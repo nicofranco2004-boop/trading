@@ -539,3 +539,99 @@ class ReviewFixesTest(AdvisorBase):
         # En sandbox Resend no está configurado → 503 send_failed es aceptable
         # (significa que llegó hasta el envío con el uid del ASESOR resuelto).
         self.assertNotIn(r.status_code, (400, 403), r.text)
+
+
+# ─── F3: el libro (/api/advisor/book) ────────────────────────────────────────
+
+class AdvisorBookTest(AdvisorBase):
+
+    def setUp(self):
+        super().setUp()
+        conn = main.get_db()
+        # FX conocido para aserciones (OR REPLACE: clave = fecha de hoy)
+        import datetime as _d
+        self.today = _d.date.today()
+        conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, 1400, 1000, 'manual')", (self.today.isoformat(),))
+        # Cliente 1 (self.client_uid, broker Cocos ARS): snapshots + posiciones
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+            "VALUES (?,?,?,?,?)",
+            (self.client_uid, (self.today - _d.timedelta(days=10)).isoformat(), 1000.0, 800.0, 800.0))
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+            "VALUES (?,?,?,?,?)",
+            (self.client_uid, self.today.isoformat(), 700.0, 800.0, 800.0))  # -30% del máximo
+        # GGAL ganadora: invested 100k ARS, precio .BA 15000 × 10 = 150k ARS
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,0,'ARS')""",
+            (self.client_uid, "Cocos", "GGAL", 10, 100000))
+        # AL30 perdedora: invested 200k ARS, precio .BA 10000 × 10 = 100k ARS
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,0,'ARS')""",
+            (self.client_uid, "Cocos", "AL30", 10, 200000))
+        # Cash ARS ocioso: 500.000 ARS (= USD 500 al MEP 1000) sobre tv 700 → >15%
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,1,'ARS')""",
+            (self.client_uid, "Cocos", "Pesos", 1, 500000))
+        for sym, price in (("GGAL.BA", 15000.0), ("AL30.BA", 10000.0)):
+            conn.execute(
+                "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,datetime('now'))",
+                (sym, price))
+        conn.commit()
+        conn.close()
+
+    def test_book_gateado_por_tier(self):
+        r = self.http.get("/api/advisor/book", headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)
+
+    def test_book_aum_y_distribucion(self):
+        r = self.http.get("/api/advisor/book", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+        self.assertEqual(d["aum"]["total_usd"], 700.0)     # último snapshot del único con datos
+        self.assertEqual(d["aum"]["with_data"], 1)
+        self.assertEqual(d["aum"]["clients"], 1)
+        # Distribución: tv 700 vs aportado 800 → en rojo
+        self.assertEqual(d["distribution"]["red"], 1)
+        self.assertEqual(d["distribution"]["worst"]["client_uid"], self.client_uid)
+
+    def test_book_motor_estrella(self):
+        r = self.http.get("/api/advisor/book", headers=self._hdr(self.advisor))
+        d = r.json()
+        star = d["star"]
+        self.assertIsNotNone(star)
+        winners = {w["asset"]: w for w in star["winners"]}
+        losers = {l["asset"]: l for l in star["losers"]}
+        self.assertIn("GGAL", winners)                     # 150k vs 100k → verde
+        self.assertEqual(winners["GGAL"]["clients_green"], 1)
+        self.assertIn("AL30", losers)                      # 100k vs 200k → rojo
+        self.assertEqual(losers["AL30"]["clients_red"], 1)
+        self.assertGreater(winners["GGAL"]["pnl_usd"], 0)
+        self.assertLess(losers["AL30"]["pnl_usd"], 0)
+
+    def test_book_colas(self):
+        r = self.http.get("/api/advisor/book", headers=self._hdr(self.advisor))
+        d = r.json()
+        by_uid = {q["client_uid"]: q for q in d["queues"]}
+        self.assertIn(self.client_uid, by_uid)
+        kinds = {re["kind"] for re in by_uid[self.client_uid]["reasons"]}
+        self.assertIn("drawdown", kinds)      # 700 vs máx 1000 = -30%
+        self.assertIn("cash_ocioso", kinds)   # USD 500 de pesos sobre tv 700
+
+    def test_book_posicion_sin_precio_se_excluye(self):
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,0,'ARS')""",
+            (self.client_uid, "Cocos", "SINPRECIO", 5, 50000))
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/book", headers=self._hdr(self.advisor))
+        star = r.json()["star"]
+        all_assets = {x["asset"] for x in star["winners"] + star["losers"]}
+        self.assertNotIn("SINPRECIO", all_assets)          # sin precio ≠ P&L 0
+        self.assertGreaterEqual(star["skipped_no_price"], 1)

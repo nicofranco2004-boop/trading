@@ -24970,3 +24970,326 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                 "fully_undone": left_ok == 0}
     finally:
         conn.close()
+
+
+# ─── F3: el libro del asesor (GET /api/advisor/book) ─────────────────────────
+
+def _advisor_client_ids(conn, uid: int) -> list:
+    return [r["client_uid"] for r in conn.execute(
+        """SELECT client_uid FROM advisor_clients
+           WHERE advisor_uid=? AND status='active' ORDER BY created_at ASC""",
+        (uid,),
+    ).fetchall()]
+
+
+def _latest_snapshots(conn, ids: list) -> dict:
+    """{uid: row(date,total_value,net_deposited)} del ÚLTIMO snapshot por cliente."""
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    return {r["user_id"]: r for r in conn.execute(
+        f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited
+            FROM snapshots s
+            WHERE s.user_id IN ({ph})
+              AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
+                            WHERE s2.user_id = s.user_id)""",
+        ids,
+    ).fetchall()}
+
+
+def _snapshots_asof(conn, ids: list, cutoff: str) -> dict:
+    """{uid: row} del último snapshot con date <= cutoff, por cliente."""
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    return {r["user_id"]: r for r in conn.execute(
+        f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited
+            FROM snapshots s
+            WHERE s.user_id IN ({ph})
+              AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
+                            WHERE s2.user_id = s.user_id AND s2.date <= ?)""",
+        (*ids, cutoff),
+    ).fetchall()}
+
+
+@app.get("/api/advisor/book")
+def advisor_book(uid: int = Depends(get_current_user)):
+    """El LIBRO del asesor: AUM total + captación + distribución + motor
+    estrella + colas accionables. Todo sale de snapshots/positions/operations
+    ya persistidos + precios last-known (asset_last_price) — CERO fetches de
+    red en el request (el libro carga instantáneo; la frescura la garantiza
+    el cron nocturno + la navegación normal que va cacheando precios).
+
+    Motor estrella: P&L NO REALIZADO per-activo per-cliente, valuando cada
+    posición con compute_broker_value_usd (el MISMO motor del snapshot —
+    CEDEARs al MEP, bonos per-1, cripto premium) → agrupado por ticker:
+    cuántos clientes están en verde/rojo con ese activo y el P&L agregado.
+    Posiciones sin precio conocido se EXCLUYEN (no cuentan como P&L 0) y se
+    reporta el conteo en star.skipped_no_price."""
+    from datetime import datetime as _dt, timedelta as _td
+    from snapshots_job import (
+        compute_broker_value_usd, build_price_symbols, read_last_prices,
+        _broker_name_sets, _user_tc_cedear, position_price_key,
+    )
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        ids = _advisor_client_ids(conn, uid)
+        labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      """SELECT ac.client_uid, ac.label, u.name
+                         FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+                         WHERE ac.advisor_uid=? AND ac.status='active'""", (uid,)).fetchall()}
+        if not ids:
+            return {"aum": {"total_usd": None, "clients": 0, "with_data": 0},
+                    "flows_month": None, "distribution": None,
+                    "star": None, "queues": []}
+
+        # FX del día (tabla global, sin red). MEP para convertir cash ARS.
+        fx = conn.execute(
+            "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
+        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else tc_blue
+
+        today = _dt.utcnow().date()
+        latest = _latest_snapshots(conn, ids)
+        asof_7d = _snapshots_asof(conn, ids, (today - _td(days=7)).isoformat())
+        asof_month = _snapshots_asof(conn, ids, today.replace(day=1).isoformat())
+
+        # ── AUM + deltas (solo clientes CON snapshot; los nuevos no restan) ──
+        total = sum(float(r["total_value"] or 0) for r in latest.values())
+        with_data = len(latest)
+
+        def _delta(asof: dict):
+            # Comparar solo clientes presentes en AMBOS cortes (base comparable)
+            # y con FECHAS distintas: con el cron caído, latest == asof y un
+            # "+0 · +0%" mentiría que la semana fue plana.
+            common = [i for i in latest if i in asof
+                      and str(latest[i]["date"]) != str(asof[i]["date"])]
+            if not common:
+                return None, None
+            now_v = sum(float(latest[i]["total_value"] or 0) for i in common)
+            then_v = sum(float(asof[i]["total_value"] or 0) for i in common)
+            d = now_v - then_v
+            return round(d, 2), (round(d / then_v * 100, 2) if then_v > 0 else None)
+
+        d7_usd, d7_pct = _delta(asof_7d)
+
+        # ── Captación del mes (Δ net_deposited desde el 1° del mes, en USD) ──
+        flows = None
+        common_m = [i for i in latest if i in asof_month
+                    and str(latest[i]["date"]) != str(asof_month[i]["date"])]
+        if common_m:
+            dep_now = sum(float(latest[i]["net_deposited"] or 0) for i in common_m)
+            dep_then = sum(float(asof_month[i]["net_deposited"] or 0) for i in common_m)
+            v_now = sum(float(latest[i]["total_value"] or 0) for i in common_m)
+            v_then = sum(float(asof_month[i]["total_value"] or 0) for i in common_m)
+            net_dep = round(dep_now - dep_then, 2)
+            flows = {
+                "net_deposited_usd": net_dep,
+                # Efecto mercado = ΔAUM del mes − flujos del mes
+                "market_effect_usd": round((v_now - v_then) - net_dep, 2),
+            }
+
+        # ── Distribución de performance (total return vs aportado, del snapshot) ──
+        dist = None
+        perf = []
+        for i, r in latest.items():
+            nd = float(r["net_deposited"] or 0)
+            # Base mínima USD 100: un nd residual (~centavos) explota el %
+            # y secuestra el Mejor/Peor con retornos astronómicos falsos.
+            if nd >= 100:
+                perf.append((i, (float(r["total_value"] or 0) - nd) / nd * 100))
+        if perf:
+            greens = [p for p in perf if p[1] > 0.5]
+            reds = [p for p in perf if p[1] < -0.5]
+            best = max(perf, key=lambda x: x[1])
+            worst = min(perf, key=lambda x: x[1])
+            dist = {
+                "green": len(greens), "red": len(reds),
+                "flat": len(perf) - len(greens) - len(reds),
+                "best": {"client_uid": best[0], "label": labels.get(best[0]), "ret_pct": round(best[1], 1)},
+                "worst": {"client_uid": worst[0], "label": labels.get(worst[0]), "ret_pct": round(worst[1], 1)},
+            }
+
+        # ── ⭐ Motor estrella: P&L no realizado per-activo cross-cliente ──
+        ph = ",".join("?" * len(ids))
+        all_brokers = {}
+        for r in conn.execute(
+            f"SELECT id, user_id, name, currency, parent_broker_id FROM brokers WHERE user_id IN ({ph})", ids
+        ).fetchall():
+            all_brokers.setdefault(r["user_id"], []).append(dict(r))
+        all_pos = {}
+        for r in conn.execute(
+            f"""SELECT user_id, broker, asset, asset_type, is_cash, invested,
+                       quantity, commissions, price_override, currency
+                FROM positions WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0""", ids
+        ).fetchall():
+            all_pos.setdefault(r["user_id"], []).append(dict(r))
+
+        per_asset = {}   # asset -> {client_uid: pnl_usd}
+        skipped_no_price = 0
+        for cid in ids:
+            brokers = all_brokers.get(cid, [])
+            positions = all_pos.get(cid, [])
+            if not brokers or not positions:
+                continue
+            symbols = build_price_symbols(positions, brokers)
+            prices = read_last_prices(conn, symbols)
+            # FCI en broker ARS: el engine busca 'FCI:x.BA' pero el NAV vive
+            # como 'FCI:x' — alias para que ambas keys resuelvan al mismo NAV.
+            for k, v in list(prices.items()):
+                if k.startswith("FCI:") and v is not None:
+                    prices.setdefault(k + ".BA", v)
+            # MEP del día para TODOS los clientes (consistencia cross-libro).
+            # _user_tc_cedear con cache frío caía al config.tc_mep PER-CLIENTE
+            # (potencialmente stale de años) — la clase de bug que el snapshot
+            # job ya arregló pasando un rate resuelto por el job.
+            tc_cedear = tc_mep
+            ars_names, ar_usd_names = _broker_name_sets(brokers)
+            broker_ccy = {b["name"]: b["currency"] for b in brokers}
+            for p in positions:
+                bccy = broker_ccy.get(p["broker"])
+                if bccy is None:
+                    # Posición huérfana (broker borrado/renombrado sin cascada):
+                    # defaultear a USD contaría un costo en pesos 1:1 como
+                    # dólares y fabricaría pérdidas gigantes. Mismo guard que
+                    # _valuate_positions_for_chat.
+                    skipped_no_price += 1
+                    continue
+                has_price = (p.get("price_override") is not None or
+                             prices.get(position_price_key(p, ars_names, ar_usd_names)) is not None)
+                if not has_price:
+                    skipped_no_price += 1
+                    continue  # sin precio ≠ P&L 0 — se excluye del motor
+                try:
+                    r = compute_broker_value_usd(
+                        [p], prices, bccy,
+                        tc_blue, broker_name=p["broker"], cedear_rate=tc_cedear)
+                    pnl = float(r["value"]) - float(r["invested"])
+                except Exception:
+                    continue
+                bucket = per_asset.setdefault(p["asset"], {})
+                bucket[cid] = bucket.get(cid, 0.0) + pnl
+
+        star = None
+        if per_asset or skipped_no_price:
+            rows_ = []
+            for asset, by_client in per_asset.items():
+                greens = sum(1 for v in by_client.values() if v > 1.0)   # > USD 1 de ruido
+                reds = sum(1 for v in by_client.values() if v < -1.0)
+                rows_.append({
+                    "asset": asset,
+                    "clients_green": greens,
+                    "clients_red": reds,
+                    "clients_total": len(by_client),
+                    "pnl_usd": round(sum(by_client.values()), 2),
+                    # P&L por lado: un activo puede estar en AMBAS columnas
+                    # (unos ganan, otros pierden) — cada columna muestra SU
+                    # plata, no el neto agregado (que contradiría el título).
+                    "pnl_red_usd": round(sum(v for v in by_client.values() if v < -1.0), 2),
+                    "pnl_green_usd": round(sum(v for v in by_client.values() if v > 1.0), 2),
+                })
+            # Perdedores: más clientes en rojo primero, después P&L más negativo
+            losers = sorted([r for r in rows_ if r["clients_red"] > 0],
+                            key=lambda r: (-r["clients_red"], r["pnl_red_usd"]))[:5]
+            winners = sorted([r for r in rows_ if r["clients_green"] > 0],
+                             key=lambda r: (-r["clients_green"], -r["pnl_green_usd"]))[:5]
+            star = {"winners": winners, "losers": losers,
+                    "skipped_no_price": skipped_no_price}
+
+        # ── Colas "¿a quién llamar hoy?" ──
+        # Drawdown AJUSTADO POR FLUJOS: máximo de (total_value − net_deposited)
+        # vs el valor actual de la misma serie. Sin el ajuste, un retiro grande
+        # (comprarse un auto) quedaba flaggeado como "caída" para siempre.
+        max_snap = {r["user_id"]: {"adj_mx": float(r["adj_mx"] or 0),
+                                    "mx": float(r["mx"] or 0)}
+                    for r in conn.execute(
+            f"""SELECT user_id,
+                       MAX(total_value - COALESCE(net_deposited, 0)) adj_mx,
+                       MAX(total_value) mx
+                FROM snapshots WHERE user_id IN ({ph}) GROUP BY user_id""",
+            ids,
+        ).fetchall()}
+        # Última actividad: operación o alta de posición más reciente
+        last_op = {r["user_id"]: r["d"] for r in conn.execute(
+            f"""SELECT user_id, MAX(d) d FROM (
+                    SELECT user_id, MAX(date) d FROM operations WHERE user_id IN ({ph}) GROUP BY user_id
+                    UNION ALL
+                    SELECT user_id, MAX(entry_date) d FROM positions WHERE user_id IN ({ph}) GROUP BY user_id
+                ) GROUP BY user_id""",
+            (*ids, *ids),
+        ).fetchall()}
+        # Cash por moneda de broker (ARS alimenta la cola de "pesos ociosos";
+        # el total en cualquier moneda evita el falso "sin cargar" de un
+        # cliente que solo depositó dólares)
+        ars_cash, has_cash = {}, set()
+        for r in conn.execute(
+            f"""SELECT p.user_id, b.currency ccy, SUM(p.invested) v
+                FROM positions p JOIN brokers b
+                  ON b.user_id = p.user_id AND b.name = p.broker
+                WHERE p.user_id IN ({ph}) AND p.is_cash = 1
+                GROUP BY p.user_id, b.currency""",
+            ids,
+        ).fetchall():
+            if float(r["v"] or 0) > 0:
+                has_cash.add(r["user_id"])
+                if r["ccy"] == "ARS":
+                    ars_cash[r["user_id"]] = float(r["v"] or 0)
+
+        queues = []
+        for cid in ids:
+            reasons = []
+            snap = latest.get(cid)
+            tv = float(snap["total_value"]) if snap and snap["total_value"] else None
+            # 1. Sin cartera cargada (ni posiciones ni cash en NINGUNA moneda)
+            if not all_pos.get(cid) and cid not in has_cash:
+                reasons.append({"kind": "sin_cargar",
+                                "detail": "Sin posiciones cargadas — cargale la foto de su cartera"})
+            # 2. Drawdown fuerte desde el mejor momento (ajustado por flujos:
+            #    la caída es de RESULTADO, no de plata que el cliente retiró)
+            ms = max_snap.get(cid)
+            if tv is not None and snap is not None and ms and ms["mx"] > 0:
+                adj_now = tv - float(snap["net_deposited"] or 0)
+                dd = (adj_now - ms["adj_mx"]) / ms["mx"] * 100
+                if dd <= -15:
+                    reasons.append({"kind": "drawdown",
+                                    "detail": f"Resultado {dd:.0f}% abajo de su mejor momento — llamada de contención"})
+            # 3. Cash ARS ocioso > 15% del portfolio
+            if tv and tv > 0 and ars_cash.get(cid, 0) > 0 and tc_mep > 0:
+                share = min((ars_cash[cid] / tc_mep) / tv * 100, 100)
+                if share >= 15:
+                    reasons.append({"kind": "cash_ocioso",
+                                    "detail": f"{share:.0f}% del portfolio en pesos sin invertir"})
+            # 4. Sin actividad hace > 90 días
+            lo = last_op.get(cid)
+            if lo:
+                try:
+                    days = (today - _dt.fromisoformat(str(lo)[:10]).date()).days
+                    if days > 90:
+                        reasons.append({"kind": "inactivo",
+                                        "detail": f"Sin movimientos hace {days} días"})
+                except (ValueError, TypeError):
+                    pass
+            if reasons:
+                queues.append({"client_uid": cid, "label": labels.get(cid),
+                               "reasons": reasons})
+
+        newest_date = max((str(r["date"]) for r in latest.values()), default=None)
+        return {
+            "aum": {
+                "total_usd": round(total, 2) if with_data else None,
+                "clients": len(ids),
+                "with_data": with_data,
+                "delta_7d_usd": d7_usd,
+                "delta_7d_pct": d7_pct,
+                "as_of": newest_date,
+            },
+            "flows_month": flows,
+            "distribution": dist,
+            "star": star,
+            "queues": queues,
+        }
+    finally:
+        conn.close()
