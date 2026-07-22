@@ -1206,7 +1206,7 @@ function PositionsDesktop() {
 
   if (brokers.length === 0) {
     return (
-      <div className="page-shell-wide">
+      <div className="page-shell-xwide">
         <PageHeader
           eyebrow="Posiciones / Activas"
           title="Tu cartera en vivo"
@@ -1261,7 +1261,7 @@ function PositionsDesktop() {
   ).length
 
   return (
-    <div className="page-shell-wide">
+    <div className="page-shell-xwide">
       <PageHeader
         eyebrow="Posiciones / Activas"
         title="Tu cartera en vivo"
