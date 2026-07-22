@@ -13071,7 +13071,7 @@ BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
 Al FINAL de cada respuesta de ANÁLISIS, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado con este shape:
 {"verdict":"2-3 palabras (ej: Buen mes / Ojo acá / Todo en orden)","tone":"pos|warn|neg|neutral","headline":"la respuesta resumida en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor con signo/unidad","t":"pos|warn|neg|neutral"}],"followups":["repregunta corta","otra"],"sources":["qué datos miraste, ej: 12 posiciones","snapshot de hoy"]}
 Reglas del bloque:
-- stats: máx 3, SOLO números reales del snapshot o de tools — nunca inventados. Elegí los números que RESPONDEN LA PREGUNTA (deltas, brechas vs benchmark, pesos, el dato que sorprende) — NO el resumen genérico de la cartera (invertido/valor actual ya lo ve en el dashboard; repetirlo aburre). Si no hay métricas relevantes, mandá stats vacío [].
+- stats: máx 3, SOLO números reales del snapshot o de tools — nunca inventados. Elegí los números que RESPONDEN LA PREGUNTA (deltas, brechas vs benchmark, concentración, el dato que sorprende) — NO el resumen genérico de la cartera (invertido/valor actual ya lo ve en el dashboard; repetirlo aburre). Si no hay métricas relevantes, mandá stats vacío []. LABELS SIN AMBIGÜEDAD: para el peso/ponderación de posiciones decí "Concentración top 5" o "Top 5 = % de tu cartera" — NUNCA "pesos" (acá "pesos" es la moneda ARS y se lee como plata). Mismo criterio en títulos de blocks y prosa: "peso" solo si el contexto lo hace inequívoco.
 - followups: máx 3 preguntas cortas que VOS puedas responder con esta data.
 - sources: máx 3, cortitos.
 - La prosa va ANTES del bloque y NO lo menciona (el usuario no ve el JSON, ve tarjetas).
