@@ -1,11 +1,13 @@
 import { useEffect, useRef, lazy, Suspense } from 'react'
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
 import { PrivacyProvider } from './contexts/PrivacyContext'
 import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import { AlertsProvider } from './contexts/AlertsContext'
+import { AdvisorProvider } from './contexts/AdvisorContext'
+import ClientContextBar from './components/advisor/ClientContextBar'
 import Sidebar from './components/Sidebar'
 import { PageSkeleton } from './components/Skeleton'
 import MobileTabBar from './components/mobile/MobileTabBar'
@@ -58,6 +60,8 @@ const Fundamentals = lazy(() => import('./pages/Fundamentals'))
 const AssetDetail = lazy(() => import('./pages/AssetDetail'))
 const Cartera = lazy(() => import('./pages/Cartera'))
 const PerfilInversor = lazy(() => import('./pages/PerfilInversor'))
+// Plan Asesor: roster de clientes + drill-down + operación grupal (tier advisor)
+const AdvisorClients = lazy(() => import('./pages/AdvisorClients'))
 const More = lazy(() => import('./pages/More'))
 const Planes = lazy(() => import('./pages/Planes'))
 // BillingReturn exporta 3 componentes — Vite los dedupea en un solo chunk
@@ -146,6 +150,27 @@ function RouteTracker() {
   return null
 }
 
+function AdvisorLandingRedirect() {
+  // Plan Asesor: al ENTRAR a la app (login o apertura de sesión), el asesor
+  // aterriza en su roster (/clientes), no en el mercado. Una vez por sesión
+  // de pestaña (sessionStorage) — después puede navegar a donde quiera sin
+  // que lo pateemos de vuelta.
+  const { user } = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (user?.tier !== 'advisor') return
+    if (location.pathname !== '/') return
+    try {
+      if (sessionStorage.getItem('rendi_adv_landed')) return
+      sessionStorage.setItem('rendi_adv_landed', '1')
+    } catch { /* sin sessionStorage → redirigir igual */ }
+    navigate('/clientes', { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.tier])
+  return null
+}
+
 function AppRoutes() {
   // Las rutas son las mismas en desktop y mobile — el layout cambia, el
   // árbol de rutas no. Algunas páginas detectan useIsMobile() internamente
@@ -179,6 +204,8 @@ function AppRoutes() {
           El TEST/cuestionario sigue en Configuración › Test de inversor; esta
           página tiene el CTA para completarlo. */}
       <Route path="/perfil-inversor" element={<PerfilInversor />} />
+      {/* Plan Asesor — gateado adentro por tier (advisor/admin) */}
+      <Route path="/clientes" element={<AdvisorClients />} />
       {/* /objetivos sigue siendo redirect a /posiciones?tab=objetivos arriba */}
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />
@@ -282,8 +309,11 @@ function Layout() {
   if (isMobile) {
     return (
       <AlertsProvider>
+      <AdvisorProvider>
+        <AdvisorLandingRedirect />
         <MobileTopBar />
         <main className="min-h-screen">
+          <ClientContextBar />
           <DemoBanner />
           <Suspense fallback={<PageFallback />}>
             <AppRoutes />
@@ -291,6 +321,7 @@ function Layout() {
         </main>
         <MobileTabBar />
         <SupportWhatsAppFab />
+      </AdvisorProvider>
       </AlertsProvider>
     )
   }
@@ -301,6 +332,8 @@ function Layout() {
   // (queda tras el gate `if (!user)`), así useAlerts nunca fetchea sin sesión.
   return (
     <AlertsProvider>
+    <AdvisorProvider>
+      <AdvisorLandingRedirect />
       <Sidebar />
       {/* main content shifteado dinámicamente por --sidebar-w
           (la sidebar setea esta CSS var según expandida/colapsada) */}
@@ -308,12 +341,14 @@ function Layout() {
         className="min-h-screen transition-[margin] duration-200 ease-out"
         style={{ marginLeft: 'var(--sidebar-w, 220px)' }}
       >
+        <ClientContextBar />
         <DemoBanner />
         <Suspense fallback={<PageFallback />}>
           <AppRoutes />
         </Suspense>
       </main>
       <SupportWhatsAppFab />
+    </AdvisorProvider>
     </AlertsProvider>
   )
 }

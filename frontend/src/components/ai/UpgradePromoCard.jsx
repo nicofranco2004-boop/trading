@@ -40,7 +40,7 @@ function fmtReset(iso) {
   }
 }
 
-const TIER_LABEL = { free: 'Free', plus: 'Plus', pro: 'Pro', admin: 'Admin' }
+const TIER_LABEL = { free: 'Free', plus: 'Plus', pro: 'Pro', advisor: 'Asesor', admin: 'Admin' }
 
 /**
  * @param {object} props

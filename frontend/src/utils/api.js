@@ -16,6 +16,56 @@ if (typeof window !== 'undefined') {
   } catch {}
 }
 
+// ── Contexto de cliente (Plan Asesor) ────────────────────────────────────────
+// Cuando el asesor entra a "el Rendi de un cliente", TODOS los requests llevan
+// el header X-Rendi-Client-Id → el backend (get_effective_user) resuelve la
+// cuenta del cliente para endpoints de datos, e IGNORA el header en los
+// prefijos exentos (auth/billing/ai/push/advisor). Persistimos en localStorage
+// para sobrevivir reloads; AdvisorContext (React) espeja este estado y fuerza
+// el refetch de plan features al entrar/salir.
+const CLIENT_CTX_KEY = 'rendi_client_ctx'
+let _clientCtx = null
+try {
+  if (typeof window !== 'undefined') {
+    const raw = localStorage.getItem(CLIENT_CTX_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed.id === 'number') _clientCtx = parsed
+    }
+  }
+} catch { /* basura en LS → sin contexto */ }
+
+export function getClientContext() {
+  return _clientCtx
+}
+
+export function setClientContext(ctx) {
+  // ctx: { id: <client_uid>, label: <string> }
+  _clientCtx = ctx && typeof ctx.id === 'number' ? { id: ctx.id, label: ctx.label || '' } : null
+  try {
+    if (_clientCtx) localStorage.setItem(CLIENT_CTX_KEY, JSON.stringify(_clientCtx))
+    else localStorage.removeItem(CLIENT_CTX_KEY)
+  } catch { /* ignore */ }
+}
+
+export function clearClientContext() {
+  setClientContext(null)
+}
+
+// Sync multi-pestaña: si OTRA pestaña limpia/cambia el contexto (logout, salir
+// del cliente), el mirror en memoria de ESTA pestaña se actualiza — sin esto,
+// una pestaña vieja seguía mandando el header de un cliente ajeno tras el
+// logout+login de otro usuario (403 en toda la app hasta un F5).
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== null && e.key !== CLIENT_CTX_KEY) return
+    try {
+      const parsed = e.key === null ? null : (e.newValue ? JSON.parse(e.newValue) : null)
+      _clientCtx = parsed && typeof parsed.id === 'number' ? parsed : null
+    } catch { _clientCtx = null }
+  })
+}
+
 async function req(method, path, body, opts) {
   // ── Demo mode interceptor ────────────────────────────────────────────────
   // Si el user está en modo demo, devolvemos fixtures hardcodeadas en lugar
@@ -49,6 +99,9 @@ async function req(method, path, body, opts) {
   }
 
   const headers = { 'Content-Type': 'application/json' }
+  // Plan Asesor: contexto de cliente activo → el backend resuelve la cuenta
+  // del cliente (o ignora el header en los prefijos exentos).
+  if (_clientCtx?.id) headers['X-Rendi-Client-Id'] = String(_clientCtx.id)
 
   const res = await fetch('/api' + path, {
     method,
@@ -108,9 +161,14 @@ async function upload(path, formData) {
     throw err
   }
   // No setear Content-Type — el browser agrega multipart/form-data con su boundary.
+  // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
+  // import caía SILENCIOSAMENTE en la cuenta del asesor con el ctx activo.
+  const upHeaders = {}
+  if (_clientCtx?.id) upHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
   const res = await fetch('/api' + path, {
     method: 'POST',
     credentials: 'include',
+    headers: upHeaders,
     body: formData,
   })
 
@@ -134,9 +192,14 @@ async function getBlob(path) {
     err.demoBlocked = true
     throw err
   }
+  // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
+  // export CSV bajaba la cartera del ASESOR presentada como la del cliente.
+  const blobHeaders = {}
+  if (_clientCtx?.id) blobHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
   const res = await fetch('/api' + path, {
     method: 'GET',
     credentials: 'include',
+    headers: blobHeaders,
   })
   if (res.status === 401) {
     localStorage.removeItem('rendi_user')
@@ -168,9 +231,13 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
     return { tier: res?.tier, portfolioChanged: !!res?.portfolio_changed }
   }
 
+  // Contexto de cliente (Plan Asesor): la IA SIGUE al contexto — con ctx
+  // activo el coach lee/escribe la cuenta del CLIENTE (IA per-cliente).
+  const chatHeaders = { 'Content-Type': 'application/json' }
+  if (_clientCtx?.id) chatHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
   const res = await fetch('/api/ai/chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: chatHeaders,
     credentials: 'include',
     body: JSON.stringify({ ...body, stream: true }),
     signal,

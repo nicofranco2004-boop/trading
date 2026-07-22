@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { api } from '../utils/api'
+import { api, clearClientContext } from '../utils/api'
 import { isDemoMode, enableDemoMode, disableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
@@ -124,6 +124,10 @@ export function AuthProvider({ children }) {
   // el backend en la respuesta de login/register/verify/reset. Lo dejamos
   // en la firma para no tener que tocar todos los call-sites.
   function login(_legacyToken, name, extra = {}) {
+    // Plan Asesor: si quedó un contexto de cliente colgado (logout sin
+    // "Volver" en la misma pestaña SPA), el header stale rompería TODOS los
+    // requests del user nuevo con 403. Identity change = contexto afuera.
+    clearClientContext()
     const u = { name, ...extra }
     localStorage.setItem('rendi_user', JSON.stringify(u))
     setUser(u)
@@ -172,6 +176,10 @@ export function AuthProvider({ children }) {
   function logout() {
     trackEvent('logout')
     setUserId(null)
+    // Plan Asesor: el loop rendi_* de abajo borra la KEY rendi_client_ctx,
+    // pero la variable módulo-level de api.js seguiría inyectando el header
+    // el resto de la sesión SPA — limpiar el mirror en memoria también.
+    clearClientContext()
     if (user?.demo) {
       track('demo_mode_exited')
       disableDemoMode()

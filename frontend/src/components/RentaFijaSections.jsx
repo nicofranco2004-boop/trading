@@ -183,6 +183,8 @@ export default function RentaFijaSections({
                 summary={bondCashflowsByKey?.get(`${p.broker}:${p.asset}`)}
                 pendingDates={pendingDatesByKey?.get(`${p.broker}:${p.asset}`)}
                 isArs={isArsFor ? isArsFor(p) : false}
+                isArsDisp={displayCurrency === 'ARS'}
+                tcBlue={tcBlue}
                 price={priceFor ? priceFor(p) : null}
                 tcMep={tcMep} cerSeries={cerSeries} cerStale={cerStale}
                 expanded={!!expanded[p.id]}
@@ -219,7 +221,7 @@ export default function RentaFijaSections({
 // Card de un bono/letra/FCI: identidad + métricas clave + próximo cobro +
 // barra de capital recuperado + expansión al detalle completo.
 function BondCardRow({
-  p, v, fmtMoney, summary, pendingDates, isArs, price, tcMep, cerSeries, cerStale,
+  p, v, fmtMoney, summary, pendingDates, isArs, isArsDisp, tcBlue, price, tcMep, cerSeries, cerStale,
   expanded, onToggle, onEdit, onDelete, openBondCashflow,
 }) {
   const meta = getBondMeta(p.asset)
@@ -288,11 +290,19 @@ function BondCardRow({
               <div className="text-[13px] font-bold text-data-violet tabular">{pctSigned(tir)}</div>
             </div>
           )}
-          {next && (
-            <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-data-cyan bg-data-cyan/10 rounded-full px-2.5 py-1 tabular">
-              Cobrás {shortDate(next.date)} ~{meta?.currency || moneyLabel} {(meta?.currency === 'ARS' ? ars : usd)(next.total)}
-            </span>
-          )}
+          {next && (() => {
+            // El cronograma paga en la moneda del BONO; el chip lo muestra en el
+            // riel del toggle global (igual que el detalle y el resto de Cartera).
+            const bondIsArs = (meta?.currency || 'USD') === 'ARS'
+            const amt = bondIsArs === isArsDisp
+              ? next.total
+              : bondIsArs ? (tcBlue ? next.total / tcBlue : next.total) : next.total * (tcBlue || 1)
+            return (
+              <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-data-cyan bg-data-cyan/10 rounded-full px-2.5 py-1 tabular">
+                Cobrás {shortDate(next.date)} ~{isArsDisp ? 'ARS' : 'USD'} {(isArsDisp ? ars : usd)(amt)}
+              </span>
+            )
+          })()}
           <div className="text-right">
             <div className={`text-[13px] font-bold tabular ${pnlAdjUsd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
               {pnlAdjUsd >= 0 ? '+' : '−'}{fmtMoney(Math.abs(pnlAdjUsd)).replace('-', '')}
@@ -341,6 +351,8 @@ function BondCardRow({
             p={p}
             summary={summary}
             isARS={isArs}
+            isArsDisp={isArsDisp}
+            tcBlue={tcBlue}
             currentPrice={price}
             tcMep={tcMep}
             cerSeries={cerSeries}

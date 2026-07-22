@@ -32,10 +32,23 @@ function diffDaysAbs(a, b) {
 export function BondDetailBody({
   p, summary, isARS, currentPrice, tcMep, cerSeries, cerStale,
   onAddCoupon, onAddAmortization, pendingDates = null,
+  isArsDisp = null, tcBlue = null,
 }) {
   const meta = getBondMeta(p.asset)
-  const moneyLabel = isARS ? 'ARS' : 'USD'
-  const fmt = isARS ? ars : usd
+  // La moneda de DISPLAY sigue el toggle global (isArsDisp) cuando viene —
+  // igual que el resto de Cartera (toggle `932bebf`). Sin la prop, cae a la
+  // moneda nativa del broker (isARS). Los montos del summary son NATIVOS del
+  // broker → `toDisp` los lleva al riel elegido, prefiriendo la pata USD
+  // exacta del summary sobre re-dividir por tcBlue cuando está disponible.
+  const dispArs = isArsDisp == null ? isARS : isArsDisp
+  const moneyLabel = dispArs ? 'ARS' : 'USD'
+  const fmt = dispArs ? ars : usd
+  const toDisp = (nativeAmt, usdAmt = null) => {
+    if (nativeAmt == null) return nativeAmt
+    if (isARS === dispArs) return nativeAmt
+    if (isARS && !dispArs) return usdAmt != null ? usdAmt : (tcBlue ? nativeAmt / tcBlue : nativeAmt)
+    return nativeAmt * (tcBlue || 1)  // broker USD, vista ARS
+  }
   const invested = p.invested || 0
   const coupons = summary?.coupons || 0
   const amortizations = summary?.amortizations || 0
@@ -46,6 +59,15 @@ export function BondDetailBody({
   const ops = summary?.ops || []
   const recoveryPct = invested > 0 ? (total / invested) : 0
   const amortRealizedGain = pnlContribution - coupons
+  // Versiones en el riel de display (las nativas quedan para gates de signo).
+  const couponsUsd = summary?.couponsUsd || 0
+  const amortizationsUsd = summary?.amortizationsUsd || 0
+  const pnlContributionUsd = summary?.pnlContributionUsd || 0
+  const totalDisp = toDisp(total, totalUsd)
+  const couponsDisp = toDisp(coupons, couponsUsd)
+  const amortizationsDisp = toDisp(amortizations, amortizationsUsd)
+  const pnlContributionDisp = toDisp(pnlContribution, pnlContributionUsd)
+  const amortRealizedGainDisp = pnlContributionDisp - couponsDisp
 
   // ── Schedule + TIR + próximo pago (misma lógica que la v1) ────────────────
   const today = new Date().toISOString().slice(0, 10)
@@ -58,6 +80,15 @@ export function BondDetailBody({
   const bondCurrency = meta?.currency || 'USD'
   const brokerCurrency = isARS ? 'ARS' : 'USD'
   const isCrossCurrency = bondCurrency !== brokerCurrency
+  // Los flujos del CRONOGRAMA (próximo pago, timeline futuro) están en la
+  // moneda del BONO — los llevamos al riel de display igual que el resto.
+  const bondIsArs = bondCurrency === 'ARS'
+  const schedToDisp = (amt) => {
+    if (amt == null) return amt
+    if (bondIsArs === dispArs) return amt
+    if (bondIsArs && !dispArs) return tcBlue ? amt / tcBlue : amt
+    return amt * (tcBlue || 1)
+  }
   let priceInBondCurrency = currentPrice
   let priceConversion = null
   if (isCrossCurrency && currentPrice != null && currentPrice > 0) {
@@ -188,19 +219,19 @@ export function BondDetailBody({
           </p>
           {total > 0 ? (
             <>
-              <p className="text-[21px] font-bold text-rendi-pos tabular leading-none">+{moneyLabel} {fmt(total)}</p>
+              <p className="text-[21px] font-bold text-rendi-pos tabular leading-none">+{moneyLabel} {fmt(totalDisp)}</p>
               <p className="text-[11px] text-ink-3 mt-1">
                 cobrado en total{invested > 0 && <> · <span className="text-ink-2 font-medium">{pctSigned(recoveryPct)} del capital recuperado</span></>}
               </p>
               <div className="mt-2.5 rounded-xl bg-bg-2/70 px-3 py-2.5 text-[11.5px] text-ink-2 space-y-1">
-                {coupons > 0 && <div className="flex justify-between"><span>Cupones</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(coupons)}</b></div>}
-                {amortizations > 0 && <div className="flex justify-between"><span>Amortizaciones</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(amortizations)}</b></div>}
-                <div className="flex justify-between border-t border-line/60 pt-1 mt-1"><span>De eso es ganancia real</span><b className={`tabular ${pnlContribution >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{pnlContribution >= 0 ? '+' : '−'}{moneyLabel} {fmt(Math.abs(pnlContribution))}</b></div>
+                {coupons > 0 && <div className="flex justify-between"><span>Cupones</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(couponsDisp)}</b></div>}
+                {amortizations > 0 && <div className="flex justify-between"><span>Amortizaciones</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(amortizationsDisp)}</b></div>}
+                <div className="flex justify-between border-t border-line/60 pt-1 mt-1"><span>De eso es ganancia real</span><b className={`tabular ${pnlContribution >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{pnlContribution >= 0 ? '+' : '−'}{moneyLabel} {fmt(Math.abs(pnlContributionDisp))}</b></div>
                 {amortizations > 0 && (
-                  <div className="flex justify-between"><span>Devolución de tu capital</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(Math.max(0, amortizations - Math.max(0, amortRealizedGain)))}</b></div>
+                  <div className="flex justify-between"><span>Devolución de tu capital</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(Math.max(0, amortizationsDisp - Math.max(0, amortRealizedGainDisp)))}</b></div>
                 )}
               </div>
-              {isARS && totalUsd > 0 && (
+              {isARS && dispArs && totalUsd > 0 && (
                 <p className="text-[10.5px] text-ink-3 mt-1.5">≈ USD {usd(totalUsd)} en cash{hasLegacyOps && <span className="text-rendi-warn"> (aprox)</span>}</p>
               )}
             </>
@@ -257,9 +288,9 @@ export function BondDetailBody({
           {nextPay && (
             <div className="mt-3 rounded-xl bg-data-cyan/10 px-3.5 py-2.5">
               <p className="text-[10.5px] font-bold tracking-[0.06em] text-data-cyan uppercase">Próximo pago · {nextPay.date}</p>
-              {/* El cronograma está en la moneda del BONO (un AL30 paga USD
-                  aunque el broker acredite pesos) — etiquetar con esa. */}
-              <p className="text-[16px] font-bold text-ink-0 tabular mt-0.5">~{bondCurrency} {(bondCurrency === 'ARS' ? ars : usd)(nextPay.total)}</p>
+              {/* El cronograma está en la moneda del BONO — se convierte al
+                  riel de display (toggle global), igual que el resto. */}
+              <p className="text-[16px] font-bold text-ink-0 tabular mt-0.5">~{moneyLabel} {fmt(schedToDisp(nextPay.total))}</p>
               <p className="text-[10.5px] text-ink-3">
                 {nextPay.isPureAmort ? 'amortización' : nextPay.isPureCoupon ? 'cupón' : 'cupón + amortización'} · por tus {qty} nominales
               </p>
@@ -282,11 +313,12 @@ export function BondDetailBody({
                 <div className="text-center mt-2">
                   <div className="text-[10.5px] text-ink-3 tabular">{t.date}</div>
                   <div className={`text-[12px] font-bold tabular mt-0.5 ${TL_AMT[t.status]}`}>
-                    {/* Estimados: moneda del bono (cronograma); cobrados: la del broker (op registrada). */}
+                    {/* Estimados vienen del cronograma (moneda del bono);
+                        cobrados de la op (moneda del broker) — ambos al riel. */}
                     {t.amount != null
                       ? (t.approx
-                        ? `~${(bondCurrency === 'ARS' ? ars : usd)(t.amount)}`
-                        : `+${fmt(t.amount)}`)
+                        ? `~${fmt(schedToDisp(t.amount))}`
+                        : `+${fmt(toDisp(t.amount))}`)
                       : '—'}
                   </div>
                   <div className="text-[9.5px] text-ink-3">{TL_LABEL[t.status]} · {t.kind}</div>
@@ -304,7 +336,7 @@ export function BondDetailBody({
               </div>
             )}
           </div>
-          <p className="text-[10px] text-ink-3 mt-1">Montos por tus {qty} nominales — estimados en {bondCurrency} (moneda del bono); cobrados en {moneyLabel} (lo que acreditó el broker). Futuro según cronograma del prospecto{meta?.type === 'cer' ? ' (ajustado por CER)' : ''}.</p>
+          <p className="text-[10px] text-ink-3 mt-1">Montos por tus {qty} nominales, en {moneyLabel}. Futuro estimado según cronograma del prospecto{meta?.type === 'cer' ? ' (ajustado por CER)' : ''}.</p>
         </div>
       )}
 
@@ -327,7 +359,7 @@ export function BondDetailBody({
                     <span className={`text-[10px] font-bold rounded-full px-2 py-0.5 shrink-0 ${o.op_type === 'Cupón' ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-data-violet/10 text-data-violet'}`}>{o.op_type}</span>
                     {o.notes && <span className="text-ink-3 truncate">{o.notes}</span>}
                   </div>
-                  <span className="font-semibold text-rendi-pos tabular shrink-0">+{moneyLabel} {fmt(+o.pnl_usd || 0)}</span>
+                  <span className="font-semibold text-rendi-pos tabular shrink-0">+{moneyLabel} {fmt(toDisp(+o.pnl_usd || 0))}</span>
                 </div>
               ))}
             </div>

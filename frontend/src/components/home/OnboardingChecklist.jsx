@@ -36,10 +36,12 @@ import { track } from '../../utils/track'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
 import { isAIDiscovered, AI_DISCOVERY_KEY } from '../ai/AIDiscoveryBanner'
 import { isPositionsDiscovered, POSITIONS_DISCOVERED_KEY } from '../../utils/positionsDiscovered'
+import { useAdvisorContext } from '../../contexts/AdvisorContext'
 
 const CHECKLIST_DISMISSED_KEY = 'rendi_checklist_dismissed'
 
 export default function OnboardingChecklist() {
+  const { clientCtx } = useAdvisorContext()
   const navigate = useNavigate()
   const location = useLocation()
   const coachDrawer = useCoachDrawer()
@@ -142,6 +144,9 @@ export default function OnboardingChecklist() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.loaded])
 
+  if (clientCtx) return null      // en la cuenta de un cliente el checklist
+                                  // mezclaba estado del asesor (perfil, flags
+                                  // de descubrimiento) con datos del cliente
   if (dismissed) return null
   if (!state.loaded) return null  // Skeleton/empty mientras carga — no flash
 
