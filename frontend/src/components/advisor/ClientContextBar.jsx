@@ -22,7 +22,7 @@ export default function ClientContextBar() {
   }
 
   return (
-    <div className="sticky top-0 z-30 flex items-center gap-2.5 px-4 py-2 bg-data-violet/[0.12] border-b border-data-violet/30 backdrop-blur-sm">
+    <div className="sticky top-16 md:top-0 z-20 flex items-center gap-2.5 px-4 py-2 bg-data-violet/[0.12] border-b border-data-violet/30 backdrop-blur-sm">
       <Eye size={14} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
       <p className="flex-1 min-w-0 text-[13px] text-ink-1 truncate">
         Estás viendo la cuenta de{' '}

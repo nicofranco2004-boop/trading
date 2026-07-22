@@ -228,9 +228,32 @@ def _fmt_pct(v) -> str:
 
 # ─── Entrega ──────────────────────────────────────────────────────────────────
 
+def _delivery_target(conn, uid: int):
+    """A quién se le ENTREGA la alerta de esta cuenta.
+
+    Plan Asesor: las alertas de una cuenta ADMINISTRADA (shadow, managed_by
+    seteado) le llegan al ASESOR — el shadow no tiene devices de push ni un
+    email real (@shadow.rendi.internal, casilla muerta). Devuelve
+    (deliver_uid, client_label|None). Para cuentas normales: (uid, None)."""
+    try:
+        row = conn.execute("SELECT managed_by FROM users WHERE id=?", (uid,)).fetchone()
+        if row and row["managed_by"]:
+            adv = int(row["managed_by"])
+            lrow = conn.execute(
+                """SELECT label FROM advisor_clients
+                   WHERE advisor_uid=? AND client_uid=?""", (adv, uid)).fetchone()
+            return adv, (lrow["label"] if lrow and lrow["label"] else f"Cliente {uid}")
+    except Exception as ex:
+        log.warning("alerts delivery-target uid=%s falló: %s (entrego al dueño)", uid, ex)
+    return uid, None
+
+
 def _deliver(conn, alert, symbol, price, change_pct, message) -> tuple:
     """Manda push + email según channel. Devuelve (push_ok, email_ok)."""
-    uid = alert["user_id"]
+    uid, client_label = _delivery_target(conn, alert["user_id"])
+    if client_label:
+        # El asesor recibe alertas de N clientes: el prefijo dice de quién es.
+        message = f"[{client_label}] {message}"
     channel = alert["channel"] or "both"
     push_ok = email_ok = False
 

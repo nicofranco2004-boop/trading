@@ -48,6 +48,12 @@ export default function More() {
   const [recomOpen, setRecomOpen] = useState(false)
 
   const allGroups = [
+    // Plan Asesor: el roster es SU home — sin esta entrada, en mobile no había
+    // forma de volver a /clientes navegando (solo tipeando la URL).
+    ...((user?.tier === 'advisor' || user?.is_admin) ? [{
+      label: 'Plan Asesor',
+      items: [{ to: '/clientes', label: 'Clientes', icon: UserRound, sub: 'Tus clientes y el resumen de sus carteras' }],
+    }] : []),
     // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.
     ...GROUPS.map(g => ({
       ...g,

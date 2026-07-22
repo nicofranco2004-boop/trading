@@ -84,6 +84,22 @@ def _broker_name_sets(brokers: list):
     return ars_names, ar_usd_names
 
 
+_CRYPTO_SET_CACHE = None
+
+
+def _crypto_symbol_set() -> set:
+    """CRYPTO_SYMBOLS de main, cacheado. Lazy para evitar el import circular
+    (main importa snapshots_job a nivel módulo)."""
+    global _CRYPTO_SET_CACHE
+    if _CRYPTO_SET_CACHE is None:
+        try:
+            from main import CRYPTO_SYMBOLS as _cs
+            _CRYPTO_SET_CACHE = set(_cs)
+        except Exception:
+            _CRYPTO_SET_CACHE = set()
+    return _CRYPTO_SET_CACHE
+
+
 def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     """Símbolo de precio que valúa esta posición: '<ASSET>.BA' (precio LOCAL ARS)
     si se valúa por su .BA — holdings en broker ARS, en sub-broker '· USD', o
@@ -96,6 +112,12 @@ def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     # que el frontend priceSymbol (valuation.js:78, chequea FCI ANTES del .BA). Sin este
     # early-return, un FCI en broker ARS pedía 'FCI:....BA' (inexistente) → al costo.
     if (asset or '').startswith('FCI:'):
+        return asset
+    # CRIPTO: nunca se rutea a '.BA' (BTC.BA no cotiza en ningún lado) — espejo
+    # del fix del frontend (valuationPriceKey chequea isCrypto ANTES del ruteo
+    # AR): sin esto, BTC en un sub-broker '· USD' pedía/gateaba 'BTC.BA'
+    # inexistente → valuado al costo en el snapshot y excluido del book.
+    if asset in _crypto_symbol_set():
         return asset
     broker = p.get('broker')
     wants_ba = (broker in ars_names or broker in ar_usd_names

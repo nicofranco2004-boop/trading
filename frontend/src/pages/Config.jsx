@@ -34,6 +34,7 @@ import { whatsappUrl, SUPPORT_WHATSAPP_DISPLAY } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 import InvestorProfileForm from '../components/InvestorProfileForm'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -129,9 +130,18 @@ export default function Config() {
   // Sección activa desde la URL (?tab=cuenta). En desktop, sin ?tab cae al
   // default 'cuenta'. En mobile, sin ?tab mostramos la LISTA de secciones
   // (patrón drill-in tipo iOS Settings). Tabs inválidos se ignoran.
+  // Plan Asesor: dentro de un cliente, Config era una quimera — "Cuenta"
+  // (contraseña, ELIMINAR CUENTA) y "Test de inversor" operan sobre la cuenta
+  // PROPIA del asesor (prefijos exentos) mientras "Tipos de cambio" opera
+  // sobre el cliente. En contexto mostramos SOLO lo que configura al cliente.
+  const { clientCtx } = useAdvisorContext()
+  const CTX_HIDDEN_TABS = new Set(['cuenta', 'test', 'planes'])
+  const visibleTabs = clientCtx ? TABS.filter(t => !CTX_HIDDEN_TABS.has(t.id)) : TABS
+
   const urlTab = searchParams.get('tab')
-  const validTab = urlTab && VALID_TAB_IDS.has(urlTab) ? urlTab : null
-  const activeSection = validTab || (isMobile ? null : DEFAULT_TAB)
+  let validTab = urlTab && VALID_TAB_IDS.has(urlTab) ? urlTab : null
+  if (clientCtx && validTab && CTX_HIDDEN_TABS.has(validTab)) validTab = null
+  const activeSection = validTab || (isMobile ? null : (clientCtx ? 'fx' : DEFAULT_TAB))
 
   useEffect(() => {
     loadDolar()
@@ -588,7 +598,7 @@ export default function Config() {
             subtitle="Cuenta, plan, tipos de cambio y más."
           />
           <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
-            {TABS.map((t, i) => {
+            {visibleTabs.map((t, i) => {
               const Icon = t.icon
               return (
                 <button
@@ -634,7 +644,7 @@ export default function Config() {
           <div className="grid grid-cols-1 md:grid-cols-[190px_1fr] gap-6 items-start">
             <nav className="md:sticky md:top-4 flex flex-col gap-0.5" aria-label="Secciones de configuración">
               <div className="text-[12px] text-ink-3 px-2.5 pt-0.5 pb-2 select-none font-medium">Secciones</div>
-              {TABS.map(t => {
+              {visibleTabs.map(t => {
                 const Icon = t.icon
                 const active = activeSection === t.id
                 return (

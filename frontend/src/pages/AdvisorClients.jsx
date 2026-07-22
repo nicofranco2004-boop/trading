@@ -398,7 +398,7 @@ function GroupOpModal({ onClose, onApplied }) {
   const goStep2 = async () => {
     if (!asset.trim() || !price) return
     try {
-      const d = await api.get(`/advisor/group-op/prep?asset=${encodeURIComponent(asset.trim().toUpperCase())}`)
+      const d = await api.get(`/advisor/group-op/prep?asset=${encodeURIComponent(asset.trim().toUpperCase())}&currency=${encodeURIComponent(currency)}`)
       const clients = d.clients || []
       setPrep(clients)
       // Preselección: todos los que tienen algún broker

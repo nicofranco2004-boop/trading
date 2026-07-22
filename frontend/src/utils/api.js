@@ -52,6 +52,20 @@ export function clearClientContext() {
   setClientContext(null)
 }
 
+// Sync multi-pestaña: si OTRA pestaña limpia/cambia el contexto (logout, salir
+// del cliente), el mirror en memoria de ESTA pestaña se actualiza — sin esto,
+// una pestaña vieja seguía mandando el header de un cliente ajeno tras el
+// logout+login de otro usuario (403 en toda la app hasta un F5).
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== null && e.key !== CLIENT_CTX_KEY) return
+    try {
+      const parsed = e.key === null ? null : (e.newValue ? JSON.parse(e.newValue) : null)
+      _clientCtx = parsed && typeof parsed.id === 'number' ? parsed : null
+    } catch { _clientCtx = null }
+  })
+}
+
 async function req(method, path, body, opts) {
   // ── Demo mode interceptor ────────────────────────────────────────────────
   // Si el user está en modo demo, devolvemos fixtures hardcodeadas en lugar

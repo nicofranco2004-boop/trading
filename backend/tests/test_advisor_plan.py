@@ -437,21 +437,35 @@ if __name__ == "__main__":
 
 class ReviewFixesTest(AdvisorBase):
 
-    def test_delete_me_en_ctx_borra_al_ASESOR_no_al_cliente(self):
-        # BLOCKER del review: DELETE /api/me con contexto activo borraba la
-        # cuenta del CLIENTE. /api/me es prefijo exento → siempre borra la
-        # cuenta PROPIA del que está logueado.
+    def test_delete_me_en_ctx_borra_al_ASESOR_con_cascada_de_shadows(self):
+        # BLOCKER del review: DELETE /api/me con ctx activo borraba la cuenta
+        # del CLIENTE apuntado. /api/me es prefijo exento → siempre borra la
+        # cuenta PROPIA del logueado. Semántica de la cascada (audit):
+        #   • shadows managed del asesor → se borran CON él (si no, quedan
+        #     como PII financiera huérfana sin login ni camino de borrado);
+        #   • un cliente REAL vinculado (managed_by NULL) → sobrevive, solo
+        #     pierde el vínculo.
+        conn = main.get_db()
+        real_linked = _new_user(conn, f"real-{uuid.uuid4().hex[:8]}@rendi.test")
+        _link(conn, self.advisor, real_linked, link_type="linked",
+              permission="read", label="Real")
+        conn.commit(); conn.close()
+
         r = self.http.delete("/api/me",
                              headers=self._hdr(self.advisor, client_ctx=self.client_uid))
         self.assertEqual(r.status_code, 200, r.text)
         conn = main.get_db()
         advisor_alive = conn.execute("SELECT 1 FROM users WHERE id=?", (self.advisor,)).fetchone()
-        client_alive = conn.execute("SELECT 1 FROM users WHERE id=?", (self.client_uid,)).fetchone()
+        shadow_alive = conn.execute("SELECT 1 FROM users WHERE id=?", (self.client_uid,)).fetchone()
+        shadow_data = conn.execute("SELECT 1 FROM brokers WHERE user_id=?", (self.client_uid,)).fetchone()
+        real_alive = conn.execute("SELECT 1 FROM users WHERE id=?", (real_linked,)).fetchone()
         links = conn.execute("SELECT 1 FROM advisor_clients WHERE advisor_uid=?", (self.advisor,)).fetchone()
         conn.close()
-        self.assertIsNone(advisor_alive)   # se borró el ASESOR (el logueado)
-        self.assertIsNotNone(client_alive) # el cliente quedó intacto
-        self.assertIsNone(links)           # y los vínculos se limpiaron
+        self.assertIsNone(advisor_alive)    # se borró el ASESOR (el logueado)
+        self.assertIsNone(shadow_alive)     # el shadow managed cascadeó
+        self.assertIsNone(shadow_data)      # …con sus datos (brokers incluidos)
+        self.assertIsNotNone(real_alive)    # el cliente REAL vinculado sobrevive
+        self.assertIsNone(links)            # y todos los vínculos se limpiaron
 
     def test_shadow_managed_resuelve_tier_pro(self):
         # Lente Pro server-side: mientras la cuenta esté administrada, TODOS
@@ -635,3 +649,78 @@ class AdvisorBookTest(AdvisorBase):
         all_assets = {x["asset"] for x in star["winners"] + star["losers"]}
         self.assertNotIn("SINPRECIO", all_assets)          # sin precio ≠ P&L 0
         self.assertGreaterEqual(star["skipped_no_price"], 1)
+
+
+# ─── Audit F0-F3 (fixes del audit comprensivo) ───────────────────────────────
+
+class AuditFixesTest(AdvisorBase):
+
+    def test_header_overflow_da_400_no_500(self):
+        # Un entero > 2^63 pasaba int() pero explotaba en el bind de SQLite → 500
+        h = self._hdr(self.advisor)
+        h["X-Rendi-Client-Id"] = "99999999999999999999999999"
+        r = self.http.get("/api/positions", headers=h)
+        self.assertEqual(r.status_code, 400)
+
+    def test_cap_de_clientes_activos(self):
+        import main as m
+        orig = m.ADVISOR_MAX_CLIENTS
+        m.ADVISOR_MAX_CLIENTS = 1  # el fixture ya creó 1 vínculo activo
+        try:
+            r = self.http.post("/api/advisor/clients", json={"label": "Uno más"},
+                               headers=self._hdr(self.advisor))
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("máximo", r.json()["detail"])
+        finally:
+            m.ADVISOR_MAX_CLIENTS = orig
+
+    def test_alertas_de_cuenta_administrada_se_entregan_al_asesor(self):
+        # El shadow no tiene devices ni email real: la entrega tiene que
+        # resolverse al ASESOR, con el label del cliente como prefijo.
+        import alerts_engine
+        conn = main.get_db()
+        target, label = alerts_engine._delivery_target(conn, self.client_uid)
+        self.assertEqual(target, self.advisor)
+        self.assertEqual(label, "Juan P")
+        # Cuenta normal (sin managed_by): se entrega al dueño, sin prefijo
+        target2, label2 = alerts_engine._delivery_target(conn, self.stranger)
+        conn.close()
+        self.assertEqual(target2, self.stranger)
+        self.assertIsNone(label2)
+
+    def test_prep_con_moneda_sugiere_broker_compatible(self):
+        # Cliente tiene AL30D en su broker ARS (importado) pero también un
+        # sub-broker dólar: con currency=USD la sugerencia tiene que ser el
+        # broker USD, no el ARS donde "ya tiene el activo" (el guard del apply
+        # saltearía esa fila).
+        conn = main.get_db()
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                     (self.client_uid, "Cocos · USD", "USD"))
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,0,'USD')""",
+            (self.client_uid, "Cocos", "AL30D", 100, 750))
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/group-op/prep?asset=AL30D&currency=USD",
+                          headers=self._hdr(self.advisor))
+        me = [c for c in r.json()["clients"] if c["client_uid"] == self.client_uid][0]
+        self.assertEqual(me["suggested_broker"], "Cocos · USD")
+        # Sin currency: prevalece donde ya tiene el activo (comportamiento previo)
+        r2 = self.http.get("/api/advisor/group-op/prep?asset=AL30D",
+                           headers=self._hdr(self.advisor))
+        me2 = [c for c in r2.json()["clients"] if c["client_uid"] == self.client_uid][0]
+        self.assertEqual(me2["suggested_broker"], "Cocos")
+
+    def test_crypto_price_key_no_rutea_a_ba(self):
+        # BTC en sub-broker '· USD' pedía 'BTC.BA' (inexistente) → costo/skip.
+        # Espejo del fix del frontend: cripto SIEMPRE por su símbolo pelado.
+        from snapshots_job import position_price_key
+        key = position_price_key(
+            {"asset": "BTC", "broker": "Cocos · USD", "asset_type": None},
+            ars_names={"Cocos"}, ar_usd_names={"Cocos · USD"})
+        self.assertEqual(key, "BTC")
+        # Una acción AR en el mismo sub-broker sigue ruteando a .BA
+        key2 = position_price_key(
+            {"asset": "GGAL", "broker": "Cocos · USD", "asset_type": None},
+            ars_names={"Cocos"}, ar_usd_names={"Cocos · USD"})
+        self.assertEqual(key2, "GGAL.BA")

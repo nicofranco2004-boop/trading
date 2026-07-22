@@ -1893,11 +1893,16 @@ def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
     if not raw:
         return None
     path = request.url.path
-    if any(path.startswith(p) for p in CLIENT_CTX_EXEMPT_PREFIXES):
+    # Match por LÍMITE DE SEGMENTO: '/api/me' exime '/api/me' y '/api/me/...'
+    # pero NO un futuro '/api/metrics' (startswith crudo lo eximiría en silencio).
+    if any(path == p or path.startswith(p + "/") for p in CLIENT_CTX_EXEMPT_PREFIXES):
         return None  # el header se ignora acá: el request es del asesor mismo
     try:
         client_id = int(str(raw).strip())
     except (TypeError, ValueError):
+        raise HTTPException(400, "X-Rendi-Client-Id inválido")
+    if not (0 < client_id < 2**63):
+        # Fuera del rango INTEGER de SQLite: el bind tiraría OverflowError → 500
         raise HTTPException(400, "X-Rendi-Client-Id inválido")
     if client_id == uid:
         return None  # mirarse a uno mismo = no-op
@@ -2730,31 +2735,56 @@ def delete_my_account(response: Response, uid: int = Depends(get_effective_user)
         except Exception as ex:
             log.warning("delete_my_account: cancel Rebill falló uid=%s: %s (sigo con el borrado)", uid, ex)
 
-        # 2) Borrar TODOS los datos del usuario, atómico.
-        with conn:
+        # 2) Borrar TODOS los datos del usuario, atómico. Si el usuario es un
+        # ASESOR, también sus clientes shadow (managed_by=uid): sin dueño no
+        # tienen login, ni email real, ni camino de borrado — quedarían como
+        # PII financiera huérfana e imposible de recolectar (derecho al olvido).
+        def _wipe_user_rows(_uid):
+            wiped = {}
             batch_ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+                "SELECT id FROM import_batches WHERE user_id=?", (_uid,)).fetchall()]
             if batch_ids:
-                ph = ",".join("?" * len(batch_ids))
+                _ph = ",".join("?" * len(batch_ids))
                 for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                    conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({ph})", tuple(batch_ids))
+                    conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
             tables = [r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
-            deleted = {}
             for t in tables:
                 cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
                 if "user_id" in cols:
-                    n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (uid,)).rowcount
+                    n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (_uid,)).rowcount
                     if n:
-                        deleted[t] = n
-            # advisor_clients no tiene columna user_id (usa advisor_uid/client_uid)
-            # → el wipe dinámico no la cubre. Borrar vínculos en ambos roles.
-            n_links = conn.execute(
+                        wiped[t] = wiped.get(t, 0) + n
+            wiped["users"] = conn.execute("DELETE FROM users WHERE id=?", (_uid,)).rowcount
+            return wiped
+
+        with conn:
+            deleted = {}
+            shadow_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM users WHERE managed_by=?", (uid,)).fetchall()]
+            # Los vínculos van PRIMERO: advisor_clients tiene FK a users(id) y
+            # bloquearía el DELETE del shadow (FOREIGN KEY constraint).
+            n_links_pre = conn.execute(
                 "DELETE FROM advisor_clients WHERE advisor_uid=? OR client_uid=?",
                 (uid, uid)).rowcount
-            if n_links:
-                deleted["advisor_clients"] = n_links
-            deleted["users"] = conn.execute("DELETE FROM users WHERE id=?", (uid,)).rowcount
+            for sid in shadow_ids:
+                conn.execute("DELETE FROM advisor_clients WHERE client_uid=? OR advisor_uid=?",
+                             (sid, sid))
+                for t, n in _wipe_user_rows(sid).items():
+                    deleted[f"shadow.{t}"] = deleted.get(f"shadow.{t}", 0) + n
+            if n_links_pre:
+                deleted["advisor_clients"] = n_links_pre
+            # Lotes de operación grupal del asesor (sin columna user_id)
+            adv_batches = [r["id"] for r in conn.execute(
+                "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (uid,)).fetchall()]
+            if adv_batches:
+                _ph = ",".join("?" * len(adv_batches))
+                conn.execute(f"DELETE FROM advisor_op_batch_items WHERE batch_id IN ({_ph})",
+                             tuple(adv_batches))
+                conn.execute(f"DELETE FROM advisor_op_batches WHERE id IN ({_ph})",
+                             tuple(adv_batches))
+            for t, n in _wipe_user_rows(uid).items():
+                deleted[t] = n
         log.info("delete_my_account uid=%s deleted=%s", uid, deleted)
         clear_auth_cookie(response)   # invalida la sesión server-side
         return {"ok": True, "deleted": deleted}
@@ -24530,6 +24560,7 @@ def public_stats():
 # cuelga de su uid como cualquier usuario → el resto de la app funciona igual.
 
 _SHADOW_EMAIL_DOMAIN = "shadow.rendi.internal"  # jamás se le manda mail (excluidos por managed_by)
+ADVISOR_MAX_CLIENTS = 500  # cap duro por asesor (anti-spam + tope de IN(...) en roster/book)
 
 
 class AdvisorClientIn(BaseModel):
@@ -24554,6 +24585,14 @@ def advisor_create_client(
     conn = get_db()
     try:
         _require_advisor(conn, uid)
+        # Cap duro de clientes activos: sin esto, una cuenta advisor comprometida
+        # podría inflar `users` sin límite (los shadows no los recolecta nadie), y
+        # los IN(...) del roster/book reventarían el tope de variables de SQLite.
+        n_active = conn.execute(
+            "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
+            (uid,)).fetchone()["c"]
+        if n_active >= ADVISOR_MAX_CLIENTS:
+            raise HTTPException(400, f"Llegaste al máximo de {ADVISOR_MAX_CLIENTS} clientes activos.")
         synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
         # Password random hasheado: nadie puede loguear con esta cuenta hasta
         # que el flujo de invitación/claim (F4) setee una contraseña real.
@@ -24735,6 +24774,7 @@ class GroupOpIn(BaseModel):
 @app.get("/api/advisor/group-op/prep")
 def advisor_group_op_prep(
     asset: str = "",
+    currency: str = "",
     uid: int = Depends(get_current_user),
 ):
     """Prepara la tabla de asignación: por cada cliente activo, sus brokers y
@@ -24742,8 +24782,14 @@ def advisor_group_op_prep(
       1. broker donde el cliente YA tiene ese activo,
       2. su único broker (si tiene uno solo),
       3. el primero de su lista.
+    Si viene `currency` (la moneda del lote del paso 1), la sugerencia prefiere
+    brokers de esa familia de moneda — sin esto se sugería el broker ARS para
+    un lote USD y el guard del apply salteaba la fila (confuso).
     Devuelve también has_asset para que el frontend marque ventas inválidas."""
     asset = (asset or "").strip()
+    want_ars = None
+    if (currency or "").strip():
+        want_ars = (currency or "").strip().upper() == "ARS"
     conn = get_db()
     try:
         _require_advisor(conn, uid)
@@ -24778,14 +24824,26 @@ def advisor_group_op_prep(
             cid = r["client_uid"]
             brs = brokers_by_uid.get(cid, [])
             held_in = holders.get(cid, [])
+            def _family_ok(b):
+                if want_ars is None:
+                    return True
+                is_ars = (b.get("currency") or "").upper() == "ARS"
+                return is_ars == want_ars
+
+            compat = [b for b in brs if _family_ok(b)]
+            names_compat = {b["name"] for b in compat}
             suggested = None
             if held_in:
-                # preferir un broker que además exista en su lista actual
-                names = {b["name"] for b in brs}
-                suggested = next((h for h in held_in if h in names), held_in[0])
-            elif brs:
-                # sin tenencia previa: el primero de su lista (si tiene uno solo,
-                # es ese; si tiene varios, el asesor lo ajusta en la tabla)
+                # preferir donde YA tiene el activo, pero solo si la moneda del
+                # broker es compatible con la del lote (el guard del apply
+                # saltearía la fila si no)
+                suggested = next((h for h in held_in if h in names_compat), None)
+                if suggested is None and want_ars is None:
+                    names = {b["name"] for b in brs}
+                    suggested = next((h for h in held_in if h in names), held_in[0])
+            if suggested is None and compat:
+                suggested = compat[0]["name"]
+            if suggested is None and brs and want_ars is None:
                 suggested = brs[0]["name"]
             out.append({
                 "client_uid": cid,
@@ -24856,8 +24914,10 @@ def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_c
             # cliente (mezcla ARS+USD en el FIFO + débito de cash en la moneda
             # equivocada). Se saltea la fila con razón explícita.
             if batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
+                hint = " — usá su sub-cuenta dólar (crear desde la Cartera del cliente)" \
+                    if _ccy_family(batch_ccy) == "USD" else ""
                 skipped.append({"client_uid": cid,
-                                "reason": f"moneda del lote ({batch_ccy}) ≠ moneda del broker {row.broker!r} ({bc})"})
+                                "reason": f"moneda del lote ({batch_ccy}) ≠ moneda del broker {row.broker!r} ({bc}){hint}"})
                 continue
             valid.append(row)
         if not valid:
@@ -24952,8 +25012,16 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                 # de la app (no borramos flujos de capital en cascada).
                 cost = _manual_position_cost(
                     pos["invested"], pos["buy_price"], pos["quantity"], pos["commissions"])
-                conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
-                             (it["position_id"], cid))
+                cur_del = conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
+                                       (it["position_id"], cid))
+                if cur_del.rowcount != 1:
+                    # Otro undo concurrente la borró entre el SELECT y acá:
+                    # NO re-acreditar (evita el doble crédito de la carrera).
+                    conn.execute(
+                        "UPDATE advisor_op_batch_items SET status='undone' WHERE id=?",
+                        (it["id"],))
+                    skipped.append({"client_uid": cid, "reason": "ya deshecha en otro pedido"})
+                    continue
                 if cost and cost > 0:
                     _adjust_broker_cash(conn, cid, pos["broker"], cost)
                 conn.execute(

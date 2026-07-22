@@ -277,6 +277,35 @@ export default function Planes() {
     }
   }
 
+  // Plan Asesor: esta página no lo conocía — lo trataba como usuario sin plan
+  // y le ofrecía "Suscribirme" a Pro (un plan MÁS CHICO que el suyo, pisando
+  // su suscripción). El asesor ve su estado y un canal de contacto, no cards.
+  if (user?.tier === 'advisor') {
+    return (
+      <div className="page-shell">
+        <PageHeader
+          eyebrow="Planes"
+          title="Tenés el Plan Asesor"
+          subtitle="Tu plan incluye todos tus clientes con visión Pro, la operación grupal y el resumen de carteras."
+        />
+        <div className="max-w-xl border border-data-violet/30 bg-data-violet/[0.05] rounded-xl p-5">
+          <p className="text-sm text-ink-1 leading-relaxed">
+            Los planes de esta página son los individuales (Free, Plus y Pro) — no aplican a tu cuenta.
+            Para cambios en tu Plan Asesor (límite de clientes, facturación o baja), escribinos directo
+            y lo resolvemos en el día.
+          </p>
+          <a
+            href="https://wa.me/542914373695?text=Hola%2C%20quiero%20hacer%20un%20cambio%20en%20mi%20Plan%20Asesor."
+            target="_blank" rel="noreferrer"
+            className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-white bg-data-violet hover:bg-data-violet/85 rounded-md px-3.5 py-2 transition-colors"
+          >
+            Hablar por WhatsApp
+          </a>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="page-shell">
       <PageMeta
