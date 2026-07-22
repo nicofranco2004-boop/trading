@@ -369,6 +369,11 @@ export default function Admin() {
                               className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-data-violet/20 text-data-violet hover:bg-data-violet/35"
                             >Pro</button>
                             <button
+                              onClick={() => grantComp(u, 'advisor')}
+                              className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-data-violet/20 text-data-violet hover:bg-data-violet/35"
+                              title="Plan Asesor (multi-cliente) — activa /clientes para este user"
+                            >Asesor</button>
+                            <button
                               onClick={() => setGiftPickerFor(null)}
                               className="text-xs text-ink-3 hover:text-ink-0 px-1"
                             >✕</button>

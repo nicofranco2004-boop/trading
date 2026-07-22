@@ -95,6 +95,26 @@ PLAN_LIMITS = {
             "alerts.pct_move": True,
         },
     },
+    # Advisor — Plan Asesor Financiero. Para su PROPIA cuenta el asesor tiene
+    # features nivel Pro (paga 4-8× un Pro). El "lente Pro" sobre las cuentas
+    # de sus clientes NO sale de acá: lo resuelve /api/plan/features cuando
+    # hay contexto de cliente activo (tier_override='pro' sobre esa cuenta).
+    "advisor": {
+        "brokers_max": None,
+        "insights_diagnostic_visible": None,
+        "behavioral_tags_visible": None,
+        "alerts_max": None,
+        "can_access": {
+            "ai.followup": True,
+            "ai.hub": False,                       # mismo estado que Pro (no liberado)
+            "comportamiento.full": True,
+            "insights.distribucion_activo": True,
+            "reportes.historicos": True,
+            "export.csv": True,
+            "tax.helper": False,
+            "alerts.pct_move": True,
+        },
+    },
     "admin": {
         "brokers_max": None,
         "insights_diagnostic_visible": None,
@@ -203,7 +223,7 @@ def check_alert_quota(conn, user_id: int) -> tuple[bool, dict]:
     }
 
 
-def get_plan_features(conn, user_id: int) -> dict:
+def get_plan_features(conn, user_id: int, tier_override: str | None = None) -> dict:
     """Resuelve TODOS los flags + límites del tier del user para el frontend.
 
     Shape estable consumido por hooks/usePlanFeatures() en el frontend:
@@ -212,8 +232,13 @@ def get_plan_features(conn, user_id: int) -> dict:
         limits.insights_diagnostic_visible
         limits.behavioral_tags_visible
         access.<feature_id>: bool
+
+    tier_override: fuerza el tier SIN mirar la cuenta. Único caso de uso: el
+    "lente Pro" del Plan Asesor — el asesor viendo la cuenta de un cliente
+    recibe features 'pro' aunque el cliente sea Free (lo paga el plan del
+    asesor). Los conteos (brokers/alerts) siguen siendo de la cuenta mirada.
     """
-    tier = quota.get_tier(conn, user_id)
+    tier = tier_override or quota.get_tier(conn, user_id)
     limits = PLAN_LIMITS.get(tier, PLAN_LIMITS["free"])
 
     broker_row = conn.execute(

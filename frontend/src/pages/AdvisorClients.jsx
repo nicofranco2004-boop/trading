@@ -1,0 +1,621 @@
+// AdvisorClients — home del Plan Asesor (/clientes).
+// ═══════════════════════════════════════════════════════════════════════════
+// F1: roster de clientes (cards con AUM del último snapshot) + agregar cliente
+//     managed + drill-down a "el Rendi del cliente" (setea el contexto y navega
+//     al Dashboard — TODAS las páginas existentes sirven la cuenta del cliente
+//     vía el header X-Rendi-Client-Id, con visión Pro).
+// F2: notas privadas por cliente + OPERACIÓN GRUPAL (block trade): una compra
+//     asignada a N clientes con broker/cantidad/precio por fila + deshacer lote.
+//
+// Gate: tier 'advisor' (o admin para testeo). El resto de los tiers ni ve la
+// ruta (el sidebar no la muestra y la página redirige a /).
+
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Navigate, useNavigate } from 'react-router-dom'
+import {
+  Users, Plus, Layers, StickyNote, MoreVertical, Trash2, ChevronRight,
+  ArrowRight, ArrowLeft, AlertTriangle, Undo2, Briefcase, Wallet,
+} from 'lucide-react'
+import PageHeader from '../components/PageHeader'
+import Skeleton from '../components/Skeleton'
+import { useToast } from '../components/Toast'
+import { api } from '../utils/api'
+import { useAuth } from '../contexts/AuthContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
+import Modal from '../components/Modal'
+import { usd, fmtMoney } from '../utils/format'
+
+// ─── Página ──────────────────────────────────────────────────────────────────
+
+export default function AdvisorClients() {
+  const { user } = useAuth()
+  const navigate = useNavigate()
+  const toast = useToast()
+  const { enterClient, exitClient, clientCtx } = useAdvisorContext()
+
+  const [clients, setClients] = useState(null)   // null = cargando
+  const [error, setError] = useState(null)
+  const [addOpen, setAddOpen] = useState(false)
+  const [notesFor, setNotesFor] = useState(null)  // cliente cuyo modal de notas está abierto
+  const [groupOpOpen, setGroupOpOpen] = useState(false)
+  const [menuFor, setMenuFor] = useState(null)    // client_uid del menú ⋯ abierto
+
+  // Gate por IDENTIDAD (useAuth), no por plan features: en contexto de
+  // cliente /plan/features devuelve el lente 'pro' y un gate por tier
+  // rebotaba al asesor a "/" justo cuando volvía al roster (race del review).
+  const isAdvisor = user?.tier === 'advisor' || !!user?.is_admin
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api.get('/advisor/clients')
+      setClients(d.clients || [])
+      setError(null)
+    } catch (e) {
+      setError(e.message || 'No se pudo cargar el roster')
+      setClients([])
+    }
+  }, [])
+
+  useEffect(() => {
+    if (isAdvisor) load()
+  }, [isAdvisor, load])
+
+  // Si el asesor llega al roster con un contexto de cliente colgado (ej. volvió
+  // con el botón Back del browser), lo limpiamos: el roster ES "afuera".
+  useEffect(() => {
+    if (clientCtx) exitClient()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  if (user && !isAdvisor) return <Navigate to="/" replace />
+
+  const openClient = (c) => {
+    enterClient({ id: c.client_uid, label: c.label })
+    navigate('/dashboard')
+  }
+
+  const revoke = async (c) => {
+    if (!window.confirm(`¿Quitar a "${c.label}" de tu lista? Sus datos no se borran; solo dejás de verlo.`)) return
+    try {
+      await api.post(`/advisor/clients/${c.client_uid}/revoke`)
+      toast.push('Cliente quitado de tu lista')
+      load()
+    } catch (e) {
+      toast.push(e.message || 'No se pudo quitar', { type: 'error' })
+    }
+  }
+
+  return (
+    <div className="page-shell-wide" onClick={() => setMenuFor(null)}>
+      <PageHeader
+        eyebrow="Plan Asesor"
+        title="Tus clientes"
+        subtitle="El libro completo: entrá a la cuenta de cada cliente con visión Pro."
+        action={(
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setGroupOpOpen(true)}
+              disabled={!clients?.length}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-1 hover:text-ink-0 bg-bg-1 hover:bg-bg-2 border border-line rounded-md px-3 py-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Layers size={13} strokeWidth={1.75} />
+              Operación grupal
+            </button>
+            <button
+              type="button"
+              onClick={() => setAddOpen(true)}
+              className={btnPrimary}
+            >
+              <Plus size={13} strokeWidth={2} />
+              Agregar cliente
+            </button>
+          </div>
+        )}
+      />
+
+      {error && (
+        <div className="mb-4 text-sm text-rendi-neg bg-rendi-neg/[0.06] border border-rendi-neg/30 rounded-md px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      {clients === null ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-36 rounded-xl" />)}
+        </div>
+      ) : clients.length === 0 ? (
+        <EmptyRoster onAdd={() => setAddOpen(true)} />
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {clients.map((c) => (
+            <ClientCard
+              key={c.client_uid}
+              c={c}
+              menuOpen={menuFor === c.client_uid}
+              onToggleMenu={(e) => { e.stopPropagation(); setMenuFor(menuFor === c.client_uid ? null : c.client_uid) }}
+              onOpen={() => openClient(c)}
+              onNotes={(e) => { e.stopPropagation(); setMenuFor(null); setNotesFor(c) }}
+              onRevoke={(e) => { e.stopPropagation(); setMenuFor(null); revoke(c) }}
+            />
+          ))}
+        </div>
+      )}
+
+      {addOpen && <AddClientModal onClose={() => setAddOpen(false)} onCreated={() => { setAddOpen(false); load() }} />}
+      {notesFor && <NotesModal client={notesFor} onClose={() => setNotesFor(null)} onSaved={() => { setNotesFor(null); load() }} />}
+      {groupOpOpen && (
+        <GroupOpModal
+          onClose={() => setGroupOpOpen(false)}
+          onApplied={() => load()}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Card de cliente ─────────────────────────────────────────────────────────
+
+function ClientCard({ c, onOpen, onNotes, onRevoke, menuOpen, onToggleMenu }) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen() }}
+      className="relative text-left bg-bg-1 border border-line/60 hover:border-data-violet/50 rounded-xl p-4 cursor-pointer transition-colors group"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-ink-0 truncate">{c.label}</p>
+          <p className="text-[11px] text-ink-3 mt-0.5">
+            {c.link_type === 'managed' ? 'Cuenta administrada' : 'Vinculado'}
+            {c.notes ? ' · 📝' : ''}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onToggleMenu}
+          aria-label="Opciones del cliente"
+          className="p-1.5 -m-1 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors flex-shrink-0"
+        >
+          <MoreVertical size={14} strokeWidth={1.75} />
+        </button>
+        {menuOpen && (
+          <div className="absolute right-3 top-10 z-20 w-44 bg-bg-1 border border-line rounded-lg shadow-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <button type="button" onClick={onNotes}
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-ink-1 hover:bg-bg-2 transition-colors text-left">
+              <StickyNote size={12} strokeWidth={1.75} /> Notas privadas
+            </button>
+            <button type="button" onClick={onRevoke}
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-rendi-neg hover:bg-rendi-neg/[0.06] transition-colors text-left border-t border-line/40">
+              <Trash2 size={12} strokeWidth={1.75} /> Quitar de mi lista
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3">
+        {c.aum_usd != null ? (
+          <>
+            <p className="text-xl font-semibold text-ink-0 tabular-nums">{usd(c.aum_usd, 0)}</p>
+            <p className="text-[11px] text-ink-3 mt-0.5">AUM · snapshot {c.aum_date}</p>
+          </>
+        ) : (
+          <>
+            <p className="text-xl font-semibold text-ink-3">—</p>
+            <p className="text-[11px] text-ink-3 mt-0.5">
+              {c.positions_count > 0 ? 'AUM se calcula esta noche' : 'Sin posiciones cargadas'}
+            </p>
+          </>
+        )}
+      </div>
+
+      <div className="mt-3 flex items-center gap-3 text-[11px] text-ink-2">
+        <span className="inline-flex items-center gap-1"><Wallet size={11} strokeWidth={1.75} />{c.brokers_count} broker{c.brokers_count === 1 ? '' : 's'}</span>
+        <span className="inline-flex items-center gap-1"><Briefcase size={11} strokeWidth={1.75} />{c.positions_count} posicion{c.positions_count === 1 ? '' : 'es'}</span>
+        <span className="ml-auto inline-flex items-center gap-0.5 text-data-violet opacity-0 group-hover:opacity-100 transition-opacity font-medium">
+          Entrar <ChevronRight size={12} strokeWidth={2} />
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function EmptyRoster({ onAdd }) {
+  return (
+    <div className="border border-dashed border-line rounded-xl p-10 text-center">
+      <Users size={28} strokeWidth={1.5} className="mx-auto text-ink-3 mb-3" />
+      <h3 className="text-sm font-semibold text-ink-0 mb-1">Todavía no tenés clientes</h3>
+      <p className="text-xs text-ink-2 max-w-sm mx-auto mb-4">
+        Agregá tu primer cliente y cargale la foto de su cartera (posiciones actuales)
+        desde adentro de su cuenta. El historial se construye solo, noche a noche.
+      </p>
+      <button
+        type="button"
+        onClick={onAdd}
+        className={btnPrimary}
+      >
+        <Plus size={13} strokeWidth={2} /> Agregar cliente
+      </button>
+    </div>
+  )
+}
+
+// Modal compartido (components/Modal): BottomSheet en mobile + prop `wide`.
+
+const inputCls = 'w-full bg-bg-1 border border-line rounded-md px-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-data-violet focus:ring-2 focus:ring-data-violet/20 transition-colors'
+const btnPrimary = 'inline-flex items-center gap-1.5 text-xs font-medium text-white bg-data-violet hover:bg-data-violet/85 rounded-md px-3.5 py-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
+
+// ─── Agregar cliente ─────────────────────────────────────────────────────────
+
+function AddClientModal({ onClose, onCreated }) {
+  const toast = useToast()
+  const [label, setLabel] = useState('')
+  const [name, setName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState(null)
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!label.trim() || saving) return
+    setSaving(true)
+    setErr(null)
+    try {
+      await api.post('/advisor/clients', { label: label.trim(), name: name.trim() || null })
+      toast.push(`Cliente "${label.trim()}" creado — entrá y cargale su cartera`)
+      onCreated()
+    } catch (ex) {
+      setErr(ex.message || 'No se pudo crear el cliente')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title="Agregar cliente" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <div>
+          <label htmlFor="adv-label" className="block text-xs text-ink-2 mb-1">¿Cómo lo identificás? *</label>
+          <input id="adv-label" autoFocus className={inputCls} value={label} maxLength={100}
+                 onChange={(e) => setLabel(e.target.value)} placeholder='Ej: "Juan P — conservador"' />
+        </div>
+        <div>
+          <label htmlFor="adv-name" className="block text-xs text-ink-2 mb-1">Nombre real (opcional)</label>
+          <input id="adv-name" className={inputCls} value={name} maxLength={100}
+                 onChange={(e) => setName(e.target.value)} placeholder="Juan Pérez" />
+        </div>
+        <p className="text-[11px] text-ink-3 leading-relaxed">
+          Se crea una cuenta administrada por vos. Después entrás a su Rendi y le cargás
+          la foto de su cartera (import del broker o carga manual). Tu cliente no recibe
+          ningún email.
+        </p>
+        {err && <p className="text-xs text-rendi-neg">{err}</p>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="text-xs text-ink-2 hover:text-ink-0 px-3 py-2 transition-colors">Cancelar</button>
+          <button type="submit" disabled={!label.trim() || saving}
+                  className={btnPrimary}>
+            {saving ? 'Creando…' : 'Crear cliente'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+// ─── Notas privadas ──────────────────────────────────────────────────────────
+
+function NotesModal({ client, onClose, onSaved }) {
+  const toast = useToast()
+  const [notes, setNotes] = useState(client.notes || '')
+  const [saving, setSaving] = useState(false)
+
+  const save = async () => {
+    if (saving) return
+    setSaving(true)
+    try {
+      await api.patch(`/advisor/clients/${client.client_uid}`, { notes })
+      toast.push('Notas guardadas')
+      onSaved()
+    } catch (e) {
+      toast.push(e.message || 'No se pudo guardar', { type: 'error' })
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`Notas privadas — ${client.label}`} onClose={onClose}>
+      <textarea
+        autoFocus
+        rows={6}
+        className={inputCls + ' resize-y'}
+        value={notes}
+        maxLength={2000}
+        onChange={(e) => setNotes(e.target.value)}
+        placeholder="Fee acordado, perfil, próxima llamada… Solo vos ves esto."
+      />
+      <div className="flex justify-end gap-2 pt-3">
+        <button type="button" onClick={onClose} className="text-xs text-ink-2 hover:text-ink-0 px-3 py-2 transition-colors">Cancelar</button>
+        <button type="button" onClick={save} disabled={saving}
+                className={btnPrimary}>
+          {saving ? 'Guardando…' : 'Guardar'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// ─── Operación grupal (block trade) ─────────────────────────────────────────
+// 3 pasos: (1) la operación común, (2) para quiénes, (3) tabla de asignación
+// con broker/cantidad/precio POR FILA (las posiciones viven por broker: sin
+// esto no se sabe a qué cuenta-broker entra la compra de cada cliente).
+
+function GroupOpModal({ onClose, onApplied }) {
+  const toast = useToast()
+  const [step, setStep] = useState(1)
+  // Paso 1 — operación común
+  const [asset, setAsset] = useState('')
+  const [price, setPrice] = useState('')
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [currency, setCurrency] = useState('ARS')
+  // Paso 2/3 — clientes + asignación
+  const [prep, setPrep] = useState(null)         // respuesta de /prep
+  const [selected, setSelected] = useState({})   // client_uid → bool
+  const [rows, setRows] = useState({})           // client_uid → {broker, quantity, price}
+  const [submitting, setSubmitting] = useState(false)
+  const [result, setResult] = useState(null)     // respuesta del POST (para undo)
+
+  const goStep2 = async () => {
+    if (!asset.trim() || !price) return
+    try {
+      const d = await api.get(`/advisor/group-op/prep?asset=${encodeURIComponent(asset.trim().toUpperCase())}`)
+      const clients = d.clients || []
+      setPrep(clients)
+      // Preselección: todos los que tienen algún broker
+      const sel = {}
+      clients.forEach((c) => { sel[c.client_uid] = c.brokers.length > 0 })
+      setSelected(sel)
+      setStep(2)
+    } catch (e) {
+      toast.push(e.message || 'No se pudo preparar la operación', { type: 'error' })
+    }
+  }
+
+  const goStep3 = () => {
+    const r = {}
+    prep.filter((c) => selected[c.client_uid]).forEach((c) => {
+      // Preservar lo ya tipeado si el asesor volvió al paso 2 y re-entra:
+      // perder 15 cantidades/precios cargados era el bug del review.
+      r[c.client_uid] = rows[c.client_uid] || {
+        broker: c.suggested_broker || (c.brokers[0]?.name ?? ''),
+        quantity: '',
+        price: price,
+      }
+    })
+    setRows(r)
+    setStep(3)
+  }
+
+  const chosen = useMemo(() => (prep || []).filter((c) => selected[c.client_uid]), [prep, selected])
+  const validRows = useMemo(() => chosen.filter((c) => {
+    const r = rows[c.client_uid]
+    return r && r.broker && Number(r.quantity) > 0 && Number(r.price) >= 0
+  }), [chosen, rows])
+
+  const submit = async () => {
+    if (!validRows.length || submitting) return
+    setSubmitting(true)
+    try {
+      const body = {
+        asset: asset.trim().toUpperCase(),
+        currency,
+        entry_date: date || null,
+        rows: validRows.map((c) => ({
+          client_uid: c.client_uid,
+          broker: rows[c.client_uid].broker,
+          quantity: Number(rows[c.client_uid].quantity),
+          buy_price: Number(rows[c.client_uid].price),
+        })),
+      }
+      const d = await api.post('/advisor/group-op', body)
+      setResult(d)
+      onApplied()
+    } catch (e) {
+      toast.push(e.message || 'No se pudo aplicar la operación', { type: 'error' })
+      setSubmitting(false)
+    }
+  }
+
+  const undo = async () => {
+    if (!result?.batch_id) return
+    try {
+      await api.post(`/advisor/group-op/${result.batch_id}/undo`)
+      toast.push('Lote deshecho — posiciones borradas y cash re-acreditado')
+      onApplied()
+      onClose()
+    } catch (e) {
+      toast.push(e.message || 'No se pudo deshacer', { type: 'error' })
+    }
+  }
+
+  // ── Resultado ──
+  if (result) {
+    return (
+      <Modal title="Operación aplicada" onClose={onClose} wide>
+        <div className="space-y-3">
+          <p className="text-sm text-ink-1">
+            <span className="font-semibold text-ink-0">{asset.trim().toUpperCase()}</span> registrada
+            en <span className="font-semibold text-ink-0">{result.applied.length}</span> cuenta{result.applied.length === 1 ? '' : 's'}.
+          </p>
+          {result.skipped?.length > 0 && (
+            <div className="text-xs text-ink-2 bg-bg-1 border border-line/60 rounded-md p-3 space-y-1">
+              <p className="font-medium text-ink-1 flex items-center gap-1.5"><AlertTriangle size={12} className="text-rendi-warn" /> {result.skipped.length} fila{result.skipped.length === 1 ? '' : 's'} salteada{result.skipped.length === 1 ? '' : 's'}:</p>
+              {result.skipped.map((s, i) => (
+                <p key={i}>· Cliente {s.client_uid}: {s.reason}</p>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-between items-center pt-2">
+            <button type="button" onClick={undo}
+                    className="inline-flex items-center gap-1.5 text-xs text-rendi-neg hover:bg-rendi-neg/[0.06] border border-rendi-neg/30 rounded-md px-3 py-2 transition-colors">
+              <Undo2 size={12} strokeWidth={1.75} /> Deshacer lote completo
+            </button>
+            <button type="button" onClick={onClose}
+                    className={btnPrimary}>
+              Listo
+            </button>
+          </div>
+        </div>
+      </Modal>
+    )
+  }
+
+  return (
+    <Modal title={`Operación grupal — paso ${step} de 3`} onClose={onClose} wide={step === 3}>
+      {step === 1 && (
+        <div className="space-y-3">
+          <div>
+            <label htmlFor="gop-asset" className="block text-xs text-ink-2 mb-1">Activo (ticker) *</label>
+            <input id="gop-asset" autoFocus className={inputCls} value={asset}
+                   onChange={(e) => setAsset(e.target.value)} placeholder="AL30, GGAL, AAPL…" maxLength={100} />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label htmlFor="gop-price" className="block text-xs text-ink-2 mb-1">Precio *</label>
+              <input id="gop-price" type="number" min="0" step="any" className={inputCls} value={price}
+                     onChange={(e) => setPrice(e.target.value)} placeholder="58.900" />
+            </div>
+            <div>
+              <label htmlFor="gop-date" className="block text-xs text-ink-2 mb-1">Fecha</label>
+              <input id="gop-date" type="date" className={inputCls} value={date}
+                     onChange={(e) => setDate(e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="gop-ccy" className="block text-xs text-ink-2 mb-1">Moneda</label>
+              <select id="gop-ccy" className={inputCls} value={currency} onChange={(e) => setCurrency(e.target.value)}>
+                <option value="ARS">ARS</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
+          </div>
+          <p className="text-[11px] text-ink-3">El precio se precarga en todas las filas del paso 3 — después lo ajustás por cliente si los fills difirieron.</p>
+          <div className="flex justify-end pt-1">
+            <button type="button" onClick={goStep2} disabled={!asset.trim() || !price}
+                    className={btnPrimary}>
+              Elegir clientes <ArrowRight size={12} strokeWidth={2} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 2 && prep && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-ink-2">¿A quiénes les registrás la compra de <span className="font-semibold text-ink-0">{asset.trim().toUpperCase()}</span>?</p>
+            <button type="button" className="text-[11px] text-data-violet hover:underline"
+                    onClick={() => {
+                      const all = prep.every((c) => selected[c.client_uid] || c.brokers.length === 0)
+                      const sel = {}
+                      prep.forEach((c) => { sel[c.client_uid] = !all && c.brokers.length > 0 })
+                      setSelected(sel)
+                    }}>
+              Alternar todos
+            </button>
+          </div>
+          <div className="border border-line/60 rounded-lg divide-y divide-line/40 max-h-72 overflow-y-auto">
+            {prep.map((c) => (
+              <label key={c.client_uid} className={`flex items-center gap-3 px-3 py-2.5 text-sm ${c.brokers.length === 0 ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-bg-1'}`}>
+                <input
+                  type="checkbox"
+                  className="accent-[#8B7DFF]"
+                  disabled={c.brokers.length === 0}
+                  checked={!!selected[c.client_uid]}
+                  onChange={(e) => setSelected({ ...selected, [c.client_uid]: e.target.checked })}
+                />
+                <span className="flex-1 min-w-0 truncate text-ink-0">{c.label}</span>
+                {c.has_asset && <span className="text-[10px] text-data-violet bg-data-violet/10 rounded px-1.5 py-0.5">ya lo tiene</span>}
+                {c.brokers.length === 0 && <span className="text-[10px] text-ink-3">sin brokers</span>}
+              </label>
+            ))}
+          </div>
+          <div className="flex justify-between pt-1">
+            <button type="button" onClick={() => setStep(1)} className="inline-flex items-center gap-1 text-xs text-ink-2 hover:text-ink-0 px-2 py-2 transition-colors">
+              <ArrowLeft size={12} /> Volver
+            </button>
+            <button type="button" onClick={goStep3} disabled={!chosen.length}
+                    className={btnPrimary}>
+              Asignar cantidades ({chosen.length}) <ArrowRight size={12} strokeWidth={2} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="space-y-3">
+          <p className="text-xs text-ink-2">
+            <span className="font-semibold text-ink-0">{asset.trim().toUpperCase()}</span> · {currency} · {date} — una fila por cliente. El broker sugerido es donde ya tiene el activo (o su único broker).
+          </p>
+          <div className="border border-line/60 rounded-lg overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-[10.5px] uppercase tracking-wide text-ink-3 border-b border-line/60">
+                  <th className="text-left px-3 py-2 font-medium">Cliente</th>
+                  <th className="text-left px-3 py-2 font-medium">Broker</th>
+                  <th className="text-right px-3 py-2 font-medium">Cantidad</th>
+                  <th className="text-right px-3 py-2 font-medium">Precio</th>
+                  <th className="text-right px-3 py-2 font-medium">Monto</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line/40">
+                {chosen.map((c) => {
+                  const r = rows[c.client_uid] || {}
+                  const amount = Number(r.quantity) > 0 && Number(r.price) >= 0
+                    ? Number(r.quantity) * Number(r.price) : null
+                  const set = (patch) => setRows({ ...rows, [c.client_uid]: { ...r, ...patch } })
+                  return (
+                    <tr key={c.client_uid}>
+                      <td className="px-3 py-2 text-ink-0 whitespace-nowrap max-w-[160px] truncate">{c.label}</td>
+                      <td className="px-3 py-2">
+                        <select
+                          aria-label={`Broker de ${c.label}`}
+                          className="bg-bg-1 border border-line rounded px-2 py-1 text-xs text-ink-0 focus:outline-none focus:border-data-violet"
+                          value={r.broker || ''}
+                          onChange={(e) => set({ broker: e.target.value })}
+                        >
+                          {c.brokers.map((b) => (
+                            <option key={b.name} value={b.name}>{b.name} ({b.currency})</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <input type="number" min="0" step="any" aria-label={`Cantidad de ${c.label}`}
+                               className="w-24 bg-bg-1 border border-line rounded px-2 py-1 text-xs text-right text-ink-0 focus:outline-none focus:border-data-violet"
+                               value={r.quantity ?? ''} onChange={(e) => set({ quantity: e.target.value })} />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <input type="number" min="0" step="any" aria-label={`Precio de ${c.label}`}
+                               className="w-24 bg-bg-1 border border-line rounded px-2 py-1 text-xs text-right text-ink-0 focus:outline-none focus:border-data-violet"
+                               value={r.price ?? ''} onChange={(e) => set({ price: e.target.value })} />
+                      </td>
+                      <td className="px-3 py-2 text-right text-xs text-ink-1 tabular-nums whitespace-nowrap">
+                        {amount != null ? fmtMoney(amount, currency) : '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex justify-between items-center pt-1">
+            <button type="button" onClick={() => setStep(2)} className="inline-flex items-center gap-1 text-xs text-ink-2 hover:text-ink-0 px-2 py-2 transition-colors">
+              <ArrowLeft size={12} /> Volver
+            </button>
+            <button type="button" onClick={submit} disabled={!validRows.length || submitting}
+                    className={btnPrimary}>
+              {submitting ? 'Aplicando…' : `Registrar en ${validRows.length} cuenta${validRows.length === 1 ? '' : 's'}`}
+            </button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  )
+}

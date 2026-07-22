@@ -131,12 +131,17 @@ export function usePlanFeatures() {
     isFree: tier === 'free',
     isPlus: tier === 'plus',
     isPro: tier === 'pro',
+    isAdvisor: tier === 'advisor',
     isAdmin: tier === 'admin',
-    // Convenience flags
-    isPaid: tier === 'plus' || tier === 'pro' || tier === 'admin',
-    // hasFullAccess es Pro o Admin — Plus tiene features parciales (sin IA
-    // avanzada). Componentes que gateaban con `hasFullAccess` siguen
+    // Plan Asesor: true cuando el asesor está mirando la cuenta de un cliente
+    // (el backend resolvió el header y devolvió el lente Pro sobre ella).
+    clientCtx: features?.client_ctx === true,
+    // Convenience flags — 'advisor' cuenta como pago y con acceso full: para
+    // su PROPIA cuenta el asesor tiene features nivel Pro (paga 4-8× un Pro).
+    isPaid: tier === 'plus' || tier === 'pro' || tier === 'advisor' || tier === 'admin',
+    // hasFullAccess es Pro/Advisor/Admin — Plus tiene features parciales (sin
+    // IA avanzada). Componentes que gateaban con `hasFullAccess` siguen
     // bloqueando Plus en features Pro-only (ai.followup, ai.hub).
-    hasFullAccess: tier === 'pro' || tier === 'admin',
+    hasFullAccess: tier === 'pro' || tier === 'advisor' || tier === 'admin',
   }
 }

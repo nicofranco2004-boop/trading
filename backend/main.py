@@ -475,6 +475,55 @@ def init_db():
         # tu historial". NULL = nunca se le mandó. Lo usa /api/admin/email/gift-plus
         # como idempotencia (no re-mailea salvo resend=True; fallidos se reintentan).
         conn.execute("ALTER TABLE users ADD COLUMN gift_plan_email_sent_at TEXT")
+    if user_cols and 'managed_by' not in user_cols:
+        # Plan Asesor: si NO es NULL, la cuenta es un "cliente shadow" creado y
+        # administrado por el asesor (users.id del asesor). Los shadows se
+        # EXCLUYEN de: broadcast/re-engagement de emails, borrado de cuentas
+        # sin verificar (lifecycle), y métricas de signup. No pueden loguear
+        # (approved=0 + password random) hasta que reclamen la cuenta (F4).
+        conn.execute("ALTER TABLE users ADD COLUMN managed_by INTEGER")
+
+    # ── Plan Asesor: vínculos asesor→cliente + lotes de operación grupal ────
+    # advisor_clients es LA tabla de autorización del contexto de cliente
+    # (get_effective_user). Un row activo = el asesor puede VER la cuenta del
+    # cliente; permission='read_write' (managed) = también puede escribirla.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS advisor_clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            advisor_uid INTEGER NOT NULL REFERENCES users(id),
+            client_uid INTEGER NOT NULL REFERENCES users(id),
+            link_type TEXT NOT NULL DEFAULT 'managed',      -- 'managed' | 'linked'
+            permission TEXT NOT NULL DEFAULT 'read_write',  -- 'read' | 'read_write'
+            status TEXT NOT NULL DEFAULT 'active',          -- 'active' | 'revoked'
+            label TEXT,
+            notes TEXT,                                     -- notas PRIVADAS del asesor
+            consent_ref TEXT,                               -- trazabilidad del consentimiento
+            created_at TEXT DEFAULT (datetime('now')),
+            revoked_at TEXT,
+            UNIQUE(advisor_uid, client_uid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_advisor_clients_advisor
+            ON advisor_clients(advisor_uid, status);
+        -- Operación grupal (block trade): un lote = una operación aplicada a N
+        -- clientes. items guarda el position_id creado por fila → el undo borra
+        -- exactamente lo que este lote creó (y re-acredita el cash).
+        CREATE TABLE IF NOT EXISTS advisor_op_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            advisor_uid INTEGER NOT NULL REFERENCES users(id),
+            asset TEXT NOT NULL,
+            op_kind TEXT NOT NULL DEFAULT 'buy',
+            created_at TEXT DEFAULT (datetime('now')),
+            undone_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS advisor_op_batch_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id INTEGER NOT NULL REFERENCES advisor_op_batches(id),
+            client_uid INTEGER NOT NULL,
+            position_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'ok'               -- 'ok' | 'undone' | 'error'
+        );
+    """)
+
     # Sincronizar is_admin + approved para usuarios con email admin
     rows = conn.execute("SELECT id, email FROM users").fetchall()
     for r in rows:
@@ -1784,6 +1833,104 @@ def get_admin_user(uid: int = Depends(get_current_user)) -> int:
     return uid
 
 
+# ─── Plan Asesor: contexto de cliente (get_effective_user) ───────────────────
+# El asesor navega "el Rendi de un cliente" mandando el header X-Rendi-Client-Id
+# en cada request. get_effective_user envuelve a get_current_user: si el header
+# está presente Y el vínculo asesor→cliente existe en advisor_clients (activo),
+# resuelve al uid del CLIENTE — así TODOS los endpoints `WHERE user_id=?`
+# sirven la cuenta del cliente sin tocar su lógica.
+#
+# ⚠️ SUPERFICIE DE SEGURIDAD CRÍTICA. Un bug acá filtra la cartera completa de
+# un cliente al asesor equivocado. Reglas:
+#   • Sin header → idéntico a get_current_user (el 99.9% del tráfico).
+#   • Header en un prefijo EXENTO → se IGNORA (devuelve el uid real). Exentos:
+#     identidad/cuenta (auth), billing, admin, gestión advisor, IA (la cuota es
+#     del asesor; el chat per-cliente llega en F5), push (device-bound) y
+#     tracking de plan (eventos del asesor, no del cliente).
+#   • Header con vínculo inexistente/revocado → 403 SIEMPRE (nunca fallback
+#     silencioso al uid propio: eso enmascararía bugs del frontend mostrando
+#     datos del asesor como si fueran del cliente).
+#   • Escrituras (todo lo que no es GET/HEAD/OPTIONS) exigen permission
+#     'read_write' (managed). Los vínculos 'linked' (v1) son read-only.
+CLIENT_CTX_HEADER = "X-Rendi-Client-Id"
+CLIENT_CTX_EXEMPT_PREFIXES = (
+    "/api/auth",
+    "/api/billing",
+    "/api/admin",
+    "/api/advisor",
+    "/api/me",          # cierre de cuenta: SIEMPRE la propia, jamás la del cliente
+    "/api/push",
+    "/api/plan/track",
+    "/api/feedback",    # recomendaciones: se atribuyen al asesor, no al shadow
+)
+# NOTA de diseño: /api/ai NO está exento a propósito — la IA sigue al contexto
+# (con ctx activo el coach y los bloques IA leen/escriben la cuenta del CLIENTE;
+# la cuota corre en los contadores del cliente, que resuelve tier 'pro' mientras
+# esté administrado — ver quota.get_tier). F5 centraliza la cuota en el asesor.
+# ⚠️ FAIL-OPEN: todo endpoint futuro FUERA de estos prefijos hereda el contexto
+# de cliente. Si agregás un endpoint de IDENTIDAD/CUENTA/PAGO nuevo, agregalo acá.
+
+
+def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
+    """Devuelve el uid del cliente si el contexto aplica, None si no.
+
+    Lanza 400 (header malformado) o 403 (sin vínculo / sin permiso de
+    escritura). Ver reglas en el comentario de arriba."""
+    raw = request.headers.get(CLIENT_CTX_HEADER)
+    if not raw:
+        return None
+    path = request.url.path
+    if any(path.startswith(p) for p in CLIENT_CTX_EXEMPT_PREFIXES):
+        return None  # el header se ignora acá: el request es del asesor mismo
+    try:
+        client_id = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise HTTPException(400, "X-Rendi-Client-Id inválido")
+    if client_id == uid:
+        return None  # mirarse a uno mismo = no-op
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT permission FROM advisor_clients
+               WHERE advisor_uid=? AND client_uid=? AND status='active'""",
+            (uid, client_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        # 403 explícito — jamás degradar en silencio al uid propio.
+        raise HTTPException(403, "Sin acceso a ese cliente")
+    if request.method not in ("GET", "HEAD", "OPTIONS") and row["permission"] != "read_write":
+        raise HTTPException(403, "Acceso de solo lectura a ese cliente")
+    return client_id
+
+
+def get_effective_user(
+    request: Request,
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
+) -> int:
+    """get_current_user + contexto de cliente del Plan Asesor.
+
+    Es el Depends por defecto de los endpoints de DATOS. Los endpoints de
+    identidad/cuenta/billing/admin usan get_current_user (o quedan cubiertos
+    por los prefijos exentos, que ignoran el header)."""
+    uid = get_current_user(request, creds)
+    # Stash del uid AUTENTICADO para que endpoints que necesitan ambos (p.ej.
+    # /api/plan/features) no re-resuelvan el JWT + SELECT users una 2da vez.
+    request.state.rendi_auth_uid = uid
+    client_uid = _resolve_client_context(request, uid)
+    return client_uid if client_uid is not None else uid
+
+
+def _require_advisor(conn, uid: int) -> str:
+    """Gate de los endpoints /api/advisor/*: tier 'advisor' o admin."""
+    from ai import quota as _q
+    tier = _q.get_tier(conn, uid)
+    if tier not in ("advisor", "admin"):
+        raise HTTPException(403, "Requiere el plan Asesor")
+    return tier
+
+
 ARS_BROKER_NAMES = {'cocos', 'iol', 'bull', 'balanz', 'lemon', 'naranja', 'pppi', 'invertironline'}
 
 # Sets de brokers cripto vs tradicionales — usado para inferir currency al
@@ -2425,7 +2572,7 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
 
 
 @app.get("/api/auth/me")
-def me(uid: int = Depends(get_current_user)):
+def me(uid: int = Depends(get_effective_user)):
     from ai import quota
     conn = get_db()
     row = conn.execute(
@@ -2527,7 +2674,7 @@ def me(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/auth/change-password")
-def change_password(data: ChangePasswordIn, response: Response, uid: int = Depends(get_current_user)):
+def change_password(data: ChangePasswordIn, response: Response, uid: int = Depends(get_effective_user)):
     conn = get_db()
     row = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
     if not row or not pwd_ctx.verify(data.current_password, row["password_hash"]):
@@ -2549,7 +2696,7 @@ def change_password(data: ChangePasswordIn, response: Response, uid: int = Depen
 
 
 @app.delete("/api/me")
-def delete_my_account(response: Response, uid: int = Depends(get_current_user)):
+def delete_my_account(response: Response, uid: int = Depends(get_effective_user)):
     """Cierre de cuenta self-service (irreversible). Cancela la suscripción externa
     (best-effort, para que no lo sigan cobrando) y BORRA al usuario + TODOS sus datos
     de la DB: brokers, posiciones, operaciones, imports, snapshots, config, monthly,
@@ -2587,6 +2734,13 @@ def delete_my_account(response: Response, uid: int = Depends(get_current_user)):
                     n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (uid,)).rowcount
                     if n:
                         deleted[t] = n
+            # advisor_clients no tiene columna user_id (usa advisor_uid/client_uid)
+            # → el wipe dinámico no la cubre. Borrar vínculos en ambos roles.
+            n_links = conn.execute(
+                "DELETE FROM advisor_clients WHERE advisor_uid=? OR client_uid=?",
+                (uid, uid)).rowcount
+            if n_links:
+                deleted["advisor_clients"] = n_links
             deleted["users"] = conn.execute("DELETE FROM users WHERE id=?", (uid,)).rowcount
         log.info("delete_my_account uid=%s deleted=%s", uid, deleted)
         clear_auth_cookie(response)   # invalida la sesión server-side
@@ -2629,7 +2783,7 @@ class InvestorProfileIn(BaseModel):
 
 
 @app.get("/api/auth/investor-profile")
-def get_investor_profile(uid: int = Depends(get_current_user)):
+def get_investor_profile(uid: int = Depends(get_effective_user)):
     """Devuelve el perfil de inversor del user (o {} si no completó el test)."""
     conn = get_db()
     try:
@@ -2647,7 +2801,7 @@ def get_investor_profile(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/auth/investor-profile")
-def save_investor_profile(data: InvestorProfileIn, uid: int = Depends(get_current_user)):
+def save_investor_profile(data: InvestorProfileIn, uid: int = Depends(get_effective_user)):
     """Guarda/actualiza el perfil. Valida valores contra el whitelist para
     evitar basura/inyecciones que terminen en el prompt de IA."""
     payload = data.model_dump(exclude_none=True)
@@ -2698,7 +2852,7 @@ class BrokerIn(BaseModel):
 
 
 @app.get("/api/brokers")
-def get_brokers(uid: int = Depends(get_current_user)):
+def get_brokers(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute("SELECT * FROM brokers WHERE user_id=? ORDER BY name", (uid,)).fetchall()
     conn.close()
@@ -2712,7 +2866,7 @@ def get_brokers(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/brokers")
-def create_broker(data: BrokerIn, uid: int = Depends(get_current_user)):
+def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
     from ai import plan
     conn = get_db()
     # Feature gate: Free permite 1 broker máximo. Grandfather: usuarios
@@ -2799,7 +2953,7 @@ NAME_KEYED_TABLES = (
 
 
 @app.put("/api/brokers/{bid}")
-def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_current_user)):
+def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_user)):
     """Renombra (o cambia la moneda de) un broker, con cascade del nombre.
 
     Como las tablas de data linkean al broker por NOMBRE (ver NAME_KEYED_TABLES),
@@ -2998,7 +3152,7 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_current_user)
 
 
 @app.delete("/api/brokers/{bid}")
-def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_current_user)):
+def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effective_user)):
     """Borra el broker. Por defecto REFUSE si tiene data asociada
     (positions/operations/monthly_entries) — el caller debe pasar `?force=true`
     explícitamente para confirmar el cascade delete.
@@ -3179,7 +3333,7 @@ class ConfigUpdate(BaseModel):
 
 
 @app.get("/api/config")
-def get_config(uid: int = Depends(get_current_user)):
+def get_config(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute("SELECT key, value FROM config WHERE user_id=?", (uid,)).fetchall()
     conn.close()
@@ -3193,7 +3347,7 @@ def get_config(uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/config")
-def update_config(data: ConfigUpdate, uid: int = Depends(get_current_user)):
+def update_config(data: ConfigUpdate, uid: int = Depends(get_effective_user)):
     conn = get_db()
     if data.tc_mep is not None:
         conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_mep', ?, ?)", (str(data.tc_mep), uid))
@@ -3505,7 +3659,7 @@ def _current_cripto_rate():
 
 
 @app.get("/api/dolar")
-def get_dolar(uid: int = Depends(get_current_user)):
+def get_dolar(uid: int = Depends(get_effective_user)):
     return _get_dolar_data()
 
 
@@ -3531,7 +3685,7 @@ class SnapshotIn(BaseModel):
 
 
 @app.post("/api/snapshots")
-def post_snapshot(data: SnapshotIn, uid: int = Depends(get_current_user)):
+def post_snapshot(data: SnapshotIn, uid: int = Depends(get_effective_user)):
     today = datetime.utcnow().strftime("%Y-%m-%d")
     # Phase C: stampamos fx_to_usd_blue desde el cache de /dolar (TTL 5min).
     #
@@ -3572,7 +3726,7 @@ def post_snapshot(data: SnapshotIn, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/snapshots")
-def get_snapshots(days: int = 30, uid: int = Depends(get_current_user)):
+def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
     # Phase 6 — cap subido de 365 → 3650 (10 años) para soportar histórico multi-año.
     # Phase C — devolvemos fx_to_usd_blue para que el frontend pueda convertir
     # snapshots viejos a ARS con el TC HISTÓRICO de cada fecha, no el de hoy.
@@ -3591,7 +3745,7 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_current_user)):
 @app.get("/api/fx-rates")
 def get_fx_rates(
     days: int = 3650,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Devuelve la historia de blue diaria. Default 10 años (mismo cap que
     snapshots). El frontend la fetcha una vez por session y la cachea en
@@ -3818,7 +3972,7 @@ def _fetch_uva_monthly():
 
 
 @app.get("/api/benchmarks")
-def get_benchmarks(uid: int = Depends(get_current_user)):
+def get_benchmarks(uid: int = Depends(get_effective_user)):
     """Endpoint stale-while-revalidate:
        • cache fresco (< 1h) → return inmediato.
        • cache stale pero existente → return stale + dispatch refresh background.
@@ -3931,7 +4085,7 @@ def get_bond_index_series(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     date: Optional[str] = None,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Devuelve la serie diaria del índice solicitado.
 
@@ -4097,7 +4251,7 @@ POPULAR_TICKERS_AR_ADR = [
 @app.get("/api/events/popular")
 def get_popular_events(
     days: int = 90,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Eventos "del mercado" en general — no filtrados al portfolio del user.
 
@@ -4329,7 +4483,7 @@ def _refresh_events_for_tickers(conn, tickers: list):
 
 
 @app.get("/api/events/earnings-expectations")
-def earnings_expectations(symbol: str, uid: int = Depends(get_current_user)):
+def earnings_expectations(symbol: str, uid: int = Depends(get_effective_user)):
     """Expectativas del consenso para el próximo earnings de un ticker.
 
     Reusa el fetcher + cache del chat tool get_earnings_history (yfinance):
@@ -4351,7 +4505,7 @@ def earnings_expectations(symbol: str, uid: int = Depends(get_current_user)):
 @app.get("/api/events/portfolio")
 def get_portfolio_events(
     days: int = 90,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Eventos próximos para los activos en el portfolio del user.
 
@@ -5219,7 +5373,7 @@ def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8, max_wait_seco
 @app.get("/api/news/market")
 def get_market_news(
     limit: int = 20,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Feed general del mercado — noticias macro y de índices populares.
 
@@ -5280,7 +5434,7 @@ def get_market_news(
 @app.get("/api/news/portfolio")
 def get_portfolio_news(
     limit: int = 15,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Noticias relevantes a los tickers en el portfolio del user.
 
@@ -5731,7 +5885,7 @@ def _prevclose_cache_set(values: dict) -> None:
 
 
 @app.get("/api/prices")
-def get_prices(symbols: str, uid: int = Depends(get_current_user)):
+def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     raw = [s.strip().upper() for s in symbols.split(",") if s.strip()]
 
     # FCI (fondos comunes): no pasan el _SYMBOL_RE de tickers yfinance — los
@@ -5900,7 +6054,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/prices/prev-close")
-def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
+def get_prev_close(symbols: str, uid: int = Depends(get_effective_user)):
     """Cierre del día hábil ANTERIOR por símbolo — base de la variación diaria
     por posición en Positions. Mismo shape que /api/prices: {symbol: number|null}.
 
@@ -6038,7 +6192,7 @@ _HISTORY_PERIODS = {
 
 
 @app.get("/api/prices/history")
-def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_current_user)):
+def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_effective_user)):
     """Devuelve serie histórica de close-prices para mini-chart.
 
     Params:
@@ -6174,7 +6328,7 @@ class PositionIn(BaseModel):
 
 
 @app.get("/api/positions")
-def get_positions(uid: int = Depends(get_current_user)):
+def get_positions(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute(
         """SELECT * FROM positions WHERE user_id=?
@@ -6186,49 +6340,63 @@ def get_positions(uid: int = Depends(get_current_user)):
     return [dict(r) for r in rows]
 
 
+def _manual_position_cost(invested, buy_price, quantity, commissions) -> float:
+    """Costo cash de un alta manual: invested ?? buy_price×quantity, + comisiones.
+    ÚNICA definición — el débito del alta y el re-crédito del undo de la
+    operación grupal DEBEN usar la misma fórmula o el cash driftea."""
+    cost = invested if invested is not None else (buy_price or 0) * (quantity or 0)
+    return (cost or 0) + (commissions or 0)
+
+
+def _insert_manual_position(conn, uid: int, p: PositionIn):
+    """Cuerpo del alta manual de posición (insert + cash debit), extraído para
+    reusarlo desde la operación grupal del Plan Asesor. NO abre transacción ni
+    conexión: el caller decide el alcance del `with conn` (una posición suelta
+    o un lote de N clientes). Devuelve la row insertada."""
+    # Auto-fill entry_date a hoy si no viene del cliente
+    entry_date = p.entry_date or datetime.utcnow().strftime("%Y-%m-%d")
+    # Moneda nativa del lote: explícita del form, o inferida del broker
+    # (ARS si el broker es ARS, USD si es el sub-broker '· USD'/USDT). Sin
+    # esto los lotes manuales quedaban NULL y se mezclaban ARS+USD en el FIFO.
+    resolved_ccy = p.currency
+    if not resolved_ccy and not p.is_cash:
+        _br = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=?",
+            (uid, p.broker)).fetchone()
+        resolved_ccy = "ARS" if (_br and _br["currency"] == "ARS") else "USD"
+    cur = conn.execute(
+        """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+           invested, tc_compra, price_override, notes, entry_date, commissions, asset_type, currency)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
+         p.invested, p.tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
+         (p.asset_type or None), resolved_ccy),
+    )
+    new_id = cur.lastrowid
+
+    # Phase 2 — descontar del cash del broker (moneda nativa).
+    # Costo real = invested + commissions (las comisiones se debitan del cash).
+    if not p.is_cash:
+        cost = _manual_position_cost(p.invested, p.buy_price, p.quantity, p.commissions)
+        if cost and cost > 0:
+            # El cash no puede quedar negativo en una alta manual: si el
+            # user agrega una posición sin haber cargado el depósito, auto-
+            # depositamos el faltante (sube cash + capital aportado) antes
+            # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
+            _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date)
+            _adjust_broker_cash(conn, uid, p.broker, -cost)
+
+    return conn.execute(
+        "SELECT * FROM positions WHERE id=? AND user_id=?", (new_id, uid)
+    ).fetchone()
+
+
 @app.post("/api/positions")
-def create_position(p: PositionIn, uid: int = Depends(get_current_user)):
+def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:  # transacción atómica: insert + cash debit
-            # Auto-fill entry_date a hoy si no viene del cliente
-            entry_date = p.entry_date or datetime.utcnow().strftime("%Y-%m-%d")
-            # Moneda nativa del lote: explícita del form, o inferida del broker
-            # (ARS si el broker es ARS, USD si es el sub-broker '· USD'/USDT). Sin
-            # esto los lotes manuales quedaban NULL y se mezclaban ARS+USD en el FIFO.
-            resolved_ccy = p.currency
-            if not resolved_ccy and not p.is_cash:
-                _br = conn.execute(
-                    "SELECT currency FROM brokers WHERE user_id=? AND name=?",
-                    (uid, p.broker)).fetchone()
-                resolved_ccy = "ARS" if (_br and _br["currency"] == "ARS") else "USD"
-            cur = conn.execute(
-                """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
-                   invested, tc_compra, price_override, notes, entry_date, commissions, asset_type, currency)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
-                 p.invested, p.tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
-                 (p.asset_type or None), resolved_ccy),
-            )
-            new_id = cur.lastrowid
-
-            # Phase 2 — descontar del cash del broker (moneda nativa).
-            # Costo real = invested + commissions (las comisiones se debitan del cash).
-            if not p.is_cash:
-                cost = p.invested if p.invested is not None else \
-                       (p.buy_price or 0) * (p.quantity or 0)
-                cost = (cost or 0) + (p.commissions or 0)
-                if cost and cost > 0:
-                    # El cash no puede quedar negativo en una alta manual: si el
-                    # user agrega una posición sin haber cargado el depósito, auto-
-                    # depositamos el faltante (sube cash + capital aportado) antes
-                    # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
-                    _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date)
-                    _adjust_broker_cash(conn, uid, p.broker, -cost)
-
-            row = conn.execute(
-                "SELECT * FROM positions WHERE id=? AND user_id=?", (new_id, uid)
-            ).fetchone()
+            row = _insert_manual_position(conn, uid, p)
         conn.close()
         _ai_cache_invalidate(uid)
         return dict(row)
@@ -6241,7 +6409,7 @@ def create_position(p: PositionIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/positions/{pid}")
-def update_position(pid: int, p: PositionIn, uid: int = Depends(get_current_user)):
+def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute(
         """UPDATE positions SET broker=?, asset=?, is_cash=?, buy_price=?, quantity=?,
@@ -6265,7 +6433,7 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_current_user
 
 
 @app.delete("/api/positions/{pid}")
-def delete_position(pid: int, uid: int = Depends(get_current_user)):
+def delete_position(pid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
     conn.commit()
@@ -6441,7 +6609,7 @@ def _foto_wm_for(broker: str, base: str, foto_map: dict, pair_cache: dict, conn,
 
 
 @app.post("/api/positions/{pid}/adjust-ratio")
-def adjust_position_ratio(pid: int, uid: int = Depends(get_current_user)):
+def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
     """Ajusta un lote de CEDEAR por el/los cambio(s) de ratio (split) que el SERVER
     detecta vía yfinance: quantity*=F, buy_price/=F, dejando invested/commissions/
     monthly_entries INTACTOS (no inventa plata, solo arregla la pérdida fantasma).
@@ -6531,7 +6699,7 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/positions/split-check")
-def positions_split_check(uid: int = Depends(get_current_user)):
+def positions_split_check(uid: int = Depends(get_effective_user)):
     """Detecta lotes con un cambio de ratio (split) que Rendi todavía no ajustó →
     P&L fantasma. Por cada equity de BYMA con qty>0, busca splits del .BA con
     ex_date posterior a la compra Y al watermark. Excluye el caso comprado EXACTO
@@ -6661,7 +6829,7 @@ def _pf_vencimiento(fecha_inicio: str, plazo_dias: int) -> str:
 
 
 @app.get("/api/plazos-fijos")
-def list_plazos_fijos(uid: int = Depends(get_current_user)):
+def list_plazos_fijos(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute(
         """SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL
@@ -6678,7 +6846,7 @@ def list_plazos_fijos(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/plazos-fijos")
-def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
+def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
     venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
     conn = get_db()
     # Si el capital salió de un broker que ya estaba en Rendi, debitamos su cash
@@ -6720,7 +6888,7 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/plazos-fijos/{pid}")
-def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_current_user)):
+def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
     venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
     conn = get_db()
     row = conn.execute("SELECT id FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid)).fetchone()
@@ -6743,7 +6911,7 @@ def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_current_u
 
 
 @app.delete("/api/plazos-fijos/{pid}")
-def delete_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
+def delete_plazo_fijo(pid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute("DELETE FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid))
     conn.commit()
@@ -6792,7 +6960,7 @@ def _pf_value(row, as_of_iso=None):
 
 
 @app.post("/api/plazos-fijos/{pid}/renovar")
-def renovar_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
+def renovar_plazo_fijo(pid: int, uid: int = Depends(get_effective_user)):
     """Renueva el PF: arranca un período nuevo desde el vencimiento, con capital
     = capital + interés (reinvierte todo). Mismo plazo y tasa."""
     conn = get_db()
@@ -6822,7 +6990,7 @@ class CobrarIn(BaseModel):
 
 
 @app.post("/api/plazos-fijos/{pid}/cobrar")
-def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_current_user)):
+def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective_user)):
     """Cierra el PF (cobrado). Si se indica un broker, acredita capital+interés
     como cash ahí (debe coincidir la moneda). El interés es la ganancia realizada
     — el PF cerrado retiene sus datos para las métricas."""
@@ -6885,7 +7053,7 @@ _PF_BANKS_TTL = 6 * 3600
 
 
 @app.get("/api/pf/banks")
-def pf_banks(uid: int = Depends(get_current_user)):
+def pf_banks(uid: int = Depends(get_effective_user)):
     """Tasas de plazo fijo por banco (argentinadatos), para el prefill del alta
     y el comparador. Devuelve [{banco, logo, tna_clientes, tna_no_clientes}]
     ordenado por mejor tasa. Cacheado 6h en memoria."""
@@ -7473,7 +7641,7 @@ class BrokerReconcileCashIn(BaseModel):
 
 
 @app.post("/api/brokers/reconcile-cash")
-def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_current_user)):
+def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_effective_user)):
     """Ajusta el cash actual de un broker a un valor real (el que el broker
     externo reporta), y registra la diferencia como movimiento sintético en
     el primer mes del broker — de modo que:
@@ -7571,7 +7739,7 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_cu
 
 
 @app.post("/api/cash/flow")
-def cash_flow(data: CashFlowIn, uid: int = Depends(get_current_user)):
+def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
     """Depósito o retiro de cash en un broker.
     Actualiza la posición cash del broker y las entradas mensuales (broker + global)."""
     conn = get_db()
@@ -7782,7 +7950,7 @@ class BondCashflowIn(BaseModel):
 
 
 @app.post("/api/bonds/cashflow")
-def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
+def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
     """Registra un cupón cobrado o amortización recibida de un bono.
 
     Hace 2-3 cosas atómicamente:
@@ -8061,7 +8229,7 @@ class BondCashflowSkipIn(BaseModel):
 
 
 @app.get("/api/bonds/cashflow/skips")
-def list_bond_cashflow_skips(uid: int = Depends(get_current_user)):
+def list_bond_cashflow_skips(uid: int = Depends(get_effective_user)):
     """Lista todos los skips del user. Frontend los consume para filtrar
     el inbox de pendientes."""
     conn = get_db()
@@ -8079,7 +8247,7 @@ def list_bond_cashflow_skips(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/bonds/cashflow/skip")
-def skip_bond_cashflow(data: BondCashflowSkipIn, uid: int = Depends(get_current_user)):
+def skip_bond_cashflow(data: BondCashflowSkipIn, uid: int = Depends(get_effective_user)):
     """Marca una cobranza teórica como saltada. Idempotente: re-aplicar el
     mismo skip no falla, sólo actualiza el `reason` si difiere."""
     conn = get_db()
@@ -8120,7 +8288,7 @@ def unskip_bond_cashflow(
     broker: str,
     asset: str,
     date: str,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Elimina un skip — el pago vuelve a aparecer en el inbox. Usado si el
     user marca por error o si la situación cambia (ej: bono salió de default)."""
@@ -8235,7 +8403,7 @@ def _adjust_cash(conn, uid: int, broker_name: str, asset: str, delta: float, tc_
 
 
 @app.post("/api/conversions")
-def create_conversion(data: ConversionIn, uid: int = Depends(get_current_user)):
+def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)):
     """Conversión interna entre cash ARS y cash USD dentro de un mismo broker.
 
     Flujo `ars_to_usd`:
@@ -8375,7 +8543,7 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_current_user)):
 # ─── Sub-broker USD manual (para CEDEARs y similares pagados con USD) ────────
 
 @app.post("/api/brokers/{bid}/usd-sibling")
-def create_usd_sibling(bid: int, uid: int = Depends(get_current_user)):
+def create_usd_sibling(bid: int, uid: int = Depends(get_effective_user)):
     """Crea (o devuelve si ya existe) el sub-broker USD asociado a un broker ARS.
 
     Use case: el usuario tiene USD del exterior y quiere comprar CEDEARs en
@@ -8406,7 +8574,7 @@ class SyncUnrealizedIn(BaseModel):
 
 
 @app.post("/api/monthly/sync-unrealized")
-def sync_unrealized(data: SyncUnrealizedIn, uid: int = Depends(get_current_user)):
+def sync_unrealized(data: SyncUnrealizedIn, uid: int = Depends(get_effective_user)):
     """Actualiza pnl_unrealized del MES CALENDARIO ACTUAL (UTC) del broker, y
     pone en 0 pnl_unrealized en todas las demás entradas (meses cerrados, históricos
     o futuros pre-abiertos).
@@ -8517,7 +8685,7 @@ class SellIn(BaseModel):
 
 
 @app.post("/api/positions/sell")
-def sell_position_fifo(data: SellIn, uid: int = Depends(get_current_user)):
+def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
     """Cierre FIFO: descuenta `quantity` empezando por la posición más vieja (entry_date asc).
     Crea una operación por cada posición tocada (cantidad parcial o total).
     Si la cantidad excede el total disponible, falla atómicamente sin tocar nada."""
@@ -8866,7 +9034,7 @@ def _rollover_all_brokers(conn, uid: int) -> int:
 
 
 @app.get("/api/monthly")
-def get_monthly(uid: int = Depends(get_current_user)):
+def get_monthly(uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         # Lazy trigger del rollover: garantiza que el current month existe
@@ -8885,7 +9053,7 @@ def get_monthly(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/monthly")
-def create_monthly(e: MonthlyIn, uid: int = Depends(get_current_user)):
+def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     # Validar que el broker exista (excepto el especial 'global' que se usa para totales)
     if e.broker != 'global':
@@ -8919,7 +9087,7 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/monthly/{eid}")
-def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_current_user)):
+def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     with conn:  # tx: update + repair atómico
         man_dep, man_wit = _derive_manual_flows(
@@ -8942,7 +9110,7 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_current_user))
 
 
 @app.delete("/api/monthly/{eid}")
-def delete_monthly(eid: int, uid: int = Depends(get_current_user)):
+def delete_monthly(eid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     # Capturar el broker ANTES del delete para poder repair la chain.
     target = conn.execute(
@@ -9013,7 +9181,7 @@ class OperationIn(BaseModel):
 
 
 @app.get("/api/operations")
-def get_operations(uid: int = Depends(get_current_user)):
+def get_operations(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute(
         "SELECT * FROM operations WHERE user_id=? ORDER BY date DESC", (uid,)
@@ -9023,7 +9191,7 @@ def get_operations(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/movements")
-def get_movements(uid: int = Depends(get_current_user)):
+def get_movements(uid: int = Depends(get_effective_user)):
     """Historial unificado de TODOS los movimientos del usuario.
 
     Es la "vista contadora" — todo lo que pasó cronológicamente, sin
@@ -9478,7 +9646,7 @@ def _delete_one_movement(conn, uid: int, mid: str):
 
 
 @app.delete("/api/movements/{movement_id}")
-def delete_movement(movement_id: str, uid: int = Depends(get_current_user)):
+def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
     """Borra UN movimiento individual (vista Operaciones) y recalcula la cascada:
     cash, monthly_entries, snapshots (capital aportado + Evolución), insights y el
     snapshot que consume la IA. v1: SOLO cash-flows (depósitos, retiros, dividendos,
@@ -9501,7 +9669,7 @@ def delete_movement(movement_id: str, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/insights/commissions")
-def get_commissions_total(uid: int = Depends(get_current_user)):
+def get_commissions_total(uid: int = Depends(get_effective_user)):
     """Suma de las comisiones EXPLÍCITAS importadas (operation_type='FEE' en
     import_normalized_tx). Convierte ARS→USD usando tc_blue. Ignora el campo
     `commissions` de operations (que tiene basura de imports viejos con
@@ -9661,7 +9829,7 @@ def _gate_export(uid: int):
 
 
 @app.get("/api/export/operations.csv")
-def export_operations_csv(uid: int = Depends(get_current_user)):
+def export_operations_csv(uid: int = Depends(get_effective_user)):
     """Operaciones cerradas → CSV. Pensado para el contador / reporte fiscal.
 
     Columnas pensadas para AFIP / régimen tributario AR: fecha de operación,
@@ -9700,7 +9868,7 @@ def export_operations_csv(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/export/positions.csv")
-def export_positions_csv(uid: int = Depends(get_current_user)):
+def export_positions_csv(uid: int = Depends(get_effective_user)):
     """Posiciones abiertas → CSV (snapshot al momento de descarga).
 
     Incluye costo basis + cantidad. NO incluye valor de mercado actual
@@ -9735,7 +9903,7 @@ def export_positions_csv(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/export/transactions.csv")
-def export_transactions_csv(uid: int = Depends(get_current_user)):
+def export_transactions_csv(uid: int = Depends(get_effective_user)):
     """Export consolidado: TODOS los movimientos del user en una sola CSV.
 
     Pensado como "lo que mandás al contador" o "lo que mandás a otra persona
@@ -9959,7 +10127,7 @@ def _humanize_tx_type(t: str) -> str:
 
 
 @app.get("/api/export/monthly.csv")
-def export_monthly_csv(uid: int = Depends(get_current_user)):
+def export_monthly_csv(uid: int = Depends(get_effective_user)):
     """Resumen mensual → CSV con flujos + P&L realizado mes a mes.
 
     Útil para el contador: sintetiza capital inicio/fin, depósitos,
@@ -9997,7 +10165,7 @@ def export_monthly_csv(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/wrapped/{year}")
-def wrapped_year(year: int, uid: int = Depends(get_current_user)):
+def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
     """Wrapped anual — reseña tipo Spotify del año en inversiones.
     Sprint 6 del plan post-auditoría. Slides con highlights:
     rendimiento, mejor/peor mes, mejor trade, sesgo dominante, vs benchmarks,
@@ -10075,7 +10243,7 @@ def wrapped_year(year: int, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/behavioral/insights")
-def behavioral_insights(uid: int = Depends(get_current_user)):
+def behavioral_insights(uid: int = Depends(get_effective_user)):
     """Detecta sesgos comportamentales sobre el historial del usuario.
     Sprint 3 + 3.1 + 3.2 del plan post-auditoría. 10 detectores en total.
 
@@ -10136,7 +10304,7 @@ def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional
 
 
 @app.post("/api/operations")
-def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
+def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
     """Crea una operation manual.
 
     Audit follow-up (2026-05-31): después de INSERT, syncroniza el cache
@@ -10167,7 +10335,7 @@ def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/operations/{oid}")
-def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_current_user)):
+def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective_user)):
     """Update operation manual + sync cache pnl_realized (audit follow-up)."""
     conn = get_db()
     currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
@@ -10196,7 +10364,7 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_current_u
 
 
 @app.delete("/api/operations/{oid}")
-def delete_operation(oid: int, uid: int = Depends(get_current_user)):
+def delete_operation(oid: int, uid: int = Depends(get_effective_user)):
     """Delete operation manual + sync cache pnl_realized (audit follow-up)."""
     conn = get_db()
     conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (oid, uid))
@@ -10227,7 +10395,7 @@ class GoalIn(BaseModel):
 
 
 @app.get("/api/goals")
-def list_goals(uid: int = Depends(get_current_user)):
+def list_goals(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute(
         "SELECT * FROM goals WHERE user_id=? ORDER BY target_date ASC", (uid,)
@@ -10237,7 +10405,7 @@ def list_goals(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/goals")
-def create_goal(g: GoalIn, uid: int = Depends(get_current_user)):
+def create_goal(g: GoalIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     cur = conn.execute(
         "INSERT INTO goals (user_id, target_usd, target_date, expected_return_pct, label) VALUES (?,?,?,?,?)",
@@ -10251,7 +10419,7 @@ def create_goal(g: GoalIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/goals/{gid}")
-def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_current_user)):
+def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute(
         "UPDATE goals SET target_usd=?, target_date=?, expected_return_pct=?, label=? WHERE id=? AND user_id=?",
@@ -10267,7 +10435,7 @@ def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_current_user)):
 
 
 @app.delete("/api/goals/{gid}")
-def delete_goal(gid: int, uid: int = Depends(get_current_user)):
+def delete_goal(gid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute("DELETE FROM goals WHERE id=? AND user_id=?", (gid, uid))
     conn.commit()
@@ -10277,7 +10445,7 @@ def delete_goal(gid: int, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/goals/{gid}/diagnostic")
-def goal_diagnostic(gid: int, uid: int = Depends(get_current_user)):
+def goal_diagnostic(gid: int, uid: int = Depends(get_effective_user)):
     """Sprint 7 — Goals 2.0. Cruza:
     - Velocidad real del usuario (CAGR histórico).
     - Velocidad necesaria para la meta.
@@ -10424,7 +10592,7 @@ def _historical_cagr_global(conn, uid: int) -> dict:
 
 
 @app.get("/api/goals/cagr")
-def historical_cagr(uid: int = Depends(get_current_user)):
+def historical_cagr(uid: int = Depends(get_effective_user)):
     """CAGR histórico TWR. Lee de snapshots (durables, MTM) → consistente con el chart
     y no se revierte con el recompute mensual. Fallback a monthly_entries sin snapshots."""
     conn = get_db()
@@ -11741,6 +11909,7 @@ def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_a
                   WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
+          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
         ORDER BY u.created_at ASC
     """).fetchall()
 
@@ -11853,6 +12022,7 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
                   WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
+          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
         ORDER BY u.created_at ASC
     """).fetchall()
 
@@ -11995,7 +12165,8 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
     conn = get_db()
     rows = conn.execute(
         "SELECT id, email, name, email_verified, tier "
-        "FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY created_at ASC"
+        "FROM users WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL "  # sin shadows del Plan Asesor
+        "ORDER BY created_at ASC"
     ).fetchall()
     targets = []
     for r in rows:
@@ -12348,8 +12519,9 @@ def admin_billing_grant_comp(
     from datetime import datetime as _dt, timedelta as _td
 
     plan = (plan or "").strip().lower()
-    if plan not in ("plus", "pro"):
-        raise HTTPException(400, "plan inválido (usá 'plus' o 'pro').")
+    # 'advisor' habilita el Plan Asesor a pilotos sin construir billing (F4).
+    if plan not in ("plus", "pro", "advisor"):
+        raise HTTPException(400, "plan inválido (usá 'plus', 'pro' o 'advisor').")
     if days < 1 or days > 366:
         raise HTTPException(400, "days fuera de rango (1..366).")
 
@@ -12544,7 +12716,7 @@ def admin_fci_probe(uid: int = Depends(get_admin_user)):
 
 
 @app.get("/api/fci/catalog")
-def fci_catalog(uid: int = Depends(get_current_user)):
+def fci_catalog(uid: int = Depends(get_effective_user)):
     """Catálogo de FCI elegibles para el selector de alta de posición, con el
     último precio por cuotaparte conocido (price puede ser null si nunca refrescó)."""
     conn = get_db()
@@ -18017,7 +18189,7 @@ def _ai_cache_invalidate(uid: int) -> None:
 
 
 @app.post("/api/ai/analyze")
-def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_current_user)):
+def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effective_user)):
     """Análisis contextual estructurado de una pantalla o sub-componente.
 
     El `screen` usa notación con puntos para sub-topics:
@@ -18214,7 +18386,7 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_curre
 # ─── Fundamentals endpoints ────────────────────────────────────────────────
 
 @app.get("/api/fundamentals/{ticker}")
-def get_fundamentals(ticker: str, uid: int = Depends(get_current_user)):
+def get_fundamentals(ticker: str, uid: int = Depends(get_effective_user)):
     """Scorecard de fundamentales de una acción ("Calidad de cartera").
 
     Auth requerida, TODOS los tiers, SIN cupo (data de yfinance cacheada).
@@ -18238,7 +18410,7 @@ def get_fundamentals(ticker: str, uid: int = Depends(get_current_user)):
 
 @app.post("/api/fundamentals/ai-summary")
 def fundamentals_ai_summary(data: FundamentalsAISummaryIn, request: Request,
-                            uid: int = Depends(get_current_user)):
+                            uid: int = Depends(get_effective_user)):
     """Resumen IA ("Lo mejor" / "Ojo con esto") de los fundamentales de una acción.
 
     Reusa EXACTAMENTE la infra de /api/ai/analyze: tier (quota.get_tier),
@@ -18395,7 +18567,7 @@ _ALLOWED_PLAN_EVENTS = {
 
 
 @app.post("/api/plan/track", status_code=204)
-def plan_track(data: PlanEventIn, uid: int = Depends(get_current_user)):
+def plan_track(data: PlanEventIn, uid: int = Depends(get_effective_user)):
     """Registra un evento de paywall para analytics de conversión.
 
     Whitelist de event_names para evitar spam. Solo eventos clave del flow
@@ -18426,23 +18598,40 @@ def plan_track(data: PlanEventIn, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/plan/features")
-def plan_features(uid: int = Depends(get_current_user)):
+def plan_features(
+    request: Request,
+    uid: int = Depends(get_effective_user),
+):
     """Feature flags + límites del tier del user para el frontend.
 
     El frontend usa esta info en `usePlanFeatures()` para gatear UI:
     blurear secciones bloqueadas, mostrar contadores, modal de upgrade.
 
     Shape (estable):
-      tier: 'free' | 'pro' | 'admin'
+      tier: 'free' | 'plus' | 'pro' | 'advisor' | 'admin'
       limits.brokers_max / brokers_current / brokers_can_create / brokers_grandfather
       limits.insights_diagnostic_visible
       limits.behavioral_tags_visible
       access.<feature_id>: bool
+      client_ctx: bool — True si el asesor está mirando la cuenta de un cliente
+
+    LENTE PRO del Plan Asesor: si hay contexto de cliente activo (uid resuelto
+    ≠ uid autenticado), las features se calculan sobre la cuenta del CLIENTE
+    pero con tier forzado 'pro' — el asesor ve todo desbloqueado porque lo
+    paga su plan, aunque el cliente sea Free. El cliente, al entrar él mismo
+    (sin header), recibe su tier real de siempre.
     """
     from ai import plan
     conn = get_db()
     try:
-        return plan.get_plan_features(conn, uid)
+        # El resolver ya autenticó y stasheó el uid real — sin 2da pasada de JWT.
+        auth_uid = getattr(request.state, "rendi_auth_uid", uid)
+        in_client_ctx = uid != auth_uid
+        out = plan.get_plan_features(
+            conn, uid, tier_override="pro" if in_client_ctx else None
+        )
+        out["client_ctx"] = in_client_ctx
+        return out
     finally:
         conn.close()
 
@@ -18462,7 +18651,7 @@ class SubscribeIn(BaseModel):
 
 
 @app.post("/api/billing/subscribe")
-def billing_subscribe(data: SubscribeIn, request: Request, uid: int = Depends(get_current_user)):
+def billing_subscribe(data: SubscribeIn, request: Request, uid: int = Depends(get_effective_user)):
     """Crea un payment link en Rebill para que el user pague la suscripción.
 
     Devuelve `init_point` (URL del checkout Rebill). El frontend redirige al
@@ -18591,7 +18780,7 @@ class ChangePlanIn(BaseModel):
 def billing_change_plan(
     data: ChangePlanIn,
     request: Request,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Cambia el plan del user manteniendo el crédito remanente.
 
@@ -18708,7 +18897,7 @@ def billing_change_plan(
 def billing_preview_change_plan(
     plan: str,
     period: str,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Devuelve lo que pasaría si el user cambia a (plan, period) sin
     ejecutarlo. Usado por el frontend para confirmar el cambio mostrando
@@ -19179,7 +19368,7 @@ def _rebill_record_payment(conn, uid: int, sub_id: str, payload: dict):
 
 
 @app.post("/api/billing/cancel")
-def billing_cancel(request: Request, uid: int = Depends(get_current_user)):
+def billing_cancel(request: Request, uid: int = Depends(get_effective_user)):
     """Cancela la suscripción Pro del user.
 
     NOTA: NO devolvemos el dinero del período actual. El user mantiene
@@ -19248,7 +19437,7 @@ def billing_cancel(request: Request, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/billing/sync")
-def billing_sync(uid: int = Depends(get_current_user)):
+def billing_sync(uid: int = Depends(get_effective_user)):
     """Pull-based confirmation: pregunta a MP el estado actual de la sub
     del user y actualiza nuestra DB acordemente.
 
@@ -19304,7 +19493,7 @@ def billing_sync(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/billing/status")
-def billing_status(uid: int = Depends(get_current_user)):
+def billing_status(uid: int = Depends(get_effective_user)):
     """Estado actual de la suscripción del user. Usado por /planes para
     mostrar 'Próxima renovación: X' o 'Cancelada · expira X'."""
     conn = get_db()
@@ -19615,7 +19804,7 @@ def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
 
 
 @app.get("/api/ai/usage")
-def ai_usage(uid: int = Depends(get_current_user)):
+def ai_usage(uid: int = Depends(get_effective_user)):
     """Usage de la SEMANA en curso (ISO week, lunes-domingo) — el frontend
     lo usa para mostrar 'X/6 esta semana' en Free, 'X/60' en Pro, 'Admin ·
     sin tope' para admin, etc."""
@@ -19628,7 +19817,7 @@ def ai_usage(uid: int = Depends(get_current_user)):
 
 
 @app.delete("/api/ai/cache/{screen}")
-def ai_invalidate_cache(screen: str, uid: int = Depends(get_current_user)):
+def ai_invalidate_cache(screen: str, uid: int = Depends(get_effective_user)):
     """Borra el cache de un screen para este user. Lo llama el frontend
     cuando aprieta 'Refrescar' en el drawer. Tambien lo llaman los
     endpoints de mutación (POST /positions, /operations, etc.) en futuro."""
@@ -20008,7 +20197,7 @@ def _chat_quota_429(tier: str, usage: dict) -> HTTPException:
 
 
 @app.post("/api/diagnostics/dismiss")
-def diagnostics_dismiss(request: Request, uid: int = Depends(get_current_user)):
+def diagnostics_dismiss(request: Request, uid: int = Depends(get_effective_user)):
     """Registra un "No me interesa" del diagnóstico contra la cuota semanal.
 
     Free: 2/sem (rolling 7d) → al pasarse, 429 con upgrade payload a Plus. El
@@ -20059,7 +20248,7 @@ def diagnostics_dismiss(request: Request, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/ai/chat")
-def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_user)):
+def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_user)):
     """Chat con el coach IA — tier-aware.
 
     Free/Plus:
@@ -20121,7 +20310,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     finally:
         conn.close()
 
-    is_premium = tier in ("pro", "admin")
+    is_premium = tier in ("pro", "advisor", "admin")  # advisor = chat libre (paga 4-8x un Pro)
     # M20: Free/Plus reciben solo las tools sobre sus propios datos + los chips
     # de onboarding; las de investigación de mercado externa quedan Pro-only.
     # allowed_names = enforcement en EJECUCIÓN (el parámetro tools es advisory:
@@ -20889,7 +21078,7 @@ class RecommendationIn(BaseModel):
 def feedback_recommendation(
     data: RecommendationIn,
     request: Request,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Recibe una recomendación del user y la envía por mail a
     recomendaciones@rendi.finance via Resend.
@@ -20993,7 +21182,7 @@ class AIRememberIn(BaseModel):
 def ai_remember(
     data: AIRememberIn,
     request: Request,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Persiste un hecho del user para que el bot lo recuerde en chats futuros.
 
@@ -21028,7 +21217,7 @@ def ai_remember(
 @app.get("/api/ai/facts")
 def ai_list_facts(
     include_inactive: bool = False,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Lista facts del user. Por default solo activos (los que se inyectan).
     `include_inactive=true` trae todo para la UI de gestión."""
@@ -21057,7 +21246,7 @@ def ai_list_facts(
 def ai_delete_fact(
     fact_id: int,
     request: Request,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Soft-delete (toggle is_active=0). No borra la fila — mantiene historial
     de auditoría. Si el user lo vuelve a querer, lo reactiva (futuro endpoint).
@@ -21119,7 +21308,7 @@ _import_helpers._recalc_pnl_realized_from_ops = _recalc_pnl_realized_from_ops
 
 
 @app.get("/api/imports/template")
-def import_template(format: str = "rendi_generic", uid: int = Depends(get_current_user)):
+def import_template(format: str = "rendi_generic", uid: int = Depends(get_effective_user)):
     """Devuelve el CSV de ejemplo del formato pedido."""
     parser = _get_parser(format)
     if parser is None:
@@ -21135,13 +21324,13 @@ def import_template(format: str = "rendi_generic", uid: int = Depends(get_curren
 
 
 @app.get("/api/imports/parsers")
-def import_parsers(uid: int = Depends(get_current_user)):
+def import_parsers(uid: int = Depends(get_effective_user)):
     """Lista los parsers disponibles + cuáles están soportados (para el dropdown)."""
     return _import_pipeline.parser_options()
 
 
 @app.get("/api/imports/parsers/grouped")
-def import_parsers_grouped(uid: int = Depends(get_current_user)):
+def import_parsers_grouped(uid: int = Depends(get_effective_user)):
     """Lista los parsers agrupados por plataforma (dropdown a 2 niveles)."""
     return _import_pipeline.parser_options_grouped()
 
@@ -21149,7 +21338,7 @@ def import_parsers_grouped(uid: int = Depends(get_current_user)):
 @app.post("/api/imports/inspect")
 async def import_inspect(
     file: UploadFile = File(...),
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Lee headers y primeras filas del CSV. Devuelve también un mapping
     sugerido (auto-detect) y la lista de campos internos de Rendi para
@@ -21181,7 +21370,7 @@ async def import_inspect(
 @app.post("/api/imports/classify-tenencia")
 async def import_classify_tenencia(
     files: List[UploadFile] = File(...),
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Dice cuál de los archivos subidos es la FOTO de tenencia (y su formato),
     para que el wizard la aparte de los Movimientos en el upload combinado. Pensado
@@ -21301,7 +21490,7 @@ async def import_tenencia_preview(
     file: UploadFile = File(...),
     broker: str = Form(...),
     format: Optional[str] = Form(None),
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """FOTO de posiciones actuales = Tenencia valorizada (PDF) de Bull Market, o
     Estado de Cuenta (Excel) de PPI cuando format='ppi'. Reconcilia contra lo que
@@ -21720,7 +21909,7 @@ async def import_preview(
     format: Optional[str] = Form(None),
     mapping: Optional[str] = Form(None),                   # JSON: {"columns":{}, "defaults":{}}
     route_by_currency: Optional[str] = Form(None),         # "1"/"true" → routing per-row
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Sube uno o más CSVs y genera el preview unificado. Persiste un batch en
     estado 'preview'. Devuelve session_id (= batch_id) para usar en /confirm.
@@ -21823,7 +22012,7 @@ class ImportConfirmIn(BaseModel):
 
 
 @app.post("/api/imports/confirm")
-def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
+def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)):
     """Confirma el import: aplica los side-effects y marca el batch como 'confirmed'.
     `skip_row_indices` permite omitir filas específicas que el usuario marcó en
     el preview como problemáticas, sin re-subir el archivo.
@@ -22241,7 +22430,7 @@ class WallbitConnectIn(BaseModel):
 
 
 @app.get("/api/wallbit/status")
-def wallbit_status(uid: int = Depends(get_current_user)):
+def wallbit_status(uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         row = conn.execute(
@@ -22261,7 +22450,7 @@ def wallbit_status(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/wallbit/connect")
-def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends(get_current_user)):
+def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends(get_effective_user)):
     """Conecta Wallbit: valida la key read-only, la guarda cifrada y hace el sync inicial."""
     _check_rate_limit(request, max_calls=6, window_seconds=60, suffix=f"wallbit_connect:{uid}")
     api_key = (data.api_key or "").strip()
@@ -22301,7 +22490,7 @@ def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends
 
 
 @app.post("/api/wallbit/sync")
-def wallbit_sync_endpoint(request: Request, uid: int = Depends(get_current_user)):
+def wallbit_sync_endpoint(request: Request, uid: int = Depends(get_effective_user)):
     """Re-sincroniza los trades de Wallbit (incremental)."""
     _check_rate_limit(request, max_calls=10, window_seconds=60, suffix=f"wallbit_sync:{uid}")
     conn = get_db()
@@ -22333,7 +22522,7 @@ def wallbit_sync_endpoint(request: Request, uid: int = Depends(get_current_user)
 
 
 @app.delete("/api/wallbit/disconnect")
-def wallbit_disconnect(uid: int = Depends(get_current_user)):
+def wallbit_disconnect(uid: int = Depends(get_effective_user)):
     """Desconecta Wallbit (borra la credencial). Las posiciones ya importadas quedan
     (el usuario puede borrar el broker aparte si quiere)."""
     conn = get_db()
@@ -22346,7 +22535,7 @@ def wallbit_disconnect(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/imports")
-def import_list(uid: int = Depends(get_current_user)):
+def import_list(uid: int = Depends(get_effective_user)):
     """Lista los batches confirmados / revertidos del usuario."""
     conn = get_db()
     try:
@@ -22356,7 +22545,7 @@ def import_list(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/imports/{batch_id}")
-def import_detail(batch_id: str, uid: int = Depends(get_current_user)):
+def import_detail(batch_id: str, uid: int = Depends(get_effective_user)):
     """Detalle de un batch — incluye filas válidas y errores para auditoría."""
     conn = get_db()
     try:
@@ -22384,7 +22573,7 @@ class ImportMappingIn(BaseModel):
 
 
 @app.get("/api/imports/mappings")
-def import_mappings_list(uid: int = Depends(get_current_user)):
+def import_mappings_list(uid: int = Depends(get_effective_user)):
     """Lista los mapping templates guardados del usuario."""
     conn = get_db()
     try:
@@ -22403,7 +22592,7 @@ def import_mappings_list(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/imports/mappings")
-def import_mappings_save(data: ImportMappingIn, uid: int = Depends(get_current_user)):
+def import_mappings_save(data: ImportMappingIn, uid: int = Depends(get_effective_user)):
     """Guarda (o sobrescribe si ya existe el nombre) un mapping template."""
     conn = get_db()
     try:
@@ -22426,7 +22615,7 @@ def import_mappings_save(data: ImportMappingIn, uid: int = Depends(get_current_u
 
 
 @app.delete("/api/imports/mappings/{mid}")
-def import_mappings_delete(mid: int, uid: int = Depends(get_current_user)):
+def import_mappings_delete(mid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
@@ -22437,7 +22626,7 @@ def import_mappings_delete(mid: int, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/imports/recalc-pnl")
-def import_recalc_pnl(uid: int = Depends(get_current_user)):
+def import_recalc_pnl(uid: int = Depends(get_effective_user)):
     """Recalcula `monthly_entries.pnl_realized` desde la tabla `operations`.
 
     Útil cuando cycles previos de import/revert con bugs dejaron drift en el
@@ -22459,7 +22648,7 @@ def import_recalc_pnl(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/imports/wipe-broker")
-def import_wipe_broker(broker: str, uid: int = Depends(get_current_user)):
+def import_wipe_broker(broker: str, uid: int = Depends(get_effective_user)):
     """Limpia TODOS los datos de un broker del usuario actual: posiciones,
     operaciones y movimientos mensuales, y marca sus imports como revertidos.
 
@@ -22519,7 +22708,7 @@ def _positions_in_section(conn, uid: int, cat: str, ccy: str):
 
 
 @app.get("/api/sections/archived")
-def sections_archived(uid: int = Depends(get_current_user)):
+def sections_archived(uid: int = Depends(get_effective_user)):
     """Lista las secciones archivadas (para el botón de restaurar)."""
     conn = get_db()
     try:
@@ -22533,7 +22722,7 @@ def sections_archived(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/sections/archive")
-def sections_archive(data: SectionKeyIn, uid: int = Depends(get_current_user)):
+def sections_archive(data: SectionKeyIn, uid: int = Depends(get_effective_user)):
     """Archiva (borrado REVERSIBLE) todas las posiciones de una sección de renta
     fija — ej. 'Bonos USD'. Serializa a JSON, las saca de `positions` (así salen de
     toda la valuación) y guarda el blob para restaurar. NO toca el broker, ni las
@@ -22572,7 +22761,7 @@ def sections_archive(data: SectionKeyIn, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/sections/restore")
-def sections_restore(data: SectionRestoreIn, uid: int = Depends(get_current_user)):
+def sections_restore(data: SectionRestoreIn, uid: int = Depends(get_effective_user)):
     """Restaura una sección archivada: re-inserta las posiciones (con su id original,
     para no romper los links de revert) y borra el registro de archivo."""
     import json as _json
@@ -22609,7 +22798,7 @@ def sections_restore(data: SectionRestoreIn, uid: int = Depends(get_current_user
 
 
 @app.post("/api/imports/{batch_id}/revert")
-def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_current_user)):
+def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_effective_user)):
     """Reversa todos los side-effects de un batch confirmado.
     En modo safe (default): falla si el batch incluye SELL/FX/FUTURES_PNL.
     En modo nuclear (`?nuclear=1`): hace best-effort de SELL/FX/FUTURES_PNL,
@@ -22649,7 +22838,7 @@ def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_curren
 
 
 @app.post("/api/imports/{batch_id}/redo")
-def import_redo(batch_id: str, uid: int = Depends(get_current_user)):
+def import_redo(batch_id: str, uid: int = Depends(get_effective_user)):
     """Editar y rehacer: revierte un batch confirmado (en modo nuclear) y
     re-corre el preview con los mismos datos. Devuelve el preview payload
     nuevo para que el frontend abra el wizard ya en la etapa de preview.
@@ -23442,7 +23631,7 @@ def _live_valuation_rate(conn, uid: int) -> float:
 def reports_timeline(
     broker: str = "global",
     months: int = 12,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Timeline cronológica condensada — últimos N meses, con semanas anidadas.
 
@@ -23502,7 +23691,7 @@ def reports_timeline(
 def reports_period_detail(
     period_type: str, period_key: str,
     broker: str = "global",
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Detalle de un período específico — útil para deep-link o expandir un
     week/day sin pegarle a la timeline completa."""
@@ -23590,13 +23779,13 @@ from home.briefing import build_personal_cards
 
 
 @app.get("/api/home/indices")
-def home_indices(uid: int = Depends(get_current_user)):
+def home_indices(uid: int = Depends(get_effective_user)):
     """Strip superior: S&P, Nasdaq, Merval, BTC, ETH, Oro."""
     return {"items": get_indices_strip()}
 
 
 @app.get("/api/home/heatmap")
-def home_heatmap(market: str = "sp500", uid: int = Depends(get_current_user)):
+def home_heatmap(market: str = "sp500", uid: int = Depends(get_effective_user)):
     """Heatmap del mercado. V1.5 soporta sp500 / merval / crypto."""
     if market not in MARKETS:
         raise HTTPException(400, f"Mercado no soportado: {market}")
@@ -23604,7 +23793,7 @@ def home_heatmap(market: str = "sp500", uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/home/movers")
-def home_movers(market: str = "sp500", uid: int = Depends(get_current_user)):
+def home_movers(market: str = "sp500", uid: int = Depends(get_effective_user)):
     """Top 5 gainers + top 5 losers del día."""
     if market not in MARKETS:
         raise HTTPException(400, f"Mercado no soportado: {market}")
@@ -23627,7 +23816,7 @@ class WatchlistAddIn(BaseModel):
 
 
 @app.get("/api/watchlist")
-def watchlist_list(uid: int = Depends(get_current_user)):
+def watchlist_list(uid: int = Depends(get_effective_user)):
     """Devuelve los tickers en watchlist + quote actual (price + change_pct)."""
     conn = get_db()
     try:
@@ -23652,7 +23841,7 @@ def watchlist_list(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/watchlist")
-def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_current_user)):
+def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     """Agrega un símbolo a la watchlist. Si ya existe, devuelve 200 silenciosamente
     (idempotente para el flow "Agregar a watchlist" desde la UI)."""
     conn = get_db()
@@ -23669,7 +23858,7 @@ def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_current_user)):
 
 
 @app.delete("/api/watchlist/{symbol}")
-def watchlist_remove(symbol: str, uid: int = Depends(get_current_user)):
+def watchlist_remove(symbol: str, uid: int = Depends(get_effective_user)):
     """Borra un símbolo de la watchlist."""
     sym = symbol.strip().upper()
     conn = get_db()
@@ -23766,7 +23955,7 @@ def _alert_row_to_dict(r) -> dict:
 
 
 @app.get("/api/alerts")
-def alerts_list(uid: int = Depends(get_current_user)):
+def alerts_list(uid: int = Depends(get_effective_user)):
     """Alertas del user + los últimos disparos (feed in-app)."""
     conn = get_db()
     try:
@@ -23787,7 +23976,7 @@ def alerts_list(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/alerts")
-def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
+def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
     (pct_move = Plus+). Arma el edge-trigger según el precio actual."""
     import alerts_engine as _ae
@@ -23874,7 +24063,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
 
 
 @app.patch("/api/alerts/{alert_id}")
-def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_current_user)):
+def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_effective_user)):
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
     re-arma el edge-trigger (y re-ancla si es 'Desde ahora')."""
     import alerts_engine as _ae
@@ -23918,7 +24107,7 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_cur
 
 
 @app.delete("/api/alerts/{alert_id}")
-def alerts_delete(alert_id: int, uid: int = Depends(get_current_user)):
+def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
     """Borra una alerta (y sus eventos)."""
     conn = get_db()
     try:
@@ -23932,7 +24121,7 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/alerts/events/seen")
-def alerts_events_seen(uid: int = Depends(get_current_user)):
+def alerts_events_seen(uid: int = Depends(get_effective_user)):
     """Marca los eventos de alerta como vistos (apaga el badge in-app)."""
     conn = get_db()
     try:
@@ -24051,7 +24240,7 @@ def push_vapid_public_key():
 
 
 @app.post("/api/push/subscribe")
-def push_subscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
+def push_subscribe(sub: PushSubIn, uid: int = Depends(get_effective_user)):
     """Guarda la subscripción push del device del user.
     Idempotente: si ya existe el endpoint, actualiza los datos."""
     conn = get_db()
@@ -24074,7 +24263,7 @@ def push_subscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
 
 
 @app.delete("/api/push/subscribe")
-def push_unsubscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
+def push_unsubscribe(sub: PushSubIn, uid: int = Depends(get_effective_user)):
     """Borra la subscripción push de este device. El frontend llama acá cuando
     el user desactiva las notificaciones."""
     conn = get_db()
@@ -24090,7 +24279,7 @@ def push_unsubscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/push/status")
-def push_status(uid: int = Depends(get_current_user)):
+def push_status(uid: int = Depends(get_effective_user)):
     """Cuenta cuántas subs tiene este user. Útil para que el UI sepa si está
     suscrito en al menos un device."""
     conn = get_db()
@@ -24156,7 +24345,7 @@ def _send_push_to_user(uid: int, payload: dict) -> int:
 
 
 @app.post("/api/push/test")
-def push_test(uid: int = Depends(get_current_user)):
+def push_test(uid: int = Depends(get_effective_user)):
     """Manda un push de prueba al user actual. Sirve para verificar que la
     config end-to-end funciona (VAPID + SW + permisos del browser)."""
     sent = _send_push_to_user(uid, {
@@ -24169,7 +24358,7 @@ def push_test(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/home/personal")
-def home_personal(uid: int = Depends(get_current_user)):
+def home_personal(uid: int = Depends(get_effective_user)):
     """Cards "Lo que te afecta" — holdings que se mueven + earnings próximos.
 
     Reusa quotes del heatmap (cacheadas) + lista de eventos del portfolio.
@@ -24311,3 +24500,458 @@ def public_stats():
     _public_stats_cache["data"] = data
     _public_stats_cache["ts"] = now
     return data
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PLAN ASESOR (F1/F2) — gestión de clientes + operación grupal
+# ═══════════════════════════════════════════════════════════════════════════
+# Todos los endpoints usan get_current_user (identidad REAL del asesor, nunca
+# el contexto de cliente — /api/advisor está en los prefijos exentos) y gatean
+# por _require_advisor (tier 'advisor' o admin).
+#
+# Modelo managed (F1): el asesor crea "clientes shadow" — rows reales en users
+# con managed_by=asesor, email sintético, password random y approved=0 (no
+# pueden loguear hasta reclamar la cuenta en F4). Toda la data del cliente
+# cuelga de su uid como cualquier usuario → el resto de la app funciona igual.
+
+_SHADOW_EMAIL_DOMAIN = "shadow.rendi.internal"  # jamás se le manda mail (excluidos por managed_by)
+
+
+class AdvisorClientIn(BaseModel):
+    label: str = Field(..., min_length=1, max_length=MAX_STR)  # cómo lo ve el asesor ("Juan P — cartera agresiva")
+    name: Optional[str] = Field(None, max_length=MAX_STR)      # nombre real (opcional)
+
+
+class AdvisorClientPatchIn(BaseModel):
+    label: Optional[str] = Field(None, min_length=1, max_length=MAX_STR)
+    notes: Optional[str] = Field(None, max_length=MAX_NOTES)
+
+
+@app.post("/api/advisor/clients")
+def advisor_create_client(
+    data: AdvisorClientIn,
+    request: Request,
+    uid: int = Depends(get_current_user),
+):
+    """Crea un cliente MANAGED: user shadow + vínculo advisor_clients activo."""
+    _check_rate_limit(request, max_calls=30, window_seconds=60, suffix=f"advcreate:{uid}")
+    import secrets as _secrets
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
+        # Password random hasheado: nadie puede loguear con esta cuenta hasta
+        # que el flujo de invitación/claim (F4) setee una contraseña real.
+        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO users (email, name, password_hash, is_admin,
+                                      approved, email_verified, managed_by)
+                   VALUES (?,?,?,0,0,0,?)""",
+                (synthetic_email, (data.name or data.label).strip(), random_hash, uid),
+            )
+            client_uid = cur.lastrowid
+            conn.execute(
+                """INSERT INTO advisor_clients
+                       (advisor_uid, client_uid, link_type, permission, status, label, consent_ref)
+                   VALUES (?,?,'managed','read_write','active',?,?)""",
+                (uid, client_uid, data.label.strip(),
+                 f"managed-by-advisor:{uid}:{datetime.utcnow().isoformat()}"),
+            )
+        return {
+            "client_uid": client_uid,
+            "label": data.label.strip(),
+            "link_type": "managed",
+            "permission": "read_write",
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/clients")
+def advisor_list_clients(uid: int = Depends(get_current_user)):
+    """Roster del asesor: vínculos activos + AUM (último snapshot) por cliente.
+
+    El AUM sale de snapshots.total_value (cero recompute — lo escribe el cron
+    nocturno). Un cliente recién creado no tiene snapshot todavía → aum_usd
+    null; el frontend muestra "—" con hint "se calcula esta noche"."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        links = conn.execute(
+            """SELECT ac.client_uid, ac.label, ac.link_type, ac.permission,
+                      ac.notes, ac.created_at, u.name
+               FROM advisor_clients ac
+               JOIN users u ON u.id = ac.client_uid
+               WHERE ac.advisor_uid = ? AND ac.status = 'active'
+               ORDER BY ac.created_at ASC""",
+            (uid,),
+        ).fetchall()
+        if not links:
+            return {"clients": []}
+        ids = [r["client_uid"] for r in links]
+        ph = ",".join("?" * len(ids))
+        # Último snapshot por cliente (AUM + fecha)
+        snaps = {r["user_id"]: r for r in conn.execute(
+            f"""SELECT s.user_id, s.date, s.total_value
+                FROM snapshots s
+                WHERE s.user_id IN ({ph})
+                  AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
+                                WHERE s2.user_id = s.user_id)""",
+            ids,
+        ).fetchall()}
+        brokers_n = {r["user_id"]: r["c"] for r in conn.execute(
+            f"SELECT user_id, COUNT(*) c FROM brokers WHERE user_id IN ({ph}) GROUP BY user_id",
+            ids,
+        ).fetchall()}
+        pos_n = {r["user_id"]: r["c"] for r in conn.execute(
+            f"""SELECT user_id, COUNT(*) c FROM positions
+                WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0 GROUP BY user_id""",
+            ids,
+        ).fetchall()}
+        out = []
+        for r in links:
+            cid = r["client_uid"]
+            snap = snaps.get(cid)
+            out.append({
+                "client_uid": cid,
+                "label": r["label"] or r["name"] or f"Cliente {cid}",
+                "name": r["name"],
+                "link_type": r["link_type"],
+                "permission": r["permission"],
+                "notes": r["notes"],
+                "created_at": r["created_at"],
+                "aum_usd": (float(snap["total_value"]) if snap and snap["total_value"] is not None else None),
+                "aum_date": (snap["date"] if snap else None),
+                "brokers_count": int(brokers_n.get(cid, 0)),
+                "positions_count": int(pos_n.get(cid, 0)),
+            })
+        return {"clients": out}
+    finally:
+        conn.close()
+
+
+def _advisor_own_link(conn, uid: int, client_uid: int):
+    """Fila de advisor_clients del PROPIO asesor (activa). 404 si no existe."""
+    row = conn.execute(
+        """SELECT * FROM advisor_clients
+           WHERE advisor_uid=? AND client_uid=? AND status='active'""",
+        (uid, client_uid),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Cliente no encontrado")
+    return row
+
+
+@app.patch("/api/advisor/clients/{client_uid}")
+def advisor_patch_client(
+    client_uid: int,
+    data: AdvisorClientPatchIn,
+    uid: int = Depends(get_current_user),
+):
+    """Edita label y/o notas PRIVADAS del vínculo (el cliente nunca las ve)."""
+    if data.label is None and data.notes is None:
+        raise HTTPException(400, "Nada para actualizar")
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        _advisor_own_link(conn, uid, client_uid)
+        with conn:
+            if data.label is not None:
+                conn.execute(
+                    "UPDATE advisor_clients SET label=? WHERE advisor_uid=? AND client_uid=?",
+                    (data.label.strip(), uid, client_uid))
+            if data.notes is not None:
+                conn.execute(
+                    "UPDATE advisor_clients SET notes=? WHERE advisor_uid=? AND client_uid=?",
+                    (data.notes, uid, client_uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/clients/{client_uid}/revoke")
+def advisor_revoke_client(client_uid: int, uid: int = Depends(get_current_user)):
+    """Quita el cliente del roster (status='revoked'). NO borra la data del
+    cliente: para un shadow queda archivada (recuperable por soporte); para un
+    linked (v1) simplemente corta el acceso del asesor."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        _advisor_own_link(conn, uid, client_uid)
+        with conn:
+            conn.execute(
+                """UPDATE advisor_clients
+                   SET status='revoked', revoked_at=datetime('now')
+                   WHERE advisor_uid=? AND client_uid=?""",
+                (uid, client_uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ─── Operación grupal (block trade) ──────────────────────────────────────────
+
+class GroupOpRowIn(BaseModel):
+    client_uid: int
+    broker: str = Field(..., min_length=1, max_length=MAX_STR)
+    quantity: float = Field(..., gt=0)
+    buy_price: float = Field(..., ge=0)
+    invested: Optional[float] = Field(None, ge=0)  # None → buy_price × quantity
+
+
+class GroupOpIn(BaseModel):
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
+    asset_type: Optional[str] = Field(None, max_length=16)
+    currency: Optional[str] = Field(None, max_length=8)
+    entry_date: Optional[str] = Field(None, max_length=10)
+    rows: List[GroupOpRowIn] = Field(..., min_length=1, max_length=200)
+
+    @field_validator('entry_date')
+    @classmethod
+    def _valid_date(cls, v):
+        if v is None or v == '':
+            return None
+        if not _DATE_RE.match(v):
+            raise ValueError('Fecha inválida')
+        return v
+
+
+@app.get("/api/advisor/group-op/prep")
+def advisor_group_op_prep(
+    asset: str = "",
+    uid: int = Depends(get_current_user),
+):
+    """Prepara la tabla de asignación: por cada cliente activo, sus brokers y
+    el broker SUGERIDO para el activo. Regla del default (en orden):
+      1. broker donde el cliente YA tiene ese activo,
+      2. su único broker (si tiene uno solo),
+      3. el primero de su lista.
+    Devuelve también has_asset para que el frontend marque ventas inválidas."""
+    asset = (asset or "").strip()
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        links = conn.execute(
+            """SELECT ac.client_uid, ac.label, ac.permission, u.name
+               FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+               WHERE ac.advisor_uid=? AND ac.status='active'
+               ORDER BY ac.created_at ASC""",
+            (uid,),
+        ).fetchall()
+        if not links:
+            return {"clients": []}
+        ids = [r["client_uid"] for r in links]
+        ph = ",".join("?" * len(ids))
+        brokers_by_uid = {}
+        for r in conn.execute(
+            f"SELECT user_id, name, currency FROM brokers WHERE user_id IN ({ph}) ORDER BY id ASC",
+            ids,
+        ).fetchall():
+            brokers_by_uid.setdefault(r["user_id"], []).append(
+                {"name": r["name"], "currency": r["currency"]})
+        holders = {}
+        if asset:
+            for r in conn.execute(
+                f"""SELECT DISTINCT user_id, broker FROM positions
+                    WHERE user_id IN ({ph}) AND asset=? AND COALESCE(is_cash,0)=0""",
+                (*ids, asset),
+            ).fetchall():
+                holders.setdefault(r["user_id"], []).append(r["broker"])
+        out = []
+        for r in links:
+            cid = r["client_uid"]
+            brs = brokers_by_uid.get(cid, [])
+            held_in = holders.get(cid, [])
+            suggested = None
+            if held_in:
+                # preferir un broker que además exista en su lista actual
+                names = {b["name"] for b in brs}
+                suggested = next((h for h in held_in if h in names), held_in[0])
+            elif brs:
+                # sin tenencia previa: el primero de su lista (si tiene uno solo,
+                # es ese; si tiene varios, el asesor lo ajusta en la tabla)
+                suggested = brs[0]["name"]
+            out.append({
+                "client_uid": cid,
+                "label": r["label"] or r["name"] or f"Cliente {cid}",
+                "permission": r["permission"],
+                "brokers": brs,
+                "suggested_broker": suggested,
+                "has_asset": bool(held_in),
+            })
+        return {"clients": out}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/group-op")
+def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_current_user)):
+    """Aplica UNA compra a N clientes (block trade con asignación).
+
+    Semántica: las filas se PRE-VALIDAN (vínculo activo read_write + broker
+    existente); las inválidas se devuelven en `skipped` sin bloquear el resto.
+    Las válidas se aplican en UNA transacción (o entran todas o ninguna) y el
+    lote queda registrado con batch_id → deshacible con /undo."""
+    _check_rate_limit(request, max_calls=10, window_seconds=60, suffix=f"advgroupop:{uid}")
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        # Vínculos activos read_write del asesor (los 'linked' read-only NO
+        # entran: escribirle la cartera a un cliente linked es ilegal acá).
+        links = {r["client_uid"]: r for r in conn.execute(
+            """SELECT client_uid, permission FROM advisor_clients
+               WHERE advisor_uid=? AND status='active'""",
+            (uid,),
+        ).fetchall()}
+        # Brokers (con moneda) de TODOS los clientes del lote en una query
+        row_cids = list({r.client_uid for r in data.rows})
+        ph = ",".join("?" * len(row_cids))
+        broker_ccy = {(r["user_id"], r["name"]): (r["currency"] or "USD") for r in conn.execute(
+            f"SELECT user_id, name, currency FROM brokers WHERE user_id IN ({ph})",
+            row_cids,
+        ).fetchall()}
+
+        def _ccy_family(c):
+            # USDT cuenta como familia dólar (exchanges) — el mismo criterio
+            # que la inferencia de _insert_manual_position (ARS vs no-ARS).
+            return "ARS" if (c or "").upper() == "ARS" else "USD"
+
+        batch_ccy = (data.currency or "").upper() or None
+        valid, skipped = [], []
+        seen = set()
+        for row in data.rows:
+            cid = row.client_uid
+            if cid in seen:
+                skipped.append({"client_uid": cid, "reason": "duplicado en el lote"})
+                continue
+            seen.add(cid)
+            link = links.get(cid)
+            if not link:
+                skipped.append({"client_uid": cid, "reason": "sin vínculo activo"})
+                continue
+            if link["permission"] != "read_write":
+                skipped.append({"client_uid": cid, "reason": "vínculo de solo lectura"})
+                continue
+            bc = broker_ccy.get((cid, row.broker))
+            if bc is None:
+                skipped.append({"client_uid": cid, "reason": f"no tiene el broker {row.broker!r}"})
+                continue
+            # Guard de moneda: un lote ARS no puede caer en un broker USD del
+            # cliente (mezcla ARS+USD en el FIFO + débito de cash en la moneda
+            # equivocada). Se saltea la fila con razón explícita.
+            if batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
+                skipped.append({"client_uid": cid,
+                                "reason": f"moneda del lote ({batch_ccy}) ≠ moneda del broker {row.broker!r} ({bc})"})
+                continue
+            valid.append(row)
+        if not valid:
+            raise HTTPException(400, "Ninguna fila válida para aplicar")
+
+        applied = []
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO advisor_op_batches (advisor_uid, asset, op_kind) VALUES (?,?, 'buy')",
+                (uid, data.asset.strip()),
+            )
+            batch_id = cur.lastrowid
+            for row in valid:
+                p = PositionIn(
+                    broker=row.broker,
+                    asset=data.asset.strip(),
+                    buy_price=row.buy_price,
+                    quantity=row.quantity,
+                    invested=(row.invested if row.invested is not None
+                              else round(row.buy_price * row.quantity, 8)),
+                    entry_date=data.entry_date,
+                    asset_type=data.asset_type,
+                    currency=data.currency,
+                )
+                prow = _insert_manual_position(conn, row.client_uid, p)
+                conn.execute(
+                    """INSERT INTO advisor_op_batch_items (batch_id, client_uid, position_id)
+                       VALUES (?,?,?)""",
+                    (batch_id, row.client_uid, prow["id"]),
+                )
+                applied.append({"client_uid": row.client_uid, "position_id": prow["id"]})
+        for a in applied:
+            _ai_cache_invalidate(a["client_uid"])
+        return {"batch_id": batch_id, "applied": applied, "skipped": skipped}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/group-op/{batch_id}/undo")
+def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
+    """Deshace un lote completo: borra las posiciones que ESTE lote creó y
+    re-acredita el costo al cash del broker de cada cliente. Items cuya
+    posición ya fue borrada/modificada a mano se saltean (best-effort, se
+    reporta). Idempotente: un lote ya deshecho devuelve 409."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        batch = conn.execute(
+            "SELECT * FROM advisor_op_batches WHERE id=? AND advisor_uid=?",
+            (batch_id, uid),
+        ).fetchone()
+        if not batch:
+            raise HTTPException(404, "Lote no encontrado")
+        if batch["undone_at"]:
+            raise HTTPException(409, "El lote ya fue deshecho")
+        items = conn.execute(
+            "SELECT * FROM advisor_op_batch_items WHERE batch_id=? AND status='ok'",
+            (batch_id,),
+        ).fetchall()
+        # Vínculos rw del asesor en UN query (mismo patrón que el apply)
+        rw_links = {r["client_uid"] for r in conn.execute(
+            """SELECT client_uid FROM advisor_clients
+               WHERE advisor_uid=? AND status='active' AND permission='read_write'""",
+            (uid,),
+        ).fetchall()}
+        undone, skipped = [], []
+        left_ok = 0  # items que NO pudimos deshacer y siguen 'ok' (reintentar)
+        with conn:
+            for it in items:
+                cid = it["client_uid"]
+                if cid not in rw_links:
+                    # Vínculo revocado/downgradeado: el item queda 'ok' y el
+                    # lote NO se marca deshecho — si el asesor recupera el
+                    # acceso, puede reintentar el undo de lo que faltó.
+                    skipped.append({"client_uid": cid, "reason": "sin acceso de escritura"})
+                    left_ok += 1
+                    continue
+                pos = conn.execute(
+                    "SELECT * FROM positions WHERE id=? AND user_id=?",
+                    (it["position_id"], cid),
+                ).fetchone()
+                if not pos:
+                    # Ya no existe (la borraron a mano) — marcar y seguir
+                    conn.execute(
+                        "UPDATE advisor_op_batch_items SET status='undone' WHERE id=?",
+                        (it["id"],))
+                    skipped.append({"client_uid": cid, "reason": "la posición ya no existía"})
+                    continue
+                # Re-acreditar el costo (LA MISMA fórmula que debitó el alta —
+                # _manual_position_cost). Nota: si el alta disparó autodepósito,
+                # ese depósito QUEDA — mismo criterio conservador que el resto
+                # de la app (no borramos flujos de capital en cascada).
+                cost = _manual_position_cost(
+                    pos["invested"], pos["buy_price"], pos["quantity"], pos["commissions"])
+                conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
+                             (it["position_id"], cid))
+                if cost and cost > 0:
+                    _adjust_broker_cash(conn, cid, pos["broker"], cost)
+                conn.execute(
+                    "UPDATE advisor_op_batch_items SET status='undone' WHERE id=?",
+                    (it["id"],))
+                undone.append({"client_uid": cid, "position_id": it["position_id"]})
+            if left_ok == 0:
+                conn.execute(
+                    "UPDATE advisor_op_batches SET undone_at=datetime('now') WHERE id=?",
+                    (batch_id,))
+        for u_ in undone:
+            _ai_cache_invalidate(u_["client_uid"])
+        return {"ok": True, "undone": undone, "skipped": skipped,
+                "fully_undone": left_ok == 0}
+    finally:
+        conn.close()

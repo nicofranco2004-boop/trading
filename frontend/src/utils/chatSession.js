@@ -26,7 +26,14 @@ export const MAX_STORED = 40  // mensajes en pantalla/persistidos
 export const MAX_SENT = 12    // ventana que viaja al modelo (cost cap)
 
 function storageKey() {
-  return isDemoMode() ? DEMO_KEY : KEY
+  if (isDemoMode()) return DEMO_KEY
+  // Plan Asesor: en contexto de cliente la conversación es OTRA (la IA opera
+  // sobre la cuenta del cliente) — key separada por cliente para no mezclar.
+  try {
+    const ctx = JSON.parse(localStorage.getItem('rendi_client_ctx') || 'null')
+    if (ctx?.id) return `${KEY}_c${ctx.id}`
+  } catch { /* sin ctx */ }
+  return KEY
 }
 
 function isValidMsg(m) {
