@@ -147,18 +147,43 @@ def test_price_target_no_fire_on_none_price(clean, monkeypatch):
 
 # ── pct_move: cooldown + holdings scope ──────────────────────────────────────
 
-def test_pct_move_cooldown(clean, monkeypatch):
+def test_pct_move_edge_trigger_no_refire_while_elevated(clean, monkeypatch):
     conn = clean
     _mk_alert(conn, kind="pct_move", down_pct=5, threshold=None, symbol="AAPL",
-              cooldown_min=360, repeat="always")
+              repeat="always")
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 90, "change_pct": -7.0}})
-    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
-    # segunda evaluación inmediata: dentro del cooldown → no re-dispara
-    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
-    # envejecemos el evento más allá del cooldown → re-dispara
-    old = (datetime.utcnow() - timedelta(hours=7)).isoformat()
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1   # cruza → dispara
+    # sigue caído 7% (MISMO movimiento) → NO re-dispara, aunque pase tiempo (edge-trigger)
+    old = (datetime.utcnow() - timedelta(hours=8)).isoformat()
     conn.execute("UPDATE alert_events SET fired_at=?", (old,)); conn.commit()
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    # vuelve DENTRO de la banda (-1%) → re-arma
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 100, "change_pct": -1.0}})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    # cae 6% DE NUEVO (movimiento nuevo) → dispara
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 90, "change_pct": -6.0}})
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+
+
+def test_holdings_frozen_move_does_not_refire(clean, monkeypatch):
+    # El bug de Nico: "toda mi cartera 3%" avisó de MU/INTC/ADBE ayer y volvió a
+    # avisar HOY sobre esos mismos (el change_pct de ayer quedaba congelado).
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None,
+              up_pct=3, down_pct=3, threshold=None, repeat="always")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["MU", "INTC", "ADBE", "AAPL"])
+    frozen = {"MU": {"price": 96, "change_pct": -4.0}, "INTC": {"price": 96, "change_pct": -4.0},
+              "ADBE": {"price": 96, "change_pct": -4.0}, "AAPL": {"price": 99, "change_pct": -1.0}}
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: frozen)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 3            # ayer: MU/INTC/ADBE
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0            # hoy congelado → NO re-dispara
+    # al abrir, el % resetea (~0) → re-arma; luego MU cae 3% de nuevo (mov de hoy)
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {k: {"price": 100, "change_pct": 0.0} for k in frozen})
+    ae.evaluate_alerts(conn, only_user=1)
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"MU": {"price": 97, "change_pct": -3.2},
+        "INTC": {"price": 100, "change_pct": 0.0}, "ADBE": {"price": 100, "change_pct": 0.0}, "AAPL": {"price": 100, "change_pct": 0.0}})
+    res = ae.evaluate_alerts(conn, only_user=1)
+    assert res["fired"] == 1 and _events(conn)[-1]["symbol"] == "MU"     # solo MU (mov nuevo)
 
 
 def test_pct_move_holdings_scope_expands(clean, monkeypatch):

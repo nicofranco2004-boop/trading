@@ -1169,6 +1169,19 @@ def init_db():
             seen INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_alert_events_user ON alert_events(user_id, fired_at DESC);
+
+        -- Edge-trigger POR (alerta, símbolo) para pct_move "En el día": una alerta
+        -- de toda la cartera tiene N símbolos, cada uno con su propio estado armado.
+        -- Dispara al cruzar el umbral; se re-arma cuando el % vuelve dentro de la
+        -- banda (al abrir el mercado el change_pct resetea) → el movimiento de ayer
+        -- no re-dispara hoy.
+        CREATE TABLE IF NOT EXISTS alert_symbol_state (
+            alert_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            armed INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (alert_id, symbol)
+        );
     """)
 
     # Migración: anchor_price para el modo "Desde ahora" (la tabla alerts ya existe
@@ -24115,6 +24128,7 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
             conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
             conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
                          (alert_id, uid))
+            conn.execute("DELETE FROM alert_symbol_state WHERE alert_id=?", (alert_id,))
         return {"ok": True}
     finally:
         conn.close()

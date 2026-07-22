@@ -165,6 +165,26 @@ def _recently_fired(conn, alert_id: int, symbol, cooldown_min: int, now: datetim
     return (now - last) < timedelta(minutes=max(0, cooldown_min or 0))
 
 
+# ─── Estado armado POR (alerta, símbolo) — edge-trigger de pct_move "En el día" ──
+
+def _sym_armed(conn, alert_id: int, symbol) -> int:
+    row = conn.execute(
+        "SELECT armed FROM alert_symbol_state WHERE alert_id=? AND symbol=?",
+        (alert_id, symbol),
+    ).fetchone()
+    return int(row["armed"]) if row else 1   # sin registro = armado
+
+
+def _set_sym_armed(conn, alert_id: int, symbol, armed: int):
+    conn.execute(
+        "INSERT INTO alert_symbol_state (alert_id, symbol, armed, updated_at) "
+        "VALUES (?,?,?,datetime('now')) "
+        "ON CONFLICT(alert_id, symbol) DO UPDATE SET "
+        "armed=excluded.armed, updated_at=excluded.updated_at",
+        (alert_id, symbol, armed),
+    )
+
+
 # ─── Mensajes ─────────────────────────────────────────────────────────────────
 
 def _display_symbol(symbol: str) -> str:
@@ -357,22 +377,37 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                 change = quote.get("change_pct") if quote else None
                 fire_price = (quote or {}).get("price")
             side = pct_move_side(change, a["up_pct"], a["down_pct"])
-            if not side:
-                continue
-            if not tradeable:
-                continue   # no disparar con el % congelado fuera de hora
-            if base != "set_price" and _recently_fired(conn, a["id"], sym, a["cooldown_min"], now):
-                continue   # cooldown = anti-spam de "En el día"; set_price dedup-ea re-anclando
-            _fire(conn, a, sym, fire_price, change, now)
-            fired += 1
-            if base == "set_price" and a["repeat"] != "once" and fire_price:
-                # "Siempre" + "Desde ahora" = avisar CADA X%: re-anclar al precio
-                # actual → el próximo disparo se mide desde acá.
-                conn.execute("UPDATE alerts SET anchor_price=? WHERE id=?",
-                             (fire_price, a["id"]))
-            if a["repeat"] == "once":
-                conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
-                deactivated.add(a["id"])
+
+            if base == "set_price":
+                # "Desde ahora": la dedup la da el re-ancla (no edge-trigger por símbolo).
+                if not side or not tradeable:
+                    continue
+                _fire(conn, a, sym, fire_price, change, now)
+                fired += 1
+                if a["repeat"] != "once" and fire_price:
+                    # "Siempre" = avisar CADA X%: re-anclar al precio actual.
+                    conn.execute("UPDATE alerts SET anchor_price=? WHERE id=?",
+                                 (fire_price, a["id"]))
+                if a["repeat"] == "once":
+                    conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
+                    deactivated.add(a["id"])
+            else:
+                # "En el día": edge-trigger POR SÍMBOLO. Dispara al cruzar el umbral;
+                # se re-arma cuando el % vuelve DENTRO de la banda (al abrir el mercado
+                # el change_pct resetea) → el movimiento de AYER no re-dispara HOY.
+                armed = _sym_armed(conn, a["id"], sym)
+                if not side:
+                    if change is not None and not armed:
+                        _set_sym_armed(conn, a["id"], sym, 1)   # dentro de la banda → re-arma
+                    continue
+                if not armed or not tradeable:
+                    continue
+                _fire(conn, a, sym, fire_price, change, now)
+                fired += 1
+                _set_sym_armed(conn, a["id"], sym, 0)
+                if a["repeat"] == "once":
+                    conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
+                    deactivated.add(a["id"])
 
     conn.execute(
         "UPDATE alerts SET last_evaluated_at=? WHERE active=1"
