@@ -120,6 +120,14 @@ describe('blocks (catálogo visual)', () => {
     expect('title' in none.meta.blocks[0]).toBe(false)
   })
 
+  it('valores numéricos del modelo se coercionan a string (no matan el block)', () => {
+    const r = wrap([{ type: 'compare', items: [{ l: 'Tu cartera', v: 6.71 }, { l: 'S&P 500', v: 10.4 }] }])
+    expect(r.meta.blocks).toHaveLength(1)
+    expect(r.meta.blocks[0].items[0].v).toBe('6.71')
+    const s = wrap([{ type: 'scenario', if: 'BTC corrige', then: -4.2, tone: 'neg' }])
+    expect(s.meta.blocks[0].then).toBe('-4.2')
+  })
+
   it('compare con <2 items no renderiza', () => {
     const r = wrap([{ type: 'compare', items: [{ l: 'Solo', v: '+1%' }] }])
     expect(r.meta.blocks).toHaveLength(0)

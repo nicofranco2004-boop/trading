@@ -71,7 +71,13 @@ function safeRoute(to) {
 // Valida y recorta el shape — el modelo puede alucinar claves/formatos.
 function sanitizeMeta(m) {
   if (!m || typeof m !== 'object') return null
-  const str = (v, max) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null)
+  // Coerción de números: el modelo a veces manda {"v":6.71} en vez de "6,71%".
+  // Antes eso descartaba el item — y con <2 items, el block ENTERO caía en
+  // silencio (compare/alloc sin renderizar aunque el modelo los emitió).
+  const str = (v, max) => {
+    if (typeof v === 'number' && isFinite(v)) v = String(v)
+    return typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null
+  }
   const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) ? Math.max(lo, Math.min(hi, v)) : null)
   const tone = TONES.has(m.tone) ? m.tone : 'neutral'
   const stats = Array.isArray(m.stats)
