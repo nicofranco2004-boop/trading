@@ -336,6 +336,8 @@ export const BONDS_AR_ONS = [
   { s: 'CGCDO', n: 'CGC 2025' },
   { s: 'TGN1O', n: 'TGN 2025' },
   { s: 'CSC1O', n: 'Capex 2026' },
+  { s: 'CS49O', n: 'Cresud 2027 (Clase 49)' },
+  { s: 'TLCMO', n: 'Telecom Argentina 2031 (9,5%)' },
 ]
 
 // === BONOS — ETFs de bonos US ===============================================

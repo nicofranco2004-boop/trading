@@ -5678,6 +5678,7 @@ AR_BONDS_DATA912 = {
     'AO28', 'AO29',                      # Bonar 2028/2029 (soberano USD) — data912 arg_bonds (AO29 → 143680; AO29D → 95.1)
     'TY30P',                             # Boncer/dual
     'PN35O', 'YM39O', 'YMCJO', 'IRCPO',  # ONs (data912 arg_corp)
+    'CS49O', 'TLCMO',                    # ONs Cresud 2027 / Telecom 2031 (data912 arg_corp; CS49O→158820, TLCMO→171310 pesos per-100 → ÷100)
 }
 
 _data912_cache = {'data': None, 'ts': 0}
