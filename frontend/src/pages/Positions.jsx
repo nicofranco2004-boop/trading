@@ -17,15 +17,11 @@ import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { isBondPosition } from '../utils/tickers'
 import { detectPendingCashflows } from '../utils/pendingCashflows'
-import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
+import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import { track } from '../utils/track'
-import {
-  generateSchedule,
-  getRemainingPayments,
-  estimateYieldDetailed,
-  nextPaymentForPosition,
-} from '../utils/bondSchedule'
+import { nextPaymentForPosition } from '../utils/bondSchedule'
+import BondDetailRow from '../components/BondDetail'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate } from '../utils/valuation'
@@ -262,6 +258,45 @@ function PositionsDesktop() {
   const pendingCashflows = useMemo(() => {
     return detectPendingCashflows(positions, bondOps, bondSkips)
   }, [positions, bondOps, bondSkips])
+
+  // Fechas pendientes por bono (`broker:asset` → Set de fechas ISO) — el
+  // timeline del detalle las marca en ámbar ("venció sin confirmar").
+  const pendingDatesByKey = useMemo(() => {
+    const m = new Map()
+    for (const it of pendingCashflows) {
+      const k = `${it.broker}:${it.asset}`
+      if (!m.has(k)) m.set(k, new Set())
+      m.get(k).add(it.date)
+    }
+    return m
+  }, [pendingCashflows])
+
+  // Confirmación DIRECTA desde el inbox (1 click, sin modal) — v2 de bonos.
+  // SOLO cupones y sin cross-currency: el monto teórico está en la moneda del
+  // bono; si el broker cobra en otra (bono USD en broker ARS) o hay que
+  // decrementar VN (amortizaciones), el flujo cae al modal ("Revisar").
+  const [confirmingKey, setConfirmingKey] = useState(null)
+  async function confirmPendingDirect(item) {
+    setConfirmingKey(item.key)
+    try {
+      await api.post('/bonds/cashflow', {
+        broker: item.broker,
+        asset: item.asset,
+        flow_type: 'coupon',
+        amount: item.coupon || item.total,
+        date: item.date,
+        commissions: 0,
+        notes: 'Confirmado desde el inbox (monto teórico del cronograma)',
+        decrement_quantity: false,
+      })
+      toast.push(`${item.asset} · cupón del ${item.date} registrado · +${item.currency} ${(item.coupon || item.total).toFixed(2)}`, { type: 'success' })
+      await loadAll()
+    } catch (e) {
+      toast.push(`No se pudo registrar: ${e.message}`, { type: 'error' })
+    } finally {
+      setConfirmingKey(null)
+    }
+  }
 
   // Click "Confirmar" en un item del inbox → abre BondCashflowModal con la
   // posición correspondiente. El modal usa nextPaymentForPosition para
@@ -1308,6 +1343,8 @@ function PositionsDesktop() {
         pending={pendingCashflows}
         brokers={brokers}
         onConfirm={confirmPendingCashflow}
+        onConfirmDirect={confirmPendingDirect}
+        confirmingKey={confirmingKey}
         onSkip={skipPendingCashflow}
       />
 
@@ -1739,6 +1776,7 @@ function PositionsDesktop() {
                             p={p}
                             colSpan={arsColSpan}
                             summary={bondSummary}
+                            pendingDates={pendingDatesByKey.get(bondKey)}
                             isARS={true}
                             currentPrice={c.priceArs}
                             tcMep={tcMepStrict}
@@ -1946,6 +1984,7 @@ function PositionsDesktop() {
                           p={p}
                           colSpan={showDetail ? 10 : 9}
                           summary={bondSummary}
+                          pendingDates={pendingDatesByKey.get(bondKey)}
                           isARS={false}
                           currentPrice={c.price}
                           tcMep={tcMepStrict}
@@ -2002,7 +2041,13 @@ function PositionsDesktop() {
       {/* Zona Renta Fija: bonos/letras/FCI agrupados cross-broker, con borrado/restore por sección */}
       <RentaFijaSections positions={positions} valuePos={valuePos} brokers={brokers}
         displayCurrency={displayCurrency} tcBlue={tcBlue} onChanged={loadAll}
-        onEdit={openEdit} onDelete={del} />
+        onEdit={openEdit} onDelete={del}
+        bondCashflowsByKey={bondCashflowsByKey}
+        pendingDatesByKey={pendingDatesByKey}
+        openBondCashflow={openBondCashflow}
+        tcMep={tcMepStrict} cerSeries={cerSeries} cerStale={cerStale}
+        isArsFor={(p) => brokers.find(b => b.name === p.broker)?.currency === 'ARS'}
+        priceFor={(p) => (brokers.find(b => b.name === p.broker)?.currency === 'ARS') ? calcARS(p).priceArs : calcUSDT(p).price} />
 
       {/* Grupo Plazos fijos + su form de alta (lo dispara el flujo o el header del grupo) */}
       <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
@@ -2644,386 +2689,6 @@ function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, openAlert,
     { label: 'Editar posición', icon: <Pencil size={13} />,       onClick: () => openEdit(p) },
     { label: 'Eliminar',        icon: <Trash2 size={13} />,       onClick: () => del(p.id), danger: true },
   ]
-}
-
-// ─── BondDetailRow ────────────────────────────────────────────────────────────
-// Fila expandible que aparece debajo de una posición de bono cuando el user
-// hace click en el chevron "Ver cobranzas". Muestra (Fase 1 + Fase 2):
-//   • Meta del bono (issuer, vencimiento, cupón, frecuencia)
-//   • Totales de lo cobrado (cupones + amortizaciones) y % del capital recuperado
-//   • Calendario futuro generado del bondSchedule + TIR estimada al precio actual
-//   • Lista cronológica de cobranzas registradas
-// El "% recuperado" es el diferencial Rendi: contexto narrativo "ya recuperaste
-// X% del capital vía cupones", no se ve en otras apps de tracking.
-//
-// Convención para TIR: usamos `currentPrice × 100` como precio por 100 nominal,
-// asumiendo qty=nominales-individuales (1 nominal = 1 USD/ARS de face value).
-// Para ETFs y bonos sin maturity, omitimos TIR.
-function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSeries, cerStale, onAddCoupon, onAddAmortization }) {
-  const meta = getBondMeta(p.asset)
-  const moneyLabel = isARS ? 'ARS' : 'USD'
-  const fmt = isARS ? ars : usd
-  const invested = p.invested || 0
-  const coupons = summary?.coupons || 0
-  const amortizations = summary?.amortizations || 0
-  const total = summary?.total || 0
-  // Phase 3D: distinción crítica entre CASH (lo que entró al broker) y
-  // P&L CONTRIBUTION (la ganancia real). Para cupones son iguales; para amorts
-  // el cash incluye devolución de capital, el pnlContribution no.
-  const totalUsd = summary?.totalUsd || 0
-  const pnlContribution = summary?.pnlContribution || 0
-  const pnlContributionUsd = summary?.pnlContributionUsd || 0
-  const hasLegacyOps = summary?.hasLegacyOps || false
-  const ops = summary?.ops || []
-  const recoveryPct = invested > 0 ? (total / invested) : 0
-  // Ganancia realizada del amort = amorts cash − parte que es devolución de capital
-  const amortRealizedGain = pnlContribution - coupons
-
-  // ── Fase 2+3A+3C+3D: schedule + TIR + próximo pago ───────────────────────
-  // Esto SOLO aplica a bonos con maturity definida en bondMeta. ETFs y
-  // tickers sin metadata caen en el fallback de Fase 1.
-  //
-  // Phase 3C: ajuste CER (capital indexado por inflación) para bonos
-  // type='cer' cuando la serie está disponible.
-  //
-  // Phase 3D — Cross-currency (fix C5 del audit):
-  // Para un bono USD comprado en broker ARS, currentPrice viene en pesos
-  // (lo que cotiza AL30 en BYMA). El schedule está en USD. Para que la
-  // TIR sea coherente, convertimos el precio ARS → USD vía MEP (el dolar
-  // financiero implícito en bonos hard-dollar). Sin MEP cargado, fallback
-  // al blue con warning.
-  const today = new Date().toISOString().slice(0, 10)
-  const cerOpts = (meta?.type === 'cer' && cerSeries && Object.keys(cerSeries).length > 0)
-    ? { cerSeries }
-    : {}
-  const fullSchedule = generateSchedule(p.asset, cerOpts)
-  const remaining = fullSchedule ? getRemainingPayments(p.asset, today, cerOpts) : null
-
-  const bondCurrency = meta?.currency || 'USD'
-  const brokerCurrency = isARS ? 'ARS' : 'USD'
-  const isCrossCurrency = bondCurrency !== brokerCurrency
-  // Si hay cross-currency, normalizar precio a moneda del bono.
-  let priceInBondCurrency = currentPrice
-  let priceConversion = null
-  if (isCrossCurrency && currentPrice != null && currentPrice > 0) {
-    if (bondCurrency === 'USD' && brokerCurrency === 'ARS' && tcMep) {
-      priceInBondCurrency = currentPrice / tcMep
-      priceConversion = { from: 'ARS', to: 'USD', rate: tcMep, type: 'MEP' }
-    } else if (bondCurrency === 'ARS' && brokerCurrency === 'USD' && tcMep) {
-      priceInBondCurrency = currentPrice * tcMep
-      priceConversion = { from: 'USD', to: 'ARS', rate: tcMep, type: 'MEP' }
-    }
-  }
-  const pricePer100Clean = priceInBondCurrency != null && priceInBondCurrency > 0
-    ? priceInBondCurrency * 100
-    : null
-  const yieldDetail = pricePer100Clean != null
-    ? estimateYieldDetailed(p.asset, pricePer100Clean, today, cerOpts)
-    : null
-  const yieldEstimate = yieldDetail?.ytm ?? null
-  const nextPay = p.quantity ? nextPaymentForPosition(p.asset, p.quantity, today) : null
-  // Para bonos CER: el coeficiente actual (factor al día de hoy) ayuda a
-  // mostrar contexto: "CER hoy ≈ 2.4× emisión" → el user ve el ajuste
-  // implícito en sus flujos futuros.
-  function cerLocfLookup(date) {
-    if (!cerSeries || !date) return null
-    if (cerSeries[date] != null) return cerSeries[date]
-    const dates = Object.keys(cerSeries).sort()
-    let best = null
-    for (const d of dates) {
-      if (d <= date) best = d
-      else break
-    }
-    return best ? cerSeries[best] : null
-  }
-  const cerToday = meta?.type === 'cer' ? cerLocfLookup(today) : null
-  const cerBase = meta?.type === 'cer' && meta.cerEmissionDate ? cerLocfLookup(meta.cerEmissionDate) : null
-  const cerFactorToday = (cerToday != null && cerBase != null && cerBase > 0)
-    ? cerToday / cerBase
-    : null
-
-  return (
-    <tr className="bg-rendi-accent/[0.04] dark:bg-rendi-accent/[0.05] border-b border-line">
-      <td colSpan={colSpan} className="px-5 py-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Meta */}
-          <div className="space-y-1">
-            <p className="eyebrow text-rendi-accent">Bono</p>
-            {meta ? (
-              <>
-                <p className="text-sm font-semibold text-ink-0">
-                  {formatBondType(meta.type)} · {meta.issuer}
-                  {meta.governingLaw && (
-                    <span className="ml-1.5 text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 font-medium">
-                      Ley {meta.governingLaw === 'Argentina' ? 'AR' : 'NY'}
-                    </span>
-                  )}
-                </p>
-                <p className="text-xs text-ink-2 font-mono">
-                  {meta.maturity ? `Vence ${meta.maturity}` : 'ETF · sin vencimiento'}
-                  {meta.couponFreq && (
-                    <>
-                      {' · '}
-                      <span
-                        className="border-b border-dotted border-ink-3/40 cursor-help"
-                        title={formatCouponTooltip(meta)}
-                      >
-                        {formatCouponLabel(meta)}
-                      </span>
-                    </>
-                  )}
-                </p>
-                <p className="text-[10px] text-ink-3 font-mono">
-                  Moneda original: {meta.currency}
-                  {meta.dayCount && ` · day-count ${meta.dayCount}`}
-                </p>
-                {meta._verificationLevel === 'approx' && (
-                  <p className="text-[10px] text-rendi-warn font-mono">
-                    ⚠ Cronograma aproximado — verificar contra prospecto para fineza
-                  </p>
-                )}
-                {/* Phase 3C: status del ajuste CER. Sólo aplica a bonos type='cer'. */}
-                {meta.type === 'cer' && (
-                  <div className="mt-1">
-                    {cerFactorToday != null ? (
-                      <p className="text-[10px] text-rendi-accent font-mono">
-                        ✓ Capital ajustado por CER · factor hoy ≈ {cerFactorToday.toFixed(3)}×
-                        {cerStale && <span className="text-rendi-warn"> (serie posiblemente desactualizada)</span>}
-                      </p>
-                    ) : cerSeries === null ? (
-                      <p className="text-[10px] text-ink-3 font-mono">
-                        Cargando coeficiente CER…
-                      </p>
-                    ) : (
-                      <p className="text-[10px] text-rendi-warn font-mono">
-                        ⚠ Serie CER no disponible — flujos mostrados en nominal sin ajuste de inflación
-                      </p>
-                    )}
-                  </div>
-                )}
-              </>
-            ) : (
-              <p className="text-xs text-ink-2">Sin metadata configurada para este ticker.</p>
-            )}
-          </div>
-
-          {/* Totales cobrados */}
-          <div className="space-y-1">
-            <p className="eyebrow text-rendi-accent">Ya cobraste</p>
-            {total > 0 ? (
-              <>
-                <p className="text-lg font-bold text-rendi-pos tabular">
-                  +{moneyLabel} {fmt(total)}
-                </p>
-                <p className="text-[11px] text-ink-2 font-mono">
-                  {coupons > 0 && <>Cupones: {moneyLabel} {fmt(coupons)}</>}
-                  {coupons > 0 && amortizations > 0 && ' · '}
-                  {amortizations > 0 && <>Amortizaciones: {moneyLabel} {fmt(amortizations)}</>}
-                </p>
-                {/* Phase 3D sub-fix: distinguir cash recibido vs aporte al P&L.
-                    Los amorts incluyen DEVOLUCIÓN DE CAPITAL (no es ganancia)
-                    + GANANCIA REALIZADA. Mostramos la separación para que el
-                    user entienda dónde "está" su rentabilidad. */}
-                {amortizations > 0 && (
-                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
-                    De los amorts, sólo{' '}
-                    <span className={amortRealizedGain >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}>
-                      {moneyLabel} {fmt(amortRealizedGain)}
-                    </span>{' '}
-                    {amortRealizedGain >= 0 ? 'es ganancia' : 'es pérdida'}; el resto es devolución de capital.
-                  </p>
-                )}
-                <p className="text-[11px] text-rendi-pos font-semibold">
-                  Aporte al P&L: {pnlContribution >= 0 ? '+' : '-'}{moneyLabel} {fmt(Math.abs(pnlContribution))}
-                </p>
-                {isARS && totalUsd > 0 && (
-                  <p className="text-[10px] text-ink-3 font-mono">
-                    ≈ USD {usd(totalUsd)} en cash {hasLegacyOps && <span className="text-rendi-warn">(aprox)</span>}
-                  </p>
-                )}
-                {invested > 0 && (
-                  <p className="text-xs text-rendi-accent font-semibold">
-                    {pctSigned(recoveryPct)} del capital recuperado
-                  </p>
-                )}
-              </>
-            ) : (
-              <p className="text-xs text-ink-2">
-                Aún no registraste cobranzas. Cuando recibas un cupón o amortización,
-                cargalo desde el menú de acciones para que se acredite al cash del broker
-                y aparezca acá.
-              </p>
-            )}
-          </div>
-
-          {/* Acciones rápidas */}
-          <div className="space-y-1">
-            <p className="eyebrow text-rendi-accent">Registrar pago</p>
-            <div className="flex flex-col gap-1.5">
-              <button
-                onClick={onAddCoupon}
-                className="inline-flex items-center justify-center gap-1.5 text-xs bg-rendi-pos/15 hover:bg-rendi-pos/25 text-rendi-pos border border-rendi-pos/30 rounded-sm px-2.5 py-1.5 transition"
-              >
-                <Coins size={12} strokeWidth={1.5} /> Cupón cobrado
-              </button>
-              <button
-                onClick={onAddAmortization}
-                className="inline-flex items-center justify-center gap-1.5 text-xs bg-rendi-accent/15 hover:bg-rendi-accent/25 text-rendi-accent border border-rendi-accent/30 rounded-sm px-2.5 py-1.5 transition"
-              >
-                <LayersIcon size={12} strokeWidth={1.5} /> Amortización
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Fase 2: cronograma + TIR + próximo pago ────────────────────── */}
-        {fullSchedule && remaining && remaining.length > 0 && (
-          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 pt-3 border-t border-line/60">
-            {/* TIR + próximo pago */}
-            <div className="space-y-2 md:col-span-1">
-              <p className="eyebrow text-rendi-accent">Rendimiento estimado</p>
-              {yieldEstimate != null ? (
-                <>
-                  <p className="text-lg font-bold tabular text-ink-0">
-                    {pctSigned(yieldEstimate)}{' '}
-                    {meta?.type === 'cer' ? (
-                      <span
-                        className="text-xs font-normal text-ink-2 border-b border-dotted border-ink-3/40 cursor-help"
-                        title="TIR REAL sobre la inflación. El motor descuenta los flujos al CER actual (último observado, sin proyectar inflación futura) — el rendimiento mostrado representa lo que ganás POR ENCIMA de la inflación, no el yield nominal. Para CER, la TIR real es el indicador relevante (los flujos futuros se ajustan automáticamente)."
-                      >
-                        TIR real (sobre CER)
-                      </span>
-                    ) : (
-                      <span className="text-xs font-normal text-ink-2">TIR ef. anual</span>
-                    )}
-                  </p>
-                  {/* Phase 3A: metadata transparente. Phase 3D: si hay conversión
-                      cross-currency, mostrarla también para que el user entienda
-                      por qué la TIR no coincide con un cálculo "ARS vs USD" naïve. */}
-                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
-                    Convención: {yieldDetail.dayCount}
-                    {yieldDetail.accrued > 0.01 && (
-                      <>
-                        {' · '}
-                        dirty {yieldDetail.dirty.toFixed(2)} (clean {yieldDetail.clean.toFixed(2)} + accrued {yieldDetail.accrued.toFixed(2)})
-                      </>
-                    )}
-                    {!yieldDetail.converged && (
-                      <span className="text-rendi-warn"> · ⚠ aproximada</span>
-                    )}
-                  </p>
-                  {priceConversion && (
-                    <p className="text-[10px] text-rendi-accent font-mono leading-snug">
-                      ✓ Precio convertido {priceConversion.from} → {priceConversion.to} al {priceConversion.type} {priceConversion.rate.toFixed(2)}
-                    </p>
-                  )}
-                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
-                    Asume qty = nominales VN, precio entrado por nominal en moneda del broker.
-                    {isCrossCurrency && !priceConversion && (
-                      <span className="text-rendi-warn"> ⚠ Bono {bondCurrency} en broker {brokerCurrency} sin MEP disponible — TIR puede estar distorsionada.</span>
-                    )}
-                  </p>
-                </>
-              ) : (
-                <p className="text-xs text-ink-2 leading-snug">
-                  {currentPrice == null
-                    ? 'Cargá un precio override en la posición para estimar la TIR a precios de mercado.'
-                    : yieldDetail?.method === 'bracket_failed'
-                      ? 'No se pudo estimar la TIR — precio fuera del rango razonable. Verificá la moneda y la unidad del precio entrado.'
-                      : 'No se pudo estimar la TIR — verificá que el precio esté en la misma moneda que el bono.'}
-                </p>
-              )}
-              {nextPay && (
-                <div className="pt-2 mt-1 border-t border-line/40">
-                  <p className="eyebrow text-rendi-accent">Próximo pago</p>
-                  <p className="text-sm font-semibold text-ink-0 tabular">{nextPay.date}</p>
-                  <p className="text-xs text-rendi-pos font-mono">
-                    ≈ +{moneyLabel} {fmt(nextPay.total)}
-                  </p>
-                  <p className="text-[10px] text-ink-3 font-mono">
-                    {nextPay.isPureAmort ? 'Amortización' : nextPay.isPureCoupon ? 'Cupón' : 'Cupón + amort.'}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Mini-cronograma de los próximos pagos */}
-            <div className="md:col-span-2">
-              <p className="eyebrow text-rendi-accent mb-1.5">
-                Calendario futuro · {remaining.length} {remaining.length === 1 ? 'pago' : 'pagos'} hasta {meta?.maturity}
-              </p>
-              <div className="border border-line/60 rounded-sm overflow-hidden">
-                <div className="bg-bg-2/40 px-3 py-1 grid grid-cols-12 gap-2 text-[12px] text-ink-3 font-medium">
-                  <div className="col-span-3">Fecha</div>
-                  <div className="col-span-3 text-right">Cupón</div>
-                  <div className="col-span-3 text-right">Amort.</div>
-                  <div className="col-span-3 text-right">Tu monto</div>
-                </div>
-                <div className="max-h-44 overflow-y-auto divide-y divide-line/30">
-                  {remaining.slice(0, 8).map(pay => {
-                    const qty = p.quantity || 0
-                    const tuMonto = qty > 0 ? (pay.total * qty / 100) : null
-                    return (
-                      <div key={pay.date} className="px-3 py-1.5 grid grid-cols-12 gap-2 text-xs">
-                        <div className="col-span-3 text-ink-1 font-mono">{pay.date}</div>
-                        <div className="col-span-3 text-right tabular text-ink-2">
-                          {pay.coupon > 0 ? pay.coupon.toFixed(3) : '—'}
-                        </div>
-                        <div className="col-span-3 text-right tabular text-ink-2">
-                          {pay.amort > 0 ? pay.amort.toFixed(3) : '—'}
-                        </div>
-                        <div className="col-span-3 text-right tabular font-semibold text-rendi-pos">
-                          {tuMonto != null ? `${moneyLabel} ${fmt(tuMonto)}` : '—'}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-                {remaining.length > 8 && (
-                  <div className="bg-bg-2/30 px-3 py-1 text-[10px] text-ink-3 font-mono text-center border-t border-line/30">
-                    + {remaining.length - 8} pago{remaining.length - 8 === 1 ? '' : 's'} más hasta vencimiento
-                  </div>
-                )}
-              </div>
-              <p className="text-[10px] text-ink-3 font-mono mt-1 leading-snug">
-                Aproximación basada en cupón promedio del prospecto. Step-up exacto y CER ajustado vienen en Fase 3.
-                Cupón/Amort. expresados por 100 nominal.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Historial */}
-        {ops.length > 0 && (
-          <div className="mt-4 border border-line rounded-sm overflow-hidden">
-            <div className="bg-bg-2/60 px-3 py-1.5 text-[12px] font-semibold text-ink-2">
-              Historial de cobranzas · {ops.length} {ops.length === 1 ? 'pago' : 'pagos'}
-            </div>
-            <div className="max-h-48 overflow-y-auto divide-y divide-line/50">
-              {ops.map(o => (
-                <div key={o.id} className="px-3 py-2 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-ink-3 font-mono shrink-0">{o.date}</span>
-                    <span className={`text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm border shrink-0 ${
-                      o.op_type === 'Cupón'
-                        ? 'bg-rendi-pos/15 text-rendi-pos border-rendi-pos/30'
-                        : 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/30'
-                    }`}>
-                      {o.op_type}
-                    </span>
-                    {o.notes && <span className="text-ink-3 truncate">{o.notes}</span>}
-                  </div>
-                  <span className="font-mono font-semibold text-rendi-pos tabular shrink-0">
-                    +{moneyLabel} {fmt(+o.pnl_usd || 0)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </td>
-    </tr>
-  )
 }
 
 export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
