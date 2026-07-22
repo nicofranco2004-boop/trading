@@ -285,6 +285,9 @@ export const BONDS_AR_SOV_USD = [
   { s: 'AL35', n: 'Argentina 2035 (USD ley local)' },
   { s: 'AE38', n: 'Argentina 2038 (USD ley local)' },
   { s: 'AL41', n: 'Argentina 2041 (USD ley local)' },
+  // Bonares nuevos (soberano USD ley local; precio live en data912 arg_bonds).
+  { s: 'AO28', n: 'Bonar 2028 (USD)' },
+  { s: 'AO29', n: 'Bonar 2029 (USD)' },
   { s: 'GD29', n: 'Argentina 2029 (USD ley extranjera)' },
   { s: 'GD30', n: 'Argentina 2030 (USD ley extranjera)' },
   { s: 'GD35', n: 'Argentina 2035 (USD ley extranjera)' },

@@ -5662,7 +5662,7 @@ AR_BONDS_DATA912 = {
     'BA37D',                             # Buenos Aires 2037 (sub-soberano provincial USD)
     # Ampliación 2026-06-26 — bonos/ONs que aparecían INFLADOS (precio per-100 sin
     # ÷100 porque no estaban acá → caían a yfinance). data912 los cubre (verificado).
-    'AO28',                              # Bonar 2028 (soberano USD)
+    'AO28', 'AO29',                      # Bonar 2028/2029 (soberano USD) — data912 arg_bonds (AO29 → 143680; AO29D → 95.1)
     'TY30P',                             # Boncer/dual
     'PN35O', 'YM39O', 'YMCJO', 'IRCPO',  # ONs (data912 arg_corp)
 }
