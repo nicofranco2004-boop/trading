@@ -16,6 +16,7 @@ from .schwab import SchwabParser
 from .bullmarket import BullMarketParser
 from .ieb import IebParser
 from .ppi import PpiParser
+from .inviu import InviuParser
 
 
 _PARSERS: List[Parser] = [
@@ -47,6 +48,9 @@ _PARSERS: List[Parser] = [
     SchwabParser(),
     BullMarketParser(),
     IebParser(),
+    # inviu "Reporte de cuenta corriente": header propio (Tipo de Operación +
+    # Import Bruto + Importe Neto + Saldo) → no se solapa con otros parsers.
+    InviuParser(),
 ]
 
 
