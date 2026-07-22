@@ -21103,8 +21103,11 @@ async def import_classify_tenencia(
                     wb.close()
                 if is_ieb_file:
                     return {"file_name": name, "format": "ieb"}
-                if _import_tenencia.looks_like_ppi_tenencia(_import_excel.xlsx_to_rows(data)):
+                _xrows = _import_excel.xlsx_to_rows(data)
+                if _import_tenencia.looks_like_ppi_tenencia(_xrows):
                     return {"file_name": name, "format": "ppi"}
+                if _import_tenencia.looks_like_inviu_tenencia(_xrows):
+                    return {"file_name": name, "format": "inviu"}
             else:
                 text = _import_pipeline._decode_csv(data) or ""
                 if _import_tenencia.looks_like_cocos_tenencia(text):
@@ -21210,6 +21213,7 @@ async def import_tenencia_preview(
     is_ppi = fmt.startswith("ppi")
     is_cocos = fmt.startswith("cocos")
     is_ieb = fmt.startswith("ieb")
+    is_inviu = fmt.startswith("inviu")
     is_balanz = False   # se resuelve por auto-detección del PDF (Balanz vs IOL vs Bull Market)
     is_bullmarket = False
     is_iol = False
@@ -21248,6 +21252,22 @@ async def import_tenencia_preview(
         snap = _import_tenencia.parse_ppi_tenencia(rows)
         parser_format, default_name = "ppi_tenencia", "EstadoDeCuenta.xlsx"
         broker_hint = "Importá primero los Movimientos de PPI."
+    elif is_inviu:
+        # inviu: Tenencias en Excel — grilla con preámbulo + secciones "Tipo de
+        # Activo:" → filas crudas (xlsx_to_rows). Trae Costo (PPC) → sembramos el
+        # costo real (como IEB). Gap-fill (no override): los Movimientos son la
+        # fuente principal y la foto completa/verifica.
+        if not _import_excel.is_xlsx(data):
+            raise HTTPException(400, "Las Tenencias de inviu se bajan en Excel (.xlsx) — subí ese archivo.")
+        try:
+            rows = _import_excel.xlsx_to_rows(data)
+        except ValueError as ex:
+            raise HTTPException(400, str(ex))
+        if not _import_tenencia.looks_like_inviu_tenencia(rows):
+            raise HTTPException(400, "Este Excel no parece el export de Tenencias de inviu.")
+        snap = _import_tenencia.parse_inviu_tenencia(rows)
+        parser_format, default_name = "inviu_tenencia", "Tenencias.xlsx"
+        broker_hint = "Importá primero los movimientos de inviu."
     elif is_cocos:
         # Cocos: Estado de Cuenta / portfolio_report en CSV (instrumento;cantidad;
         # precio;moneda;total). Reconcilia por el path AGREGADO (broker_pair), igual
@@ -21300,7 +21320,7 @@ async def import_tenencia_preview(
         seed_date = snap.date or _import_excel.datetime.now().strftime("%Y-%m-%d")
         override_info = None   # sólo lo puebla el path OVERRIDE de Balanz
 
-        if is_ppi or is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol:
+        if is_ppi or is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol or is_inviu:
             # TODA foto rutea las posiciones en dólares al sibling '<broker> · USD'
             # (igual que los Movimientos) y PISA POR PARTICIÓN de moneda: concilia +
             # override en el padre (ARS) Y en el sibling (USD) contra la foto de esa

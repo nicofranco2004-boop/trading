@@ -128,5 +128,100 @@ class InviuPreambleTest(unittest.TestCase):
         self.assertIn("13/3/2024", lines[1])
 
 
+
+
+# ─── Foto de Tenencias (inviu) ────────────────────────────────────────────────
+from importing.tenencia import (
+    looks_like_inviu_tenencia, parse_inviu_tenencia, looks_like_ppi_tenencia,
+)
+
+# Filas crudas como las devuelve excel.xlsx_to_rows sobre el export real
+# (estructura verificada contra Tenencias-202689_*.xlsx; números de fantasía).
+TEN_ROWS = [
+    [None] * 14,
+    ["Fecha de solicitud:", "22/07/2026 12:25:13", None, None, "Comitente:", "202689"] + [None] * 8,
+    ["Fecha de valuación:", "23/07/2026"] + [None] * 12,
+    ["TC USD MEP:", 1510.881] + [None] * 12,
+    ["TC USD CCL:", 1572.42] + [None] * 12,
+    [None] * 14,
+    ["Tenencias en Portfolio"] + [None] * 13,
+    [None] * 14,
+    ["Tipo de Activo: Moneda"] + [None] * 13,
+    ["Ticker", "Nombre", "Cantidad", "Garantía", "Disponibles", "Moneda",
+     "Precio actual", "Monto $", "Equivalente U$S", "Costo (PPC)",
+     "Monto invertido", "Resultado", "Var %", "MTM Acumulado"],
+    ["ARS", "Pesos", None, 0, 1302.92, "ARS", 1, None, None, 0, None, None, 0, None],
+    ["USD", "Dólar", None, 0, 127.49, "ARS", 1510.881, None, None, 0, None, None, 0, None],
+    [None, "Subtotal Disponibilidades"] + [None] * 12,
+    ["Tipo de Activo: Bonos"] + [None] * 13,
+    ["Ticker", "Nombre", "Cantidad", "Garantía", "Disponibles", "Moneda",
+     "Precio actual", "Monto $", "Equivalente U$S", "Costo (PPC)",
+     "Monto invertido", "Resultado", "Var %", "MTM Acumulado"],
+    ["RUCDO", "USD ON MSU Energy Vto. 05/12/2030", None, 0, 1813, "ARS",
+     1632, None, None, 1175.146906, None, None, 38.87, None],
+    [None, "Subtotal Bonos"] + [None] * 12,
+    ["Tipo de Activo: Acciones"] + [None] * 13,
+    ["Ticker", "Nombre", "Cantidad", "Garantía", "Disponibles", "Moneda",
+     "Precio actual", "Monto $", "Equivalente U$S", "Costo (PPC)",
+     "Monto invertido", "Resultado", "Var %", "MTM Acumulado"],
+    ["GGAL", "Grupo Financiero Galicia", None, 0, 54, "ARS",
+     8145, None, None, 3885.840569, None, None, 109.6, None],
+    [None, "Subtotal Acciones"] + [None] * 12,
+    ["Tipo de Activo: Cedear"] + [None] * 13,
+    ["Ticker", "Nombre", "Cantidad", "Garantía", "Disponibles", "Moneda",
+     "Precio actual", "Monto $", "Equivalente U$S", "Costo (PPC)",
+     "Monto invertido", "Resultado", "Var %", "MTM Acumulado"],
+    ["NVDA", "NVIDIA Corp", None, 0, 175, "ARS",
+     13920, None, None, 5334.86032, None, None, 160.9, None],
+    [None, "Subtotal Cedears"] + [None] * 12,
+    [None, "Total"] + [None] * 12,
+]
+
+
+class InviuTenenciaTest(unittest.TestCase):
+    def setUp(self):
+        self.snap = parse_inviu_tenencia(TEN_ROWS)
+
+    def test_looks_like(self):
+        self.assertTrue(looks_like_inviu_tenencia(TEN_ROWS))
+
+    def test_no_colisiona_con_ppi(self):
+        # La foto de inviu NO debe matchear el detector de PPI (y viceversa el
+        # classify prueba PPI primero) — si esto falla, classify-tenencia la
+        # rutearía al parser equivocado.
+        self.assertFalse(looks_like_ppi_tenencia(TEN_ROWS))
+
+    def test_meta(self):
+        self.assertEqual(self.snap.date, "2026-07-23")
+        self.assertAlmostEqual(self.snap.fx_mep, 1510.881, places=3)
+
+    def test_cash(self):
+        self.assertAlmostEqual(self.snap.cash_ars, 1302.92, places=2)
+        self.assertAlmostEqual(self.snap.cash_usd, 127.49, places=2)
+
+    def test_holdings_tipos_y_cantidades(self):
+        by = {h.ticker: h for h in self.snap.holdings}
+        self.assertEqual(set(by), {"RUCDO", "GGAL", "NVDA"})   # cash NO es holding
+        self.assertEqual(by["RUCDO"].asset_type, "BOND")
+        self.assertEqual(by["GGAL"].asset_type, "STOCK")
+        self.assertEqual(by["NVDA"].asset_type, "CEDEAR")
+        self.assertEqual(by["RUCDO"].quantity, 1813)           # qty desde Disponibles
+        self.assertEqual(by["NVDA"].quantity, 175)
+
+    def test_costo_ppc_sembrado(self):
+        by = {h.ticker: h for h in self.snap.holdings}
+        self.assertAlmostEqual(by["NVDA"].price_per1, 5334.86032, places=4)  # PPC, no mercado
+        self.assertAlmostEqual(by["NVDA"].value, 175 * 13920, places=2)      # value = mercado
+
+    def test_moneda_ars_y_sin_warnings(self):
+        self.assertTrue(all(h.currency == "ARS" for h in self.snap.holdings))
+        self.assertEqual(self.snap.warnings, [])
+
+    def test_seccion_desconocida_avisa(self):
+        rows = TEN_ROWS[:13] + [["Tipo de Activo: Opciones"] + [None] * 13] + TEN_ROWS[13:]
+        snap = parse_inviu_tenencia(rows)
+        self.assertTrue(any("no reconocemos" in w for w in snap.warnings))
+
+
 if __name__ == "__main__":
     unittest.main()
