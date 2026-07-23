@@ -25,6 +25,9 @@ import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/f
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
+import { useAuth } from '../contexts/AuthContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
+import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, valuationPriceKey } from '../utils/valuation'
 import { auditPositions } from '../utils/valuationGuards'
@@ -36,7 +39,20 @@ import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
 
 const REFRESH_MS = 90_000
 
+// El asesor, en su propio nivel (sin haber entrado a la cuenta de un
+// cliente), no tiene cartera propia — "Dashboard" le muestra el libro
+// (AdvisorDashboard) en vez de una cartera personal. Adentro de un cliente
+// (clientCtx activo) es SU cartera → el Dashboard normal de siempre.
+// Wrapper aparte (no un branch adentro de PersonalDashboard) para que los
+// effects de carga de cartera de PersonalDashboard ni se monten en ese caso.
 export default function Dashboard() {
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  if (user?.tier === 'advisor' && !clientCtx) return <AdvisorDashboard />
+  return <PersonalDashboard />
+}
+
+function PersonalDashboard() {
   const [positions, setPositions] = useState([])
   const [monthly, setMonthly] = useState([])
   const [config, setConfig] = useState({ tc_mep: 1415, tc_blue: 1415 })
