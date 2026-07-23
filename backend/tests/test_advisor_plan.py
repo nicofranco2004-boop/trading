@@ -889,6 +889,39 @@ class ClaimFlowTest(AdvisorBase):
         self._claim(token, "unaClaveLarga1")
         r2 = self._claim(token, "otraClaveLarga2")
         self.assertEqual(r2.status_code, 400)
+        # Y la contraseña activa sigue siendo la de la PRIMERA claim, no la
+        # segunda (si la segunda hubiese corrido igual, la pisaría).
+        conn = main.get_db()
+        row = conn.execute("SELECT password_hash FROM users WHERE id=?",
+                           (self.client_uid,)).fetchone()
+        conn.close()
+        self.assertTrue(main.pwd_ctx.verify("unaClaveLarga1", row["password_hash"]))
+
+    def test_claim_update_atomico_no_permite_doble_marcado(self):
+        # Hallazgo del 2do review de seguridad F4a: el UPDATE que marca el
+        # token usado no tenía "AND used_at IS NULL" + chequeo de rowcount —
+        # dos claims CONCURRENTES del mismo link (ej. alguien interceptó el
+        # email) pasaban ambas el SELECT inicial antes de que cualquiera lo
+        # marcara usado, y la segunda pisaba la contraseña de la primera.
+        # No podemos reproducir dos threads reales acá, pero sí probar que el
+        # UPDATE atómico en sí sólo deja ganar a UNA conexión: la segunda
+        # ejecución (token ya usado) debe reportar rowcount==0, nunca 1.
+        self._invite()
+        token = self._token_for_client()
+        token_id = main.get_db().execute(
+            "SELECT id FROM advisor_claim_tokens WHERE token=?", (token,)).fetchone()["id"]
+        conn_a = main.get_db()
+        cur_a = conn_a.execute(
+            "UPDATE advisor_claim_tokens SET used_at=datetime('now') WHERE id=? AND used_at IS NULL",
+            (token_id,))
+        conn_a.commit(); conn_a.close()
+        conn_b = main.get_db()
+        cur_b = conn_b.execute(
+            "UPDATE advisor_claim_tokens SET used_at=datetime('now') WHERE id=? AND used_at IS NULL",
+            (token_id,))
+        conn_b.commit(); conn_b.close()
+        self.assertEqual(cur_a.rowcount, 1)
+        self.assertEqual(cur_b.rowcount, 0)
 
     def test_claim_token_expirado_400(self):
         self._invite()

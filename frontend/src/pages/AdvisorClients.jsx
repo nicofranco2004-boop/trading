@@ -56,7 +56,10 @@ export default function AdvisorClients() {
       setError(null)
     } catch (e) {
       setError(e.message || 'No se pudo cargar el roster')
-      setClients([])
+      // Si ya había un roster cargado, un error transitorio (ej. recarga en
+      // segundo plano) no debe vaciarlo a "sin clientes" — mismo patrón que
+      // ya usa el fetch de /advisor/book un poco más abajo.
+      setClients(prev => (prev === null ? [] : prev))
     }
     // El libro (AUM + estrella + colas) carga aparte y no bloquea el roster
     try {

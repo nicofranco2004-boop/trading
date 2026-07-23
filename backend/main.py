@@ -504,6 +504,8 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_advisor_clients_advisor
             ON advisor_clients(advisor_uid, status);
+        CREATE INDEX IF NOT EXISTS idx_advisor_clients_client
+            ON advisor_clients(client_uid, status);
         -- Operación grupal (block trade): un lote = una operación aplicada a N
         -- clientes. items guarda el position_id creado por fila → el undo borra
         -- exactamente lo que este lote creó (y re-acredita el cash).
@@ -24833,6 +24835,18 @@ def advisor_invite_client(
             (uid, client_uid)).fetchone()
         client_label = (link["label"] if link and link["label"] else (client["name"] or "tu cuenta"))
 
+        # Tope diario por cliente (no por asesor): un reenvío inmediato para
+        # corregir un typo sigue funcionando (no es un cooldown), pero corta
+        # a alguien usando el mismo shadow para probar/spammear muchos emails
+        # de terceros — esto es además del rate-limit general de arriba
+        # (10/300s por asesor).
+        sent_today = conn.execute(
+            """SELECT COUNT(*) AS n FROM advisor_claim_tokens
+               WHERE user_id=? AND created_at > datetime('now', '-1 day')""",
+            (client_uid,)).fetchone()["n"]
+        if sent_today >= 8:
+            raise HTTPException(429, "Ya le mandaste varias invitaciones a este cliente hoy. Probá de nuevo mañana o contactá a soporte.")
+
         token = _gen_reset_token()
         expires = (datetime.utcnow() + timedelta(days=ADVISOR_CLAIM_TTL_DAYS)).isoformat()
         with conn:
@@ -24859,10 +24873,11 @@ def advisor_invite_client(
 
 
 @app.get("/api/auth/claim/preview")
-def claim_preview(token: str):
+def claim_preview(token: str, request: Request):
     """Datos SEGUROS de mostrar sin autenticar (quién invita, a qué cuenta) —
     para que la pantalla de claim diga 'Tu asesor X te invitó', no un form
     genérico de contraseña sin contexto."""
+    _check_rate_limit(request, max_calls=20, window_seconds=300, suffix="claim_preview_ip")
     conn = get_db()
     try:
         row = conn.execute(
@@ -24923,6 +24938,17 @@ def claim_account(data: ClaimAccountIn, request: Request, response: Response):
 
         new_hash = pwd_ctx.hash(data.new_password)
         with conn:
+            # Cerramos el token PRIMERO y sólo seguimos si nosotros lo cerramos
+            # (rowcount==1). Dos claims concurrentes del mismo link (ej. alguien
+            # interceptó el email) corren esta transacción en paralelo — sin el
+            # WHERE used_at IS NULL + chequeo de rowcount, ambas pasarían el
+            # SELECT de arriba antes de que cualquiera lo marcara usado, y la
+            # segunda pisaría la contraseña que puso la primera.
+            cur = conn.execute(
+                "UPDATE advisor_claim_tokens SET used_at=datetime('now') WHERE id=? AND used_at IS NULL",
+                (row["id"],))
+            if cur.rowcount != 1:
+                raise HTTPException(400, "Link inválido o ya usado. Pedile a tu asesor que te invite de nuevo.")
             # managed_by → NULL: una vez reclamada, la cuenta es independiente
             # de verdad (login propio, puede revocar al asesor desde Config).
             # El VÍNCULO con el asesor sigue viviendo en advisor_clients (única
@@ -24936,9 +24962,6 @@ def claim_account(data: ClaimAccountIn, request: Request, response: Response):
                        password_changed_at=datetime('now'), managed_by=NULL
                    WHERE id=?""",
                 (row["email"], new_hash, row["user_id"]))
-            conn.execute(
-                "UPDATE advisor_claim_tokens SET used_at=datetime('now') WHERE id=?",
-                (row["id"],))
         user = conn.execute("SELECT name, password_changed_at FROM users WHERE id=?",
                            (row["user_id"],)).fetchone()
         token = create_token(row["user_id"], user["password_changed_at"])

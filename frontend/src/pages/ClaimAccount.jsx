@@ -36,13 +36,20 @@ export default function ClaimAccount() {
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [retryKey, setRetryKey] = useState(0)
   const { login } = useAuth()
   const navigate = useNavigate()
 
   useEffect(() => {
     if (!token) { setPreviewError('missing'); return }
     let cancelled = false
-    fetch(`/api/auth/claim/preview?token=${encodeURIComponent(token)}`)
+    setPreviewError('')
+    setPreview(null)
+    const controller = new AbortController()
+    // Sin esto el spinner "Validando tu invitación…" cuelga para siempre si
+    // el fetch nunca resuelve (red caída a mitad de camino, no un error explícito).
+    const timeout = setTimeout(() => controller.abort(), 15000)
+    fetch(`/api/auth/claim/preview?token=${encodeURIComponent(token)}`, { signal: controller.signal })
       .then(async (res) => {
         const data = await res.json()
         if (cancelled) return
@@ -52,9 +59,10 @@ export default function ClaimAccount() {
         }
         setPreview(data)
       })
-      .catch(() => { if (!cancelled) setPreviewError('No pudimos validar el link. Probá de nuevo.') })
-    return () => { cancelled = true }
-  }, [token])
+      .catch(() => { if (!cancelled) setPreviewError('network') })
+      .finally(() => clearTimeout(timeout))
+    return () => { cancelled = true; clearTimeout(timeout); controller.abort() }
+  }, [token, retryKey])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -113,16 +121,27 @@ export default function ClaimAccount() {
                 <AlertTriangle size={22} className="text-rendi-neg" strokeWidth={1.75} />
               </div>
               <h1 className="text-xl font-semibold text-ink-0 mb-1.5">
-                {previewError === 'missing' ? 'Falta el link' : 'Link inválido'}
+                {previewError === 'missing' ? 'Falta el link' : previewError === 'network' ? 'No pudimos conectar' : 'Link inválido'}
               </h1>
               <p className="text-sm text-ink-2 leading-relaxed mb-5">
                 {previewError === 'missing'
                   ? 'Abrí el link completo que te llegó por email.'
+                  : previewError === 'network'
+                  ? 'Revisá tu conexión e intentá de nuevo.'
                   : previewError}
               </p>
-              <Link to="/login" className="text-xs text-data-violet hover:underline">
-                Ir al login
-              </Link>
+              {previewError === 'network' ? (
+                <button
+                  onClick={() => setRetryKey(k => k + 1)}
+                  className="text-xs text-data-violet hover:underline"
+                >
+                  Reintentar
+                </button>
+              ) : (
+                <Link to="/login" className="text-xs text-data-violet hover:underline">
+                  Ir al login
+                </Link>
+              )}
             </div>
           ) : !preview ? (
             <div className="text-center py-6">
