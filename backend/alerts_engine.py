@@ -167,12 +167,15 @@ def _recently_fired(conn, alert_id: int, symbol, cooldown_min: int, now: datetim
 
 # ─── Estado armado POR (alerta, símbolo) — edge-trigger de pct_move "En el día" ──
 
-def _sym_armed(conn, alert_id: int, symbol) -> int:
+def _sym_state(conn, alert_id: int, symbol):
+    """(armed, last_fired_date) del par (alerta, símbolo). Sin registro = (armado, None)."""
     row = conn.execute(
-        "SELECT armed FROM alert_symbol_state WHERE alert_id=? AND symbol=?",
+        "SELECT armed, last_fired_date FROM alert_symbol_state WHERE alert_id=? AND symbol=?",
         (alert_id, symbol),
     ).fetchone()
-    return int(row["armed"]) if row else 1   # sin registro = armado
+    if not row:
+        return (1, None)
+    return (int(row["armed"]), row["last_fired_date"])
 
 
 def _set_sym_armed(conn, alert_id: int, symbol, armed: int):
@@ -182,6 +185,17 @@ def _set_sym_armed(conn, alert_id: int, symbol, armed: int):
         "ON CONFLICT(alert_id, symbol) DO UPDATE SET "
         "armed=excluded.armed, updated_at=excluded.updated_at",
         (alert_id, symbol, armed),
+    )
+
+
+def _set_sym_fired(conn, alert_id: int, symbol, date: str):
+    """Marca disparado hoy: armed=0 + last_fired_date=date (para el tope de 1/día)."""
+    conn.execute(
+        "INSERT INTO alert_symbol_state (alert_id, symbol, armed, last_fired_date, updated_at) "
+        "VALUES (?,?,0,?,datetime('now')) "
+        "ON CONFLICT(alert_id, symbol) DO UPDATE SET "
+        "armed=0, last_fired_date=excluded.last_fired_date, updated_at=excluded.updated_at",
+        (alert_id, symbol, date),
     )
 
 
@@ -415,19 +429,25 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
                     deactivated.add(a["id"])
             else:
-                # "En el día": edge-trigger POR SÍMBOLO. Dispara al cruzar el umbral;
-                # se re-arma cuando el % vuelve DENTRO de la banda (al abrir el mercado
-                # el change_pct resetea) → el movimiento de AYER no re-dispara HOY.
-                armed = _sym_armed(conn, a["id"], sym)
+                # "En el día": edge-trigger POR SÍMBOLO + tope de 1 aviso por jornada.
+                #  • dispara al cruzar el umbral;
+                #  • máximo 1 vez por día UTC por símbolo (si oscila alrededor del 3%
+                #    no vuelve a avisar hoy);
+                #  • NO se re-arma el mismo día que disparó → el % congelado de ayer no
+                #    re-dispara hoy; recién se re-arma un día nuevo cuando el % vuelve
+                #    dentro de la banda (al abrir el mercado el change_pct resetea).
+                today = now.strftime("%Y-%m-%d")
+                armed, last_fired_date = _sym_state(conn, a["id"], sym)
+                fired_today = (last_fired_date == today)
                 if not side:
-                    if change is not None and not armed:
-                        _set_sym_armed(conn, a["id"], sym, 1)   # dentro de la banda → re-arma
+                    if change is not None and not armed and not fired_today:
+                        _set_sym_armed(conn, a["id"], sym, 1)   # día nuevo, dentro de banda → re-arma
                     continue
-                if not armed or not tradeable:
+                if not armed or not tradeable or fired_today:
                     continue
                 _fire(conn, a, sym, fire_price, change, now)
                 fired += 1
-                _set_sym_armed(conn, a["id"], sym, 0)
+                _set_sym_fired(conn, a["id"], sym, today)
                 if a["repeat"] == "once":
                     conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
                     deactivated.add(a["id"])

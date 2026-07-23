@@ -1179,6 +1179,7 @@ def init_db():
             alert_id INTEGER NOT NULL,
             symbol TEXT NOT NULL,
             armed INTEGER NOT NULL DEFAULT 1,
+            last_fired_date TEXT,          -- fecha UTC del último disparo → máx 1 por día
             updated_at TEXT DEFAULT (datetime('now')),
             PRIMARY KEY (alert_id, symbol)
         );
@@ -1189,6 +1190,12 @@ def init_db():
     _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
     if _alert_cols and 'anchor_price' not in _alert_cols:
         conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
+
+    # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
+    # sin esta columna, se creó en el deploy anterior).
+    _st_cols = [r[1] for r in conn.execute("PRAGMA table_info(alert_symbol_state)").fetchall()]
+    if _st_cols and 'last_fired_date' not in _st_cols:
+        conn.executescript("ALTER TABLE alert_symbol_state ADD COLUMN last_fired_date TEXT;")
 
     # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
     # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
