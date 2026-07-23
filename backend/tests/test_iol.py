@@ -719,5 +719,58 @@ class TestCaucion(unittest.TestCase):
         self.assertEqual(len(inter), 0)
 
 
+class TestDolarDirecto(unittest.TestCase):
+    """'Compra/Venta de Dólares' de IOL → conversión ARS↔USD (dólar bolsa)."""
+
+    def _fx(self, res):
+        return [r for r in res.raw_rows if r.data.get("tipo", "").startswith("FX_")]
+
+    def test_compra_dolares_pata_dolar_entera(self):
+        # pata dólar entera pelada ('20000' = 200.00 USD, ÷100)
+        res = _parse([
+            _row("Compra de Dólares", concert="10/02/2020", precio="6135", monto="-15.951,00"),
+            _row("Compra de Dólares", concert="10/02/2020", precio="6135", monto="20000",
+                 cuenta="Inversion Argentina Dolares"),
+        ])
+        fx = self._fx(res)
+        self.assertEqual(len(fx), 1)
+        self.assertEqual(fx[0].data["tipo"], "FX_ARS_USD")
+        self.assertAlmostEqual(float(fx[0].data["monto"]), 15951.0)
+        self.assertAlmostEqual(float(fx[0].data["monto_usd"]), 200.0)   # 20000 ÷ 100
+        self.assertEqual(len(res.parse_errors), 0)
+
+    def test_compra_dolares_pata_dolar_ar(self):
+        # pata dólar en formato AR literal ('2.400,00' = 2400 USD, NO ÷100)
+        res = _parse([
+            _row("Compra de Dólares", concert="08/10/2019", precio="582", monto="-139.680,00"),
+            _row("Compra de Dólares", concert="08/10/2019", precio="582", monto="2.400,00",
+                 cuenta="Inversion Argentina Dolares"),
+        ])
+        fx = self._fx(res)
+        self.assertEqual(len(fx), 1)
+        self.assertAlmostEqual(float(fx[0].data["monto_usd"]), 2400.0)   # literal, no ÷100
+
+    def test_venta_dolares(self):
+        res = _parse([
+            _row("Venta de Dólares", concert="29/07/2019", precio="4344", monto="6.516,00"),
+            _row("Venta de Dólares", concert="29/07/2019", precio="4344", monto="-15000",
+                 cuenta="Inversion Argentina Dolares"),
+        ])
+        fx = self._fx(res)
+        self.assertEqual(len(fx), 1)
+        self.assertEqual(fx[0].data["tipo"], "FX_USD_ARS")
+        self.assertAlmostEqual(float(fx[0].data["monto"]), 6516.0)
+        self.assertAlmostEqual(float(fx[0].data["monto_usd"]), 150.0)   # 15000 ÷ 100
+
+    def test_guard_tasa_implausible_no_colapsa(self):
+        # 100 pesos por 200 USD → tasa 0.5 (fuera del guard 10-2000) → NO colapsa;
+        # cae al error normal (visible), no se cuela un ×100.
+        res = _parse([
+            _row("Compra de Dólares", concert="10/02/2020", precio="6135", monto="-100,00"),
+            _row("Compra de Dólares", concert="10/02/2020", precio="6135", monto="20000"),
+        ])
+        self.assertEqual(len(self._fx(res)), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

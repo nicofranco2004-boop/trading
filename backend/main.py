@@ -504,6 +504,8 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_advisor_clients_advisor
             ON advisor_clients(advisor_uid, status);
+        CREATE INDEX IF NOT EXISTS idx_advisor_clients_client
+            ON advisor_clients(client_uid, status);
         -- Operación grupal (block trade): un lote = una operación aplicada a N
         -- clientes. items guarda el position_id creado por fila → el undo borra
         -- exactamente lo que este lote creó (y re-acredita el cash).
@@ -1179,6 +1181,7 @@ def init_db():
             alert_id INTEGER NOT NULL,
             symbol TEXT NOT NULL,
             armed INTEGER NOT NULL DEFAULT 1,
+            last_fired_date TEXT,          -- fecha UTC del último disparo → máx 1 por día
             updated_at TEXT DEFAULT (datetime('now')),
             PRIMARY KEY (alert_id, symbol)
         );
@@ -1189,6 +1192,12 @@ def init_db():
     _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
     if _alert_cols and 'anchor_price' not in _alert_cols:
         conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
+
+    # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
+    # sin esta columna, se creó en el deploy anterior).
+    _st_cols = [r[1] for r in conn.execute("PRAGMA table_info(alert_symbol_state)").fetchall()]
+    if _st_cols and 'last_fired_date' not in _st_cols:
+        conn.executescript("ALTER TABLE alert_symbol_state ADD COLUMN last_fired_date TEXT;")
 
     # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
     # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
@@ -1441,6 +1450,25 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_pwd_reset_token ON password_reset_tokens(token);
         CREATE INDEX IF NOT EXISTS idx_pwd_reset_user ON password_reset_tokens(user_id, used_at);
+
+        -- ─── advisor_claim_tokens: invitación del asesor a una cuenta shadow ──
+        -- El asesor invita a su cliente (email real) a "reclamar" la cuenta
+        -- administrada: el cliente entra con ESTE link, pone contraseña, y la
+        -- MISMA cuenta (mismo uid, misma cartera) pasa a ser autogestionada.
+        -- Mismo patrón que password_reset_tokens (token URL-safe 256-bit, TTL,
+        -- un solo token vivo por user, used_at al confirmar).
+        CREATE TABLE IF NOT EXISTS advisor_claim_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,          -- el shadow que se reclama
+            advisor_uid INTEGER NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL,               -- email real al que se invitó
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_advisor_claim_token ON advisor_claim_tokens(token);
+        CREATE INDEX IF NOT EXISTS idx_advisor_claim_user ON advisor_claim_tokens(user_id, used_at);
 
         -- ─── login_history: dispositivos vistos por user (alerta de nuevo login) ──
         -- Si el ua_hash actual no apareció antes para este user, se envía un email
@@ -21463,8 +21491,11 @@ async def import_classify_tenencia(
                     wb.close()
                 if is_ieb_file:
                     return {"file_name": name, "format": "ieb"}
-                if _import_tenencia.looks_like_ppi_tenencia(_import_excel.xlsx_to_rows(data)):
+                _xrows = _import_excel.xlsx_to_rows(data)
+                if _import_tenencia.looks_like_ppi_tenencia(_xrows):
                     return {"file_name": name, "format": "ppi"}
+                if _import_tenencia.looks_like_inviu_tenencia(_xrows):
+                    return {"file_name": name, "format": "inviu"}
             else:
                 text = _import_pipeline._decode_csv(data) or ""
                 if _import_tenencia.looks_like_cocos_tenencia(text):
@@ -21570,6 +21601,7 @@ async def import_tenencia_preview(
     is_ppi = fmt.startswith("ppi")
     is_cocos = fmt.startswith("cocos")
     is_ieb = fmt.startswith("ieb")
+    is_inviu = fmt.startswith("inviu")
     is_balanz = False   # se resuelve por auto-detección del PDF (Balanz vs IOL vs Bull Market)
     is_bullmarket = False
     is_iol = False
@@ -21608,6 +21640,22 @@ async def import_tenencia_preview(
         snap = _import_tenencia.parse_ppi_tenencia(rows)
         parser_format, default_name = "ppi_tenencia", "EstadoDeCuenta.xlsx"
         broker_hint = "Importá primero los Movimientos de PPI."
+    elif is_inviu:
+        # inviu: Tenencias en Excel — grilla con preámbulo + secciones "Tipo de
+        # Activo:" → filas crudas (xlsx_to_rows). Trae Costo (PPC) → sembramos el
+        # costo real (como IEB). Gap-fill (no override): los Movimientos son la
+        # fuente principal y la foto completa/verifica.
+        if not _import_excel.is_xlsx(data):
+            raise HTTPException(400, "Las Tenencias de inviu se bajan en Excel (.xlsx) — subí ese archivo.")
+        try:
+            rows = _import_excel.xlsx_to_rows(data)
+        except ValueError as ex:
+            raise HTTPException(400, str(ex))
+        if not _import_tenencia.looks_like_inviu_tenencia(rows):
+            raise HTTPException(400, "Este Excel no parece el export de Tenencias de inviu.")
+        snap = _import_tenencia.parse_inviu_tenencia(rows)
+        parser_format, default_name = "inviu_tenencia", "Tenencias.xlsx"
+        broker_hint = "Importá primero los movimientos de inviu."
     elif is_cocos:
         # Cocos: Estado de Cuenta / portfolio_report en CSV (instrumento;cantidad;
         # precio;moneda;total). Reconcilia por el path AGREGADO (broker_pair), igual
@@ -21660,7 +21708,7 @@ async def import_tenencia_preview(
         seed_date = snap.date or _import_excel.datetime.now().strftime("%Y-%m-%d")
         override_info = None   # sólo lo puebla el path OVERRIDE de Balanz
 
-        if is_ppi or is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol:
+        if is_ppi or is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol or is_inviu:
             # TODA foto rutea las posiciones en dólares al sibling '<broker> · USD'
             # (igual que los Movimientos) y PISA POR PARTICIÓN de moneda: concilia +
             # override en el padre (ARS) Y en el sibling (USD) contra la foto de esa
@@ -24645,7 +24693,7 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
         _require_advisor(conn, uid)
         links = conn.execute(
             """SELECT ac.client_uid, ac.label, ac.link_type, ac.permission,
-                      ac.notes, ac.created_at, u.name
+                      ac.notes, ac.created_at, u.name, u.approved
                FROM advisor_clients ac
                JOIN users u ON u.id = ac.client_uid
                WHERE ac.advisor_uid = ? AND ac.status = 'active'
@@ -24656,6 +24704,14 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
             return {"clients": []}
         ids = [r["client_uid"] for r in links]
         ph = ",".join("?" * len(ids))
+        # claim_status: 'claimed' (ya reclamó, loguea sola) > 'invited' (invite
+        # mandado, esperando) > 'shadow' (default, el asesor la administra 100%)
+        invited_ids = {r["user_id"] for r in conn.execute(
+            f"""SELECT DISTINCT user_id FROM advisor_claim_tokens
+                WHERE user_id IN ({ph}) AND used_at IS NULL
+                  AND expires_at > datetime('now')""",
+            ids,
+        ).fetchall()}
         # Último snapshot por cliente (AUM + fecha)
         snaps = {r["user_id"]: r for r in conn.execute(
             f"""SELECT s.user_id, s.date, s.total_value
@@ -24678,6 +24734,8 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
         for r in links:
             cid = r["client_uid"]
             snap = snaps.get(cid)
+            claim_status = ("claimed" if r["approved"] else
+                            ("invited" if cid in invited_ids else "shadow"))
             out.append({
                 "client_uid": cid,
                 "label": r["label"] or r["name"] or f"Cliente {cid}",
@@ -24686,6 +24744,7 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
                 "permission": r["permission"],
                 "notes": r["notes"],
                 "created_at": r["created_at"],
+                "claim_status": claim_status,
                 "aum_usd": (float(snap["total_value"]) if snap and snap["total_value"] is not None else None),
                 "aum_date": (snap["date"] if snap else None),
                 "brokers_count": int(brokers_n.get(cid, 0)),
@@ -24750,6 +24809,247 @@ def advisor_revoke_client(client_uid: int, uid: int = Depends(get_current_user))
                    SET status='revoked', revoked_at=datetime('now')
                    WHERE advisor_uid=? AND client_uid=?""",
                 (uid, client_uid))
+            # Si había una invitación de claim pendiente, se corta con el
+            # vínculo — no tiene sentido dejar un link vivo hacia una relación
+            # que el asesor acaba de cortar.
+            conn.execute(
+                """UPDATE advisor_claim_tokens SET used_at=datetime('now')
+                   WHERE user_id=? AND advisor_uid=? AND used_at IS NULL""",
+                (client_uid, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ─── F4a: reclamar la cuenta (shadow → cliente autogestionado) ──────────────
+# El asesor invita al cliente por su email real; el cliente entra con el
+# link, pone contraseña, y la MISMA cuenta (mismo uid, misma cartera) pasa a
+# loguear sola. Mismo patrón de seguridad que password_reset_tokens (arriba):
+# token URL-safe 256-bit, un solo token vivo por user, invalidado al usarse.
+
+ADVISOR_CLAIM_TTL_DAYS = 7
+
+
+class AdvisorInviteIn(BaseModel):
+    email: str = Field(..., max_length=254)
+
+
+@app.post("/api/advisor/clients/{client_uid}/invite")
+def advisor_invite_client(
+    client_uid: int, data: AdvisorInviteIn, request: Request,
+    uid: int = Depends(get_current_user),
+):
+    """Manda (o reenvía) la invitación de claim al email real del cliente."""
+    _check_rate_limit(request, max_calls=10, window_seconds=300, suffix=f"advinvite:{uid}")
+    email_norm = data.email.strip().lower()
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        _advisor_own_link(conn, uid, client_uid)
+        client = conn.execute(
+            "SELECT name, approved FROM users WHERE id=?", (client_uid,)).fetchone()
+        if not client:
+            raise HTTPException(404, "Cliente no encontrado")
+        if client["approved"]:
+            raise HTTPException(400, "Este cliente ya tiene su cuenta activa.")
+        # El email no puede pertenecer a OTRA cuenta ya existente (evita que
+        # el claim pise/tome una cuenta ajena).
+        clash = conn.execute(
+            "SELECT 1 FROM users WHERE email=? AND id != ?", (email_norm, client_uid)
+        ).fetchone()
+        if clash:
+            raise HTTPException(400, "Ya existe una cuenta de Rendi con ese email.")
+        advisor = conn.execute("SELECT name, email FROM users WHERE id=?", (uid,)).fetchone()
+        advisor_name = (advisor["name"] or advisor["email"].split("@")[0]) if advisor else "Tu asesor"
+        link = conn.execute(
+            "SELECT label FROM advisor_clients WHERE advisor_uid=? AND client_uid=?",
+            (uid, client_uid)).fetchone()
+        client_label = (link["label"] if link and link["label"] else (client["name"] or "tu cuenta"))
+
+        # Tope diario por cliente (no por asesor): un reenvío inmediato para
+        # corregir un typo sigue funcionando (no es un cooldown), pero corta
+        # a alguien usando el mismo shadow para probar/spammear muchos emails
+        # de terceros — esto es además del rate-limit general de arriba
+        # (10/300s por asesor).
+        sent_today = conn.execute(
+            """SELECT COUNT(*) AS n FROM advisor_claim_tokens
+               WHERE user_id=? AND created_at > datetime('now', '-1 day')""",
+            (client_uid,)).fetchone()["n"]
+        if sent_today >= 8:
+            raise HTTPException(429, "Ya le mandaste varias invitaciones a este cliente hoy. Probá de nuevo mañana o contactá a soporte.")
+
+        token = _gen_reset_token()
+        expires = (datetime.utcnow() + timedelta(days=ADVISOR_CLAIM_TTL_DAYS)).isoformat()
+        with conn:
+            # Un solo link vivo por cliente — invalida invitaciones previas.
+            conn.execute(
+                """UPDATE advisor_claim_tokens SET used_at=datetime('now')
+                   WHERE user_id=? AND used_at IS NULL""", (client_uid,))
+            conn.execute(
+                """INSERT INTO advisor_claim_tokens
+                       (user_id, advisor_uid, token, email, expires_at)
+                   VALUES (?,?,?,?,?)""",
+                (client_uid, uid, token, email_norm, expires))
+        claim_url = f"{_frontend_url()}/claim?token={token}"
+        try:
+            from billing import emails
+            emails.send_advisor_claim(
+                to=email_norm, advisor_name=advisor_name, client_label=client_label,
+                claim_url=claim_url, expires_days=ADVISOR_CLAIM_TTL_DAYS)
+        except Exception as ex:
+            log.error("Advisor claim email failed uid=%s client=%s: %s", uid, client_uid, ex)
+        return {"ok": True, "email": email_norm}
+    finally:
+        conn.close()
+
+
+@app.get("/api/auth/claim/preview")
+def claim_preview(token: str, request: Request):
+    """Datos SEGUROS de mostrar sin autenticar (quién invita, a qué cuenta) —
+    para que la pantalla de claim diga 'Tu asesor X te invitó', no un form
+    genérico de contraseña sin contexto."""
+    _check_rate_limit(request, max_calls=20, window_seconds=300, suffix="claim_preview_ip")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT ct.advisor_uid, ac.label, u.name AS advisor_name, u.email AS advisor_email
+               FROM advisor_claim_tokens ct
+               JOIN users u ON u.id = ct.advisor_uid
+               LEFT JOIN advisor_clients ac
+                      ON ac.advisor_uid = ct.advisor_uid AND ac.client_uid = ct.user_id
+               WHERE ct.token=? AND ct.used_at IS NULL""",
+            (token,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "Link inválido o ya usado.")
+        exp = conn.execute(
+            "SELECT expires_at FROM advisor_claim_tokens WHERE token=?", (token,)).fetchone()
+        if exp and datetime.fromisoformat(exp["expires_at"]) < datetime.utcnow():
+            raise HTTPException(400, "El link expiró. Pedile a tu asesor que te invite de nuevo.")
+        return {
+            "advisor_name": row["advisor_name"] or row["advisor_email"].split("@")[0],
+            "label": row["label"],
+        }
+    finally:
+        conn.close()
+
+
+class ClaimAccountIn(BaseModel):
+    token: str = Field(..., min_length=20, max_length=128)
+    new_password: str = Field(..., min_length=10, max_length=128)
+
+
+@app.post("/api/auth/claim")
+def claim_account(data: ClaimAccountIn, request: Request, response: Response):
+    """Confirma el claim: valida el token, setea contraseña, y la cuenta shadow
+    pasa a loguear sola (approved=1). Mismo patrón que reset-password —
+    rota password_changed_at (invalida sesiones viejas) y auto-loguea."""
+    _check_rate_limit(request, max_calls=10, window_seconds=300, suffix="claim_ip")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT id, user_id, email, expires_at, used_at
+               FROM advisor_claim_tokens WHERE token=?""",
+            (data.token,),
+        ).fetchone()
+        if not row or row["used_at"]:
+            raise HTTPException(400, "Link inválido o ya usado. Pedile a tu asesor que te invite de nuevo.")
+        try:
+            if datetime.fromisoformat(row["expires_at"]) < datetime.utcnow():
+                raise HTTPException(400, "El link expiró. Pedile a tu asesor que te invite de nuevo.")
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Link inválido")
+        # Re-chequeo de colisión de email (defensivo: alguien pudo registrarse
+        # con ese email entre la invitación y el claim).
+        clash = conn.execute(
+            "SELECT 1 FROM users WHERE email=? AND id != ?", (row["email"], row["user_id"])
+        ).fetchone()
+        if clash:
+            raise HTTPException(400, "Ese email ya está en uso. Pedile a tu asesor que te invite con otro.")
+
+        new_hash = pwd_ctx.hash(data.new_password)
+        with conn:
+            # Cerramos el token PRIMERO y sólo seguimos si nosotros lo cerramos
+            # (rowcount==1). Dos claims concurrentes del mismo link (ej. alguien
+            # interceptó el email) corren esta transacción en paralelo — sin el
+            # WHERE used_at IS NULL + chequeo de rowcount, ambas pasarían el
+            # SELECT de arriba antes de que cualquiera lo marcara usado, y la
+            # segunda pisaría la contraseña que puso la primera.
+            cur = conn.execute(
+                "UPDATE advisor_claim_tokens SET used_at=datetime('now') WHERE id=? AND used_at IS NULL",
+                (row["id"],))
+            if cur.rowcount != 1:
+                raise HTTPException(400, "Link inválido o ya usado. Pedile a tu asesor que te invite de nuevo.")
+            # managed_by → NULL: una vez reclamada, la cuenta es independiente
+            # de verdad (login propio, puede revocar al asesor desde Config).
+            # El VÍNCULO con el asesor sigue viviendo en advisor_clients (única
+            # fuente de verdad para su acceso) — esto NO le corta el acceso.
+            # Sin este NULL, delete_my_account trataría a esta cuenta YA
+            # INDEPENDIENTE como shadow del asesor y la borraría en cascada si
+            # el asesor cierra su cuenta más adelante (bug real, hallado en
+            # el review de seguridad de F4a).
+            conn.execute(
+                """UPDATE users SET email=?, password_hash=?, approved=1, email_verified=1,
+                       password_changed_at=datetime('now'), managed_by=NULL
+                   WHERE id=?""",
+                (row["email"], new_hash, row["user_id"]))
+        user = conn.execute("SELECT name, password_changed_at FROM users WHERE id=?",
+                           (row["user_id"],)).fetchone()
+        token = create_token(row["user_id"], user["password_changed_at"])
+        set_auth_cookie(response, token)
+        return {"token": token, "name": user["name"] or row["email"], "email": row["email"]}
+    except HTTPException:
+        raise
+    finally:
+        conn.close()
+
+
+# ─── F4a: vista del CLIENTE sobre su propio vínculo (Config › Cuenta) ───────
+# Estos endpoints usan get_current_user (identidad REAL del logueado, NUNCA
+# el contexto) — es la cuenta viéndose a sí misma, no algo que un asesor
+# pueda invocar por otro.
+
+@app.get("/api/me/advisor")
+def my_advisor_links(uid: int = Depends(get_current_user)):
+    """¿Quién tiene acceso a MI cuenta? Para el cliente que reclamó su cuenta
+    y quiere ver/gestionar el acceso de su asesor desde Configuración."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT ac.advisor_uid, ac.permission, ac.created_at, u.name, u.email
+               FROM advisor_clients ac JOIN users u ON u.id = ac.advisor_uid
+               WHERE ac.client_uid=? AND ac.status='active'
+               ORDER BY ac.created_at ASC""",
+            (uid,),
+        ).fetchall()
+        return {"advisors": [{
+            "advisor_uid": r["advisor_uid"],
+            "name": r["name"] or r["email"].split("@")[0],
+            "permission": r["permission"],
+            "since": r["created_at"],
+        } for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/me/advisor/{advisor_uid}/revoke")
+def revoke_my_advisor(advisor_uid: int, uid: int = Depends(get_current_user)):
+    """El cliente corta el acceso de un asesor a SU cuenta. Es su cuenta, él
+    manda — la revocación es efectiva de inmediato (get_effective_user
+    solo resuelve el contexto sobre vínculos status='active')."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT 1 FROM advisor_clients
+               WHERE advisor_uid=? AND client_uid=? AND status='active'""",
+            (advisor_uid, uid)).fetchone()
+        if not row:
+            raise HTTPException(404, "No encontramos ese asesor en tu cuenta.")
+        with conn:
+            conn.execute(
+                """UPDATE advisor_clients SET status='revoked', revoked_at=datetime('now')
+                   WHERE advisor_uid=? AND client_uid=?""",
+                (advisor_uid, uid))
         return {"ok": True}
     finally:
         conn.close()

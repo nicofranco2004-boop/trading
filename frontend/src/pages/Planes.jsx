@@ -880,7 +880,7 @@ function PlanFeatureSection({ title, items, variant, accent = false }) {
   const accentColor = variantAccent(variant)
   return (
     <div>
-      <div className={`text-[12px] mb-2 ${accent ? font-medium`text-${accentColor}` : 'text-ink-3'}`}>
+      <div className={`text-[12px] mb-2 ${accent ? `font-medium text-${accentColor}` : 'text-ink-3'}`}>
         {title}
       </div>
       <ul className="space-y-2">

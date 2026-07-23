@@ -111,6 +111,7 @@ const TENENCIA_BROKER_BY_FORMAT = {
   ppi: 'PPI',
   ieb: 'IEB',
   iol: 'IOL',
+  inviu: 'inviu',
   // La plataforma Balanz tiene 3 exports (balanz=Órdenes, balanz_movimientos,
   // balanz_resultados) y el wizard arranca en el PRIMERO (balanz). Todos crean el
   // broker 'Balanz', así que mapeamos los tres → la foto se aplica bien sin importar
@@ -422,11 +423,11 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
           }
           ccFiles.push(f)
         }
-        // PPI e IEB: la foto (Estado de Cuenta / Portafolio) es xlsx IGUAL que los
-        // Movimientos → el browser no puede mirar adentro para distinguirlas. Si no
-        // apartamos foto client-side y hay ≥2 archivos, le preguntamos al backend cuál
-        // es la foto (looks_like_ppi_tenencia / looks_like_ieb_portfolio). Best-effort.
-        if (!tenFile && (format === 'ppi' || format === 'ieb') && ccFiles.length >= 2) {
+        // PPI, IEB e inviu: la foto (Estado de Cuenta / Portafolio / Tenencias) es
+        // xlsx IGUAL que los Movimientos → el browser no puede mirar adentro para
+        // distinguirlas. Si no apartamos foto client-side y hay ≥2 archivos, le
+        // preguntamos al backend cuál es la foto (classify-tenencia). Best-effort.
+        if (!tenFile && (format === 'ppi' || format === 'ieb' || format === 'inviu') && ccFiles.length >= 2) {
           try {
             const cfd = new FormData()
             ccFiles.forEach(f => cfd.append('files', f))

@@ -118,6 +118,18 @@ def xlsx_to_csv(file_bytes: bytes) -> str:
         if not sheets:
             raise ValueError("El Excel no tiene datos.")
 
+        # Guard anti-preámbulo: algunos exports (ej. inviu "Reporte de cuenta
+        # corriente") arrancan con filas de TÍTULO/metadata y el header real está más
+        # abajo. Como acá tomamos la fila 0 como header, esas quedarían con 1 sola
+        # columna útil → toda la grilla se colapsa. Si el resultado sería degenerado
+        # (<2 columnas nombradas) en un archivo de UNA hoja, re-detectamos el header
+        # como la primera fila más ancha y emitimos desde ahí. Solo se dispara cuando
+        # el camino normal YA falló → no afecta a los exports con header en la fila 0.
+        if len(sheets) == 1:
+            named = [h for h in sheets[0][1][0] if h.strip()]
+            if len(named) < 2:
+                return _rows_to_csv_headerdetect(sheets[0][1])
+
         # Unión de columnas (por nombre de header) preservando orden de aparición.
         union: list[str] = []
         seen: set = set()
@@ -142,6 +154,29 @@ def xlsx_to_csv(file_bytes: bytes) -> str:
         return buf.getvalue()
     finally:
         wb.close()
+
+
+def _rows_to_csv_headerdetect(rows: "list[list[str]]") -> str:
+    """CSV de una hoja cuyo header NO está en la fila 0 (hay preámbulo de título/
+    metadata arriba). Detecta el header como la PRIMERA fila más ancha (más celdas
+    no vacías) entre las primeras 20, y emite header + todas las filas siguientes
+    (las de sección tipo 'PESOS - $' llegan como filas de datos, las lee el parser).
+    Agrega '_hoja' vacío para mantener el shape del resto de conversiones."""
+    if not rows:
+        return ""
+    window = rows[:20]
+    counts = [sum(1 for c in r if c.strip()) for r in window]
+    best = max(counts) if counts else 0
+    hdr_idx = counts.index(best) if best else 0
+    header = rows[hdr_idx]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(list(header) + ["_hoja"])
+    for r in rows[hdr_idx + 1:]:
+        # Recorta/pad a la longitud del header para que las columnas alineen.
+        cells = list(r[:len(header)]) + [""] * (len(header) - len(r))
+        writer.writerow(cells + [""])
+    return buf.getvalue()
 
 
 def load_xlsx_workbook(file_bytes: bytes):

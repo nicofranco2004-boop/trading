@@ -147,27 +147,30 @@ def test_price_target_no_fire_on_none_price(clean, monkeypatch):
 
 # ── pct_move: cooldown + holdings scope ──────────────────────────────────────
 
-def test_pct_move_edge_trigger_no_refire_while_elevated(clean, monkeypatch):
+def test_pct_move_once_per_day_no_oscillation_dupes(clean, monkeypatch):
+    # Bug de Nico: ADBE avisó a las 16:20 (3.2%) y OTRA vez 16:50 (3.3%) — oscilando
+    # alrededor del 3%. Debe avisar UNA sola vez por jornada.
     conn = clean
-    _mk_alert(conn, kind="pct_move", down_pct=5, threshold=None, symbol="AAPL",
-              repeat="always")
+    _mk_alert(conn, kind="pct_move", down_pct=5, threshold=None, symbol="AAPL", repeat="always")
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 90, "change_pct": -7.0}})
-    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1   # cruza → dispara
-    # sigue caído 7% (MISMO movimiento) → NO re-dispara, aunque pase tiempo (edge-trigger)
-    old = (datetime.utcnow() - timedelta(hours=8)).isoformat()
-    conn.execute("UPDATE alert_events SET fired_at=?", (old,)); conn.commit()
-    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
-    # vuelve DENTRO de la banda (-1%) → re-arma
-    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 100, "change_pct": -1.0}})
-    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
-    # cae 6% DE NUEVO (movimiento nuevo) → dispara
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1   # cruza → dispara (1 hoy)
+    # baja a -1% (dentro de banda) y vuelve a -6% → NO re-dispara (ya avisó hoy)
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 99, "change_pct": -1.0}})
+    ae.evaluate_alerts(conn, only_user=1)
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 90, "change_pct": -6.0}})
-    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0   # mismo día → 1 aviso y basta
+    # DÍA NUEVO (simulado): el % congelado NO re-dispara (armed=0), pero un mov nuevo sí
+    conn.execute("UPDATE alert_symbol_state SET last_fired_date='2000-01-01'"); conn.commit()
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0   # -6% congelado → no
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 100, "change_pct": -0.5}})
+    ae.evaluate_alerts(conn, only_user=1)                        # resetea → re-arma
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 90, "change_pct": -7.0}})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1   # mov nuevo del día → dispara
 
 
 def test_holdings_frozen_move_does_not_refire(clean, monkeypatch):
-    # El bug de Nico: "toda mi cartera 3%" avisó de MU/INTC/ADBE ayer y volvió a
-    # avisar HOY sobre esos mismos (el change_pct de ayer quedaba congelado).
+    # Bug de Nico: "toda mi cartera 3%" avisó de MU/INTC/ADBE ayer y volvió a avisar
+    # HOY sobre esos mismos (el change_pct de ayer quedaba congelado).
     conn = clean
     _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None,
               up_pct=3, down_pct=3, threshold=None, repeat="always")
@@ -176,10 +179,12 @@ def test_holdings_frozen_move_does_not_refire(clean, monkeypatch):
               "ADBE": {"price": 96, "change_pct": -4.0}, "AAPL": {"price": 99, "change_pct": -1.0}}
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: frozen)
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 3            # ayer: MU/INTC/ADBE
-    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0            # hoy congelado → NO re-dispara
-    # al abrir, el % resetea (~0) → re-arma; luego MU cae 3% de nuevo (mov de hoy)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0            # mismo día / congelado → no
+    # DÍA NUEVO: congelado no re-dispara; al resetear re-arma; MU cae 3% de nuevo → solo MU
+    conn.execute("UPDATE alert_symbol_state SET last_fired_date='2000-01-01'"); conn.commit()
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0            # -4% congelado (armed=0)
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {k: {"price": 100, "change_pct": 0.0} for k in frozen})
-    ae.evaluate_alerts(conn, only_user=1)
+    ae.evaluate_alerts(conn, only_user=1)                                # resetea → re-arma
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"MU": {"price": 97, "change_pct": -3.2},
         "INTC": {"price": 100, "change_pct": 0.0}, "ADBE": {"price": 100, "change_pct": 0.0}, "AAPL": {"price": 100, "change_pct": 0.0}})
     res = ae.evaluate_alerts(conn, only_user=1)

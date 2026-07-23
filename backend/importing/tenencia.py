@@ -1256,3 +1256,179 @@ def parse_ieb_portfolio(wb) -> TenenciaSnapshot:
         snap.warnings.append("No encontramos los saldos de efectivo en la hoja 'Saldos'.")
     snap.cash_ars, snap.cash_usd = cash_ars, cash_usd
     return snap
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# inviu — "Tenencias" (foto de posiciones, Excel)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Una hoja con preámbulo (Fecha de solicitud / Fecha de valuación / TC USD MEP /
+# TC USD CCL) + "Tenencias en Portfolio" + SECCIONES "Tipo de Activo: <clase>"
+# (Moneda / Bonos / Acciones / Cedear …). Cada sección repite su header:
+#   Ticker · Nombre · Cantidad · Garantía · Disponibles · Moneda · Precio actual ·
+#   Monto $ · Equivalente U$S · Costo (PPC) · Monto invertido · Resultado · Var %
+# y cierra con "Subtotal <clase>". Verificado contra un export real:
+#   • la CANTIDAD viene en `Disponibles` (la columna `Cantidad` llega vacía);
+#   • `Precio actual` está en ARS per-1 (bonos/ONs incluidos — no per-100);
+#   • `Costo (PPC)` = costo promedio per-1 → sembramos COSTO real (como IEB);
+#   • la sección "Moneda" es el CASH (fila ARS = pesos, fila USD = dólares en
+#     unidades USD) → snap.cash_ars / cash_usd, no holdings;
+#   • las columnas Monto $ / Equivalente U$S vienen VACÍAS → value = qty × precio.
+# Todo cotiza en pesos (BYMA) → currency "ARS"; el path agregado del endpoint
+# (broker padre + sibling '· USD') y el re-tag de bonos amortizantes ubican bien
+# lo operado en dólar MEP.
+
+_INVIU_SECTION_TYPE = {
+    "moneda": "CASH",
+    "bonos": "BOND",
+    "letras": "BOND",
+    "acciones": "STOCK",
+    "cedear": "CEDEAR",
+    "cedears": "CEDEAR",
+    "fondos": "FUND",
+    "fci": "FUND",
+    "fcis": "FUND",
+}
+
+
+def looks_like_inviu_tenencia(rows) -> bool:
+    """Heurística para el export de Tenencias de inviu (xlsx → filas crudas).
+    'Tenencias en Portfolio' + secciones 'Tipo de Activo:' es único de inviu
+    (PPI dice 'Estado de cuenta' + 'por tipo de activo', sin dos puntos)."""
+    flat = " ".join(_deaccent(_cell_s(c)).lower() for r in rows[:15] for c in r)
+    return "tenencias en portfolio" in flat and "tipo de activo:" in flat
+
+
+def _inviu_extract_meta(rows):
+    """(fecha_iso, tc_mep) del preámbulo. La fecha de valuación puede venir como
+    string 'DD/MM/YYYY' o datetime de openpyxl."""
+    fecha = None
+    mep = None
+    for r in rows[:8]:
+        svals = [_cell_s(c) for c in r]
+        for i, v in enumerate(svals):
+            lv = _deaccent(v).lower()
+            if lv.startswith("fecha de valuacion"):
+                nxt = r[i + 1] if i + 1 < len(r) else None
+                if hasattr(nxt, "strftime"):
+                    try:
+                        fecha = nxt.strftime("%Y-%m-%d")
+                    except Exception:
+                        pass
+                else:
+                    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})", _cell_s(nxt))
+                    if m:
+                        fecha = f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+            elif lv.startswith("tc usd mep"):
+                mep = _ppi_num(r[i + 1] if i + 1 < len(r) else None)
+    return fecha, mep
+
+
+def parse_inviu_tenencia(rows) -> TenenciaSnapshot:
+    """Parsea el export de Tenencias de inviu (filas crudas de `excel.xlsx_to_rows`)
+    a un TenenciaSnapshot. Siembra COSTO real (Costo PPC) como IEB; el cash sale de
+    la sección Moneda. Gap-fill (no override): los Movimientos son la fuente
+    principal y la foto completa/verifica."""
+    snap = TenenciaSnapshot()
+    snap.date, snap.fx_mep = _inviu_extract_meta(rows)
+
+    section: Optional[str] = None      # CASH / BOND / STOCK / CEDEAR / FUND / None
+    cols: dict = {}                    # nombre canónico → índice (por sección)
+    sect_count = 0
+
+    def _warn_empty():
+        if section and section != "CASH" and sect_count == 0:
+            snap.warnings.append(
+                "Una sección de las Tenencias cerró sin filas legibles — el formato "
+                "pudo cambiar; no la usamos para sacar posiciones.")
+
+    for r in rows:
+        cells = list(r)
+        svals = [_cell_s(c) for c in cells]
+        if not any(svals):
+            continue
+        c0 = _deaccent(svals[0]).lower().strip()
+
+        # Marcador de sección: "Tipo de Activo: Bonos"
+        if c0.startswith("tipo de activo"):
+            _warn_empty()
+            label = c0.split(":", 1)[1].strip() if ":" in c0 else ""
+            section = _INVIU_SECTION_TYPE.get(label)
+            sect_count = 0
+            cols = {}
+            if section is None and label:
+                snap.warnings.append(
+                    f"Sección de Tenencias que no reconocemos: '{svals[0][:40]}' — "
+                    f"no la usamos para sacar posiciones (la foto puede estar incompleta).")
+            continue
+
+        # Header de sección: resuelve índices por nombre (robusto a columnas movidas).
+        if c0 == "ticker":
+            cols = {}
+            for i, v in enumerate(svals):
+                lv = _deaccent(v).lower()
+                if lv.startswith("nombre"):
+                    cols["nombre"] = i
+                elif lv == "cantidad":
+                    cols["cantidad"] = i
+                elif lv.startswith("garantia"):
+                    cols["garantia"] = i
+                elif lv.startswith("disponible"):
+                    cols["disponibles"] = i
+                elif lv.startswith("precio actual"):
+                    cols["precio"] = i
+                elif lv.startswith("costo"):
+                    cols["ppc"] = i
+            continue
+
+        # Cierre de sección
+        if any(_deaccent(v).lower().startswith("subtotal") for v in svals[:3]) or c0 == "total":
+            _warn_empty()
+            section = None
+            continue
+
+        if not section or not cols:
+            continue
+
+        def _col(key):
+            i = cols.get(key)
+            return cells[i] if (i is not None and i < len(cells)) else None
+
+        ticker = svals[0].strip().upper()
+        if not ticker or len(ticker) > 12:
+            continue
+        qty_cant = _ppi_num(_col("cantidad"))
+        qty_disp = _ppi_num(_col("disponibles"))
+        qty_gar = _ppi_num(_col("garantia"))
+        # Cantidad total: la columna Cantidad si viene; si no, Disponibles + Garantía
+        # (en el export real Cantidad llega vacía y la tenencia está en Disponibles).
+        qty = qty_cant if (qty_cant and qty_cant > 0) else ((qty_disp or 0.0) + (qty_gar or 0.0))
+
+        # Sección Moneda = cash (fila ARS en pesos, fila USD en unidades USD).
+        # inviu puede listar más de un bucket de dólar (USD = MEP, USD.C = Cable);
+        # ambos consolidan al cash USD (espejo del voucher, que consolida las
+        # secciones "Dólar MEP" + "Dólar Cable" en USD) — sin sumar el cable, el
+        # true-up contra la foto recortaba ese saldo del sibling.
+        if section == "CASH":
+            amt = qty_disp if qty_disp is not None else qty_cant
+            if ticker == "ARS":
+                snap.cash_ars = amt
+            elif ticker == "USD" or ticker.startswith("USD."):
+                snap.cash_usd = (snap.cash_usd or 0.0) + (amt or 0.0)
+            continue
+
+        if qty <= 1e-9:
+            continue
+        precio = _ppi_num(_col("precio")) or 0.0
+        ppc = _ppi_num(_col("ppc"))
+        name = _cell_s(_col("nombre"))
+        value = round(qty * precio, 4)
+        cost_per1 = ppc if (ppc and ppc > 0) else (precio or 0.0)
+        if section == "FUND":
+            ticker = _canon_fund_ticker(ticker)
+        snap.holdings.append(Holding(
+            ticker=ticker, asset_type=section, quantity=qty, value=value,
+            currency="ARS", price_per1=cost_per1, per100=False, name=name[:60]))
+        sect_count += 1
+
+    _warn_empty()
+    return snap

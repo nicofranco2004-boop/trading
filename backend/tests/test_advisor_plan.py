@@ -22,10 +22,10 @@ from fastapi.testclient import TestClient
 from ai import quota, plan
 
 
-def _new_user(conn, email, tier=None):
+def _new_user(conn, email, tier=None, approved=1):
     cur = conn.execute(
-        "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,?)",
-        (email, "x", tier))
+        "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,?,?)",
+        (email, "x", approved, tier))
     return cur.lastrowid
 
 
@@ -46,7 +46,10 @@ class AdvisorBase(unittest.TestCase):
         conn = main.get_db()
         tag = uuid.uuid4().hex[:10]
         self.advisor = _new_user(conn, f"asesor-{tag}@rendi.test", tier="advisor")
-        self.client_uid = _new_user(conn, f"cliente-{tag}@rendi.test")
+        # approved=0: representa un shadow SIN reclamar — el estado real que
+        # crea advisor_create_client. get_tier fuerza 'pro' solo en ese estado
+        # (F4a: una vez reclamada, approved=1 y cae a su tier real/free).
+        self.client_uid = _new_user(conn, f"cliente-{tag}@rendi.test", approved=0)
         self.stranger = _new_user(conn, f"ajeno-{tag}@rendi.test")
         conn.execute("UPDATE users SET managed_by=? WHERE id=?",
                      (self.advisor, self.client_uid))
@@ -724,3 +727,262 @@ class AuditFixesTest(AdvisorBase):
             {"asset": "GGAL", "broker": "Cocos · USD", "asset_type": None},
             ars_names={"Cocos"}, ar_usd_names={"Cocos · USD"})
         self.assertEqual(key2, "GGAL.BA")
+
+
+# ─── F4a: claim flow (invite + set-password) ─────────────────────────────────
+
+class ClaimFlowTest(AdvisorBase):
+
+    def setUp(self):
+        super().setUp()
+        # _check_rate_limit usa un dict GLOBAL en memoria (main._rate_store)
+        # keyeado por IP (constante en TestClient) + suffix. El suffix de
+        # /api/auth/claim es "claim_ip" (fijo, sin distinguir por token/user
+        # — correcto en producción: un atacante no debería poder probar más
+        # de 10 tokens cada 5 min desde la misma IP). Esta clase invoca claim
+        # en ~10 tests → sin resetear, los últimos chocan un 429 legítimo
+        # que no tiene nada que ver con lo que cada test intenta probar.
+        main._rate_store.pop(f"testclient|claim_ip", None)
+        main._rate_store.pop("testclient|reset_pw_ip", None)
+
+    def _invite(self, email=None, uid=None):
+        # Email único por default: la tabla de users es COMPARTIDA entre tests
+        # de la clase (misma DB) — un email fijo colisionaría con el "ya existe
+        # una cuenta con ese email" de un test previo que ya reclamó el suyo.
+        email = email or f"cliente.real.{uuid.uuid4().hex[:10]}@example.com"
+        return self.http.post(
+            f"/api/advisor/clients/{self.client_uid}/invite",
+            json={"email": email}, headers=self._hdr(uid or self.advisor))
+
+    def _token_for_client(self):
+        conn = main.get_db()
+        row = conn.execute(
+            "SELECT token FROM advisor_claim_tokens WHERE user_id=? AND used_at IS NULL",
+            (self.client_uid,)).fetchone()
+        conn.close()
+        return row["token"] if row else None
+
+    def _claim(self, token, password="unaClaveLarga1"):
+        # /api/auth/claim setea la cookie de sesión del CLIENTE en la respuesta.
+        # TestClient persiste cookies (como un browser real) — en la vida real
+        # asesor y cliente están en dispositivos DISTINTOS, así que limpiamos
+        # el jar después para no contaminar las siguientes llamadas "como
+        # asesor" de este mismo test (que usan Authorization header, pero
+        # get_current_user prioriza la cookie si está presente).
+        r = self.http.post("/api/auth/claim", json={"token": token, "new_password": password})
+        self.http.cookies.clear()
+        return r
+
+    def test_invite_solo_el_asesor_dueno(self):
+        conn = main.get_db()
+        otro = _new_user(conn, f"asesor2-{uuid.uuid4().hex[:8]}@rendi.test", tier="advisor")
+        conn.commit(); conn.close()
+        r = self._invite(uid=otro)
+        self.assertEqual(r.status_code, 404)
+
+    def test_invite_email_ya_usado_por_otra_cuenta(self):
+        r = self._invite(email=f"asesor-{uuid.uuid4().hex[:6]}@rendi.test")  # email de self.advisor no, uno cualquiera existente
+        # probamos contra el email real del stranger (ya existe)
+        conn = main.get_db()
+        stranger_email = conn.execute("SELECT email FROM users WHERE id=?", (self.stranger,)).fetchone()["email"]
+        conn.close()
+        r2 = self._invite(email=stranger_email)
+        self.assertEqual(r2.status_code, 400)
+
+    def test_invite_ok_crea_token_y_manda_mail(self):
+        r = self._invite()
+        self.assertEqual(r.status_code, 200, r.text)
+        token = self._token_for_client()
+        self.assertIsNotNone(token)
+
+    def test_reinvite_invalida_el_token_anterior(self):
+        self._invite()
+        old_token = self._token_for_client()
+        self._invite()
+        conn = main.get_db()
+        old_row = conn.execute("SELECT used_at FROM advisor_claim_tokens WHERE token=?",
+                               (old_token,)).fetchone()
+        conn.close()
+        self.assertIsNotNone(old_row["used_at"])
+
+    def test_invite_a_cliente_ya_reclamado_400(self):
+        self._invite()
+        token = self._token_for_client()
+        self._claim(token, "unaClaveLarga1")
+        r = self._invite(email="segunda-vez@example.com")
+        self.assertEqual(r.status_code, 400)
+
+    def test_claim_preview_muestra_asesor_y_label(self):
+        self._invite()
+        token = self._token_for_client()
+        r = self.http.get(f"/api/auth/claim/preview?token={token}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["label"], "Juan P")
+
+    def test_claim_preview_token_invalido_400(self):
+        r = self.http.get("/api/auth/claim/preview?token=noexiste")
+        self.assertEqual(r.status_code, 400)
+
+    def test_claim_exitoso_setea_password_y_loguea(self):
+        self._invite(email="juan.real@example.com")
+        token = self._token_for_client()
+        r = self.http.post("/api/auth/claim",
+                           json={"token": token, "new_password": "unaClaveLarga1"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("token", r.json())
+        conn = main.get_db()
+        row = conn.execute("SELECT email, approved, email_verified, managed_by FROM users WHERE id=?",
+                           (self.client_uid,)).fetchone()
+        conn.close()
+        self.assertEqual(row["email"], "juan.real@example.com")
+        self.assertEqual(row["approved"], 1)
+        self.assertEqual(row["email_verified"], 1)
+        # managed_by → NULL: la cuenta pasa a ser independiente de verdad. El
+        # vínculo con el asesor sigue en advisor_clients (no acá) — ver el test
+        # de la cascada de borrado, que es EXACTAMENTE por qué esto importa.
+        self.assertIsNone(row["managed_by"])
+
+    def test_claim_managed_by_null_protege_de_la_cascada_del_asesor(self):
+        # Hallazgo del review de seguridad F4a: antes de este fix, un cliente
+        # RECLAMADO (cuenta independiente, login propio) seguía teniendo
+        # managed_by=asesor. Si el asesor cerraba SU cuenta (DELETE /api/me),
+        # la cascada de borrado (que trata managed_by IS NOT NULL como "shadow,
+        # seguro borrar") volaba la cuenta del cliente YA INDEPENDIENTE sin su
+        # consentimiento. Este test reproduce el escenario completo.
+        self._invite()
+        token = self._token_for_client()
+        self._claim(token)
+        # El cliente incluso revoca el vínculo — ya no tiene NADA que ver con
+        # el asesor, ni en advisor_clients ni (gracias al fix) en managed_by.
+        conn = main.get_db()
+        conn.execute(
+            "UPDATE advisor_clients SET status='revoked' WHERE advisor_uid=? AND client_uid=?",
+            (self.advisor, self.client_uid))
+        conn.commit(); conn.close()
+
+        r = self.http.delete("/api/me", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+
+        conn = main.get_db()
+        client_alive = conn.execute("SELECT 1 FROM users WHERE id=?", (self.client_uid,)).fetchone()
+        conn.close()
+        self.assertIsNotNone(client_alive)  # sobrevive: ya no es un shadow de nadie
+
+    def test_claim_login_directo_ve_tier_free(self):
+        # El corazón del fix: reclamada, la cuenta deja de forzar 'pro' cuando
+        # el CLIENTE la mira directo (sin contexto de asesor).
+        self._invite()
+        token = self._token_for_client()
+        claim_r = self._claim(token)
+        client_token = claim_r.json()["token"]
+        r = self.http.get("/api/plan/features",
+                          headers={"Authorization": f"Bearer {client_token}"})
+        self.assertEqual(r.json()["tier"], "free")
+        # El asesor, viendo la MISMA cuenta vía contexto, sigue con lente Pro
+        r2 = self.http.get("/api/plan/features",
+                           headers=self._hdr(self.advisor, client_ctx=self.client_uid))
+        self.assertEqual(r2.json()["tier"], "pro")
+
+    def test_claim_token_usado_dos_veces_400(self):
+        self._invite()
+        token = self._token_for_client()
+        self._claim(token, "unaClaveLarga1")
+        r2 = self._claim(token, "otraClaveLarga2")
+        self.assertEqual(r2.status_code, 400)
+        # Y la contraseña activa sigue siendo la de la PRIMERA claim, no la
+        # segunda (si la segunda hubiese corrido igual, la pisaría).
+        conn = main.get_db()
+        row = conn.execute("SELECT password_hash FROM users WHERE id=?",
+                           (self.client_uid,)).fetchone()
+        conn.close()
+        self.assertTrue(main.pwd_ctx.verify("unaClaveLarga1", row["password_hash"]))
+
+    def test_claim_update_atomico_no_permite_doble_marcado(self):
+        # Hallazgo del 2do review de seguridad F4a: el UPDATE que marca el
+        # token usado no tenía "AND used_at IS NULL" + chequeo de rowcount —
+        # dos claims CONCURRENTES del mismo link (ej. alguien interceptó el
+        # email) pasaban ambas el SELECT inicial antes de que cualquiera lo
+        # marcara usado, y la segunda pisaba la contraseña de la primera.
+        # No podemos reproducir dos threads reales acá, pero sí probar que el
+        # UPDATE atómico en sí sólo deja ganar a UNA conexión: la segunda
+        # ejecución (token ya usado) debe reportar rowcount==0, nunca 1.
+        self._invite()
+        token = self._token_for_client()
+        token_id = main.get_db().execute(
+            "SELECT id FROM advisor_claim_tokens WHERE token=?", (token,)).fetchone()["id"]
+        conn_a = main.get_db()
+        cur_a = conn_a.execute(
+            "UPDATE advisor_claim_tokens SET used_at=datetime('now') WHERE id=? AND used_at IS NULL",
+            (token_id,))
+        conn_a.commit(); conn_a.close()
+        conn_b = main.get_db()
+        cur_b = conn_b.execute(
+            "UPDATE advisor_claim_tokens SET used_at=datetime('now') WHERE id=? AND used_at IS NULL",
+            (token_id,))
+        conn_b.commit(); conn_b.close()
+        self.assertEqual(cur_a.rowcount, 1)
+        self.assertEqual(cur_b.rowcount, 0)
+
+    def test_claim_token_expirado_400(self):
+        self._invite()
+        token = self._token_for_client()
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_claim_tokens SET expires_at='2000-01-01T00:00:00' WHERE token=?",
+                     (token,))
+        conn.commit(); conn.close()
+        r = self._claim(token, "unaClaveLarga1")
+        self.assertEqual(r.status_code, 400)
+
+    def test_revoke_invalida_invitacion_pendiente(self):
+        self._invite()
+        token = self._token_for_client()
+        self.http.post(f"/api/advisor/clients/{self.client_uid}/revoke",
+                       headers=self._hdr(self.advisor))
+        r = self._claim(token, "unaClaveLarga1")
+        self.assertEqual(r.status_code, 400)
+
+    def test_roster_muestra_claim_status(self):
+        r0 = self.http.get("/api/advisor/clients", headers=self._hdr(self.advisor))
+        me0 = [c for c in r0.json()["clients"] if c["client_uid"] == self.client_uid][0]
+        self.assertEqual(me0["claim_status"], "shadow")
+
+        self._invite()
+        r1 = self.http.get("/api/advisor/clients", headers=self._hdr(self.advisor))
+        me1 = [c for c in r1.json()["clients"] if c["client_uid"] == self.client_uid][0]
+        self.assertEqual(me1["claim_status"], "invited")
+
+        token = self._token_for_client()
+        self._claim(token, "unaClaveLarga1")
+        r2 = self.http.get("/api/advisor/clients", headers=self._hdr(self.advisor))
+        me2 = [c for c in r2.json()["clients"] if c["client_uid"] == self.client_uid][0]
+        self.assertEqual(me2["claim_status"], "claimed")
+
+    def test_cliente_ve_y_revoca_a_su_asesor(self):
+        self._invite()
+        token = self._token_for_client()
+        claim_r = self._claim(token)
+        client_token = claim_r.json()["token"]
+        h = {"Authorization": f"Bearer {client_token}"}
+
+        r = self.http.get("/api/me/advisor", headers=h)
+        self.assertEqual(r.status_code, 200)
+        advisors = r.json()["advisors"]
+        self.assertEqual(len(advisors), 1)
+        self.assertEqual(advisors[0]["advisor_uid"], self.advisor)
+        self.assertEqual(advisors[0]["permission"], "read_write")
+
+        r2 = self.http.post(f"/api/me/advisor/{self.advisor}/revoke", headers=h)
+        self.assertEqual(r2.status_code, 200)
+        # El asesor pierde el acceso de inmediato
+        r3 = self.http.get("/api/positions",
+                           headers=self._hdr(self.advisor, client_ctx=self.client_uid))
+        self.assertEqual(r3.status_code, 403)
+
+    def test_otro_user_no_puede_revocar_asesor_ajeno(self):
+        self._invite()
+        token = self._token_for_client()
+        self._claim(token, "unaClaveLarga1")
+        # El "stranger" intenta revocar un vínculo que no es suyo
+        r = self.http.post(f"/api/me/advisor/{self.advisor}/revoke",
+                           headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 404)

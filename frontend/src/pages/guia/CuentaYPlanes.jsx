@@ -8,7 +8,7 @@ export default function CuentaYPlanes() {
       section="6 de 6"
       title="Cuenta y planes"
       intro="Configurar tu cuenta, gestionar brokers, planes Free/Plus/Pro, cambio de plan con conversión de crédito y cómo cancelar."
-      prev={{ to: '/guia/novedades', label: 'Novedades' }}
+      prev={{ to: '/guia/novedades', label: 'Novedades y alertas' }}
       metaTitle="Cuenta y planes — Guía Rendi"
       metaDescription="Cómo configurar tu cuenta, cambiar de plan, cancelar tu suscripción y gestionar brokers en Rendi."
       canonicalPath="/guia/cuenta-y-planes"
@@ -47,7 +47,7 @@ export default function CuentaYPlanes() {
         <li>Posiciones, Operaciones, Wrapped anual, Objetivos.</li>
         <li>Diagnóstico completo (con CAGR y volatilidad; las métricas ajustadas por riesgo —Sharpe, Sortino…— con Plus); personalizalo 2×/semana con “No me interesa”.</li>
         <li>3 detectores de comportamiento.</li>
-        <li>6 análisis IA + 3 chat por semana (Coach IA limitado a 12 preguntas guiadas).</li>
+        <li>6 análisis IA + 3 chat por semana (Rendi AI limitado a 12 preguntas guiadas).</li>
         <li>Reportes: solo último mes.</li>
       </ul>
 
@@ -67,7 +67,7 @@ export default function CuentaYPlanes() {
         <li>Todo lo de Plus.</li>
         <li>Brokers ilimitados.</li>
         <li>60 análisis IA / semana (10× más que Free y Plus).</li>
-        <li><strong>Chat libre</strong> con el Coach IA (40 consultas/semana, texto libre).</li>
+        <li><strong>Chat libre</strong> con Rendi AI (40 consultas/semana, texto libre).</li>
         <li>Respuestas con causalidad y comparaciones (Modo research-note).</li>
         <li>Follow-ups: profundizá cualquier análisis.</li>
         <li>Memoria persistente del Coach: los hechos que aclarás se respetan entre sesiones.</li>

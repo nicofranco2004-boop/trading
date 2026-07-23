@@ -30,6 +30,12 @@ export default function CarteraYOperaciones() {
         Tocás una fila para editarla, ver el detalle (lotes FIFO) o eliminarla.
         En mobile, swipe izquierda muestra acciones rápidas (vender, editar).
       </p>
+      <p>
+        En la barra de herramientas de la Cartera tenés un toggle <strong>USD | ARS</strong>:
+        muestra todas las tarjetas de broker en la moneda que elijas, convirtiendo por el
+        dólar-MEP activo. Así ves todo en dólares o todo en pesos de un toque. Por defecto
+        cada broker arranca en su moneda nativa, pero el toggle lo unifica.
+      </p>
 
       <h2>Operaciones — qué podés cargar</h2>
       <p>
