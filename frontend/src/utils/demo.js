@@ -2727,6 +2727,9 @@ export function handleDemoRequest(method, path, body) {
         { platform: 'ieb', platform_label: 'IEB · Invertir en Bolsa', exports: [
           { id: 'ieb', label: 'Movimientos', supported: true },
         ] },
+        { platform: 'inviu', platform_label: 'inviu', exports: [
+          { id: 'inviu', label: 'Reporte de cuenta corriente (Excel)', supported: true },
+        ] },
       ]
     }
     if (basePath === '/imports/mappings') return []

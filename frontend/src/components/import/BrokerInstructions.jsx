@@ -88,6 +88,16 @@ function PpiLogo({ size = 18 }) {
   )
 }
 
+function InviuLogo({ size = 18 }) {
+  // inviu: lowercase en coral sobre fondo oscuro (placeholder — swappable).
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect width="24" height="24" rx="4" fill="#141726" />
+      <text x="12" y="16" textAnchor="middle" fontFamily="-apple-system,sans-serif" fontWeight="800" fontSize="8" fill="#FF6A5A">inviu</text>
+    </svg>
+  )
+}
+
 // Diccionario broker → contenido. El user va a actualizar `steps` y `summary`
 // cuando mande los ejemplos reales.
 const BROKERS = [
@@ -203,6 +213,18 @@ const BROKERS = [
       'Subí los dos Excel juntos acá — los acomodamos solos (el Estado de Cuenta completa lo que el historial no alcanza).',
     ],
     parserNote: 'Importamos compras y ventas (en pesos y en dólares MEP/cable), suscripciones y rescates de FCI, dividendos, renta y amortización de bonos, comisiones y retenciones, depósitos y retiros, y el interés de tus cauciones. Las sub-cuentas en dólares se consolidan en una sola. El Estado de Cuenta es tu foto de HOY y MANDA: completa las posiciones con su costo real, cierra tu efectivo a la foto y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes? Subí solo el Estado de Cuenta con el botón “Estado de Cuenta PPI”. Por ahora, las operaciones de dólar SPOT y las transferencias de títulos entrantes quedan para revisar a mano.',
+  },
+  {
+    id: 'inviu',
+    label: 'inviu',
+    Logo: InviuLogo,
+    summary: 'Subí dos archivos juntos: el Portfolio Histórico (reconstruye tu historial, tu P&L y tu efectivo) + el Portfolio (tu foto de tenencias de HOY, que fija tus posiciones y saldos exactos).',
+    steps: [
+      'En inviu, en la pantalla principal (sección Portfolio), tocá Reportes arriba a la derecha.',
+      'Exportá los dos reportes: Portfolio (se baja directo) y Portfolio Histórico (te pide una fecha — poné la de hoy).',
+      'Subí los dos archivos juntos acá — los acomodamos solos (el Portfolio completa lo que el historial no alcanza y pone el costo real).',
+    ],
+    parserNote: 'Del Portfolio Histórico reconstruimos compras y ventas (en pesos y en dólares MEP), dividendos, renta y amortización de bonos, comisiones, retenciones, depósitos y retiros, detectando la moneda de cada operación. El Portfolio es tu foto de HOY y MANDA: completa las posiciones que ya tenías de antes con su costo real, cierra tu efectivo (pesos y dólares) y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes? Alcanza con volver a subir el Portfolio.',
   },
 ]
 
