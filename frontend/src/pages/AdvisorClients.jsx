@@ -15,7 +15,7 @@ import { Navigate, useNavigate } from 'react-router-dom'
 import {
   Users, Plus, Layers, StickyNote, MoreVertical, Trash2, ChevronRight,
   ArrowRight, ArrowLeft, AlertTriangle, Undo2, Briefcase, Wallet,
-  TrendingUp, TrendingDown, PhoneCall, Landmark,
+  TrendingUp, TrendingDown, PhoneCall, Landmark, Mail, CheckCircle2,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -41,6 +41,7 @@ export default function AdvisorClients() {
   const [addOpen, setAddOpen] = useState(false)
   const [notesFor, setNotesFor] = useState(null)  // cliente cuyo modal de notas está abierto
   const [groupOpOpen, setGroupOpOpen] = useState(false)
+  const [inviteFor, setInviteFor] = useState(null) // cliente cuyo modal de invitar está abierto
   const [menuFor, setMenuFor] = useState(null)    // client_uid del menú ⋯ abierto
 
   // Gate por IDENTIDAD (useAuth), no por plan features: en contexto de
@@ -167,6 +168,7 @@ export default function AdvisorClients() {
               onToggleMenu={(e) => { e.stopPropagation(); setMenuFor(menuFor === c.client_uid ? null : c.client_uid) }}
               onOpen={() => openClient(c)}
               onNotes={(e) => { e.stopPropagation(); setMenuFor(null); setNotesFor(c) }}
+              onInvite={(e) => { e.stopPropagation(); setMenuFor(null); setInviteFor(c) }}
               onRevoke={(e) => { e.stopPropagation(); setMenuFor(null); revoke(c) }}
             />
           ))}
@@ -175,6 +177,7 @@ export default function AdvisorClients() {
 
       {addOpen && <AddClientModal onClose={() => setAddOpen(false)} onCreated={() => { setAddOpen(false); load() }} />}
       {notesFor && <NotesModal client={notesFor} onClose={() => setNotesFor(null)} onSaved={() => { setNotesFor(null); load() }} />}
+      {inviteFor && <InviteModal client={inviteFor} onClose={() => setInviteFor(null)} onSent={() => { setInviteFor(null); load() }} />}
       {groupOpOpen && (
         <GroupOpModal
           onClose={() => setGroupOpOpen(false)}
@@ -187,7 +190,13 @@ export default function AdvisorClients() {
 
 // ─── Card de cliente ─────────────────────────────────────────────────────────
 
-function ClientCard({ c, onOpen, onNotes, onRevoke, menuOpen, onToggleMenu }) {
+const CLAIM_BADGE = {
+  invited: { label: 'Invitado', cls: 'text-data-violet bg-data-violet/10' },
+  claimed: { label: 'Su cuenta', cls: 'text-rendi-pos bg-rendi-pos/10' },
+}
+
+function ClientCard({ c, onOpen, onNotes, onInvite, onRevoke, menuOpen, onToggleMenu }) {
+  const badge = CLAIM_BADGE[c.claim_status]
   return (
     <div
       role="button"
@@ -199,9 +208,11 @@ function ClientCard({ c, onOpen, onNotes, onRevoke, menuOpen, onToggleMenu }) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-ink-0 truncate">{c.label}</p>
-          <p className="text-[11px] text-ink-3 mt-0.5">
-            {c.link_type === 'managed' ? 'Cuenta administrada' : 'Vinculado'}
-            {c.notes ? ' · 📝' : ''}
+          <p className="text-[11px] text-ink-3 mt-0.5 flex items-center gap-1.5 flex-wrap">
+            <span>{c.link_type === 'managed' ? 'Cuenta administrada' : 'Vinculado'}{c.notes ? ' · 📝' : ''}</span>
+            {badge && (
+              <span className={`text-[10px] font-medium rounded px-1.5 py-0.5 ${badge.cls}`}>{badge.label}</span>
+            )}
           </p>
         </div>
         <button
@@ -213,9 +224,16 @@ function ClientCard({ c, onOpen, onNotes, onRevoke, menuOpen, onToggleMenu }) {
           <MoreVertical size={14} strokeWidth={1.75} />
         </button>
         {menuOpen && (
-          <div className="absolute right-3 top-10 z-20 w-44 bg-bg-1 border border-line rounded-lg shadow-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+          <div className="absolute right-3 top-10 z-20 w-52 bg-bg-1 border border-line rounded-lg shadow-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            {c.claim_status !== 'claimed' && (
+              <button type="button" onClick={onInvite}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs text-ink-1 hover:bg-bg-2 transition-colors text-left">
+                <Mail size={12} strokeWidth={1.75} />
+                {c.claim_status === 'invited' ? 'Reenviar invitación' : 'Invitar a esta cuenta'}
+              </button>
+            )}
             <button type="button" onClick={onNotes}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-ink-1 hover:bg-bg-2 transition-colors text-left">
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-ink-1 hover:bg-bg-2 transition-colors text-left border-t border-line/40">
               <StickyNote size={12} strokeWidth={1.75} /> Notas privadas
             </button>
             <button type="button" onClick={onRevoke}
@@ -371,6 +389,59 @@ function NotesModal({ client, onClose, onSaved }) {
           {saving ? 'Guardando…' : 'Guardar'}
         </button>
       </div>
+    </Modal>
+  )
+}
+
+// ─── Invitar a reclamar la cuenta (F4a) ──────────────────────────────────────
+// El asesor pone el email REAL del cliente → le llega un link para poner
+// contraseña y entrar a ver LO MISMO que el asesor le cargó (misma cuenta).
+
+function InviteModal({ client, onClose, onSent }) {
+  const toast = useToast()
+  const [email, setEmail] = useState('')
+  const [sending, setSending] = useState(false)
+  const [err, setErr] = useState(null)
+  const alreadyInvited = client.claim_status === 'invited'
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!email.trim() || sending) return
+    setSending(true)
+    setErr(null)
+    try {
+      await api.post(`/advisor/clients/${client.client_uid}/invite`, { email: email.trim() })
+      toast.push(`Invitación enviada a ${email.trim()}`)
+      onSent()
+    } catch (ex) {
+      setErr(ex.message || 'No se pudo enviar la invitación')
+      setSending(false)
+    }
+  }
+
+  return (
+    <Modal title={`Invitar a ${client.label}`} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <p className="text-xs text-ink-2 leading-relaxed">
+          {alreadyInvited
+            ? 'Ya le mandamos un link a este cliente. Si ingresás un email nuevo, se lo reenviamos ahí (el link anterior deja de servir).'
+            : 'Le mandamos un email para que ponga su propia contraseña y entre a ver — con visión Free — la cartera que le cargaste. Es la MISMA cuenta: lo que vos edites, él lo ve; lo que él edite, vos lo ves.'}
+        </p>
+        <div>
+          <label htmlFor="inv-email" className="block text-xs text-ink-2 mb-1">Email real del cliente *</label>
+          <input id="inv-email" type="email" autoFocus className={inputCls} value={email}
+                 maxLength={254} onChange={(e) => setEmail(e.target.value)}
+                 placeholder="juan.perez@gmail.com" />
+        </div>
+        {err && <p className="text-xs text-rendi-neg">{err}</p>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="text-xs text-ink-2 hover:text-ink-0 px-3 py-2 transition-colors">Cancelar</button>
+          <button type="submit" disabled={!email.trim() || sending} className={btnPrimary}>
+            <Mail size={12} strokeWidth={1.75} />
+            {sending ? 'Enviando…' : (alreadyInvited ? 'Reenviar' : 'Mandar invitación')}
+          </button>
+        </div>
+      </form>
     </Modal>
   )
 }

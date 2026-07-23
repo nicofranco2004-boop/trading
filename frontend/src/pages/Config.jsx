@@ -20,6 +20,7 @@ import {
   LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock, Check, ClipboardList,
 } from 'lucide-react'
 import { api } from '../utils/api'
+import { useToast } from '../components/Toast'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -93,6 +94,67 @@ function FxCell({ first, label, sub, value, compra, venta }) {
           : '—'}
       </div>
     </div>
+  )
+}
+
+// ─── Plan Asesor: quién administra ESTA cuenta (F4a) ─────────────────────────
+// Solo la ve una cuenta que RECLAMÓ su acceso (fue managed, ahora loguea sola)
+// y que sigue teniendo un asesor vinculado. GET devuelve lista vacía para el
+// 99% de las cuentas → no renderiza nada (no ensucia Config para nadie más).
+
+function AdvisorAccessPanel() {
+  const toast = useToast()
+  const [advisors, setAdvisors] = useState(null)  // null = cargando; [] = sin asesor
+  const [revokingId, setRevokingId] = useState(null)
+
+  useEffect(() => {
+    api.get('/me/advisor').then((d) => setAdvisors(d.advisors || [])).catch(() => setAdvisors([]))
+  }, [])
+
+  if (!advisors || advisors.length === 0) return null
+
+  const revoke = async (advisorUid, name) => {
+    if (!window.confirm(`¿Quitarle acceso a ${name}? Va a dejar de ver y editar tu cartera.`)) return
+    setRevokingId(advisorUid)
+    try {
+      await api.post(`/me/advisor/${advisorUid}/revoke`)
+      setAdvisors(advisors.filter((a) => a.advisor_uid !== advisorUid))
+      toast.push(`Le quitaste el acceso a ${name}`)
+    } catch (e) {
+      toast.push(e.message || 'No se pudo quitar el acceso', { type: 'error' })
+    } finally {
+      setRevokingId(null)
+    }
+  }
+
+  return (
+    <Panel padding="none">
+      <header className="px-4 py-3 border-b border-line">
+        <h2 className="text-sm font-medium text-ink-0">Tu asesor</h2>
+        <p className="text-xs text-ink-3 mt-0.5">Quién puede ver y administrar tu cartera</p>
+      </header>
+      <div>
+        {advisors.map((a, i) => (
+          <div key={a.advisor_uid}
+               className={`flex items-center justify-between gap-3 px-4 py-3 ${i > 0 ? 'border-t border-line/30' : ''}`}>
+            <div className="min-w-0">
+              <p className="text-sm text-ink-0 font-medium truncate">{a.name}</p>
+              <p className="text-xs text-ink-3 mt-0.5">
+                {a.permission === 'read_write' ? 'Puede ver y editar tu cartera' : 'Solo puede ver tu cartera'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => revoke(a.advisor_uid, a.name)}
+              disabled={revokingId === a.advisor_uid}
+              className="flex-shrink-0 text-xs font-medium text-rendi-neg hover:bg-rendi-neg/[0.06] border border-rendi-neg/30 rounded-md px-3 py-1.5 transition-colors disabled:opacity-50"
+            >
+              {revokingId === a.advisor_uid ? 'Quitando…' : 'Quitar acceso'}
+            </button>
+          </div>
+        ))}
+      </div>
+    </Panel>
   )
 }
 
@@ -235,6 +297,12 @@ export default function Config() {
   function renderCuenta() {
     return (
       <div className="space-y-4">
+        {/* Plan Asesor: solo aparece si un asesor tiene acceso a ESTA cuenta
+            (F4a — cuenta reclamada). Es la contraparte del lado del cliente
+            de lo que el asesor ve en /clientes: quién te administra + un
+            botón para cortar el acceso cuando quieras. */}
+        <AdvisorAccessPanel />
+
         {/* Datos del workspace. Brokers management se mudó a /posiciones. */}
         <Panel padding="none">
           <header className="px-4 py-3 border-b border-line">

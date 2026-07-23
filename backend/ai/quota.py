@@ -164,10 +164,24 @@ def get_tier(conn, user_id: int) -> Tier:
             keys = row.keys()
             # Plan Asesor: una cuenta ADMINISTRADA (shadow, managed_by seteado)
             # se comporta como Pro para todos los gates — el asesor la opera y
-            # su plan lo paga. El cliente NO puede loguear mientras es shadow
-            # (approved=0); cuando reclame la cuenta (F4), managed_by se limpia
-            # y vuelve a resolver su tier real (Free + brokers censurados).
-            if "managed_by" in keys and row["managed_by"] is not None:
+            # su plan lo paga. PERO esto aplica SOLO mientras sea shadow SIN
+            # RECLAMAR (approved=0, no puede loguear ella misma): en ese caso
+            # el único que la ve es el asesor, vía contexto, con su propio plan.
+            #
+            # Una vez que el cliente RECLAMA la cuenta (F4a: /api/auth/claim),
+            # el endpoint pone approved=1 Y managed_by=NULL (la cuenta pasa a
+            # ser independiente de verdad — el vínculo con el asesor sigue
+            # vivo en advisor_clients, no acá). Esta rama queda inalcanzable
+            # para ella de las dos formas: managed_by ya es NULL, y aunque no
+            # lo fuera, approved=1 la saca del check. Cae a la resolución
+            # normal de abajo (override pago si existe, si no 'free'). Es la
+            # regla de negocio explícita: "el cliente entra a SU cuenta y ve
+            # visión Free — el plan del asesor no incluye a los clientes."
+            # (El asesor, viendo la MISMA cuenta vía X-Rendi-Client-Id, sigue
+            # viendo Pro: /api/plan/features fuerza tier_override='pro' en
+            # contexto, sin pasar por acá.)
+            approved = bool(row["approved"]) if "approved" in keys else True
+            if "managed_by" in keys and row["managed_by"] is not None and not approved:
                 return "pro"
             override = ((row["tier"] if "tier" in keys else None) or "").strip().lower()
             is_admin = bool(row["is_admin"]) if "is_admin" in keys else False

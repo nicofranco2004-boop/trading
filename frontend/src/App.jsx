@@ -28,6 +28,7 @@ import Login from './pages/Login'
 import Landing from './pages/Landing'
 import VerifyEmail from './pages/VerifyEmail'
 import ResetPassword from './pages/ResetPassword'
+import ClaimAccount from './pages/ClaimAccount'
 
 // ─── Lazy imports: páginas del flujo autenticado ──────────────────────────────
 // Cada página queda en su propio chunk JS, descargado on-demand al navegar.
@@ -267,6 +268,9 @@ function Layout() {
               o tras clickear un magic link de password reset. */}
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/reset-password" element={<ResetPassword />} />
+          {/* Plan Asesor: link de invitación — el cliente reclama la cuenta
+              que su asesor cargó, poniendo su propia contraseña. */}
+          <Route path="/claim" element={<ClaimAccount />} />
           {/* Planes — accesible sin login (el visitante decide comprar ANTES
               de crear cuenta; el flow de subscribe en sí requiere login pero
               la página de pricing es 100% pública e indexable por Google). */}
