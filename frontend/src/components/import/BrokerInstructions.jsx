@@ -218,13 +218,14 @@ const BROKERS = [
     id: 'inviu',
     label: 'inviu',
     Logo: InviuLogo,
-    summary: 'Subí dos archivos juntos: el Portfolio Histórico (reconstruye tu historial, tu P&L y tu efectivo) + el Portfolio (tu foto de tenencias de HOY, que fija tus posiciones y saldos exactos).',
+    summary: 'Subí dos archivos juntos: el Reporte de cuenta corriente (reconstruye tu historial, tu P&L y tu efectivo) + el Portfolio (tu foto de tenencias de HOY, que fija tus posiciones y saldos exactos).',
     steps: [
       'En inviu, en la pantalla principal (sección Portfolio), tocá Reportes arriba a la derecha.',
-      'Exportá los dos reportes: Portfolio (se baja directo) y Portfolio Histórico (te pide una fecha — poné la de hoy).',
+      'Reporte de cuenta corriente (tu historial): elegí Tipo “Liquidación”, Cuenta corriente “Consolidada”, y el rango de fechas DESDE QUE EMPEZASTE A OPERAR hasta hoy. Descargá el Excel. ⚠️ Si arrancás en una fecha posterior, falta el fondeo y el saldo no cierra.',
+      'Portfolio (tu foto de hoy): exportalo — se baja directo.',
       'Subí los dos archivos juntos acá — los acomodamos solos (el Portfolio completa lo que el historial no alcanza y pone el costo real).',
     ],
-    parserNote: 'Del Portfolio Histórico reconstruimos compras y ventas (en pesos y en dólares MEP), dividendos, renta y amortización de bonos, comisiones, retenciones, depósitos y retiros, detectando la moneda de cada operación. El Portfolio es tu foto de HOY y MANDA: completa las posiciones que ya tenías de antes con su costo real, cierra tu efectivo (pesos y dólares) y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes? Alcanza con volver a subir el Portfolio.',
+    parserNote: 'Del Reporte de cuenta corriente (Liquidación, Consolidada) reconstruimos compras y ventas (en pesos y en dólares MEP), dividendos, renta y amortización de bonos, comisiones, retenciones, depósitos y retiros, detectando la moneda de cada operación. El Portfolio es tu foto de HOY y MANDA: completa las posiciones que ya tenías de antes con su costo real, cierra tu efectivo (pesos y dólares) y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes? Alcanza con volver a subir el Portfolio.',
   },
 ]
 
