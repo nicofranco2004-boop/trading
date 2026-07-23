@@ -386,6 +386,68 @@ def _detect_iol_conduits(rows: List[dict], G) -> tuple:
     return fx, fee, drop
 
 
+def _detect_iol_dolar_directo(rows: List[dict], G) -> tuple:
+    """'Compra de Dólares' / 'Venta de Dólares' de IOL: el dólar bolsa/MEP que IOL
+    exporta como DOS filas (pata pesos + pata dólares), SIN ticker y con cantidad 0.
+    No es un trade — es una conversión ARS↔USD. Empareja las dos patas (misma fecha
+    + misma 'tasa' cruda del campo Precio) y emite UN FX.
+
+    Formato sucio de IOL: la pata pesos viene en formato AR ('-15.951,00'); la pata
+    dólares a veces en AR literal ('2.400,00'=2400) y a veces como entero pelado con
+    2 decimales implícitos ('20000'=200.00 · '2409'=24.09). El SIGNO identifica la
+    pata: Compra → pesos negativos / dólares positivos; Venta al revés. Guarda de
+    tasa plausible (10–2000 ARS/USD): si no da, NO colapsa (cae al error, visible)
+    en vez de arriesgar un ×100.
+
+    Devuelve (fx, drop): fx {idx_pesos → (fx_op, ars, usd)}, drop {idx_dolar}.
+    """
+    def _amt_dolar(raw: str):
+        s = _strip(raw)
+        v = _num(s)
+        if v == 0:
+            return 0.0
+        return v if "," in s else v / 100.0   # coma → literal; entero pelado → ÷100
+
+    groups: dict = {}
+    for i, row in enumerate(rows, start=1):
+        head = _deaccent(_strip(G(row, "tipomov")).lower())
+        if head.startswith("compra de dolares"):
+            d = "C"
+        elif head.startswith("venta de dolares"):
+            d = "V"
+        else:
+            continue
+        key = (d, _parse_date(G(row, "concert")), _strip(G(row, "precio")))
+        groups.setdefault(key, []).append((i, row))
+
+    fx: dict = {}
+    drop: set = set()
+    for (d, _fecha, _precio), items in groups.items():
+        if len(items) != 2:
+            continue   # esperamos exactamente 2 patas; si no, no adivinamos
+        vals = [(i, _num(G(row, "monto")), G(row, "monto")) for i, row in items]
+        if d == "C":
+            peso = [(i, v, raw) for i, v, raw in vals if v < 0]
+            dol = [(i, v, raw) for i, v, raw in vals if v > 0]
+            fx_op = "FX_ARS_USD"
+        else:
+            peso = [(i, v, raw) for i, v, raw in vals if v > 0]
+            dol = [(i, v, raw) for i, v, raw in vals if v < 0]
+            fx_op = "FX_USD_ARS"
+        if len(peso) != 1 or len(dol) != 1:
+            continue
+        ars = abs(peso[0][1])
+        usd = abs(_amt_dolar(dol[0][2]))
+        if not (ars > 0 and usd > 0):
+            continue
+        rate = ars / usd
+        if not (10.0 <= rate <= 2000.0):   # guarda de tasa → fail-safe (no ×100)
+            continue
+        fx[peso[0][0]] = (fx_op, ars, usd)
+        drop.add(dol[0][0])
+    return fx, drop
+
+
 def _detect_iol_fci_phantoms(rows: List[dict], G) -> set:
     """Doble-booking de FCI en dólares: IOL exporta UNA Suscripción/Rescate de FCI en
     dólares como DOS filas del mismo Boleto+activo (misma cantidad) — la pata de la
@@ -496,6 +558,13 @@ class IolParser(Parser):
         # fantasma del bono + P&L basura + cash fabricado. Ver _detect_iol_conduits.
         conduit_fx, conduit_fee, conduit_drop = _detect_iol_conduits(rows, G)
 
+        # 'Compra/Venta de Dólares' directo (dólar bolsa de IOL, sin bono puente):
+        # dos filas sin ticker → UNA conversión ARS↔USD. Se fusiona con el conducto
+        # (mismo carrier fx/drop). Ver _detect_iol_dolar_directo.
+        _dolar_fx, _dolar_drop = _detect_iol_dolar_directo(rows, G)
+        conduit_fx = {**conduit_fx, **_dolar_fx}
+        conduit_drop = conduit_drop | _dolar_drop
+
         # Doble-booking de FCI en dólares: IOL exporta UNA Suscripción/Rescate de FCI
         # en dólares como DOS filas (mismo Boleto + mismo activo, misma cantidad) — la
         # pata de la moneda real trae el Monto y la otra viene en 0. Si contamos las
@@ -568,7 +637,7 @@ class IolParser(Parser):
                     "cantidad": "", "precio": "",
                     "monto": repr(ars_amt), "monto_usd": repr(usd_amt), "tc": "",
                     "comisiones": "0", "moneda": "",
-                    "notas": f"Conversión dólar-MEP ({tipo_mov})"
+                    "notas": f"Conversión de dólares ({tipo_mov})"
                              + (f" · Boleto {boleto}" if boleto and boleto != "0" else ""),
                 }))
                 continue
