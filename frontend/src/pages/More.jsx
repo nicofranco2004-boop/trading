@@ -16,6 +16,7 @@ import RecommendationsModal from '../components/RecommendationsModal'
 import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
 
 // Restructure 2026-05-27: 7 items en 3 grupos, espejado del sidebar desktop.
 // Las URLs viejas (/dashboard, /insights, etc.) redirigen al wrapper consolidado
@@ -45,7 +46,13 @@ const GROUPS = [
 export default function More() {
   const { user, logout } = useAuth()
   const coachDrawer = useCoachDrawer()
+  const { clientCtx } = useAdvisorContext()
   const [recomOpen, setRecomOpen] = useState(false)
+
+  // El asesor en su propio nivel (sin haber entrado a un cliente) no tiene
+  // cartera propia — "Tu portfolio"/"Análisis" no aplican, mismo criterio
+  // que el sidebar desktop. Adentro de un cliente (clientCtx) es SU cartera.
+  const atOwnLevel = user?.tier === 'advisor' && !clientCtx
 
   const allGroups = [
     // Plan Asesor: el roster es SU home — sin esta entrada, en mobile no había
@@ -55,10 +62,10 @@ export default function More() {
       items: [{ to: '/clientes', label: 'Clientes', icon: UserRound, sub: 'Tus clientes y el resumen de sus carteras' }],
     }] : []),
     // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.
-    ...GROUPS.map(g => ({
+    ...(atOwnLevel ? [] : GROUPS.map(g => ({
       ...g,
       items: g.items.filter(it => !it.adminOnly || user?.is_admin),
-    })),
+    }))),
     ...(user?.is_admin
       ? [{
           label: 'Admin',
