@@ -157,8 +157,37 @@ export default function Sidebar() {
 
       {/* Navegación */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-5 px-2.5">
-        {/* Plan Asesor: acceso al roster, arriba de todo (es SU home). */}
-        {isAdvisor && (
+        {/* Plan Asesor: Dashboard (el libro) + Clientes (el roster), arriba de
+            todo — es SU home. Dashboard acá es standalone, no el de la
+            sección Tu Cartera (oculta en este estado): adentro de un cliente
+            ese grupo reaparece con SU PROPIO Dashboard, así que no conviven
+            los dos al mismo tiempo. */}
+        {atOwnLevel && (
+          <div className="mb-4 space-y-1">
+            <NavLink to="/dashboard" title={collapsed ? 'Dashboard' : undefined}
+              onMouseEnter={() => prefetchRoute('/dashboard')} onFocus={() => prefetchRoute('/dashboard')}
+              className={rowCls}>
+              {({ isActive }) => (<>
+                {isActive && <ActiveBar />}
+                <LayoutDashboard size={18} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span>Dashboard</span>}
+              </>)}
+            </NavLink>
+            <NavLink to="/clientes" title={collapsed ? 'Clientes' : undefined}
+              onMouseEnter={() => prefetchRoute('/clientes')} onFocus={() => prefetchRoute('/clientes')}
+              className={rowCls}>
+              {({ isActive }) => (<>
+                {isActive && <ActiveBar />}
+                <Users size={18} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span>Clientes</span>}
+              </>)}
+            </NavLink>
+          </div>
+        )}
+        {/* Dentro de un cliente, "Clientes" sigue accesible para volver al
+            roster, pero SIN el Dashboard standalone de arriba (ese cliente
+            ya tiene el suyo propio en la sección Tu Cartera de abajo). */}
+        {isAdvisor && !atOwnLevel && (
           <div className="mb-4">
             <NavLink to="/clientes" title={collapsed ? 'Clientes' : undefined}
               onMouseEnter={() => prefetchRoute('/clientes')} onFocus={() => prefetchRoute('/clientes')}

@@ -56,10 +56,15 @@ export default function More() {
 
   const allGroups = [
     // Plan Asesor: el roster es SU home — sin esta entrada, en mobile no había
-    // forma de volver a /clientes navegando (solo tipeando la URL).
+    // forma de volver a /clientes navegando (solo tipeando la URL). Dashboard
+    // (el libro) solo tiene sentido en su propio nivel — adentro de un
+    // cliente, "Dashboard" ya aparece más abajo como el de ESE cliente.
     ...(user?.tier === 'advisor' ? [{
       label: 'Plan Asesor',
-      items: [{ to: '/clientes', label: 'Clientes', icon: UserRound, sub: 'Tus clientes y el resumen de sus carteras' }],
+      items: [
+        ...(atOwnLevel ? [{ to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, sub: 'Tu libro: AUM total, estrella, colas' }] : []),
+        { to: '/clientes', label: 'Clientes', icon: UserRound, sub: 'Tus clientes y el resumen de sus carteras' },
+      ],
     }] : []),
     // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.
     ...(atOwnLevel ? [] : GROUPS.map(g => ({
