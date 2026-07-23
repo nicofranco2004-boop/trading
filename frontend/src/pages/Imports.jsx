@@ -175,6 +175,14 @@ export default function Imports() {
         subtitle={isFirstUse ? "Subí el CSV de tu broker y en un minuto ves tu P&L real en dólares." : undefined}
         action={
           <div className="flex items-center gap-2">
+            {/* CTA principal PRIMERO (izquierda) — la fila scrollea horizontal en
+                mobile y esto dejaba "Nueva importación" escondida al final. */}
+            <button
+              onClick={() => setShowWizard(true)}
+              className="inline-flex items-center gap-1.5 text-[12.5px] bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-2.5 py-1.5 rounded-sm transition-colors font-medium"
+            >
+              <Upload size={12} strokeWidth={2} /> Nueva importación
+            </button>
             {!isFirstUse && (
               <button
                 onClick={doRecalcPnl}
@@ -237,12 +245,6 @@ export default function Imports() {
                 <Upload size={12} strokeWidth={1.75} /> Resumen IOL
               </button>
             )}
-            <button
-              onClick={() => setShowWizard(true)}
-              className="inline-flex items-center gap-1.5 text-[12.5px] bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-2.5 py-1.5 rounded-sm transition-colors font-medium"
-            >
-              <Upload size={12} strokeWidth={2} /> Nueva importación
-            </button>
           </div>
         }
       />

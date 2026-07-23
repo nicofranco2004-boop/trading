@@ -401,12 +401,21 @@ def _detect_iol_dolar_directo(rows: List[dict], G) -> tuple:
 
     Devuelve (fx, drop): fx {idx_pesos → (fx_op, ars, usd)}, drop {idx_dolar}.
     """
-    def _amt_dolar(raw: str):
+    def _amt_dolar_candidates(raw: str):
+        """Interpretaciones posibles de la pata dólar, EN ORDEN de preferencia.
+        Con coma (formato AR original) → literal, sin ambigüedad. Sin coma, IOL
+        exporta enteros con 2 decimales implícitos ('20000'=200.00) PERO un
+        re-export vía Google Sheets/Excel pierde la coma AR ('2.400,00'→'2400')
+        → ambiguo. Probamos ÷100 primero (el formato nativo de IOL) y literal
+        como fallback; el CALLER elige la primera con tasa plausible. Nunca se
+        emite nada fuera del guard → un empate imposible cae al error visible."""
         s = _strip(raw)
         v = _num(s)
         if v == 0:
-            return 0.0
-        return v if "," in s else v / 100.0   # coma → literal; entero pelado → ÷100
+            return []
+        if "," in s:
+            return [v]                 # literal AR — sin ambigüedad
+        return [v / 100.0, v]          # ÷100 (nativo IOL) primero, literal después
 
     groups: dict = {}
     for i, row in enumerate(rows, start=1):
@@ -437,11 +446,17 @@ def _detect_iol_dolar_directo(rows: List[dict], G) -> tuple:
         if len(peso) != 1 or len(dol) != 1:
             continue
         ars = abs(peso[0][1])
-        usd = abs(_amt_dolar(dol[0][2]))
-        if not (ars > 0 and usd > 0):
+        if ars <= 0:
             continue
-        rate = ars / usd
-        if not (10.0 <= rate <= 2000.0):   # guarda de tasa → fail-safe (no ×100)
+        # Primera interpretación de la pata dólar con tasa plausible (guarda
+        # 10–2000 ARS/USD = fail-safe: si ninguna da, NO colapsamos → error visible).
+        usd = None
+        for cand in _amt_dolar_candidates(dol[0][2]):
+            c = abs(cand)
+            if c > 0 and 10.0 <= ars / c <= 2000.0:
+                usd = c
+                break
+        if usd is None:
             continue
         fx[peso[0][0]] = (fx_op, ars, usd)
         drop.add(dol[0][0])
