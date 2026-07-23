@@ -50,7 +50,7 @@ export default function More() {
   const allGroups = [
     // Plan Asesor: el roster es SU home — sin esta entrada, en mobile no había
     // forma de volver a /clientes navegando (solo tipeando la URL).
-    ...((user?.tier === 'advisor' || user?.is_admin) ? [{
+    ...(user?.tier === 'advisor' ? [{
       label: 'Plan Asesor',
       items: [{ to: '/clientes', label: 'Clientes', icon: UserRound, sub: 'Tus clientes y el resumen de sus carteras' }],
     }] : []),

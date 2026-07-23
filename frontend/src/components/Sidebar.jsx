@@ -88,8 +88,10 @@ export default function Sidebar() {
   const coachDrawer = useCoachDrawer()
   const location = useLocation()
   const { unseenCount = 0 } = useAlertsContext()  // badge de alertas sin ver
-  // Ítem "Clientes": asesores + admin (mismo predicado que el gate de /clientes)
-  const isAdvisor = user?.tier === 'advisor' || !!user?.is_admin
+  // Ítem "Clientes": solo cuentas con el plan Asesor de verdad (mismo
+  // predicado que el gate de /clientes) — is_admin NO alcanza, se paga o se
+  // otorga por grant-comp, no es un bypass genérico de admin.
+  const isAdvisor = user?.tier === 'advisor'
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
 

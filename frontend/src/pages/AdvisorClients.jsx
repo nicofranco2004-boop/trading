@@ -47,7 +47,9 @@ export default function AdvisorClients() {
   // Gate por IDENTIDAD (useAuth), no por plan features: en contexto de
   // cliente /plan/features devuelve el lente 'pro' y un gate por tier
   // rebotaba al asesor a "/" justo cuando volvía al roster (race del review).
-  const isAdvisor = user?.tier === 'advisor' || !!user?.is_admin
+  // is_admin NO es un bypass acá — el plan Asesor se paga o se otorga por
+  // grant-comp, no lo desbloquea genéricamente ser cuenta de administrador.
+  const isAdvisor = user?.tier === 'advisor'
 
   const load = useCallback(async () => {
     try {

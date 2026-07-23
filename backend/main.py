@@ -1969,10 +1969,13 @@ def get_effective_user(
 
 
 def _require_advisor(conn, uid: int) -> str:
-    """Gate de los endpoints /api/advisor/*: tier 'advisor' o admin."""
+    """Gate de los endpoints /api/advisor/*: tier 'advisor' de verdad —
+    is_admin NO alcanza (a diferencia de otros gates de la app, el plan
+    Asesor se paga o se otorga por grant-comp explícito; una cuenta admin
+    sin ese otorgamiento no debe poder crear/gestionar clientes reales)."""
     from ai import quota as _q
     tier = _q.get_tier(conn, uid)
-    if tier not in ("advisor", "admin"):
+    if tier != "advisor":
         raise HTTPException(403, "Requiere el plan Asesor")
     return tier
 
