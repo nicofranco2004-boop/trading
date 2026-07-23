@@ -1404,11 +1404,16 @@ def parse_inviu_tenencia(rows) -> TenenciaSnapshot:
         qty = qty_cant if (qty_cant and qty_cant > 0) else ((qty_disp or 0.0) + (qty_gar or 0.0))
 
         # Sección Moneda = cash (fila ARS en pesos, fila USD en unidades USD).
+        # inviu puede listar más de un bucket de dólar (USD = MEP, USD.C = Cable);
+        # ambos consolidan al cash USD (espejo del voucher, que consolida las
+        # secciones "Dólar MEP" + "Dólar Cable" en USD) — sin sumar el cable, el
+        # true-up contra la foto recortaba ese saldo del sibling.
         if section == "CASH":
+            amt = qty_disp if qty_disp is not None else qty_cant
             if ticker == "ARS":
-                snap.cash_ars = qty_disp if qty_disp is not None else qty_cant
-            elif ticker == "USD":
-                snap.cash_usd = qty_disp if qty_disp is not None else qty_cant
+                snap.cash_ars = amt
+            elif ticker == "USD" or ticker.startswith("USD."):
+                snap.cash_usd = (snap.cash_usd or 0.0) + (amt or 0.0)
             continue
 
         if qty <= 1e-9:

@@ -9,8 +9,18 @@ Columnas:
   Fecha de Concertación · Fecha de Liquidación · Descripción · Tipo de Operación ·
   Ticker · Cantidad VN · Precio · Import Bruto · Importe Neto · Saldo
 
+Variantes del export (verificadas contra exports reales):
+  • "Cuenta Corriente Monetaria" — solo la parte de CASH (secciones por moneda).
+  • "Cuenta Corriente Consolidada" — lo mismo + sección "Disponible - Instrumentos":
+    el registro de movimientos de TÍTULOS por especie (nominales, sin cash). Esa
+    sección es REDUNDANTE (cada boleto ya está en la parte monetaria con su cash)
+    y sus filas confunden nominales con plata → se CORTA el parseo al llegar a su
+    marcador. Sin el corte, cada boleto se importaba DOS veces y la segunda con
+    montos en pesos/nominales etiquetados como dólares (cartera inflada ×miles).
+
 Reglas clave (verificadas contra un export real):
-  • La MONEDA sale de la sección vigente (fila marcador "PESOS - $" / "Dólar MEP").
+  • La MONEDA sale de la sección vigente (fila marcador "PESOS - $" / "Dólar MEP -
+    U$S" / "Dólar Cable - U$C" — ambas variantes de dólar consolidan a USD).
   • `Importe Neto` = efecto real en el saldo (Saldo[i] = Saldo[i-1] + Neto).
   • Trades (CPRA/VENTA): `Import Bruto` = Cantidad×Precio; la comisión/impuesto está
     en la diferencia |Neto|−|Bruto| → emitimos monto=|Bruto| + comisiones=|Neto|−|Bruto|.
@@ -191,8 +201,16 @@ class InviuParser(Parser):
         for row in reader:
             fecha_raw = _g(row, "fecha")
 
-            # Marcador de sección de moneda ("PESOS - $" / "Dólar MEP - U$S"): cae en
-            # la primera columna. Actualiza la moneda y sigue.
+            # ── Fin de la parte monetaria ────────────────────────────────────
+            # "Disponible - Instrumentos" abre el registro de TÍTULOS por especie
+            # (export "Consolidada"): filas de nominales SIN cash, redundantes con
+            # los boletos de la parte monetaria. Cortamos acá — seguir las contaba
+            # como compras en dólares con montos en pesos (cartera inflada).
+            if _norm(fecha_raw).startswith("disponible - instrumentos"):
+                break
+
+            # Marcador de sección de moneda ("PESOS - $" / "Dólar MEP - U$S" /
+            # "Dólar Cable - U$C"): cae en la primera columna. Actualiza la moneda.
             sec = _section_ccy(fecha_raw)
             if sec:
                 moneda = sec

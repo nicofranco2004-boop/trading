@@ -223,5 +223,67 @@ class InviuTenenciaTest(unittest.TestCase):
         self.assertTrue(any("no reconocemos" in w for w in snap.warnings))
 
 
+class InviuConsolidadaTest(unittest.TestCase):
+    """Export "Cuenta Corriente Consolidada": trae la sección "Disponible -
+    Instrumentos" (movimientos de títulos por especie, nominales sin cash) que es
+    redundante — el parseo CORTA ahí. Sin el corte, cada boleto se contaba dos
+    veces y la segunda con montos peso/nominal etiquetados USD (cartera ×miles)."""
+
+    SAMPLE = (
+        "Fecha de Concertación,Fecha de Liquidación,Descripción,Tipo de Operación,"
+        "Ticker,Cantidad VN,Precio,Import Bruto,Importe Neto,Saldo,_hoja\n"
+        "PESOS - $,,,,,,,,,,\n"
+        "13/3/2024,13/3/2024,Recibo de Cobro / 1,Recibo de Cobro,-,-,0,300000,300000,300000,\n"
+        "13/3/2024,15/3/2024,Boleto / 1 / CPRA / 2 / NVDA / $,CPRA,NVDA,4,39316.5,-157266,-159321.15,140678.85,\n"
+        "Dólar Cable - U$C,,,,,,,,,,\n"
+        "16/2/2024,16/2/2024,Recibo de Cobro / 2,Recibo de Cobro,-,-,0,378.10,378.10,378.10,\n"
+        "Dólar MEP - U$S,,,,,,,,,,\n"
+        "16/2/2024,16/2/2024,Recibo de Cobro / 3,Recibo de Cobro,-,-,0,127.49,127.49,127.49,\n"
+        "Disponible - Instrumentos,,,,,,,,,,\n"
+        "CEDEAR NVIDIA CORPORATION - NVDA /8469,,,,,,,,,,\n"
+        "13/3/2024,15/3/2024,Boleto / 1 / CPRA / 2 / NVDA / $,CPRA,NVDA,4,39316.5,-157266,4,4,\n"
+        "1/6/2026,2/6/2026,Boleto / 9 / CPRA / 1 / YPFD / $,CPRA,YPFD,2,83000,-166000,2,6,\n"
+    )
+
+    def setUp(self):
+        self.res = InviuParser().parse(self.SAMPLE)
+        self.rows = self.res.raw_rows
+
+    def test_corta_en_instrumentos(self):
+        # Solo UNA compra (la de la sección monetaria) — las filas de Instrumentos
+        # (NVDA repetido + YPFD en nominales) NO se importan.
+        compras = _by_tipo(self.rows, "COMPRA")
+        self.assertEqual(len(compras), 1)
+        self.assertEqual(compras[0].data["activo"], "NVDA")
+        self.assertNotIn("YPFD", [r.data.get("activo") for r in self.rows])
+
+    def test_dolar_cable_es_usd(self):
+        deps = _by_tipo(self.rows, "DEPOSITO")
+        usd = [r for r in deps if r.data["moneda"] == "USD"]
+        self.assertEqual(len(usd), 2)   # cable 378.10 + MEP 127.49
+        self.assertAlmostEqual(sum(float(r.data["monto"]) for r in usd), 505.59, places=2)
+
+    def test_cash_reconcilia_consolidada(self):
+        cash = {}
+        for r in self.rows:
+            d = r.data
+            m = float(d.get("monto") or 0); c = float(d.get("comisiones") or 0)
+            tp = d["tipo"]
+            eff = (m - c) if tp == "VENTA" else -(m + c) if tp == "COMPRA" else m * {"DEPOSITO": 1, "DIVIDENDO": 1, "INTERES": 1, "RETIRO": -1, "FEE": -1, "IMPUESTO": -1}.get(tp, 0)
+            cash[d["moneda"]] = cash.get(d["moneda"], 0.0) + eff
+        self.assertAlmostEqual(cash["ARS"], 140678.85, places=2)
+        self.assertAlmostEqual(cash["USD"], 505.59, places=2)
+
+
+class InviuTenenciaCableTest(unittest.TestCase):
+    def test_cash_usd_suma_mep_y_cable(self):
+        rows = [r[:] for r in TEN_ROWS]
+        # insertar fila USD.C (Dólar Cable) en la sección Moneda, después de USD
+        idx = next(i for i, r in enumerate(rows) if r[0] == "USD")
+        rows.insert(idx + 1, ["USD.C", "Dólar Cable", None, 0, 378.10, "ARS", 1564.84, None, None, 0, None, None, 0, None])
+        snap = parse_inviu_tenencia(rows)
+        self.assertAlmostEqual(snap.cash_usd, 127.49 + 378.10, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
