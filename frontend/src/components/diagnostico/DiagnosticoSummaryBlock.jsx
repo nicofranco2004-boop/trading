@@ -52,10 +52,10 @@ export default function DiagnosticoSummaryBlock({ params = {}, className = '' })
             <Sparkles size={13} strokeWidth={1.9} className="text-data-violet" />
           </span>
           <div className="min-w-0">
-            <div className="font-mono text-[9.5px] uppercase tracking-caps text-data-violet font-semibold leading-none">
+            <div className="text-[11.5px] text-data-violet font-semibold leading-none">
               Lectura IA · {tierLabel}
             </div>
-            <h3 className="text-sm font-semibold text-ink-0 leading-tight mt-0.5">
+            <h3 className="text-[15px] font-semibold text-ink-0 leading-tight mt-1">
               Tu lectura personalizada
             </h3>
           </div>

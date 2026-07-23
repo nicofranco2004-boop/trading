@@ -971,6 +971,63 @@ def send_password_reset(*, to: str, user_name: str, reset_url: str,
                  from_addr=_from_support())
 
 
+def send_advisor_claim(*, to: str, advisor_name: str, client_label: str,
+                      claim_url: str, expires_days: int = 7) -> bool:
+    """Invitación del Plan Asesor: el asesor cargó la cartera del cliente en
+    Rendi y lo invita a reclamar SU PROPIA cuenta (poner contraseña) para
+    entrar a ver lo que ya tiene cargado. Mismo patrón que send_password_reset
+    (magic link con token en la query string).
+
+    SECURITY: advisor_name (users.name) y client_label (AdvisorClientIn.label)
+    son user-controlled por la cuenta ASESOR que invita — html.escape antes de
+    interpolar en el HTML, para que un asesor no pueda inyectar markup/links en
+    un email que Rendi manda a un tercero (mismo patrón que send_plan_change_admin)."""
+    advisor_name = (advisor_name or "").strip() or "Tu asesor"
+    client_label = (client_label or "").strip() or "tu cuenta"
+    # SECURITY: escapadas SOLO para el HTML — el texto plano y el subject usan
+    # los valores crudos (escapar ahí mostraría "&amp;" literal en el inbox).
+    safe_advisor = html.escape(advisor_name)
+    safe_label = html.escape(client_label)
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu asesor te invitó a Rendi</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        <b>{safe_advisor}</b> te está siguiendo en Rendi y ya cargó tu cartera
+        (<b>{safe_label}</b>) para que puedas verla vos también.
+      </p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 24px;">
+        Creá tu contraseña para entrar a tu cuenta:
+      </p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="{claim_url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
+          Crear mi contraseña
+        </a>
+      </div>
+      <p style="font-size:13px;color:#6b7280;line-height:1.6;margin:0 0 8px;">
+        O copiá y pegá este link en tu navegador:
+      </p>
+      <p style="font-size:11px;color:#8B7BFF;word-break:break-all;font-family:monospace;background:#f9fafb;padding:10px;border-radius:4px;margin:0 0 20px;">
+        {claim_url}
+      </p>
+      <p style="font-size:13px;color:#6b7280;line-height:1.6;">
+        El link vence en <b>{expires_days} días</b>. Si no reconocés a {safe_advisor}
+        o no querés crear tu cuenta, ignorá este email — no se crea nada sin este link.
+      </p>
+    """
+    text = (
+        f"Tu asesor te invitó a Rendi\n\n"
+        f"{advisor_name} te está siguiendo en Rendi y ya cargó tu cartera ({client_label}) "
+        f"para que puedas verla vos también.\n\n"
+        f"Para crear tu contraseña y entrar, abrí este link:\n"
+        f"{claim_url}\n\n"
+        f"El link vence en {expires_days} días.\n\n"
+        f"Si no reconocés a {advisor_name}, ignorá este email — no se crea nada sin el link.\n\n"
+        f"— Rendi"
+    )
+    return _send(to, f"{advisor_name} te invitó a ver tu cartera en Rendi",
+                 _wrap_html(body_html), text,
+                 from_addr=_from_support())
+
+
 def send_new_login_alert(*, to: str, user_name: str, device: str,
                          ip: str, when: str) -> bool:
     """Avisa al usuario que se detectó un inicio de sesión desde un

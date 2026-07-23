@@ -5,7 +5,6 @@ import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import StatCard from '../components/StatCard'
 import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
@@ -18,15 +17,11 @@ import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { isBondPosition } from '../utils/tickers'
 import { detectPendingCashflows } from '../utils/pendingCashflows'
-import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
+import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import { track } from '../utils/track'
-import {
-  generateSchedule,
-  getRemainingPayments,
-  estimateYieldDetailed,
-  nextPaymentForPosition,
-} from '../utils/bondSchedule'
+import { nextPaymentForPosition } from '../utils/bondSchedule'
+import BondDetailRow from '../components/BondDetail'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate } from '../utils/valuation'
@@ -92,7 +87,7 @@ export default function Positions() {
 function PositionsDesktop() {
   // Fase A: currency global compartido — Positions desktop respeta el toggle
   // global USD/ARS (mismo state que Dashboard, HomeMobile, PositionsMobile).
-  const { currency: displayCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
+  const { currency: displayCurrency, setCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
   const { hidden, toggle: togglePrivacy } = usePrivacy()
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
@@ -263,6 +258,45 @@ function PositionsDesktop() {
   const pendingCashflows = useMemo(() => {
     return detectPendingCashflows(positions, bondOps, bondSkips)
   }, [positions, bondOps, bondSkips])
+
+  // Fechas pendientes por bono (`broker:asset` → Set de fechas ISO) — el
+  // timeline del detalle las marca en ámbar ("venció sin confirmar").
+  const pendingDatesByKey = useMemo(() => {
+    const m = new Map()
+    for (const it of pendingCashflows) {
+      const k = `${it.broker}:${it.asset}`
+      if (!m.has(k)) m.set(k, new Set())
+      m.get(k).add(it.date)
+    }
+    return m
+  }, [pendingCashflows])
+
+  // Confirmación DIRECTA desde el inbox (1 click, sin modal) — v2 de bonos.
+  // SOLO cupones y sin cross-currency: el monto teórico está en la moneda del
+  // bono; si el broker cobra en otra (bono USD en broker ARS) o hay que
+  // decrementar VN (amortizaciones), el flujo cae al modal ("Revisar").
+  const [confirmingKey, setConfirmingKey] = useState(null)
+  async function confirmPendingDirect(item) {
+    setConfirmingKey(item.key)
+    try {
+      await api.post('/bonds/cashflow', {
+        broker: item.broker,
+        asset: item.asset,
+        flow_type: 'coupon',
+        amount: item.coupon || item.total,
+        date: item.date,
+        commissions: 0,
+        notes: 'Confirmado desde el inbox (monto teórico del cronograma)',
+        decrement_quantity: false,
+      })
+      toast.push(`${item.asset} · cupón del ${item.date} registrado · +${item.currency} ${(item.coupon || item.total).toFixed(2)}`, { type: 'success' })
+      await loadAll()
+    } catch (e) {
+      toast.push(`No se pudo registrar: ${e.message}`, { type: 'error' })
+    } finally {
+      setConfirmingKey(null)
+    }
+  }
 
   // Click "Confirmar" en un item del inbox → abre BondCashflowModal con la
   // posición correspondiente. El modal usa nextPaymentForPosition para
@@ -513,10 +547,17 @@ function PositionsDesktop() {
     setModal('add')
   }
   function openEdit(p) {
+    // Muchas posiciones (imports) tienen buy_price null/0 en la DB: la grilla
+    // deriva el precio de invested/quantity, pero el form mostraba 0 → para
+    // editar solo los nominales había que re-buscar el precio. Mismo fallback
+    // que la grilla, redondeado para que el input quede editable.
+    const fallbackPrice = (!p.is_cash && !p.buy_price && p.quantity > 0 && p.invested > 0)
+      ? +(p.invested / p.quantity).toFixed(6)
+      : null
     setForm({
       ...p,
       is_cash: !!p.is_cash,
-      buy_price: p.buy_price ?? '',
+      buy_price: (p.buy_price || fallbackPrice) ?? '',
       quantity: p.quantity ?? '',
       invested: p.invested ?? '',
       tc_compra: p.tc_compra ?? '',
@@ -1118,14 +1159,16 @@ function PositionsDesktop() {
   // en el mismo orden en cada render (rules of hooks).
   const totals = useMemo(() => {
     let value = 0, invested = 0
+    const byBroker = {}
     for (const b of brokers) {
       const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis)
+      byBroker[b.name] = r
       value += r.value || 0
       invested += r.invested || 0
     }
     const pnl = value - invested
     const pct = invested > 0 ? pnl / invested : 0
-    return { value, invested, pnl, pct }
+    return { value, invested, pnl, pct, byBroker }
   }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto, costBasis])
 
   // Totales en modo 'today' (mode-independent) para el hero en display ARS: el peso
@@ -1198,7 +1241,7 @@ function PositionsDesktop() {
 
   if (brokers.length === 0) {
     return (
-      <div className="page-shell-wide">
+      <div className="page-shell-xwide">
         <PageHeader
           eyebrow="Posiciones / Activas"
           title="Tu cartera en vivo"
@@ -1211,7 +1254,7 @@ function PositionsDesktop() {
             no existe — ahora el flow vive acá en Posiciones. */}
         <BrokerManager brokers={brokers} onChange={loadAll} />
 
-        <div className="bg-bg-1 border border-line rounded mt-6">
+        <div className="bg-bg-1 border border-line rounded-xl mt-6">
           <EmptyState
             title="Sumá tu primer broker"
             description='Apretá "+ Agregar broker" arriba para empezar. Después vas a poder cargar posiciones, importar CSV o sumar más cuentas.'
@@ -1253,7 +1296,7 @@ function PositionsDesktop() {
   ).length
 
   return (
-    <div className="page-shell-wide">
+    <div className="page-shell-xwide">
       <PageHeader
         eyebrow="Posiciones / Activas"
         title="Tu cartera en vivo"
@@ -1300,6 +1343,8 @@ function PositionsDesktop() {
         pending={pendingCashflows}
         brokers={brokers}
         onConfirm={confirmPendingCashflow}
+        onConfirmDirect={confirmPendingDirect}
+        confirmingKey={confirmingKey}
         onSkip={skipPendingCashflow}
       />
 
@@ -1312,47 +1357,46 @@ function PositionsDesktop() {
           Phase A: respeta el toggle global USD/ARS — los pesos siguen al user
           a través de todas las pantallas.
           ══════════════════════════════════════════════════════════════════════ */}
-      <div className="mb-4">
-        <StatCard
-          tone="hero"
-          label="Tu cartera hoy"
-          value={
-            <span className="inline-flex items-end gap-3">
-              <PrivacyMask><FlashValue value={isArsDisp ? heroValueArs : heroValue}><AnimatedNumber value={isArsDisp ? heroValueArs : heroValue} format={(n) => isArsDisp ? fmtArs(n) : fmtUsd(n)} /></FlashValue></PrivacyMask>
-              <button onClick={togglePrivacy} className="mb-2 text-ink-3 hover:text-ink-0 transition-colors flex-shrink-0" title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}>
-                {hidden ? <EyeOff size={22} strokeWidth={1.5} /> : <Eye size={22} strokeWidth={1.5} />}
-              </button>
+      <div className="mb-5 bg-bg-1 border border-line rounded-xl px-5 sm:px-6 py-5">
+        <p className="eyebrow mb-2">Tu cartera hoy</p>
+        <div className="flex items-end gap-3">
+          <span className="text-[30px] sm:text-[34px] leading-none font-semibold text-ink-0 tabular">
+            <PrivacyMask><FlashValue value={isArsDisp ? heroValueArs : heroValue}><AnimatedNumber value={isArsDisp ? heroValueArs : heroValue} format={(n) => isArsDisp ? fmtArs(n) : fmtUsd(n)} /></FlashValue></PrivacyMask>
+          </span>
+          <button onClick={togglePrivacy} className="mb-0.5 text-ink-3 hover:text-ink-0 transition-colors flex-shrink-0" title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}>
+            {hidden ? <EyeOff size={20} strokeWidth={1.5} /> : <Eye size={20} strokeWidth={1.5} />}
+          </button>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap mt-3.5 text-[12.5px]">
+          <span
+            className={`inline-flex items-center gap-1.5 font-medium tabular rounded-full px-2.5 py-1 ${heroPnlDisp >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}
+            title="P&L no realizado"
+          >
+            {heroPnlDisp >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
+            {hidden ? '••••••' : (isArsDisp
+              ? `${heroPnlArs >= 0 ? '+' : '−'}ARS ${ars(Math.abs(heroPnlArs))}`
+              : `${heroPnl >= 0 ? '+' : '−'}USD ${usd(Math.abs(heroPnl))}`)}
+            <span className="opacity-80">· {pctSigned(heroPctDisp)}</span>
+          </span>
+          {!hidden && (
+            <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
+              <span className="text-ink-3">Invertido</span>
+              {isArsDisp ? `ARS ${ars(heroInvestedArs)}` : `USD ${usd(heroInvested)}`}
             </span>
-          }
-          sub={
-            <span className="inline-flex items-center gap-3 flex-wrap">
-              <span className="text-ink-2">P&L no realizado</span>
-              <span className={`inline-flex items-center gap-1 font-semibold ${heroPnlDisp >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {heroPnlDisp >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
-                {hidden ? '••••••' : (isArsDisp
-                  ? `ARS ${ars(Math.abs(heroPnlArs))}`
-                  : `USD ${usd(Math.abs(heroPnl))}`)}
-              </span>
-              <span className={`tabular ${heroPnlDisp >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
-                ({pctSigned(heroPctDisp)})
-              </span>
-            </span>
-          }
-          hint={hidden ? undefined : (
-            isArsDisp
-              ? `Invertido ARS ${ars(heroInvestedArs)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
-              : `Invertido USD ${usd(heroInvested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
           )}
-        />
+          <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
+            {brokers.length} {brokers.length === 1 ? 'broker activo' : 'brokers activos'}
+          </span>
+        </div>
       </div>
 
       {/* Banner de variación diaria deshabilitado — requiere snapshots
           confiables (cron server-side) que aún no están implementados. */}
 
-      {/* Broker chips + agregar (movido desde /config). Va debajo del hero
+      {/* Broker cards + agregar (movido desde /config). Va debajo del hero
           KPI y antes del breakdown detallado por broker para que el user
-          vea sus cuentas conectadas de un vistazo. */}
-      <BrokerManager brokers={brokers} onChange={loadAll} />
+          vea sus cuentas conectadas de un vistazo, con valor y P&L nativos. */}
+      <BrokerManager brokers={brokers} onChange={loadAll} totals={totals.byBroker} hidden={hidden} />
 
       {/* ─── Barra de filtros + orden ─────────────────────────────────────
           Buscar activo · filtrar por broker (Todos | uno) · ordenar dentro de
@@ -1366,7 +1410,7 @@ function PositionsDesktop() {
             onChange={e => setFilterAsset(e.target.value)}
             placeholder="Buscar activo…"
             aria-label="Buscar activo"
-            className="bg-bg-2 border border-line rounded-sm pl-8 pr-2 py-1.5 text-xs text-ink-1 placeholder:text-ink-3 focus:outline-none focus:border-ink-2 w-44"
+            className="bg-bg-2 border border-line rounded-full pl-8 pr-3 py-1.5 text-xs text-ink-1 placeholder:text-ink-3 focus:outline-none focus:border-ink-2 w-44"
           />
         </div>
         <FilterPill
@@ -1376,10 +1420,33 @@ function PositionsDesktop() {
           options={[{ id: 'all', label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]}
         />
         <FilterPill label="Ordenar" value={sortBy} onChange={setSortBy} options={SORT_OPTIONS} />
+        {/* Toggle global de moneda (USD | ARS). Convierte TODAS las tarjetas de
+            broker + tablas al tipo de cambio activo (mismo state que el hero y el
+            resto de la app — persiste en localStorage 'rendi_display_currency'). */}
+        <div className="inline-flex items-center rounded-full border border-line-2 bg-bg-2 p-0.5" role="group" aria-label="Moneda de visualización">
+          <button
+            type="button"
+            onClick={() => setCurrency('USD')}
+            aria-pressed={!isArsDisp}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition ${!isArsDisp ? 'bg-data-violet/15 text-data-violet' : 'text-ink-2 hover:text-ink-0'}`}
+            title="Mostrar toda la cartera en dólares"
+          >
+            USD
+          </button>
+          <button
+            type="button"
+            onClick={() => setCurrency('ARS')}
+            aria-pressed={isArsDisp}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition ${isArsDisp ? 'bg-data-violet/15 text-data-violet' : 'text-ink-2 hover:text-ink-0'}`}
+            title="Mostrar toda la cartera en pesos (al tipo de cambio activo)"
+          >
+            ARS
+          </button>
+        </div>
         <button
           type="button"
           onClick={() => setShowAllLots(v => !v)}
-          className={`inline-flex items-center gap-1 text-xs font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-md border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'}`}
+          className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
           title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
         >
           <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {showAllLots ? 'Ver agregado' : 'Ver lotes'}
@@ -1387,7 +1454,7 @@ function PositionsDesktop() {
         <button
           type="button"
           onClick={toggleCompact}
-          className={`inline-flex items-center gap-1 text-xs font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-md border transition ${compact ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'}`}
+          className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${compact ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
           title="Compacta las filas para ver más columnas sin scrollear de costado."
         >
           <RowsIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {compact ? 'Cómodo' : 'Compacto'}
@@ -1396,7 +1463,7 @@ function PositionsDesktop() {
           <button
             type="button"
             onClick={() => { setFilterAsset(''); setFilterBroker('all') }}
-            className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition"
+            className="inline-flex items-center gap-1 text-[12.5px] text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition font-medium"
           >
             <X size={12} strokeWidth={1.75} aria-hidden="true" /> Limpiar
           </button>
@@ -1478,30 +1545,46 @@ function PositionsDesktop() {
         // ── Header (compartido) ────────────────────────────────────────────
         // Eyebrow 'Broker' + nombre prominente · badges discretos · métricas
         // inline · acciones a la derecha. Patrón specimen sheet del audit.
-        // Broker ARS: el P&L del header es NATIVO en pesos (monto, signo, color y %),
-        // mode-independent — consistente con Valor/Inv en pesos de arriba y con el %
-        // nativo de cada fila. Broker USD: todo en USD (refleja el modo en 'purchase').
-        const headerPnlAmt = isARS ? r.pnlArs : r.pnlUsd
+        // El P&L del header (monto, signo, color y %) sigue el riel de DISPLAY
+        // (isArsDisp), no la moneda nativa del broker. En modo 'purchase' con
+        // devaluación r.pnlArs y r.pnlUsd pueden tener SIGNO OPUESTO → keyear el
+        // color/% en la cifra mostrada (pnlDisp) evita pill verde con "−USD X" y
+        // el % de la pata equivocada. Para broker USD el % es el mismo en ambas
+        // patas (no divergen), por eso cae siempre a pnlUsd/invested.
         const headerPnlPct = isARS
-          ? (r.invArs > 0 ? r.pnlArs / r.invArs : 0)
+          ? (isArsDisp
+              ? (r.invArs > 0 ? r.pnlArs / r.invArs : 0)
+              : (r.invested > 0 ? r.pnlUsd / r.invested : 0))
           : (r.invested > 0 ? r.pnlUsd / r.invested : 0)
+        // Cifras del header en la moneda de DISPLAY (toggle global). El LAYOUT y
+        // la valuación siguen dependiendo de `isARS` (moneda nativa del broker);
+        // acá sólo convertimos el número a la moneda elegida. Para brokers ARS
+        // tenemos ambas patas (r.valueArs/r.value); para brokers USD la pata ARS
+        // no se acumula (r.valueArs=0) → derivamos ×tcBlue. El signo/color/% no
+        // cambian con la conversión (tcBlue > 0).
+        const valueDisp = isArsDisp ? (isARS ? r.valueArs : r.value * tcBlue) : r.value
+        const investedDisp = isArsDisp ? (isARS ? r.invArs : r.invested * tcBlue) : r.invested
+        const pnlDisp = isArsDisp ? (isARS ? r.pnlArs : r.pnlUsd * tcBlue) : r.pnlUsd
+        // Pata de display del P&L para los COLORES del tfoot (el texto del monto/%
+        // ya se ternariza con isArsDisp). El tfoot muestra r.pnlUsd crudo en vista
+        // USD (no ×tcBlue), así que footPnl usa r.pnlUsd para alinear color↔cifra.
+        const footPnl = isArsDisp ? r.pnlArs : r.pnlUsd
         const Header = (
           <div className="flex flex-col gap-3 px-4 sm:px-5 py-4 border-b border-line">
             <div className="flex items-start justify-between flex-wrap gap-3">
-              <div className="min-w-0">
-                <p className="eyebrow mb-1 flex items-center gap-2">
-                  {isSubBroker && (
-                    <span className="text-ink-3 select-none" title={`Sub-broker de ${parentName}`}>└─</span>
-                  )}
-                  Broker · {isARS ? 'ARS' : 'USD'}
-                  {isSubBroker && (
-                    <span className="text-ink-3 normal-case tracking-normal" title="Creado automáticamente al convertir ARS a USD">
-                      sub-broker
-                    </span>
-                  )}
-                  {isARS && <span className="text-ink-3 normal-case tracking-normal">· TC MEP {tcBlue}</span>}
-                </p>
-                <h3 className={`text-lg font-semibold leading-tight ${color.text}`}>{broker.name}</h3>
+              <div className="min-w-0 flex items-center gap-2 flex-wrap">
+                {isSubBroker && (
+                  <span className="text-ink-3 select-none text-sm" title={`Sub-broker de ${parentName}`}>└─</span>
+                )}
+                <h3 className={`text-base font-semibold leading-tight ${color.text}`}>{broker.name}</h3>
+                <span className={`text-[10.5px] font-semibold tracking-wide rounded-full px-2 py-0.5 ${isARS ? 'bg-rendi-warn/10 text-rendi-warn' : 'bg-data-cyan/10 text-data-cyan'}`}>
+                  {isARS ? 'ARS' : 'USD'}
+                </span>
+                {isSubBroker && (
+                  <span className="text-[10.5px] rounded-full px-2 py-0.5 bg-bg-2 text-ink-3" title="Creado automáticamente al convertir ARS a USD">
+                    sub-broker
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {/* Para brokers ARS sin sub-broker USD: ofrecemos crearlo
@@ -1519,7 +1602,7 @@ function PositionsDesktop() {
                 <button
                   onClick={() => toggleDetail(broker.name)}
                   className="flex items-center gap-1 text-[11px] text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition"
-                  title={showDetail ? 'Ocultar columnas auxiliares' : 'Mostrar tipo de cambio, conversiones y detalles adicionales'}
+                  title={showDetail ? 'Ocultar columnas auxiliares' : 'Mostrar invertido, tipo de cambio y P&L en USD'}
                 >
                   {showDetail ? <ChevronUp size={12} strokeWidth={1.5} /> : <ChevronDown size={12} strokeWidth={1.5} />}
                   {showDetail ? 'Ocultar detalle' : 'Detalle'}
@@ -1529,22 +1612,26 @@ function PositionsDesktop() {
                 </button>
               </div>
             </div>
-            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-xs sm:text-sm tabular">
-              <span>
-                <span className="label-mono mr-1.5">Valor</span>
+            <div className="flex flex-wrap items-center gap-2 text-[12px] tabular">
+              <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2">
+                <span className="text-ink-3">Valor</span>
                 <span className="font-semibold text-ink-0">
-                  {hidden ? '••••••' : (isARS ? fmtArs(r.valueArs) : fmtUsd(r.value))}
+                  {hidden ? '••••••' : (isArsDisp ? fmtArs(valueDisp) : fmtUsd(valueDisp))}
                 </span>
               </span>
-              <span className="text-ink-2">
-                <span className="label-mono mr-1.5">Inv</span>
-                {hidden ? '••••••' : (isARS ? fmtArs(r.invArs) : fmtUsd(r.invested))}
+              <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
+                <span className="text-ink-3">Invertido</span>
+                {hidden ? '••••••' : (isArsDisp ? fmtArs(investedDisp) : fmtUsd(investedDisp))}
               </span>
-              <span className={`${colorClass(headerPnlAmt)} font-medium`}>
-                <span className="label-mono mr-1.5 text-ink-2">P&L</span>
-                {hidden ? '••••••' : `${headerPnlAmt >= 0 ? '+' : '−'}${isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(r.pnlUsd))}`}`}
-                <span className="ml-1 opacity-80">({pctSigned(headerPnlPct)})</span>
+              <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium ${pnlDisp >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
+                {hidden ? '••••••' : `${pnlDisp >= 0 ? '+' : '−'}${isArsDisp ? `ARS ${ars(Math.abs(pnlDisp))}` : `USD ${usd(Math.abs(pnlDisp))}`}`}
+                <span className="opacity-80">· {pctSigned(headerPnlPct)}</span>
               </span>
+              {isArsDisp && (
+                <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-3">
+                  TC MEP <span className="text-ink-2">{tcBlue}</span>
+                </span>
+              )}
             </div>
           </div>
         )
@@ -1552,7 +1639,7 @@ function PositionsDesktop() {
         // ── ARS broker ─────────────────────────────────────────────────────
         if (isARS) {
           return (
-            <div key={broker.id} className="bg-bg-1 border border-line rounded overflow-hidden mb-6">
+            <div key={broker.id} className="bg-bg-1 border border-line rounded-xl overflow-hidden mb-6">
               {Header}
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -1562,14 +1649,13 @@ function PositionsDesktop() {
                       <th className={thClass}>30D</th>
                       <th className={thClass}>Cantidad</th>
                       <th className={thClass}>Precio prom.</th>
-                      <th className={thClass}>Precio actual</th>
-                      <th className={thClass}>Invertido</th>
-                      {showDetail && <th className={thClass}>TC Compra</th>}
-                      {showDetail && <th className={thClass}>Inv. USD</th>}
+                      <th className={thClass}>Actual</th>
+                      {showDetail && <th className={thClass}>Invertido</th>}
+                      {showDetail && isArsDisp && <th className={thClass}>TC Compra</th>}
+                      {showDetail && isArsDisp && <th className={thClass}>Inv. USD</th>}
                       <th className={thClass}>Valor</th>
                       <th className={thClass}>P&L</th>
-                      {showDetail && <th className={thClass}>P&L USD</th>}
-                      <th className={thClass}>P&L %</th>
+                      {showDetail && isArsDisp && <th className={thClass}>P&L USD</th>}
                       <th className={thClass}>Var. día</th>
                       <th className={thClassStickyRight}></th>
                     </tr>
@@ -1591,17 +1677,36 @@ function PositionsDesktop() {
                       // no es ganancia.
                       const cobranzasCash = bondSummary?.total || 0
                       const pnlContrib = bondSummary?.pnlContribution || 0
+                      const pnlContribUsd = bondSummary?.pnlContributionUsd || 0
                       const adjPnlArs = (c.pnlArs != null && pnlContrib)
                         ? c.pnlArs + pnlContrib
                         : c.pnlArs
-                      const adjPnlPct = (isBond && adjPnlArs != null && p.invested > 0)
-                        ? adjPnlArs / p.invested
-                        : c.pnlPct
-                      const pnlBg = adjPnlArs == null ? '' : adjPnlArs > 0 ? 'bg-rendi-pos/[0.06]' : adjPnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
+                      // Pata USD del P&L augmentado: usamos c.pnlUsd (exacto de calcARS)
+                      // + la contribución de cobranzas ya convertida a USD (no re-dividir).
+                      const adjPnlUsd = (c.pnlUsd != null && pnlContribUsd)
+                        ? c.pnlUsd + pnlContribUsd
+                        : c.pnlUsd
+                      const adjPnlDisp = isArsDisp ? adjPnlArs : adjPnlUsd
+                      // El % debe derivar de la MISMA pata (ARS/USD) que el monto
+                      // mostrado (adjPnlDisp). En 'purchase' ARS% ≠ USD%. Vista USD
+                      // → adjPnlUsd/c.invUsd (bonos) o c.pnlUsd/c.invUsd; vista ARS
+                      // → el % nativo. Guardas contra división por cero / sin precio.
+                      const adjPnlPct = isArsDisp
+                        ? ((isBond && adjPnlArs != null && p.invested > 0)
+                            ? adjPnlArs / p.invested
+                            : c.pnlPct)
+                        : ((isBond && adjPnlUsd != null && c.invUsd > 0)
+                            ? adjPnlUsd / c.invUsd
+                            : (c.invUsd > 0 && c.pnlUsd != null ? c.pnlUsd / c.invUsd : null))
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
                       const dvArs = dvFor(p, true)
                       const expanded = isBond && !isLot && expandedBonds.has(bondKey)
-                      const arsColSpan = showDetail ? 14 : 11
+                      // colSpan del detalle de bono = total de columnas de la fila.
+                      // Base 9 (Activo,30D,Cant,Prom,Actual,Valor,P&L,Var.día,acciones)
+                      // + Invertido si showDetail (+1) + TC Compra/Inv.USD/P&L USD si
+                      // showDetail && vista ARS (+3). USD: los 3 helpers cross-moneda
+                      // se ocultan (redundantes con las columnas ya-en-USD).
+                      const arsColSpan = showDetail ? (isArsDisp ? 13 : 10) : 9
                       const pnlTooltip = (isBond && pnlContrib !== 0)
                         ? `P&L = mark-to-market (${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlContrib))} de ganancia realizada (cupones + parte de ganancia de amorts). Cash total cobrado: ARS ${ars(cobranzasCash)}.`
                         : undefined
@@ -1628,10 +1733,10 @@ function PositionsDesktop() {
                                       {p.asset}
                                     </button>
                                   )}
-                                  {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                  {!!p.is_cash && <span className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5 font-medium"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
                                   {isBond && (
                                     <span
-                                      className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5"
+                                      className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5 font-medium"
                                       title="Bono / Obligación Negociable"
                                     >
                                       <Coins size={9} strokeWidth={1.5} /> BONO
@@ -1640,7 +1745,7 @@ function PositionsDesktop() {
                                   {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
                                   {lotMissingPurchaseRate(p, costBasis, true) && (
                                     <span
-                                      className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30"
+                                      className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30 font-medium"
                                       title="Sin tipo de cambio de compra registrado — este lote usa el dólar de hoy para el costo en USD. Editá la posición para cargarlo."
                                     >
                                       TC?
@@ -1683,24 +1788,30 @@ function PositionsDesktop() {
                             )}
                           </td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
-                          <td className={`${tdClass} text-ink-2 tabular`}>{avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—'}</td>
-                          <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{`ARS ${ars(c.priceArs)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
-                          <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : fmtArs(p.invested)}</td>
-                          {showDetail && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
-                          {showDetail && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? (hidden ? '••••••' : fmtUsd(c.invUsd)) : '—'}</td>}
-                          <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.valueArs != null ? <FlashValue value={c.value}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
-                          <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlArs)} ${pnlBg}`} title={pnlTooltip}>
-                            {hidden ? '••••••' : (adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—')}
-                            {!hidden && isBond && pnlContrib !== 0 && (
-                              <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
-                            )}
+                          <td className={`${tdClass} text-ink-2 tabular`}>{avgPriceArs != null ? (isArsDisp ? `ARS ${ars(avgPriceArs)}` : `USD ${usd(avgPriceArs / tcBlue)}`) : '—'}</td>
+                          <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{isArsDisp ? `ARS ${ars(c.priceArs)}` : `USD ${usd(c.priceArs / tcBlue)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                          {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs(p.invested) : (c.invUsd != null ? fmtUsd(c.invUsd) : '—'))}</td>}
+                          {showDetail && isArsDisp && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
+                          {showDetail && isArsDisp && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? (hidden ? '••••••' : fmtUsd(c.invUsd)) : '—'}</td>}
+                          <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (isArsDisp ? (c.valueArs != null ? <FlashValue value={c.value}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>) : (c.valueUsd != null ? <FlashValue value={c.value}>{fmtUsd(c.valueUsd)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>))}</td>
+                          <td className={`${tdClass} tabular`} title={pnlTooltip}>
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className={`font-semibold ${colorClass(adjPnlDisp)}`}>
+                                {hidden ? '••••••' : (adjPnlDisp != null ? `${adjPnlDisp >= 0 ? '+' : '-'}${isArsDisp ? `ARS ${ars(Math.abs(adjPnlDisp))}` : `USD ${usd(Math.abs(adjPnlDisp))}`}` : '—')}
+                              </span>
+                              {adjPnlPct != null && (
+                                <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${adjPnlPct >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(adjPnlPct)}</span>
+                              )}
+                              {!hidden && isBond && pnlContrib !== 0 && (
+                                <span className="text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
+                              )}
+                            </span>
                           </td>
-                          {showDetail && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{hidden ? '••••••' : (c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—')}</td>}
-                          <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
+                          {showDetail && isArsDisp && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{hidden ? '••••••' : (c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—')}</td>}
                           <td className={`${tdClass} tabular`}>
                             {dvArs ? (
                               <div className="leading-tight">
-                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}ARS {ars(Math.abs(dvArs.amount))}</div>
+                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcBlue))}`}</div>
                                 <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
                               </div>
                             ) : (
@@ -1725,7 +1836,10 @@ function PositionsDesktop() {
                             p={p}
                             colSpan={arsColSpan}
                             summary={bondSummary}
+                            pendingDates={pendingDatesByKey.get(bondKey)}
                             isARS={true}
+                            isArsDisp={isArsDisp}
+                            tcBlue={tcBlue}
                             currentPrice={c.priceArs}
                             tcMep={tcMepStrict}
                             cerSeries={cerSeries}
@@ -1740,20 +1854,24 @@ function PositionsDesktop() {
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 border-line-2 bg-bg-2/40">
-                      {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
-                      <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2 uppercase tracking-wider">TOTAL</td>
-                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtArs(r.invArs)}</td>
-                      {showDetail && <td className="px-3 py-2.5 text-xs text-ink-3">—</td>}
-                      {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>}
-                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtArs(r.valueArs)}</td>
-                      <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlArs)}`}>{hidden ? '••••••' : `${r.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(r.pnlArs))}`}</td>
-                      {showDetail && <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>}
-                      <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
-                        {r.invested > 0 ? pctSigned(r.pnlUsd / r.invested) : '—'}
+                      {/* Activo + 30D + Cantidad + Precio prom + Actual collapsed (colSpan=5) */}
+                      <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2">TOTAL</td>
+                      {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : (isArsDisp ? fmtArs(r.invArs) : fmtUsd(r.invested))}</td>}
+                      {showDetail && isArsDisp && <td className="px-3 py-2.5 text-xs text-ink-3">—</td>}
+                      {showDetail && isArsDisp && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>}
+                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : (isArsDisp ? fmtArs(r.valueArs) : fmtUsd(r.value))}</td>
+                      <td className="px-3 py-2.5 text-xs tabular">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className={`font-bold ${colorClass(footPnl)}`}>{hidden ? '••••••' : (isArsDisp ? `${r.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(r.pnlArs))}` : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`)}</span>
+                          {r.invArs > 0 && (
+                            <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${footPnl >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(isArsDisp ? r.pnlArs / r.invArs : (r.invested > 0 ? r.pnlUsd / r.invested : 0))}</span>
+                          )}
+                        </span>
                       </td>
+                      {showDetail && isArsDisp && <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>}
                       <td className="px-3 py-2.5 text-xs font-bold tabular">
                         {brokerHasDay
-                          ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}`}</span>
+                          ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : (isArsDisp ? `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}` : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay / tcBlue))}`)}</span>
                           : <span className="text-ink-3">—</span>}
                       </td>
                       <td />
@@ -1767,7 +1885,7 @@ function PositionsDesktop() {
 
         // ── USD broker ─────────────────────────────────────────────────────
         return (
-          <div key={broker.id} className="bg-bg-1 border border-line rounded overflow-hidden mb-6">
+          <div key={broker.id} className="bg-bg-1 border border-line rounded-xl overflow-hidden mb-6">
             {Header}
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -1777,11 +1895,10 @@ function PositionsDesktop() {
                     <th className={thClass}>30D</th>
                     <th className={thClass}>Cantidad</th>
                     <th className={thClass}>Precio prom.</th>
-                    <th className={thClass}>Precio actual</th>
-                    <th className={thClass}>Invertido</th>
+                    <th className={thClass}>Actual</th>
+                    {showDetail && <th className={thClass}>Invertido</th>}
                     <th className={thClass}>Valor</th>
                     <th className={thClass}>P&L</th>
-                    <th className={thClass}>P&L %</th>
                     <th className={thClass}>Var. día</th>
                     <th className={thClassStickyRight}></th>
                   </tr>
@@ -1799,13 +1916,15 @@ function PositionsDesktop() {
                     const adjPnl = (c.pnl != null && pnlContrib)
                       ? c.pnl + pnlContrib
                       : c.pnl
+                    // P&L en la moneda de DISPLAY: calcUSDT sólo da USD → la pata ARS
+                    // se deriva ×tcBlue. El % (abajo) es adimensional, no se convierte.
+                    const adjPnlDisp = isArsDisp ? (adjPnl != null ? adjPnl * tcBlue : null) : adjPnl
                     // P&L% del bono sobre el costo en USD (c.investedUsd ya respeta
                     // la moneda del lote: un bono en pesos va ÷MEP, no se cuenta crudo).
                     const adjPnlCost = c.investedUsd ?? p.invested
                     const adjPnlPct = (isBond && adjPnl != null && adjPnlCost > 0)
                       ? adjPnl / adjPnlCost
                       : c.pnlPct
-                    const pnlBg = adjPnl == null ? '' : adjPnl > 0 ? 'bg-rendi-pos/[0.06]' : adjPnl < 0 ? 'bg-rendi-neg/[0.06]' : ''
                     const avgPrice = (!p.is_cash && p.quantity > 0)
                       ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
                       : null
@@ -1837,16 +1956,17 @@ function PositionsDesktop() {
                                     {p.asset}
                                   </button>
                                 )}
-                                {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                {!!p.is_cash && <span className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5 font-medium"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
                                 {isBond && (
                                   <span
-                                    className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5"
+                                    className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5 font-medium"
                                     title="Bono / Obligación Negociable"
                                   >
                                     <Coins size={9} strokeWidth={1.5} /> BONO
                                   </span>
                                 )}
                                 {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
+                                {!hidden && <TcMissingBadge p={p} costBasis={costBasis} />}
                               </div>
                               <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
                                 <span>{isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha')}</span>
@@ -1884,21 +2004,27 @@ function PositionsDesktop() {
                           )}
                         </td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
-                        <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? fmtUsd(avgPrice) : '—'}</td>
-                        <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
-                        <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : <>{fmtUsd(c.investedUsd ?? p.invested)}<TcMissingBadge p={p} costBasis={costBasis} /></>}</td>
-                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.value != null ? <FlashValue value={c.value}>{fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
-                        <td className={`${tdClass} font-bold tabular ${colorClass(adjPnl)} ${pnlBg}`} title={pnlTooltip}>
-                          {hidden ? '••••••' : (adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—')}
-                          {!hidden && isBond && pnlContrib !== 0 && (
-                            <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
-                          )}
+                        <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? (isArsDisp ? fmtArs(avgPrice * tcBlue) : fmtUsd(avgPrice)) : '—'}</td>
+                        <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{isArsDisp ? fmtArs(c.price * tcBlue) : fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                        {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs((c.investedUsd ?? p.invested) * tcBlue) : fmtUsd(c.investedUsd ?? p.invested))}</td>}
+                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.value != null ? <FlashValue value={c.value}>{isArsDisp ? fmtArs(c.value * tcBlue) : fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
+                        <td className={`${tdClass} tabular`} title={pnlTooltip}>
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className={`font-semibold ${colorClass(adjPnlDisp)}`}>
+                              {hidden ? '••••••' : (adjPnlDisp != null ? `${adjPnlDisp >= 0 ? '+' : '-'}${isArsDisp ? `ARS ${ars(Math.abs(adjPnlDisp))}` : `USD ${usd(Math.abs(adjPnlDisp))}`}` : '—')}
+                            </span>
+                            {adjPnlPct != null && (
+                              <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${adjPnlPct >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(adjPnlPct)}</span>
+                            )}
+                            {!hidden && isBond && pnlContrib !== 0 && (
+                              <span className="text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
+                            )}
+                          </span>
                         </td>
-                        <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
                         <td className={`${tdClass} tabular`}>
                           {dvUsd ? (
                             <div className="leading-tight">
-                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}USD {usd(Math.abs(dvUsd.amount))}</div>
+                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcBlue))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</div>
                               <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
                             </div>
                           ) : (
@@ -1921,9 +2047,12 @@ function PositionsDesktop() {
                       {expanded && (
                         <BondDetailRow
                           p={p}
-                          colSpan={11}
+                          colSpan={showDetail ? 10 : 9}
                           summary={bondSummary}
+                          pendingDates={pendingDatesByKey.get(bondKey)}
                           isARS={false}
+                          isArsDisp={isArsDisp}
+                          tcBlue={tcBlue}
                           currentPrice={c.price}
                           tcMep={tcMepStrict}
                           cerSeries={cerSeries}
@@ -1938,17 +2067,21 @@ function PositionsDesktop() {
                 </tbody>
                 <tfoot>
                   <tr className="border-t-2 border-line-2 bg-bg-2/30">
-                    {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
-                    <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2 uppercase tracking-wider">TOTAL</td>
-                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>
-                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.value)}</td>
-                    <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>
-                    <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
-                      {r.invested > 0 ? pctSigned(r.pnlUsd / r.invested) : '—'}
+                    {/* Activo + 30D + Cantidad + Precio prom + Actual collapsed (colSpan=5) */}
+                    <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2">TOTAL</td>
+                    {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : (isArsDisp ? fmtArs(r.invested * tcBlue) : fmtUsd(r.invested))}</td>}
+                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : (isArsDisp ? fmtArs(r.value * tcBlue) : fmtUsd(r.value))}</td>
+                    <td className="px-3 py-2.5 text-xs tabular">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className={`font-bold ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : (isArsDisp ? `${r.pnlUsd >= 0 ? '+' : '-'}ARS ${ars(Math.abs(r.pnlUsd * tcBlue))}` : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`)}</span>
+                        {r.invested > 0 && (
+                          <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${r.pnlUsd >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(r.pnlUsd / r.invested)}</span>
+                        )}
+                      </span>
                     </td>
                     <td className="px-3 py-2.5 text-xs font-bold tabular">
                       {brokerHasDay
-                        ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`}</span>
+                        ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : (isArsDisp ? `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay * tcBlue))}` : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`)}</span>
                         : <span className="text-ink-3">—</span>}
                     </td>
                     <td />
@@ -1964,7 +2097,7 @@ function PositionsDesktop() {
           coincidencias). El grupo de Plazos Fijos sigue mostrándose debajo —
           es una clase de activo aparte y no entra en el filtro de posiciones. */}
       {isFiltering && visibleBrokerCount === 0 && (
-        <div className="bg-bg-1 border border-line rounded mb-6">
+        <div className="bg-bg-1 border border-line rounded-xl mb-6">
           <EmptyState
             title="Sin coincidencias"
             description="Ninguna posición coincide con los filtros. Probá limpiar la búsqueda o elegir otro broker."
@@ -1975,7 +2108,13 @@ function PositionsDesktop() {
       {/* Zona Renta Fija: bonos/letras/FCI agrupados cross-broker, con borrado/restore por sección */}
       <RentaFijaSections positions={positions} valuePos={valuePos} brokers={brokers}
         displayCurrency={displayCurrency} tcBlue={tcBlue} onChanged={loadAll}
-        onEdit={openEdit} onDelete={del} />
+        onEdit={openEdit} onDelete={del}
+        bondCashflowsByKey={bondCashflowsByKey}
+        pendingDatesByKey={pendingDatesByKey}
+        openBondCashflow={openBondCashflow}
+        tcMep={tcMepStrict} cerSeries={cerSeries} cerStale={cerStale}
+        isArsFor={(p) => brokers.find(b => b.name === p.broker)?.currency === 'ARS'}
+        priceFor={(p) => (brokers.find(b => b.name === p.broker)?.currency === 'ARS') ? calcARS(p).priceArs : calcUSDT(p).price} />
 
       {/* Grupo Plazos fijos + su form de alta (lo dispara el flujo o el header del grupo) */}
       <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
@@ -2150,7 +2289,7 @@ function PositionsDesktop() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-0.5">
                             <span className="text-sm font-semibold text-ink-0">{fciLabel(p.asset)}</span>
-                            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 bg-bg-2 border border-line/60 px-1.5 py-0.5 rounded">
+                            <span className="text-[12.5px] text-ink-2 bg-bg-2 border border-line/60 px-1.5 py-0.5 rounded font-medium">
                               {p.broker}
                             </span>
                           </div>
@@ -2512,7 +2651,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
 function FilterPill({ label, value, onChange, options }) {
   return (
     <label className="inline-flex items-center gap-1.5 text-xs">
-      <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">{label}</span>
+      <span className="text-[12.5px] text-ink-2 font-medium">{label}</span>
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -2619,386 +2758,6 @@ function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, openAlert,
   ]
 }
 
-// ─── BondDetailRow ────────────────────────────────────────────────────────────
-// Fila expandible que aparece debajo de una posición de bono cuando el user
-// hace click en el chevron "Ver cobranzas". Muestra (Fase 1 + Fase 2):
-//   • Meta del bono (issuer, vencimiento, cupón, frecuencia)
-//   • Totales de lo cobrado (cupones + amortizaciones) y % del capital recuperado
-//   • Calendario futuro generado del bondSchedule + TIR estimada al precio actual
-//   • Lista cronológica de cobranzas registradas
-// El "% recuperado" es el diferencial Rendi: contexto narrativo "ya recuperaste
-// X% del capital vía cupones", no se ve en otras apps de tracking.
-//
-// Convención para TIR: usamos `currentPrice × 100` como precio por 100 nominal,
-// asumiendo qty=nominales-individuales (1 nominal = 1 USD/ARS de face value).
-// Para ETFs y bonos sin maturity, omitimos TIR.
-function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSeries, cerStale, onAddCoupon, onAddAmortization }) {
-  const meta = getBondMeta(p.asset)
-  const moneyLabel = isARS ? 'ARS' : 'USD'
-  const fmt = isARS ? ars : usd
-  const invested = p.invested || 0
-  const coupons = summary?.coupons || 0
-  const amortizations = summary?.amortizations || 0
-  const total = summary?.total || 0
-  // Phase 3D: distinción crítica entre CASH (lo que entró al broker) y
-  // P&L CONTRIBUTION (la ganancia real). Para cupones son iguales; para amorts
-  // el cash incluye devolución de capital, el pnlContribution no.
-  const totalUsd = summary?.totalUsd || 0
-  const pnlContribution = summary?.pnlContribution || 0
-  const pnlContributionUsd = summary?.pnlContributionUsd || 0
-  const hasLegacyOps = summary?.hasLegacyOps || false
-  const ops = summary?.ops || []
-  const recoveryPct = invested > 0 ? (total / invested) : 0
-  // Ganancia realizada del amort = amorts cash − parte que es devolución de capital
-  const amortRealizedGain = pnlContribution - coupons
-
-  // ── Fase 2+3A+3C+3D: schedule + TIR + próximo pago ───────────────────────
-  // Esto SOLO aplica a bonos con maturity definida en bondMeta. ETFs y
-  // tickers sin metadata caen en el fallback de Fase 1.
-  //
-  // Phase 3C: ajuste CER (capital indexado por inflación) para bonos
-  // type='cer' cuando la serie está disponible.
-  //
-  // Phase 3D — Cross-currency (fix C5 del audit):
-  // Para un bono USD comprado en broker ARS, currentPrice viene en pesos
-  // (lo que cotiza AL30 en BYMA). El schedule está en USD. Para que la
-  // TIR sea coherente, convertimos el precio ARS → USD vía MEP (el dolar
-  // financiero implícito en bonos hard-dollar). Sin MEP cargado, fallback
-  // al blue con warning.
-  const today = new Date().toISOString().slice(0, 10)
-  const cerOpts = (meta?.type === 'cer' && cerSeries && Object.keys(cerSeries).length > 0)
-    ? { cerSeries }
-    : {}
-  const fullSchedule = generateSchedule(p.asset, cerOpts)
-  const remaining = fullSchedule ? getRemainingPayments(p.asset, today, cerOpts) : null
-
-  const bondCurrency = meta?.currency || 'USD'
-  const brokerCurrency = isARS ? 'ARS' : 'USD'
-  const isCrossCurrency = bondCurrency !== brokerCurrency
-  // Si hay cross-currency, normalizar precio a moneda del bono.
-  let priceInBondCurrency = currentPrice
-  let priceConversion = null
-  if (isCrossCurrency && currentPrice != null && currentPrice > 0) {
-    if (bondCurrency === 'USD' && brokerCurrency === 'ARS' && tcMep) {
-      priceInBondCurrency = currentPrice / tcMep
-      priceConversion = { from: 'ARS', to: 'USD', rate: tcMep, type: 'MEP' }
-    } else if (bondCurrency === 'ARS' && brokerCurrency === 'USD' && tcMep) {
-      priceInBondCurrency = currentPrice * tcMep
-      priceConversion = { from: 'USD', to: 'ARS', rate: tcMep, type: 'MEP' }
-    }
-  }
-  const pricePer100Clean = priceInBondCurrency != null && priceInBondCurrency > 0
-    ? priceInBondCurrency * 100
-    : null
-  const yieldDetail = pricePer100Clean != null
-    ? estimateYieldDetailed(p.asset, pricePer100Clean, today, cerOpts)
-    : null
-  const yieldEstimate = yieldDetail?.ytm ?? null
-  const nextPay = p.quantity ? nextPaymentForPosition(p.asset, p.quantity, today) : null
-  // Para bonos CER: el coeficiente actual (factor al día de hoy) ayuda a
-  // mostrar contexto: "CER hoy ≈ 2.4× emisión" → el user ve el ajuste
-  // implícito en sus flujos futuros.
-  function cerLocfLookup(date) {
-    if (!cerSeries || !date) return null
-    if (cerSeries[date] != null) return cerSeries[date]
-    const dates = Object.keys(cerSeries).sort()
-    let best = null
-    for (const d of dates) {
-      if (d <= date) best = d
-      else break
-    }
-    return best ? cerSeries[best] : null
-  }
-  const cerToday = meta?.type === 'cer' ? cerLocfLookup(today) : null
-  const cerBase = meta?.type === 'cer' && meta.cerEmissionDate ? cerLocfLookup(meta.cerEmissionDate) : null
-  const cerFactorToday = (cerToday != null && cerBase != null && cerBase > 0)
-    ? cerToday / cerBase
-    : null
-
-  return (
-    <tr className="bg-rendi-accent/[0.04] dark:bg-rendi-accent/[0.05] border-b border-line">
-      <td colSpan={colSpan} className="px-5 py-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Meta */}
-          <div className="space-y-1">
-            <p className="eyebrow text-rendi-accent">Bono</p>
-            {meta ? (
-              <>
-                <p className="text-sm font-semibold text-ink-0">
-                  {formatBondType(meta.type)} · {meta.issuer}
-                  {meta.governingLaw && (
-                    <span className="ml-1.5 text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2">
-                      Ley {meta.governingLaw === 'Argentina' ? 'AR' : 'NY'}
-                    </span>
-                  )}
-                </p>
-                <p className="text-xs text-ink-2 font-mono">
-                  {meta.maturity ? `Vence ${meta.maturity}` : 'ETF · sin vencimiento'}
-                  {meta.couponFreq && (
-                    <>
-                      {' · '}
-                      <span
-                        className="border-b border-dotted border-ink-3/40 cursor-help"
-                        title={formatCouponTooltip(meta)}
-                      >
-                        {formatCouponLabel(meta)}
-                      </span>
-                    </>
-                  )}
-                </p>
-                <p className="text-[10px] text-ink-3 font-mono">
-                  Moneda original: {meta.currency}
-                  {meta.dayCount && ` · day-count ${meta.dayCount}`}
-                </p>
-                {meta._verificationLevel === 'approx' && (
-                  <p className="text-[10px] text-rendi-warn font-mono">
-                    ⚠ Cronograma aproximado — verificar contra prospecto para fineza
-                  </p>
-                )}
-                {/* Phase 3C: status del ajuste CER. Sólo aplica a bonos type='cer'. */}
-                {meta.type === 'cer' && (
-                  <div className="mt-1">
-                    {cerFactorToday != null ? (
-                      <p className="text-[10px] text-rendi-accent font-mono">
-                        ✓ Capital ajustado por CER · factor hoy ≈ {cerFactorToday.toFixed(3)}×
-                        {cerStale && <span className="text-rendi-warn"> (serie posiblemente desactualizada)</span>}
-                      </p>
-                    ) : cerSeries === null ? (
-                      <p className="text-[10px] text-ink-3 font-mono">
-                        Cargando coeficiente CER…
-                      </p>
-                    ) : (
-                      <p className="text-[10px] text-rendi-warn font-mono">
-                        ⚠ Serie CER no disponible — flujos mostrados en nominal sin ajuste de inflación
-                      </p>
-                    )}
-                  </div>
-                )}
-              </>
-            ) : (
-              <p className="text-xs text-ink-2">Sin metadata configurada para este ticker.</p>
-            )}
-          </div>
-
-          {/* Totales cobrados */}
-          <div className="space-y-1">
-            <p className="eyebrow text-rendi-accent">Ya cobraste</p>
-            {total > 0 ? (
-              <>
-                <p className="text-lg font-bold text-rendi-pos tabular">
-                  +{moneyLabel} {fmt(total)}
-                </p>
-                <p className="text-[11px] text-ink-2 font-mono">
-                  {coupons > 0 && <>Cupones: {moneyLabel} {fmt(coupons)}</>}
-                  {coupons > 0 && amortizations > 0 && ' · '}
-                  {amortizations > 0 && <>Amortizaciones: {moneyLabel} {fmt(amortizations)}</>}
-                </p>
-                {/* Phase 3D sub-fix: distinguir cash recibido vs aporte al P&L.
-                    Los amorts incluyen DEVOLUCIÓN DE CAPITAL (no es ganancia)
-                    + GANANCIA REALIZADA. Mostramos la separación para que el
-                    user entienda dónde "está" su rentabilidad. */}
-                {amortizations > 0 && (
-                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
-                    De los amorts, sólo{' '}
-                    <span className={amortRealizedGain >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}>
-                      {moneyLabel} {fmt(amortRealizedGain)}
-                    </span>{' '}
-                    {amortRealizedGain >= 0 ? 'es ganancia' : 'es pérdida'}; el resto es devolución de capital.
-                  </p>
-                )}
-                <p className="text-[11px] text-rendi-pos font-semibold">
-                  Aporte al P&L: {pnlContribution >= 0 ? '+' : '-'}{moneyLabel} {fmt(Math.abs(pnlContribution))}
-                </p>
-                {isARS && totalUsd > 0 && (
-                  <p className="text-[10px] text-ink-3 font-mono">
-                    ≈ USD {usd(totalUsd)} en cash {hasLegacyOps && <span className="text-rendi-warn">(aprox)</span>}
-                  </p>
-                )}
-                {invested > 0 && (
-                  <p className="text-xs text-rendi-accent font-semibold">
-                    {pctSigned(recoveryPct)} del capital recuperado
-                  </p>
-                )}
-              </>
-            ) : (
-              <p className="text-xs text-ink-2">
-                Aún no registraste cobranzas. Cuando recibas un cupón o amortización,
-                cargalo desde el menú de acciones para que se acredite al cash del broker
-                y aparezca acá.
-              </p>
-            )}
-          </div>
-
-          {/* Acciones rápidas */}
-          <div className="space-y-1">
-            <p className="eyebrow text-rendi-accent">Registrar pago</p>
-            <div className="flex flex-col gap-1.5">
-              <button
-                onClick={onAddCoupon}
-                className="inline-flex items-center justify-center gap-1.5 text-xs bg-rendi-pos/15 hover:bg-rendi-pos/25 text-rendi-pos border border-rendi-pos/30 rounded-sm px-2.5 py-1.5 transition"
-              >
-                <Coins size={12} strokeWidth={1.5} /> Cupón cobrado
-              </button>
-              <button
-                onClick={onAddAmortization}
-                className="inline-flex items-center justify-center gap-1.5 text-xs bg-rendi-accent/15 hover:bg-rendi-accent/25 text-rendi-accent border border-rendi-accent/30 rounded-sm px-2.5 py-1.5 transition"
-              >
-                <LayersIcon size={12} strokeWidth={1.5} /> Amortización
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Fase 2: cronograma + TIR + próximo pago ────────────────────── */}
-        {fullSchedule && remaining && remaining.length > 0 && (
-          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 pt-3 border-t border-line/60">
-            {/* TIR + próximo pago */}
-            <div className="space-y-2 md:col-span-1">
-              <p className="eyebrow text-rendi-accent">Rendimiento estimado</p>
-              {yieldEstimate != null ? (
-                <>
-                  <p className="text-lg font-bold tabular text-ink-0">
-                    {pctSigned(yieldEstimate)}{' '}
-                    {meta?.type === 'cer' ? (
-                      <span
-                        className="text-xs font-normal text-ink-2 border-b border-dotted border-ink-3/40 cursor-help"
-                        title="TIR REAL sobre la inflación. El motor descuenta los flujos al CER actual (último observado, sin proyectar inflación futura) — el rendimiento mostrado representa lo que ganás POR ENCIMA de la inflación, no el yield nominal. Para CER, la TIR real es el indicador relevante (los flujos futuros se ajustan automáticamente)."
-                      >
-                        TIR real (sobre CER)
-                      </span>
-                    ) : (
-                      <span className="text-xs font-normal text-ink-2">TIR ef. anual</span>
-                    )}
-                  </p>
-                  {/* Phase 3A: metadata transparente. Phase 3D: si hay conversión
-                      cross-currency, mostrarla también para que el user entienda
-                      por qué la TIR no coincide con un cálculo "ARS vs USD" naïve. */}
-                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
-                    Convención: {yieldDetail.dayCount}
-                    {yieldDetail.accrued > 0.01 && (
-                      <>
-                        {' · '}
-                        dirty {yieldDetail.dirty.toFixed(2)} (clean {yieldDetail.clean.toFixed(2)} + accrued {yieldDetail.accrued.toFixed(2)})
-                      </>
-                    )}
-                    {!yieldDetail.converged && (
-                      <span className="text-rendi-warn"> · ⚠ aproximada</span>
-                    )}
-                  </p>
-                  {priceConversion && (
-                    <p className="text-[10px] text-rendi-accent font-mono leading-snug">
-                      ✓ Precio convertido {priceConversion.from} → {priceConversion.to} al {priceConversion.type} {priceConversion.rate.toFixed(2)}
-                    </p>
-                  )}
-                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
-                    Asume qty = nominales VN, precio entrado por nominal en moneda del broker.
-                    {isCrossCurrency && !priceConversion && (
-                      <span className="text-rendi-warn"> ⚠ Bono {bondCurrency} en broker {brokerCurrency} sin MEP disponible — TIR puede estar distorsionada.</span>
-                    )}
-                  </p>
-                </>
-              ) : (
-                <p className="text-xs text-ink-2 leading-snug">
-                  {currentPrice == null
-                    ? 'Cargá un precio override en la posición para estimar la TIR a precios de mercado.'
-                    : yieldDetail?.method === 'bracket_failed'
-                      ? 'No se pudo estimar la TIR — precio fuera del rango razonable. Verificá la moneda y la unidad del precio entrado.'
-                      : 'No se pudo estimar la TIR — verificá que el precio esté en la misma moneda que el bono.'}
-                </p>
-              )}
-              {nextPay && (
-                <div className="pt-2 mt-1 border-t border-line/40">
-                  <p className="eyebrow text-rendi-accent">Próximo pago</p>
-                  <p className="text-sm font-semibold text-ink-0 tabular">{nextPay.date}</p>
-                  <p className="text-xs text-rendi-pos font-mono">
-                    ≈ +{moneyLabel} {fmt(nextPay.total)}
-                  </p>
-                  <p className="text-[10px] text-ink-3 font-mono">
-                    {nextPay.isPureAmort ? 'Amortización' : nextPay.isPureCoupon ? 'Cupón' : 'Cupón + amort.'}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Mini-cronograma de los próximos pagos */}
-            <div className="md:col-span-2">
-              <p className="eyebrow text-rendi-accent mb-1.5">
-                Calendario futuro · {remaining.length} {remaining.length === 1 ? 'pago' : 'pagos'} hasta {meta?.maturity}
-              </p>
-              <div className="border border-line/60 rounded-sm overflow-hidden">
-                <div className="bg-bg-2/40 px-3 py-1 grid grid-cols-12 gap-2 text-[10px] uppercase tracking-wider text-ink-3 font-mono">
-                  <div className="col-span-3">Fecha</div>
-                  <div className="col-span-3 text-right">Cupón</div>
-                  <div className="col-span-3 text-right">Amort.</div>
-                  <div className="col-span-3 text-right">Tu monto</div>
-                </div>
-                <div className="max-h-44 overflow-y-auto divide-y divide-line/30">
-                  {remaining.slice(0, 8).map(pay => {
-                    const qty = p.quantity || 0
-                    const tuMonto = qty > 0 ? (pay.total * qty / 100) : null
-                    return (
-                      <div key={pay.date} className="px-3 py-1.5 grid grid-cols-12 gap-2 text-xs">
-                        <div className="col-span-3 text-ink-1 font-mono">{pay.date}</div>
-                        <div className="col-span-3 text-right tabular text-ink-2">
-                          {pay.coupon > 0 ? pay.coupon.toFixed(3) : '—'}
-                        </div>
-                        <div className="col-span-3 text-right tabular text-ink-2">
-                          {pay.amort > 0 ? pay.amort.toFixed(3) : '—'}
-                        </div>
-                        <div className="col-span-3 text-right tabular font-semibold text-rendi-pos">
-                          {tuMonto != null ? `${moneyLabel} ${fmt(tuMonto)}` : '—'}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-                {remaining.length > 8 && (
-                  <div className="bg-bg-2/30 px-3 py-1 text-[10px] text-ink-3 font-mono text-center border-t border-line/30">
-                    + {remaining.length - 8} pago{remaining.length - 8 === 1 ? '' : 's'} más hasta vencimiento
-                  </div>
-                )}
-              </div>
-              <p className="text-[10px] text-ink-3 font-mono mt-1 leading-snug">
-                Aproximación basada en cupón promedio del prospecto. Step-up exacto y CER ajustado vienen en Fase 3.
-                Cupón/Amort. expresados por 100 nominal.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Historial */}
-        {ops.length > 0 && (
-          <div className="mt-4 border border-line rounded-sm overflow-hidden">
-            <div className="bg-bg-2/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-2">
-              Historial de cobranzas · {ops.length} {ops.length === 1 ? 'pago' : 'pagos'}
-            </div>
-            <div className="max-h-48 overflow-y-auto divide-y divide-line/50">
-              {ops.map(o => (
-                <div key={o.id} className="px-3 py-2 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-ink-3 font-mono shrink-0">{o.date}</span>
-                    <span className={`text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm border shrink-0 ${
-                      o.op_type === 'Cupón'
-                        ? 'bg-rendi-pos/15 text-rendi-pos border-rendi-pos/30'
-                        : 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/30'
-                    }`}>
-                      {o.op_type}
-                    </span>
-                    {o.notes && <span className="text-ink-3 truncate">{o.notes}</span>}
-                  </div>
-                  <span className="font-mono font-semibold text-rendi-pos tabular shrink-0">
-                    +{moneyLabel} {fmt(+o.pnl_usd || 0)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </td>
-    </tr>
-  )
-}
-
 export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
   // Posiciones FIFO del par (broker, asset)
   const lots = positions
@@ -3072,7 +2831,7 @@ export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm
 
         {/* Lotes FIFO */}
         <div className="border border-line rounded-lg overflow-hidden">
-          <div className="bg-bg-2 px-3 py-1.5 text-[10px] font-semibold text-ink-3 uppercase tracking-wide">
+          <div className="bg-bg-2 px-3 py-1.5 text-[12px] font-semibold text-ink-3">
             Lotes · orden de cierre FIFO
           </div>
           <div className="max-h-32 overflow-y-auto divide-y divide-line dark:divide-line">
@@ -3219,7 +2978,7 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
         <span>{label}</span>
         {autoCalculated && (
           <span
-            className="inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-caps text-data-violet bg-data-violet/10 border border-data-violet/30 px-1.5 py-0.5 rounded"
+            className="inline-flex items-center gap-1 text-[12.5px] text-data-violet bg-data-violet/10 border border-data-violet/30 px-1.5 py-0.5 rounded font-medium"
             title="Se calcula solo a partir de los otros dos campos. Editalo si querés sobrescribirlo."
           >
             <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -3415,7 +3174,7 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
         {bondMeta && (
           <div className="px-3 py-2.5 rounded bg-rendi-accent/[0.06] border border-rendi-accent/25">
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30">
+              <span className="text-[12.5px] tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 font-medium">
                 Bono
               </span>
               <span className="text-xs font-semibold text-ink-0">{formatBondType(bondMeta.type)} · {bondMeta.issuer}</span>
@@ -3447,7 +3206,7 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
                 <Wallet size={14} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
                 <span className="text-sm text-ink-0 font-medium truncate">{form.broker || '—'}</span>
                 {selectedBrokerCurrency && (
-                  <span className="ml-auto text-[10px] font-mono uppercase tracking-caps text-ink-3">{selectedBrokerCurrency}</span>
+                  <span className="ml-auto text-[12px] text-ink-3 font-medium">{selectedBrokerCurrency}</span>
                 )}
               </div>
             ) : (

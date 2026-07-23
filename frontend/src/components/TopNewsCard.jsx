@@ -28,7 +28,7 @@ export default function TopNewsCard() {
   if (!loaded || news.length === 0) return null
 
   return (
-    <div className="bg-white dark:bg-bg-1 border border-line rounded overflow-hidden">
+    <div className="bg-white dark:bg-bg-1 border border-line rounded-xl overflow-hidden">
       <div className="px-4 py-3 border-b border-line bg-bg-2/40 dark:bg-bg-2/40 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Newspaper size={14} strokeWidth={1.75} className="text-rendi-accent" />
@@ -36,7 +36,7 @@ export default function TopNewsCard() {
         </div>
         <Link
           to="/novedades?tab=noticias"
-          className="text-[11px] text-rendi-accent hover:text-rendi-accent/80 font-mono inline-flex items-center gap-0.5"
+          className="text-[11.5px] font-medium text-rendi-accent hover:text-rendi-accent/80 inline-flex items-center gap-0.5"
         >
           Ver todas <ArrowRight size={11} strokeWidth={1.75} />
         </Link>
@@ -65,14 +65,14 @@ function NewsRow({ news }) {
         <div className="flex items-start gap-3">
           {ticker && <AssetLogo asset={ticker} size={28} />}
           <div className="min-w-0 flex-1">
-            <div className="flex items-baseline gap-2 mb-0.5">
+            <div className="flex items-baseline gap-1.5 mb-0.5 flex-wrap">
               {ticker && (
-                <span className="text-xs font-semibold text-ink-0 font-mono">{ticker}</span>
+                <span className="text-xs font-semibold text-ink-0 tabular">{ticker}</span>
               )}
               {sourceName && (
-                <span className="text-[10px] text-ink-3 font-mono">· {sourceName}</span>
+                <span className="text-[11px] text-ink-3">· {sourceName}</span>
               )}
-              <span className="text-[10px] text-ink-3 font-mono">· {formatNewsDate(published_at)}</span>
+              <span className="text-[11px] text-ink-3">· {formatNewsDate(published_at)}</span>
             </div>
             <p className="text-sm text-ink-0 leading-snug line-clamp-2">{cleanTitle}</p>
           </div>

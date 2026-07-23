@@ -1026,7 +1026,7 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
           <button type="button" onClick={() => setEntryType('integration')} className={bigCard(entryType === 'integration')}>
             <div className="text-sm font-medium text-ink-0 flex items-center gap-1.5">
               Integración con broker
-              <span className="text-[9px] font-mono uppercase tracking-caps text-data-violet bg-data-violet/15 rounded-full px-1.5 py-0.5">Nuevo</span>
+              <span className="text-[12.5px] text-data-violet bg-data-violet/15 rounded-full px-1.5 py-0.5 font-medium">Nuevo</span>
             </div>
             <div className="text-xs text-ink-3 mt-0.5">Conectá tu cuenta por API y se sincroniza sola — sin subir archivos.</div>
           </button>
@@ -1545,12 +1545,12 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
       </div>
 
       <div className="px-3 py-2 rounded-md bg-bg-2 dark:bg-bg-1/40 border border-line">
-        <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1">
+        <div className="text-[12px] text-ink-3 mb-1 font-medium">
           Columnas detectadas en tu archivo
         </div>
         <div className="flex flex-wrap gap-1.5">
           {headers.map(h => (
-            <span key={h} className="text-xs bg-white dark:bg-bg-2 border border-line rounded px-2 py-0.5 font-mono">
+            <span key={h} className="text-xs bg-white dark:bg-bg-2 border border-line rounded-xl px-2 py-0.5 font-mono">
               {h}
             </span>
           ))}
@@ -1611,7 +1611,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
 
       {sampleRows.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1">
+          <div className="text-[12px] text-ink-3 mb-1 font-medium">
             Vista previa de tu archivo (primeras filas)
           </div>
           <div className="overflow-x-auto border border-line rounded-md">
@@ -2021,7 +2021,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-ink-0 text-sm">{b.broker}</span>
                 {b.broker_currency && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-2 dark:bg-bg-2 text-ink-1 uppercase">
+                  <span className="text-[12px] px-1.5 py-0.5 rounded bg-bg-2 dark:bg-bg-2 text-ink-1 font-medium">
                     {displayCur(b.broker_currency, b.broker)}
                   </span>
                 )}
@@ -2030,7 +2030,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
             <div className="p-3 space-y-3">
               {/* Cash */}
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1">
+                <div className="text-[12px] text-ink-3 mb-1 font-medium">
                   ¿Cuánto efectivo (cash) tenés hoy en {b.broker}?
                 </div>
                 <p className="text-[11px] text-ink-3 mb-1.5">
@@ -2050,7 +2050,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           <span className="font-semibold text-ink-0 text-sm">{curLabel}</span>
                           {hasF && (
                             <span className="inline-flex items-baseline gap-1.5 px-2.5 py-1 rounded-md bg-rendi-accent/12 border border-rendi-accent/40">
-                              <span className="text-[9px] uppercase tracking-wider text-rendi-accent/90 font-bold">según tu CSV</span>
+                              <span className="text-[12.5px] text-rendi-accent/90 font-bold">según tu CSV</span>
                               <span className="text-base font-bold text-rendi-accent tabular leading-none">
                                 {F.toLocaleString('es-AR', { maximumFractionDigits: 2 })} {curLabel}
                               </span>
@@ -2110,7 +2110,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
               {/* Precio de compra — posiciones transferidas / compras sin precio / ventas sin compra previa */}
               {(b.assets || []).length > 0 && (
                 <div>
-                  <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1">
+                  <div className="text-[12px] text-ink-3 mb-1 font-medium">
                     Precio de compra de tus posiciones en {b.broker}
                   </div>
                   <p className="text-[11px] text-ink-3 mb-2">
@@ -2144,7 +2144,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                             </button>
                           )}
                           <div className="flex items-center gap-1.5 ml-auto">
-                            <span className="text-[10px] text-ink-3 uppercase">{curLabel}</span>
+                            <span className="text-[12px] text-ink-3 font-medium">{curLabel}</span>
                             <input
                               type="number"
                               step="any"
@@ -2270,7 +2270,7 @@ function CashReconcileCard({ c, onApplied }) {
           )}
         </div>
         <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wide text-ink-3">Calculado del CSV</div>
+          <div className="text-[12px] text-ink-3 font-medium">Calculado del CSV</div>
           <div className={`text-sm font-mono ${isNegative ? 'text-rendi-warn' : 'text-ink-1'}`}>
             {computedFmt}
           </div>
@@ -2279,7 +2279,7 @@ function CashReconcileCard({ c, onApplied }) {
 
       <div className="flex items-stretch gap-2">
         <div className="flex-1">
-          <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
+          <label className="block text-[12px] text-ink-3 mb-1 font-medium">
             ¿Qué cash muestra tu app de {c.broker}?
           </label>
           <div className="relative">
@@ -2447,7 +2447,7 @@ function SummaryBox({ label, value, positive, negative }) {
       ${positive ? 'border-emerald-500/30 bg-emerald-500/5' :
         negative ? 'border-red-500/30 bg-red-500/5' :
         'border-line bg-bg-2 dark:bg-bg-1/40'}`}>
-      <div className="text-[10px] uppercase tracking-wider text-ink-3">{label}</div>
+      <div className="text-[12px] text-ink-3 font-medium">{label}</div>
       <div className={`text-sm font-semibold mt-0.5 tabular
         ${positive ? 'text-emerald-700 dark:text-emerald-400' :
           negative ? 'text-red-700 dark:text-red-400' :

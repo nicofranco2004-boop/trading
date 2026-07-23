@@ -19,7 +19,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import {
   Briefcase, List, Wallet, LineChart, Activity, Newspaper, Compass, TrendingUp,
   Gauge, Bell, Upload, BookOpen, Settings, MessageCircle, Sparkles, Shield,
-  Sun, Moon, LogOut, Menu, ChevronRight,
+  Sun, Moon, LogOut, Menu, ChevronRight, LayoutDashboard, UserRound, Users,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
@@ -44,6 +44,7 @@ const GROUPS = [
   {
     id: 'cartera', label: 'Tu Cartera', icon: Wallet,
     items: [
+      { to: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard },
       { to: '/posiciones',  label: 'Cartera',      icon: Briefcase },
       { to: '/operaciones', label: 'Movimientos',  icon: List },
     ],
@@ -58,8 +59,9 @@ const GROUPS = [
   {
     id: 'analisis', label: 'Análisis', icon: Compass,
     items: [
-      { to: '/analisis',     label: 'Rendimiento',        icon: TrendingUp },
-      { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge },
+      { to: '/analisis',        label: 'Métricas',           icon: TrendingUp },
+      { to: '/fundamentals',    label: 'Calidad de cartera', icon: Gauge },
+      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound },
     ],
   },
 ]
@@ -86,6 +88,8 @@ export default function Sidebar() {
   const coachDrawer = useCoachDrawer()
   const location = useLocation()
   const { unseenCount = 0 } = useAlertsContext()  // badge de alertas sin ver
+  // Ítem "Clientes": asesores + admin (mismo predicado que el gate de /clientes)
+  const isAdvisor = user?.tier === 'advisor' || !!user?.is_admin
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
 
@@ -141,10 +145,27 @@ export default function Sidebar() {
 
       {/* Navegación */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-5 px-2.5">
-        {/* Rendi AI — botón especial que abre drawer (no navega). */}
+        {/* Plan Asesor: acceso al roster, arriba de todo (es SU home). */}
+        {isAdvisor && (
+          <div className="mb-4">
+            <NavLink to="/clientes" title={collapsed ? 'Clientes' : undefined}
+              onMouseEnter={() => prefetchRoute('/clientes')} onFocus={() => prefetchRoute('/clientes')}
+              className={rowCls}>
+              {({ isActive }) => (<>
+                {isActive && <ActiveBar />}
+                <Users size={18} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span>Clientes</span>}
+              </>)}
+            </NavLink>
+          </div>
+        )}
+
+        {/* Rendi AI — botón especial que abre drawer (no navega). En contexto
+            de cliente el coach opera sobre LA CUENTA DEL CLIENTE (la IA sigue
+            al contexto — /api/ai no es prefijo exento). */}
         <div className="mb-6">
           {!collapsed && (
-            <p className="px-3 mb-2 font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium">Asistente</p>
+            <p className="px-3 mb-2 text-[12.5px] text-ink-2 font-medium">Asistente</p>
           )}
           <button
             type="button"
@@ -315,6 +336,7 @@ function PlanBadge({ tier, compact = false }) {
     free:  { label: 'FREE',  bg: 'bg-bg-2',           text: 'text-ink-2',       dot: 'bg-ink-3' },
     plus:  { label: 'PLUS',  bg: 'bg-data-cyan/15',   text: 'text-data-cyan',   dot: 'bg-data-cyan' },
     pro:   { label: 'PRO',   bg: 'bg-data-violet/15', text: 'text-data-violet', dot: 'bg-data-violet' },
+    advisor: { label: 'ASESOR', bg: 'bg-data-violet/15', text: 'text-data-violet', dot: 'bg-data-violet' },
     admin: { label: 'ADMIN', bg: 'bg-rendi-pos/15',   text: 'text-rendi-pos',   dot: 'bg-rendi-pos' },
   }
   const s = styles[t] || styles.free

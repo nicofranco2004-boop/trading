@@ -10,10 +10,12 @@ import PageHeader from '../components/PageHeader'
 import AlertsManager from '../components/alerts/AlertsManager'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAlertsContext } from '../contexts/AlertsContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
 
 export default function Alertas() {
   const plan = usePlanFeatures()
   const { markSeen } = useAlertsContext()
+  const { clientCtx } = useAdvisorContext()
   const [searchParams] = useSearchParams()
 
   // Al entrar a Alertas, marcar los eventos como vistos → apaga el puntito del
@@ -31,6 +33,12 @@ export default function Alertas() {
         title="Alertas"
         subtitle="Avisos de precio objetivo y variación sobre tus activos."
       />
+      {clientCtx && (
+        <div className="mb-4 text-[12.5px] text-ink-1 bg-data-violet/[0.08] border border-data-violet/30 rounded-md px-3 py-2">
+          Las alertas que crees en esta cuenta te llegan <span className="font-semibold">a vos</span> (tu
+          email y tus notificaciones), con el nombre de <span className="font-semibold">{clientCtx.label}</span> adelante.
+        </div>
+      )}
       <AlertsManager plan={plan} prefill={prefill} />
     </div>
   )

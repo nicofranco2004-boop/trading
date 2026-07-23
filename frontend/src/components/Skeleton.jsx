@@ -64,7 +64,7 @@ export function DashboardSkeleton() {
       {/* Insight line */}
       <Skeleton className="h-10 w-full mb-8" />
       {/* KPI strip */}
-      <div className="bg-bg-1 border border-line rounded mb-8 p-4">
+      <div className="bg-bg-1 border border-line rounded-xl mb-8 p-4">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
           {[0, 1, 2, 3].map(i => (
             <div key={i} className="space-y-2">
@@ -76,7 +76,7 @@ export function DashboardSkeleton() {
         </div>
       </div>
       {/* Chart */}
-      <div className="bg-bg-1 border border-line rounded p-5 mb-8">
+      <div className="bg-bg-1 border border-line rounded-xl p-5 mb-8">
         <Skeleton className="h-5 w-32 mb-2" />
         <Skeleton className="h-4 w-64 mb-6" />
         <Skeleton className="h-64 w-full" />

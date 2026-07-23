@@ -325,7 +325,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-ink-0 text-sm leading-tight truncate">{b.name}</h3>
-                  <p className="text-[10px] font-mono text-ink-3 mt-1 uppercase tracking-[0.12em]">{b.currency}</p>
+                  <p className="text-[12px] text-ink-3 mt-1 tracking-[0.12em] font-medium">{b.currency}</p>
                 </div>
               </div>
             </button>
@@ -356,7 +356,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
           {hasBrokers && (
             <div className="flex items-center gap-3 my-4">
               <div className="flex-1 h-px bg-line" />
-              <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">o</span>
+              <span className="text-[12px] tracking-[0.12em] text-ink-3 font-medium">o</span>
               <div className="flex-1 h-px bg-line" />
             </div>
           )}
@@ -480,7 +480,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
             {/* En tu cartera — lo primero: los activos que ya tenés en este broker */}
             {engaged && holdings.length > 0 && (
               <div className="border-b border-line/50 dark:border-line/40">
-                <p className="px-5 pt-3 pb-1 text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">En tu cartera</p>
+                <p className="px-5 pt-3 pb-1 text-[12px] tracking-[0.12em] text-ink-3 font-medium">En tu cartera</p>
                 <ul className="divide-y divide-line/50 dark:divide-line/40">
                   {holdings.map(h => (
                     <li key={`hold:${h.symbol}`}>
@@ -499,7 +499,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
             {/* Sugeridos — populares que todavía no tenés acá */}
             {engaged && suggestions.length > 0 && (
               <div className="border-b border-line/50 dark:border-line/40">
-                <p className="px-5 pt-3 pb-1 text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">Sugeridos</p>
+                <p className="px-5 pt-3 pb-1 text-[12px] tracking-[0.12em] text-ink-3 font-medium">Sugeridos</p>
                 <ul className="divide-y divide-line/50 dark:divide-line/40">
                   {suggestions.map(s => (
                     <li key={`sug:${s.symbol}`}>
@@ -518,7 +518,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
             {/* Explorá por categoría */}
             <div className="p-5">
               {engaged && (holdings.length > 0 || suggestions.length > 0) && (
-                <p className="mb-3 text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">O explorá por categoría</p>
+                <p className="mb-3 text-[12px] tracking-[0.12em] text-ink-3 font-medium">O explorá por categoría</p>
               )}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {categories.map(cat => {
@@ -536,7 +536,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
                         <div className="min-w-0 flex-1">
                           <h3 className="font-semibold text-ink-0 text-sm leading-tight">{cat.label}</h3>
                           <p className="text-xs text-ink-2 mt-1 leading-snug">{cat.hint}</p>
-                          <p className="text-[10px] font-mono text-ink-3 mt-2 uppercase tracking-[0.12em]">
+                          <p className="text-[12px] text-ink-3 mt-2 tracking-[0.12em] font-medium">
                             {cat.freeText ? 'Entrada libre' : `${cat.list.length} ${cat.list.length === 1 ? 'opción' : 'opciones'}`}
                           </p>
                         </div>
@@ -655,7 +655,7 @@ function StepLetraPicker({ onPick }) {
   return (
     <div className="flex-1 flex flex-col min-h-0 p-5 gap-4">
       <div>
-        <label className="block text-xs text-ink-3 font-mono uppercase tracking-[0.12em] mb-2">Ticker de la letra</label>
+        <label className="block text-xs text-ink-3 tracking-[0.12em] mb-2 font-medium">Ticker de la letra</label>
         <input
           ref={inputRef}
           type="text"
@@ -665,7 +665,7 @@ function StepLetraPicker({ onPick }) {
           placeholder="T30A7, S31O5, X18J5…"
           autoComplete="off"
           spellCheck="false"
-          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm font-mono text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition uppercase"
+          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition font-medium"
         />
         {upper && (
           <p className={`text-xs mt-2 ${valid ? 'text-rendi-pos' : 'text-rendi-warn'}`}>
@@ -767,11 +767,11 @@ function StepFciPicker({ list, onPick }) {
                       <p className="text-xs text-ink-2 truncate">{g.emisor}</p>
                     </div>
                     {single ? (
-                      <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3 flex-shrink-0">
+                      <span className="text-[12px] tracking-[0.12em] text-ink-3 flex-shrink-0 font-medium">
                         Clase {g.classes[0].cls || '—'}
                       </span>
                     ) : (
-                      <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3 flex items-center gap-1 flex-shrink-0">
+                      <span className="text-[12px] tracking-[0.12em] text-ink-3 flex items-center gap-1 flex-shrink-0 font-medium">
                         {g.classes.length} clases {isOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                       </span>
                     )}

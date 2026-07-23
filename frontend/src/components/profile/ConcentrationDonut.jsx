@@ -48,7 +48,7 @@ export default function ConcentrationDonut({ holdings, top3Pct, comparison }) {
             <div className="text-xl font-semibold text-ink-0 tabular-nums leading-none">
               {top3Pct}%
             </div>
-            <div className="font-mono text-[9px] uppercase tracking-caps text-ink-2 mt-1">
+            <div className="text-[12.5px] text-ink-2 mt-1 font-medium">
               Top 3
             </div>
           </div>

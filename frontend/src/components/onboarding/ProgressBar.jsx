@@ -9,7 +9,7 @@ export default function ProgressBar({ steps, currentIndex }) {
   return (
     <div className="w-full">
       {/* Step indicator mono */}
-      <div className="text-[10px] font-mono uppercase tracking-caps text-data-violet mb-3 text-center">
+      <div className="text-[12px] text-data-violet mb-3 text-center font-medium">
         Paso {currentIndex + 1} de {steps.length}
       </div>
 

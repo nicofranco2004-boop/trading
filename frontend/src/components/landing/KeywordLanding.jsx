@@ -103,7 +103,7 @@ export default function KeywordLanding({
       <main className="max-w-3xl mx-auto px-6 py-16 md:py-24">
         {/* Hero — kicker + H1 + intro + CTAs */}
         <section className="mb-16">
-          <p className="font-mono text-[11px] uppercase tracking-caps text-data-violet mb-4">
+          <p className="text-[12.5px] text-data-violet mb-4 font-medium">
             {kicker}
           </p>
           <h1 className="text-4xl md:text-5xl font-semibold tracking-tight leading-[1.1] mb-6 text-ink-0">
@@ -197,7 +197,7 @@ export default function KeywordLanding({
         {/* Internal links — relacionados (SEO: distribuir authority entre landings) */}
         {relatedLinks && relatedLinks.length > 0 && (
           <section className="border-t border-line/40 pt-8">
-            <h2 className="text-sm font-mono uppercase tracking-caps text-ink-3 mb-4">
+            <h2 className="text-sm text-ink-3 mb-4 font-medium">
               También te puede interesar
             </h2>
             <ul className="flex flex-wrap gap-3">

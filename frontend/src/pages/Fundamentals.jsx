@@ -125,7 +125,7 @@ export default function Fundamentals() {
           className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-line bg-bg-1 text-sm text-ink-2 hover:text-ink-0 hover:border-line-2 transition-colors flex-shrink-0"
         >
           <Search size={15} strokeWidth={1.75} /> Buscar activo
-          <kbd className="hidden sm:inline-block text-[10px] font-mono text-ink-3 border border-line rounded px-1 py-0.5 ml-0.5">⌘K</kbd>
+          <kbd className="hidden sm:inline-block text-[10px] font-mono text-ink-3 border border-line rounded-xl px-1 py-0.5 ml-0.5">⌘K</kbd>
         </button>
       </div>
 

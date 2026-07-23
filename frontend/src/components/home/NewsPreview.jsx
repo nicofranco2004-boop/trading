@@ -44,9 +44,9 @@ export default function NewsPreview() {
         </div>
         <Link
           to="/novedades?tab=noticias"
-          className="text-[11px] text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 font-mono uppercase tracking-caps"
+          className="text-[12.5px] font-medium text-ink-2 hover:text-ink-0 inline-flex items-center gap-1"
         >
-          Ver todas <ArrowRight size={10} strokeWidth={1.75} aria-hidden="true" />
+          Ver todas <ArrowRight size={11} strokeWidth={1.75} aria-hidden="true" />
         </Link>
       </header>
 
@@ -70,8 +70,8 @@ export default function NewsPreview() {
                 <div className="flex items-start gap-2">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-ink-1 leading-snug line-clamp-2">{n.title}</p>
-                    <div className="flex items-center gap-1.5 mt-1 text-[10px] text-ink-3 font-mono">
-                      <span className="uppercase tracking-caps">{n.source || '—'}</span>
+                    <div className="flex items-center gap-1.5 mt-1 text-[12px] text-ink-3">
+                      <span className="font-medium">{n.source || '—'}</span>
                       <span>·</span>
                       <span>{fmtTimeAgo(n.published_at)}</span>
                     </div>

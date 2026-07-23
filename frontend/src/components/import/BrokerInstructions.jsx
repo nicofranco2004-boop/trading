@@ -250,13 +250,13 @@ export default function BrokerInstructions({ defaultBrokerId = 'cocos', lockBrok
         <div className="flex items-center gap-2 min-w-0">
           <BookOpen size={14} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
           <div className="text-left min-w-0">
-            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Antes de subir</div>
+            <div className="text-[12.5px] text-ink-2 font-medium">Antes de subir</div>
             <div className="text-sm font-medium text-ink-0 truncate">Cómo descargar tus archivos</div>
           </div>
         </div>
         <div className="flex items-center gap-2">
           {!locked && (
-            <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-2 border border-line/60 rounded-sm px-2 py-0.5">
+            <span className="hidden sm:inline-flex items-center gap-1 text-[12.5px] text-ink-2 border border-line/60 rounded-sm px-2 py-0.5 font-medium">
               Cocos · Balanz · Binance · IOL
             </span>
           )}

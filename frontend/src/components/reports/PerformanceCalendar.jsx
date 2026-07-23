@@ -80,13 +80,13 @@ function KpiCell({ label, value, sub, tone, first }) {
     'text-ink-0'
   return (
     <div className={`px-4 py-3 flex-1 min-w-[140px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-none">
+      <div className="text-[12.5px] text-ink-2 leading-none font-medium">
         {label}
       </div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>
         {value}
       </div>
-      <div className="text-[11px] font-mono text-ink-2 mt-1.5 leading-none truncate uppercase tracking-caps">
+      <div className="text-[12.5px] text-ink-2 mt-1.5 leading-none truncate font-medium">
         {sub}
       </div>
     </div>
@@ -103,7 +103,7 @@ export default function PerformanceCalendar({ yearGroups }) {
   return (
     <section className="mb-6 space-y-3">
       {/* ── KPI strip ── */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap">
+      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
         <KpiCell
           first
           label="P&L Realizado · 12M"
@@ -128,18 +128,18 @@ export default function PerformanceCalendar({ yearGroups }) {
       </div>
 
       {/* ── Calendar heatmap ── */}
-      <div className="border border-line rounded bg-bg-1 overflow-hidden">
+      <div className="border border-line rounded-xl bg-bg-1 overflow-hidden">
         <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
           <div className="flex items-center gap-2">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
-            <span className="text-[11px] font-mono uppercase tracking-label text-ink-0">
+            <span className="text-[12.5px] text-ink-0 font-medium">
               Calendario de performance
             </span>
-            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 ml-1">
+            <span className="text-[12.5px] text-ink-2 ml-1 font-medium">
               / TWR mensual
             </span>
           </div>
-          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+          <span className="text-[12.5px] text-ink-2 font-medium">
             {yearGroups.length} {yearGroups.length === 1 ? 'año' : 'años'} cargados
           </span>
         </header>
@@ -211,7 +211,7 @@ export default function PerformanceCalendar({ yearGroups }) {
 
           {/* Legend */}
           <div className="flex items-center gap-1 pt-3 border-t border-line/50 text-[10px] font-mono text-ink-3">
-            <span className="mr-2 uppercase tracking-caps">−5%</span>
+            <span className="mr-2 font-medium">−5%</span>
             <span className="inline-block w-5 h-2.5" style={{ background: '#FF5360' }} />
             <span className="inline-block w-5 h-2.5" style={{ background: '#C8333E' }} />
             <span className="inline-block w-5 h-2.5" style={{ background: '#8E2B33' }} />
@@ -219,8 +219,8 @@ export default function PerformanceCalendar({ yearGroups }) {
             <span className="inline-block w-5 h-2.5" style={{ background: '#0F5C36' }} />
             <span className="inline-block w-5 h-2.5" style={{ background: '#14A560' }} />
             <span className="inline-block w-5 h-2.5" style={{ background: '#21D07A' }} />
-            <span className="ml-2 uppercase tracking-caps">+5%</span>
-            <span className="ml-auto uppercase tracking-caps">Rendimiento mensual</span>
+            <span className="ml-2 font-medium">+5%</span>
+            <span className="ml-auto font-medium">Rendimiento mensual</span>
           </div>
         </div>
       </div>

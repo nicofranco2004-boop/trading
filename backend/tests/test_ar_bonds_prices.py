@@ -78,13 +78,21 @@ class ResolveARBondPriceTest(unittest.TestCase):
             self.assertIsNone(main._resolve_ar_bond_price('AL30.BA'))
 
     def test_cer_bonds_supported(self):
-        """TX26, TX28, TZX26 también están cubiertos."""
+        """CER (TX*/TZX*) están cubiertos y NO se dividen por 100.
+
+        data912 NO es uniforme: los soberanos/ONs vienen per-100 face (AL30≈86k
+        ARS / AL30D≈57 USD) pero los CER vienen per-1 (TX26≈716 ARS / TX26D≈0.47
+        USD, ~100× más chicos). El resolver clasifica por USD-equiv y devuelve
+        per-1 en ambos casos. Cf. fix fb1e295 (2026-06-27) y la matriz completa en
+        test_bond_unit_convention.py — el ÷100 a ciegas dejaba los CER 100×
+        subvaluados. Verificado live 2026-07-22."""
         with patch('main.requests.get', side_effect=_mock_data912({
             'TX26': 685.0,
             'TZX26': 383.1,
         })):
-            self.assertAlmostEqual(main._resolve_ar_bond_price('TX26.BA'), 6.85)
-            self.assertAlmostEqual(main._resolve_ar_bond_price('TZX26.BA'), 3.831)
+            # per-1: se reportan tal cual (sin ÷100, a diferencia de los soberanos)
+            self.assertAlmostEqual(main._resolve_ar_bond_price('TX26.BA'), 685.0)
+            self.assertAlmostEqual(main._resolve_ar_bond_price('TZX26.BA'), 383.1)
 
 
 class FetchData912BondsCacheTest(unittest.TestCase):

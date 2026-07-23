@@ -66,7 +66,7 @@ export default function WelcomeStep({ userName, onNext, onSkip }) {
 
 function FeatureMini({ Icon, title, desc }) {
   return (
-    <div className="p-4 border border-line rounded bg-bg-1/40">
+    <div className="p-4 border border-line rounded-xl bg-bg-1/40">
       <div className="w-7 h-7 rounded bg-bg-2 border border-line flex items-center justify-center text-data-violet mb-2">
         <Icon size={14} strokeWidth={1.75} />
       </div>

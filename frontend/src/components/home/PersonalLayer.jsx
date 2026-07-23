@@ -85,10 +85,10 @@ export default function PersonalLayer() {
                 </div>
                 <div className="text-sm text-ink-1 leading-snug">{c.headline}</div>
                 {c.context && (
-                  <div className="text-[10px] text-ink-3 mt-0.5 font-mono">{c.context}</div>
+                  <div className="text-[12px] text-ink-3 mt-0.5 num tabular">{c.context}</div>
                 )}
                 {c.cta_label && (
-                  <div className="text-[10px] text-rendi-pos mt-1.5 font-mono uppercase tracking-caps">{c.cta_label}</div>
+                  <div className="text-[12.5px] text-rendi-pos mt-1.5 font-medium">{c.cta_label}</div>
                 )}
               </Panel>
             </Wrapper>

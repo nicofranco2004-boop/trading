@@ -48,7 +48,7 @@ export default function StyleScale({
       </div>
 
       {/* Extremos de la escala */}
-      <div className="flex justify-between font-mono text-[10px] uppercase tracking-caps text-ink-3">
+      <div className="flex justify-between text-[12px] text-ink-3 font-medium">
         <span>Pasivo</span>
         <span>Activo</span>
       </div>

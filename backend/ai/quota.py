@@ -49,7 +49,7 @@ from __future__ import annotations
 from typing import Literal
 from datetime import date, datetime, timedelta
 
-Tier = Literal["free", "plus", "pro", "admin"]
+Tier = Literal["free", "plus", "pro", "advisor", "admin"]
 
 # Cap semanal. Cambiar acá afecta UI, mensaje 429, demo mock, tests.
 #
@@ -94,6 +94,16 @@ LIMITS = {
         # Cap 40/sem tras audit #3 (down de 60) — Pro user real usa ~40%
         # de la cuota = 16 chats/sem promedio, 40 deja headroom 2.5×.
         # Worst case proyectado: ~$3.50/Pro/mes (chat + analyses + hub).
+        "chat_per_week": 40,
+        "diag_dismiss_per_week": None,  # ilimitado
+    },
+    # Advisor — Plan Asesor Financiero (B2B). Pool PROPIO del asesor: toda la
+    # IA que use (en su cuenta o dentro de un cliente vía contexto) descuenta
+    # de acá, nunca de la cuota del cliente. Arranca a niveles Pro; cuando
+    # exista la IA de libro (cross-cliente) se recalibra.
+    "advisor": {
+        "analyses_per_week": 60,
+        "hub_queries_per_week": 60,
         "chat_per_week": 40,
         "diag_dismiss_per_week": None,  # ilimitado
     },
@@ -152,12 +162,34 @@ def get_tier(conn, user_id: int) -> Tier:
         ).fetchone()
         if row:
             keys = row.keys()
+            # Plan Asesor: una cuenta ADMINISTRADA (shadow, managed_by seteado)
+            # se comporta como Pro para todos los gates — el asesor la opera y
+            # su plan lo paga. PERO esto aplica SOLO mientras sea shadow SIN
+            # RECLAMAR (approved=0, no puede loguear ella misma): en ese caso
+            # el único que la ve es el asesor, vía contexto, con su propio plan.
+            #
+            # Una vez que el cliente RECLAMA la cuenta (F4a: /api/auth/claim),
+            # el endpoint pone approved=1 Y managed_by=NULL (la cuenta pasa a
+            # ser independiente de verdad — el vínculo con el asesor sigue
+            # vivo en advisor_clients, no acá). Esta rama queda inalcanzable
+            # para ella de las dos formas: managed_by ya es NULL, y aunque no
+            # lo fuera, approved=1 la saca del check. Cae a la resolución
+            # normal de abajo (override pago si existe, si no 'free'). Es la
+            # regla de negocio explícita: "el cliente entra a SU cuenta y ve
+            # visión Free — el plan del asesor no incluye a los clientes."
+            # (El asesor, viendo la MISMA cuenta vía X-Rendi-Client-Id, sigue
+            # viendo Pro: /api/plan/features fuerza tier_override='pro' en
+            # contexto, sin pasar por acá.)
+            approved = bool(row["approved"]) if "approved" in keys else True
+            if "managed_by" in keys and row["managed_by"] is not None and not approved:
+                return "pro"
             override = ((row["tier"] if "tier" in keys else None) or "").strip().lower()
             is_admin = bool(row["is_admin"]) if "is_admin" in keys else False
-            if override in ("pro", "plus"):
+            if override in ("pro", "plus", "advisor"):
                 # credit_active_until puede no existir en esquemas mínimos (tests
                 # viejos): en ese caso no aplicamos la red de seguridad y el tier
-                # se resuelve como antes.
+                # se resuelve como antes. 'advisor' entra por la misma rama: el
+                # grant-comp le pone vencimiento y esta red lo corta igual.
                 cau = row["credit_active_until"] if "credit_active_until" in keys else None
                 if _paid_override_expired(conn, user_id, cau):
                     return "admin" if is_admin else "free"

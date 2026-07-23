@@ -20,6 +20,7 @@ import {
   LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock, Check, ClipboardList,
 } from 'lucide-react'
 import { api } from '../utils/api'
+import { useToast } from '../components/Toast'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -34,6 +35,7 @@ import { whatsappUrl, SUPPORT_WHATSAPP_DISPLAY } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 import InvestorProfileForm from '../components/InvestorProfileForm'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -95,6 +97,67 @@ function FxCell({ first, label, sub, value, compra, venta }) {
   )
 }
 
+// ─── Plan Asesor: quién administra ESTA cuenta (F4a) ─────────────────────────
+// Solo la ve una cuenta que RECLAMÓ su acceso (fue managed, ahora loguea sola)
+// y que sigue teniendo un asesor vinculado. GET devuelve lista vacía para el
+// 99% de las cuentas → no renderiza nada (no ensucia Config para nadie más).
+
+function AdvisorAccessPanel() {
+  const toast = useToast()
+  const [advisors, setAdvisors] = useState(null)  // null = cargando; [] = sin asesor
+  const [revokingId, setRevokingId] = useState(null)
+
+  useEffect(() => {
+    api.get('/me/advisor').then((d) => setAdvisors(d.advisors || [])).catch(() => setAdvisors([]))
+  }, [])
+
+  if (!advisors || advisors.length === 0) return null
+
+  const revoke = async (advisorUid, name) => {
+    if (!window.confirm(`¿Quitarle acceso a ${name}? Va a dejar de ver y editar tu cartera.`)) return
+    setRevokingId(advisorUid)
+    try {
+      await api.post(`/me/advisor/${advisorUid}/revoke`)
+      setAdvisors(advisors.filter((a) => a.advisor_uid !== advisorUid))
+      toast.push(`Le quitaste el acceso a ${name}`)
+    } catch (e) {
+      toast.push(e.message || 'No se pudo quitar el acceso', { type: 'error' })
+    } finally {
+      setRevokingId(null)
+    }
+  }
+
+  return (
+    <Panel padding="none">
+      <header className="px-4 py-3 border-b border-line">
+        <h2 className="text-sm font-medium text-ink-0">Tu asesor</h2>
+        <p className="text-xs text-ink-3 mt-0.5">Quién puede ver y administrar tu cartera</p>
+      </header>
+      <div>
+        {advisors.map((a, i) => (
+          <div key={a.advisor_uid}
+               className={`flex items-center justify-between gap-3 px-4 py-3 ${i > 0 ? 'border-t border-line/30' : ''}`}>
+            <div className="min-w-0">
+              <p className="text-sm text-ink-0 font-medium truncate">{a.name}</p>
+              <p className="text-xs text-ink-3 mt-0.5">
+                {a.permission === 'read_write' ? 'Puede ver y editar tu cartera' : 'Solo puede ver tu cartera'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => revoke(a.advisor_uid, a.name)}
+              disabled={revokingId === a.advisor_uid}
+              className="flex-shrink-0 text-xs font-medium text-rendi-neg hover:bg-rendi-neg/[0.06] border border-rendi-neg/30 rounded-md px-3 py-1.5 transition-colors disabled:opacity-50"
+            >
+              {revokingId === a.advisor_uid ? 'Quitando…' : 'Quitar acceso'}
+            </button>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  )
+}
+
 // ─── Workspace key-value row ─────────────────────────────────────────────────
 
 function MetaRow({ label, children, last }) {
@@ -129,9 +192,18 @@ export default function Config() {
   // Sección activa desde la URL (?tab=cuenta). En desktop, sin ?tab cae al
   // default 'cuenta'. En mobile, sin ?tab mostramos la LISTA de secciones
   // (patrón drill-in tipo iOS Settings). Tabs inválidos se ignoran.
+  // Plan Asesor: dentro de un cliente, Config era una quimera — "Cuenta"
+  // (contraseña, ELIMINAR CUENTA) y "Test de inversor" operan sobre la cuenta
+  // PROPIA del asesor (prefijos exentos) mientras "Tipos de cambio" opera
+  // sobre el cliente. En contexto mostramos SOLO lo que configura al cliente.
+  const { clientCtx } = useAdvisorContext()
+  const CTX_HIDDEN_TABS = new Set(['cuenta', 'test', 'planes'])
+  const visibleTabs = clientCtx ? TABS.filter(t => !CTX_HIDDEN_TABS.has(t.id)) : TABS
+
   const urlTab = searchParams.get('tab')
-  const validTab = urlTab && VALID_TAB_IDS.has(urlTab) ? urlTab : null
-  const activeSection = validTab || (isMobile ? null : DEFAULT_TAB)
+  let validTab = urlTab && VALID_TAB_IDS.has(urlTab) ? urlTab : null
+  if (clientCtx && validTab && CTX_HIDDEN_TABS.has(validTab)) validTab = null
+  const activeSection = validTab || (isMobile ? null : (clientCtx ? 'fx' : DEFAULT_TAB))
 
   useEffect(() => {
     loadDolar()
@@ -225,6 +297,12 @@ export default function Config() {
   function renderCuenta() {
     return (
       <div className="space-y-4">
+        {/* Plan Asesor: solo aparece si un asesor tiene acceso a ESTA cuenta
+            (F4a — cuenta reclamada). Es la contraparte del lado del cliente
+            de lo que el asesor ve en /clientes: quién te administra + un
+            botón para cortar el acceso cuando quieras. */}
+        <AdvisorAccessPanel />
+
         {/* Datos del workspace. Brokers management se mudó a /posiciones. */}
         <Panel padding="none">
           <header className="px-4 py-3 border-b border-line">
@@ -412,7 +490,7 @@ export default function Config() {
             Mismo state global que el riel de Cartera/Análisis: cambiarlo acá lo
             cambia en toda la app. */}
         <section>
-          <div className="border border-line rounded bg-bg-1 px-4 py-3.5">
+          <div className="border border-line rounded-xl bg-bg-1 px-4 py-3.5">
             <div className="min-w-0 mb-3">
               <h2 className="text-sm font-medium text-ink-1">Moneda de valuación</h2>
               <p className="text-xs text-ink-3 mt-0.5">
@@ -428,7 +506,7 @@ export default function Config() {
             per-device; espeja el patrón del riel de moneda). Solo afecta la columna
             INV. USD de la Cartera; el valor de mercado siempre va al dólar de hoy. */}
         <section>
-          <div className="border border-line rounded bg-bg-1 px-4 py-3.5">
+          <div className="border border-line rounded-xl bg-bg-1 px-4 py-3.5">
             <div className="min-w-0 mb-3">
               <h2 className="text-sm font-medium text-ink-1">Costo en dólares</h2>
               <p className="text-xs text-ink-3 mt-0.5">
@@ -482,7 +560,7 @@ export default function Config() {
               </button>
             </span>
           </div>
-          <div className="border border-line rounded bg-bg-1 flex flex-wrap">
+          <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
             <FxCell
               first
               label="Blue"
@@ -523,7 +601,7 @@ export default function Config() {
       <Panel padding="none">
         <div className="px-4 py-3 border-b border-line/40 flex items-center justify-between">
           <h2 className="text-sm font-medium text-ink-0">Soporte</h2>
-          <span className="text-[10px] text-ink-3 uppercase tracking-wider">WhatsApp directo</span>
+          <span className="text-[12px] text-ink-3 font-medium">WhatsApp directo</span>
         </div>
         <div className="px-4 py-4 flex items-center justify-between gap-4 flex-wrap">
           <div className="min-w-0">
@@ -588,7 +666,7 @@ export default function Config() {
             subtitle="Cuenta, plan, tipos de cambio y más."
           />
           <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
-            {TABS.map((t, i) => {
+            {visibleTabs.map((t, i) => {
               const Icon = t.icon
               return (
                 <button
@@ -633,8 +711,8 @@ export default function Config() {
           />
           <div className="grid grid-cols-1 md:grid-cols-[190px_1fr] gap-6 items-start">
             <nav className="md:sticky md:top-4 flex flex-col gap-0.5" aria-label="Secciones de configuración">
-              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 px-2.5 pt-0.5 pb-2 select-none">Secciones</div>
-              {TABS.map(t => {
+              <div className="text-[12px] text-ink-3 px-2.5 pt-0.5 pb-2 select-none font-medium">Secciones</div>
+              {visibleTabs.map(t => {
                 const Icon = t.icon
                 const active = activeSection === t.id
                 return (
@@ -711,7 +789,7 @@ function PlanHeroFree({ usage }) {
         {/* Left: tier badge + headline */}
         <div className="flex-1 min-w-[240px]">
           <div className="flex items-center gap-2 mb-1.5">
-            <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Plan actual</span>
+            <span className="text-[12.5px] text-ink-2 font-medium">Plan actual</span>
             <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-bg-2 text-ink-2">
               FREE
             </span>
@@ -727,7 +805,7 @@ function PlanHeroFree({ usage }) {
         {/* Middle: usage strip compacto */}
         <div className="min-w-[180px]">
           <div className="flex items-baseline justify-between gap-3 mb-1">
-            <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Uso IA</span>
+            <span className="text-[12.5px] text-ink-2 font-medium">Uso IA</span>
             <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
           </div>
           <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
@@ -892,11 +970,11 @@ function PlanHeroPro({ tier = 'pro', usage }) {
     <section className={`border rounded-lg p-5 flex items-center gap-5 flex-wrap ${containerStyle}`}>
       <div className="flex-1 min-w-[240px]">
         <div className="flex items-center gap-2 mb-1.5">
-          <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Plan actual</span>
+          <span className="text-[12.5px] text-ink-2 font-medium">Plan actual</span>
           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${badgeStyle}`}>
             {tierLabel}
           </span>
-          <span className={`inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-caps ${statusPill.textCls}`}>
+          <span className={`inline-flex items-center gap-1 text-[12px] ${statusPill.textCls} font-medium`}>
             <span className={`w-1.5 h-1.5 rounded-full ${statusPill.dotCls}`} />
             {statusPill.label}
           </span>
@@ -907,7 +985,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
 
       <div className="min-w-[180px]">
         <div className="flex items-baseline justify-between gap-3 mb-1">
-          <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Uso IA</span>
+          <span className="text-[12.5px] text-ink-2 font-medium">Uso IA</span>
           <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
         </div>
         <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
@@ -926,7 +1004,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
       {hasCredit && anchorPlan && anchorPeriod && (
         <div className="min-w-[180px] border-l border-line/40 pl-5">
           <div className="flex items-baseline justify-between gap-3 mb-1">
-            <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Crédito</span>
+            <span className="text-[12.5px] text-ink-2 font-medium">Crédito</span>
             <span className="font-mono text-xs text-ink-1 tabular">
               {Math.round(creditDays)} días
             </span>
@@ -1135,14 +1213,14 @@ function PlanHeroAdmin({ usage }) {
   return (
     <section className="border border-rendi-pos/30 bg-rendi-pos/[0.04] rounded-lg px-5 py-3.5 flex items-center gap-3 flex-wrap">
       <Zap size={14} strokeWidth={1.75} className="text-rendi-pos flex-shrink-0" />
-      <span className="font-mono text-[10px] uppercase tracking-caps text-rendi-pos">Plan ADMIN</span>
+      <span className="text-[12px] text-rendi-pos font-medium">Plan ADMIN</span>
       <span className="text-sm text-ink-1 flex-1 min-w-[200px]">
         Acceso interno sin tope. {count > 0 ? `Usaste ${count} análisis IA en los últimos 7 días.` : 'Sin uso de IA reciente.'}
       </span>
       <button
         type="button"
         onClick={() => navigate('/planes')}
-        className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 transition-colors"
+        className="inline-flex items-center gap-1.5 text-[12.5px] text-ink-3 hover:text-ink-0 transition-colors font-medium"
       >
         Ver planes →
       </button>

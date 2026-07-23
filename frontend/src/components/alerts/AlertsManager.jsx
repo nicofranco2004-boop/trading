@@ -17,6 +17,7 @@ import AssetResultRow from '../AssetResultRow'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
 import { useAlerts } from '../../hooks/useAlerts'
 import { POPULAR_TICKERS } from '../../utils/tickers'
+import { api } from '../../utils/api'
 
 const EMPTY_FORM = {
   kind: 'price_target',
@@ -27,6 +28,7 @@ const EMPTY_FORM = {
   threshold: '',      // price_target
   up_pct: '',         // pct_move: sube ≥ up_pct%
   down_pct: '',       // pct_move: cae ≥ down_pct%
+  baseline: 'set_price', // pct_move un-activo: 'set_price' (desde ahora) | 'prev_close' (en el día)
   channel: 'both',
   repeat: 'once',
 }
@@ -85,8 +87,27 @@ export default function AlertsManager({ plan, prefill }) {
   const [err, setErr] = useState(null)
   const [upsell, setUpsell] = useState(false)
   const [warnSym, setWarnSym] = useState(null)   // ticker que no resolvió precio
+  const [currentPrice, setCurrentPrice] = useState(null)  // precio actual del ticker elegido
 
   const push = usePushNotifications()
+
+  // Trae el precio actual al elegir/tipear un ticker (debounce) — contexto para
+  // el usuario y ancla del modo "Desde ahora".
+  const priceSym = (form.symbol || '').trim().toUpperCase()
+  const priceCcy = priceSym.endsWith('.BA') ? 'ARS' : 'USD'
+  useEffect(() => {
+    if (!priceSym || (form.kind === 'pct_move' && form.scope === 'holdings')) {
+      setCurrentPrice(null); return
+    }
+    let cancelled = false
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.get(`/prices?symbols=${encodeURIComponent(priceSym)}`)
+        if (!cancelled) setCurrentPrice(res && res[priceSym] != null ? res[priceSym] : null)
+      } catch { if (!cancelled) setCurrentPrice(null) }
+    }, 450)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [priceSym, form.kind, form.scope])
 
   function setField(k, v) { setForm(f => ({ ...f, [k]: v })) }
 
@@ -118,7 +139,8 @@ export default function AlertsManager({ plan, prefill }) {
       channel: form.channel,
       repeat: form.repeat,
       ...(isPct
-        ? { up_pct: up > 0 ? up : undefined, down_pct: down > 0 ? down : undefined }
+        ? { up_pct: up > 0 ? up : undefined, down_pct: down > 0 ? down : undefined,
+            baseline: form.scope === 'ticker' ? form.baseline : 'prev_close' }
         : { direction: form.direction, threshold: thr, currency: form.currency }),
     }
     setBusy(true)
@@ -227,6 +249,30 @@ export default function AlertsManager({ plan, prefill }) {
             </div>
           )}
 
+          {/* Precio actual del ticker elegido */}
+          {currentPrice != null && priceSym && !(form.kind === 'pct_move' && form.scope === 'holdings') && (
+            <p className="text-[11px] text-ink-2">
+              {displaySym(priceSym)} · <span className="font-medium text-ink-1">{fmtPrice(currentPrice, priceCcy)}</span> ahora
+              {form.kind === 'pct_move' && form.scope === 'ticker' && form.baseline === 'set_price' && parseNum(form.up_pct) > 0 &&
+                ` → objetivo ${fmtPrice(currentPrice * (1 + parseNum(form.up_pct) / 100), priceCcy)} (+${parseNum(form.up_pct)}%)`}
+            </p>
+          )}
+
+          {/* pct_move un-activo: ¿desde dónde medimos el %? */}
+          {form.kind === 'pct_move' && form.scope === 'ticker' && (
+            <div>
+              <div className="flex gap-2">
+                <SegBtn active={form.baseline === 'set_price'} onClick={() => setField('baseline', 'set_price')} label="Desde ahora" />
+                <SegBtn active={form.baseline === 'prev_close'} onClick={() => setField('baseline', 'prev_close')} label="En el día" />
+              </div>
+              <p className="text-[11px] text-ink-3 mt-1">
+                {form.baseline === 'set_price'
+                  ? 'Mide el % desde el precio de ahora. Al reactivar, se re-ancla (te avisa del próximo tramo).'
+                  : 'Mide el movimiento del día (vs el cierre de ayer). Se resetea cada jornada.'}
+              </p>
+            </div>
+          )}
+
           {/* Umbral */}
           {form.kind === 'price_target' ? (
             <>
@@ -318,7 +364,7 @@ export default function AlertsManager({ plan, prefill }) {
       {/* Feed de disparos recientes */}
       {events.length > 0 && (
         <div className="border-t border-line/40">
-          <div className="px-4 py-2 text-[11px] uppercase tracking-wider text-ink-3 flex items-center gap-2">
+          <div className="px-4 py-2 text-[12.5px] text-ink-3 flex items-center gap-2 font-medium">
             Últimos avisos {unseen.length > 0 && <Pill tone="info">{unseen.length} nuevos</Pill>}
           </div>
           {events.slice(0, 6).map(ev => (

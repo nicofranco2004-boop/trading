@@ -277,6 +277,35 @@ export default function Planes() {
     }
   }
 
+  // Plan Asesor: esta página no lo conocía — lo trataba como usuario sin plan
+  // y le ofrecía "Suscribirme" a Pro (un plan MÁS CHICO que el suyo, pisando
+  // su suscripción). El asesor ve su estado y un canal de contacto, no cards.
+  if (user?.tier === 'advisor') {
+    return (
+      <div className="page-shell">
+        <PageHeader
+          eyebrow="Planes"
+          title="Tenés el Plan Asesor"
+          subtitle="Tu plan incluye todos tus clientes con visión Pro, la operación grupal y el resumen de carteras."
+        />
+        <div className="max-w-xl border border-data-violet/30 bg-data-violet/[0.05] rounded-xl p-5">
+          <p className="text-sm text-ink-1 leading-relaxed">
+            Los planes de esta página son los individuales (Free, Plus y Pro) — no aplican a tu cuenta.
+            Para cambios en tu Plan Asesor (límite de clientes, facturación o baja), escribinos directo
+            y lo resolvemos en el día.
+          </p>
+          <a
+            href="https://wa.me/542914373695?text=Hola%2C%20quiero%20hacer%20un%20cambio%20en%20mi%20Plan%20Asesor."
+            target="_blank" rel="noreferrer"
+            className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-white bg-data-violet hover:bg-data-violet/85 rounded-md px-3.5 py-2 transition-colors"
+          >
+            Hablar por WhatsApp
+          </a>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="page-shell">
       <PageMeta
@@ -361,7 +390,7 @@ export default function Planes() {
                   }`}
                 >
                   Anual
-                  <span className="text-[9px] font-mono uppercase tracking-caps px-1 py-px rounded-sm bg-rendi-pos/15 text-rendi-pos">
+                  <span className="text-[12.5px] px-1 py-px rounded-sm bg-rendi-pos/15 text-rendi-pos font-medium">
                     −15%
                   </span>
                 </button>
@@ -612,13 +641,13 @@ function ChangePlanModal({ state, subscribing, onConfirm, onClose }) {
 
             <div className="bg-bg-2/60 border border-line/40 rounded-md px-4 py-3 mb-5 space-y-2">
               <div className="flex items-baseline justify-between text-sm">
-                <span className="text-ink-3 text-xs font-mono uppercase tracking-caps">
+                <span className="text-ink-3 text-xs font-medium">
                   Antes ({preview.from_plan} {preview.from_period === 'annual' ? 'anual' : 'mensual'})
                 </span>
                 <span className="tabular text-ink-1">{Math.round(preview.current_days)} días</span>
               </div>
               <div className="flex items-baseline justify-between text-sm border-t border-line/40 pt-2">
-                <span className="text-ink-3 text-xs font-mono uppercase tracking-caps">
+                <span className="text-ink-3 text-xs font-medium">
                   Después ({planLabel} {periodLabel})
                 </span>
                 <span className={`tabular font-semibold ${
@@ -721,7 +750,7 @@ function PlanCard({
       )}
 
       {isCurrent && (
-        <span className="absolute top-3 right-3 inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-rendi-pos/15 text-rendi-pos text-[10px] font-mono uppercase tracking-caps">
+        <span className="absolute top-3 right-3 inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-rendi-pos/15 text-rendi-pos text-[12px] font-medium">
           <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" /> Tu plan
         </span>
       )}
@@ -823,14 +852,14 @@ function PlanQuotaGrid({ quotas, variant }) {
   const accent = variantAccent(variant)
   return (
     <div>
-      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">Cuotas semanales</div>
+      <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Cuotas semanales</div>
       <div className="grid grid-cols-3 gap-2">
         {quotas.map((q, i) => (
           <div key={i} className="border border-line/60 rounded bg-bg-2/30 px-2 py-2 text-center">
             <div className={`text-xl font-bold tabular leading-none mb-1 text-${accent}`}>
               {q.value}
             </div>
-            <div className="text-[9px] font-mono uppercase tracking-caps text-ink-3 leading-tight">
+            <div className="text-[12.5px] text-ink-3 leading-tight font-medium">
               {q.label}
             </div>
             {q.note && (
@@ -851,7 +880,7 @@ function PlanFeatureSection({ title, items, variant, accent = false }) {
   const accentColor = variantAccent(variant)
   return (
     <div>
-      <div className={`text-[10px] font-mono uppercase tracking-caps mb-2 ${accent ? `text-${accentColor}` : 'text-ink-3'}`}>
+      <div className={`text-[12px] mb-2 ${accent ? `font-medium text-${accentColor}` : 'text-ink-3'}`}>
         {title}
       </div>
       <ul className="space-y-2">
@@ -883,7 +912,7 @@ function PlanFeatureSection({ title, items, variant, accent = false }) {
 function PlanRoadmapSection({ items }) {
   return (
     <div className="border-t border-line/40 pt-4 mt-2">
-      <div className="text-[10px] font-mono uppercase tracking-caps text-data-amber mb-2 flex items-center gap-1.5">
+      <div className="text-[12px] text-data-amber mb-2 flex items-center gap-1.5 font-medium">
         <Clock size={10} strokeWidth={2} />
         En construcción
       </div>
@@ -922,7 +951,7 @@ function PlanFeatureListLegacy({ items, variant }) {
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className={comingSoon ? 'text-ink-2' : 'text-ink-1'}>{label}</span>
                 {comingSoon && (
-                  <span className="font-mono text-[9px] uppercase tracking-caps px-1 py-px rounded-sm bg-data-amber/15 text-data-amber">
+                  <span className="text-[12.5px] px-1 py-px rounded-sm bg-data-amber/15 text-data-amber font-medium">
                     Próximamente
                   </span>
                 )}

@@ -78,7 +78,7 @@ function FooterStrip({ metrics }) {
       <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-line">
         {cells.map(c => (
           <div key={c.label} className="px-4 py-3 text-center">
-            <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">
+            <p className="text-[12px] text-ink-3 mb-1 font-medium">
               {c.label}
             </p>
             <p className="text-base font-semibold text-ink-0 tabular leading-none">
@@ -94,7 +94,7 @@ function FooterStrip({ metrics }) {
 function AxisCard({ title, read }) {
   return (
     <div className="rounded-lg border border-line bg-bg-1 p-4">
-      <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">{title}</p>
+      <p className="text-[12px] text-ink-3 mb-1.5 font-medium">{title}</p>
       <p className={`text-2xl font-semibold leading-none ${AXIS_TEXT[read.tone] || 'text-ink-0'}`}>
         {read.label}
       </p>
@@ -172,7 +172,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
 
         {positions.length > 0 && (
           <div className="mt-4">
-            <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+            <p className="text-[12px] text-ink-3 mb-2 font-medium">
               Tus posiciones
             </p>
             <div className="flex flex-wrap gap-2">
@@ -258,7 +258,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
               <div className="flex items-center gap-2 mt-0.5">
                 {data.sector && <span className="text-xs text-ink-3">{data.sector}</span>}
                 {data.currency && (
-                  <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+                  <span className="text-[12px] text-ink-3 font-medium">
                     {data.currency}
                   </span>
                 )}
@@ -295,7 +295,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
           {/* DETALLE POR CATEGORÍA — desglose métrica por métrica (wave 3) */}
           {categoriesDetail.length > 0 && (
             <section className="space-y-3">
-              <p className="text-[11px] font-mono uppercase tracking-label text-ink-2">
+              <p className="text-[12.5px] text-ink-2 font-medium">
                 Detalle por categoría
               </p>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -2752,6 +2752,22 @@ export function handleDemoRequest(method, path, body) {
     }
     if (basePath === '/events/portfolio') return { events: EVENTS_PORTFOLIO }
     if (basePath === '/events/popular')   return { events: EVENTS_POPULAR }
+    // Expectativas de earnings (panel expandible de la agenda de Eventos)
+    if (basePath === '/events/earnings-expectations') {
+      return {
+        available: true,
+        ticker: 'DEMO',
+        next_earnings_date: '2026-07-26',
+        next_earnings_estimates: { eps_average: 0.93, eps_low: 0.85, eps_high: 1.02 },
+        last_quarters: [
+          { date: '2026-04', eps_estimate: 0.85, eps_actual: 0.9, surprise_pct: 6.1 },
+          { date: '2026-01', eps_estimate: 0.78, eps_actual: 0.85, surprise_pct: 9.2 },
+          { date: '2025-10', eps_estimate: 0.71, eps_actual: 0.74, surprise_pct: 4.0 },
+          { date: '2025-07', eps_estimate: 0.68, eps_actual: 0.67, surprise_pct: -1.8 },
+        ],
+        surprise_avg_last_4q_pct: 4.4,
+      }
+    }
     if (basePath === '/news/portfolio')   return { news: NEWS_PORTFOLIO, count: NEWS_PORTFOLIO.length }
     if (basePath === '/news/market')      return { news: NEWS_MARKET, count: NEWS_MARKET.length }
     if (basePath === '/prices') {
@@ -3021,10 +3037,19 @@ export function handleDemoRequest(method, path, body) {
     return _buildDemoAISummary(body?.ticker)
   }
 
-  // ── AI chat: respuesta hardcodeada explicando el demo
+  // ── AI chat: respuestas canned ESTRUCTURADAS (bloque ---RENDI---) para que
+  //    el demo muestre el diseño nuevo (veredicto + tarjetas + repreguntas).
   if (basePath === '/ai/chat') {
+    const _q = ((body?.messages || []).filter(m => m.role === 'user').pop()?.content || '').toLowerCase()
+    if (_q.includes('riesgo') || _q.includes('concentr') || _q.includes('sesgo')) {
+      return {
+        tier: 'pro',
+        reply: 'Tu mayor riesgo hoy es la concentración: NVDA pesa el 28% de la cartera y explicó dos tercios de la suba del mes. Si corrige 15%, el golpe directo al portfolio es de ~4 puntos. El segundo factor es el cash (~45% entre USDT y ARS), que te protege de una corrección pero también explica la mayor parte del gap contra el S&P.\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)\n---RENDI---{"verdict":"Ojo acá","tone":"warn","headline":"NVDA concentra el 28% — una corrección suya te pega ~4 puntos directos.","stats":[{"l":"Mayor posición","v":"NVDA · 28%","t":"warn"},{"l":"Si corrige 15%","v":"−4,2 pp","t":"neg"},{"l":"Cash sin invertir","v":"~45%","t":"warn"}],"blocks":[{"type":"scenario","if":"NVDA corrige −15%","then":"−4,2 pp en tu cartera","tone":"neg"},{"type":"actions","title":"Siguientes pasos","items":[{"label":"Crear alerta: NVDA −10%","to":"/alertas?new=NVDA"},{"label":"Ver atribución completa","to":"/analisis"}]}],"followups":["¿Qué pasa si NVDA corrige 25%?","¿Me conviene rotar algo de NVDA?","¿Cómo despliego el cash gradualmente?"],"sources":["12 posiciones","3 brokers","snapshot demo"]}',
+      }
+    }
     return {
-      reply: 'Estás en modo demo. Para usar el coach con tu portfolio real, creá una cuenta gratis y subí tu CSV.',
+      tier: 'pro',
+      reply: 'La cartera demo vale US$ 41.416 y acumula +13,4% de ganancia no realizada. El motor es NVDA (28% del portfolio, +9,1% en el mes) — aportó dos tercios de la suba. INTC fue el mejor trade cerrado del año (+148%) y lo único que frena el rendimiento agregado es el cash: ~45% entre USDT y ARS que no está trabajando.\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)\n---RENDI---{"verdict":"Buen momento","tone":"pos","headline":"La cartera vale US$ 41.416, +13,4% no realizado, con NVDA de motor.","stats":[{"l":"Valor hoy","v":"US$ 41.416","t":"neutral"},{"l":"P&L no realizado","v":"+13,4%","t":"pos"},{"l":"Mayor posición","v":"NVDA · 28%","t":"warn"}],"blocks":[{"type":"compare","title":"Tu cartera vs benchmarks · YTD","items":[{"l":"Tu cartera","v":"+13,4%","pct":92},{"l":"S&P 500","v":"+11,1%","pct":76},{"l":"Inflación AR","v":"+8,6%","pct":59}]},{"type":"alloc","title":"Composición de tu cartera","items":[{"l":"NVDA","pct":28},{"l":"MSFT","pct":12},{"l":"Otros","pct":15},{"l":"Cash","pct":45}]}],"followups":["¿Qué riesgos detectás en mi cartera?","¿Cómo evalúo mi win rate?","¿Cómo vengo contra el S&P 500?"],"sources":["12 posiciones","3 brokers","snapshot demo"]}',
     }
   }
 

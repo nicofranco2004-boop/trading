@@ -18,8 +18,8 @@ function fmtPct(p) {
 function MoverList({ items, tone, icon: Icon, label, onSelect }) {
   return (
     <Panel padding="none" className="overflow-hidden">
-      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
-        <Icon size={12} className={tone === 'pos' ? 'text-rendi-pos' : 'text-rendi-neg'} strokeWidth={1.75} aria-hidden="true" />
+      <div className="px-4 py-2.5 border-b border-line flex items-center gap-2">
+        <Icon size={14} className={tone === 'pos' ? 'text-rendi-pos' : 'text-rendi-neg'} strokeWidth={1.75} aria-hidden="true" />
         <Eyebrow tone={tone === 'pos' ? 'signal' : 'red'}>{label}</Eyebrow>
       </div>
       <div className="divide-y divide-line/30">
@@ -30,7 +30,7 @@ function MoverList({ items, tone, icon: Icon, label, onSelect }) {
               <DataRow.Cell width={64} mono>
                 <span className="text-ink-0 text-[13px]">{it.symbol}</span>
               </DataRow.Cell>
-              <DataRow.Cell muted className="text-[11px]">
+              <DataRow.Cell muted className="text-[12.5px]">
                 {it.name}
               </DataRow.Cell>
               <DataRow.Cell align="right" width={70} mono tabular>

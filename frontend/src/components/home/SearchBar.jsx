@@ -220,7 +220,7 @@ export default function SearchBar() {
     <>
       <div ref={containerRef} className="relative w-full max-w-[420px]">
         {/* INPUT */}
-        <div className="flex items-center gap-2 bg-bg-2 border border-line rounded px-3 py-2 focus-within:border-ink-2 transition-colors">
+        <div className="flex items-center gap-2 bg-bg-2 border border-line rounded-xl px-3 py-2 focus-within:border-ink-2 transition-colors">
           <Search size={14} className="text-ink-3 flex-shrink-0" strokeWidth={1.75} aria-hidden="true" />
           <input
             ref={inputRef}
@@ -245,7 +245,7 @@ export default function SearchBar() {
 
         {/* DROPDOWN */}
         {open && (
-          <div className="absolute top-full right-0 mt-1 w-[min(640px,calc(100vw-2rem))] bg-bg-1 border border-line rounded shadow-2xl z-50 overflow-hidden">
+          <div className="absolute top-full right-0 mt-1 w-[min(640px,calc(100vw-2rem))] bg-bg-1 border border-line rounded-xl shadow-2xl z-50 overflow-hidden">
             {/* HEADER: filtros + counter */}
             <div className="px-3 py-2 border-b border-line/60 flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-center gap-1 flex-wrap">
@@ -263,7 +263,7 @@ export default function SearchBar() {
                   </button>
                 ))}
               </div>
-              <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 flex-shrink-0">
+              <span className="text-[12.5px] text-ink-2 flex-shrink-0 font-medium">
                 {totalCount} {totalCount === 1 ? 'resultado' : 'resultados'} · {elapsedMs}ms
               </span>
             </div>
@@ -336,7 +336,7 @@ export default function SearchBar() {
             )}
 
             {/* FOOTER: atajos */}
-            <div className="px-3 py-2 border-t border-line/60 flex items-center gap-4 text-[11px] font-mono uppercase tracking-caps text-ink-2 bg-bg-2/40">
+            <div className="px-3 py-2 border-t border-line/60 flex items-center gap-4 text-[12.5px] text-ink-2 bg-bg-2/40 font-medium">
               <Shortcut icon={<><ArrowUp size={9} strokeWidth={2} /><ArrowDown size={9} strokeWidth={2} /></>} label="navegar" />
               <Shortcut icon={<CornerDownLeft size={9} strokeWidth={2} />} label="abrir / agregar" />
               <Shortcut text="ESC" label="cerrar" />
@@ -359,7 +359,7 @@ export default function SearchBar() {
 function SectionHeader({ label, count, hint }) {
   return (
     <div className="px-3 pt-2.5 pb-1 flex items-baseline justify-between gap-3">
-      <span className="text-[11px] font-mono uppercase tracking-label text-ink-2">
+      <span className="text-[12.5px] text-ink-2 font-medium">
         {label} <span className="text-ink-2">· {count}</span>
       </span>
       {hint && (
@@ -400,13 +400,13 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
           <span className="text-xs text-ink-2 truncate">{ticker.name}</span>
           <AssetTypeBadge type={ticker.type} className="self-center" />
           {ticker.exchange && (
-            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+            <span className="text-[12.5px] text-ink-2 font-medium">
               · {ticker.exchange}
             </span>
           )}
         </div>
         {ticker.fromUser && (
-          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mt-0.5">
+          <div className="text-[12.5px] text-ink-2 mt-0.5 font-medium">
             En posición
             {ticker.quantity > 0 && <> · {ticker.quantity.toLocaleString('es-AR', { maximumFractionDigits: 4 })} {ticker.type === 'crypto' ? 'unid.' : 'acc.'}</>}
             {ticker.invested > 0 && <> · invertido {fmtUsd(ticker.invested)}</>}
@@ -418,7 +418,7 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
       {ticker.fromUser ? (
         <button
           onClick={(e) => { e.stopPropagation(); onPick(ticker.symbol) }}
-          className="flex-shrink-0 text-[10px] font-mono uppercase tracking-caps text-ink-2 hover:text-ink-0 border border-line bg-bg-2 hover:bg-bg-3 px-2 py-1 rounded-sm transition-colors"
+          className="flex-shrink-0 text-[12px] text-ink-2 hover:text-ink-0 border border-line bg-bg-2 hover:bg-bg-3 px-2 py-1 rounded-sm transition-colors font-medium"
         >
           Ver posición
         </button>
@@ -442,7 +442,7 @@ function WatchlistToggleButton({ inWatchlist, disabled, onClick }) {
       <button
         onClick={onClick}
         disabled={disabled}
-        className="flex-shrink-0 text-[10px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1"
+        className="flex-shrink-0 text-[12px] px-2 py-1 rounded-sm border border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1 font-medium"
       >
         <Plus size={9} strokeWidth={2.25} />
         + Watchlist
@@ -454,7 +454,7 @@ function WatchlistToggleButton({ inWatchlist, disabled, onClick }) {
       onClick={onClick}
       disabled={disabled}
       title="Quitar de watchlist"
-      className="flex-shrink-0 text-[10px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border border-rendi-pos/30 bg-rendi-pos/10 text-rendi-pos hover:border-rendi-neg/40 hover:bg-rendi-neg/10 hover:text-rendi-neg disabled:opacity-40 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1"
+      className="flex-shrink-0 text-[12px] px-2 py-1 rounded-sm border border-rendi-pos/30 bg-rendi-pos/10 text-rendi-pos hover:border-rendi-neg/40 hover:bg-rendi-neg/10 hover:text-rendi-neg disabled:opacity-40 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1 font-medium"
     >
       <Check size={9} strokeWidth={2.25} className="group-hover:hidden inline-block" />
       <X size={9} strokeWidth={2.25} className="hidden group-hover:inline-block" />

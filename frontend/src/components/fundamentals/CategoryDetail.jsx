@@ -78,7 +78,7 @@ function MetricRow({ metric }) {
             )}
           </div>
           {hint && !isMissing && (
-            <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mt-0.5">
+            <p className="text-[12px] text-ink-3 mt-0.5 font-medium">
               {hint}
             </p>
           )}

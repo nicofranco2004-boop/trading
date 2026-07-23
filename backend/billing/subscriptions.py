@@ -113,7 +113,7 @@ def _downgrade_expired_credit(conn) -> int:
     rows = conn.execute(
         """SELECT u.id, u.email, u.tier, u.credit_active_until
            FROM users u
-           WHERE u.tier IN ('pro', 'plus')
+           WHERE u.tier IN ('pro', 'plus', 'advisor')
              AND u.credit_active_until IS NOT NULL
              AND u.credit_active_until < ?
              AND NOT EXISTS (
@@ -173,7 +173,7 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
         """SELECT u.id as user_id, u.email, u.name, u.credit_active_until,
                   u.credit_anchor_plan, u.credit_anchor_period
            FROM users u
-           WHERE u.tier IN ('pro', 'plus')
+           WHERE u.tier IN ('pro', 'plus', 'advisor')
              AND u.credit_active_until IS NOT NULL
              AND u.credit_active_until BETWEEN ? AND ?
              AND NOT EXISTS (
@@ -245,7 +245,9 @@ def _delete_unverified_accounts(conn, stale_days: int = 7) -> int:
     cutoff = (datetime.utcnow() - timedelta(days=stale_days)).isoformat()
     rows = conn.execute(
         """SELECT id, email FROM users
-           WHERE email_verified = 0 AND created_at < ?""",
+           WHERE email_verified = 0 AND created_at < ?
+             AND managed_by IS NULL  -- shadows del Plan Asesor: NUNCA borrarlos acá
+        """,
         (cutoff,),
     ).fetchall()
     if not rows:
@@ -359,7 +361,7 @@ def _downgrade_expired_cancellations(conn) -> int:
            WHERE s.status = 'cancelled'
              AND s.current_period_end IS NOT NULL
              AND s.current_period_end < ?
-             AND u.tier IN ('pro', 'plus')
+             AND u.tier IN ('pro', 'plus', 'advisor')
              AND (u.credit_active_until IS NULL OR u.credit_active_until < ?)
              AND NOT EXISTS (
                 SELECT 1 FROM subscriptions a

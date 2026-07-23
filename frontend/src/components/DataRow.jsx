@@ -79,10 +79,10 @@ DataRow.Cell = function Cell({
 }
 
 // DataRow.Header — fila de header tipográficamente consistente.
-// Eyebrows uppercase mono, separator inferior 1px.
+// Clean pass 2026-07: sans sentence-case (antes uppercase mono).
 DataRow.Header = function Header({ children, className = '' }) {
   return (
-    <div className={`flex items-center gap-3 min-h-[32px] px-3 border-b border-line text-[11px] uppercase tracking-label font-mono text-ink-2 font-medium ${className}`}>
+    <div className={`flex items-center gap-3 min-h-[34px] px-3 border-b border-line text-[12px] text-ink-2 font-medium ${className}`}>
       {children}
     </div>
   )

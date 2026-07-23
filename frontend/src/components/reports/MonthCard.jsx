@@ -236,7 +236,7 @@ function MetricsGrid({ metrics: m, money }) {
 function Cell({ label, value, accent = false }) {
   return (
     <div className="rounded-sm bg-bg-2/40 px-2 py-1.5">
-      <div className="text-ink-3 uppercase tracking-wider text-[9px]">{label}</div>
+      <div className="text-ink-3 text-[12.5px] font-medium">{label}</div>
       <div className={`font-mono tabular ${accent ? 'text-ink-0' : 'text-ink-1'}`}>{value}</div>
     </div>
   )

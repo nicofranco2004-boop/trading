@@ -158,7 +158,7 @@ export default function Behavioral() {
       />
 
       {/* KPI strip de resumen */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap">
+      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
         <SummaryCell first label="Sesgos detectados" value={data?.summary?.total_detected ?? 0} tone={data?.summary?.total_detected > 0 ? 'warn' : 'pos'} />
         <SummaryCell label="Severidad alta"  value={data?.summary?.total_high ?? 0}    tone={data?.summary?.total_high > 0 ? 'neg' : null} />
         <SummaryCell label="Severidad media" value={data?.summary?.total_medium ?? 0}  tone={data?.summary?.total_medium > 0 ? 'warn' : null} />
@@ -169,7 +169,7 @@ export default function Behavioral() {
       {/* Empty state si no hay data */}
       {allInsufficient && (
         <div className="space-y-6">
-          <div className="border border-line rounded bg-bg-1 px-6 py-8 text-center max-w-2xl mx-auto">
+          <div className="border border-line rounded-xl bg-bg-1 px-6 py-8 text-center max-w-2xl mx-auto">
             <Brain size={28} strokeWidth={1.5} className="mx-auto mb-3 text-ink-3" />
             <h2 className="text-base font-medium text-ink-0 mb-1.5">Necesitamos más historial</h2>
             <p className="text-sm text-ink-2 leading-relaxed mb-4 max-w-md mx-auto">
@@ -236,7 +236,7 @@ function SummaryCell({ label, value, sub, tone, first }) {
               : 'text-ink-0'
   return (
     <div className={`px-4 py-3 flex-1 min-w-[120px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-none">{label}</div>
+      <div className="text-[12.5px] text-ink-2 leading-none font-medium">{label}</div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${color}`}>{value}</div>
       {sub && <div className="text-[10px] font-mono text-ink-3 mt-1.5 leading-none">{sub}</div>}
     </div>
@@ -253,11 +253,11 @@ function BehavioralCard({ card, onClick }) {
 
   if (card.insufficient_data) {
     return (
-      <div className="border border-line rounded bg-bg-1 p-4 opacity-70 h-full">
+      <div className="border border-line rounded-xl bg-bg-1 p-4 opacity-70 h-full">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <Icon size={14} strokeWidth={1.75} className="text-ink-3" />
-            <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
+            <span className="text-xs text-ink-2 font-medium">{meta.label}</span>
           </div>
           <Pill tone="off">Sin datos</Pill>
         </div>
@@ -275,7 +275,7 @@ function BehavioralCard({ card, onClick }) {
       <div className="flex items-center justify-between mb-2.5">
         <div className="flex items-center gap-2 min-w-0">
           <Icon size={14} strokeWidth={1.75} className={tone.accent} />
-          <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
+          <span className="text-xs text-ink-2 font-medium">{meta.label}</span>
         </div>
         <Pill tone={tone.pill} dot={card.severity !== 'neutral' && card.severity !== 'off'}>
           {SEVERITY_LABEL[card.severity] || card.severity}
@@ -326,7 +326,7 @@ function BehavioralModal({ card, onClose }) {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-1">
               <Icon size={14} strokeWidth={1.75} className={tone.accent} />
-              <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
+              <span className="text-xs text-ink-2 font-medium">{meta.label}</span>
               <Pill tone={tone.pill} dot>{SEVERITY_LABEL[card.severity] || card.severity}</Pill>
             </div>
             <h2 className="text-lg font-medium text-ink-0 leading-tight">{card.title}</h2>
@@ -338,7 +338,7 @@ function BehavioralModal({ card, onClose }) {
                   track('share_card_opened', { source: 'behavioral', code: card.code })
                   setShareOpen(true)
                 }}
-                className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-2 hover:text-ink-0 hover:bg-bg-2/60 transition-colors px-2 py-1 rounded-sm border border-line/60"
+                className="inline-flex items-center gap-1 text-[12.5px] text-ink-2 hover:text-ink-0 hover:bg-bg-2/60 transition-colors px-2 py-1 rounded-sm border border-line/60 font-medium"
                 aria-label="Compartir esta tarjeta"
                 title="Compartir"
               >
@@ -364,7 +364,7 @@ function BehavioralModal({ card, onClose }) {
           {/* Referencias académicas */}
           {card.references?.length > 0 && (
             <div className="border-t border-line/40 pt-3">
-              <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">
+              <div className="flex items-center gap-1.5 text-[12.5px] text-ink-2 mb-1.5 font-medium">
                 <BookOpen size={11} strokeWidth={1.75} />
                 Referencia académica
               </div>
@@ -439,7 +439,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Caída promedio entre compras" value={`${ev.avg_drop_pct?.toFixed(1)}%`} mono />
           {ev.instances?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-2">
-              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Ejemplos</div>
+              <div className="text-[12.5px] text-ink-2 font-medium">Ejemplos</div>
               {ev.instances.slice(0, 5).map((inst, i) => (
                 <div key={i} className="text-xs border border-line/40 rounded-sm p-2 bg-bg-2/40">
                   <div className="flex items-center justify-between mb-1">
@@ -468,7 +468,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Activos totales" value={ev.total_assets} mono />
           {ev.top_5?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-1">
-              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">Composición</div>
+              <div className="text-[12.5px] text-ink-2 mb-1 font-medium">Composición</div>
               {ev.top_5.map((a, i) => (
                 <div key={i} className="flex items-center justify-between text-xs">
                   <span className="text-ink-1 font-mono">{a.asset}</span>
@@ -507,7 +507,7 @@ function ModalEvidence({ card }) {
           )}
           {ev.top_misses?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-1">
-              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">Top diferencias</div>
+              <div className="text-[12.5px] text-ink-2 mb-1 font-medium">Top diferencias</div>
               {ev.top_misses.map((m, i) => (
                 <div key={i} className="flex items-center justify-between text-xs">
                   <span className="text-ink-1 font-mono">{m.asset}</span>
@@ -576,7 +576,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Activos flagged" value={ev.flagged_count} count={`de ${ev.flagged_count > 0 ? ev.flagged_count : 0}`} />
           {ev.flagged_assets?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-2">
-              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Top compras altas</div>
+              <div className="text-[12.5px] text-ink-2 font-medium">Top compras altas</div>
               {ev.flagged_assets.map((a, i) => (
                 <div key={i} className="text-xs border border-line/40 rounded-sm p-2 bg-bg-2/40">
                   <div className="flex items-center justify-between mb-1">
@@ -602,7 +602,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Sectores distintos" value={ev.total_sectors} mono />
           {ev.breakdown?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-1">
-              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">Distribución</div>
+              <div className="text-[12.5px] text-ink-2 mb-1 font-medium">Distribución</div>
               {/* Barra stacked */}
               <div className="flex h-2 rounded-sm overflow-hidden bg-bg-2 mb-2">
                 {ev.breakdown.slice(0, 6).map((b, i) => {
@@ -743,7 +743,7 @@ function BehavioralCardPreviewStatic({ card }) {
     <div className="w-full h-full border border-line/60 rounded bg-bg-1/60 p-4 flex flex-col">
       <div className="flex items-center gap-2 min-w-0 mb-2.5">
         <Icon size={14} strokeWidth={1.75} className="text-ink-3" />
-        <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
+        <span className="text-xs text-ink-2 font-medium">{meta.label}</span>
       </div>
       <h3 className="text-base font-medium text-ink-1 mb-1.5 leading-snug">Qué analiza Rendi</h3>
       <p className="text-sm text-ink-3 leading-relaxed">
@@ -787,7 +787,7 @@ function BehavioralCardLockedPreview({ card, targetTier = 'pro' }) {
       <div className="flex items-center justify-between mb-2.5">
         <div className="flex items-center gap-2 min-w-0">
           <Icon size={14} strokeWidth={1.75} className="text-ink-3" />
-          <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
+          <span className="text-xs text-ink-2 font-medium">{meta.label}</span>
         </div>
         <Pill tone="off">
           <span className="inline-flex items-center gap-1">
@@ -843,7 +843,7 @@ function SamplesPanel({ title, tone, items }) {
   const color = tone === 'pos' ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
     <div className="border border-line/40 rounded-sm p-2 bg-bg-2/40">
-      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">{title}</div>
+      <div className="text-[12.5px] text-ink-2 mb-1.5 font-medium">{title}</div>
       <ul className="space-y-1 text-xs">
         {items.map((s, i) => (
           <li key={i} className="flex items-center justify-between gap-2">

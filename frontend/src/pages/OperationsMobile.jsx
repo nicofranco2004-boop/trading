@@ -105,7 +105,7 @@ export default function OperationsMobile() {
   // retiros, dividendos, comisiones) con borrado — el tacho ya no es desktop-only.
   const viewToggle = (
     <div className="px-4 pt-3">
-      <div className="flex w-full rounded-sm border border-line/60 bg-bg-1 p-0.5 text-xs font-mono uppercase tracking-caps">
+      <div className="flex w-full rounded-sm border border-line/60 bg-bg-1 p-0.5 text-xs font-medium">
         <button
           onClick={() => setView('trades')}
           className={`flex-1 py-1.5 rounded-sm transition-colors ${view === 'trades' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
@@ -144,7 +144,7 @@ export default function OperationsMobile() {
       <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-3">
         <div className="flex items-baseline justify-between mb-3">
           <div>
-            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1">
+            <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
               P&L acumulado · {filtered.length} ops
             </div>
             <div className={`text-xl font-medium tabular leading-none ${colorClass(totalPnl)}`}>
@@ -153,7 +153,7 @@ export default function OperationsMobile() {
           </div>
           {winRate != null && (
             <div className="text-right">
-              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1">
+              <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
                 Win rate
               </div>
               <div className="text-xl font-medium tabular text-ink-0 leading-none">
@@ -179,7 +179,7 @@ export default function OperationsMobile() {
               </span>
             )}
           </span>
-          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+          <span className="text-[12.5px] text-ink-2 font-medium">
             {PERIOD_OPTIONS.find(p => p.id === period)?.label}
             {broker !== 'all' && ` · ${broker}`}
             {result !== 'all' && ` · ${RESULT_OPTIONS.find(r => r.id === result)?.label}`}
@@ -197,7 +197,7 @@ export default function OperationsMobile() {
               activeFiltersCount > 0 && (
                 <button
                   onClick={() => { setPeriod('all'); setResult('all'); setBroker('all') }}
-                  className="text-xs font-mono uppercase tracking-caps text-data-blue hover:text-rendi-accent"
+                  className="text-xs text-data-blue hover:text-rendi-accent font-medium"
                 >
                   Limpiar filtros
                 </button>
@@ -243,13 +243,13 @@ export default function OperationsMobile() {
           <div className="pt-2 flex items-center gap-2">
             <button
               onClick={() => { setPeriod('90d'); setResult('all'); setBroker('all') }}
-              className="flex-1 text-xs font-mono uppercase tracking-caps text-ink-2 hover:text-ink-0 border border-line/60 hover:bg-bg-2/60 rounded-sm py-2 transition-colors"
+              className="flex-1 text-xs text-ink-2 hover:text-ink-0 border border-line/60 hover:bg-bg-2/60 rounded-sm py-2 transition-colors font-medium"
             >
               Restablecer
             </button>
             <button
               onClick={() => setFiltersOpen(false)}
-              className="flex-1 text-xs font-mono uppercase tracking-caps bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 rounded-sm py-2 transition-colors"
+              className="flex-1 text-xs bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 rounded-sm py-2 transition-colors font-medium"
             >
               Aplicar
             </button>
@@ -277,7 +277,7 @@ function DayGroup({ date, ops }) {
       <div className="flex items-baseline justify-between px-4 py-2 bg-bg-1/50">
         <div className="flex items-center gap-1.5">
           <Calendar size={11} strokeWidth={1.75} className="text-ink-3" />
-          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+          <span className="text-[12.5px] text-ink-2 font-medium">
             {label}
           </span>
           <span className="text-[10px] font-mono text-ink-3">
@@ -318,7 +318,7 @@ function OperationRow({ op }) {
           <span className="text-sm font-semibold text-ink-0 leading-none truncate">
             {op.asset}
           </span>
-          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none">
+          <span className="text-[12.5px] text-ink-2 leading-none font-medium">
             {op.broker}
           </span>
         </div>
@@ -364,7 +364,7 @@ function OperationRow({ op }) {
 function FilterGroup({ label, options, value, onChange }) {
   return (
     <div>
-      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+      <div className="text-[12.5px] text-ink-2 mb-2 font-medium">
         {label}
       </div>
       <div className="flex flex-wrap gap-1.5">
@@ -481,7 +481,7 @@ function MovementsMobile() {
     <ul className="pt-1">
       {grouped.map(([date, items]) => (
         <li key={date}>
-          <div className="px-4 py-1.5 text-[10px] font-mono uppercase tracking-caps text-ink-3 border-b border-line/30 bg-bg-1/50">
+          <div className="px-4 py-1.5 text-[12px] text-ink-3 border-b border-line/30 bg-bg-1/50 font-medium">
             {formatDateLabel(date)}
           </div>
           <ul>
@@ -507,7 +507,7 @@ function MovementRowMobile({ m, money, onDelete, deleting }) {
       </span>
       <div className="flex-1 min-w-0">
         <div className="text-sm font-semibold text-ink-0 leading-none">{meta.label}</div>
-        <div className="text-[11px] font-mono uppercase tracking-caps text-ink-3 leading-none mt-1.5 truncate">
+        <div className="text-[12.5px] text-ink-3 leading-none mt-1.5 truncate font-medium">
           {m.broker || '—'}{m.asset ? ` · ${m.asset}` : ''}
         </div>
       </div>

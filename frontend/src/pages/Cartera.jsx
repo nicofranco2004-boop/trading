@@ -23,37 +23,40 @@
 // de este refactor.
 
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { useSearchParams, useLocation } from 'react-router-dom'
-import { Briefcase, TrendingUp, Target } from 'lucide-react'
+import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
+import { Briefcase, Target } from 'lucide-react'
 import { track } from '../utils/track'
 import Skeleton from '../components/Skeleton'
 import { markPositionsDiscovered } from '../utils/positionsDiscovered'
 
 const Positions = lazy(() => import('./Positions'))
-const Dashboard = lazy(() => import('./Dashboard'))
 const Goals = lazy(() => import('./Goals'))
 
+// El Dashboard salió de las tabs: ahora es página propia (/dashboard, ítem
+// "Dashboard" del sidebar en "Tu Cartera"). Acá quedan Posiciones y Objetivos.
 const TABS = [
   { id: 'posiciones',  label: 'Posiciones',   icon: Briefcase,  desc: 'Tus tenencias actuales' },
-  // ID se mantiene 'evolucion' para no romper bookmarks ni el alias
-  // legacy de ?tab=composicion (TAB_ALIASES abajo).
-  { id: 'evolucion',   label: 'Dashboard',    icon: TrendingUp, desc: 'Equity curve, composición y heatmap' },
   { id: 'objetivos',   label: 'Objetivos',    icon: Target,     desc: 'Tus metas financieras y proyección' },
 ]
 
 const VALID_TAB_IDS = new Set(TABS.map(t => t.id))
 const DEFAULT_TAB = 'posiciones'
 
-// Aliases legacy: bookmarks / links externos / códigos viejos pueden tener
-// `?tab=composicion` (cuando hacíamos 4 tabs). Lo mapeamos a Evolución que
-// es donde quedó la composición unificada.
-const TAB_ALIASES = {
-  composicion: 'evolucion',
-}
+// Sin aliases: las URLs viejas de Dashboard (?tab=evolucion / ?tab=composicion)
+// se redirigen a /dashboard (ver el efecto de back-compat abajo).
+const TAB_ALIASES = {}
 
 export default function Cartera() {
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
+  const navigate = useNavigate()
+
+  // Back-compat: el Dashboard salió de las tabs a su propia página. Los links
+  // viejos (?tab=evolucion / ?tab=composicion) redirigen a /dashboard.
+  useEffect(() => {
+    const t = searchParams.get('tab')
+    if (t === 'evolucion' || t === 'composicion') navigate('/dashboard', { replace: true })
+  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const urlTab = searchParams.get('tab')
   const resolvedTab = TAB_ALIASES[urlTab] || urlTab
@@ -62,6 +65,10 @@ export default function Cartera() {
 
   useEffect(() => {
     const current = searchParams.get('tab') || DEFAULT_TAB
+    // Los valores legacy del Dashboard los maneja el redirect de arriba — sin
+    // este guard, este efecto corre después del navigate('/dashboard') del
+    // mount y lo pisa reescribiendo la URL a /posiciones (race de efectos).
+    if (current === 'evolucion' || current === 'composicion') return
     if (current !== tab) {
       const next = new URLSearchParams(searchParams)
       if (tab === DEFAULT_TAB) next.delete('tab')
@@ -137,7 +144,6 @@ export default function Cartera() {
         </div>
       }>
         {tab === 'posiciones' && <Positions />}
-        {tab === 'evolucion'  && <Dashboard />}
         {tab === 'objetivos'  && <Goals />}
       </Suspense>
     </div>

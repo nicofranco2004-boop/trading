@@ -16,7 +16,7 @@
 
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { TrendingUp, TrendingDown, ArrowRight } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { simulateSp500, simulateDolarCash } from '../utils/benchmarkSim'
 import { usd } from '../utils/format'
 
@@ -55,21 +55,15 @@ export default function BenchmarksLine({ monthly, bench, totalPortfolio, classNa
   if (globalMonthly.length === 0) return null
   if (!vsSp && !vsDolar) return null
 
-  // Tono general: positivo si ganó a TODOS los benchmarks disponibles.
-  // Negativo si perdió a todos. Neutral si es mixto.
-  const both = [vsSp, vsDolar].filter(Boolean)
-  const allPositive = both.every(d => d.delta >= 0)
-  const allNegative = both.every(d => d.delta < 0)
-  const tone = allPositive ? 'positive' : allNegative ? 'negative' : 'neutral'
-
-  // Build segments
+  // Chips: uno por benchmark, con tono propio. El monto va en el title
+  // (hover) para no saturar la línea.
   function fmtSegment(d, name) {
-    const word = d.delta >= 0 ? 'más' : 'menos'
     const sign = d.delta >= 0 ? '+' : '−'
     return {
-      pct: `${Math.abs(d.pct).toFixed(1)}% ${word}`,
       ref: name,
-      amount: `${sign}USD ${usd(Math.abs(d.delta), 0)}`,
+      pct: `${sign}${Math.abs(d.pct).toFixed(1)}%`,
+      pos: d.delta >= 0,
+      amount: `${sign}USD ${usd(Math.abs(d.delta), 0)} vs ${name}`,
     }
   }
 
@@ -77,36 +71,24 @@ export default function BenchmarksLine({ monthly, bench, totalPortfolio, classNa
   if (vsSp) segments.push(fmtSegment(vsSp, 'el S&P 500'))
   if (vsDolar) segments.push(fmtSegment(vsDolar, 'el dólar quieto'))
 
-  const toneClass = {
-    positive: 'text-rendi-pos border-rendi-pos/30 bg-rendi-pos/[0.05]',
-    negative: 'text-rendi-neg border-rendi-neg/30 bg-rendi-neg/[0.05]',
-    neutral:  'text-ink-1 border-line bg-bg-1',
-  }[tone]
-
-  const icon = allPositive ? <TrendingUp size={14} strokeWidth={1.75} /> :
-               allNegative ? <TrendingDown size={14} strokeWidth={1.75} /> :
-               null
-
   return (
-    <div className={`flex items-start gap-2 px-3 py-2 rounded-lg border text-sm leading-snug ${toneClass} ${className}`}>
-      {icon && <span className="flex-shrink-0 mt-0.5">{icon}</span>}
-      <span className="flex-1 min-w-0">
-        Tu cartera rindió{' '}
-        {segments.map((s, i) => (
-          <span key={i}>
-            <strong className="font-semibold">{s.pct}</strong> que {s.ref}{' '}
-            <span className="text-ink-3 font-mono text-[12px]">({s.amount})</span>
-            {i < segments.length - 1 && <span> y </span>}
-          </span>
-        ))}
-        .{' '}
-        <Link
-          to="/insights"
-          className="font-mono uppercase tracking-caps text-[11px] text-ink-2 hover:text-ink-0 inline-flex items-center gap-0.5 ml-1 transition-colors"
+    <div className={`flex items-center gap-2 flex-wrap ${className}`}>
+      {segments.map((s, i) => (
+        <span
+          key={i}
+          className="inline-flex items-center gap-1.5 text-[12px] text-ink-2 bg-bg-1 border border-line rounded-full px-2.5 py-1 tabular"
+          title={s.amount}
         >
-          Ver detalle <ArrowRight size={11} strokeWidth={1.75} />
-        </Link>
-      </span>
+          vs {s.ref}
+          <b className={`font-semibold ${s.pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{s.pct}</b>
+        </span>
+      ))}
+      <Link
+        to="/insights"
+        className="text-[12.5px] text-rendi-accent hover:text-rendi-accent/80 inline-flex items-center gap-0.5 transition-colors font-medium"
+      >
+        Ver comparativa <ArrowRight size={11} strokeWidth={1.75} />
+      </Link>
     </div>
   )
 }

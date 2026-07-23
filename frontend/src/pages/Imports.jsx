@@ -180,7 +180,7 @@ export default function Imports() {
                 onClick={doRecalcPnl}
                 disabled={recalculating}
                 title="Recalcula P&L, deposits y withdrawals mensuales desde las operations e imports confirmados. Útil si el dashboard quedó con drift de cycles import/revert."
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 text-[12.5px] border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50 font-medium"
               >
                 {recalculating
                   ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
@@ -193,7 +193,7 @@ export default function Imports() {
                 onClick={openWipe}
                 disabled={wiping}
                 title="Borra TODOS los datos de un broker (posiciones, operaciones y movimientos), incluyendo cualquier resto de imports viejos. Después podés volver a importar limpio."
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-rendi-neg/30 bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 text-[12.5px] border border-rendi-neg/30 bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50 font-medium"
               >
                 {wiping
                   ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
@@ -205,7 +205,7 @@ export default function Imports() {
               <button
                 onClick={() => setShowPpiEstado(true)}
                 title="Completá tu cartera de PPI subiendo el Estado de Cuenta (Excel). Agrega las posiciones que los Movimientos no reconstruyen, sin duplicar."
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
+                className="inline-flex items-center gap-1.5 text-[12.5px] border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors font-medium"
               >
                 <Upload size={12} strokeWidth={1.75} /> Estado de Cuenta PPI
               </button>
@@ -214,7 +214,7 @@ export default function Imports() {
               <button
                 onClick={() => setShowCocosEstado(true)}
                 title="Completá tu cartera de Cocos subiendo el Estado de Cuenta (CSV). Agrega las posiciones que los Movimientos no reconstruyen, sin duplicar."
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
+                className="inline-flex items-center gap-1.5 text-[12.5px] border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors font-medium"
               >
                 <Upload size={12} strokeWidth={1.75} /> Estado de Cuenta Cocos
               </button>
@@ -223,7 +223,7 @@ export default function Imports() {
               <button
                 onClick={() => setShowIebPortfolio(true)}
                 title="Actualizá tu cartera de IEB subiendo el Portafolio (Excel). Completa las posiciones con su costo real, cierra el efectivo a la foto y ajusta lo que quedó de más/de menos — con un tope de seguridad."
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
+                className="inline-flex items-center gap-1.5 text-[12.5px] border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors font-medium"
               >
                 <Upload size={12} strokeWidth={1.75} /> Portafolio IEB
               </button>
@@ -232,14 +232,14 @@ export default function Imports() {
               <button
                 onClick={() => setShowIolResumen(true)}
                 title="Actualizá tu cartera de IOL subiendo el Resumen de Cuenta (PDF). Completa las posiciones, cierra el efectivo a la foto y ajusta lo que quedó de más/de menos — con un tope de seguridad."
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
+                className="inline-flex items-center gap-1.5 text-[12.5px] border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors font-medium"
               >
                 <Upload size={12} strokeWidth={1.75} /> Resumen IOL
               </button>
             )}
             <button
               onClick={() => setShowWizard(true)}
-              className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-2.5 py-1.5 rounded-sm transition-colors"
+              className="inline-flex items-center gap-1.5 text-[12.5px] bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-2.5 py-1.5 rounded-sm transition-colors font-medium"
             >
               <Upload size={12} strokeWidth={2} /> Nueva importación
             </button>
@@ -275,7 +275,7 @@ export default function Imports() {
             action={
               <button
                 onClick={() => setShowWizard(true)}
-                className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 font-mono uppercase tracking-caps text-[11px] px-3 py-2 rounded-md font-semibold transition"
+                className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 text-[12.5px] px-3 py-2 rounded-md font-semibold transition"
               >
                 <Upload size={14} /> Importar CSV
               </button>
@@ -286,11 +286,11 @@ export default function Imports() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-line/50">
-                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium uppercase tracking-wider">Fecha</th>
-                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium uppercase tracking-wider">Archivo</th>
-                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium uppercase tracking-wider">Broker</th>
-                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium uppercase tracking-wider">Filas</th>
-                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium uppercase tracking-wider">Estado</th>
+                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium">Fecha</th>
+                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium">Archivo</th>
+                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium">Broker</th>
+                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium">Filas</th>
+                  <th className="px-4 py-2 text-left text-xs text-ink-3 font-medium">Estado</th>
                   <th className="px-4 py-2"></th>
                 </tr>
               </thead>
@@ -372,7 +372,7 @@ export default function Imports() {
               <button
                 onClick={() => doRedo(confirmRedo)}
                 disabled={redoing === confirmRedo.id}
-                className="px-4 py-2 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 font-mono uppercase tracking-caps text-[11px] rounded-md font-semibold transition disabled:opacity-50 inline-flex items-center gap-1.5"
+                className="px-4 py-2 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 text-[12.5px] rounded-md font-semibold transition disabled:opacity-50 inline-flex items-center gap-1.5"
               >
                 {redoing === confirmRedo.id && <Loader2 size={12} className="animate-spin" />}
                 <Edit3 size={12} />
@@ -579,7 +579,7 @@ export default function Imports() {
                         </span>
                         <span className="font-medium text-ink-0 truncate">{b.name}</span>
                       </span>
-                      <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 flex-shrink-0">{b.currency}</span>
+                      <span className="text-[12px] text-ink-3 flex-shrink-0 font-medium">{b.currency}</span>
                     </button>
                   )
                 })}
@@ -616,7 +616,7 @@ export default function Imports() {
                 type="button"
                 onClick={confirmWipe}
                 disabled={!wipeSel || wiping}
-                className="px-4 py-2 text-sm bg-rendi-neg/15 hover:bg-rendi-neg/25 text-rendi-neg border border-rendi-neg/30 rounded-md font-semibold uppercase tracking-caps transition disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                className="px-4 py-2 text-sm bg-rendi-neg/15 hover:bg-rendi-neg/25 text-rendi-neg border border-rendi-neg/30 rounded-md font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
               >
                 {wiping && <Loader2 size={12} className="animate-spin" />}
                 <Trash2 size={12} />

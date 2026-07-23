@@ -111,7 +111,7 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
       {/* ── Selector ───────────────────────────────────────────────────────── */}
       <Panel>
         <div className="flex items-center justify-between gap-3 mb-3">
-          <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          <p className="text-[12px] text-ink-3 font-medium">
             Acciones a comparar
           </p>
           <span className="text-[11px] font-mono text-ink-3 tabular">
@@ -207,7 +207,7 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
 function CompareCards({ entries, watchlist, onOpenTicker }) {
   return (
     <section>
-      <p className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-3">Negocio y precio, lado a lado</p>
+      <p className="text-[12.5px] text-ink-2 mb-3 font-medium">Negocio y precio, lado a lado</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {entries.map(({ ticker, data }) => {
           const cats = data.score?.categories || []
@@ -258,7 +258,7 @@ function CompareCards({ entries, watchlist, onOpenTicker }) {
 function AxisMini({ label, read }) {
   return (
     <div>
-      <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">{label}</p>
+      <p className="text-[12px] text-ink-3 mb-1 font-medium">{label}</p>
       {read ? <Pill tone={AXIS_PILL[read.tone]}>{read.label}</Pill> : <span className="text-[11px] text-ink-3">—</span>}
     </div>
   )
@@ -269,7 +269,7 @@ function MetricDetail({ comparison }) {
   const { tickers, rowsByCategory } = comparison
   return (
     <section>
-      <p className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-3">Detalle métrica por métrica</p>
+      <p className="text-[12.5px] text-ink-2 mb-3 font-medium">Detalle métrica por métrica</p>
       <div className="space-y-3">
         {CATEGORY_ORDER.map(cat => {
           const rows = rowsByCategory[cat] || []
@@ -304,7 +304,7 @@ function CategorySection({ category, rows, tickers }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line bg-bg-2/60">
-                <th scope="col" className="text-left font-normal text-[10px] font-mono uppercase tracking-caps text-ink-3 px-4 py-2.5">
+                <th scope="col" className="text-left font-normal text-[12px] text-ink-3 px-4 py-2.5 font-medium">
                   Métrica
                 </th>
                 {tickers.map(t => (

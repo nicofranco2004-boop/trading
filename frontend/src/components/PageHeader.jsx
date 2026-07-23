@@ -21,23 +21,25 @@ export default function PageHeader({ title, subtitle, action, meta, bordered = f
       }`}
     >
       <div className="min-w-0">
+        {/* Clean pass 2026-07: eyebrow sans violeta (antes mono uppercase),
+            título más grande y pesado — jerarquía editorial, no de terminal. */}
         {eyebrow && (
-          <p className="font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium mb-1">
+          <p className="text-[12.5px] font-semibold text-data-violet mb-1.5">
             {eyebrow}
           </p>
         )}
-        <h1 className="text-xl sm:text-2xl font-medium text-ink-0 tracking-tight leading-tight">
+        <h1 className="text-2xl sm:text-[27px] font-semibold text-ink-0 tracking-tight leading-tight">
           {title}
         </h1>
         {subtitle && (
-          <p className="text-sm text-ink-2 mt-1 leading-relaxed max-w-2xl">
+          <p className="text-[14px] text-ink-2 mt-1.5 leading-relaxed max-w-2xl">
             {subtitle}
           </p>
         )}
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
         {meta && (
-          <span className="inline-flex items-center gap-2 text-[11px] font-mono text-ink-2 uppercase tracking-caps">
+          <span className="inline-flex items-center gap-2 text-[12px] text-ink-2 font-medium">
             {isLive && <span className="live-dot" aria-hidden />}
             {meta}
           </span>

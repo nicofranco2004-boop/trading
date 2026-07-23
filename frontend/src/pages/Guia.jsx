@@ -88,7 +88,7 @@ export default function Guia() {
         <section className="mb-12 text-center">
           <div className="inline-flex items-center gap-2 mb-4 px-3 py-1 rounded-full bg-data-violet/10 border border-data-violet/30">
             <BookOpen size={14} strokeWidth={1.75} className="text-data-violet" />
-            <span className="font-mono text-[10px] uppercase tracking-caps text-data-violet">
+            <span className="text-[12px] text-data-violet font-medium">
               Guía completa
             </span>
           </div>
@@ -119,7 +119,7 @@ export default function Guia() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">
+                        <span className="text-[12.5px] text-ink-2 font-medium">
                           {s.n} de {SECTIONS.length}
                         </span>
                       </div>
@@ -143,7 +143,7 @@ export default function Guia() {
 
         {/* Recursos rápidos */}
         <section className="mt-12 pt-10 border-t border-line/40">
-          <h2 className="text-sm font-mono uppercase tracking-caps text-ink-3 mb-4">
+          <h2 className="text-sm text-ink-3 mb-4 font-medium">
             Recursos rápidos
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

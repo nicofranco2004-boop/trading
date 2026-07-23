@@ -24,7 +24,8 @@ const GROUPS = [
   {
     label: 'Tu portfolio',
     items: [
-      { to: '/posiciones',  label: 'Cartera',      icon: List,   sub: 'Posiciones, evolución, objetivos' },
+      { to: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard, sub: 'Evolución, composición y heatmap' },
+      { to: '/posiciones',  label: 'Cartera',      icon: List,   sub: 'Tus tenencias y objetivos' },
       { to: '/operaciones', label: 'Movimientos',  icon: List,   sub: 'Trades + depósitos + dividendos' },
       { to: '/imports',     label: 'Importar CSV', icon: Upload, sub: 'Subí CSVs de tus brokers' },
       { to: '/alertas',     label: 'Alertas',      icon: BellRing, sub: 'Avisos de precio y variación' },
@@ -33,15 +34,10 @@ const GROUPS = [
   {
     label: 'Análisis',
     items: [
-      { to: '/analisis',     label: 'Análisis',     icon: Brain, sub: 'Diagnóstico, métricas, sesgos' },
-      { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge, sub: 'Calidad de tus tenencias + buscador' },
-      { to: '/novedades',    label: 'Novedades',    icon: Bell,  sub: 'Noticias + eventos' },
-    ],
-  },
-  {
-    label: 'Personal',
-    items: [
-      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound, sub: 'Contexto para el Coach IA' },
+      { to: '/analisis',        label: 'Métricas',           icon: Brain,     sub: 'Diagnóstico, comportamiento, reportes' },
+      { to: '/fundamentals',    label: 'Calidad de cartera', icon: Gauge,     sub: 'Calidad de tus tenencias + buscador' },
+      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound, sub: 'Tu perfil declarado vs. tu cartera' },
+      { to: '/novedades',       label: 'Novedades',          icon: Bell,      sub: 'Noticias + eventos' },
     ],
   },
 ]
@@ -52,6 +48,12 @@ export default function More() {
   const [recomOpen, setRecomOpen] = useState(false)
 
   const allGroups = [
+    // Plan Asesor: el roster es SU home — sin esta entrada, en mobile no había
+    // forma de volver a /clientes navegando (solo tipeando la URL).
+    ...((user?.tier === 'advisor' || user?.is_admin) ? [{
+      label: 'Plan Asesor',
+      items: [{ to: '/clientes', label: 'Clientes', icon: UserRound, sub: 'Tus clientes y el resumen de sus carteras' }],
+    }] : []),
     // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.
     ...GROUPS.map(g => ({
       ...g,
@@ -75,7 +77,7 @@ export default function More() {
 
       {/* Asistente — Coach IA abre el drawer global, no navega a una ruta */}
       <section>
-        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
+        <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
           Asistente
         </h2>
         <div className="bg-bg-1 border border-data-violet/30 rounded-lg overflow-hidden">
@@ -96,7 +98,7 @@ export default function More() {
 
       {allGroups.map((group) => (
         <section key={group.label}>
-          <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
+          <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
             {group.label}
           </h2>
           <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
@@ -128,7 +130,7 @@ export default function More() {
 
       {/* Configuración + logout */}
       <section>
-        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
+        <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
           Cuenta
         </h2>
         <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
@@ -190,7 +192,7 @@ function PushNotificationsSection() {
   if (!supported) {
     return (
       <section>
-        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
+        <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
           Notificaciones
         </h2>
         <div className="bg-bg-1 border border-line/60 rounded-lg p-4">
@@ -245,7 +247,7 @@ function PushNotificationsSection() {
 
   return (
     <section>
-      <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
+      <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
         Notificaciones
       </h2>
       <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
@@ -261,7 +263,7 @@ function PushNotificationsSection() {
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-ink-0 leading-tight flex items-center gap-2">
               Notificaciones push
-              <span className={`text-[10px] font-mono uppercase tracking-caps ${statusTone}`}>
+              <span className={`text-[12px] ${statusTone} font-medium`}>
                 {statusLabel}
               </span>
             </div>
@@ -273,7 +275,7 @@ function PushNotificationsSection() {
                   : 'Recibí alertas cuando algo importante pasa en tu cartera.'}
             </div>
           </div>
-          <span className={`text-[10px] font-mono uppercase tracking-caps ${subscribed ? 'text-rendi-neg' : 'text-rendi-pos'}`}>
+          <span className={`text-[12px] ${subscribed ? 'text-rendi-neg' : 'text-rendi-pos'} font-medium`}>
             {loading ? '...' : subscribed ? 'Desactivar' : 'Activar'}
           </span>
         </button>
@@ -294,7 +296,7 @@ function PushNotificationsSection() {
                 Verificá que las notificaciones llegan correctamente.
               </div>
             </div>
-            <span className="text-[10px] font-mono uppercase tracking-caps text-data-blue">
+            <span className="text-[12px] text-data-blue font-medium">
               {testing ? '...' : 'Enviar'}
             </span>
           </button>

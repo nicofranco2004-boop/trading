@@ -475,6 +475,57 @@ def init_db():
         # tu historial". NULL = nunca se le mandó. Lo usa /api/admin/email/gift-plus
         # como idempotencia (no re-mailea salvo resend=True; fallidos se reintentan).
         conn.execute("ALTER TABLE users ADD COLUMN gift_plan_email_sent_at TEXT")
+    if user_cols and 'managed_by' not in user_cols:
+        # Plan Asesor: si NO es NULL, la cuenta es un "cliente shadow" creado y
+        # administrado por el asesor (users.id del asesor). Los shadows se
+        # EXCLUYEN de: broadcast/re-engagement de emails, borrado de cuentas
+        # sin verificar (lifecycle), y métricas de signup. No pueden loguear
+        # (approved=0 + password random) hasta que reclamen la cuenta (F4).
+        conn.execute("ALTER TABLE users ADD COLUMN managed_by INTEGER")
+
+    # ── Plan Asesor: vínculos asesor→cliente + lotes de operación grupal ────
+    # advisor_clients es LA tabla de autorización del contexto de cliente
+    # (get_effective_user). Un row activo = el asesor puede VER la cuenta del
+    # cliente; permission='read_write' (managed) = también puede escribirla.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS advisor_clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            advisor_uid INTEGER NOT NULL REFERENCES users(id),
+            client_uid INTEGER NOT NULL REFERENCES users(id),
+            link_type TEXT NOT NULL DEFAULT 'managed',      -- 'managed' | 'linked'
+            permission TEXT NOT NULL DEFAULT 'read_write',  -- 'read' | 'read_write'
+            status TEXT NOT NULL DEFAULT 'active',          -- 'active' | 'revoked'
+            label TEXT,
+            notes TEXT,                                     -- notas PRIVADAS del asesor
+            consent_ref TEXT,                               -- trazabilidad del consentimiento
+            created_at TEXT DEFAULT (datetime('now')),
+            revoked_at TEXT,
+            UNIQUE(advisor_uid, client_uid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_advisor_clients_advisor
+            ON advisor_clients(advisor_uid, status);
+        CREATE INDEX IF NOT EXISTS idx_advisor_clients_client
+            ON advisor_clients(client_uid, status);
+        -- Operación grupal (block trade): un lote = una operación aplicada a N
+        -- clientes. items guarda el position_id creado por fila → el undo borra
+        -- exactamente lo que este lote creó (y re-acredita el cash).
+        CREATE TABLE IF NOT EXISTS advisor_op_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            advisor_uid INTEGER NOT NULL REFERENCES users(id),
+            asset TEXT NOT NULL,
+            op_kind TEXT NOT NULL DEFAULT 'buy',
+            created_at TEXT DEFAULT (datetime('now')),
+            undone_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS advisor_op_batch_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id INTEGER NOT NULL REFERENCES advisor_op_batches(id),
+            client_uid INTEGER NOT NULL,
+            position_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'ok'               -- 'ok' | 'undone' | 'error'
+        );
+    """)
+
     # Sincronizar is_admin + approved para usuarios con email admin
     rows = conn.execute("SELECT id, email FROM users").fetchall()
     for r in rows:
@@ -818,6 +869,21 @@ def init_db():
     if news_cols and 'tags' not in news_cols:
         conn.execute("ALTER TABLE news ADD COLUMN tags TEXT")
         conn.commit()
+    # Migración 2026-07-22 (noticias en español): purgar el backlog de noticias
+    # en INGLÉS cacheadas por el código anterior — sin esto dominan el feed
+    # durante días (se ordena por published_at y el backlog EN es más denso).
+    # Identificables sin ambigüedad: los queries viejos eran "{TICKER} stock" y
+    # los feeds EN de Investing (www.investing.com). El código nuevo nunca
+    # persiste con esos query_source (el fallback EN se guarda bajo el query
+    # "{TICKER} acciones"), así que esto es idempotente y no borra nada nuevo.
+    if news_cols:
+        _purged = conn.execute(
+            "DELETE FROM news WHERE query_source LIKE '% stock' "
+            "OR query_source LIKE '%www.investing.com%'"
+        ).rowcount
+        if _purged:
+            log.info("news migración es: purgadas %d noticias EN del cache", _purged)
+        conn.commit()
     if news_cols and 'sentiment' not in news_cols:
         conn.execute("ALTER TABLE news ADD COLUMN sentiment TEXT")
         conn.commit()
@@ -1076,7 +1142,8 @@ def init_db():
             up_pct REAL,                        -- pct_move: dispara si sube ≥ up_pct%
             down_pct REAL,                      -- pct_move: dispara si cae ≥ down_pct%
             currency TEXT,                      -- 'ARS' | 'USD' (riel del umbral)
-            baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close'|'cost'|'set_price'
+            baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close' (día) | 'set_price' (desde ahora)
+            anchor_price REAL,                  -- pct_move set_price: precio de referencia (se re-ancla)
             channel TEXT NOT NULL DEFAULT 'both',-- 'push' | 'email' | 'both'
             repeat TEXT NOT NULL DEFAULT 'once',-- 'once' | 'daily' | 'always'
             cooldown_min INTEGER NOT NULL DEFAULT 360,
@@ -1104,7 +1171,33 @@ def init_db():
             seen INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_alert_events_user ON alert_events(user_id, fired_at DESC);
+
+        -- Edge-trigger POR (alerta, símbolo) para pct_move "En el día": una alerta
+        -- de toda la cartera tiene N símbolos, cada uno con su propio estado armado.
+        -- Dispara al cruzar el umbral; se re-arma cuando el % vuelve dentro de la
+        -- banda (al abrir el mercado el change_pct resetea) → el movimiento de ayer
+        -- no re-dispara hoy.
+        CREATE TABLE IF NOT EXISTS alert_symbol_state (
+            alert_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            armed INTEGER NOT NULL DEFAULT 1,
+            last_fired_date TEXT,          -- fecha UTC del último disparo → máx 1 por día
+            updated_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (alert_id, symbol)
+        );
     """)
+
+    # Migración: anchor_price para el modo "Desde ahora" (la tabla alerts ya existe
+    # en prod sin esta columna → CREATE IF NOT EXISTS no la agrega).
+    _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
+    if _alert_cols and 'anchor_price' not in _alert_cols:
+        conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
+
+    # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
+    # sin esta columna, se creó en el deploy anterior).
+    _st_cols = [r[1] for r in conn.execute("PRAGMA table_info(alert_symbol_state)").fetchall()]
+    if _st_cols and 'last_fired_date' not in _st_cols:
+        conn.executescript("ALTER TABLE alert_symbol_state ADD COLUMN last_fired_date TEXT;")
 
     # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
     # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
@@ -1357,6 +1450,25 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_pwd_reset_token ON password_reset_tokens(token);
         CREATE INDEX IF NOT EXISTS idx_pwd_reset_user ON password_reset_tokens(user_id, used_at);
+
+        -- ─── advisor_claim_tokens: invitación del asesor a una cuenta shadow ──
+        -- El asesor invita a su cliente (email real) a "reclamar" la cuenta
+        -- administrada: el cliente entra con ESTE link, pone contraseña, y la
+        -- MISMA cuenta (mismo uid, misma cartera) pasa a ser autogestionada.
+        -- Mismo patrón que password_reset_tokens (token URL-safe 256-bit, TTL,
+        -- un solo token vivo por user, used_at al confirmar).
+        CREATE TABLE IF NOT EXISTS advisor_claim_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,          -- el shadow que se reclama
+            advisor_uid INTEGER NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL,               -- email real al que se invitó
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_advisor_claim_token ON advisor_claim_tokens(token);
+        CREATE INDEX IF NOT EXISTS idx_advisor_claim_user ON advisor_claim_tokens(user_id, used_at);
 
         -- ─── login_history: dispositivos vistos por user (alerta de nuevo login) ──
         -- Si el ua_hash actual no apareció antes para este user, se envía un email
@@ -1760,6 +1872,109 @@ def get_admin_user(uid: int = Depends(get_current_user)) -> int:
     if not row or not row["is_admin"]:
         raise HTTPException(403, "Acceso restringido")
     return uid
+
+
+# ─── Plan Asesor: contexto de cliente (get_effective_user) ───────────────────
+# El asesor navega "el Rendi de un cliente" mandando el header X-Rendi-Client-Id
+# en cada request. get_effective_user envuelve a get_current_user: si el header
+# está presente Y el vínculo asesor→cliente existe en advisor_clients (activo),
+# resuelve al uid del CLIENTE — así TODOS los endpoints `WHERE user_id=?`
+# sirven la cuenta del cliente sin tocar su lógica.
+#
+# ⚠️ SUPERFICIE DE SEGURIDAD CRÍTICA. Un bug acá filtra la cartera completa de
+# un cliente al asesor equivocado. Reglas:
+#   • Sin header → idéntico a get_current_user (el 99.9% del tráfico).
+#   • Header en un prefijo EXENTO → se IGNORA (devuelve el uid real). Exentos:
+#     identidad/cuenta (auth), billing, admin, gestión advisor, IA (la cuota es
+#     del asesor; el chat per-cliente llega en F5), push (device-bound) y
+#     tracking de plan (eventos del asesor, no del cliente).
+#   • Header con vínculo inexistente/revocado → 403 SIEMPRE (nunca fallback
+#     silencioso al uid propio: eso enmascararía bugs del frontend mostrando
+#     datos del asesor como si fueran del cliente).
+#   • Escrituras (todo lo que no es GET/HEAD/OPTIONS) exigen permission
+#     'read_write' (managed). Los vínculos 'linked' (v1) son read-only.
+CLIENT_CTX_HEADER = "X-Rendi-Client-Id"
+CLIENT_CTX_EXEMPT_PREFIXES = (
+    "/api/auth",
+    "/api/billing",
+    "/api/admin",
+    "/api/advisor",
+    "/api/me",          # cierre de cuenta: SIEMPRE la propia, jamás la del cliente
+    "/api/push",
+    "/api/plan/track",
+    "/api/feedback",    # recomendaciones: se atribuyen al asesor, no al shadow
+)
+# NOTA de diseño: /api/ai NO está exento a propósito — la IA sigue al contexto
+# (con ctx activo el coach y los bloques IA leen/escriben la cuenta del CLIENTE;
+# la cuota corre en los contadores del cliente, que resuelve tier 'pro' mientras
+# esté administrado — ver quota.get_tier). F5 centraliza la cuota en el asesor.
+# ⚠️ FAIL-OPEN: todo endpoint futuro FUERA de estos prefijos hereda el contexto
+# de cliente. Si agregás un endpoint de IDENTIDAD/CUENTA/PAGO nuevo, agregalo acá.
+
+
+def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
+    """Devuelve el uid del cliente si el contexto aplica, None si no.
+
+    Lanza 400 (header malformado) o 403 (sin vínculo / sin permiso de
+    escritura). Ver reglas en el comentario de arriba."""
+    raw = request.headers.get(CLIENT_CTX_HEADER)
+    if not raw:
+        return None
+    path = request.url.path
+    # Match por LÍMITE DE SEGMENTO: '/api/me' exime '/api/me' y '/api/me/...'
+    # pero NO un futuro '/api/metrics' (startswith crudo lo eximiría en silencio).
+    if any(path == p or path.startswith(p + "/") for p in CLIENT_CTX_EXEMPT_PREFIXES):
+        return None  # el header se ignora acá: el request es del asesor mismo
+    try:
+        client_id = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise HTTPException(400, "X-Rendi-Client-Id inválido")
+    if not (0 < client_id < 2**63):
+        # Fuera del rango INTEGER de SQLite: el bind tiraría OverflowError → 500
+        raise HTTPException(400, "X-Rendi-Client-Id inválido")
+    if client_id == uid:
+        return None  # mirarse a uno mismo = no-op
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT permission FROM advisor_clients
+               WHERE advisor_uid=? AND client_uid=? AND status='active'""",
+            (uid, client_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        # 403 explícito — jamás degradar en silencio al uid propio.
+        raise HTTPException(403, "Sin acceso a ese cliente")
+    if request.method not in ("GET", "HEAD", "OPTIONS") and row["permission"] != "read_write":
+        raise HTTPException(403, "Acceso de solo lectura a ese cliente")
+    return client_id
+
+
+def get_effective_user(
+    request: Request,
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
+) -> int:
+    """get_current_user + contexto de cliente del Plan Asesor.
+
+    Es el Depends por defecto de los endpoints de DATOS. Los endpoints de
+    identidad/cuenta/billing/admin usan get_current_user (o quedan cubiertos
+    por los prefijos exentos, que ignoran el header)."""
+    uid = get_current_user(request, creds)
+    # Stash del uid AUTENTICADO para que endpoints que necesitan ambos (p.ej.
+    # /api/plan/features) no re-resuelvan el JWT + SELECT users una 2da vez.
+    request.state.rendi_auth_uid = uid
+    client_uid = _resolve_client_context(request, uid)
+    return client_uid if client_uid is not None else uid
+
+
+def _require_advisor(conn, uid: int) -> str:
+    """Gate de los endpoints /api/advisor/*: tier 'advisor' o admin."""
+    from ai import quota as _q
+    tier = _q.get_tier(conn, uid)
+    if tier not in ("advisor", "admin"):
+        raise HTTPException(403, "Requiere el plan Asesor")
+    return tier
 
 
 ARS_BROKER_NAMES = {'cocos', 'iol', 'bull', 'balanz', 'lemon', 'naranja', 'pppi', 'invertironline'}
@@ -2403,7 +2618,7 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
 
 
 @app.get("/api/auth/me")
-def me(uid: int = Depends(get_current_user)):
+def me(uid: int = Depends(get_effective_user)):
     from ai import quota
     conn = get_db()
     row = conn.execute(
@@ -2505,7 +2720,7 @@ def me(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/auth/change-password")
-def change_password(data: ChangePasswordIn, response: Response, uid: int = Depends(get_current_user)):
+def change_password(data: ChangePasswordIn, response: Response, uid: int = Depends(get_effective_user)):
     conn = get_db()
     row = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
     if not row or not pwd_ctx.verify(data.current_password, row["password_hash"]):
@@ -2527,7 +2742,7 @@ def change_password(data: ChangePasswordIn, response: Response, uid: int = Depen
 
 
 @app.delete("/api/me")
-def delete_my_account(response: Response, uid: int = Depends(get_current_user)):
+def delete_my_account(response: Response, uid: int = Depends(get_effective_user)):
     """Cierre de cuenta self-service (irreversible). Cancela la suscripción externa
     (best-effort, para que no lo sigan cobrando) y BORRA al usuario + TODOS sus datos
     de la DB: brokers, posiciones, operaciones, imports, snapshots, config, monthly,
@@ -2548,24 +2763,56 @@ def delete_my_account(response: Response, uid: int = Depends(get_current_user)):
         except Exception as ex:
             log.warning("delete_my_account: cancel Rebill falló uid=%s: %s (sigo con el borrado)", uid, ex)
 
-        # 2) Borrar TODOS los datos del usuario, atómico.
-        with conn:
+        # 2) Borrar TODOS los datos del usuario, atómico. Si el usuario es un
+        # ASESOR, también sus clientes shadow (managed_by=uid): sin dueño no
+        # tienen login, ni email real, ni camino de borrado — quedarían como
+        # PII financiera huérfana e imposible de recolectar (derecho al olvido).
+        def _wipe_user_rows(_uid):
+            wiped = {}
             batch_ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+                "SELECT id FROM import_batches WHERE user_id=?", (_uid,)).fetchall()]
             if batch_ids:
-                ph = ",".join("?" * len(batch_ids))
+                _ph = ",".join("?" * len(batch_ids))
                 for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                    conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({ph})", tuple(batch_ids))
+                    conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
             tables = [r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
-            deleted = {}
             for t in tables:
                 cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
                 if "user_id" in cols:
-                    n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (uid,)).rowcount
+                    n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (_uid,)).rowcount
                     if n:
-                        deleted[t] = n
-            deleted["users"] = conn.execute("DELETE FROM users WHERE id=?", (uid,)).rowcount
+                        wiped[t] = wiped.get(t, 0) + n
+            wiped["users"] = conn.execute("DELETE FROM users WHERE id=?", (_uid,)).rowcount
+            return wiped
+
+        with conn:
+            deleted = {}
+            shadow_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM users WHERE managed_by=?", (uid,)).fetchall()]
+            # Los vínculos van PRIMERO: advisor_clients tiene FK a users(id) y
+            # bloquearía el DELETE del shadow (FOREIGN KEY constraint).
+            n_links_pre = conn.execute(
+                "DELETE FROM advisor_clients WHERE advisor_uid=? OR client_uid=?",
+                (uid, uid)).rowcount
+            for sid in shadow_ids:
+                conn.execute("DELETE FROM advisor_clients WHERE client_uid=? OR advisor_uid=?",
+                             (sid, sid))
+                for t, n in _wipe_user_rows(sid).items():
+                    deleted[f"shadow.{t}"] = deleted.get(f"shadow.{t}", 0) + n
+            if n_links_pre:
+                deleted["advisor_clients"] = n_links_pre
+            # Lotes de operación grupal del asesor (sin columna user_id)
+            adv_batches = [r["id"] for r in conn.execute(
+                "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (uid,)).fetchall()]
+            if adv_batches:
+                _ph = ",".join("?" * len(adv_batches))
+                conn.execute(f"DELETE FROM advisor_op_batch_items WHERE batch_id IN ({_ph})",
+                             tuple(adv_batches))
+                conn.execute(f"DELETE FROM advisor_op_batches WHERE id IN ({_ph})",
+                             tuple(adv_batches))
+            for t, n in _wipe_user_rows(uid).items():
+                deleted[t] = n
         log.info("delete_my_account uid=%s deleted=%s", uid, deleted)
         clear_auth_cookie(response)   # invalida la sesión server-side
         return {"ok": True, "deleted": deleted}
@@ -2607,7 +2854,7 @@ class InvestorProfileIn(BaseModel):
 
 
 @app.get("/api/auth/investor-profile")
-def get_investor_profile(uid: int = Depends(get_current_user)):
+def get_investor_profile(uid: int = Depends(get_effective_user)):
     """Devuelve el perfil de inversor del user (o {} si no completó el test)."""
     conn = get_db()
     try:
@@ -2625,7 +2872,7 @@ def get_investor_profile(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/auth/investor-profile")
-def save_investor_profile(data: InvestorProfileIn, uid: int = Depends(get_current_user)):
+def save_investor_profile(data: InvestorProfileIn, uid: int = Depends(get_effective_user)):
     """Guarda/actualiza el perfil. Valida valores contra el whitelist para
     evitar basura/inyecciones que terminen en el prompt de IA."""
     payload = data.model_dump(exclude_none=True)
@@ -2676,7 +2923,7 @@ class BrokerIn(BaseModel):
 
 
 @app.get("/api/brokers")
-def get_brokers(uid: int = Depends(get_current_user)):
+def get_brokers(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute("SELECT * FROM brokers WHERE user_id=? ORDER BY name", (uid,)).fetchall()
     conn.close()
@@ -2690,7 +2937,7 @@ def get_brokers(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/brokers")
-def create_broker(data: BrokerIn, uid: int = Depends(get_current_user)):
+def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
     from ai import plan
     conn = get_db()
     # Feature gate: Free permite 1 broker máximo. Grandfather: usuarios
@@ -2777,7 +3024,7 @@ NAME_KEYED_TABLES = (
 
 
 @app.put("/api/brokers/{bid}")
-def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_current_user)):
+def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_user)):
     """Renombra (o cambia la moneda de) un broker, con cascade del nombre.
 
     Como las tablas de data linkean al broker por NOMBRE (ver NAME_KEYED_TABLES),
@@ -2976,7 +3223,7 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_current_user)
 
 
 @app.delete("/api/brokers/{bid}")
-def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_current_user)):
+def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effective_user)):
     """Borra el broker. Por defecto REFUSE si tiene data asociada
     (positions/operations/monthly_entries) — el caller debe pasar `?force=true`
     explícitamente para confirmar el cascade delete.
@@ -3157,7 +3404,7 @@ class ConfigUpdate(BaseModel):
 
 
 @app.get("/api/config")
-def get_config(uid: int = Depends(get_current_user)):
+def get_config(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute("SELECT key, value FROM config WHERE user_id=?", (uid,)).fetchall()
     conn.close()
@@ -3171,7 +3418,7 @@ def get_config(uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/config")
-def update_config(data: ConfigUpdate, uid: int = Depends(get_current_user)):
+def update_config(data: ConfigUpdate, uid: int = Depends(get_effective_user)):
     conn = get_db()
     if data.tc_mep is not None:
         conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_mep', ?, ?)", (str(data.tc_mep), uid))
@@ -3483,7 +3730,7 @@ def _current_cripto_rate():
 
 
 @app.get("/api/dolar")
-def get_dolar(uid: int = Depends(get_current_user)):
+def get_dolar(uid: int = Depends(get_effective_user)):
     return _get_dolar_data()
 
 
@@ -3509,7 +3756,7 @@ class SnapshotIn(BaseModel):
 
 
 @app.post("/api/snapshots")
-def post_snapshot(data: SnapshotIn, uid: int = Depends(get_current_user)):
+def post_snapshot(data: SnapshotIn, uid: int = Depends(get_effective_user)):
     today = datetime.utcnow().strftime("%Y-%m-%d")
     # Phase C: stampamos fx_to_usd_blue desde el cache de /dolar (TTL 5min).
     #
@@ -3550,7 +3797,7 @@ def post_snapshot(data: SnapshotIn, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/snapshots")
-def get_snapshots(days: int = 30, uid: int = Depends(get_current_user)):
+def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
     # Phase 6 — cap subido de 365 → 3650 (10 años) para soportar histórico multi-año.
     # Phase C — devolvemos fx_to_usd_blue para que el frontend pueda convertir
     # snapshots viejos a ARS con el TC HISTÓRICO de cada fecha, no el de hoy.
@@ -3569,7 +3816,7 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_current_user)):
 @app.get("/api/fx-rates")
 def get_fx_rates(
     days: int = 3650,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Devuelve la historia de blue diaria. Default 10 años (mismo cap que
     snapshots). El frontend la fetcha una vez por session y la cachea en
@@ -3796,7 +4043,7 @@ def _fetch_uva_monthly():
 
 
 @app.get("/api/benchmarks")
-def get_benchmarks(uid: int = Depends(get_current_user)):
+def get_benchmarks(uid: int = Depends(get_effective_user)):
     """Endpoint stale-while-revalidate:
        • cache fresco (< 1h) → return inmediato.
        • cache stale pero existente → return stale + dispatch refresh background.
@@ -3909,7 +4156,7 @@ def get_bond_index_series(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     date: Optional[str] = None,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Devuelve la serie diaria del índice solicitado.
 
@@ -4075,7 +4322,7 @@ POPULAR_TICKERS_AR_ADR = [
 @app.get("/api/events/popular")
 def get_popular_events(
     days: int = 90,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Eventos "del mercado" en general — no filtrados al portfolio del user.
 
@@ -4306,10 +4553,30 @@ def _refresh_events_for_tickers(conn, tickers: list):
         _events_fetched_at[ticker] = now
 
 
+@app.get("/api/events/earnings-expectations")
+def earnings_expectations(symbol: str, uid: int = Depends(get_effective_user)):
+    """Expectativas del consenso para el próximo earnings de un ticker.
+
+    Reusa el fetcher + cache del chat tool get_earnings_history (yfinance):
+    EPS esperado (avg/high/low del consenso), últimos quarters con surprise %
+    y promedio. La UI de Eventos lo pide on-demand al expandir una card de
+    earnings — el cache TTL por kind evita repegarle a yfinance por cada click.
+    Si el ticker no es una equity con earnings (cripto/ETF/bono) devuelve
+    available=False y el frontend simplemente no muestra el panel."""
+    ticker = (symbol or "").strip().upper()[:15]
+    if not ticker or not _SYMBOL_RE.match(ticker):
+        raise HTTPException(status_code=400, detail="Símbolo inválido.")
+    try:
+        return _yf_fetch_cached(ticker, "earnings", _yf_earnings_fetcher)
+    except Exception as ex:
+        log.warning("earnings-expectations failed for %s: %s", ticker, ex)
+        return {"available": False, "reason": "No pudimos traer las expectativas ahora."}
+
+
 @app.get("/api/events/portfolio")
 def get_portfolio_events(
     days: int = 90,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Eventos próximos para los activos en el portfolio del user.
 
@@ -4445,10 +4712,13 @@ MARKET_NEWS_QUERIES = [
 # Codes documentados:
 #   news_25  → Stock market (acciones)
 #   news_285 → Economic indicators (macro)
+
+# Clean pass 2026-07 (pedido de Nico): noticias EN ESPAÑOL por default.
+# Los feeds en inglés de Investing se retiraron — el mercado/macro sale de las
+# ediciones es.investing.com. El fallback a inglés queda solo para tickers de
+# portfolio con poca cobertura en español (ver _refresh_news_query).
 INVESTING_FEEDS = [
     # (url, category, lang)
-    ("https://www.investing.com/rss/news_25.rss",  "market", "en"),
-    ("https://www.investing.com/rss/news_285.rss", "macro",  "en"),
     ("https://es.investing.com/rss/news_25.rss",   "market", "es"),
     ("https://es.investing.com/rss/news_285.rss",  "macro",  "es"),
 ]
@@ -4958,8 +5228,16 @@ def _refresh_news_query(conn, query: str, lang: str, category: str, limit: int =
     """Refresca el cache de Google News para un query dado. Idempotente.
 
     Delega a _persist_news_items con source='google_news_rss'.
+
+    Clean pass 2026-07: español-first. Si el query es en español y Google trae
+    POCAS notas (<3 — tickers chicos sin cobertura en medios hispanos),
+    complementamos con la variante en inglés ("{TICKER} stock") para que ese
+    ticker no quede sin noticias. El dedup por external_id evita duplicados.
     """
     items = _fetch_google_news_rss(query, lang=lang, limit=limit)
+    if lang == "es" and len(items) < 3 and query.endswith(" acciones"):
+        fallback_q = query[: -len(" acciones")] + " stock"
+        items = items + _fetch_google_news_rss(fallback_q, lang="en", limit=limit - len(items))
     return _persist_news_items(conn, items, 'google_news_rss', category, query)
 
 
@@ -5166,7 +5444,7 @@ def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8, max_wait_seco
 @app.get("/api/news/market")
 def get_market_news(
     limit: int = 20,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Feed general del mercado — noticias macro y de índices populares.
 
@@ -5227,7 +5505,7 @@ def get_market_news(
 @app.get("/api/news/portfolio")
 def get_portfolio_news(
     limit: int = 15,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Noticias relevantes a los tickers en el portfolio del user.
 
@@ -5250,13 +5528,14 @@ def get_portfolio_news(
         if not tickers:
             return {'news': [], 'count': 0}
 
-        # Build queries batch (cap a 20 para no martillar Google) + paralelo
+        # Build queries batch (cap a 20 para no martillar Google) + paralelo.
+        # Clean pass 2026-07: TODO en español ("{TICKER} acciones", es-419/AR)
+        # — antes los tickers US iban en inglés y el feed quedaba mezclado.
+        # Si un ticker tiene poca cobertura en español, _refresh_news_query
+        # cae a inglés para ese query (el feed nunca queda vacío).
         queries_batch = []
         for ticker in tickers[:20]:
-            is_ar = (ticker in POPULAR_TICKERS_AR_ADR) or (ticker in AR_BONDS_DATA912)
-            lang = "es" if is_ar else "en"
-            query = f"{ticker} {'acciones' if is_ar else 'stock'}"
-            queries_batch.append((query, lang, 'portfolio'))
+            queries_batch.append((f"{ticker} acciones", "es", 'portfolio'))
 
         # SWR per-ticker: si tenemos news para AL MENOS un ticker del user,
         # refresh en background y devolvemos lo que hay. Si NINGÚN ticker
@@ -5454,9 +5733,10 @@ AR_BONDS_DATA912 = {
     'BA37D',                             # Buenos Aires 2037 (sub-soberano provincial USD)
     # Ampliación 2026-06-26 — bonos/ONs que aparecían INFLADOS (precio per-100 sin
     # ÷100 porque no estaban acá → caían a yfinance). data912 los cubre (verificado).
-    'AO28',                              # Bonar 2028 (soberano USD)
+    'AO28', 'AO29',                      # Bonar 2028/2029 (soberano USD) — data912 arg_bonds (AO29 → 143680; AO29D → 95.1)
     'TY30P',                             # Boncer/dual
     'PN35O', 'YM39O', 'YMCJO', 'IRCPO',  # ONs (data912 arg_corp)
+    'CS49O', 'TLCMO',                    # ONs Cresud 2027 / Telecom 2031 (data912 arg_corp; CS49O→158820, TLCMO→171310 pesos per-100 → ÷100)
 }
 
 _data912_cache = {'data': None, 'ts': 0}
@@ -5677,7 +5957,7 @@ def _prevclose_cache_set(values: dict) -> None:
 
 
 @app.get("/api/prices")
-def get_prices(symbols: str, uid: int = Depends(get_current_user)):
+def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     raw = [s.strip().upper() for s in symbols.split(",") if s.strip()]
 
     # FCI (fondos comunes): no pasan el _SYMBOL_RE de tickers yfinance — los
@@ -5846,7 +6126,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/prices/prev-close")
-def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
+def get_prev_close(symbols: str, uid: int = Depends(get_effective_user)):
     """Cierre del día hábil ANTERIOR por símbolo — base de la variación diaria
     por posición en Positions. Mismo shape que /api/prices: {symbol: number|null}.
 
@@ -5984,7 +6264,7 @@ _HISTORY_PERIODS = {
 
 
 @app.get("/api/prices/history")
-def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_current_user)):
+def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_effective_user)):
     """Devuelve serie histórica de close-prices para mini-chart.
 
     Params:
@@ -6073,7 +6353,7 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_cu
 
 class PositionIn(BaseModel):
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=48)  # 48 para símbolos FCI: 'FCI:FIMA-PREMIUM-A'
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)  # MAX_STR (100): FCI y nombres largos (compra y venta comparten límite)
     is_cash: bool = False
     buy_price: Optional[float] = Field(None, ge=0)
     quantity: Optional[float] = Field(None, ge=0)
@@ -6120,7 +6400,7 @@ class PositionIn(BaseModel):
 
 
 @app.get("/api/positions")
-def get_positions(uid: int = Depends(get_current_user)):
+def get_positions(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute(
         """SELECT * FROM positions WHERE user_id=?
@@ -6132,49 +6412,63 @@ def get_positions(uid: int = Depends(get_current_user)):
     return [dict(r) for r in rows]
 
 
+def _manual_position_cost(invested, buy_price, quantity, commissions) -> float:
+    """Costo cash de un alta manual: invested ?? buy_price×quantity, + comisiones.
+    ÚNICA definición — el débito del alta y el re-crédito del undo de la
+    operación grupal DEBEN usar la misma fórmula o el cash driftea."""
+    cost = invested if invested is not None else (buy_price or 0) * (quantity or 0)
+    return (cost or 0) + (commissions or 0)
+
+
+def _insert_manual_position(conn, uid: int, p: PositionIn):
+    """Cuerpo del alta manual de posición (insert + cash debit), extraído para
+    reusarlo desde la operación grupal del Plan Asesor. NO abre transacción ni
+    conexión: el caller decide el alcance del `with conn` (una posición suelta
+    o un lote de N clientes). Devuelve la row insertada."""
+    # Auto-fill entry_date a hoy si no viene del cliente
+    entry_date = p.entry_date or datetime.utcnow().strftime("%Y-%m-%d")
+    # Moneda nativa del lote: explícita del form, o inferida del broker
+    # (ARS si el broker es ARS, USD si es el sub-broker '· USD'/USDT). Sin
+    # esto los lotes manuales quedaban NULL y se mezclaban ARS+USD en el FIFO.
+    resolved_ccy = p.currency
+    if not resolved_ccy and not p.is_cash:
+        _br = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=?",
+            (uid, p.broker)).fetchone()
+        resolved_ccy = "ARS" if (_br and _br["currency"] == "ARS") else "USD"
+    cur = conn.execute(
+        """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+           invested, tc_compra, price_override, notes, entry_date, commissions, asset_type, currency)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
+         p.invested, p.tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
+         (p.asset_type or None), resolved_ccy),
+    )
+    new_id = cur.lastrowid
+
+    # Phase 2 — descontar del cash del broker (moneda nativa).
+    # Costo real = invested + commissions (las comisiones se debitan del cash).
+    if not p.is_cash:
+        cost = _manual_position_cost(p.invested, p.buy_price, p.quantity, p.commissions)
+        if cost and cost > 0:
+            # El cash no puede quedar negativo en una alta manual: si el
+            # user agrega una posición sin haber cargado el depósito, auto-
+            # depositamos el faltante (sube cash + capital aportado) antes
+            # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
+            _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date)
+            _adjust_broker_cash(conn, uid, p.broker, -cost)
+
+    return conn.execute(
+        "SELECT * FROM positions WHERE id=? AND user_id=?", (new_id, uid)
+    ).fetchone()
+
+
 @app.post("/api/positions")
-def create_position(p: PositionIn, uid: int = Depends(get_current_user)):
+def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:  # transacción atómica: insert + cash debit
-            # Auto-fill entry_date a hoy si no viene del cliente
-            entry_date = p.entry_date or datetime.utcnow().strftime("%Y-%m-%d")
-            # Moneda nativa del lote: explícita del form, o inferida del broker
-            # (ARS si el broker es ARS, USD si es el sub-broker '· USD'/USDT). Sin
-            # esto los lotes manuales quedaban NULL y se mezclaban ARS+USD en el FIFO.
-            resolved_ccy = p.currency
-            if not resolved_ccy and not p.is_cash:
-                _br = conn.execute(
-                    "SELECT currency FROM brokers WHERE user_id=? AND name=?",
-                    (uid, p.broker)).fetchone()
-                resolved_ccy = "ARS" if (_br and _br["currency"] == "ARS") else "USD"
-            cur = conn.execute(
-                """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
-                   invested, tc_compra, price_override, notes, entry_date, commissions, asset_type, currency)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
-                 p.invested, p.tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
-                 (p.asset_type or None), resolved_ccy),
-            )
-            new_id = cur.lastrowid
-
-            # Phase 2 — descontar del cash del broker (moneda nativa).
-            # Costo real = invested + commissions (las comisiones se debitan del cash).
-            if not p.is_cash:
-                cost = p.invested if p.invested is not None else \
-                       (p.buy_price or 0) * (p.quantity or 0)
-                cost = (cost or 0) + (p.commissions or 0)
-                if cost and cost > 0:
-                    # El cash no puede quedar negativo en una alta manual: si el
-                    # user agrega una posición sin haber cargado el depósito, auto-
-                    # depositamos el faltante (sube cash + capital aportado) antes
-                    # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
-                    _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date)
-                    _adjust_broker_cash(conn, uid, p.broker, -cost)
-
-            row = conn.execute(
-                "SELECT * FROM positions WHERE id=? AND user_id=?", (new_id, uid)
-            ).fetchone()
+            row = _insert_manual_position(conn, uid, p)
         conn.close()
         _ai_cache_invalidate(uid)
         return dict(row)
@@ -6187,7 +6481,7 @@ def create_position(p: PositionIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/positions/{pid}")
-def update_position(pid: int, p: PositionIn, uid: int = Depends(get_current_user)):
+def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute(
         """UPDATE positions SET broker=?, asset=?, is_cash=?, buy_price=?, quantity=?,
@@ -6211,7 +6505,7 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_current_user
 
 
 @app.delete("/api/positions/{pid}")
-def delete_position(pid: int, uid: int = Depends(get_current_user)):
+def delete_position(pid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
     conn.commit()
@@ -6387,7 +6681,7 @@ def _foto_wm_for(broker: str, base: str, foto_map: dict, pair_cache: dict, conn,
 
 
 @app.post("/api/positions/{pid}/adjust-ratio")
-def adjust_position_ratio(pid: int, uid: int = Depends(get_current_user)):
+def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
     """Ajusta un lote de CEDEAR por el/los cambio(s) de ratio (split) que el SERVER
     detecta vía yfinance: quantity*=F, buy_price/=F, dejando invested/commissions/
     monthly_entries INTACTOS (no inventa plata, solo arregla la pérdida fantasma).
@@ -6477,7 +6771,7 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/positions/split-check")
-def positions_split_check(uid: int = Depends(get_current_user)):
+def positions_split_check(uid: int = Depends(get_effective_user)):
     """Detecta lotes con un cambio de ratio (split) que Rendi todavía no ajustó →
     P&L fantasma. Por cada equity de BYMA con qty>0, busca splits del .BA con
     ex_date posterior a la compra Y al watermark. Excluye el caso comprado EXACTO
@@ -6607,7 +6901,7 @@ def _pf_vencimiento(fecha_inicio: str, plazo_dias: int) -> str:
 
 
 @app.get("/api/plazos-fijos")
-def list_plazos_fijos(uid: int = Depends(get_current_user)):
+def list_plazos_fijos(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute(
         """SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL
@@ -6624,7 +6918,7 @@ def list_plazos_fijos(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/plazos-fijos")
-def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
+def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
     venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
     conn = get_db()
     # Si el capital salió de un broker que ya estaba en Rendi, debitamos su cash
@@ -6666,7 +6960,7 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/plazos-fijos/{pid}")
-def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_current_user)):
+def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
     venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
     conn = get_db()
     row = conn.execute("SELECT id FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid)).fetchone()
@@ -6689,7 +6983,7 @@ def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_current_u
 
 
 @app.delete("/api/plazos-fijos/{pid}")
-def delete_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
+def delete_plazo_fijo(pid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute("DELETE FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid))
     conn.commit()
@@ -6738,7 +7032,7 @@ def _pf_value(row, as_of_iso=None):
 
 
 @app.post("/api/plazos-fijos/{pid}/renovar")
-def renovar_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
+def renovar_plazo_fijo(pid: int, uid: int = Depends(get_effective_user)):
     """Renueva el PF: arranca un período nuevo desde el vencimiento, con capital
     = capital + interés (reinvierte todo). Mismo plazo y tasa."""
     conn = get_db()
@@ -6768,7 +7062,7 @@ class CobrarIn(BaseModel):
 
 
 @app.post("/api/plazos-fijos/{pid}/cobrar")
-def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_current_user)):
+def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective_user)):
     """Cierra el PF (cobrado). Si se indica un broker, acredita capital+interés
     como cash ahí (debe coincidir la moneda). El interés es la ganancia realizada
     — el PF cerrado retiene sus datos para las métricas."""
@@ -6831,7 +7125,7 @@ _PF_BANKS_TTL = 6 * 3600
 
 
 @app.get("/api/pf/banks")
-def pf_banks(uid: int = Depends(get_current_user)):
+def pf_banks(uid: int = Depends(get_effective_user)):
     """Tasas de plazo fijo por banco (argentinadatos), para el prefill del alta
     y el comparador. Devuelve [{banco, logo, tna_clientes, tna_no_clientes}]
     ordenado por mejor tasa. Cacheado 6h en memoria."""
@@ -7419,7 +7713,7 @@ class BrokerReconcileCashIn(BaseModel):
 
 
 @app.post("/api/brokers/reconcile-cash")
-def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_current_user)):
+def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_effective_user)):
     """Ajusta el cash actual de un broker a un valor real (el que el broker
     externo reporta), y registra la diferencia como movimiento sintético en
     el primer mes del broker — de modo que:
@@ -7517,7 +7811,7 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_cu
 
 
 @app.post("/api/cash/flow")
-def cash_flow(data: CashFlowIn, uid: int = Depends(get_current_user)):
+def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
     """Depósito o retiro de cash en un broker.
     Actualiza la posición cash del broker y las entradas mensuales (broker + global)."""
     conn = get_db()
@@ -7689,7 +7983,7 @@ class BondCashflowIn(BaseModel):
     Todo atómico.
     """
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     flow_type: str = Field(..., max_length=20)  # 'coupon' | 'amortization'
     amount: float = Field(..., gt=0, le=1e12)
     date: str = Field(..., max_length=10)
@@ -7728,7 +8022,7 @@ class BondCashflowIn(BaseModel):
 
 
 @app.post("/api/bonds/cashflow")
-def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
+def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
     """Registra un cupón cobrado o amortización recibida de un bono.
 
     Hace 2-3 cosas atómicamente:
@@ -7994,7 +8288,7 @@ def _cash_asset_for_currency(currency: str) -> str:
 class BondCashflowSkipIn(BaseModel):
     """Marca una cobranza teórica como "no aplica" para no sugerirla más."""
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     date: str = Field(..., max_length=10)
     reason: Optional[str] = Field(None, max_length=200)
 
@@ -8007,7 +8301,7 @@ class BondCashflowSkipIn(BaseModel):
 
 
 @app.get("/api/bonds/cashflow/skips")
-def list_bond_cashflow_skips(uid: int = Depends(get_current_user)):
+def list_bond_cashflow_skips(uid: int = Depends(get_effective_user)):
     """Lista todos los skips del user. Frontend los consume para filtrar
     el inbox de pendientes."""
     conn = get_db()
@@ -8025,7 +8319,7 @@ def list_bond_cashflow_skips(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/bonds/cashflow/skip")
-def skip_bond_cashflow(data: BondCashflowSkipIn, uid: int = Depends(get_current_user)):
+def skip_bond_cashflow(data: BondCashflowSkipIn, uid: int = Depends(get_effective_user)):
     """Marca una cobranza teórica como saltada. Idempotente: re-aplicar el
     mismo skip no falla, sólo actualiza el `reason` si difiere."""
     conn = get_db()
@@ -8066,7 +8360,7 @@ def unskip_bond_cashflow(
     broker: str,
     asset: str,
     date: str,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Elimina un skip — el pago vuelve a aparecer en el inbox. Usado si el
     user marca por error o si la situación cambia (ej: bono salió de default)."""
@@ -8181,7 +8475,7 @@ def _adjust_cash(conn, uid: int, broker_name: str, asset: str, delta: float, tc_
 
 
 @app.post("/api/conversions")
-def create_conversion(data: ConversionIn, uid: int = Depends(get_current_user)):
+def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)):
     """Conversión interna entre cash ARS y cash USD dentro de un mismo broker.
 
     Flujo `ars_to_usd`:
@@ -8321,7 +8615,7 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_current_user)):
 # ─── Sub-broker USD manual (para CEDEARs y similares pagados con USD) ────────
 
 @app.post("/api/brokers/{bid}/usd-sibling")
-def create_usd_sibling(bid: int, uid: int = Depends(get_current_user)):
+def create_usd_sibling(bid: int, uid: int = Depends(get_effective_user)):
     """Crea (o devuelve si ya existe) el sub-broker USD asociado a un broker ARS.
 
     Use case: el usuario tiene USD del exterior y quiere comprar CEDEARs en
@@ -8352,7 +8646,7 @@ class SyncUnrealizedIn(BaseModel):
 
 
 @app.post("/api/monthly/sync-unrealized")
-def sync_unrealized(data: SyncUnrealizedIn, uid: int = Depends(get_current_user)):
+def sync_unrealized(data: SyncUnrealizedIn, uid: int = Depends(get_effective_user)):
     """Actualiza pnl_unrealized del MES CALENDARIO ACTUAL (UTC) del broker, y
     pone en 0 pnl_unrealized en todas las demás entradas (meses cerrados, históricos
     o futuros pre-abiertos).
@@ -8427,7 +8721,7 @@ def _finite(v: Optional[float]) -> Optional[float]:
 class SellIn(BaseModel):
     """Venta FIFO: cierra posiciones del par (broker, asset) en orden de entry_date asc."""
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     quantity: float = Field(..., gt=0, le=_FINITE_BOUND)
     exit_price: float = Field(..., ge=0, le=_FINITE_BOUND)
     date: Optional[str] = Field(None, max_length=10)
@@ -8463,7 +8757,7 @@ class SellIn(BaseModel):
 
 
 @app.post("/api/positions/sell")
-def sell_position_fifo(data: SellIn, uid: int = Depends(get_current_user)):
+def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
     """Cierre FIFO: descuenta `quantity` empezando por la posición más vieja (entry_date asc).
     Crea una operación por cada posición tocada (cantidad parcial o total).
     Si la cantidad excede el total disponible, falla atómicamente sin tocar nada."""
@@ -8812,7 +9106,7 @@ def _rollover_all_brokers(conn, uid: int) -> int:
 
 
 @app.get("/api/monthly")
-def get_monthly(uid: int = Depends(get_current_user)):
+def get_monthly(uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         # Lazy trigger del rollover: garantiza que el current month existe
@@ -8831,7 +9125,7 @@ def get_monthly(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/monthly")
-def create_monthly(e: MonthlyIn, uid: int = Depends(get_current_user)):
+def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     # Validar que el broker exista (excepto el especial 'global' que se usa para totales)
     if e.broker != 'global':
@@ -8865,7 +9159,7 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/monthly/{eid}")
-def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_current_user)):
+def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     with conn:  # tx: update + repair atómico
         man_dep, man_wit = _derive_manual_flows(
@@ -8888,7 +9182,7 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_current_user))
 
 
 @app.delete("/api/monthly/{eid}")
-def delete_monthly(eid: int, uid: int = Depends(get_current_user)):
+def delete_monthly(eid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     # Capturar el broker ANTES del delete para poder repair la chain.
     target = conn.execute(
@@ -8911,7 +9205,7 @@ _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 class OperationIn(BaseModel):
     date: str = Field(..., max_length=10)
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     op_type: Optional[str] = Field(None, max_length=MAX_STR)
     entry_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
     exit_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
@@ -8959,7 +9253,7 @@ class OperationIn(BaseModel):
 
 
 @app.get("/api/operations")
-def get_operations(uid: int = Depends(get_current_user)):
+def get_operations(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute(
         "SELECT * FROM operations WHERE user_id=? ORDER BY date DESC", (uid,)
@@ -8969,7 +9263,7 @@ def get_operations(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/movements")
-def get_movements(uid: int = Depends(get_current_user)):
+def get_movements(uid: int = Depends(get_effective_user)):
     """Historial unificado de TODOS los movimientos del usuario.
 
     Es la "vista contadora" — todo lo que pasó cronológicamente, sin
@@ -9424,7 +9718,7 @@ def _delete_one_movement(conn, uid: int, mid: str):
 
 
 @app.delete("/api/movements/{movement_id}")
-def delete_movement(movement_id: str, uid: int = Depends(get_current_user)):
+def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
     """Borra UN movimiento individual (vista Operaciones) y recalcula la cascada:
     cash, monthly_entries, snapshots (capital aportado + Evolución), insights y el
     snapshot que consume la IA. v1: SOLO cash-flows (depósitos, retiros, dividendos,
@@ -9447,7 +9741,7 @@ def delete_movement(movement_id: str, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/insights/commissions")
-def get_commissions_total(uid: int = Depends(get_current_user)):
+def get_commissions_total(uid: int = Depends(get_effective_user)):
     """Suma de las comisiones EXPLÍCITAS importadas (operation_type='FEE' en
     import_normalized_tx). Convierte ARS→USD usando tc_blue. Ignora el campo
     `commissions` de operations (que tiene basura de imports viejos con
@@ -9607,7 +9901,7 @@ def _gate_export(uid: int):
 
 
 @app.get("/api/export/operations.csv")
-def export_operations_csv(uid: int = Depends(get_current_user)):
+def export_operations_csv(uid: int = Depends(get_effective_user)):
     """Operaciones cerradas → CSV. Pensado para el contador / reporte fiscal.
 
     Columnas pensadas para AFIP / régimen tributario AR: fecha de operación,
@@ -9646,7 +9940,7 @@ def export_operations_csv(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/export/positions.csv")
-def export_positions_csv(uid: int = Depends(get_current_user)):
+def export_positions_csv(uid: int = Depends(get_effective_user)):
     """Posiciones abiertas → CSV (snapshot al momento de descarga).
 
     Incluye costo basis + cantidad. NO incluye valor de mercado actual
@@ -9681,7 +9975,7 @@ def export_positions_csv(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/export/transactions.csv")
-def export_transactions_csv(uid: int = Depends(get_current_user)):
+def export_transactions_csv(uid: int = Depends(get_effective_user)):
     """Export consolidado: TODOS los movimientos del user en una sola CSV.
 
     Pensado como "lo que mandás al contador" o "lo que mandás a otra persona
@@ -9905,7 +10199,7 @@ def _humanize_tx_type(t: str) -> str:
 
 
 @app.get("/api/export/monthly.csv")
-def export_monthly_csv(uid: int = Depends(get_current_user)):
+def export_monthly_csv(uid: int = Depends(get_effective_user)):
     """Resumen mensual → CSV con flujos + P&L realizado mes a mes.
 
     Útil para el contador: sintetiza capital inicio/fin, depósitos,
@@ -9943,7 +10237,7 @@ def export_monthly_csv(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/wrapped/{year}")
-def wrapped_year(year: int, uid: int = Depends(get_current_user)):
+def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
     """Wrapped anual — reseña tipo Spotify del año en inversiones.
     Sprint 6 del plan post-auditoría. Slides con highlights:
     rendimiento, mejor/peor mes, mejor trade, sesgo dominante, vs benchmarks,
@@ -10021,7 +10315,7 @@ def wrapped_year(year: int, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/behavioral/insights")
-def behavioral_insights(uid: int = Depends(get_current_user)):
+def behavioral_insights(uid: int = Depends(get_effective_user)):
     """Detecta sesgos comportamentales sobre el historial del usuario.
     Sprint 3 + 3.1 + 3.2 del plan post-auditoría. 10 detectores en total.
 
@@ -10082,7 +10376,7 @@ def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional
 
 
 @app.post("/api/operations")
-def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
+def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
     """Crea una operation manual.
 
     Audit follow-up (2026-05-31): después de INSERT, syncroniza el cache
@@ -10113,7 +10407,7 @@ def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/operations/{oid}")
-def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_current_user)):
+def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective_user)):
     """Update operation manual + sync cache pnl_realized (audit follow-up)."""
     conn = get_db()
     currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
@@ -10142,7 +10436,7 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_current_u
 
 
 @app.delete("/api/operations/{oid}")
-def delete_operation(oid: int, uid: int = Depends(get_current_user)):
+def delete_operation(oid: int, uid: int = Depends(get_effective_user)):
     """Delete operation manual + sync cache pnl_realized (audit follow-up)."""
     conn = get_db()
     conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (oid, uid))
@@ -10173,7 +10467,7 @@ class GoalIn(BaseModel):
 
 
 @app.get("/api/goals")
-def list_goals(uid: int = Depends(get_current_user)):
+def list_goals(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute(
         "SELECT * FROM goals WHERE user_id=? ORDER BY target_date ASC", (uid,)
@@ -10183,7 +10477,7 @@ def list_goals(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/goals")
-def create_goal(g: GoalIn, uid: int = Depends(get_current_user)):
+def create_goal(g: GoalIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     cur = conn.execute(
         "INSERT INTO goals (user_id, target_usd, target_date, expected_return_pct, label) VALUES (?,?,?,?,?)",
@@ -10197,7 +10491,7 @@ def create_goal(g: GoalIn, uid: int = Depends(get_current_user)):
 
 
 @app.put("/api/goals/{gid}")
-def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_current_user)):
+def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute(
         "UPDATE goals SET target_usd=?, target_date=?, expected_return_pct=?, label=? WHERE id=? AND user_id=?",
@@ -10213,7 +10507,7 @@ def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_current_user)):
 
 
 @app.delete("/api/goals/{gid}")
-def delete_goal(gid: int, uid: int = Depends(get_current_user)):
+def delete_goal(gid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     conn.execute("DELETE FROM goals WHERE id=? AND user_id=?", (gid, uid))
     conn.commit()
@@ -10223,7 +10517,7 @@ def delete_goal(gid: int, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/goals/{gid}/diagnostic")
-def goal_diagnostic(gid: int, uid: int = Depends(get_current_user)):
+def goal_diagnostic(gid: int, uid: int = Depends(get_effective_user)):
     """Sprint 7 — Goals 2.0. Cruza:
     - Velocidad real del usuario (CAGR histórico).
     - Velocidad necesaria para la meta.
@@ -10370,7 +10664,7 @@ def _historical_cagr_global(conn, uid: int) -> dict:
 
 
 @app.get("/api/goals/cagr")
-def historical_cagr(uid: int = Depends(get_current_user)):
+def historical_cagr(uid: int = Depends(get_effective_user)):
     """CAGR histórico TWR. Lee de snapshots (durables, MTM) → consistente con el chart
     y no se revierte con el recompute mensual. Fallback a monthly_entries sin snapshots."""
     conn = get_db()
@@ -11687,6 +11981,7 @@ def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_a
                   WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
+          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
         ORDER BY u.created_at ASC
     """).fetchall()
 
@@ -11799,6 +12094,7 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
                   WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
+          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
         ORDER BY u.created_at ASC
     """).fetchall()
 
@@ -11941,7 +12237,8 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
     conn = get_db()
     rows = conn.execute(
         "SELECT id, email, name, email_verified, tier "
-        "FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY created_at ASC"
+        "FROM users WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL "  # sin shadows del Plan Asesor
+        "ORDER BY created_at ASC"
     ).fetchall()
     targets = []
     for r in rows:
@@ -12294,8 +12591,9 @@ def admin_billing_grant_comp(
     from datetime import datetime as _dt, timedelta as _td
 
     plan = (plan or "").strip().lower()
-    if plan not in ("plus", "pro"):
-        raise HTTPException(400, "plan inválido (usá 'plus' o 'pro').")
+    # 'advisor' habilita el Plan Asesor a pilotos sin construir billing (F4).
+    if plan not in ("plus", "pro", "advisor"):
+        raise HTTPException(400, "plan inválido (usá 'plus', 'pro' o 'advisor').")
     if days < 1 or days > 366:
         raise HTTPException(400, "days fuera de rango (1..366).")
 
@@ -12490,7 +12788,7 @@ def admin_fci_probe(uid: int = Depends(get_admin_user)):
 
 
 @app.get("/api/fci/catalog")
-def fci_catalog(uid: int = Depends(get_current_user)):
+def fci_catalog(uid: int = Depends(get_effective_user)):
     """Catálogo de FCI elegibles para el selector de alta de posición, con el
     último precio por cuotaparte conocido (price puede ser null si nunca refrescó)."""
     conn = get_db()
@@ -12829,8 +13127,8 @@ ANTI-SPAM DE TOOLS:
 
 ESTILO RIOPLATENSE
 Vos, tenés, querés. Tono cercano pero profesional. Sin emojis.
-CORTO: 2-4 oraciones por defecto, salvo que pidan explícitamente "explicame en detalle".
-NO uses markdown (sin bold con asteriscos, sin listas con guión, sin headers con numeral). Escribí en prosa fluida con saltos de línea naturales. La UI no renderiza markdown.
+CORTO — REGLA DURA DE EXTENSIÓN: la prosa es el TITULAR de tu respuesta, no el cuerpo. Máximo ~120 palabras (2 párrafos cortos o 4-5 oraciones), incluso si piden detalle. PROHIBIDO: ensayos numerados (1./2./3. con párrafos), enumerar posiciones o P&L por activo en texto, repetir en prosa números que ya van en las tarjetas. El CUERPO de la respuesta son los blocks visuales del BLOQUE ESTRUCTURADO (tablas, barras, comparaciones) — la UI los muestra lindos; el texto largo da fiaca y nadie lo lee. Estructura ideal: 1 oración con la respuesta directa → 2-3 oraciones con tu lectura/el porqué → (si aplica) 1 pregunta corta al usuario → bloque estructurado con los datos.
+NO uses markdown (sin bold con asteriscos, sin listas con guión, sin headers con numeral). Escribí en prosa fluida con saltos de línea naturales. La UI no renderiza markdown. ÚNICA EXCEPCIÓN: la línea ---RENDI--- del BLOQUE ESTRUCTURADO final NO es markdown — es un marcador técnico para la UI y va siempre que la respuesta sea de análisis.
 Directo cuando está eufórico ("buen mes, pero un mes no es sistema"). Empático cuando está en rojo real ("32% duele, entiendo. Pero la decisión que viene no se toma desde ahí").
 Separá la persona de la decisión: "los números muestran X" en vez de "estás haciendo mal".
 Anti-patrones a EVITAR: disclaimers genéricos en cada respuesta; jerga vacía ("diversificá inteligentemente"); falsa modestia ("yo no sé pero..."); listas infinitas cuando preguntan algo puntual.
@@ -13011,7 +13309,26 @@ Mi lectura para tu cartera: NVDA pesa 16% en tu portfolio (US$ 7.812 con +38% si
 Respuesta Pro (mala):
 NVDA tiene P/E 33, forward 17, PEG 0.71, payoutRatio 0.0061, ROE 1.14, debtToEquity 0.07, profitMargins 0.62, revenueGrowth 0.85, marketCap $5.2T, beta 2.24. Comprala.
 
-(mala porque: dump de números crudos, sin contexto, jerga sin definir, hace recomendación operativa)"""
+(mala porque: dump de números crudos, sin contexto, jerga sin definir, hace recomendación operativa)
+
+BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
+Al FINAL de cada respuesta de ANÁLISIS, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado con este shape:
+{"verdict":"2-3 palabras (ej: Buen mes / Ojo acá / Todo en orden)","tone":"pos|warn|neg|neutral","headline":"la respuesta resumida en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor con signo/unidad","t":"pos|warn|neg|neutral"}],"followups":["repregunta corta","otra"],"sources":["qué datos miraste, ej: 12 posiciones","snapshot de hoy"]}
+Reglas del bloque:
+- stats: máx 3, SOLO números reales del snapshot o de tools — nunca inventados. Elegí los números que RESPONDEN LA PREGUNTA (deltas, brechas vs benchmark, concentración, el dato que sorprende) — NO el resumen genérico de la cartera (invertido/valor actual ya lo ve en el dashboard; repetirlo aburre). Si no hay métricas relevantes, mandá stats vacío []. LABELS SIN AMBIGÜEDAD: para el peso/ponderación de posiciones decí "Concentración top 5" o "Top 5 = % de tu cartera" — NUNCA "pesos" (acá "pesos" es la moneda ARS y se lee como plata). Mismo criterio en títulos de blocks y prosa: "peso" solo si el contexto lo hace inequívoco.
+- followups: máx 3 preguntas cortas que VOS puedas responder con esta data.
+- sources: máx 3, cortitos.
+- La prosa va ANTES del bloque y NO lo menciona (el usuario no ve el JSON, ve tarjetas).
+- OMITÍ el bloque entero en: saludos, aclaraciones breves, y TODO el flujo de registro de operaciones (confirmaciones "¿Confirmás?", resultado del registro, undo). Ahí respondé texto plano como siempre.
+
+Además el JSON acepta "blocks" (máx 2): bloques VISUALES pre-armados que el frontend renderiza. En respuestas de ANÁLISIS es OBLIGATORIO incluir al menos 1 (ideal 2) — son el CUERPO de la respuesta, la prosa es solo el titular + tu lectura. Elegí por afinidad: ¿comparás contra benchmarks o alternativas? → "compare". ¿Hablás de composición/concentración/pesos? → "alloc". ¿Es ranking o lista de activos? → "table". ¿La respuesta invita a hacer algo en la app? → "actions". NO lo saltees porque "la prosa ya lo dijo" — es al revés: si un dato entra en un block, NO va en la prosa. Los valores de los items van como STRINGS formateados ("+6,7%", "US$ 8.812"), no números crudos. Cada block acepta "title" opcional (máx 40 chars, contextual: "Tu cartera vs S&P · YTD" mejor que "Comparación"). Tipos:
+· {"type":"compare","items":[{"l":"Tu cartera","v":"+18,4%","pct":92},{"l":"S&P 500","v":"+15,2%","pct":76}]} — comparaciones (vs benchmark/alternativas). pct = largo relativo de la barra 0-100 (el mayor ≈ 90-100). Primer item = SIEMPRE el usuario. Máx 4 items.
+· {"type":"alloc","items":[{"l":"NVDA","pct":28},{"l":"Cash","pct":45}]} — composición de la cartera (pct reales del snapshot, máx 6 segmentos, que sumen ~100).
+· {"type":"scenario","if":"NVDA corrige −15%","then":"−4,2 pp en tu cartera","tone":"neg"} — hipotéticos si→entonces (para "¿qué pasa si...?").
+· {"type":"table","cols":["Activo","Peso","Mes"],"rows":[["NVDA","28%","+9,1%"]]} — rankings/listas. Máx 4 columnas × 5 filas; valores numéricos con signo (+/−) para que se coloreen.
+· {"type":"actions","items":[{"label":"Crear alerta NVDA −10%","to":"/alertas?new=NVDA"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER), /analisis, /posiciones, /operaciones, /fundamentals, /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app.
+
+RECETA — "¿cómo viene/está mi portfolio?" (la pregunta más común, cuidala): prosa de 3-4 oraciones — estado general, qué lo explica, y LO más notable (riesgo, concentración o racha; UNO, no una lista). stats = el retorno del período, el versus benchmark (si summary.benchmarks está) y el dato saliente. blocks ideales: "compare" con los números REALES de summary.benchmarks (tu cartera vs S&P 500 e inflación) + "alloc" con la composición, o "actions" si detectaste algo accionable. Las posiciones NUNCA una por una en la prosa — para eso está la tabla."""
 
 
 # Prompt FREE — version stripped del coach. Diseño deliberado: descriptivo,
@@ -13027,7 +13344,7 @@ ESTILO — REGLAS HARD
 - Español rioplatense (vos, tenés). Profesional, sin familiaridad falsa.
 - Sin emojis, sin asteriscos, sin signos de exclamación.
 - 1 o 2 ORACIONES MÁXIMO por respuesta. Una sola idea. Sin párrafos múltiples, sin secciones, sin listas, sin bullets.
-- CERO markdown. Sin **bold**, sin guiones de listas, sin headers con #. La UI muestra el texto plano.
+- CERO markdown. Sin **bold**, sin guiones de listas, sin headers con #. La UI muestra el texto plano. ÚNICA EXCEPCIÓN: la línea ---RENDI--- del bloque final para la UI — es un marcador técnico, no markdown, y va siempre que la respuesta sea de análisis.
 - Describir, NO interpretar. Decís "el portfolio bajó 8%", no "el retroceso del 8% sugiere...". La interpretación es del plan Pro.
 
 CONTEXTO ARGENTINO MÍNIMO
@@ -13093,7 +13410,13 @@ Cierre obligatorio cuando presentás scorecard en Free/Plus:
 "Para entender qué significan estos números para tu cartera específicamente y qué considerar antes de decidir, el plan Pro hace ese análisis."
 
 DIFERENCIACIÓN CON PRO
-El plan Pro recibe respuestas con interpretación, causalidad, comparaciones y profundidad analítica. Vos (Free/Plus) das el dato puro, brevísimo. Es deliberado — no inventes interpretación para "ayudar"."""
+El plan Pro recibe respuestas con interpretación, causalidad, comparaciones y profundidad analítica. Vos (Free/Plus) das el dato puro, brevísimo. Es deliberado — no inventes interpretación para "ayudar".
+
+BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
+Al FINAL de cada respuesta de análisis, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado:
+{"verdict":"2-3 palabras","tone":"pos|warn|neg|neutral","headline":"el dato principal en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor","t":"pos|warn|neg|neutral"}],"sources":["ej: 12 posiciones"]}
+Reglas: stats máx 3 con números REALES del snapshot (nunca inventados); sources máx 2; NO incluyas "followups" (este plan no tiene chat libre); la prosa va antes y no menciona el bloque; omitilo en saludos y en el flujo de registro de operaciones.
+El JSON también acepta "blocks" (opcional, máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"NVDA","pct":28},...]} (composición, máx 6, pct reales) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"...","to":"/alertas?new=TICKER"}]} (solo rutas internas /alertas /analisis /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). Usá el que mejor muestre el dato — no los fuerces."""
 
 
 # Strip markdown que el modelo a veces inyecta a pesar del prompt. Aplicamos
@@ -17588,14 +17911,12 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
 
         conn = get_db()
         try:
-            # Sembrar (o refrescar) por cada ticker — sigue el mismo patrón que
-            # /api/news/portfolio: query "{TICKER} stock" (en/es según AR/US).
+            # Sembrar (o refrescar) por cada ticker — mismo patrón que
+            # /api/news/portfolio: español para todos ("{TICKER} acciones"),
+            # con fallback a inglés dentro de _refresh_news_query.
             specs = []
             for ticker in valid:
-                is_ar = (ticker in POPULAR_TICKERS_AR_ADR) or (ticker in AR_BONDS_DATA912)
-                lang = "es" if is_ar else "en"
-                q = f"{ticker} {'acciones' if is_ar else 'stock'}"
-                specs.append((q, lang, 'portfolio'))
+                specs.append((f"{ticker} acciones", "es", 'portfolio'))
 
             try:
                 # max_wait=4s: este tool corre dentro del chat IA (timeout SDK
@@ -17940,7 +18261,7 @@ def _ai_cache_invalidate(uid: int) -> None:
 
 
 @app.post("/api/ai/analyze")
-def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_current_user)):
+def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effective_user)):
     """Análisis contextual estructurado de una pantalla o sub-componente.
 
     El `screen` usa notación con puntos para sub-topics:
@@ -18137,7 +18458,7 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_curre
 # ─── Fundamentals endpoints ────────────────────────────────────────────────
 
 @app.get("/api/fundamentals/{ticker}")
-def get_fundamentals(ticker: str, uid: int = Depends(get_current_user)):
+def get_fundamentals(ticker: str, uid: int = Depends(get_effective_user)):
     """Scorecard de fundamentales de una acción ("Calidad de cartera").
 
     Auth requerida, TODOS los tiers, SIN cupo (data de yfinance cacheada).
@@ -18161,7 +18482,7 @@ def get_fundamentals(ticker: str, uid: int = Depends(get_current_user)):
 
 @app.post("/api/fundamentals/ai-summary")
 def fundamentals_ai_summary(data: FundamentalsAISummaryIn, request: Request,
-                            uid: int = Depends(get_current_user)):
+                            uid: int = Depends(get_effective_user)):
     """Resumen IA ("Lo mejor" / "Ojo con esto") de los fundamentales de una acción.
 
     Reusa EXACTAMENTE la infra de /api/ai/analyze: tier (quota.get_tier),
@@ -18318,7 +18639,7 @@ _ALLOWED_PLAN_EVENTS = {
 
 
 @app.post("/api/plan/track", status_code=204)
-def plan_track(data: PlanEventIn, uid: int = Depends(get_current_user)):
+def plan_track(data: PlanEventIn, uid: int = Depends(get_effective_user)):
     """Registra un evento de paywall para analytics de conversión.
 
     Whitelist de event_names para evitar spam. Solo eventos clave del flow
@@ -18349,23 +18670,40 @@ def plan_track(data: PlanEventIn, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/plan/features")
-def plan_features(uid: int = Depends(get_current_user)):
+def plan_features(
+    request: Request,
+    uid: int = Depends(get_effective_user),
+):
     """Feature flags + límites del tier del user para el frontend.
 
     El frontend usa esta info en `usePlanFeatures()` para gatear UI:
     blurear secciones bloqueadas, mostrar contadores, modal de upgrade.
 
     Shape (estable):
-      tier: 'free' | 'pro' | 'admin'
+      tier: 'free' | 'plus' | 'pro' | 'advisor' | 'admin'
       limits.brokers_max / brokers_current / brokers_can_create / brokers_grandfather
       limits.insights_diagnostic_visible
       limits.behavioral_tags_visible
       access.<feature_id>: bool
+      client_ctx: bool — True si el asesor está mirando la cuenta de un cliente
+
+    LENTE PRO del Plan Asesor: si hay contexto de cliente activo (uid resuelto
+    ≠ uid autenticado), las features se calculan sobre la cuenta del CLIENTE
+    pero con tier forzado 'pro' — el asesor ve todo desbloqueado porque lo
+    paga su plan, aunque el cliente sea Free. El cliente, al entrar él mismo
+    (sin header), recibe su tier real de siempre.
     """
     from ai import plan
     conn = get_db()
     try:
-        return plan.get_plan_features(conn, uid)
+        # El resolver ya autenticó y stasheó el uid real — sin 2da pasada de JWT.
+        auth_uid = getattr(request.state, "rendi_auth_uid", uid)
+        in_client_ctx = uid != auth_uid
+        out = plan.get_plan_features(
+            conn, uid, tier_override="pro" if in_client_ctx else None
+        )
+        out["client_ctx"] = in_client_ctx
+        return out
     finally:
         conn.close()
 
@@ -18385,7 +18723,7 @@ class SubscribeIn(BaseModel):
 
 
 @app.post("/api/billing/subscribe")
-def billing_subscribe(data: SubscribeIn, request: Request, uid: int = Depends(get_current_user)):
+def billing_subscribe(data: SubscribeIn, request: Request, uid: int = Depends(get_effective_user)):
     """Crea un payment link en Rebill para que el user pague la suscripción.
 
     Devuelve `init_point` (URL del checkout Rebill). El frontend redirige al
@@ -18514,7 +18852,7 @@ class ChangePlanIn(BaseModel):
 def billing_change_plan(
     data: ChangePlanIn,
     request: Request,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Cambia el plan del user manteniendo el crédito remanente.
 
@@ -18631,7 +18969,7 @@ def billing_change_plan(
 def billing_preview_change_plan(
     plan: str,
     period: str,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Devuelve lo que pasaría si el user cambia a (plan, period) sin
     ejecutarlo. Usado por el frontend para confirmar el cambio mostrando
@@ -19102,7 +19440,7 @@ def _rebill_record_payment(conn, uid: int, sub_id: str, payload: dict):
 
 
 @app.post("/api/billing/cancel")
-def billing_cancel(request: Request, uid: int = Depends(get_current_user)):
+def billing_cancel(request: Request, uid: int = Depends(get_effective_user)):
     """Cancela la suscripción Pro del user.
 
     NOTA: NO devolvemos el dinero del período actual. El user mantiene
@@ -19171,7 +19509,7 @@ def billing_cancel(request: Request, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/billing/sync")
-def billing_sync(uid: int = Depends(get_current_user)):
+def billing_sync(uid: int = Depends(get_effective_user)):
     """Pull-based confirmation: pregunta a MP el estado actual de la sub
     del user y actualiza nuestra DB acordemente.
 
@@ -19227,7 +19565,7 @@ def billing_sync(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/billing/status")
-def billing_status(uid: int = Depends(get_current_user)):
+def billing_status(uid: int = Depends(get_effective_user)):
     """Estado actual de la suscripción del user. Usado por /planes para
     mostrar 'Próxima renovación: X' o 'Cancelada · expira X'."""
     conn = get_db()
@@ -19538,7 +19876,7 @@ def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
 
 
 @app.get("/api/ai/usage")
-def ai_usage(uid: int = Depends(get_current_user)):
+def ai_usage(uid: int = Depends(get_effective_user)):
     """Usage de la SEMANA en curso (ISO week, lunes-domingo) — el frontend
     lo usa para mostrar 'X/6 esta semana' en Free, 'X/60' en Pro, 'Admin ·
     sin tope' para admin, etc."""
@@ -19551,7 +19889,7 @@ def ai_usage(uid: int = Depends(get_current_user)):
 
 
 @app.delete("/api/ai/cache/{screen}")
-def ai_invalidate_cache(screen: str, uid: int = Depends(get_current_user)):
+def ai_invalidate_cache(screen: str, uid: int = Depends(get_effective_user)):
     """Borra el cache de un screen para este user. Lo llama el frontend
     cuando aprieta 'Refrescar' en el drawer. Tambien lo llaman los
     endpoints de mutación (POST /positions, /operations, etc.) en futuro."""
@@ -19671,6 +20009,19 @@ _HAIKU_PRICE = {
     "cache_read": 0.10,    # cache_read
     "output": 5.0,
 }
+
+
+def _warn_if_truncated(resp_obj, tier: str, uid: int, stage: str) -> None:
+    """Respuesta cortada por max_tokens → la prosa se comió el presupuesto y el
+    bloque ---RENDI--- del final no llegó (bug reportado 2026-07: el chat se
+    cortaba a mitad de palabra y las tarjetas no aparecían nunca). Este log
+    permite monitorear en Railway si el budget de prosa del prompt alcanza o
+    hay que volver a subir max_tokens."""
+    try:
+        if getattr(resp_obj, "stop_reason", None) == "max_tokens":
+            log.warning("ai_chat respuesta TRUNCADA por max_tokens tier=%s uid=%s stage=%s", tier, uid, stage)
+    except Exception:
+        pass
 
 
 def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> int:
@@ -19918,7 +20269,7 @@ def _chat_quota_429(tier: str, usage: dict) -> HTTPException:
 
 
 @app.post("/api/diagnostics/dismiss")
-def diagnostics_dismiss(request: Request, uid: int = Depends(get_current_user)):
+def diagnostics_dismiss(request: Request, uid: int = Depends(get_effective_user)):
     """Registra un "No me interesa" del diagnóstico contra la cuota semanal.
 
     Free: 2/sem (rolling 7d) → al pasarse, 429 con upgrade payload a Plus. El
@@ -19969,7 +20320,7 @@ def diagnostics_dismiss(request: Request, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/ai/chat")
-def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_user)):
+def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_user)):
     """Chat con el coach IA — tier-aware.
 
     Free/Plus:
@@ -20031,7 +20382,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     finally:
         conn.close()
 
-    is_premium = tier in ("pro", "admin")
+    is_premium = tier in ("pro", "advisor", "admin")  # advisor = chat libre (paga 4-8x un Pro)
     # M20: Free/Plus reciben solo las tools sobre sus propios datos + los chips
     # de onboarding; las de investigación de mercado externa quedan Pro-only.
     # allowed_names = enforcement en EJECUCIÓN (el parámetro tools es advisory:
@@ -20084,11 +20435,18 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
             )
 
     base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
-    # Pro chat max_tokens bajado de 1000 → 800 tras audit #3 (cost control).
-    # 800 tokens output mantiene respuestas profundas (~600 palabras) y baja
-    # output cost del worst case ~20%.
-    max_tokens = 800 if is_premium else 300
-    max_tokens_fallback = 600 if is_premium else 250
+    # Pro chat max_tokens: 1000 → 800 (audit #3 cost control) → 1200 (2026-07,
+    # bug reportado por Nico): con 800, las preguntas amplias ("¿cómo está mi
+    # portfolio?") generaban prosa larga que se comía TODO el presupuesto → la
+    # respuesta se cortaba a mitad de palabra y el bloque ---RENDI--- del FINAL
+    # no entraba NUNCA. 1200 da headroom (+400 out ≈ +$0.002/resp worst case);
+    # el budget de prosa del prompt (ESTILO: máx ~200 palabras) es la primera
+    # línea de defensa, esto es la red.
+    # Free 300 → 500 (2026-07): el bloque estructurado ---RENDI--- (~150-200
+    # tokens) no entraba en 300 sin truncar la respuesta. Costo extra máximo
+    # ~$0.001/respuesta × 3 chat/sem = ~1 centavo/mes por Free activo.
+    max_tokens = 1200 if is_premium else 500
+    max_tokens_fallback = 800 if is_premium else 400
 
     # Modo del bloque de perfil: Pro/Admin → causal (infiere causas plausibles).
     # Free/Plus → descriptive (solo presenta el dato, no interpreta).
@@ -20138,7 +20496,9 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
 
 VALUACIÓN (crítico para no dar cifras mal): cada position trae value_usd (valor de mercado HOY), invested_usd (costo) y weight_pct (% de la cartera), TODO en dólares al tipo MEP (la cripto de exchange va al spot). Para "¿cuál es mi posición más grande?", "¿cuánto vale mi cartera?" o concentración, usá value_usd / summary.total_value_usd y weight_pct — NUNCA el 'invested' crudo ni sumes montos en pesos con montos en dólares. summary.tc_mep y summary.tc_blue son las cotizaciones; el blue es solo referencia, no la base de valuación.
 
-BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (inflación AR, S&P 500 total return, dólar blue, Merval) y los del usuario (USD y pesos-aprox), YA calculados — usá esos números tal cual y respetá las reglas de comparación de su _note (USD contra USD, pesos contra pesos). Si summary.benchmarks NO está o un campo es null, decí con franqueza que no tenés ese dato — NUNCA inventes el retorno de un índice."""
+BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (inflación AR, S&P 500 total return, dólar blue, Merval) y los del usuario (USD y pesos-aprox), YA calculados — usá esos números tal cual y respetá las reglas de comparación de su _note (USD contra USD, pesos contra pesos). Si summary.benchmarks NO está o un campo es null, decí con franqueza que no tenés ese dato — NUNCA inventes el retorno de un índice.
+
+RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: prosa CORTA (máx ~120 palabras: la respuesta directa + tu lectura) y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Omitilo SOLO en saludos, aclaraciones breves y todo el flujo de registro de operaciones (confirmaciones, resultado, undo)."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
@@ -20170,6 +20530,19 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
     # (chat conversacional real).
     if is_premium:
         incoming = [m.model_dump() for m in data.messages]
+        # Cost cap de historial (2026-07): la conversación ahora PERSISTE en el
+        # cliente (no se borra al navegar) — al LLM viaja SOLO la ventana final
+        # para que el input por turno no crezca con chats largos. El cliente ya
+        # manda recortado (utils/chatSession.sendWindow); esto es la verdad
+        # server-side. La ventana arranca en un mensaje 'user' (requisito de la
+        # API de Anthropic + ahí se inyecta el contexto del snapshot).
+        _MAX_HISTORY = 12
+        if len(incoming) > _MAX_HISTORY:
+            incoming = incoming[-_MAX_HISTORY:]
+        while incoming and incoming[0].get("role") != "user":
+            incoming.pop(0)
+        if not incoming:
+            incoming = [{"role": "user", "content": last_user_msg}]
     else:
         # Free/Plus: one-shot. Mandamos al LLM SOLO el mensaje validado.
         incoming = [{"role": "user", "content": last_user_msg}]
@@ -20370,6 +20743,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                         _ep = _pending_summary_epilogue(uid, state["synth_text"])
                         if _ep:
                             yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
+                        _warn_if_truncated(resp, tier, uid, "stream_final")
                         cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final")
                         _record_chat_quota(uid, cost_cents)
                         _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
@@ -20410,6 +20784,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                 _ep = _pending_summary_epilogue(uid, state["synth_text"])
                 if _ep:
                     yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
+                _warn_if_truncated(resp, tier, uid, "stream_fallback")
                 cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback")
                 _record_chat_quota(uid, cost_cents)
                 _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
@@ -20491,6 +20866,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                 # cache_read cae a 0, el costo se multiplica por ~10× y solo
                 # nos enteramos por la factura mensual de Anthropic).
                 usage_obj = getattr(response, "usage", None)
+                _warn_if_truncated(response, tier, uid, "json_final")
                 cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "final")
                 # Registrar consumo de cuota (solo en éxito — si falló no descontamos).
                 try:
@@ -20542,6 +20918,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
         )
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
         usage_obj = getattr(response, "usage", None)
+        _warn_if_truncated(response, tier, uid, "json_fallback")
         cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "fallback")
         try:
             conn2 = get_db()
@@ -20773,7 +21150,7 @@ class RecommendationIn(BaseModel):
 def feedback_recommendation(
     data: RecommendationIn,
     request: Request,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Recibe una recomendación del user y la envía por mail a
     recomendaciones@rendi.finance via Resend.
@@ -20877,7 +21254,7 @@ class AIRememberIn(BaseModel):
 def ai_remember(
     data: AIRememberIn,
     request: Request,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Persiste un hecho del user para que el bot lo recuerde en chats futuros.
 
@@ -20912,7 +21289,7 @@ def ai_remember(
 @app.get("/api/ai/facts")
 def ai_list_facts(
     include_inactive: bool = False,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Lista facts del user. Por default solo activos (los que se inyectan).
     `include_inactive=true` trae todo para la UI de gestión."""
@@ -20941,7 +21318,7 @@ def ai_list_facts(
 def ai_delete_fact(
     fact_id: int,
     request: Request,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Soft-delete (toggle is_active=0). No borra la fila — mantiene historial
     de auditoría. Si el user lo vuelve a querer, lo reactiva (futuro endpoint).
@@ -21003,7 +21380,7 @@ _import_helpers._recalc_pnl_realized_from_ops = _recalc_pnl_realized_from_ops
 
 
 @app.get("/api/imports/template")
-def import_template(format: str = "rendi_generic", uid: int = Depends(get_current_user)):
+def import_template(format: str = "rendi_generic", uid: int = Depends(get_effective_user)):
     """Devuelve el CSV de ejemplo del formato pedido."""
     parser = _get_parser(format)
     if parser is None:
@@ -21019,13 +21396,13 @@ def import_template(format: str = "rendi_generic", uid: int = Depends(get_curren
 
 
 @app.get("/api/imports/parsers")
-def import_parsers(uid: int = Depends(get_current_user)):
+def import_parsers(uid: int = Depends(get_effective_user)):
     """Lista los parsers disponibles + cuáles están soportados (para el dropdown)."""
     return _import_pipeline.parser_options()
 
 
 @app.get("/api/imports/parsers/grouped")
-def import_parsers_grouped(uid: int = Depends(get_current_user)):
+def import_parsers_grouped(uid: int = Depends(get_effective_user)):
     """Lista los parsers agrupados por plataforma (dropdown a 2 niveles)."""
     return _import_pipeline.parser_options_grouped()
 
@@ -21033,7 +21410,7 @@ def import_parsers_grouped(uid: int = Depends(get_current_user)):
 @app.post("/api/imports/inspect")
 async def import_inspect(
     file: UploadFile = File(...),
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Lee headers y primeras filas del CSV. Devuelve también un mapping
     sugerido (auto-detect) y la lista de campos internos de Rendi para
@@ -21065,7 +21442,7 @@ async def import_inspect(
 @app.post("/api/imports/classify-tenencia")
 async def import_classify_tenencia(
     files: List[UploadFile] = File(...),
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Dice cuál de los archivos subidos es la FOTO de tenencia (y su formato),
     para que el wizard la aparte de los Movimientos en el upload combinado. Pensado
@@ -21188,7 +21565,7 @@ async def import_tenencia_preview(
     file: UploadFile = File(...),
     broker: str = Form(...),
     format: Optional[str] = Form(None),
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """FOTO de posiciones actuales = Tenencia valorizada (PDF) de Bull Market, o
     Estado de Cuenta (Excel) de PPI cuando format='ppi'. Reconcilia contra lo que
@@ -21624,7 +22001,7 @@ async def import_preview(
     format: Optional[str] = Form(None),
     mapping: Optional[str] = Form(None),                   # JSON: {"columns":{}, "defaults":{}}
     route_by_currency: Optional[str] = Form(None),         # "1"/"true" → routing per-row
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Sube uno o más CSVs y genera el preview unificado. Persiste un batch en
     estado 'preview'. Devuelve session_id (= batch_id) para usar en /confirm.
@@ -21727,7 +22104,7 @@ class ImportConfirmIn(BaseModel):
 
 
 @app.post("/api/imports/confirm")
-def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
+def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)):
     """Confirma el import: aplica los side-effects y marca el batch como 'confirmed'.
     `skip_row_indices` permite omitir filas específicas que el usuario marcó en
     el preview como problemáticas, sin re-subir el archivo.
@@ -22145,7 +22522,7 @@ class WallbitConnectIn(BaseModel):
 
 
 @app.get("/api/wallbit/status")
-def wallbit_status(uid: int = Depends(get_current_user)):
+def wallbit_status(uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         row = conn.execute(
@@ -22165,7 +22542,7 @@ def wallbit_status(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/wallbit/connect")
-def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends(get_current_user)):
+def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends(get_effective_user)):
     """Conecta Wallbit: valida la key read-only, la guarda cifrada y hace el sync inicial."""
     _check_rate_limit(request, max_calls=6, window_seconds=60, suffix=f"wallbit_connect:{uid}")
     api_key = (data.api_key or "").strip()
@@ -22205,7 +22582,7 @@ def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends
 
 
 @app.post("/api/wallbit/sync")
-def wallbit_sync_endpoint(request: Request, uid: int = Depends(get_current_user)):
+def wallbit_sync_endpoint(request: Request, uid: int = Depends(get_effective_user)):
     """Re-sincroniza los trades de Wallbit (incremental)."""
     _check_rate_limit(request, max_calls=10, window_seconds=60, suffix=f"wallbit_sync:{uid}")
     conn = get_db()
@@ -22237,7 +22614,7 @@ def wallbit_sync_endpoint(request: Request, uid: int = Depends(get_current_user)
 
 
 @app.delete("/api/wallbit/disconnect")
-def wallbit_disconnect(uid: int = Depends(get_current_user)):
+def wallbit_disconnect(uid: int = Depends(get_effective_user)):
     """Desconecta Wallbit (borra la credencial). Las posiciones ya importadas quedan
     (el usuario puede borrar el broker aparte si quiere)."""
     conn = get_db()
@@ -22250,7 +22627,7 @@ def wallbit_disconnect(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/imports")
-def import_list(uid: int = Depends(get_current_user)):
+def import_list(uid: int = Depends(get_effective_user)):
     """Lista los batches confirmados / revertidos del usuario."""
     conn = get_db()
     try:
@@ -22260,7 +22637,7 @@ def import_list(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/imports/{batch_id}")
-def import_detail(batch_id: str, uid: int = Depends(get_current_user)):
+def import_detail(batch_id: str, uid: int = Depends(get_effective_user)):
     """Detalle de un batch — incluye filas válidas y errores para auditoría."""
     conn = get_db()
     try:
@@ -22288,7 +22665,7 @@ class ImportMappingIn(BaseModel):
 
 
 @app.get("/api/imports/mappings")
-def import_mappings_list(uid: int = Depends(get_current_user)):
+def import_mappings_list(uid: int = Depends(get_effective_user)):
     """Lista los mapping templates guardados del usuario."""
     conn = get_db()
     try:
@@ -22307,7 +22684,7 @@ def import_mappings_list(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/imports/mappings")
-def import_mappings_save(data: ImportMappingIn, uid: int = Depends(get_current_user)):
+def import_mappings_save(data: ImportMappingIn, uid: int = Depends(get_effective_user)):
     """Guarda (o sobrescribe si ya existe el nombre) un mapping template."""
     conn = get_db()
     try:
@@ -22330,7 +22707,7 @@ def import_mappings_save(data: ImportMappingIn, uid: int = Depends(get_current_u
 
 
 @app.delete("/api/imports/mappings/{mid}")
-def import_mappings_delete(mid: int, uid: int = Depends(get_current_user)):
+def import_mappings_delete(mid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
@@ -22341,7 +22718,7 @@ def import_mappings_delete(mid: int, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/imports/recalc-pnl")
-def import_recalc_pnl(uid: int = Depends(get_current_user)):
+def import_recalc_pnl(uid: int = Depends(get_effective_user)):
     """Recalcula `monthly_entries.pnl_realized` desde la tabla `operations`.
 
     Útil cuando cycles previos de import/revert con bugs dejaron drift en el
@@ -22363,7 +22740,7 @@ def import_recalc_pnl(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/imports/wipe-broker")
-def import_wipe_broker(broker: str, uid: int = Depends(get_current_user)):
+def import_wipe_broker(broker: str, uid: int = Depends(get_effective_user)):
     """Limpia TODOS los datos de un broker del usuario actual: posiciones,
     operaciones y movimientos mensuales, y marca sus imports como revertidos.
 
@@ -22423,7 +22800,7 @@ def _positions_in_section(conn, uid: int, cat: str, ccy: str):
 
 
 @app.get("/api/sections/archived")
-def sections_archived(uid: int = Depends(get_current_user)):
+def sections_archived(uid: int = Depends(get_effective_user)):
     """Lista las secciones archivadas (para el botón de restaurar)."""
     conn = get_db()
     try:
@@ -22437,7 +22814,7 @@ def sections_archived(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/sections/archive")
-def sections_archive(data: SectionKeyIn, uid: int = Depends(get_current_user)):
+def sections_archive(data: SectionKeyIn, uid: int = Depends(get_effective_user)):
     """Archiva (borrado REVERSIBLE) todas las posiciones de una sección de renta
     fija — ej. 'Bonos USD'. Serializa a JSON, las saca de `positions` (así salen de
     toda la valuación) y guarda el blob para restaurar. NO toca el broker, ni las
@@ -22476,7 +22853,7 @@ def sections_archive(data: SectionKeyIn, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/sections/restore")
-def sections_restore(data: SectionRestoreIn, uid: int = Depends(get_current_user)):
+def sections_restore(data: SectionRestoreIn, uid: int = Depends(get_effective_user)):
     """Restaura una sección archivada: re-inserta las posiciones (con su id original,
     para no romper los links de revert) y borra el registro de archivo."""
     import json as _json
@@ -22513,7 +22890,7 @@ def sections_restore(data: SectionRestoreIn, uid: int = Depends(get_current_user
 
 
 @app.post("/api/imports/{batch_id}/revert")
-def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_current_user)):
+def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_effective_user)):
     """Reversa todos los side-effects de un batch confirmado.
     En modo safe (default): falla si el batch incluye SELL/FX/FUTURES_PNL.
     En modo nuclear (`?nuclear=1`): hace best-effort de SELL/FX/FUTURES_PNL,
@@ -22553,7 +22930,7 @@ def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_curren
 
 
 @app.post("/api/imports/{batch_id}/redo")
-def import_redo(batch_id: str, uid: int = Depends(get_current_user)):
+def import_redo(batch_id: str, uid: int = Depends(get_effective_user)):
     """Editar y rehacer: revierte un batch confirmado (en modo nuclear) y
     re-corre el preview con los mismos datos. Devuelve el preview payload
     nuevo para que el frontend abra el wizard ya en la etapa de preview.
@@ -23346,7 +23723,7 @@ def _live_valuation_rate(conn, uid: int) -> float:
 def reports_timeline(
     broker: str = "global",
     months: int = 12,
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Timeline cronológica condensada — últimos N meses, con semanas anidadas.
 
@@ -23406,7 +23783,7 @@ def reports_timeline(
 def reports_period_detail(
     period_type: str, period_key: str,
     broker: str = "global",
-    uid: int = Depends(get_current_user),
+    uid: int = Depends(get_effective_user),
 ):
     """Detalle de un período específico — útil para deep-link o expandir un
     week/day sin pegarle a la timeline completa."""
@@ -23494,13 +23871,13 @@ from home.briefing import build_personal_cards
 
 
 @app.get("/api/home/indices")
-def home_indices(uid: int = Depends(get_current_user)):
+def home_indices(uid: int = Depends(get_effective_user)):
     """Strip superior: S&P, Nasdaq, Merval, BTC, ETH, Oro."""
     return {"items": get_indices_strip()}
 
 
 @app.get("/api/home/heatmap")
-def home_heatmap(market: str = "sp500", uid: int = Depends(get_current_user)):
+def home_heatmap(market: str = "sp500", uid: int = Depends(get_effective_user)):
     """Heatmap del mercado. V1.5 soporta sp500 / merval / crypto."""
     if market not in MARKETS:
         raise HTTPException(400, f"Mercado no soportado: {market}")
@@ -23508,7 +23885,7 @@ def home_heatmap(market: str = "sp500", uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/home/movers")
-def home_movers(market: str = "sp500", uid: int = Depends(get_current_user)):
+def home_movers(market: str = "sp500", uid: int = Depends(get_effective_user)):
     """Top 5 gainers + top 5 losers del día."""
     if market not in MARKETS:
         raise HTTPException(400, f"Mercado no soportado: {market}")
@@ -23531,7 +23908,7 @@ class WatchlistAddIn(BaseModel):
 
 
 @app.get("/api/watchlist")
-def watchlist_list(uid: int = Depends(get_current_user)):
+def watchlist_list(uid: int = Depends(get_effective_user)):
     """Devuelve los tickers en watchlist + quote actual (price + change_pct)."""
     conn = get_db()
     try:
@@ -23556,7 +23933,7 @@ def watchlist_list(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/watchlist")
-def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_current_user)):
+def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     """Agrega un símbolo a la watchlist. Si ya existe, devuelve 200 silenciosamente
     (idempotente para el flow "Agregar a watchlist" desde la UI)."""
     conn = get_db()
@@ -23573,7 +23950,7 @@ def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_current_user)):
 
 
 @app.delete("/api/watchlist/{symbol}")
-def watchlist_remove(symbol: str, uid: int = Depends(get_current_user)):
+def watchlist_remove(symbol: str, uid: int = Depends(get_effective_user)):
     """Borra un símbolo de la watchlist."""
     sym = symbol.strip().upper()
     conn = get_db()
@@ -23670,7 +24047,7 @@ def _alert_row_to_dict(r) -> dict:
 
 
 @app.get("/api/alerts")
-def alerts_list(uid: int = Depends(get_current_user)):
+def alerts_list(uid: int = Depends(get_effective_user)):
     """Alertas del user + los últimos disparos (feed in-app)."""
     conn = get_db()
     try:
@@ -23691,7 +24068,7 @@ def alerts_list(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/alerts")
-def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
+def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
     (pct_move = Plus+). Arma el edge-trigger según el precio actual."""
     import alerts_engine as _ae
@@ -23713,6 +24090,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
         currency = data.currency
         up_pct = down_pct = None
         threshold = data.threshold
+        baseline = "prev_close"
         if data.kind == "price_target":
             if data.scope != "ticker" or not symbol:
                 raise HTTPException(400, "Una alerta de precio necesita un ticker.")
@@ -23727,6 +24105,9 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
             if data.scope == "holdings":
                 symbol = None
+                baseline = "prev_close"   # toda la cartera = solo "en el día"
+            else:
+                baseline = "set_price" if data.baseline == "set_price" else "prev_close"
             up_pct = data.up_pct if (data.up_pct and data.up_pct > 0) else None
             down_pct = data.down_pct if (data.down_pct and data.down_pct > 0) else None
             if up_pct is None and down_pct is None:
@@ -23743,6 +24124,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
         # puede fallar transitoriamente y el símbolo ser válido).
         armed = 1
         current_price = None
+        anchor_price = None
         resolved = True
         if symbol:  # ticker-scope (price_target siempre; pct_move de un activo)
             current_price = _ae.price_for_alert(symbol)
@@ -23751,28 +24133,32 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
                 met = _ae.condition_met("price_target", data.direction, threshold,
                                         current_price, None)
                 armed = 0 if met else 1
+            elif baseline == "set_price":
+                anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
         cur = conn.execute(
             """INSERT INTO alerts
                (user_id, kind, symbol, scope, direction, threshold, up_pct, down_pct,
-                currency, baseline, channel, repeat, cooldown_min, armed, active, note)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                currency, baseline, anchor_price, channel, repeat, cooldown_min, armed, active, note)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
             (uid, data.kind, symbol, data.scope, data.direction, threshold, up_pct, down_pct,
-             currency, data.baseline, data.channel, data.repeat, data.cooldown_min,
+             currency, baseline, anchor_price, data.channel, data.repeat, data.cooldown_min,
              armed, data.note),
         )
         aid = cur.lastrowid
         conn.commit()
         return {"ok": True, "id": aid, "armed": bool(armed),
-                "current_price": current_price, "resolved": resolved}
+                "current_price": current_price, "resolved": resolved,
+                "anchor_price": anchor_price, "baseline": baseline}
     finally:
         conn.close()
 
 
 @app.patch("/api/alerts/{alert_id}")
-def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_current_user)):
+def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_effective_user)):
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
-    re-arma el edge-trigger."""
+    re-arma el edge-trigger (y re-ancla si es 'Desde ahora')."""
+    import alerts_engine as _ae
     conn = get_db()
     try:
         row = conn.execute(
@@ -23793,6 +24179,13 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_cur
             sets.append("active=?"); params.append(1 if data.active else 0)
             # Reactivar o editar → re-armar para que vuelva a poder disparar.
             sets.append("armed=1")
+            # Reactivar una alerta "Desde ahora" → re-anclar al precio actual, así el
+            # % se cuenta desde acá y no re-dispara sobre el movimiento que ya pasó.
+            if (data.active and row["kind"] == "pct_move"
+                    and (row["baseline"] or "") == "set_price" and row["symbol"]):
+                _px = _ae.price_for_alert(row["symbol"])
+                if _px is not None:
+                    sets.append("anchor_price=?"); params.append(_px)
         elif data.threshold is not None or data.direction is not None:
             sets.append("armed=1")
         if not sets:
@@ -23806,7 +24199,7 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_cur
 
 
 @app.delete("/api/alerts/{alert_id}")
-def alerts_delete(alert_id: int, uid: int = Depends(get_current_user)):
+def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
     """Borra una alerta (y sus eventos)."""
     conn = get_db()
     try:
@@ -23814,13 +24207,14 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_current_user)):
             conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
             conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
                          (alert_id, uid))
+            conn.execute("DELETE FROM alert_symbol_state WHERE alert_id=?", (alert_id,))
         return {"ok": True}
     finally:
         conn.close()
 
 
 @app.post("/api/alerts/events/seen")
-def alerts_events_seen(uid: int = Depends(get_current_user)):
+def alerts_events_seen(uid: int = Depends(get_effective_user)):
     """Marca los eventos de alerta como vistos (apaga el badge in-app)."""
     conn = get_db()
     try:
@@ -23939,7 +24333,7 @@ def push_vapid_public_key():
 
 
 @app.post("/api/push/subscribe")
-def push_subscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
+def push_subscribe(sub: PushSubIn, uid: int = Depends(get_effective_user)):
     """Guarda la subscripción push del device del user.
     Idempotente: si ya existe el endpoint, actualiza los datos."""
     conn = get_db()
@@ -23962,7 +24356,7 @@ def push_subscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
 
 
 @app.delete("/api/push/subscribe")
-def push_unsubscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
+def push_unsubscribe(sub: PushSubIn, uid: int = Depends(get_effective_user)):
     """Borra la subscripción push de este device. El frontend llama acá cuando
     el user desactiva las notificaciones."""
     conn = get_db()
@@ -23978,7 +24372,7 @@ def push_unsubscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/push/status")
-def push_status(uid: int = Depends(get_current_user)):
+def push_status(uid: int = Depends(get_effective_user)):
     """Cuenta cuántas subs tiene este user. Útil para que el UI sepa si está
     suscrito en al menos un device."""
     conn = get_db()
@@ -24044,7 +24438,7 @@ def _send_push_to_user(uid: int, payload: dict) -> int:
 
 
 @app.post("/api/push/test")
-def push_test(uid: int = Depends(get_current_user)):
+def push_test(uid: int = Depends(get_effective_user)):
     """Manda un push de prueba al user actual. Sirve para verificar que la
     config end-to-end funciona (VAPID + SW + permisos del browser)."""
     sent = _send_push_to_user(uid, {
@@ -24057,7 +24451,7 @@ def push_test(uid: int = Depends(get_current_user)):
 
 
 @app.get("/api/home/personal")
-def home_personal(uid: int = Depends(get_current_user)):
+def home_personal(uid: int = Depends(get_effective_user)):
     """Cards "Lo que te afecta" — holdings que se mueven + earnings próximos.
 
     Reusa quotes del heatmap (cacheadas) + lista de eventos del portfolio.
@@ -24199,3 +24593,1071 @@ def public_stats():
     _public_stats_cache["data"] = data
     _public_stats_cache["ts"] = now
     return data
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PLAN ASESOR (F1/F2) — gestión de clientes + operación grupal
+# ═══════════════════════════════════════════════════════════════════════════
+# Todos los endpoints usan get_current_user (identidad REAL del asesor, nunca
+# el contexto de cliente — /api/advisor está en los prefijos exentos) y gatean
+# por _require_advisor (tier 'advisor' o admin).
+#
+# Modelo managed (F1): el asesor crea "clientes shadow" — rows reales en users
+# con managed_by=asesor, email sintético, password random y approved=0 (no
+# pueden loguear hasta reclamar la cuenta en F4). Toda la data del cliente
+# cuelga de su uid como cualquier usuario → el resto de la app funciona igual.
+
+_SHADOW_EMAIL_DOMAIN = "shadow.rendi.internal"  # jamás se le manda mail (excluidos por managed_by)
+ADVISOR_MAX_CLIENTS = 500  # cap duro por asesor (anti-spam + tope de IN(...) en roster/book)
+
+
+class AdvisorClientIn(BaseModel):
+    label: str = Field(..., min_length=1, max_length=MAX_STR)  # cómo lo ve el asesor ("Juan P — cartera agresiva")
+    name: Optional[str] = Field(None, max_length=MAX_STR)      # nombre real (opcional)
+
+
+class AdvisorClientPatchIn(BaseModel):
+    label: Optional[str] = Field(None, min_length=1, max_length=MAX_STR)
+    notes: Optional[str] = Field(None, max_length=MAX_NOTES)
+
+
+@app.post("/api/advisor/clients")
+def advisor_create_client(
+    data: AdvisorClientIn,
+    request: Request,
+    uid: int = Depends(get_current_user),
+):
+    """Crea un cliente MANAGED: user shadow + vínculo advisor_clients activo."""
+    _check_rate_limit(request, max_calls=30, window_seconds=60, suffix=f"advcreate:{uid}")
+    import secrets as _secrets
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        # Cap duro de clientes activos: sin esto, una cuenta advisor comprometida
+        # podría inflar `users` sin límite (los shadows no los recolecta nadie), y
+        # los IN(...) del roster/book reventarían el tope de variables de SQLite.
+        n_active = conn.execute(
+            "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
+            (uid,)).fetchone()["c"]
+        if n_active >= ADVISOR_MAX_CLIENTS:
+            raise HTTPException(400, f"Llegaste al máximo de {ADVISOR_MAX_CLIENTS} clientes activos.")
+        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
+        # Password random hasheado: nadie puede loguear con esta cuenta hasta
+        # que el flujo de invitación/claim (F4) setee una contraseña real.
+        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO users (email, name, password_hash, is_admin,
+                                      approved, email_verified, managed_by)
+                   VALUES (?,?,?,0,0,0,?)""",
+                (synthetic_email, (data.name or data.label).strip(), random_hash, uid),
+            )
+            client_uid = cur.lastrowid
+            conn.execute(
+                """INSERT INTO advisor_clients
+                       (advisor_uid, client_uid, link_type, permission, status, label, consent_ref)
+                   VALUES (?,?,'managed','read_write','active',?,?)""",
+                (uid, client_uid, data.label.strip(),
+                 f"managed-by-advisor:{uid}:{datetime.utcnow().isoformat()}"),
+            )
+        return {
+            "client_uid": client_uid,
+            "label": data.label.strip(),
+            "link_type": "managed",
+            "permission": "read_write",
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/clients")
+def advisor_list_clients(uid: int = Depends(get_current_user)):
+    """Roster del asesor: vínculos activos + AUM (último snapshot) por cliente.
+
+    El AUM sale de snapshots.total_value (cero recompute — lo escribe el cron
+    nocturno). Un cliente recién creado no tiene snapshot todavía → aum_usd
+    null; el frontend muestra "—" con hint "se calcula esta noche"."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        links = conn.execute(
+            """SELECT ac.client_uid, ac.label, ac.link_type, ac.permission,
+                      ac.notes, ac.created_at, u.name, u.approved
+               FROM advisor_clients ac
+               JOIN users u ON u.id = ac.client_uid
+               WHERE ac.advisor_uid = ? AND ac.status = 'active'
+               ORDER BY ac.created_at ASC""",
+            (uid,),
+        ).fetchall()
+        if not links:
+            return {"clients": []}
+        ids = [r["client_uid"] for r in links]
+        ph = ",".join("?" * len(ids))
+        # claim_status: 'claimed' (ya reclamó, loguea sola) > 'invited' (invite
+        # mandado, esperando) > 'shadow' (default, el asesor la administra 100%)
+        invited_ids = {r["user_id"] for r in conn.execute(
+            f"""SELECT DISTINCT user_id FROM advisor_claim_tokens
+                WHERE user_id IN ({ph}) AND used_at IS NULL
+                  AND expires_at > datetime('now')""",
+            ids,
+        ).fetchall()}
+        # Último snapshot por cliente (AUM + fecha)
+        snaps = {r["user_id"]: r for r in conn.execute(
+            f"""SELECT s.user_id, s.date, s.total_value
+                FROM snapshots s
+                WHERE s.user_id IN ({ph})
+                  AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
+                                WHERE s2.user_id = s.user_id)""",
+            ids,
+        ).fetchall()}
+        brokers_n = {r["user_id"]: r["c"] for r in conn.execute(
+            f"SELECT user_id, COUNT(*) c FROM brokers WHERE user_id IN ({ph}) GROUP BY user_id",
+            ids,
+        ).fetchall()}
+        pos_n = {r["user_id"]: r["c"] for r in conn.execute(
+            f"""SELECT user_id, COUNT(*) c FROM positions
+                WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0 GROUP BY user_id""",
+            ids,
+        ).fetchall()}
+        out = []
+        for r in links:
+            cid = r["client_uid"]
+            snap = snaps.get(cid)
+            claim_status = ("claimed" if r["approved"] else
+                            ("invited" if cid in invited_ids else "shadow"))
+            out.append({
+                "client_uid": cid,
+                "label": r["label"] or r["name"] or f"Cliente {cid}",
+                "name": r["name"],
+                "link_type": r["link_type"],
+                "permission": r["permission"],
+                "notes": r["notes"],
+                "created_at": r["created_at"],
+                "claim_status": claim_status,
+                "aum_usd": (float(snap["total_value"]) if snap and snap["total_value"] is not None else None),
+                "aum_date": (snap["date"] if snap else None),
+                "brokers_count": int(brokers_n.get(cid, 0)),
+                "positions_count": int(pos_n.get(cid, 0)),
+            })
+        return {"clients": out}
+    finally:
+        conn.close()
+
+
+def _advisor_own_link(conn, uid: int, client_uid: int):
+    """Fila de advisor_clients del PROPIO asesor (activa). 404 si no existe."""
+    row = conn.execute(
+        """SELECT * FROM advisor_clients
+           WHERE advisor_uid=? AND client_uid=? AND status='active'""",
+        (uid, client_uid),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Cliente no encontrado")
+    return row
+
+
+@app.patch("/api/advisor/clients/{client_uid}")
+def advisor_patch_client(
+    client_uid: int,
+    data: AdvisorClientPatchIn,
+    uid: int = Depends(get_current_user),
+):
+    """Edita label y/o notas PRIVADAS del vínculo (el cliente nunca las ve)."""
+    if data.label is None and data.notes is None:
+        raise HTTPException(400, "Nada para actualizar")
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        _advisor_own_link(conn, uid, client_uid)
+        with conn:
+            if data.label is not None:
+                conn.execute(
+                    "UPDATE advisor_clients SET label=? WHERE advisor_uid=? AND client_uid=?",
+                    (data.label.strip(), uid, client_uid))
+            if data.notes is not None:
+                conn.execute(
+                    "UPDATE advisor_clients SET notes=? WHERE advisor_uid=? AND client_uid=?",
+                    (data.notes, uid, client_uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/clients/{client_uid}/revoke")
+def advisor_revoke_client(client_uid: int, uid: int = Depends(get_current_user)):
+    """Quita el cliente del roster (status='revoked'). NO borra la data del
+    cliente: para un shadow queda archivada (recuperable por soporte); para un
+    linked (v1) simplemente corta el acceso del asesor."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        _advisor_own_link(conn, uid, client_uid)
+        with conn:
+            conn.execute(
+                """UPDATE advisor_clients
+                   SET status='revoked', revoked_at=datetime('now')
+                   WHERE advisor_uid=? AND client_uid=?""",
+                (uid, client_uid))
+            # Si había una invitación de claim pendiente, se corta con el
+            # vínculo — no tiene sentido dejar un link vivo hacia una relación
+            # que el asesor acaba de cortar.
+            conn.execute(
+                """UPDATE advisor_claim_tokens SET used_at=datetime('now')
+                   WHERE user_id=? AND advisor_uid=? AND used_at IS NULL""",
+                (client_uid, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ─── F4a: reclamar la cuenta (shadow → cliente autogestionado) ──────────────
+# El asesor invita al cliente por su email real; el cliente entra con el
+# link, pone contraseña, y la MISMA cuenta (mismo uid, misma cartera) pasa a
+# loguear sola. Mismo patrón de seguridad que password_reset_tokens (arriba):
+# token URL-safe 256-bit, un solo token vivo por user, invalidado al usarse.
+
+ADVISOR_CLAIM_TTL_DAYS = 7
+
+
+class AdvisorInviteIn(BaseModel):
+    email: str = Field(..., max_length=254)
+
+
+@app.post("/api/advisor/clients/{client_uid}/invite")
+def advisor_invite_client(
+    client_uid: int, data: AdvisorInviteIn, request: Request,
+    uid: int = Depends(get_current_user),
+):
+    """Manda (o reenvía) la invitación de claim al email real del cliente."""
+    _check_rate_limit(request, max_calls=10, window_seconds=300, suffix=f"advinvite:{uid}")
+    email_norm = data.email.strip().lower()
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        _advisor_own_link(conn, uid, client_uid)
+        client = conn.execute(
+            "SELECT name, approved FROM users WHERE id=?", (client_uid,)).fetchone()
+        if not client:
+            raise HTTPException(404, "Cliente no encontrado")
+        if client["approved"]:
+            raise HTTPException(400, "Este cliente ya tiene su cuenta activa.")
+        # El email no puede pertenecer a OTRA cuenta ya existente (evita que
+        # el claim pise/tome una cuenta ajena).
+        clash = conn.execute(
+            "SELECT 1 FROM users WHERE email=? AND id != ?", (email_norm, client_uid)
+        ).fetchone()
+        if clash:
+            raise HTTPException(400, "Ya existe una cuenta de Rendi con ese email.")
+        advisor = conn.execute("SELECT name, email FROM users WHERE id=?", (uid,)).fetchone()
+        advisor_name = (advisor["name"] or advisor["email"].split("@")[0]) if advisor else "Tu asesor"
+        link = conn.execute(
+            "SELECT label FROM advisor_clients WHERE advisor_uid=? AND client_uid=?",
+            (uid, client_uid)).fetchone()
+        client_label = (link["label"] if link and link["label"] else (client["name"] or "tu cuenta"))
+
+        # Tope diario por cliente (no por asesor): un reenvío inmediato para
+        # corregir un typo sigue funcionando (no es un cooldown), pero corta
+        # a alguien usando el mismo shadow para probar/spammear muchos emails
+        # de terceros — esto es además del rate-limit general de arriba
+        # (10/300s por asesor).
+        sent_today = conn.execute(
+            """SELECT COUNT(*) AS n FROM advisor_claim_tokens
+               WHERE user_id=? AND created_at > datetime('now', '-1 day')""",
+            (client_uid,)).fetchone()["n"]
+        if sent_today >= 8:
+            raise HTTPException(429, "Ya le mandaste varias invitaciones a este cliente hoy. Probá de nuevo mañana o contactá a soporte.")
+
+        token = _gen_reset_token()
+        expires = (datetime.utcnow() + timedelta(days=ADVISOR_CLAIM_TTL_DAYS)).isoformat()
+        with conn:
+            # Un solo link vivo por cliente — invalida invitaciones previas.
+            conn.execute(
+                """UPDATE advisor_claim_tokens SET used_at=datetime('now')
+                   WHERE user_id=? AND used_at IS NULL""", (client_uid,))
+            conn.execute(
+                """INSERT INTO advisor_claim_tokens
+                       (user_id, advisor_uid, token, email, expires_at)
+                   VALUES (?,?,?,?,?)""",
+                (client_uid, uid, token, email_norm, expires))
+        claim_url = f"{_frontend_url()}/claim?token={token}"
+        try:
+            from billing import emails
+            emails.send_advisor_claim(
+                to=email_norm, advisor_name=advisor_name, client_label=client_label,
+                claim_url=claim_url, expires_days=ADVISOR_CLAIM_TTL_DAYS)
+        except Exception as ex:
+            log.error("Advisor claim email failed uid=%s client=%s: %s", uid, client_uid, ex)
+        return {"ok": True, "email": email_norm}
+    finally:
+        conn.close()
+
+
+@app.get("/api/auth/claim/preview")
+def claim_preview(token: str, request: Request):
+    """Datos SEGUROS de mostrar sin autenticar (quién invita, a qué cuenta) —
+    para que la pantalla de claim diga 'Tu asesor X te invitó', no un form
+    genérico de contraseña sin contexto."""
+    _check_rate_limit(request, max_calls=20, window_seconds=300, suffix="claim_preview_ip")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT ct.advisor_uid, ac.label, u.name AS advisor_name, u.email AS advisor_email
+               FROM advisor_claim_tokens ct
+               JOIN users u ON u.id = ct.advisor_uid
+               LEFT JOIN advisor_clients ac
+                      ON ac.advisor_uid = ct.advisor_uid AND ac.client_uid = ct.user_id
+               WHERE ct.token=? AND ct.used_at IS NULL""",
+            (token,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "Link inválido o ya usado.")
+        exp = conn.execute(
+            "SELECT expires_at FROM advisor_claim_tokens WHERE token=?", (token,)).fetchone()
+        if exp and datetime.fromisoformat(exp["expires_at"]) < datetime.utcnow():
+            raise HTTPException(400, "El link expiró. Pedile a tu asesor que te invite de nuevo.")
+        return {
+            "advisor_name": row["advisor_name"] or row["advisor_email"].split("@")[0],
+            "label": row["label"],
+        }
+    finally:
+        conn.close()
+
+
+class ClaimAccountIn(BaseModel):
+    token: str = Field(..., min_length=20, max_length=128)
+    new_password: str = Field(..., min_length=10, max_length=128)
+
+
+@app.post("/api/auth/claim")
+def claim_account(data: ClaimAccountIn, request: Request, response: Response):
+    """Confirma el claim: valida el token, setea contraseña, y la cuenta shadow
+    pasa a loguear sola (approved=1). Mismo patrón que reset-password —
+    rota password_changed_at (invalida sesiones viejas) y auto-loguea."""
+    _check_rate_limit(request, max_calls=10, window_seconds=300, suffix="claim_ip")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT id, user_id, email, expires_at, used_at
+               FROM advisor_claim_tokens WHERE token=?""",
+            (data.token,),
+        ).fetchone()
+        if not row or row["used_at"]:
+            raise HTTPException(400, "Link inválido o ya usado. Pedile a tu asesor que te invite de nuevo.")
+        try:
+            if datetime.fromisoformat(row["expires_at"]) < datetime.utcnow():
+                raise HTTPException(400, "El link expiró. Pedile a tu asesor que te invite de nuevo.")
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Link inválido")
+        # Re-chequeo de colisión de email (defensivo: alguien pudo registrarse
+        # con ese email entre la invitación y el claim).
+        clash = conn.execute(
+            "SELECT 1 FROM users WHERE email=? AND id != ?", (row["email"], row["user_id"])
+        ).fetchone()
+        if clash:
+            raise HTTPException(400, "Ese email ya está en uso. Pedile a tu asesor que te invite con otro.")
+
+        new_hash = pwd_ctx.hash(data.new_password)
+        with conn:
+            # Cerramos el token PRIMERO y sólo seguimos si nosotros lo cerramos
+            # (rowcount==1). Dos claims concurrentes del mismo link (ej. alguien
+            # interceptó el email) corren esta transacción en paralelo — sin el
+            # WHERE used_at IS NULL + chequeo de rowcount, ambas pasarían el
+            # SELECT de arriba antes de que cualquiera lo marcara usado, y la
+            # segunda pisaría la contraseña que puso la primera.
+            cur = conn.execute(
+                "UPDATE advisor_claim_tokens SET used_at=datetime('now') WHERE id=? AND used_at IS NULL",
+                (row["id"],))
+            if cur.rowcount != 1:
+                raise HTTPException(400, "Link inválido o ya usado. Pedile a tu asesor que te invite de nuevo.")
+            # managed_by → NULL: una vez reclamada, la cuenta es independiente
+            # de verdad (login propio, puede revocar al asesor desde Config).
+            # El VÍNCULO con el asesor sigue viviendo en advisor_clients (única
+            # fuente de verdad para su acceso) — esto NO le corta el acceso.
+            # Sin este NULL, delete_my_account trataría a esta cuenta YA
+            # INDEPENDIENTE como shadow del asesor y la borraría en cascada si
+            # el asesor cierra su cuenta más adelante (bug real, hallado en
+            # el review de seguridad de F4a).
+            conn.execute(
+                """UPDATE users SET email=?, password_hash=?, approved=1, email_verified=1,
+                       password_changed_at=datetime('now'), managed_by=NULL
+                   WHERE id=?""",
+                (row["email"], new_hash, row["user_id"]))
+        user = conn.execute("SELECT name, password_changed_at FROM users WHERE id=?",
+                           (row["user_id"],)).fetchone()
+        token = create_token(row["user_id"], user["password_changed_at"])
+        set_auth_cookie(response, token)
+        return {"token": token, "name": user["name"] or row["email"], "email": row["email"]}
+    except HTTPException:
+        raise
+    finally:
+        conn.close()
+
+
+# ─── F4a: vista del CLIENTE sobre su propio vínculo (Config › Cuenta) ───────
+# Estos endpoints usan get_current_user (identidad REAL del logueado, NUNCA
+# el contexto) — es la cuenta viéndose a sí misma, no algo que un asesor
+# pueda invocar por otro.
+
+@app.get("/api/me/advisor")
+def my_advisor_links(uid: int = Depends(get_current_user)):
+    """¿Quién tiene acceso a MI cuenta? Para el cliente que reclamó su cuenta
+    y quiere ver/gestionar el acceso de su asesor desde Configuración."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT ac.advisor_uid, ac.permission, ac.created_at, u.name, u.email
+               FROM advisor_clients ac JOIN users u ON u.id = ac.advisor_uid
+               WHERE ac.client_uid=? AND ac.status='active'
+               ORDER BY ac.created_at ASC""",
+            (uid,),
+        ).fetchall()
+        return {"advisors": [{
+            "advisor_uid": r["advisor_uid"],
+            "name": r["name"] or r["email"].split("@")[0],
+            "permission": r["permission"],
+            "since": r["created_at"],
+        } for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/me/advisor/{advisor_uid}/revoke")
+def revoke_my_advisor(advisor_uid: int, uid: int = Depends(get_current_user)):
+    """El cliente corta el acceso de un asesor a SU cuenta. Es su cuenta, él
+    manda — la revocación es efectiva de inmediato (get_effective_user
+    solo resuelve el contexto sobre vínculos status='active')."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT 1 FROM advisor_clients
+               WHERE advisor_uid=? AND client_uid=? AND status='active'""",
+            (advisor_uid, uid)).fetchone()
+        if not row:
+            raise HTTPException(404, "No encontramos ese asesor en tu cuenta.")
+        with conn:
+            conn.execute(
+                """UPDATE advisor_clients SET status='revoked', revoked_at=datetime('now')
+                   WHERE advisor_uid=? AND client_uid=?""",
+                (advisor_uid, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ─── Operación grupal (block trade) ──────────────────────────────────────────
+
+class GroupOpRowIn(BaseModel):
+    client_uid: int
+    broker: str = Field(..., min_length=1, max_length=MAX_STR)
+    quantity: float = Field(..., gt=0)
+    buy_price: float = Field(..., ge=0)
+    invested: Optional[float] = Field(None, ge=0)  # None → buy_price × quantity
+
+
+class GroupOpIn(BaseModel):
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
+    asset_type: Optional[str] = Field(None, max_length=16)
+    currency: Optional[str] = Field(None, max_length=8)
+    entry_date: Optional[str] = Field(None, max_length=10)
+    rows: List[GroupOpRowIn] = Field(..., min_length=1, max_length=200)
+
+    @field_validator('entry_date')
+    @classmethod
+    def _valid_date(cls, v):
+        if v is None or v == '':
+            return None
+        if not _DATE_RE.match(v):
+            raise ValueError('Fecha inválida')
+        return v
+
+
+@app.get("/api/advisor/group-op/prep")
+def advisor_group_op_prep(
+    asset: str = "",
+    currency: str = "",
+    uid: int = Depends(get_current_user),
+):
+    """Prepara la tabla de asignación: por cada cliente activo, sus brokers y
+    el broker SUGERIDO para el activo. Regla del default (en orden):
+      1. broker donde el cliente YA tiene ese activo,
+      2. su único broker (si tiene uno solo),
+      3. el primero de su lista.
+    Si viene `currency` (la moneda del lote del paso 1), la sugerencia prefiere
+    brokers de esa familia de moneda — sin esto se sugería el broker ARS para
+    un lote USD y el guard del apply salteaba la fila (confuso).
+    Devuelve también has_asset para que el frontend marque ventas inválidas."""
+    asset = (asset or "").strip()
+    want_ars = None
+    if (currency or "").strip():
+        want_ars = (currency or "").strip().upper() == "ARS"
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        links = conn.execute(
+            """SELECT ac.client_uid, ac.label, ac.permission, u.name
+               FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+               WHERE ac.advisor_uid=? AND ac.status='active'
+               ORDER BY ac.created_at ASC""",
+            (uid,),
+        ).fetchall()
+        if not links:
+            return {"clients": []}
+        ids = [r["client_uid"] for r in links]
+        ph = ",".join("?" * len(ids))
+        brokers_by_uid = {}
+        for r in conn.execute(
+            f"SELECT user_id, name, currency FROM brokers WHERE user_id IN ({ph}) ORDER BY id ASC",
+            ids,
+        ).fetchall():
+            brokers_by_uid.setdefault(r["user_id"], []).append(
+                {"name": r["name"], "currency": r["currency"]})
+        holders = {}
+        if asset:
+            for r in conn.execute(
+                f"""SELECT DISTINCT user_id, broker FROM positions
+                    WHERE user_id IN ({ph}) AND asset=? AND COALESCE(is_cash,0)=0""",
+                (*ids, asset),
+            ).fetchall():
+                holders.setdefault(r["user_id"], []).append(r["broker"])
+        out = []
+        for r in links:
+            cid = r["client_uid"]
+            brs = brokers_by_uid.get(cid, [])
+            held_in = holders.get(cid, [])
+            def _family_ok(b):
+                if want_ars is None:
+                    return True
+                is_ars = (b.get("currency") or "").upper() == "ARS"
+                return is_ars == want_ars
+
+            compat = [b for b in brs if _family_ok(b)]
+            names_compat = {b["name"] for b in compat}
+            suggested = None
+            if held_in:
+                # preferir donde YA tiene el activo, pero solo si la moneda del
+                # broker es compatible con la del lote (el guard del apply
+                # saltearía la fila si no)
+                suggested = next((h for h in held_in if h in names_compat), None)
+                if suggested is None and want_ars is None:
+                    names = {b["name"] for b in brs}
+                    suggested = next((h for h in held_in if h in names), held_in[0])
+            if suggested is None and compat:
+                suggested = compat[0]["name"]
+            if suggested is None and brs and want_ars is None:
+                suggested = brs[0]["name"]
+            out.append({
+                "client_uid": cid,
+                "label": r["label"] or r["name"] or f"Cliente {cid}",
+                "permission": r["permission"],
+                "brokers": brs,
+                "suggested_broker": suggested,
+                "has_asset": bool(held_in),
+            })
+        return {"clients": out}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/group-op")
+def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_current_user)):
+    """Aplica UNA compra a N clientes (block trade con asignación).
+
+    Semántica: las filas se PRE-VALIDAN (vínculo activo read_write + broker
+    existente); las inválidas se devuelven en `skipped` sin bloquear el resto.
+    Las válidas se aplican en UNA transacción (o entran todas o ninguna) y el
+    lote queda registrado con batch_id → deshacible con /undo."""
+    _check_rate_limit(request, max_calls=10, window_seconds=60, suffix=f"advgroupop:{uid}")
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        # Vínculos activos read_write del asesor (los 'linked' read-only NO
+        # entran: escribirle la cartera a un cliente linked es ilegal acá).
+        links = {r["client_uid"]: r for r in conn.execute(
+            """SELECT client_uid, permission FROM advisor_clients
+               WHERE advisor_uid=? AND status='active'""",
+            (uid,),
+        ).fetchall()}
+        # Brokers (con moneda) de TODOS los clientes del lote en una query
+        row_cids = list({r.client_uid for r in data.rows})
+        ph = ",".join("?" * len(row_cids))
+        broker_ccy = {(r["user_id"], r["name"]): (r["currency"] or "USD") for r in conn.execute(
+            f"SELECT user_id, name, currency FROM brokers WHERE user_id IN ({ph})",
+            row_cids,
+        ).fetchall()}
+
+        def _ccy_family(c):
+            # USDT cuenta como familia dólar (exchanges) — el mismo criterio
+            # que la inferencia de _insert_manual_position (ARS vs no-ARS).
+            return "ARS" if (c or "").upper() == "ARS" else "USD"
+
+        batch_ccy = (data.currency or "").upper() or None
+        valid, skipped = [], []
+        seen = set()
+        for row in data.rows:
+            cid = row.client_uid
+            if cid in seen:
+                skipped.append({"client_uid": cid, "reason": "duplicado en el lote"})
+                continue
+            seen.add(cid)
+            link = links.get(cid)
+            if not link:
+                skipped.append({"client_uid": cid, "reason": "sin vínculo activo"})
+                continue
+            if link["permission"] != "read_write":
+                skipped.append({"client_uid": cid, "reason": "vínculo de solo lectura"})
+                continue
+            bc = broker_ccy.get((cid, row.broker))
+            if bc is None:
+                skipped.append({"client_uid": cid, "reason": f"no tiene el broker {row.broker!r}"})
+                continue
+            # Guard de moneda: un lote ARS no puede caer en un broker USD del
+            # cliente (mezcla ARS+USD en el FIFO + débito de cash en la moneda
+            # equivocada). Se saltea la fila con razón explícita.
+            if batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
+                hint = " — usá su sub-cuenta dólar (crear desde la Cartera del cliente)" \
+                    if _ccy_family(batch_ccy) == "USD" else ""
+                skipped.append({"client_uid": cid,
+                                "reason": f"moneda del lote ({batch_ccy}) ≠ moneda del broker {row.broker!r} ({bc}){hint}"})
+                continue
+            valid.append(row)
+        if not valid:
+            raise HTTPException(400, "Ninguna fila válida para aplicar")
+
+        applied = []
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO advisor_op_batches (advisor_uid, asset, op_kind) VALUES (?,?, 'buy')",
+                (uid, data.asset.strip()),
+            )
+            batch_id = cur.lastrowid
+            for row in valid:
+                p = PositionIn(
+                    broker=row.broker,
+                    asset=data.asset.strip(),
+                    buy_price=row.buy_price,
+                    quantity=row.quantity,
+                    invested=(row.invested if row.invested is not None
+                              else round(row.buy_price * row.quantity, 8)),
+                    entry_date=data.entry_date,
+                    asset_type=data.asset_type,
+                    currency=data.currency,
+                )
+                prow = _insert_manual_position(conn, row.client_uid, p)
+                conn.execute(
+                    """INSERT INTO advisor_op_batch_items (batch_id, client_uid, position_id)
+                       VALUES (?,?,?)""",
+                    (batch_id, row.client_uid, prow["id"]),
+                )
+                applied.append({"client_uid": row.client_uid, "position_id": prow["id"]})
+        for a in applied:
+            _ai_cache_invalidate(a["client_uid"])
+        return {"batch_id": batch_id, "applied": applied, "skipped": skipped}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/group-op/{batch_id}/undo")
+def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
+    """Deshace un lote completo: borra las posiciones que ESTE lote creó y
+    re-acredita el costo al cash del broker de cada cliente. Items cuya
+    posición ya fue borrada/modificada a mano se saltean (best-effort, se
+    reporta). Idempotente: un lote ya deshecho devuelve 409."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        batch = conn.execute(
+            "SELECT * FROM advisor_op_batches WHERE id=? AND advisor_uid=?",
+            (batch_id, uid),
+        ).fetchone()
+        if not batch:
+            raise HTTPException(404, "Lote no encontrado")
+        if batch["undone_at"]:
+            raise HTTPException(409, "El lote ya fue deshecho")
+        items = conn.execute(
+            "SELECT * FROM advisor_op_batch_items WHERE batch_id=? AND status='ok'",
+            (batch_id,),
+        ).fetchall()
+        # Vínculos rw del asesor en UN query (mismo patrón que el apply)
+        rw_links = {r["client_uid"] for r in conn.execute(
+            """SELECT client_uid FROM advisor_clients
+               WHERE advisor_uid=? AND status='active' AND permission='read_write'""",
+            (uid,),
+        ).fetchall()}
+        undone, skipped = [], []
+        left_ok = 0  # items que NO pudimos deshacer y siguen 'ok' (reintentar)
+        with conn:
+            for it in items:
+                cid = it["client_uid"]
+                if cid not in rw_links:
+                    # Vínculo revocado/downgradeado: el item queda 'ok' y el
+                    # lote NO se marca deshecho — si el asesor recupera el
+                    # acceso, puede reintentar el undo de lo que faltó.
+                    skipped.append({"client_uid": cid, "reason": "sin acceso de escritura"})
+                    left_ok += 1
+                    continue
+                pos = conn.execute(
+                    "SELECT * FROM positions WHERE id=? AND user_id=?",
+                    (it["position_id"], cid),
+                ).fetchone()
+                if not pos:
+                    # Ya no existe (la borraron a mano) — marcar y seguir
+                    conn.execute(
+                        "UPDATE advisor_op_batch_items SET status='undone' WHERE id=?",
+                        (it["id"],))
+                    skipped.append({"client_uid": cid, "reason": "la posición ya no existía"})
+                    continue
+                # Re-acreditar el costo (LA MISMA fórmula que debitó el alta —
+                # _manual_position_cost). Nota: si el alta disparó autodepósito,
+                # ese depósito QUEDA — mismo criterio conservador que el resto
+                # de la app (no borramos flujos de capital en cascada).
+                cost = _manual_position_cost(
+                    pos["invested"], pos["buy_price"], pos["quantity"], pos["commissions"])
+                cur_del = conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
+                                       (it["position_id"], cid))
+                if cur_del.rowcount != 1:
+                    # Otro undo concurrente la borró entre el SELECT y acá:
+                    # NO re-acreditar (evita el doble crédito de la carrera).
+                    conn.execute(
+                        "UPDATE advisor_op_batch_items SET status='undone' WHERE id=?",
+                        (it["id"],))
+                    skipped.append({"client_uid": cid, "reason": "ya deshecha en otro pedido"})
+                    continue
+                if cost and cost > 0:
+                    _adjust_broker_cash(conn, cid, pos["broker"], cost)
+                conn.execute(
+                    "UPDATE advisor_op_batch_items SET status='undone' WHERE id=?",
+                    (it["id"],))
+                undone.append({"client_uid": cid, "position_id": it["position_id"]})
+            if left_ok == 0:
+                conn.execute(
+                    "UPDATE advisor_op_batches SET undone_at=datetime('now') WHERE id=?",
+                    (batch_id,))
+        for u_ in undone:
+            _ai_cache_invalidate(u_["client_uid"])
+        return {"ok": True, "undone": undone, "skipped": skipped,
+                "fully_undone": left_ok == 0}
+    finally:
+        conn.close()
+
+
+# ─── F3: el libro del asesor (GET /api/advisor/book) ─────────────────────────
+
+def _advisor_client_ids(conn, uid: int) -> list:
+    return [r["client_uid"] for r in conn.execute(
+        """SELECT client_uid FROM advisor_clients
+           WHERE advisor_uid=? AND status='active' ORDER BY created_at ASC""",
+        (uid,),
+    ).fetchall()]
+
+
+def _latest_snapshots(conn, ids: list) -> dict:
+    """{uid: row(date,total_value,net_deposited)} del ÚLTIMO snapshot por cliente."""
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    return {r["user_id"]: r for r in conn.execute(
+        f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited
+            FROM snapshots s
+            WHERE s.user_id IN ({ph})
+              AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
+                            WHERE s2.user_id = s.user_id)""",
+        ids,
+    ).fetchall()}
+
+
+def _snapshots_asof(conn, ids: list, cutoff: str) -> dict:
+    """{uid: row} del último snapshot con date <= cutoff, por cliente."""
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    return {r["user_id"]: r for r in conn.execute(
+        f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited
+            FROM snapshots s
+            WHERE s.user_id IN ({ph})
+              AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
+                            WHERE s2.user_id = s.user_id AND s2.date <= ?)""",
+        (*ids, cutoff),
+    ).fetchall()}
+
+
+@app.get("/api/advisor/book")
+def advisor_book(uid: int = Depends(get_current_user)):
+    """El LIBRO del asesor: AUM total + captación + distribución + motor
+    estrella + colas accionables. Todo sale de snapshots/positions/operations
+    ya persistidos + precios last-known (asset_last_price) — CERO fetches de
+    red en el request (el libro carga instantáneo; la frescura la garantiza
+    el cron nocturno + la navegación normal que va cacheando precios).
+
+    Motor estrella: P&L NO REALIZADO per-activo per-cliente, valuando cada
+    posición con compute_broker_value_usd (el MISMO motor del snapshot —
+    CEDEARs al MEP, bonos per-1, cripto premium) → agrupado por ticker:
+    cuántos clientes están en verde/rojo con ese activo y el P&L agregado.
+    Posiciones sin precio conocido se EXCLUYEN (no cuentan como P&L 0) y se
+    reporta el conteo en star.skipped_no_price."""
+    from datetime import datetime as _dt, timedelta as _td
+    from snapshots_job import (
+        compute_broker_value_usd, build_price_symbols, read_last_prices,
+        _broker_name_sets, _user_tc_cedear, position_price_key,
+    )
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        ids = _advisor_client_ids(conn, uid)
+        labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      """SELECT ac.client_uid, ac.label, u.name
+                         FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+                         WHERE ac.advisor_uid=? AND ac.status='active'""", (uid,)).fetchall()}
+        if not ids:
+            return {"aum": {"total_usd": None, "clients": 0, "with_data": 0},
+                    "flows_month": None, "distribution": None,
+                    "star": None, "queues": []}
+
+        # FX del día (tabla global, sin red). MEP para convertir cash ARS.
+        fx = conn.execute(
+            "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
+        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else tc_blue
+
+        today = _dt.utcnow().date()
+        latest = _latest_snapshots(conn, ids)
+        asof_7d = _snapshots_asof(conn, ids, (today - _td(days=7)).isoformat())
+        asof_month = _snapshots_asof(conn, ids, today.replace(day=1).isoformat())
+
+        # ── AUM + deltas (solo clientes CON snapshot; los nuevos no restan) ──
+        total = sum(float(r["total_value"] or 0) for r in latest.values())
+        with_data = len(latest)
+
+        def _delta(asof: dict):
+            # Comparar solo clientes presentes en AMBOS cortes (base comparable)
+            # y con FECHAS distintas: con el cron caído, latest == asof y un
+            # "+0 · +0%" mentiría que la semana fue plana.
+            common = [i for i in latest if i in asof
+                      and str(latest[i]["date"]) != str(asof[i]["date"])]
+            if not common:
+                return None, None
+            now_v = sum(float(latest[i]["total_value"] or 0) for i in common)
+            then_v = sum(float(asof[i]["total_value"] or 0) for i in common)
+            d = now_v - then_v
+            return round(d, 2), (round(d / then_v * 100, 2) if then_v > 0 else None)
+
+        d7_usd, d7_pct = _delta(asof_7d)
+
+        # ── Captación del mes (Δ net_deposited desde el 1° del mes, en USD) ──
+        flows = None
+        common_m = [i for i in latest if i in asof_month
+                    and str(latest[i]["date"]) != str(asof_month[i]["date"])]
+        if common_m:
+            dep_now = sum(float(latest[i]["net_deposited"] or 0) for i in common_m)
+            dep_then = sum(float(asof_month[i]["net_deposited"] or 0) for i in common_m)
+            v_now = sum(float(latest[i]["total_value"] or 0) for i in common_m)
+            v_then = sum(float(asof_month[i]["total_value"] or 0) for i in common_m)
+            net_dep = round(dep_now - dep_then, 2)
+            flows = {
+                "net_deposited_usd": net_dep,
+                # Efecto mercado = ΔAUM del mes − flujos del mes
+                "market_effect_usd": round((v_now - v_then) - net_dep, 2),
+            }
+
+        # ── Distribución de performance (total return vs aportado, del snapshot) ──
+        dist = None
+        perf = []
+        for i, r in latest.items():
+            nd = float(r["net_deposited"] or 0)
+            # Base mínima USD 100: un nd residual (~centavos) explota el %
+            # y secuestra el Mejor/Peor con retornos astronómicos falsos.
+            if nd >= 100:
+                perf.append((i, (float(r["total_value"] or 0) - nd) / nd * 100))
+        if perf:
+            greens = [p for p in perf if p[1] > 0.5]
+            reds = [p for p in perf if p[1] < -0.5]
+            best = max(perf, key=lambda x: x[1])
+            worst = min(perf, key=lambda x: x[1])
+            dist = {
+                "green": len(greens), "red": len(reds),
+                "flat": len(perf) - len(greens) - len(reds),
+                "best": {"client_uid": best[0], "label": labels.get(best[0]), "ret_pct": round(best[1], 1)},
+                "worst": {"client_uid": worst[0], "label": labels.get(worst[0]), "ret_pct": round(worst[1], 1)},
+            }
+
+        # ── ⭐ Motor estrella: P&L no realizado per-activo cross-cliente ──
+        ph = ",".join("?" * len(ids))
+        all_brokers = {}
+        for r in conn.execute(
+            f"SELECT id, user_id, name, currency, parent_broker_id FROM brokers WHERE user_id IN ({ph})", ids
+        ).fetchall():
+            all_brokers.setdefault(r["user_id"], []).append(dict(r))
+        all_pos = {}
+        for r in conn.execute(
+            f"""SELECT user_id, broker, asset, asset_type, is_cash, invested,
+                       quantity, commissions, price_override, currency
+                FROM positions WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0""", ids
+        ).fetchall():
+            all_pos.setdefault(r["user_id"], []).append(dict(r))
+
+        per_asset = {}   # asset -> {client_uid: pnl_usd}
+        skipped_no_price = 0
+        for cid in ids:
+            brokers = all_brokers.get(cid, [])
+            positions = all_pos.get(cid, [])
+            if not brokers or not positions:
+                continue
+            symbols = build_price_symbols(positions, brokers)
+            prices = read_last_prices(conn, symbols)
+            # FCI en broker ARS: el engine busca 'FCI:x.BA' pero el NAV vive
+            # como 'FCI:x' — alias para que ambas keys resuelvan al mismo NAV.
+            for k, v in list(prices.items()):
+                if k.startswith("FCI:") and v is not None:
+                    prices.setdefault(k + ".BA", v)
+            # MEP del día para TODOS los clientes (consistencia cross-libro).
+            # _user_tc_cedear con cache frío caía al config.tc_mep PER-CLIENTE
+            # (potencialmente stale de años) — la clase de bug que el snapshot
+            # job ya arregló pasando un rate resuelto por el job.
+            tc_cedear = tc_mep
+            ars_names, ar_usd_names = _broker_name_sets(brokers)
+            broker_ccy = {b["name"]: b["currency"] for b in brokers}
+            for p in positions:
+                bccy = broker_ccy.get(p["broker"])
+                if bccy is None:
+                    # Posición huérfana (broker borrado/renombrado sin cascada):
+                    # defaultear a USD contaría un costo en pesos 1:1 como
+                    # dólares y fabricaría pérdidas gigantes. Mismo guard que
+                    # _valuate_positions_for_chat.
+                    skipped_no_price += 1
+                    continue
+                has_price = (p.get("price_override") is not None or
+                             prices.get(position_price_key(p, ars_names, ar_usd_names)) is not None)
+                if not has_price:
+                    skipped_no_price += 1
+                    continue  # sin precio ≠ P&L 0 — se excluye del motor
+                try:
+                    r = compute_broker_value_usd(
+                        [p], prices, bccy,
+                        tc_blue, broker_name=p["broker"], cedear_rate=tc_cedear)
+                    pnl = float(r["value"]) - float(r["invested"])
+                except Exception:
+                    continue
+                bucket = per_asset.setdefault(p["asset"], {})
+                bucket[cid] = bucket.get(cid, 0.0) + pnl
+
+        star = None
+        if per_asset or skipped_no_price:
+            rows_ = []
+            for asset, by_client in per_asset.items():
+                greens = sum(1 for v in by_client.values() if v > 1.0)   # > USD 1 de ruido
+                reds = sum(1 for v in by_client.values() if v < -1.0)
+                rows_.append({
+                    "asset": asset,
+                    "clients_green": greens,
+                    "clients_red": reds,
+                    "clients_total": len(by_client),
+                    "pnl_usd": round(sum(by_client.values()), 2),
+                    # P&L por lado: un activo puede estar en AMBAS columnas
+                    # (unos ganan, otros pierden) — cada columna muestra SU
+                    # plata, no el neto agregado (que contradiría el título).
+                    "pnl_red_usd": round(sum(v for v in by_client.values() if v < -1.0), 2),
+                    "pnl_green_usd": round(sum(v for v in by_client.values() if v > 1.0), 2),
+                })
+            # Perdedores: más clientes en rojo primero, después P&L más negativo
+            losers = sorted([r for r in rows_ if r["clients_red"] > 0],
+                            key=lambda r: (-r["clients_red"], r["pnl_red_usd"]))[:5]
+            winners = sorted([r for r in rows_ if r["clients_green"] > 0],
+                             key=lambda r: (-r["clients_green"], -r["pnl_green_usd"]))[:5]
+            star = {"winners": winners, "losers": losers,
+                    "skipped_no_price": skipped_no_price}
+
+        # ── Colas "¿a quién llamar hoy?" ──
+        # Drawdown AJUSTADO POR FLUJOS: máximo de (total_value − net_deposited)
+        # vs el valor actual de la misma serie. Sin el ajuste, un retiro grande
+        # (comprarse un auto) quedaba flaggeado como "caída" para siempre.
+        max_snap = {r["user_id"]: {"adj_mx": float(r["adj_mx"] or 0),
+                                    "mx": float(r["mx"] or 0)}
+                    for r in conn.execute(
+            f"""SELECT user_id,
+                       MAX(total_value - COALESCE(net_deposited, 0)) adj_mx,
+                       MAX(total_value) mx
+                FROM snapshots WHERE user_id IN ({ph}) GROUP BY user_id""",
+            ids,
+        ).fetchall()}
+        # Última actividad: operación o alta de posición más reciente
+        last_op = {r["user_id"]: r["d"] for r in conn.execute(
+            f"""SELECT user_id, MAX(d) d FROM (
+                    SELECT user_id, MAX(date) d FROM operations WHERE user_id IN ({ph}) GROUP BY user_id
+                    UNION ALL
+                    SELECT user_id, MAX(entry_date) d FROM positions WHERE user_id IN ({ph}) GROUP BY user_id
+                ) GROUP BY user_id""",
+            (*ids, *ids),
+        ).fetchall()}
+        # Cash por moneda de broker (ARS alimenta la cola de "pesos ociosos";
+        # el total en cualquier moneda evita el falso "sin cargar" de un
+        # cliente que solo depositó dólares)
+        ars_cash, has_cash = {}, set()
+        for r in conn.execute(
+            f"""SELECT p.user_id, b.currency ccy, SUM(p.invested) v
+                FROM positions p JOIN brokers b
+                  ON b.user_id = p.user_id AND b.name = p.broker
+                WHERE p.user_id IN ({ph}) AND p.is_cash = 1
+                GROUP BY p.user_id, b.currency""",
+            ids,
+        ).fetchall():
+            if float(r["v"] or 0) > 0:
+                has_cash.add(r["user_id"])
+                if r["ccy"] == "ARS":
+                    ars_cash[r["user_id"]] = float(r["v"] or 0)
+
+        queues = []
+        for cid in ids:
+            reasons = []
+            snap = latest.get(cid)
+            tv = float(snap["total_value"]) if snap and snap["total_value"] else None
+            # 1. Sin cartera cargada (ni posiciones ni cash en NINGUNA moneda)
+            if not all_pos.get(cid) and cid not in has_cash:
+                reasons.append({"kind": "sin_cargar",
+                                "detail": "Sin posiciones cargadas — cargale la foto de su cartera"})
+            # 2. Drawdown fuerte desde el mejor momento (ajustado por flujos:
+            #    la caída es de RESULTADO, no de plata que el cliente retiró)
+            ms = max_snap.get(cid)
+            if tv is not None and snap is not None and ms and ms["mx"] > 0:
+                adj_now = tv - float(snap["net_deposited"] or 0)
+                dd = (adj_now - ms["adj_mx"]) / ms["mx"] * 100
+                if dd <= -15:
+                    reasons.append({"kind": "drawdown",
+                                    "detail": f"Resultado {dd:.0f}% abajo de su mejor momento — llamada de contención"})
+            # 3. Cash ARS ocioso > 15% del portfolio
+            if tv and tv > 0 and ars_cash.get(cid, 0) > 0 and tc_mep > 0:
+                share = min((ars_cash[cid] / tc_mep) / tv * 100, 100)
+                if share >= 15:
+                    reasons.append({"kind": "cash_ocioso",
+                                    "detail": f"{share:.0f}% del portfolio en pesos sin invertir"})
+            # 4. Sin actividad hace > 90 días
+            lo = last_op.get(cid)
+            if lo:
+                try:
+                    days = (today - _dt.fromisoformat(str(lo)[:10]).date()).days
+                    if days > 90:
+                        reasons.append({"kind": "inactivo",
+                                        "detail": f"Sin movimientos hace {days} días"})
+                except (ValueError, TypeError):
+                    pass
+            if reasons:
+                queues.append({"client_uid": cid, "label": labels.get(cid),
+                               "reasons": reasons})
+
+        newest_date = max((str(r["date"]) for r in latest.values()), default=None)
+        return {
+            "aum": {
+                "total_usd": round(total, 2) if with_data else None,
+                "clients": len(ids),
+                "with_data": with_data,
+                "delta_7d_usd": d7_usd,
+                "delta_7d_pct": d7_pct,
+                "as_of": newest_date,
+            },
+            "flows_month": flows,
+            "distribution": dist,
+            "star": star,
+            "queues": queues,
+        }
+    finally:
+        conn.close()

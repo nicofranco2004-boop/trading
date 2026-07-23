@@ -34,11 +34,11 @@ export default function ModuleShell({ icon: Icon, title, rel, topPick = false, l
           <h4 className="text-sm font-semibold text-ink-0 truncate">{title}</h4>
         </div>
         {topPick ? (
-          <span className="flex-shrink-0 font-mono text-[9px] uppercase tracking-caps font-semibold text-data-violet bg-data-violet/12 border border-data-violet/30 rounded-full px-2 py-1">
+          <span className="flex-shrink-0 text-[12.5px] font-semibold text-data-violet bg-data-violet/12 border border-data-violet/30 rounded-full px-2 py-1">
             ★ Lo más relevante
           </span>
         ) : rel != null ? (
-          <span className="flex-shrink-0 font-mono text-[9px] uppercase tracking-caps text-ink-3 bg-bg-2/60 rounded-full px-2 py-1">
+          <span className="flex-shrink-0 text-[12.5px] text-ink-3 bg-bg-2/60 rounded-full px-2 py-1 font-medium">
             rel {rel}
           </span>
         ) : null}
@@ -48,7 +48,7 @@ export default function ModuleShell({ icon: Icon, title, rel, topPick = false, l
         <div className="flex-1 flex flex-col items-start gap-2 py-3">
           <div className="flex items-center gap-1.5 text-ink-3">
             <Lock size={13} strokeWidth={1.75} aria-hidden />
-            <span className="text-[11px] font-mono uppercase tracking-caps">Bloqueado</span>
+            <span className="text-[12.5px] font-medium">Bloqueado</span>
           </div>
           <p className="text-xs text-ink-2 leading-relaxed">{lock}</p>
           {lockCta && (

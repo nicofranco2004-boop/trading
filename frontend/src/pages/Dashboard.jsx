@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, Activity, CircleDollarSign, Upload, ArrowRight, Eye, EyeOff } from 'lucide-react'
-import StatCard from '../components/StatCard'
+import { TrendingUp, TrendingDown, Upload, ArrowRight, Eye, EyeOff } from 'lucide-react'
+import { BrokerCard } from '../components/BrokerManager'
 import MonthlyTeaser from '../components/MonthlyTeaser'
 import UpcomingEventsCard from '../components/UpcomingEventsCard'
 import TopNewsCard from '../components/TopNewsCard'
@@ -14,7 +15,6 @@ import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
 import { DashboardSkeleton } from '../components/Skeleton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
-import InsightLine from '../components/InsightLine'
 import BenchmarksLine from '../components/BenchmarksLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
 import LazySparkline from '../components/LazySparkline'
@@ -635,60 +635,80 @@ export default function Dashboard() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          HERO — la cifra única de la pantalla. Instrument Serif italic 64-84px.
-          Solo 1 hero por página (audit rule).
+          HERO — la cifra única de la pantalla. Absorbe "Resultado total" (pill),
+          el contexto (chips ≈FX / Aportado) y el insight (línea integrada) —
+          antes la misma ganancia aparecía 3 veces (hero, banner, KPI strip).
           ══════════════════════════════════════════════════════════════════════ */}
-      <div className="mb-6 sm:mb-8">
-        <StatCard
-          tone="hero"
-          label={currency === 'ARS' ? 'Valor actual · ARS' : 'Valor actual · USD'}
-          value={<PrivacyMask><FlashValue value={portfolioTotal}><AnimatedNumber value={portfolioTotal} format={fmt} /></FlashValue></PrivacyMask>}
-          tooltip={
-            <>
-              <p className="font-semibold text-ink-0">Valor de mercado de tu cartera</p>
-              <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
-              <p className="text-ink-3">
-                {currency === 'ARS'
-                  ? `Conversión USD → ARS al blue actual (${tcBlue}). Los valores históricos no se reconvierten.`
-                  : 'Para brokers ARS, la conversión a USD se hace al blue actual.'}
-              </p>
-            </>
-          }
-          sub={
-            <span className="inline-flex items-center gap-3 flex-wrap">
-              <span className="text-ink-2">
-                {totalReturnUsd >= 0 ? 'Ganancia total' : 'Pérdida total'}
-              </span>
-              <span className={`inline-flex items-center gap-1 font-semibold ${totalReturnUsd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {totalReturnUsd >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
-                {hidden ? '••••••' : fmtSigned(totalReturnUsd).replace(/^[+−]/, '')}
-              </span>
-              <span className={`tabular ${totalReturnUsd >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
-                ({pctSigned(totalReturnPct)})
-              </span>
+      <div className="mb-6 sm:mb-8 bg-bg-1 border border-line rounded-xl px-5 sm:px-6 py-5">
+        <div className="flex items-center gap-1.5 mb-2">
+          <p className="text-[12.5px] font-medium text-ink-3">{currency === 'ARS' ? 'Valor actual · ARS' : 'Valor actual · USD'}</p>
+          <InfoTooltip size={11} align="left">
+            <p className="font-semibold text-ink-0">Valor de mercado de tu cartera</p>
+            <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
+            <p className="text-ink-3">
+              {currency === 'ARS'
+                ? `Conversión USD → ARS al blue actual (${tcBlue}). Los valores históricos no se reconvierten.`
+                : 'Para brokers ARS, la conversión a USD se hace al blue actual.'}
+            </p>
+          </InfoTooltip>
+        </div>
+        <div className="text-[30px] sm:text-[34px] leading-none font-semibold text-ink-0 tabular">
+          <PrivacyMask><FlashValue value={portfolioTotal}><AnimatedNumber value={portfolioTotal} format={fmt} /></FlashValue></PrivacyMask>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap mt-3.5 text-[12.5px]">
+          <span className={`inline-flex items-center gap-1.5 font-medium tabular rounded-full px-2.5 py-1 ${totalReturnUsd >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
+            {totalReturnUsd >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
+            <span>{totalReturnUsd >= 0 ? 'Ganancia total' : 'Pérdida total'}</span>
+            <span>{hidden ? '••••••' : fmtSigned(totalReturnUsd)}</span>
+            <span className="opacity-80">· {pctSigned(totalReturnPct)}</span>
+          </span>
+          {!hidden && (
+            <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
+              {currency === 'ARS'
+                ? <>≈ {fmtUsd(portfolioTotal)}<span className="text-ink-3 ml-1">al blue {tcBlue}</span></>
+                : <>≈ {fmtArs(portfolioTotal * tcBlue)}<span className="text-ink-3 ml-1">al blue {tcBlue}</span></>}
             </span>
-          }
-          hint={hidden ? undefined : (currency === 'ARS'
-            ? `≈ ${fmtUsd(portfolioTotal)} al blue ${tcBlue} · sobre ${fmtArs(netDeposited * tcBlue)} de capital aportado`
-            : `≈ ${fmtArs(portfolioTotal * tcBlue)} al blue ${tcBlue} · sobre ${fmtUsd(netDeposited)} de capital aportado`)}
-        />
+          )}
+          {!hidden && (
+            <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
+              <span className="text-ink-3">Aportado</span>
+              {fmt(netDeposited)}
+            </span>
+          )}
+        </div>
+        {insight && (
+          <div className="flex items-center gap-2.5 mt-4 pt-3.5 border-t border-line/60 text-[13px] text-ink-2">
+            <span className={`w-[7px] h-[7px] rounded-full flex-shrink-0 ${insight.tone === 'negative' ? 'bg-rendi-neg' : insight.tone === 'positive' ? 'bg-rendi-pos' : 'bg-ink-3'}`} />
+            <span>{insight.text}</span>
+          </div>
+        )}
       </div>
 
-      {/* InsightLine — diagnóstico breve dinámico */}
-      {insight && (
-        <div className="mb-6">
-          <InsightLine tone={insight.tone} icon={insight.tone === 'negative' ? <TrendingDown size={14} /> : insight.tone === 'positive' ? <TrendingUp size={14} /> : <Activity size={14} />}>
-            {insight.text}
-          </InsightLine>
-        </div>
-      )}
-
       {/* ══════════════════════════════════════════════════════════════════════
-          KPI STRIP V2 — celdas densas mono caps + divisor 1px (audit pattern).
+          DESGLOSE — de dónde sale la ganancia del hero. Cards con aire (antes:
+          strip de celdas con divisor 1px). "Resultado total" ya no se repite —
+          vive en el hero; su explicación quedó en el ⓘ del título.
           ══════════════════════════════════════════════════════════════════════ */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap mb-8">
+      <div className="mb-3 flex items-center gap-1.5">
+        <h3 className="text-[15px] font-semibold text-ink-0 leading-tight">¿De dónde sale la ganancia?</h3>
+        <InfoTooltip size={12} align="left">
+          <p className="font-medium text-ink-0">Resultado total</p>
+          <p>Cuánto vale tu cartera HOY de más (o de menos) respecto a lo que pusiste neto — es el número del hero.</p>
+          <p className="text-ink-3 font-mono text-[11px]">= valor actual − capital aportado neto</p>
+          {showAccountingGap && (
+            <>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
+              <p className="text-ink-3">{gapIsOutflow
+                ? 'Hubo retiros que incluían ganancias — esa plata salió de la cartera pero sigue contabilizada como realizada (ver "Ganancias retiradas").'
+                : 'La cartera tiene plusvalía no clasificada como P&L realizado, típicamente dividendos cobrados o intereses sobre cash (ver "Dividendos e intereses").'}
+              </p>
+            </>
+          )}
+        </InfoTooltip>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
         <KpiCell
-          first
           label="Capital aportado"
           value={fmt(netDeposited)}
           sub="depósitos netos"
@@ -705,35 +725,8 @@ export default function Dashboard() {
           }
         />
         <KpiCell
-          label="Resultado total"
-          value={fmt(totalReturnUsd)}
-          tone={totalReturnUsd >= 0 ? 'pos' : 'neg'}
-          sub={`${pctSigned(totalReturnPct)} desde el inicio`}
-          infoAlign="left"
-          info={
-            <>
-              <p className="font-medium text-ink-0">Qué es</p>
-              <p>Cuánto vale tu cartera HOY de más (o de menos) respecto a lo que pusiste neto.</p>
-              <div className="border-t border-line/60 my-1.5" />
-              <p className="font-medium text-ink-0">Cómo se calcula</p>
-              <p className="text-ink-3 font-mono text-[11px]">= valor actual − capital aportado neto</p>
-              <p className="text-ink-3">El porcentaje es sobre el capital aportado neto.</p>
-              {showAccountingGap && (
-                <>
-                  <div className="border-t border-line/60 my-1.5" />
-                  <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
-                  <p className="text-ink-3">{gapIsOutflow
-                    ? 'Hubo retiros que incluían ganancias — esa plata salió de la cartera pero sigue contabilizada como realizada (ver KPI "Ganancias retiradas").'
-                    : 'La cartera tiene plusvalía no clasificada como P&L realizado, típicamente dividendos cobrados o intereses sobre cash (ver KPI "Dividendos e intereses").'}
-                  </p>
-                </>
-              )}
-            </>
-          }
-        />
-        <KpiCell
           label="P&L realizado"
-          value={fmt(realizedPnl)}
+          value={fmtSigned(realizedPnl)}
           tone={realizedPnl >= 0 ? 'pos' : 'neg'}
           sub="operaciones cerradas"
           info={
@@ -749,7 +742,7 @@ export default function Dashboard() {
         />
         <KpiCell
           label="P&L no realizado"
-          value={fmt(totalPnl)}
+          value={fmtSigned(totalPnl)}
           tone={totalPnl >= 0 ? 'pos' : 'neg'}
           sub={`${pctSigned(totalPct)} sobre costo`}
           info={
@@ -806,9 +799,9 @@ export default function Dashboard() {
           es la CAGR time-weighted (Modified Dietz), comparable con benchmarks.
           El desglose realizado/no-realizado ACUMULADO vive en el KPI strip. */}
       {(dailyVar || monthlyVar || totalVar || cagrVar) && (
-        <div className="mb-8">
-          <div className="flex items-center gap-1 mb-2">
-            <p className="eyebrow">Rendimiento</p>
+        <div className="mb-4">
+          <div className="flex items-center gap-1 mb-3">
+            <h3 className="text-[15px] font-semibold text-ink-0 leading-tight">Rendimiento</h3>
             <InfoTooltip size={11} align="left">
               <p className="font-medium text-ink-0">Variación de tus posiciones, sin contar aportes/retiros.</p>
               <p className="text-ink-2 mt-1"><strong className="text-ink-1">Hoy</strong>: vs cierre 23:59 ART. <strong className="text-ink-1">Este mes</strong>: vs cierre del mes anterior. <strong className="text-ink-1">Anual</strong>: CAGR.</p>
@@ -816,9 +809,9 @@ export default function Dashboard() {
               <p className="text-ink-3">⚠ Medido en USD. Si tenés posiciones en ARS (CEDEARs, bonos), los movimientos del dólar blue afectan la variación aunque el precio en pesos no haya cambiado — porque tus pesos valen más o menos dólares.</p>
             </InfoTooltip>
           </div>
-          {/* Mini-strip compacto (no full-width) con el mismo lenguaje visual que
-              el strip de KPIs de arriba — label mono caps + valor text-2xl + %. */}
-          <div className="inline-flex flex-wrap border border-line rounded bg-bg-1">
+          {/* Cards compactas con el % como protagonista (Hoy / Este mes / Anual),
+              mismo lenguaje que el desglose de arriba. */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-w-xl">
             {[
               dailyVar && {
                 key: 'd',
@@ -838,10 +831,9 @@ export default function Dashboard() {
                 pctHero: true,
                 note: cagrVar.months < 12 ? `${cagrVar.months}m · anualizado` : `${cagrVar.months} meses`,
               },
-            ].filter(Boolean).map((c, i) => (
+            ].filter(Boolean).map((c) => (
               <VarCell
                 key={c.key}
-                first={i === 0}
                 label={c.label}
                 data={c.data}
                 note={c.note}
@@ -887,15 +879,11 @@ export default function Dashboard() {
               Rendimiento ajustado por flujos de capital — aportes y retiros se neutralizan para reflejar performance pura.
             </p>
             {periodChange && (
-              <p className="text-sm mt-3 tabular">
-                <span className={`font-semibold ${periodChange.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                  {periodChange.delta >= 0 ? '+' : '−'}USD {usd(Math.abs(periodChange.delta))}
-                </span>
-                <span className={`ml-2 ${periodChange.delta >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
-                  {pctSigned(periodChange.pct)}
-                </span>
-                <span className="ml-2 text-ink-2">en {rangeLabel(range)}</span>
-              </p>
+              <span className={`inline-flex items-center gap-1.5 mt-3 text-[12.5px] font-medium tabular rounded-full px-2.5 py-1 ${periodChange.delta >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
+                {periodChange.delta >= 0 ? '+' : '−'}USD {usd(Math.abs(periodChange.delta))}
+                <span className="opacity-80">· {pctSigned(periodChange.pct)}</span>
+                <span className="text-ink-3 font-normal">en {rangeLabel(range)}</span>
+              </span>
             )}
           </div>
           <RangeTabs value={range} onChange={setRange} />
@@ -923,16 +911,17 @@ export default function Dashboard() {
                       <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid stroke="#1B2230" strokeOpacity={0.6} strokeDasharray="2 4" vertical={false} />
+                  <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} strokeDasharray="2 4" vertical={false} />
                   <XAxis
                     dataKey="label"
-                    tick={{ fill: '#8B8D8A', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    tick={{ fill: '#7C8698', fontSize: 12 }}
                     axisLine={false}
                     tickLine={false}
-                    minTickGap={28}
+                    minTickGap={40}
+                    dy={4}
                   />
                   <YAxis
-                    tick={{ fill: '#8B8D8A', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    tick={{ fill: '#7C8698', fontSize: 12 }}
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={v => {
@@ -951,15 +940,14 @@ export default function Dashboard() {
                   <Tooltip
                     cursor={{ stroke: '#5A5C5B', strokeWidth: 1, strokeDasharray: '3 3' }}
                     contentStyle={{
-                      background: '#101218',
-                      border: '1px solid #2C3142',
-                      borderRadius: 10,
-                      padding: '10px 12px',
-                      boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
-                      fontFamily: 'JetBrains Mono'
+                      background: '#10151F',
+                      border: '1px solid #262E40',
+                      borderRadius: 12,
+                      padding: '10px 14px',
+                      boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)',
                     }}
-                    labelStyle={{ color: '#8B8D8A', fontSize: 10, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.12em' }}
-                    itemStyle={{ color: '#F4F4F0', fontSize: 12, padding: '2px 0' }}
+                    labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 5 }}
+                    itemStyle={{ color: '#F4F4F0', fontSize: 12.5, padding: '2px 0' }}
                     formatter={(v, name) => {
                       // Audit fix C1: data ya está en la currency target.
                       // Solo formateamos. Mismo valor que el axis.
@@ -1003,7 +991,7 @@ export default function Dashboard() {
         )}
 
         {evoSeries.length >= 2 && (
-          <div className="flex items-center gap-4 text-xs text-ink-2 mt-3 pt-3 border-t border-line font-mono">
+          <div className="flex items-center gap-4 text-xs text-ink-2 mt-3 pt-3 border-t border-line/60">
             <span className="inline-flex items-center gap-1.5">
               <span
                 className="inline-block w-3 h-0.5 rounded-full"
@@ -1057,47 +1045,24 @@ export default function Dashboard() {
           rounded={false}
         >
         <div>
-          <div className="mb-4">
-            <p className="eyebrow mb-1">Brokers</p>
+          <div className="mb-3 flex items-baseline justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-1.5">
-              <h3 className="text-base font-semibold text-ink-0 leading-tight">Detalle por cuenta</h3>
+              <h3 className="text-[15px] font-semibold text-ink-0 leading-tight">Brokers</h3>
               <InfoTooltip size={12} align="left">
-                <p>Valor actual de tus posiciones por broker, con P&L total (incluye cash).</p>
+                <p>Valor actual de tus posiciones por broker, con P&L total (incluye cash). Las mismas cards que ves en Cartera.</p>
               </InfoTooltip>
             </div>
+            <Link
+              to="/posiciones"
+              className="text-[12.5px] text-rendi-accent hover:text-rendi-accent/80 inline-flex items-center gap-0.5 transition-colors font-medium"
+            >
+              Ir a Cartera <ArrowRight size={11} strokeWidth={1.75} />
+            </Link>
           </div>
           <div className={`grid gap-3 ${brokers.length === 1 ? 'grid-cols-1 max-w-sm' : brokers.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 md:grid-cols-3'}`}>
-            {brokerTotals.map(b => {
-              const isARS = b.currency === 'ARS'
-              if (isARS) {
-                const pnlArs = b.valueArs - b.invArs
-                const pnlPctArs = b.invArs > 0 ? pnlArs / b.invArs : 0
-                return (
-                  <StatCard
-                    key={b.id}
-                    label={`${b.name} · ARS`}
-                    value={hidden ? '••••••' : fmtArs(b.valueArs)}
-                    sub={hidden
-                      ? `Inv •••••• · P&L: ${pnlArs >= 0 ? '+' : '−'}ARS •••••• (${pctSigned(pnlPctArs)})`
-                      : `Inv ${fmtArs(b.invArs)} · P&L: ${pnlArs >= 0 ? '+' : '−'}ARS ${ars(Math.abs(pnlArs))} (${pctSigned(pnlPctArs)})`}
-                    pnlPositive={pnlArs >= 0}
-                  />
-                )
-              }
-              const pnlUsd = b.value - b.invested
-              const pnlPctUsd = b.invested > 0 ? pnlUsd / b.invested : 0
-              return (
-                <StatCard
-                  key={b.id}
-                  label={`${b.name} · USD`}
-                  value={hidden ? '••••••' : fmtUsd(b.value)}
-                  sub={hidden
-                    ? `Inv •••••• · P&L: ${pnlUsd >= 0 ? '+' : '−'}USD •••••• (${pctSigned(pnlPctUsd)})`
-                    : `Inv ${fmtUsd(b.invested)} · P&L: ${pnlUsd >= 0 ? '+' : '−'}USD ${usd(Math.abs(pnlUsd))} (${pctSigned(pnlPctUsd)})`}
-                  pnlPositive={pnlUsd >= 0}
-                />
-              )
-            })}
+            {brokerTotals.map(b => (
+              <BrokerCard key={b.id} broker={b} totals={b} hidden={hidden} />
+            ))}
           </div>
         </div>
         </AskAIAbout>
@@ -1140,41 +1105,37 @@ function rangeLabel(id) {
 // Total). Con pctHero=true el % es el valor principal y no hay monto (Anual/CAGR).
 // El subdato opcional (note) lleva contexto: "realizado", "desde el inicio",
 // "anualizado". Renderiza igual en mobile y desktop.
-function VarCell({ label, data, fmtSigned, note = null, first = false, pctHero = false }) {
+function VarCell({ label, data, fmtSigned, note = null, pctHero = false }) {
   const pos = (pctHero ? data.pct : data.usd) >= 0
   const toneCls = pos ? 'text-rendi-pos' : 'text-rendi-neg'
   const subTone = pos ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
   return (
-    <div className={`px-5 py-3 min-w-[150px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-none">{label}</div>
-      {pctHero ? (
-        <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${toneCls}`}>{pctSigned(data.pct)}</div>
-      ) : (
-        <>
-          <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${toneCls}`}>{fmtSigned(data.usd)}</div>
-          <div className={`text-[11px] font-mono mt-1.5 leading-none uppercase tracking-caps ${subTone}`}>{pctSigned(data.pct)}</div>
-        </>
+    <div className="bg-bg-1 border border-line rounded-xl px-4 py-3.5">
+      <div className="text-[12px] text-ink-3 leading-none font-medium">{label}</div>
+      <div className={`mt-2 font-semibold tabular num leading-none text-[22px] tracking-tight ${toneCls}`}>{pctSigned(data.pct)}</div>
+      {!pctHero && (
+        <div className={`text-[12px] mt-1.5 leading-none ${subTone} tabular font-medium`}>{fmtSigned(data.usd)}</div>
       )}
       {note && (
-        <div className="text-[11px] font-mono text-ink-2 mt-1 leading-none uppercase tracking-caps truncate">{note}</div>
+        <div className="text-[11px] text-ink-3 mt-1.5 leading-none truncate">{note}</div>
       )}
     </div>
   )
 }
 
-function KpiCell({ label, value, sub, tone, first, info, infoAlign = 'right' }) {
+function KpiCell({ label, value, sub, tone, info, infoAlign = 'right' }) {
   const valueColor =
     tone === 'pos' ? 'text-rendi-pos' :
     tone === 'neg' ? 'text-rendi-neg' :
     'text-ink-0'
   return (
-    <div className={`px-4 py-3 flex-1 min-w-[160px] ${first ? '' : 'border-l border-line/50'}`}>
+    <div className="bg-bg-1 border border-line rounded-xl px-4 py-3.5">
       <div className="flex items-center gap-1 leading-none">
-        <div className="text-[11px] font-mono uppercase tracking-label text-ink-2">{label}</div>
+        <div className="text-[12.5px] text-ink-2 font-medium">{label}</div>
         {info && <InfoTooltip size={11} align={infoAlign}>{info}</InfoTooltip>}
       </div>
-      <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>{value}</div>
-      <div className="text-[11px] font-mono text-ink-2 mt-1.5 leading-none truncate uppercase tracking-caps">{sub}</div>
+      <div className={`mt-2 font-semibold tabular num leading-none text-[19px] tracking-tight ${valueColor}`}>{value}</div>
+      <div className="text-[11.5px] text-ink-3 mt-1.5 leading-none truncate">{sub}</div>
     </div>
   )
 }
@@ -1221,12 +1182,12 @@ function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcBlue = 1
   if (items.length === 0) return null
 
   return (
-    <div className="border border-line rounded bg-bg-1 p-4">
-      <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-sm font-medium text-ink-0">Composición</h3>
-        <span className="text-xs text-ink-3">{items.length} {items.length === 1 ? 'activo' : 'activos'}</span>
+    <div className="border border-line rounded-xl bg-bg-1 p-5">
+      <div className="mb-3.5">
+        <h3 className="text-[14.5px] font-semibold text-ink-0 leading-tight">Composición</h3>
+        <p className="text-xs text-ink-3 mt-0.5">{items.length} {items.length === 1 ? 'activo' : 'activos'} · por valor actual</p>
       </div>
-      <div className="flex h-2 rounded-sm overflow-hidden bg-bg-2 mb-3">
+      <div className="flex h-3 rounded-full overflow-hidden bg-bg-2 mb-4">
         {items.map((it) => (
           <div
             key={it.asset}
@@ -1235,16 +1196,16 @@ function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcBlue = 1
           />
         ))}
       </div>
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         {items.map((it) => (
-          <div key={it.asset} className="flex items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="inline-block w-2 h-2 rounded-sm flex-shrink-0" style={{ background: it.color }} />
-              <span className="text-ink-1 truncate">{it.asset}</span>
+          <div key={it.asset} className="flex items-center justify-between gap-3 text-[12.5px]">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="inline-block w-2.5 h-2.5 rounded flex-shrink-0" style={{ background: it.color }} />
+              <span className="text-ink-0 font-medium truncate">{it.asset}</span>
             </div>
-            <div className="flex items-baseline gap-2 flex-shrink-0">
-              <span className="text-ink-3 tabular text-[11px]">{fmt(it.value)}</span>
-              <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">{it.pct.toFixed(1)}%</span>
+            <div className="flex items-baseline gap-2.5 flex-shrink-0">
+              <span className="text-ink-3 tabular text-[11.5px]">{fmt(it.value)}</span>
+              <span className="text-ink-1 tabular font-semibold min-w-[46px] text-right">{it.pct.toFixed(1)}%</span>
             </div>
           </div>
         ))}
@@ -1292,29 +1253,31 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcBlue = 1 }) {
   if (top.length === 0) return null
 
   return (
-    <div className="border border-line rounded bg-bg-1 overflow-hidden">
-      <header className="flex items-baseline justify-between px-4 py-3 border-b border-line">
-        <h3 className="text-sm font-medium text-ink-0">Principales posiciones</h3>
-        <span className="text-xs text-ink-3">Top 5 por valor</span>
+    <div className="border border-line rounded-xl bg-bg-1 overflow-hidden">
+      <header className="px-5 pt-5 pb-3">
+        <h3 className="text-[14.5px] font-semibold text-ink-0 leading-tight">Principales posiciones</h3>
+        <p className="text-xs text-ink-3 mt-0.5">Top 5 por valor</p>
       </header>
-      <div className="divide-y divide-line/30">
-        {top.map(h => {
+      <div className="px-5 pb-4">
+        {top.map((h, i) => {
           const positive = (h.pnl_pct ?? 0) >= 0
           return (
-            <div key={h.asset} className="flex items-center gap-3 px-4 py-2.5 hover:bg-bg-2/40 transition-colors">
-              <AssetLogo asset={h.asset} size={28} className="flex-shrink-0" />
+            <div key={h.asset} className={`flex items-center gap-3 py-2.5 ${i > 0 ? 'border-t border-line/40' : ''}`}>
+              <AssetLogo asset={h.asset} size={30} className="flex-shrink-0" />
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-ink-0 truncate">{h.asset}</div>
-                <div className="text-[11px] text-ink-3 tabular">{fmt(h.value_usd)}</div>
-              </div>
-              <LazySparkline symbol={(h.asset || '').toUpperCase()} variant="row" />
-              <div className="text-right min-w-[60px]">
-                <div className={`text-sm font-mono tabular ${positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                  {h.pnl_pct != null ? pctSigned(h.pnl_pct) : '—'}
-                </div>
-                <div className={`text-[10px] tabular ${positive ? 'text-rendi-pos/70' : 'text-rendi-neg/70'}`}>
+                <div className="text-[13.5px] font-semibold text-ink-0 truncate leading-tight">{h.asset}</div>
+                <div className={`text-[11px] tabular mt-0.5 ${positive ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
                   {fmtSigned(h.pnl_usd)}
                 </div>
+              </div>
+              <LazySparkline symbol={(h.asset || '').toUpperCase()} variant="row" />
+              <div className="text-right flex-shrink-0">
+                <div className="text-[13.5px] font-semibold text-ink-0 tabular leading-tight">{fmt(h.value_usd)}</div>
+                {h.pnl_pct != null && (
+                  <span className={`inline-block text-[10.5px] font-medium px-1.5 py-0.5 rounded-full mt-1 tabular ${positive ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
+                    {pctSigned(h.pnl_pct)}
+                  </span>
+                )}
               </div>
             </div>
           )

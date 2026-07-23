@@ -43,7 +43,7 @@ export default function Panel({
 
   return (
     <Tag
-      className={`${bg} ${borderClass} rounded ${padClass} ${hover} ${className}`}
+      className={`${bg} ${borderClass} rounded-xl ${padClass} ${hover} ${className}`}
       {...rest}
     >
       {children}
@@ -62,15 +62,15 @@ export function PanelHeader({ title, subtitle, action, icon, eyebrow }) {
         )}
         <div className="min-w-0">
           {eyebrow && (
-            <p className="font-mono text-[11px] uppercase tracking-label text-ink-2 mb-0.5">
+            <p className="text-[12px] font-medium text-ink-2 mb-0.5">
               {eyebrow}
             </p>
           )}
-          <h2 className="text-sm font-medium text-ink-0 leading-tight">
+          <h2 className="text-[15px] font-semibold text-ink-0 leading-tight">
             {title}
           </h2>
           {subtitle && (
-            <p className="text-xs text-ink-3 mt-0.5 leading-snug">
+            <p className="text-[12.5px] text-ink-3 mt-0.5 leading-snug">
               {subtitle}
             </p>
           )}

@@ -137,23 +137,26 @@ body {
     @apply border-b border-line/30;
   }
 
-  /* Label uppercase mono — patrón "specimen sheet" para etiquetas de KPIs.
-     v2: tracking 0.12em (más compacto que 0.18 editorial), tamaño 10-11 px. */
+  /* Label de KPI / header de tabla.
+     Clean pass 2026-07: sans sentence-case legible (antes mono uppercase micro,
+     look terminal). El nombre `label-mono` se mantiene por compat de clases. */
   .label-mono {
-    @apply font-mono text-[11px] sm:text-xs uppercase tracking-label text-ink-2 font-medium;
+    @apply text-[12px] text-ink-2 font-medium;
   }
 
-  /* Eyebrow — kicker pequeño arriba de un título o sección. */
+  /* Eyebrow — kicker pequeño arriba de un título o sección.
+     Clean pass 2026-07: sans sentence-case (mono queda para números). */
   .eyebrow {
-    @apply font-mono text-xs uppercase tracking-label text-ink-2 font-medium;
+    @apply text-[13px] text-ink-2 font-semibold;
   }
 
-  /* Section title — usado por <Section> en Insights y otros. */
+  /* Section title — usado por <Section> en Insights y otros.
+     Clean pass 2026-07: sans grande sentence-case (antes uppercase micro). */
   .section-title {
-    @apply text-sm font-medium uppercase tracking-caps text-ink-1;
+    @apply text-lg font-semibold tracking-tight text-ink-0;
   }
   .section-subtitle {
-    @apply text-xs text-ink-3 mt-1;
+    @apply text-[13px] text-ink-3 mt-1;
   }
 
   /* Hero number — Geist sans grande tabular. Para 1 métrica por pantalla.

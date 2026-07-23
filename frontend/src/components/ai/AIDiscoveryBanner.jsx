@@ -59,7 +59,7 @@ export default function AIDiscoveryBanner() {
         <Sparkles size={14} strokeWidth={1.75} className="text-data-violet" />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-[10px] font-mono uppercase tracking-caps text-data-violet mb-1">
+        <div className="text-[12px] text-data-violet mb-1 font-medium">
           Nuevo · IA contextual
         </div>
         <p className="text-sm text-ink-1 leading-relaxed">

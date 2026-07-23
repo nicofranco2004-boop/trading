@@ -1,18 +1,19 @@
 import { useEffect, useRef, lazy, Suspense } from 'react'
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
 import { PrivacyProvider } from './contexts/PrivacyContext'
 import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import { AlertsProvider } from './contexts/AlertsContext'
+import { AdvisorProvider } from './contexts/AdvisorContext'
+import ClientContextBar from './components/advisor/ClientContextBar'
 import Sidebar from './components/Sidebar'
 import { PageSkeleton } from './components/Skeleton'
 import MobileTabBar from './components/mobile/MobileTabBar'
 import MobileTopBar from './components/mobile/MobileTopBar'
 import DemoBanner from './components/DemoBanner'
 import SupportWhatsAppFab from './components/SupportWhatsAppFab'
-import AICoachDrawer from './components/ai/AICoachDrawer'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import { trackPageView } from './utils/analytics'
@@ -27,6 +28,7 @@ import Login from './pages/Login'
 import Landing from './pages/Landing'
 import VerifyEmail from './pages/VerifyEmail'
 import ResetPassword from './pages/ResetPassword'
+import ClaimAccount from './pages/ClaimAccount'
 
 // ─── Lazy imports: páginas del flujo autenticado ──────────────────────────────
 // Cada página queda en su propio chunk JS, descargado on-demand al navegar.
@@ -44,6 +46,7 @@ const Admin = lazy(() => import('./pages/Admin'))
 const Goals = lazy(() => import('./pages/Goals'))
 const Imports = lazy(() => import('./pages/Imports'))
 const Alertas = lazy(() => import('./pages/Alertas'))
+const RendiAI = lazy(() => import('./pages/RendiAI'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Novedades = lazy(() => import('./pages/Novedades'))
 const FirstInsight = lazy(() => import('./pages/FirstInsight'))
@@ -57,6 +60,9 @@ const Analisis = lazy(() => import('./pages/Analisis'))
 const Fundamentals = lazy(() => import('./pages/Fundamentals'))
 const AssetDetail = lazy(() => import('./pages/AssetDetail'))
 const Cartera = lazy(() => import('./pages/Cartera'))
+const PerfilInversor = lazy(() => import('./pages/PerfilInversor'))
+// Plan Asesor: roster de clientes + drill-down + operación grupal (tier advisor)
+const AdvisorClients = lazy(() => import('./pages/AdvisorClients'))
 const More = lazy(() => import('./pages/More'))
 const Planes = lazy(() => import('./pages/Planes'))
 // BillingReturn exporta 3 componentes — Vite los dedupea en un solo chunk
@@ -145,6 +151,27 @@ function RouteTracker() {
   return null
 }
 
+function AdvisorLandingRedirect() {
+  // Plan Asesor: al ENTRAR a la app (login o apertura de sesión), el asesor
+  // aterriza en su roster (/clientes), no en el mercado. Una vez por sesión
+  // de pestaña (sessionStorage) — después puede navegar a donde quiera sin
+  // que lo pateemos de vuelta.
+  const { user } = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (user?.tier !== 'advisor') return
+    if (location.pathname !== '/') return
+    try {
+      if (sessionStorage.getItem('rendi_adv_landed')) return
+      sessionStorage.setItem('rendi_adv_landed', '1')
+    } catch { /* sin sessionStorage → redirigir igual */ }
+    navigate('/clientes', { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.tier])
+  return null
+}
+
 function AppRoutes() {
   // Las rutas son las mismas en desktop y mobile — el layout cambia, el
   // árbol de rutas no. Algunas páginas detectan useIsMobile() internamente
@@ -159,8 +186,9 @@ function AppRoutes() {
       <Route path="/analisis" element={<Analisis />} />
       <Route path="/fundamentals" element={<Fundamentals />} />
       <Route path="/activo/:ticker" element={<AssetDetail />} />
-      {/* Redirects de rutas viejas al wrapper consolidado, preservando query */}
-      <Route path="/dashboard"       element={<Navigate to="/posiciones?tab=evolucion"   replace />} />
+      {/* Dashboard vuelve a ser página propia (ítem "Dashboard" del sidebar,
+          principal dentro de "Tu Cartera"). Antes era un tab de Cartera. */}
+      <Route path="/dashboard"       element={<Dashboard />} />
       <Route path="/objetivos"       element={<Navigate to="/posiciones?tab=objetivos"   replace />} />
       <Route path="/insights"        element={<Navigate to="/analisis?tab=diagnostico"   replace />} />
       <Route path="/comportamiento"  element={<Navigate to="/analisis?tab=comportamiento" replace />} />
@@ -172,14 +200,18 @@ function AppRoutes() {
       <Route path="/noticias" element={<Navigate to="/novedades?tab=noticias" replace />} />
       <Route path="/operaciones" element={<Operations />} />
       <Route path="/config" element={<Config />} />
-      {/* El test de inversor se migró a Configuración › Test de inversor
-          (2026-07-14). El URL viejo /perfil-inversor redirige ahí para que
-          bookmarks externos y el menú "Más" de mobile lleven al test. */}
-      <Route path="/perfil-inversor" element={<Navigate to="/config?tab=test" replace />} />
+      {/* Perfil de inversor = el CRUCE "perfil declarado vs. tu cartera real"
+          (ítem propio del sidebar en "Análisis"; antes era un tab de /analisis).
+          El TEST/cuestionario sigue en Configuración › Test de inversor; esta
+          página tiene el CTA para completarlo. */}
+      <Route path="/perfil-inversor" element={<PerfilInversor />} />
+      {/* Plan Asesor — gateado adentro por tier (advisor/admin) */}
+      <Route path="/clientes" element={<AdvisorClients />} />
       {/* /objetivos sigue siendo redirect a /posiciones?tab=objetivos arriba */}
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />
       <Route path="/alertas" element={<Alertas />} />
+      <Route path="/ai" element={<RendiAI />} />
       {/* Back-compat: las alertas vivían en Config › Notificaciones */}
       <Route path="/config/notificaciones" element={<Navigate to="/alertas" replace />} />
       <Route path="/bienvenida" element={<FirstInsight />} />
@@ -236,6 +268,9 @@ function Layout() {
               o tras clickear un magic link de password reset. */}
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/reset-password" element={<ResetPassword />} />
+          {/* Plan Asesor: link de invitación — el cliente reclama la cuenta
+              que su asesor cargó, poniendo su propia contraseña. */}
+          <Route path="/claim" element={<ClaimAccount />} />
           {/* Planes — accesible sin login (el visitante decide comprar ANTES
               de crear cuenta; el flow de subscribe en sí requiere login pero
               la página de pricing es 100% pública e indexable por Google). */}
@@ -278,8 +313,11 @@ function Layout() {
   if (isMobile) {
     return (
       <AlertsProvider>
+      <AdvisorProvider>
+        <AdvisorLandingRedirect />
         <MobileTopBar />
         <main className="min-h-screen">
+          <ClientContextBar />
           <DemoBanner />
           <Suspense fallback={<PageFallback />}>
             <AppRoutes />
@@ -287,6 +325,7 @@ function Layout() {
         </main>
         <MobileTabBar />
         <SupportWhatsAppFab />
+      </AdvisorProvider>
       </AlertsProvider>
     )
   }
@@ -297,6 +336,8 @@ function Layout() {
   // (queda tras el gate `if (!user)`), así useAlerts nunca fetchea sin sesión.
   return (
     <AlertsProvider>
+    <AdvisorProvider>
+      <AdvisorLandingRedirect />
       <Sidebar />
       {/* main content shifteado dinámicamente por --sidebar-w
           (la sidebar setea esta CSS var según expandida/colapsada) */}
@@ -304,12 +345,14 @@ function Layout() {
         className="min-h-screen transition-[margin] duration-200 ease-out"
         style={{ marginLeft: 'var(--sidebar-w, 220px)' }}
       >
+        <ClientContextBar />
         <DemoBanner />
         <Suspense fallback={<PageFallback />}>
           <AppRoutes />
         </Suspense>
       </main>
       <SupportWhatsAppFab />
+    </AdvisorProvider>
     </AlertsProvider>
   )
 }
@@ -329,9 +372,8 @@ export default function App() {
                   importa para los ads) era invisible en analytics. */}
               <RouteTracker />
               <Layout />
-              {/* Drawer global del Coach IA — mounted una vez al nivel de App,
-                  cualquier componente lo abre via useCoachDrawer().open() */}
-              <AICoachDrawer />
+              {/* Rendi AI vive en /ai (página propia) — el drawer lateral se
+                  retiró (clean pass 2026-07). useCoachDrawer().open() navega. */}
             </div>
           </CoachDrawerProvider>
           </PrivacyProvider>

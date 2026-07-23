@@ -34,13 +34,13 @@ export default function Privacidad() {
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
-        <p className="font-mono text-[11px] uppercase tracking-caps text-ink-2 mb-2">Legal</p>
+        <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de Privacidad</h1>
         <p className="text-sm text-ink-3 mb-10">Última actualización: 3 de junio de 2026</p>
 
         {/* Resumen prominente */}
         <div className="border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 mb-10">
-          <p className="text-[10px] font-mono uppercase tracking-caps text-data-violet mb-1.5">Resumen rápido</p>
+          <p className="text-[12px] text-data-violet mb-1.5 font-medium">Resumen rápido</p>
           <ul className="text-sm text-ink-1 leading-relaxed space-y-1.5 list-disc pl-5 [&_li]:marker:text-data-violet">
             <li>Guardamos solo lo que vos cargás (operaciones, posiciones, plazos fijos, entradas mensuales) más tu email y nombre.</li>
             <li>No tenemos acceso a tu dinero ni a tus cuentas: no hay integración bancaria. Vos cargás los datos manualmente o por CSV.</li>

@@ -372,7 +372,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   }, { deposits: 0, withdrawals: 0, pnl_realized: 0, pnl_unrealized: 0, ret: 0, retCompound: 1 })
   const totalRetPct = totals.retCompound - 1
 
-  const thClass = 'px-4 py-2 text-left text-[11px] text-ink-3 font-semibold uppercase tracking-wider'
+  const thClass = 'px-4 py-2 text-left text-[12.5px] text-ink-3 font-semibold'
   const tdClass = 'px-4 py-2 text-sm'
   const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
@@ -548,7 +548,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                     <td className={`${tdClass} font-medium text-ink-0`}>
                       <div className="flex items-center gap-2">
                         {isCurrent ? (
-                          <span className="inline-flex items-center text-[9px] font-mono font-semibold uppercase tracking-[0.18em] bg-bg-3 text-ink-1 px-1.5 py-0.5 rounded-sm border border-line">
+                          <span className="inline-flex items-center text-[12.5px] font-semibold tracking-[0.18em] bg-bg-3 text-ink-1 px-1.5 py-0.5 rounded-sm border border-line">
                             En curso
                           </span>
                         ) : (
@@ -564,11 +564,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                         <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoney(net, m.year, m.month)}</td>
                         <td className={tdClass}>
                           {isCurrent ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold uppercase tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-3 text-ink-1 border border-line">
+                            <span className="inline-flex items-center gap-1 text-[12px] font-semibold tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-3 text-ink-1 border border-line">
                               En curso
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold uppercase tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-2 dark:bg-bg-2 text-ink-3 border border-line/50 dark:border-line">
+                            <span className="inline-flex items-center gap-1 text-[12px] font-semibold tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-2 dark:bg-bg-2 text-ink-3 border border-line/50 dark:border-line">
                               <Lock size={9} /> Cerrado
                             </span>
                           )}
@@ -625,7 +625,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             {tabData.length > 0 && (
               <tfoot>
                 <tr className="border-t border-line-2 bg-bg-2 dark:bg-bg-2/20">
-                  <td className="px-4 py-2 text-xs font-semibold text-ink-3 uppercase tracking-wider">Total</td>
+                  <td className="px-4 py-2 text-xs font-semibold text-ink-3">Total</td>
                   {viewMode === 'simple' ? (
                     <>
                       <td className={`px-4 py-2 text-xs font-semibold tabular ${colorClass(totals.ret)}`}>{fmtMoneyDirect(totals.ret)}</td>
@@ -670,7 +670,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           <div className="space-y-4">
 
             {modal === 'next' && (
-              <div className="flex items-start gap-2 bg-bg-2 border border-line rounded px-3 py-2.5 text-sm text-ink-1">
+              <div className="flex items-start gap-2 bg-bg-2 border border-line rounded-xl px-3 py-2.5 text-sm text-ink-1">
                 <ChevronRight size={15} strokeWidth={1.5} className="text-ink-2 mt-0.5 flex-shrink-0" />
                 <span>
                   Capital inicial heredado del cierre de {MONTHS[form.month - 2 < 0 ? 11 : form.month - 2]} ·
@@ -821,7 +821,7 @@ function ConciliationBanner({ live, entries }) {
   return (
     <div className="mb-5 bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-4">
       <div className="flex items-center gap-2 mb-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-3">
+        <h3 className="text-xs font-semibold text-ink-3">
           Conciliación
         </h3>
         <span className="text-[10px] text-ink-3">
@@ -829,8 +829,8 @@ function ConciliationBanner({ live, entries }) {
         </span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="bg-bg-2 border border-line rounded p-3">
-          <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase font-semibold tracking-[0.18em] text-ink-2">
+        <div className="bg-bg-2 border border-line rounded-xl p-3">
+          <div className="flex items-center gap-1.5 text-[12px] font-semibold tracking-[0.18em] text-ink-2">
             <span className="live-dot" aria-hidden />
             Valor actual (live)
           </div>
@@ -843,7 +843,7 @@ function ConciliationBanner({ live, entries }) {
         </div>
 
         <div className="bg-bg-2 dark:bg-bg-1/40 border border-line/70 dark:border-line/40 rounded-lg p-3">
-          <div className="text-[10px] uppercase font-semibold tracking-wider text-ink-3">
+          <div className="text-[12px] font-semibold text-ink-3">
             Mes en curso · cap. final
           </div>
           <p className={`text-lg font-bold mt-1 tabular ${significantDrift ? 'text-amber-600 dark:text-amber-400' : 'text-ink-0 dark:text-white'}`}>
@@ -855,7 +855,7 @@ function ConciliationBanner({ live, entries }) {
         </div>
 
         <div className="bg-bg-2 dark:bg-bg-1/40 border border-line/70 dark:border-line/40 rounded-lg p-3">
-          <div className="text-[10px] uppercase font-semibold tracking-wider text-ink-3">
+          <div className="text-[12px] font-semibold text-ink-3">
             Último mes cerrado
           </div>
           <p className="text-lg font-bold text-ink-0 dark:text-white mt-1 tabular">
