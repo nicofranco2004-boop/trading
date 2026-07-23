@@ -9,7 +9,7 @@ export default function InsightsYReportes() {
       title="Insights y reportes"
       intro="Las 5 cards de análisis automático, el timeline histórico de 12 meses, los detectores de comportamiento y cómo exportar el CSV para tu contador."
       prev={{ to: '/guia/cartera-y-operaciones', label: 'Cartera y operaciones' }}
-      next={{ to: '/guia/coach-ia', label: 'Coach IA' }}
+      next={{ to: '/guia/coach-ia', label: 'Rendi AI' }}
       metaTitle="Insights y reportes — Guía Rendi"
       metaDescription="Las 5 cards de Insights, timeline histórico, 12 detectores de comportamiento y export CSV consolidado para AFIP en Rendi."
       canonicalPath="/guia/insights-y-reportes"
@@ -104,6 +104,23 @@ export default function InsightsYReportes() {
       <p>
         <strong>Free</strong> exporta solo el último mes.{' '}
         <strong>Plus y Pro</strong> exportan todos los meses históricos.
+      </p>
+
+      <h2>Calidad de cartera</h2>
+      <p>
+        En <strong>Calidad de cartera</strong> (en el sidebar, disponible en{' '}
+        <strong>todos los planes</strong>) analizamos tus acciones y CEDEARs en 2 ejes:{' '}
+        <strong>Negocio</strong> (qué tan sólida es la empresa) y <strong>Precio</strong>{' '}
+        (si está cara o atractiva hoy).
+      </p>
+      <p>
+        Es <strong>holding-first</strong>: abre con tus tenencias valuadas y sus dos pills
+        Negocio/Precio a la vista. Desde ahí podés pedir un análisis con IA por categoría
+        para profundizar.
+      </p>
+      <p>
+        Ojo: bonos, FCI y cripto no tienen fundamentals, así que aparecen como{' '}
+        <strong>"sin datos"</strong>.
       </p>
 
       <h2>Wrapped anual</h2>

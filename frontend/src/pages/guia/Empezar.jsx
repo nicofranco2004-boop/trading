@@ -89,7 +89,7 @@ export default function Empezar() {
       <ul>
         <li><strong>Dashboard</strong>: tu portfolio total en USD, P&amp;L del mes, evolución.</li>
         <li><strong>Insights</strong>: 5 cards de análisis automático.</li>
-        <li><strong>Coach IA</strong>: 12 preguntas guiadas (Free) o chat libre (Pro).</li>
+        <li><strong>Rendi AI</strong>: 12 preguntas guiadas (Free) o chat libre (Pro).</li>
       </ul>
     </GuidePage>
   )

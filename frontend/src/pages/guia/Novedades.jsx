@@ -6,12 +6,12 @@ export default function Novedades() {
   return (
     <GuidePage
       section="5 de 6"
-      title="Novedades"
-      intro="Eventos del mercado que afectan tus tickers + noticias filtradas por tu cartera + noticias macro generales."
-      prev={{ to: '/guia/coach-ia', label: 'Coach IA' }}
+      title="Novedades y alertas"
+      intro="Eventos del mercado que afectan tus tickers + noticias filtradas por tu cartera + noticias macro generales, y alertas que te avisan cuando un activo llega a un precio o se mueve un % que vos definís."
+      prev={{ to: '/guia/coach-ia', label: 'Rendi AI' }}
       next={{ to: '/guia/cuenta-y-planes', label: 'Cuenta y planes' }}
-      metaTitle="Novedades (Eventos + Noticias) — Guía Rendi"
-      metaDescription="Cómo funcionan los eventos del mercado y las noticias filtradas por tu cartera en Rendi."
+      metaTitle="Novedades y alertas (Eventos + Noticias) — Guía Rendi"
+      metaDescription="Cómo funcionan los eventos del mercado, las noticias filtradas por tu cartera y las alertas de precio y variación en Rendi."
       canonicalPath="/guia/novedades"
     >
       <h2>Cómo llegar</h2>
@@ -88,9 +88,25 @@ export default function Novedades() {
         carga puede tardar 3-5 segundos mientras buscamos noticias frescas.
       </p>
 
-      <h2>Tip: AI Coach + Novedades</h2>
+      <h2>Alertas de precio</h2>
       <p>
-        Si una noticia te preocupa, podés pasarla al Coach IA para contexto:
+        Sección <strong>Alertas</strong> en el sidebar. Creás alertas para que Rendi te
+        avise cuando pasa algo con un activo, sin tener que estar mirando la pantalla.
+      </p>
+      <ul>
+        <li><strong>Precio objetivo</strong> (todos los planes, incluido Free): "avisame cuando NVDA toque tal precio", por encima o por debajo del valor actual.</li>
+        <li><strong>Variación %</strong> (Plus y Pro): asimétrica, o sea que podés pedir "sube ≥ X%" o "baja ≥ Y%" con umbrales distintos para cada lado.</li>
+      </ul>
+      <p>
+        Te avisamos por <strong>push notification</strong> (si activaste las notificaciones)
+        más <strong>email</strong>. La alerta es <strong>edge-trigger con cooldown</strong>:
+        te avisa una sola vez cuando cruza el umbral y no te spamea mientras se queda del
+        otro lado.
+      </p>
+
+      <h2>Tip: Rendi AI + Novedades</h2>
+      <p>
+        Si una noticia te preocupa, podés pasarla a Rendi AI para contexto:
         "vi una noticia que dice X sobre NVDA. ¿cómo me afecta a mí?". El bot tiene
         herramienta <code>get_recent_news_for_assets</code> que busca news frescas
         para responderte con contexto.

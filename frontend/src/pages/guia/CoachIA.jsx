@@ -6,15 +6,15 @@ export default function CoachIA() {
   return (
     <GuidePage
       section="4 de 6"
-      title="Coach IA"
-      intro="Cómo funciona el asistente IA: 12 preguntas guiadas, chat libre (Pro), memoria persistente y cuotas semanales."
+      title="Rendi AI"
+      intro="Cómo funciona el asistente IA: 12 preguntas guiadas, chat libre (Pro), registro de operaciones por chat, memoria persistente y cuotas semanales."
       prev={{ to: '/guia/insights-y-reportes', label: 'Insights y reportes' }}
-      next={{ to: '/guia/novedades', label: 'Novedades' }}
-      metaTitle="Coach IA — Guía Rendi"
-      metaDescription="Cómo usar el Coach IA de Rendi: preguntas guiadas, chat libre Pro, memoria persistente y cuotas semanales."
+      next={{ to: '/guia/novedades', label: 'Novedades y alertas' }}
+      metaTitle="Rendi AI — Guía Rendi"
+      metaDescription="Cómo usar Rendi AI: preguntas guiadas, chat libre Pro, registro de operaciones por chat, memoria persistente y cuotas semanales."
       canonicalPath="/guia/coach-ia"
     >
-      <h2>Qué es el Coach IA</h2>
+      <h2>Qué es Rendi AI</h2>
       <p>
         Asistente conversacional con contexto completo de tu cartera. Usa{' '}
         <strong>Claude Haiku 4.5</strong> (Anthropic) y recibe un snapshot de tus
@@ -24,7 +24,7 @@ export default function CoachIA() {
 
       <h2>Cómo abrirlo</h2>
       <p>
-        En el sidebar (desktop) o en cualquier página, botón "Coach IA" con ícono de
+        En el sidebar (desktop) o en cualquier página, botón "Rendi AI" con ícono de
         chispas. Se abre un drawer lateral con el chat. También aparece como FAB en
         algunas pantallas (mobile).
       </p>
@@ -42,6 +42,33 @@ export default function CoachIA() {
         <li>"¿Cuándo reportan earnings los activos de mi cartera?"</li>
         <li>"¿Mi cartera coincide con mi perfil de inversor?"</li>
       </ul>
+
+      <h2>Registrar operaciones por chat</h2>
+      <p>
+        Además de consultar, en el chat de Rendi AI podés{' '}
+        <strong>registrar o actualizar operaciones</strong> escribiéndolas en lenguaje
+        natural. Reconoce compras y ventas, depósitos y retiros de cash, transferencias
+        entre brokers y conversiones de pesos a dólares (y viceversa). Por ejemplo:
+      </p>
+      <ul>
+        <li>"Compré 10 CEDEARs de AAPL a 150."</li>
+        <li>"Vendí 5 AAPL a 180."</li>
+        <li>"Deposité 600.000 pesos en Balanz."</li>
+        <li>"Pasé 200.000 pesos a dólares en Balanz."</li>
+      </ul>
+      <p>
+        El flujo es simple: le decís lo que hiciste, si falta algún dato te lo pregunta,
+        te muestra un resumen y, cuando confirmás, lo anota. Si la operación es de hoy y
+        no le pasás el precio, usa la cotización real del día; si es retroactiva, el
+        precio lo ponés vos. ¿Cargaste algo mal? Le decís que deshaga la última.
+      </p>
+      <p>
+        <strong>Importante</strong>: Rendi AI solo lo <strong>anota en tu tracker de
+        Rendi</strong> — no opera tu cuenta real del broker. Está disponible en{' '}
+        <strong>todos los planes</strong>: en Free y Plus el texto libre del chat sirve
+        solo para registrar (el análisis con causalidad sigue siendo Pro); Pro hace las
+        dos cosas. La Cartera se refresca sola después de registrar.
+      </p>
 
       <h2>Chat libre (solo Pro)</h2>
       <p>

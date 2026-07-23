@@ -41,15 +41,15 @@ const SECTIONS = [
     n: 4,
     to: '/guia/coach-ia',
     icon: SparkIcon,
-    title: 'Coach IA',
-    desc: '12 preguntas guiadas, chat libre (Pro), memoria persistente y cuotas semanales.',
+    title: 'Rendi AI',
+    desc: '12 preguntas guiadas, chat libre (Pro), registrar operaciones por chat, memoria persistente y cuotas semanales.',
   },
   {
     n: 5,
     to: '/guia/novedades',
     icon: Bell,
-    title: 'Novedades',
-    desc: 'Eventos del mercado, noticias filtradas por tus tickers y noticias macro generales.',
+    title: 'Novedades y alertas',
+    desc: 'Eventos del mercado, noticias filtradas por tus tickers, noticias macro generales y alertas de precio objetivo o variación %.',
   },
   {
     n: 6,
@@ -65,7 +65,7 @@ export default function Guia() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Guía completa de Rendi — Manual de uso"
-        description="Cómo usar Rendi paso a paso: agregar operaciones, importar CSV, ver insights, usar el Coach IA, gestionar tu suscripción. Manual completo para inversores argentinos."
+        description="Cómo usar Rendi paso a paso: agregar operaciones, importar CSV, ver insights, usar Rendi AI, gestionar tu suscripción. Manual completo para inversores argentinos."
         canonical="/guia"
       />
 
@@ -97,7 +97,7 @@ export default function Guia() {
           </h1>
           <p className="text-base md:text-lg text-ink-2 max-w-2xl mx-auto leading-relaxed">
             Todo lo que necesitás saber para sacarle el jugo a Rendi. Desde cargar tu
-            primera operación hasta usar el Coach IA con memoria. 6 secciones, lectura
+            primera operación hasta usar Rendi AI con memoria. 6 secciones, lectura
             de 5-10 min cada una.
           </p>
         </section>
