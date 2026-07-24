@@ -986,3 +986,125 @@ class ClaimFlowTest(AdvisorBase):
         r = self.http.post(f"/api/me/advisor/{self.advisor}/revoke",
                            headers=self._hdr(self.stranger))
         self.assertEqual(r.status_code, 404)
+
+
+class RadarTest(AdvisorBase):
+    """Radar cross-cliente (nav del asesor, Fase 2): /api/advisor/radar/*.
+
+    Los helpers de refresh pegan a yfinance/Google News — acá se anulan
+    (no-op) y se siembran las tablas de cache (financial_events / news)
+    directo: lo que se testea es la agregación + atribución, no el fetcher.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._saved = (
+            main._refresh_events_in_background, main._refresh_events_for_tickers,
+            main._refresh_news_in_background, main._ensure_news_batch_parallel,
+        )
+        main._refresh_events_in_background = lambda *a, **k: None
+        main._refresh_events_for_tickers = lambda *a, **k: None
+        main._refresh_news_in_background = lambda *a, **k: None
+        main._ensure_news_batch_parallel = lambda *a, **k: None
+        # Segundo cliente para probar la atribución ("lo tienen 2 clientes")
+        conn = main.get_db()
+        self.client2 = _new_user(conn, f"cliente2-{uuid.uuid4().hex[:8]}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, self.client2))
+        _link(conn, self.advisor, self.client2, label="Ana G")
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                     (self.client2, "IOL", "ARS"))
+        conn.commit(); conn.close()
+
+    def tearDown(self):
+        (main._refresh_events_in_background, main._refresh_events_for_tickers,
+         main._refresh_news_in_background, main._ensure_news_batch_parallel) = self._saved
+
+    def _pos(self, uid, asset, broker="Cocos", qty=10):
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, buy_price, is_cash)
+               VALUES (?,?,?,?,?,0)""", (uid, broker, asset, qty, 100))
+        conn.commit(); conn.close()
+
+    def _seed_event(self, ticker, days_ahead=5, event_type="earnings"):
+        from datetime import datetime, timedelta
+        conn = main.get_db()
+        conn.execute(
+            """INSERT OR IGNORE INTO financial_events
+                   (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+               VALUES (?,?,?,?,1,'yfinance',datetime('now'))""",
+            (ticker, event_type,
+             (datetime.utcnow() + timedelta(days=days_ahead)).strftime('%Y-%m-%d'), '{}'))
+        conn.commit(); conn.close()
+
+    def _seed_news(self, ticker, title):
+        conn = main.get_db()
+        conn.execute(
+            """INSERT OR IGNORE INTO news
+                   (source, external_id, title, url, published_at, category,
+                    query_source, fetched_at)
+               VALUES ('google_news_rss', ?, ?, 'https://example.com/n',
+                       datetime('now'), 'portfolio', ?, datetime('now'))""",
+            (f"ext-{uuid.uuid4().hex[:10]}", title, f"{ticker} acciones"))
+        conn.commit(); conn.close()
+
+    def test_radar_events_agrega_y_atribuye_clientes(self):
+        # AAPL lo tienen los dos clientes; GGAL solo el segundo. MSFT lo tiene
+        # un usuario AJENO al asesor — no debe aparecer.
+        self._pos(self.client_uid, "AAPL")
+        self._pos(self.client2, "AAPL", broker="IOL")
+        self._pos(self.client2, "GGAL", broker="IOL")
+        self._pos(self.stranger, "MSFT")
+        for t in ("AAPL", "GGAL", "MSFT"):
+            self._seed_event(t)
+
+        r = self.http.get("/api/advisor/radar/events", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        events = {e["ticker"]: e for e in r.json()["events"]}
+        self.assertIn("AAPL", events)
+        self.assertIn("GGAL", events)
+        self.assertNotIn("MSFT", events)
+        self.assertEqual(len(events["AAPL"]["clients"]), 2)
+        self.assertEqual({c["label"] for c in events["AAPL"]["clients"]}, {"Juan P", "Ana G"})
+        self.assertEqual([c["label"] for c in events["GGAL"]["clients"]], ["Ana G"])
+
+    def test_radar_events_requiere_plan_asesor(self):
+        r = self.http.get("/api/advisor/radar/events", headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)
+
+    def test_radar_events_cliente_revocado_no_cuenta(self):
+        self._pos(self.client2, "GGAL", broker="IOL")
+        self._seed_event("GGAL")
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_clients SET status='revoked' WHERE client_uid=?",
+                     (self.client2,))
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/radar/events", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("GGAL", {e["ticker"] for e in r.json()["events"]})
+
+    def test_radar_events_sin_clientes_con_posiciones_vacio(self):
+        r = self.http.get("/api/advisor/radar/events", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["events"], [])
+
+    def test_radar_news_agrega_y_atribuye(self):
+        self._pos(self.client_uid, "AAPL")
+        self._pos(self.stranger, "MSFT")
+        self._seed_news("AAPL", "Apple sube fuerte")
+        self._seed_news("MSFT", "Microsoft cae")
+
+        r = self.http.get("/api/advisor/radar/news", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        news = r.json()["news"]
+        # La tabla news es compartida entre archivos del suite — no asumimos
+        # cuántas noticias de AAPL hay, sino que TODAS son de tickers del
+        # libro (nunca MSFT del ajeno) y que la atribución es correcta.
+        self.assertTrue(any(n["title"] == "Apple sube fuerte" for n in news))
+        for n in news:
+            self.assertEqual(n["ticker"], "AAPL")
+            self.assertEqual([c["label"] for c in n["clients"]], ["Juan P"])
+
+    def test_radar_news_requiere_plan_asesor(self):
+        r = self.http.get("/api/advisor/radar/news", headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)

@@ -25058,6 +25058,167 @@ def revoke_my_advisor(advisor_uid: int, uid: int = Depends(get_current_user)):
         conn.close()
 
 
+# ─── Radar cross-cliente (nav del asesor, Fase 2) ────────────────────────────
+# El asesor no tiene cartera propia — su "Novedades" son los eventos/noticias
+# de CUALQUIER activo que tenga CUALQUIERA de sus clientes, con atribución
+# ("GGAL reporta el jueves — lo tienen 3 de tus clientes"). Reusa la misma
+# maquinaria de cache que /events/portfolio y /news/portfolio (tablas
+# financial_events/news + SWR), solo cambia el universo de tickers.
+
+# El fetch de eventos es per-ticker contra yfinance: un libro grande (500
+# clientes) puede juntar cientos de tickers distintos — capeamos priorizando
+# los MÁS TENIDOS (los que le importan a más clientes) y reportamos cuántos
+# quedaron afuera en la respuesta (sin caps silenciosos).
+ADVISOR_RADAR_TICKER_CAP = 60
+ADVISOR_RADAR_NEWS_QUERY_CAP = 20  # mismo cap de queries que /news/portfolio
+
+
+def _advisor_ticker_holders(conn, uid: int) -> dict:
+    """Universo de tickers del libro: {ticker: [{client_uid, label}, …]}.
+    Solo clientes con vínculo activo y posiciones abiertas (quantity > 0);
+    cash afuera, igual que los endpoints per-cuenta."""
+    rows = conn.execute(
+        """SELECT DISTINCT p.asset, ac.client_uid, ac.label
+           FROM advisor_clients ac
+           JOIN positions p ON p.user_id = ac.client_uid
+           WHERE ac.advisor_uid=? AND ac.status='active'
+             AND p.is_cash=0 AND p.quantity > 0
+             AND p.asset NOT IN ('USDT','USD','ARS')
+           ORDER BY ac.label""",
+        (uid,),
+    ).fetchall()
+    holders = {}
+    for r in rows:
+        holders.setdefault(r["asset"], []).append(
+            {"client_uid": r["client_uid"], "label": r["label"] or f"Cliente {r['client_uid']}"})
+    return holders
+
+
+def _radar_cap_tickers(holders: dict, tickers: list, cap: int):
+    """Ordena por cantidad de tenedores (desc, alfabético como desempate) y
+    capea. Devuelve (tickers_capeados, cuántos_quedaron_afuera)."""
+    ordered = sorted(tickers, key=lambda t: (-len(holders.get(t, [])), t))
+    return ordered[:cap], max(0, len(ordered) - cap)
+
+
+@app.get("/api/advisor/radar/events")
+def advisor_radar_events(days: int = 90, uid: int = Depends(get_current_user)):
+    """Eventos próximos para los activos que tiene cualquiera de los clientes
+    del asesor, cada uno con la lista de clientes que lo tienen."""
+    if days <= 0 or days > 365:
+        raise HTTPException(422, "days debe estar entre 1 y 365")
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        holders = _advisor_ticker_holders(conn, uid)
+        # Igual que /events/portfolio: bonos AR los arma el frontend desde
+        # bondSchedule (acá no hay posiciones per-broker así que se omiten)
+        # y cripto no tiene eventos de este tipo.
+        stock_tickers = [t for t in holders
+                         if t not in AR_BONDS_DATA912 and t not in CRYPTO_SYMBOLS]
+        stock_tickers, dropped = _radar_cap_tickers(holders, stock_tickers, ADVISOR_RADAR_TICKER_CAP)
+        if not stock_tickers:
+            return {"events": [], "refreshed_tickers": 0, "dropped_tickers": 0}
+
+        # SWR idéntico a /events/portfolio: si hay algo cacheado devolvemos ya
+        # y refrescamos atrás; si el cache está frío bloqueamos una vez.
+        refreshed = 0
+        if _has_events_for_tickers(conn, stock_tickers, days=days):
+            _refresh_events_in_background(stock_tickers)
+        else:
+            try:
+                before = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
+                _refresh_events_for_tickers(conn, stock_tickers)
+                after = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
+                refreshed = after - before
+            except Exception:
+                pass
+
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        end_date = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%d')
+        placeholders = ','.join('?' for _ in stock_tickers)
+        rows = conn.execute(
+            f"""SELECT ticker, event_type, event_date, details, confirmed, source
+                FROM financial_events
+                WHERE ticker IN ({placeholders})
+                  AND event_date >= ? AND event_date <= ?
+                ORDER BY event_date ASC""",
+            (*stock_tickers, today, end_date),
+        ).fetchall()
+
+        events = []
+        for r in rows:
+            details = {}
+            try:
+                details = json.loads(r['details']) if r['details'] else {}
+            except Exception:
+                pass
+            events.append({
+                'ticker': r['ticker'],
+                'event_type': r['event_type'],
+                'event_date': r['event_date'],
+                'details': details,
+                'confirmed': bool(r['confirmed']),
+                'source': r['source'],
+                'clients': holders.get(r['ticker'], []),
+            })
+        return {"events": events, "refreshed_tickers": refreshed, "dropped_tickers": dropped}
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/radar/news")
+def advisor_radar_news(limit: int = 30, uid: int = Depends(get_current_user)):
+    """Noticias de los activos que tiene cualquiera de los clientes del
+    asesor, cada una con la lista de clientes que tienen ese activo."""
+    if limit <= 0 or limit > 100:
+        raise HTTPException(422, "limit debe estar entre 1 y 100")
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        holders = _advisor_ticker_holders(conn, uid)
+        all_tickers = [t for t in holders if t not in CRYPTO_SYMBOLS]
+        tickers, dropped = _radar_cap_tickers(holders, all_tickers, ADVISOR_RADAR_TICKER_CAP)
+        if not tickers:
+            return {"news": [], "count": 0, "dropped_tickers": 0}
+
+        # Sembramos queries solo para los más tenidos (mismo cap que
+        # /news/portfolio) — el SELECT de abajo matchea el universo completo
+        # capeado, así que noticias ya cacheadas de otros tickers salen igual.
+        queries_batch = [(f"{t} acciones", "es", 'portfolio')
+                         for t in tickers[:ADVISOR_RADAR_NEWS_QUERY_CAP]]
+        if _has_news_for_tickers(conn, tickers):
+            _refresh_news_in_background(queries_batch, NEWS_TICKER_TTL)
+        else:
+            try:
+                _ensure_news_batch_parallel(queries_batch, NEWS_TICKER_TTL, max_wait_seconds=4)
+            except Exception:
+                pass
+
+        like_clauses = ' OR '.join(['query_source LIKE ?'] * len(tickers))
+        like_params = [f'{t} %' for t in tickers]
+        rows = conn.execute(
+            f"""SELECT title, summary, url, published_at, query_source,
+                       category, source, tags, sentiment
+                FROM news
+                WHERE category = 'portfolio'
+                  AND ({like_clauses})
+                ORDER BY published_at DESC
+                LIMIT ?""",
+            (*like_params, limit),
+        ).fetchall()
+
+        result = []
+        for r in rows:
+            d = _news_row_to_dict(r)
+            d['ticker'] = d.get('query_source', '').split(' ', 1)[0] if d.get('query_source') else None
+            d['clients'] = holders.get(d['ticker'], []) if d['ticker'] else []
+            result.append(d)
+        return {"news": result, "count": len(result), "dropped_tickers": dropped}
+    finally:
+        conn.close()
+
+
 # ─── Operación grupal (block trade) ──────────────────────────────────────────
 
 class GroupOpRowIn(BaseModel):

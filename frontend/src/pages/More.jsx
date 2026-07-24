@@ -64,6 +64,7 @@ export default function More() {
       items: [
         ...(atOwnLevel ? [{ to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, sub: 'Tu libro: AUM total, estrella, colas' }] : []),
         { to: '/clientes', label: 'Clientes', icon: UserRound, sub: 'Tus clientes y el resumen de sus carteras' },
+        ...(atOwnLevel ? [{ to: '/novedades', label: 'Novedades', icon: Bell, sub: 'Eventos y noticias de los activos de tus clientes' }] : []),
       ],
     }] : []),
     // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.

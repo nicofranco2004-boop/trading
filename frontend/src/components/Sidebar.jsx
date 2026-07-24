@@ -182,6 +182,15 @@ export default function Sidebar() {
                 {!collapsed && <span>Clientes</span>}
               </>)}
             </NavLink>
+            <NavLink to="/novedades" title={collapsed ? 'Novedades' : undefined}
+              onMouseEnter={() => prefetchRoute('/novedades')} onFocus={() => prefetchRoute('/novedades')}
+              className={rowCls}>
+              {({ isActive }) => (<>
+                {isActive && <ActiveBar />}
+                <Newspaper size={18} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span>Novedades</span>}
+              </>)}
+            </NavLink>
           </div>
         )}
         {/* Dentro de un cliente, "Clientes" sigue accesible para volver al

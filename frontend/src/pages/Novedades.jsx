@@ -16,6 +16,9 @@ import { Calendar, Newspaper } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Events from './Events'
 import News from './News'
+import AdvisorNovedades from './AdvisorNovedades'
+import { useAuth } from '../contexts/AuthContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
 
 const SECTIONS = [
   { value: 'eventos',  label: 'Eventos',  icon: Calendar },
@@ -29,7 +32,18 @@ function readSection(searchParams) {
   return SECTIONS.find(s => s.value === t) ? t : DEFAULT_SECTION
 }
 
+// El asesor, en su propio nivel (sin haber entrado a un cliente), no tiene
+// cartera propia — "Novedades" ahí es el radar cross-cliente (los activos de
+// TODOS sus clientes). Adentro de un cliente, el radar normal de ESA cartera.
+// Mismo patrón wrapper que Dashboard.jsx → AdvisorDashboard.
 export default function Novedades() {
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  if (user?.tier === 'advisor' && !clientCtx) return <AdvisorNovedades />
+  return <PersonalNovedades />
+}
+
+function PersonalNovedades() {
   const [searchParams, setSearchParams] = useSearchParams()
   const section = readSection(searchParams)
 
