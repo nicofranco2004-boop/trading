@@ -13357,7 +13357,7 @@ Tu usuario NO es un inversor retail: es un ASESOR FINANCIERO que administra las 
 
 TU CONTEXTO (reemplaza al snapshot personal; ignorá las reglas de 'positions/_kind' del snapshot):
 - aum: total administrado (USD), clientes, delta 7d. flows_month: aportes−retiros del mes + efecto mercado.
-- clients[]: cada cliente con id, label (así lo nombra el asesor — usalo SIEMPRE tal cual), aum_usd, ret_pct (retorno total vs aportado), n_pos y top (sus 5 tenencias más grandes con value_usd y weight_pct DE ESA cartera).
+- clients[]: cada cliente con id, label (así lo nombra el asesor — usalo SIEMPRE tal cual), aum_usd, ret_pct (retorno total vs aportado), n_pos y top (sus 5 tenencias más grandes con value_usd y weight_pct = % del TOTAL de la cuenta del cliente, cash incluido).
 - exposure[]: por activo, qué clientes lo tienen (value_usd + weight_pct de la cartera de cada uno) y el total_usd cross-cliente. Es TU fuente para "¿a quiénes afecta X?" y concentraciones.
 - star: qué activos le hacen ganar/perder a más clientes. queues: clientes que necesitan atención (caída fuerte, cash ocioso, inactivos, sin cargar) — TU fuente para "¿a quién llamo hoy?". distribution: cuántos van en verde/rojo + mejor/peor.
 - Todo en USD al MEP del día (tc_mep). skipped_no_price = posiciones excluidas por no tener precio — si es alto, aclaralo.
@@ -17120,21 +17120,36 @@ def _pending_summary_epilogue(uid: int, text: str) -> str:
     el precio a X' sin re-armar, o re-arma a otro precio sin mostrarlo — las
     dos pasaron en e2e reales), el server anexa el resumen él mismo."""
     d = _TRADE_DRAFT.get(uid)
-    if not d or d.get("status") != "confirming":
-        return ""
-    if (time.time() - d.get("ts", 0)) > _TRADE_DRAFT_TTL:
-        return ""
-    p = d.get("payload") or {}
-    # trades: se matchea el PRECIO; movimientos de cash (sin precio): el MONTO
-    ref_val = p.get("price") if p.get("price") is not None else p.get("amount")
-    if ref_val is None:
-        return ""
-    text_digits = re.sub(r"\D", "", text or "")
-    ref_digits = re.sub(r"\D", "", f"{ref_val:g}")
-    if ref_digits and ref_digits in text_digits:
-        return ""
-    return ("\n\nRegistro pendiente: " + str(d.get("summary", ""))
-            + " — ¿Confirmás? (sí/no)")
+    if d and d.get("status") == "confirming" \
+            and (time.time() - d.get("ts", 0)) <= _TRADE_DRAFT_TTL:
+        p = d.get("payload") or {}
+        # trades: se matchea el PRECIO; movimientos de cash (sin precio): el MONTO
+        ref_val = p.get("price") if p.get("price") is not None else p.get("amount")
+        if ref_val is None:
+            return ""
+        text_digits = re.sub(r"\D", "", text or "")
+        ref_digits = re.sub(r"\D", "", f"{ref_val:g}")
+        if ref_digits and ref_digits in text_digits:
+            return ""
+        return ("\n\nRegistro pendiente: " + str(d.get("summary", ""))
+                + " — ¿Confirmás? (sí/no)")
+    # Misma garantía para el registro GRUPAL (book-mode): escribe en N
+    # cuentas — con más razón el asesor tiene que haber visto el resumen
+    # vigente antes de que un 'sí' lo ejecute (audit: el flujo grupal no
+    # tenía esta red y el personal sí).
+    g = _GROUP_DRAFT.get(uid)
+    if g and g.get("status") == "confirming" \
+            and (time.time() - g.get("ts", 0)) <= _TRADE_DRAFT_TTL:
+        ref_val = (g.get("fields") or {}).get("price")
+        if ref_val is None:
+            return ""
+        text_digits = re.sub(r"\D", "", text or "")
+        ref_digits = re.sub(r"\D", "", f"{float(ref_val):g}")
+        if ref_digits and ref_digits in text_digits:
+            return ""
+        return ("\n\nRegistro grupal pendiente: " + str(g.get("summary", ""))
+                + " — ¿Confirmás? (sí/no)")
+    return ""
 
 
 def _trade_error_human(err) -> str:
@@ -20163,6 +20178,15 @@ _HAIKU_PRICE = {
     "output": 5.0,
 }
 
+# Sonnet 4.6 (el modelo del chat del LIBRO, book-mode del Plan Asesor) — sin
+# esto el monitoreo de costos subreportaba 3× justo el modo más caro (audit).
+_SONNET_PRICE = {
+    "input": 3.0,
+    "cache_write": 3.75,
+    "cache_read": 0.30,
+    "output": 15.0,
+}
+
 
 def _warn_if_truncated(resp_obj, tier: str, uid: int, stage: str) -> None:
     """Respuesta cortada por max_tokens → la prosa se comió el presupuesto y el
@@ -20177,7 +20201,8 @@ def _warn_if_truncated(resp_obj, tier: str, uid: int, stage: str) -> None:
         pass
 
 
-def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> int:
+def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str,
+                                model: str = None) -> int:
     """Estima costo de un response del LLM y loggea cache hit/create.
 
     Devuelve costo en centésimos de USD (int) para persistir en
@@ -20186,6 +20211,8 @@ def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> i
 
     Audit #3 fix B4: sin este log, una caída del cache hit rate de 50%→25%
     duplica el costo y solo nos enteramos por la factura mensual.
+    `model`: el modelo REAL del request — book-mode corre Sonnet (3×/5× el
+    precio de Haiku); sin esto el costo del modo más caro se subreportaba 3×.
     """
     if usage_obj is None:
         return 0
@@ -20197,20 +20224,21 @@ def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> i
         cw = int(getattr(usage_obj, "cache_creation_input_tokens", 0) or 0)
         cr = int(getattr(usage_obj, "cache_read_input_tokens", 0) or 0)
 
+        price = _SONNET_PRICE if (model and "sonnet" in model) else _HAIKU_PRICE
         cost_usd = (
-            inp * _HAIKU_PRICE["input"]
-            + cw * _HAIKU_PRICE["cache_write"]
-            + cr * _HAIKU_PRICE["cache_read"]
-            + out * _HAIKU_PRICE["output"]
+            inp * price["input"]
+            + cw * price["cache_write"]
+            + cr * price["cache_read"]
+            + out * price["output"]
         ) / 1_000_000
 
         total_input = inp + cw + cr
         cache_hit_pct = (cr / total_input * 100) if total_input > 0 else 0.0
 
         log.info(
-            "ai_chat_usage tier=%s uid=%s stage=%s input=%d cache_write=%d cache_read=%d "
+            "ai_chat_usage tier=%s uid=%s stage=%s model=%s input=%d cache_write=%d cache_read=%d "
             "output=%d cache_hit=%.1f%% cost_usd=%.5f",
-            tier, uid, stage, inp, cw, cr, out, cache_hit_pct, cost_usd,
+            tier, uid, stage, model or "haiku", inp, cw, cr, out, cache_hit_pct, cost_usd,
         )
         # Convertir a centésimos (1 USD = 100 cents). Round mínimo 0 — si la
         # llamada fue gratis (todo cache_read y resultó <0.5 cent), no perdemos
@@ -20268,6 +20296,12 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
                     "tool_use_id": block.id,
                     "content": json.dumps({
                         "error": (
+                            # El upsell a Pro es intencional para Free/Plus;
+                            # al ASESOR (tier tope, book-mode) jamás hay que
+                            # sugerirle "pasate a Pro" (audit).
+                            f"la tool '{block.name}' no está disponible en este "
+                            "chat. Respondé con los datos del contexto que ya tenés."
+                            if tier == "advisor" else
                             f"la tool '{block.name}' no está disponible en tu plan. "
                             "Respondé con los datos del snapshot; si el usuario "
                             "necesita ese dato de mercado, mencioná que es parte "
@@ -20511,12 +20545,28 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     conn = get_db()
     try:
         tier = quota.get_tier(conn, uid)
+        # LENTE del asesor dentro de un cliente (misma regla que
+        # /api/plan/features): el resolver YA validó el vínculo activo (uid ≠
+        # auth_uid solo pasa con link 'active'). Si el que mira es un asesor y
+        # la cuenta del cliente es free/plus — el caso real: un cliente que
+        # RECLAMÓ su cuenta (F4a) y cayó a 'free' — el chat se sirve con
+        # lente 'pro' (chat libre, prompt premium), igual que un shadow.
+        # Sin esto la UI ofrecía input libre (lente pro de /plan/features) y
+        # el backend lo rebotaba con un upsell "pasate a Pro"… al asesor.
+        # Los contadores siguen en la cuenta del cliente (criterio del
+        # shadow; F5 centraliza el pool en el asesor).
+        _lens_auth = getattr(request.state, "rendi_auth_uid", uid)
+        _lens_override = None
+        if uid != _lens_auth and tier in ("free", "plus") \
+                and quota.get_tier(conn, _lens_auth) == "advisor":
+            tier = "pro"
+            _lens_override = "pro"
         # Cuota semanal por tier (Free/Plus=6, Pro=60, Admin=1000). PRE-CHECK
         # barato read-only para el 429 temprano con upgrade payload. La toma
         # REAL del slot es la reserva atómica justo antes del LLM (B-9) — el
         # review cazó que reservar acá dejaba ~130 líneas de ventana donde una
         # excepción cobraba el slot sin dar respuesta.
-        allowed, usage = quota.can_chat(conn, uid)
+        allowed, usage = quota.can_chat(conn, uid, tier_override=_lens_override)
         # Continuación de un registro en curso (draft fresco): NO la bloquea el
         # cap. El usuario ya "gastó" su slot en el turno que abrió el registro;
         # el "sí, confirmá" no puede rebotar con 429 dejando la operación a
@@ -20696,8 +20746,10 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # draft en curso (si hay) → el modelo retoma la confirmación/los datos que
     # faltan aunque el chat no tenga memoria entre requests (Free one-shot). Sin
     # esto, el turno del "sí, confirmá" llegaba sin saber qué se iba a registrar.
-    # Book-mode: sin draft de trade personal (register_trade excluido).
-    _draft_ctx = "" if book_mode else _trade_draft_context(uid)
+    # Book-mode: el draft vigente es el GRUPAL (register_trade excluido) —
+    # sin esta inyección el modelo quedaba ciego a un registro en curso tras
+    # un reload del chat (audit: _group_draft_context estaba sin cablear).
+    _draft_ctx = _group_draft_context(uid) if book_mode else _trade_draft_context(uid)
     # La fecha de HOY va en el contexto: sin esto el modelo no puede resolver
     # fechas relativas ('ayer hice un depósito') y las inventaba de su prior
     # (caso real: 'AYER' → 2025-01-08, año equivocado, mensual mal bookeado).
@@ -20863,7 +20915,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     else:
         _rconn = get_db()
         try:
-            _reserved, _rusage = quota.reserve_chat(_rconn, uid)
+            _reserved, _rusage = quota.reserve_chat(_rconn, uid, tier_override=_lens_override)
         finally:
             _rconn.close()
         if not _reserved:
@@ -20958,7 +21010,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         if _ep:
                             yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
                         _warn_if_truncated(resp, tier, uid, "stream_final")
-                        cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final")
+                        cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final", model=chat_model)
                         _record_chat_quota(uid, cost_cents)
                         _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
                         state["settled"] = True
@@ -20999,7 +21051,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 if _ep:
                     yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
                 _warn_if_truncated(resp, tier, uid, "stream_fallback")
-                cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback")
+                cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback", model=chat_model)
                 _record_chat_quota(uid, cost_cents)
                 _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
                 state["settled"] = True
@@ -21081,7 +21133,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # nos enteramos por la factura mensual de Anthropic).
                 usage_obj = getattr(response, "usage", None)
                 _warn_if_truncated(response, tier, uid, "json_final")
-                cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "final")
+                cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "final", model=chat_model)
                 # Registrar consumo de cuota (solo en éxito — si falló no descontamos).
                 try:
                     conn2 = get_db()
@@ -21133,7 +21185,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
         usage_obj = getattr(response, "usage", None)
         _warn_if_truncated(response, tier, uid, "json_fallback")
-        cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "fallback")
+        cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "fallback", model=chat_model)
         try:
             conn2 = get_db()
             try:
@@ -25466,6 +25518,18 @@ def _advisor_book_chat_context(uid: int) -> dict:
             c["tot"] += vr["value_usd"]
             c["pos"].append(vr)
 
+        # Denominador del weight_pct: el TOTAL de la cuenta (AUM del snapshot,
+        # que incluye cash) cuando existe y es mayor que lo valuado — sin esto
+        # un cliente con 80% cash veía su única posición como "100% de la
+        # cartera" y la IA sobreestimaba la concentración sistemáticamente
+        # (audit). Fallback: el total valuado (cuentas sin snapshot aún).
+        denom = {}
+        for cid in ids:
+            snap = latest.get(cid)
+            snap_tv = float(snap["total_value"]) if snap and snap["total_value"] is not None else 0.0
+            agg_tot = per_client.get(cid, {}).get("tot", 0.0)
+            denom[cid] = max(snap_tv, agg_tot) or 1.0
+
         clients = []
         for cid in ids:
             snap = latest.get(cid)
@@ -25475,13 +25539,12 @@ def _advisor_book_chat_context(uid: int) -> dict:
             ret = (round((float(snap["total_value"]) - nd) / nd * 100, 1)
                    if snap and nd >= 100 else None)
             agg = per_client.get(cid, {"tot": 0.0, "pos": []})
-            tot = agg["tot"] or 1.0
             top = sorted(agg["pos"], key=lambda r: -r["value_usd"])[:5]
             clients.append({
                 "id": cid, "label": labels[cid], "aum_usd": aum, "ret_pct": ret,
                 "n_pos": len(agg["pos"]),
                 "top": [{"asset": t["asset"], "value_usd": round(t["value_usd"]),
-                         "weight_pct": round(t["value_usd"] / tot * 100)} for t in top],
+                         "weight_pct": round(t["value_usd"] / denom[cid] * 100)} for t in top],
             })
 
         per_asset: dict = {}
@@ -25495,7 +25558,7 @@ def _advisor_book_chat_context(uid: int) -> dict:
                 "asset": asset, "total_usd": round(a["tot"]),
                 "clients": [
                     {"id": cid, "label": labels.get(cid), "value_usd": round(v),
-                     "weight_pct": round(v / (per_client[cid]["tot"] or 1) * 100)}
+                     "weight_pct": round(v / denom.get(cid, 1.0) * 100)}
                     for cid, v in sorted(a["by"].items(), key=lambda kv: -kv[1])
                 ],
             })
@@ -25938,6 +26001,17 @@ def _register_group_op_handler(inp: dict, uid: int, request_id=None,
                                  "request_id": request_id, "free_turns": free_turns}
             return {"status": "needs_info",
                     "missing": (problems + row_problems) or ["ningún cliente resolvió — revisá los nombres"]}
+
+        # Tope AGREGADO del lote (5× el per-fila): un nominal alucinado
+        # repartido en filas individualmente plausibles pasaba el freno
+        # por-fila (audit) — 5× deja margen a un libro grande comprando en
+        # serio y corta el disparate.
+        total_notional = sum(p["quantity"] * p["buy_price"] for p in prows)
+        if total_notional > max_notional * 5:
+            return {"error": (f"el TOTAL del lote ({ccy} {total_notional:,.0f}) supera el tope "
+                              "de seguridad — confirmá los números con el asesor y, si son "
+                              "reales, registralo en tandas más chicas o desde Clientes → "
+                              "Operación grupal")}
 
         summary = _group_op_summary(asset, ccy, price, date_s, prows)
         payload = {"asset": asset, "asset_type": fields.get("asset_type"),

@@ -44,6 +44,25 @@ export default function AIBlocks({ blocks }) {
   )
 }
 
+// Fallback de la barra cuando el modelo no manda pct: parsear el VALOR
+// formateado. Formato es-AR: puntos = miles ("US$ 1.500.000"), coma =
+// decimal — el parseFloat ingenuo leía 1.5 y el ranking salía INVERTIDO
+// (audit). Reglas: hay coma → puntos son miles; solo puntos en grupos de
+// 3 → miles; si no, decimal normal.
+function parseMoneyish(v) {
+  const cleaned = String(v ?? '').replace(/[^\d.,-]/g, '')
+  if (!cleaned) return 0
+  let n
+  if (cleaned.includes(',')) {
+    n = parseFloat(cleaned.replace(/\./g, '').replace(',', '.'))
+  } else if (/^-?\d{1,3}(\.\d{3})+$/.test(cleaned)) {
+    n = parseFloat(cleaned.replace(/\./g, ''))
+  } else {
+    n = parseFloat(cleaned)
+  }
+  return Number.isFinite(n) ? Math.abs(n) : 0
+}
+
 // Card contenedora con mini-título uppercase + punto violeta. El título viene
 // del modelo (opcional, sanitizado ≤40) o cae al genérico del tipo.
 function BlockCard({ title, children }) {
@@ -65,7 +84,7 @@ function BlockCard({ title, children }) {
 // normalizado contra el máximo (best-effort — el modelo debería mandarlo).
 // Primer item = el usuario → barra con gradiente violeta→cyan.
 function CompareBlock({ items, title }) {
-  const parsed = items.map(it => ({ ...it, n: it.pct ?? (Math.abs(parseFloat(String(it.v).replace(',', '.').replace(/[^\d.,-]/g, ''))) || 0) }))
+  const parsed = items.map(it => ({ ...it, n: it.pct ?? parseMoneyish(it.v) }))
   const max = Math.max(...parsed.map(p => p.n), 1)
   return (
     <BlockCard title={title || 'Comparación'}>
@@ -207,7 +226,7 @@ function TableCell({ cell, first }) {
 function ClientListBlock({ items, title }) {
   const navigate = useNavigate()
   const { enterClient } = useAdvisorContext()
-  const parsed = items.map(it => ({ ...it, n: it.pct ?? (Math.abs(parseFloat(String(it.v).replace(',', '.').replace(/[^\d.,-]/g, ''))) || 0) }))
+  const parsed = items.map(it => ({ ...it, n: it.pct ?? parseMoneyish(it.v) }))
   const max = Math.max(...parsed.map(p => p.n), 1)
   const enter = (it) => {
     enterClient({ id: it.id, label: it.l })

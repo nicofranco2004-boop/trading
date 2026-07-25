@@ -62,6 +62,25 @@ class AdvisorBase(unittest.TestCase):
         conn.close()
         self.http = TestClient(main.app)
 
+    def tearDown(self):
+        # Limpieza de las tablas del plan asesor que REFERENCIAN users (FK):
+        # sin esto, las filas que deja esta suite hacían fallar el
+        # "DELETE FROM users" del setUp de OTRAS suites cuando se corren
+        # juntas (audit: 98 fallas en cascada por IntegrityError — cada suite
+        # pasaba sola y el combo enmascaraba regresiones reales).
+        conn = main.get_db()
+        try:
+            conn.execute(
+                """DELETE FROM advisor_op_batch_items WHERE batch_id IN
+                   (SELECT id FROM advisor_op_batches WHERE advisor_uid=?)""",
+                (self.advisor,))
+            conn.execute("DELETE FROM advisor_op_batches WHERE advisor_uid=?", (self.advisor,))
+            conn.execute("DELETE FROM advisor_claim_tokens WHERE advisor_uid=?", (self.advisor,))
+            conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=?", (self.advisor,))
+            conn.commit()
+        finally:
+            conn.close()
+
     def _hdr(self, uid, client_ctx=None):
         h = {"Authorization": f"Bearer {main.create_token(uid)}"}
         if client_ctx is not None:
@@ -1018,6 +1037,7 @@ class RadarTest(AdvisorBase):
     def tearDown(self):
         (main._refresh_events_in_background, main._refresh_events_for_tickers,
          main._refresh_news_in_background, main._ensure_news_batch_parallel) = self._saved
+        super().tearDown()  # limpieza FK de AdvisorBase
 
     def _pos(self, uid, asset, broker="Cocos", qty=10):
         conn = main.get_db()

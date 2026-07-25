@@ -53,16 +53,22 @@ export default function AdvisorClients() {
 
   useEffect(() => {
     const t = (searchParams.get('groupop') || '').trim().toUpperCase().slice(0, 20)
-    if (t) {
-      setGroupOpAsset(t)
-      setGroupOpOpen(true)
-      // Limpiar el param: un refresh o el botón Back no deben re-abrir el modal.
-      const next = new URLSearchParams(searchParams)
-      next.delete('groupop')
-      setSearchParams(next, { replace: true })
+    if (!t) return
+    if (clients === null) return  // esperar el roster — decide si abrir o avisar
+    // Limpiar el param SIEMPRE: un refresh o el botón Back no re-abren nada.
+    const next = new URLSearchParams(searchParams)
+    next.delete('groupop')
+    setSearchParams(next, { replace: true })
+    if (clients.length === 0) {
+      // Con 0 clientes el modal era un callejón sin salida (paso 2 vacío,
+      // audit) — mismo criterio que el botón del header, que está disabled.
+      toast.push('Todavía no tenés clientes — agregá el primero para usar la operación grupal')
+      return
     }
+    setGroupOpAsset(t)
+    setGroupOpOpen(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams])
+  }, [searchParams, clients])
 
   // Gate por IDENTIDAD (useAuth), no por plan features: en contexto de
   // cliente /plan/features devuelve el lente 'pro' y un gate por tier

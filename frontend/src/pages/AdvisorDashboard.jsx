@@ -9,7 +9,7 @@
 // (F3). El roster puro (agregar/invitar/operación grupal) sigue ahí, en
 // /clientes — esta página es SOLO el libro.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { PhoneCall, Landmark, TrendingUp, TrendingDown, Users, ArrowRight, LineChart } from 'lucide-react'
@@ -71,10 +71,14 @@ export default function AdvisorDashboard() {
       )}
 
       {book === null ? (
-        <div className="space-y-3">
-          <Skeleton className="h-28 rounded-xl" />
-          <Skeleton className="h-24 rounded-xl" />
-        </div>
+        // Con error y sin datos previos, el banner de arriba ES el estado —
+        // los skeletons eternos leían como "sigue cargando" (audit).
+        error ? null : (
+          <div className="space-y-3">
+            <Skeleton className="h-28 rounded-xl" />
+            <Skeleton className="h-24 rounded-xl" />
+          </div>
+        )
       ) : noClients ? (
         <div className="border border-dashed border-line rounded-xl p-10 text-center">
           <Users size={28} strokeWidth={1.5} className="mx-auto text-ink-3 mb-3" />
@@ -190,24 +194,46 @@ const EVO_RANGES = [
 function BookEvolution({ series }) {
   const [range, setRange] = useState('3M')
 
-  const visible = useMemo(() => {
-    if (!series?.length) return []
+  const { visible, baseline } = useMemo(() => {
+    if (!series?.length) return { visible: [], baseline: null }
     const days = EVO_RANGES.find(r => r.key === range)?.days ?? 90
     const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
-    return series.filter(p => p.date >= cutoff)
+    const firstIdx = series.findIndex(p => p.date >= cutoff)
+    if (firstIdx === -1) return { visible: [], baseline: null }
+    return {
+      visible: series.slice(firstIdx),
+      // Base de la descomposición: el punto ANTERIOR a la ventana (si existe)
+      // — sin esto el cambio DEL PRIMER DÍA visible quedaba afuera del rótulo
+      // "mercado sumó X · aportes +Y" (audit: inconsistente con el hero, que
+      // usa el snapshot previo al período).
+      baseline: firstIdx > 0 ? series[firstIdx - 1] : series[firstIdx],
+    }
   }, [series, range])
 
-  // Descomposición del período visible: ΔAUM = flujos (Δaportado) + mercado.
+  // Descomposición del período: ΔAUM = flujos (Δaportado) + mercado.
   const delta = useMemo(() => {
-    if (visible.length < 2) return null
-    const a = visible[0], b = visible[visible.length - 1]
-    const dAum = b.aum_usd - a.aum_usd
-    const dFlows = b.net_deposited_usd - a.net_deposited_usd
-    return { market: dAum - dFlows, flows: dFlows, clients: b.clients - a.clients }
-  }, [visible])
+    if (visible.length < 2 || !baseline) return null
+    const b = visible[visible.length - 1]
+    const dAum = b.aum_usd - baseline.aum_usd
+    const dFlows = b.net_deposited_usd - baseline.net_deposited_usd
+    return { market: dAum - dFlows, flows: dFlows, clients: b.clients - baseline.clients }
+  }, [visible, baseline])
+
+  // U5 (audit): si la historia existe pero es más vieja que el rango default
+  // (3M), auto-ampliamos UNA vez al rango más chico que muestre la curva —
+  // antes caía a un empty-state falso sin botones para salir.
+  const touchedRef = useRef(false)
+  useEffect(() => {
+    if (touchedRef.current || !series || series.length < 2 || visible.length >= 2) return
+    const fit = EVO_RANGES.find(r => {
+      const cut = new Date(Date.now() - r.days * 86400000).toISOString().slice(0, 10)
+      return series.filter(p => p.date >= cut).length >= 2
+    })
+    if (fit) setRange(fit.key)
+  }, [series, visible])
 
   if (series === null) return <Skeleton className="h-56 rounded-xl mb-4" />
-  if (!series.length || visible.length < 2) {
+  if (series.length < 2) {
     return (
       <div className="bg-bg-1 border border-line/60 rounded-xl p-4 mb-4">
         <h2 className="flex items-center gap-2 text-[13px] font-semibold text-ink-0 mb-1">
@@ -257,7 +283,7 @@ function BookEvolution({ series }) {
         </div>
         <div className="flex items-center gap-1">
           {EVO_RANGES.map(r => (
-            <button key={r.key} type="button" onClick={() => setRange(r.key)}
+            <button key={r.key} type="button" onClick={() => { touchedRef.current = true; setRange(r.key) }}
               className={`text-[11px] font-medium rounded px-2 py-1 transition-colors ${
                 range === r.key ? 'text-ink-0 bg-bg-2' : 'text-ink-3 hover:text-ink-1'
               }`}>
