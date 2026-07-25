@@ -16,7 +16,7 @@
 // ruta (el sidebar no la muestra y la página redirige a /).
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Users, Plus, Layers, StickyNote, MoreVertical, Trash2, ChevronRight,
   ArrowRight, ArrowLeft, AlertTriangle, Undo2, Briefcase, Wallet, Mail,
@@ -37,14 +37,32 @@ export default function AdvisorClients() {
   const navigate = useNavigate()
   const toast = useToast()
   const { enterClient, exitClient, clientCtx } = useAdvisorContext()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [clients, setClients] = useState(null)   // null = cargando
   const [error, setError] = useState(null)
   const [addOpen, setAddOpen] = useState(false)
   const [notesFor, setNotesFor] = useState(null)  // cliente cuyo modal de notas está abierto
   const [groupOpOpen, setGroupOpOpen] = useState(false)
+  // Deep-link ?groupop=TICKER (lo emite la IA del libro): abre la operación
+  // grupal PRECARGADA con ese activo — la IA nunca registra sola, solo trae
+  // al asesor hasta acá con el formulario ya arrancado.
+  const [groupOpAsset, setGroupOpAsset] = useState(null)
   const [inviteFor, setInviteFor] = useState(null) // cliente cuyo modal de invitar está abierto
   const [menuFor, setMenuFor] = useState(null)    // client_uid del menú ⋯ abierto
+
+  useEffect(() => {
+    const t = (searchParams.get('groupop') || '').trim().toUpperCase().slice(0, 20)
+    if (t) {
+      setGroupOpAsset(t)
+      setGroupOpOpen(true)
+      // Limpiar el param: un refresh o el botón Back no deben re-abrir el modal.
+      const next = new URLSearchParams(searchParams)
+      next.delete('groupop')
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   // Gate por IDENTIDAD (useAuth), no por plan features: en contexto de
   // cliente /plan/features devuelve el lente 'pro' y un gate por tier
@@ -158,7 +176,8 @@ export default function AdvisorClients() {
       {inviteFor && <InviteModal client={inviteFor} onClose={() => setInviteFor(null)} onSent={() => { setInviteFor(null); load() }} />}
       {groupOpOpen && (
         <GroupOpModal
-          onClose={() => setGroupOpOpen(false)}
+          initialAsset={groupOpAsset}
+          onClose={() => { setGroupOpOpen(false); setGroupOpAsset(null) }}
           onApplied={() => load()}
         />
       )}
@@ -429,11 +448,11 @@ function InviteModal({ client, onClose, onSent }) {
 // con broker/cantidad/precio POR FILA (las posiciones viven por broker: sin
 // esto no se sabe a qué cuenta-broker entra la compra de cada cliente).
 
-function GroupOpModal({ onClose, onApplied }) {
+function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
   const toast = useToast()
   const [step, setStep] = useState(1)
-  // Paso 1 — operación común
-  const [asset, setAsset] = useState('')
+  // Paso 1 — operación común (initialAsset: viene del deep-link ?groupop=)
+  const [asset, setAsset] = useState(initialAsset || '')
   const [price, setPrice] = useState('')
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [currency, setCurrency] = useState('ARS')

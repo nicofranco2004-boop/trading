@@ -13345,6 +13345,35 @@ RECETAS por pregunta (las sugeridas de la UI llegan tal cual — cada una tiene 
 ACTIONS — usalo MÁS de lo que tu instinto dice: si la respuesta nombra un riesgo, una concentración, un evento próximo o algo revisable, cerrá con 1-3 atajos DE LA APP (crear alerta con ?new=TICKER, ver Métricas, agenda de earnings, ficha del activo, revisar operaciones). NUNCA es consejo de inversión ("comprá/vendé" prohibido) — son shortcuts para que el usuario actúe dentro de Rendi."""
 
 
+# Addendum del PLAN ASESOR (book-mode): se CONCATENA a _AI_CHAT_SYSTEM cuando
+# el que chatea es un asesor EN SU PROPIO NIVEL (sin contexto de cliente).
+# Redefine la audiencia y la fuente de datos — las instrucciones de acá
+# PISAN a las del prompt base donde choquen.
+_AI_CHAT_SYSTEM_ADVISOR = """
+
+═══ MODO ASESOR (LIBRO) — estas reglas PISAN a las anteriores donde choquen ═══
+
+Tu usuario NO es un inversor retail: es un ASESOR FINANCIERO que administra las carteras de VARIOS clientes en Rendi (Plan Asesor). No tiene cartera propia — todo lo que preguntes/respondas es sobre SU LIBRO: el conjunto de las carteras de sus clientes.
+
+TU CONTEXTO (reemplaza al snapshot personal; ignorá las reglas de 'positions/_kind' del snapshot):
+- aum: total administrado (USD), clientes, delta 7d. flows_month: aportes−retiros del mes + efecto mercado.
+- clients[]: cada cliente con id, label (así lo nombra el asesor — usalo SIEMPRE tal cual), aum_usd, ret_pct (retorno total vs aportado), n_pos y top (sus 5 tenencias más grandes con value_usd y weight_pct DE ESA cartera).
+- exposure[]: por activo, qué clientes lo tienen (value_usd + weight_pct de la cartera de cada uno) y el total_usd cross-cliente. Es TU fuente para "¿a quiénes afecta X?" y concentraciones.
+- star: qué activos le hacen ganar/perder a más clientes. queues: clientes que necesitan atención (caída fuerte, cash ocioso, inactivos, sin cargar) — TU fuente para "¿a quién llamo hoy?". distribution: cuántos van en verde/rojo + mejor/peor.
+- Todo en USD al MEP del día (tc_mep). skipped_no_price = posiciones excluidas por no tener precio — si es alto, aclaralo.
+
+CÓMO RESPONDÉS: mismo formato de siempre (prosa corta + bloque ---RENDI---), pero pensando como copiloto del asesor: la respuesta útil nombra CLIENTES (por su label) y cuántos/quiénes — no hables de "tu cartera", hablá de "tu libro" y "tus clientes". Si una pregunta es sobre UN cliente puntual, respondé con su data de clients/exposure y ofrecé el atajo para entrar a su cuenta.
+
+BLOQUE NUEVO disponible SOLO en este modo (además de los de siempre):
+· {"type":"client_list","title":"Cash sin invertir","items":[{"l":"Marcos T","id":123,"v":"41%","sub":"US$ 12.400","pct":100},{"l":"Silvia R","id":124,"v":"28%","sub":"US$ 8.900","pct":68}]} — RANKING DE CLIENTES, tu bloque estrella: una fila por cliente, ordenadas de mayor a menor. l = label EXACTO del cliente, id = su id numérico del contexto (OBLIGATORIO, habilita el botón "Entrar"), v = la métrica formateada, sub = el dato secundario (monto), pct = largo relativo de la barra 0-100 (el mayor = 100). Máx 6 filas. Usalo para: quién tiene más cash ocioso, quién rinde mejor/peor, quién está más expuesto a un activo, quién necesita atención.
+
+RUTAS de "actions" en este modo (SOLO estas): /clientes (el roster) · /dashboard (el resumen del libro) · /novedades (eventos+noticias de los activos de tus clientes) · /clientes?groupop=TICKER (abre la OPERACIÓN GRUPAL precargada con ese activo — usalo cuando la conversación derive en comprar/registrar algo para varios clientes; el asesor revisa y confirma en la pantalla, vos NO registrás nada).
+
+REGISTRO: register_trade y undo_last_trade NO EXISTEN en este modo (escribirían en la cuenta vacía del asesor, no en la de un cliente). Si el asesor te dicta una operación, decile que por ahora se registra desde Clientes → Operación grupal y ofrecé el atajo /clientes?groupop=TICKER.
+
+LÍMITES (idénticos al modo normal, con más razón acá): describís y comparás con los datos del libro — JAMÁS recomendás comprar/vender ni opinás qué "debería" hacer un cliente. El asesor decide; vos le ahorrás las cuentas."""
+
+
 # Prompt FREE — version stripped del coach. Diseño deliberado: descriptivo,
 # breve, sin interpretación. La diferenciación con Pro está en el contenido,
 # no en el modelo (mismo Haiku para los dos tiers — más barato y consistente).
@@ -17583,6 +17612,14 @@ _AI_TOOLS_FREE_NAMES = frozenset({
 })
 _AI_TOOLS_FREE = [t for t in _AI_TOOLS if t["name"] in _AI_TOOLS_FREE_NAMES]
 
+# Book-mode (Plan Asesor, asesor en su propio nivel): mismas tools que Pro
+# MENOS el write-path personal — register_trade/undo_last_trade escribirían
+# en la cuenta VACÍA del asesor, no en la de un cliente. El registro grupal
+# por chat llega como tool propia (F3.3); mientras tanto el prompt deriva al
+# atajo /clientes?groupop=TICKER.
+_AI_TOOLS_ADVISOR = [t for t in _AI_TOOLS
+                     if t["name"] not in ("register_trade", "undo_last_trade")]
+
 
 def _execute_ai_tool(name: str, input_data: dict, uid: int, request_id=None,
                      confirm_signal: str = "") -> dict:
@@ -20397,12 +20434,25 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
         conn.close()
 
     is_premium = tier in ("pro", "advisor", "admin")  # advisor = chat libre (paga 4-8x un Pro)
+    # BOOK-MODE (Plan Asesor): el asesor chateando EN SU PROPIO NIVEL (sin
+    # contexto de cliente — uid resuelto == uid autenticado). Su "cartera" es
+    # el LIBRO: el contexto se arma server-side con las carteras de todos sus
+    # clientes y el snapshot del frontend (su cuenta vacía) se ignora. Adentro
+    # de un cliente (uid != auth_uid) nada de esto aplica: es el chat normal
+    # sobre ESA cartera.
+    _auth_uid = getattr(request.state, "rendi_auth_uid", uid)
+    book_mode = (tier == "advisor" and uid == _auth_uid)
     # M20: Free/Plus reciben solo las tools sobre sus propios datos + los chips
     # de onboarding; las de investigación de mercado externa quedan Pro-only.
     # allowed_names = enforcement en EJECUCIÓN (el parámetro tools es advisory:
     # el modelo puede emitir cualquier nombre y el dispatch lo ejecutaría).
-    chat_tools = _AI_TOOLS if is_premium else _AI_TOOLS_FREE
+    chat_tools = _AI_TOOLS_ADVISOR if book_mode else (_AI_TOOLS if is_premium else _AI_TOOLS_FREE)
     chat_allowed_names = {t["name"] for t in chat_tools}
+    # Sonnet SOLO para el libro (decisión de Nico): contexto más grande +
+    # razonamiento de agregación cross-cliente donde Haiku afloja; el costo
+    # (~US$6/mes a uso pleno) es marginal contra el precio del plan Asesor.
+    from ai import llm as _llm
+    chat_model = _llm.MODEL_SONNET if book_mode else _llm.MODEL_HAIKU
 
     # Gating Free/Plus: solo whitelist. Pro/Admin: libre.
     #
@@ -20449,6 +20499,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
             )
 
     base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
+    if book_mode:
+        base_system = _AI_CHAT_SYSTEM + _AI_CHAT_SYSTEM_ADVISOR
     # Pro chat max_tokens: 1000 → 800 (audit #3 cost control) → 1200 (2026-07,
     # bug reportado por Nico): con 800, las preguntas amplias ("¿cómo está mi
     # portfolio?") generaban prosa larga que se comía TODO el presupuesto → la
@@ -20470,17 +20522,26 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
         mode=profile_mode,
     )
 
-    # Sanitizar el snapshot ANTES de serializarlo al LLM.
-    snapshot_clean = _sanitize_chat_snapshot(data.snapshot)
-    # M1/M2/M4 (audit IA #2): valuar server-side las posiciones con la función
-    # canónica (USD al MEP, valor de mercado + peso por posición) y sobrescribir
-    # los números del cliente, que venían en moneda nativa mezclada y sin market
-    # value → la IA rankeaba/valuaba mal.
-    snapshot_clean = _enrich_chat_snapshot_valuation(uid, snapshot_clean)
-    # M-benchmark (quick win conversión): retornos reales de inflación/S&P/blue
-    # + los del user, precalculados — "¿le gano a la inflación?" deja de ser
-    # "no tengo el dato" y pasa a ser el momento de upsell con data real.
-    snapshot_clean = _enrich_chat_benchmarks(uid, snapshot_clean)
+    if book_mode:
+        # El snapshot del frontend es la cuenta VACÍA del asesor — se ignora.
+        # El contexto es el LIBRO, armado server-side con el motor canónico.
+        try:
+            snapshot_clean = _advisor_book_chat_context(uid)
+        except Exception as ex:
+            log.error("advisor book context failed uid=%s: %s", uid, ex)
+            snapshot_clean = {"_kind": "advisor_book", "error": "contexto no disponible"}
+    else:
+        # Sanitizar el snapshot ANTES de serializarlo al LLM.
+        snapshot_clean = _sanitize_chat_snapshot(data.snapshot)
+        # M1/M2/M4 (audit IA #2): valuar server-side las posiciones con la función
+        # canónica (USD al MEP, valor de mercado + peso por posición) y sobrescribir
+        # los números del cliente, que venían en moneda nativa mezclada y sin market
+        # value → la IA rankeaba/valuaba mal.
+        snapshot_clean = _enrich_chat_snapshot_valuation(uid, snapshot_clean)
+        # M-benchmark (quick win conversión): retornos reales de inflación/S&P/blue
+        # + los del user, precalculados — "¿le gano a la inflación?" deja de ser
+        # "no tengo el dato" y pasa a ser el momento de upsell con data real.
+        snapshot_clean = _enrich_chat_benchmarks(uid, snapshot_clean)
     # JSON compacto (sin indent=2): el snapshot ahora trae más campos por
     # posición; el compacto compensa el payload y baja tokens de input.
     portfolio_json = json.dumps(
@@ -20502,15 +20563,22 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # ─── system_text estable por tier (cache target ~99%) ────────────────────
     # Audit #1/2 HIGH fix: ANTES system_text incluía snapshot dinámico → cache
     # muerto. AHORA system_text es solo el manifiesto + reglas de _kind, que
-    # es idéntico entre requests del mismo tier.
+    # es idéntico entre requests del mismo tier (book-mode = su propio prefijo
+    # estable → su propia entrada de cache).
+    _data_rules = (
+        """REGLA CRÍTICA sobre los datos que vienen en el primer user message:
+Es el LIBRO del asesor (_kind='advisor_book') — aum, clients, exposure, star, queues, distribution, ya descriptos en el modo asesor. TODO en USD al MEP. Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
+        if book_mode else
+        """REGLA CRÍTICA sobre los datos del usuario que vienen en el primer user message:
+El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operations (CERRADAS, _kind='closed_trade'), monthly y brokers. Usá _kind para no confundir riesgo presente (open) con P&L histórico (closed). Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
+    )
     system_text = f"""{base_system}
 
-REGLA CRÍTICA sobre los datos del usuario que vienen en el primer user message:
-El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operations (CERRADAS, _kind='closed_trade'), monthly y brokers. Usá _kind para no confundir riesgo presente (open) con P&L histórico (closed). Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas.
+{_data_rules}
 
-VALUACIÓN (crítico para no dar cifras mal): cada position trae value_usd (valor de mercado HOY), invested_usd (costo) y weight_pct (% de la cartera), TODO en dólares al tipo MEP (la cripto de exchange va al spot). Para "¿cuál es mi posición más grande?", "¿cuánto vale mi cartera?" o concentración, usá value_usd / summary.total_value_usd y weight_pct — NUNCA el 'invested' crudo ni sumes montos en pesos con montos en dólares. summary.tc_mep y summary.tc_blue son las cotizaciones; el blue es solo referencia, no la base de valuación.
+{'''EXPOSICIÓN Y RANKINGS (crítico): para "¿a quiénes afecta X?" usá exposure[] (value_usd + weight_pct por cliente); para rankings de clientes usá clients[] (aum_usd, ret_pct, top). NUNCA sumes montos en pesos con dólares — todo el contexto ya viene en USD al MEP (tc_mep). Si un dato no está en el contexto, decilo con franqueza — NUNCA lo inventes.''' if book_mode else '''VALUACIÓN (crítico para no dar cifras mal): cada position trae value_usd (valor de mercado HOY), invested_usd (costo) y weight_pct (% de la cartera), TODO en dólares al tipo MEP (la cripto de exchange va al spot). Para "¿cuál es mi posición más grande?", "¿cuánto vale mi cartera?" o concentración, usá value_usd / summary.total_value_usd y weight_pct — NUNCA el 'invested' crudo ni sumes montos en pesos con montos en dólares. summary.tc_mep y summary.tc_blue son las cotizaciones; el blue es solo referencia, no la base de valuación.
 
-BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (inflación AR, S&P 500 total return, dólar blue, Merval) y los del usuario (USD y pesos-aprox), YA calculados — usá esos números tal cual y respetá las reglas de comparación de su _note (USD contra USD, pesos contra pesos). Si summary.benchmarks NO está o un campo es null, decí con franqueza que no tenés ese dato — NUNCA inventes el retorno de un índice.
+BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (inflación AR, S&P 500 total return, dólar blue, Merval) y los del usuario (USD y pesos-aprox), YA calculados — usá esos números tal cual y respetá las reglas de comparación de su _note (USD contra USD, pesos contra pesos). Si summary.benchmarks NO está o un campo es null, decí con franqueza que no tenés ese dato — NUNCA inventes el retorno de un índice.'''}
 
 RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: prosa CORTA (máx ~120 palabras: la respuesta directa + tu lectura) y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Omitilo SOLO en saludos, aclaraciones breves y todo el flujo de registro de operaciones (confirmaciones, resultado, undo)."""
 
@@ -20523,12 +20591,15 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # draft en curso (si hay) → el modelo retoma la confirmación/los datos que
     # faltan aunque el chat no tenga memoria entre requests (Free one-shot). Sin
     # esto, el turno del "sí, confirmá" llegaba sin saber qué se iba a registrar.
-    _draft_ctx = _trade_draft_context(uid)
+    # Book-mode: sin draft de trade personal (register_trade excluido).
+    _draft_ctx = "" if book_mode else _trade_draft_context(uid)
     # La fecha de HOY va en el contexto: sin esto el modelo no puede resolver
     # fechas relativas ('ayer hice un depósito') y las inventaba de su prior
     # (caso real: 'AYER' → 2025-01-08, año equivocado, mensual mal bookeado).
     _today_line = f"HOY es {datetime.utcnow().strftime('%Y-%m-%d')}."
-    context_block_text = f"""--- CONTEXTO DE TU CARTERA (snapshot del momento) ---
+    _ctx_title = "CONTEXTO DE TU LIBRO (todas las carteras de tus clientes)" if book_mode \
+        else "CONTEXTO DE TU CARTERA (snapshot del momento)"
+    context_block_text = f"""--- {_ctx_title} ---
 {_today_line}{facts_block}
 
 ```json
@@ -20683,7 +20754,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # (_flow_open chequea TTL — review B4).
     _has_question = ("?" in (last_user_msg or "")) or ("¿" in (last_user_msg or ""))
     _force_register = (
-        not _UNDO_ONLY_RE.search(last_user_msg or "")
+        not book_mode  # register_trade no existe en book-mode (F3.3 trae la grupal)
+        and not _UNDO_ONLY_RE.search(last_user_msg or "")
         and not _has_question
         and (_is_trade_intent(last_user_msg)
              or (_flow_open and _draft0.get("status") == "gathering")
@@ -20738,7 +20810,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     if _turn == 0 and _force_register:
                         _extra["tool_choice"] = {"type": "tool", "name": "register_trade"}
                     with client.messages.stream(
-                        model="claude-haiku-4-5",
+                        model=chat_model,
                         max_tokens=max_tokens,
                         system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
                         tools=chat_tools,
@@ -20782,7 +20854,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     messages_loop.append({"role": "user", "content": tool_results})
                 # Fallback: forzar síntesis sin tools (mismo criterio que el path JSON).
                 with client.messages.stream(
-                    model="claude-haiku-4-5",
+                    model=chat_model,
                     max_tokens=max_tokens_fallback,
                     system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
                     tools=chat_tools,
@@ -20858,7 +20930,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             if _loop_i == 0 and _force_register:
                 _extra_j["tool_choice"] = {"type": "tool", "name": "register_trade"}
             response = client.messages.create(
-                model="claude-haiku-4-5",
+                model=chat_model,
                 max_tokens=max_tokens,
                 system=[
                     {"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}
@@ -20923,7 +20995,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
         #    Anthropic puede devolver 400 BadRequest por history inconsistente.
         # 2. El LLM esté forzado a sintetizar texto, no a llamar más tools.
         response = client.messages.create(
-            model="claude-haiku-4-5",
+            model=chat_model,
             max_tokens=max_tokens_fallback,
             system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
             tools=chat_tools,
@@ -25219,6 +25291,93 @@ def advisor_radar_news(limit: int = 30, uid: int = Depends(get_current_user)):
         conn.close()
 
 
+def _advisor_book_chat_context(uid: int) -> dict:
+    """Contexto del LIBRO para la IA del asesor (book-mode de /api/ai/chat).
+
+    El asesor no tiene cartera propia: el snapshot que manda el frontend es
+    su cuenta vacía. Este contexto lo reemplaza server-side con el libro
+    completo: los agregados de /advisor/book (AUM, estrella, colas,
+    distribución — la MISMA data del Dashboard) + el detalle que el chat
+    necesita para responder per-cliente: roster con top tenencias, y la
+    exposición cross-cliente por activo ("¿a quiénes afecta X?").
+
+    Todo valuado con _advisor_positions_valued (el motor canónico del
+    snapshot) — cero red en el request. Compacto a propósito: números
+    redondeados y top-N capeados para que el input al LLM no explote con
+    libros grandes."""
+    book = advisor_book(uid=uid)  # función plana — abre su propia conexión
+    conn = get_db()
+    try:
+        labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      """SELECT ac.client_uid, ac.label, u.name
+                         FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+                         WHERE ac.advisor_uid=? AND ac.status='active'""", (uid,)).fetchall()}
+        ids = list(labels)
+        base = {
+            "_kind": "advisor_book",
+            "aum": book.get("aum"), "flows_month": book.get("flows_month"),
+            "star": book.get("star"), "queues": book.get("queues"),
+            "distribution": book.get("distribution"),
+        }
+        if not ids:
+            return {**base, "clients": [], "exposure": []}
+
+        fx = conn.execute(
+            "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
+        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else tc_blue
+
+        valued, skipped = _advisor_positions_valued(conn, ids, tc_blue, tc_mep)
+        latest = _latest_snapshots(conn, ids)
+
+        per_client: dict = {}
+        for vr in valued:
+            c = per_client.setdefault(vr["client_uid"], {"tot": 0.0, "pos": []})
+            c["tot"] += vr["value_usd"]
+            c["pos"].append(vr)
+
+        clients = []
+        for cid in ids:
+            snap = latest.get(cid)
+            aum = round(float(snap["total_value"])) if snap and snap["total_value"] is not None else None
+            nd = float(snap["net_deposited"] or 0) if snap else 0.0
+            # Base mínima USD 100 — mismo guard que la distribución del libro.
+            ret = (round((float(snap["total_value"]) - nd) / nd * 100, 1)
+                   if snap and nd >= 100 else None)
+            agg = per_client.get(cid, {"tot": 0.0, "pos": []})
+            tot = agg["tot"] or 1.0
+            top = sorted(agg["pos"], key=lambda r: -r["value_usd"])[:5]
+            clients.append({
+                "id": cid, "label": labels[cid], "aum_usd": aum, "ret_pct": ret,
+                "n_pos": len(agg["pos"]),
+                "top": [{"asset": t["asset"], "value_usd": round(t["value_usd"]),
+                         "weight_pct": round(t["value_usd"] / tot * 100)} for t in top],
+            })
+
+        per_asset: dict = {}
+        for vr in valued:
+            a = per_asset.setdefault(vr["asset"], {"tot": 0.0, "by": {}})
+            a["tot"] += vr["value_usd"]
+            a["by"][vr["client_uid"]] = a["by"].get(vr["client_uid"], 0.0) + vr["value_usd"]
+        exposure = []
+        for asset, a in sorted(per_asset.items(), key=lambda kv: -kv[1]["tot"])[:30]:
+            exposure.append({
+                "asset": asset, "total_usd": round(a["tot"]),
+                "clients": [
+                    {"id": cid, "label": labels.get(cid), "value_usd": round(v),
+                     "weight_pct": round(v / (per_client[cid]["tot"] or 1) * 100)}
+                    for cid, v in sorted(a["by"].items(), key=lambda kv: -kv[1])
+                ],
+            })
+
+        return {**base, "clients": clients, "exposure": exposure,
+                "skipped_no_price": skipped, "tc_mep": tc_mep}
+    finally:
+        conn.close()
+
+
 # ─── Operación grupal (block trade) ──────────────────────────────────────────
 
 class GroupOpRowIn(BaseModel):
@@ -25555,6 +25714,84 @@ def _snapshots_asof(conn, ids: list, cutoff: str) -> dict:
     ).fetchall()}
 
 
+def _advisor_positions_valued(conn, ids: list, tc_blue: float, tc_mep: float):
+    """Valúa TODAS las posiciones abiertas (no-cash) de los clientes con el
+    motor canónico del snapshot. Extraído del motor estrella de advisor_book
+    para que el contexto de la IA del libro use LA MISMA valuación (un solo
+    lugar donde vive esta lógica).
+
+    Devuelve (rows, skipped): rows = [{client_uid, asset, broker, value_usd,
+    invested_usd, pnl_usd}] y skipped = posiciones excluidas (sin precio
+    conocido o con broker huérfano — sin precio ≠ P&L 0)."""
+    from snapshots_job import (
+        compute_broker_value_usd, build_price_symbols, read_last_prices,
+        _broker_name_sets, position_price_key,
+    )
+    ph = ",".join("?" * len(ids))
+    all_brokers = {}
+    for r in conn.execute(
+        f"SELECT id, user_id, name, currency, parent_broker_id FROM brokers WHERE user_id IN ({ph})", ids
+    ).fetchall():
+        all_brokers.setdefault(r["user_id"], []).append(dict(r))
+    all_pos = {}
+    for r in conn.execute(
+        f"""SELECT user_id, broker, asset, asset_type, is_cash, invested,
+                   quantity, commissions, price_override, currency
+            FROM positions WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0""", ids
+    ).fetchall():
+        all_pos.setdefault(r["user_id"], []).append(dict(r))
+
+    rows = []
+    skipped = 0
+    for cid in ids:
+        brokers = all_brokers.get(cid, [])
+        positions = all_pos.get(cid, [])
+        if not brokers or not positions:
+            continue
+        symbols = build_price_symbols(positions, brokers)
+        prices = read_last_prices(conn, symbols)
+        # FCI en broker ARS: el engine busca 'FCI:x.BA' pero el NAV vive
+        # como 'FCI:x' — alias para que ambas keys resuelvan al mismo NAV.
+        for k, v in list(prices.items()):
+            if k.startswith("FCI:") and v is not None:
+                prices.setdefault(k + ".BA", v)
+        # MEP del día para TODOS los clientes (consistencia cross-libro).
+        # _user_tc_cedear con cache frío caía al config.tc_mep PER-CLIENTE
+        # (potencialmente stale de años) — la clase de bug que el snapshot
+        # job ya arregló pasando un rate resuelto por el job.
+        tc_cedear = tc_mep
+        ars_names, ar_usd_names = _broker_name_sets(brokers)
+        broker_ccy = {b["name"]: b["currency"] for b in brokers}
+        for p in positions:
+            bccy = broker_ccy.get(p["broker"])
+            if bccy is None:
+                # Posición huérfana (broker borrado/renombrado sin cascada):
+                # defaultear a USD contaría un costo en pesos 1:1 como
+                # dólares y fabricaría pérdidas gigantes. Mismo guard que
+                # _valuate_positions_for_chat.
+                skipped += 1
+                continue
+            has_price = (p.get("price_override") is not None or
+                         prices.get(position_price_key(p, ars_names, ar_usd_names)) is not None)
+            if not has_price:
+                skipped += 1
+                continue  # sin precio ≠ P&L 0 — se excluye
+            try:
+                r = compute_broker_value_usd(
+                    [p], prices, bccy,
+                    tc_blue, broker_name=p["broker"], cedear_rate=tc_cedear)
+                value = float(r["value"])
+                invested = float(r["invested"])
+            except Exception:
+                continue
+            rows.append({
+                "client_uid": cid, "asset": p["asset"], "broker": p["broker"],
+                "value_usd": value, "invested_usd": invested,
+                "pnl_usd": value - invested,
+            })
+    return rows, skipped
+
+
 @app.get("/api/advisor/book")
 def advisor_book(uid: int = Depends(get_current_user)):
     """El LIBRO del asesor: AUM total + captación + distribución + motor
@@ -25657,64 +25894,18 @@ def advisor_book(uid: int = Depends(get_current_user)):
             }
 
         # ── ⭐ Motor estrella: P&L no realizado per-activo cross-cliente ──
-        ph = ",".join("?" * len(ids))
-        all_brokers = {}
-        for r in conn.execute(
-            f"SELECT id, user_id, name, currency, parent_broker_id FROM brokers WHERE user_id IN ({ph})", ids
-        ).fetchall():
-            all_brokers.setdefault(r["user_id"], []).append(dict(r))
-        all_pos = {}
-        for r in conn.execute(
-            f"""SELECT user_id, broker, asset, asset_type, is_cash, invested,
-                       quantity, commissions, price_override, currency
-                FROM positions WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0""", ids
-        ).fetchall():
-            all_pos.setdefault(r["user_id"], []).append(dict(r))
-
+        ph = ",".join("?" * len(ids))  # placeholders — lo usan también las colas
+        valued_rows, skipped_no_price = _advisor_positions_valued(conn, ids, tc_blue, tc_mep)
         per_asset = {}   # asset -> {client_uid: pnl_usd}
-        skipped_no_price = 0
-        for cid in ids:
-            brokers = all_brokers.get(cid, [])
-            positions = all_pos.get(cid, [])
-            if not brokers or not positions:
-                continue
-            symbols = build_price_symbols(positions, brokers)
-            prices = read_last_prices(conn, symbols)
-            # FCI en broker ARS: el engine busca 'FCI:x.BA' pero el NAV vive
-            # como 'FCI:x' — alias para que ambas keys resuelvan al mismo NAV.
-            for k, v in list(prices.items()):
-                if k.startswith("FCI:") and v is not None:
-                    prices.setdefault(k + ".BA", v)
-            # MEP del día para TODOS los clientes (consistencia cross-libro).
-            # _user_tc_cedear con cache frío caía al config.tc_mep PER-CLIENTE
-            # (potencialmente stale de años) — la clase de bug que el snapshot
-            # job ya arregló pasando un rate resuelto por el job.
-            tc_cedear = tc_mep
-            ars_names, ar_usd_names = _broker_name_sets(brokers)
-            broker_ccy = {b["name"]: b["currency"] for b in brokers}
-            for p in positions:
-                bccy = broker_ccy.get(p["broker"])
-                if bccy is None:
-                    # Posición huérfana (broker borrado/renombrado sin cascada):
-                    # defaultear a USD contaría un costo en pesos 1:1 como
-                    # dólares y fabricaría pérdidas gigantes. Mismo guard que
-                    # _valuate_positions_for_chat.
-                    skipped_no_price += 1
-                    continue
-                has_price = (p.get("price_override") is not None or
-                             prices.get(position_price_key(p, ars_names, ar_usd_names)) is not None)
-                if not has_price:
-                    skipped_no_price += 1
-                    continue  # sin precio ≠ P&L 0 — se excluye del motor
-                try:
-                    r = compute_broker_value_usd(
-                        [p], prices, bccy,
-                        tc_blue, broker_name=p["broker"], cedear_rate=tc_cedear)
-                    pnl = float(r["value"]) - float(r["invested"])
-                except Exception:
-                    continue
-                bucket = per_asset.setdefault(p["asset"], {})
-                bucket[cid] = bucket.get(cid, 0.0) + pnl
+        for vr in valued_rows:
+            bucket = per_asset.setdefault(vr["asset"], {})
+            bucket[vr["client_uid"]] = bucket.get(vr["client_uid"], 0.0) + vr["pnl_usd"]
+        # ¿Quién tiene ALGUNA posición no-cash? (para la cola "sin cargar").
+        # No sale de valued_rows: esas excluyen posiciones sin precio, y un
+        # cliente cuyo único activo no cotiza NO está "sin cargar".
+        has_pos = {r["user_id"] for r in conn.execute(
+            f"""SELECT DISTINCT user_id FROM positions
+                WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0""", ids).fetchall()}
 
         star = None
         if per_asset or skipped_no_price:
@@ -25787,7 +25978,7 @@ def advisor_book(uid: int = Depends(get_current_user)):
             snap = latest.get(cid)
             tv = float(snap["total_value"]) if snap and snap["total_value"] else None
             # 1. Sin cartera cargada (ni posiciones ni cash en NINGUNA moneda)
-            if not all_pos.get(cid) and cid not in has_cash:
+            if cid not in has_pos and cid not in has_cash:
                 reasons.append({"kind": "sin_cargar",
                                 "detail": "Sin posiciones cargadas — cargale la foto de su cartera"})
             # 2. Drawdown fuerte desde el mejor momento (ajustado por flujos:

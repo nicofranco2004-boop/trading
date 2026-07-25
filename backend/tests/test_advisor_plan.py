@@ -1108,3 +1108,74 @@ class RadarTest(AdvisorBase):
     def test_radar_news_requiere_plan_asesor(self):
         r = self.http.get("/api/advisor/radar/news", headers=self._hdr(self.stranger))
         self.assertEqual(r.status_code, 403)
+
+
+class BookChatContextTest(AdvisorBase):
+    """F3 (IA del libro): _advisor_book_chat_context + selección de tools.
+
+    No pega al LLM — testea el contexto que ai_chat inyecta en book-mode y
+    que el book-mode NO expone el write-path personal (register_trade
+    escribiría en la cuenta vacía del asesor)."""
+
+    def setUp(self):
+        super().setUp()
+        conn = main.get_db()
+        import datetime as _d
+        today = _d.date.today()
+        conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, 1400, 1000, 'manual')", (today.isoformat(),))
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+            "VALUES (?,?,?,?,?)", (self.client_uid, today.isoformat(), 700.0, 800.0, 500.0))
+        # GGAL: invested 100k ARS, precio .BA 15000 × 10 = 150k ARS (USD 150 al MEP 1000)
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,0,'ARS')""",
+            (self.client_uid, "Cocos", "GGAL", 10, 100000))
+        conn.execute(
+            "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,datetime('now'))",
+            ("GGAL.BA", 15000.0))
+        conn.commit(); conn.close()
+
+    def test_contexto_trae_clientes_y_exposicion(self):
+        ctx = main._advisor_book_chat_context(self.advisor)
+        self.assertEqual(ctx["_kind"], "advisor_book")
+        self.assertEqual(len(ctx["clients"]), 1)
+        c = ctx["clients"][0]
+        self.assertEqual(c["id"], self.client_uid)
+        self.assertEqual(c["label"], "Juan P")
+        self.assertEqual(c["aum_usd"], 700)
+        self.assertEqual(c["n_pos"], 1)
+        self.assertEqual(c["top"][0]["asset"], "GGAL")
+        self.assertEqual(c["top"][0]["value_usd"], 150)  # 150k ARS al MEP 1000
+        # Exposición cross-cliente: GGAL con el cliente atribuido
+        exp = {e["asset"]: e for e in ctx["exposure"]}
+        self.assertIn("GGAL", exp)
+        self.assertEqual(exp["GGAL"]["clients"][0]["id"], self.client_uid)
+        self.assertEqual(exp["GGAL"]["clients"][0]["label"], "Juan P")
+        # Los agregados del libro viajan también (mismo motor del Dashboard)
+        self.assertEqual(ctx["aum"]["total_usd"], 700.0)
+
+    def test_contexto_sin_clientes_no_rompe(self):
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_clients SET status='revoked' WHERE advisor_uid=?",
+                     (self.advisor,))
+        conn.commit(); conn.close()
+        ctx = main._advisor_book_chat_context(self.advisor)
+        self.assertEqual(ctx["clients"], [])
+        self.assertEqual(ctx["exposure"], [])
+
+    def test_tools_de_book_mode_sin_write_path_personal(self):
+        names = {t["name"] for t in main._AI_TOOLS_ADVISOR}
+        self.assertNotIn("register_trade", names)
+        self.assertNotIn("undo_last_trade", names)
+        # Las de lectura siguen (precios, noticias, memoria)
+        self.assertIn("get_current_prices", names)
+        self.assertIn("remember_user_fact", names)
+
+    def test_addendum_ensena_client_list_y_rutas(self):
+        s = main._AI_CHAT_SYSTEM_ADVISOR
+        self.assertIn("client_list", s)
+        self.assertIn("/clientes?groupop=", s)
+        self.assertIn("register_trade y undo_last_trade NO EXISTEN", s)
