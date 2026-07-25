@@ -104,17 +104,24 @@ export default function AdvisorNovedades() {
   )
 }
 
-// Badge "quiénes lo tienen": hasta 2 labels + "+N más". El punto del radar es
-// exactamente este dato — sin la atribución sería el radar de cualquiera.
+// Badge "a cuántos afecta": el número SIEMPRE visible primero (pedido de
+// Nico: "los earnings de Tesla que te diga afecta a 15 clientes"), después
+// los primeros nombres. Hover muestra la lista completa. El punto del radar
+// es exactamente este dato — sin la atribución sería el radar de cualquiera.
 function ClientsBadge({ clients }) {
   if (!clients?.length) return null
+  const n = clients.length
   const shown = clients.slice(0, 2).map(c => c.label).join(', ')
-  const extra = clients.length - 2
+  const extra = n - 2
   return (
-    <span className="inline-flex items-center gap-1 text-[11px] text-data-violet bg-data-violet/10 rounded px-2 py-0.5 max-w-full">
+    <span
+      title={clients.map(c => c.label).join(', ')}
+      className="inline-flex items-center gap-1 text-[11px] text-data-violet bg-data-violet/10 rounded px-2 py-0.5 max-w-full"
+    >
       <Users size={10} strokeWidth={2} className="flex-shrink-0" />
       <span className="truncate">
-        {clients.length === 1 ? shown : `${clients.length} clientes: ${shown}${extra > 0 ? ` +${extra}` : ''}`}
+        <span className="font-semibold">Afecta a {n} cliente{n === 1 ? '' : 's'}</span>
+        {' · '}{shown}{extra > 0 ? ` +${extra}` : ''}
       </span>
     </span>
   )
