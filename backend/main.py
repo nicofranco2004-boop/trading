@@ -26412,3 +26412,64 @@ def advisor_book(uid: int = Depends(get_current_user)):
         }
     finally:
         conn.close()
+
+
+@app.get("/api/advisor/book/history")
+def advisor_book_history(days: int = 365, uid: int = Depends(get_current_user)):
+    """Serie histórica del capital administrado (idea de Nico): la evolución
+    del AUM total del libro, día a día, desde los snapshots nocturnos — con
+    la línea de "plata aportada neta" al lado, para distinguir a ojo si el
+    libro sube porque el MERCADO rindió o porque ENTRÓ plata/clientes.
+
+    Construcción: por cada fecha con algún snapshot en la ventana, se suma el
+    ÚLTIMO snapshot conocido de CADA cliente (forward-fill) — un cliente sin
+    snapshot ESE día no hace caer la serie (hipo del cron ≠ retiro masivo), y
+    un cliente nuevo empieza a sumar desde su primer snapshot (el salto es
+    REAL: entró capital al libro). Clientes revocados no cuentan."""
+    if days <= 0 or days > 730:
+        raise HTTPException(422, "days debe estar entre 1 y 730")
+    from datetime import datetime as _dt, timedelta as _td
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        ids = _advisor_client_ids(conn, uid)
+        if not ids:
+            return {"series": [], "clients": 0}
+        cutoff = (_dt.utcnow().date() - _td(days=days)).isoformat()
+        # Seed del forward-fill: el último snapshot ANTERIOR a la ventana de
+        # cada cliente — sin esto, un cliente con historia vieja arrancaría
+        # la ventana aportando 0 y la serie mostraría una rampa falsa.
+        seed = _snapshots_asof(conn, ids, cutoff)
+        last = {cid: {"tv": float(r["total_value"] or 0),
+                      "nd": float(r["net_deposited"] or 0)}
+                for cid, r in seed.items()}
+        ph = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""SELECT user_id, date, total_value, net_deposited
+                FROM snapshots
+                WHERE user_id IN ({ph}) AND date > ?
+                ORDER BY date ASC""",
+            (*ids, cutoff),
+        ).fetchall()
+        by_date: dict = {}
+        for r in rows:
+            by_date.setdefault(str(r["date"]), []).append(r)
+        series = []
+        for date_s in sorted(by_date):
+            for r in by_date[date_s]:
+                last[r["user_id"]] = {"tv": float(r["total_value"] or 0),
+                                      "nd": float(r["net_deposited"] or 0)}
+            series.append({
+                "date": date_s,
+                "aum_usd": round(sum(v["tv"] for v in last.values()), 2),
+                "net_deposited_usd": round(sum(v["nd"] for v in last.values()), 2),
+                "clients": len(last),
+            })
+        # Downsample defensivo (2 años diarios ≈ 730 puntos): stride que
+        # PRESERVA primero y último — el gráfico no necesita más de ~400.
+        if len(series) > 400:
+            stride = (len(series) + 399) // 400
+            series = series[::stride] + ([series[-1]] if series[-1] not in series[::stride] else [])
+        return {"series": series, "clients": len(ids)}
+    finally:
+        conn.close()

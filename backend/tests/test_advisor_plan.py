@@ -1301,3 +1301,77 @@ class GroupOpChatTest(AdvisorBase):
         self.assertIn("register_group_op", {t["name"] for t in main._AI_TOOLS_ADVISOR})
         self.assertNotIn("register_group_op", {t["name"] for t in main._AI_TOOLS})
         self.assertNotIn("register_group_op", {t["name"] for t in main._AI_TOOLS_FREE})
+
+
+class BookHistoryTest(AdvisorBase):
+    """Evolución del capital administrado (idea de Nico): serie diaria de AUM
+    con forward-fill por cliente — un hipo del cron no hace caer la serie y
+    un cliente nuevo suma desde su primer snapshot (salto real)."""
+
+    def setUp(self):
+        super().setUp()
+        conn = main.get_db()
+        import datetime as _d
+        self.today = _d.date.today()
+        self.d10 = (self.today - _d.timedelta(days=10)).isoformat()
+        self.d1 = (self.today - _d.timedelta(days=1)).isoformat()
+        self.client2 = _new_user(conn, f"ana-{uuid.uuid4().hex[:8]}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, self.client2))
+        _link(conn, self.advisor, self.client2, label="Ana G")
+        # Cliente 1: dos snapshots; Cliente 2: entra recién en d-1
+        for (u, d, tv, nd) in ((self.client_uid, self.d10, 1000.0, 800.0),
+                               (self.client_uid, self.d1, 1200.0, 900.0),
+                               (self.client2, self.d1, 500.0, 500.0)):
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+                "VALUES (?,?,?,?,?)", (u, d, tv, tv, nd))
+        conn.commit(); conn.close()
+
+    def test_serie_suma_y_cliente_nuevo(self):
+        r = self.http.get("/api/advisor/book/history?days=30",
+                          headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        s = r.json()["series"]
+        self.assertEqual(len(s), 2)
+        p10 = next(p for p in s if p["date"] == self.d10)
+        p1 = next(p for p in s if p["date"] == self.d1)
+        self.assertEqual(p10["aum_usd"], 1000.0)      # solo el cliente 1
+        self.assertEqual(p10["clients"], 1)
+        self.assertEqual(p1["aum_usd"], 1700.0)       # 1200 + 500 (Ana entró)
+        self.assertEqual(p1["net_deposited_usd"], 1400.0)
+        self.assertEqual(p1["clients"], 2)
+
+    def test_seed_pre_ventana_forward_fill(self):
+        # Snapshot VIEJO (fuera de la ventana) de un 3er cliente: la serie
+        # arranca sumándolo igual — sin rampa falsa desde cero.
+        conn = main.get_db()
+        import datetime as _d
+        c3 = _new_user(conn, f"c3-{uuid.uuid4().hex[:8]}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, c3))
+        _link(conn, self.advisor, c3, label="Viejo V")
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+            "VALUES (?,?,?,?,?)",
+            (c3, (self.today - _d.timedelta(days=40)).isoformat(), 300.0, 300.0, 300.0))
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/book/history?days=30",
+                          headers=self._hdr(self.advisor))
+        s = r.json()["series"]
+        p10 = next(p for p in s if p["date"] == self.d10)
+        self.assertEqual(p10["aum_usd"], 1300.0)  # 1000 del c1 + 300 seed del c3
+        self.assertEqual(p10["clients"], 2)
+
+    def test_revocado_no_cuenta(self):
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_clients SET status='revoked' WHERE client_uid=?",
+                     (self.client2,))
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/book/history?days=30",
+                          headers=self._hdr(self.advisor))
+        p1 = next(p for p in r.json()["series"] if p["date"] == self.d1)
+        self.assertEqual(p1["aum_usd"], 1200.0)  # sin Ana
+
+    def test_gateado_por_tier(self):
+        r = self.http.get("/api/advisor/book/history",
+                          headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)

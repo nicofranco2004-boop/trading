@@ -9,9 +9,10 @@
 // (F3). El roster puro (agregar/invitar/operación grupal) sigue ahí, en
 // /clientes — esta página es SOLO el libro.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { PhoneCall, Landmark, TrendingUp, TrendingDown, Users, ArrowRight } from 'lucide-react'
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { PhoneCall, Landmark, TrendingUp, TrendingDown, Users, ArrowRight, LineChart } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
@@ -26,6 +27,7 @@ export default function AdvisorDashboard() {
   const navigate = useNavigate()
   const { enterClient } = useAdvisorContext()
   const [book, setBook] = useState(null)     // null = cargando
+  const [history, setHistory] = useState(null)  // serie AUM (evolución del libro)
   const [error, setError] = useState(false)
 
   const load = useCallback(async () => {
@@ -35,6 +37,13 @@ export default function AdvisorDashboard() {
     } catch {
       // No pisar un libro ya mostrado con nada; avisar que está desactualizado.
       setError(true)
+    }
+    // La serie histórica carga aparte y no bloquea el resto del libro.
+    try {
+      const h = await api.get('/advisor/book/history?days=730')
+      setHistory(h.series || [])
+    } catch {
+      setHistory(prev => prev ?? [])
     }
   }, [])
 
@@ -80,6 +89,7 @@ export default function AdvisorDashboard() {
       ) : (
         <>
           {book.aum && <BookHero book={book} />}
+          <BookEvolution series={history} />
           {book.queues?.length > 0 && <CallQueue queues={book.queues} onOpen={openClient} />}
           {(book.star || book.distribution) && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
@@ -162,6 +172,144 @@ function BookHero({ book }) {
           </p>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Evolución del capital administrado (idea de Nico) ──────────────────────
+// La MISMA anatomía que el gráfico de evolución del dashboard personal:
+// línea violeta = total administrado, punteada gris = plata aportada neta.
+// La brecha entre las dos ES el efecto mercado — se ve a ojo si el libro
+// sube porque los clientes ganan o porque entra plata/gente nueva.
+
+const EVO_RANGES = [
+  { key: '1M', days: 30 }, { key: '3M', days: 90 }, { key: '6M', days: 180 },
+  { key: '1A', days: 365 }, { key: 'Todo', days: 99999 },
+]
+
+function BookEvolution({ series }) {
+  const [range, setRange] = useState('3M')
+
+  const visible = useMemo(() => {
+    if (!series?.length) return []
+    const days = EVO_RANGES.find(r => r.key === range)?.days ?? 90
+    const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
+    return series.filter(p => p.date >= cutoff)
+  }, [series, range])
+
+  // Descomposición del período visible: ΔAUM = flujos (Δaportado) + mercado.
+  const delta = useMemo(() => {
+    if (visible.length < 2) return null
+    const a = visible[0], b = visible[visible.length - 1]
+    const dAum = b.aum_usd - a.aum_usd
+    const dFlows = b.net_deposited_usd - a.net_deposited_usd
+    return { market: dAum - dFlows, flows: dFlows, clients: b.clients - a.clients }
+  }, [visible])
+
+  if (series === null) return <Skeleton className="h-56 rounded-xl mb-4" />
+  if (!series.length || visible.length < 2) {
+    return (
+      <div className="bg-bg-1 border border-line/60 rounded-xl p-4 mb-4">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold text-ink-0 mb-1">
+          <LineChart size={13} strokeWidth={1.75} className="text-data-violet" />
+          Evolución del capital administrado
+        </h2>
+        <p className="text-[11.5px] text-ink-3">
+          Se dibuja solo con los snapshots nocturnos — con un par de días de
+          historia ya vas a ver la curva (y si el libro sube por el mercado o
+          porque entra plata nueva).
+        </p>
+      </div>
+    )
+  }
+
+  const fmtShort = (v) => {
+    const abs = Math.abs(v)
+    if (abs >= 1e9) return `US$${(v / 1e9).toFixed(1)}B`
+    if (abs >= 1e6) return `US$${(v / 1e6).toFixed(1)}M`
+    if (abs >= 1e3) return `US$${Math.round(v / 1e3)}k`
+    return `US$${Math.round(v)}`
+  }
+  const signed = (n) => (n >= 0 ? `+${usd(n, 0)}` : `−${usd(Math.abs(n), 0)}`)
+  const vals = visible.flatMap(p => [p.aum_usd, p.net_deposited_usd])
+  const mn = Math.min(...vals), mx = Math.max(...vals)
+
+  return (
+    <div className="bg-bg-1 border border-line/60 rounded-xl p-4 mb-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
+        <div>
+          <h2 className="flex items-center gap-2 text-[13px] font-semibold text-ink-0">
+            <LineChart size={13} strokeWidth={1.75} className="text-data-violet" />
+            Evolución del capital administrado
+          </h2>
+          {delta && (
+            <p className="text-[11px] text-ink-3 mt-0.5 ml-[21px]">
+              En el período: el mercado {delta.market >= 0 ? 'sumó' : 'restó'}{' '}
+              <span className={delta.market >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}>
+                {usd(Math.abs(delta.market), 0)}
+              </span>
+              {' · '}aportes netos <span className="text-ink-1">{signed(delta.flows)}</span>
+              {delta.clients !== 0 && (
+                <> · {delta.clients > 0 ? `+${delta.clients}` : delta.clients} cliente{Math.abs(delta.clients) === 1 ? '' : 's'}</>
+              )}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {EVO_RANGES.map(r => (
+            <button key={r.key} type="button" onClick={() => setRange(r.key)}
+              className={`text-[11px] font-medium rounded px-2 py-1 transition-colors ${
+                range === r.key ? 'text-ink-0 bg-bg-2' : 'text-ink-3 hover:text-ink-1'
+              }`}>
+              {r.key}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="h-52">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={visible} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+            <defs>
+              <linearGradient id="bookEvoFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#8B7DFF" stopOpacity={0.18} />
+                <stop offset="100%" stopColor="#8B7DFF" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} strokeDasharray="2 4" vertical={false} />
+            <XAxis dataKey="date" tick={{ fill: '#7C8698', fontSize: 11 }}
+                   axisLine={false} tickLine={false} minTickGap={48} dy={4}
+                   tickFormatter={(d) => {
+                     const dt = new Date(d + 'T12:00:00')
+                     return dt.toLocaleDateString('es-AR', { day: 'numeric', month: 'short' })
+                   }} />
+            <YAxis tick={{ fill: '#7C8698', fontSize: 11 }} axisLine={false} tickLine={false}
+                   tickFormatter={fmtShort} width={64}
+                   domain={[mn > 0 ? mn * 0.97 : 0, mx * 1.02]} />
+            <Tooltip
+              cursor={{ stroke: '#5A5C5B', strokeWidth: 1, strokeDasharray: '3 3' }}
+              contentStyle={{ background: '#10151F', border: '1px solid #262E40',
+                              borderRadius: 12, padding: '10px 14px',
+                              boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
+              labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 5 }}
+              itemStyle={{ color: '#F4F4F0', fontSize: 12.5, padding: '2px 0' }}
+              formatter={(v, name) => [usd(v, 0), name === 'aum_usd' ? 'Administrado' : 'Aportado neto']}
+              labelFormatter={(label, payload) => {
+                const p = payload?.[0]?.payload
+                return p ? `${p.date} · ${p.clients} cliente${p.clients === 1 ? '' : 's'}` : label
+              }}
+            />
+            <Area type="monotone" dataKey="net_deposited_usd" stroke="#3A4256" strokeWidth={1.5}
+                  strokeDasharray="4 4" fill="none" dot={false} activeDot={false} />
+            <Area type="monotone" dataKey="aum_usd" stroke="#8B7DFF" strokeWidth={1.75}
+                  fill="url(#bookEvoFill)" dot={false}
+                  activeDot={{ r: 4, fill: '#8B7DFF', stroke: '#0A0B0E', strokeWidth: 2 }} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="text-[10.5px] text-ink-3 mt-2">
+        Línea violeta = todo lo que administrás · punteada = plata aportada neta.
+        La brecha entre las dos es lo que puso (o sacó) el mercado.
+      </p>
     </div>
   )
 }
