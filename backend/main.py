@@ -13369,7 +13369,7 @@ BLOQUE NUEVO disponible SOLO en este modo (además de los de siempre):
 
 RUTAS de "actions" en este modo (SOLO estas): /clientes (el roster) · /dashboard (el resumen del libro) · /novedades (eventos+noticias de los activos de tus clientes) · /clientes?groupop=TICKER (abre la OPERACIÓN GRUPAL precargada con ese activo — usalo cuando la conversación derive en comprar/registrar algo para varios clientes; el asesor revisa y confirma en la pantalla, vos NO registrás nada).
 
-REGISTRO: register_trade y undo_last_trade NO EXISTEN en este modo (escribirían en la cuenta vacía del asesor, no en la de un cliente). Si el asesor te dicta una operación, decile que por ahora se registra desde Clientes → Operación grupal y ofrecé el atajo /clientes?groupop=TICKER.
+REGISTRO GRUPAL POR CHAT: si el asesor te dicta una compra para uno o varios clientes ("registrale a Juan 300.000 pesos y a Ana 400.000 del CEDEAR de Tesla a 58.900"), usá register_group_op — su description tiene el flujo completo (armar → resumen → confirmar EN OTRO MENSAJE → registered). register_trade y undo_last_trade NO EXISTEN en este modo (escribirían en la cuenta vacía del asesor). Solo COMPRAS: si dicta una VENTA, decile que por ahora las ventas se registran cliente por cliente desde su cuenta y ofrecé el atajo para entrar. Alternativa visual siempre disponible: el atajo /clientes?groupop=TICKER abre la pantalla de Operación grupal precargada.
 
 LÍMITES (idénticos al modo normal, con más razón acá): describís y comparás con los datos del libro — JAMÁS recomendás comprar/vender ni opinás qué "debería" hacer un cliente. El asesor decide; vos le ahorrás las cuentas."""
 
@@ -15896,6 +15896,12 @@ _TRADE_DRAFT_TTL = 900         # 15 min de vida del draft
 _TRADE_FREE_TURNS_CAP = 8      # máx turnos gratis por draft (anti-abuso del skip-reserve)
 _UNDO_TRADE_TTL = 24 * 3600    # undo disponible 24 h
 
+# Registro GRUPAL por chat (book-mode del Plan Asesor) — mismo diseño
+# stateless-safe que _TRADE_DRAFT, keyed por el uid del ASESOR. Ver
+# _register_group_op_handler (vive junto al core del group-op).
+_GROUP_DRAFT: dict = {}        # advisor_uid → draft del registro grupal
+_LAST_GROUP_BATCH: dict = {}   # advisor_uid → {batch_id, summary, ts} (para undo)
+
 _TRADE_KIND_TO_ASSET_TYPE = {
     "CRYPTO": "CRYPTO", "CEDEAR": "CEDEAR", "STOCK": "STOCK", "AR_STOCK": "STOCK",
 }
@@ -15905,9 +15911,41 @@ _TRADE_MAX_NOTIONAL = {"USD": 5_000_000, "ARS": 5_000_000_000}
 
 def _trade_sweep_expired(now: float) -> None:
     """GC lazy de los dicts de estado (sin cron). Se llama en cada handler."""
-    for d, ttl in ((_TRADE_DRAFT, _TRADE_DRAFT_TTL), (_LAST_CHAT_TRADE, _UNDO_TRADE_TTL)):
+    for d, ttl in ((_TRADE_DRAFT, _TRADE_DRAFT_TTL), (_LAST_CHAT_TRADE, _UNDO_TRADE_TTL),
+                   (_GROUP_DRAFT, _TRADE_DRAFT_TTL), (_LAST_GROUP_BATCH, _UNDO_TRADE_TTL)):
         for k in [k for k, v in d.items() if (now - v.get("ts", 0)) > ttl]:
             d.pop(k, None)
+
+
+def _group_flow_open(uid: int) -> bool:
+    """¿Hay un registro GRUPAL en progreso (draft fresco) para el asesor?"""
+    d = _GROUP_DRAFT.get(uid)
+    return bool(d and (time.time() - d.get("ts", 0)) <= _TRADE_DRAFT_TTL)
+
+
+def _group_draft_context(uid: int) -> str:
+    """Bloque que ai_chat inyecta en book-mode cuando hay un registro grupal
+    en progreso — el modelo lo retoma aunque el chat sea stateless."""
+    d = _GROUP_DRAFT.get(uid)
+    if not d or (time.time() - d.get("ts", 0)) > _TRADE_DRAFT_TTL:
+        return ""
+    if d["status"] == "confirming":
+        return (
+            "\n\n--- REGISTRO GRUPAL PENDIENTE DE CONFIRMAR ---\n"
+            f"YA le mostraste al asesor este resumen y espera su respuesta: {d['summary']}.\n"
+            "Si en ESTE mensaje acepta (sí/dale/confirmá/ok), llamá "
+            "register_group_op con SOLO {confirm_pending:true}. Si quiere "
+            "CAMBIAR algo (precio/monto/cliente), llamala con SOLO lo corregido "
+            "(el server conserva el resto). Si NIEGA y nada más, {cancel:true}. "
+            "NUNCA des por registrado nada hasta el status 'registered'.\n--- FIN ---"
+        )
+    f = d.get("fields", {})
+    known = ", ".join(f"{k}={v}" for k, v in f.items() if v not in (None, "", []))
+    return (
+        "\n\n--- REGISTRO GRUPAL EN PROGRESO ---\n"
+        f"El asesor está registrando una compra grupal. Datos ya dados: {known or '(ninguno)'}. "
+        "Cuando tengas lo que falta, llamá register_group_op con TODOS los campos juntos.\n--- FIN ---"
+    )
 
 
 def _trade_flow_open(uid: int) -> bool:
@@ -17614,11 +17652,63 @@ _AI_TOOLS_FREE = [t for t in _AI_TOOLS if t["name"] in _AI_TOOLS_FREE_NAMES]
 
 # Book-mode (Plan Asesor, asesor en su propio nivel): mismas tools que Pro
 # MENOS el write-path personal — register_trade/undo_last_trade escribirían
-# en la cuenta VACÍA del asesor, no en la de un cliente. El registro grupal
-# por chat llega como tool propia (F3.3); mientras tanto el prompt deriva al
-# atajo /clientes?groupop=TICKER.
+# en la cuenta VACÍA del asesor, no en la de un cliente. El registro se hace
+# con register_group_op (compra grupal con confirmación, F3.3).
+_GROUP_OP_TOOL = {
+    "name": "register_group_op",
+    "description": (
+        "Registra una COMPRA GRUPAL: el asesor te dicta un activo y a qué "
+        "clientes anotárselo, con monto o cantidad POR CLIENTE ('registrale "
+        "a Juan una compra de 300.000 pesos y a Ana 400.000 del CEDEAR de "
+        "Tesla a 58.900'). NO opera en los brokers reales — solo lo ANOTA en "
+        "Rendi, igual que la Operación grupal de la pantalla Clientes. Solo "
+        "COMPRAS (las ventas se hacen desde la app, cliente por cliente).\n\n"
+        "Campos: asset (ticker tal cual lo dijo), currency (ARS o USD — la "
+        "moneda de los montos), price (el precio unitario que DICTÓ el "
+        "asesor; si no lo dio, NO lo inventes ni uses precios de mercado — "
+        "el server lo pide), date (YYYY-MM-DD, omitir si es de hoy), y rows: "
+        "una por cliente con {client: el nombre TAL CUAL lo dijo, amount: el "
+        "monto en esa moneda} o {client, quantity} si dictó nominales. NO "
+        "calcules vos las cantidades — mandá amount y el server deriva. El "
+        "broker de cada cliente lo elige el server (donde ya tiene el activo "
+        "o su broker compatible).\n\n"
+        "FLUJO OBLIGATORIO (el server lleva el estado): 1) llamala con lo que "
+        "tengas → el server responde needs_info (qué falta — preguntá TODO "
+        "junto) o needs_confirmation (un resumen por cliente + excluidos). "
+        "2) Mostrá el resumen + '(esto solo lo anota en Rendi — no toca los "
+        "brokers reales)' y preguntá si confirma. 3) Cuando el asesor "
+        "responda EN SU PRÓXIMO MENSAJE: confirma → {confirm_pending:true} "
+        "solo; corrige un dato → mandá SOLO lo corregido; niega → "
+        "{cancel:true}. NUNCA digas 'registrado' sin el status 'registered'. "
+        "Se arrepintió después → {undo_last:true} (deshace el lote completo)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "asset": {"type": "string", "description": "Ticker (TSLA, GGAL, AL30…)"},
+            "asset_type": {"type": "string", "enum": ["CRYPTO", "CEDEAR", "STOCK", "AR_STOCK"],
+                            "description": "Solo si el asesor lo aclaró o el ticker es ambiguo"},
+            "currency": {"type": "string", "enum": ["ARS", "USD"],
+                          "description": "Moneda de los montos/precio dictados"},
+            "price": {"type": "number", "description": "Precio unitario DICTADO por el asesor"},
+            "date": {"type": "string", "description": "YYYY-MM-DD (omitir = hoy)"},
+            "rows": {"type": "array", "maxItems": 50, "items": {
+                "type": "object",
+                "properties": {
+                    "client": {"type": "string", "description": "Nombre del cliente tal cual lo dijo el asesor"},
+                    "amount": {"type": "number", "description": "Monto total para ese cliente (en currency)"},
+                    "quantity": {"type": "number", "description": "Nominales (si los dictó en vez del monto)"},
+                },
+            }},
+            "confirm_pending": {"type": "boolean", "description": "true SOLO cuando el asesor confirma en un mensaje NUEVO (mandalo solo)"},
+            "cancel": {"type": "boolean", "description": "true si el asesor descarta el registro pendiente"},
+            "undo_last": {"type": "boolean", "description": "true para deshacer el ÚLTIMO lote registrado por chat (24 h)"},
+        },
+        "required": [],
+    },
+}
 _AI_TOOLS_ADVISOR = [t for t in _AI_TOOLS
-                     if t["name"] not in ("register_trade", "undo_last_trade")]
+                     if t["name"] not in ("register_trade", "undo_last_trade")] + [_GROUP_OP_TOOL]
 
 
 def _execute_ai_tool(name: str, input_data: dict, uid: int, request_id=None,
@@ -17661,6 +17751,10 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
     if name == "register_trade":
         return _register_trade_handler(input_data, uid, request_id=request_id,
                                        confirm_signal=confirm_signal)
+
+    elif name == "register_group_op":
+        return _register_group_op_handler(input_data, uid, request_id=request_id,
+                                          confirm_signal=confirm_signal)
 
     elif name == "undo_last_trade":
         return _undo_last_trade_handler(uid)
@@ -20025,6 +20119,14 @@ _CASH_CONTEXT_RE = re.compile(
     r"palos?)\b", re.IGNORECASE)
 
 
+# Verbos del ASESOR dictando un registro para clientes ("registrale a Juan…",
+# "anotale una compra…", "cargale 300 mil…"). Complementa a _is_trade_intent
+# (pensado para primera persona: "compré", "deposité") en book-mode.
+_GROUP_INTENT_RE = re.compile(
+    r"(?i)\b(registr[aá][a-z]*|anot[aá][a-z]*|c[aá]rga(le|les)|cargale[s]?|"
+    r"c[oó]mpra(le|les)|comprale[s]?)\b")
+
+
 def _is_trade_intent(text: str) -> bool:
     """¿El mensaje es intención de REGISTRAR o DESHACER una operación ('compré
     2000 usd de btc a 65000', 'anotame una compra', 'deshacelo')? Gate del texto
@@ -20198,9 +20300,11 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
                 # (status 'registered'), no en cualquier llamada a register_trade
                 # — si no, el needs_confirmation (que re-planta el draft) haría
                 # refundear indefinidamente = chat gratis ilimitado (review B4).
-                if block.name == "register_trade" and result.get("status") == "registered":
+                if block.name in ("register_trade", "register_group_op") and result.get("status") == "registered":
                     turn_flags.add("trade_registered")
                 elif block.name == "undo_last_trade" and result.get("status") == "undone":
+                    turn_flags.add("undo_ok")
+                elif block.name == "register_group_op" and result.get("status") == "undone":
                     turn_flags.add("undo_ok")
             tool_results.append({
                 "type": "tool_result",
@@ -20417,7 +20521,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
         # cap. El usuario ya "gastó" su slot en el turno que abrió el registro;
         # el "sí, confirmá" no puede rebotar con 429 dejando la operación a
         # medias (review B4). Estos turnos son gratis (skip-reserve más abajo).
-        if not allowed and not _trade_flow_open(uid):
+        # (El flujo grupal del asesor tiene su propio draft — mismo criterio.)
+        if not allowed and not (_trade_flow_open(uid) or _group_flow_open(uid)):
             raise _chat_quota_429(tier, usage)
         prof_row = conn.execute(
             "SELECT investor_profile FROM users WHERE id=?", (uid,)
@@ -20684,7 +20789,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     import secrets as _secrets
     _req_id = _secrets.token_hex(8)  # turn-boundary de la confirmación
     _turn_flags: set = set()
-    _draft0 = _TRADE_DRAFT.get(uid)
+    # Book-mode usa SU draft (registro grupal); el resto, el draft personal.
+    _draft0 = (_GROUP_DRAFT if book_mode else _TRADE_DRAFT).get(uid)
     _flow_open = bool(_draft0 and (time.time() - _draft0.get("ts", 0)) <= _TRADE_DRAFT_TTL)
     # Señal sí/no del usuario, computada UNA vez: gobierna el short-circuit y
     # viaja al handler (ningún write pendiente se ejecuta sin 'yes').
@@ -20700,7 +20806,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # sin cuota disponible (review nocturno: gatearlo por _free_continuation
     # reintroducía el 429-en-el-borde que colgaba el "sí" — clase B4).
     # Ambiguo ('sí pero a 16000', 'dale, pero en dólares') → sigue al LLM.
-    if _flow_open and _draft0.get("status") == "confirming":
+    if _flow_open and _draft0.get("status") == "confirming" and not book_mode:
         if _confirm_signal == "yes":
             _res = _confirm_pending_trade_by_uid(uid)
             if _res.get("status") == "registered":
@@ -20714,13 +20820,31 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             return _chat_direct_reply(
                 data.stream, "Ok, lo descarté. Decime si querés cargar otra cosa.", tier)
 
+    # Twin del short-circuit para el REGISTRO GRUPAL (book-mode): el 'sí'
+    # inequívoco ejecuta el payload guardado sin depender del modelo.
+    if _flow_open and _draft0.get("status") == "confirming" and book_mode:
+        if _confirm_signal == "yes":
+            _res = _confirm_pending_group_by_uid(uid)
+            if _res.get("status") == "registered":
+                _msg = f"✅ Listo, registré: {_res.get('summary', '')}"
+                if _res.get("skipped"):
+                    _msg += f" · {len(_res['skipped'])} fila(s) quedaron afuera"
+            else:
+                _msg = "No pude completar el registro: " + str(_res.get("error") or "error desconocido")
+            return _chat_direct_reply(data.stream, _msg, tier,
+                                      portfolio_changed=_res.get("status") == "registered")
+        if _confirm_signal == "no":
+            _GROUP_DRAFT.pop(uid, None)
+            return _chat_direct_reply(
+                data.stream, "Ok, lo descarté. Decime si querés registrar otra cosa.", tier)
+
     # ── SHORT-CIRCUIT de undo (mismo criterio: pedido EXPLÍCITO e inequívoco) ─
     # 'deshacelo', 'deshacé la última operación', 'borrala' → ejecutar el undo
     # server-side (el handler tiene sus propias guardas: solo compras por chat,
     # 24 h, posición intacta). En la prueba e2e el modelo FABULÓ un undo sin
     # llamar la tool — para un pedido claro no dependemos de él. Mensajes con
     # dígitos/preguntas/drafts abiertos siguen al modelo (puede ser enmienda).
-    if (not _flow_open and _UNDO_STRONG_RE.search(last_user_msg or "")
+    if (not book_mode and not _flow_open and _UNDO_STRONG_RE.search(last_user_msg or "")
             and not any(c.isdigit() for c in (last_user_msg or ""))
             and "?" not in (last_user_msg or "") and "¿" not in (last_user_msg or "")
             and len((last_user_msg or "").split()) <= 6
@@ -20753,11 +20877,15 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # la red de seguridad podía ejecutar), verbos de undo, ni drafts VENCIDOS
     # (_flow_open chequea TTL — review B4).
     _has_question = ("?" in (last_user_msg or "")) or ("¿" in (last_user_msg or ""))
+    # En book-mode la tool forzada es la GRUPAL; la intención suma los verbos
+    # del asesor ("registrale/anotale/comprale a Juan…") que el regex personal
+    # no cubre.
+    _forced_tool = "register_group_op" if book_mode else "register_trade"
+    _group_intent = bool(book_mode and _GROUP_INTENT_RE.search(last_user_msg or ""))
     _force_register = (
-        not book_mode  # register_trade no existe en book-mode (F3.3 trae la grupal)
-        and not _UNDO_ONLY_RE.search(last_user_msg or "")
+        not _UNDO_ONLY_RE.search(last_user_msg or "")
         and not _has_question
-        and (_is_trade_intent(last_user_msg)
+        and (_is_trade_intent(last_user_msg) or _group_intent
              or (_flow_open and _draft0.get("status") == "gathering")
              # enmienda sobre un pendiente ('no, mejor a 5500'): mensaje con
              # dígitos y sin pregunta → forzar la tool para que la enmienda
@@ -20808,7 +20936,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     # siguiente (libre) produce el texto para el usuario.
                     _extra = {}
                     if _turn == 0 and _force_register:
-                        _extra["tool_choice"] = {"type": "tool", "name": "register_trade"}
+                        _extra["tool_choice"] = {"type": "tool", "name": _forced_tool}
                     with client.messages.stream(
                         model=chat_model,
                         max_tokens=max_tokens,
@@ -20928,7 +21056,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
         for _loop_i in range(MAX_TOOL_LOOPS + (2 if _force_register else 1)):
             _extra_j = {}
             if _loop_i == 0 and _force_register:
-                _extra_j["tool_choice"] = {"type": "tool", "name": "register_trade"}
+                _extra_j["tool_choice"] = {"type": "tool", "name": _forced_tool}
             response = client.messages.create(
                 model=chat_model,
                 max_tokens=max_tokens,
@@ -25492,15 +25620,15 @@ def advisor_group_op_prep(
         conn.close()
 
 
-@app.post("/api/advisor/group-op")
-def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_current_user)):
-    """Aplica UNA compra a N clientes (block trade con asignación).
+def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_date, rows: list) -> dict:
+    """Core del block trade — compartido por el endpoint POST /advisor/group-op
+    y por el registro grupal por chat (register_group_op). `rows` son dicts
+    planos: {client_uid, broker, quantity, buy_price, invested?}.
 
     Semántica: las filas se PRE-VALIDAN (vínculo activo read_write + broker
-    existente); las inválidas se devuelven en `skipped` sin bloquear el resto.
-    Las válidas se aplican en UNA transacción (o entran todas o ninguna) y el
-    lote queda registrado con batch_id → deshacible con /undo."""
-    _check_rate_limit(request, max_calls=10, window_seconds=60, suffix=f"advgroupop:{uid}")
+    existente + moneda compatible); las inválidas van a `skipped` sin bloquear
+    el resto. Las válidas se aplican en UNA transacción (o entran todas o
+    ninguna) y el lote queda con batch_id → deshacible con /undo."""
     conn = get_db()
     try:
         _require_advisor(conn, uid)
@@ -25512,7 +25640,7 @@ def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_c
             (uid,),
         ).fetchall()}
         # Brokers (con moneda) de TODOS los clientes del lote en una query
-        row_cids = list({r.client_uid for r in data.rows})
+        row_cids = list({r["client_uid"] for r in rows})
         ph = ",".join("?" * len(row_cids))
         broker_ccy = {(r["user_id"], r["name"]): (r["currency"] or "USD") for r in conn.execute(
             f"SELECT user_id, name, currency FROM brokers WHERE user_id IN ({ph})",
@@ -25524,11 +25652,11 @@ def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_c
             # que la inferencia de _insert_manual_position (ARS vs no-ARS).
             return "ARS" if (c or "").upper() == "ARS" else "USD"
 
-        batch_ccy = (data.currency or "").upper() or None
+        batch_ccy = (currency or "").upper() or None
         valid, skipped = [], []
         seen = set()
-        for row in data.rows:
-            cid = row.client_uid
+        for row in rows:
+            cid = row["client_uid"]
             if cid in seen:
                 skipped.append({"client_uid": cid, "reason": "duplicado en el lote"})
                 continue
@@ -25540,9 +25668,9 @@ def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_c
             if link["permission"] != "read_write":
                 skipped.append({"client_uid": cid, "reason": "vínculo de solo lectura"})
                 continue
-            bc = broker_ccy.get((cid, row.broker))
+            bc = broker_ccy.get((cid, row["broker"]))
             if bc is None:
-                skipped.append({"client_uid": cid, "reason": f"no tiene el broker {row.broker!r}"})
+                skipped.append({"client_uid": cid, "reason": f"no tiene el broker {row['broker']!r}"})
                 continue
             # Guard de moneda: un lote ARS no puede caer en un broker USD del
             # cliente (mezcla ARS+USD en el FIFO + débito de cash en la moneda
@@ -25551,7 +25679,7 @@ def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_c
                 hint = " — usá su sub-cuenta dólar (crear desde la Cartera del cliente)" \
                     if _ccy_family(batch_ccy) == "USD" else ""
                 skipped.append({"client_uid": cid,
-                                "reason": f"moneda del lote ({batch_ccy}) ≠ moneda del broker {row.broker!r} ({bc}){hint}"})
+                                "reason": f"moneda del lote ({batch_ccy}) ≠ moneda del broker {row['broker']!r} ({bc}){hint}"})
                 continue
             valid.append(row)
         if not valid:
@@ -25561,33 +25689,290 @@ def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_c
         with conn:
             cur = conn.execute(
                 "INSERT INTO advisor_op_batches (advisor_uid, asset, op_kind) VALUES (?,?, 'buy')",
-                (uid, data.asset.strip()),
+                (uid, asset.strip()),
             )
             batch_id = cur.lastrowid
             for row in valid:
                 p = PositionIn(
-                    broker=row.broker,
-                    asset=data.asset.strip(),
-                    buy_price=row.buy_price,
-                    quantity=row.quantity,
-                    invested=(row.invested if row.invested is not None
-                              else round(row.buy_price * row.quantity, 8)),
-                    entry_date=data.entry_date,
-                    asset_type=data.asset_type,
-                    currency=data.currency,
+                    broker=row["broker"],
+                    asset=asset.strip(),
+                    buy_price=row["buy_price"],
+                    quantity=row["quantity"],
+                    invested=(row["invested"] if row.get("invested") is not None
+                              else round(row["buy_price"] * row["quantity"], 8)),
+                    entry_date=entry_date,
+                    asset_type=asset_type,
+                    currency=currency,
                 )
-                prow = _insert_manual_position(conn, row.client_uid, p)
+                prow = _insert_manual_position(conn, row["client_uid"], p)
                 conn.execute(
                     """INSERT INTO advisor_op_batch_items (batch_id, client_uid, position_id)
                        VALUES (?,?,?)""",
-                    (batch_id, row.client_uid, prow["id"]),
+                    (batch_id, row["client_uid"], prow["id"]),
                 )
-                applied.append({"client_uid": row.client_uid, "position_id": prow["id"]})
+                applied.append({"client_uid": row["client_uid"], "position_id": prow["id"]})
         for a in applied:
             _ai_cache_invalidate(a["client_uid"])
         return {"batch_id": batch_id, "applied": applied, "skipped": skipped}
     finally:
         conn.close()
+
+
+@app.post("/api/advisor/group-op")
+def advisor_group_op(data: GroupOpIn, request: Request, uid: int = Depends(get_current_user)):
+    """Aplica UNA compra a N clientes (block trade con asignación). El core
+    vive en _advisor_group_op_apply (compartido con el registro por chat)."""
+    _check_rate_limit(request, max_calls=10, window_seconds=60, suffix=f"advgroupop:{uid}")
+    rows = [{"client_uid": r.client_uid, "broker": r.broker, "quantity": r.quantity,
+             "buy_price": r.buy_price, "invested": r.invested} for r in data.rows]
+    return _advisor_group_op_apply(
+        uid, data.asset, data.asset_type, data.currency, data.entry_date, rows)
+
+
+# ─── register_group_op: el registro grupal POR CHAT (book-mode, F3.3) ────────
+# Calca el diseño de register_trade (stateless-safe, confirmación enforced en
+# turno distinto, ejecuta el payload GUARDADO) pero escribe vía el core del
+# block trade — mismas validaciones (vínculo rw, broker, moneda) y mismo undo
+# por batch. Pedido de Nico: "registrale a tal y tal cliente una compra de
+# $300.000 en uno, $400.000 en otro, del CEDEAR de Tesla a X precio".
+
+def _norm_label(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s or ""))
+    return "".join(c for c in s if not unicodedata.combining(c)).lower().strip()
+
+
+def _resolve_group_clients(conn, uid: int, rows: list):
+    """Matchea los nombres que dictó el asesor contra su roster (label o
+    nombre real, sin tildes/case). Devuelve (resueltos, problemas):
+    resueltos = [(row, {client_uid, label})], problemas = [str]."""
+    roster = conn.execute(
+        """SELECT ac.client_uid, ac.label, ac.permission, u.name
+           FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+           WHERE ac.advisor_uid=? AND ac.status='active'""",
+        (uid,),
+    ).fetchall()
+    resolved, problems = [], []
+    for row in rows:
+        q = _norm_label(row.get("client"))
+        if not q:
+            problems.append("una fila vino sin nombre de cliente")
+            continue
+        exact = [r for r in roster
+                 if _norm_label(r["label"]) == q or _norm_label(r["name"]) == q]
+        cands = exact or [
+            r for r in roster
+            if q in _norm_label(r["label"]) or (r["name"] and q in _norm_label(r["name"]))
+        ]
+        if not cands:
+            names = ", ".join(sorted({r["label"] or r["name"] for r in roster})[:15])
+            problems.append(f"no encontré al cliente {row.get('client')!r} — tus clientes son: {names}")
+            continue
+        if len(cands) > 1:
+            opts = ", ".join(sorted({c["label"] or c["name"] for c in cands})[:6])
+            problems.append(f"{row.get('client')!r} es ambiguo — ¿cuál: {opts}?")
+            continue
+        c = cands[0]
+        if c["permission"] != "read_write":
+            problems.append(f"{c['label']}: el vínculo es de solo lectura — no puedo registrarle nada")
+            continue
+        resolved.append((row, {"client_uid": c["client_uid"],
+                               "label": c["label"] or c["name"] or f"Cliente {c['client_uid']}"}))
+    return resolved, problems
+
+
+def _suggest_group_broker(conn, client_uid: int, asset: str, currency: str):
+    """Broker del cliente para la fila — misma regla que el prep del modal:
+    donde YA tiene el activo → único compatible → primero compatible. La
+    compatibilidad es por familia de moneda (ARS vs no-ARS). None si no hay."""
+    want_ars = (currency or "").upper() == "ARS"
+    brokers = conn.execute(
+        "SELECT name, currency FROM brokers WHERE user_id=? ORDER BY id ASC",
+        (client_uid,),
+    ).fetchall()
+    compat = [b for b in brokers
+              if ((b["currency"] or "").upper() == "ARS") == want_ars]
+    if not compat:
+        return None
+    names_compat = {b["name"] for b in compat}
+    held = [r["broker"] for r in conn.execute(
+        """SELECT DISTINCT broker FROM positions
+           WHERE user_id=? AND asset=? AND COALESCE(is_cash,0)=0""",
+        (client_uid, asset),
+    ).fetchall()]
+    for h in held:
+        if h in names_compat:
+            return h
+    return compat[0]["name"]
+
+
+def _group_op_summary(asset: str, ccy: str, price: float, date, prows: list) -> str:
+    sym = "US$" if ccy == "USD" else "$"
+    parts = []
+    for p in prows:
+        amt = p["quantity"] * p["buy_price"]
+        parts.append(f"{p['_label']}: {_fmt_qty(p['quantity'])} × {sym} {p['buy_price']:,.2f} "
+                     f"= {sym} {amt:,.2f} en {p['broker']}")
+    when = f" con fecha {date}" if date else ""
+    return (f"COMPRA GRUPAL de {asset} ({ccy}){when} para {len(prows)} "
+            f"cliente{'s' if len(prows) != 1 else ''} — " + " · ".join(parts))
+
+
+def _register_group_op_handler(inp: dict, uid: int, request_id=None,
+                               confirm_signal: str = "") -> dict:
+    now = time.time()
+    _trade_sweep_expired(now)
+    conn = get_db()
+    try:
+        from ai import quota as _q
+        if _q.get_tier(conn, uid) != "advisor":
+            return {"error": "register_group_op es solo para el plan Asesor"}
+
+        # ── cancel ──
+        if inp.get("cancel"):
+            _GROUP_DRAFT.pop(uid, None)
+            return {"status": "cancelled", "note": "Registro grupal descartado."}
+
+        # ── undo del último lote registrado por chat ──
+        if inp.get("undo_last"):
+            last = _LAST_GROUP_BATCH.pop(uid, None)
+            if not last or (now - last.get("ts", 0)) > _UNDO_TRADE_TTL:
+                return {"error": "no hay un lote grupal reciente para deshacer (o pasaron más de 24 h) — se puede deshacer desde Clientes"}
+            try:
+                res = advisor_group_op_undo(batch_id=last["batch_id"], uid=uid)
+            except HTTPException as ex:
+                return {"error": f"no se pudo deshacer: {ex.detail}"}
+            return {"status": "undone",
+                    "summary": f"Lote deshecho — {len(res.get('undone', []))} posiciones borradas y el cash re-acreditado."}
+
+        # ── confirmación (SOLO desde un turno distinto al que armó el draft) ──
+        if inp.get("confirm_pending"):
+            d = _GROUP_DRAFT.get(uid)
+            if not d or (now - d.get("ts", 0)) > _TRADE_DRAFT_TTL:
+                return {"error": "no hay registro grupal pendiente (expiró) — armalo de nuevo"}
+            if d.get("status") != "confirming":
+                return {"error": "el registro no está listo — faltan datos"}
+            if request_id is not None and d.get("request_id") == request_id:
+                return {"error": "no podés confirmar en el mismo turno que armaste el resumen — mostráselo al asesor y esperá su respuesta"}
+            if confirm_signal == "no":
+                _GROUP_DRAFT.pop(uid, None)
+                return {"status": "cancelled", "note": "El asesor no confirmó — registro descartado."}
+            d2 = _GROUP_DRAFT.pop(uid, None)  # claim atómico: solo un request gana
+            if not d2 or d2.get("status") != "confirming":
+                return {"error": "el registro ya fue procesado"}
+            payload = d2["payload"]
+            try:
+                res = _advisor_group_op_apply(uid, **payload)
+            except HTTPException as ex:
+                return {"error": f"no se pudo aplicar: {ex.detail}"}
+            _LAST_GROUP_BATCH[uid] = {"batch_id": res["batch_id"], "ts": now,
+                                      "summary": d2["summary"]}
+            return {"status": "registered", "summary": d2["summary"],
+                    "applied": len(res["applied"]), "skipped": res["skipped"],
+                    "note": "Solo quedó anotado en Rendi — no toca los brokers reales. Se puede deshacer con undo_last o desde Clientes."}
+
+        # ── gathering / (re)armado del draft ──
+        d = _GROUP_DRAFT.get(uid)
+        if d and (now - d.get("ts", 0)) > _TRADE_DRAFT_TTL:
+            _GROUP_DRAFT.pop(uid, None)
+            d = None
+        fields = dict(d["fields"]) if d else {}
+        for k in ("asset", "asset_type", "currency", "date"):
+            v = inp.get(k)
+            if isinstance(v, str) and v.strip():
+                fields[k] = v.strip()
+        if isinstance(inp.get("price"), (int, float)) and inp["price"] > 0:
+            fields["price"] = float(inp["price"])
+        if isinstance(inp.get("rows"), list) and inp["rows"]:
+            fields["rows"] = [r for r in inp["rows"] if isinstance(r, dict)][:50]
+
+        missing = []
+        if not fields.get("asset"):
+            missing.append("el activo (ticker)")
+        if (fields.get("currency") or "").upper() not in ("ARS", "USD"):
+            missing.append("la moneda (ARS o USD)")
+        if not isinstance(fields.get("price"), float) or fields["price"] <= 0:
+            missing.append("el precio unitario al que operó")
+        if not fields.get("rows"):
+            missing.append("los clientes, cada uno con su monto o cantidad")
+        free_turns = d.get("free_turns", 0) if d else 0
+        if missing:
+            _GROUP_DRAFT[uid] = {"status": "gathering", "fields": fields, "ts": now,
+                                 "request_id": request_id, "free_turns": free_turns}
+            return {"status": "needs_info", "missing": missing,
+                    "note": "Pedile TODO lo que falta en una sola repregunta."}
+
+        asset = fields["asset"].upper().strip()
+        ccy = fields["currency"].upper()
+        price = float(fields["price"])
+        date_s = fields.get("date")
+        if date_s and not _DATE_RE.match(date_s):
+            return {"error": "fecha inválida — usá YYYY-MM-DD u omitila si es de hoy"}
+
+        resolved, problems = _resolve_group_clients(conn, uid, fields["rows"])
+        prows, row_problems = [], []
+        max_notional = _TRADE_MAX_NOTIONAL.get(ccy, 5_000_000)
+        for row, client in resolved:
+            qty = row.get("quantity")
+            amt = row.get("amount")
+            if (not isinstance(qty, (int, float)) or qty <= 0):
+                if isinstance(amt, (int, float)) and amt > 0:
+                    qty = round(float(amt) / price, 8)
+                else:
+                    row_problems.append(f"{client['label']}: falta el monto o la cantidad")
+                    continue
+            notional = float(qty) * price
+            if notional > max_notional:
+                row_problems.append(f"{client['label']}: {ccy} {notional:,.0f} supera el tope de seguridad — confirmá el número con el asesor")
+                continue
+            broker = _suggest_group_broker(conn, client["client_uid"], asset, ccy)
+            if broker is None:
+                row_problems.append(f"{client['label']}: no tiene ningún broker en {ccy} — queda afuera")
+                continue
+            prows.append({"client_uid": client["client_uid"], "broker": broker,
+                          "quantity": float(qty), "buy_price": price,
+                          "_label": client["label"]})
+
+        if not prows:
+            _GROUP_DRAFT[uid] = {"status": "gathering", "fields": fields, "ts": now,
+                                 "request_id": request_id, "free_turns": free_turns}
+            return {"status": "needs_info",
+                    "missing": (problems + row_problems) or ["ningún cliente resolvió — revisá los nombres"]}
+
+        summary = _group_op_summary(asset, ccy, price, date_s, prows)
+        payload = {"asset": asset, "asset_type": fields.get("asset_type"),
+                   "currency": ccy, "entry_date": date_s,
+                   "rows": [{k: v for k, v in p.items() if k != "_label"} for p in prows]}
+        _GROUP_DRAFT[uid] = {"status": "confirming", "fields": fields,
+                             "payload": payload, "summary": summary, "ts": now,
+                             "request_id": request_id, "free_turns": free_turns}
+        return {"status": "needs_confirmation", "summary": summary,
+                "excluded": problems + row_problems,
+                "note": ("Mostrale el resumen (y los excluidos si hay) + '(esto solo lo anota en Rendi — "
+                         "no toca los brokers reales)' y preguntá si confirma. NO confirmes en este turno.")}
+    finally:
+        conn.close()
+
+
+def _confirm_pending_group_by_uid(uid: int) -> dict:
+    """Short-circuit determinístico del 'sí' para el registro grupal (mismo
+    criterio que _confirm_pending_trade_by_uid): claim atómico del draft y
+    ejecución del payload GUARDADO, sin pasar por el modelo."""
+    now = time.time()
+    d = _GROUP_DRAFT.pop(uid, None)
+    if not d or d.get("status") != "confirming" or (now - d.get("ts", 0)) > _TRADE_DRAFT_TTL:
+        return {"error": "no hay registro grupal pendiente"}
+    try:
+        res = _advisor_group_op_apply(uid, **d["payload"])
+    except HTTPException as ex:
+        return {"error": str(ex.detail)}
+    except Exception as ex:
+        log.error("group op confirm failed uid=%s: %s", uid, ex)
+        return {"error": "falló el registro — nada quedó anotado"}
+    _LAST_GROUP_BATCH[uid] = {"batch_id": res["batch_id"], "ts": now,
+                              "summary": d["summary"]}
+    return {"status": "registered", "summary": d["summary"],
+            "applied": len(res["applied"]), "skipped": res["skipped"]}
 
 
 @app.post("/api/advisor/group-op/{batch_id}/undo")

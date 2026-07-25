@@ -1178,4 +1178,126 @@ class BookChatContextTest(AdvisorBase):
         s = main._AI_CHAT_SYSTEM_ADVISOR
         self.assertIn("client_list", s)
         self.assertIn("/clientes?groupop=", s)
+        self.assertIn("register_group_op", s)
         self.assertIn("register_trade y undo_last_trade NO EXISTEN", s)
+
+
+class GroupOpChatTest(AdvisorBase):
+    """F3.3: register_group_op (registro grupal por chat) — el write-path del
+    book-mode. Se testea el HANDLER directo (sin LLM): armado del draft,
+    confirmación enforced en turno distinto, ejecución del payload guardado,
+    resolución de nombres y undo."""
+
+    def setUp(self):
+        super().setUp()
+        main._GROUP_DRAFT.clear()
+        main._LAST_GROUP_BATCH.clear()
+        conn = main.get_db()
+        self.client2 = _new_user(conn, f"ana-{uuid.uuid4().hex[:8]}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, self.client2))
+        _link(conn, self.advisor, self.client2, label="Ana G")
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                     (self.client2, "IOL", "ARS"))
+        conn.commit(); conn.close()
+
+    def _build(self, req_id="req-1", **overrides):
+        inp = {"asset": "TSLA", "currency": "ARS", "price": 58900.0,
+               "rows": [{"client": "Juan P", "amount": 300000},
+                        {"client": "Ana G", "amount": 400000}]}
+        inp.update(overrides)
+        return main._register_group_op_handler(inp, self.advisor, request_id=req_id)
+
+    def test_flujo_completo_montos_a_cantidades(self):
+        r = self._build()
+        self.assertEqual(r["status"], "needs_confirmation", r)
+        self.assertIn("Juan P", r["summary"])
+        self.assertIn("Ana G", r["summary"])
+        # Confirmación desde OTRO turno (request_id distinto)
+        r2 = main._register_group_op_handler(
+            {"confirm_pending": True}, self.advisor, request_id="req-2")
+        self.assertEqual(r2["status"], "registered", r2)
+        self.assertEqual(r2["applied"], 2)
+        conn = main.get_db()
+        p1 = conn.execute(
+            "SELECT quantity, buy_price, broker FROM positions WHERE user_id=? AND asset='TSLA'",
+            (self.client_uid,)).fetchone()
+        p2 = conn.execute(
+            "SELECT quantity, broker FROM positions WHERE user_id=? AND asset='TSLA'",
+            (self.client2,)).fetchone()
+        conn.close()
+        self.assertAlmostEqual(p1["quantity"], 300000 / 58900.0, places=6)
+        self.assertEqual(p1["broker"], "Cocos")
+        self.assertAlmostEqual(p2["quantity"], 400000 / 58900.0, places=6)
+        self.assertEqual(p2["broker"], "IOL")
+
+    def test_confirmar_en_el_mismo_turno_rechazado(self):
+        self._build(req_id="mismo-turno")
+        r = main._register_group_op_handler(
+            {"confirm_pending": True}, self.advisor, request_id="mismo-turno")
+        self.assertIn("error", r)
+        self.assertIn("mismo turno", r["error"])
+        # El draft sigue vivo — el próximo turno SÍ puede confirmar
+        self.assertTrue(main._group_flow_open(self.advisor))
+
+    def test_cliente_desconocido_repregunta_con_roster(self):
+        r = self._build(rows=[{"client": "Roberto X", "amount": 100000}])
+        self.assertEqual(r["status"], "needs_info")
+        joined = " ".join(r["missing"])
+        self.assertIn("Roberto X", joined)
+        self.assertIn("Juan P", joined)  # le lista el roster real
+
+    def test_no_asesor_rechazado(self):
+        r = main._register_group_op_handler(
+            {"asset": "TSLA"}, self.stranger, request_id="r")
+        self.assertIn("error", r)
+
+    def test_faltan_datos_needs_info(self):
+        r = main._register_group_op_handler(
+            {"asset": "TSLA"}, self.advisor, request_id="r")
+        self.assertEqual(r["status"], "needs_info")
+        self.assertTrue(any("moneda" in m for m in r["missing"]))
+        self.assertTrue(any("precio" in m for m in r["missing"]))
+
+    def test_moneda_incompatible_queda_afuera(self):
+        # Lote USD pero ambos clientes solo tienen brokers ARS → nadie entra
+        r = self._build(currency="USD", price=250.0)
+        self.assertEqual(r["status"], "needs_info")
+        self.assertTrue(any("no tiene ningún broker en USD" in m for m in r["missing"]))
+
+    def test_vinculo_solo_lectura_excluido(self):
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_clients SET permission='read' WHERE client_uid=?",
+                     (self.client2,))
+        conn.commit(); conn.close()
+        r = self._build()
+        self.assertEqual(r["status"], "needs_confirmation")
+        self.assertIn("Juan P", r["summary"])
+        self.assertNotIn("Ana G", r["summary"])
+        self.assertTrue(any("solo lectura" in p for p in r["excluded"]))
+
+    def test_undo_del_ultimo_lote(self):
+        self._build()
+        main._register_group_op_handler({"confirm_pending": True}, self.advisor,
+                                        request_id="req-2")
+        r = main._register_group_op_handler({"undo_last": True}, self.advisor,
+                                            request_id="req-3")
+        self.assertEqual(r["status"], "undone", r)
+        conn = main.get_db()
+        left = conn.execute(
+            "SELECT COUNT(*) c FROM positions WHERE asset='TSLA' AND user_id IN (?,?)",
+            (self.client_uid, self.client2)).fetchone()["c"]
+        conn.close()
+        self.assertEqual(left, 0)
+
+    def test_short_circuit_confirma_payload_guardado(self):
+        self._build()
+        r = main._confirm_pending_group_by_uid(self.advisor)
+        self.assertEqual(r["status"], "registered")
+        # Segundo intento: el draft ya fue claimeado — no hay doble write
+        r2 = main._confirm_pending_group_by_uid(self.advisor)
+        self.assertIn("error", r2)
+
+    def test_tool_solo_en_lista_advisor(self):
+        self.assertIn("register_group_op", {t["name"] for t in main._AI_TOOLS_ADVISOR})
+        self.assertNotIn("register_group_op", {t["name"] for t in main._AI_TOOLS})
+        self.assertNotIn("register_group_op", {t["name"] for t in main._AI_TOOLS_FREE})
