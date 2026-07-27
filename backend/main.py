@@ -20317,7 +20317,7 @@ def _maybe_refund_trade_turn(uid: int, turn_flags: set, reserved: bool = True) -
 
 
 def _chat_direct_reply(stream: bool, text: str, tier: str,
-                       portfolio_changed: bool = False, uid: int | None = None):
+                       portfolio_changed: bool = False, uid=None):
     """Respuesta del chat SIN llamar al LLM (short-circuit de confirmación de
     registro). Devuelve un StreamingResponse SSE (delta+done) si stream, o el
     JSON {reply,tier} si no — mismo shape que consume el frontend.
