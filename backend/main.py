@@ -432,6 +432,12 @@ def init_db():
     """)
     conn.commit()
 
+    # advisor_profile — logo del asesor (informes brandeados) si ya existía
+    _ap_cols = _table_cols(conn, 'advisor_profile')
+    if _ap_cols and 'logo_data' not in _ap_cols:
+        conn.execute("ALTER TABLE advisor_profile ADD COLUMN logo_data TEXT")
+        conn.commit()
+
     # brokers — agregar columna parent_broker_id si la tabla ya existía
     broker_cols = _table_cols(conn, 'brokers')
     if broker_cols and 'parent_broker_id' not in broker_cols:
@@ -1491,6 +1497,7 @@ def init_db():
             advisor_uid INTEGER PRIMARY KEY,
             display_name TEXT,
             cnv_matricula TEXT,
+            logo_data TEXT,                  -- data-URI (raster, ≤ ~300KB) del logo
             updated_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -25624,19 +25631,34 @@ class AdvisorReportIn(BaseModel):
 class AdvisorProfileIn(BaseModel):
     display_name: Optional[str] = Field(None, max_length=80)
     cnv_matricula: Optional[str] = Field(None, max_length=40)
+    # Logo: data-URI raster (el frontend ya lo achica a ≤256px con canvas).
+    # None = no tocar · "" = borrar · data:image/... = guardar.
+    logo_data: Optional[str] = Field(None, max_length=400_000)
+
+    @field_validator('logo_data')
+    @classmethod
+    def _valid_logo(cls, v):
+        if v is None or v == "":
+            return v
+        # Solo raster (nada de SVG: aunque en <img> no ejecuta scripts,
+        # restringir es gratis) y en base64.
+        if not re.match(r'^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$', v):
+            raise ValueError('Logo inválido — subí un PNG o JPG')
+        return v
 
 
 def _advisor_branding(conn, uid: int) -> dict:
     row = conn.execute(
-        "SELECT display_name, cnv_matricula FROM advisor_profile WHERE advisor_uid=?",
+        "SELECT display_name, cnv_matricula, logo_data FROM advisor_profile WHERE advisor_uid=?",
         (uid,)).fetchone()
-    if row and (row["display_name"] or row["cnv_matricula"]):
-        return {"name": row["display_name"], "matricula": row["cnv_matricula"]}
+    if row and (row["display_name"] or row["cnv_matricula"] or row["logo_data"]):
+        return {"name": row["display_name"], "matricula": row["cnv_matricula"],
+                "logo": row["logo_data"]}
     # Sin perfil configurado: SOLO users.name — jamás el localpart del email
     # (esto termina en una página pública sin auth; audit).
     u = conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
     return {"name": (u["name"] if u and u["name"] else "Tu asesor"),
-            "matricula": None}
+            "matricula": None, "logo": None}
 
 
 def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
@@ -25876,6 +25898,11 @@ def advisor_set_profile(data: AdvisorProfileIn, uid: int = Depends(get_current_u
                      updated_at=datetime('now')""",
                 (uid, (data.display_name or "").strip() or None,
                  (data.cnv_matricula or "").strip() or None))
+            # Logo aparte: None = no tocar · "" = borrar · data-URI = guardar
+            if data.logo_data is not None:
+                conn.execute(
+                    "UPDATE advisor_profile SET logo_data=?, updated_at=datetime('now') WHERE advisor_uid=?",
+                    (data.logo_data or None, uid))
         return _advisor_branding(conn, uid)
     finally:
         conn.close()

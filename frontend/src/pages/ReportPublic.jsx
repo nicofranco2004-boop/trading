@@ -89,7 +89,11 @@ export default function ReportPublic() {
           {/* Cabecera con la marca del asesor */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, borderBottom: `2px solid ${P.ink0}`, paddingBottom: 14, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
-              <div style={{ width: 40, height: 40, borderRadius: 10, background: P.brand, color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 15 }}>{initials}</div>
+              {(r.branding?.logo && r.branding.logo.startsWith('data:image/')) ? (
+                <img src={r.branding.logo} alt="" style={{ height: 40, maxWidth: 150, objectFit: 'contain', borderRadius: 6 }} />
+              ) : (
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: P.brand, color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 15 }}>{initials}</div>
+              )}
               <div>
                 <div style={{ fontSize: 15.5, fontWeight: 700 }}>{r.branding?.name || 'Tu asesor'}</div>
                 {r.branding?.matricula && (

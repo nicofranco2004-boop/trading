@@ -1513,3 +1513,26 @@ class AdvisorReportsTest(AdvisorBase):
         self.assertEqual(p2["holdings"][0]["asset"], "GGAL")
         self.assertEqual(p2["holdings"][0]["value_usd"], 100)  # invested 100k ARS al MEP 1000
         self.assertIsNone(p2["movers"])
+
+    def test_logo_guardado_congelado_y_validado(self):
+        logo = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+        r = self.http.patch("/api/advisor/profile",
+                            json={"display_name": "MB", "logo_data": logo},
+                            headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["logo"], logo)
+        # Congelado en el informe
+        g = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.advisor))
+        p = self.http.get(f"/api/reports/public/{g.json()['reports'][0]['token']}").json()["report"]
+        self.assertEqual(p["branding"]["logo"], logo)
+        # Borrar con "" — y un SVG se rechaza (solo raster)
+        self.http.patch("/api/advisor/profile", json={"logo_data": ""},
+                        headers=self._hdr(self.advisor))
+        self.assertIsNone(self.http.get("/api/advisor/profile",
+                                        headers=self._hdr(self.advisor)).json()["logo"])
+        bad = self.http.patch("/api/advisor/profile",
+                              json={"logo_data": "data:image/svg+xml;base64,PHN2Zz4="},
+                              headers=self._hdr(self.advisor))
+        self.assertEqual(bad.status_code, 422)

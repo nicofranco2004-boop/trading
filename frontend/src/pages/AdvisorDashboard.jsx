@@ -513,7 +513,7 @@ function ReportModal({ onClose }) {
   // Selección con checkboxes (feedback Nico): "Todos" + tildar un subconjunto.
   const [checked, setChecked] = useState(null)    // Set de client_uid; null hasta cargar
   const [note, setNote] = useState('')
-  const [brand, setBrand] = useState({ name: '', matricula: '' })
+  const [brand, setBrand] = useState({ name: '', matricula: '', logo: null })
   const [brandDirty, setBrandDirty] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [results, setResults] = useState(null)
@@ -524,7 +524,7 @@ function ReportModal({ onClose }) {
       setClients(cs)
       setChecked(new Set(cs.map(c => c.client_uid)))  // arranca con todos tildados
     }).catch(() => { setClients([]); setChecked(new Set()) })
-    api.get('/advisor/profile').then(p => setBrand({ name: p.name || '', matricula: p.matricula || '' })).catch(() => {})
+    api.get('/advisor/profile').then(p => setBrand({ name: p.name || '', matricula: p.matricula || '', logo: p.logo || null })).catch(() => {})
   }, [])
 
   const allChecked = clients && checked && checked.size === clients.length
@@ -534,6 +534,32 @@ function ReportModal({ onClose }) {
     next.has(uid) ? next.delete(uid) : next.add(uid)
     return next
   })
+
+  // Logo: leer el archivo, achicarlo con canvas (máx 256px de alto — el
+  // informe lo muestra a 40px, no hace falta más) y guardarlo como data-URI.
+  const onLogoFile = (file) => {
+    if (!file || !/^image\/(png|jpeg|webp)$/.test(file.type)) {
+      toast.push('Subí un PNG o JPG', { type: 'error' })
+      return
+    }
+    const img = new Image()
+    img.onload = () => {
+      const scale = Math.min(1, 256 / img.height, 512 / img.width)
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.round(img.width * scale)
+      canvas.height = Math.round(img.height * scale)
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+      const data = canvas.toDataURL('image/png')
+      if (data.length > 390_000) {
+        toast.push('El logo quedó muy pesado — probá con una imagen más simple', { type: 'error' })
+        return
+      }
+      setBrand(b => ({ ...b, logo: data }))
+      setBrandDirty(true)
+    }
+    img.onerror = () => toast.push('No pudimos leer esa imagen', { type: 'error' })
+    img.src = URL.createObjectURL(file)
+  }
 
   const generate = async () => {
     if (generating) return
@@ -547,6 +573,7 @@ function ReportModal({ onClose }) {
           await api.patch('/advisor/profile', {
             display_name: brand.name.trim() || null,
             cnv_matricula: brand.matricula.trim() || null,
+            logo_data: brand.logo ?? '',   // '' = borrar; data-URI = guardar
           })
         } catch (e) {
           toast.push('No se pudo guardar tu marca — no generé nada. Probá de nuevo.', { type: 'error' })
@@ -670,6 +697,27 @@ function ReportModal({ onClose }) {
               onChange={e => { setBrand({ ...brand, matricula: e.target.value }); setBrandDirty(true) }}
               placeholder="Matrícula CNV (opcional)" />
           </div>
+          <div className="mt-2 flex items-center gap-3">
+            {brand.logo ? (
+              <img src={brand.logo} alt="Logo" className="h-9 max-w-[120px] object-contain rounded bg-white/90 p-0.5" />
+            ) : (
+              <span className="text-[11px] text-ink-3">Sin logo — el informe usa tus iniciales</span>
+            )}
+            <label className="text-[11.5px] font-medium text-data-violet border border-data-violet/30 hover:bg-data-violet/10 rounded-md px-2.5 py-1.5 cursor-pointer transition-colors">
+              {brand.logo ? 'Cambiar logo' : 'Subir logo'}
+              <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
+                onChange={e => { onLogoFile(e.target.files?.[0]); e.target.value = '' }} />
+            </label>
+            {brand.logo && (
+              <button type="button" onClick={() => { setBrand(b => ({ ...b, logo: null })); setBrandDirty(true) }}
+                className="text-[11.5px] text-ink-3 hover:text-ink-1 transition-colors">
+                Quitar
+              </button>
+            )}
+          </div>
+          <p className="text-[10.5px] text-ink-3 mt-1.5">
+            PNG o JPG, ideal con fondo transparente y formato apaisado (ej. 600×200 px) — lo achicamos solo.
+          </p>
         </div>
 
         <p className="text-[11px] text-ink-3 leading-relaxed">
