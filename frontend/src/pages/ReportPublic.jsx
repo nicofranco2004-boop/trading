@@ -176,7 +176,7 @@ export default function ReportPublic() {
             </div>
             {/* Tenencias */}
             <div>
-              <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Principales tenencias</div>
+              <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Principales tenencias{r.holdings_basis === 'cost' ? ' (a valor de compra)' : ''}</div>
               {(r.holdings || []).map((h, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, padding: '4px 0' }}>
                   <b style={{ width: 64, flexShrink: 0 }}>{h.asset}</b>
@@ -194,6 +194,31 @@ export default function ReportPublic() {
               ))}
             </div>
           </div>
+
+          {/* Lo que más movió — resultado TOTAL por tenencia */}
+          {(r.movers?.winners?.length || r.movers?.losers?.length) ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 20, marginTop: 16 }}>
+              <div>
+                <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Ganadoras</div>
+                {(r.movers.winners || []).map((m, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
+                    <b>{m.asset}</b><span style={{ fontWeight: 700, color: P.up }}>{signed(m.pnl_usd)}</span>
+                  </div>
+                ))}
+                {!(r.movers.winners || []).length && <p style={{ fontSize: 12, color: P.ink3, margin: 0 }}>Ninguna en verde.</p>}
+              </div>
+              <div>
+                <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Perdedoras</div>
+                {(r.movers.losers || []).map((m, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
+                    <b>{m.asset}</b><span style={{ fontWeight: 700, color: P.down }}>{signed(m.pnl_usd)}</span>
+                  </div>
+                ))}
+                {!(r.movers.losers || []).length && <p style={{ fontSize: 12, color: P.ink3, margin: 0 }}>Ninguna en rojo.</p>}
+              </div>
+              <div style={{ gridColumn: '1 / -1', fontSize: 10, color: P.ink3, marginTop: -8 }}>Resultado total de cada tenencia desde su compra, a valores de hoy.</div>
+            </div>
+          ) : null}
 
           {/* Invitación si el cliente todavía no reclamó su cuenta */}
           {r.claimed === false && (

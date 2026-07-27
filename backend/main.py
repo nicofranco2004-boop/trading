@@ -25705,6 +25705,31 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
 
     # Tenencias HOY (top 6) — misma valuación y denominador que el contexto IA.
     valued, _sk = _advisor_positions_valued(conn, [client_uid], tc_blue, tc_mep)
+    holdings_basis = "market"
+    if not valued:
+        # Sin cotizaciones cacheadas (activo raro / cache frío) el informe
+        # salía SIN tenencias (feedback de Nico). Mejor mostrarlas a valor de
+        # COSTO, etiquetadas, que nada: invested en moneda del broker → USD.
+        holdings_basis = "cost"
+        _ccy_by_broker = {r["name"]: (r["currency"] or "USD") for r in conn.execute(
+            "SELECT name, currency FROM brokers WHERE user_id=?", (client_uid,)).fetchall()}
+        valued = []
+        for r in conn.execute(
+                """SELECT broker, asset, invested FROM positions
+                   WHERE user_id=? AND COALESCE(is_cash,0)=0 AND invested > 0""",
+                (client_uid,)).fetchall():
+            inv = float(r["invested"] or 0)
+            if (_ccy_by_broker.get(r["broker"]) or "USD").upper() == "ARS":
+                inv = inv / (tc_mep or 1.0)
+            valued.append({"asset": r["asset"], "value_usd": inv, "invested_usd": inv,
+                           "pnl_usd": 0.0})
+        # agrupar por asset (posiciones multi-lote)
+        _agg = {}
+        for v in valued:
+            a = _agg.setdefault(v["asset"], {"asset": v["asset"], "value_usd": 0.0,
+                                             "invested_usd": 0.0, "pnl_usd": 0.0})
+            a["value_usd"] += v["value_usd"]; a["invested_usd"] += v["invested_usd"]
+        valued = list(_agg.values())
     tot_valued = sum(v["value_usd"] for v in valued)
     denom = max(value_end or 0.0, tot_valued) or 1.0
     holdings = [
@@ -25714,6 +25739,22 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
          "weight_pct": (round(v["value_usd"] / denom * 100) if value_end else None)}
         for v in sorted(valued, key=lambda r: -r["value_usd"])[:6]
     ]
+    # "Lo que más movió": P&L total NO realizado por tenencia (solo con
+    # valuación a mercado — a costo el pnl es 0 por definición). Etiquetado
+    # como resultado TOTAL de la tenencia, no del período (feedback Nico:
+    # la sección faltaba; el per-período necesita precios históricos → v2).
+    movers = None
+    if holdings_basis == "market":
+        _by_asset = {}
+        for v in valued:
+            _by_asset[v["asset"]] = _by_asset.get(v["asset"], 0.0) + v["pnl_usd"]
+        ganadoras = sorted(((a, p) for a, p in _by_asset.items() if p > 1),
+                           key=lambda x: -x[1])[:3]
+        perdedoras = sorted(((a, p) for a, p in _by_asset.items() if p < -1),
+                            key=lambda x: x[1])[:3]
+        if ganadoras or perdedoras:
+            movers = {"winners": [{"asset": a, "pnl_usd": round(p)} for a, p in ganadoras],
+                      "losers": [{"asset": a, "pnl_usd": round(p)} for a, p in perdedoras]}
 
     _CASHLIKE = ("Dividendo", "Interés", "Interes", "Amortización", "Amortizacion", "Renta")
     movs_all = []
@@ -25772,6 +25813,8 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
         "movements": movs,
         "movements_total": movs_total,
         "value_as_of": value_as_of,
+        "holdings_basis": holdings_basis,
+        "movers": movers,
         "note": (note or "").strip() or None,
         "claimed": bool(conn.execute(
             "SELECT approved FROM users WHERE id=?", (client_uid,)).fetchone()["approved"]),

@@ -505,11 +505,13 @@ function ReportModal({ onClose }) {
   const PERIODS = [
     { key: 'mes', label: 'Este mes', start: iso(firstOfMonth), end: iso(today) },
     { key: 'prev', label: 'Mes pasado', start: iso(firstOfPrev), end: iso(endOfPrev) },
-    { key: '90d', label: 'Últimos 90 días', start: iso(new Date(today.getTime() - 90 * 86400000)), end: iso(today) },
+    { key: '90d', label: '90 días', start: iso(new Date(today.getTime() - 90 * 86400000)), end: iso(today) },
+    { key: 'ytd', label: 'Este año', start: iso(new Date(today.getFullYear(), 0, 1)), end: iso(today) },
   ]
   const [period, setPeriod] = useState('mes')
   const [clients, setClients] = useState(null)
-  const [target, setTarget] = useState('all')     // 'all' | client_uid
+  // Selección con checkboxes (feedback Nico): "Todos" + tildar un subconjunto.
+  const [checked, setChecked] = useState(null)    // Set de client_uid; null hasta cargar
   const [note, setNote] = useState('')
   const [brand, setBrand] = useState({ name: '', matricula: '' })
   const [brandDirty, setBrandDirty] = useState(false)
@@ -517,9 +519,21 @@ function ReportModal({ onClose }) {
   const [results, setResults] = useState(null)
 
   useEffect(() => {
-    api.get('/advisor/clients').then(d => setClients(d.clients || [])).catch(() => setClients([]))
+    api.get('/advisor/clients').then(d => {
+      const cs = d.clients || []
+      setClients(cs)
+      setChecked(new Set(cs.map(c => c.client_uid)))  // arranca con todos tildados
+    }).catch(() => { setClients([]); setChecked(new Set()) })
     api.get('/advisor/profile').then(p => setBrand({ name: p.name || '', matricula: p.matricula || '' })).catch(() => {})
   }, [])
+
+  const allChecked = clients && checked && checked.size === clients.length
+  const toggleAll = () => setChecked(allChecked ? new Set() : new Set(clients.map(c => c.client_uid)))
+  const toggleOne = (uid) => setChecked(prev => {
+    const next = new Set(prev)
+    next.has(uid) ? next.delete(uid) : next.add(uid)
+    return next
+  })
 
   const generate = async () => {
     if (generating) return
@@ -544,7 +558,7 @@ function ReportModal({ onClose }) {
       const body = {
         period_start: p.start, period_end: p.end,
         note: note.trim() || null,
-        client_uids: target === 'all' ? null : [Number(target)],
+        client_uids: allChecked ? null : [...checked],
       }
       const d = await api.post('/advisor/reports/generate', body)
       setResults(d.reports || [])
@@ -622,12 +636,21 @@ function ReportModal({ onClose }) {
 
         <div>
           <p className="text-xs text-ink-2 mb-1.5">¿Para quién?</p>
-          <select className={inputCls} value={target} onChange={e => setTarget(e.target.value)}>
-            <option value="all">Todos {clients ? `(${clients.length} clientes)` : ''}</option>
+          <div className="border border-line rounded-md max-h-44 overflow-y-auto divide-y divide-line/40">
+            <label className="flex items-center gap-2.5 px-3 py-2 text-[12.5px] font-semibold text-ink-0 cursor-pointer hover:bg-bg-2/50">
+              <input type="checkbox" className="accent-[#8B7DFF]" checked={!!allChecked}
+                     onChange={toggleAll} />
+              Todos {clients ? `(${clients.length})` : ''}
+            </label>
             {(clients || []).map(c => (
-              <option key={c.client_uid} value={c.client_uid}>{c.label}</option>
+              <label key={c.client_uid} className="flex items-center gap-2.5 px-3 py-2 text-[12.5px] text-ink-1 cursor-pointer hover:bg-bg-2/50">
+                <input type="checkbox" className="accent-[#8B7DFF]"
+                       checked={!!checked?.has(c.client_uid)}
+                       onChange={() => toggleOne(c.client_uid)} />
+                <span className="truncate">{c.label}</span>
+              </label>
             ))}
-          </select>
+          </div>
         </div>
 
         <div>
@@ -657,9 +680,11 @@ function ReportModal({ onClose }) {
 
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="text-xs text-ink-2 hover:text-ink-0 px-3 py-2 transition-colors">Cancelar</button>
-          <button type="button" onClick={generate} disabled={generating || clients === null} className={btnPrimary}>
+          <button type="button" onClick={generate}
+                  disabled={generating || clients === null || !checked?.size} className={btnPrimary}>
             <FileText size={13} strokeWidth={1.75} />
-            {generating ? 'Generando…' : (target === 'all' ? `Generar ${clients?.length ?? ''} informes` : 'Generar informe')}
+            {generating ? 'Generando…'
+              : `Generar ${checked?.size ?? 0} informe${(checked?.size ?? 0) === 1 ? '' : 's'}`}
           </button>
         </div>
       </div>

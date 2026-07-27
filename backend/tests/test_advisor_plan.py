@@ -1491,3 +1491,25 @@ class AdvisorReportsTest(AdvisorBase):
         self.assertEqual(r.status_code, 403)
         pub = self.http.get("/api/reports/public/token-inexistente-123")
         self.assertEqual(pub.status_code, 404)
+
+    def test_holdings_fallback_costo_y_movers(self):
+        # Con precio cacheado: basis market + movers (GGAL vale 150 vs 100 invertidos)
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.advisor))
+        p = self.http.get(f"/api/reports/public/{r.json()['reports'][0]['token']}").json()["report"]
+        self.assertEqual(p["holdings_basis"], "market")
+        self.assertEqual(p["movers"]["winners"][0]["asset"], "GGAL")
+        self.assertEqual(p["movers"]["winners"][0]["pnl_usd"], 50)  # 150−100 USD al MEP 1000
+        # Sin precio cacheado: basis cost, tenencias PRESENTES igual (feedback Nico)
+        conn = main.get_db()
+        conn.execute("DELETE FROM asset_last_price WHERE symbol='GGAL.BA'")
+        conn.commit(); conn.close()
+        r2 = self.http.post("/api/advisor/reports/generate",
+                            json={"period_start": self.start, "period_end": self.end},
+                            headers=self._hdr(self.advisor))
+        p2 = self.http.get(f"/api/reports/public/{r2.json()['reports'][0]['token']}").json()["report"]
+        self.assertEqual(p2["holdings_basis"], "cost")
+        self.assertEqual(p2["holdings"][0]["asset"], "GGAL")
+        self.assertEqual(p2["holdings"][0]["value_usd"], 100)  # invested 100k ARS al MEP 1000
+        self.assertIsNone(p2["movers"])
