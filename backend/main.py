@@ -16001,8 +16001,13 @@ def _trade_draft_context(uid: int) -> str:
     if not d or (time.time() - d.get("ts", 0)) > _TRADE_DRAFT_TTL:
         return ""
     if d["status"] == "confirming":
+        _stale = ("⚠ El usuario pidió un CAMBIO después de ese resumen y AÚN NO "
+                  "lo aplicaste. NO uses confirm_pending todavía: primero llamá "
+                  "register_trade con el dato corregido (el server conserva el "
+                  "resto) y mostrá el resumen NUEVO para re-confirmar.\n"
+                  if d.get("needs_reconfirm") else "")
         return (
-            "\n\n--- REGISTRO PENDIENTE DE CONFIRMAR ---\n"
+            "\n\n--- REGISTRO PENDIENTE DE CONFIRMAR ---\n" + _stale +
             f"YA le mostraste al usuario este resumen y espera su respuesta: {d['summary']}.\n"
             "Si en ESTE mensaje el usuario acepta (sí/dale/confirmá/ok/correcto/"
             "listo), llamá register_trade con SOLO {confirm_pending:true} — NO "
@@ -17183,17 +17188,34 @@ def _register_blocks_epilogue(uid: int, text: str = "") -> str:
 
         blocks = []
         if d.get("status") == "confirming":
+            if d.get("needs_reconfirm"):
+                return ""  # hay una corrección sin aplicar — el resumen está viejo
+            # El draft confirmando guarda el PAYLOAD ya validado (fields queda
+            # vacío) — la card se arma de ahí, con formato legible.
+            p = d.get("payload") or f
+            action = str(p.get("action") or action or "").lower()
+
+            def _fmt_v(k, v):
+                if k == "quantity":
+                    try:
+                        return _fmt_qty(float(v))
+                    except Exception:
+                        return str(v)
+                if k in ("price", "amount") and isinstance(v, (int, float)):
+                    return f"{v:,.2f}".replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+                return str(v)
+
             rows = []
-            for k, lbl in (("action", "Operación"), ("asset", "Activo"), ("broker", "Broker"),
+            for k, lbl in (("asset", "Activo"), ("broker", "Broker"),
                            ("to_broker", "Hacia"), ("quantity", "Cantidad"), ("price", "Precio"),
                            ("amount", "Monto"), ("currency", "Moneda"), ("date", "Fecha")):
-                v = f.get(k)
+                v = p.get(k)
                 if v in (None, ""):
                     continue
-                rows.append([lbl, _ACTION_ES.get(str(v).lower(), str(v)) if k == "action" else str(v)])
+                rows.append([lbl, _fmt_v(k, v)])
             if not rows:
                 rows = [["Resumen", str(d.get("summary") or "")[:60]]]
-            title = _ACTION_ES.get(action, "Operación") + (f" de {f.get('asset')}" if f.get("asset") else "")
+            title = _ACTION_ES.get(action, "Operación") + (f" de {p.get('asset')}" if p.get("asset") else "")
             blocks.append({"type": "confirm", "title": title[:40], "rows": rows[:7],
                            "yes": f"Confirmar {_ACTION_ES.get(action, '').lower()}".strip()[:30],
                            "no": "Corregir"})
@@ -20994,6 +21016,16 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # Señal sí/no del usuario, computada UNA vez: gobierna el short-circuit y
     # viaja al handler (ningún write pendiente se ejecuta sin 'yes').
     _confirm_signal = _confirm_word(last_user_msg)
+    # Corrección a mitad de confirmación (bug reportado por Nico: corrigió
+    # "es el CEDEAR", el modelo no aplicó el cambio al draft, la card re-mostró
+    # el resumen VIEJO y el botón Confirmar registró el error). Si hay un
+    # "¿Confirmás?" pendiente y el usuario responde OTRA cosa que sí/no, el
+    # resumen mostrado queda potencialmente desactualizado: marcamos el draft
+    # y hasta que el modelo re-llame register_trade (que re-planta el dict y
+    # limpia el flag) NO hay card de confirmación NI atajo del "sí".
+    if (_flow_open and not book_mode and _draft0.get("status") == "confirming"
+            and _confirm_signal is None):
+        _TRADE_DRAFT[uid]["needs_reconfirm"] = True
 
     # ── SHORT-CIRCUIT de confirmación (determinístico, sin depender del LLM) ──
     # Si hay un registro PENDIENTE (de un turno anterior, TTL vigente) y el
@@ -21006,7 +21038,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # reintroducía el 429-en-el-borde que colgaba el "sí" — clase B4).
     # Ambiguo ('sí pero a 16000', 'dale, pero en dólares') → sigue al LLM.
     if _flow_open and _draft0.get("status") == "confirming" and not book_mode:
-        if _confirm_signal == "yes":
+        if _confirm_signal == "yes" and not _draft0.get("needs_reconfirm"):
             _res = _confirm_pending_trade_by_uid(uid)
             if _res.get("status") == "registered":
                 _msg = f"✅ Listo, registré: {_res.get('summary', '')}"
