@@ -17819,7 +17819,7 @@ _AI_TOOLS_FREE_NAMES = frozenset({
     "get_monthly_detail",        # mensual propio
     "remember_user_fact",        # memoria del user
     # Registro conversacional (decisión de producto 2026-07-12): TODOS los
-    # tiers pueden registrar — consume el cupo de chat del plan (Free ~3/sem
+    # tiers pueden registrar — consume el cupo de chat del plan (Free ~1/sem
     # = probar; Pro = usar). 1 registro completo = 1 uso (las continuaciones
     # del flujo se refundean — ver _maybe_refund_trade_turn).
     "register_trade",
@@ -20591,7 +20591,7 @@ def _chat_quota_429(tier: str, usage: dict) -> HTTPException:
     target_tier = "plus" if tier == "free" else "pro"
     if target_tier == "plus":
         benefits = [
-            "3× más Chat Coach IA (9 consultas/sem vs 3)",
+            "9× más Chat Rendi AI (9 consultas/sem vs 1)",
             "Hasta 3 brokers (vs 1 en Free)",
             "Reportes históricos + Export CSV",
             "Diagnóstico completo + 4 detectores de comportamiento",
@@ -20667,7 +20667,7 @@ def diagnostics_dismiss(request: Request, uid: int = Depends(get_effective_user)
                             "Personalizá tu diagnóstico sin límite (descartá lo que no te sirve)",
                             "Hasta 3 brokers (vs 1 en Free)",
                             "Reportes históricos + Export CSV",
-                            "3× más Chat con el Coach IA",
+                            "9× más Chat con Rendi AI",
                         ],
                     },
                 },
@@ -20834,7 +20834,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # línea de defensa, esto es la red.
     # Free 300 → 500 (2026-07): el bloque estructurado ---RENDI--- (~150-200
     # tokens) no entraba en 300 sin truncar la respuesta. Costo extra máximo
-    # ~$0.001/respuesta × 3 chat/sem = ~1 centavo/mes por Free activo.
+    # ~$0.001/respuesta × 1 chat/sem = ~sub-centavo/mes por Free activo.
     max_tokens = 1200 if is_premium else 500
     max_tokens_fallback = 800 if is_premium else 400
 

@@ -310,7 +310,7 @@ export default function Planes() {
     <div className="page-shell">
       <PageMeta
         title="Planes y precios — Rendi | Plus desde ARS 5.990/mes"
-        description="Elegí el plan de Rendi: Free para empezar, Plus para multi-broker, Pro con Coach IA libre y memoria. Precios en pesos al blue del día. Cancelá cuando quieras."
+        description="Elegí el plan de Rendi: Free para empezar, Plus para multi-broker, Pro con Rendi AI libre y memoria. Precios en pesos al blue del día. Cancelá cuando quieras."
         canonical="/planes"
       />
       <PageHeader

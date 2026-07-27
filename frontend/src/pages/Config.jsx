@@ -43,7 +43,7 @@ const DOLAR_REFRESH_MS = 600_000 // 10 min
 
 const TABS = [
   { id: 'cuenta',         label: 'Cuenta',           icon: UserRound,      sub: 'Datos, seguridad y eliminación' },
-  { id: 'test',           label: 'Test de inversor', icon: ClipboardList,  sub: 'Contexto para el Coach IA' },
+  { id: 'test',           label: 'Test de inversor', icon: ClipboardList,  sub: 'Contexto para el Rendi AI' },
   { id: 'planes',         label: 'Planes',           icon: CreditCard,     sub: 'Tu plan y uso de IA' },
   { id: 'fx',             label: 'Tipos de cambio',  icon: ArrowLeftRight, sub: 'Moneda de valuación y cotizaciones' },
   { id: 'soporte',        label: 'Soporte',          icon: LifeBuoy,       sub: 'WhatsApp y ayuda' },
@@ -624,7 +624,7 @@ export default function Config() {
     )
   }
 
-  // Test de inversor — el formulario de 7 preguntas que alimenta al Coach IA.
+  // Test de inversor — el formulario de 7 preguntas que alimenta al Rendi AI.
   // Se migró acá desde Análisis (2026-07-14): sólo se ve cuando el user entra a
   // esta sección, no siempre. El cruce cartera-vs-perfil sigue en Análisis ›
   // Perfil (con CTA a esta sección si el test no está completo).
@@ -634,7 +634,7 @@ export default function Config() {
         <header className="px-4 py-3 border-b border-line">
           <h2 className="text-sm font-medium text-ink-0">Test de inversor</h2>
           <p className="text-xs text-ink-3 mt-0.5">
-            Un test corto para que el Coach IA te conozca · define tu perfil (conservador / moderado / agresivo).
+            Un test corto para que el Rendi AI te conozca · define tu perfil (conservador / moderado / agresivo).
             Las respuestas viajan al prompt cuando le hablás al modelo — no se comparten con nadie.
           </p>
         </header>

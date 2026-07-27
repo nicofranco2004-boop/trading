@@ -3147,7 +3147,7 @@ export function handleDemoRequest(method, path, body) {
           'Personalizá tu diagnóstico sin límite (descartá lo que no te sirve)',
           'Hasta 3 brokers (vs 1 en Free)',
           'Reportes históricos + Export CSV',
-          '3× más Chat con el Coach IA',
+          '9× más Chat con Rendi AI',
         ] },
       } } } }
     }

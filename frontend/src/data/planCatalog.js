@@ -19,14 +19,14 @@ export const FREE_FEATURES = {
     { label: 'Posiciones, Operaciones, Wrapped anual y Objetivos' },
     { label: 'Insights con TWR, benchmarks (S&P, inflación AR, dólar) y drawdown' },
     { label: 'Diagnóstico completo + 3 detectores de comportamiento', sub: 'Con CAGR y volatilidad; personalizalo 2×/sem con “No me interesa” (métricas ajustadas por riesgo con Plus)' },
-    { label: 'Coach IA con 12 preguntas guiadas (taster)' },
+    { label: 'Rendi AI con 12 preguntas guiadas (taster)' },
     { label: 'Reportes: vista previa del último mes' },
   ],
   // Free no tiene "diff" — es el baseline.
   diff: null,
   quotas: [
-    { label: 'Análisis IA / sem', value: '6' },
-    { label: 'Chat Coach IA / sem', value: '3' },
+    { label: 'Análisis IA / sem', value: '1' },
+    { label: 'Chat Rendi AI / sem', value: '1' },
     { label: 'Brokers', value: '1' },
   ],
 }
@@ -40,13 +40,13 @@ export const PLUS_FEATURES = {
     { label: 'Distribución por activo desbloqueada' },
     { label: 'Reportes históricos completos (todos los meses)' },
     { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
-    { label: '3× más Chat Coach IA que Free', sub: '9 consultas/semana vs 3 en Free' },
+    { label: '9× más Chat Rendi AI que Free', sub: '9 consultas/semana vs 1 en Free' },
   ],
   diff: {
     title: 'Vs Free',
     items: [
       'Hasta 3 brokers (3× más)',
-      '3× más Chat Coach IA (9 vs 3 /sem)',
+      '9× más Chat Rendi AI (9 vs 1 /sem)',
       'Personalizá el diagnóstico sin límite (Free: 2/sem)',
       'Métricas de riesgo desbloqueadas (Sharpe, Sortino, alfa, Calmar…)',
       '6 detectores de comportamiento (2× más)',
@@ -54,8 +54,8 @@ export const PLUS_FEATURES = {
     ],
   },
   quotas: [
-    { label: 'Análisis IA / sem', value: '6', note: 'igual que Free' },
-    { label: 'Chat Coach IA / sem', value: '9', note: '3× Free' },
+    { label: 'Análisis IA / sem', value: '6', note: '6× Free' },
+    { label: 'Chat Rendi AI / sem', value: '9', note: '9× Free' },
     { label: 'Brokers', value: '3' },
   ],
 }
@@ -63,8 +63,8 @@ export const PLUS_FEATURES = {
 export const PRO_FEATURES = {
   essentials: [
     { label: 'Todo lo del Plus' },
-    { label: '60 análisis IA / semana', sub: '10× más que Free y Plus' },
-    { label: 'Chat libre con el Coach IA', sub: '40 consultas/sem · texto libre, sin restricción de preguntas' },
+    { label: '60 análisis IA / semana', sub: '60× más que Free · 10× que Plus' },
+    { label: 'Chat libre con Rendi AI', sub: '40 consultas/sem · texto libre, sin restricción de preguntas' },
     { label: 'Respuestas con causalidad y comparaciones', sub: 'Modo research-note: no solo describe, infiere por qué' },
     { label: 'Follow-ups: profundizá cualquier análisis con preguntas libres' },
     { label: 'Memoria persistente del Coach', sub: 'Los hechos que le aclarás se respetan entre sesiones' },
@@ -75,14 +75,14 @@ export const PRO_FEATURES = {
     title: 'Vs Plus',
     items: [
       '10× más análisis IA (60/sem vs 6/sem)',
-      'Chat libre del Coach (vs 12 preguntas guiadas)',
+      'Chat libre con Rendi AI (vs 12 preguntas guiadas)',
       'IA con causalidad y memoria persistente',
       'Comportamiento completo (12 vs 6) + brokers ilimitados',
     ],
   },
   quotas: [
     { label: 'Análisis IA / sem', value: '60' },
-    { label: 'Chat Coach IA / sem', value: '40' },
+    { label: 'Chat Rendi AI / sem', value: '40' },
     { label: 'Brokers', value: '∞' },
   ],
   // Roadmap visible — features prometidas que están en construcción.

@@ -112,8 +112,8 @@ export default function CoachIA() {
         (no resetea el lunes — el slot más viejo se libera cada día):
       </p>
       <ul>
-        <li><strong>Free</strong>: 6 análisis + 3 chat por semana.</li>
-        <li><strong>Plus</strong>: 6 análisis + 9 chat por semana (3× más chat que Free).</li>
+        <li><strong>Free</strong>: 1 análisis + 1 chat por semana (una degustación).</li>
+        <li><strong>Plus</strong>: 6 análisis + 9 chat por semana (6× análisis y 9× chat que Free).</li>
         <li><strong>Pro</strong>: 60 análisis + 40 chat por semana + memoria persistente.</li>
       </ul>
       <p>
