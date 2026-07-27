@@ -460,7 +460,12 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
   // Paso 1 — operación común (initialAsset: viene del deep-link ?groupop=)
   const [asset, setAsset] = useState(initialAsset || '')
   const [price, setPrice] = useState('')
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  // Fecha LOCAL (audit: toISOString es UTC — de noche en Argentina el lote
+  // grupal quedaba registrado con la fecha de MAÑANA en todas las cuentas).
+  const [date, setDate] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
   const [currency, setCurrency] = useState('ARS')
   // Paso 2/3 — clientes + asignación
   const [prep, setPrep] = useState(null)         // respuesta de /prep

@@ -432,6 +432,17 @@ def init_db():
     """)
     conn.commit()
 
+    # advisor_op_batch_items — columnas de undo exacto (audit: el undo
+    # recomputaba el crédito desde la fila VIVA — editable — y no revertía
+    # el autodepósito, dejando capital fantasma)
+    _bi_cols = _table_cols(conn, 'advisor_op_batch_items')
+    if _bi_cols:
+        for _c, _t in (('cost_debited', 'REAL'), ('autodep_native', 'REAL'),
+                       ('autodep_usd', 'REAL'), ('autodep_ym', 'TEXT')):
+            if _c not in _bi_cols:
+                conn.execute(f"ALTER TABLE advisor_op_batch_items ADD COLUMN {_c} {_t}")
+        conn.commit()
+
     # advisor_profile — logo del asesor (informes brandeados) si ya existía
     _ap_cols = _table_cols(conn, 'advisor_profile')
     if _ap_cols and 'logo_data' not in _ap_cols:
@@ -528,7 +539,11 @@ def init_db():
             batch_id INTEGER NOT NULL REFERENCES advisor_op_batches(id),
             client_uid INTEGER NOT NULL,
             position_id INTEGER,
-            status TEXT NOT NULL DEFAULT 'ok'               -- 'ok' | 'undone' | 'error'
+            status TEXT NOT NULL DEFAULT 'ok',              -- 'ok' | 'undone' | 'error'
+            cost_debited REAL,      -- lo que el alta debitó del cash (undo exacto)
+            autodep_native REAL,    -- autodepósito que disparó el alta (si hubo)
+            autodep_usd REAL,       -- ídem en USD (para revertir el flujo mensual)
+            autodep_ym TEXT         -- 'YYYY-MM' del flujo a revertir
         );
     """)
 
@@ -2836,6 +2851,18 @@ def delete_my_account(response: Response, uid: int = Depends(get_effective_user)
                     deleted[f"shadow.{t}"] = deleted.get(f"shadow.{t}", 0) + n
             if n_links_pre:
                 deleted["advisor_clients"] = n_links_pre
+            # Artefactos del plan asesor SIN columna user_id (audit: quedaban
+            # huérfanos sirviendo data borrada): informes públicos congelados,
+            # perfil/marca del asesor, e items de lotes donde este usuario es
+            # el CLIENTE (lotes de OTRO asesor).
+            for _sid in [uid] + shadow_ids:
+                _n = conn.execute(
+                    "DELETE FROM advisor_reports WHERE advisor_uid=? OR client_uid=?",
+                    (_sid, _sid)).rowcount
+                if _n:
+                    deleted["advisor_reports"] = deleted.get("advisor_reports", 0) + _n
+                conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
+            conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (uid,))
             # Lotes de operación grupal del asesor (sin columna user_id)
             adv_batches = [r["id"] for r in conn.execute(
                 "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (uid,)).fetchall()]
@@ -6454,7 +6481,7 @@ def _manual_position_cost(invested, buy_price, quantity, commissions) -> float:
     return (cost or 0) + (commissions or 0)
 
 
-def _insert_manual_position(conn, uid: int, p: PositionIn):
+def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None):
     """Cuerpo del alta manual de posición (insert + cash debit), extraído para
     reusarlo desde la operación grupal del Plan Asesor. NO abre transacción ni
     conexión: el caller decide el alcance del `with conn` (una posición suelta
@@ -6489,7 +6516,12 @@ def _insert_manual_position(conn, uid: int, p: PositionIn):
             # user agrega una posición sin haber cargado el depósito, auto-
             # depositamos el faltante (sube cash + capital aportado) antes
             # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
-            _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date)
+            _autodep = _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date)
+            if meta_out is not None:
+                # El caller (op grupal) persiste esto para que el undo acredite
+                # EXACTO lo debitado y revierta el autodepósito si lo hubo.
+                meta_out.update({"cost": cost, "autodep_native": _autodep,
+                                 "entry_date": entry_date})
             _adjust_broker_cash(conn, uid, p.broker, -cost)
 
     return conn.execute(
@@ -13056,10 +13088,46 @@ def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
         conn.close()
         raise HTTPException(403, "No se puede borrar otro admin desde la API")
     try:
+        # Cascada COMPLETA (audit: la lista hardcodeada de 6 tablas fallaba por
+        # FOREIGN KEY con cualquier usuario del plan asesor — advisor_clients /
+        # batches referencian users — y no había camino de soporte para purgar
+        # un shadow revocado). Mismo barrido dinámico que delete_my_account.
+        def _wipe(_uid):
+            batch_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM import_batches WHERE user_id=?", (_uid,)).fetchall()]
+            if batch_ids:
+                _ph = ",".join("?" * len(batch_ids))
+                for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+                    conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
+            for t in [r["name"] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]:
+                cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
+                if "user_id" in cols:
+                    conn.execute(f"DELETE FROM {t} WHERE user_id=?", (_uid,))
+            conn.execute("DELETE FROM users WHERE id=?", (_uid,))
         with conn:
-            for table in ('positions', 'monthly_entries', 'operations', 'brokers', 'snapshots', 'config'):
-                conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
-            conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+            shadow_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM users WHERE managed_by=?", (user_id,)).fetchall()]
+            conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=? OR client_uid=?",
+                         (user_id, user_id))
+            for _sid in [user_id] + shadow_ids:
+                conn.execute("DELETE FROM advisor_reports WHERE advisor_uid=? OR client_uid=?",
+                             (_sid, _sid))
+                conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
+            conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (user_id,))
+            adv_batches = [r["id"] for r in conn.execute(
+                "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (user_id,)).fetchall()]
+            if adv_batches:
+                _ph = ",".join("?" * len(adv_batches))
+                conn.execute(f"DELETE FROM advisor_op_batch_items WHERE batch_id IN ({_ph})",
+                             tuple(adv_batches))
+                conn.execute(f"DELETE FROM advisor_op_batches WHERE id IN ({_ph})",
+                             tuple(adv_batches))
+            for _sid in shadow_ids:
+                conn.execute("DELETE FROM advisor_clients WHERE client_uid=? OR advisor_uid=?",
+                             (_sid, _sid))
+                _wipe(_sid)
+            _wipe(user_id)
         conn.close()
         return {"ok": True}
     except Exception as ex:
@@ -21023,9 +21091,11 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # resumen mostrado queda potencialmente desactualizado: marcamos el draft
     # y hasta que el modelo re-llame register_trade (que re-planta el dict y
     # limpia el flag) NO hay card de confirmación NI atajo del "sí".
-    if (_flow_open and not book_mode and _draft0.get("status") == "confirming"
+    if (_flow_open and _draft0.get("status") == "confirming"
             and _confirm_signal is None):
-        _TRADE_DRAFT[uid]["needs_reconfirm"] = True
+        # Aplica a AMBOS drafts (audit: el grupal quedaba afuera y un "sí"
+        # posterior ejecutaba el payload viejo tras una corrección no aplicada).
+        (_GROUP_DRAFT if book_mode else _TRADE_DRAFT)[uid]["needs_reconfirm"] = True
 
     # ── SHORT-CIRCUIT de confirmación (determinístico, sin depender del LLM) ──
     # Si hay un registro PENDIENTE (de un turno anterior, TTL vigente) y el
@@ -21055,7 +21125,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # Twin del short-circuit para el REGISTRO GRUPAL (book-mode): el 'sí'
     # inequívoco ejecuta el payload guardado sin depender del modelo.
     if _flow_open and _draft0.get("status") == "confirming" and book_mode:
-        if _confirm_signal == "yes":
+        if _confirm_signal == "yes" and not _draft0.get("needs_reconfirm"):
             _res = _confirm_pending_group_by_uid(uid)
             if _res.get("status") == "registered":
                 _msg = f"✅ Listo, registré: {_res.get('summary', '')}"
@@ -25676,7 +25746,12 @@ def _advisor_book_chat_context(uid: int) -> dict:
     book = advisor_book(uid=uid)  # función plana — abre su propia conexión
     conn = get_db()
     try:
-        labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
+        def _ctx_txt(s, cap=60):
+            # Los labels/nombres/activos los escribe el CLIENTE: van al prompt
+            # de Sonnet, así que se aplanan saltos de línea y se capea el largo
+            # (mitigación de inyección vía nombre — audit).
+            return re.sub(r"[\r\n\t]+", " ", str(s or "")).strip()[:cap]
+        labels = {r["client_uid"]: _ctx_txt(r["label"] or r["name"] or f"Cliente {r['client_uid']}")
                   for r in conn.execute(
                       """SELECT ac.client_uid, ac.label, u.name
                          FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
@@ -25730,8 +25805,11 @@ def _advisor_book_chat_context(uid: int) -> dict:
             top = sorted(agg["pos"], key=lambda r: -r["value_usd"])[:5]
             clients.append({
                 "id": cid, "label": labels[cid], "aum_usd": aum, "ret_pct": ret,
+                # Fecha del dato: sin esto el modelo presenta un snapshot de
+                # hace semanas (cron caído) como el AUM de HOY (audit).
+                "as_of": str(snap["date"]) if snap else None,
                 "n_pos": len(agg["pos"]),
-                "top": [{"asset": t["asset"], "value_usd": round(t["value_usd"]),
+                "top": [{"asset": _ctx_txt(t["asset"], 40), "value_usd": round(t["value_usd"]),
                          "weight_pct": round(t["value_usd"] / denom[cid] * 100)} for t in top],
             })
 
@@ -25742,14 +25820,21 @@ def _advisor_book_chat_context(uid: int) -> dict:
             a["by"][vr["client_uid"]] = a["by"].get(vr["client_uid"], 0.0) + vr["value_usd"]
         exposure = []
         for asset, a in sorted(per_asset.items(), key=lambda kv: -kv[1]["tot"])[:30]:
-            exposure.append({
-                "asset": asset, "total_usd": round(a["tot"]),
+            # Cap de tenedores por activo (audit: sin cap, un libro de 200
+            # clientes metía miles de entradas al prompt en CADA turno).
+            _holders = sorted(a["by"].items(), key=lambda kv: -kv[1])
+            _entry = {
+                "asset": _ctx_txt(asset, 40), "total_usd": round(a["tot"]),
                 "clients": [
                     {"id": cid, "label": labels.get(cid), "value_usd": round(v),
                      "weight_pct": round(v / denom.get(cid, 1.0) * 100)}
-                    for cid, v in sorted(a["by"].items(), key=lambda kv: -kv[1])
+                    for cid, v in _holders[:10]
                 ],
-            })
+            }
+            if len(_holders) > 10:
+                _entry["others"] = {"n": len(_holders) - 10,
+                                    "value_usd": round(sum(v for _, v in _holders[10:]))}
+            exposure.append(_entry)
 
         return {**base, "clients": clients, "exposure": exposure,
                 "skipped_no_price": skipped, "tc_mep": tc_mep}
@@ -25783,7 +25868,7 @@ class AdvisorProfileIn(BaseModel):
     cnv_matricula: Optional[str] = Field(None, max_length=40)
     # Logo: data-URI raster (el frontend ya lo achica a ≤256px con canvas).
     # None = no tocar · "" = borrar · data:image/... = guardar.
-    logo_data: Optional[str] = Field(None, max_length=400_000)
+    logo_data: Optional[str] = Field(None, max_length=200_000)
 
     @field_validator('logo_data')
     @classmethod
@@ -25836,14 +25921,43 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     value_end = round(float(end_row["total_value"]), 2) if end_row else None
     value_as_of = str(end_row["date"]) if end_row else None  # el cliente ve la fecha REAL del dato
     market_usd = flows_usd = ret_pct = None
+    base_date = base_note = None
     if end_row is not None:
         if base_row is not None and str(base_row["date"]) != str(end_row["date"]):
             v0, nd0 = float(base_row["total_value"] or 0), float(base_row["net_deposited"] or 0)
+            base_date = str(base_row["date"])
+            # Base vieja (cron caído): los números son reales pero la ventana
+            # no es la del título — el informe lo aclara (audit).
+            try:
+                from datetime import date as _ddate
+                if (_ddate.fromisoformat(start) - _ddate.fromisoformat(base_date)).days > 10:
+                    base_note = "stale"
+            except ValueError:
+                pass
         elif base_row is None:
-            # La cuenta ARRANCÓ dentro del período: la base es cartera CERO —
-            # así el aporte inicial cuenta como aporte y no desaparece (audit:
-            # el fallback al primer snapshot lo tragaba dentro de nd0).
-            v0, nd0 = 0.0, 0.0
+            # Sin snapshot previo al período. Dos casos MUY distintos (audit #2):
+            #  a) cuenta nueva de verdad (primer aporte dentro del período) →
+            #     base CERO: el aporte inicial cuenta como aporte (audit v1).
+            #  b) cliente recién dado de alta en Rendi con HISTORIA importada
+            #     de años → net_deposited acumula depósitos viejos y la base
+            #     cero los presentaba como aportes DEL período con retornos
+            #     absurdos. Medimos desde el primer snapshot del período.
+            has_prehistory = conn.execute(
+                """SELECT 1 WHERE EXISTS (SELECT 1 FROM monthly_entries
+                                          WHERE user_id=? AND printf('%04d-%02d', year, month) < ?)
+                          OR EXISTS (SELECT 1 FROM operations WHERE user_id=? AND date < ?)
+                          OR EXISTS (SELECT 1 FROM positions WHERE user_id=? AND is_cash=0
+                                     AND entry_date IS NOT NULL AND entry_date < ?)""",
+                (client_uid, start[:7], client_uid, start, client_uid, start)).fetchone()
+            if has_prehistory:
+                first_in = series[0] if len(series) >= 2 else None
+                if first_in is not None and str(first_in["date"]) != str(end_row["date"]):
+                    v0, nd0 = float(first_in["v"]), float(first_in["nd"])
+                    base_date, base_note = str(first_in["date"]), "onboarding"
+                else:
+                    v0 = nd0 = None  # una sola foto — sin ventana medible
+            else:
+                v0, nd0 = 0.0, 0.0
         else:
             v0 = nd0 = None  # un solo snapshot en la misma fecha — sin período
         if v0 is not None:
@@ -25860,7 +25974,7 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     # Referencia MEP — misma VENTANA que la cartera (base→as_of), no start→end:
     # comparar ventanas distintas no era like-for-like (audit).
     mep_var_pct = None
-    fx_start_date = str(base_row["date"]) if base_row is not None else start
+    fx_start_date = base_date or start
     fx_end_date = value_as_of or end
     fx0 = conn.execute(
         "SELECT mep_venta FROM fx_rates_daily WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
@@ -25985,6 +26099,8 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
         "movements": movs,
         "movements_total": movs_total,
         "value_as_of": value_as_of,
+        "base_date": base_date,
+        "base_note": base_note,   # 'onboarding' | 'stale' | None (el informe lo aclara)
         "holdings_basis": holdings_basis,
         "movers": movers,
         "note": (note or "").strip() or None,
@@ -26010,12 +26126,14 @@ def _report_wa_text(p: dict, url: str) -> str:
     if p.get("value_end_usd") is not None:
         lines.append(f"Cerró en US$ {_fmt_ar(p['value_end_usd'])}.")
     if p.get("market_usd") is not None:
-        signo = "ganó" if p["market_usd"] >= 0 else "perdió"
-        extra = f" ({p['ret_pct']:+.1f}%)" if p.get("ret_pct") is not None else ""
-        f = p.get("flows_usd") or 0
+        mu = round(p["market_usd"], 2) + 0.0   # -0.004 → -0.0 → 0.0 (sin "ganó -0")
+        signo = "ganó" if mu >= 0 else "perdió"
+        rp = (round(p["ret_pct"], 1) + 0.0) if p.get("ret_pct") is not None else None
+        extra = f" ({rp:+.1f}%)" if rp is not None else ""
+        f = round(p.get("flows_usd") or 0, 2) + 0.0
         flujo = (f"tus aportes netos fueron US$ {_fmt_ar(f)}" if f >= 0
                  else f"tus retiros netos fueron US$ {_fmt_ar(abs(f))}")
-        lines.append(f"El mercado {signo} US$ {_fmt_ar(abs(p['market_usd']))}{extra} y {flujo}.")
+        lines.append(f"El mercado {signo} US$ {_fmt_ar(abs(mu))}{extra} y {flujo}.")
     if p.get("holdings") and p["holdings"][0].get("weight_pct") is not None:
         h = p["holdings"][0]
         lines.append(f"Tu posición principal es {h['asset']} ({h['weight_pct']}% de la cartera).")
@@ -26338,11 +26456,24 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
                     asset_type=asset_type,
                     currency=currency,
                 )
-                prow = _insert_manual_position(conn, row["client_uid"], p)
+                meta = {}
+                prow = _insert_manual_position(conn, row["client_uid"], p, meta_out=meta)
+                _adep_n = float(meta.get("autodep_native") or 0)
+                _adep_usd = None
+                if _adep_n > 0:
+                    # Misma conversión que _autodeposit_if_overdraw (ARS→USD al
+                    # blue del cliente) — se persiste para revertir el flujo.
+                    _bc = broker_ccy.get((row["client_uid"], row["broker"]))
+                    _tcb = _user_tc_blue(conn, row["client_uid"]) if _bc == "ARS" else 0
+                    _adep_usd = round(_adep_n / _tcb, 2) if (_bc == "ARS" and _tcb > 0) else round(_adep_n, 2)
                 conn.execute(
-                    """INSERT INTO advisor_op_batch_items (batch_id, client_uid, position_id)
-                       VALUES (?,?,?)""",
-                    (batch_id, row["client_uid"], prow["id"]),
+                    """INSERT INTO advisor_op_batch_items
+                       (batch_id, client_uid, position_id, cost_debited,
+                        autodep_native, autodep_usd, autodep_ym)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (batch_id, row["client_uid"], prow["id"], meta.get("cost"),
+                     _adep_n or None, _adep_usd,
+                     (str(meta.get("entry_date") or "")[:7] or None)),
                 )
                 applied.append({"client_uid": row["client_uid"], "position_id": prow["id"]})
         for a in applied:
@@ -26469,13 +26600,17 @@ def _register_group_op_handler(inp: dict, uid: int, request_id=None,
 
         # ── undo del último lote registrado por chat ──
         if inp.get("undo_last"):
-            last = _LAST_GROUP_BATCH.pop(uid, None)
+            last = _LAST_GROUP_BATCH.get(uid)
             if not last or (now - last.get("ts", 0)) > _UNDO_TRADE_TTL:
+                _LAST_GROUP_BATCH.pop(uid, None)
                 return {"error": "no hay un lote grupal reciente para deshacer (o pasaron más de 24 h) — se puede deshacer desde Clientes"}
             try:
                 res = advisor_group_op_undo(batch_id=last["batch_id"], uid=uid)
             except HTTPException as ex:
+                # NO descartamos la referencia: un fallo transitorio (lock,
+                # 409 parcial) debe poder reintentarse por chat (audit).
                 return {"error": f"no se pudo deshacer: {ex.detail}"}
+            _LAST_GROUP_BATCH.pop(uid, None)
             return {"status": "undone",
                     "summary": f"Lote deshecho — {len(res.get('undone', []))} posiciones borradas y el cash re-acreditado."}
 
@@ -26491,6 +26626,16 @@ def _register_group_op_handler(inp: dict, uid: int, request_id=None,
             if confirm_signal == "no":
                 _GROUP_DRAFT.pop(uid, None)
                 return {"status": "cancelled", "note": "El asesor no confirmó — registro descartado."}
+            if confirm_signal != "yes" or d.get("needs_reconfirm"):
+                # Mismo contrato que register_trade: NINGÚN write pendiente se
+                # ejecuta sin un 'sí' explícito del asesor (audit: acá el else
+                # ejecutaba con señal ambigua — un lote multi-cliente sin
+                # consentimiento). needs_reconfirm = pidió un cambio que no se
+                # aplicó al draft → re-armar antes de confirmar.
+                return {"status": "needs_confirmation", "summary": d.get("summary"),
+                        "note": ("el asesor pidió cambios — re-armá el registro con register_group_op antes de confirmar"
+                                 if d.get("needs_reconfirm")
+                                 else "esperá el 'sí' explícito del asesor antes de confirmar")}
             d2 = _GROUP_DRAFT.pop(uid, None)  # claim atómico: solo un request gana
             if not d2 or d2.get("status") != "confirming":
                 return {"error": "el registro ya fue procesado"}
@@ -26670,12 +26815,14 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                         (it["id"],))
                     skipped.append({"client_uid": cid, "reason": "la posición ya no existía"})
                     continue
-                # Re-acreditar el costo (LA MISMA fórmula que debitó el alta —
-                # _manual_position_cost). Nota: si el alta disparó autodepósito,
-                # ese depósito QUEDA — mismo criterio conservador que el resto
-                # de la app (no borramos flujos de capital en cascada).
-                cost = _manual_position_cost(
-                    pos["invested"], pos["buy_price"], pos["quantity"], pos["commissions"])
+                # Re-acreditar lo que el alta DEBITÓ (guardado en el item —
+                # audit: recomputar desde la fila viva permitía que una edición
+                # del cliente infle/desvíe el crédito). Items legacy sin la
+                # columna caen al recomputo de antes.
+                cost = (float(it["cost_debited"]) if it["cost_debited"] is not None
+                        else _manual_position_cost(
+                            pos["invested"], pos["buy_price"], pos["quantity"], pos["commissions"]))
+                autodep_n = float(it["autodep_native"] or 0)
                 cur_del = conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
                                        (it["position_id"], cid))
                 if cur_del.rowcount != 1:
@@ -26686,8 +26833,27 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                         (it["id"],))
                     skipped.append({"client_uid": cid, "reason": "ya deshecha en otro pedido"})
                     continue
-                if cost and cost > 0:
-                    _adjust_broker_cash(conn, cid, pos["broker"], cost)
+                # Crédito neto = costo − autodepósito: el cash vuelve al nivel
+                # PREVIO al lote (audit: acreditar el costo entero dejaba cash
+                # y capital aportado fantasma en cada cuenta sin fondos).
+                credit = round((cost or 0) - autodep_n, 6)
+                if credit > 0:
+                    _adjust_broker_cash(conn, cid, pos["broker"], credit)
+                if autodep_n > 0 and it["autodep_usd"]:
+                    _ym = str(it["autodep_ym"] or "")
+                    try:
+                        _ay, _am = int(_ym[:4]), int(_ym[5:7])
+                    except (ValueError, IndexError):
+                        _ay = _am = None
+                    if _ay:
+                        # amount negativo = reversión (contrato documentado de
+                        # _update_monthly_flow)
+                        _update_monthly_flow(conn, cid, pos["broker"], _ay, _am,
+                                             'deposit', -float(it["autodep_usd"]), is_manual=True)
+                        _update_monthly_flow(conn, cid, 'global', _ay, _am,
+                                             'deposit', -float(it["autodep_usd"]), is_manual=True)
+                        _repair_monthly_chain(conn, cid, pos["broker"])
+                        _repair_monthly_chain(conn, cid, 'global')
                 conn.execute(
                     "UPDATE advisor_op_batch_items SET status='undone' WHERE id=?",
                     (it["id"],))
@@ -26888,8 +27054,12 @@ def advisor_book(uid: int = Depends(get_current_user)):
 
         # ── Captación del mes (Δ net_deposited desde el 1° del mes, en USD) ──
         flows = None
+        _stale_floor = (today.replace(day=1) - _td(days=7)).isoformat()
         common_m = [i for i in latest if i in asof_month
-                    and str(latest[i]["date"]) != str(asof_month[i]["date"])]
+                    and str(latest[i]["date"]) != str(asof_month[i]["date"])
+                    # Base demasiado vieja (cron caído): depósitos del mes
+                    # ANTERIOR se colarían como captación de este mes (audit).
+                    and str(asof_month[i]["date"]) >= _stale_floor]
         if common_m:
             dep_now = sum(float(latest[i]["net_deposited"] or 0) for i in common_m)
             dep_then = sum(float(asof_month[i]["net_deposited"] or 0) for i in common_m)
@@ -26905,12 +27075,21 @@ def advisor_book(uid: int = Depends(get_current_user)):
         # ── Distribución de performance (total return vs aportado, del snapshot) ──
         dist = None
         perf = []
+        # Denominador = MÁXIMO net_deposited histórico, no el actual (audit:
+        # un cliente que retiró casi todo dejaba nd chico y el % explotaba —
+        # +1000% falso secuestrando el Mejor/Peor). El máximo histórico es el
+        # capital realmente puesto a trabajar.
+        _ph_d = ",".join("?" * len(ids))
+        _max_nd = {r["user_id"]: float(r["m"] or 0) for r in conn.execute(
+            f"SELECT user_id, MAX(net_deposited) m FROM snapshots WHERE user_id IN ({_ph_d}) GROUP BY user_id",
+            ids).fetchall()}
         for i, r in latest.items():
             nd = float(r["net_deposited"] or 0)
+            base_nd = max(_max_nd.get(i, 0.0), nd)
             # Base mínima USD 100: un nd residual (~centavos) explota el %
             # y secuestra el Mejor/Peor con retornos astronómicos falsos.
-            if nd >= 100:
-                perf.append((i, (float(r["total_value"] or 0) - nd) / nd * 100))
+            if base_nd >= 100:
+                perf.append((i, (float(r["total_value"] or 0) - nd) / base_nd * 100))
         if perf:
             greens = [p for p in perf if p[1] > 0.5]
             reds = [p for p in perf if p[1] < -0.5]
@@ -27014,9 +27193,13 @@ def advisor_book(uid: int = Depends(get_current_user)):
             # 2. Drawdown fuerte desde el mejor momento (ajustado por flujos:
             #    la caída es de RESULTADO, no de plata que el cliente retiró)
             ms = max_snap.get(cid)
-            if tv is not None and snap is not None and ms and ms["mx"] > 0:
+            # Denominador = el mejor RESULTADO (adj_mx), no el mejor valor de
+            # cartera (audit: dividir la caída de resultado por el valor total
+            # daba un % que no era ni una cosa ni la otra). Piso USD 500 para
+            # no gritar drawdown sobre resultados chiquitos.
+            if tv is not None and snap is not None and ms and ms["adj_mx"] >= 500:
                 adj_now = tv - float(snap["net_deposited"] or 0)
-                dd = (adj_now - ms["adj_mx"]) / ms["mx"] * 100
+                dd = (adj_now - ms["adj_mx"]) / ms["adj_mx"] * 100
                 if dd <= -15:
                     reasons.append({"kind": "drawdown",
                                     "detail": f"Resultado {dd:.0f}% abajo de su mejor momento — llamada de contención"})

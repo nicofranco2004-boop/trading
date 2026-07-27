@@ -66,6 +66,11 @@ export default function ReportPublic() {
         @media print {
           .report-shell { background: #fff !important; padding: 0 !important; }
           .no-print { display: none !important; }
+          /* Abierto desde una sesión logueada (asesor → "Abrir" → imprimir):
+             el shell de la app quedaba EN el PDF — sidebar oscura encima y
+             el papel corrido 220px (audit). */
+          aside, nav, header { display: none !important; }
+          main { margin-left: 0 !important; }
           .report-paper { box-shadow: none !important; border-radius: 0 !important; }
           /* Sin esto los navegadores omiten los backgrounds: el monograma y
              las barras de tenencias salían invisibles en el PDF (audit). */
@@ -128,6 +133,13 @@ export default function ReportPublic() {
                 Mercado <b style={{ color: (r.market_usd ?? 0) >= 0 ? P.up : P.down }}>{signed(r.market_usd)}</b><br />
                 Aportes netos <b>{signed(r.flows_usd)}</b>
               </div>
+              {r.base_note && (
+                <div style={{ fontSize: 10.5, color: P.ink2, marginTop: 6 }}>
+                  {r.base_note === 'onboarding'
+                    ? `Medido desde el alta de la cuenta en Rendi${r.base_date ? ` (${r.base_date})` : ''}.`
+                    : `Comparado contra los últimos datos disponibles al ${r.base_date}.`}
+                </div>
+              )}
             </div>
           </div>
 

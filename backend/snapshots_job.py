@@ -907,9 +907,21 @@ def run_daily_snapshot(
         except sqlite3.OperationalError as e:
             log.warning(f"fx_rates_daily insert falló (migration pendiente?): {e}")
 
-        user_ids = [r[0] for r in conn.execute(
-            "SELECT id FROM users WHERE id IS NOT NULL"
-        ).fetchall()]
+        # Shadows del plan asesor REVOCADOS (sin vínculo activo, sin login):
+        # excluirlos del cron — acumulaban un snapshot por noche para siempre
+        # (audit). Fallback a la query vieja si la tabla aún no existe.
+        try:
+            user_ids = [r[0] for r in conn.execute(
+                """SELECT id FROM users u
+                   WHERE NOT (u.managed_by IS NOT NULL AND u.approved = 0
+                              AND NOT EXISTS (SELECT 1 FROM advisor_clients ac
+                                              WHERE ac.client_uid = u.id
+                                                AND ac.status = 'active'))"""
+            ).fetchall()]
+        except sqlite3.OperationalError:
+            user_ids = [r[0] for r in conn.execute(
+                "SELECT id FROM users WHERE id IS NOT NULL"
+            ).fetchall()]
         log.info(f"Procesando {len(user_ids)} usuarios con blue={tc_blue}")
 
         ok_count = 0

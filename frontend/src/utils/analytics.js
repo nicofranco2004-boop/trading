@@ -86,12 +86,25 @@ export function initAnalytics() {
  * Trackea un page view. Llamar en cada route change.
  * RouteTracker en App.jsx ya lo hace automático.
  */
+// Rutas que llevan un SECRETO en la URL (token de claim = takeover de la
+// cuenta; token del informe público = la cartera del cliente). NUNCA se
+// reportan a analytics: GA guardaba la URL completa y cualquiera con acceso
+// a la propiedad (o Google mismo) leía el token (audit de seguridad).
+const isSensitivePath = (p) => typeof p === 'string' && (p.startsWith('/i/') || p.startsWith('/claim'))
+
 export function trackPageView(path, title) {
   if (!initialized || !window.gtag) return
+  if (isSensitivePath(path || window.location.pathname)) return
+  // page_location sin query de token (defensa extra si algún flujo lo agrega)
+  let loc = window.location.href
+  try {
+    const u = new URL(loc)
+    if (u.searchParams.has('token')) { u.searchParams.delete('token'); loc = u.toString() }
+  } catch { /* URL rara — mandamos origin+path pelado */ loc = window.location.origin + path }
   window.gtag('event', 'page_view', {
     page_path: path,
     page_title: title || document.title,
-    page_location: window.location.href,
+    page_location: loc,
   })
   if (DEBUG) console.log('[analytics] page_view', path)
 }

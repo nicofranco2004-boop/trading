@@ -108,5 +108,10 @@ export function trackMetaEvent(name, params = {}) {
  * RouteTracker da granularidad (retargetear "vio /planes", etc.).
  */
 export function trackMetaPageView() {
+  // /i/:token y /claim llevan secretos en la URL: fbevents manda la location
+  // completa a Facebook — el guard del index.html solo cubría la carga
+  // inicial, no la navegación SPA (audit de seguridad).
+  const p = window.location.pathname
+  if (p.startsWith('/i/') || p.startsWith('/claim')) return
   trackMetaEvent('PageView')
 }

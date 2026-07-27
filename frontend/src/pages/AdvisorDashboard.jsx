@@ -30,6 +30,7 @@ export default function AdvisorDashboard() {
   const { enterClient } = useAdvisorContext()
   const [book, setBook] = useState(null)     // null = cargando
   const [history, setHistory] = useState(null)  // serie AUM (evolución del libro)
+  const [historyError, setHistoryError] = useState(false)
   const [error, setError] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
 
@@ -45,8 +46,12 @@ export default function AdvisorDashboard() {
     try {
       const h = await api.get('/advisor/book/history?days=730')
       setHistory(h.series || [])
+      setHistoryError(false)
     } catch {
+      // Distinguir error de "sin datos": el empty-state decía "en unos días
+      // vas a ver la curva" ante un fallo de red (audit).
       setHistory(prev => prev ?? [])
+      setHistoryError(true)
     }
   }, [])
 
@@ -108,7 +113,7 @@ export default function AdvisorDashboard() {
       ) : (
         <>
           {book.aum && <BookHero book={book} />}
-          <BookEvolution series={history} />
+          <BookEvolution series={history} error={historyError} />
           {book.queues?.length > 0 && <CallQueue queues={book.queues} onOpen={openClient} />}
           {(book.star || book.distribution) && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
@@ -313,7 +318,7 @@ function BookDetailModal({ onClose }) {
                       <span className="text-[13px] font-medium text-ink-0 truncate">{c.label}</span>
                       <span className="text-right text-[13px] text-ink-0 tabular-nums">{usd(c.value_usd, 0)}</span>
                       <span className="flex items-center justify-end gap-2">
-                        <b className="text-xs font-medium text-ink-1 tabular-nums">{c.share_pct}%</b>
+                        <b className="text-xs font-medium text-ink-1 tabular-nums">{c.share_pct != null ? `${c.share_pct}%` : '—'}</b>
                         <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
                           <i className="block h-full bg-data-violet rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
                         </span>
@@ -356,7 +361,7 @@ function BookDetailModal({ onClose }) {
                         <>
                           <span className="text-right text-[13px] text-ink-1 tabular-nums">{usd(c.value_usd, 0)}</span>
                           <span className="flex items-center justify-end gap-2">
-                            <b className="text-xs font-medium text-ink-2 tabular-nums">{c.share_pct}%</b>
+                            <b className="text-xs font-medium text-ink-2 tabular-nums">{c.share_pct != null ? `${c.share_pct}%` : '—'}</b>
                             <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
                               <i className="block h-full bg-line-3 rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
                             </span>
@@ -402,7 +407,7 @@ const EVO_RANGES = [
   { key: '1A', days: 365 }, { key: 'Todo', days: 99999 },
 ]
 
-function BookEvolution({ series }) {
+function BookEvolution({ series, error }) {
   const [range, setRange] = useState('3M')
 
   const { visible, baseline } = useMemo(() => {
@@ -452,9 +457,11 @@ function BookEvolution({ series }) {
           Evolución del capital administrado
         </h2>
         <p className="text-[11.5px] text-ink-3">
-          Se dibuja solo con los snapshots nocturnos — con un par de días de
+          {error
+            ? 'No pudimos cargar la evolución recién — recargá la página para reintentar.'
+            : `Se dibuja solo con los snapshots nocturnos — con un par de días de
           historia ya vas a ver la curva (y si el libro sube por el mercado o
-          porque entra plata nueva).
+          porque entra plata nueva).`}
         </p>
       </div>
     )
@@ -711,6 +718,10 @@ function ReportModal({ onClose }) {
   const [note, setNote] = useState('')
   const [brand, setBrand] = useState({ name: '', matricula: '', logo: null })
   const [brandDirty, setBrandDirty] = useState(false)
+  // Si el GET del perfil falló, editar la marca y generar PISARÍA el logo y
+  // la matrícula guardados con los campos vacíos del form (audit): bloqueamos
+  // el PATCH hasta que la marca guardada haya cargado de verdad.
+  const [profileError, setProfileError] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [results, setResults] = useState(null)
 
@@ -720,11 +731,14 @@ function ReportModal({ onClose }) {
       setClients(cs)
       setChecked(new Set(cs.map(c => c.client_uid)))  // arranca con todos tildados
     }).catch(() => { setClients([]); setChecked(new Set()) })
-    api.get('/advisor/profile').then(p => setBrand({ name: p.name || '', matricula: p.matricula || '', logo: p.logo || null })).catch(() => {})
+    api.get('/advisor/profile').then(p => setBrand({ name: p.name || '', matricula: p.matricula || '', logo: p.logo || null })).catch(() => setProfileError(true))
   }, [])
 
   const allChecked = clients && checked && checked.size === clients.length
-  const toggleAll = () => setChecked(allChecked ? new Set() : new Set(clients.map(c => c.client_uid)))
+  const toggleAll = () => {
+    if (!clients) return  // roster aún cargando — evita el TypeError del .map
+    setChecked(allChecked ? new Set() : new Set(clients.map(c => c.client_uid)))
+  }
   const toggleOne = (uid) => setChecked(prev => {
     const next = new Set(prev)
     next.has(uid) ? next.delete(uid) : next.add(uid)
@@ -759,6 +773,10 @@ function ReportModal({ onClose }) {
 
   const generate = async () => {
     if (generating) return
+    if (brandDirty && profileError) {
+      toast.push('No pudimos cargar tu marca guardada — cerrá y reabrí el modal antes de editarla (para no pisarla).', { type: 'error' })
+      return
+    }
     setGenerating(true)
     try {
       if (brandDirty) {
