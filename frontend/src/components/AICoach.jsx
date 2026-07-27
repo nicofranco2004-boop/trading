@@ -109,6 +109,14 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   // streaming — barato: sessionStorage síncrono sobre ~40 mensajes máx).
   useEffect(() => { saveChatSession(messages) }, [messages])
 
+  // "Corregir" del ConfirmBlock enfoca el input (evento global, sin drilling).
+  const freeInputRef = useRef(null)
+  useEffect(() => {
+    const onFocus = () => freeInputRef.current?.focus()
+    window.addEventListener('rendi:chat-focus', onFocus)
+    return () => window.removeEventListener('rendi:chat-focus', onFocus)
+  }, [])
+
   // Cargar cuota inicial — solo lectura, sin gating front (el server tiene la
   // verdad). Si falla, no rompemos UX — el server devolverá 429 si excede.
   useEffect(() => {
@@ -461,7 +469,13 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                     })}
                   </div>
                 )}
-                {meta?.blocks?.length > 0 && <AIBlocks blocks={meta.blocks} />}
+                {meta?.blocks?.length > 0 && (
+                  <AIBlocks
+                    blocks={meta.blocks}
+                    onSendMessage={send}
+                    interactive={isLastMsg && !loading && !sending}
+                  />
+                )}
                 {meta?.sources?.length > 0 && (
                   <div className="flex items-center gap-1.5 mt-2.5 flex-wrap text-[11px] text-ink-3">
                     <span>Basado en</span>
@@ -583,6 +597,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         >
           <input
             type="text"
+            ref={freeInputRef}
             value={freeText}
             onChange={e => setFreeText(e.target.value)}
             disabled={loading || sending}

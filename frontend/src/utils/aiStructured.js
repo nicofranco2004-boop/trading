@@ -129,6 +129,44 @@ function sanitizeMeta(m) {
           .filter(Boolean)
           .slice(0, 3)
         if (items.length >= 1) blocks.push(withTitle({ type: 'actions', items }))
+      } else if (b.type === 'form' && Array.isArray(b.fields)) {
+        // Registro por chat v2: formulario de datos faltantes (lo emite el
+        // SERVER desde el draft — determinístico). El submit del frontend
+        // vuelve como mensaje de chat "k: valor · k: valor".
+        const KINDS = new Set(['select', 'number', 'text', 'date'])
+        const fields = b.fields
+          .filter(fl => fl && typeof fl === 'object' && str(fl.k, 20) && str(fl.label, 40) && KINDS.has(fl.kind))
+          .slice(0, 5)
+          .map(fl => ({
+            k: str(fl.k, 20), label: str(fl.label, 40), kind: fl.kind,
+            ...(Array.isArray(fl.options) && fl.options.length
+              ? { options: fl.options.filter(o => typeof o === 'string' || typeof o === 'number').slice(0, 8).map(o => String(o).slice(0, 24)) }
+              : {}),
+            ...(str(fl.value, 24) ? { value: str(fl.value, 24) } : {}),
+            ...(str(fl.unit, 8) ? { unit: str(fl.unit, 8) } : {}),
+            ...(str(fl.hint, 60) ? { hint: str(fl.hint, 60) } : {}),
+          }))
+        if (fields.length >= 1) {
+          blocks.push(withTitle({
+            type: 'form',
+            ...(str(b.subtitle, 60) ? { subtitle: str(b.subtitle, 60) } : {}),
+            fields,
+            submitLabel: str(b.submitLabel, 30) || 'Enviar',
+          }))
+        }
+      } else if (b.type === 'confirm' && Array.isArray(b.rows)) {
+        // Confirmación del registro con botones (chau tipear "sí").
+        const rows = b.rows
+          .filter(r => Array.isArray(r) && str(r[0], 20) && str(r[1], 40))
+          .slice(0, 7)
+          .map(r => [str(r[0], 20), str(r[1], 40)])
+        if (rows.length >= 1) {
+          blocks.push(withTitle({
+            type: 'confirm', rows,
+            yes: str(b.yes, 30) || 'Confirmar',
+            no: str(b.no, 20) || 'Corregir',
+          }))
+        }
       }
       if (blocks.length >= 2) break   // máx 2 bloques por respuesta (regla de diseño)
     }

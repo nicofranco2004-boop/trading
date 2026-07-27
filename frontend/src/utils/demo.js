@@ -3041,6 +3041,28 @@ export function handleDemoRequest(method, path, body) {
   //    el demo muestre el diseño nuevo (veredicto + tarjetas + repreguntas).
   if (basePath === '/ai/chat') {
     const _q = ((body?.messages || []).filter(m => m.role === 'user').pop()?.content || '').toLowerCase()
+    // ── Registro por chat v2 (demo del form/confirm, stateless por matching) ──
+    // "compré ..." → form de faltantes; "broker: ..." (submit del form) →
+    // confirmación con botones; "sí, confirmá" → registrado (demo no escribe).
+    if (/\bcompr[eé](?=\s|$)/.test(_q) && !_q.includes('broker:')) {
+      return {
+        tier: 'pro',
+        reply: 'Anotado: compra de TSLA por ARS 300.000. Me faltan dos datos:\n---RENDI---{"blocks":[{"type":"form","title":"Completá el registro","subtitle":"TSLA · compra · ARS 300.000","fields":[{"k":"broker","label":"¿En qué broker?","kind":"select","options":["Cocos","Balanz","Binance"]},{"k":"precio","label":"Precio de compra","kind":"number","unit":"ARS","hint":"El precio al que operaste, por unidad"}],"submitLabel":"Completar registro"}]}',
+      }
+    }
+    if (_q.includes('broker:')) {
+      return {
+        tier: 'pro',
+        reply: 'Listo, quedaría así:\n---RENDI---{"blocks":[{"type":"confirm","title":"Compra de TSLA","rows":[["Operación","Compra"],["Activo","TSLA"],["Broker","Cocos"],["Cantidad","16,08 CEDEARs"],["Precio","ARS 18.650"],["Total","ARS 300.000"]],"yes":"Confirmar compra","no":"Corregir"}]}',
+      }
+    }
+    if (/^s[ií](?=[\s,.!]|$)/.test(_q.trim())) {
+      return {
+        tier: 'pro',
+        reply: '✅ (Demo) Compra registrada: 16,08 TSLA en Cocos. En tu cuenta real, la Cartera se actualiza al instante.',
+        portfolio_changed: false,
+      }
+    }
     if (_q.includes('riesgo') || _q.includes('concentr') || _q.includes('sesgo')) {
       return {
         tier: 'pro',

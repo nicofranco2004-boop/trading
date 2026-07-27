@@ -17042,6 +17042,111 @@ def _confirm_pending_trade_by_uid(uid: int) -> dict:
     return _execute_confirmed_trade(claimed["payload"], uid)
 
 
+
+# ─── Registro por chat v2: bloques form/confirm DETERMINÍSTICOS ───────────────
+# (mockup registro-form aprobado por Nico). Si hay un draft de registro vivo,
+# el SERVER adjunta al final de la respuesta un bloque estructurado para la UI:
+#   • gathering  → {"type":"form"}    con los campos que faltan (brokers reales
+#                  como opciones; claves en castellano: el submit del frontend
+#                  vuelve como mensaje "broker: X · precio: Y" y el pipeline
+#                  existente lo completa).
+#   • confirming → {"type":"confirm"} con el resumen y botones Confirmar/Corregir
+#                  ("Confirmar" manda el sí por el usuario).
+# Lo arma el server (fuente de verdad del draft), no el modelo → cero riesgo de
+# omisión y cero tokens extra. Cubre buy/sell/deposit/withdraw/transfer/convert;
+# los campos exóticos (asset_type ambiguo, tc de conversión) los sigue pidiendo
+# el modelo en la prosa y el form muestra lo común.
+_ACTION_ES = {"buy": "Compra", "sell": "Venta", "deposit": "Depósito",
+              "withdraw": "Retiro", "transfer": "Transferencia", "convert": "Conversión"}
+
+
+def _register_blocks_epilogue(uid: int, text: str = "") -> str:
+    try:
+        d = _TRADE_DRAFT.get(uid)
+        if not d or (time.time() - d.get("ts", 0)) > _TRADE_DRAFT_TTL:
+            return ""
+        if text and "---RENDI---" in text:
+            return ""  # el modelo ya emitió bloque (no debería en registro)
+        f = d.get("fields", {}) or {}
+        action = str(f.get("action") or "").strip().lower()
+
+        def have(k):
+            return f.get(k) not in (None, "")
+
+        blocks = []
+        if d.get("status") == "confirming":
+            rows = []
+            for k, lbl in (("action", "Operación"), ("asset", "Activo"), ("broker", "Broker"),
+                           ("to_broker", "Hacia"), ("quantity", "Cantidad"), ("price", "Precio"),
+                           ("amount", "Monto"), ("currency", "Moneda"), ("date", "Fecha")):
+                v = f.get(k)
+                if v in (None, ""):
+                    continue
+                rows.append([lbl, _ACTION_ES.get(str(v).lower(), str(v)) if k == "action" else str(v)])
+            if not rows:
+                rows = [["Resumen", str(d.get("summary") or "")[:60]]]
+            title = _ACTION_ES.get(action, "Operación") + (f" de {f.get('asset')}" if f.get("asset") else "")
+            blocks.append({"type": "confirm", "title": title[:40], "rows": rows[:7],
+                           "yes": f"Confirmar {_ACTION_ES.get(action, '').lower()}".strip()[:30],
+                           "no": "Corregir"})
+        else:
+            try:
+                conn = get_db()
+                try:
+                    _rows = conn.execute("SELECT name FROM brokers WHERE user_id=?", (uid,)).fetchall()
+                finally:
+                    conn.close()
+                broker_opts = [(_r["name"] if hasattr(_r, "keys") else _r[0]) for _r in _rows][:8]
+            except Exception:
+                broker_opts = []
+            fields_out = []
+
+            def add(k, label, kind, **kw):
+                fields_out.append({"k": k, "label": label, "kind": kind, **kw})
+
+            ccy = str(f.get("currency") or "")
+            if action in ("buy", "sell", ""):
+                if not have("asset"):
+                    add("activo", "¿Qué activo?", "text", hint="Ticker: TSLA, BTC, AL30…")
+                if not have("broker"):
+                    add("broker", "¿En qué broker?", "select", options=broker_opts)
+                if not have("price"):
+                    add("precio", "Precio de venta" if action == "sell" else "Precio de compra",
+                        "number", unit=ccy, hint="El precio al que operaste, por unidad")
+                if not have("quantity") and not have("amount"):
+                    add("cantidad", "Cantidad", "number", hint="Unidades — o decime el monto total")
+            elif action in ("deposit", "withdraw", "transfer"):
+                if not have("broker"):
+                    add("broker", "¿De qué broker?" if action != "deposit" else "¿En qué broker?",
+                        "select", options=broker_opts)
+                if action == "transfer" and not have("to_broker"):
+                    add("hacia", "¿Hacia qué broker?", "select", options=broker_opts)
+                if not have("amount"):
+                    add("monto", "Monto", "number", unit=ccy)
+                if not have("currency"):
+                    add("moneda", "Moneda", "select", options=["ARS", "USD"])
+            elif action == "convert":
+                if not have("broker"):
+                    add("broker", "¿En qué broker?", "select", options=broker_opts)
+                if not have("amount"):
+                    add("monto", "Monto", "number")
+            if not fields_out:
+                return ""
+            sub = " · ".join(x for x in [
+                str(f.get("asset") or ""),
+                _ACTION_ES.get(action, "").lower(),
+                (f"{ccy} {f.get('amount')}" if f.get("amount") not in (None, "") else ""),
+            ] if x).strip()
+            blocks.append({"type": "form", "title": "Completá el registro", "subtitle": sub[:60],
+                           "fields": fields_out[:5], "submitLabel": "Completar registro"})
+        if not blocks:
+            return ""
+        return "\n---RENDI---" + json.dumps({"blocks": blocks}, ensure_ascii=False, separators=(",", ":"))
+    except Exception as ex:
+        log.warning("register_blocks_epilogue error uid=%s: %s", uid, ex)
+        return ""
+
+
 def _pending_summary_epilogue(uid: int, text: str) -> str:
     """Garantía server-side de VISIBILIDAD del pendiente: si al final del
     turno queda un draft 'confirming', el usuario tiene que haber visto el
@@ -20212,13 +20317,17 @@ def _maybe_refund_trade_turn(uid: int, turn_flags: set, reserved: bool = True) -
 
 
 def _chat_direct_reply(stream: bool, text: str, tier: str,
-                       portfolio_changed: bool = False):
+                       portfolio_changed: bool = False, uid: int | None = None):
     """Respuesta del chat SIN llamar al LLM (short-circuit de confirmación de
     registro). Devuelve un StreamingResponse SSE (delta+done) si stream, o el
     JSON {reply,tier} si no — mismo shape que consume el frontend.
 
     portfolio_changed: el turno ESCRIBIÓ en la cartera (registro/undo) → el
     frontend refresca Cartera y el snapshot del chat sin F5 del usuario."""
+    if uid is not None:
+        # Registro v2: si tras este short-circuit sigue habiendo draft vivo
+        # (p.ej. confirmación que falló), adjuntar el bloque form/confirm.
+        text = text + _register_blocks_epilogue(uid, text)
     if stream:
         def _sse():
             yield ": ok\n\n"
@@ -20634,7 +20743,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             else:
                 _msg = "No pude completar el registro: " + _trade_error_human(_res.get("error"))
             return _chat_direct_reply(data.stream, _msg, tier,
-                                      portfolio_changed=_res.get("status") == "registered")
+                                      portfolio_changed=_res.get("status") == "registered",
+                                      uid=uid)
         if _confirm_signal == "no":
             _TRADE_DRAFT.pop(uid, None)
             return _chat_direct_reply(
@@ -20754,6 +20864,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         _ep = _pending_summary_epilogue(uid, state["synth_text"])
                         if _ep:
                             yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
+                        _rb = _register_blocks_epilogue(uid, state["synth_text"])
+                        if _rb:
+                            yield "data: " + json.dumps({"t": "delta", "d": _rb}, ensure_ascii=False) + "\n\n"
                         _warn_if_truncated(resp, tier, uid, "stream_final")
                         cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final")
                         _record_chat_quota(uid, cost_cents)
@@ -20795,6 +20908,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 _ep = _pending_summary_epilogue(uid, state["synth_text"])
                 if _ep:
                     yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
+                _rb = _register_blocks_epilogue(uid, state["synth_text"])
+                if _rb:
+                    yield "data: " + json.dumps({"t": "delta", "d": _rb}, ensure_ascii=False) + "\n\n"
                 _warn_if_truncated(resp, tier, uid, "stream_fallback")
                 cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback")
                 _record_chat_quota(uid, cost_cents)
@@ -20891,6 +21007,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
                 # Garantía de visibilidad del pendiente (ver _pending_summary_epilogue)
                 text = text + _pending_summary_epilogue(uid, text)
+                text = text + _register_blocks_epilogue(uid, text)
                 _out = {"reply": _strip_markdown(text.strip()), "tier": tier}
                 if _turn_flags & {"trade_registered", "undo_ok"}:
                     _out["portfolio_changed"] = True
@@ -20942,6 +21059,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
         _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
         # Garantía de visibilidad del pendiente (ver _pending_summary_epilogue)
         text = text + _pending_summary_epilogue(uid, text)
+        text = text + _register_blocks_epilogue(uid, text)
         _out = {"reply": _strip_markdown(text.strip()), "tier": tier}
         if _turn_flags & {"trade_registered", "undo_ok"}:
             _out["portfolio_changed"] = True

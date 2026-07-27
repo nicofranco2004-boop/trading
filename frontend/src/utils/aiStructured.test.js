@@ -133,3 +133,34 @@ describe('blocks (catálogo visual)', () => {
     expect(r.meta.blocks).toHaveLength(0)
   })
 })
+
+describe('bloques de registro (form/confirm)', () => {
+  const wrap2 = (blocks) => parseStructured(`x\n${RENDI_DELIM}\n${JSON.stringify({ blocks })}`)
+
+  it('form: sanitiza campos, kinds whitelisted, caps y defaults', () => {
+    const r = wrap2([{ type: 'form', title: 'Completá el registro', subtitle: 'TSLA · compra', fields: [
+      { k: 'broker', label: '¿En qué broker?', kind: 'select', options: ['Cocos', 'Balanz'] },
+      { k: 'precio', label: 'Precio', kind: 'number', unit: 'ARS', hint: 'por unidad', value: 18650 },
+      { k: 'x', label: 'malo', kind: 'radio' },
+    ] }])
+    expect(r.meta.blocks).toHaveLength(1)
+    const f = r.meta.blocks[0]
+    expect(f.fields).toHaveLength(2)
+    expect(f.fields[0].options).toEqual(['Cocos', 'Balanz'])
+    expect(f.fields[1].value).toBe('18650')
+    expect(f.submitLabel).toBe('Enviar')
+  })
+
+  it('confirm: rows saneadas + labels default', () => {
+    const r = wrap2([{ type: 'confirm', title: 'Compra de TSLA', rows: [['Broker', 'Cocos'], ['Precio', 18650], ['mal'], 'x'], yes: 'Confirmar compra' }])
+    const c = r.meta.blocks[0]
+    expect(c.rows).toEqual([['Broker', 'Cocos'], ['Precio', '18650']])
+    expect(c.yes).toBe('Confirmar compra')
+    expect(c.no).toBe('Corregir')
+  })
+
+  it('meta con SOLO un form igual renderiza (no cae a texto plano)', () => {
+    const r = wrap2([{ type: 'form', fields: [{ k: 'broker', label: 'Broker', kind: 'select', options: ['A'] }] }])
+    expect(r.meta).not.toBe(null)
+  })
+})

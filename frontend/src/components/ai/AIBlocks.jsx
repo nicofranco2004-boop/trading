@@ -11,10 +11,11 @@
 // scenario con resultado tintado grande, tabla con zebra + pills, actions con
 // ícono por ruta. Todo client-side: cero tokens extra por respuesta.
 
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Bell, LineChart, Briefcase, List, Gauge, Newspaper, TrendingUp, Upload,
-  Sparkles, ChevronRight,
+  Sparkles, ChevronRight, PencilLine, Check, Loader2,
 } from 'lucide-react'
 
 // Paleta de composición (por índice; el último cae en gris).
@@ -24,7 +25,10 @@ const TONE_TEXT = {
   pos: 'text-rendi-pos', warn: 'text-rendi-warn', neg: 'text-rendi-neg', neutral: 'text-ink-0',
 }
 
-export default function AIBlocks({ blocks }) {
+// onSendMessage(text): manda un mensaje al chat como si el usuario lo tipeara
+// (submit del form de registro / botón Confirmar). interactive: solo el ÚLTIMO
+// mensaje del hilo tiene controles vivos — forms de turnos viejos se congelan.
+export default function AIBlocks({ blocks, onSendMessage = null, interactive = false }) {
   if (!blocks?.length) return null
   return (
     <div className="space-y-3 mt-3">
@@ -35,6 +39,8 @@ export default function AIBlocks({ blocks }) {
           case 'scenario': return <ScenarioBlock key={i} {...b} />
           case 'table':    return <TableBlock key={i} {...b} />
           case 'actions':  return <ActionsBlock key={i} {...b} />
+          case 'form':     return <FormBlock key={i} {...b} onSendMessage={onSendMessage} interactive={interactive} />
+          case 'confirm':  return <ConfirmBlock key={i} {...b} onSendMessage={onSendMessage} interactive={interactive} />
           default:         return null
         }
       })}
@@ -226,6 +232,105 @@ function ActionsBlock({ items, title }) {
             </button>
           )
         })}
+      </div>
+    </BlockCard>
+  )
+}
+
+// ── 07 · Formulario de registro (datos faltantes) ───────────────────────────
+// Lo emite el SERVER desde el draft del registro por chat (determinístico).
+// Submit → onSendMessage("broker: Cocos · precio: 18650") → el pipeline de
+// registro existente completa el draft. Cubre compra/venta/depósito/retiro/
+// transferencia/conversión — el server decide los campos.
+function FormBlock({ title, subtitle, fields, submitLabel, onSendMessage, interactive }) {
+  const [vals, setVals] = useState(() => Object.fromEntries(
+    fields.map(f => [f.k, f.value ?? (f.kind === 'select' && f.options?.length === 1 ? f.options[0] : '')])
+  ))
+  const [sent, setSent] = useState(false)
+  const live = interactive && !sent && typeof onSendMessage === 'function'
+  const complete = fields.every(f => String(vals[f.k] ?? '').trim() !== '')
+  const submit = () => {
+    if (!live || !complete) return
+    setSent(true)
+    onSendMessage(fields.map(f => `${f.k}: ${String(vals[f.k]).trim()}`).join(' · '))
+  }
+  return (
+    <BlockCard title={title || 'Completá el registro'}>
+      {subtitle && <p className="text-[11.5px] text-ink-3 -mt-2 mb-3">{subtitle}</p>}
+      <div className="space-y-3">
+        {fields.map(f => (
+          <div key={f.k}>
+            <label className="block text-[11px] font-semibold text-ink-2 mb-1.5">{f.label}</label>
+            {f.kind === 'select' && f.options?.length ? (
+              <div className="flex gap-2 flex-wrap">
+                {f.options.map(opt => (
+                  <button key={opt} type="button" disabled={!live}
+                    onClick={() => setVals(v => ({ ...v, [f.k]: opt }))}
+                    className={`text-[12.5px] font-semibold rounded-xl px-3.5 py-2 border transition disabled:opacity-60 ${
+                      vals[f.k] === opt
+                        ? 'text-data-violet border-data-violet/40 bg-data-violet/10'
+                        : 'text-ink-1 border-line bg-bg-2 hover:border-ink-3'}`}>
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 bg-bg-2 border border-line rounded-xl px-3 py-2 max-w-[260px] focus-within:border-data-violet/50">
+                <input
+                  type={f.kind === 'number' ? 'number' : f.kind === 'date' ? 'date' : 'text'}
+                  inputMode={f.kind === 'number' ? 'decimal' : undefined}
+                  step={f.kind === 'number' ? 'any' : undefined}
+                  value={vals[f.k]}
+                  disabled={!live}
+                  onChange={e => setVals(v => ({ ...v, [f.k]: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter') submit() }}
+                  className="bg-transparent outline-none border-none text-[13.5px] text-ink-0 w-full num tabular disabled:opacity-60"
+                  placeholder="0"
+                />
+                {f.unit && <span className="text-[10.5px] text-ink-3 flex-none">{f.unit}</span>}
+              </div>
+            )}
+            {f.hint && <p className="text-[10.5px] text-data-cyan mt-1">{f.hint}</p>}
+          </div>
+        ))}
+      </div>
+      <button type="button" onClick={submit} disabled={!live || !complete}
+        className="mt-4 w-full max-w-[260px] inline-flex items-center justify-center gap-2 text-[13px] font-bold text-white bg-data-violet hover:bg-data-violet/90 rounded-xl px-4 py-2.5 transition disabled:opacity-40 disabled:cursor-not-allowed">
+        {sent ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <PencilLine size={13} aria-hidden />}
+        {sent ? 'Enviando…' : (submitLabel || 'Enviar')}
+      </button>
+    </BlockCard>
+  )
+}
+
+// ── 08 · Confirmación del registro con botones ──────────────────────────────
+// "Confirmar" manda el sí por el usuario; "Corregir" enfoca el input del chat
+// (evento global — sin prop-drilling) para tipear el ajuste.
+function ConfirmBlock({ title, rows, yes, no, onSendMessage, interactive }) {
+  const [sent, setSent] = useState(false)
+  const live = interactive && !sent && typeof onSendMessage === 'function'
+  return (
+    <BlockCard title={title || 'Confirmá el registro'}>
+      <div className="space-y-1 mb-3.5">
+        {rows.map(([k, v], i) => (
+          <div key={i} className="flex justify-between gap-3 text-[12.5px]">
+            <span className="text-ink-3">{k}</span>
+            <span className="font-semibold text-ink-0 num tabular text-right">{v}</span>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <button type="button" disabled={!live}
+          onClick={() => { if (!live) return; setSent(true); onSendMessage('sí, confirmá') }}
+          className="flex-1 max-w-[240px] inline-flex items-center justify-center gap-1.5 text-[13px] font-bold rounded-xl px-4 py-2.5 bg-rendi-pos text-[#04120a] hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed">
+          {sent ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Check size={13} strokeWidth={2.5} aria-hidden />}
+          {sent ? 'Registrando…' : (yes || 'Confirmar')}
+        </button>
+        <button type="button" disabled={!live}
+          onClick={() => window.dispatchEvent(new Event('rendi:chat-focus'))}
+          className="text-[12.5px] font-medium text-ink-1 border border-line hover:border-ink-3 rounded-xl px-3.5 py-2.5 transition disabled:opacity-40">
+          {no || 'Corregir'}
+        </button>
       </div>
     </BlockCard>
   )
