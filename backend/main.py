@@ -26050,9 +26050,17 @@ def advisor_set_profile(data: AdvisorProfileIn, uid: int = Depends(get_current_u
                  (data.cnv_matricula or "").strip() or None))
             # Logo aparte: None = no tocar · "" = borrar · data-URI = guardar
             if data.logo_data is not None:
-                conn.execute(
-                    "UPDATE advisor_profile SET logo_data=?, updated_at=datetime('now') WHERE advisor_uid=?",
-                    (data.logo_data or None, uid))
+                try:
+                    conn.execute(
+                        "UPDATE advisor_profile SET logo_data=?, updated_at=datetime('now') WHERE advisor_uid=?",
+                        (data.logo_data or None, uid))
+                except sqlite3.OperationalError:
+                    # Columna ausente (deploy a mitad de camino / migración no
+                    # corrida): auto-reparar y reintentar en vez de un 500.
+                    conn.execute("ALTER TABLE advisor_profile ADD COLUMN logo_data TEXT")
+                    conn.execute(
+                        "UPDATE advisor_profile SET logo_data=?, updated_at=datetime('now') WHERE advisor_uid=?",
+                        (data.logo_data or None, uid))
         return _advisor_branding(conn, uid)
     finally:
         conn.close()

@@ -576,7 +576,9 @@ function ReportModal({ onClose }) {
             logo_data: brand.logo ?? '',   // '' = borrar; data-URI = guardar
           })
         } catch (e) {
-          toast.push('No se pudo guardar tu marca — no generé nada. Probá de nuevo.', { type: 'error' })
+          // Mostrar el motivo real (audit del caso en prod: el genérico no
+          // dejaba diagnosticar si era validación, red o deploy a medias).
+          toast.push(`No se pudo guardar tu marca — no generé nada. ${e.message || 'Probá de nuevo.'}`, { type: 'error' })
           setGenerating(false)
           return
         }
