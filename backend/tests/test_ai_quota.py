@@ -134,9 +134,9 @@ def test_week_start_alias_still_works():
 
 # ── LIMITS por tier ──────────────────────────────────────────────────────────
 
-def test_limits_free_is_6_per_week():
-    # Free: 6 análisis/sem (tasting menu, paywall agresivo a 3k+ users).
-    assert quota.LIMITS["free"]["analyses_per_week"] == 6
+def test_limits_free_is_1_per_week():
+    # Free: 1 análisis/sem (degustación mínima — empuja fuerte a upgrade).
+    assert quota.LIMITS["free"]["analyses_per_week"] == 1
 
 
 def test_limits_free_has_no_hub_access():
@@ -144,11 +144,11 @@ def test_limits_free_has_no_hub_access():
     assert quota.LIMITS["free"]["hub_queries_per_week"] == 0
 
 
-def test_limits_pro_is_10x_free():
-    # Cap Pro: 60/sem = exactamente 10× Free, claim de marketing literal.
+def test_limits_pro_is_10x_plus():
+    # Cap Pro: 60/sem = exactamente 10× Plus, claim de marketing literal.
     pro = quota.LIMITS["pro"]["analyses_per_week"]
-    free = quota.LIMITS["free"]["analyses_per_week"]
-    assert pro == free * 10, f"Pro ({pro}) debe ser exactamente 10× Free ({free})"
+    plus = quota.LIMITS["plus"]["analyses_per_week"]
+    assert pro == plus * 10, f"Pro ({pro}) debe ser exactamente 10× Plus ({plus})"
 
 
 def test_limits_admin_unlimited():
@@ -162,9 +162,10 @@ def test_usage_empty_user_zero_count():
     u = quota.get_current_usage(conn, 3)
     assert u["tier"] == "free"
     assert u["period"] == "rolling_7d"
+    free_cap = quota.LIMITS["free"]["analyses_per_week"]
     assert u["analyses_count"] == 0
-    assert u["analyses_limit"] == 6
-    assert u["analyses_remaining"] == 6
+    assert u["analyses_limit"] == free_cap
+    assert u["analyses_remaining"] == free_cap
     # Hub Pro-only — Free user ve 0/0
     assert u["hub_queries_limit"] == 0
     assert u["hub_queries_remaining"] == 0
@@ -195,7 +196,8 @@ def test_usage_excludes_analyses_older_than_7_days():
         u = quota.get_current_usage(conn, 2)
         # Solo los 2 dentro del window cuentan
         assert u["analyses_count"] == 2
-        assert u["analyses_remaining"] == 4
+        free_cap = quota.LIMITS["free"]["analyses_per_week"]
+        assert u["analyses_remaining"] == max(free_cap - 2, 0)
 
 
 def test_usage_pablo_bug_sunday_analysis_counts_on_monday():
@@ -220,7 +222,8 @@ def test_usage_pablo_bug_sunday_analysis_counts_on_monday():
         assert u["analyses_count"] == 1, (
             "El análisis del domingo previo DEBE contar el lunes (rolling window)"
         )
-        assert u["analyses_remaining"] == 5
+        free_cap = quota.LIMITS["free"]["analyses_per_week"]
+        assert u["analyses_remaining"] == max(free_cap - 1, 0)
 
 
 def test_usage_sums_multiple_days_within_window():
@@ -241,7 +244,8 @@ def test_usage_sums_multiple_days_within_window():
 
         u = quota.get_current_usage(conn, 2)
         assert u["analyses_count"] == 5
-        assert u["analyses_remaining"] == 1
+        free_cap = quota.LIMITS["free"]["analyses_per_week"]
+        assert u["analyses_remaining"] == max(free_cap - 5, 0)
 
 
 def test_usage_admin_tier_uses_admin_limits():
@@ -289,7 +293,7 @@ def test_can_analyze_free_under_cap():
     conn = _make_db()
     allowed, usage = quota.can_analyze(conn, 2)
     assert allowed is True
-    assert usage["analyses_remaining"] == 6
+    assert usage["analyses_remaining"] == quota.LIMITS["free"]["analyses_per_week"]
 
 
 def test_can_analyze_free_at_cap_blocks():
