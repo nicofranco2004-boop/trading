@@ -27118,3 +27118,85 @@ def advisor_book_history(days: int = 365, uid: int = Depends(get_current_user)):
         return {"series": series, "clients": len(ids)}
     finally:
         conn.close()
+
+
+@app.get("/api/advisor/book/detail")
+def advisor_book_detail(uid: int = Depends(get_current_user)):
+    """Desglose por cliente del hero del libro (idea de Nico): quién pone
+    cuánto del capital administrado y quién movió la aguja en los últimos
+    7 días. MISMA fuente y MISMAS reglas que advisor_book, para que el total
+    y el delta de acá cierren EXACTO con el hero:
+      · AUM = suma del último snapshot por cliente.
+      · Δ7d por cliente solo si tiene snapshot en ambos cortes con FECHAS
+        distintas (regla del hero — con el cron caído no se miente "+0").
+        Los demás salen con estado: "new" = sin base de 7 días (cliente
+        nuevo O snapshot único), "no_snapshot" = se calcula esta noche.
+      · El Δ se separa en aportes (Δ net_deposited) y mercado (el resto):
+        un depósito del cliente no se disfraza de ganancia."""
+    from datetime import datetime as _dt, timedelta as _td
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        ids = _advisor_client_ids(conn, uid)
+        if not ids:
+            return {"total_usd": None, "clients_total": 0,
+                    "delta_7d_usd": None, "delta_7d_pct": None, "clients": []}
+        labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      """SELECT ac.client_uid, ac.label, u.name
+                         FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+                         WHERE ac.advisor_uid=? AND ac.status='active'""", (uid,)).fetchall()}
+        today = _dt.utcnow().date()
+        latest = _latest_snapshots(conn, ids)
+        asof_7d = _snapshots_asof(conn, ids, (today - _td(days=7)).isoformat())
+
+        total = sum(float(r["total_value"] or 0) for r in latest.values())
+        out, d_sum, then_sum = [], 0.0, 0.0
+        for cid in ids:
+            snap = latest.get(cid)
+            if snap is None:
+                out.append({"client_uid": cid, "label": labels.get(cid),
+                            "state": "no_snapshot", "value_usd": None,
+                            "share_pct": None, "as_of": None,
+                            "delta_7d_usd": None, "delta_7d_pct": None,
+                            "flows_7d_usd": None, "market_7d_usd": None})
+                continue
+            tv = float(snap["total_value"] or 0)
+            row = {"client_uid": cid, "label": labels.get(cid),
+                   "value_usd": round(tv, 2),
+                   "share_pct": round(tv / total * 100, 1) if total > 0 else None,
+                   "as_of": str(snap["date"])}
+            then = asof_7d.get(cid)
+            if then is None or str(then["date"]) == str(snap["date"]):
+                row.update({"state": "new", "delta_7d_usd": None,
+                            "delta_7d_pct": None, "flows_7d_usd": None,
+                            "market_7d_usd": None})
+            else:
+                then_v = float(then["total_value"] or 0)
+                d = tv - then_v
+                flows = (float(snap["net_deposited"] or 0)
+                         - float(then["net_deposited"] or 0))
+                row.update({
+                    "state": "ok",
+                    "delta_7d_usd": round(d, 2),
+                    "delta_7d_pct": round(d / then_v * 100, 2) if then_v > 0 else None,
+                    "flows_7d_usd": round(flows, 2),
+                    "market_7d_usd": round(d - flows, 2),
+                })
+                d_sum += d
+                then_sum += then_v
+            out.append(row)
+        # Orden default por capital desc; sin-snapshot al final (el frontend
+        # re-ordena en memoria con el toggle).
+        out.sort(key=lambda r: (r["value_usd"] is None, -(r["value_usd"] or 0)))
+        has_delta = any(r["state"] == "ok" for r in out)
+        return {
+            "total_usd": round(total, 2) if latest else None,
+            "clients_total": len(ids),
+            "delta_7d_usd": round(d_sum, 2) if has_delta else None,
+            "delta_7d_pct": (round(d_sum / then_sum * 100, 2)
+                             if has_delta and then_sum > 0 else None),
+            "clients": out,
+        }
+    finally:
+        conn.close()

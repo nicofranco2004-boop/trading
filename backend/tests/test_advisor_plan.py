@@ -1397,6 +1397,117 @@ class BookHistoryTest(AdvisorBase):
         self.assertEqual(r.status_code, 403)
 
 
+class BookDetailTest(AdvisorBase):
+    """GET /api/advisor/book/detail — desglose por cliente del hero.
+    Invariante clave: la suma de los Δ7d por cliente cierra EXACTO con el
+    delta agregado (misma regla de comparabilidad que advisor_book)."""
+
+    def setUp(self):
+        super().setUp()
+        import datetime as _d
+        self.today = _d.date.today()
+        conn = main.get_db()
+        tag = uuid.uuid4().hex[:10]
+        # Cliente 2: con base de 7 días y APORTE en la ventana
+        self.client2 = _new_user(conn, f"cliente2-{tag}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?",
+                     (self.advisor, self.client2))
+        _link(conn, self.advisor, self.client2, label="Ana G")
+        # Cliente 3: snapshot único (sin base de 7 días → state new)
+        self.client3 = _new_user(conn, f"cliente3-{tag}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?",
+                     (self.advisor, self.client3))
+        _link(conn, self.advisor, self.client3, label="Leo N")
+        # Cliente 4: sin ningún snapshot → state no_snapshot
+        self.client4 = _new_user(conn, f"cliente4-{tag}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?",
+                     (self.advisor, self.client4))
+        _link(conn, self.advisor, self.client4, label="Sin Datos")
+
+        old = (self.today - _d.timedelta(days=10)).isoformat()
+        now = self.today.isoformat()
+        rows = [
+            # Cliente 1 (Juan P): 1000 → 700, sin flujos → mercado −300
+            (self.client_uid, old, 1000.0, 800.0),
+            (self.client_uid, now, 700.0, 800.0),
+            # Cliente 2 (Ana G): 2000 → 2600 con +500 aportados → mercado +100
+            (self.client2, old, 2000.0, 1500.0),
+            (self.client2, now, 2600.0, 2000.0),
+            # Cliente 3 (Leo N): solo snapshot de hoy
+            (self.client3, now, 900.0, 900.0),
+        ]
+        for cid, date_s, tv, nd in rows:
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+                "VALUES (?,?,?,?,?)", (cid, date_s, tv, nd, nd))
+        conn.commit()
+        conn.close()
+
+    def _get(self):
+        r = self.http.get("/api/advisor/book/detail", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def test_gateado_por_tier(self):
+        r = self.http.get("/api/advisor/book/detail", headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)
+
+    def test_total_y_shares(self):
+        d = self._get()
+        # AUM = 700 + 2600 + 900 (el sin-snapshot no aporta)
+        self.assertEqual(d["total_usd"], 4200.0)
+        self.assertEqual(d["clients_total"], 4)
+        by = {c["label"]: c for c in d["clients"]}
+        self.assertEqual(by["Ana G"]["value_usd"], 2600.0)
+        self.assertEqual(by["Ana G"]["share_pct"], round(2600 / 4200 * 100, 1))
+        # Orden default: capital desc, sin-snapshot al final
+        self.assertEqual([c["label"] for c in d["clients"]],
+                         ["Ana G", "Leo N", "Juan P", "Sin Datos"])
+
+    def test_delta_separa_mercado_de_aportes(self):
+        d = self._get()
+        ana = next(c for c in d["clients"] if c["label"] == "Ana G")
+        self.assertEqual(ana["state"], "ok")
+        self.assertEqual(ana["delta_7d_usd"], 600.0)
+        self.assertEqual(ana["flows_7d_usd"], 500.0)   # aportó 500
+        self.assertEqual(ana["market_7d_usd"], 100.0)  # mercado real +100
+        juan = next(c for c in d["clients"] if c["label"] == "Juan P")
+        self.assertEqual(juan["delta_7d_usd"], -300.0)
+        self.assertEqual(juan["flows_7d_usd"], 0.0)
+        self.assertEqual(juan["market_7d_usd"], -300.0)
+
+    def test_suma_de_deltas_cierra_con_el_agregado(self):
+        d = self._get()
+        suma = sum(c["delta_7d_usd"] for c in d["clients"]
+                   if c["delta_7d_usd"] is not None)
+        self.assertEqual(round(suma, 2), d["delta_7d_usd"])  # 600 − 300 = 300
+        self.assertEqual(d["delta_7d_usd"], 300.0)
+        # Y cierra también con el hero del libro
+        book = self.http.get("/api/advisor/book",
+                             headers=self._hdr(self.advisor)).json()
+        self.assertEqual(book["aum"]["delta_7d_usd"], d["delta_7d_usd"])
+
+    def test_estados_new_y_no_snapshot(self):
+        d = self._get()
+        leo = next(c for c in d["clients"] if c["label"] == "Leo N")
+        self.assertEqual(leo["state"], "new")
+        self.assertIsNone(leo["delta_7d_usd"])
+        self.assertEqual(leo["value_usd"], 900.0)  # cuenta en el AUM igual
+        sin = next(c for c in d["clients"] if c["label"] == "Sin Datos")
+        self.assertEqual(sin["state"], "no_snapshot")
+        self.assertIsNone(sin["value_usd"])
+
+    def test_sin_clientes_devuelve_vacio(self):
+        conn = main.get_db()
+        tag = uuid.uuid4().hex[:10]
+        solo = _new_user(conn, f"solo-{tag}@rendi.test", tier="advisor")
+        conn.commit()
+        conn.close()
+        r = self.http.get("/api/advisor/book/detail", headers=self._hdr(solo))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["clients"], [])
+
+
 class AdvisorReportsTest(AdvisorBase):
     """Informe del período (prioridad #1 del research): generación en lote,
     payload congelado, link público y branding."""

@@ -130,11 +130,24 @@ const btnPrimary = 'inline-flex items-center gap-1.5 text-xs font-medium text-wh
 
 function BookHero({ book }) {
   const { aum, flows_month: flows } = book
+  const [detailOpen, setDetailOpen] = useState(false)
   if (!aum || aum.clients === 0) return null
   const hasAum = aum.total_usd != null
   return (
-    <div className="bg-bg-1 border border-line/60 rounded-xl p-5 mb-4">
-      <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
+    <div className="relative bg-bg-1 border border-line/60 rounded-xl p-5 mb-4">
+      {hasAum && (
+        <button
+          type="button"
+          onClick={() => setDetailOpen(true)}
+          className="absolute top-4 right-4 inline-flex items-center gap-1 text-xs font-medium text-data-violet border border-line-3 rounded-md px-3 py-1.5 hover:bg-bg-2 transition-colors"
+        >
+          Detalle <ArrowRight size={12} strokeWidth={2} />
+        </button>
+      )}
+      {detailOpen && <BookDetailModal onClose={() => setDetailOpen(false)} />}
+      {/* pr-24 = reserva del ancho del botón absoluto: la columna Clientes
+          (ml-auto) nunca queda abajo del "Detalle" aunque el hero se achique */}
+      <div className="flex flex-wrap items-end gap-x-8 gap-y-3 pr-24">
         <div>
           <p className="text-[11.5px] text-ink-3 mb-1">Total administrado</p>
           {hasAum ? (
@@ -192,6 +205,189 @@ function BookHero({ book }) {
         </div>
       </div>
     </div>
+  )
+}
+
+// ─── Detalle del capital administrado (idea de Nico) ────────────────────────
+// Modal que abre el hero: quién pone cuánto del AUM y quién movió la aguja
+// en los últimos 7 días. La variación separa mercado de aportes (un depósito
+// no es ganancia) y su suma cierra EXACTO con el hero — misma regla de
+// comparabilidad que /advisor/book (solo clientes con foto en ambos cortes).
+
+const COMP_COLORS = ['#8B7DFF', '#7466E8', '#5F53C4', '#4C429E', '#3D357E']
+const DETAIL_GRID = { display: 'grid', gridTemplateColumns: '1.5fr 0.9fr 1fr 1.35fr 1.25fr', gap: '12px', alignItems: 'center' }
+
+function BookDetailModal({ onClose }) {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(false)
+  const [sortBy, setSortBy] = useState('cap')   // 'cap' | 'var'
+
+  useEffect(() => {
+    api.get('/advisor/book/detail').then(setData).catch(() => setError(true))
+  }, [])
+
+  const { rows, edge, comp, maxShare, maxAbsDelta } = useMemo(() => {
+    const cs = data?.clients ?? []
+    const ok = cs.filter(c => c.state === 'ok')
+    const edge = cs.filter(c => c.state !== 'ok')
+    const sorted = [...ok].sort((a, b) => sortBy === 'cap'
+      ? (b.value_usd ?? 0) - (a.value_usd ?? 0)
+      : Math.abs(b.delta_7d_usd ?? 0) - Math.abs(a.delta_7d_usd ?? 0))
+    // Composición: top 5 por capital + "Resto" (los "new" también suman AUM)
+    const valued = cs.filter(c => c.value_usd != null).sort((a, b) => b.value_usd - a.value_usd)
+    const top = valued.slice(0, 5)
+    const restV = valued.slice(5).reduce((s, c) => s + c.value_usd, 0)
+    const comp = top.map((c, i) => ({ label: c.label, pct: c.share_pct ?? 0, color: COMP_COLORS[i] }))
+    if (restV > 0 && data?.total_usd > 0) {
+      comp.push({ label: `Resto (${valued.length - 5})`, pct: Math.round((restV / data.total_usd) * 1000) / 10, color: '#3A4256' })
+    }
+    return {
+      rows: sorted, edge, comp,
+      maxShare: Math.max(...valued.map(c => c.share_pct ?? 0), 1),
+      maxAbsDelta: Math.max(...ok.map(c => Math.abs(c.delta_7d_usd ?? 0)), 1),
+    }
+  }, [data, sortBy])
+
+  return (
+    <Modal title="Capital administrado — detalle" onClose={onClose} wide>
+      {error ? (
+        <p className="text-xs text-ink-2 py-6 text-center">
+          No pudimos armar el detalle recién. Cerrá y probá de nuevo.
+        </p>
+      ) : !data ? (
+        <div className="space-y-2 py-2">
+          <Skeleton className="h-10 rounded-md" />
+          <Skeleton className="h-40 rounded-md" />
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {/* Composición del libro */}
+          {comp.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-ink-3 mb-2">Composición del libro</p>
+              <div className="flex gap-0.5 h-3 rounded overflow-hidden">
+                {comp.map((s) => (
+                  <div key={s.label} className="rounded-[2px]" style={{ flex: s.pct, background: s.color }} />
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-x-3.5 gap-y-1.5 mt-2">
+                {comp.map((s) => (
+                  <span key={s.label} className="inline-flex items-center gap-1.5 text-[11px] text-ink-2">
+                    <i className="w-2 h-2 rounded-[2px]" style={{ background: s.color }} />
+                    {s.label} <span className="tabular-nums">{s.pct}%</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Orden */}
+          <div className="flex items-center gap-2.5">
+            <span className="text-[10px] uppercase tracking-widest text-ink-3">Ordenar</span>
+            <div className="inline-flex bg-bg-2 border border-line-2 rounded-md p-0.5">
+              {[['cap', 'Por capital'], ['var', 'Por variación 7d']].map(([k, lbl]) => (
+                <button
+                  key={k} type="button" onClick={() => setSortBy(k)}
+                  className={`text-[11.5px] font-medium rounded px-3 py-1 transition-colors ${sortBy === k ? 'bg-bg-3 text-ink-0' : 'text-ink-2 hover:text-ink-1'}`}
+                >
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Tabla */}
+          <div className="overflow-x-auto">
+            <div className="min-w-[620px]">
+              <div style={DETAIL_GRID} className="px-3 pb-1.5">
+                {['Cliente', 'Capital', 'Del libro', 'Últimos 7 días', 'Aporte a la variación'].map((h, i) => (
+                  <span key={h} className={`text-[10.5px] text-ink-3 ${i > 0 ? 'text-right' : ''}`}>{h}</span>
+                ))}
+              </div>
+              <div className="space-y-0.5">
+                {rows.map((c) => {
+                  const flows = c.flows_7d_usd ?? 0
+                  const pos = (c.delta_7d_usd ?? 0) >= 0
+                  return (
+                    <div key={c.client_uid} style={DETAIL_GRID} className="bg-bg-2 rounded-md px-3 py-2.5">
+                      <span className="text-[13px] font-medium text-ink-0 truncate">{c.label}</span>
+                      <span className="text-right text-[13px] text-ink-0 tabular-nums">{usd(c.value_usd, 0)}</span>
+                      <span className="flex items-center justify-end gap-2">
+                        <b className="text-xs font-medium text-ink-1 tabular-nums">{c.share_pct}%</b>
+                        <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
+                          <i className="block h-full bg-data-violet rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
+                        </span>
+                      </span>
+                      <span className={`text-right text-[13px] font-medium tabular-nums ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                        {signedUsd(c.delta_7d_usd)}
+                        <span className="block text-[10.5px] text-ink-3 font-normal mt-0.5">
+                          {Math.abs(flows) >= 1
+                            ? `${flows >= 0 ? 'aportó' : 'retiró'} ${usd(Math.abs(flows), 0)} · mercado ${signedUsd(c.market_7d_usd)}`
+                            : `${c.delta_7d_pct != null ? signedPct(c.delta_7d_pct) : '—'} · todo mercado`}
+                        </span>
+                      </span>
+                      <span className="flex items-center justify-end gap-2.5">
+                        <span className={`text-xs tabular-nums ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{signedUsd(c.delta_7d_usd)}</span>
+                        <span className="relative w-20 h-3 shrink-0">
+                          <i className="absolute left-1/2 -top-0.5 -bottom-0.5 w-px bg-line-3" />
+                          <i
+                            className={`absolute top-0.5 bottom-0.5 rounded-[2px] ${pos ? 'left-1/2 bg-rendi-pos' : 'right-1/2 bg-rendi-neg'}`}
+                            style={{ width: `${Math.abs(c.delta_7d_usd ?? 0) / maxAbsDelta * 48}%` }}
+                          />
+                        </span>
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Casos borde: sin base de 7 días / sin snapshot */}
+              {edge.length > 0 && (
+                <div className="space-y-0.5 mt-2">
+                  {edge.map((c) => (
+                    <div key={c.client_uid} style={DETAIL_GRID} className="border border-dashed border-line-2 rounded-md px-3 py-2.5">
+                      <span className="text-[13px] text-ink-2 truncate">
+                        {c.label}
+                        <span className={`ml-2 text-[10px] font-semibold rounded px-1.5 py-0.5 align-[1px] ${c.state === 'new' ? 'text-data-violet bg-rendi-violet-deep' : 'text-ink-2 bg-bg-3'}`}>
+                          {c.state === 'new' ? 'Sin base de 7 días' : 'Sin snapshot'}
+                        </span>
+                      </span>
+                      {c.state === 'new' ? (
+                        <>
+                          <span className="text-right text-[13px] text-ink-1 tabular-nums">{usd(c.value_usd, 0)}</span>
+                          <span className="flex items-center justify-end gap-2">
+                            <b className="text-xs font-medium text-ink-2 tabular-nums">{c.share_pct}%</b>
+                            <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
+                              <i className="block h-full bg-line-3 rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
+                            </span>
+                          </span>
+                          <span className="text-right text-xs text-ink-3">Recién tiene una foto</span>
+                          <span className="text-right text-xs text-ink-3">No entra en la variación</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-right text-xs text-ink-3">Se calcula esta noche</span>
+                          <span className="text-right text-xs text-ink-3">—</span>
+                          <span className="text-right text-xs text-ink-3">—</span>
+                          <span className="text-right text-xs text-ink-3">—</span>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <p className="text-[11.5px] text-ink-3 leading-relaxed border-t border-line pt-3">
+            <span className="text-ink-2 font-medium">La variación separa mercado de aportes.</span>{' '}
+            Si un cliente depositó esta semana, su suba no se disfraza de ganancia — la fila lo aclara.
+            Los clientes sin foto de hace 7 días no entran en la variación del libro, por eso esta
+            columna suma exacto el número del hero.
+          </p>
+        </div>
+      )}
+    </Modal>
   )
 }
 
