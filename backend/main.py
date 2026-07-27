@@ -25632,8 +25632,10 @@ def _advisor_branding(conn, uid: int) -> dict:
         (uid,)).fetchone()
     if row and (row["display_name"] or row["cnv_matricula"]):
         return {"name": row["display_name"], "matricula": row["cnv_matricula"]}
-    u = conn.execute("SELECT name, email FROM users WHERE id=?", (uid,)).fetchone()
-    return {"name": (u["name"] or u["email"].split("@")[0]) if u else "Tu asesor",
+    # Sin perfil configurado: SOLO users.name — jamás el localpart del email
+    # (esto termina en una página pública sin auth; audit).
+    u = conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
+    return {"name": (u["name"] if u and u["name"] else "Tu asesor"),
             "matricula": None}
 
 
@@ -25658,28 +25660,48 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
                            "v": round(float(s["total_value"] or 0), 2),
                            "nd": round(float(s["net_deposited"] or 0), 2)})
     end_row = snaps[-1] if snaps else None
-    base = base_row or (snaps[0] if snaps else None)
 
     value_end = round(float(end_row["total_value"]), 2) if end_row else None
+    value_as_of = str(end_row["date"]) if end_row else None  # el cliente ve la fecha REAL del dato
     market_usd = flows_usd = ret_pct = None
-    if base is not None and end_row is not None and str(base["date"]) != str(end_row["date"]):
-        v0, nd0 = float(base["total_value"] or 0), float(base["net_deposited"] or 0)
-        v1, nd1 = float(end_row["total_value"] or 0), float(end_row["net_deposited"] or 0)
-        flows_usd = round(nd1 - nd0, 2)
-        market_usd = round((v1 - v0) - flows_usd, 2)
-        if v0 > 100:
-            ret_pct = round(market_usd / v0 * 100, 2)
+    if end_row is not None:
+        if base_row is not None and str(base_row["date"]) != str(end_row["date"]):
+            v0, nd0 = float(base_row["total_value"] or 0), float(base_row["net_deposited"] or 0)
+        elif base_row is None:
+            # La cuenta ARRANCÓ dentro del período: la base es cartera CERO —
+            # así el aporte inicial cuenta como aporte y no desaparece (audit:
+            # el fallback al primer snapshot lo tragaba dentro de nd0).
+            v0, nd0 = 0.0, 0.0
+        else:
+            v0 = nd0 = None  # un solo snapshot en la misma fecha — sin período
+        if v0 is not None:
+            v1, nd1 = float(end_row["total_value"] or 0), float(end_row["net_deposited"] or 0)
+            flows_usd = round(nd1 - nd0, 2)
+            market_usd = round((v1 - v0) - flows_usd, 2)
+            # Dietz simple: los flujos del período ponderan mitad — sin esto un
+            # depósito grande a mitad de mes inflaba el % hasta el absurdo
+            # (audit: +63% mostrado para un mes de +3%).
+            dietz_base = v0 + flows_usd / 2.0
+            if dietz_base > 100:
+                ret_pct = round(market_usd / dietz_base * 100, 2)
 
-    # Benchmark: variación del MEP en el período (fuente propia, sin red).
+    # Referencia MEP — misma VENTANA que la cartera (base→as_of), no start→end:
+    # comparar ventanas distintas no era like-for-like (audit).
     mep_var_pct = None
+    fx_start_date = str(base_row["date"]) if base_row is not None else start
+    fx_end_date = value_as_of or end
     fx0 = conn.execute(
         "SELECT mep_venta FROM fx_rates_daily WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
-        (start,)).fetchone()
+        (fx_start_date,)).fetchone()
     fx1 = conn.execute(
         "SELECT mep_venta FROM fx_rates_daily WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
-        (end,)).fetchone()
+        (fx_end_date,)).fetchone()
     if fx0 and fx1 and float(fx0["mep_venta"] or 0) > 0:
         mep_var_pct = round((float(fx1["mep_venta"]) / float(fx0["mep_venta"]) - 1) * 100, 2)
+    # El MEP que se MUESTRA junto al valor: el del cierre del dato, no el de
+    # generación. La VALUACIÓN de tenencias sigue con el tc_mep del día (los
+    # precios de read_last_prices son de hoy — mezclar sería peor).
+    tc_mep_display = float(fx1["mep_venta"]) if fx1 and fx1["mep_venta"] else tc_mep
 
     # Tenencias HOY (top 6) — misma valuación y denominador que el contexto IA.
     valued, _sk = _advisor_positions_valued(conn, [client_uid], tc_blue, tc_mep)
@@ -25687,19 +25709,44 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     denom = max(value_end or 0.0, tot_valued) or 1.0
     holdings = [
         {"asset": v["asset"], "value_usd": round(v["value_usd"]),
-         "weight_pct": round(v["value_usd"] / denom * 100)}
+         # Sin snapshot no hay total CON cash → mejor sin % que un % inflado
+         # (audit: "AAPL 100%" para un cliente mitad cash).
+         "weight_pct": (round(v["value_usd"] / denom * 100) if value_end else None)}
         for v in sorted(valued, key=lambda r: -r["value_usd"])[:6]
     ]
 
-    movs = [
-        {"date": str(r["date"]), "asset": r["asset"], "type": r["op_type"],
-         "quantity": r["quantity"], "pnl_usd": r["pnl_usd"]}
-        for r in conn.execute(
-            """SELECT date, asset, op_type, quantity, pnl_usd FROM operations
+    _CASHLIKE = ("Dividendo", "Interés", "Interes", "Amortización", "Amortizacion", "Renta")
+    movs_all = []
+    for r in conn.execute(
+            """SELECT date, asset, op_type, quantity FROM operations
                WHERE user_id=? AND date >= ? AND date <= ?
-               ORDER BY date ASC LIMIT 15""",
-            (client_uid, start, end)).fetchall()
-    ]
+                 AND (op_type IS NULL OR op_type NOT LIKE '%CONVERSION%')
+               ORDER BY date ASC""",
+            (client_uid, start, end)).fetchall():
+        qty = r["quantity"]
+        # Para rentas, operations.quantity guarda el MONTO (no nominales) —
+        # mostrarlo como cantidad confundía (audit). Y las ventas parciales
+        # arrastran residuos float.
+        if r["op_type"] and any(k in str(r["op_type"]) for k in _CASHLIKE):
+            qty = None
+        elif isinstance(qty, (int, float)):
+            qty = round(qty, 4)
+        movs_all.append({"date": str(r["date"]), "asset": r["asset"],
+                         "type": r["op_type"] or "Operación", "quantity": qty})
+    # Las COMPRAS importadas no pasan por operations (audit): las posiciones
+    # abiertas con entry_date dentro del período son las compras del período.
+    for r in conn.execute(
+            """SELECT entry_date, asset, quantity FROM positions
+               WHERE user_id=? AND COALESCE(is_cash,0)=0
+                 AND entry_date >= ? AND entry_date <= ?
+               ORDER BY entry_date ASC""",
+            (client_uid, start, end)).fetchall():
+        movs_all.append({"date": str(r["entry_date"]), "asset": r["asset"],
+                         "type": "Compra",
+                         "quantity": round(float(r["quantity"]), 4) if r["quantity"] else None})
+    movs_all.sort(key=lambda m: m["date"])
+    movs_total = len(movs_all)
+    movs = movs_all[-15:]  # los MÁS RECIENTES (audit: truncaba los primeros)
 
     # Serie liviana para el gráfico del informe (cap 60 puntos, extremos fijos).
     if len(series) > 60:
@@ -25719,15 +25766,25 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
         "flows_usd": flows_usd,
         "ret_pct": ret_pct,
         "mep_var_pct": mep_var_pct,
-        "tc_mep": tc_mep,
+        "tc_mep": tc_mep_display,
         "series": series,
         "holdings": holdings,
         "movements": movs,
+        "movements_total": movs_total,
+        "value_as_of": value_as_of,
         "note": (note or "").strip() or None,
         "claimed": bool(conn.execute(
             "SELECT approved FROM users WHERE id=?", (client_uid,)).fetchone()["approved"]),
-        "generated_at": datetime.utcnow().strftime("%Y-%m-%d"),
+        # Hora ARGENTINA (UTC-3, sin DST): generado a las 21:30 ART no puede
+        # decir la fecha de mañana (audit).
+        "generated_at": (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d"),
     }
+
+
+def _fmt_ar(n: float) -> str:
+    """Miles con punto, estilo es-AR (el :,.0f de Python usa coma en-US y en
+    Argentina '12,346' se lee doce-coma-tres; audit)."""
+    return f"{n:,.0f}".replace(",", ".")
 
 
 def _report_wa_text(p: dict, url: str) -> str:
@@ -25736,12 +25793,15 @@ def _report_wa_text(p: dict, url: str) -> str:
     name = (p.get("client_label") or "").split(" ")[0] or "Hola"
     lines = [f"Hola {name}! Te paso el resumen de tu cartera ({p['period']['start']} al {p['period']['end']}):"]
     if p.get("value_end_usd") is not None:
-        lines.append(f"Cerró en US$ {p['value_end_usd']:,.0f}.")
+        lines.append(f"Cerró en US$ {_fmt_ar(p['value_end_usd'])}.")
     if p.get("market_usd") is not None:
         signo = "ganó" if p["market_usd"] >= 0 else "perdió"
         extra = f" ({p['ret_pct']:+.1f}%)" if p.get("ret_pct") is not None else ""
-        lines.append(f"El mercado {signo} US$ {abs(p['market_usd']):,.0f}{extra} y tus aportes netos fueron US$ {p.get('flows_usd') or 0:,.0f}.")
-    if p.get("holdings"):
+        f = p.get("flows_usd") or 0
+        flujo = (f"tus aportes netos fueron US$ {_fmt_ar(f)}" if f >= 0
+                 else f"tus retiros netos fueron US$ {_fmt_ar(abs(f))}")
+        lines.append(f"El mercado {signo} US$ {_fmt_ar(abs(p['market_usd']))}{extra} y {flujo}.")
+    if p.get("holdings") and p["holdings"][0].get("weight_pct") is not None:
         h = p["holdings"][0]
         lines.append(f"Tu posición principal es {h['asset']} ({h['weight_pct']}% de la cartera).")
     lines.append(f"Informe completo: {url}")
@@ -25788,7 +25848,8 @@ def advisor_reports_generate(data: AdvisorReportIn, request: Request,
     conn = get_db()
     try:
         _require_advisor(conn, uid)
-        links = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
+        # Fallback SIN el uid interno (el label va a una página pública; audit).
+        links = {r["client_uid"]: (r["label"] or r["name"] or "Cliente")
                  for r in conn.execute(
                      """SELECT ac.client_uid, ac.label, u.name
                         FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid

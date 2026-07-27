@@ -1447,7 +1447,7 @@ class AdvisorReportsTest(AdvisorBase):
         self.assertEqual(p["value_end_usd"], 1200.0)
         self.assertEqual(p["flows_usd"], 100.0)     # nd 800 → 900
         self.assertEqual(p["market_usd"], 100.0)    # (1200-1000) − 100
-        self.assertEqual(p["ret_pct"], 10.0)        # 100 / 1000
+        self.assertEqual(p["ret_pct"], 9.52)        # Dietz: 100 / (1000 + 100/2)
         self.assertEqual(p["note"], "Buen mes, hablamos el martes.")
         self.assertEqual(p["holdings"][0]["asset"], "GGAL")
         self.assertFalse(p["claimed"])              # shadow sin reclamar

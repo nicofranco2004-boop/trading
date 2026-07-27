@@ -67,6 +67,9 @@ export default function ReportPublic() {
           .report-shell { background: #fff !important; padding: 0 !important; }
           .no-print { display: none !important; }
           .report-paper { box-shadow: none !important; border-radius: 0 !important; }
+          /* Sin esto los navegadores omiten los backgrounds: el monograma y
+             las barras de tenencias salían invisibles en el PDF (audit). */
+          .report-paper, .report-paper * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
       `}</style>
 
@@ -106,7 +109,7 @@ export default function ReportPublic() {
             <div>
               <div style={{ fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, marginBottom: 4 }}>Valor de la cartera</div>
               <div style={{ fontSize: 24, fontWeight: 750 }}>{fmtUsd(r.value_end_usd)}</div>
-              <div style={{ fontSize: 11, color: P.ink2, marginTop: 3 }}>al {r.period?.end} · dólar MEP {r.tc_mep ? Math.round(r.tc_mep).toLocaleString('es-AR') : '—'}</div>
+              <div style={{ fontSize: 11, color: P.ink2, marginTop: 3 }}>al {r.value_as_of || r.period?.end} · dólar MEP {r.tc_mep ? Math.round(r.tc_mep).toLocaleString('es-AR') : '—'}</div>
             </div>
             <div>
               <div style={{ fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, marginBottom: 4 }}>Resultado del período</div>
@@ -134,14 +137,14 @@ export default function ReportPublic() {
 
           {/* Benchmark MEP */}
           {r.mep_var_pct != null && r.ret_pct != null && (
-            <div style={{ display: 'flex', border: `1px solid ${P.line}`, borderRadius: 10, overflow: 'hidden', margin: '16px 0' }}>
-              <div style={{ flex: 1, padding: '10px 14px', borderRight: `1px solid ${P.line}`, background: r.ret_pct >= r.mep_var_pct ? '#F2FBF6' : 'transparent' }}>
-                <div style={{ fontSize: 10.5, color: P.ink2 }}>Tu cartera</div>
+            <div style={{ display: 'flex', border: `1px solid ${P.line}`, borderRadius: 10, overflow: 'hidden', margin: '16px 0', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 150, padding: '10px 14px', borderRight: `1px solid ${P.line}`, background: r.ret_pct >= 0 ? '#F2FBF6' : 'transparent' }}>
+                <div style={{ fontSize: 10.5, color: P.ink2 }}>Tu cartera (en dólares)</div>
                 <div style={{ fontSize: 16, fontWeight: 750, color: r.ret_pct >= 0 ? P.up : P.down }}>{r.ret_pct >= 0 ? '+' : ''}{r.ret_pct}%</div>
               </div>
-              <div style={{ flex: 1, padding: '10px 14px' }}>
-                <div style={{ fontSize: 10.5, color: P.ink2 }}>Dólar MEP (período)</div>
-                <div style={{ fontSize: 16, fontWeight: 750 }}>{r.mep_var_pct >= 0 ? '+' : ''}{r.mep_var_pct}%</div>
+              <div style={{ flex: 1, minWidth: 150, padding: '10px 14px' }}>
+                <div style={{ fontSize: 10.5, color: P.ink2 }}>Dólar MEP en el mismo lapso</div>
+                <div style={{ fontSize: 16, fontWeight: 750 }}>{r.mep_var_pct >= 0 ? '+' : ''}{r.mep_var_pct}% <span style={{ fontSize: 10, fontWeight: 400, color: P.ink3 }}>(en pesos)</span></div>
               </div>
             </div>
           )}
@@ -149,7 +152,7 @@ export default function ReportPublic() {
           {/* Evolución */}
           {r.series?.length >= 2 && <EvolutionSvg series={r.series} />}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 20, marginTop: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 20, marginTop: 16 }}>
             {/* Movimientos */}
             <div>
               <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Movimientos del período</div>
@@ -165,7 +168,10 @@ export default function ReportPublic() {
                   </tbody>
                 </table>
               ) : (
-                <p style={{ fontSize: 12.5, color: P.ink3, margin: 0 }}>Sin operaciones cerradas en el período.</p>
+                <p style={{ fontSize: 12.5, color: P.ink3, margin: 0 }}>Sin movimientos registrados en el período.</p>
+              )}
+              {r.movements_total > (r.movements?.length || 0) && (
+                <p style={{ fontSize: 11, color: P.ink3, marginTop: 6 }}>Se muestran los {r.movements.length} más recientes de {r.movements_total}.</p>
               )}
             </div>
             {/* Tenencias */}
@@ -174,10 +180,16 @@ export default function ReportPublic() {
               {(r.holdings || []).map((h, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, padding: '4px 0' }}>
                   <b style={{ width: 64, flexShrink: 0 }}>{h.asset}</b>
-                  <div style={{ flex: 1, height: 8, background: P.paper2, borderRadius: 4, overflow: 'hidden' }}>
-                    <div style={{ width: `${Math.max(4, (h.weight_pct / holdingsMax) * 100)}%`, height: '100%', background: P.brand, borderRadius: 4 }} />
-                  </div>
-                  <span style={{ fontWeight: 700, width: 38, textAlign: 'right' }}>{h.weight_pct}%</span>
+                  {h.weight_pct != null ? (
+                    <>
+                      <div style={{ flex: 1, height: 8, background: P.paper2, borderRadius: 4, overflow: 'hidden' }}>
+                        <div style={{ width: `${Math.max(4, (h.weight_pct / holdingsMax) * 100)}%`, height: '100%', background: P.brand, borderRadius: 4 }} />
+                      </div>
+                      <span style={{ fontWeight: 700, width: 38, textAlign: 'right' }}>{h.weight_pct}%</span>
+                    </>
+                  ) : (
+                    <span style={{ marginLeft: 'auto', fontWeight: 700 }}>{fmtUsd(h.value_usd)}</span>
+                  )}
                 </div>
               ))}
             </div>

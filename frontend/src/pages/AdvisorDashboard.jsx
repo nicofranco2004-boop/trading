@@ -496,7 +496,9 @@ function DistributionCard({ dist }) {
 function ReportModal({ onClose }) {
   const toast = useToast()
   const today = new Date()
-  const iso = (d) => d.toISOString().slice(0, 10)
+  // Fecha LOCAL (audit: toISOString es UTC — de noche en Argentina devolvía
+  // la fecha de mañana en un documento con matrícula CNV).
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1)
   const firstOfPrev = new Date(today.getFullYear(), today.getMonth() - 1, 1)
   const endOfPrev = new Date(today.getFullYear(), today.getMonth(), 0)
@@ -524,10 +526,19 @@ function ReportModal({ onClose }) {
     setGenerating(true)
     try {
       if (brandDirty) {
-        await api.patch('/advisor/profile', {
-          display_name: brand.name.trim() || null,
-          cnv_matricula: brand.matricula.trim() || null,
-        }).catch(() => {})
+        // Si el guardado de la marca falla, ABORTAR: el lote se congela con
+        // el branding del server y no hay forma de regenerar el mismo link
+        // (audit: el catch silencioso mandaba informes con la marca vieja).
+        try {
+          await api.patch('/advisor/profile', {
+            display_name: brand.name.trim() || null,
+            cnv_matricula: brand.matricula.trim() || null,
+          })
+        } catch (e) {
+          toast.push('No se pudo guardar tu marca — no generé nada. Probá de nuevo.', { type: 'error' })
+          setGenerating(false)
+          return
+        }
       }
       const p = PERIODS.find(x => x.key === period)
       const body = {
@@ -554,8 +565,9 @@ function ReportModal({ onClose }) {
 
   // ── Resultados ──
   if (results) {
+    const p = PERIODS.find(x => x.key === period)
     return (
-      <Modal title={`${results.length} informe${results.length === 1 ? '' : 's'} listo${results.length === 1 ? '' : 's'}`} onClose={onClose} wide>
+      <Modal title={`${results.length} informe${results.length === 1 ? '' : 's'} listo${results.length === 1 ? '' : 's'} · ${p?.label ?? ''} (${p?.start} → ${p?.end})`} onClose={onClose} wide>
         <p className="text-xs text-ink-2 mb-3">
           Cada informe quedó congelado con su link — lo que le mandás al cliente no cambia después.
           El texto de WhatsApp ya tiene sus números y el link al final.

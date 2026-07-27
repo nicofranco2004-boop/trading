@@ -187,6 +187,10 @@ function AppRoutes() {
       <Route path="/activo/:ticker" element={<AssetDetail />} />
       {/* Dashboard vuelve a ser página propia (ítem "Dashboard" del sidebar,
           principal dentro de "Tu Cartera"). Antes era un tab de Cartera. */}
+      {/* Informe del período: el link público TAMBIÉN debe resolver con
+          sesión activa — un cliente logueado (o el propio asesor tocando
+          "Abrir") caía al catch-all y aterrizaba en Home (audit). */}
+      <Route path="/i/:token" element={<ReportPublic />} />
       <Route path="/dashboard"       element={<Dashboard />} />
       <Route path="/objetivos"       element={<Navigate to="/posiciones?tab=objetivos"   replace />} />
       <Route path="/insights"        element={<Navigate to="/analisis?tab=diagnostico"   replace />} />
