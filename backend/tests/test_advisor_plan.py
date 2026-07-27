@@ -1395,3 +1395,99 @@ class BookHistoryTest(AdvisorBase):
         r = self.http.get("/api/advisor/book/history",
                           headers=self._hdr(self.stranger))
         self.assertEqual(r.status_code, 403)
+
+
+class AdvisorReportsTest(AdvisorBase):
+    """Informe del período (prioridad #1 del research): generación en lote,
+    payload congelado, link público y branding."""
+
+    def setUp(self):
+        super().setUp()
+        conn = main.get_db()
+        import datetime as _d
+        self.today = _d.date.today()
+        self.start = (self.today - _d.timedelta(days=30)).isoformat()
+        self.end = self.today.isoformat()
+        conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, 1400, 1000, 'manual')", (self.today.isoformat(),))
+        # Base ANTERIOR al período + cierre: mercado = (1200-1000) - (900-800) = +100
+        for (d, tv, nd) in ((self.today - _d.timedelta(days=40), 1000.0, 800.0),
+                            (self.today - _d.timedelta(days=1), 1200.0, 900.0)):
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+                "VALUES (?,?,?,?,?)", (self.client_uid, d.isoformat(), tv, tv, nd))
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,0,'ARS')""",
+            (self.client_uid, "Cocos", "GGAL", 10, 100000))
+        conn.execute(
+            "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,datetime('now'))",
+            ("GGAL.BA", 15000.0))
+        conn.commit(); conn.close()
+        main._rate_store.pop("testclient|report_pub_ip", None)
+        main._rate_store.pop(f"testclient|advreport:{self.advisor}", None)
+
+    def test_generar_lote_y_abrir_publico(self):
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end,
+                                 "note": "Buen mes, hablamos el martes."},
+                           headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        reps = r.json()["reports"]
+        self.assertEqual(len(reps), 1)
+        rep = reps[0]
+        self.assertEqual(rep["label"], "Juan P")
+        self.assertIn("/i/", rep["url"])
+        self.assertIn("US$", rep["wa_text"])
+        # Link público sin auth
+        pub = self.http.get(f"/api/reports/public/{rep['token']}")
+        self.assertEqual(pub.status_code, 200, pub.text)
+        p = pub.json()["report"]
+        self.assertEqual(p["value_end_usd"], 1200.0)
+        self.assertEqual(p["flows_usd"], 100.0)     # nd 800 → 900
+        self.assertEqual(p["market_usd"], 100.0)    # (1200-1000) − 100
+        self.assertEqual(p["ret_pct"], 10.0)        # 100 / 1000
+        self.assertEqual(p["note"], "Buen mes, hablamos el martes.")
+        self.assertEqual(p["holdings"][0]["asset"], "GGAL")
+        self.assertFalse(p["claimed"])              # shadow sin reclamar
+
+    def test_payload_congelado_no_cambia_con_branding_posterior(self):
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.advisor))
+        token = r.json()["reports"][0]["token"]
+        # Cambia el branding DESPUÉS de generar
+        self.http.patch("/api/advisor/profile",
+                        json={"display_name": "Estudio Nuevo", "cnv_matricula": "999"},
+                        headers=self._hdr(self.advisor))
+        p = self.http.get(f"/api/reports/public/{token}").json()["report"]
+        self.assertNotEqual(p["branding"]["name"], "Estudio Nuevo")  # quedó el del momento
+
+    def test_branding_persistido_y_usado(self):
+        self.http.patch("/api/advisor/profile",
+                        json={"display_name": "Martín Beltrán", "cnv_matricula": "1.234"},
+                        headers=self._hdr(self.advisor))
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.advisor))
+        p = self.http.get(f"/api/reports/public/{r.json()['reports'][0]['token']}").json()["report"]
+        self.assertEqual(p["branding"]["name"], "Martín Beltrán")
+        self.assertEqual(p["branding"]["matricula"], "1.234")
+
+    def test_cliente_ajeno_salteado(self):
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end,
+                                 "client_uids": [self.stranger]},
+                           headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["reports"], [])
+        self.assertEqual(r.json()["skipped"][0]["reason"], "sin vínculo activo")
+
+    def test_gateado_por_tier_y_token_invalido(self):
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)
+        pub = self.http.get("/api/reports/public/token-inexistente-123")
+        self.assertEqual(pub.status_code, 404)

@@ -12,11 +12,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { PhoneCall, Landmark, TrendingUp, TrendingDown, Users, ArrowRight, LineChart } from 'lucide-react'
+import { PhoneCall, Landmark, TrendingUp, TrendingDown, Users, ArrowRight, LineChart, FileText, ExternalLink } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
+import Modal from '../components/Modal'
+import { useToast } from '../components/Toast'
 import { usd } from '../utils/format'
 
 // usd() formatea negativos con paréntesis — para deltas del libro queremos ±.
@@ -29,6 +31,7 @@ export default function AdvisorDashboard() {
   const [book, setBook] = useState(null)     // null = cargando
   const [history, setHistory] = useState(null)  // serie AUM (evolución del libro)
   const [error, setError] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -62,7 +65,19 @@ export default function AdvisorDashboard() {
         eyebrow="Plan Asesor"
         title="Tu libro"
         subtitle="Cómo viene, en conjunto, todo lo que administrás."
+        action={(
+          <button
+            type="button"
+            onClick={() => setReportOpen(true)}
+            disabled={!book || (book.aum?.clients ?? 0) === 0}
+            className={btnPrimary}
+          >
+            <FileText size={13} strokeWidth={1.75} />
+            Informe del período
+          </button>
+        )}
       />
+      {reportOpen && <ReportModal onClose={() => setReportOpen(false)} />}
 
       {error && (
         <div className="mb-4 text-[12px] text-ink-2 bg-bg-1 border border-line/60 rounded-md px-3 py-2">
@@ -470,5 +485,172 @@ function DistributionCard({ dist }) {
       </div>
       <p className="text-[10.5px] text-ink-3 mt-2">Retorno total vs. aportado, del último snapshot.</p>
     </div>
+  )
+}
+
+// ─── Informe del período (prioridad #1 del research) ────────────────────────
+// Genera el lote de informes brandeados: uno por cliente, congelado, con
+// link público /i/{token} + texto listo para WhatsApp. La marca (nombre +
+// matrícula CNV) se pide acá mismo la primera vez y queda guardada.
+
+function ReportModal({ onClose }) {
+  const toast = useToast()
+  const today = new Date()
+  const iso = (d) => d.toISOString().slice(0, 10)
+  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1)
+  const firstOfPrev = new Date(today.getFullYear(), today.getMonth() - 1, 1)
+  const endOfPrev = new Date(today.getFullYear(), today.getMonth(), 0)
+  const PERIODS = [
+    { key: 'mes', label: 'Este mes', start: iso(firstOfMonth), end: iso(today) },
+    { key: 'prev', label: 'Mes pasado', start: iso(firstOfPrev), end: iso(endOfPrev) },
+    { key: '90d', label: 'Últimos 90 días', start: iso(new Date(today.getTime() - 90 * 86400000)), end: iso(today) },
+  ]
+  const [period, setPeriod] = useState('mes')
+  const [clients, setClients] = useState(null)
+  const [target, setTarget] = useState('all')     // 'all' | client_uid
+  const [note, setNote] = useState('')
+  const [brand, setBrand] = useState({ name: '', matricula: '' })
+  const [brandDirty, setBrandDirty] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [results, setResults] = useState(null)
+
+  useEffect(() => {
+    api.get('/advisor/clients').then(d => setClients(d.clients || [])).catch(() => setClients([]))
+    api.get('/advisor/profile').then(p => setBrand({ name: p.name || '', matricula: p.matricula || '' })).catch(() => {})
+  }, [])
+
+  const generate = async () => {
+    if (generating) return
+    setGenerating(true)
+    try {
+      if (brandDirty) {
+        await api.patch('/advisor/profile', {
+          display_name: brand.name.trim() || null,
+          cnv_matricula: brand.matricula.trim() || null,
+        }).catch(() => {})
+      }
+      const p = PERIODS.find(x => x.key === period)
+      const body = {
+        period_start: p.start, period_end: p.end,
+        note: note.trim() || null,
+        client_uids: target === 'all' ? null : [Number(target)],
+      }
+      const d = await api.post('/advisor/reports/generate', body)
+      setResults(d.reports || [])
+      if (!(d.reports || []).length) toast.push('No se generó ningún informe — revisá que haya clientes con datos', { type: 'error' })
+    } catch (e) {
+      toast.push(e.message || 'No se pudieron generar los informes', { type: 'error' })
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const copy = async (text, msg) => {
+    try { await navigator.clipboard.writeText(text); toast.push(msg) }
+    catch { toast.push('No se pudo copiar', { type: 'error' }) }
+  }
+
+  const inputCls = 'w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-data-violet transition-colors'
+
+  // ── Resultados ──
+  if (results) {
+    return (
+      <Modal title={`${results.length} informe${results.length === 1 ? '' : 's'} listo${results.length === 1 ? '' : 's'}`} onClose={onClose} wide>
+        <p className="text-xs text-ink-2 mb-3">
+          Cada informe quedó congelado con su link — lo que le mandás al cliente no cambia después.
+          El texto de WhatsApp ya tiene sus números y el link al final.
+        </p>
+        <div className="border border-line/60 rounded-lg divide-y divide-line/40 max-h-80 overflow-y-auto">
+          {results.map(r => (
+            <div key={r.report_id} className="flex items-center gap-2 px-3 py-2.5 flex-wrap">
+              <span className="text-sm font-medium text-ink-0 min-w-[110px]">{r.label}</span>
+              {!r.has_data && (
+                <span className="text-[10px] text-rendi-warn bg-rendi-warn/10 rounded px-1.5 py-0.5">sin datos del período</span>
+              )}
+              <div className="ml-auto flex items-center gap-1.5">
+                <button type="button" onClick={() => copy(r.url, 'Link copiado')}
+                  className="text-[11px] font-semibold text-data-violet border border-data-violet/30 hover:bg-data-violet/10 rounded-md px-2.5 py-1.5 transition-colors">
+                  Copiar link
+                </button>
+                <button type="button" onClick={() => copy(r.wa_text, 'Texto copiado — pegalo en WhatsApp')}
+                  className="text-[11px] font-medium text-ink-2 hover:text-ink-0 border border-line rounded-md px-2.5 py-1.5 transition-colors">
+                  Texto WhatsApp
+                </button>
+                <a href={r.url} target="_blank" rel="noopener noreferrer"
+                  className="text-[11px] font-medium text-ink-2 hover:text-ink-0 border border-line rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
+                  Abrir <ExternalLink size={10} strokeWidth={2} />
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-end pt-3">
+          <button type="button" onClick={onClose} className={btnPrimary}>Listo</button>
+        </div>
+      </Modal>
+    )
+  }
+
+  return (
+    <Modal title="Informe del período" onClose={onClose}>
+      <div className="space-y-3">
+        <div>
+          <p className="text-xs text-ink-2 mb-1.5">Período</p>
+          <div className="flex gap-1.5">
+            {PERIODS.map(p => (
+              <button key={p.key} type="button" onClick={() => setPeriod(p.key)}
+                className={`text-[12px] font-medium rounded-md px-3 py-1.5 border transition-colors ${
+                  period === p.key ? 'text-data-violet border-data-violet/40 bg-data-violet/10' : 'text-ink-2 border-line hover:text-ink-0'
+                }`}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="text-xs text-ink-2 mb-1.5">¿Para quién?</p>
+          <select className={inputCls} value={target} onChange={e => setTarget(e.target.value)}>
+            <option value="all">Todos {clients ? `(${clients.length} clientes)` : ''}</option>
+            {(clients || []).map(c => (
+              <option key={c.client_uid} value={c.client_uid}>{c.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <p className="text-xs text-ink-2 mb-1.5">Nota personal (va arriba del informe, igual para todos)</p>
+          <textarea rows={3} className={inputCls + ' resize-y'} value={note} maxLength={1200}
+            onChange={e => setNote(e.target.value)}
+            placeholder="Ej: Mes tranquilo y positivo. En agosto vencen los cupones del AL30 — lo hablamos el martes." />
+        </div>
+
+        <div className="border-t border-line/40 pt-3">
+          <p className="text-xs text-ink-2 mb-1.5">Tu marca en el informe</p>
+          <div className="grid grid-cols-2 gap-2">
+            <input className={inputCls} value={brand.name} maxLength={80}
+              onChange={e => { setBrand({ ...brand, name: e.target.value }); setBrandDirty(true) }}
+              placeholder="Nombre / estudio" />
+            <input className={inputCls} value={brand.matricula} maxLength={40}
+              onChange={e => { setBrand({ ...brand, matricula: e.target.value }); setBrandDirty(true) }}
+              placeholder="Matrícula CNV (opcional)" />
+          </div>
+        </div>
+
+        <p className="text-[11px] text-ink-3 leading-relaxed">
+          El informe muestra el resultado del período separado en mercado vs. aportes,
+          neto de comisiones, con la comparación contra el dólar MEP — y tu marca arriba.
+          Rendi aparece solo en el pie.
+        </p>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="text-xs text-ink-2 hover:text-ink-0 px-3 py-2 transition-colors">Cancelar</button>
+          <button type="button" onClick={generate} disabled={generating || clients === null} className={btnPrimary}>
+            <FileText size={13} strokeWidth={1.75} />
+            {generating ? 'Generando…' : (target === 'all' ? `Generar ${clients?.length ?? ''} informes` : 'Generar informe')}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }

@@ -1470,6 +1470,30 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_advisor_claim_token ON advisor_claim_tokens(token);
         CREATE INDEX IF NOT EXISTS idx_advisor_claim_user ON advisor_claim_tokens(user_id, used_at);
 
+        -- Informe del período (Plan Asesor): el payload queda CONGELADO al
+        -- generarse (lo que se le mandó al cliente no cambia aunque cambien
+        -- los datos o el branding después — rendición de cuentas).
+        CREATE TABLE IF NOT EXISTS advisor_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            advisor_uid INTEGER NOT NULL,
+            client_uid INTEGER NOT NULL,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            token TEXT NOT NULL UNIQUE,      -- link público /i/{token}
+            payload TEXT NOT NULL,           -- JSON congelado del informe
+            wa_text TEXT,                    -- versión texto para WhatsApp
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_advisor_reports_client
+            ON advisor_reports(advisor_uid, client_uid, created_at);
+        -- Marca del asesor en los informes (se pide una vez).
+        CREATE TABLE IF NOT EXISTS advisor_profile (
+            advisor_uid INTEGER PRIMARY KEY,
+            display_name TEXT,
+            cnv_matricula TEXT,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
         -- ─── login_history: dispositivos vistos por user (alerta de nuevo login) ──
         -- Si el ua_hash actual no apareció antes para este user, se envía un email
         -- de alerta (después del primer login, que es esperado y no alerta).
@@ -9877,12 +9901,19 @@ def _csv_response(rows: list[dict], headers: list[tuple[str, str]], filename: st
     )
 
 
-def _gate_export(uid: int):
-    """Gate común para los exports — devuelve 403 si Free, sino sigue."""
+def _gate_export(uid: int, request: Request = None):
+    """Gate común para los exports — devuelve 403 si Free, sino sigue.
+    Lente del asesor (audit/research): dentro de un cliente free/plus, si el
+    que mira es un asesor con vínculo activo (el resolver ya lo validó), el
+    export está incluido en SU plan — sin esto el asesor recibía un 403 con
+    upsell sobre clientes reclamados."""
     from ai import plan
     conn = get_db()
     try:
         if not plan.can_access(conn, uid, "export.csv"):
+            _auth = getattr(request.state, "rendi_auth_uid", uid) if request is not None else uid
+            if _auth != uid and plan.quota.get_tier(conn, _auth) == "advisor":
+                return
             tier = plan.quota.get_tier(conn, uid)
             raise HTTPException(403, {
                 "error": "Export CSV está disponible en los planes Plus y Pro.",
@@ -9904,13 +9935,13 @@ def _gate_export(uid: int):
 
 
 @app.get("/api/export/operations.csv")
-def export_operations_csv(uid: int = Depends(get_effective_user)):
+def export_operations_csv(request: Request, uid: int = Depends(get_effective_user)):
     """Operaciones cerradas → CSV. Pensado para el contador / reporte fiscal.
 
     Columnas pensadas para AFIP / régimen tributario AR: fecha de operación,
     activo, broker, tipo (LONG/SHORT), cantidad, precios de entrada/salida,
     P&L en USD, comisiones, fecha de cierre, días tenidos."""
-    _gate_export(uid)
+    _gate_export(uid, request)
     conn = get_db()
     try:
         rows = [dict(r) for r in conn.execute(
@@ -9943,12 +9974,12 @@ def export_operations_csv(uid: int = Depends(get_effective_user)):
 
 
 @app.get("/api/export/positions.csv")
-def export_positions_csv(uid: int = Depends(get_effective_user)):
+def export_positions_csv(request: Request, uid: int = Depends(get_effective_user)):
     """Posiciones abiertas → CSV (snapshot al momento de descarga).
 
     Incluye costo basis + cantidad. NO incluye valor de mercado actual
     (eso es volátil — para análisis the Dashboard tiene mejor lugar)."""
-    _gate_export(uid)
+    _gate_export(uid, request)
     conn = get_db()
     try:
         rows = [dict(r) for r in conn.execute(
@@ -9978,7 +10009,7 @@ def export_positions_csv(uid: int = Depends(get_effective_user)):
 
 
 @app.get("/api/export/transactions.csv")
-def export_transactions_csv(uid: int = Depends(get_effective_user)):
+def export_transactions_csv(request: Request, uid: int = Depends(get_effective_user)):
     """Export consolidado: TODOS los movimientos del user en una sola CSV.
 
     Pensado como "lo que mandás al contador" o "lo que mandás a otra persona
@@ -9999,7 +10030,7 @@ def export_transactions_csv(uid: int = Depends(get_effective_user)):
     abierta). Los flujos de cash manuales vienen de `monthly_entries`
     no-global (aggregated por mes).
     """
-    _gate_export(uid)
+    _gate_export(uid, request)
     conn = get_db()
     rows: list[dict] = []
     try:
@@ -10202,13 +10233,13 @@ def _humanize_tx_type(t: str) -> str:
 
 
 @app.get("/api/export/monthly.csv")
-def export_monthly_csv(uid: int = Depends(get_effective_user)):
+def export_monthly_csv(request: Request, uid: int = Depends(get_effective_user)):
     """Resumen mensual → CSV con flujos + P&L realizado mes a mes.
 
     Útil para el contador: sintetiza capital inicio/fin, depósitos,
     retiros, P&L realizado por mes. Incluye el broker 'global' (agregado
     de todos los brokers) y por broker individual."""
-    _gate_export(uid)
+    _gate_export(uid, request)
     conn = get_db()
     try:
         rows = [dict(r) for r in conn.execute(
@@ -25565,6 +25596,257 @@ def _advisor_book_chat_context(uid: int) -> dict:
 
         return {**base, "clients": clients, "exposure": exposure,
                 "skipped_no_price": skipped, "tc_mep": tc_mep}
+    finally:
+        conn.close()
+
+
+# ─── Informe del período (Plan Asesor — prioridad #1 del research) ──────────
+# El entregable del asesor: un informe por cliente con SU marca (nombre +
+# matrícula CNV), retorno del período descompuesto mercado-vs-aportes (neto
+# de comisiones — la rendición), benchmark MEP, evolución, tenencias y
+# movimientos. Se genera en LOTE y cada uno queda congelado con un link
+# público /i/{token} + versión texto para WhatsApp. Rendi aparece solo al pie.
+
+class AdvisorReportIn(BaseModel):
+    period_start: str = Field(..., max_length=10)
+    period_end: str = Field(..., max_length=10)
+    client_uids: Optional[List[int]] = Field(None, max_length=200)  # None = todos
+    note: Optional[str] = Field(None, max_length=1200)
+
+    @field_validator('period_start', 'period_end')
+    @classmethod
+    def _valid_dates(cls, v):
+        if not _DATE_RE.match(v or ''):
+            raise ValueError('Fecha inválida')
+        return v
+
+
+class AdvisorProfileIn(BaseModel):
+    display_name: Optional[str] = Field(None, max_length=80)
+    cnv_matricula: Optional[str] = Field(None, max_length=40)
+
+
+def _advisor_branding(conn, uid: int) -> dict:
+    row = conn.execute(
+        "SELECT display_name, cnv_matricula FROM advisor_profile WHERE advisor_uid=?",
+        (uid,)).fetchone()
+    if row and (row["display_name"] or row["cnv_matricula"]):
+        return {"name": row["display_name"], "matricula": row["cnv_matricula"]}
+    u = conn.execute("SELECT name, email FROM users WHERE id=?", (uid,)).fetchone()
+    return {"name": (u["name"] or u["email"].split("@")[0]) if u else "Tu asesor",
+            "matricula": None}
+
+
+def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
+                            start: str, end: str, note, branding: dict,
+                            tc_blue: float, tc_mep: float) -> dict:
+    """Arma el contenido del informe de UN cliente. Toda la matemática reusa
+    lo existente: snapshots (MtM sellado) para valor/mercado-vs-aportes —
+    la MISMA descomposición del hero y de BookEvolution — y el motor
+    canónico de valuación para las tenencias."""
+    snaps = conn.execute(
+        """SELECT date, total_value, net_deposited FROM snapshots
+           WHERE user_id=? AND date <= ? ORDER BY date ASC""",
+        (client_uid, end)).fetchall()
+    base_row = None   # último snapshot ANTERIOR al período (base de la descomposición)
+    series = []
+    for s in snaps:
+        if str(s["date"]) < start:
+            base_row = s
+        else:
+            series.append({"date": str(s["date"]),
+                           "v": round(float(s["total_value"] or 0), 2),
+                           "nd": round(float(s["net_deposited"] or 0), 2)})
+    end_row = snaps[-1] if snaps else None
+    base = base_row or (snaps[0] if snaps else None)
+
+    value_end = round(float(end_row["total_value"]), 2) if end_row else None
+    market_usd = flows_usd = ret_pct = None
+    if base is not None and end_row is not None and str(base["date"]) != str(end_row["date"]):
+        v0, nd0 = float(base["total_value"] or 0), float(base["net_deposited"] or 0)
+        v1, nd1 = float(end_row["total_value"] or 0), float(end_row["net_deposited"] or 0)
+        flows_usd = round(nd1 - nd0, 2)
+        market_usd = round((v1 - v0) - flows_usd, 2)
+        if v0 > 100:
+            ret_pct = round(market_usd / v0 * 100, 2)
+
+    # Benchmark: variación del MEP en el período (fuente propia, sin red).
+    mep_var_pct = None
+    fx0 = conn.execute(
+        "SELECT mep_venta FROM fx_rates_daily WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
+        (start,)).fetchone()
+    fx1 = conn.execute(
+        "SELECT mep_venta FROM fx_rates_daily WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
+        (end,)).fetchone()
+    if fx0 and fx1 and float(fx0["mep_venta"] or 0) > 0:
+        mep_var_pct = round((float(fx1["mep_venta"]) / float(fx0["mep_venta"]) - 1) * 100, 2)
+
+    # Tenencias HOY (top 6) — misma valuación y denominador que el contexto IA.
+    valued, _sk = _advisor_positions_valued(conn, [client_uid], tc_blue, tc_mep)
+    tot_valued = sum(v["value_usd"] for v in valued)
+    denom = max(value_end or 0.0, tot_valued) or 1.0
+    holdings = [
+        {"asset": v["asset"], "value_usd": round(v["value_usd"]),
+         "weight_pct": round(v["value_usd"] / denom * 100)}
+        for v in sorted(valued, key=lambda r: -r["value_usd"])[:6]
+    ]
+
+    movs = [
+        {"date": str(r["date"]), "asset": r["asset"], "type": r["op_type"],
+         "quantity": r["quantity"], "pnl_usd": r["pnl_usd"]}
+        for r in conn.execute(
+            """SELECT date, asset, op_type, quantity, pnl_usd FROM operations
+               WHERE user_id=? AND date >= ? AND date <= ?
+               ORDER BY date ASC LIMIT 15""",
+            (client_uid, start, end)).fetchall()
+    ]
+
+    # Serie liviana para el gráfico del informe (cap 60 puntos, extremos fijos).
+    if len(series) > 60:
+        stride = (len(series) + 59) // 60
+        keep = series[::stride]
+        if keep[-1] is not series[-1]:
+            keep.append(series[-1])
+        series = keep
+
+    return {
+        "v": 1,
+        "branding": branding,
+        "client_label": label,
+        "period": {"start": start, "end": end},
+        "value_end_usd": value_end,
+        "market_usd": market_usd,
+        "flows_usd": flows_usd,
+        "ret_pct": ret_pct,
+        "mep_var_pct": mep_var_pct,
+        "tc_mep": tc_mep,
+        "series": series,
+        "holdings": holdings,
+        "movements": movs,
+        "note": (note or "").strip() or None,
+        "claimed": bool(conn.execute(
+            "SELECT approved FROM users WHERE id=?", (client_uid,)).fetchone()["approved"]),
+        "generated_at": datetime.utcnow().strftime("%Y-%m-%d"),
+    }
+
+
+def _report_wa_text(p: dict, url: str) -> str:
+    """Versión WhatsApp: determinística con los números del cliente (la IA
+    puede refinarla después — esto es instantáneo y gratis)."""
+    name = (p.get("client_label") or "").split(" ")[0] or "Hola"
+    lines = [f"Hola {name}! Te paso el resumen de tu cartera ({p['period']['start']} al {p['period']['end']}):"]
+    if p.get("value_end_usd") is not None:
+        lines.append(f"Cerró en US$ {p['value_end_usd']:,.0f}.")
+    if p.get("market_usd") is not None:
+        signo = "ganó" if p["market_usd"] >= 0 else "perdió"
+        extra = f" ({p['ret_pct']:+.1f}%)" if p.get("ret_pct") is not None else ""
+        lines.append(f"El mercado {signo} US$ {abs(p['market_usd']):,.0f}{extra} y tus aportes netos fueron US$ {p.get('flows_usd') or 0:,.0f}.")
+    if p.get("holdings"):
+        h = p["holdings"][0]
+        lines.append(f"Tu posición principal es {h['asset']} ({h['weight_pct']}% de la cartera).")
+    lines.append(f"Informe completo: {url}")
+    return "\n".join(lines)
+
+
+@app.get("/api/advisor/profile")
+def advisor_get_profile(uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        return _advisor_branding(conn, uid)
+    finally:
+        conn.close()
+
+
+@app.patch("/api/advisor/profile")
+def advisor_set_profile(data: AdvisorProfileIn, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        with conn:
+            conn.execute(
+                """INSERT INTO advisor_profile (advisor_uid, display_name, cnv_matricula, updated_at)
+                   VALUES (?,?,?,datetime('now'))
+                   ON CONFLICT(advisor_uid) DO UPDATE SET
+                     display_name=excluded.display_name,
+                     cnv_matricula=excluded.cnv_matricula,
+                     updated_at=datetime('now')""",
+                (uid, (data.display_name or "").strip() or None,
+                 (data.cnv_matricula or "").strip() or None))
+        return _advisor_branding(conn, uid)
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/reports/generate")
+def advisor_reports_generate(data: AdvisorReportIn, request: Request,
+                             uid: int = Depends(get_current_user)):
+    """Genera el lote de informes: uno por cliente, congelado, con token."""
+    _check_rate_limit(request, max_calls=6, window_seconds=300, suffix=f"advreport:{uid}")
+    if data.period_end < data.period_start:
+        raise HTTPException(422, "El fin del período es anterior al inicio")
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        links = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
+                 for r in conn.execute(
+                     """SELECT ac.client_uid, ac.label, u.name
+                        FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+                        WHERE ac.advisor_uid=? AND ac.status='active'""", (uid,)).fetchall()}
+        targets = (data.client_uids if data.client_uids else list(links))
+        branding = _advisor_branding(conn, uid)
+        fx = conn.execute(
+            "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
+        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else tc_blue
+
+        out, skipped = [], []
+        for cid in targets[:200]:
+            label = links.get(cid)
+            if label is None:
+                skipped.append({"client_uid": cid, "reason": "sin vínculo activo"})
+                continue
+            payload = _advisor_report_payload(
+                conn, uid, cid, label, data.period_start, data.period_end,
+                data.note, branding, tc_blue, tc_mep)
+            token = _gen_reset_token()[:22]
+            url = f"{_frontend_url()}/i/{token}"
+            wa = _report_wa_text(payload, url)
+            with conn:
+                cur = conn.execute(
+                    """INSERT INTO advisor_reports
+                           (advisor_uid, client_uid, period_start, period_end, token, payload, wa_text)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (uid, cid, data.period_start, data.period_end, token,
+                     json.dumps(payload, ensure_ascii=False, default=str), wa))
+            out.append({"client_uid": cid, "label": label, "report_id": cur.lastrowid,
+                        "token": token, "url": url, "wa_text": wa,
+                        "has_data": payload["value_end_usd"] is not None})
+        return {"reports": out, "skipped": skipped}
+    finally:
+        conn.close()
+
+
+@app.get("/api/reports/public/{token}")
+def report_public(token: str, request: Request):
+    """El informe que abre el CLIENTE — público, sin cuenta (viaja por
+    WhatsApp/email). Devuelve el payload CONGELADO al momento de generar."""
+    _check_rate_limit(request, max_calls=30, window_seconds=300, suffix="report_pub_ip")
+    if not token or len(token) < 10 or len(token) > 40:
+        raise HTTPException(404, "Informe no encontrado")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT payload, created_at FROM advisor_reports WHERE token=?",
+            (token,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Informe no encontrado")
+        try:
+            payload = json.loads(row["payload"])
+        except Exception:
+            raise HTTPException(500, "Informe corrupto")
+        return {"report": payload, "created_at": row["created_at"]}
     finally:
         conn.close()
 
