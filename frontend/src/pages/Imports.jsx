@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Upload, RotateCcw, AlertTriangle, CheckCircle2, Trash2, ChevronLeft, Loader2, Edit3 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
+import { useAuth } from '../contexts/AuthContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
 import EmptyState from '../components/EmptyState'
@@ -18,6 +20,12 @@ const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
 
 export default function Imports() {
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  // El asesor en su propio nivel no tiene cartera (decisión de producto):
+  // un import acá caería en su cuenta de trabajo y quedaría invisible
+  // (audit). Aviso no bloqueante — la página sigue operable.
+  const advisorOwnLevel = user?.tier === 'advisor' && !clientCtx
   const [searchParams] = useSearchParams()
   const fromOnboarding = searchParams.get('from') === 'onboarding'
   const [batches, setBatches] = useState([])
@@ -181,7 +189,15 @@ export default function Imports() {
               onClick={() => setShowWizard(true)}
               className="inline-flex items-center gap-1.5 text-[12.5px] bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-2.5 py-1.5 rounded-sm transition-colors font-medium"
             >
-              <Upload size={12} strokeWidth={2} /> Nueva importación
+              <Upload size={12} strokeWidth={2} />
+
+      {advisorOwnLevel && (
+        <div className="mb-4 text-[12.5px] text-ink-1 bg-rendi-warn/[0.07] border border-rendi-warn/30 rounded-md px-3 py-2.5">
+          Estás en tu cuenta de trabajo, que no tiene cartera propia. Para importarle
+          el historial a un cliente, entrá primero a su cuenta desde <b>Clientes</b> —
+          lo que importes acá no se va a ver en ningún lado.
+        </div>
+      )} Nueva importación
             </button>
             {!isFirstUse && (
               <button

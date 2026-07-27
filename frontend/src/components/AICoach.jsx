@@ -18,6 +18,8 @@ import { useState, useRef, useEffect } from 'react'
 import { Sparkles, AlertCircle, RotateCcw, Send, Lock, TrendingUp, TrendingDown, AlertTriangle, Activity } from 'lucide-react'
 import { api } from '../utils/api'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { useAuth } from '../contexts/AuthContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { trackEvent } from '../utils/analytics'
 import { markAIDiscovered } from './ai/AIDiscoveryBanner'
 import UpgradePromoCard from './ai/UpgradePromoCard'
@@ -44,6 +46,20 @@ const DEFAULT_SUGGESTED = [
   '¿Cómo voy vs el S&P 500?',
   '¿Le estoy ganando a la inflación argentina?',
   '¿Qué activo es el que más riesgo me agrega?',
+]
+
+// Chips del ASESOR en su propio nivel (book-mode): preguntas sobre el LIBRO,
+// no sobre una cartera. No necesitan whitelist — el tier advisor tiene chat
+// libre (es premium); son solo sugerencias de arranque.
+const ADVISOR_SUGGESTED = [
+  '¿Cómo viene mi libro en general?',
+  '¿Qué cliente necesita mi atención hoy?',
+  '¿Qué clientes tienen plata sin invertir?',
+  '¿Quién está más concentrado en un solo activo?',
+  '¿Qué activo le está haciendo perder plata a más clientes?',
+  '¿Cómo está repartido el libro entre mis clientes?',
+  '¿Qué cliente rindió mejor y cuál peor?',
+  'Armame un resumen del libro para una reunión',
 ]
 
 // stripMarkdown vive en utils/stripMarkdown.js (testeable sin la cadena de
@@ -73,8 +89,17 @@ const STAT_TONE = {
 // pone su chrome), mensajes flex-1 que llenan el alto disponible.
 export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = false }) {
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
-  const canChatFree = isPro || isAdmin  // chat libre = solo Pro/Admin
-  const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 12) : DEFAULT_SUGGESTED
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO (backend
+  // arma el contexto server-side). Por IDENTIDAD (useAuth), no por plan
+  // features — en contexto de cliente el lente es 'pro' y ahí el chat es el
+  // normal de ESA cartera.
+  const bookMode = user?.tier === 'advisor' && !clientCtx
+  const canChatFree = isPro || isAdmin || bookMode  // chat libre = Pro/Admin/asesor
+  const SUGGESTED = bookMode
+    ? ADVISOR_SUGGESTED
+    : (suggested && suggested.length > 0) ? suggested.slice(0, 12) : DEFAULT_SUGGESTED
   // La conversación PERSISTE al navegar (pedido de Nico: ir al Dashboard y
   // volver sin perder el chat). Se hidrata del sessionStorage y solo se borra
   // con "Nueva conversación" / "Nuevo" (reset). Ver utils/chatSession.js —
@@ -408,7 +433,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
               ¿Qué querés saber de tu plata?
             </p>
             <p className="text-[13.5px] text-ink-2 max-w-md mx-auto">
-              Respondo mirando tus posiciones, tu historial y el mercado de hoy.
+              {bookMode ? 'Respondo mirando las carteras de todos tus clientes.' : 'Respondo mirando tus posiciones, tu historial y el mercado de hoy.'}
               También puedo <b className="text-ink-1">registrar operaciones</b> si me las dictás.
             </p>
           </div>

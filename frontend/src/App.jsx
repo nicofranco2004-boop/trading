@@ -6,7 +6,7 @@ import { CurrencyProvider } from './contexts/CurrencyContext'
 import { PrivacyProvider } from './contexts/PrivacyContext'
 import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import { AlertsProvider } from './contexts/AlertsContext'
-import { AdvisorProvider } from './contexts/AdvisorContext'
+import { AdvisorProvider, useAdvisorContext } from './contexts/AdvisorContext'
 import ClientContextBar from './components/advisor/ClientContextBar'
 import Sidebar from './components/Sidebar'
 import { PageSkeleton } from './components/Skeleton'
@@ -29,6 +29,7 @@ import Landing from './pages/Landing'
 import VerifyEmail from './pages/VerifyEmail'
 import ResetPassword from './pages/ResetPassword'
 import ClaimAccount from './pages/ClaimAccount'
+import ReportPublic from './pages/ReportPublic'
 
 // ─── Lazy imports: páginas del flujo autenticado ──────────────────────────────
 // Cada página queda en su propio chunk JS, descargado on-demand al navegar.
@@ -152,23 +153,21 @@ function RouteTracker() {
 }
 
 function AdvisorLandingRedirect() {
-  // Plan Asesor: al ENTRAR a la app (login o apertura de sesión), el asesor
-  // aterriza en su roster (/clientes), no en el mercado. Una vez por sesión
-  // de pestaña (sessionStorage) — después puede navegar a donde quiera sin
-  // que lo pateemos de vuelta.
+  // Plan Asesor: "/" (el Resumen de mercado) NO es una superficie del asesor
+  // en su propio nivel — su nav la oculta. Redirigimos SIEMPRE que caiga ahí
+  // (login, click en el logo, catch-all de rutas, re-login en la misma
+  // pestaña) a su Dashboard. La marca once-per-tab vieja fallaba en el
+  // re-login (audit: el logout no la limpiaba → aterrizaba en una página
+  // sin nav). Adentro de un cliente, "/" es válida (Mercado del cliente).
   const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
   const location = useLocation()
   const navigate = useNavigate()
   useEffect(() => {
-    if (user?.tier !== 'advisor') return
+    if (user?.tier !== 'advisor' || clientCtx) return
     if (location.pathname !== '/') return
-    try {
-      if (sessionStorage.getItem('rendi_adv_landed')) return
-      sessionStorage.setItem('rendi_adv_landed', '1')
-    } catch { /* sin sessionStorage → redirigir igual */ }
-    navigate('/clientes', { replace: true })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.tier])
+    navigate('/dashboard', { replace: true })
+  }, [user?.tier, clientCtx, location.pathname, navigate])
   return null
 }
 
@@ -188,6 +187,10 @@ function AppRoutes() {
       <Route path="/activo/:ticker" element={<AssetDetail />} />
       {/* Dashboard vuelve a ser página propia (ítem "Dashboard" del sidebar,
           principal dentro de "Tu Cartera"). Antes era un tab de Cartera. */}
+      {/* Informe del período: el link público TAMBIÉN debe resolver con
+          sesión activa — un cliente logueado (o el propio asesor tocando
+          "Abrir") caía al catch-all y aterrizaba en Home (audit). */}
+      <Route path="/i/:token" element={<ReportPublic />} />
       <Route path="/dashboard"       element={<Dashboard />} />
       <Route path="/objetivos"       element={<Navigate to="/posiciones?tab=objetivos"   replace />} />
       <Route path="/insights"        element={<Navigate to="/analisis?tab=diagnostico"   replace />} />
@@ -271,6 +274,9 @@ function Layout() {
           {/* Plan Asesor: link de invitación — el cliente reclama la cuenta
               que su asesor cargó, poniendo su propia contraseña. */}
           <Route path="/claim" element={<ClaimAccount />} />
+          {/* Informe del período (Plan Asesor): el link que el asesor le
+              manda a su cliente — público, contenido congelado al generar. */}
+          <Route path="/i/:token" element={<ReportPublic />} />
           {/* Planes — accesible sin login (el visitante decide comprar ANTES
               de crear cuenta; el flow de subscribe en sí requiere login pero
               la página de pricing es 100% pública e indexable por Google). */}

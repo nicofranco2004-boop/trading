@@ -217,8 +217,13 @@ def _window_start(today: date) -> date:
 _week_start = _window_start
 
 
-def get_current_usage(conn, user_id: int) -> dict:
+def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
     """Counters de los últimos 7 días + límites del tier.
+
+    tier_override: el LENTE del que mira, cuando difiere del tier de la
+    cuenta — p.ej. el asesor dentro de un cliente reclamado (tier real
+    'free') usa límites 'pro' sobre los contadores del cliente (misma
+    regla que /api/plan/features; igual que un shadow pre-claim).
 
     Devuelve dict con shape estable para el frontend:
       tier, period='rolling_7d',
@@ -255,7 +260,7 @@ def get_current_usage(conn, user_id: int) -> dict:
     diag_dismiss = int(row["d"] or 0) if row else 0
     resets_on = row["resets_on"] if row else None
 
-    tier = get_tier(conn, user_id)
+    tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
     limits = LIMITS[tier]
     a_limit = limits["analyses_per_week"]
     h_limit = limits["hub_queries_per_week"]
@@ -301,9 +306,9 @@ def can_hub_query(conn, user_id: int) -> tuple[bool, dict]:
     return usage["hub_queries_remaining"] > 0, usage
 
 
-def can_chat(conn, user_id: int) -> tuple[bool, dict]:
+def can_chat(conn, user_id: int, tier_override: str = None) -> tuple[bool, dict]:
     """(allowed, usage_dict) para /api/ai/chat. Si False → 429."""
-    usage = get_current_usage(conn, user_id)
+    usage = get_current_usage(conn, user_id, tier_override=tier_override)
     return usage["chat_remaining"] > 0, usage
 
 
@@ -351,7 +356,7 @@ def record_chat(conn, user_id: int, cost_usd_cents: int = 0) -> None:
         )
 
 
-def reserve_chat(conn, user_id: int) -> tuple[bool, dict]:
+def reserve_chat(conn, user_id: int, tier_override: str = None) -> tuple[bool, dict]:
     """Reserva ATÓMICA de 1 slot de chat ANTES del LLM (audit IA #2 B-9).
 
     El flujo viejo (can_chat → LLM → record_chat) era check-then-act sin lock:
@@ -364,7 +369,7 @@ def reserve_chat(conn, user_id: int) -> tuple[bool, dict]:
     el caller debe devolverlo con refund_chat. usage refleja el estado
     POST-reserva (la consulta en curso ya cuenta).
     """
-    tier = get_tier(conn, user_id)
+    tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
     limit = LIMITS[tier]["chat_per_week"]
     today = date.today()
     window_start = _window_start(today).isoformat()
@@ -382,7 +387,7 @@ def reserve_chat(conn, user_id: int) -> tuple[bool, dict]:
              user_id, window_start, limit),
         )
         ok = cur.rowcount > 0
-    return ok, get_current_usage(conn, user_id)
+    return ok, get_current_usage(conn, user_id, tier_override=tier_override)
 
 
 def refund_chat(conn, user_id: int) -> None:

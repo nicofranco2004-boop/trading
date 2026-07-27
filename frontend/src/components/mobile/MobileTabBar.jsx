@@ -19,10 +19,13 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Home, Briefcase, Compass, MoreHorizontal, Plus,
   PlusCircle, Repeat, Star, Search, TrendingDown,
+  LayoutDashboard, Users, Newspaper,
 } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import { track } from '../../utils/track'
 import { prefetchRoute } from '../../utils/routePrefetch'
+import { useAuth } from '../../contexts/AuthContext'
+import { useAdvisorContext } from '../../contexts/AdvisorContext'
 
 const TABS = [
   { to: '/',             label: 'Home',       icon: Home },
@@ -32,8 +35,40 @@ const TABS = [
   { to: '/mas',          label: 'Más',        icon: MoreHorizontal },
 ]
 
+// El asesor EN SU PROPIO NIVEL no tiene cartera propia (audit: la bar
+// mostraba Home/Cartera/Insights — superficies que su nav oculta — y el FAB
+// registraba compras EN SU CUENTA DE TRABAJO). Sus tabs son las de su mundo,
+// sin FAB. Adentro de un cliente vuelven las TABS normales (es SU cartera).
+const ADVISOR_TABS = [
+  { to: '/dashboard',  label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/clientes',   label: 'Clientes',  icon: Users },
+  { to: '/novedades',  label: 'Novedades', icon: Newspaper },
+  { to: '/mas',        label: 'Más',       icon: MoreHorizontal },
+]
+
 export default function MobileTabBar() {
   const [fabOpen, setFabOpen] = useState(false)
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  const atOwnLevel = user?.tier === 'advisor' && !clientCtx
+
+  if (atOwnLevel) {
+    return (
+      <>
+        <div aria-hidden className="h-[64px]" />
+        <nav
+          className="fixed bottom-0 left-0 right-0 z-40 bg-bg-0/95 backdrop-blur-md border-t border-line"
+          role="navigation"
+          aria-label="Navegación principal"
+          style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+        >
+          <div className="grid grid-cols-4 h-14">
+            {ADVISOR_TABS.map((t) => <TabItem key={t.to} {...t} />)}
+          </div>
+        </nav>
+      </>
+    )
+  }
 
   return (
     <>

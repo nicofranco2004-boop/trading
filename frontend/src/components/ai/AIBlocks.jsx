@@ -15,8 +15,9 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Bell, LineChart, Briefcase, List, Gauge, Newspaper, TrendingUp, Upload,
-  Sparkles, ChevronRight, PencilLine, Check, Loader2,
+  Sparkles, ChevronRight, PencilLine, Check, Loader2, Users, LayoutDashboard,
 } from 'lucide-react'
+import { useAdvisorContext } from '../../contexts/AdvisorContext'
 
 // Paleta de composición (por índice; el último cae en gris).
 const ALLOC_COLORS = ['#7c6df0', '#4bd0e8', '#2ad17f', '#f5b752', '#ff6472', '#5f6a7e']
@@ -41,11 +42,31 @@ export default function AIBlocks({ blocks, onSendMessage = null, interactive = f
           case 'actions':  return <ActionsBlock key={i} {...b} />
           case 'form':     return <FormBlock key={i} {...b} onSendMessage={onSendMessage} interactive={interactive} />
           case 'confirm':  return <ConfirmBlock key={i} {...b} onSendMessage={onSendMessage} interactive={interactive} />
+          case 'client_list': return <ClientListBlock key={i} {...b} />
           default:         return null
         }
       })}
     </div>
   )
+}
+
+// Fallback de la barra cuando el modelo no manda pct: parsear el VALOR
+// formateado. Formato es-AR: puntos = miles ("US$ 1.500.000"), coma =
+// decimal — el parseFloat ingenuo leía 1.5 y el ranking salía INVERTIDO
+// (audit). Reglas: hay coma → puntos son miles; solo puntos en grupos de
+// 3 → miles; si no, decimal normal.
+function parseMoneyish(v) {
+  const cleaned = String(v ?? '').replace(/[^\d.,-]/g, '')
+  if (!cleaned) return 0
+  let n
+  if (cleaned.includes(',')) {
+    n = parseFloat(cleaned.replace(/\./g, '').replace(',', '.'))
+  } else if (/^-?\d{1,3}(\.\d{3})+$/.test(cleaned)) {
+    n = parseFloat(cleaned.replace(/\./g, ''))
+  } else {
+    n = parseFloat(cleaned)
+  }
+  return Number.isFinite(n) ? Math.abs(n) : 0
 }
 
 // Card contenedora con mini-título uppercase + punto violeta. El título viene
@@ -69,7 +90,7 @@ function BlockCard({ title, children }) {
 // normalizado contra el máximo (best-effort — el modelo debería mandarlo).
 // Primer item = el usuario → barra con gradiente violeta→cyan.
 function CompareBlock({ items, title }) {
-  const parsed = items.map(it => ({ ...it, n: it.pct ?? (Math.abs(parseFloat(String(it.v).replace(',', '.').replace(/[^\d.,-]/g, ''))) || 0) }))
+  const parsed = items.map(it => ({ ...it, n: it.pct ?? parseMoneyish(it.v) }))
   const max = Math.max(...parsed.map(p => p.n), 1)
   return (
     <BlockCard title={title || 'Comparación'}>
@@ -203,11 +224,64 @@ function TableCell({ cell, first }) {
   return <td className={`px-2.5 py-2 text-right num tabular ${toneCls}`}>{s}</td>
 }
 
+// ── 07 · Ranking de clientes (book-mode del Plan Asesor) ───────────────────
+// Una barra por cliente, ordenadas — el bloque estrella del asesor (mockup
+// aprobado por Nico). "Entrar" setea el contexto de cliente y navega a SU
+// dashboard, igual que la card del roster. Solo si el item trae `id` (y un
+// id inventado no filtra nada: el resolver valida el vínculo en cada request).
+function ClientListBlock({ items, title }) {
+  const navigate = useNavigate()
+  const { enterClient } = useAdvisorContext()
+  const parsed = items.map(it => ({ ...it, n: it.pct ?? parseMoneyish(it.v) }))
+  const max = Math.max(...parsed.map(p => p.n), 1)
+  const enter = (it) => {
+    enterClient({ id: it.id, label: it.l })
+    navigate('/dashboard')
+  }
+  return (
+    <BlockCard title={title || 'Tus clientes'}>
+      <div className="space-y-2.5">
+        {parsed.map((it, i) => (
+          <div key={i} className="grid items-center gap-3" style={{ gridTemplateColumns: '92px 1fr auto' }}>
+            <span className={`text-[12.5px] truncate font-medium ${i === 0 ? 'text-ink-0' : 'text-ink-2'}`}>{it.l}</span>
+            <div className="h-[20px] rounded-lg bg-bg-2 overflow-hidden">
+              <div
+                className="h-full rounded-lg transition-[width] duration-500"
+                style={{
+                  width: `${Math.max(5, Math.min(100, (it.n / max) * 100))}%`,
+                  background: i === 0 ? 'linear-gradient(90deg, #9d8cff, #8B7DFF)' : '#5f6a7e',
+                  opacity: i === 0 ? 1 : 0.55,
+                }}
+              />
+            </div>
+            <div className="flex items-center gap-2.5 justify-end">
+              <span className="text-right num tabular">
+                <span className={`block text-[13px] font-bold ${i === 0 ? 'text-data-violet' : 'text-ink-1'}`}>{it.v}</span>
+                {it.sub && <span className="block text-[10.5px] text-ink-3">{it.sub}</span>}
+              </span>
+              {it.id != null && (
+                <button
+                  type="button"
+                  onClick={() => enter(it)}
+                  className="text-[11px] font-semibold text-data-violet border border-data-violet/30 hover:bg-data-violet/10 rounded-md px-2 py-1 transition-colors whitespace-nowrap"
+                >
+                  Entrar →
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </BlockCard>
+  )
+}
+
 // ── 06 · Acciones (deep-links internos, ya whitelisted por el parser) ───────
 const ROUTE_ICONS = [
   ['/alertas', Bell], ['/analisis', LineChart], ['/posiciones', Briefcase],
   ['/operaciones', List], ['/fundamentals', Gauge], ['/novedades', Newspaper],
   ['/activo/', TrendingUp], ['/imports', Upload],
+  ['/clientes', Users], ['/dashboard', LayoutDashboard],
 ]
 function iconForRoute(to) {
   const hit = ROUTE_ICONS.find(([p]) => to.startsWith(p))

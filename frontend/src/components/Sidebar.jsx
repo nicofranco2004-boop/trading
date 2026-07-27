@@ -26,6 +26,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAlertsContext } from '../contexts/AlertsContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { prefetchRoute } from '../utils/routePrefetch'
 import RecommendationsModal from './RecommendationsModal'
 
@@ -74,8 +75,6 @@ const LOOSE = [
   { to: '/imports', label: 'Importar', icon: Upload },
 ]
 
-const ALL_LEAVES = GROUPS.flatMap(g => g.items)
-
 // ¿La ruta actual cae dentro de este `to`? '/' es exacto; el resto por prefijo.
 function matchPath(pathname, to) {
   if (to === '/') return pathname === '/'
@@ -88,8 +87,21 @@ export default function Sidebar() {
   const coachDrawer = useCoachDrawer()
   const location = useLocation()
   const { unseenCount = 0 } = useAlertsContext()  // badge de alertas sin ver
-  // Ítem "Clientes": asesores + admin (mismo predicado que el gate de /clientes)
-  const isAdvisor = user?.tier === 'advisor' || !!user?.is_admin
+  const { clientCtx } = useAdvisorContext()
+  // Ítem "Clientes": solo cuentas con el plan Asesor de verdad (mismo
+  // predicado que el gate de /clientes) — is_admin NO alcanza, se paga o se
+  // otorga por grant-comp, no es un bypass genérico de admin.
+  const isAdvisor = user?.tier === 'advisor'
+  // El asesor EN SU PROPIO NIVEL (sin haber entrado a la cuenta de un
+  // cliente) no tiene cartera propia — decisión de producto: si quiere
+  // invertir él, se agrega como su propio cliente, no mezcla cuenta de
+  // trabajo con personal. Tu Cartera/Mercado/Análisis + los sueltos
+  // (Alertas/Importar) asumen una cartera cargada → no aplican acá. Adentro
+  // de un cliente (clientCtx activo) es SU cartera → todo vuelve a mostrarse.
+  const atOwnLevel = isAdvisor && !clientCtx
+  const visibleGroups = atOwnLevel ? [] : GROUPS
+  const visibleLeaves = visibleGroups.flatMap(g => g.items)
+  const visibleLoose = atOwnLevel ? [] : LOOSE
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
 
@@ -145,8 +157,46 @@ export default function Sidebar() {
 
       {/* Navegación */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-5 px-2.5">
-        {/* Plan Asesor: acceso al roster, arriba de todo (es SU home). */}
-        {isAdvisor && (
+        {/* Plan Asesor: Dashboard (el libro) + Clientes (el roster), arriba de
+            todo — es SU home. Dashboard acá es standalone, no el de la
+            sección Tu Cartera (oculta en este estado): adentro de un cliente
+            ese grupo reaparece con SU PROPIO Dashboard, así que no conviven
+            los dos al mismo tiempo. */}
+        {atOwnLevel && (
+          <div className="mb-4 space-y-1">
+            <NavLink to="/dashboard" title={collapsed ? 'Dashboard' : undefined}
+              onMouseEnter={() => prefetchRoute('/dashboard')} onFocus={() => prefetchRoute('/dashboard')}
+              className={rowCls}>
+              {({ isActive }) => (<>
+                {isActive && <ActiveBar />}
+                <LayoutDashboard size={18} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span>Dashboard</span>}
+              </>)}
+            </NavLink>
+            <NavLink to="/clientes" title={collapsed ? 'Clientes' : undefined}
+              onMouseEnter={() => prefetchRoute('/clientes')} onFocus={() => prefetchRoute('/clientes')}
+              className={rowCls}>
+              {({ isActive }) => (<>
+                {isActive && <ActiveBar />}
+                <Users size={18} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span>Clientes</span>}
+              </>)}
+            </NavLink>
+            <NavLink to="/novedades" title={collapsed ? 'Novedades' : undefined}
+              onMouseEnter={() => prefetchRoute('/novedades')} onFocus={() => prefetchRoute('/novedades')}
+              className={rowCls}>
+              {({ isActive }) => (<>
+                {isActive && <ActiveBar />}
+                <Newspaper size={18} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span>Novedades</span>}
+              </>)}
+            </NavLink>
+          </div>
+        )}
+        {/* Dentro de un cliente, "Clientes" sigue accesible para volver al
+            roster, pero SIN el Dashboard standalone de arriba (ese cliente
+            ya tiene el suyo propio en la sección Tu Cartera de abajo). */}
+        {isAdvisor && !atOwnLevel && (
           <div className="mb-4">
             <NavLink to="/clientes" title={collapsed ? 'Clientes' : undefined}
               onMouseEnter={() => prefetchRoute('/clientes')} onFocus={() => prefetchRoute('/clientes')}
@@ -181,7 +231,7 @@ export default function Sidebar() {
         {collapsed ? (
           /* ── Colapsada: íconos planos de cada destino (sin acordeón) ── */
           <div className="space-y-1">
-            {ALL_LEAVES.map(({ to, label, icon: Icon }) => (
+            {visibleLeaves.map(({ to, label, icon: Icon }) => (
               <NavLink key={to} to={to} end={to === '/'} title={label}
                 onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
                 className={rowCls}>
@@ -192,7 +242,7 @@ export default function Sidebar() {
         ) : (
           /* ── Expandida: 3 secciones acordeón ── */
           <div className="space-y-3">
-            {GROUPS.map((group) => {
+            {visibleGroups.map((group) => {
               const isOpen = openGroup === group.id
               const GroupIcon = group.icon
               return (
@@ -235,7 +285,7 @@ export default function Sidebar() {
       {/* Footer: sueltos (Alertas / Importar) + utilidades + cuenta */}
       <div className="border-t border-line px-2.5 py-3 flex-shrink-0">
         {/* Sueltos — siempre visibles, tinta más fuerte que las utilidades */}
-        {LOOSE.map(({ to, label, icon: Icon }) => {
+        {visibleLoose.map(({ to, label, icon: Icon }) => {
           // Puntito violeta sólo en Alertas y sólo si hay eventos SIN VER. Al
           // entrar a /alertas se marcan vistos (AlertsContext.markSeen) → se apaga.
           const showDot = to === '/alertas' && unseenCount > 0

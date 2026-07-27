@@ -217,6 +217,18 @@ export function AuthProvider({ children }) {
       // localStorage puede no estar disponible (private mode iOS antiguo) — best effort
       localStorage.removeItem('rendi_user')
     }
+    // sessionStorage TAMBIÉN (audit): la conversación del chat persiste ahí
+    // (rendi_chat_v1*) — si otra persona loguea en la misma pestaña veía el
+    // chat del anterior (en un asesor: nombres de clientes, AUM, colas).
+    // Mismo criterio rendi_-prefix que arriba.
+    try {
+      const sKeys = []
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i)
+        if (key && key.startsWith('rendi_')) sKeys.push(key)
+      }
+      sKeys.forEach((k) => sessionStorage.removeItem(k))
+    } catch { /* best effort */ }
     setUser(null)
     refreshPlanFeatures()  // limpiamos cache para el próximo login
   }

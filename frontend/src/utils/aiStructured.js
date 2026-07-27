@@ -56,9 +56,13 @@ function trimPartialDelim(text) {
 
 // Rutas internas permitidas para el bloque "actions" (deep-links). Cualquier
 // otra cosa (URLs externas, javascript:, rutas no listadas) se descarta.
+// /clientes y /dashboard: modo asesor (book-mode) — para el resto de los
+// tiers el modelo no las emite, y si las emitiera el gate de la página
+// rebota a "/" (defensa en profundidad, no dependemos de esta lista).
 const ACTION_ROUTE_PREFIXES = [
   '/alertas', '/analisis', '/posiciones', '/operaciones', '/fundamentals',
   '/novedades', '/activo/', '/imports', '/ai', '/planes',
+  '/clientes', '/dashboard',
 ]
 
 function safeRoute(to) {
@@ -167,6 +171,21 @@ function sanitizeMeta(m) {
             no: str(b.no, 20) || 'Corregir',
           }))
         }
+      } else if (b.type === 'client_list' && Array.isArray(b.items)) {
+        // Ranking de clientes (book-mode del Plan Asesor). `id` habilita el
+        // botón "Entrar" — un id fabricado no filtra nada: el resolver del
+        // backend valida el vínculo asesor-cliente en cada request (403).
+        const items = b.items
+          .filter(it => it && str(it.l, 30) && str(it.v, 20))
+          .slice(0, 6)
+          .map(it => ({
+            l: str(it.l, 30),
+            v: str(it.v, 20),
+            sub: str(it.sub, 24),
+            pct: num(it.pct, 0, 100),
+            id: (typeof it.id === 'number' && Number.isInteger(it.id) && it.id > 0) ? it.id : null,
+          }))
+        if (items.length >= 1) blocks.push(withTitle({ type: 'client_list', items }))
       }
       if (blocks.length >= 2) break   // máx 2 bloques por respuesta (regla de diseño)
     }

@@ -15,11 +15,26 @@ import { useEffect, useRef, useState } from 'react'
 import { Loader2, AlertCircle, Plus } from 'lucide-react'
 import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
+import { useAuth } from '../contexts/AuthContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { api } from '../utils/api'
 import { clearChatSession } from '../utils/chatSession'
 
+// Book-mode: AICoach exige un snapshot truthy para habilitar el envío; el
+// backend lo IGNORA en este modo (arma el libro server-side). Ref estable
+// para no re-disparar effects por identidad.
+const BOOK_SNAPSHOT = {}
+
 export default function RendiAI() {
   const { initialQuestion, consumeInitialQuestion } = useCoachDrawer()
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO — el
+  // backend arma el contexto server-side e IGNORA el snapshot personal.
+  // Acá: no fetcheamos la cartera (vacía) ni bloqueamos el chat si esos
+  // fetches fallan, y el chrome habla del libro, no de "tu cartera" (audit:
+  // decía "Viendo tu cartera · 0 posiciones" en la superficie estrella).
+  const bookMode = user?.tier === 'advisor' && !clientCtx
   const [snapshot, setSnapshot] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -40,6 +55,7 @@ export default function RendiAI() {
   // con loader, refreshes en background sin tirar el chat.
   useEffect(() => {
     let cancelled = false
+    if (bookMode) { setLoading(false); setError(null); return }
     if (!snapshotRef.current) setLoading(true)
     setError(null)
     Promise.all([
@@ -68,7 +84,7 @@ export default function RendiAI() {
         setLoading(false)
       })
     return () => { cancelled = true }
-  }, [refreshTick])
+  }, [refreshTick, bookMode])
 
   // El chat registró/deshizo una operación → refrescar snapshot en background.
   useEffect(() => {
@@ -89,11 +105,16 @@ export default function RendiAI() {
             style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
           <div className="min-w-0">
             <div className="text-[15.5px] font-semibold text-ink-0 leading-tight">Rendi AI</div>
-            <div className="text-[12px] text-ink-3 truncate">Conoce tu cartera en tiempo real</div>
+            <div className="text-[12px] text-ink-3 truncate">{bookMode ? 'Respondo mirando todo tu libro' : 'Conoce tu cartera en tiempo real'}</div>
           </div>
         </div>
         <div className="flex items-center gap-2.5 flex-shrink-0">
-          {snapshot && (
+          {bookMode ? (
+            <span className="hidden md:inline-flex items-center gap-2 text-[12.5px] text-ink-2 bg-bg-1 border border-line rounded-full px-3.5 py-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden />
+              Viendo tu libro · todas las carteras de tus clientes
+            </span>
+          ) : snapshot && (
             <span className="hidden md:inline-flex items-center gap-2 text-[12.5px] text-ink-2 bg-bg-1 border border-line rounded-full px-3.5 py-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden />
               Viendo tu cartera{nPos != null ? ` · ${nPos} posiciones` : ''}{nBrokers ? ` · ${nBrokers} brokers` : ''}
@@ -125,7 +146,9 @@ export default function RendiAI() {
           </div>
         )}
 
-        {snapshot && !loading && !error && (
+        {bookMode ? (
+          <AICoach key={convKey} snapshot={BOOK_SNAPSHOT} autoAsk={autoAskRef.current} fullHeight />
+        ) : snapshot && !loading && !error && (
           <AICoach key={convKey} snapshot={snapshot} autoAsk={autoAskRef.current} fullHeight />
         )}
       </div>

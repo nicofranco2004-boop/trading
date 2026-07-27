@@ -62,6 +62,25 @@ class AdvisorBase(unittest.TestCase):
         conn.close()
         self.http = TestClient(main.app)
 
+    def tearDown(self):
+        # Limpieza de las tablas del plan asesor que REFERENCIAN users (FK):
+        # sin esto, las filas que deja esta suite hacían fallar el
+        # "DELETE FROM users" del setUp de OTRAS suites cuando se corren
+        # juntas (audit: 98 fallas en cascada por IntegrityError — cada suite
+        # pasaba sola y el combo enmascaraba regresiones reales).
+        conn = main.get_db()
+        try:
+            conn.execute(
+                """DELETE FROM advisor_op_batch_items WHERE batch_id IN
+                   (SELECT id FROM advisor_op_batches WHERE advisor_uid=?)""",
+                (self.advisor,))
+            conn.execute("DELETE FROM advisor_op_batches WHERE advisor_uid=?", (self.advisor,))
+            conn.execute("DELETE FROM advisor_claim_tokens WHERE advisor_uid=?", (self.advisor,))
+            conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=?", (self.advisor,))
+            conn.commit()
+        finally:
+            conn.close()
+
     def _hdr(self, uid, client_ctx=None):
         h = {"Authorization": f"Bearer {main.create_token(uid)}"}
         if client_ctx is not None:
@@ -986,3 +1005,534 @@ class ClaimFlowTest(AdvisorBase):
         r = self.http.post(f"/api/me/advisor/{self.advisor}/revoke",
                            headers=self._hdr(self.stranger))
         self.assertEqual(r.status_code, 404)
+
+
+class RadarTest(AdvisorBase):
+    """Radar cross-cliente (nav del asesor, Fase 2): /api/advisor/radar/*.
+
+    Los helpers de refresh pegan a yfinance/Google News — acá se anulan
+    (no-op) y se siembran las tablas de cache (financial_events / news)
+    directo: lo que se testea es la agregación + atribución, no el fetcher.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._saved = (
+            main._refresh_events_in_background, main._refresh_events_for_tickers,
+            main._refresh_news_in_background, main._ensure_news_batch_parallel,
+        )
+        main._refresh_events_in_background = lambda *a, **k: None
+        main._refresh_events_for_tickers = lambda *a, **k: None
+        main._refresh_news_in_background = lambda *a, **k: None
+        main._ensure_news_batch_parallel = lambda *a, **k: None
+        # Segundo cliente para probar la atribución ("lo tienen 2 clientes")
+        conn = main.get_db()
+        self.client2 = _new_user(conn, f"cliente2-{uuid.uuid4().hex[:8]}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, self.client2))
+        _link(conn, self.advisor, self.client2, label="Ana G")
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                     (self.client2, "IOL", "ARS"))
+        conn.commit(); conn.close()
+
+    def tearDown(self):
+        (main._refresh_events_in_background, main._refresh_events_for_tickers,
+         main._refresh_news_in_background, main._ensure_news_batch_parallel) = self._saved
+        super().tearDown()  # limpieza FK de AdvisorBase
+
+    def _pos(self, uid, asset, broker="Cocos", qty=10):
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, buy_price, is_cash)
+               VALUES (?,?,?,?,?,0)""", (uid, broker, asset, qty, 100))
+        conn.commit(); conn.close()
+
+    def _seed_event(self, ticker, days_ahead=5, event_type="earnings"):
+        from datetime import datetime, timedelta
+        conn = main.get_db()
+        conn.execute(
+            """INSERT OR IGNORE INTO financial_events
+                   (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+               VALUES (?,?,?,?,1,'yfinance',datetime('now'))""",
+            (ticker, event_type,
+             (datetime.utcnow() + timedelta(days=days_ahead)).strftime('%Y-%m-%d'), '{}'))
+        conn.commit(); conn.close()
+
+    def _seed_news(self, ticker, title):
+        conn = main.get_db()
+        conn.execute(
+            """INSERT OR IGNORE INTO news
+                   (source, external_id, title, url, published_at, category,
+                    query_source, fetched_at)
+               VALUES ('google_news_rss', ?, ?, 'https://example.com/n',
+                       datetime('now'), 'portfolio', ?, datetime('now'))""",
+            (f"ext-{uuid.uuid4().hex[:10]}", title, f"{ticker} acciones"))
+        conn.commit(); conn.close()
+
+    def test_radar_events_agrega_y_atribuye_clientes(self):
+        # AAPL lo tienen los dos clientes; GGAL solo el segundo. MSFT lo tiene
+        # un usuario AJENO al asesor — no debe aparecer.
+        self._pos(self.client_uid, "AAPL")
+        self._pos(self.client2, "AAPL", broker="IOL")
+        self._pos(self.client2, "GGAL", broker="IOL")
+        self._pos(self.stranger, "MSFT")
+        for t in ("AAPL", "GGAL", "MSFT"):
+            self._seed_event(t)
+
+        r = self.http.get("/api/advisor/radar/events", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        events = {e["ticker"]: e for e in r.json()["events"]}
+        self.assertIn("AAPL", events)
+        self.assertIn("GGAL", events)
+        self.assertNotIn("MSFT", events)
+        self.assertEqual(len(events["AAPL"]["clients"]), 2)
+        self.assertEqual({c["label"] for c in events["AAPL"]["clients"]}, {"Juan P", "Ana G"})
+        self.assertEqual([c["label"] for c in events["GGAL"]["clients"]], ["Ana G"])
+
+    def test_radar_events_requiere_plan_asesor(self):
+        r = self.http.get("/api/advisor/radar/events", headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)
+
+    def test_radar_events_cliente_revocado_no_cuenta(self):
+        self._pos(self.client2, "GGAL", broker="IOL")
+        self._seed_event("GGAL")
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_clients SET status='revoked' WHERE client_uid=?",
+                     (self.client2,))
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/radar/events", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("GGAL", {e["ticker"] for e in r.json()["events"]})
+
+    def test_radar_events_sin_clientes_con_posiciones_vacio(self):
+        r = self.http.get("/api/advisor/radar/events", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["events"], [])
+
+    def test_radar_news_agrega_y_atribuye(self):
+        self._pos(self.client_uid, "AAPL")
+        self._pos(self.stranger, "MSFT")
+        self._seed_news("AAPL", "Apple sube fuerte")
+        self._seed_news("MSFT", "Microsoft cae")
+
+        r = self.http.get("/api/advisor/radar/news", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        news = r.json()["news"]
+        # La tabla news es compartida entre archivos del suite — no asumimos
+        # cuántas noticias de AAPL hay, sino que TODAS son de tickers del
+        # libro (nunca MSFT del ajeno) y que la atribución es correcta.
+        self.assertTrue(any(n["title"] == "Apple sube fuerte" for n in news))
+        for n in news:
+            self.assertEqual(n["ticker"], "AAPL")
+            self.assertEqual([c["label"] for c in n["clients"]], ["Juan P"])
+
+    def test_radar_news_requiere_plan_asesor(self):
+        r = self.http.get("/api/advisor/radar/news", headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)
+
+
+class BookChatContextTest(AdvisorBase):
+    """F3 (IA del libro): _advisor_book_chat_context + selección de tools.
+
+    No pega al LLM — testea el contexto que ai_chat inyecta en book-mode y
+    que el book-mode NO expone el write-path personal (register_trade
+    escribiría en la cuenta vacía del asesor)."""
+
+    def setUp(self):
+        super().setUp()
+        conn = main.get_db()
+        import datetime as _d
+        today = _d.date.today()
+        conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, 1400, 1000, 'manual')", (today.isoformat(),))
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+            "VALUES (?,?,?,?,?)", (self.client_uid, today.isoformat(), 700.0, 800.0, 500.0))
+        # GGAL: invested 100k ARS, precio .BA 15000 × 10 = 150k ARS (USD 150 al MEP 1000)
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,0,'ARS')""",
+            (self.client_uid, "Cocos", "GGAL", 10, 100000))
+        conn.execute(
+            "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,datetime('now'))",
+            ("GGAL.BA", 15000.0))
+        conn.commit(); conn.close()
+
+    def test_contexto_trae_clientes_y_exposicion(self):
+        ctx = main._advisor_book_chat_context(self.advisor)
+        self.assertEqual(ctx["_kind"], "advisor_book")
+        self.assertEqual(len(ctx["clients"]), 1)
+        c = ctx["clients"][0]
+        self.assertEqual(c["id"], self.client_uid)
+        self.assertEqual(c["label"], "Juan P")
+        self.assertEqual(c["aum_usd"], 700)
+        self.assertEqual(c["n_pos"], 1)
+        self.assertEqual(c["top"][0]["asset"], "GGAL")
+        self.assertEqual(c["top"][0]["value_usd"], 150)  # 150k ARS al MEP 1000
+        # Exposición cross-cliente: GGAL con el cliente atribuido
+        exp = {e["asset"]: e for e in ctx["exposure"]}
+        self.assertIn("GGAL", exp)
+        self.assertEqual(exp["GGAL"]["clients"][0]["id"], self.client_uid)
+        self.assertEqual(exp["GGAL"]["clients"][0]["label"], "Juan P")
+        # Los agregados del libro viajan también (mismo motor del Dashboard)
+        self.assertEqual(ctx["aum"]["total_usd"], 700.0)
+
+    def test_contexto_sin_clientes_no_rompe(self):
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_clients SET status='revoked' WHERE advisor_uid=?",
+                     (self.advisor,))
+        conn.commit(); conn.close()
+        ctx = main._advisor_book_chat_context(self.advisor)
+        self.assertEqual(ctx["clients"], [])
+        self.assertEqual(ctx["exposure"], [])
+
+    def test_tools_de_book_mode_sin_write_path_personal(self):
+        names = {t["name"] for t in main._AI_TOOLS_ADVISOR}
+        self.assertNotIn("register_trade", names)
+        self.assertNotIn("undo_last_trade", names)
+        # Las de lectura siguen (precios, noticias, memoria)
+        self.assertIn("get_current_prices", names)
+        self.assertIn("remember_user_fact", names)
+
+    def test_addendum_ensena_client_list_y_rutas(self):
+        s = main._AI_CHAT_SYSTEM_ADVISOR
+        self.assertIn("client_list", s)
+        self.assertIn("/clientes?groupop=", s)
+        self.assertIn("register_group_op", s)
+        self.assertIn("register_trade y undo_last_trade NO EXISTEN", s)
+
+
+class GroupOpChatTest(AdvisorBase):
+    """F3.3: register_group_op (registro grupal por chat) — el write-path del
+    book-mode. Se testea el HANDLER directo (sin LLM): armado del draft,
+    confirmación enforced en turno distinto, ejecución del payload guardado,
+    resolución de nombres y undo."""
+
+    def setUp(self):
+        super().setUp()
+        main._GROUP_DRAFT.clear()
+        main._LAST_GROUP_BATCH.clear()
+        conn = main.get_db()
+        self.client2 = _new_user(conn, f"ana-{uuid.uuid4().hex[:8]}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, self.client2))
+        _link(conn, self.advisor, self.client2, label="Ana G")
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                     (self.client2, "IOL", "ARS"))
+        conn.commit(); conn.close()
+
+    def _build(self, req_id="req-1", **overrides):
+        inp = {"asset": "TSLA", "currency": "ARS", "price": 58900.0,
+               "rows": [{"client": "Juan P", "amount": 300000},
+                        {"client": "Ana G", "amount": 400000}]}
+        inp.update(overrides)
+        return main._register_group_op_handler(inp, self.advisor, request_id=req_id)
+
+    def test_flujo_completo_montos_a_cantidades(self):
+        r = self._build()
+        self.assertEqual(r["status"], "needs_confirmation", r)
+        self.assertIn("Juan P", r["summary"])
+        self.assertIn("Ana G", r["summary"])
+        # Confirmación desde OTRO turno (request_id distinto)
+        r2 = main._register_group_op_handler(
+            {"confirm_pending": True}, self.advisor, request_id="req-2")
+        self.assertEqual(r2["status"], "registered", r2)
+        self.assertEqual(r2["applied"], 2)
+        conn = main.get_db()
+        p1 = conn.execute(
+            "SELECT quantity, buy_price, broker FROM positions WHERE user_id=? AND asset='TSLA'",
+            (self.client_uid,)).fetchone()
+        p2 = conn.execute(
+            "SELECT quantity, broker FROM positions WHERE user_id=? AND asset='TSLA'",
+            (self.client2,)).fetchone()
+        conn.close()
+        self.assertAlmostEqual(p1["quantity"], 300000 / 58900.0, places=6)
+        self.assertEqual(p1["broker"], "Cocos")
+        self.assertAlmostEqual(p2["quantity"], 400000 / 58900.0, places=6)
+        self.assertEqual(p2["broker"], "IOL")
+
+    def test_confirmar_en_el_mismo_turno_rechazado(self):
+        self._build(req_id="mismo-turno")
+        r = main._register_group_op_handler(
+            {"confirm_pending": True}, self.advisor, request_id="mismo-turno")
+        self.assertIn("error", r)
+        self.assertIn("mismo turno", r["error"])
+        # El draft sigue vivo — el próximo turno SÍ puede confirmar
+        self.assertTrue(main._group_flow_open(self.advisor))
+
+    def test_cliente_desconocido_repregunta_con_roster(self):
+        r = self._build(rows=[{"client": "Roberto X", "amount": 100000}])
+        self.assertEqual(r["status"], "needs_info")
+        joined = " ".join(r["missing"])
+        self.assertIn("Roberto X", joined)
+        self.assertIn("Juan P", joined)  # le lista el roster real
+
+    def test_no_asesor_rechazado(self):
+        r = main._register_group_op_handler(
+            {"asset": "TSLA"}, self.stranger, request_id="r")
+        self.assertIn("error", r)
+
+    def test_faltan_datos_needs_info(self):
+        r = main._register_group_op_handler(
+            {"asset": "TSLA"}, self.advisor, request_id="r")
+        self.assertEqual(r["status"], "needs_info")
+        self.assertTrue(any("moneda" in m for m in r["missing"]))
+        self.assertTrue(any("precio" in m for m in r["missing"]))
+
+    def test_moneda_incompatible_queda_afuera(self):
+        # Lote USD pero ambos clientes solo tienen brokers ARS → nadie entra
+        r = self._build(currency="USD", price=250.0)
+        self.assertEqual(r["status"], "needs_info")
+        self.assertTrue(any("no tiene ningún broker en USD" in m for m in r["missing"]))
+
+    def test_vinculo_solo_lectura_excluido(self):
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_clients SET permission='read' WHERE client_uid=?",
+                     (self.client2,))
+        conn.commit(); conn.close()
+        r = self._build()
+        self.assertEqual(r["status"], "needs_confirmation")
+        self.assertIn("Juan P", r["summary"])
+        self.assertNotIn("Ana G", r["summary"])
+        self.assertTrue(any("solo lectura" in p for p in r["excluded"]))
+
+    def test_undo_del_ultimo_lote(self):
+        self._build()
+        main._register_group_op_handler({"confirm_pending": True}, self.advisor,
+                                        request_id="req-2")
+        r = main._register_group_op_handler({"undo_last": True}, self.advisor,
+                                            request_id="req-3")
+        self.assertEqual(r["status"], "undone", r)
+        conn = main.get_db()
+        left = conn.execute(
+            "SELECT COUNT(*) c FROM positions WHERE asset='TSLA' AND user_id IN (?,?)",
+            (self.client_uid, self.client2)).fetchone()["c"]
+        conn.close()
+        self.assertEqual(left, 0)
+
+    def test_short_circuit_confirma_payload_guardado(self):
+        self._build()
+        r = main._confirm_pending_group_by_uid(self.advisor)
+        self.assertEqual(r["status"], "registered")
+        # Segundo intento: el draft ya fue claimeado — no hay doble write
+        r2 = main._confirm_pending_group_by_uid(self.advisor)
+        self.assertIn("error", r2)
+
+    def test_tool_solo_en_lista_advisor(self):
+        self.assertIn("register_group_op", {t["name"] for t in main._AI_TOOLS_ADVISOR})
+        self.assertNotIn("register_group_op", {t["name"] for t in main._AI_TOOLS})
+        self.assertNotIn("register_group_op", {t["name"] for t in main._AI_TOOLS_FREE})
+
+
+class BookHistoryTest(AdvisorBase):
+    """Evolución del capital administrado (idea de Nico): serie diaria de AUM
+    con forward-fill por cliente — un hipo del cron no hace caer la serie y
+    un cliente nuevo suma desde su primer snapshot (salto real)."""
+
+    def setUp(self):
+        super().setUp()
+        conn = main.get_db()
+        import datetime as _d
+        self.today = _d.date.today()
+        self.d10 = (self.today - _d.timedelta(days=10)).isoformat()
+        self.d1 = (self.today - _d.timedelta(days=1)).isoformat()
+        self.client2 = _new_user(conn, f"ana-{uuid.uuid4().hex[:8]}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, self.client2))
+        _link(conn, self.advisor, self.client2, label="Ana G")
+        # Cliente 1: dos snapshots; Cliente 2: entra recién en d-1
+        for (u, d, tv, nd) in ((self.client_uid, self.d10, 1000.0, 800.0),
+                               (self.client_uid, self.d1, 1200.0, 900.0),
+                               (self.client2, self.d1, 500.0, 500.0)):
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+                "VALUES (?,?,?,?,?)", (u, d, tv, tv, nd))
+        conn.commit(); conn.close()
+
+    def test_serie_suma_y_cliente_nuevo(self):
+        r = self.http.get("/api/advisor/book/history?days=30",
+                          headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        s = r.json()["series"]
+        self.assertEqual(len(s), 2)
+        p10 = next(p for p in s if p["date"] == self.d10)
+        p1 = next(p for p in s if p["date"] == self.d1)
+        self.assertEqual(p10["aum_usd"], 1000.0)      # solo el cliente 1
+        self.assertEqual(p10["clients"], 1)
+        self.assertEqual(p1["aum_usd"], 1700.0)       # 1200 + 500 (Ana entró)
+        self.assertEqual(p1["net_deposited_usd"], 1400.0)
+        self.assertEqual(p1["clients"], 2)
+
+    def test_seed_pre_ventana_forward_fill(self):
+        # Snapshot VIEJO (fuera de la ventana) de un 3er cliente: la serie
+        # arranca sumándolo igual — sin rampa falsa desde cero.
+        conn = main.get_db()
+        import datetime as _d
+        c3 = _new_user(conn, f"c3-{uuid.uuid4().hex[:8]}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, c3))
+        _link(conn, self.advisor, c3, label="Viejo V")
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+            "VALUES (?,?,?,?,?)",
+            (c3, (self.today - _d.timedelta(days=40)).isoformat(), 300.0, 300.0, 300.0))
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/book/history?days=30",
+                          headers=self._hdr(self.advisor))
+        s = r.json()["series"]
+        p10 = next(p for p in s if p["date"] == self.d10)
+        self.assertEqual(p10["aum_usd"], 1300.0)  # 1000 del c1 + 300 seed del c3
+        self.assertEqual(p10["clients"], 2)
+
+    def test_revocado_no_cuenta(self):
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_clients SET status='revoked' WHERE client_uid=?",
+                     (self.client2,))
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/book/history?days=30",
+                          headers=self._hdr(self.advisor))
+        p1 = next(p for p in r.json()["series"] if p["date"] == self.d1)
+        self.assertEqual(p1["aum_usd"], 1200.0)  # sin Ana
+
+    def test_gateado_por_tier(self):
+        r = self.http.get("/api/advisor/book/history",
+                          headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)
+
+
+class AdvisorReportsTest(AdvisorBase):
+    """Informe del período (prioridad #1 del research): generación en lote,
+    payload congelado, link público y branding."""
+
+    def setUp(self):
+        super().setUp()
+        conn = main.get_db()
+        import datetime as _d
+        self.today = _d.date.today()
+        self.start = (self.today - _d.timedelta(days=30)).isoformat()
+        self.end = self.today.isoformat()
+        conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, 1400, 1000, 'manual')", (self.today.isoformat(),))
+        # Base ANTERIOR al período + cierre: mercado = (1200-1000) - (900-800) = +100
+        for (d, tv, nd) in ((self.today - _d.timedelta(days=40), 1000.0, 800.0),
+                            (self.today - _d.timedelta(days=1), 1200.0, 900.0)):
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+                "VALUES (?,?,?,?,?)", (self.client_uid, d.isoformat(), tv, tv, nd))
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,0,'ARS')""",
+            (self.client_uid, "Cocos", "GGAL", 10, 100000))
+        conn.execute(
+            "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,datetime('now'))",
+            ("GGAL.BA", 15000.0))
+        conn.commit(); conn.close()
+        main._rate_store.pop("testclient|report_pub_ip", None)
+        main._rate_store.pop(f"testclient|advreport:{self.advisor}", None)
+
+    def test_generar_lote_y_abrir_publico(self):
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end,
+                                 "note": "Buen mes, hablamos el martes."},
+                           headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        reps = r.json()["reports"]
+        self.assertEqual(len(reps), 1)
+        rep = reps[0]
+        self.assertEqual(rep["label"], "Juan P")
+        self.assertIn("/i/", rep["url"])
+        self.assertIn("US$", rep["wa_text"])
+        # Link público sin auth
+        pub = self.http.get(f"/api/reports/public/{rep['token']}")
+        self.assertEqual(pub.status_code, 200, pub.text)
+        p = pub.json()["report"]
+        self.assertEqual(p["value_end_usd"], 1200.0)
+        self.assertEqual(p["flows_usd"], 100.0)     # nd 800 → 900
+        self.assertEqual(p["market_usd"], 100.0)    # (1200-1000) − 100
+        self.assertEqual(p["ret_pct"], 9.52)        # Dietz: 100 / (1000 + 100/2)
+        self.assertEqual(p["note"], "Buen mes, hablamos el martes.")
+        self.assertEqual(p["holdings"][0]["asset"], "GGAL")
+        self.assertFalse(p["claimed"])              # shadow sin reclamar
+
+    def test_payload_congelado_no_cambia_con_branding_posterior(self):
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.advisor))
+        token = r.json()["reports"][0]["token"]
+        # Cambia el branding DESPUÉS de generar
+        self.http.patch("/api/advisor/profile",
+                        json={"display_name": "Estudio Nuevo", "cnv_matricula": "999"},
+                        headers=self._hdr(self.advisor))
+        p = self.http.get(f"/api/reports/public/{token}").json()["report"]
+        self.assertNotEqual(p["branding"]["name"], "Estudio Nuevo")  # quedó el del momento
+
+    def test_branding_persistido_y_usado(self):
+        self.http.patch("/api/advisor/profile",
+                        json={"display_name": "Martín Beltrán", "cnv_matricula": "1.234"},
+                        headers=self._hdr(self.advisor))
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.advisor))
+        p = self.http.get(f"/api/reports/public/{r.json()['reports'][0]['token']}").json()["report"]
+        self.assertEqual(p["branding"]["name"], "Martín Beltrán")
+        self.assertEqual(p["branding"]["matricula"], "1.234")
+
+    def test_cliente_ajeno_salteado(self):
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end,
+                                 "client_uids": [self.stranger]},
+                           headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["reports"], [])
+        self.assertEqual(r.json()["skipped"][0]["reason"], "sin vínculo activo")
+
+    def test_gateado_por_tier_y_token_invalido(self):
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)
+        pub = self.http.get("/api/reports/public/token-inexistente-123")
+        self.assertEqual(pub.status_code, 404)
+
+    def test_holdings_fallback_costo_y_movers(self):
+        # Con precio cacheado: basis market + movers (GGAL vale 150 vs 100 invertidos)
+        r = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.advisor))
+        p = self.http.get(f"/api/reports/public/{r.json()['reports'][0]['token']}").json()["report"]
+        self.assertEqual(p["holdings_basis"], "market")
+        self.assertEqual(p["movers"]["winners"][0]["asset"], "GGAL")
+        self.assertEqual(p["movers"]["winners"][0]["pnl_usd"], 50)  # 150−100 USD al MEP 1000
+        # Sin precio cacheado: basis cost, tenencias PRESENTES igual (feedback Nico)
+        conn = main.get_db()
+        conn.execute("DELETE FROM asset_last_price WHERE symbol='GGAL.BA'")
+        conn.commit(); conn.close()
+        r2 = self.http.post("/api/advisor/reports/generate",
+                            json={"period_start": self.start, "period_end": self.end},
+                            headers=self._hdr(self.advisor))
+        p2 = self.http.get(f"/api/reports/public/{r2.json()['reports'][0]['token']}").json()["report"]
+        self.assertEqual(p2["holdings_basis"], "cost")
+        self.assertEqual(p2["holdings"][0]["asset"], "GGAL")
+        self.assertEqual(p2["holdings"][0]["value_usd"], 100)  # invested 100k ARS al MEP 1000
+        self.assertIsNone(p2["movers"])
+
+    def test_logo_guardado_congelado_y_validado(self):
+        logo = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+        r = self.http.patch("/api/advisor/profile",
+                            json={"display_name": "MB", "logo_data": logo},
+                            headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["logo"], logo)
+        # Congelado en el informe
+        g = self.http.post("/api/advisor/reports/generate",
+                           json={"period_start": self.start, "period_end": self.end},
+                           headers=self._hdr(self.advisor))
+        p = self.http.get(f"/api/reports/public/{g.json()['reports'][0]['token']}").json()["report"]
+        self.assertEqual(p["branding"]["logo"], logo)
+        # Borrar con "" — y un SVG se rechaza (solo raster)
+        self.http.patch("/api/advisor/profile", json={"logo_data": ""},
+                        headers=self._hdr(self.advisor))
+        self.assertIsNone(self.http.get("/api/advisor/profile",
+                                        headers=self._hdr(self.advisor)).json()["logo"])
+        bad = self.http.patch("/api/advisor/profile",
+                              json={"logo_data": "data:image/svg+xml;base64,PHN2Zz4="},
+                              headers=self._hdr(self.advisor))
+        self.assertEqual(bad.status_code, 422)
