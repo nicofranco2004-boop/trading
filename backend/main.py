@@ -27189,7 +27189,7 @@ def advisor_book(uid: int = Depends(get_current_user)):
             # 1. Sin cartera cargada (ni posiciones ni cash en NINGUNA moneda)
             if cid not in has_pos and cid not in has_cash:
                 reasons.append({"kind": "sin_cargar",
-                                "detail": "Sin posiciones cargadas — cargale la foto de su cartera"})
+                                "detail": "Todavía no cargaste su cartera — subí el resumen de su broker"})
             # 2. Drawdown fuerte desde el mejor momento (ajustado por flujos:
             #    la caída es de RESULTADO, no de plata que el cliente retiró)
             ms = max_snap.get(cid)
@@ -27202,13 +27202,13 @@ def advisor_book(uid: int = Depends(get_current_user)):
                 dd = (adj_now - ms["adj_mx"]) / ms["adj_mx"] * 100
                 if dd <= -15:
                     reasons.append({"kind": "drawdown",
-                                    "detail": f"Resultado {dd:.0f}% abajo de su mejor momento — llamada de contención"})
+                                    "detail": f"Su ganancia cayó {abs(dd):.0f}% desde el mejor momento — conviene que lo llames"})
             # 3. Cash ARS ocioso > 15% del portfolio
             if tv and tv > 0 and ars_cash.get(cid, 0) > 0 and tc_mep > 0:
                 share = min((ars_cash[cid] / tc_mep) / tv * 100, 100)
                 if share >= 15:
                     reasons.append({"kind": "cash_ocioso",
-                                    "detail": f"{share:.0f}% del portfolio en pesos sin invertir"})
+                                    "detail": f"Tiene {share:.0f}% de la cartera en pesos sin invertir"})
             # 4. Sin actividad hace > 90 días
             lo = last_op.get(cid)
             if lo:
@@ -27216,7 +27216,7 @@ def advisor_book(uid: int = Depends(get_current_user)):
                     days = (today - _dt.fromisoformat(str(lo)[:10]).date()).days
                     if days > 90:
                         reasons.append({"kind": "inactivo",
-                                        "detail": f"Sin movimientos hace {days} días"})
+                                        "detail": f"Hace {days} días que no mueve nada"})
                 except (ValueError, TypeError):
                     pass
             if reasons:

@@ -682,7 +682,7 @@ class AdvisorBookTest(AdvisorBase):
         by_uid = {q["client_uid"]: q for q in r.json()["queues"]}
         self.assertIn(big, by_uid)
         dd = next(x for x in by_uid[big]["reasons"] if x["kind"] == "drawdown")
-        self.assertIn("-75%", dd["detail"])
+        self.assertIn("75%", dd["detail"])   # "Su ganancia cayó 75% desde..."
 
     def test_book_posicion_sin_precio_se_excluye(self):
         conn = main.get_db()
