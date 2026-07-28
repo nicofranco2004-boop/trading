@@ -205,10 +205,30 @@ function PersonalDashboard() {
   const netDepositedPositions = netDeposited - pf.investedUsd
   const totalCostBasisPositions = totalCostBasis - pf.investedUsd
 
-  // Realized P&L (cumulative across all months from monthly_entries global)
+  // Realized P&L (cumulative across all months from monthly_entries global).
+  // En USD es la SUMA CRUDA — la usa la identidad contable de abajo
+  // (realizedPnl + totalPnl = totalReturnUsd + gap), que mezcla magnitudes USD.
   const realizedPnl = monthly
     .filter(m => m.broker === 'global')
     .reduce((s, m) => s + (m.pnl_realized || 0), 0)
+  // Para MOSTRAR en pesos: convert-then-sum con el FX del mes de cada resultado,
+  // igual que Movimientos. Multiplicar el total por el dólar de hoy re-expresa
+  // ganancias viejas al tipo de cambio actual (las infla con la devaluación
+  // posterior) y hacía que este KPI y el "P&L Realizado" de Movimientos —mismo
+  // nombre, misma plata— mostraran números distintos. En USD da idéntico.
+  const realizedPnlDisp = useMemo(() => {
+    if (currency !== 'ARS') return realizedPnl
+    return monthly
+      .filter(m => m.broker === 'global')
+      .reduce((s, m) => {
+        const v = m.pnl_realized || 0
+        if (!v) return s
+        // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
+        // → FX de ese momento. getHistoricalFx ya cae al blue actual si no hay serie.
+        const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
+        return s + v * (getHistoricalFx(lastDay) || tcBlue)
+      }, 0)
+  }, [monthly, currency, tcBlue, getHistoricalFx, realizedPnl])
 
   // Total return = market value vs net deposited (so deposits aren't counted as performance)
   const totalReturnUsd = totalValue - netDeposited
@@ -578,6 +598,14 @@ function PersonalDashboard() {
       ? `${sign(usdValue)}ARS ${ars(Math.abs(usdValue * tcBlue))}`
       : `${sign(usdValue)}USD ${usd(Math.abs(usdValue))}`
   }
+  // Igual que fmtSigned pero para valores que YA vienen en la moneda de display
+  // (los que convertimos nosotros con FX histórico) — no vuelve a multiplicar.
+  const fmtSignedDirect = (v) => {
+    if (v == null) return '—'
+    return currency === 'ARS'
+      ? `${sign(v)}ARS ${ars(Math.abs(v))}`
+      : `${sign(v)}USD ${usd(Math.abs(v))}`
+  }
 
   return (
     <div className="page-shell">
@@ -742,8 +770,8 @@ function PersonalDashboard() {
         />
         <KpiCell
           label="P&L realizado"
-          value={fmtSigned(realizedPnl)}
-          tone={realizedPnl >= 0 ? 'pos' : 'neg'}
+          value={fmtSignedDirect(realizedPnlDisp)}
+          tone={realizedPnlDisp >= 0 ? 'pos' : 'neg'}
           sub="operaciones cerradas"
           info={
             <>

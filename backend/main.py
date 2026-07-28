@@ -8955,16 +8955,26 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 total_proceeds_native += data.exit_price * take - chunk_commission_native
                 pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
 
+                # Moneda + TC con el que se llevó a USD (ver persister.py): deja el
+                # P&L auditable y le permite al frontend mostrar el nominal real en
+                # pesos en vez de re-convertir con el blue de otra fecha.
+                # Usamos `sell_ccy` (normalizada 'ARS'|'USD'), NO `currency` (que es
+                # la del BROKER y puede ser 'USDT') → mismo vocabulario que los otros
+                # dos INSERT. Y NULL en ventas USD: estampar 1.0 haría que el front,
+                # que lee el campo como "ARS por USD", colapse el P&L en pesos 1:1.
+                fx_stamp = (data.tc_venta or 1) if sell_ccy == "ARS" else None
                 cur = conn.execute(
                     """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
-                       exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions,
+                       currency, fx_to_usd)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (uid, op_date, p["broker"], p["asset"], 'Venta',
                      buy_price, data.exit_price, take,
                      round(pnl_usd, 2),
                      round(pnl_pct, 4) if pnl_pct is not None else None,
                      p["entry_date"] if "entry_date" in p.keys() else None,
-                     round(chunk_commission_native, 4)),
+                     round(chunk_commission_native, 4),
+                     sell_ccy, fx_stamp),
                 )
                 ops_created.append(cur.lastrowid)
 
@@ -9424,6 +9434,11 @@ def get_movements(uid: int = Depends(get_effective_user)):
                 "unit_price": exit_p,
                 "amount_usd": amount_sell,
                 "currency": (d.get("currency") or "USD").upper(),
+                # fx_to_usd viaja también acá: sin esto la MISMA venta mostraba un
+                # P&L distinto en "Solo P/L" (que sí lo recibe vía /operations) y en
+                # "Todos los movimientos", porque esta vista caía al lookup por
+                # fecha mientras la otra usaba el TC estampado.
+                "fx_to_usd": d.get("fx_to_usd"),
                 "fees_usd": fees,
                 "pnl_usd": pnl,
                 "notes": d.get("notes") or "",

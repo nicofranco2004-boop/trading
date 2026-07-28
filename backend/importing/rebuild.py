@@ -432,6 +432,12 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 "pnl_pct": round(pnl_pct, 4) if pnl_pct is not None else None,
                 "entry_date": lot["entry_date"],
                 "commissions": round(chunk_commission, 4),
+                # Moneda del trade + TC con el que se llevó a USD → el frontend
+                # puede reconstruir el nominal en pesos sin adivinar. Solo en
+                # ventas ARS: en USD tc_venta es 1.0 y estamparlo colapsaría el
+                # P&L en pesos 1:1 (ver el comentario largo en persister.py).
+                "currency": currency,
+                "fx_to_usd": (tc_venta if currency == "ARS" else None),
                 # origen = la VENTA (para revert / dedup de links)
                 "batch_id": ev["batch_id"],
                 "raw_row_id": ev["raw_row_id"],
@@ -629,11 +635,12 @@ def _write_rebuilt(conn, uid: int, replay: Dict[str, List[Dict[str, Any]]]) -> N
         cur = conn.execute(
             """INSERT INTO operations (user_id, date, broker, asset, op_type,
                    entry_price, exit_price, quantity, pnl_usd, pnl_pct, entry_date,
-                   commissions)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   commissions, currency, fx_to_usd)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (uid, o["date"], o["broker"], o["asset"], o["op_type"],
              o["entry_price"], o["exit_price"], o["quantity"], o["pnl_usd"],
-             o["pnl_pct"], o["entry_date"], o["commissions"]),
+             o["pnl_pct"], o["entry_date"], o["commissions"],
+             o.get("currency"), o.get("fx_to_usd")),
         )
         op_id = cur.lastrowid
         if o.get("batch_id") and o.get("raw_row_id"):

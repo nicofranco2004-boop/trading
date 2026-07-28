@@ -196,7 +196,13 @@ export function fmtMoneyRaw(usdValue, currency, tcBlue, opts = {}) {
   const abs = Math.abs(v)
   const sign = signed ? (v < 0 ? '−' : '+') : (v < 0 ? '−' : '')
   const sym = isArs ? '$' : 'US$'
-  return `${sign}${sym}${abs.toLocaleString('es-AR', { maximumFractionDigits: decimals })}`
+  // minimumFractionDigits además del maximum: sin él, `decimals: 2` sobre un
+  // valor redondo imprime "$135.444" y sigue leyéndose como "135,444" (el punto
+  // es separador de MILES en es-AR). Con decimals=0 (default) el output es
+  // byte-idéntico al de antes → no toca Dashboard/Cartera.
+  return `${sign}${sym}${abs.toLocaleString('es-AR', {
+    minimumFractionDigits: decimals, maximumFractionDigits: decimals,
+  })}`
 }
 
 // fmtConvertedRaw: formatea un valor que YA está en la currency target.
@@ -209,7 +215,11 @@ export function fmtConvertedRaw(value, targetCurrency, opts = {}) {
   const abs = Math.abs(value)
   const sign = signed ? (value < 0 ? '−' : '+') : (value < 0 ? '−' : '')
   const sym = isArs ? '$' : 'US$'
-  return `${sign}${sym}${abs.toLocaleString('es-AR', { maximumFractionDigits: decimals })}`
+  // Ver fmtMoneyRaw: minimumFractionDigits es lo que hace que `decimals: 2`
+  // desambigüe el punto de miles de es-AR. decimals=0 → idéntico a antes.
+  return `${sign}${sym}${abs.toLocaleString('es-AR', {
+    minimumFractionDigits: decimals, maximumFractionDigits: decimals,
+  })}`
 }
 
 export function fmtConvertedCompactRaw(value, targetCurrency, opts = {}) {

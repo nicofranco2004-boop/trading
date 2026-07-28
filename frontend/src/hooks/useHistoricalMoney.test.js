@@ -106,3 +106,102 @@ describe('resolveHistoricalFx — casos reales (audit fix H1)', () => {
     expect(fx).toBe(1)
   })
 })
+
+// ─── convert-then-sum: el total tiene que coincidir con sus filas ────────────
+//
+// El bug que arreglan estos tests (reporte real YPFD/BMB): el header de un grupo
+// convertía el total USD al dólar de HOY mientras cada fila usaba el FX de SU
+// fecha → un grupo de UN SOLO trade mostraba dos números distintos
+// (header +$147.007 vs su única fila +$135.444: mismo pnl_usd, dos dólares).
+
+// Réplica pura de `sumConvertedAt` del hook (el hook necesita CurrencyProvider).
+function sumConvertedAt(rows, getUsd, currency, tcBlue, getRateForDate) {
+  let total = 0
+  for (const r of (rows || [])) {
+    const usd = getUsd(r)
+    if (usd == null || !Number.isFinite(usd)) continue
+    const fx = resolveHistoricalFx(
+      currency, tcBlue,
+      { stampedFx: r?.fx_to_usd, dateIso: r?.date, rowCurrency: r?.currency },
+      getRateForDate,
+    )
+    total += currency === 'ARS' ? usd * fx : usd
+  }
+  return total
+}
+
+describe('convert-then-sum — invariante total === Σ filas', () => {
+  const YPFD = { date: '2026-04-22', pnl_usd: 90.1189, fx_to_usd: null }
+  const BLUE_FECHA = 1502.95
+  const MEP_HOY = 1631.26
+  const rate = (d) => (d === '2026-04-22' ? BLUE_FECHA : null)
+
+  it('grupo de UN trade: el total es exactamente el de la fila', () => {
+    const fila = 90.1189 * BLUE_FECHA
+    const total = sumConvertedAt([YPFD], o => o.pnl_usd, 'ARS', MEP_HOY, rate)
+    expect(total).toBeCloseTo(fila, 6)
+    // y NO el número viejo del header (pnl_usd × dólar de hoy)
+    expect(total).not.toBeCloseTo(90.1189 * MEP_HOY, 0)
+  })
+
+  it('el modo viejo inflaba en la razón entre los dos dólares', () => {
+    const viejo = 90.1189 * MEP_HOY
+    const nuevo = sumConvertedAt([YPFD], o => o.pnl_usd, 'ARS', MEP_HOY, rate)
+    expect(viejo / nuevo).toBeCloseTo(MEP_HOY / BLUE_FECHA, 6)
+  })
+
+  it('multi-fecha: cada trade con SU FX (stamped o lookup), no un promedio', () => {
+    const rows = [
+      { date: '2026-04-22', pnl_usd: 100, fx_to_usd: null },   // lookup
+      { date: '2024-08-15', pnl_usd: 50, fx_to_usd: 1100 },    // stamped
+    ]
+    const total = sumConvertedAt(rows, o => o.pnl_usd, 'ARS', MEP_HOY, rate)
+    expect(total).toBeCloseTo(100 * BLUE_FECHA + 50 * 1100, 6)
+  })
+
+  it('mezcla ARS y USD en el mismo grupo: cada una con su propio FX', () => {
+    // Caso del subtotal por día en mobile, que antes aplicaba el fx de la PRIMERA
+    // op con fx>0 a TODO el subtotal.
+    const rows = [
+      { date: '2026-04-22', pnl_usd: 10, fx_to_usd: 1, currency: 'USD' },   // trade USD
+      { date: '2026-04-22', pnl_usd: 20, fx_to_usd: 1500, currency: 'ARS' }, // trade ARS
+    ]
+    // La op USD se lleva a pesos por el BLUE de su fecha (no por su fx=1).
+    expect(sumConvertedAt(rows, o => o.pnl_usd, 'ARS', MEP_HOY, rate))
+      .toBeCloseTo(10 * BLUE_FECHA + 20 * 1500, 6)
+  })
+
+  // ⚠️ REGRESIÓN CAZADA EN REVIEW: el backend estampa fx_to_usd = tc_venta, que
+  // vale 1.0 en las ventas en DÓLARES (no hubo conversión). Si el front tomara
+  // ese 1.0 como "ARS por USD", un P&L de USD 10.000 se mostraría como "$10.000"
+  // (~1500× menos) en TODA cuenta USD (Binance, Schwab, Wallbit, Balanz Intl).
+  it('venta en USD: el stamp 1.0 se IGNORA y se usa el blue de la fecha', () => {
+    const fx = resolveHistoricalFx('ARS', MEP_HOY,
+      { stampedFx: 1, dateIso: '2026-04-22', rowCurrency: 'USD' }, rate)
+    expect(fx).toBe(BLUE_FECHA)
+    expect(10000 * fx).toBeCloseTo(10000 * BLUE_FECHA, 6)   // NO 10.000 pesos
+  })
+
+  it('venta en ARS: el stamp SÍ manda (reconstruye el nominal real en pesos)', () => {
+    const fx = resolveHistoricalFx('ARS', MEP_HOY,
+      { stampedFx: 1434.18, dateIso: '2026-04-22', rowCurrency: 'ARS' }, rate)
+    expect(fx).toBe(1434.18)
+  })
+
+  it('sin rowCurrency (ops viejas) el stamp se sigue respetando', () => {
+    const fx = resolveHistoricalFx('ARS', MEP_HOY,
+      { stampedFx: 1434.18, dateIso: '2026-04-22' }, rate)
+    expect(fx).toBe(1434.18)
+  })
+
+  it('en USD el total es la suma cruda', () => {
+    const rows = [YPFD, { date: '2024-08-15', pnl_usd: -10, fx_to_usd: 1100 }]
+    expect(sumConvertedAt(rows, o => o.pnl_usd, 'USD', MEP_HOY, rate)).toBeCloseTo(80.1189, 6)
+  })
+
+  it('filas sin P&L no rompen el total', () => {
+    const rows = [YPFD, { date: '2026-05-01', pnl_usd: null }, { date: '2026-05-02' }]
+    expect(sumConvertedAt(rows, o => o.pnl_usd, 'ARS', MEP_HOY, rate))
+      .toBeCloseTo(90.1189 * BLUE_FECHA, 6)
+  })
+})

@@ -614,16 +614,28 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         total_proceeds_native += proceeds_native
         pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
 
+        # currency + fx_to_usd: dejan AUDITABLE en qué moneda ocurrió el trade y
+        # con qué TC se llevó a USD. Sin esto el frontend no sabe reconstruir el
+        # nominal en pesos y cae a buscar el blue de la fecha (que NO es el TC que
+        # usó este cálculo) → el P&L en pesos que muestra no reproduce el real.
+        #
+        # ⚠️ SOLO para ventas en PESOS. En una venta en USD `tc_venta` vale 1.0
+        # (no hubo conversión) y estampar ese 1.0 haría que el front, que lee el
+        # campo como "ARS por USD", muestre un P&L de USD 10.000 como "$10.000"
+        # (~1500× menos). NULL → el front usa el blue de la fecha, que es correcto.
+        fx_stamp = tc_venta if sell_currency == "ARS" else None
         cur = conn.execute(
             """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
-               exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+               exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions,
+               currency, fx_to_usd)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (uid, op_date, p["broker"], p["asset"], "Venta",
              p["buy_price"], exit_price, take,
              round(pnl_usd, 2),
              round(pnl_pct, 4) if pnl_pct is not None else None,
              p["entry_date"] if "entry_date" in p.keys() else None,
-             round(chunk_commission, 4)),
+             round(chunk_commission, 4),
+             sell_currency, fx_stamp),
         )
         op_id = cur.lastrowid
         ops_created.append(op_id)
