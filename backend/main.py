@@ -11424,7 +11424,7 @@ def admin_diagnose_negative_capital(min_capital: float = -50000.0, limit_account
 
 
 @app.get("/api/admin/diagnose-sell-fx")
-def admin_diagnose_sell_fx(limit_ops: int = 200000, uid: int = Depends(get_admin_user)):
+def admin_diagnose_sell_fx(limit_ops: int = 500000, uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY del TC con el que se dolarizaron las ventas y los flujos.
 
     TESIS: `pnl_usd = pnl_ars / tc_venta` donde `tc_venta` NO es el dólar de la fecha
@@ -11433,202 +11433,395 @@ def admin_diagnose_sell_fx(limit_ops: int = 200000, uid: int = Depends(get_admin
     (hoy) en vez de por ~180 (entonces) muestra ~1/8 del P&L en dólares que realmente
     fue. Los DEPÓSITOS tienen el mismo problema (pipeline._stamp_gross_amount_usd).
 
-    NO ESCRIBE NADA. Sirve para dimensionar si conviene reparar el histórico y, sobre
-    todo, para separar las filas en TRES buckets — porque NO todas se reparan con la
-    misma fórmula y dos de ellas son trampas:
+    NO ESCRIBE NADA.
 
-      1. REPARABLE     — venta ARS de lote ARS. Corrección: pnl_usd × (fx_to_usd / blue_de_la_fecha)
-      2. PESO-ESCALA   — fx_to_usd NULL o ==1: `pnl_usd` NO son dólares, es el nominal
-                         en PESOS (ventas manuales sin TC, cupones que guardan el monto
-                         nativo). Aplicarles la fórmula del bucket 1 las multiplica ×1000.
-      3. CROSS-CURRENCY — lote USD vendido en ARS (dólar-MEP con CEDEARs). El TC rancio
-                         está a AMBOS lados y SE CANCELA POR DISEÑO (persister.py:573-577:
-                         `base_invested *= tc_venta` con el comentario "así pnl_ars/tc_venta
-                         preserva el costo USD"). Reparar acá ROMPE un número que hoy está
-                         bien y puede dar vuelta el signo.
+    ── POR QUÉ ESTA VERSIÓN NO USA operations.currency NI operations.fx_to_usd ──
+    Ambas columnas se agregaron en `96976a4` (2026-07-28) y están NULL en las 73.718
+    ventas históricas. La v1 de este endpoint branchaba sobre ellas y por eso metía
+    el 100% de las filas en un solo bucket: no medía la base, medía que las columnas
+    estaban vacías. Todo lo de abajo se reconstruye desde columnas que SÍ existen.
 
-    Discriminador de bucket 3 (robusto, no depende de la escala del precio): reconstruimos
-    el costo desde pnl_pct —que es TC-invariante— y lo comparamos con el costo nominal.
-        invested_usd = 100 * pnl_usd / pnl_pct          (lo que el motor usó como costo)
-        r = (entry_price * quantity) / invested_usd
-        r ≈ fx_to_usd  → el costo se dividió por el TC → LOTE ARS  → reparable
-        r ≈ 1          → el costo ya estaba en USD     → LOTE USD  → carve-out
+    ── EL ESTIMADOR ──
+    `pnl_pct` se DEFINE como 100*pnl_usd/invested_usd (persister.py:615, rebuild.py:421,
+    main.py:8956), así que `100*pnl_usd/pnl_pct == invested_usd` es una identidad exacta,
+    no una aproximación. De ahí sale el TC perdido:
+
+        invested_engine = 100 * pnl_usd / pnl_pct
+        T_rec = (exit_price*quantity - commissions) / (pnl_usd + invested_engine)
+
+    porque en la rama ARS (persister.py:602-604) pnl_usd=(X·Q−E−c)/T e invested_usd=E/T,
+    o sea que la suma es (X·Q−c)/T y el costo E se cancela; y en la rama USD
+    (persister.py:609-610) no hay división, así que T_rec da 1. En AMBAS es exacto.
+
+    T_rec reemplaza al ratio sobre `entry_price` que usaba la v1, que quedó refutado por
+    medición: un lote ARS vendido en USD (dólar-MEP) daba ratio 1450,59 contra 1415,43
+    del caso reparable de verdad — el falso positivo caía ARRIBA del verdadero y ningún
+    umbral los separaba. T_rec no toca `entry_price`, así que además es inmune a las
+    comisiones de compra, a `entry_price` NULL y a los bonos per-100 (que daban 100).
+
+    `entry_price` no se tira: entra como SEGUNDO eje normalizado, s = ratio_H/T_rec, que
+    es lo que separa el lote-USD-vendido-en-ARS (s≈1/T) del lote-ARS-vendido-en-ARS (s≈1).
+
+    ── LO QUE ESTE ENDPOINT NO PUEDE RESPONDER (y por eso lo reporta aparte) ──
+    Una venta manual en USD y una venta manual en ARS con el campo TC vacío son
+    byte-idénticas en todo lo observable (mismo broker, misma moneda de broker, mismo
+    activo, mismo pnl_pct, T_rec=1, s=1, sin link) y el lote que las distinguía se borró
+    al vender (main.py:8983). Van a B5_MANUAL_AMBIGUA con su Σ|pnl| para decidir a mano.
     """
     conn = get_db()
     try:
+        import bisect
+
+        # Umbrales. Cada uno con su justificación medida — ver riesgos_residuales.
+        T_BAJO, T_ALTO = 3.0, 20.0     # cota de cuantización: T_medido/T_real ∈ [1/3,3]
+        K_LO, K_HI = 0.5, 2.0          # ventana de "k ≈ 1"
+        S_MEP_MIN = 20.0               # s>20 con T_rec≈1 ⇒ costo dividido por un blue
+        PCT_HI, PCT_LO = 500.0, -95.0  # cuarentena de lote mal etiquetado
+        TOL_BLUE = 0.05
+
         out: dict = {
             "tesis": "tc_venta = blue VIVO del import, no el de la fecha de la venta",
             "solo_lectura": True,
+            "metodo": "T_rec = (exit_price*qty - commissions) / (pnl_usd + 100*pnl_usd/pnl_pct)",
+            "nota_v2": "v1 branchaba sobre operations.currency/fx_to_usd, que están NULL "
+                       "en todo el histórico → metía el 100% en un bucket. v2 no las usa.",
         }
 
-        # ── (d) Cobertura real de la serie FX ────────────────────────────────
-        fx = conn.execute(
+        # ── Series FX ────────────────────────────────────────────────────────
+        fxr = conn.execute(
             "SELECT COUNT(*) n, MIN(date) d0, MAX(date) d1, "
             "SUM(CASE WHEN blue_venta IS NOT NULL THEN 1 ELSE 0 END) con_blue, "
             "SUM(CASE WHEN mep_venta IS NOT NULL THEN 1 ELSE 0 END) con_mep, "
             "MIN(CASE WHEN mep_venta IS NOT NULL THEN date END) mep0 "
             "FROM fx_rates_daily").fetchone()
         out["serie_fx"] = {
-            "filas": fx["n"], "desde": fx["d0"], "hasta": fx["d1"],
-            "con_blue": fx["con_blue"], "con_mep": fx["con_mep"], "mep_desde": fx["mep0"],
+            "filas": fxr["n"], "desde": fxr["d0"], "hasta": fxr["d1"],
+            "con_blue": fxr["con_blue"], "con_mep": fxr["con_mep"], "mep_desde": fxr["mep0"],
         }
 
-        # Índice date→blue en memoria (la serie es chica: ~5.700 filas).
-        serie = [(r["date"], float(r["blue_venta"]))
-                 for r in conn.execute(
-                     "SELECT date, blue_venta FROM fx_rates_daily "
-                     "WHERE blue_venta IS NOT NULL ORDER BY date")]
-        fechas = [d for d, _ in serie]
+        def _serie(col):
+            rs = conn.execute(
+                f"SELECT date, {col} v FROM fx_rates_daily "
+                f"WHERE {col} IS NOT NULL ORDER BY date").fetchall()
+            return [r["date"] for r in rs], [float(r["v"]) for r in rs]
 
-        def blue_de(fecha):
-            """Blue del día `fecha` (el más reciente en o antes). None si es previo a la serie."""
+        f_blue, v_blue = _serie("blue_venta")
+        f_mep, v_mep = _serie("mep_venta")
+
+        def _lookup(fechas, vals, fecha):
+            """Último valor en o antes de `fecha`. None si es previo al inicio de la serie."""
             if not fecha or not fechas:
                 return None
-            import bisect
             i = bisect.bisect_right(fechas, str(fecha)[:10]) - 1
-            return serie[i][1] if i >= 0 else None
+            return vals[i] if i >= 0 else None
 
-        # ── (a)(b)(c) Censo de ventas + (e) impacto simulado ────────────────
+        def blue_de(f):
+            return _lookup(f_blue, v_blue, f)
+
+        def mep_de(f):
+            """MEP del día, con caída al blue — la serie MEP arranca en 2018-10-29."""
+            return _lookup(f_mep, v_mep, f) or _lookup(f_blue, v_blue, f)
+
+        # ── Quién escribió cada fila: persister/rebuild linkean, la venta manual no ──
+        linked = {r["operation_id"] for r in conn.execute(
+            "SELECT DISTINCT operation_id FROM import_op_links "
+            "WHERE operation_id IS NOT NULL")}
+
         rows = conn.execute(
-            "SELECT user_id, date, broker, asset, pnl_usd, pnl_pct, entry_price, quantity, "
-            "       currency, fx_to_usd "
+            "SELECT id, user_id, date, broker, asset, pnl_usd, pnl_pct, entry_price, "
+            "       exit_price, quantity, commissions, entry_date "
             "FROM operations WHERE op_type='Venta' ORDER BY date LIMIT ?",
             (max(1, int(limit_ops)),),
         ).fetchall()
 
-        por_anio: dict = {}
-        buckets = {"reparable": 0, "peso_escala": 0, "cross_currency": 0,
-                   "usd": 0, "sin_fecha_en_serie": 0, "indeterminado": 0}
-        delta_total = 0.0          # Σ (pnl corregido − pnl actual), solo bucket reparable
-        actual_total = 0.0
-        ratios = []
-        por_usuario: dict = {}
-        peor = []
+        BUCKETS = ["B1_REPARABLE_ARS", "B2_USD_GENUINA", "B3_LOTE_USD_VENTA_ARS",
+                   "B4_MEP_INVERSO_OK", "B4B_MEP_COSTO_RANCIO", "B5_MANUAL_AMBIGUA",
+                   "B6_ANOMALA_ESCALA", "B7_ESCALA_PER_100", "B0_INDETERMINADO",
+                   "L0_DEGENERADA", "L0_INVESTED_NO_POSITIVO"]
+        buckets = {b: {"n": 0, "sum_pnl_usd": 0.0, "sum_abs_pnl": 0.0, "users": set()}
+                   for b in BUCKETS}
+        motivos_degen: dict = {}
+        gates = {"ORO": 0, "PLATA": 0, "BRONCE": 0, "SIN_ANCLA": 0}
+        medidas = []          # (user, fecha, bucket, gate, T_rec, s, pnl, invested, entry_date, broker, asset)
+        sin_entry_price = 0
+        por_escritor = {"import": 0, "manual": 0}
 
         for r in rows:
-            anio = (r["date"] or "")[:4] or "?"
-            a = por_anio.setdefault(anio, {"n": 0, "ars": 0, "reparable": 0,
-                                           "actual_usd": 0.0, "corregido_usd": 0.0})
-            a["n"] += 1
-            ccy = (r["currency"] or "").upper()
-            fx = r["fx_to_usd"]
-            pnl = r["pnl_usd"]
+            pnl, pct = r["pnl_usd"], r["pnl_pct"]
+            X, Q, c = r["exit_price"], r["quantity"], (r["commissions"] or 0)
+            uidr = r["user_id"]
+            (por_escritor.__setitem__("import", por_escritor["import"] + 1)
+             if r["id"] in linked else
+             por_escritor.__setitem__("manual", por_escritor["manual"] + 1))
 
-            if ccy and ccy != "ARS":
-                buckets["usd"] += 1
+            def _degen(motivo):
+                b = buckets["L0_DEGENERADA"]
+                b["n"] += 1
+                b["sum_abs_pnl"] += abs(float(pnl or 0))
+                b["users"].add(uidr)
+                motivos_degen[motivo] = motivos_degen.get(motivo, 0) + 1
+
+            # L0 — exclusiones duras. El que muere primero es pnl_usd (round a 2),
+            # no pnl_pct: la guarda de la v1 chequeaba la variable equivocada.
+            if pct is None or float(pct) == 0.0:
+                _degen("pnl_pct nulo o 0 (transfer_out / lote semilla / foto)")
                 continue
-            a["ars"] += 1
-
-            if fx is None or float(fx) <= 1.0000001:
-                # pnl_usd está en PESOS (o no hubo conversión) → NO tocar con esta fórmula
-                buckets["peso_escala"] += 1
+            if pnl is None or round(float(pnl), 2) == 0.0:
+                _degen("pnl_usd redondeado a 0,00 (sweep FCI, polvo cripto)")
                 continue
-
-            fx = float(fx)
-            b = blue_de(r["date"])
-            if b is None or b <= 0:
-                buckets["sin_fecha_en_serie"] += 1
-                continue
-
-            # Discriminar lote ARS vs lote USD por el costo que usó el motor
-            bucket = "indeterminado"
-            try:
-                if pnl is not None and r["pnl_pct"] not in (None, 0) and r["entry_price"] and r["quantity"]:
-                    invested_usd = 100.0 * float(pnl) / float(r["pnl_pct"])
-                    if invested_usd != 0:
-                        ratio_costo = (float(r["entry_price"]) * float(r["quantity"])) / invested_usd
-                        if ratio_costo > fx * 0.5:
-                            bucket = "reparable"        # costo ÷ TC → lote en pesos
-                        elif ratio_costo < 10:
-                            bucket = "cross_currency"   # costo ya en USD → carve-out
-            except (TypeError, ValueError, ZeroDivisionError):
-                pass
-
-            buckets[bucket] = buckets.get(bucket, 0) + 1
-            if bucket != "reparable" or pnl is None:
+            if not X or not Q:
+                _degen("sin exit_price o quantity")
                 continue
 
-            # Impacto: pnl_ars es un HECHO (pnl_usd × el TC que se usó). Se re-divide
-            # por el blue de la fecha real.
-            pnl_ars = float(pnl) * fx
-            corregido = pnl_ars / b
-            delta = corregido - float(pnl)
-            delta_total += delta
-            actual_total += float(pnl)
-            ratios.append(fx / b)
-            a["reparable"] += 1
-            a["actual_usd"] += float(pnl)
-            a["corregido_usd"] += corregido
+            invested = 100.0 * float(pnl) / float(pct)
+            if invested <= 0:
+                b = buckets["L0_INVESTED_NO_POSITIVO"]
+                b["n"] += 1
+                b["sum_abs_pnl"] += abs(float(pnl))
+                b["users"].add(uidr)
+                continue
 
-            u = por_usuario.setdefault(r["user_id"], {"n": 0, "actual": 0.0, "corregido": 0.0})
-            u["n"] += 1; u["actual"] += float(pnl); u["corregido"] += corregido
-            peor.append((abs(delta), {
-                "user_id": r["user_id"], "fecha": r["date"], "broker": r["broker"],
-                "activo": r["asset"], "pnl_actual_usd": round(float(pnl), 2),
-                "pnl_corregido_usd": round(corregido, 2),
-                "pnl_ars_nominal": round(pnl_ars, 2),
-                "fx_usado": round(fx, 2), "blue_de_la_fecha": round(b, 2),
-            }))
+            den = float(pnl) + invested
+            num = float(X) * float(Q) - float(c)
+            if den == 0 or num <= 0:
+                _degen("proceeds no positivos")
+                continue
+            T = num / den
+            if T <= 0:
+                _degen("T_rec no positivo")
+                continue
 
-        ratios.sort()
+            ep = r["entry_price"]
+            ratio_h = (float(ep) * float(Q) / invested) if ep else None
+            s = (ratio_h / T) if ratio_h else None
+            if ep is None:
+                sin_entry_price += 1
+
+            apnl, apct = abs(float(pnl)), abs(float(pct))
+            gate = ("ORO" if (apnl >= 5 and apct >= 0.5) else
+                    "PLATA" if (apnl >= 1 and apct >= 0.5) else
+                    "BRONCE" if (apnl >= 0.10 and apct >= 0.05) else "SIN_ANCLA")
+
+            # ── Árbol de decisión ──
+            if T <= T_BAJO:
+                # El motor NO dividió por ningún TC.
+                if s is not None and s > S_MEP_MIN:
+                    be = blue_de(r["entry_date"])
+                    if be and abs(s / be - 1) <= TOL_BLUE:
+                        bucket = "B4_MEP_INVERSO_OK"       # costo con el blue correcto
+                    elif abs(s / 100.0 - 1) <= 0.02:
+                        bucket = "B7_ESCALA_PER_100"       # bono exportado per-100
+                    else:
+                        bucket = "B4B_MEP_COSTO_RANCIO"    # cayó al fallback tc_blue
+                elif float(pct) > PCT_HI or float(pct) < PCT_LO:
+                    bucket = "B6_ANOMALA_ESCALA"
+                elif s is not None and not (K_LO <= s <= K_HI):
+                    bucket = "B0_INDETERMINADO"
+                elif r["id"] not in linked:
+                    bucket = "B5_MANUAL_AMBIGUA"           # residuo irreducible
+                else:
+                    bucket = "B2_USD_GENUINA"
+            elif T >= T_ALTO:
+                # El motor dividió por un TC.
+                if float(pct) > PCT_HI or float(pct) < PCT_LO:
+                    bucket = "B6_ANOMALA_ESCALA"
+                elif s is not None and s < 0.05 and K_LO <= s * T <= K_HI:
+                    bucket = "B3_LOTE_USD_VENTA_ARS"       # el TC se cancela en el COSTO
+                elif s is None or (K_LO <= s <= K_HI) or s > 10:
+                    bucket = "B1_REPARABLE_ARS"            # el caso masivo
+                else:
+                    bucket = "B0_INDETERMINADO"
+            else:
+                bucket = "B0_INDETERMINADO"                # zona muerta (3, 20)
+
+            b = buckets[bucket]
+            b["n"] += 1
+            b["sum_pnl_usd"] += float(pnl)
+            b["sum_abs_pnl"] += abs(float(pnl))
+            b["users"].add(uidr)
+            gates[gate] += 1
+            medidas.append((uidr, r["date"], bucket, gate, T, s, float(pnl), invested,
+                            r["entry_date"], r["broker"], r["asset"]))
+
+        # ── Clusters de T_rec por usuario: cada centroide es UNA corrida de import ──
+        # Es la prueba directa del stamp rancio y revela las DOS constantes que
+        # conviven (persister lee el config, rebuild el blue live).
+        por_user_T: dict = {}
+        for (u, f, bk, g, T, s, pnl, inv, ed, br, ast) in medidas:
+            if bk in ("B1_REPARABLE_ARS", "B3_LOTE_USD_VENTA_ARS") and g == "ORO":
+                por_user_T.setdefault(u, []).append((T, f))
+
+        clusters: dict = {}
+        for u, vals in por_user_T.items():
+            vals.sort()
+            grupos = []
+            for T, f in vals:
+                if grupos and abs(T / grupos[-1]["cen"] - 1) <= 0.01:
+                    gp = grupos[-1]
+                    gp["n"] += 1
+                    gp["suma"] += T
+                    gp["cen"] = gp["suma"] / gp["n"]
+                    gp["d0"] = min(gp["d0"], f)
+                    gp["d1"] = max(gp["d1"], f)
+                else:
+                    grupos.append({"cen": T, "suma": T, "n": 1, "d0": f, "d1": f})
+            clusters[u] = [g for g in grupos if g["n"] >= 3]
+
+        def T_para_reparar(u, T, gate):
+            if gate in ("ORO", "PLATA"):
+                return T, "propio"
+            for g in clusters.get(u, []):
+                if abs(T / g["cen"] - 1) <= 0.03:
+                    return g["cen"], "cluster"
+            return None, "sin_ancla"
+
+        # ── Simulación de la reparación, con los dos rieles ──────────────────
+        def simular(fx_de):
+            tot_act = tot_cor = 0.0
+            flips = 0
+            sin_serie = 0
+            por_anio: dict = {}
+            por_user: dict = {}
+            peor = []
+            for (u, f, bk, g, T, s, pnl, inv, ed, br, ast) in medidas:
+                a = por_anio.setdefault((f or "")[:4] or "?",
+                                        {"n": 0, "reparables": 0, "actual": 0.0, "corregido": 0.0})
+                a["n"] += 1
+                if bk not in ("B1_REPARABLE_ARS", "B3_LOTE_USD_VENTA_ARS", "B4B_MEP_COSTO_RANCIO"):
+                    continue
+                B = fx_de(f)
+                if not B or B <= 0:
+                    sin_serie += 1
+                    continue
+                Tu, origen = T_para_reparar(u, T, g)
+                if Tu is None:
+                    continue
+                if bk == "B1_REPARABLE_ARS":
+                    cor = float(pnl) * Tu / B
+                elif bk == "B3_LOTE_USD_VENTA_ARS":
+                    # El costo ya está en USD reales (el TC se canceló). Solo los
+                    # proceeds siguen divididos por el T rancio.
+                    cor = (float(pnl) + inv) * Tu / B - inv
+                else:  # B4B — recalcular SOLO el costo con el blue de la fecha de compra
+                    be = blue_de(ed)
+                    if not be or not s:
+                        continue
+                    cor = float(pnl) + (inv - inv * (s / be))
+                tot_act += float(pnl)
+                tot_cor += cor
+                if (float(pnl) > 0) != (cor > 0):
+                    flips += 1
+                a["reparables"] += 1
+                a["actual"] += float(pnl)
+                a["corregido"] += cor
+                pu = por_user.setdefault(u, {"n": 0, "actual": 0.0, "corregido": 0.0})
+                pu["n"] += 1
+                pu["actual"] += float(pnl)
+                pu["corregido"] += cor
+                peor.append((abs(cor - float(pnl)), {
+                    "user_id": u, "fecha": f, "broker": br, "activo": ast, "bucket": bk,
+                    "pnl_actual_usd": round(float(pnl), 2), "pnl_corregido_usd": round(cor, 2),
+                    "tc_recuperado": round(Tu, 2), "origen_tc": origen,
+                    "fx_de_la_fecha": round(B, 2),
+                }))
+            peor.sort(key=lambda t: -t[0])
+            return {
+                "pnl_actual_usd": round(tot_act, 2),
+                "pnl_corregido_usd": round(tot_cor, 2),
+                "delta_usd": round(tot_cor - tot_act, 2),
+                "factor": round(tot_cor / tot_act, 3) if tot_act else None,
+                "cambios_de_signo": flips,
+                "sin_fecha_en_serie": sin_serie,
+                "por_anio": {k: {**v, "actual": round(v["actual"], 2),
+                                 "corregido": round(v["corregido"], 2),
+                                 "factor": round(v["corregido"] / v["actual"], 2) if v["actual"] else None}
+                             for k, v in sorted(por_anio.items())},
+                "usuarios_mas_afectados": sorted(
+                    [{"user_id": k, "ops": v["n"], "actual_usd": round(v["actual"], 2),
+                      "corregido_usd": round(v["corregido"], 2),
+                      "delta_usd": round(v["corregido"] - v["actual"], 2)}
+                     for k, v in por_user.items()],
+                    key=lambda x: -abs(x["delta_usd"]))[:15],
+                "ops_mas_distorsionadas": [d for _, d in peor[:15]],
+            }
+
         out["ventas"] = {
             "analizadas": len(rows),
             "truncado": len(rows) >= int(limit_ops),
-            "buckets": buckets,
-            "nota_buckets": "solo 'reparable' admite la corrección pnl×(fx/blue_fecha)",
+            "por_escritor": por_escritor,
+            "sin_entry_price": sin_entry_price,
+            "buckets": {k: {"n": v["n"], "usuarios": len(v["users"]),
+                            "sum_pnl_usd": round(v["sum_pnl_usd"], 2),
+                            "sum_abs_pnl_usd": round(v["sum_abs_pnl"], 2)}
+                        for k, v in buckets.items() if v["n"]},
+            "motivos_degeneradas": motivos_degen,
+            "cobertura_gate": gates,
         }
-        out["impacto_simulado"] = {
-            "ops_reparables": len(ratios),
-            "pnl_actual_usd": round(actual_total, 2),
-            "pnl_corregido_usd": round(actual_total + delta_total, 2),
-            "delta_usd": round(delta_total, 2),
-            "ratio_mediano": round(ratios[len(ratios) // 2], 2) if ratios else None,
-            "ratio_max": round(ratios[-1], 2) if ratios else None,
-        }
-        out["por_anio"] = {
-            k: {**v, "actual_usd": round(v["actual_usd"], 2),
-                "corregido_usd": round(v["corregido_usd"], 2),
-                "factor": round(v["corregido_usd"] / v["actual_usd"], 2)
-                          if v["actual_usd"] else None}
-            for k, v in sorted(por_anio.items())
-        }
-        out["usuarios_mas_afectados"] = sorted(
-            [{"user_id": k, "ops": v["n"], "actual_usd": round(v["actual"], 2),
-              "corregido_usd": round(v["corregido"], 2),
-              "delta_usd": round(v["corregido"] - v["actual"], 2)}
-             for k, v in por_usuario.items()],
-            key=lambda x: -abs(x["delta_usd"]))[:15]
-        peor.sort(key=lambda t: -t[0])
-        out["ops_mas_distorsionadas"] = [d for _, d in peor[:15]]
+        out["impacto_blue"] = simular(blue_de)
+        out["impacto_mep"] = simular(mep_de)
+        out["nota_riel"] = ("el motor usó BLUE; la regla canónica del proyecto es MEP. "
+                            "Los dos totales están arriba — la elección es una decisión, "
+                            "no la puede tomar el clasificador.")
 
-        # ── Prueba directa del "stamp rancio": mismo TC en ventas de fechas lejanas ──
-        clusters = conn.execute(
-            "SELECT fx_to_usd, COUNT(*) n, MIN(date) d0, MAX(date) d1 "
-            "FROM operations WHERE op_type='Venta' AND fx_to_usd > 1 "
-            "GROUP BY ROUND(fx_to_usd, 2) HAVING n > 1 AND julianday(d1) - julianday(d0) > 60 "
-            "ORDER BY n DESC LIMIT 10").fetchall()
-        out["stamp_rancio"] = {
-            "explicacion": "mismo TC aplicado a ventas separadas por >60 días ⇒ es el "
-                           "dólar del día del IMPORT, no el de cada venta",
-            "clusters": [{"fx": round(float(c["fx_to_usd"]), 2), "ventas": c["n"],
-                          "desde": c["d0"], "hasta": c["d1"]} for c in clusters],
-        }
+        out["clusters_tc"] = sorted(
+            [{"user_id": u, "clusters": [
+                {"tc": round(g["cen"], 2), "ventas": g["n"], "desde": g["d0"], "hasta": g["d1"],
+                 "dias_de_span": (
+                     (datetime.strptime(g["d1"][:10], "%Y-%m-%d") -
+                      datetime.strptime(g["d0"][:10], "%Y-%m-%d")).days
+                     if g["d0"] and g["d1"] else None)}
+                for g in gs]}
+             for u, gs in clusters.items() if gs],
+            key=lambda x: -sum(c["ventas"] for c in x["clusters"]))[:15]
+        out["nota_clusters"] = ("un mismo TC aplicado a ventas separadas por >60 días es la "
+                                "prueba directa de que es el dólar del día del IMPORT. Dos "
+                                "clusters en el mismo usuario = las dos generaciones de "
+                                "veneno (config rancio ~143 vs blue live ~1450).")
 
-        # ── El bug GEMELO: depósitos/flujos dolarizados al blue del import ──
+        # ── El bug GEMELO: flujos ARS dolarizados al blue del import ─────────
         try:
             flu = conn.execute(
-                "SELECT COUNT(*) n, SUM(CASE WHEN gross_amount_usd IS NULL THEN 1 ELSE 0 END) sin_usd "
+                "SELECT COUNT(*) n, "
+                "SUM(CASE WHEN gross_amount_usd IS NULL THEN 1 ELSE 0 END) sin_usd "
                 "FROM import_normalized_tx WHERE UPPER(COALESCE(currency,''))='ARS' "
                 "  AND operation_type IN ('DEPOSIT','WITHDRAW')").fetchone()
+            # Acá el TC se recupera por división pura (sin ramas de netting).
+            tcs = conn.execute(
+                "SELECT ROUND(gross_amount/gross_amount_usd, 0) tc, COUNT(*) n, "
+                "       MIN(date) d0, MAX(date) d1 "
+                "FROM import_normalized_tx "
+                "WHERE UPPER(COALESCE(currency,''))='ARS' "
+                "  AND operation_type IN ('DEPOSIT','WITHDRAW') "
+                "  AND gross_amount_usd IS NOT NULL AND gross_amount_usd <> 0 "
+                "  AND gross_amount IS NOT NULL "
+                "GROUP BY tc HAVING n > 2 ORDER BY n DESC LIMIT 15").fetchall()
             out["flujos_ars"] = {
                 "total": flu["n"], "sin_gross_amount_usd": flu["sin_usd"],
-                "nota": "gross_amount_usd se estampó con el blue del import "
-                        "(pipeline._stamp_gross_amount_usd) — mismo bug que las ventas. "
-                        "Reparar solo las ventas rompe la identidad contable del Dashboard.",
+                "tc_usados": [{"tc": t["tc"], "flujos": t["n"],
+                               "desde": t["d0"], "hasta": t["d1"]} for t in tcs],
+                "nota": "mismo bug que las ventas (pipeline._stamp_gross_amount_usd ni "
+                        "siquiera recibe la fecha), pero el SIGNO en el Dashboard es "
+                        "OPUESTO: ventas subvaluadas deflacionan la ganancia realizada, "
+                        "depósitos subvaluados deflacionan net_deposited e INFLAN el "
+                        "Total Return. Reparar solo una pata mueve el Dashboard para el "
+                        "lado equivocado.",
             }
-        except Exception:
-            out["flujos_ars"] = {"error": "tabla import_normalized_tx no disponible"}
+        except Exception as e:
+            out["flujos_ars"] = {"error": f"{type(e).__name__}: {e}"}
 
+        out["advertencias"] = [
+            "La reparación se AUTO-REVIERTE: rebuild.py:567 borra y reinserta las Ventas "
+            "del par (broker,activo) con el tc_blue del momento. Cualquier UPDATE sobre "
+            "operations lo pisa el próximo import/revert/backfill. El fix real es que "
+            "tc_venta pase a ser el FX de la fecha de la venta en el motor.",
+            "'T_rec ≈ TC' prueba que el MOTOR trató el lote como pesos, NO que el lote "
+            "estuviera en pesos. Un lote USD con positions.currency NULL vendido en ARS "
+            "es indistinguible de un B1 legítimo salvo por el pnl_pct absurdo (B6).",
+            "B5_MANUAL_AMBIGUA no tiene solución en la base: una venta manual USD y una "
+            "ARS con el TC vacío son byte-idénticas y necesitan tratamientos opuestos.",
+            "Si B0_INDETERMINADO supera el ~2% del P&L total hay un quinto camino de "
+            "escritura que este análisis no modeló.",
+        ]
         return out
     except HTTPException:
         raise
