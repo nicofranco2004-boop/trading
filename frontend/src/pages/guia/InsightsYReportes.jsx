@@ -1,6 +1,7 @@
 // /guia/insights-y-reportes — sección 3 del manual
 
 import GuidePage from '../../components/guide/GuidePage'
+import ReturnsDiagram from '../../components/guide/ReturnsDiagram'
 
 export default function InsightsYReportes() {
   return (
@@ -105,6 +106,136 @@ export default function InsightsYReportes() {
         <strong>Free</strong> exporta solo el último mes.{' '}
         <strong>Plus y Pro</strong> exportan todos los meses históricos.
       </p>
+
+      <h2>Cómo calculamos tu rendimiento</h2>
+      <p>
+        Cada número de rendimiento que ves en Rendi sale de una cuenta con reglas
+        fijas — no es simplemente "lo que vale hoy menos lo que creés que pusiste".
+        Acá te mostramos las 5 piezas que usamos, con ejemplos y números redondos,
+        para que sepas exactamente qué estás mirando. La idea de fondo es una sola:
+        separar la plata que pusiste vos de la que ganó (o perdió) el mercado, y
+        medir el % por tiempo para que refleje tu cartera y no tu timing.
+      </p>
+
+      <figure className="my-9">
+        <ReturnsDiagram />
+        <div className="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-1.5 text-[11px] text-ink-2">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#8B7DFF' }} />
+            lo que pusiste
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#21D07A' }} />
+            ganancia (USD)
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#5B9DF9' }} />
+            el % en el tiempo
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#3A4256' }} />
+            FIFO (la maquinaria)
+          </span>
+        </div>
+        <figcaption className="mt-3 text-center text-xs text-ink-3">
+          Los mismos insumos, dos respuestas: cuántos dólares ganaste y qué tan bien rindió tu cartera.
+        </figcaption>
+      </figure>
+
+      <h3>La base: cuánto pusiste y cuánto vale</h3>
+      <p>
+        Todo arranca con el <strong>capital aportado</strong>: la plata que pusiste
+        de tu bolsillo. Sumamos cada depósito y restamos cada retiro, 1 a 1, sin
+        ponderar nada. Si metiste US$1.000 y después US$500 más, aportaste US$1.500.
+      </p>
+      <p>
+        El número grande en dólares es tu <strong>ganancia acumulada</strong>: valor
+        de mercado menos capital aportado. Junta lo que ya realizaste (lo vendido)
+        con lo no realizado (lo que todavía tenés).
+      </p>
+      <p>
+        Restar los flujos es lo que hace que la cuenta sea honesta. Si esos US$1.500
+        hoy valen US$1.800, ganaste US$300 — no US$800. Así un depósito no se disfraza
+        de ganancia, ni un retiro de pérdida.
+      </p>
+
+      <h3>El % se pondera por el tiempo</h3>
+      <p>
+        El número en dólares está bueno, pero para comparar necesitás un %. Y un %
+        justo tiene que mirar <strong>cuándo</strong> entró cada peso, no solo cuánto.
+        Para eso usamos <strong>Modified Dietz</strong>, el estándar de la industria.
+      </p>
+      <p>
+        La idea del famoso <strong>0,5</strong>: si un depósito entró a mitad del
+        período, solo "trabajó" la mitad del tiempo, así que lo contamos a la mitad
+        en la base del cálculo.
+      </p>
+      <p>
+        Ejemplo: empezás el mes con US$1.000, a mitad de mes agregás otros US$1.000 y
+        terminás con US$2.100. Ganaste US$100. Si dividieras por los US$2.000, te daría
+        5%. Pero esos segundos mil recién entraron: la base real es 1.000 + la mitad de
+        1.000 = 1.500, y el rendimiento sube a 6,7%. Le das crédito solo a la plata que
+        estuvo laburando.
+      </p>
+      <p>
+        <strong>Ojo</strong>: si retirás más del 30% del capital de un saque, ese
+        "medio flujo" distorsiona feo, así que ahí usamos el valor inicial directo y
+        evitamos picos falsos.
+      </p>
+
+      <h3>En el largo plazo, se multiplica (no se suma)</h3>
+      <p>
+        Para varios meses seguidos no sumamos los rendimientos: los{' '}
+        <strong>multiplicamos</strong>. Eso se llama encadenar, o <strong>TWR</strong>{' '}
+        (rendimiento ponderado por tiempo).
+      </p>
+      <p>
+        Un mes +10% y al siguiente otro +10% no es +20%, es (1,10 × 1,10) − 1 ={' '}
+        <strong>21%</strong>. El segundo 10% corre sobre un capital ya más grande.
+      </p>
+      <p>
+        Encadenar así neutraliza cuánto y cuándo metiste plata: mide cómo laburó tu
+        cartera, no el timing de tus aportes. Por eso podés compararte de igual a igual
+        contra el <strong>S&amp;P 500</strong>.
+      </p>
+      <p>
+        El <strong>CAGR</strong> es esa misma historia como una tasa anual pareja —
+        "como si hubieras ganado X% todos los años". Sobre esta serie encadenada salen
+        la volatilidad, el Sharpe, el Sortino y el alfa/beta vs el S&amp;P 500.
+      </p>
+
+      <h3>Cada venta se matchea con FIFO</h3>
+      <p>
+        Del historial que importás, cada venta se matchea contra tus compras más viejas
+        primero. Es <strong>FIFO</strong> ("first in, first out").
+      </p>
+      <p>
+        Ejemplo: compraste 10 CEDEARs a US$100 y después 10 más a US$150. Cuando vendés
+        10, usamos los de US$100 (los más viejos) como costo. El resultado = precio de
+        venta × cantidad − ese costo − comisiones.
+      </p>
+      <p>
+        Si la operación fue en pesos, la calculamos en ARS y la pasamos a dólares al
+        tipo de cambio <strong>del día de la venta</strong>, no al de hoy. La ganancia
+        queda congelada en el momento real en que pasó.
+      </p>
+      <p>
+        Lo <strong>no realizado</strong> es lo que todavía tenés, a valor de mercado,
+        menos el costo que le queda. Y no importa en qué orden subas los archivos: el
+        sistema recalcula todo desde cero desde la fuente, así que el número siempre da
+        igual.
+      </p>
+      <p>
+        Todas estas cuentas — aportado, ganancia, el %, el encadenado y el FIFO —
+        corren en <strong>todos los planes</strong>. Las métricas de riesgo que salen
+        del rendimiento encadenado (volatilidad, Sharpe, Sortino, alfa/beta vs el{' '}
+        S&amp;P 500) están bloqueadas en <strong>Free</strong> y se desbloquean en{' '}
+        <strong>Plus y Pro</strong>.
+      </p>
+      <blockquote>
+        En una frase: separamos la plata que pusiste de la que ganó el mercado, y
+        ponderamos todo por tiempo — así el % mide tu cartera, no tu timing.
+      </blockquote>
 
       <h2>Calidad de cartera</h2>
       <p>
