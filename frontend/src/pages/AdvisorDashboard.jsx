@@ -366,7 +366,7 @@ function BookDetailModal({ onClose }) {
                               <i className="block h-full bg-line-3 rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
                             </span>
                           </span>
-                          <span className="text-right text-xs text-ink-3">Recién tiene una foto</span>
+                          <span className="text-right text-xs text-ink-3">Recién empezó a medirse</span>
                           <span className="text-right text-xs text-ink-3">No entra en la variación</span>
                         </>
                       ) : (
@@ -632,7 +632,7 @@ function StarSection({ star }) {
           </p>
           {star.losers.length
             ? star.losers.map((r) => <Row key={r.asset} r={r} tone="red" />)
-            : <p className="text-[11.5px] text-ink-3 py-1.5">Ningún activo en rojo — bien ahí.</p>}
+            : <p className="text-[11.5px] text-ink-3 py-1.5">Ningún activo les está haciendo perder plata.</p>}
         </div>
         <div>
           <p className="flex items-center gap-1.5 text-[11px] text-rendi-pos font-medium mb-1">
@@ -640,7 +640,7 @@ function StarSection({ star }) {
           </p>
           {star.winners.length
             ? star.winners.map((r) => <Row key={r.asset} r={r} tone="green" />)
-            : <p className="text-[11.5px] text-ink-3 py-1.5">Todavía nada en verde.</p>}
+            : <p className="text-[11.5px] text-ink-3 py-1.5">Todavía ningún activo les está dando ganancia.</p>}
         </div>
       </div>
       {star.skipped_no_price > 0 && (
@@ -686,7 +686,7 @@ function DistributionCard({ dist }) {
           </p>
         )}
       </div>
-      <p className="text-[10.5px] text-ink-3 mt-2">Retorno total vs. aportado, del último snapshot.</p>
+      <p className="text-[10.5px] text-ink-3 mt-2">Cuánto ganó cada uno sobre la plata que puso, según los últimos datos del cierre.</p>
     </div>
   )
 }
