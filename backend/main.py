@@ -11832,6 +11832,329 @@ def admin_diagnose_sell_fx(limit_ops: int = 500000, uid: int = Depends(get_admin
         conn.close()
 
 
+@app.get("/api/admin/diagnose-scale")
+def admin_diagnose_scale(limit_ops: int = 500000, dias_canilla: int = 90,
+                         uid: int = Depends(get_admin_user)):
+    """Diagnóstico READ-ONLY del error de ESCALA en las ventas (el bug per-100).
+
+    TESIS (verificada en código): el motor lee el COSTO y los INGRESOS de columnas
+    distintas del archivo, y nunca las reconcilia.
+
+        COMPRA → invested  = tx.gross_amount        (la columna `monto` = caja real)
+                                                     persister.py:411, rebuild.py:261
+        VENTA  → proceeds  = tx.unit_price * qty     (la columna `precio` CRUDA)
+                                                     persister.py:536 → 602/609
+
+    `gross_amount` no aparece NI UNA VEZ dentro de _persist_sell_fifo. Como el costo
+    queda sano, cualquier error de escala en el precio cae 100% sobre el P&L:
+    un bono cotizado por 100 nominales da `pnl = 99 × costo` y `pnl_pct ≈ 9.900%`.
+
+    Los parsers que reenvían `Precio` crudo (ieb, balanz, balanz_movimientos, ppi,
+    bullmarket) son vulnerables; los que DERIVAN precio=monto/cantidad (iol, cocos)
+    son inmunes.
+
+    ── LA FORMULACIÓN EXACTA (no modela k, no estima nada) ──
+    Como el costo no se toca, el error de P&L es EXACTAMENTE la diferencia entre los
+    ingresos que usó el motor y los que dice el resumen del broker:
+
+        error_nativo = exit_price*quantity − gross_amount*(quantity/tx_quantity)
+        error_usd    = error_nativo / T_rec
+        pnl_sano     = pnl_usd − error_usd
+
+    donde T_rec = (exit_price*qty − commissions)/(pnl_usd + 100*pnl_usd/pnl_pct) es el
+    TC que usó el motor (1.0 en ventas USD). Ver /api/admin/diagnose-sell-fx.
+
+    Solo cubre ventas CON LINK a import_normalized_tx: para el resto la escala real se
+    perdió en el parseo y NO es recuperable. El conteo es un PISO, no un total.
+
+    NO ESCRIBE NADA. No devuelve emails a propósito (el JSON se pega en chats).
+    """
+    conn = get_db()
+    try:
+        out: dict = {
+            "tesis": "el motor toma el costo de gross_amount y los ingresos de "
+                     "unit_price*quantity, y nunca los reconcilia",
+            "solo_lectura": True,
+            "formula": "error_usd = (exit_price*qty - gross_amount*qty/tx_qty) / T_rec",
+        }
+
+        # ── BLOQUE A — el triángulo EN LA FUENTE ────────────────────────────
+        # k = (precio × cantidad) / monto. Si el archivo es coherente, k = 1.
+        # Un bono per-100 da k = 100; un FCI con VCP/1000 da k = 1000.
+        # Pregunta clave: ¿el cluster de k=100 está EXACTAMENTE en 100 (gross_amount
+        # es BRUTO) o corrido (es NETO de comisiones)? De eso depende si el fix
+        # simétrico —que la venta use gross_amount igual que la compra— es seguro.
+        bandas = {"k~1 (sano)": 0, "k~100 (per-100)": 0, "k~1000 (VCP/1000)": 0,
+                  "k~0,01": 0, "k~0,001": 0, "otro": 0}
+        por_parser: dict = {}
+        k100_muestras = []
+        k1_muestras = []
+        tri_total = 0
+
+        for r in conn.execute(
+            """SELECT n.unit_price up, n.quantity q, n.gross_amount ga, n.fees fee,
+                      n.operation_type ot, n.asset_type at, ib.parser_format pf
+                 FROM import_normalized_tx n
+                 JOIN import_batches ib ON ib.id = n.batch_id
+                WHERE ib.status='confirmed'
+                  AND n.unit_price IS NOT NULL AND n.unit_price <> 0
+                  AND n.quantity   IS NOT NULL AND n.quantity   <> 0
+                  AND n.gross_amount IS NOT NULL AND n.gross_amount <> 0"""):
+            try:
+                k = (float(r["up"]) * float(r["q"])) / float(r["ga"])
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+            k = abs(k)
+            tri_total += 1
+            if 0.9 <= k <= 1.1:
+                banda = "k~1 (sano)"
+                if len(k1_muestras) < 4000:
+                    k1_muestras.append(k)
+            elif 90 <= k <= 110:
+                banda = "k~100 (per-100)"
+                if len(k100_muestras) < 4000:
+                    k100_muestras.append(k)
+            elif 900 <= k <= 1100:
+                banda = "k~1000 (VCP/1000)"
+            elif 0.009 <= k <= 0.011:
+                banda = "k~0,01"
+            elif 0.0009 <= k <= 0.0011:
+                banda = "k~0,001"
+            else:
+                banda = "otro"
+            bandas[banda] += 1
+            pf = r["pf"] or "?"
+            p = por_parser.setdefault(pf, {"n": 0, "sano": 0, "per_100": 0,
+                                           "vcp_1000": 0, "otro": 0})
+            p["n"] += 1
+            p["sano" if banda == "k~1 (sano)" else
+              "per_100" if banda == "k~100 (per-100)" else
+              "vcp_1000" if banda == "k~1000 (VCP/1000)" else "otro"] += 1
+
+        def _pct(vals, q):
+            if not vals:
+                return None
+            s = sorted(vals)
+            return round(s[min(len(s) - 1, int(len(s) * q))], 6)
+
+        out["triangulo_en_la_fuente"] = {
+            "filas_con_las_3_columnas": tri_total,
+            "bandas": bandas,
+            "por_parser": {k: v for k, v in sorted(
+                por_parser.items(), key=lambda x: -x[1]["per_100"] - x[1]["vcp_1000"])},
+            "k100_percentiles": {"p05": _pct(k100_muestras, 0.05),
+                                 "p50": _pct(k100_muestras, 0.50),
+                                 "p95": _pct(k100_muestras, 0.95)},
+            "k1_percentiles": {"p05": _pct(k1_muestras, 0.05),
+                               "p50": _pct(k1_muestras, 0.50),
+                               "p95": _pct(k1_muestras, 0.95)},
+            "lectura": "si k100_percentiles ≈ 100,000 exacto ⇒ gross_amount es BRUTO y "
+                       "el fix simétrico (que la venta use gross_amount como ya hace la "
+                       "compra) es seguro. Si está corrido (ej. 99,7) ⇒ viene NETO de "
+                       "comisiones y el fix simétrico metería un error nuevo.",
+        }
+
+        # ── BLOQUE B — el error exacto, venta por venta ─────────────────────
+        rows = conn.execute(
+            """SELECT o.id, o.user_id uid, o.date, o.broker, o.asset,
+                      o.pnl_usd, o.pnl_pct, o.exit_price ep, o.quantity q,
+                      o.commissions com,
+                      n.gross_amount ga, n.quantity txq, n.currency txccy,
+                      n.asset_type at, ib.parser_format pf, ib.confirmed_at conf
+                 FROM operations o
+                 JOIN import_op_links l ON l.operation_id = o.id
+                 JOIN import_normalized_tx n
+                      ON n.batch_id = l.batch_id AND n.raw_row_id = l.raw_row_id
+                 JOIN import_batches ib ON ib.id = l.batch_id
+                WHERE o.op_type='Venta' AND ib.status='confirmed'
+                LIMIT ?""", (max(1, int(limit_ops)),)).fetchall()
+
+        corte_canilla = (datetime.utcnow() - timedelta(days=max(1, int(dias_canilla)))
+                         ).strftime("%Y-%m-%d")
+
+        afectadas = []
+        sin_datos = 0
+        recientes = 0
+        por_activo: dict = {}
+        por_broker_parser: dict = {}
+
+        for r in rows:
+            ep, q, ga, txq = r["ep"], r["q"], r["ga"], r["txq"]
+            pnl, pct = r["pnl_usd"], r["pnl_pct"]
+            if not ep or not q or not ga or not txq:
+                sin_datos += 1
+                continue
+            try:
+                proceeds_motor = float(ep) * float(q)
+                proceeds_reales = float(ga) * (float(q) / float(txq))
+                err_nativo = proceeds_motor - proceeds_reales
+                if proceeds_reales == 0:
+                    sin_datos += 1
+                    continue
+                k = proceeds_motor / proceeds_reales
+                # T_rec: el TC que usó el motor (1.0 si la venta fue en USD)
+                T = 1.0
+                if pnl is not None and pct not in (None, 0) and round(float(pnl), 2) != 0.0:
+                    inv = 100.0 * float(pnl) / float(pct)
+                    den = float(pnl) + inv
+                    num = proceeds_motor - float(r["com"] or 0)
+                    if den != 0 and num > 0:
+                        cand = num / den
+                        if cand > 0:
+                            T = cand
+                err_usd = err_nativo / T
+            except (TypeError, ValueError, ZeroDivisionError):
+                sin_datos += 1
+                continue
+
+            if abs(k - 1.0) <= 0.02:          # el archivo cierra: no hay error de escala
+                continue
+
+            afectadas.append({
+                "uid": r["uid"], "fecha": r["date"], "broker": r["broker"],
+                "activo": r["asset"], "parser": r["pf"], "asset_type": r["at"],
+                "k": k, "pnl_usd": float(pnl or 0), "err_usd": err_usd,
+                "pnl_sano": float(pnl or 0) - err_usd, "T_rec": T,
+            })
+            if (r["conf"] or "")[:10] >= corte_canilla:
+                recientes += 1
+            a = por_activo.setdefault(r["asset"], {"n": 0, "err": 0.0, "k_tipico": k})
+            a["n"] += 1
+            a["err"] += err_usd
+            bp = f'{r["pf"] or "?"} / {r["broker"]}'
+            b = por_broker_parser.setdefault(bp, {"n": 0, "err": 0.0, "users": set()})
+            b["n"] += 1
+            b["err"] += err_usd
+            b["users"].add(r["uid"])
+
+        # ── BLOQUE C — régimen de reparación por (user, broker, activo) ──────
+        # _is_safe_to_rebuild (rebuild.py:512-544) saltea el par si existe UNA
+        # position o Venta sin link. Donde eso pasa, el rebuild NUNCA vuelve a tocar
+        # esas filas ⇒ un UPDATE a mano SÍ es durable. Donde no, se auto-revierte.
+        # ⚠️ PROXY: replicamos el predicado sobre (broker, activo) exacto; la función
+        # real usa el PAR de brokers (padre + hermano '· USD').
+        congelados = set()
+        for r in conn.execute(
+            """SELECT DISTINCT o.user_id u, o.broker b, o.asset a
+                 FROM operations o
+                 LEFT JOIN import_op_links l ON l.operation_id = o.id
+                WHERE o.op_type='Venta' AND l.operation_id IS NULL"""):
+            congelados.add((r["u"], r["b"], r["a"]))
+        for r in conn.execute(
+            """SELECT DISTINCT p.user_id u, p.broker b, p.asset a
+                 FROM positions p
+                 LEFT JOIN import_op_links l ON l.position_id = p.id
+                WHERE l.position_id IS NULL AND p.is_cash=0"""):
+            congelados.add((r["u"], r["b"], r["a"]))
+
+        # ── BLOQUE D — por cuenta ───────────────────────────────────────────
+        por_user: dict = {}
+        for f in afectadas:
+            u = por_user.setdefault(f["uid"], {
+                "ops": 0, "err_usd": 0.0, "pnl_actual": 0.0, "pnl_sano": 0.0,
+                "congeladas": 0, "recomputables": 0, "activos": set()})
+            u["ops"] += 1
+            u["err_usd"] += f["err_usd"]
+            u["pnl_actual"] += f["pnl_usd"]
+            u["pnl_sano"] += f["pnl_sano"]
+            u["activos"].add(f["activo"])
+            if (f["uid"], f["broker"], f["activo"]) in congelados:
+                u["congeladas"] += 1
+            else:
+                u["recomputables"] += 1
+
+        cuentas = []
+        for u, v in por_user.items():
+            urow = conn.execute("SELECT tier FROM users WHERE id=?", (u,)).fetchone()
+            cap = conn.execute(
+                """SELECT capital_final cf FROM monthly_entries
+                    WHERE user_id=? AND broker='global'
+                    ORDER BY year DESC, month DESC LIMIT 1""", (u,)).fetchone()
+            inf = conn.execute(
+                "SELECT COUNT(*) n FROM advisor_reports WHERE client_uid=?", (u,)).fetchone()
+            cf = float(cap["cf"]) if cap and cap["cf"] is not None else None
+            cuentas.append({
+                "user_id": u, "tier": (urow["tier"] if urow else None),
+                "ops_afectadas": v["ops"],
+                "activos": sorted(v["activos"])[:6],
+                "pnl_actual_usd": round(v["pnl_actual"], 2),
+                "pnl_sano_usd": round(v["pnl_sano"], 2),
+                "error_usd": round(v["err_usd"], 2),
+                "capital_final_actual": round(cf, 2) if cf is not None else None,
+                "pct_del_capital_que_es_falso": (
+                    round(v["err_usd"] / cf * 100, 1) if cf else None),
+                "regimen": ("CONGELADA_MANUAL" if v["congeladas"] > v["recomputables"]
+                            else "RECOMPUTE_REPRODUCE"),
+                "filas_congeladas": v["congeladas"],
+                "filas_recomputables": v["recomputables"],
+                "informes_congelados": inf["n"] if inf else 0,
+            })
+        cuentas.sort(key=lambda c: -abs(c["error_usd"]))
+
+        afectadas.sort(key=lambda f: -abs(f["err_usd"]))
+        out["ventas"] = {
+            "con_link_analizadas": len(rows),
+            "sin_las_columnas_necesarias": sin_datos,
+            "afectadas_por_escala": len(afectadas),
+            "usuarios_afectados": len(por_user),
+            "error_total_usd": round(sum(f["err_usd"] for f in afectadas), 2),
+            "pnl_actual_usd": round(sum(f["pnl_usd"] for f in afectadas), 2),
+            "pnl_sano_usd": round(sum(f["pnl_sano"] for f in afectadas), 2),
+            "nota": "PISO, no total: solo ventas con link a import_normalized_tx. "
+                    "Para las demás la escala se perdió en el parseo.",
+        }
+        out["canilla"] = {
+            "ventas_afectadas_de_batches_recientes": recientes,
+            "ventana_dias": int(dias_canilla),
+            "abierta": recientes > 0,
+            "nota": "si es >0, se sigue generando data rota con cada import. El fix del "
+                    "motor va ANTES que cualquier reparación.",
+        }
+        out["por_broker_parser"] = sorted(
+            [{"origen": k, "ventas": v["n"], "usuarios": len(v["users"]),
+              "error_usd": round(v["err"], 2)} for k, v in por_broker_parser.items()],
+            key=lambda x: -abs(x["error_usd"]))[:20]
+        out["por_activo"] = sorted(
+            [{"activo": k, "ventas": v["n"], "error_usd": round(v["err"], 2),
+              "k_tipico": round(v["k_tipico"], 2)} for k, v in por_activo.items()],
+            key=lambda x: -abs(x["error_usd"]))[:25]
+        out["cuentas"] = cuentas[:40]
+        out["reparto_por_regimen"] = {
+            "CONGELADA_MANUAL": sum(1 for c in cuentas if c["regimen"] == "CONGELADA_MANUAL"),
+            "RECOMPUTE_REPRODUCE": sum(1 for c in cuentas if c["regimen"] == "RECOMPUTE_REPRODUCE"),
+            "nota": "CONGELADA_MANUAL ⇒ el UPDATE directo sobre operations es durable "
+                    "(el guard que impide recomputar la protege). RECOMPUTE_REPRODUCE ⇒ "
+                    "hay que arreglar import_normalized_tx/parsers + rebuild scoped. "
+                    "Aplicar el régimen equivocado rebota o es un no-op silencioso.",
+        }
+        out["ops_peores"] = [
+            {k: (round(v, 2) if isinstance(v, float) else v) for k, v in f.items()}
+            for f in afectadas[:20]]
+
+        out["advertencias"] = [
+            "🔴 NO correr /api/admin/repair-snapshots-all sobre estas cuentas: "
+            "_remove_trajectory_outlier_snapshots (main.py:10985) se ancla al "
+            "capital_final CORRUPTO y borra los snapshots diarios LEGÍTIMOS, que no se "
+            "pueden recomputar (main.py:10778: no guardamos precios históricos).",
+            "Reparar import_normalized_tx sin reparar el CASH muda el error al cash, "
+            "que entra igual a snapshots.total_value pero YA SIN la firma pnl_pct que "
+            "lo detecta (rebuild.py:29-33 declara que no toca cash).",
+            "El régimen es un PROXY: replica el predicado de _is_safe_to_rebuild sobre "
+            "(broker, activo) exacto, pero la función real usa el PAR de brokers "
+            "(padre + hermano '· USD'). Verificar antes de aplicar.",
+            "OperationIn.pnl_usd tiene le=1e12 (main.py:9294): el PUT de la API rechaza "
+            "con 422 las filas más rotas. Repararlas exige SQL crudo.",
+        ]
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_diagnose_scale FAILED")
+        raise HTTPException(status_code=500, detail=f"diagnose-scale falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/commissions-debug")
 def admin_commissions_debug(email: str = "", user_id: int = 0,
                             uid: int = Depends(get_admin_user)):
