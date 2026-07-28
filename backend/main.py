@@ -11423,6 +11423,222 @@ def admin_diagnose_negative_capital(min_capital: float = -50000.0, limit_account
         conn.close()
 
 
+@app.get("/api/admin/diagnose-sell-fx")
+def admin_diagnose_sell_fx(limit_ops: int = 200000, uid: int = Depends(get_admin_user)):
+    """Diagnóstico READ-ONLY del TC con el que se dolarizaron las ventas y los flujos.
+
+    TESIS: `pnl_usd = pnl_ars / tc_venta` donde `tc_venta` NO es el dólar de la fecha
+    de la venta sino `tc_blue`, el dólar VIVO del momento en que se corrió el import
+    (persister.py:547, rebuild.py:357). Una venta en pesos de 2021 dividida por ~1450
+    (hoy) en vez de por ~180 (entonces) muestra ~1/8 del P&L en dólares que realmente
+    fue. Los DEPÓSITOS tienen el mismo problema (pipeline._stamp_gross_amount_usd).
+
+    NO ESCRIBE NADA. Sirve para dimensionar si conviene reparar el histórico y, sobre
+    todo, para separar las filas en TRES buckets — porque NO todas se reparan con la
+    misma fórmula y dos de ellas son trampas:
+
+      1. REPARABLE     — venta ARS de lote ARS. Corrección: pnl_usd × (fx_to_usd / blue_de_la_fecha)
+      2. PESO-ESCALA   — fx_to_usd NULL o ==1: `pnl_usd` NO son dólares, es el nominal
+                         en PESOS (ventas manuales sin TC, cupones que guardan el monto
+                         nativo). Aplicarles la fórmula del bucket 1 las multiplica ×1000.
+      3. CROSS-CURRENCY — lote USD vendido en ARS (dólar-MEP con CEDEARs). El TC rancio
+                         está a AMBOS lados y SE CANCELA POR DISEÑO (persister.py:573-577:
+                         `base_invested *= tc_venta` con el comentario "así pnl_ars/tc_venta
+                         preserva el costo USD"). Reparar acá ROMPE un número que hoy está
+                         bien y puede dar vuelta el signo.
+
+    Discriminador de bucket 3 (robusto, no depende de la escala del precio): reconstruimos
+    el costo desde pnl_pct —que es TC-invariante— y lo comparamos con el costo nominal.
+        invested_usd = 100 * pnl_usd / pnl_pct          (lo que el motor usó como costo)
+        r = (entry_price * quantity) / invested_usd
+        r ≈ fx_to_usd  → el costo se dividió por el TC → LOTE ARS  → reparable
+        r ≈ 1          → el costo ya estaba en USD     → LOTE USD  → carve-out
+    """
+    conn = get_db()
+    try:
+        out: dict = {
+            "tesis": "tc_venta = blue VIVO del import, no el de la fecha de la venta",
+            "solo_lectura": True,
+        }
+
+        # ── (d) Cobertura real de la serie FX ────────────────────────────────
+        fx = conn.execute(
+            "SELECT COUNT(*) n, MIN(date) d0, MAX(date) d1, "
+            "SUM(CASE WHEN blue_venta IS NOT NULL THEN 1 ELSE 0 END) con_blue, "
+            "SUM(CASE WHEN mep_venta IS NOT NULL THEN 1 ELSE 0 END) con_mep, "
+            "MIN(CASE WHEN mep_venta IS NOT NULL THEN date END) mep0 "
+            "FROM fx_rates_daily").fetchone()
+        out["serie_fx"] = {
+            "filas": fx["n"], "desde": fx["d0"], "hasta": fx["d1"],
+            "con_blue": fx["con_blue"], "con_mep": fx["con_mep"], "mep_desde": fx["mep0"],
+        }
+
+        # Índice date→blue en memoria (la serie es chica: ~5.700 filas).
+        serie = [(r["date"], float(r["blue_venta"]))
+                 for r in conn.execute(
+                     "SELECT date, blue_venta FROM fx_rates_daily "
+                     "WHERE blue_venta IS NOT NULL ORDER BY date")]
+        fechas = [d for d, _ in serie]
+
+        def blue_de(fecha):
+            """Blue del día `fecha` (el más reciente en o antes). None si es previo a la serie."""
+            if not fecha or not fechas:
+                return None
+            import bisect
+            i = bisect.bisect_right(fechas, str(fecha)[:10]) - 1
+            return serie[i][1] if i >= 0 else None
+
+        # ── (a)(b)(c) Censo de ventas + (e) impacto simulado ────────────────
+        rows = conn.execute(
+            "SELECT user_id, date, broker, asset, pnl_usd, pnl_pct, entry_price, quantity, "
+            "       currency, fx_to_usd "
+            "FROM operations WHERE op_type='Venta' ORDER BY date LIMIT ?",
+            (max(1, int(limit_ops)),),
+        ).fetchall()
+
+        por_anio: dict = {}
+        buckets = {"reparable": 0, "peso_escala": 0, "cross_currency": 0,
+                   "usd": 0, "sin_fecha_en_serie": 0, "indeterminado": 0}
+        delta_total = 0.0          # Σ (pnl corregido − pnl actual), solo bucket reparable
+        actual_total = 0.0
+        ratios = []
+        por_usuario: dict = {}
+        peor = []
+
+        for r in rows:
+            anio = (r["date"] or "")[:4] or "?"
+            a = por_anio.setdefault(anio, {"n": 0, "ars": 0, "reparable": 0,
+                                           "actual_usd": 0.0, "corregido_usd": 0.0})
+            a["n"] += 1
+            ccy = (r["currency"] or "").upper()
+            fx = r["fx_to_usd"]
+            pnl = r["pnl_usd"]
+
+            if ccy and ccy != "ARS":
+                buckets["usd"] += 1
+                continue
+            a["ars"] += 1
+
+            if fx is None or float(fx) <= 1.0000001:
+                # pnl_usd está en PESOS (o no hubo conversión) → NO tocar con esta fórmula
+                buckets["peso_escala"] += 1
+                continue
+
+            fx = float(fx)
+            b = blue_de(r["date"])
+            if b is None or b <= 0:
+                buckets["sin_fecha_en_serie"] += 1
+                continue
+
+            # Discriminar lote ARS vs lote USD por el costo que usó el motor
+            bucket = "indeterminado"
+            try:
+                if pnl is not None and r["pnl_pct"] not in (None, 0) and r["entry_price"] and r["quantity"]:
+                    invested_usd = 100.0 * float(pnl) / float(r["pnl_pct"])
+                    if invested_usd != 0:
+                        ratio_costo = (float(r["entry_price"]) * float(r["quantity"])) / invested_usd
+                        if ratio_costo > fx * 0.5:
+                            bucket = "reparable"        # costo ÷ TC → lote en pesos
+                        elif ratio_costo < 10:
+                            bucket = "cross_currency"   # costo ya en USD → carve-out
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+
+            buckets[bucket] = buckets.get(bucket, 0) + 1
+            if bucket != "reparable" or pnl is None:
+                continue
+
+            # Impacto: pnl_ars es un HECHO (pnl_usd × el TC que se usó). Se re-divide
+            # por el blue de la fecha real.
+            pnl_ars = float(pnl) * fx
+            corregido = pnl_ars / b
+            delta = corregido - float(pnl)
+            delta_total += delta
+            actual_total += float(pnl)
+            ratios.append(fx / b)
+            a["reparable"] += 1
+            a["actual_usd"] += float(pnl)
+            a["corregido_usd"] += corregido
+
+            u = por_usuario.setdefault(r["user_id"], {"n": 0, "actual": 0.0, "corregido": 0.0})
+            u["n"] += 1; u["actual"] += float(pnl); u["corregido"] += corregido
+            peor.append((abs(delta), {
+                "user_id": r["user_id"], "fecha": r["date"], "broker": r["broker"],
+                "activo": r["asset"], "pnl_actual_usd": round(float(pnl), 2),
+                "pnl_corregido_usd": round(corregido, 2),
+                "pnl_ars_nominal": round(pnl_ars, 2),
+                "fx_usado": round(fx, 2), "blue_de_la_fecha": round(b, 2),
+            }))
+
+        ratios.sort()
+        out["ventas"] = {
+            "analizadas": len(rows),
+            "truncado": len(rows) >= int(limit_ops),
+            "buckets": buckets,
+            "nota_buckets": "solo 'reparable' admite la corrección pnl×(fx/blue_fecha)",
+        }
+        out["impacto_simulado"] = {
+            "ops_reparables": len(ratios),
+            "pnl_actual_usd": round(actual_total, 2),
+            "pnl_corregido_usd": round(actual_total + delta_total, 2),
+            "delta_usd": round(delta_total, 2),
+            "ratio_mediano": round(ratios[len(ratios) // 2], 2) if ratios else None,
+            "ratio_max": round(ratios[-1], 2) if ratios else None,
+        }
+        out["por_anio"] = {
+            k: {**v, "actual_usd": round(v["actual_usd"], 2),
+                "corregido_usd": round(v["corregido_usd"], 2),
+                "factor": round(v["corregido_usd"] / v["actual_usd"], 2)
+                          if v["actual_usd"] else None}
+            for k, v in sorted(por_anio.items())
+        }
+        out["usuarios_mas_afectados"] = sorted(
+            [{"user_id": k, "ops": v["n"], "actual_usd": round(v["actual"], 2),
+              "corregido_usd": round(v["corregido"], 2),
+              "delta_usd": round(v["corregido"] - v["actual"], 2)}
+             for k, v in por_usuario.items()],
+            key=lambda x: -abs(x["delta_usd"]))[:15]
+        peor.sort(key=lambda t: -t[0])
+        out["ops_mas_distorsionadas"] = [d for _, d in peor[:15]]
+
+        # ── Prueba directa del "stamp rancio": mismo TC en ventas de fechas lejanas ──
+        clusters = conn.execute(
+            "SELECT fx_to_usd, COUNT(*) n, MIN(date) d0, MAX(date) d1 "
+            "FROM operations WHERE op_type='Venta' AND fx_to_usd > 1 "
+            "GROUP BY ROUND(fx_to_usd, 2) HAVING n > 1 AND julianday(d1) - julianday(d0) > 60 "
+            "ORDER BY n DESC LIMIT 10").fetchall()
+        out["stamp_rancio"] = {
+            "explicacion": "mismo TC aplicado a ventas separadas por >60 días ⇒ es el "
+                           "dólar del día del IMPORT, no el de cada venta",
+            "clusters": [{"fx": round(float(c["fx_to_usd"]), 2), "ventas": c["n"],
+                          "desde": c["d0"], "hasta": c["d1"]} for c in clusters],
+        }
+
+        # ── El bug GEMELO: depósitos/flujos dolarizados al blue del import ──
+        try:
+            flu = conn.execute(
+                "SELECT COUNT(*) n, SUM(CASE WHEN gross_amount_usd IS NULL THEN 1 ELSE 0 END) sin_usd "
+                "FROM import_normalized_tx WHERE UPPER(COALESCE(currency,''))='ARS' "
+                "  AND operation_type IN ('DEPOSIT','WITHDRAW')").fetchone()
+            out["flujos_ars"] = {
+                "total": flu["n"], "sin_gross_amount_usd": flu["sin_usd"],
+                "nota": "gross_amount_usd se estampó con el blue del import "
+                        "(pipeline._stamp_gross_amount_usd) — mismo bug que las ventas. "
+                        "Reparar solo las ventas rompe la identidad contable del Dashboard.",
+            }
+        except Exception:
+            out["flujos_ars"] = {"error": "tabla import_normalized_tx no disponible"}
+
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_diagnose_sell_fx FAILED")
+        raise HTTPException(status_code=500, detail=f"diagnose-sell-fx falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/commissions-debug")
 def admin_commissions_debug(email: str = "", user_id: int = 0,
                             uid: int = Depends(get_admin_user)):
