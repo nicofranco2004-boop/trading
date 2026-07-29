@@ -170,10 +170,11 @@ const BROKERS = [
     summary: 'Subí la Cuenta Corriente (Excel) + la Tenencia valorizada (PDF), todo junto, y armamos tu cartera completa.',
     steps: [
       'Cuenta Corriente: Bull Market → Mi Cuenta → Cuenta Corriente. En la pestaña Pesos poné el rango más amplio, Buscar → Exportar (.xlsx). Si operaste en dólares, repetí con Dólares y Dólares cable.',
+      '¿Tenés muchos años de historia y el portal no te deja exportar todo? Pedile a Bull Market el histórico de cuenta corriente por mail: te mandan un CSV (tipo HC12345.CSV) con TODO tu historial. Ese archivo también sirve — subilo tal cual.',
       'Tenencia valorizada: en la WEB de Bull Market andá a Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder. Como no tiene botón de descarga, guardá la página como PDF: Ctrl+P (Windows) o Cmd+P (Mac) → en Destino elegí “Guardar como PDF”.',
       'Subí los Excel + el PDF de la Tenencia, todos juntos acá — los acomodamos solos.',
     ],
-    parserNote: 'De la Cuenta Corriente importamos compras, ventas, depósitos, retiros, el interés de cauciones y los dividendos (las conversiones cable↔MEP se omiten). Como la Cuenta Corriente solo cubre el período del export, la Tenencia valorizada (PDF) es tu foto de HOY y MANDA: completa las posiciones que ya tenías de antes y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes sin la Tenencia? Volvé a importar incluyendo el PDF. Si tenés un fondo común (FCI) abierto, cargalo a mano desde Posiciones.',
+    parserNote: 'De la Cuenta Corriente (o del histórico por mail) importamos compras, ventas, depósitos, retiros, el interés de cauciones, el resultado de tus futuros de dólar y los dividendos (las conversiones cable↔MEP se omiten). Como la Cuenta Corriente solo cubre el período del export, la Tenencia valorizada (PDF) es tu foto de HOY y MANDA: completa las posiciones que ya tenías de antes y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes sin la Tenencia? Volvé a importar incluyendo el PDF. Si tenés un fondo común (FCI) abierto, cargalo a mano desde Posiciones.',
   },
   {
     id: 'iol',
