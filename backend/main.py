@@ -67,6 +67,7 @@ def _setup_yfinance_cache():
 
 
 _setup_yfinance_cache()
+import fx as _fx
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from snapshots_job import (
@@ -8932,13 +8933,32 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 chunk_commission_native = total_commission_native * (take / data.quantity) if data.quantity else 0
 
                 # P&L por chunk = sale − cost_basis_with_buy_comm − sell_commission
-                if currency == "ARS":
+                #
+                # ⚠️ La compuerta es `sell_ccy` (la moneda de la VENTA), NO `currency`
+                # (la del BROKER). Son distintas cuando un lote USD vive en un broker
+                # ARS —estado soportado y testeado, ver tests/test_currency_lots.py— y
+                # la selección de lotes y la conversión cross-currency de arriba ya
+                # usaban `sell_ccy`. Con `currency` una venta USD sobre broker ARS
+                # entraba a la rama de pesos y dividía por el TC un P&L que YA estaba
+                # en dólares. Antes quedaba tapado porque el front solo manda
+                # `tc_venta` en ventas ARS (Positions.jsx:665) y el `or 1` hacía que
+                # se dividiera por 1: correcto por accidente. Con el TC de la fecha el
+                # accidente se convierte en un error de ~1440× que además se ve
+                # plausible. El persister y el rebuild no pueden tener este bug porque
+                # ahí `currency = sell_currency` es un alias (persister.py:531).
+                if sell_ccy == "ARS":
                     # FX-phantom fix: cost basis y venta se valúan al MISMO TC
                     # (el de venta). Eso hace que pnl_usd sea exactamente
                     # pnl_ars / tc_venta y no aparezca P&L sintético por
                     # variaciones del blue entre compra y venta. tc_compra
                     # queda como dato informativo pero no afecta el P&L.
-                    tc_venta = data.tc_venta or 1
+                    # Si el usuario dejó el campo TC vacío, el `or 1` de antes
+                    # guardaba el nominal EN PESOS dentro de `pnl_usd` — el bucket
+                    # B5 del diagnóstico, imposible de distinguir después de una
+                    # venta USD genuina (las dos quedan byte-idénticas). Ahora cae al
+                    # TC de la fecha, que es lo que el usuario habría puesto.
+                    tc_venta = data.tc_venta or _fx.fx_for_date(
+                        conn, op_date, fallback=_user_tc_blue(conn, uid)) or 1
                     pnl_ars_chunk = data.exit_price * take - (entry_invested or 0) - chunk_commission_native
                     pnl_usd = pnl_ars_chunk / tc_venta
                     invested_usd = (entry_invested or 0) / tc_venta if entry_invested else 0
@@ -17695,9 +17715,13 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                     "Avisale y preguntá si la cantidad o el broker son otros."
                 )}
             # FX para el P&L en USD de una venta en pesos (sin esto pnl_ars se
-            # contaba como USD = ~1415× inflado). MEP (dólar de salida real).
+            # contaba como USD = ~1415× inflado). MEP de la FECHA de la operación:
+            # el chat también registra ventas retroactivas, y ahí el dólar de hoy
+            # es el mismo error que teníamos en el importador. Para una venta de
+            # hoy los dos caminos dan el mismo número.
             if currency == "ARS":
-                tc_venta = _current_cedear_rate() or _user_tc_blue(conn, uid)
+                tc_venta = (_fx.fx_for_date(conn, date)
+                            or _current_cedear_rate() or _user_tc_blue(conn, uid))
         elif action in ("withdraw", "transfer"):
             # retiro (o pata origen de una transferencia): no puede dejar el
             # cash negativo — mismo predicado que el endpoint (que igual lo

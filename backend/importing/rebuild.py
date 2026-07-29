@@ -59,6 +59,10 @@ from datetime import date as _date
 
 from .schema import OP_BUY, OP_SELL
 from .persister import _link, broker_pair, blue_for_date, reconciled_unit_price
+try:
+    from fx import fx_for_date
+except ImportError:  # pragma: no cover
+    from ..fx import fx_for_date
 from .maturity import is_bond_like_name
 from .normalizer import guess_asset_type
 try:
@@ -362,7 +366,11 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
         if seed_qty > _EPS:
             _consume_from = _consume_from + [_seed(seed_qty)]
 
-        tc_venta = tc_blue if sell_currency == "ARS" else 1.0
+        # TC de la FECHA DE LA VENTA (ver persister._persist_sell_fifo). Antes iba
+        # `tc_blue`, el dólar vivo del momento del rebuild → el P&L de una venta
+        # vieja dependía de CUÁNDO se corría el rebuild.
+        tc_venta = (fx_for_date(conn, op_date, fallback=tc_blue)
+                    if sell_currency == "ARS" else 1.0)
         remaining = qty_to_sell
         spill_taken = 0.0   # cuánto de la pata cruzada (cross-currency) ya consumimos
 
@@ -385,7 +393,16 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             # Cross-currency: valuar el invested del lote en la moneda de la venta.
             if is_cross and tc_blue:
                 if lot_currency == "USD" and currency == "ARS":
-                    base_invested = base_invested * tc_blue
+                    # ⚠️ TIENE que ser el MISMO número que `tc_venta`, no `tc_blue`.
+                    # El costo USD se lleva a pesos acá y después `pnl_ars/tc_venta`
+                    # lo divide de vuelta: el TC se CANCELA y el costo USD se
+                    # preserva. Mientras ambos eran `tc_blue` daba igual cuál se
+                    # usara; ahora que `tc_venta` es el TC histórico de la fecha,
+                    # dejar `tc_blue` acá los hace divergir ~5× y mete una pérdida
+                    # fantasma en TODA operación dólar-MEP — y solo por el camino
+                    # del rebuild (re-import, foto, backfill), o sea invisible en
+                    # un test normal. El persister ya usaba `tc_venta` acá.
+                    base_invested = base_invested * (tc_venta or tc_blue)
                 elif lot_currency == "ARS" and currency == "USD":
                     # Dólar-MEP: el costo USD es lo que esos pesos valían CUANDO
                     # COMPRASTE (blue de la fecha de entrada), NO el blue de hoy —
@@ -394,8 +411,8 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                     # antes rebuild usaba el blue de hoy y divergía → la P&L
                     # realizada cambiaba según cuándo corría el rebuild. Sin conn
                     # cae al tc_blue actual (back-compat con callers/tests viejos).
-                    _pblue = blue_for_date(conn, lot.get("entry_date"), tc_blue) if conn is not None else tc_blue
-                    base_invested = base_invested / (_pblue or tc_blue)
+                    _pfx = fx_for_date(conn, lot.get("entry_date"), fallback=tc_blue) if conn is not None else tc_blue
+                    base_invested = base_invested / (_pfx or tc_blue)
 
             entry_invested = base_invested * ratio if base_invested else None
             chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0

@@ -17,6 +17,10 @@ from .parsers.registry import get_parser, autodetect, list_parsers
 from .normalizer import normalize_rows
 from .validator import validate
 from .preview import build_preview
+try:
+    from fx import fx_for_date
+except ImportError:  # pragma: no cover
+    from ..fx import fx_for_date
 from .mapper import Mapping, apply_mapping, inspect_csv as mapper_inspect
 from .cash_sim import simulate as simulate_cash
 from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_to_csv
@@ -60,18 +64,35 @@ def _read_user_tc_blue(conn, uid: int) -> float:
         return 1415.0
 
 
-def _stamp_gross_amount_usd(currency, gross_amount, tc_blue):
-    """Fase 4 (2026-05-30): convierte gross_amount a USD usando el tc_blue
-    del momento del import. Stampado en `import_normalized_tx.gross_amount_usd`.
-    Readers downstream (recalc, /api/movements) usan este valor stamped en
-    vez de re-calcularlo con tc_blue actual — estable contra cambios de TC.
-    Devuelve None si gross_amount es None.
+def _stamp_gross_amount_usd(currency, gross_amount, tc_blue, conn=None, date=None):
+    """Convierte gross_amount a USD y lo estampa en
+    `import_normalized_tx.gross_amount_usd`. Los readers downstream (recalc,
+    /api/movements) usan el valor stampeado en vez de recalcular con el TC actual.
+
+    ⚠️ EL TC ES EL DE LA FECHA DEL FLUJO, no el del momento del import. Esta
+    función no recibía `date` y por eso dolarizaba TODO con el dólar vivo del
+    import: medido en prod, **80.868 de 84.123 flujos en pesos (96%) quedaron
+    estampados con el mismo 1415,00, desde 2013-02-08 hasta 2026-07-20**. Trece
+    años de depósitos a un solo dólar.
+
+    Es la pata GEMELA del bug de las ventas, y el signo en el Dashboard es
+    OPUESTO: una venta subvaluada deflaciona la ganancia realizada, un depósito
+    subvaluado deflaciona `net_deposited` e INFLA el "Total Return". Por eso las
+    dos patas tienen que moverse en el mismo release — arreglar solo una mueve el
+    Dashboard para el lado equivocado y le muestra "ganancias retiradas" a gente
+    que nunca retiró nada.
+
+    `conn`/`date` son opcionales para no romper callers viejos: sin ellos cae al
+    comportamiento anterior.
     """
     if gross_amount is None:
         return None
     cur = (currency or "").upper()
-    if cur == "ARS" and tc_blue and tc_blue > 0:
-        return float(gross_amount) / float(tc_blue)
+    if cur != "ARS":
+        return float(gross_amount)
+    tc = fx_for_date(conn, date, fallback=tc_blue) if (conn is not None and date) else tc_blue
+    if tc and tc > 0:
+        return float(gross_amount) / float(tc)
     return float(gross_amount)
 
 
@@ -622,7 +643,8 @@ def run_preview(
         fp = _row_fingerprint(tx)
         if fp in existing_fingerprints:
             duplicate_row_indices.append(tx.row_index)
-        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_import)
+        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_import,
+                                            conn=conn, date=tx.date)
         # Audit follow-up: ALSO populate the NormalizedTx in-memory para que el
         # persister (que consume estos NormalizedTx) tenga acceso al stamped USD
         # y lo use en `_apply_cash_flow`. Sin esto, persist re-convertía con
@@ -897,7 +919,8 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
                  "qty": tx.quantity, "price": tx.unit_price, "notes": tx.notes},
                 ensure_ascii=False)))
         raw_id = cur.lastrowid
-        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue)
+        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue,
+                                            conn=conn, date=tx.date)
         tx.gross_amount_usd = gross_usd
         conn.execute(
             """INSERT INTO import_normalized_tx
@@ -1056,7 +1079,8 @@ def load_session_with_seed_revalidate(
     tc_blue_at_confirm = _read_user_tc_blue(conn, uid)
     for tx in valid_txs:
         fp = _row_fingerprint(tx)
-        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_confirm)
+        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_confirm,
+                                            conn=conn, date=tx.date)
         # Audit follow-up: stamp también en el NormalizedTx in-memory para que
         # el persister lo use en `_apply_cash_flow` (consistencia DB ↔ memory).
         tx.gross_amount_usd = gross_usd

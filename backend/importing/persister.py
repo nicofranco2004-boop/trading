@@ -36,6 +36,10 @@ from .schema import (
     OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TAX, OP_FUTURES_PNL,
 )
 from . import seed as _seed
+try:
+    from fx import fx_for_date
+except ImportError:  # pragma: no cover — import relativo según cómo se cargue el paquete
+    from ..fx import fx_for_date
 
 
 def blue_for_date(conn, date_str, fallback):
@@ -152,7 +156,8 @@ def persist_batch(
                 # para que `_apply_cash_flow` use el mismo USD que la DB.
                 from .pipeline import _stamp_gross_amount_usd, _read_user_tc_blue
                 _tc_blue_seed = _read_user_tc_blue(conn, uid)
-                gross_usd = _stamp_gross_amount_usd(st.currency, st.gross_amount, _tc_blue_seed)
+                gross_usd = _stamp_gross_amount_usd(st.currency, st.gross_amount, _tc_blue_seed,
+                                                    conn=conn, date=st.date)
                 st.gross_amount_usd = gross_usd
                 conn.execute(
                     """INSERT INTO import_normalized_tx
@@ -613,8 +618,19 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     total_proceeds_native = 0.0
     ops_created: List[int] = []
 
-    # TC efectivo de venta para SELLs ARS (USD para SELLs USD no aplica)
-    tc_venta = tc_blue if sell_currency == "ARS" else 1.0
+    # TC efectivo de venta para SELLs ARS (USD para SELLs USD no aplica).
+    #
+    # El TC de la FECHA DE LA VENTA, no el dólar vivo del import. Antes acá iba
+    # `tc_blue` —el blue del momento en que se corría el import— y por eso una venta
+    # en pesos de 2021 quedaba dividida por ~1450 en vez de por ~180: la octava parte
+    # del P&L real. Medido en prod: un usuario con 370 ventas de diez años estampadas
+    # todas con el mismo 1415,00 (`/api/admin/diagnose-sell-fx`).
+    #
+    # `fx_for_date` es estricta (MEP de la fecha → blue de la fecha → fallback), así
+    # que el replay es determinístico: es lo que permite reparar el histórico
+    # replayando en vez de escribiendo números que el próximo rebuild pisa.
+    tc_venta = (fx_for_date(conn, tx.date, fallback=tc_blue)
+                if sell_currency == "ARS" else 1.0)
 
     for p in positions:
         if remaining <= 1e-9:
@@ -648,8 +664,8 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
                 # lote), NO el blue de hoy: usarlo achica el costo e infla la
                 # ganancia con la devaluación del peso.
                 entry_dt = p["entry_date"] if "entry_date" in p.keys() else None
-                purchase_blue = blue_for_date(conn, entry_dt, tc_blue)
-                base_invested = base_invested / (purchase_blue or tc_blue)
+                purchase_fx = fx_for_date(conn, entry_dt, fallback=tc_blue)
+                base_invested = base_invested / (purchase_fx or tc_blue)
 
         entry_invested = base_invested * ratio if base_invested else None
 

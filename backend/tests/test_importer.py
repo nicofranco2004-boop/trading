@@ -5943,9 +5943,15 @@ class CrossCurrencyRealizedPnlTest(unittest.TestCase):
             conn.execute(f"DELETE FROM {t}")
         conn.commit()
         self.uid = _new_user(conn, email="xc_pnl@rendi.test")
-        # blue histórico: 1000 en 2024-11-01 (fecha de compra de los lotes de test)
+        # Dos fechas distintas a propósito: el TC de la COMPRA (2024-11-01 → 1000) y
+        # el de la VENTA (2025-10-01 → 1500). Antes el motor usaba el `tc_blue` del
+        # config para la venta y solo miraba la serie para el costo de un lote ARS;
+        # ahora las dos patas salen de `fx_for_date`, así que el fixture tiene que
+        # tener las dos fechas o el TC de venta cae por carry-forward al de compra.
         conn.execute(
             "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, source) VALUES ('2024-11-01', 1000, 'test')")
+        conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, source) VALUES ('2025-10-01', 1500, 'test')")
         conn.commit()
         conn.close()
 
@@ -5991,15 +5997,30 @@ class CrossCurrencyRealizedPnlTest(unittest.TestCase):
                                msg="Debe usar el blue de la fecha de compra, no el actual")
 
     def test_ars_lot_sold_usd_no_history_falls_back(self):
-        # Sin blue histórico para la fecha → fallback al blue actual (back-compat).
+        # Fecha de compra ANTERIOR a toda la serie → fallback explícito del caller.
         pnl = self._sell_pnl("USDT", "ARS", "USD", qty=10, lot_invested=10000,
                              exit_price=2.0, entry_date='2020-01-01')  # antes de fx_rates_daily
-        # costo = 10.000/1500 = 6,67 → P&L = 13,33 (comportamiento previo, sin data histórica)
+        # costo = 10.000/1500 = 6,67 → P&L = 13,33 (sin data histórica de esa fecha)
         self.assertAlmostEqual(pnl, 13.33, places=1)
 
+    def test_venta_usa_el_tc_de_SU_fecha_no_el_del_config(self):
+        """El fix de fondo: con la serie sembrada, el TC de la venta sale de la
+        FECHA DE LA VENTA. Si se sacara la fila de 2025-10-01, el carry-forward
+        traería el 1000 de la compra y el P&L cambiaría — que es exactamente el
+        bug que había con `tc_blue` (el dólar vivo del import)."""
+        conn = main.get_db()
+        conn.execute("DELETE FROM fx_rates_daily WHERE date='2025-10-01'")
+        conn.commit(); conn.close()
+        pnl_sin = self._sell_pnl("ARS", "ARS", "ARS", qty=10, lot_invested=15000,
+                                 exit_price=1600.0)
+        self.assertAlmostEqual(pnl_sin, 1000.0 / 1000.0, places=2)   # carry-forward: 1000
+
     def test_usd_lot_sold_ars_preserves_usd_cost(self):
-        # Lote USD (costo US$10) vendido 10u a 1600 ARS. cost_ars=10*1500=15000;
-        # proceeds_ars=16000; pnl_ars=1000; /1500 = +0,67. El costo USD se preserva.
+        # Lote USD (costo US$10) vendido 10u a 1600 ARS con el TC de la venta (1500):
+        # cost_ars=10*1500=15000; proceeds_ars=16000; pnl_ars=1000; /1500 = +0,67.
+        # El costo USD se preserva porque el MISMO TC multiplica y divide — por eso
+        # rebuild tiene que usar `tc_venta` acá y no `tc_blue` (si divergen, el costo
+        # queda ~7,6× inflado y aparece una pérdida fantasma).
         pnl = self._sell_pnl("ARS", "USD", "ARS", qty=10, lot_invested=10, exit_price=1600.0)
         self.assertAlmostEqual(pnl, 0.67, places=1)
 
