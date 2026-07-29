@@ -6503,12 +6503,20 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
             "SELECT currency FROM brokers WHERE user_id=? AND name=?",
             (uid, p.broker)).fetchone()
         resolved_ccy = "ARS" if (_br and _br["currency"] == "ARS") else "USD"
+    # TC de compra: si el usuario dejó el campo en blanco y el lote es en pesos,
+    # se completa con el dólar de la FECHA de la compra (hoy o retroactiva —
+    # fx_for_date resuelve las dos igual). Antes quedaba NULL y la vista "Costo
+    # en dólares de la compra" no tenía con qué calcular. Solo rellena el hueco:
+    # un TC tipeado por el usuario manda siempre.
+    tc_compra = p.tc_compra
+    if not tc_compra and not p.is_cash and (resolved_ccy or "").upper() == "ARS":
+        tc_compra = _fx.fx_for_date(conn, entry_date)   # None si la fecha es pre-serie
     cur = conn.execute(
         """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
            invested, tc_compra, price_override, notes, entry_date, commissions, asset_type, currency)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
-         p.invested, p.tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
+         p.invested, tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
          (p.asset_type or None), resolved_ccy),
     )
     new_id = cur.lastrowid
@@ -17897,7 +17905,11 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # es el mismo error que teníamos en el importador. Para una venta de
             # hoy los dos caminos dan el mismo número.
             if currency == "ARS":
-                if _fx.fx_version(conn, uid) == _fx.FX_V2:
+                if _fx.fx_version(conn, uid) == _fx.FX_V2 and not date_is_today:
+                    # Venta RETROACTIVA: el dólar de la fecha de la operación.
+                    # Para una venta de HOY el MEP vivo del mercado es mejor dato
+                    # que el último cierre guardado en la serie (el cron corre a
+                    # las 3 AM: la serie suele estar un día atrás intradía).
                     tc_venta = (_fx.fx_for_date(conn, date)
                                 or _current_cedear_rate() or _user_tc_blue(conn, uid))
                 else:

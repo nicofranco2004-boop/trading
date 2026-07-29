@@ -3317,7 +3317,8 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
             onChange={v => setForm(f => ({ ...f, tc_compra: v }))}
             type="number"
             step="any"
-            hint="Tipo de cambio del momento de la compra. Se usa para calcular el P&L equivalente en USD."
+            placeholder="auto: dólar de la fecha"
+            hint="Tipo de cambio del momento de la compra, para el costo equivalente en USD. Si lo dejás vacío, se completa solo con el dólar MEP de la fecha de entrada."
           />
         )}
 

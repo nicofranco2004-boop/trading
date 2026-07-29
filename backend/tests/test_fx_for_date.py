@@ -270,3 +270,54 @@ class VentaManualUsdSobreBrokerArsTest(unittest.TestCase):
         # 10u × US$150 = 1.500 de ingresos contra 1.000 de costo → +500 dólares.
         self.assertAlmostEqual(op["pnl_usd"], 500.0, places=1)
         self.assertNotAlmostEqual(op["pnl_usd"], 500.0 / 1440.0, places=1)   # el 0,35
+
+
+class TcCompraAutofillTest(unittest.TestCase):
+    """Alta manual de posición: TC de compra en blanco + fecha ⇒ se completa solo
+    con el dólar de ESA fecha (hoy o retroactiva). Un TC tipeado manda siempre.
+    Cubre las tres vías manuales: form desktop, mobile (mandan tc_compra=null) y
+    el registro por chat (construye PositionIn sin tc_compra)."""
+
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("fx_rates_daily", "operations", "positions", "brokers", "users",
+                  "monthly_entries", "config"):
+            try: self.conn.execute(f"DELETE FROM {t}")
+            except Exception: pass
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved) VALUES (?,?,1)",
+            ("tcauto@test", "x")).lastrowid
+        self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
+                          (self.uid, "IOL", "ARS"))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
+            "VALUES (?,?,?,?)", ("2021-06-15", BLUE_2021, MEP_2021, "test"))
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _crear(self, **kw):
+        p = main.PositionIn(broker="IOL", asset="GGAL", buy_price=1000,
+                            quantity=10, invested=10000, **kw)
+        with self.conn:
+            main._insert_manual_position(self.conn, self.uid, p)
+        return self.conn.execute(
+            "SELECT tc_compra, currency FROM positions WHERE user_id=? AND is_cash=0 "
+            "ORDER BY id DESC LIMIT 1", (self.uid,)).fetchone()
+
+    def test_blanco_con_fecha_retroactiva_usa_el_dolar_de_esa_fecha(self):
+        r = self._crear(entry_date="2021-06-15")
+        self.assertAlmostEqual(r["tc_compra"], MEP_2021, places=2)   # 190, no el de hoy
+
+    def test_tc_tipeado_manda_siempre(self):
+        r = self._crear(entry_date="2021-06-15", tc_compra=185.5)
+        self.assertAlmostEqual(r["tc_compra"], 185.5, places=2)
+
+    def test_lote_usd_no_se_le_inventa_tc(self):
+        r = self._crear(entry_date="2021-06-15", currency="USD")
+        self.assertIsNone(r["tc_compra"])
+
+    def test_fecha_pre_serie_queda_null_no_inventa(self):
+        r = self._crear(entry_date="2005-01-01")
+        self.assertIsNone(r["tc_compra"])    # sin dato histórico → mejor vacío que falso
