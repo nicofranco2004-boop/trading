@@ -117,6 +117,9 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
 
     antes = _metricas(conn, uid)
     resultado: Dict[str, Any] = {"ok": True, "user_id": uid, "antes": antes}
+    cash_antes = {r["broker"]: round(r["c"] or 0, 4) for r in conn.execute(
+        "SELECT broker, SUM(invested) c FROM positions "
+        "WHERE user_id=? AND is_cash=1 GROUP BY broker", (uid,))}
 
     # ── PATA 1: re-estampar los flujos con el TC de la fecha de cada uno ──────
     # Se re-estampa TODA fila ARS con gross_amount (no solo DEPOSIT/WITHDRAW):
@@ -203,6 +206,44 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     recalc(conn, uid)
     backfill_snapshots(conn, uid)
     recompute_netdep(conn, uid)
+
+    # ── VERIFICACIÓN: la prueba de que quedó bien, no solo de que corrió ──────
+    # Tres invariantes chequeables desde la base, sin fe:
+    #  1. cada venta ARS importada quedó estampada con el TC de SU fecha
+    #  2. los flujos dejaron de estar todos al mismo TC (la firma del bug era UN
+    #     solo TC para años de depósitos; ahora tiene que haber muchos)
+    #  3. el cash NO se movió (el migrador no lo toca; si cambió, algo anda mal)
+    ventas_chk = conn.execute(
+        """SELECT o.date, o.fx_to_usd FROM operations o
+             JOIN import_op_links l ON l.operation_id = o.id
+            WHERE o.user_id=? AND o.op_type='Venta'
+              AND o.fx_to_usd IS NOT NULL AND o.fx_to_usd > 1""", (uid,)).fetchall()
+    ok_tc, mal_tc = 0, []
+    _vcache: Dict[str, Optional[float]] = {}
+    for v in ventas_chk:
+        d = (v["date"] or "")[:10]
+        if d not in _vcache:
+            _vcache[d] = fx_for_date(conn, d)
+        esperado = _vcache[d]
+        if esperado and abs(float(v["fx_to_usd"]) / esperado - 1) <= 0.01:
+            ok_tc += 1
+        else:
+            mal_tc.append({"fecha": d, "fx_estampado": round(float(v["fx_to_usd"]), 2),
+                           "fx_de_la_fecha": round(esperado, 2) if esperado else None})
+    resultado["verificacion"] = {
+        "ventas_al_tc_de_su_fecha": f"{ok_tc}/{len(ventas_chk)}",
+        "ventas_con_tc_distinto": mal_tc[:5],
+        "tcs_distintos_en_flujos": {"antes": antes["tcs_distintos_en_flujos"],
+                                    "despues": _metricas(conn, uid)["tcs_distintos_en_flujos"]},
+        "cash_intacto": cash_antes == {r["broker"]: round(r["c"] or 0, 4) for r in conn.execute(
+            "SELECT broker, SUM(invested) c FROM positions "
+            "WHERE user_id=? AND is_cash=1 GROUP BY broker", (uid,))},
+        "nota": "antes los flujos estaban TODOS al mismo TC (la firma del bug); "
+                "después tiene que haber un TC por fecha. `cash_intacto` tiene que "
+                "ser true: el migrador no toca la caja. Las ventas de pares "
+                "salteados (manuales) no entran acá: conservan su TC viejo a "
+                "propósito.",
+    }
 
     despues = _metricas(conn, uid)
     resultado["despues"] = despues

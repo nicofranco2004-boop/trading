@@ -146,6 +146,13 @@ class FxMigrateTest(unittest.TestCase):
             "SELECT fx_to_usd FROM operations WHERE user_id=? AND op_type='Venta'",
             (self.uid,)).fetchone()["fx_to_usd"]
         self.assertAlmostEqual(fx, MEP_VTA, places=2)
+        # La VERIFICACIÓN incluida: la prueba de que quedó bien, no solo de que corrió.
+        v = out["verificacion"]
+        self.assertEqual(v["ventas_al_tc_de_su_fecha"], "1/1")
+        self.assertEqual(v["ventas_con_tc_distinto"], [])
+        self.assertTrue(v["cash_intacto"])          # el migrador no toca la caja
+        self.assertGreaterEqual(v["tcs_distintos_en_flujos"]["despues"],
+                                v["tcs_distintos_en_flujos"]["antes"])
 
     def test_migracion_es_idempotente(self):
         self._importar_historia_v1()

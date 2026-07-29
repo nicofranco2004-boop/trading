@@ -1564,8 +1564,16 @@ function FxMigratePanel({ toast }) {
                       </td>
                       <td className="py-1.5 text-ink-3">
                         {s && !s.ok ? (s.motivo || '').slice(0, 80)
-                          : s?.ok && s.rebuild?.pares_salteados?.length
-                            ? `${s.rebuild.pares_salteados.length} par(es) con ventas manuales sin migrar`
+                          : s?.ok && s.verificacion
+                            ? <>
+                                <span className={s.verificacion.cash_intacto ? 'text-emerald-500' : 'text-red-400'}>
+                                  ✓ {s.verificacion.ventas_al_tc_de_su_fecha} ventas al TC de su fecha
+                                  {' · '}cash {s.verificacion.cash_intacto ? 'intacto' : '⚠️ CAMBIÓ'}
+                                  {' · '}TCs en flujos {s.verificacion.tcs_distintos_en_flujos?.antes}→{s.verificacion.tcs_distintos_en_flujos?.despues}
+                                </span>
+                                {s.rebuild?.pares_salteados?.length
+                                  ? ` · ${s.rebuild.pares_salteados.length} par(es) manuales sin migrar` : ''}
+                              </>
                             : c.ventas_manuales > 0 ? `${c.ventas_manuales} venta(s) manual(es)` : ''}
                       </td>
                     </tr>
