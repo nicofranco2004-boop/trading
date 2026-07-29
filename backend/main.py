@@ -10970,7 +10970,8 @@ def _remove_trajectory_outlier_snapshots(conn, uid: int) -> list:
             monthly[(r["year"], r["month"])] = float(r["capital_final"])
     if not monthly:
         return []
-    bad = []
+    flagged: dict = {}      # (año, mes) → [ids fuera de banda]
+    total_mes: dict = {}    # (año, mes) → cuántos snapshots evaluables tiene
     for s in conn.execute("SELECT id, date, total_value FROM snapshots WHERE user_id=?", (uid,)):
         tv = float(s["total_value"] or 0)
         if tv <= 0:
@@ -10982,9 +10983,35 @@ def _remove_trajectory_outlier_snapshots(conn, uid: int) -> list:
         capf = monthly.get((y, m))
         if not capf:
             continue                       # sin referencia del mes → no tocar
+        total_mes[(y, m)] = total_mes.get((y, m), 0) + 1
         ratio = tv / capf
         if ratio < 0.10 or ratio > 20.0:
-            bad.append(s["id"])
+            flagged.setdefault((y, m), []).append(s["id"])
+
+    # ── GUARD: si CASI TODO el mes cae fuera de banda, el sospechoso es el ANCLA ──
+    # `capital_final` sale de SUM(operations.pnl_usd) (_recalc_pnl_realized_from_ops),
+    # así que una sola venta con el P&L corrupto lo infla el mes entero y TODOS los
+    # snapshots diarios —que se valúan a precio de mercado, o sea el número REAL—
+    # pasan a leerse como outliers. Ese es exactamente el cohorte del bug per-100:
+    # valor diario real ~20k contra un capital_final de 2,8M da ratio 0,007 y se
+    # borraría la curva entera. Y no se puede recomputar: no guardamos precios
+    # históricos (ver el comentario de _repair_user_history).
+    #
+    # La contaminación genuina que esta rutina busca son puntos SUELTOS que el cron
+    # tomó con la data a medio escribir. Si el mes entero está fuera de banda, no son
+    # los días los que están mal.
+    bad, meses_protegidos = [], []
+    for ym, ids in flagged.items():
+        n_tot = total_mes.get(ym, 0)
+        if n_tot >= 3 and len(ids) / n_tot >= 0.8:
+            meses_protegidos.append(f"{ym[0]}-{ym[1]:02d}")
+            continue
+        bad.extend(ids)
+    if meses_protegidos:
+        log.warning(
+            "uid=%s: %d mes(es) NO se limpiaron porque casi todos sus snapshots caen "
+            "fuera de banda ⇒ el capital_final del mes es el sospechoso, no los días: %s",
+            uid, len(meses_protegidos), ", ".join(sorted(meses_protegidos)[:12]))
     if bad:
         ph = ",".join("?" * len(bad))
         conn.execute(f"DELETE FROM snapshots WHERE id IN ({ph}) AND user_id=?", (*bad, uid))

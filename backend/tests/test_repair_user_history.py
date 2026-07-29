@@ -109,6 +109,63 @@ class RepairUserHistoryTest(unittest.TestCase):
         self.assertIn("2026-06-10", dates)       # diario legítimo: queda
         self.assertNotIn("2026-06-12", dates)    # contaminado: se fue
 
+    def test_ancla_corrupta_NO_borra_la_curva_diaria_real(self):
+        """El caso del bug per-100: `capital_final` viene de SUM(operations.pnl_usd),
+        así que UNA venta con el P&L inflado ×100 infla el mes entero y TODOS los
+        snapshots diarios —que se valúan a mercado, o sea el número REAL— pasan a
+        leerse como outliers. Sin guard se borraba la curva completa, y no se puede
+        recomputar: no guardamos precios históricos."""
+        self._monthly(2026, 6, 0, 2800000)          # capital_final inflado (2,8M)
+        for d in range(1, 21):                      # 20 diarios REALES en torno a 20k
+            self.conn.execute(
+                "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+                "VALUES (?,?,?,?,?)",
+                (self.uid, f"2026-06-{d:02d}", 20000 + d * 50, 19000, 19000))
+        self.conn.commit()
+
+        with self.conn:
+            removed = main._remove_trajectory_outlier_snapshots(self.conn, self.uid)
+
+        # ratio = 20.000/2.800.000 = 0,007 → los 20 caen fuera de banda. No se toca ninguno.
+        self.assertEqual(removed, [])
+        n = self.conn.execute(
+            "SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (self.uid,)).fetchone()["c"]
+        self.assertEqual(n, 20)
+
+    def test_el_guard_no_tapa_la_contaminacion_genuina(self):
+        """Un mes sano con UN punto suelto roto: el guard no se activa y se limpia igual."""
+        self._monthly(2026, 6, 0, 20000)
+        for d in range(1, 11):
+            self.conn.execute(
+                "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+                "VALUES (?,?,?,?,?)",
+                (self.uid, f"2026-06-{d:02d}", 20000 + d * 50, 19000, 19000))
+        self.conn.execute(                           # el único contaminado
+            "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+            "VALUES (?,?,?,?,?)", (self.uid, "2026-06-15", 370.0, 19000, 19000))
+        self.conn.commit()
+
+        with self.conn:
+            removed = main._remove_trajectory_outlier_snapshots(self.conn, self.uid)
+
+        self.assertEqual(len(removed), 1)            # 1 de 11 = 9% → muy por debajo del 80%
+        dates = [r["date"] for r in self.conn.execute(
+            "SELECT date FROM snapshots WHERE user_id=?", (self.uid,))]
+        self.assertNotIn("2026-06-15", dates)
+        self.assertEqual(len(dates), 10)
+
+    def test_mes_con_pocos_puntos_sigue_limpiandose(self):
+        """El guard exige ≥3 snapshots en el mes: con 1 o 2 no hay evidencia de que el
+        ancla sea el problema, así que se mantiene el comportamiento viejo."""
+        self._monthly(2026, 6, 0, 20000)
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+            "VALUES (?,?,?,?,?)", (self.uid, "2026-06-12", 400, 20000, 20000))
+        self.conn.commit()
+        with self.conn:
+            removed = main._remove_trajectory_outlier_snapshots(self.conn, self.uid)
+        self.assertEqual(len(removed), 1)
+
     def test_mass_dry_run_no_toca_la_base_real(self):
         # _repair_snapshots_summary(apply=False) corre sobre una COPIA → la real
         # queda intacta (el snapshot contaminado SIGUE hasta que se aplique de verdad).
