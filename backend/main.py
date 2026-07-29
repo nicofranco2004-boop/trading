@@ -12286,6 +12286,84 @@ def admin_fx_migrate_user(user_id: int, apply: bool = False,
     finally:
         conn.close()
 
+@app.get("/api/admin/fx-migrate-candidates")
+def admin_fx_migrate_candidates(uid: int = Depends(get_admin_user)):
+    """Lista las cuentas para el panel de migración FX: en qué versión está cada
+    una, cuánta data tiene, y si está BLOQUEADA por el bug de escala per-100
+    (esas van por su procedimiento propio antes). Orden: primero las más chicas,
+    que son las que conviene migrar primero para validar la mecánica.
+    """
+    conn = get_db()
+    try:
+        candidatos = []
+        for u in conn.execute(
+            """SELECT DISTINCT user_id uid FROM (
+                   SELECT user_id FROM operations
+                   UNION SELECT user_id FROM import_batches WHERE status='confirmed'
+               )"""):
+            au = u["uid"]
+            ver = conn.execute(
+                "SELECT value FROM config WHERE user_id=? AND key='fx_version'",
+                (au,)).fetchone()
+            version = ver["value"] if ver and ver["value"] in ("v1", "v2") else "v1"
+
+            ventas = conn.execute(
+                "SELECT COUNT(*) n FROM operations WHERE user_id=? AND op_type='Venta'",
+                (au,)).fetchone()["n"]
+            flujos = conn.execute(
+                """SELECT COUNT(*) n FROM import_normalized_tx n
+                     JOIN import_batches b ON b.id=n.batch_id
+                    WHERE b.user_id=? AND b.status='confirmed'
+                      AND UPPER(COALESCE(n.currency,''))='ARS'
+                      AND n.gross_amount IS NOT NULL""", (au,)).fetchone()["n"]
+            escala = conn.execute(
+                """SELECT COUNT(*) n FROM operations o
+                     JOIN import_op_links l ON l.operation_id = o.id
+                     JOIN import_normalized_tx n2
+                          ON n2.batch_id=l.batch_id AND n2.raw_row_id=l.raw_row_id
+                    WHERE o.user_id=? AND o.op_type='Venta'
+                      AND o.exit_price IS NOT NULL AND o.quantity IS NOT NULL
+                      AND n2.gross_amount IS NOT NULL AND n2.gross_amount <> 0
+                      AND n2.quantity IS NOT NULL AND n2.quantity <> 0
+                      AND ABS((o.exit_price*o.quantity) /
+                              (n2.gross_amount*o.quantity/n2.quantity) - 1) > 0.02""",
+                (au,)).fetchone()["n"]
+            manuales = conn.execute(
+                """SELECT COUNT(*) n FROM operations o
+                     LEFT JOIN import_op_links l ON l.operation_id = o.id
+                    WHERE o.user_id=? AND o.op_type='Venta' AND l.operation_id IS NULL""",
+                (au,)).fetchone()["n"]
+            urow = conn.execute("SELECT tier FROM users WHERE id=?", (au,)).fetchone()
+
+            candidatos.append({
+                "user_id": au,
+                "fx_version": version,
+                "tier": urow["tier"] if urow else None,
+                "ventas": ventas,
+                "flujos_ars": flujos,
+                "ventas_manuales": manuales,
+                "bloqueada_por_escala": escala > 0,
+                "ventas_con_escala_rota": escala,
+            })
+        candidatos.sort(key=lambda c: (c["fx_version"] != "v1",      # v1 primero
+                                       c["bloqueada_por_escala"],     # migrables primero
+                                       c["ventas"]))                  # chicas primero
+        return {
+            "total": len(candidatos),
+            "v1_migrables": sum(1 for c in candidatos
+                                if c["fx_version"] == "v1" and not c["bloqueada_por_escala"]),
+            "v1_bloqueadas_por_escala": sum(1 for c in candidatos
+                                            if c["fx_version"] == "v1" and c["bloqueada_por_escala"]),
+            "v2_ya_migradas": sum(1 for c in candidatos if c["fx_version"] == "v2"),
+            "cuentas": candidatos,
+        }
+    except Exception as e:
+        log.exception("fx-migrate-candidates FAILED")
+        raise HTTPException(status_code=500, detail=f"fx-migrate-candidates falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 
 
 @app.get("/api/admin/commissions-debug")
