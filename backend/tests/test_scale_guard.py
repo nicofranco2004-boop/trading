@@ -38,26 +38,63 @@ def _helpers():
 
 
 class ReconciledUnitPriceTest(unittest.TestCase):
-    """La función pura, con los números del fixture real de Balanz."""
+    """La función pura. Solo reconcilia DOS convenciones de mercado; todo lo demás
+    queda intacto a propósito (ver el docstring de la función)."""
 
+    # ── Lo que sí reconcilia ─────────────────────────────────────────────
     def test_per_100(self):
-        # GD30: 1000 nominales, precio 66,04, monto 660,4 → per-1
+        # GD30 del fixture real de Balanz: 1000 nominales, precio 66,04, monto 660,4
         self.assertAlmostEqual(ps.reconciled_unit_price(66.04, 1000, 660.4), 0.6604, places=6)
+        self.assertAlmostEqual(ps.reconciled_unit_price(66.04, 1000, 660.4, "BOND"), 0.6604, places=6)
+        self.assertAlmostEqual(ps.reconciled_unit_price(66.04, 1000, 660.4, "OTHER"), 0.6604, places=6)
 
     def test_vcp_1000(self):
         self.assertAlmostEqual(ps.reconciled_unit_price(2290, 1000, 2290), 2.29, places=6)
+        self.assertAlmostEqual(ps.reconciled_unit_price(2290, 1000, 2290, "FUND"), 2.29, places=6)
 
-    def test_inverso(self):
-        self.assertAlmostEqual(ps.reconciled_unit_price(0.5, 10, 500), 50.0, places=6)
+    def test_per_100_con_comision_embebida_dentro_de_tolerancia(self):
+        # ratio 100,5 (0,5% de comisión sobre un per-100) → sigue siendo per-100
+        self.assertAlmostEqual(ps.reconciled_unit_price(66.04, 1000, 657.11), 0.65711, places=6)
 
+    # ── Lo que NO toca: k sin evidencia (las peores cuentas de prod) ──────
+    def test_k_absurdo_no_se_toca(self):
+        """#160 (k≈1e13), #607 (1e6), #451 (1e5), opciones (1e4). diagnose-scale solo
+        midió percentiles para 90≤k≤110; fuera de ahí no hay ninguna evidencia de que
+        gane el monto, y derivarlo da precio ~0 → proceeds ~0, cash ~0 y un lote
+        semilla a costo ~0. Se reportan y se miran a mano."""
+        for k in (1e4, 1e5, 1e6, 1e13):
+            self.assertEqual(ps.reconciled_unit_price(k, 1, 1.0), k, f"k={k} no debe tocarse")
+        # el caso literal del user 160
+        self.assertEqual(ps.reconciled_unit_price(10000.0, 1000, 1e-6), 10000.0)
+
+    def test_banda_intermedia_no_se_toca(self):
+        for ratio in (5, 10, 50, 200, 500):
+            self.assertEqual(ps.reconciled_unit_price(ratio, 1, 1.0), ratio)
+
+    # ── Lo que NO toca: el separador de miles comido ──────────────────────
+    def test_monto_mal_parseado_en_una_accion_no_se_toca(self):
+        """parse_number("660.400") = 660,4 (normalizer.py:90 y el _num de los 8
+        parsers). Una fila SANA con el monto así escrito da ratio 1000 — la misma
+        firma que un FCI legítimo. Gatearlo por asset_type evita destruir el precio
+        bueno y, en una venta, escribir un crédito de cash ×1000 más chico."""
+        self.assertEqual(ps.reconciled_unit_price(660.4, 1000, 660.4, "STOCK"), 660.4)
+        self.assertEqual(ps.reconciled_unit_price(660.4, 1000, 660.4, "CEDEAR"), 660.4)
+        self.assertEqual(ps.reconciled_unit_price(660.4, 1000, 660.4, "CRYPTO"), 660.4)
+
+    def test_cantidad_mal_parseada_no_se_tapa(self):
+        """cantidad "1.000" → 1,0 con monto sano da ratio ≈ 0,001. Derivarlo daría un
+        precio de 660.400 por unidad y TAPARÍA el bug de cantidad. La banda inversa
+        ya no dispara."""
+        self.assertEqual(ps.reconciled_unit_price(660.4, 1.0, 660400.0), 660.4)
+        self.assertEqual(ps.reconciled_unit_price(0.5, 10, 500), 0.5)          # ratio 0,01
+        self.assertEqual(ps.reconciled_unit_price(0.5, 10, 5000), 0.5)         # ratio 0,001
+
+    # ── No-regresión ─────────────────────────────────────────────────────
     def test_comision_embebida_intacta(self):
         self.assertEqual(ps.reconciled_unit_price(10.30, 100, 1000), 10.30)   # ratio 1,03
 
     def test_triangulo_exacto_intacto(self):
         self.assertEqual(ps.reconciled_unit_price(150, 10, 1500), 150)
-
-    def test_gap_4x_intacto(self):
-        self.assertEqual(ps.reconciled_unit_price(40, 10, 100), 40)           # frontera <5×
 
     def test_sin_monto_intacto(self):
         self.assertEqual(ps.reconciled_unit_price(66.04, 1000, None), 66.04)

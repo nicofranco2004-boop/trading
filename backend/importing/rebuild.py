@@ -261,7 +261,8 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             # pueden traer el precio en otra escala que el monto. Sin esto, cada
             # rebuild re-imprime la escala rota aunque el normalizer ya la corrija
             # en imports nuevos. Ver persister.reconciled_unit_price.
-            unit = _num(reconciled_unit_price(ev["unit_price"], ev["quantity"], ev["gross_amount"]))
+            unit = _num(reconciled_unit_price(ev["unit_price"], ev["quantity"], ev["gross_amount"],
+                                              ev.get("asset_type")))
             invested = _num(ev["gross_amount"]) if ev["gross_amount"] is not None else unit * qty
             fees = _num(ev["fees"])
             seen_buy_ccy.add(_norm_cur(ev["currency"]) or broker_currency)
@@ -296,7 +297,8 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
 
         # Mismo guard de escala que en la compra (y que _persist_sell_fifo): con el
         # costo sano, un precio per-100 acá inflaba el P&L ×100 entero.
-        exit_price = _num(reconciled_unit_price(ev["unit_price"], ev["quantity"], ev["gross_amount"]))
+        exit_price = _num(reconciled_unit_price(ev["unit_price"], ev["quantity"], ev["gross_amount"],
+                                                ev.get("asset_type")))
         sell_commissions = _num(ev["fees"])
         qty_to_sell = _num(ev["quantity"])
         op_date = ev["date"]

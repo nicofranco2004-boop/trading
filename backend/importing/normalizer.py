@@ -394,30 +394,27 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
                 if p != 0:
                     tx.quantity = round(a / p, 8)
             elif q and p and a and q != 0:
-                # Los TRES vienen y se CONTRADICEN por un orden de magnitud.
+                # Los TRES vienen y se CONTRADICEN por una CONVENCIÓN DE ESCALA
+                # CONOCIDA (renta fija per-100 / VCP de FCI por 1.000 cuotapartes).
                 #
                 # El motor lee el costo de `monto` (persister.py:411) y los ingresos
                 # de `precio × cantidad` (persister.py:536→609), y nunca los
                 # reconcilia. Con el costo sano, todo el error de escala del precio
-                # cae sobre el P&L: un bono cotizado por 100 nominales da
-                # `pnl = 99 × costo` y `pnl_pct ≈ 9.900%`.
+                # cae sobre el P&L: un bono per-100 da `pnl = 99 × costo`.
                 #
-                # `monto` es la plata que SE MOVIÓ (la columna de caja del resumen);
-                # `precio` es lo que el broker imprimió, en la convención que se le
-                # cantó. Ante el conflicto gana `monto` — que es exactamente lo que
-                # ya hacen los parsers de IOL (iol.py:714) y Cocos (cocos.py:531)
-                # derivando `precio = monto/cantidad`, y por eso son inmunes.
-                #
-                # Umbral 5×: las comisiones embebidas mueven el triángulo 1-3% (ver
-                # el guard de tasa ≤3% en balanz_movimientos.py:428) y el ruido de
-                # redondeo FX menos todavía. Los desvíos reales que corregimos son
-                # ×100 (renta fija per-100: ieb.py:318, balanz.py:264, ppi.py:323,
-                # bullmarket.py:383) y ×1000 (VCP de FCI por 1.000 cuotapartes, y el
-                # precio con 3 decimales de coma mal parseado). 5× no toca ninguna
-                # comisión concebible y entra cómodo debajo de 100.
-                ratio = (q * p) / a
-                if ratio >= 5 or ratio <= 0.2:
-                    tx.unit_price = round(a / q, 8)
+                # ⚠️ Solo esas dos ventanas, gateadas por tipo de instrumento. `k` NO
+                # dice cuál de los tres campos está mal: `parse_number("660.400")`
+                # devuelve 660,4 (se come el separador de miles, ver :90), así que una
+                # fila SANA con el monto así escrito da la MISMA firma que un FCI
+                # legítimo — y ahí el corrupto es el monto, no el precio. Con un k
+                # arbitrario (1e4, 1e6, 1e13, medidos en prod) no hay ninguna
+                # evidencia de cuál gana. Esos quedan intactos y se reportan por
+                # /api/admin/diagnose-scale: un número que no entendemos conserva su
+                # firma absurda, que es lo que permite detectarlo.
+                # La lógica canónica vive en persister.reconciled_unit_price.
+                from .persister import reconciled_unit_price
+                tx.unit_price = round(
+                    reconciled_unit_price(p, q, a, tx.asset_type), 8)
 
             # tc de la compra (ARS/USD) para la vista "costo al dólar de la
             # compra": del CSV (columna 'tc'), o derivado monto_ARS/monto_usd.

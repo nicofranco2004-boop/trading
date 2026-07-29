@@ -404,25 +404,48 @@ def persist_batch(
 
 # ─── Implementaciones por op_type ────────────────────────────────────────────
 
-def reconciled_unit_price(unit_price, quantity, gross_amount):
-    """Precio efectivo por unidad cuando `monto` contradice a `precio × cantidad`.
+# ─── Convenciones de escala conocidas ───────────────────────────────────────
+# Solo estas dos. Cada una es una convención DOCUMENTADA del mercado local, con su
+# familia de instrumentos; fuera de ellas no reconciliamos nada (ver el docstring).
+_ESCALA_PER_100 = 100.0     # renta fija: cotiza por 100 nominales
+_ESCALA_VCP_1000 = 1000.0   # FCI: el VCP se publica por 1.000 cuotapartes
+_TOL_ESCALA = 0.02          # ±2% — absorbe comisión embebida sin llegar a otra potencia
+
+
+def reconciled_unit_price(unit_price, quantity, gross_amount, asset_type=None):
+    """Precio efectivo por unidad cuando `monto` contradice a `precio × cantidad`
+    por una CONVENCIÓN DE ESCALA CONOCIDA. Fuera de esas, no toca nada.
 
     El motor toma el COSTO de `gross_amount` (la caja real) y los INGRESOS de
-    `unit_price × quantity`. Si el precio viene en otra escala (bono per-100,
-    VCP de FCI por 1.000 cuotapartes, coma decimal mal parseada), el costo queda
-    sano y TODO el error cae en el P&L: `pnl = 99 × costo` para un per-100.
+    `unit_price × quantity`. Si el precio viene en otra escala, el costo queda sano
+    y TODO el error cae en el P&L: `pnl = 99 × costo` para un bono per-100.
 
-    Ante un desvío de un orden de magnitud gana la caja: `precio = monto/cantidad`
-    — la convención de IOL (iol.py:714) y Cocos (cocos.py:531), los dos únicos
-    parsers inmunes al bug. El normalizer aplica esta misma regla al PARSEAR
-    (normalizer.py, rama del triángulo); acá se repite porque el rebuild replaya
-    `import_normalized_tx` YA GUARDADO — sin este guard, cada rebuild re-imprime
-    la escala rota del stock histórico aunque el parseo nuevo esté sano.
+    ── POR QUÉ ESTO ESTÁ TAN ACOTADO (dos hallazgos que costaron caro) ──
 
-    Umbral 5×: las comisiones embebidas mueven el triángulo 1-3% (guard ≤3% en
-    balanz_movimientos) y el ruido FX menos. Medido en prod (2026-07-28, 129.607
-    filas): el cluster per-100 tiene p50 = 100,000 EXACTO ⇒ gross_amount es BRUTO
-    y esta derivación no absorbe ninguna comisión.
+    1. `k` NO IDENTIFICA CUÁL DE LOS TRES CAMPOS ESTÁ MAL. `parse_number("660.400")`
+       devuelve 660,4: se come el separador de miles (normalizer.py:90 "si solo hay
+       punto, asumimos que es decimal", y el `_num` de los 8 parsers de movimientos
+       hace lo mismo). Una fila SANA con el monto así escrito da k = 1000 — la misma
+       firma que un FCI legítimo — y ahí el corrupto es el MONTO, no el precio:
+       derivarlo destruye un precio bueno y, en una venta, escribe un crédito de cash
+       ×1000 más chico (persister:695 sale de este mismo número). Lo mismo con
+       `cantidad` "1.000" → 1,0, que da k ≈ 0,001 y taparía un bug de cantidad.
+       ⚠️ `tenencia._num` usa la convención OPUESTA para la misma celda: una de las
+       dos está mal por construcción. Mientras eso siga así, ceñirse a las dos
+       convenciones de mercado es lo único defendible.
+
+    2. NO HAY EVIDENCIA FUERA DE LA BANDA MEDIDA. `/api/admin/diagnose-scale` calculó
+       percentiles solo para 90 ≤ k ≤ 110 (p50 = 100,000 exacto ⇒ `gross_amount` es
+       BRUTO, no neto de comisiones). Las cuentas con k = 1e4/1e5/1e6/1e13 caen en la
+       banda "otro", la única sin ninguna medición. Un k de 1e13 no es ninguna
+       convención de escala: es basura, y `precio = monto/cantidad` ahí da ~0 →
+       proceeds ~0, cash ~0 y un lote semilla a costo ~0 que hace que toda venta
+       posterior del activo muestre ganancia ~100%. Esas filas se REPORTAN
+       (diagnose-scale) y se miran a mano; no se auto-corrigen.
+
+    Fuera de estas dos ventanas el valor se devuelve INTACTO — a propósito. Un número
+    que no entendemos se queda con su firma `pnl_pct` absurda, que es lo que permite
+    detectarlo; "arreglarlo" a ciegas lo volvería invisible.
     """
     try:
         up = float(unit_price or 0)
@@ -430,9 +453,18 @@ def reconciled_unit_price(unit_price, quantity, gross_amount):
         ga = float(gross_amount or 0)
     except (TypeError, ValueError):
         return unit_price
-    if up > 0 and q > 0 and ga > 0:
-        ratio = (up * q) / ga
-        if ratio >= 5 or ratio <= 0.2:
+    if not (up > 0 and q > 0 and ga > 0):
+        return up
+    ratio = (up * q) / ga
+    at = (asset_type or "").upper()
+    # Renta fija per-100. `OTHER` entra porque los parsers de bonos AR muchas veces
+    # no clasifican el instrumento (AL30/GD30/PVR1Q llegan como OTHER).
+    if at in ("BOND", "OTHER", ""):
+        if abs(ratio / _ESCALA_PER_100 - 1) <= _TOL_ESCALA:
+            return ga / q
+    # FCI: VCP por 1.000 cuotapartes.
+    if at in ("FUND", "OTHER", ""):
+        if abs(ratio / _ESCALA_VCP_1000 - 1) <= _TOL_ESCALA:
             return ga / q
     return up
 
@@ -440,7 +472,7 @@ def reconciled_unit_price(unit_price, quantity, gross_amount):
 def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
     """Compra → INSERT positions + debit cash. Equivalente a POST /positions."""
     qty = float(tx.quantity or 0)
-    unit = float(reconciled_unit_price(tx.unit_price, qty, tx.gross_amount) or 0)
+    unit = float(reconciled_unit_price(tx.unit_price, qty, tx.gross_amount, tx.asset_type) or 0)
     invested = float(tx.gross_amount) if tx.gross_amount is not None else (unit * qty)
     fees = float(tx.fees or 0)
     # Persistimos la moneda nativa del lote (USD para Compra Dolar Mep, ARS
@@ -532,7 +564,8 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     # Guard de escala: si `monto` contradice a precio×cantidad por un orden de
     # magnitud, los proceeds reales son el monto (ver reconciled_unit_price).
     # Cubre también el REPLAY de tx viejas guardadas con el precio per-100.
-    unit_eff = float(reconciled_unit_price(tx.unit_price, qty_to_sell, tx.gross_amount) or 0)
+    unit_eff = float(reconciled_unit_price(tx.unit_price, qty_to_sell, tx.gross_amount,
+                                            tx.asset_type) or 0)
 
     # Política: si el CSV vende más de lo disponible, asumimos que existe stock
     # previo que el CSV no incluye (history-as-truth). Auto-creamos un seed lot

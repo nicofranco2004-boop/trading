@@ -54,10 +54,26 @@ class TriangleReconcileTest(unittest.TestCase):
         self.assertAlmostEqual(tx.unit_price, 0.70, places=6)
         self.assertAlmostEqual(tx.quantity * tx.unit_price, tx.gross_amount, places=4)
 
-    def test_precio_demasiado_chico_tambien(self):
-        """El desvío inverso (ratio ≤ 0,2) también se reconcilia."""
-        tx = _norm(cantidad="10", precio="0.5", monto="500")
-        self.assertAlmostEqual(tx.unit_price, 50.0, places=6)
+    def test_desvio_inverso_NO_se_toca(self):
+        """La banda inversa se sacó a propósito: `cantidad` "1.000" se parsea como
+        1,0 (parse_number se come el separador de miles) y da ratio ≈ 0,001.
+        Derivar el precio ahí TAPARÍA el bug de cantidad en vez de arreglarlo."""
+        tx = _norm(cantidad="10", precio="0.5", monto="500")     # ratio 0,01
+        self.assertAlmostEqual(tx.unit_price, 0.5, places=6)
+
+    def test_k_sin_evidencia_NO_se_toca(self):
+        """Los k de las peores cuentas de prod (1e4 a 1e13) quedan intactos: no hay
+        ninguna medición que respalde de qué lado está el error, y derivarlos daría
+        precio ~0 → proceeds ~0 → cash ~0, sin la firma que hoy los delata."""
+        tx = _norm(cantidad="1", precio="10000", monto="1")      # ratio 10.000
+        self.assertAlmostEqual(tx.unit_price, 10000.0, places=4)
+
+    def test_accion_con_monto_mal_parseado_NO_se_toca(self):
+        """Mismo ratio 1000 que un FCI, pero en una acción: acá el corrupto es el
+        MONTO (separador de miles comido), no el precio."""
+        tx = _norm(activo="GGAL", asset_type="STOCK",
+                   cantidad="1000", precio="660.4", monto="660.4")
+        self.assertAlmostEqual(tx.unit_price, 660.4, places=4)
 
     # ── Lo que NO se toca (el umbral tiene que dejarlo pasar) ────────────
     def test_comision_embebida_del_3pct_no_se_toca(self):
