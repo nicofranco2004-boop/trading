@@ -313,9 +313,11 @@ class TestBullMarketMovimientos(unittest.TestCase):
         # FCI: suscripción (cash out) → RETIRO ; rescate (con cantidad) → VENTA.
         "23/08/24;23/08/24;SFCI;355160;10000;CONAAFA;\n"
         "04/11/24;01/11/24;LRFD;466687;-11857;CONAAFA;-1.1972                    0.0000\n"
-        # Dividendos: este export no trae monto confiable → se omiten.
+        # Dividendos: sin monto se omiten; con monto cuentan, y el SIGNO manda
+        # (negativo = entró plata → DIVIDENDO; positivo = salió → retención/FEE).
         "18/08/23;18/08/23;DIV;763092;;AAPL;\n"
-        "11/06/24;11/06/24;DIV;427507;676,63;NVDA;\n"
+        "11/06/24;11/06/24;DIV;427507;-676,63;NVDA;\n"
+        "12/06/24;12/06/24;DIV;427508;45,5;NVDA;\n"
         # Bono RETENIDO (no MEP): precio viene per-100 → se pasa a per-1.
         "12/07/24;12/07/24;CPRA;5856212;322778,86;TX26;450                    71370.0000\n"
         # Filas de leyenda/totales al pie (sin fecha) → se saltean.
@@ -345,12 +347,13 @@ class TestBullMarketMovimientos(unittest.TestCase):
 
     def test_row_count_and_types(self):
         # 1 DEPOSITO + 2 COMPRA (CRM, TX26) + 2 VENTA (IRSA, CONAAFA-rescate)
-        # + 3 RETIRO (PAGA, MEP-AL30, SFCI) = 8. VTU$, DIV×2 y leyenda → 0.
-        self.assertEqual(len(self.r.raw_rows), 8)
+        # + 3 RETIRO (PAGA, MEP-AL30, SFCI) + 1 DIVIDENDO (NVDA) + 1 FEE (la
+        # retención de NVDA) = 10. VTU$, el DIV sin monto y la leyenda → 0.
+        self.assertEqual(len(self.r.raw_rows), 10)
         tipos = sorted(x.data["tipo"] for x in self.r.raw_rows)
         self.assertEqual(
-            tipos, ["COMPRA", "COMPRA", "DEPOSITO", "RETIRO", "RETIRO", "RETIRO",
-                    "VENTA", "VENTA"])
+            tipos, ["COMPRA", "COMPRA", "DEPOSITO", "DIVIDENDO", "FEE", "RETIRO",
+                    "RETIRO", "RETIRO", "VENTA", "VENTA"])
 
     def test_inverted_signs_cash(self):
         by = self._by()
@@ -380,10 +383,19 @@ class TestBullMarketMovimientos(unittest.TestCase):
         self.assertEqual(float(mep[0]["monto"]), 99025.15)
         self.assertEqual(mep[0]["activo"], "")
 
-    def test_dividends_skipped(self):
-        # DIV/CDIV/RTA no se importan (sin monto confiable) → no hay DIVIDENDO/FEE.
-        self.assertNotIn("DIVIDENDO", self._by())
-        self.assertNotIn("FEE", self._by())
+    def test_dividends_solo_los_que_traen_monto(self):
+        # DIV/CDIV/RTA SIN monto se omiten (no hay nada que registrar); CON monto
+        # se importan. La columna Saldo del export los acumula, así que saltearlos
+        # descuadraba la caja — en el histórico de un usuario real eran $70M de
+        # renta de bonos que quedaban afuera (reporte 2026-07-29).
+        by = self._by()
+        divs = by.get("DIVIDENDO", [])
+        self.assertEqual(len(divs), 1)                  # el DIV de AAPL no trae monto
+        self.assertEqual(divs[0]["activo"], "NVDA")
+        self.assertEqual(float(divs[0]["monto"]), 676.63)
+        # El de signo invertido es una retención, no un ingreso
+        fees = by.get("FEE", [])
+        self.assertEqual([float(f["monto"]) for f in fees], [45.5])
 
     def test_fci_cash_reconciles(self):
         by = self._by()
@@ -402,3 +414,160 @@ class TestBullMarketMovimientos(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBullMarketHistorico(unittest.TestCase):
+    """Export "Histórico de cuenta corriente" — el que Bull Market MANDA POR MAIL
+    a las cuentas con historia larga (reporte de un usuario, 2026-07-29). Mismo
+    layout de códigos que Movimientos pero SIN la columna `Operado` (el gate lo
+    rechazaba entero), con cauciones, futuros de dólar A3 y la LEYENDA de códigos
+    al pie. Datos sintéticos con la misma forma que el archivo real."""
+
+    HIST = (
+        "Liquida;Cpbt.;Numero;Importe;Saldo;Especie;Referencia/Cantidad/Precio\n"
+        "31/12/22;Ant.;;-1000;-1000;;S.ANTERIOR\n"
+        "19/01/23;COBA;53066;-100000;-101000;;CREDITO CTA. CTE.\n"
+        # Caución: colocó 50.000 y volvieron 50.400 → 400 de interés, sin activo.
+        "20/01/23;CCDO;553763;50000;-51000;VARIAS;100                    50000.0000\n"
+        "21/01/23;VTCT;553764;-50400;-101400;VARIAS;-100                  50400.0000\n"
+        # Futuros de dólar A3: ganancia 900 y pérdida 300 → neto +600, sin activo.
+        "22/01/23;CRGI;468435;-900;-102300;DLR072023;\n"
+        "23/01/23;DBPI;449982;300;-102000;DLR072023;\n"
+        # MEP comprando dólares: CPRA (sale plata) + VTU$ (pata dólar, sin importe)
+        "24/01/23;CPRA;251989;40000;-62000;AL30;1000                      40.0000\n"
+        "25/01/23;VTU$;269422;;-62000;AL30;-1000                     32.0000\n"
+        # MEP VENDIENDO dólares: CPU$ (pata dólar) + VTAS (ENTRA plata en pesos).
+        # Este par se descartaba entero y se perdía el ingreso.
+        "26/01/23;CPU$;1244685;;-62000;AL30;500                       33.0000\n"
+        "27/01/23;VTAS;1245671;-21000;-83000;AL30;-500                      42.0000\n"
+        # Compra y venta comunes de OTRA cantidad del mismo bono (no son MEP).
+        "28/01/23;CPRA;251990;12000;-71000;AL30;300                       40.0000\n"
+        "29/01/23;VTAS;1245672;-13000;-84000;AL30;-300                      43.3333\n"
+        # Renta de bono CON monto: es cash real, tiene que contar.
+        "30/01/23;RTA;232438;-5000;-89000;S31M3;\n"
+        "31/01/23;DREP;894647;200;-88800;;BYMA RETENCION\n"
+        "31/01/23;PAGA;29070;88800;0;;TRANSFERENCIA VIA MEP\n"
+        # Leyenda del pie (sin fecha): código → descripción larga.
+        ";;;;;CCDO;COMPRA CAUCION CONTADO\n"
+        ";;;;;VTCT;VENTA  CAUCION TERMINO\n"
+        ";;;;;COBA;RECIBO DE COBRO\n"
+        ";;;;;PAGA;ORDEN  DE PAGO\n"
+        ";;;;;CPRA;COMPRA\n"
+        ";;;;;VTAS;VENTA\n"
+        ";;;;;RTA;RENTA Y AMORTIZ\n"
+        ";;;;;DREP;RETENCION\n"
+        ";;;;;CRGI;CREDITO POR GANANCIA INDICE\n"
+        ";;;;;DBPI;DEBITO POR PERDIDA INDICE\n"
+        ";Total;;-88800;;;\n"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.r = BullMarketParser().parse(cls.HIST, "HC40419.CSV")
+
+    def _by(self):
+        out = {}
+        for x in self.r.raw_rows:
+            out.setdefault(x.data["tipo"], []).append(x.data)
+        return out
+
+    def test_se_acepta_sin_columna_operado(self):
+        # El bug reportado: el gate exigía `Operado` y rechazaba el archivo con
+        # "no parece un export de Bull Market".
+        self.assertEqual(self.r.parse_errors, [])
+        self.assertTrue(self.r.raw_rows)
+
+    def test_la_caja_cierra_con_el_saldo_del_broker(self):
+        # Invariante fuerte: reconstruir el cash desde lo importado tiene que dar
+        # el saldo final del propio archivo (acá 88.800 de salida → 0).
+        signo = {"DEPOSITO": 1, "VENTA": 1, "DIVIDENDO": 1, "INTERES": 1,
+                 "RETIRO": -1, "COMPRA": -1, "FEE": -1}
+        cash = sum(signo[x.data["tipo"]] * float(x.data["monto"] or 0)
+                   for x in self.r.raw_rows)
+        self.assertAlmostEqual(cash, 0.0, places=2)
+
+    def test_mep_vendiendo_dolares_entra_como_deposito(self):
+        # CPU$ + VTAS del mismo lote (500) → DEPOSITO, no VENTA del bono.
+        dep = [d for d in self._by()["DEPOSITO"] if "MEP" in d["notas"]]
+        self.assertEqual(len(dep), 1)
+        self.assertEqual(float(dep[0]["monto"]), 21000.0)
+        self.assertEqual(dep[0]["activo"], "")          # el bono netea, no es tenencia
+
+    def test_mep_comprando_dolares_sale_como_retiro(self):
+        ret = [d for d in self._by()["RETIRO"] if "Dólar MEP" in d["notas"]]
+        self.assertEqual(len(ret), 1)
+        self.assertEqual(float(ret[0]["monto"]), 40000.0)
+
+    def test_compraventa_comun_del_mismo_bono_no_se_come(self):
+        # La regresión que motivó el fix: antes se descartaba TODA fila de una
+        # especie que alguna vez hizo MEP → se perdían ventas reales.
+        by = self._by()
+        compra = [d for d in by["COMPRA"] if d["activo"] == "AL30"]
+        venta = [d for d in by["VENTA"] if d["activo"] == "AL30"]
+        self.assertEqual(len(compra), 1)
+        self.assertEqual(float(compra[0]["cantidad"]), 300.0)
+        self.assertEqual(len(venta), 1)
+        self.assertEqual(float(venta[0]["monto"]), 13000.0)
+
+    def test_cauciones_y_futuros_netean_sin_crear_activos(self):
+        by = self._by()
+        # Caución: 50.400 − 50.000 = 400 de interés. Futuros: 900 − 300 = 600.
+        intereses = {d["notas"]: float(d["monto"]) for d in by["INTERES"]}
+        self.assertEqual(intereses.get("Neto de cauciones"), 400.0)
+        self.assertEqual(intereses.get("Neto de futuros de dólar (A3)"), 600.0)
+        # Y NO entran como tenencias fantasma
+        activos = {x.data["activo"] for x in self.r.raw_rows}
+        self.assertNotIn("VARIAS", activos)
+        self.assertNotIn("DLR072023", activos)
+
+    def test_saldo_anterior_entra_como_cash_inicial(self):
+        dep = [d for d in self._by()["DEPOSITO"] if d["notas"] == "Saldo anterior"]
+        self.assertEqual(len(dep), 1)
+        self.assertEqual(float(dep[0]["monto"]), 1000.0)
+
+    def test_renta_con_monto_cuenta_y_retencion_es_fee(self):
+        by = self._by()
+        self.assertEqual(float(by["DIVIDENDO"][0]["monto"]), 5000.0)   # RTA
+        fees = [d for d in by["FEE"] if float(d["monto"]) == 200.0]
+        self.assertEqual(len(fees), 1)                                 # DREP
+
+
+class TestBullMarketIndiceA3CuentaCorriente(unittest.TestCase):
+    """Futuros de dólar en A3/Matba-Rofex dentro del layout Cuenta Corriente.
+    Caían en "tipo de comprobante no soportado" (58 filas en el export real de
+    un usuario) y su resultado se perdía. Ahora netean como las cauciones."""
+
+    HEADER = ("Liquida,Operado,Comprobante,Numero,Cantidad,Especie,Precio,"
+              "Importe,Saldo,Referencia\n")
+    CSV = HEADER + (
+        "2025-07-24,2025-07-24,RECIBO DE COBRO,1,0,,0,100000,100000,CREDITO CTA. CTE.\n"
+        "2025-07-25,2025-07-25,CPRA INDICE A3 MTR,2,2,DLR092025,0,-1000,99000,\n"
+        "2025-07-26,2025-07-26,CREDITO POR GANANCIA INDICE,3,0,DLR092025,0,2500,101500,\n"
+        "2025-07-27,2025-07-27,DEBITO POR PERDIDA INDICE,4,0,DLR092025,0,-400,101100,\n"
+        "2025-07-28,2025-07-28,VTA INDICE A3 MTR,5,-2,DLR092025,0,900,102000,\n"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.r = BullMarketParser().parse(cls.CSV, "Cuenta Corriente PESOS.xlsx")
+
+    def test_sin_errores_de_comprobante(self):
+        self.assertEqual([e.code for e in self.r.parse_errors], [])
+
+    def test_netea_a_una_sola_fila_de_resultado(self):
+        # −1000 + 2500 − 400 + 900 = +2000 de ganancia
+        fut = [x.data for x in self.r.raw_rows
+               if x.data["notas"].startswith("Resultado de futuros")]
+        self.assertEqual(len(fut), 1)
+        self.assertEqual(fut[0]["tipo"], "INTERES")
+        self.assertEqual(float(fut[0]["monto"]), 2000.0)
+
+    def test_no_crea_el_contrato_como_tenencia(self):
+        self.assertNotIn("DLR092025", {x.data["activo"] for x in self.r.raw_rows})
+
+    def test_la_caja_cierra(self):
+        signo = {"DEPOSITO": 1, "VENTA": 1, "DIVIDENDO": 1, "INTERES": 1,
+                 "RETIRO": -1, "COMPRA": -1, "FEE": -1}
+        cash = sum(signo[x.data["tipo"]] * float(x.data["monto"] or 0)
+                   for x in self.r.raw_rows)
+        self.assertAlmostEqual(cash, 102000.0, places=2)   # el saldo del archivo

@@ -29,7 +29,15 @@ import PageMeta from '../components/PageMeta'
 
 export default function ClaimAccount() {
   const [searchParams] = useSearchParams()
-  const token = searchParams.get('token') || ''
+  // El token es una credencial de un solo uso: se captura UNA vez y se borra
+  // de la URL al toque — que no quede en el historial ni viaje a analytics
+  // (audit de seguridad: GA/Meta recibían la URL completa con el token).
+  const [token] = useState(() => searchParams.get('token') || '')
+  useEffect(() => {
+    if (window.location.search.includes('token=')) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
   const [preview, setPreview] = useState(null)     // { advisor_name, label } | null mientras carga
   const [previewError, setPreviewError] = useState('')
   const [password, setPassword] = useState('')

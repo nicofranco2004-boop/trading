@@ -279,6 +279,8 @@ export default function Admin() {
 
       <CurrencyBackfillPanel toast={toast} />
 
+      <FxMigratePanel toast={toast} />
+
       <RepairUserPanel toast={toast} />
 
       <MassRepairPanel toast={toast} />
@@ -1390,6 +1392,197 @@ function MtmBackfillPanel({ toast }) {
     </div>
   )
 }
+
+// ─── FxMigratePanel — migrar cuentas al TC histórico (dólar de la fecha de cada op) ──
+// Las cuentas viejas tienen TODO dolarizado al dólar del día en que importaron (medido:
+// un usuario con 370 ventas de 10 años, todas al mismo 1415). El motor nuevo usa el TC
+// de la fecha de cada operación, pero cada cuenta migra ENTERA (ventas + depósitos
+// juntos) o no migra: por eso es cuenta por cuenta, con simulación previa.
+function FxMigratePanel({ toast }) {
+  const [cands, setCands] = useState(null)        // resultado de /candidates
+  const [sel, setSel] = useState(new Set())       // user_ids seleccionados
+  const [sims, setSims] = useState({})            // uid -> resultado del dry-run
+  const [loading, setLoading] = useState(false)
+  const [running, setRunning] = useState(null)    // 'sim' | 'apply' | null
+  const [progress, setProgress] = useState(null)
+
+  async function cargar() {
+    setLoading(true)
+    try {
+      const r = await api.get('/admin/fx-migrate-candidates')
+      setCands(r); setSims({}); setSel(new Set())
+    } catch (e) { toast.push('Error al cargar: ' + e.message, { type: 'error' }) }
+    finally { setLoading(false) }
+  }
+
+  const migrables = (cands?.cuentas || []).filter(c => c.fx_version === 'v1' && !c.bloqueada_por_escala)
+
+  function toggle(uid) {
+    const s = new Set(sel)
+    s.has(uid) ? s.delete(uid) : s.add(uid)
+    setSel(s)
+  }
+
+  async function correr(apply) {
+    const ids = [...sel]
+    if (!ids.length) return
+    if (apply) {
+      const sinSim = ids.filter(id => !sims[id]?.ok)
+      if (sinSim.length && !confirm(`${sinSim.length} cuenta(s) sin simulación previa. ¿Aplicar igual?`)) return
+      if (!confirm(`¿Migrar ${ids.length} cuenta(s) al TC histórico? Cambia el P&L en USD y el capital ` +
+                   `aportado de esas cuentas (el % por operación NO cambia). Hacé un backup antes.`)) return
+    }
+    setRunning(apply ? 'apply' : 'sim')
+    setProgress({ done: 0, total: ids.length })
+    const out = { ...sims }
+    for (let i = 0; i < ids.length; i++) {
+      try {
+        out[ids[i]] = await api.post(`/admin/fx-migrate-user?user_id=${ids[i]}&apply=${apply}`)
+      } catch (e) {
+        out[ids[i]] = { ok: false, motivo: e.message }
+      }
+      setProgress({ done: i + 1, total: ids.length })
+      setSims({ ...out })
+    }
+    setRunning(null); setProgress(null)
+    if (apply) {
+      const okN = ids.filter(id => out[id]?.ok && out[id]?.applied).length
+      toast.push(`Migradas ${okN}/${ids.length} cuentas`, { type: okN === ids.length ? 'success' : 'error' })
+      await cargar()   // refrescar estados v1/v2
+    }
+  }
+
+  const fmt = (n) => (n == null ? '—' : Math.round(n).toLocaleString())
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <RefreshCw size={16} className="text-violet-500" />
+          <h2 className="font-semibold text-ink-0">Migración FX — TC de la fecha de cada operación</h2>
+        </div>
+        <button onClick={cargar} disabled={loading || !!running}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {cands ? 'Recargar' : 'Cargar cuentas'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Las cuentas viejas tienen el P&L y los depósitos dolarizados al <b>dólar del día en que importaron</b>
+        (una venta de 2021 dividida por ~1450 en vez de ~190). Acá se migran al TC de la fecha de cada
+        operación, <b>cuenta por cuenta y con las dos patas juntas</b> (ventas + depósitos), que es la única
+        forma de que el rendimiento no quede a mitad de camino. Flujo: <b>Cargar → seleccionar → Simular</b>
+        {' '}(corre sobre una copia, no toca nada) <b>→ revisar el antes/después → Aplicar</b>. El % por
+        operación no cambia; el P&L en USD y el capital aportado sí. Las cuentas <b>bloqueadas por escala</b>
+        {' '}(bug per-100) van por su reparación propia antes.
+      </p>
+
+      {progress && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-ink-3">
+            <span>{running === 'apply' ? 'Aplicando…' : 'Simulando…'}</span>
+            <span className="tabular">{progress.done} / {progress.total} cuentas</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-bg-2 dark:bg-bg-2/40 overflow-hidden">
+            <div className="h-full transition-all bg-violet-500" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
+          </div>
+        </div>
+      )}
+
+      {cands && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <StatCard label="Migrables (v1)" value={String(cands.v1_migrables)} />
+            <StatCard label="Bloqueadas por escala" value={String(cands.v1_bloqueadas_por_escala)} />
+            <StatCard label="Ya migradas (v2)" value={String(cands.v2_ya_migradas)} />
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <button onClick={() => setSel(new Set(migrables.slice(0, 10).map(c => c.user_id)))}
+              disabled={!!running}
+              className="text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
+              Seleccionar 10 más chicas
+            </button>
+            <button onClick={() => setSel(new Set(migrables.map(c => c.user_id)))}
+              disabled={!!running}
+              className="text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
+              Seleccionar todas las migrables ({migrables.length})
+            </button>
+            <div className="flex-1" />
+            <button onClick={() => correr(false)} disabled={!sel.size || !!running}
+              className="text-xs px-3 py-1.5 rounded-md bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+              Simular {sel.size ? `(${sel.size})` : ''}
+            </button>
+            <button onClick={() => correr(true)} disabled={!sel.size || !!running}
+              className="text-xs px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50">
+              Aplicar {sel.size ? `(${sel.size})` : ''}
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-ink-3 text-left border-b border-line/60">
+                  <th className="py-1.5 pr-2"></th>
+                  <th className="py-1.5 pr-3">Usuario</th>
+                  <th className="py-1.5 pr-3">Estado</th>
+                  <th className="py-1.5 pr-3 text-right">Ventas</th>
+                  <th className="py-1.5 pr-3 text-right">Flujos ARS</th>
+                  <th className="py-1.5 pr-3 text-right">Δ P&L ventas</th>
+                  <th className="py-1.5 pr-3 text-right">Δ Aportado</th>
+                  <th className="py-1.5">Notas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(cands.cuentas || []).slice(0, 200).map(c => {
+                  const s = sims[c.user_id]
+                  const bloq = c.bloqueada_por_escala
+                  const v2 = c.fx_version === 'v2'
+                  return (
+                    <tr key={c.user_id} className="border-b border-line/30">
+                      <td className="py-1.5 pr-2">
+                        <input type="checkbox" checked={sel.has(c.user_id)}
+                          disabled={bloq || v2 || !!running}
+                          onChange={() => toggle(c.user_id)} />
+                      </td>
+                      <td className="py-1.5 pr-3 tabular">#{c.user_id}{c.tier ? ` · ${c.tier}` : ''}</td>
+                      <td className="py-1.5 pr-3">
+                        {v2 ? <span className="text-emerald-500">v2 ✓</span>
+                          : bloq ? <span className="text-amber-500">bloqueada (escala ×{c.ventas_con_escala_rota})</span>
+                          : s?.applied ? <span className="text-emerald-500">migrada ✓</span>
+                          : s?.ok ? <span className="text-violet-400">simulada</span>
+                          : s ? <span className="text-red-400">error</span>
+                          : <span className="text-ink-3">v1</span>}
+                      </td>
+                      <td className="py-1.5 pr-3 text-right tabular">{c.ventas}</td>
+                      <td className="py-1.5 pr-3 text-right tabular">{c.flujos_ars}</td>
+                      <td className="py-1.5 pr-3 text-right tabular">
+                        {s?.ok ? fmt(s.delta?.pnl_ventas_usd) : '—'}
+                      </td>
+                      <td className="py-1.5 pr-3 text-right tabular">
+                        {s?.ok ? fmt((s.delta?.deposits_usd || 0) - (s.delta?.withdrawals_usd || 0)) : '—'}
+                      </td>
+                      <td className="py-1.5 text-ink-3">
+                        {s && !s.ok ? (s.motivo || '').slice(0, 80)
+                          : s?.ok && s.rebuild?.pares_salteados?.length
+                            ? `${s.rebuild.pares_salteados.length} par(es) con ventas manuales sin migrar`
+                            : c.ventas_manuales > 0 ? `${c.ventas_manuales} venta(s) manual(es)` : ''}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            {(cands.cuentas || []).length > 200 && (
+              <p className="text-xs text-ink-3 mt-1">Mostrando 200 de {cands.cuentas.length}. Migrá estas y recargá.</p>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 
 // ─── CurrencyBackfillPanel — corregir moneda de cuentas con capital negativo gigante ──
 // Corrige in-place las filas de import_normalized_tx envenenadas (pesos contados como

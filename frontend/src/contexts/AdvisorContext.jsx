@@ -14,7 +14,7 @@
 // Fallback seguro: fuera del provider devuelve ctx null y no-ops (mismo
 // patrón que AlertsContext) — ningún componente explota si se monta suelto.
 
-import { createContext, useCallback, useContext, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { getClientContext, setClientContext, clearClientContext } from '../utils/api'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 
@@ -24,6 +24,16 @@ export function AdvisorProvider({ children }) {
   // Hidrata del estado persistido (localStorage vía api.js) — el contexto
   // sobrevive reloads: si el asesor refresca mirando un cliente, sigue ahí.
   const [clientCtx, setCtx] = useState(() => getClientContext())
+
+  // Sync multi-pestaña: si el asesor sale del cliente (o cierra sesión) en
+  // otra pestaña, api.js ya deja de mandar el header — sin esto el estado
+  // React de ESTA pestaña seguía mostrando la banda del cliente sobre datos
+  // del asesor (audit).
+  useEffect(() => {
+    const onStorage = (e) => { if (e.key === 'rendi_client_ctx') setCtx(getClientContext()) }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
 
   const enterClient = useCallback((client) => {
     if (!client || typeof client.id !== 'number') return

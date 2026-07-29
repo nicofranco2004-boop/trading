@@ -429,10 +429,10 @@ class GroupOpTest(AdvisorBase):
             (self.client_uid,)).fetchone()
         conn.close()
         self.assertIsNone(pos)                     # la posición del lote se fue
-        # Cash neto igual que antes (débito + autodepósito + re-crédito = neutro
-        # respecto del costo; el autodepósito queda documentado como flujo)
+        # Audit: el undo revierte TAMBIÉN el autodepósito que disparó el alta
+        # (antes quedaba +1000 de cash y capital aportado fantasma).
         self.assertAlmostEqual(self._cash(self.client_uid, "Cocos"),
-                               cash_before + 1000, places=4)
+                               cash_before, places=4)
         # Idempotencia: segundo undo → 409
         r3 = self.http.post(f"/api/advisor/group-op/{batch}/undo",
                             headers=self._hdr(self.advisor))
@@ -656,8 +656,33 @@ class AdvisorBookTest(AdvisorBase):
         by_uid = {q["client_uid"]: q for q in d["queues"]}
         self.assertIn(self.client_uid, by_uid)
         kinds = {re["kind"] for re in by_uid[self.client_uid]["reasons"]}
-        self.assertIn("drawdown", kinds)      # 700 vs máx 1000 = -30%
+        # Audit: drawdown solo con resultado pico >= USD 500 (acá adj_mx=200)
+        # y medido resultado-sobre-resultado, no sobre el valor de cartera.
+        self.assertNotIn("drawdown", kinds)
         self.assertIn("cash_ocioso", kinds)   # USD 500 de pesos sobre tv 700
+
+    def test_book_drawdown_resultado_sobre_resultado(self):
+        import datetime as _d
+        conn = main.get_db()
+        tag = uuid.uuid4().hex[:10]
+        big = _new_user(conn, f"grande-{tag}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, big))
+        _link(conn, self.advisor, big, label="Grande")
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                     (big, "Cocos", "ARS"))
+        today = _d.date.today()
+        # pico: resultado 8000 (10000-2000); hoy: resultado 2000 → dd = -75%
+        for date_s, tv in (((today - _d.timedelta(days=10)).isoformat(), 10000.0),
+                           (today.isoformat(), 4000.0)):
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+                "VALUES (?,?,?,?,?)", (big, date_s, tv, 2000.0, 2000.0))
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/book", headers=self._hdr(self.advisor))
+        by_uid = {q["client_uid"]: q for q in r.json()["queues"]}
+        self.assertIn(big, by_uid)
+        dd = next(x for x in by_uid[big]["reasons"] if x["kind"] == "drawdown")
+        self.assertIn("75%", dd["detail"])   # "Su ganancia cayó 75% desde..."
 
     def test_book_posicion_sin_precio_se_excluye(self):
         conn = main.get_db()
@@ -1233,8 +1258,13 @@ class GroupOpChatTest(AdvisorBase):
         self.assertIn("Juan P", r["summary"])
         self.assertIn("Ana G", r["summary"])
         # Confirmación desde OTRO turno (request_id distinto)
-        r2 = main._register_group_op_handler(
+        # Audit: sin señal de 'sí' NO se ejecuta (aunque el modelo confirme)
+        r_amb = main._register_group_op_handler(
             {"confirm_pending": True}, self.advisor, request_id="req-2")
+        self.assertEqual(r_amb["status"], "needs_confirmation", r_amb)
+        r2 = main._register_group_op_handler(
+            {"confirm_pending": True}, self.advisor, request_id="req-2",
+            confirm_signal="yes")
         self.assertEqual(r2["status"], "registered", r2)
         self.assertEqual(r2["applied"], 2)
         conn = main.get_db()
@@ -1298,7 +1328,7 @@ class GroupOpChatTest(AdvisorBase):
     def test_undo_del_ultimo_lote(self):
         self._build()
         main._register_group_op_handler({"confirm_pending": True}, self.advisor,
-                                        request_id="req-2")
+                                        request_id="req-2", confirm_signal="yes")
         r = main._register_group_op_handler({"undo_last": True}, self.advisor,
                                             request_id="req-3")
         self.assertEqual(r["status"], "undone", r)
@@ -1395,6 +1425,117 @@ class BookHistoryTest(AdvisorBase):
         r = self.http.get("/api/advisor/book/history",
                           headers=self._hdr(self.stranger))
         self.assertEqual(r.status_code, 403)
+
+
+class BookDetailTest(AdvisorBase):
+    """GET /api/advisor/book/detail — desglose por cliente del hero.
+    Invariante clave: la suma de los Δ7d por cliente cierra EXACTO con el
+    delta agregado (misma regla de comparabilidad que advisor_book)."""
+
+    def setUp(self):
+        super().setUp()
+        import datetime as _d
+        self.today = _d.date.today()
+        conn = main.get_db()
+        tag = uuid.uuid4().hex[:10]
+        # Cliente 2: con base de 7 días y APORTE en la ventana
+        self.client2 = _new_user(conn, f"cliente2-{tag}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?",
+                     (self.advisor, self.client2))
+        _link(conn, self.advisor, self.client2, label="Ana G")
+        # Cliente 3: snapshot único (sin base de 7 días → state new)
+        self.client3 = _new_user(conn, f"cliente3-{tag}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?",
+                     (self.advisor, self.client3))
+        _link(conn, self.advisor, self.client3, label="Leo N")
+        # Cliente 4: sin ningún snapshot → state no_snapshot
+        self.client4 = _new_user(conn, f"cliente4-{tag}@rendi.test", approved=0)
+        conn.execute("UPDATE users SET managed_by=? WHERE id=?",
+                     (self.advisor, self.client4))
+        _link(conn, self.advisor, self.client4, label="Sin Datos")
+
+        old = (self.today - _d.timedelta(days=10)).isoformat()
+        now = self.today.isoformat()
+        rows = [
+            # Cliente 1 (Juan P): 1000 → 700, sin flujos → mercado −300
+            (self.client_uid, old, 1000.0, 800.0),
+            (self.client_uid, now, 700.0, 800.0),
+            # Cliente 2 (Ana G): 2000 → 2600 con +500 aportados → mercado +100
+            (self.client2, old, 2000.0, 1500.0),
+            (self.client2, now, 2600.0, 2000.0),
+            # Cliente 3 (Leo N): solo snapshot de hoy
+            (self.client3, now, 900.0, 900.0),
+        ]
+        for cid, date_s, tv, nd in rows:
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+                "VALUES (?,?,?,?,?)", (cid, date_s, tv, nd, nd))
+        conn.commit()
+        conn.close()
+
+    def _get(self):
+        r = self.http.get("/api/advisor/book/detail", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def test_gateado_por_tier(self):
+        r = self.http.get("/api/advisor/book/detail", headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 403)
+
+    def test_total_y_shares(self):
+        d = self._get()
+        # AUM = 700 + 2600 + 900 (el sin-snapshot no aporta)
+        self.assertEqual(d["total_usd"], 4200.0)
+        self.assertEqual(d["clients_total"], 4)
+        by = {c["label"]: c for c in d["clients"]}
+        self.assertEqual(by["Ana G"]["value_usd"], 2600.0)
+        self.assertEqual(by["Ana G"]["share_pct"], round(2600 / 4200 * 100, 1))
+        # Orden default: capital desc, sin-snapshot al final
+        self.assertEqual([c["label"] for c in d["clients"]],
+                         ["Ana G", "Leo N", "Juan P", "Sin Datos"])
+
+    def test_delta_separa_mercado_de_aportes(self):
+        d = self._get()
+        ana = next(c for c in d["clients"] if c["label"] == "Ana G")
+        self.assertEqual(ana["state"], "ok")
+        self.assertEqual(ana["delta_7d_usd"], 600.0)
+        self.assertEqual(ana["flows_7d_usd"], 500.0)   # aportó 500
+        self.assertEqual(ana["market_7d_usd"], 100.0)  # mercado real +100
+        juan = next(c for c in d["clients"] if c["label"] == "Juan P")
+        self.assertEqual(juan["delta_7d_usd"], -300.0)
+        self.assertEqual(juan["flows_7d_usd"], 0.0)
+        self.assertEqual(juan["market_7d_usd"], -300.0)
+
+    def test_suma_de_deltas_cierra_con_el_agregado(self):
+        d = self._get()
+        suma = sum(c["delta_7d_usd"] for c in d["clients"]
+                   if c["delta_7d_usd"] is not None)
+        self.assertEqual(round(suma, 2), d["delta_7d_usd"])  # 600 − 300 = 300
+        self.assertEqual(d["delta_7d_usd"], 300.0)
+        # Y cierra también con el hero del libro
+        book = self.http.get("/api/advisor/book",
+                             headers=self._hdr(self.advisor)).json()
+        self.assertEqual(book["aum"]["delta_7d_usd"], d["delta_7d_usd"])
+
+    def test_estados_new_y_no_snapshot(self):
+        d = self._get()
+        leo = next(c for c in d["clients"] if c["label"] == "Leo N")
+        self.assertEqual(leo["state"], "new")
+        self.assertIsNone(leo["delta_7d_usd"])
+        self.assertEqual(leo["value_usd"], 900.0)  # cuenta en el AUM igual
+        sin = next(c for c in d["clients"] if c["label"] == "Sin Datos")
+        self.assertEqual(sin["state"], "no_snapshot")
+        self.assertIsNone(sin["value_usd"])
+
+    def test_sin_clientes_devuelve_vacio(self):
+        conn = main.get_db()
+        tag = uuid.uuid4().hex[:10]
+        solo = _new_user(conn, f"solo-{tag}@rendi.test", tier="advisor")
+        conn.commit()
+        conn.close()
+        r = self.http.get("/api/advisor/book/detail", headers=self._hdr(solo))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["clients"], [])
 
 
 class AdvisorReportsTest(AdvisorBase):
@@ -1536,3 +1677,127 @@ class AdvisorReportsTest(AdvisorBase):
                               json={"logo_data": "data:image/svg+xml;base64,PHN2Zz4="},
                               headers=self._hdr(self.advisor))
         self.assertEqual(bad.status_code, 422)
+
+
+# ─── Audit grande del plan asesor (2026-07-27) ───────────────────────────────
+
+class AuditGrandeTest(AdvisorBase):
+    """Fixes del audit de 5 frentes: consentimiento del lote por chat, undo
+    exacto, cascadas de borrado y base honesta del informe."""
+
+    def test_undo_acredita_el_costo_guardado_no_el_editado(self):
+        conn = main.get_db()
+        # Cliente con cash de sobra: sin autodepósito de por medio
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
+               VALUES (?,?,?,?,?,1,'ARS')""",
+            (self.client_uid, "Cocos", "Pesos", 1, 50000))
+        conn.commit(); conn.close()
+        body = {"asset": "GD30", "currency": "ARS",
+                "rows": [{"client_uid": self.client_uid, "broker": "Cocos",
+                          "quantity": 10, "buy_price": 100}]}
+        r = self.http.post("/api/advisor/group-op", json=body, headers=self._hdr(self.advisor))
+        batch = r.json()["batch_id"]
+        pid = r.json()["applied"][0]["position_id"]
+        conn = main.get_db()
+        # El cliente "edita" la posición: invested x3 (el bug acreditaba 3000)
+        conn.execute("UPDATE positions SET invested=3000 WHERE id=?", (pid,))
+        conn.commit(); conn.close()
+        r2 = self.http.post(f"/api/advisor/group-op/{batch}/undo",
+                            headers=self._hdr(self.advisor))
+        self.assertEqual(r2.status_code, 200, r2.text)
+        conn = main.get_db()
+        cash = float(conn.execute(
+            "SELECT COALESCE(SUM(invested),0) v FROM positions "
+            "WHERE user_id=? AND broker='Cocos' AND is_cash=1",
+            (self.client_uid,)).fetchone()["v"])
+        conn.close()
+        self.assertAlmostEqual(cash, 50000.0, places=4)  # 50000 - 1000 + 1000
+
+    def test_delete_my_account_borra_informes_perfil_y_publico(self):
+        conn = main.get_db()
+        conn.execute(
+            "INSERT INTO advisor_reports (advisor_uid, client_uid, token, payload, period_start, period_end) "
+            "VALUES (?,?,?,?,?,?)",
+            (self.advisor, self.client_uid, "tok-audit-xyz", "{}", "2026-07-01", "2026-07-27"))
+        conn.execute(
+            "INSERT INTO advisor_profile (advisor_uid, display_name) VALUES (?,?)",
+            (self.advisor, "Estudio X"))
+        conn.commit(); conn.close()
+        r = self.http.delete("/api/me", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        conn = main.get_db()
+        reps = conn.execute("SELECT COUNT(*) c FROM advisor_reports WHERE advisor_uid=?",
+                            (self.advisor,)).fetchone()["c"]
+        prof = conn.execute("SELECT COUNT(*) c FROM advisor_profile WHERE advisor_uid=?",
+                            (self.advisor,)).fetchone()["c"]
+        conn.close()
+        self.assertEqual((reps, prof), (0, 0))
+        # El link público muere con la cuenta (audit: quedaba vivo para siempre)
+        pub = self.http.get("/api/reports/public/tok-audit-xyz")
+        self.assertEqual(pub.status_code, 404)
+
+    def test_admin_puede_borrar_usuario_del_plan_asesor(self):
+        conn = main.get_db()
+        tag = uuid.uuid4().hex[:10]
+        admin = _new_user(conn, f"admin-{tag}@rendi.test")
+        conn.execute("UPDATE users SET is_admin=1, approved=1 WHERE id=?", (admin,))
+        conn.commit(); conn.close()
+        # Audit: la lista hardcodeada fallaba por FOREIGN KEY con cualquier
+        # usuario del plan asesor (advisor_clients referencia users).
+        r = self.http.delete(f"/api/admin/users/{self.advisor}",
+                             headers=self._hdr(admin))
+        self.assertEqual(r.status_code, 200, r.text)
+        conn = main.get_db()
+        left = conn.execute("SELECT COUNT(*) c FROM users WHERE id IN (?,?)",
+                            (self.advisor, self.client_uid)).fetchone()["c"]
+        conn.close()
+        self.assertEqual(left, 0)   # asesor + shadow, ambos purgados
+
+    def test_informe_base_onboarding_no_infla_aportes(self):
+        import datetime as _d
+        today = _d.date.today()
+        start = (today - _d.timedelta(days=20)).isoformat()
+        end = today.isoformat()
+        conn = main.get_db()
+        # Historia importada ANTERIOR al período (posición vieja) + snapshots
+        # solo DENTRO del período (cliente recién dado de alta en Rendi).
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency, entry_date)
+               VALUES (?,?,?,?,?,0,'ARS',?)""",
+            (self.client_uid, "Cocos", "GGAL", 10, 100000,
+             (today - _d.timedelta(days=400)).isoformat()))
+        for date_s, tv, nd in (((today - _d.timedelta(days=10)).isoformat(), 65000.0, 50000.0),
+                               (end, 66000.0, 50000.0)):
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+                "VALUES (?,?,?,?,?)", (self.client_uid, date_s, tv, nd, nd))
+        conn.commit()
+        p = main._advisor_report_payload(conn, self.advisor, self.client_uid, "Juan P",
+                                         start, end, None, {"name": "A"}, 1400.0, 1000.0)
+        conn.close()
+        # Audit #2: la base cero presentaba los 50.000 de depósitos históricos
+        # como aportes DEL período. Ahora mide desde el alta (primer snapshot).
+        self.assertEqual(p["base_note"], "onboarding")
+        self.assertEqual(p["flows_usd"], 0.0)
+        self.assertEqual(p["market_usd"], 1000.0)
+
+    def test_informe_cuenta_nueva_sigue_con_base_cero(self):
+        import datetime as _d
+        today = _d.date.today()
+        start = (today - _d.timedelta(days=20)).isoformat()
+        end = today.isoformat()
+        conn = main.get_db()
+        # SIN historia previa: el aporte inicial debe contar como aporte
+        for date_s, tv, nd in (((today - _d.timedelta(days=5)).isoformat(), 10000.0, 10000.0),
+                               (end, 10500.0, 10000.0)):
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+                "VALUES (?,?,?,?,?)", (self.client_uid, date_s, tv, nd, nd))
+        conn.commit()
+        p = main._advisor_report_payload(conn, self.advisor, self.client_uid, "Juan P",
+                                         start, end, None, {"name": "A"}, 1400.0, 1000.0)
+        conn.close()
+        self.assertIsNone(p["base_note"])
+        self.assertEqual(p["flows_usd"], 10000.0)
+        self.assertEqual(p["market_usd"], 500.0)

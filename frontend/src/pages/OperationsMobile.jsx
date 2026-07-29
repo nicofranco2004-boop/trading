@@ -20,7 +20,7 @@ import EmptyState from '../components/EmptyState'
 import BottomSheet from '../components/mobile/BottomSheet'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { useMoneyFormat } from '../contexts/CurrencyContext'
+import { useMoneyFormat, fmtConvertedRaw, fmtConvertedCompactRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
 import { track } from '../utils/track'
 
@@ -37,11 +37,13 @@ const RESULT_OPTIONS = [
 ]
 
 export default function OperationsMobile() {
-  // Fase B: P&L respeta el toggle global ARS/USD. Conversión usa tcBlue
-  // ACTUAL — para P&L histórico de hace meses, esto significa que un
-  // movimiento del blue posterior va a inflar/deflactar el ARS equivalente
-  // mostrado. Limitación MVP; Fase C va a trackear TC por fecha.
+  // P&L con el toggle global ARS/USD y FX HISTÓRICO por operación: el acumulado
+  // suma los valores YA convertidos con el FX de cada trade (convert-then-sum),
+  // no el total en USD al dólar de hoy — sino un movimiento posterior del blue
+  // infla/deflacta un resultado que ya ocurrió. `money` queda para los montos
+  // sin fecha propia (MovementsMobile).
   const money = useMoneyFormat()
+  const histMoney = useHistoricalMoney()
   const [view, setView] = useState('trades')  // 'trades' | 'movements'
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -94,7 +96,7 @@ export default function OperationsMobile() {
       .sort((a, b) => (a[0] < b[0] ? 1 : -1))
   }, [filtered])
 
-  const totalPnl = filtered.reduce((s, o) => s + (o.pnl_usd || 0), 0)
+  const totalPnlDisp = histMoney.sumConvertedAt(filtered, o => (o.pnl_usd || 0))
   const wins = filtered.filter(o => o.pnl_usd > 0).length
   const losses = filtered.filter(o => o.pnl_usd < 0).length
   const winRate = (wins + losses) > 0 ? wins / (wins + losses) : null
@@ -147,8 +149,8 @@ export default function OperationsMobile() {
             <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
               P&L acumulado · {filtered.length} ops
             </div>
-            <div className={`text-xl font-medium tabular leading-none ${colorClass(totalPnl)}`}>
-              {money.fmtMoney(totalPnl, { signed: true })}
+            <div className={`text-xl font-medium tabular leading-none ${colorClass(totalPnlDisp)}`}>
+              {fmtConvertedRaw(totalPnlDisp, histMoney.currency, { signed: true, decimals: 2 })}
             </div>
           </div>
           {winRate != null && (
@@ -263,15 +265,14 @@ export default function OperationsMobile() {
 // ─── Day group ────────────────────────────────────────────────────────────
 
 function DayGroup({ date, ops }) {
-  // Phase C audit fix H1: el subtotal del DÍA es de operaciones que TODAS
-  // tienen la misma fecha → usamos FX histórico de esa fecha. Si las ops
-  // tienen fx_to_usd stampeado, sumamos los valores ya convertidos para
-  // máxima precisión. Sino, usamos el FX del día (el del primer op como proxy).
+  // El subtotal del DÍA se arma convirtiendo CADA op con SU FX y sumando eso
+  // (convert-then-sum) — así coincide con las filas que despliega.
+  // Antes tomaba el `fx_to_usd` de la PRIMERA op con fx>0 y lo aplicaba a todo
+  // el subtotal: si el día mezclaba una op USD (fx=1) con una ARS, el subtotal
+  // quedaba mal. Mismo criterio que los headers de grupo del desktop.
   const histMoney = useHistoricalMoney()
-  const subtotal = ops.reduce((s, o) => s + (o.pnl_usd || 0), 0)
+  const subtotalDisp = histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0))
   const label = formatDateLabel(date)
-  // Para el subtotal, usamos la fecha del día (todos los ops la comparten).
-  const stampedFx = ops.find(o => o.fx_to_usd && o.fx_to_usd > 0)?.fx_to_usd
   return (
     <li className="border-t border-line/30">
       <div className="flex items-baseline justify-between px-4 py-2 bg-bg-1/50">
@@ -284,12 +285,8 @@ function DayGroup({ date, ops }) {
             · {ops.length} {ops.length === 1 ? 'op' : 'ops'}
           </span>
         </div>
-        <span className={`text-[11px] font-mono tabular ${colorClass(subtotal)}`}>
-          {histMoney.fmtMoneyCompactAt(subtotal, {
-            stampedFx,
-            dateIso: date,
-            signed: true,
-          })}
+        <span className={`text-[11px] font-mono tabular ${colorClass(subtotalDisp)}`}>
+          {fmtConvertedCompactRaw(subtotalDisp, histMoney.currency, { signed: true })}
         </span>
       </div>
       <ul>
@@ -344,6 +341,7 @@ function OperationRow({ op }) {
             {isWin ? <TrendingUp size={11} strokeWidth={1.75} /> : isLoss ? <TrendingDown size={11} strokeWidth={1.75} /> : null}
             {histMoney.fmtMoneyCompactAt(op.pnl_usd, {
               stampedFx: op.fx_to_usd,
+              rowCurrency: op.currency,
               dateIso: op.date,
               signed: true,
             })}

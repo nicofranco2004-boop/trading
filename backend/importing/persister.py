@@ -36,6 +36,10 @@ from .schema import (
     OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TAX, OP_FUTURES_PNL,
 )
 from . import seed as _seed
+try:
+    from fx import fx_for_date, fx_version, FX_V2
+except ImportError:  # pragma: no cover — import relativo según cómo se cargue el paquete
+    from ..fx import fx_for_date, fx_version, FX_V2
 
 
 def blue_for_date(conn, date_str, fallback):
@@ -152,7 +156,10 @@ def persist_batch(
                 # para que `_apply_cash_flow` use el mismo USD que la DB.
                 from .pipeline import _stamp_gross_amount_usd, _read_user_tc_blue
                 _tc_blue_seed = _read_user_tc_blue(conn, uid)
-                gross_usd = _stamp_gross_amount_usd(st.currency, st.gross_amount, _tc_blue_seed)
+                _h = fx_version(conn, uid) == FX_V2
+                gross_usd = _stamp_gross_amount_usd(st.currency, st.gross_amount, _tc_blue_seed,
+                                                    conn=conn if _h else None,
+                                                    date=st.date if _h else None)
                 st.gross_amount_usd = gross_usd
                 conn.execute(
                     """INSERT INTO import_normalized_tx
@@ -404,10 +411,75 @@ def persist_batch(
 
 # ─── Implementaciones por op_type ────────────────────────────────────────────
 
+# ─── Convenciones de escala conocidas ───────────────────────────────────────
+# Solo estas dos. Cada una es una convención DOCUMENTADA del mercado local, con su
+# familia de instrumentos; fuera de ellas no reconciliamos nada (ver el docstring).
+_ESCALA_PER_100 = 100.0     # renta fija: cotiza por 100 nominales
+_ESCALA_VCP_1000 = 1000.0   # FCI: el VCP se publica por 1.000 cuotapartes
+_TOL_ESCALA = 0.02          # ±2% — absorbe comisión embebida sin llegar a otra potencia
+
+
+def reconciled_unit_price(unit_price, quantity, gross_amount, asset_type=None):
+    """Precio efectivo por unidad cuando `monto` contradice a `precio × cantidad`
+    por una CONVENCIÓN DE ESCALA CONOCIDA. Fuera de esas, no toca nada.
+
+    El motor toma el COSTO de `gross_amount` (la caja real) y los INGRESOS de
+    `unit_price × quantity`. Si el precio viene en otra escala, el costo queda sano
+    y TODO el error cae en el P&L: `pnl = 99 × costo` para un bono per-100.
+
+    ── POR QUÉ ESTO ESTÁ TAN ACOTADO (dos hallazgos que costaron caro) ──
+
+    1. `k` NO IDENTIFICA CUÁL DE LOS TRES CAMPOS ESTÁ MAL. `parse_number("660.400")`
+       devuelve 660,4: se come el separador de miles (normalizer.py:90 "si solo hay
+       punto, asumimos que es decimal", y el `_num` de los 8 parsers de movimientos
+       hace lo mismo). Una fila SANA con el monto así escrito da k = 1000 — la misma
+       firma que un FCI legítimo — y ahí el corrupto es el MONTO, no el precio:
+       derivarlo destruye un precio bueno y, en una venta, escribe un crédito de cash
+       ×1000 más chico (persister:695 sale de este mismo número). Lo mismo con
+       `cantidad` "1.000" → 1,0, que da k ≈ 0,001 y taparía un bug de cantidad.
+       ⚠️ `tenencia._num` usa la convención OPUESTA para la misma celda: una de las
+       dos está mal por construcción. Mientras eso siga así, ceñirse a las dos
+       convenciones de mercado es lo único defendible.
+
+    2. NO HAY EVIDENCIA FUERA DE LA BANDA MEDIDA. `/api/admin/diagnose-scale` calculó
+       percentiles solo para 90 ≤ k ≤ 110 (p50 = 100,000 exacto ⇒ `gross_amount` es
+       BRUTO, no neto de comisiones). Las cuentas con k = 1e4/1e5/1e6/1e13 caen en la
+       banda "otro", la única sin ninguna medición. Un k de 1e13 no es ninguna
+       convención de escala: es basura, y `precio = monto/cantidad` ahí da ~0 →
+       proceeds ~0, cash ~0 y un lote semilla a costo ~0 que hace que toda venta
+       posterior del activo muestre ganancia ~100%. Esas filas se REPORTAN
+       (diagnose-scale) y se miran a mano; no se auto-corrigen.
+
+    Fuera de estas dos ventanas el valor se devuelve INTACTO — a propósito. Un número
+    que no entendemos se queda con su firma `pnl_pct` absurda, que es lo que permite
+    detectarlo; "arreglarlo" a ciegas lo volvería invisible.
+    """
+    try:
+        up = float(unit_price or 0)
+        q = float(quantity or 0)
+        ga = float(gross_amount or 0)
+    except (TypeError, ValueError):
+        return unit_price
+    if not (up > 0 and q > 0 and ga > 0):
+        return up
+    ratio = (up * q) / ga
+    at = (asset_type or "").upper()
+    # Renta fija per-100. `OTHER` entra porque los parsers de bonos AR muchas veces
+    # no clasifican el instrumento (AL30/GD30/PVR1Q llegan como OTHER).
+    if at in ("BOND", "OTHER", ""):
+        if abs(ratio / _ESCALA_PER_100 - 1) <= _TOL_ESCALA:
+            return ga / q
+    # FCI: VCP por 1.000 cuotapartes.
+    if at in ("FUND", "OTHER", ""):
+        if abs(ratio / _ESCALA_VCP_1000 - 1) <= _TOL_ESCALA:
+            return ga / q
+    return up
+
+
 def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
     """Compra → INSERT positions + debit cash. Equivalente a POST /positions."""
     qty = float(tx.quantity or 0)
-    unit = float(tx.unit_price or 0)
+    unit = float(reconciled_unit_price(tx.unit_price, qty, tx.gross_amount, tx.asset_type) or 0)
     invested = float(tx.gross_amount) if tx.gross_amount is not None else (unit * qty)
     fees = float(tx.fees or 0)
     # Persistimos la moneda nativa del lote (USD para Compra Dolar Mep, ARS
@@ -496,6 +568,11 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     ).fetchall())
     total_avail = sum((p["quantity"] or 0) for p in positions)
     qty_to_sell = float(tx.quantity or 0)
+    # Guard de escala: si `monto` contradice a precio×cantidad por un orden de
+    # magnitud, los proceeds reales son el monto (ver reconciled_unit_price).
+    # Cubre también el REPLAY de tx viejas guardadas con el precio per-100.
+    unit_eff = float(reconciled_unit_price(tx.unit_price, qty_to_sell, tx.gross_amount,
+                                            tx.asset_type) or 0)
 
     # Política: si el CSV vende más de lo disponible, asumimos que existe stock
     # previo que el CSV no incluye (history-as-truth). Auto-creamos un seed lot
@@ -505,7 +582,7 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     # confirmar para precisar el cost basis.
     if qty_to_sell > total_avail + 1e-9:
         missing_qty = qty_to_sell - total_avail
-        seed_price = float(tx.unit_price or 0)
+        seed_price = unit_eff
         seed_invested = missing_qty * seed_price
         # entry_date: la misma fecha de la venta (FIFO lo ordena por entry_date,
         # luego por id — queda al final entre lotes con la misma fecha).
@@ -533,7 +610,7 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         ).fetchall())
         total_avail = sum((p["quantity"] or 0) for p in positions)
 
-    exit_price = float(tx.unit_price or 0)
+    exit_price = unit_eff
     sell_commissions = float(tx.fees or 0)
     op_date = tx.date
 
@@ -543,8 +620,29 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     total_proceeds_native = 0.0
     ops_created: List[int] = []
 
-    # TC efectivo de venta para SELLs ARS (USD para SELLs USD no aplica)
-    tc_venta = tc_blue if sell_currency == "ARS" else 1.0
+    # TC efectivo de venta para SELLs ARS (USD para SELLs USD no aplica).
+    #
+    # El TC de la FECHA DE LA VENTA, no el dólar vivo del import. Antes acá iba
+    # `tc_blue` —el blue del momento en que se corría el import— y por eso una venta
+    # en pesos de 2021 quedaba dividida por ~1450 en vez de por ~180: la octava parte
+    # del P&L real. Medido en prod: un usuario con 370 ventas de diez años estampadas
+    # todas con el mismo 1415,00 (`/api/admin/diagnose-sell-fx`).
+    #
+    # `fx_for_date` es estricta (MEP de la fecha → blue de la fecha → fallback), así
+    # que el replay es determinístico: es lo que permite reparar el histórico
+    # replayando en vez de escribiendo números que el próximo rebuild pisa.
+    #
+    # Gateado por `fx_version`: las cuentas con historia siguen en v1 (el dólar
+    # vivo, su comportamiento de siempre) hasta que el migrador las pase — porque
+    # migrarles UNA pata sola (ventas al TC histórico, flujos al 1415 viejo) lleva
+    # el error del Total Return de 1,23× a 9,1× (medido). Cuentas nuevas nacen v2.
+    _hist = fx_version(conn, uid) == FX_V2
+    if sell_currency != "ARS":
+        tc_venta = 1.0
+    elif _hist:
+        tc_venta = fx_for_date(conn, tx.date, fallback=tc_blue)
+    else:
+        tc_venta = tc_blue
 
     for p in positions:
         if remaining <= 1e-9:
@@ -578,8 +676,9 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
                 # lote), NO el blue de hoy: usarlo achica el costo e infla la
                 # ganancia con la devaluación del peso.
                 entry_dt = p["entry_date"] if "entry_date" in p.keys() else None
-                purchase_blue = blue_for_date(conn, entry_dt, tc_blue)
-                base_invested = base_invested / (purchase_blue or tc_blue)
+                purchase_fx = (fx_for_date(conn, entry_dt, fallback=tc_blue) if _hist
+                               else blue_for_date(conn, entry_dt, tc_blue))
+                base_invested = base_invested / (purchase_fx or tc_blue)
 
         entry_invested = base_invested * ratio if base_invested else None
 
@@ -614,16 +713,28 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         total_proceeds_native += proceeds_native
         pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
 
+        # currency + fx_to_usd: dejan AUDITABLE en qué moneda ocurrió el trade y
+        # con qué TC se llevó a USD. Sin esto el frontend no sabe reconstruir el
+        # nominal en pesos y cae a buscar el blue de la fecha (que NO es el TC que
+        # usó este cálculo) → el P&L en pesos que muestra no reproduce el real.
+        #
+        # ⚠️ SOLO para ventas en PESOS. En una venta en USD `tc_venta` vale 1.0
+        # (no hubo conversión) y estampar ese 1.0 haría que el front, que lee el
+        # campo como "ARS por USD", muestre un P&L de USD 10.000 como "$10.000"
+        # (~1500× menos). NULL → el front usa el blue de la fecha, que es correcto.
+        fx_stamp = tc_venta if sell_currency == "ARS" else None
         cur = conn.execute(
             """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
-               exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+               exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions,
+               currency, fx_to_usd)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (uid, op_date, p["broker"], p["asset"], "Venta",
              p["buy_price"], exit_price, take,
              round(pnl_usd, 2),
              round(pnl_pct, 4) if pnl_pct is not None else None,
              p["entry_date"] if "entry_date" in p.keys() else None,
-             round(chunk_commission, 4)),
+             round(chunk_commission, 4),
+             sell_currency, fx_stamp),
         )
         op_id = cur.lastrowid
         ops_created.append(op_id)

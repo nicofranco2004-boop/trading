@@ -394,6 +394,28 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
             elif p and a and not q:
                 if p != 0:
                     tx.quantity = round(a / p, 8)
+            elif q and p and a and q != 0:
+                # Los TRES vienen y se CONTRADICEN por una CONVENCIÓN DE ESCALA
+                # CONOCIDA (renta fija per-100 / VCP de FCI por 1.000 cuotapartes).
+                #
+                # El motor lee el costo de `monto` (persister.py:411) y los ingresos
+                # de `precio × cantidad` (persister.py:536→609), y nunca los
+                # reconcilia. Con el costo sano, todo el error de escala del precio
+                # cae sobre el P&L: un bono per-100 da `pnl = 99 × costo`.
+                #
+                # ⚠️ Solo esas dos ventanas, gateadas por tipo de instrumento. `k` NO
+                # dice cuál de los tres campos está mal: `parse_number("660.400")`
+                # devuelve 660,4 (se come el separador de miles, ver :90), así que una
+                # fila SANA con el monto así escrito da la MISMA firma que un FCI
+                # legítimo — y ahí el corrupto es el monto, no el precio. Con un k
+                # arbitrario (1e4, 1e6, 1e13, medidos en prod) no hay ninguna
+                # evidencia de cuál gana. Esos quedan intactos y se reportan por
+                # /api/admin/diagnose-scale: un número que no entendemos conserva su
+                # firma absurda, que es lo que permite detectarlo.
+                # La lógica canónica vive en persister.reconciled_unit_price.
+                from .persister import reconciled_unit_price
+                tx.unit_price = round(
+                    reconciled_unit_price(p, q, a, tx.asset_type), 8)
 
             # tc de la compra (ARS/USD) para la vista "costo al dólar de la
             # compra": del CSV (columna 'tc'), o derivado monto_ARS/monto_usd.

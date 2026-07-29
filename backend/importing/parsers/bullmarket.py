@@ -74,7 +74,10 @@ from ..schema import ParseResult, RawRow, RowError
 
 # Headers mínimos para reconocer un export de Bull Market (cualquiera de los dos
 # layouts). `comprobante`/`cpbt` se chequean aparte para elegir el sub-parser.
-_REQUIRED_HEADERS = {"liquida", "operado", "especie", "importe"}
+# `operado` NO va acá: el export "Histórico" (el que Bull Market manda por mail
+# a las cuentas con historia larga) trae SOLO `Liquida` — el gate lo rechazaba
+# con "no parece un export de Bull Market" (reporte de un usuario, 2026-07-29).
+_REQUIRED_HEADERS = {"liquida", "especie", "importe"}
 
 # Comprobante (lowercase) → categoría Rendi, por PREFIJO (Bull Market tiene muchas
 # variantes: COMPRA NORMAL/PARIDAD/EXTERIOR, RENTA Y AMORTIZ, DIVIDENDOS DOLARES
@@ -91,6 +94,10 @@ def _classify_comprobante(comp_lc: str) -> Optional[str]:
         return "VENTA"
     if comp_lc.startswith("suscripcion fci") or comp_lc.startswith("suscripcion fondo"):
         return "RETIRO"
+    # Licitación primaria/privada de letras y bonos: es una COMPRA (trae especie,
+    # cantidad y precio) — solo que el comprobante no empieza con "compra".
+    if comp_lc.startswith("licitacion"):
+        return "COMPRA"
     if comp_lc.startswith("compra"):            # normal / paridad / exterior
         return "COMPRA"
     if comp_lc.startswith("venta"):             # normal / paridad
@@ -309,6 +316,8 @@ class BullMarketParser(Parser):
         # INTERÉS por moneda al final. last_idx indexa esas filas sintéticas.
         caucion_net = {}        # moneda → neto
         caucion_last_date = {}  # moneda → última fecha
+        indice_net = {}         # ídem para futuros de dólar en A3/Matba-Rofex
+        indice_last_date = {}
         last_idx = 0
 
         for idx, row in enumerate(rows, start=1):
@@ -331,6 +340,20 @@ class BullMarketParser(Parser):
                     d = G(row, "operado") or G(row, "liquida")
                     if d > caucion_last_date.get(moneda, ""):
                         caucion_last_date[moneda] = d
+                continue
+
+            # Futuros de dólar en A3/Matba-Rofex (CPRA/VTA INDICE A3 MTR, CREDITO
+            # POR GANANCIA / DEBITO POR PERDIDA INDICE): el contrato no es una
+            # tenencia (especie "DLR072023") → igual que las cauciones, solo su
+            # NETO cuenta, como resultado. Antes caían en "tipo no soportado" y
+            # se perdían: 58 filas en el export de un usuario real.
+            if "indice" in comp_lc or "a3 mtr" in comp_lc:
+                v = _num(G(row, "importe"))
+                if v is not None:
+                    indice_net[moneda] = indice_net.get(moneda, 0.0) + v
+                    d = G(row, "operado") or G(row, "liquida")
+                    if d > indice_last_date.get(moneda, ""):
+                        indice_last_date[moneda] = d
                 continue
 
             # Conversiones internas cable↔MEP (NOTA DE CRÉDITO/DÉBITO U$S): mueven
@@ -440,6 +463,28 @@ class BullMarketParser(Parser):
                     "notas":      "Interés de cauciones",
                 }))
 
+        # Resultado de los futuros de dólar (A3): acá el neto SÍ puede ser
+        # negativo (una posición perdedora es una pérdida real, no un contrato
+        # abierto) → INTERÉS si ganó, FEE si perdió.
+        for moneda, net in indice_net.items():
+            if abs(net) < 0.01:
+                continue
+            last_idx += 1
+            result.raw_rows.append(RawRow(row_index=last_idx, data={
+                "fecha":      indice_last_date.get(moneda, "") or "",
+                "tipo":       "INTERES" if net > 0 else "FEE",
+                "broker":     "Bull Market",
+                "activo":     "",
+                "cantidad":   "",
+                "precio":     "",
+                "monto":      f"{abs(net):.2f}",
+                "monto_usd":  "",
+                "tc":         "",
+                "comisiones": "0",
+                "moneda":     moneda,
+                "notas":      "Resultado de futuros de dólar (A3)",
+            }))
+
         return result
 
     # ── Layout 2: Movimientos (CSV compacto, códigos `Cpbt.`) ────────────────
@@ -456,14 +501,83 @@ class BullMarketParser(Parser):
         def gv(row, col) -> str:
             return _strip(row.get(col, "")) if col else ""
 
-        # Pass 1: especies que aparecen en VTU$ (venta paridad = pata dólar del
-        # MEP). Sus compras en pesos son "compra de dólares" (ver abajo).
-        mep_especies = set()
+        # Pass 1a: LEYENDA del pie. El export trae, después de los movimientos,
+        # una fila por código con su descripción larga — LAS MISMAS que usa la
+        # Cuenta Corriente ("CPRA = COMPRA", "COBA = RECIBO DE COBRO", …). La
+        # leemos y clasificamos con _classify_comprobante: así un código nuevo
+        # que Bull Market agregue mañana se entiende solo, sin tocar el mapa.
+        # (Las filas de leyenda no tienen fecha; van en Especie=código,
+        # Referencia=descripción.)
+        legend = {}
         for row in rows:
-            if gv(row, cpbt_col).upper().startswith("VTU"):
-                esp = _norm_ticker(gv(row, esp_col))
-                if esp:
-                    mep_especies.add(esp)
+            if gv(row, op_col) or gv(row, liq_col):
+                continue
+            code_l, desc_l = gv(row, esp_col), gv(row, ref_col)
+            if code_l and desc_l:
+                # Doble espacio real en el archivo ("ORDEN  DE PAGO") — normalizar
+                # o el startswith del clasificador no matchea.
+                legend[code_l.upper()] = re.sub(r"\s+", " ", desc_l).strip()
+
+        def _tipo_de(code: str) -> Optional[str]:
+            """Código → tipo Rendi: primero la leyenda del propio archivo, si no
+            el mapa fijo (exports viejos que no la traen)."""
+            desc = legend.get(code.upper())
+            if desc:
+                t = _classify_comprobante(desc.lower())
+                if t:
+                    return t
+            return _MOV_CODE_MAP.get(code[:4].lower())
+
+        def _es_caucion(code: str) -> bool:
+            # CCDO/VTCT/VTCC/CPCT — y cualquier código nuevo cuya leyenda diga
+            # "caución". Mismo criterio que la Cuenta Corriente: manejo de caja,
+            # no inversión → solo su NETO cuenta, como interés.
+            if code[:4].lower() in ("ccdo", "vtct", "vtcc", "cpct"):
+                return True
+            return "caucion" in (legend.get(code.upper(), "").lower())
+
+        def _es_indice(code: str) -> bool:
+            # Futuros de dólar en A3/Matba-Rofex (CIRM/VIRM compra-venta del
+            # contrato, CRGI/DBPI resultado diario, DECU retención). El contrato
+            # NO es una tenencia (especie tipo "DLR072023") → se netea como
+            # resultado, igual que las cauciones. Sin esto entraba un activo
+            # fantasma por cada vencimiento.
+            if code[:4].lower() in ("crgi", "dbpi", "virm", "cirm", "decu"):
+                return True
+            d = legend.get(code.upper(), "").lower()
+            return "indice" in d or "a3 mtr" in d
+
+        # Pass 1b: PATAS del dólar bolsa. Hay dos sentidos y ANTES se trataban
+        # mal (se descartaba TODA fila de una especie que alguna vez hizo MEP —
+        # en el histórico de un usuario eso se comió 4 ventas reales por
+        # $3.581.048):
+        #   · comprar dólares → CPRA (bono en pesos, sale plata) + VTU$ (venta
+        #     paridad, sin importe en pesos)  → la CPRA es un RETIRO de pesos.
+        #   · vender dólares  → CPU$ (compra paridad, sin importe) + VTAS (venta
+        #     del bono en pesos, entra plata) → la VTAS es un DEPOSITO de pesos.
+        # El bono NETEA a 0 en ambos casos (no es tenencia). Emparejamos cada
+        # pata dólar con su pata pesos por (especie, cantidad); lo que no
+        # empareja es una compra/venta común y se importa como tal.
+        def _key_ref(row):
+            q, _p, _t = _split_ref(gv(row, ref_col))
+            esp = _norm_ticker(gv(row, esp_col))
+            return (esp, round(abs(q), 6)) if (esp and q) else None
+
+        mep_buy_legs, mep_sell_legs = {}, {}   # (especie, |qty|) → cuántas patas
+        for row in rows:
+            c = gv(row, cpbt_col).upper()
+            k = _key_ref(row)
+            if not k:
+                continue
+            if c.startswith("VTU"):            # venta paridad → compró dólares
+                mep_buy_legs[k] = mep_buy_legs.get(k, 0) + 1
+            elif c.startswith("CPU"):          # compra paridad → vendió dólares
+                mep_sell_legs[k] = mep_sell_legs.get(k, 0) + 1
+
+        # Netos que se emiten como UNA fila sintética al final (ver arriba).
+        caucion_net = 0.0
+        indice_net = 0.0
+        last_fecha = ""
 
         for idx, row in enumerate(rows, start=1):
             operado = gv(row, op_col)
@@ -475,37 +589,75 @@ class BullMarketParser(Parser):
                 continue
 
             fecha = _iso_date(operado or liquida)
+            if fecha:
+                last_fecha = fecha
             numero = gv(row, num_col)
             notas = f"Op. {numero}" if numero else ""
             importe = _num(gv(row, imp_col))
             especie = _norm_ticker(gv(row, esp_col))
             qty, price, _txt = _split_ref(gv(row, ref_col))
 
-            # VTU$ (venta paridad): pata dólar del MEP. El Importe en pesos viene
-            # vacío → no hay cash acá. Su único efecto es netear el bono comprado
-            # (lo hacemos vía la especie MEP, abajo). Se omite.
-            if code.startswith("VTU"):
+            # Cauciones y futuros de índice: solo su NETO cuenta (ver helpers).
+            # OJO con el signo: en ESTE layout el Importe viene invertido
+            # (negativo = entra plata) → el neto se niega para que un interés
+            # ganado quede positivo.
+            if _es_caucion(code):
+                if importe is not None:
+                    caucion_net -= importe
+                continue
+            if _es_indice(code):
+                if importe is not None:
+                    indice_net -= importe
                 continue
 
-            # Especie dolarizada vía MEP: la COMPRA en pesos del bono fue para
-            # comprar dólares (que quedan en la cuenta USD, fuera de este export).
-            # La registramos como RETIRO de pesos y NO creamos la posición del bono
-            # (neto 0). Otras filas de esa especie sin monto (RTA, etc.) se omiten.
-            if especie and especie in mep_especies:
-                if code.startswith("CPRA") and importe is not None:
+            # "S.ANTERIOR": no es un movimiento, es el saldo con el que arranca
+            # el archivo. Se emite como cash inicial para que la caja reconcilie
+            # (sin esto el saldo del broker arranca corrido).
+            if code.upper().startswith("ANT"):
+                if importe:
+                    result.raw_rows.append(_mk_row(
+                        idx, fecha, "DEPOSITO" if importe < 0 else "RETIRO",
+                        "", "", "", abs(importe), "ARS", "Saldo anterior"))
+                continue
+
+            # Patas DÓLAR del MEP (VTU$ / CPU$): el Importe en pesos viene vacío
+            # → no hay cash que registrar acá. Su efecto (netear el bono) se
+            # aplica en la pata PESOS, abajo.
+            if code.startswith(("VTU", "CPU")):
+                continue
+
+            # Pata PESOS de un MEP: se convierte en movimiento de caja puro y el
+            # bono NO entra como tenencia (netea contra la pata dólar). Solo si
+            # esta fila tiene una pata dólar que la reclame — si no, es una
+            # compra/venta común del bono y sigue de largo.
+            _k = (especie, round(abs(qty), 6)) if (especie and qty) else None
+            if _k and importe is not None:
+                if code.startswith("CPRA") and mep_buy_legs.get(_k, 0) > 0:
+                    mep_buy_legs[_k] -= 1
                     nt = f"Dólar MEP vía {especie}" + (f" · {notas}" if notas else "")
                     result.raw_rows.append(
                         _mk_row(idx, fecha, "RETIRO", "", "", "", abs(importe), "ARS", nt))
+                    continue
+                if code.startswith("VTAS") and mep_sell_legs.get(_k, 0) > 0:
+                    mep_sell_legs[_k] -= 1
+                    nt = f"Venta de dólar MEP vía {especie}" + (f" · {notas}" if notas else "")
+                    result.raw_rows.append(
+                        _mk_row(idx, fecha, "DEPOSITO", "", "", "", abs(importe), "ARS", nt))
+                    continue
+
+            # Dividendos / renta-amortización: SIN monto no hay nada que
+            # registrar (el export los lista igual) → se omiten. CON monto sí
+            # se cuentan: la columna Saldo los acumula, así que ignorarlos
+            # descuadraba la caja — en el histórico de un usuario real eran
+            # $70M de renta de bonos que quedaban afuera.
+            if code.startswith(("DIV", "CDIV", "DDIV", "RTA")):
+                if importe:
+                    result.raw_rows.append(_mk_row(
+                        idx, fecha, "DIVIDENDO" if importe < 0 else "FEE",
+                        especie or "", "", "", abs(importe), "ARS", notas))
                 continue
 
-            # Dividendos / renta-amortización: este export casi nunca trae el monto
-            # y los pocos que trae son ambiguos (bruto vs retención) → NO los
-            # importamos como ingreso para no inventar números. El detalle de
-            # dividendos está en el reporte de Resultados.
-            if code.startswith(("DIV", "CDIV", "RTA")):
-                continue
-
-            tipo = _MOV_CODE_MAP.get(code[:4].lower())
+            tipo = _tipo_de(code)
             if tipo is None:
                 result.parse_errors.append(RowError(
                     idx, "Cpbt.", "BULLMARKET_OP_UNKNOWN",
@@ -518,6 +670,12 @@ class BullMarketParser(Parser):
             # por construcción.
             if tipo in ("DEPOSITO", "RETIRO") and importe is not None:
                 tipo = "DEPOSITO" if importe < 0 else "RETIRO"
+            elif tipo == "FEE_SIGNED":
+                # Retenciones, aranceles y notas de crédito/débito: gasto si sale
+                # plata, ingreso si entra (signo invertido en este layout).
+                tipo = "FEE" if (importe or 0) > 0 else "DIVIDENDO"
+            elif tipo == "DIVIDENDO" and (importe or 0) > 0:
+                tipo = "FEE"    # fila de ingreso con signo de egreso = retención
 
             if tipo in ("COMPRA", "VENTA"):
                 if not especie:
@@ -536,5 +694,18 @@ class BullMarketParser(Parser):
                 monto = abs(importe) if importe is not None else None
                 result.raw_rows.append(
                     _mk_row(idx, fecha, tipo, "", "", "", monto, "ARS", notas))
+
+        # Netos de cauciones y futuros: una fila sintética cada uno. Positivo =
+        # ganancia (INTERÉS), negativo = costo (FEE). Mismo criterio que la
+        # Cuenta Corriente: no se crea el activo fantasma ("VARIAS", "DLR072023")
+        # pero el resultado real no se pierde ni descuadra la caja.
+        n_idx = len(rows) + 1
+        for neto, etiqueta in ((caucion_net, "Neto de cauciones"),
+                               (indice_net, "Neto de futuros de dólar (A3)")):
+            if abs(neto) >= 0.01:
+                result.raw_rows.append(_mk_row(
+                    n_idx, last_fecha, "INTERES" if neto > 0 else "FEE",
+                    "", "", "", abs(neto), "ARS", etiqueta))
+                n_idx += 1
 
         return result

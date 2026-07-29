@@ -1,0 +1,168 @@
+"""FX ARS/USD por FECHA — la fuente única para dolarizar cualquier cosa histórica.
+
+POR QUÉ EXISTE
+──────────────
+El motor dolarizaba las ventas con `tc_blue`, el dólar VIVO del momento en que se
+corría el import (`persister.py`, `rebuild.py`). Consecuencias medidas en producción
+(2026-07-28, `/api/admin/diagnose-sell-fx`):
+
+  · 51.475 ventas de 503 usuarios con el TC equivocado
+  · un usuario con 370 ventas repartidas en 3.746 días —diez años— estampadas TODAS
+    con el mismo 1415,00
+  · 80.868 de 84.123 flujos en pesos (96%) al mismo 1415, desde 2013
+
+Una venta en pesos de 2021 dividida por 1450 en vez de por ~180 muestra la octava
+parte del P&L en dólares que realmente fue.
+
+ESTRICTA A PROPÓSITO — NUNCA CAE AL DÓLAR VIVO
+──────────────────────────────────────────────
+`persister.blue_for_date` cae a `tc_blue` (el dólar de HOY) cuando no encuentra dato.
+Eso hace que replayar el MISMO `import_normalized_tx` en dos momentos distintos dé
+P&L distinto — medido: 1.490 contra 1.433,33. Con eso, un recompute masivo reescribe
+también el P&L de cuentas SANAS y después no hay forma de distinguir una reparación
+de un drift.
+
+Acá la cadena de fallback es toda HISTÓRICA:
+
+    MEP de la fecha  →  blue de la fecha  →  el `fallback` explícito del caller
+
+o sea que el replay es DETERMINÍSTICO: mismo input, mismo output, siempre. Esa
+propiedad es lo que hace que reparar el histórico sea replayar en vez de escribir
+números a mano (que además el rebuild pisa en el próximo import).
+
+COBERTURA REAL (medida, no estimada)
+────────────────────────────────────
+  · MEP: diario COMPLETO desde 2018-10-29 — 2.829 filas sobre un span de 2.830 días
+  · blue: diario COMPLETO desde 2011-01-03 — 5.685 filas sobre 5.686 días
+  · solo 290 de 73.718 ventas (0,4%) son anteriores a la cobertura MEP
+
+Por eso el riel por defecto es MEP (la regla canónica del proyecto para todo menos
+cripto de exchange) y el blue queda como red histórica, no como excusa.
+"""
+from typing import Optional
+
+RIEL_MEP = "mep"
+RIEL_BLUE = "blue"
+
+_COL = {RIEL_MEP: "mep_venta", RIEL_BLUE: "blue_venta"}
+
+
+def _lookup(conn, col: str, d: str) -> Optional[float]:
+    """Último valor NO NULO de `col` en o antes de `d`.
+
+    ⚠️ El filtro `IS NOT NULL` va en el WHERE, no después de traer la fila. Si se
+    toma "la fila más reciente ≤ fecha" y recién ahí se valida la columna, un solo
+    día sin MEP devuelve NULL y el caller cae al fallback creyendo que no hay
+    cobertura — cuando el dato existía dos días antes. `mep_venta` es NULLABLE y se
+    pobló por UPDATE sobre fechas que ya tenían blue, así que ese caso es real.
+    """
+    try:
+        row = conn.execute(
+            f"SELECT {col} FROM fx_rates_daily "
+            f"WHERE date <= ? AND {col} IS NOT NULL ORDER BY date DESC LIMIT 1",
+            (d,),
+        ).fetchone()
+    except Exception:
+        return None
+    if row and row[0] is not None:
+        try:
+            v = float(row[0])
+            return v if v > 0 else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def fx_for_date_detail(conn, date_str, fallback=None, riel: str = RIEL_MEP):
+    """Devuelve `(tc, fuente)` con fuente ∈ {'mep', 'blue', 'fallback', None}.
+
+    Sirve para auditar con qué riel se valuó cada operación sin tener que
+    re-derivarlo después comparando contra la serie.
+    """
+    if conn is None or not date_str:
+        return (fallback, "fallback" if fallback else None)
+    d = str(date_str)[:10]
+
+    primero = riel if riel in _COL else RIEL_MEP
+    v = _lookup(conn, _COL[primero], d)
+    if v is not None:
+        return (v, primero)
+
+    # Red histórica: el blue cubre desde 2011 y es determinístico igual.
+    if primero != RIEL_BLUE:
+        v = _lookup(conn, _COL[RIEL_BLUE], d)
+        if v is not None:
+            return (v, RIEL_BLUE)
+
+    return (fallback, "fallback" if fallback else None)
+
+
+def fx_for_date(conn, date_str, fallback=None, riel: str = RIEL_MEP) -> Optional[float]:
+    """El TC ARS/USD de `date_str`. Ver el docstring del módulo.
+
+    `fallback` es el ÚLTIMO recurso (fechas previas a 2011 o base sin serie). No es
+    el dólar de hoy salvo que el caller decida pasarlo — y los callers del motor lo
+    pasan solo para no romper con una base vacía en tests.
+    """
+    return fx_for_date_detail(conn, date_str, fallback=fallback, riel=riel)[0]
+
+
+# ─── Versionado por usuario: la migración es POR CUENTA, no global ────────────
+#
+# Deployar el TC histórico sin esto rompe a los 503 usuarios con data existente:
+# el rebuild re-deriva sus VENTAS con el TC nuevo en cuanto tocan cualquier camino
+# de rebuild (import, foto, backfill), pero sus FLUJOS quedan estampados al dólar
+# del import viejo (medido: 80.868 de 84.123 al mismo 1415, desde 2013). Hoy los
+# dos errores se CANCELAN en el cociente del Total Return (medido: 2,00% mostrado
+# vs 1,63% real = error 1,23×); con una sola pata migrada dejan de cancelarse y el
+# error salta a 9,1×. Las dos patas tienen que moverse JUNTAS, por usuario, en una
+# transacción — eso es exactamente lo que hace el migrador
+# (/api/admin/fx-migrate-user), que al final estampa `fx_version = v2`.
+#
+#   v1 → el motor escribe como siempre (dólar vivo del import). Nadie cambia de
+#        número por el deploy.
+#   v2 → el motor escribe con fx_for_date. Cuentas nuevas nacen acá.
+
+FX_V1 = "v1"
+FX_V2 = "v2"
+_FX_VERSION_KEY = "fx_version"
+
+
+def fx_version(conn, uid: int) -> str:
+    """Versión de FX de la cuenta. Resuelve UNA vez y queda persistida.
+
+    Sin fila en config:
+      · cuenta con historia (algún batch confirmado o alguna operación) → v1,
+        "grandfathered": sus números no se mueven hasta que el migrador la pase.
+      · cuenta virgen → v2, y se PERSISTE en el momento. El orden importa: la
+        primera resolución ocurre durante el primer preview/persist, ANTES de que
+        su primer batch quede confirmado — si no se persistiera acá, la segunda
+        llamada la vería "con historia" y la degradaría a v1 para siempre.
+    """
+    try:
+        row = conn.execute(
+            "SELECT value FROM config WHERE user_id=? AND key=?",
+            (uid, _FX_VERSION_KEY)).fetchone()
+        if row and row[0] in (FX_V1, FX_V2):
+            return row[0]
+        tiene_historia = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed') "
+            "OR EXISTS(SELECT 1 FROM operations WHERE user_id=?)",
+            (uid, uid)).fetchone()[0]
+        version = FX_V1 if tiene_historia else FX_V2
+        conn.execute(
+            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            (uid, _FX_VERSION_KEY, version))
+        return version
+    except Exception:
+        # Ante cualquier duda, el comportamiento viejo: v1 no corrompe nada, solo
+        # posterga la mejora para esa cuenta.
+        return FX_V1
+
+
+def set_fx_version(conn, uid: int, version: str) -> None:
+    if version not in (FX_V1, FX_V2):
+        raise ValueError(f"fx_version inválida: {version}")
+    conn.execute(
+        "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+        (uid, _FX_VERSION_KEY, version))

@@ -3,7 +3,8 @@
 Estrategia de monetización dual (paywall agresivo para sostener Free a escala):
 
   Free (gratis, "tasting menu"):
-    - 6 análisis contextuales por SEMANA (ISO week, lunes-domingo).
+    - 1 análisis contextual + 1 chat por SEMANA (ventana móvil de 7 días —
+      degustación mínima; empuja fuerte a Plus/Pro).
     - 0 queries del AI Hub (Hub es feature exclusiva Pro).
     - 0 follow-ups (también exclusivo Pro).
     - Modelo: claude-haiku-4-5.
@@ -24,10 +25,10 @@ Estrategia de monetización dual (paywall agresivo para sostener Free a escala):
     - System prompt: PREMIUM.
 
 Economía a 3000 Free users (worst case sin cache):
-    3000 × 6 análisis/sem × 4.33 sem/mes × $0.007/call ≈ $540/mes
+    3000 × 1 análisis/sem × 4.33 sem/mes × $0.007/call ≈ $90/mes
   vs ingresos Pro a 5% conversión:
     150 Pro × ($7 − $2 costo Pro real) = $750/mes
-  Net: +$210/mes ✓ (más margen con cache hits y conversión 7%+).
+  Net: +$660/mes ✓ (el drop de Free a 1+1 mejora fuerte el margen y la conversión).
 
 Cap rolling 7-day vs ISO week:
   Usamos ventana móvil de 7 días (hoy y los 6 días anteriores). Esto
@@ -54,7 +55,7 @@ Tier = Literal["free", "plus", "pro", "advisor", "admin"]
 # Cap semanal. Cambiar acá afecta UI, mensaje 429, demo mock, tests.
 #
 # Cálculo costo Free a 3000 users (worst case sin cache):
-#   3000 × 6/sem × 4.33 sem × $0.007 ≈ $545/mes.
+#   3000 × 1/sem × 4.33 sem × $0.007 ≈ $90/mes.
 # Free no tiene acceso a Hub ni follow-ups — el contador hub_queries_per_week=0
 # es un gate explícito que el endpoint del Hub leerá para responder 403.
 #
@@ -65,30 +66,29 @@ Tier = Literal["free", "plus", "pro", "advisor", "admin"]
 #   ≈ $1.80-$2.50/mes → margen 65-75%.
 LIMITS = {
     "free": {
-        "analyses_per_week": 6,
+        "analyses_per_week": 1,
         "hub_queries_per_week": 0,     # Hub es Pro-only — gate en endpoint
-        # chat_per_week: cuántas consultas al Coach IA por ventana 7d.
+        # chat_per_week: cuántas consultas a Rendi AI por ventana 7d.
         # Free/Plus tienen acceso SOLO a las 12 preguntas pre-fijadas
         # (whitelist en el endpoint /api/ai/chat). No pueden tipear libre.
-        # Free=3 (taster — engancha pero empuja a upgrade), Plus=9 (3× Free).
-        "chat_per_week": 3,
+        # Free=1 (degustación mínima — empuja fuerte a upgrade), Plus=9 (9× Free).
+        "chat_per_week": 1,
         # diag_dismiss_per_week: cuántos "No me interesa" del diagnóstico puede
         # descartar por ventana 7d. Free ve la grilla completa pero puede
         # personalizarla solo 2×/sem → al pasarse, upsell a Plus. None = ∞.
         "diag_dismiss_per_week": 2,
     },
-    # Plus diferencial IA: 3× más chat que Free (9 vs 3). Mismos análisis 6
-    # (que se cachean 24h → uso efectivo similar). Plus es upgrade de
-    # "más broker + algo más de IA descriptiva". Pro sigue siendo el motor
-    # IA premium real (chat libre + causalidad + 60 análisis).
+    # Plus diferencial IA: 9× más chat que Free (9 vs 1) y 6× más análisis
+    # (6 vs 1). Plus es upgrade de "más broker + algo más de IA descriptiva".
+    # Pro sigue siendo el motor IA premium real (chat libre + causalidad + 60 análisis).
     "plus": {
         "analyses_per_week": 6,
         "hub_queries_per_week": 0,
-        "chat_per_week": 9,             # 3× Free
+        "chat_per_week": 9,             # 9× Free
         "diag_dismiss_per_week": None,  # ilimitado (el diferencial vs Free)
     },
     "pro": {
-        "analyses_per_week": 60,        # 10× Free
+        "analyses_per_week": 60,        # 60× Free · 10× Plus
         "hub_queries_per_week": 60,
         # Pro desbloquea CHAT LIBRE — pueden tipear cualquier pregunta.
         # Cap 40/sem tras audit #3 (down de 60) — Pro user real usa ~40%

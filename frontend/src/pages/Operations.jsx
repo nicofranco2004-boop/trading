@@ -9,7 +9,7 @@ import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
 import { usd, fmtUsd as fmtUsdRaw, pctSigned, colorClass } from '../utils/format'
 import { track } from '../utils/track'
-import { useMoneyFormat } from '../contexts/CurrencyContext'
+import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
@@ -51,16 +51,16 @@ function OperationsDesktop() {
   // Persistimos selección en localStorage para que respete preferencia del user.
   const [tab, setTab] = useState(() => localStorage.getItem('rendi_operations_tab') || 'all')
   useEffect(() => { localStorage.setItem('rendi_operations_tab', tab) }, [tab])
-  // Fase B+C: P&L realizado respeta el toggle global ARS/USD. Para operaciones
-  // individuales usamos FX HISTÓRICO (op.fx_to_usd stampeado al cierre del
-  // trade > lookup por op.date > tcBlue actual). Para los KPIs agregados
-  // (totalPnl, bestTrade) que no tienen una fecha única, usamos tcBlue actual
-  // via useMoneyFormat — limitación aceptada porque mezclan trades de
-  // múltiples fechas.
+  // P&L realizado con el toggle global ARS/USD, SIEMPRE a FX histórico:
+  // cada trade se convierte con el suyo (op.fx_to_usd stampeado > lookup por
+  // op.date > tcBlue actual) y los agregados (KPIs, headers de grupo) suman los
+  // valores YA convertidos — convert-then-sum, ver `sumConvertedAt`.
+  // Antes los agregados usaban tcBlue de HOY: un grupo de un solo trade mostraba
+  // un número distinto al de su propia fila (reporte real +$147.007 vs +$135.444).
+  // `money` sigue para montos sin fecha propia (ej. header de columna).
   const money = useMoneyFormat()
   const histMoney = useHistoricalMoney()
   const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
-  const fmtUsdSigned = (v) => money.fmtMoney(v, { signed: true })
 
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -145,12 +145,36 @@ function OperationsDesktop() {
     load()
   }
 
-  // KPIs sobre todas las ops, no las filtradas
-  const totalPnl = ops.reduce((s, o) => s + (o.pnl_usd || 0), 0)
+  // KPIs sobre todas las ops, no las filtradas.
+  // P&L Realizado: convert-then-sum (cada trade a SU FX histórico). Sumar los USD
+  // y convertir el total al dólar de hoy re-expresaba ganancias viejas al MEP
+  // actual — mismo bug que el header de grupo. `totalPnl` (USD crudo) se mantiene
+  // solo para el TONO (color), que no debe depender del FX.
+  const totalPnlDisp = useMemo(
+    () => histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0)),
+    [ops, histMoney.currency, histMoney.fxKey],
+  )
   const wins = ops.filter(o => o.pnl_usd > 0).length
   const losses = ops.filter(o => o.pnl_usd < 0).length
   const winRate = ops.length > 0 ? wins / ops.length : 0
-  const bestTrade = ops.length > 0 ? Math.max(...ops.map(o => o.pnl_usd || 0)) : null
+  // Mejor trade: guardamos la OP entera (no el escalar) para formatearla con SU FX
+  // histórico. El máximo se elige sobre el valor que se VA A MOSTRAR: en pesos el
+  // ranking puede diferir del ranking en USD (un trade viejo con dólar barato
+  // rinde menos pesos que uno nuevo con el mismo USD) → si eligiéramos por USD, el
+  // "Mejor trade" podía quedar por debajo de una fila visible de la tabla.
+  // El viejo `Math.max(..., o.pnl_usd || 0)` además mapeaba null→0 y con todas las
+  // ops en pérdida mostraba "$0" (un trade inexistente).
+  const bestTradeOp = useMemo(() => {
+    let best = null, bestVal = -Infinity
+    for (const o of ops) {
+      if (o.pnl_usd == null || !Number.isFinite(o.pnl_usd)) continue
+      const v = histMoney.convertedValue(o.pnl_usd, {
+        stampedFx: o.fx_to_usd, rowCurrency: o.currency, dateIso: o.date,
+      })
+      if (v != null && v > bestVal) { bestVal = v; best = o }
+    }
+    return best
+  }, [ops, histMoney.currency, histMoney.fxKey])
 
   // Patrones derivados de las operaciones — observaciones escaneables arriba de
   // la tabla. Cálculo inline (diagnostics.js espera el objeto `data` completo
@@ -295,8 +319,8 @@ function OperationsDesktop() {
         <KpiCell
           first
           label="P&L Realizado"
-          value={fmtUsd(totalPnl)}
-          tone={totalPnl >= 0 ? 'pos' : 'neg'}
+          value={fmtConvertedRaw(totalPnlDisp, histMoney.currency, { decimals: 2 })}
+          tone={totalPnlDisp >= 0 ? 'pos' : 'neg'}
           sub="acumulado histórico"
         />
         <KpiCell
@@ -312,8 +336,13 @@ function OperationsDesktop() {
         />
         <KpiCell
           label="Mejor trade"
-          value={bestTrade != null ? fmtUsd(bestTrade) : '—'}
-          tone={bestTrade != null && bestTrade > 0 ? 'pos' : null}
+          value={bestTradeOp
+            ? histMoney.fmtMoneyAt(bestTradeOp.pnl_usd, {
+                stampedFx: bestTradeOp.fx_to_usd, rowCurrency: bestTradeOp.currency,
+                dateIso: bestTradeOp.date, decimals: 2,
+              })
+            : '—'}
+          tone={bestTradeOp && bestTradeOp.pnl_usd > 0 ? 'pos' : null}
           sub="P&L individual"
         />
       </div>
@@ -451,7 +480,7 @@ function OperationsDesktop() {
                       groupBy={groupBy}
                       isOpen={isOpen}
                       onToggle={() => toggleGroup(g.key)}
-                      fmtPnl={fmtUsdSigned}
+                      histMoney={histMoney}
                     />
                     {isOpen && g.rows.map(op => (
                       <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} indent />
@@ -569,8 +598,10 @@ function TradeRow({ op, histMoney, onEdit, onDelete, indent = false }) {
           ? '—'
           : histMoney.fmtMoneyAt(op.pnl_usd, {
               stampedFx: op.fx_to_usd,
+              rowCurrency: op.currency,
               dateIso: op.date,
               signed: true,
+              decimals: 2,
             })}
       </td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)} ${indent ? 'opacity-75' : ''}`}>
@@ -605,12 +636,22 @@ function TradeRow({ op, histMoney, onEdit, onDelete, indent = false }) {
 
 // Fila-resumen de un grupo de trades (modo agrupado por activo o por mes).
 // Click → toggle del detalle. Muestra: etiqueta (ticker o mes) · broker(s) ·
-// # de trades · P&L total con flecha ↗/↘. El P&L se formatea con el toggle
-// global vía fmtPnl (tcBlue actual — el grupo mezcla trades de distintas
-// fechas, igual que los KPIs agregados). Reusa buildGroups → group.pnl ya suma
-// los pnl_usd de las filas (acá todas son trades cerrados con P&L).
-function TradeGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
-  const { label, count, pnl, brokers } = group
+// # de trades · P&L total con flecha ↗/↘.
+//
+// ⚠️ CONVERT-THEN-SUM (money-critical): el total se arma convirtiendo CADA fila
+// con SU FX histórico y sumando eso — NO sumando los USD y convirtiendo al FX de
+// hoy. Antes usaba `fmtPnl` (= tcBlue actual, que además es el MEP), mientras las
+// filas usan el FX de su fecha: un grupo de UN trade mostraba dos números
+// distintos (reporte real: header +$147.007 vs su única fila +$135.444, mismo
+// pnl_usd × dos dólares). El invariante que garantiza esto es `total === Σ filas`.
+function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney }) {
+  const { label, count, brokers } = group
+  // Signo, color y flecha salen del MISMO número que se imprime. Derivarlos del
+  // USD crudo podía contradecir lo mostrado: un grupo con +100 USD de 2021 (fx 190)
+  // y −90 USD de 2026 (fx 1500) suma +10 USD (flecha verde) pero −$116.000 en
+  // pesos. En modo USD `pnlDisp === pnl`, así que no cambia nada.
+  const pnl = histMoney.sumConvertedAt(group.rows, r => movPnl(r))
+  const pnlDisp = pnl
   const Chevron = isOpen ? ChevronUp : ChevronDown
   const hasPnl = pnl !== 0
   const Arrow = pnl > 0 ? ArrowUpRight : pnl < 0 ? ArrowDownRight : null
@@ -650,7 +691,7 @@ function TradeGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
       <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular ${colorClass(hasPnl ? pnl : null)}`}>
         <span className="inline-flex items-center gap-1 justify-end">
           {Arrow && <Arrow size={13} strokeWidth={2.25} aria-hidden="true" />}
-          {hasPnl ? fmtPnl(pnl) : '—'}
+          {hasPnl ? fmtConvertedRaw(pnlDisp, histMoney.currency, { signed: true, decimals: 2 }) : '—'}
         </span>
       </td>
       {/* Resto (P&L % · acciones · flecha) — hint del P&L */}
@@ -859,14 +900,12 @@ function MovementsView() {
   // Fase B: formatter atado al toggle global ARS/USD. Lo bajamos a
   // computeMovementKpis y a MovementRow vía props para evitar shadow.
   // Phase C audit fix H1: el HM (historical money) se usa en MovementRow
-  // para cada fila individual (cada movimiento tiene su date). Los KPIs
-  // agregados (totales / promedios) usan tcBlue actual via `money` porque
-  // mezclan movimientos de múltiples fechas.
+  // para cada fila individual (cada movimiento tiene su date). El P&L de los
+  // headers de grupo también va por HM (convert-then-sum) para que coincida con
+  // sus filas. Los KPIs de montos (totales / promedios) siguen con `money`.
   const money = useMoneyFormat()
   const histMoney = useHistoricalMoney()
   const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
-  // Variante con signo para el P&L realizado de cada grupo (modo agrupado).
-  const fmtUsdSigned = (v) => money.fmtMoney(v, { signed: true })
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -1092,7 +1131,7 @@ function MovementsView() {
                       groupBy={groupBy}
                       isOpen={isOpen}
                       onToggle={() => toggleGroup(g.key)}
-                      fmtPnl={fmtUsdSigned}
+                      histMoney={histMoney}
                     />
                     {isOpen && g.rows.map(m => (
                       <MovementRow key={m.id} m={m} indent onDelete={handleDelete} deleting={deletingId === m.id} />
@@ -1212,10 +1251,15 @@ function MovementRow({ m, indent = false, onDelete, deleting = false }) {
   // 1100) se muestre hoy como $1.466.000 ARS (al blue actual ~1466) cuando
   // en realidad fueron ~$1.100.000 ARS al tipo de cambio del momento.
   const histMoney = useHistoricalMoney()
+  // decimals:2 para que la columna sea coherente: el header del grupo muestra
+  // centavos, así que las filas que despliega tienen que mostrarlos también
+  // (si no, el total "no cierra" con la suma visible de sus filas).
   const fmtUsd = (v) => histMoney.fmtMoneyAt(v, {
     stampedFx: m.fx_to_usd,
+    rowCurrency: m.currency,
     dateIso: m.date,
     signed: false,
+    decimals: 2,
   })
   const meta = TYPE_META[m.type] || { label: m.type, Icon: Repeat, color: 'text-ink-3' }
   const { Icon } = meta
@@ -1269,11 +1313,16 @@ function MovementRow({ m, indent = false, onDelete, deleting = false }) {
 
 // Fila-resumen de un grupo (modo agrupado por activo o por mes). Click → toggle
 // del despliegue de sus movimientos. Muestra: etiqueta del grupo (ticker o mes)
-// · broker(s) · # de movimientos · P&L realizado total con flecha ↗/↘. El P&L
-// se formatea con el toggle global vía fmtUsd (tcBlue actual — el grupo mezcla
-// movimientos de distintas fechas, igual que los KPIs agregados de arriba).
-function MovementGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
-  const { label, count, pnl, brokers } = group
+// · broker(s) · # de movimientos · P&L realizado total con flecha ↗/↘.
+//
+// ⚠️ CONVERT-THEN-SUM, igual que TradeGroupRow (ver el comentario largo allá):
+// cada fila se convierte con SU FX histórico y recién ahí se suma, para que el
+// total coincida con las filas que despliega.
+function MovementGroupRow({ group, groupBy, isOpen, onToggle, histMoney }) {
+  const { label, count, brokers } = group
+  // Ver TradeGroupRow: signo/color/flecha sobre el número que se muestra.
+  const pnl = histMoney.sumConvertedAt(group.rows, r => movPnl(r))
+  const pnlDisp = pnl
   const Chevron = isOpen ? ChevronUp : ChevronDown
   const hasPnl = pnl !== 0
   const Arrow = pnl > 0 ? ArrowUpRight : pnl < 0 ? ArrowDownRight : null
@@ -1313,7 +1362,7 @@ function MovementGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
       <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular ${colorClass(hasPnl ? pnl : null)}`}>
         <span className="inline-flex items-center gap-1 justify-end">
           {Arrow && <Arrow size={13} strokeWidth={2.25} aria-hidden="true" />}
-          {hasPnl ? fmtPnl(pnl) : '—'}
+          {hasPnl ? fmtConvertedRaw(pnlDisp, histMoney.currency, { signed: true, decimals: 2 }) : '—'}
         </span>
       </td>
       {/* Notas — hint del P&L */}

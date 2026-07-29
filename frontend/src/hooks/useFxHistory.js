@@ -125,8 +125,35 @@ export function useFxHistory(fallbackTcBlue = 1415) {
     return data
   }, [data])
 
+  // Índice date → blue + array de fechas ordenado, para resolver por búsqueda
+  // BINARIA en vez del scan lineal. Los agregados nuevos (convert-then-sum en
+  // headers de grupo y KPIs) llaman esto una vez POR OPERACIÓN en cada render:
+  // con ~10 años de serie (3.650 filas) y cientos de ops, el scan lineal era
+  // O(ops × filas) por render. Se construye una sola vez por cambio de `data`.
+  const fxIndex = useMemo(() => {
+    const dates = []
+    const byDate = new Map()
+    for (const r of sortedRows) {
+      if (!r?.date || r?.blue == null) continue
+      dates.push(r.date)
+      byDate.set(r.date, Number(r.blue))
+    }
+    return { dates, byDate }
+  }, [sortedRows])
+
   function getRateForDate(dateIso) {
-    return lookupRate(sortedRows, dateIso)
+    if (!dateIso) return null
+    const { dates, byDate } = fxIndex
+    if (dates.length === 0) return null
+    const exact = byDate.get(dateIso)
+    if (exact != null) return exact
+    // Sin match exacto (fin de semana / feriado) → el día anterior más cercano.
+    let lo = 0, hi = dates.length - 1, best = -1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (dates[mid] <= dateIso) { best = mid; lo = mid + 1 } else { hi = mid - 1 }
+    }
+    return best >= 0 ? byDate.get(dates[best]) : null
   }
 
   function getRateOrFallback(dateIso) {
@@ -138,5 +165,8 @@ export function useFxHistory(fallbackTcBlue = 1415) {
     loaded: !!data,
     getRateForDate,
     getRateOrFallback,
+    // Clave estable para memoizar cálculos que dependen de la serie: cambia
+    // cuando la serie termina de cargar (o se recarga), no en cada render.
+    fxKey: fxIndex.dates.length,
   }
 }

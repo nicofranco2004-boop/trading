@@ -30,7 +30,15 @@ import { useFxHistory } from './useFxHistory'
 export function resolveHistoricalFx(currency, tcBlue, opts, getRateForDate) {
   if (currency !== 'ARS') return 1
   const stamped = opts?.stampedFx
-  if (stamped && stamped > 0) return stamped
+  // ⚠️ El stamp SOLO sirve si el evento ocurrió en PESOS: ahí `fx_to_usd` es el TC
+  // que se usó para llevarlo a USD, así que invertirlo reconstruye el nominal real.
+  // En un evento en DÓLARES el backend estampa 1.0 (no hubo conversión) — tomarlo
+  // como "ARS por USD" mostraría un P&L de USD 10.000 como "$10.000" (~1500× menos).
+  // Para esos casos ignoramos el stamp y vamos al blue de la fecha, que es lo que
+  // el usuario quiere ver: cuántos pesos representaban esos dólares ese día.
+  const rowCcy = (opts?.rowCurrency || '').toUpperCase()
+  const stampUsable = stamped && stamped > 0 && !(rowCcy && rowCcy !== 'ARS')
+  if (stampUsable) return stamped
   const date = opts?.dateIso
   if (date && typeof getRateForDate === 'function') {
     const r = getRateForDate(date)
@@ -41,7 +49,7 @@ export function resolveHistoricalFx(currency, tcBlue, opts, getRateForDate) {
 
 export function useHistoricalMoney() {
   const { currency, tcBlue } = useCurrency()
-  const { getRateOrFallback } = useFxHistory(tcBlue)
+  const { getRateOrFallback, fxKey } = useFxHistory(tcBlue)
 
   function resolveFx(opts) {
     return resolveHistoricalFx(currency, tcBlue, opts, getRateOrFallback)
@@ -76,9 +84,41 @@ export function useHistoricalMoney() {
     return fmtConvertedCompactRaw(v, currency, opts)
   }
 
+  /**
+   * sumConvertedAt — convert-then-sum: convierte CADA fila con SU propio FX
+   * histórico y recién ahí suma. Es la única forma de que un total coincida con
+   * las filas que muestra (`total === Σ filas`), incluso con una sola fila.
+   *
+   * Sumar los USD y convertir el total al FX de hoy (convert-after-sum) re-expresa
+   * ganancias viejas al dólar actual → infla un resultado que ya ocurrió. Mismo
+   * criterio que MonthlySummary (valueAt por mes) y que MovementRow ("un retiro de
+   * $1000 USD en 2024 no se muestra hoy como $1.466.000").
+   *
+   * @param {Array} rows — filas con valor USD canónico
+   * @param {(row) => number|null} getUsd — extractor del valor USD de cada fila
+   * @returns {number} total YA convertido a la currency del toggle
+   */
+  function sumConvertedAt(rows, getUsd) {
+    let total = 0
+    for (const r of (rows || [])) {
+      const usd = getUsd(r)
+      if (usd == null || !Number.isFinite(usd)) continue
+      const v = convertedValue(usd, {
+        stampedFx: r?.fx_to_usd, dateIso: r?.date, rowCurrency: r?.currency,
+      })
+      if (v != null) total += v
+    }
+    return total
+  }
+
   return {
     currency,
     fmtMoneyAt,
     fmtMoneyCompactAt,
+    convertedValue,
+    resolveFx,
+    sumConvertedAt,
+    // Para memoizar agregados: cambia cuando cambia la serie FX (no por render).
+    fxKey,
   }
 }

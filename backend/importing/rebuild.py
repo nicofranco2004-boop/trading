@@ -58,7 +58,11 @@ from typing import Any, Dict, List, Optional
 from datetime import date as _date
 
 from .schema import OP_BUY, OP_SELL
-from .persister import _link, broker_pair, blue_for_date
+from .persister import _link, broker_pair, blue_for_date, reconciled_unit_price
+try:
+    from fx import fx_for_date, fx_version, FX_V2
+except ImportError:  # pragma: no cover
+    from ..fx import fx_for_date, fx_version, FX_V2
 from .maturity import is_bond_like_name
 from .normalizer import guess_asset_type
 try:
@@ -193,7 +197,8 @@ def _is_exchange_broker(name) -> bool:
 
 def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                    tc_blue: float, conn=None,
-                   is_exchange: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+                   is_exchange: bool = False,
+                   use_hist: bool = False) -> Dict[str, List[Dict[str, Any]]]:
     """Replaya los eventos BUY/SELL (ya ordenados cronológicamente, BUY antes
     que SELL el mismo día) de UN (broker, activo) y devuelve:
       {"operations": [...], "open_lots": [...]}
@@ -257,7 +262,12 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
 
         if op == OP_BUY:
             qty = _num(ev["quantity"])
-            unit = _num(ev["unit_price"])
+            # Guard de escala (per-100/VCP-1000): el replay lee tx GUARDADAS, que
+            # pueden traer el precio en otra escala que el monto. Sin esto, cada
+            # rebuild re-imprime la escala rota aunque el normalizer ya la corrija
+            # en imports nuevos. Ver persister.reconciled_unit_price.
+            unit = _num(reconciled_unit_price(ev["unit_price"], ev["quantity"], ev["gross_amount"],
+                                              ev.get("asset_type")))
             invested = _num(ev["gross_amount"]) if ev["gross_amount"] is not None else unit * qty
             fees = _num(ev["fees"])
             seen_buy_ccy.add(_norm_cur(ev["currency"]) or broker_currency)
@@ -290,7 +300,10 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             sell_currency = broker_currency
         currency = sell_currency
 
-        exit_price = _num(ev["unit_price"])
+        # Mismo guard de escala que en la compra (y que _persist_sell_fifo): con el
+        # costo sano, un precio per-100 acá inflaba el P&L ×100 entero.
+        exit_price = _num(reconciled_unit_price(ev["unit_price"], ev["quantity"], ev["gross_amount"],
+                                                ev.get("asset_type")))
         sell_commissions = _num(ev["fees"])
         qty_to_sell = _num(ev["quantity"])
         op_date = ev["date"]
@@ -354,7 +367,16 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
         if seed_qty > _EPS:
             _consume_from = _consume_from + [_seed(seed_qty)]
 
-        tc_venta = tc_blue if sell_currency == "ARS" else 1.0
+        # TC de la FECHA DE LA VENTA (ver persister._persist_sell_fifo). Antes iba
+        # `tc_blue`, el dólar vivo del momento del rebuild → el P&L de una venta
+        # vieja dependía de CUÁNDO se corría el rebuild. `use_hist` viene del
+        # fx_version de la cuenta: v1 replaya EXACTAMENTE como siempre.
+        if sell_currency != "ARS":
+            tc_venta = 1.0
+        elif use_hist:
+            tc_venta = fx_for_date(conn, op_date, fallback=tc_blue)
+        else:
+            tc_venta = tc_blue
         remaining = qty_to_sell
         spill_taken = 0.0   # cuánto de la pata cruzada (cross-currency) ya consumimos
 
@@ -377,7 +399,16 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             # Cross-currency: valuar el invested del lote en la moneda de la venta.
             if is_cross and tc_blue:
                 if lot_currency == "USD" and currency == "ARS":
-                    base_invested = base_invested * tc_blue
+                    # ⚠️ TIENE que ser el MISMO número que `tc_venta`, no `tc_blue`.
+                    # El costo USD se lleva a pesos acá y después `pnl_ars/tc_venta`
+                    # lo divide de vuelta: el TC se CANCELA y el costo USD se
+                    # preserva. Mientras ambos eran `tc_blue` daba igual cuál se
+                    # usara; ahora que `tc_venta` es el TC histórico de la fecha,
+                    # dejar `tc_blue` acá los hace divergir ~5× y mete una pérdida
+                    # fantasma en TODA operación dólar-MEP — y solo por el camino
+                    # del rebuild (re-import, foto, backfill), o sea invisible en
+                    # un test normal. El persister ya usaba `tc_venta` acá.
+                    base_invested = base_invested * (tc_venta or tc_blue)
                 elif lot_currency == "ARS" and currency == "USD":
                     # Dólar-MEP: el costo USD es lo que esos pesos valían CUANDO
                     # COMPRASTE (blue de la fecha de entrada), NO el blue de hoy —
@@ -386,8 +417,13 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                     # antes rebuild usaba el blue de hoy y divergía → la P&L
                     # realizada cambiaba según cuándo corría el rebuild. Sin conn
                     # cae al tc_blue actual (back-compat con callers/tests viejos).
-                    _pblue = blue_for_date(conn, lot.get("entry_date"), tc_blue) if conn is not None else tc_blue
-                    base_invested = base_invested / (_pblue or tc_blue)
+                    if conn is None:
+                        _pfx = tc_blue
+                    elif use_hist:
+                        _pfx = fx_for_date(conn, lot.get("entry_date"), fallback=tc_blue)
+                    else:
+                        _pfx = blue_for_date(conn, lot.get("entry_date"), tc_blue)
+                    base_invested = base_invested / (_pfx or tc_blue)
 
             entry_invested = base_invested * ratio if base_invested else None
             chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0
@@ -432,6 +468,12 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 "pnl_pct": round(pnl_pct, 4) if pnl_pct is not None else None,
                 "entry_date": lot["entry_date"],
                 "commissions": round(chunk_commission, 4),
+                # Moneda del trade + TC con el que se llevó a USD → el frontend
+                # puede reconstruir el nominal en pesos sin adivinar. Solo en
+                # ventas ARS: en USD tc_venta es 1.0 y estamparlo colapsaría el
+                # P&L en pesos 1:1 (ver el comentario largo en persister.py).
+                "currency": currency,
+                "fx_to_usd": (tc_venta if currency == "ARS" else None),
                 # origen = la VENTA (para revert / dedup de links)
                 "batch_id": ev["batch_id"],
                 "raw_row_id": ev["raw_row_id"],
@@ -629,11 +671,12 @@ def _write_rebuilt(conn, uid: int, replay: Dict[str, List[Dict[str, Any]]]) -> N
         cur = conn.execute(
             """INSERT INTO operations (user_id, date, broker, asset, op_type,
                    entry_price, exit_price, quantity, pnl_usd, pnl_pct, entry_date,
-                   commissions)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   commissions, currency, fx_to_usd)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (uid, o["date"], o["broker"], o["asset"], o["op_type"],
              o["entry_price"], o["exit_price"], o["quantity"], o["pnl_usd"],
-             o["pnl_pct"], o["entry_date"], o["commissions"]),
+             o["pnl_pct"], o["entry_date"], o["commissions"],
+             o.get("currency"), o.get("fx_to_usd")),
         )
         op_id = cur.lastrowid
         if o.get("batch_id") and o.get("raw_row_id"):
@@ -688,6 +731,12 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
     skipped_no_sell: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
 
+    # La versión de FX de la CUENTA decide cómo replaya el rebuild. v1 = el dólar
+    # vivo (el comportamiento de siempre, byte-idéntico); v2 = fx_for_date. Es lo
+    # que hace que el deploy no le cambie el número a nadie hasta que el migrador
+    # pase su cuenta — con las DOS patas (ventas y flujos) en la misma transacción.
+    _use_hist = fx_version(conn, uid) == FX_V2
+
     seen_groups: set = set()
     for i, ba in enumerate(_affected_assets(conn, uid, batch_id)):
         broker, asset = ba["broker"], ba["asset"]
@@ -739,6 +788,7 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         # todos los links); el replay corre sobre los eventos sin conductos.
         grp_is_exchange = any(_is_exchange_broker(b) for b in pair)
         replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue,
+                               use_hist=_use_hist,
                                conn=conn, is_exchange=grp_is_exchange)
         # Los lotes/ops ya cargan su _broker desde el evento (neteo cross-broker):
         # un lote comprado en el sibling se reescribe al sibling, uno del padre al

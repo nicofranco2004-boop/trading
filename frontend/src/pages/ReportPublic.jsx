@@ -66,6 +66,11 @@ export default function ReportPublic() {
         @media print {
           .report-shell { background: #fff !important; padding: 0 !important; }
           .no-print { display: none !important; }
+          /* Abierto desde una sesión logueada (asesor → "Abrir" → imprimir):
+             el shell de la app quedaba EN el PDF — sidebar oscura encima y
+             el papel corrido 220px (audit). */
+          aside, nav, header { display: none !important; }
+          main { margin-left: 0 !important; }
           .report-paper { box-shadow: none !important; border-radius: 0 !important; }
           /* Sin esto los navegadores omiten los backgrounds: el monograma y
              las barras de tenencias salían invisibles en el PDF (audit). */
@@ -123,11 +128,18 @@ export default function ReportPublic() {
               <div style={{ fontSize: 11, color: P.ink2, marginTop: 3 }}>{signed(r.market_usd)} · neto de comisiones</div>
             </div>
             <div>
-              <div style={{ fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, marginBottom: 4 }}>¿De dónde vino?</div>
+              <div style={{ fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, marginBottom: 4 }}>Cómo se explica</div>
               <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>
                 Mercado <b style={{ color: (r.market_usd ?? 0) >= 0 ? P.up : P.down }}>{signed(r.market_usd)}</b><br />
                 Aportes netos <b>{signed(r.flows_usd)}</b>
               </div>
+              {r.base_note && (
+                <div style={{ fontSize: 10.5, color: P.ink2, marginTop: 6 }}>
+                  {r.base_note === 'onboarding'
+                    ? `Medido desde el alta de la cuenta en Rendi${r.base_date ? ` (${r.base_date})` : ''}.`
+                    : `Comparado contra los últimos datos disponibles al ${r.base_date}.`}
+                </div>
+              )}
             </div>
           </div>
 
@@ -172,7 +184,7 @@ export default function ReportPublic() {
                   </tbody>
                 </table>
               ) : (
-                <p style={{ fontSize: 12.5, color: P.ink3, margin: 0 }}>Sin movimientos registrados en el período.</p>
+                <p style={{ fontSize: 12.5, color: P.ink3, margin: 0 }}>No hubo compras ni ventas en este período.</p>
               )}
               {r.movements_total > (r.movements?.length || 0) && (
                 <p style={{ fontSize: 11, color: P.ink3, marginTop: 6 }}>Se muestran los {r.movements.length} más recientes de {r.movements_total}.</p>
@@ -203,24 +215,24 @@ export default function ReportPublic() {
           {(r.movers?.winners?.length || r.movers?.losers?.length) ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 20, marginTop: 16 }}>
               <div>
-                <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Ganadoras</div>
+                <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Lo que más sumó</div>
                 {(r.movers.winners || []).map((m, i) => (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
                     <b>{m.asset}</b><span style={{ fontWeight: 700, color: P.up }}>{signed(m.pnl_usd)}</span>
                   </div>
                 ))}
-                {!(r.movers.winners || []).length && <p style={{ fontSize: 12, color: P.ink3, margin: 0 }}>Ninguna en verde.</p>}
+                {!(r.movers.winners || []).length && <p style={{ fontSize: 12, color: P.ink3, margin: 0 }}>Por ahora ninguna tenencia está dando ganancia.</p>}
               </div>
               <div>
-                <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Perdedoras</div>
+                <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Lo que más restó</div>
                 {(r.movers.losers || []).map((m, i) => (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
                     <b>{m.asset}</b><span style={{ fontWeight: 700, color: P.down }}>{signed(m.pnl_usd)}</span>
                   </div>
                 ))}
-                {!(r.movers.losers || []).length && <p style={{ fontSize: 12, color: P.ink3, margin: 0 }}>Ninguna en rojo.</p>}
+                {!(r.movers.losers || []).length && <p style={{ fontSize: 12, color: P.ink3, margin: 0 }}>Ninguna tenencia está en pérdida.</p>}
               </div>
-              <div style={{ gridColumn: '1 / -1', fontSize: 10, color: P.ink3, marginTop: -8 }}>Resultado total de cada tenencia desde su compra, a valores de hoy.</div>
+              <div style={{ gridColumn: '1 / -1', fontSize: 10, color: P.ink3, marginTop: -8 }}>Cuánto ganó o perdió cada tenencia desde que la compraste, a precios de hoy.</div>
             </div>
           ) : null}
 

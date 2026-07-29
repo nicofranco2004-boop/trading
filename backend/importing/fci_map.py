@@ -23,9 +23,13 @@ la clase equivocada: dentro de un mismo fondo el VCP entre clases puede variar
 la CLASE exacta y, ante la duda, NO se mapea (la posición queda al costo, que es
 el comportamiento previo — sin regresión, no inventamos precio).
 
-Verificado 2026-06-25 vs api.argentinadatos.com. Fondos deliberadamente FUERA
-(sin match confiable → al costo): "Cocos Pesos Plus" (COCOSPPA, no figura en la
-fuente), "BAHUSDA" (Balanz — candidatos ambiguos), "ALRTAFA" (Allaria vs Alpha,
+Verificado 2026-06-25 vs api.argentinadatos.com; IAMRDOA agregado 2026-07-28.
+Fondos deliberadamente FUERA (sin match confiable → al costo): "Cocos Pesos Plus"
+(COCOSPPA) — re-chequeado 2026-07-28: sigue SIN figurar en ArgentinaDatos (fondo
+nuevo, inicio 15/05/2025; VCP Clase A 1,2945 no matchea ningún fondo de la fuente,
+y "Adcap Pesos Plus" es otro fondo con VCP ~136). CAFCI directo devuelve 403 y
+cocos.capital es SSR/Cloudflare sin API estable → no hay fuente backend confiable;
+queda al costo hasta que ArgentinaDatos lo indexe. "ALRTAFA" (Allaria vs Alpha,
 errar es catastrófico). Para sumar uno: confirmá su `fondo` exacto en la fuente,
 agregá el ticker acá y su base-name en pricing.fci.BROKER_FCI_ALLOWLIST.
 """
@@ -68,6 +72,10 @@ BROKER_FCI_AD_NAME = {
     # EXACTO (VCP 193.077,218 = los $193.077 de IOL) y magnitud sana. Clase B daría
     # 227.176 (×1.18 mal). Otras clases (D/E/F) sin VCP en la fuente → no candidatas.
     "CONIOLA":   "Adcap Acciones - Clase A",           # rentaVariable ARS (IOL)
+    # Cohen / IAM — confirmado 2026-07-28 vs ArgentinaDatos: "IAM Renta Dólares - Clase A"
+    # (rentaFija USD), VCP 1780,226 (÷1000 = 1,78 escala USD). El user linkeó el fondo 4815
+    # de Cohen con ese nombre EXACTO. Clases B/C dan 1830/1801 (misma magnitud, sin riesgo 100x).
+    "IAMRDOA":   "IAM Renta Dólares - Clase A",        # rentaFija USD (Cohen/IAM)
 }
 
 
