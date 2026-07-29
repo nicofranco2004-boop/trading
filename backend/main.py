@@ -8957,8 +8957,11 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                     # B5 del diagnóstico, imposible de distinguir después de una
                     # venta USD genuina (las dos quedan byte-idénticas). Ahora cae al
                     # TC de la fecha, que es lo que el usuario habría puesto.
-                    tc_venta = data.tc_venta or _fx.fx_for_date(
-                        conn, op_date, fallback=_user_tc_blue(conn, uid)) or 1
+                    if _fx.fx_version(conn, uid) == _fx.FX_V2:
+                        tc_venta = data.tc_venta or _fx.fx_for_date(
+                            conn, op_date, fallback=_user_tc_blue(conn, uid)) or 1
+                    else:
+                        tc_venta = data.tc_venta or 1
                     pnl_ars_chunk = data.exit_price * take - (entry_invested or 0) - chunk_commission_native
                     pnl_usd = pnl_ars_chunk / tc_venta
                     invested_usd = (entry_invested or 0) / tc_venta if entry_invested else 0
@@ -12200,6 +12203,89 @@ def admin_diagnose_scale(limit_ops: int = 500000, dias_canilla: int = 90,
         raise HTTPException(status_code=500, detail=f"diagnose-scale falló: {type(e).__name__}: {e}")
     finally:
         conn.close()
+
+@app.post("/api/admin/fx-migrate-user")
+def admin_fx_migrate_user(user_id: int, apply: bool = False,
+                          uid: int = Depends(get_admin_user)):
+    """Migra UNA cuenta de FX v1 (dólar vivo del import) a v2 (TC de la fecha de
+    cada operación), con las DOS patas —ventas y flujos— en una sola transacción.
+
+    apply=False (default): corre la migración COMPLETA sobre una COPIA de la base
+    y devuelve el antes/después sin tocar nada. Es el mismo código que el apply —
+    lo que ves en el dry-run es lo que pasa de verdad.
+
+    Por qué por cuenta y no global: migrar una sola pata lleva el error del Total
+    Return de 1,23× a 9,1× (medido) porque los dos errores dejan de cancelarse.
+    Y un barrido global no permite verificar cuenta por cuenta ni frenar.
+
+    NO corre el borrador de outliers de snapshots (se ancla al capital_final y
+    puede borrar la curva diaria real). NO toca cash ni operaciones manuales
+    (quedan reportadas en `pares_salteados`).
+    """
+    from importing import fx_migrate as _fxm
+
+    def _correr(conn):
+        return _fxm.migrate_user_fx(
+            conn, user_id, helpers=None,
+            recalc=_recalc_pnl_realized_from_ops,
+            backfill_snapshots=_import_persister._backfill_snapshots_from_monthly,
+            recompute_netdep=_recompute_snapshots_netdep_for_user)
+
+    if not apply:
+        # Dry-run: copia física de la base, misma función, se descarta al final.
+        import shutil, tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        try:
+            src = get_db()
+            try:
+                # backup() copia consistente aunque haya un writer activo (WAL)
+                dst = sqlite3.connect(tmp.name)
+                src.backup(dst)
+                dst.close()
+            finally:
+                src.close()
+            conn = sqlite3.connect(tmp.name)
+            conn.row_factory = sqlite3.Row
+            try:
+                out = _correr(conn)
+                out["applied"] = False
+                out["nota"] = ("dry-run sobre una copia: la base real NO se tocó. "
+                               "Repetir con apply=true para aplicar.")
+                return out
+            finally:
+                conn.close()
+        except HTTPException:
+            raise
+        except Exception as e:
+            log.exception("fx-migrate dry-run FAILED user_id=%s", user_id)
+            raise HTTPException(status_code=500, detail=f"fx-migrate dry-run falló: {type(e).__name__}: {e}")
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+    conn = get_db()
+    try:
+        out = _correr(conn)
+        if not out.get("ok"):
+            conn.rollback()
+            return out
+        conn.commit()
+        out["applied"] = True
+        log.info("fx-migrate APLICADO user_id=%s delta=%s", user_id, out.get("delta"))
+        return out
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        log.exception("fx-migrate APPLY FAILED user_id=%s — rollback", user_id)
+        raise HTTPException(status_code=500, detail=f"fx-migrate falló (rollback hecho): {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
 
 
 @app.get("/api/admin/commissions-debug")
@@ -17720,8 +17806,11 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # es el mismo error que teníamos en el importador. Para una venta de
             # hoy los dos caminos dan el mismo número.
             if currency == "ARS":
-                tc_venta = (_fx.fx_for_date(conn, date)
-                            or _current_cedear_rate() or _user_tc_blue(conn, uid))
+                if _fx.fx_version(conn, uid) == _fx.FX_V2:
+                    tc_venta = (_fx.fx_for_date(conn, date)
+                                or _current_cedear_rate() or _user_tc_blue(conn, uid))
+                else:
+                    tc_venta = _current_cedear_rate() or _user_tc_blue(conn, uid)
         elif action in ("withdraw", "transfer"):
             # retiro (o pata origen de una transferencia): no puede dejar el
             # cash negativo — mismo predicado que el endpoint (que igual lo

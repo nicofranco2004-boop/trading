@@ -105,3 +105,64 @@ def fx_for_date(conn, date_str, fallback=None, riel: str = RIEL_MEP) -> Optional
     pasan solo para no romper con una base vacía en tests.
     """
     return fx_for_date_detail(conn, date_str, fallback=fallback, riel=riel)[0]
+
+
+# ─── Versionado por usuario: la migración es POR CUENTA, no global ────────────
+#
+# Deployar el TC histórico sin esto rompe a los 503 usuarios con data existente:
+# el rebuild re-deriva sus VENTAS con el TC nuevo en cuanto tocan cualquier camino
+# de rebuild (import, foto, backfill), pero sus FLUJOS quedan estampados al dólar
+# del import viejo (medido: 80.868 de 84.123 al mismo 1415, desde 2013). Hoy los
+# dos errores se CANCELAN en el cociente del Total Return (medido: 2,00% mostrado
+# vs 1,63% real = error 1,23×); con una sola pata migrada dejan de cancelarse y el
+# error salta a 9,1×. Las dos patas tienen que moverse JUNTAS, por usuario, en una
+# transacción — eso es exactamente lo que hace el migrador
+# (/api/admin/fx-migrate-user), que al final estampa `fx_version = v2`.
+#
+#   v1 → el motor escribe como siempre (dólar vivo del import). Nadie cambia de
+#        número por el deploy.
+#   v2 → el motor escribe con fx_for_date. Cuentas nuevas nacen acá.
+
+FX_V1 = "v1"
+FX_V2 = "v2"
+_FX_VERSION_KEY = "fx_version"
+
+
+def fx_version(conn, uid: int) -> str:
+    """Versión de FX de la cuenta. Resuelve UNA vez y queda persistida.
+
+    Sin fila en config:
+      · cuenta con historia (algún batch confirmado o alguna operación) → v1,
+        "grandfathered": sus números no se mueven hasta que el migrador la pase.
+      · cuenta virgen → v2, y se PERSISTE en el momento. El orden importa: la
+        primera resolución ocurre durante el primer preview/persist, ANTES de que
+        su primer batch quede confirmado — si no se persistiera acá, la segunda
+        llamada la vería "con historia" y la degradaría a v1 para siempre.
+    """
+    try:
+        row = conn.execute(
+            "SELECT value FROM config WHERE user_id=? AND key=?",
+            (uid, _FX_VERSION_KEY)).fetchone()
+        if row and row[0] in (FX_V1, FX_V2):
+            return row[0]
+        tiene_historia = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed') "
+            "OR EXISTS(SELECT 1 FROM operations WHERE user_id=?)",
+            (uid, uid)).fetchone()[0]
+        version = FX_V1 if tiene_historia else FX_V2
+        conn.execute(
+            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            (uid, _FX_VERSION_KEY, version))
+        return version
+    except Exception:
+        # Ante cualquier duda, el comportamiento viejo: v1 no corrompe nada, solo
+        # posterga la mejora para esa cuenta.
+        return FX_V1
+
+
+def set_fx_version(conn, uid: int, version: str) -> None:
+    if version not in (FX_V1, FX_V2):
+        raise ValueError(f"fx_version inválida: {version}")
+    conn.execute(
+        "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+        (uid, _FX_VERSION_KEY, version))

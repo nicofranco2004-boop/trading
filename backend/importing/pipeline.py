@@ -18,9 +18,9 @@ from .normalizer import normalize_rows
 from .validator import validate
 from .preview import build_preview
 try:
-    from fx import fx_for_date
+    from fx import fx_for_date, fx_version, FX_V2
 except ImportError:  # pragma: no cover
-    from ..fx import fx_for_date
+    from ..fx import fx_for_date, fx_version, FX_V2
 from .mapper import Mapping, apply_mapping, inspect_csv as mapper_inspect
 from .cash_sim import simulate as simulate_cash
 from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_to_csv
@@ -638,13 +638,15 @@ def run_preview(
 
     # Fase 4: tc_blue stamp at write time
     tc_blue_at_import = _read_user_tc_blue(conn, uid)
+    _hist = fx_version(conn, uid) == FX_V2
 
     for tx in valid_txs:
         fp = _row_fingerprint(tx)
         if fp in existing_fingerprints:
             duplicate_row_indices.append(tx.row_index)
         gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_import,
-                                            conn=conn, date=tx.date)
+                                            conn=conn if _hist else None,
+                                            date=tx.date if _hist else None)
         # Audit follow-up: ALSO populate the NormalizedTx in-memory para que el
         # persister (que consume estos NormalizedTx) tenga acceso al stamped USD
         # y lo use en `_apply_cash_flow`. Sin esto, persist re-convertía con
@@ -902,6 +904,7 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
     cleanup_stale_previews(conn)
     batch_id = _new_id()
     tc_blue = _read_user_tc_blue(conn, uid)
+    _hist = fx_version(conn, uid) == FX_V2
     fh = _file_hash(("tenencia|" + "|".join(_row_fingerprint(t) for t in txs)).encode("utf-8"))
     n = len(txs)
     conn.execute(
@@ -920,7 +923,8 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
                 ensure_ascii=False)))
         raw_id = cur.lastrowid
         gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue,
-                                            conn=conn, date=tx.date)
+                                            conn=conn if _hist else None,
+                                            date=tx.date if _hist else None)
         tx.gross_amount_usd = gross_usd
         conn.execute(
             """INSERT INTO import_normalized_tx
@@ -1077,10 +1081,12 @@ def load_session_with_seed_revalidate(
     conn.execute("DELETE FROM import_normalized_tx WHERE batch_id=?", (session_id,))
     # Fase 4: tc_blue stamp at write time
     tc_blue_at_confirm = _read_user_tc_blue(conn, uid)
+    _hist2 = fx_version(conn, uid) == FX_V2
     for tx in valid_txs:
         fp = _row_fingerprint(tx)
         gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_confirm,
-                                            conn=conn, date=tx.date)
+                                            conn=conn if _hist2 else None,
+                                            date=tx.date if _hist2 else None)
         # Audit follow-up: stamp también en el NormalizedTx in-memory para que
         # el persister lo use en `_apply_cash_flow` (consistencia DB ↔ memory).
         tx.gross_amount_usd = gross_usd

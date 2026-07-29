@@ -60,9 +60,9 @@ from datetime import date as _date
 from .schema import OP_BUY, OP_SELL
 from .persister import _link, broker_pair, blue_for_date, reconciled_unit_price
 try:
-    from fx import fx_for_date
+    from fx import fx_for_date, fx_version, FX_V2
 except ImportError:  # pragma: no cover
-    from ..fx import fx_for_date
+    from ..fx import fx_for_date, fx_version, FX_V2
 from .maturity import is_bond_like_name
 from .normalizer import guess_asset_type
 try:
@@ -197,7 +197,8 @@ def _is_exchange_broker(name) -> bool:
 
 def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                    tc_blue: float, conn=None,
-                   is_exchange: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+                   is_exchange: bool = False,
+                   use_hist: bool = False) -> Dict[str, List[Dict[str, Any]]]:
     """Replaya los eventos BUY/SELL (ya ordenados cronológicamente, BUY antes
     que SELL el mismo día) de UN (broker, activo) y devuelve:
       {"operations": [...], "open_lots": [...]}
@@ -368,9 +369,14 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
 
         # TC de la FECHA DE LA VENTA (ver persister._persist_sell_fifo). Antes iba
         # `tc_blue`, el dólar vivo del momento del rebuild → el P&L de una venta
-        # vieja dependía de CUÁNDO se corría el rebuild.
-        tc_venta = (fx_for_date(conn, op_date, fallback=tc_blue)
-                    if sell_currency == "ARS" else 1.0)
+        # vieja dependía de CUÁNDO se corría el rebuild. `use_hist` viene del
+        # fx_version de la cuenta: v1 replaya EXACTAMENTE como siempre.
+        if sell_currency != "ARS":
+            tc_venta = 1.0
+        elif use_hist:
+            tc_venta = fx_for_date(conn, op_date, fallback=tc_blue)
+        else:
+            tc_venta = tc_blue
         remaining = qty_to_sell
         spill_taken = 0.0   # cuánto de la pata cruzada (cross-currency) ya consumimos
 
@@ -411,7 +417,12 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                     # antes rebuild usaba el blue de hoy y divergía → la P&L
                     # realizada cambiaba según cuándo corría el rebuild. Sin conn
                     # cae al tc_blue actual (back-compat con callers/tests viejos).
-                    _pfx = fx_for_date(conn, lot.get("entry_date"), fallback=tc_blue) if conn is not None else tc_blue
+                    if conn is None:
+                        _pfx = tc_blue
+                    elif use_hist:
+                        _pfx = fx_for_date(conn, lot.get("entry_date"), fallback=tc_blue)
+                    else:
+                        _pfx = blue_for_date(conn, lot.get("entry_date"), tc_blue)
                     base_invested = base_invested / (_pfx or tc_blue)
 
             entry_invested = base_invested * ratio if base_invested else None
@@ -720,6 +731,12 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
     skipped_no_sell: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
 
+    # La versión de FX de la CUENTA decide cómo replaya el rebuild. v1 = el dólar
+    # vivo (el comportamiento de siempre, byte-idéntico); v2 = fx_for_date. Es lo
+    # que hace que el deploy no le cambie el número a nadie hasta que el migrador
+    # pase su cuenta — con las DOS patas (ventas y flujos) en la misma transacción.
+    _use_hist = fx_version(conn, uid) == FX_V2
+
     seen_groups: set = set()
     for i, ba in enumerate(_affected_assets(conn, uid, batch_id)):
         broker, asset = ba["broker"], ba["asset"]
@@ -771,6 +788,7 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         # todos los links); el replay corre sobre los eventos sin conductos.
         grp_is_exchange = any(_is_exchange_broker(b) for b in pair)
         replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue,
+                               use_hist=_use_hist,
                                conn=conn, is_exchange=grp_is_exchange)
         # Los lotes/ops ya cargan su _broker desde el evento (neteo cross-broker):
         # un lote comprado en el sibling se reescribe al sibling, uno del padre al
