@@ -1768,6 +1768,11 @@ def init_db():
             operation_id INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_import_op_links_batch ON import_op_links(batch_id);
+        -- operation_id se joinea en el revert (persister.py), en los diagnósticos de
+        -- FX/escala y en el panel de migración. Sin este índice, cada lookup era un
+        -- full scan de la tabla — con ~150k links, el panel de migración hacía
+        -- timeout al listar candidatos.
+        CREATE INDEX IF NOT EXISTS idx_import_op_links_op ON import_op_links(operation_id);
     """)
 
     # Migración: ai_usage_daily.chat_count (agregada al introducir chat tiered).
@@ -12288,66 +12293,74 @@ def admin_fx_migrate_user(user_id: int, apply: bool = False,
 
 @app.get("/api/admin/fx-migrate-candidates")
 def admin_fx_migrate_candidates(uid: int = Depends(get_admin_user)):
-    """Lista las cuentas para el panel de migración FX: en qué versión está cada
-    una, cuánta data tiene, y si está BLOQUEADA por el bug de escala per-100
-    (esas van por su procedimiento propio antes). Orden: primero las más chicas,
-    que son las que conviene migrar primero para validar la mecánica.
+    """Lista las cuentas para el panel de migración FX: versión, cuánta data tiene
+    cada una, y si está BLOQUEADA por el bug de escala per-100.
+
+    TODO agrupado — 6 queries EN TOTAL, no 5 por usuario. La v1 loopeaba usuario
+    por usuario y con ~500 cuentas eran ~2.500 queries (una de ellas cruzando
+    operations × import_op_links sin índice): timeout del proxy. Mismo error que
+    ya cometimos con diagnose-sell-fx v1 — el endpoint no medía, colgaba.
     """
     conn = get_db()
     try:
+        universo = {r["u"] for r in conn.execute(
+            """SELECT user_id u FROM operations
+               UNION SELECT user_id u FROM import_batches WHERE status='confirmed'""")}
+
+        versiones = {r["user_id"]: r["value"] for r in conn.execute(
+            "SELECT user_id, value FROM config WHERE key='fx_version'")}
+        tiers = {r["id"]: r["tier"] for r in conn.execute(
+            "SELECT id, tier FROM users")}
+        ventas = {r["u"]: r["n"] for r in conn.execute(
+            "SELECT user_id u, COUNT(*) n FROM operations "
+            "WHERE op_type='Venta' GROUP BY user_id")}
+        flujos = {r["u"]: r["n"] for r in conn.execute(
+            """SELECT b.user_id u, COUNT(*) n FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.status='confirmed' AND UPPER(COALESCE(n.currency,''))='ARS'
+                  AND n.gross_amount IS NOT NULL GROUP BY b.user_id""")}
+        manuales = {r["u"]: r["n"] for r in conn.execute(
+            """SELECT user_id u, COUNT(*) n FROM operations
+                WHERE op_type='Venta' AND id NOT IN
+                      (SELECT operation_id FROM import_op_links
+                        WHERE operation_id IS NOT NULL)
+                GROUP BY user_id""")}
+        # Escala per-100: una sola pasada arrancando por los LINKS (una vez, no
+        # por usuario) — operations se resuelve por PK y la tx por el índice de
+        # batch. El predicado es el mismo del guard del migrador.
+        escala = {r["u"]: r["n"] for r in conn.execute(
+            """SELECT o.user_id u, COUNT(*) n
+                 FROM import_op_links l
+                 JOIN operations o ON o.id = l.operation_id
+                 JOIN import_normalized_tx n2
+                      ON n2.batch_id = l.batch_id AND n2.raw_row_id = l.raw_row_id
+                WHERE o.op_type='Venta'
+                  AND o.exit_price IS NOT NULL AND o.quantity IS NOT NULL
+                  AND n2.gross_amount IS NOT NULL AND n2.gross_amount <> 0
+                  AND n2.quantity IS NOT NULL AND n2.quantity <> 0
+                  AND ABS((o.exit_price * o.quantity) /
+                          (n2.gross_amount * o.quantity / n2.quantity) - 1) > 0.02
+                GROUP BY o.user_id""")}
+
         candidatos = []
-        for u in conn.execute(
-            """SELECT DISTINCT user_id uid FROM (
-                   SELECT user_id FROM operations
-                   UNION SELECT user_id FROM import_batches WHERE status='confirmed'
-               )"""):
-            au = u["uid"]
-            ver = conn.execute(
-                "SELECT value FROM config WHERE user_id=? AND key='fx_version'",
-                (au,)).fetchone()
-            version = ver["value"] if ver and ver["value"] in ("v1", "v2") else "v1"
-
-            ventas = conn.execute(
-                "SELECT COUNT(*) n FROM operations WHERE user_id=? AND op_type='Venta'",
-                (au,)).fetchone()["n"]
-            flujos = conn.execute(
-                """SELECT COUNT(*) n FROM import_normalized_tx n
-                     JOIN import_batches b ON b.id=n.batch_id
-                    WHERE b.user_id=? AND b.status='confirmed'
-                      AND UPPER(COALESCE(n.currency,''))='ARS'
-                      AND n.gross_amount IS NOT NULL""", (au,)).fetchone()["n"]
-            escala = conn.execute(
-                """SELECT COUNT(*) n FROM operations o
-                     JOIN import_op_links l ON l.operation_id = o.id
-                     JOIN import_normalized_tx n2
-                          ON n2.batch_id=l.batch_id AND n2.raw_row_id=l.raw_row_id
-                    WHERE o.user_id=? AND o.op_type='Venta'
-                      AND o.exit_price IS NOT NULL AND o.quantity IS NOT NULL
-                      AND n2.gross_amount IS NOT NULL AND n2.gross_amount <> 0
-                      AND n2.quantity IS NOT NULL AND n2.quantity <> 0
-                      AND ABS((o.exit_price*o.quantity) /
-                              (n2.gross_amount*o.quantity/n2.quantity) - 1) > 0.02""",
-                (au,)).fetchone()["n"]
-            manuales = conn.execute(
-                """SELECT COUNT(*) n FROM operations o
-                     LEFT JOIN import_op_links l ON l.operation_id = o.id
-                    WHERE o.user_id=? AND o.op_type='Venta' AND l.operation_id IS NULL""",
-                (au,)).fetchone()["n"]
-            urow = conn.execute("SELECT tier FROM users WHERE id=?", (au,)).fetchone()
-
+        for au in universo:
+            version = versiones.get(au)
+            if version not in ("v1", "v2"):
+                version = "v1"
+            esc = escala.get(au, 0)
             candidatos.append({
                 "user_id": au,
                 "fx_version": version,
-                "tier": urow["tier"] if urow else None,
-                "ventas": ventas,
-                "flujos_ars": flujos,
-                "ventas_manuales": manuales,
-                "bloqueada_por_escala": escala > 0,
-                "ventas_con_escala_rota": escala,
+                "tier": tiers.get(au),
+                "ventas": ventas.get(au, 0),
+                "flujos_ars": flujos.get(au, 0),
+                "ventas_manuales": manuales.get(au, 0),
+                "bloqueada_por_escala": esc > 0,
+                "ventas_con_escala_rota": esc,
             })
-        candidatos.sort(key=lambda c: (c["fx_version"] != "v1",      # v1 primero
-                                       c["bloqueada_por_escala"],     # migrables primero
-                                       c["ventas"]))                  # chicas primero
+        candidatos.sort(key=lambda c: (c["fx_version"] != "v1",
+                                       c["bloqueada_por_escala"],
+                                       c["ventas"]))
         return {
             "total": len(candidatos),
             "v1_migrables": sum(1 for c in candidatos
