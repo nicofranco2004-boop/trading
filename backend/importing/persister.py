@@ -404,10 +404,43 @@ def persist_batch(
 
 # ─── Implementaciones por op_type ────────────────────────────────────────────
 
+def reconciled_unit_price(unit_price, quantity, gross_amount):
+    """Precio efectivo por unidad cuando `monto` contradice a `precio × cantidad`.
+
+    El motor toma el COSTO de `gross_amount` (la caja real) y los INGRESOS de
+    `unit_price × quantity`. Si el precio viene en otra escala (bono per-100,
+    VCP de FCI por 1.000 cuotapartes, coma decimal mal parseada), el costo queda
+    sano y TODO el error cae en el P&L: `pnl = 99 × costo` para un per-100.
+
+    Ante un desvío de un orden de magnitud gana la caja: `precio = monto/cantidad`
+    — la convención de IOL (iol.py:714) y Cocos (cocos.py:531), los dos únicos
+    parsers inmunes al bug. El normalizer aplica esta misma regla al PARSEAR
+    (normalizer.py, rama del triángulo); acá se repite porque el rebuild replaya
+    `import_normalized_tx` YA GUARDADO — sin este guard, cada rebuild re-imprime
+    la escala rota del stock histórico aunque el parseo nuevo esté sano.
+
+    Umbral 5×: las comisiones embebidas mueven el triángulo 1-3% (guard ≤3% en
+    balanz_movimientos) y el ruido FX menos. Medido en prod (2026-07-28, 129.607
+    filas): el cluster per-100 tiene p50 = 100,000 EXACTO ⇒ gross_amount es BRUTO
+    y esta derivación no absorbe ninguna comisión.
+    """
+    try:
+        up = float(unit_price or 0)
+        q = float(quantity or 0)
+        ga = float(gross_amount or 0)
+    except (TypeError, ValueError):
+        return unit_price
+    if up > 0 and q > 0 and ga > 0:
+        ratio = (up * q) / ga
+        if ratio >= 5 or ratio <= 0.2:
+            return ga / q
+    return up
+
+
 def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
     """Compra → INSERT positions + debit cash. Equivalente a POST /positions."""
     qty = float(tx.quantity or 0)
-    unit = float(tx.unit_price or 0)
+    unit = float(reconciled_unit_price(tx.unit_price, qty, tx.gross_amount) or 0)
     invested = float(tx.gross_amount) if tx.gross_amount is not None else (unit * qty)
     fees = float(tx.fees or 0)
     # Persistimos la moneda nativa del lote (USD para Compra Dolar Mep, ARS
@@ -496,6 +529,10 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     ).fetchall())
     total_avail = sum((p["quantity"] or 0) for p in positions)
     qty_to_sell = float(tx.quantity or 0)
+    # Guard de escala: si `monto` contradice a precio×cantidad por un orden de
+    # magnitud, los proceeds reales son el monto (ver reconciled_unit_price).
+    # Cubre también el REPLAY de tx viejas guardadas con el precio per-100.
+    unit_eff = float(reconciled_unit_price(tx.unit_price, qty_to_sell, tx.gross_amount) or 0)
 
     # Política: si el CSV vende más de lo disponible, asumimos que existe stock
     # previo que el CSV no incluye (history-as-truth). Auto-creamos un seed lot
@@ -505,7 +542,7 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     # confirmar para precisar el cost basis.
     if qty_to_sell > total_avail + 1e-9:
         missing_qty = qty_to_sell - total_avail
-        seed_price = float(tx.unit_price or 0)
+        seed_price = unit_eff
         seed_invested = missing_qty * seed_price
         # entry_date: la misma fecha de la venta (FIFO lo ordena por entry_date,
         # luego por id — queda al final entre lotes con la misma fecha).
@@ -533,7 +570,7 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         ).fetchall())
         total_avail = sum((p["quantity"] or 0) for p in positions)
 
-    exit_price = float(tx.unit_price or 0)
+    exit_price = unit_eff
     sell_commissions = float(tx.fees or 0)
     op_date = tx.date
 
