@@ -393,6 +393,31 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
             elif p and a and not q:
                 if p != 0:
                     tx.quantity = round(a / p, 8)
+            elif q and p and a and q != 0:
+                # Los TRES vienen y se CONTRADICEN por un orden de magnitud.
+                #
+                # El motor lee el costo de `monto` (persister.py:411) y los ingresos
+                # de `precio × cantidad` (persister.py:536→609), y nunca los
+                # reconcilia. Con el costo sano, todo el error de escala del precio
+                # cae sobre el P&L: un bono cotizado por 100 nominales da
+                # `pnl = 99 × costo` y `pnl_pct ≈ 9.900%`.
+                #
+                # `monto` es la plata que SE MOVIÓ (la columna de caja del resumen);
+                # `precio` es lo que el broker imprimió, en la convención que se le
+                # cantó. Ante el conflicto gana `monto` — que es exactamente lo que
+                # ya hacen los parsers de IOL (iol.py:714) y Cocos (cocos.py:531)
+                # derivando `precio = monto/cantidad`, y por eso son inmunes.
+                #
+                # Umbral 5×: las comisiones embebidas mueven el triángulo 1-3% (ver
+                # el guard de tasa ≤3% en balanz_movimientos.py:428) y el ruido de
+                # redondeo FX menos todavía. Los desvíos reales que corregimos son
+                # ×100 (renta fija per-100: ieb.py:318, balanz.py:264, ppi.py:323,
+                # bullmarket.py:383) y ×1000 (VCP de FCI por 1.000 cuotapartes, y el
+                # precio con 3 decimales de coma mal parseado). 5× no toca ninguna
+                # comisión concebible y entra cómodo debajo de 100.
+                ratio = (q * p) / a
+                if ratio >= 5 or ratio <= 0.2:
+                    tx.unit_price = round(a / q, 8)
 
             # tc de la compra (ARS/USD) para la vista "costo al dólar de la
             # compra": del CSV (columna 'tc'), o derivado monto_ARS/monto_usd.
