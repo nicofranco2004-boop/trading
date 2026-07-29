@@ -21,6 +21,34 @@ import { BondDetailBody } from './BondDetail'
 
 const todayIso = () => new Date().toISOString().slice(0, 10)
 
+// Posición sintética que representa N lotes del mismo (broker, activo) —
+// espejo de `_buildAgg` de Positions.jsx para que la valuación sea idéntica a
+// la de las tablas por broker. `_lots` es lo que hace que `valuePos` rutee el
+// costo USD lote por lote (cada uno a su tc_compra) en modo 'purchase'.
+function buildAggregate(lots) {
+  const totalQty = lots.reduce((s, x) => s + (x.quantity || 0), 0)
+  const totalInv = lots.reduce((s, x) => s + (x.invested || 0), 0)
+  const totalComm = lots.reduce((s, x) => s + (x.commissions || 0), 0)
+  const overrides = [...new Set(lots.map(x => x.price_override).filter(v => v != null))]
+  const dates = lots.map(x => x.entry_date).filter(Boolean).sort()
+  return {
+    id: `agg:${lots[0].broker}:${lots[0].asset}`,
+    broker: lots[0].broker,
+    asset: lots[0].asset,
+    currency: lots[0].currency || null,
+    asset_type: lots[0].asset_type || null,
+    is_cash: false,
+    quantity: totalQty,
+    invested: totalInv,
+    commissions: totalComm,
+    buy_price: totalQty > 0 ? totalInv / totalQty : null,
+    price_override: overrides.length === 1 ? overrides[0] : null,
+    tc_compra: lots[0].tc_compra,
+    _lots: lots,
+    entry_date: dates[0] || null,
+  }
+}
+
 // "2027-01-09" → "09 ene 27" (el slice MM-DD era ambiguo en es-AR).
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
 const shortDate = (iso) => {
@@ -58,6 +86,28 @@ export default function RentaFijaSections({
     if (!groups[key]) groups[key] = { category: sec.category, currency: sec.currency, rows: [] }
     groups[key].rows.push(p)
   }
+  // Dentro de cada sección, CONSOLIDAR los lotes del mismo activo — espejo del
+  // aggregateAndSort de las tablas por broker. Sin esto la zona renderizaba una
+  // card POR LOTE: un FCI con 4 suscripciones se veía 4 veces con el mismo
+  // nombre y cada card mostraba el monto PARCIAL de su lote (bug reportado por
+  // un usuario de Cocos: "uno cuadruplicado, otro triplicado, otro duplicado,
+  // con montos que no se acercan a los reales").
+  // Clave = (broker, activo): cross-broker sigue separado a propósito — el P&L,
+  // el cash y las cobranzas (bondCashflowsByKey) son POR BROKER. La moneda ya la
+  // fija la sección (positionSection), así que no hace falta en la clave.
+  for (const key of Object.keys(groups)) {
+    const byAsset = new Map()
+    for (const p of groups[key].rows) {
+      const k = `${p.broker}::${p.asset}`
+      if (!byAsset.has(k)) byAsset.set(k, [])
+      byAsset.get(k).push(p)
+    }
+    groups[key].items = [...byAsset.values()].map(lots => ({
+      p: lots.length === 1 ? lots[0] : buildAggregate(lots),
+      lots,
+      isAgg: lots.length > 1,
+    }))
+  }
   const keys = sortSectionKeys(Object.keys(groups))
 
   if (keys.length === 0 && archived.length === 0) return null
@@ -75,8 +125,11 @@ export default function RentaFijaSections({
   let cobradoYearUsd = 0
   let proximos30Usd = 0
   let proximos30Count = 0
+  // Itera los AGREGADOS, no los lotes: `bondCashflowsByKey` está keyeado por
+  // (broker, activo), así que recorrer lote por lote sumaba los MISMOS cobros
+  // una vez por lote (y el próximo pago se contaba N veces).
   for (const key of keys) {
-    for (const p of groups[key].rows) {
+    for (const { p } of groups[key].items) {
       const ccyArs = isArsFor ? isArsFor(p) : false
       const summary = bondCashflowsByKey?.get(`${p.broker}:${p.asset}`)
       if (summary?.ops) {
@@ -149,11 +202,13 @@ export default function RentaFijaSections({
         const label = sectionLabel(g.category, g.currency)
         const isOpen = open[key] !== false   // default abierto
         let secValue = 0, secInv = 0
-        const valued = g.rows.map(p => {
+        // El subtotal de la sección se calcula sobre los AGREGADOS (que suman
+        // sus lotes) → idéntico a sumar lote por lote, sin doble conteo.
+        const valued = g.items.map(({ p, lots, isAgg }) => {
           const v = valuePos ? valuePos(p) : { valueUsd: 0, investedUsd: 0, pnlUsd: 0, pnlPct: 0 }
           secValue += v.valueUsd || 0
           secInv += v.investedUsd || 0
-          return { p, v }
+          return { p, v, lots, isAgg }
         })
         const secPnl = secValue - secInv
         const secPct = secInv > 0 ? secPnl / secInv : 0
@@ -163,7 +218,7 @@ export default function RentaFijaSections({
               <button onClick={() => setOpen(o => ({ ...o, [key]: !isOpen }))}
                 className="flex items-center gap-1.5 text-[13px] font-semibold text-ink-1 hover:text-ink-0 transition">
                 {isOpen ? <ChevronDown size={13} /> : <ChevronUp size={13} className="rotate-90" />}
-                {label} <span className="text-ink-3 text-xs font-normal">· {g.rows.length}</span>
+                {label} <span className="text-ink-3 text-xs font-normal">· {g.items.length}</span>
               </button>
               <div className="flex items-center gap-3">
                 <span className="text-[12px] tabular text-ink-0 font-semibold">{fmtMoney(secValue)}</span>
@@ -175,10 +230,10 @@ export default function RentaFijaSections({
                 </button>
               </div>
             </div>
-            {isOpen && valued.map(({ p, v }) => (
+            {isOpen && valued.map(({ p, v, lots, isAgg }) => (
               <BondCardRow
                 key={p.id}
-                p={p} v={v}
+                p={p} v={v} lots={lots} isAgg={isAgg}
                 fmtMoney={fmtMoney}
                 summary={bondCashflowsByKey?.get(`${p.broker}:${p.asset}`)}
                 pendingDates={pendingDatesByKey?.get(`${p.broker}:${p.asset}`)}
@@ -221,13 +276,17 @@ export default function RentaFijaSections({
 // Card de un bono/letra/FCI: identidad + métricas clave + próximo cobro +
 // barra de capital recuperado + expansión al detalle completo.
 function BondCardRow({
-  p, v, fmtMoney, summary, pendingDates, isArs, isArsDisp, tcBlue, price, tcMep, cerSeries, cerStale,
+  p, v, lots = null, isAgg = false,
+  fmtMoney, summary, pendingDates, isArs, isArsDisp, tcBlue, price, tcMep, cerSeries, cerStale,
   expanded, onToggle, onEdit, onDelete, openBondCashflow,
 }) {
   const meta = getBondMeta(p.asset)
   const moneyLabel = isArs ? 'ARS' : 'USD'
   const fmt = isArs ? ars : usd
-  const hasDetail = !!(meta || (summary?.ops?.length > 0))
+  // Multi-lote: SIEMPRE hay detalle (aunque el activo no tenga metadata) —
+  // el usuario necesita poder abrir y ver/editar cada compra.
+  const hasDetail = !!(meta || (summary?.ops?.length > 0) || isAgg)
+  const lotCount = lots?.length || 1
 
   // Próximo cobro (chip cyan) — solo bonos con cronograma.
   const next = (meta?.maturity && p.quantity) ? nextPaymentForPosition(p.asset, p.quantity, todayIso()) : null
@@ -271,8 +330,18 @@ function BondCardRow({
               <span key={i} className={`text-[10px] font-bold rounded-full px-2 py-0.5 ${tg.cls}`}>{tg.t}</span>
             ))}
           </div>
-          <div className="text-[11px] text-ink-3">
-            {meta?.issuer ? `${meta.issuer} · ` : ''}{meta?.maturity ? `vence ${meta.maturity} · ` : ''}{p.broker}
+          <div className="text-[11px] text-ink-3 flex items-center gap-1.5 flex-wrap">
+            <span>{meta?.issuer ? `${meta.issuer} · ` : ''}{meta?.maturity ? `vence ${meta.maturity} · ` : ''}{p.broker}</span>
+            {isAgg && (
+              <button
+                type="button"
+                onClick={onToggle}
+                className="inline-flex items-center gap-1 text-data-violet hover:text-data-violet/80 transition"
+                title={`${lotCount} compras de ${p.asset} en ${p.broker} — tocá para ver y editar cada una`}
+              >
+                <Layers size={10} strokeWidth={1.75} /> {lotCount} compras
+              </button>
+            )}
           </div>
         </div>
         <div className="ml-auto flex items-center gap-4 flex-wrap justify-end">
@@ -312,13 +381,16 @@ function BondCardRow({
             </span>
           </div>
           <div className="flex items-center gap-1">
-            {onEdit && (
+            {/* Editar/eliminar solo cuando la card ES una posición real. En un
+                agregado el id es sintético ("agg:…") → las acciones viven por
+                lote adentro de la expansión. */}
+            {!isAgg && onEdit && (
               <button onClick={() => onEdit(p)} title="Editar posición"
                 className="p-1.5 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition">
                 <Pencil size={13} />
               </button>
             )}
-            {onDelete && (
+            {!isAgg && onDelete && (
               <button onClick={() => onDelete(p.id)} title="Eliminar posición"
                 className="p-1.5 rounded-md text-ink-3 hover:text-rendi-neg hover:bg-bg-2 transition">
                 <Trash2 size={13} />
@@ -345,7 +417,47 @@ function BondCardRow({
         </div>
       )}
 
-      {expanded && hasDetail && (
+      {expanded && isAgg && (
+        <div className="mt-4 pt-3.5 border-t border-dashed border-line">
+          <p className="text-[11px] font-bold tracking-[0.07em] uppercase text-ink-3 mb-2">
+            Tus {lotCount} compras
+          </p>
+          <div className="rounded-xl border border-line overflow-hidden divide-y divide-line/50">
+            {[...lots]
+              .sort((a, b) => (a.entry_date || '9999').localeCompare(b.entry_date || '9999'))
+              .map(lot => (
+                <div key={lot.id} className="flex items-center gap-3 px-3.5 py-2 bg-bg-2/40 text-[12.5px]">
+                  <span className="text-ink-3 tabular w-[86px] flex-none">{lot.entry_date || 'sin fecha'}</span>
+                  <span className="text-ink-1 tabular">{(lot.quantity || 0).toLocaleString('es-AR')} <span className="text-ink-3">nominales</span></span>
+                  {lot.quantity > 0 && lot.invested > 0 && (
+                    <span className="text-ink-3 tabular hidden sm:inline">
+                      @ {isArs ? 'ARS' : 'USD'} {(isArs ? ars : usd)(lot.invested / lot.quantity)}
+                    </span>
+                  )}
+                  <span className="ml-auto text-ink-0 font-semibold tabular">
+                    {isArs ? 'ARS' : 'USD'} {(isArs ? ars : usd)(lot.invested || 0)}
+                  </span>
+                  <div className="flex items-center gap-0.5 flex-none">
+                    {onEdit && (
+                      <button onClick={() => onEdit(lot)} title={`Editar la compra del ${lot.entry_date || 's/f'}`}
+                        className="p-1.5 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-3 transition">
+                        <Pencil size={12} />
+                      </button>
+                    )}
+                    {onDelete && (
+                      <button onClick={() => onDelete(lot.id)} title={`Eliminar la compra del ${lot.entry_date || 's/f'}`}
+                        className="p-1.5 rounded-md text-ink-3 hover:text-rendi-neg hover:bg-bg-3 transition">
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {expanded && (meta || (summary?.ops?.length > 0)) && (
         <div className="mt-4 pt-4 border-t border-dashed border-line">
           <BondDetailBody
             p={p}
