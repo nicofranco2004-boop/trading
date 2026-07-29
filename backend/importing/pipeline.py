@@ -8,6 +8,7 @@ al inicio de cada preview nuevo (cleanup oportunista, no necesita cron job).
 """
 from __future__ import annotations
 import hashlib
+import logging
 import json
 import secrets
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,6 +22,8 @@ from .mapper import Mapping, apply_mapping, inspect_csv as mapper_inspect
 from .cash_sim import simulate as simulate_cash
 from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_to_csv
 from . import seed as _seed
+
+log = logging.getLogger(__name__)
 
 
 PREVIEW_TTL_HOURS = 1
@@ -106,11 +109,23 @@ def _row_fingerprint(tx: NormalizedTx) -> str:
     """Hash que identifica unívocamente una transacción a efectos de dedup.
     Misma fecha + broker + tipo + activo + cantidad + precio → misma fila lógica.
     No incluye fees ni notes (que pueden diferir entre imports del mismo evento)."""
+    return _fp_from(tx, (tx.asset_symbol_raw or tx.asset_symbol or ""))
+
+
+def _row_fingerprint_legacy(tx: NormalizedTx) -> str:
+    """Fingerprint con el símbolo CANÓNICO (comportamiento hasta 2026-07). Los
+    imports viejos lo tienen guardado, así que el dedup compara contra AMBOS:
+    sin esto, estabilizar el fingerprint habría duplicado una vez más a todo el
+    que ya había importado FCI. Para todo lo que no es FCI, ambos coinciden."""
+    return _fp_from(tx, (tx.asset_symbol or ""))
+
+
+def _fp_from(tx: NormalizedTx, symbol: str) -> str:
     parts = [
         tx.date or "",
         (tx.broker or "").strip().lower(),
         tx.operation_type or "",
-        (tx.asset_symbol or "").strip().upper(),
+        (symbol or "").strip().upper(),
         f"{tx.quantity:.8f}" if tx.quantity is not None else "",
         f"{tx.unit_price:.8f}" if tx.unit_price is not None else "",
         f"{tx.gross_amount:.4f}" if tx.gross_amount is not None else "",
@@ -182,7 +197,9 @@ def already_imported_row_indices(conn, uid: int, session_id: str, txs,
         return set()
     skip = set(already_skipped)
     return {t.row_index for t in txs
-            if t.row_index not in skip and _row_fingerprint(t) in existing}
+            if t.row_index not in skip
+            and (_row_fingerprint(t) in existing
+                 or _row_fingerprint_legacy(t) in existing)}
 
 
 def inspect(file_bytes: bytes) -> Dict[str, Any]:
@@ -295,6 +312,34 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
                 f"Subí archivos del mismo broker/export.{hint}",
             )
         parts.extend(lines[1:])  # skip header de archivos 2..N
+
+    # Dedup ENTRE archivos: dos exports con rangos SOLAPADOS traen las mismas
+    # filas (caso real: "movimientos (2).csv" y "(3).csv" comparten meses) y
+    # concatenarlos duplicaba todo — el dedup por fingerprint es CROSS-batch,
+    # así que dentro de una misma carga no lo agarraba nadie.
+    # Criterio conservador: solo se descarta una línea IDÉNTICA (byte a byte,
+    # sin espacios de borde) que YA apareció en un archivo ANTERIOR. Dentro de
+    # un mismo archivo las repeticiones se respetan — ahí sí pueden ser dos
+    # operaciones legítimas iguales (mismo día, mismo monto).
+    deduped: List[str] = [parts[0]]  # header
+    seen_prev_files: set = set()
+    idx = 1
+    dropped = 0
+    for lines, _name in decoded:
+        this_file: List[str] = []
+        for ln in lines[1:]:
+            key = ln.strip()
+            if key and key in seen_prev_files:
+                dropped += 1
+                idx += 1
+                continue
+            this_file.append(ln)
+            deduped.append(ln)
+            idx += 1
+        seen_prev_files.update(l.strip() for l in this_file if l.strip())
+    if dropped:
+        log.info("combine_csv_files: %d filas repetidas entre archivos descartadas", dropped)
+    parts = deduped
 
     combined_text = "\n".join(parts)
     names_joined = " + ".join(n for _, n in decoded)
@@ -620,7 +665,7 @@ def run_preview(
 
     for tx in valid_txs:
         fp = _row_fingerprint(tx)
-        if fp in existing_fingerprints:
+        if fp in existing_fingerprints or _row_fingerprint_legacy(tx) in existing_fingerprints:
             duplicate_row_indices.append(tx.row_index)
         gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_import)
         # Audit follow-up: ALSO populate the NormalizedTx in-memory para que el

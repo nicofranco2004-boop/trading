@@ -318,6 +318,7 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
             broker=broker,
             operation_type=op_type,
             asset_symbol=asset_symbol,
+            asset_symbol_raw=asset_raw or None,
             asset_name=asset_name,
             asset_type=asset_type,
             quantity=quantity,

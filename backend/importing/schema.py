@@ -206,6 +206,12 @@ class NormalizedTx:
     broker: str                                 # mapea a portfolio_id
     operation_type: str                         # OPERATION_TYPES
     asset_symbol: Optional[str] = None
+    # Símbolo CRUDO del parser, antes de cualquier canonicalización (hoy solo
+    # los FCI se reescriben a 'FCI:<slug>' vía el catálogo curado). Se usa para
+    # el fingerprint de dedup: si el catálogo crece, el símbolo canónico de una
+    # operación VIEJA cambia y el dedup dejaría de reconocerla → se re-importaba
+    # duplicada (bug real: FCI de Cocos duplicados, los CEDEAR no).
+    asset_symbol_raw: Optional[str] = None
     asset_name: Optional[str] = None
     asset_type: Optional[str] = None            # ASSET_TYPES
     quantity: Optional[float] = None
