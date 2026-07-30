@@ -1757,6 +1757,25 @@ function FxMigratePanel({ toast }) {
                                         : ''}
                                     </>
                                   ) : ''}
+                                  {/* LO QUE VA A VER EL USUARIO. Es la única forma de
+                                      verificar sin entrar a una cuenta ajena: el hero del
+                                      Dashboard muestra (cartera − aportado) / aportado, y
+                                      migrar mueve SOLO el denominador (el valor de la
+                                      cartera queda idéntico). Así que este salto es,
+                                      literalmente, el cambio que el usuario va a abrir. */}
+                                  {(v.rendimiento_antes_pct != null || v.rendimiento_despues_pct != null) ? (
+                                    <span className={v.denominador_roto ? 'text-red-400 font-medium' : 'text-slate-300'}>
+                                      {' · '}rendimiento del usuario{' '}
+                                      {v.rendimiento_antes_pct != null ? `${v.rendimiento_antes_pct > 0 ? '+' : ''}${v.rendimiento_antes_pct}%` : '—'}
+                                      {' → '}
+                                      {v.rendimiento_despues_pct != null ? `${v.rendimiento_despues_pct > 0 ? '+' : ''}${v.rendimiento_despues_pct}%` : '—'}
+                                      {v.valor_cartera_usd != null ? ` (cartera US$ ${Math.round(v.valor_cartera_usd).toLocaleString()})` : ''}
+                                    </span>
+                                  ) : ''}
+                                  {v.denominador_roto ? <span className="text-red-400"> · ⛔ {v.denominador_roto}</span> : ''}
+                                  {(v.baseline_borrada_usd || 0) !== 0
+                                    ? <span className="text-amber-400"> · ⚠️ se borra el capital inicial cargado a mano (US$ {Math.round(v.baseline_borrada_usd).toLocaleString()})</span>
+                                    : ''}
                                   {v.delta_pnl_implausible ? ` · ⚠️ Δ P&L IMPLAUSIBLE (US$ ${Math.round(v.delta_pnl_por_venta).toLocaleString()}/venta) — el P&L ya estaba corrupto y migrar lo multiplica` : ''}
                                   {(s.rebuild?.errores || []).length ? ` · ⚠️ ${s.rebuild.errores.length} activo(s) con error de rebuild` : ''}
                                   {(v.ventas_con_tc_distinto || []).length ? ` · ${v.ventas_con_tc_distinto.length} venta(s) con TC distinto` : ''}

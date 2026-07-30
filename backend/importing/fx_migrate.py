@@ -70,13 +70,75 @@ def _metricas(conn, uid: int) -> Dict[str, Any]:
         "WHERE b.user_id=? AND b.status='confirmed' "
         "  AND UPPER(COALESCE(n.currency,''))='ARS' "
         "  AND n.gross_amount_usd IS NOT NULL AND n.gross_amount_usd<>0", (uid,)).fetchone()
+    # ── EL NÚMERO QUE VE EL USUARIO ───────────────────────────────────────────
+    # El "rendimiento" del Dashboard es UN solo número, calculado client-side:
+    #   (totalValue − netDeposited) / netDeposited        (Dashboard.jsx:234-235)
+    # y su denominador es `capital_inicio` del PRIMER mes de 'global' (baseline)
+    # + Σ(deposits − withdrawals) de todos los meses (Dashboard.jsx:191-201) —
+    # la misma fórmula que `snapshots_job.compute_net_deposited_db(broker_filter=
+    # 'global', include_baseline=True)`. Se replica acá para poder mostrar en el
+    # panel EXACTAMENTE lo que el usuario va a ver, sin entrar a su cuenta.
+    #
+    # El NUMERADOR no lo toca la migración: `positions.invested` se guarda en
+    # moneda nativa y la valuación lo dolariza al MEP de HOY, así que el rebuild
+    # lo reescribe con el mismo número (verificado: positions byte-idénticas,
+    # valor 703,45 → 703,45). Migrar mueve el DENOMINADOR, y sólo el denominador.
+    # Por eso alcanza con el último snapshot como valor de cartera: es la misma
+    # medición antes y después, y es la que ya alimentan el gráfico y el CAGR.
+    base = conn.execute(
+        "SELECT capital_inicio FROM monthly_entries WHERE user_id=? AND broker='global' "
+        "ORDER BY year, month LIMIT 1", (uid,)).fetchone()
+    baseline = float(base["capital_inicio"] or 0) if base and base["capital_inicio"] is not None else 0.0
+    aportado = baseline + float(mon["dep"] or 0) - float(mon["ret"] or 0)
+    snap = conn.execute(
+        "SELECT total_value FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
+        (uid,)).fetchone()
+    valor = float(snap["total_value"]) if snap and snap["total_value"] is not None else None
     return {
         "ventas": ops["n"], "pnl_ventas_usd": ops["s"],
         "deposits_usd": mon["dep"], "withdrawals_usd": mon["ret"],
         "pnl_realized_usd": mon["pnl"],
         "capital_final": round(cap["capital_final"], 2) if cap and cap["capital_final"] is not None else None,
         "tcs_distintos_en_flujos": tcs["n"],
+        "baseline_usd": round(baseline, 2),
+        "aportado_dashboard_usd": round(aportado, 2),
+        "valor_cartera_usd": round(valor, 2) if valor is not None else None,
+        "rendimiento_pct": (round(((valor - aportado) / aportado) * 100, 1)
+                            if valor is not None and aportado > 0 else None),
     }
+
+
+def denominador_roto(valor, ap_antes, ap_despues, rend_despues):
+    """El único freno del aportado que NO es cuestión de criterio, sino aritmética.
+
+    La MAGNITUD del salto del aportado no distingue reparación de daño (un flujo
+    de 2013 dolarizado a 1415 y re-derivado a ~5 se multiplica ×280, y está bien).
+    Pero hay dos estados en los que el rendimiento del Dashboard deja de ser un
+    número, y esos no dependen de la época de los flujos de nadie:
+
+      · aportado ≤ 0 con cartera > 0 → el % no existe. El strip "Rendimiento"
+        esconde la card (Dashboard.jsx:566-568 exige netDeposited > 0) pero el
+        pill del hero NO está gateado (Dashboard.jsx:703-708): sigue mostrando
+        "Ganancia total" en dólares —inflada, porque restar un negativo suma—
+        con "+0,0%" al lado.
+      · aportado positivo pero minúsculo frente a la cartera → el % explota. No
+        hay clamp: `pctSigned` sólo filtra null/NaN (format.js:113-118), así que
+        US$ 1 de aportado con US$ 50.000 de cartera imprime "+5.000.000,0%".
+
+    Devuelve el motivo (str) o None. Nadie puede mirar 503 cuentas para cazar
+    esto a ojo — por eso frena solo.
+    """
+    if valor is None or valor <= 1:
+        return None
+    if ap_despues <= 0 < ap_antes:
+        return (f"el aportado queda en US$ {round(ap_despues, 2)} (venía de "
+                f"US$ {round(ap_antes, 2)}) con una cartera de US$ {round(valor, 2)}: "
+                "el % del Dashboard deja de tener sentido")
+    if rend_despues is not None and abs(rend_despues) > 100_000:
+        return (f"el rendimiento queda en {rend_despues}% (aportado "
+                f"US$ {round(ap_despues, 2)} contra una cartera de US$ {round(valor, 2)}): "
+                "el denominador quedó casi en cero")
+    return None
 
 
 def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
@@ -340,6 +402,26 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     _d_ap = abs(_ap_despues - _ap_antes)
     _d_ap_pct = (_d_ap / abs(_ap_antes)) if abs(_ap_antes) > 1 else None
 
+    # ── EL DENOMINADOR SÍ FRENA (esto no es juicio, es aritmética) ─────────────
+    # Lo de arriba dice que la MAGNITUD del salto no distingue reparación de daño.
+    # Pero hay un caso que no depende de la época de los flujos ni del criterio de
+    # nadie: si el aportado queda en CERO o NEGATIVO con cartera positiva, el
+    # rendimiento del Dashboard deja de existir como número. Y si queda positivo
+    # pero minúsculo frente a la cartera, explota: no hay clamp en el frontend
+    # (`pctSigned` sólo filtra null/NaN, format.js:113-118), así que un aportado de
+    # US$ 1 con US$ 50.000 de cartera imprime "+5.000.000,0%" en el hero.
+    # Peor todavía con aportado ≤ 0: el strip "Rendimiento" esconde la card
+    # (Dashboard.jsx:566-568 exige netDeposited > 0) pero el pill del hero NO está
+    # gateado (Dashboard.jsx:703-708) y sigue mostrando "Ganancia total" en dólares
+    # —inflada, porque restar un aportado negativo suma— con "+0,0%" al lado.
+    # Nadie puede mirar 503 cuentas para cazar esto: se frena solo.
+    _val = despues.get("valor_cartera_usd")
+    _ap_dash_antes = float(antes.get("aportado_dashboard_usd") or 0)
+    _ap_dash_despues = float(despues.get("aportado_dashboard_usd") or 0)
+    _rend_antes = antes.get("rendimiento_pct")
+    _rend_despues = despues.get("rendimiento_pct")
+    _denominador_roto = denominador_roto(_val, _ap_dash_antes, _ap_dash_despues, _rend_despues)
+
     resultado["verificacion"] = {
         "ventas_al_tc_de_su_fecha": f"{ok_tc}/{total_chk}",
         "delta_pnl_implausible": _implausible,
@@ -349,6 +431,23 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
         "aportado_antes_usd": round(_ap_antes, 2),
         "aportado_despues_usd": round(_ap_despues, 2),
         "aportado_delta_pct": round(_d_ap_pct * 100, 1) if _d_ap_pct is not None else None,
+        # Lo que el usuario va a ver en el hero del Dashboard, antes y después.
+        # Es LA razón de ser del panel: verificar sin entrar a la cuenta ajena.
+        "valor_cartera_usd": _val,
+        "aportado_dashboard_antes_usd": round(_ap_dash_antes, 2),
+        "aportado_dashboard_despues_usd": round(_ap_dash_despues, 2),
+        "rendimiento_antes_pct": _rend_antes,
+        "rendimiento_despues_pct": _rend_despues,
+        "denominador_roto": _denominador_roto,
+        # El recalc pone en CERO el capital_inicio del primer mes de todo broker
+        # con actividad (main.py, _repair_monthly_chain). Si el usuario había
+        # cargado a mano "empecé con US$ X" en /mensual, migrar se lo borra y el
+        # aportado baja por esa vía ADEMÁS de moverse por el FX. No lo restauro
+        # —restaurarlo podría duplicar capital que los flujos ya explican— pero
+        # se reporta para que se vea cuánto se fue por ahí.
+        "baseline_borrada_usd": (round(float(antes.get("baseline_usd") or 0), 2)
+                                 if float(antes.get("baseline_usd") or 0) != 0
+                                 and float(despues.get("baseline_usd") or 0) == 0 else 0),
         "en_pares_salteados": en_pares_salteados,
         "sin_serie_fx": sin_serie_fx,
         "flujos_manuales_usd_no_migrables": round(flujos_manuales_usd, 2),
@@ -399,6 +498,8 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
         _frenos.append("el cash cambió (tiene que quedar intacto)")
     if mal_tc:
         _frenos.append(f"{len(mal_tc)} venta(s) quedaron con un TC distinto al de su fecha")
+    if _denominador_roto:
+        _frenos.append(_denominador_roto)
     if _implausible:
         _frenos.append(f"Δ P&L implausible (US$ {round(_d_pnl / _n_ventas, 2)}/venta sobre "
                        f"US$ {round(_d_pnl, 2)} totales): el P&L ya estaba corrupto y "

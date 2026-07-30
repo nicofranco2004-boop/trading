@@ -3475,10 +3475,20 @@ def get_config(uid: int = Depends(get_effective_user)):
     conn = get_db()
     rows = conn.execute("SELECT key, value FROM config WHERE user_id=?", (uid,)).fetchall()
     conn.close()
-    try:
-        cfg = {r["key"]: float(r["value"]) for r in rows}
-    except (ValueError, TypeError):
-        cfg = {}
+    # La coerción a float va POR CLAVE, no sobre el dict entero. Con el
+    # try/except envolviendo la comprehension, UNA sola fila no numérica tiraba
+    # TODA la config del usuario y los setdefault reponían 1415 — y desde que
+    # existe `fx_version` (fx.py, valor 'v1'/'v2') esa fila la tiene cualquier
+    # cuenta que haya importado, vendido o registrado algo por chat, más TODAS
+    # las que migre el migrador FX. O sea: el TC guardado a mano se perdía en
+    # silencio. Las claves no numéricas simplemente no se exponen acá (este
+    # endpoint es el de los tipos de cambio; `fx_version` se lee por su módulo).
+    cfg = {}
+    for r in rows:
+        try:
+            cfg[r["key"]] = float(r["value"])
+        except (ValueError, TypeError):
+            continue
     cfg.setdefault("tc_mep", 1415)
     cfg.setdefault("tc_blue", 1415)
     return cfg

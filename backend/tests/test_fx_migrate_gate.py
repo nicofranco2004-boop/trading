@@ -83,6 +83,67 @@ def inspect_source():
     return inspect.getsource(fxm)
 
 
+class DenominadorRotoTest(unittest.TestCase):
+    """El freno que sí es objetivo: el aportado es el denominador del rendimiento.
+
+    Los números vienen del dry-run real de 2026-07-30 sobre 503 cuentas.
+    """
+
+    def test_cruza_a_negativo_con_cartera_positiva(self):
+        # #826: aportado 2.820 → −1.477.984. El hero mostraría "Ganancia total"
+        # en dólares (inflada) con "+0,0%" al lado.
+        m = fxm.denominador_roto(50_000, 2_820, -1_477_984, None)
+        self.assertIsNotNone(m)
+        self.assertIn("deja de tener sentido", m)
+
+    def test_cruza_a_negativo_aunque_sea_chico(self):
+        # #946: 394 → −264. Chico en dólares, pero el % igual deja de existir.
+        self.assertIsNotNone(fxm.denominador_roto(9_000, 394, -264, None))
+
+    def test_denominador_casi_cero_explota_el_porcentaje(self):
+        # Sin clamp en pctSigned: US$1 de aportado con US$50.000 de cartera.
+        self.assertIsNotNone(fxm.denominador_roto(50_000, 20_000, 1, 4_999_900.0))
+
+    def test_no_frena_la_reparacion_normal(self):
+        # #595: 79.311 → 874.375 (×11). Es la corrección funcionando.
+        self.assertIsNone(fxm.denominador_roto(120_000, 79_311, 874_375, -86.3))
+        # #719: 39 → 606 (×15,7), cuenta chica.
+        self.assertIsNone(fxm.denominador_roto(700, 39, 606, 15.5))
+
+    def test_no_frena_si_ya_venia_negativo(self):
+        # #808: −509.588 → −509.652. Ya era negativo ANTES; la migración no lo
+        # rompió y frenarla no arregla nada — es un problema aparte.
+        self.assertIsNone(fxm.denominador_roto(30_000, -509_588, -509_652, None))
+
+    def test_sin_snapshot_no_opina(self):
+        # Sin valor de cartera no hay con qué juzgar: no se inventa un freno.
+        self.assertIsNone(fxm.denominador_roto(None, 2_820, -1_477_984, None))
+
+    def test_cartera_vacia_no_frena(self):
+        # Cuenta sin cartera: el rendimiento no le importa a nadie.
+        self.assertIsNone(fxm.denominador_roto(0, 2_820, -1_477_984, None))
+
+
+class RendimientoVisibleTest(unittest.TestCase):
+    """El panel tiene que mostrar el número que el usuario va a ver."""
+
+    def test_metricas_expone_el_rendimiento_del_dashboard(self):
+        import inspect
+        src = inspect.getsource(fxm._metricas)
+        # La fórmula del hero: (totalValue − netDeposited) / netDeposited, con
+        # netDeposited = capital_inicio del primer mes + Σ(deposits − withdrawals).
+        self.assertIn("capital_inicio", src)
+        self.assertIn("aportado_dashboard_usd", src)
+        self.assertIn("valor_cartera_usd", src)
+        self.assertIn("rendimiento_pct", src)
+
+    def test_el_resultado_reporta_antes_y_despues(self):
+        src = inspect_source()
+        for campo in ("rendimiento_antes_pct", "rendimiento_despues_pct",
+                      "aportado_dashboard_antes_usd", "baseline_borrada_usd"):
+            self.assertIn(campo, src)
+
+
 class SnapshotsNoSePisanTest(unittest.TestCase):
     """El backfill de snapshots desde monthly no puede pisar una medición real."""
 
