@@ -192,6 +192,47 @@ class FxMigrateTest(unittest.TestCase):
         self.assertAlmostEqual(pnl / dep * 100, 1.63, delta=0.05)
 
     # ── 4. Defaults del versionado ────────────────────────────────────────
+    def test_tc_compra_de_lotes_importados_se_completa(self):
+        """Las compras: el P&L no necesita el TC de compra (el costo vive en pesos
+        y el modelo es FX-neutral), pero la vista "Costo en dólares de la compra"
+        sí — y solo 6 de 15 parsers lo emiten. La migración lo completa con el
+        dólar de la fecha de compra REAL para lotes abiertos importados."""
+        fxmod.set_fx_version(self.conn, self.uid, fxmod.FX_V1)
+        self.conn.commit()
+        # Compra 200, vende 100 → queda un lote abierto de 100 sin tc_compra.
+        csv = (HDR +
+               "2021-01-15,DEPOSITO,IOL,,,,2000000,,,0,ARS,\n" +
+               "2021-01-15,COMPRA,IOL,GGAL,200,1000,200000,,,0,ARS,\n" +
+               "2021-06-15,VENTA,IOL,GGAL,100,1200,120000,,,0,ARS,\n").encode()
+        with self.conn:
+            payload = pl.run_preview(self.conn, uid=self.uid, file_bytes=csv,
+                                     file_name="h.csv", broker_hint="IOL",
+                                     parser_format="rendi_generic")
+            sid = payload["session_id"]
+            txs, raw = pl.load_session_for_confirm(self.conn, uid=self.uid, session_id=sid)
+            ps.persist_batch(self.conn, uid=self.uid, batch_id=sid, txs=txs,
+                             raw_row_ids_by_index=raw, helpers=_helpers())
+            self.conn.execute("UPDATE import_batches SET status='confirmed', "
+                              "confirmed_at=datetime('now') WHERE id=?", (sid,))
+            rb.rebuild_fifo_after_import(self.conn, self.uid, sid, tc_blue=TC_VIVO)
+            main._recalc_pnl_realized_from_ops(self.conn, self.uid)
+        antes = self.conn.execute(
+            "SELECT tc_compra FROM positions WHERE user_id=? AND asset='GGAL' AND is_cash=0",
+            (self.uid,)).fetchone()
+        self.assertIsNone(antes["tc_compra"])          # el parser genérico no lo trae
+
+        with self.conn:
+            out = fxm.migrate_user_fx(self.conn, self.uid, helpers=None,
+                                      recalc=main._recalc_pnl_realized_from_ops,
+                                      backfill_snapshots=ps._backfill_snapshots_from_monthly,
+                                      recompute_netdep=main._recompute_snapshots_netdep_for_user)
+        self.assertTrue(out["ok"], out)
+        self.assertGreaterEqual(out["tc_compra_completados"], 1)
+        lote = self.conn.execute(
+            "SELECT tc_compra FROM positions WHERE user_id=? AND asset='GGAL' AND is_cash=0",
+            (self.uid,)).fetchone()
+        self.assertAlmostEqual(lote["tc_compra"], MEP_DEP, places=2)   # el MEP del día de compra
+
     def test_cuenta_con_historia_queda_v1(self):
         self.conn.execute(
             "INSERT INTO operations (user_id,date,broker,asset,op_type,pnl_usd) "

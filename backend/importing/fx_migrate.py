@@ -223,6 +223,35 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
         restaurados += cur.rowcount
     resultado["overrides"] = {"restaurados": restaurados, "overrides_ambiguos": ambiguos}
 
+    # ── tc_compra de lotes ARS que quedaron sin TC ────────────────────────────
+    # Solo 6 de 15 parsers emiten el TC de compra: la mayoría de los lotes
+    # importados tienen tc_compra NULL y la vista "Costo en dólares de la compra"
+    # no tiene con qué calcular. Acá se completa con el dólar de la FECHA DE
+    # COMPRA real — solo lotes linkeados a un BUY importado de un batch que NO es
+    # foto de tenencia: los lotes de foto tienen entry_date FALSA (la fecha de la
+    # foto), y un TC falso-preciso es peor que un NULL honesto. Solo rellena el
+    # hueco: un tc_compra existente (del parser o restaurado arriba) manda.
+    lotes_sin_tc = conn.execute(
+        """SELECT DISTINCT p.id, p.entry_date
+             FROM positions p
+             JOIN import_op_links l ON l.position_id = p.id
+             JOIN import_batches b ON b.id = l.batch_id
+            WHERE p.user_id=? AND p.is_cash=0 AND p.tc_compra IS NULL
+              AND UPPER(COALESCE(p.currency,''))='ARS'
+              AND p.entry_date IS NOT NULL
+              AND b.parser_format NOT LIKE '%tenencia%'""", (uid,)).fetchall()
+    tc_completados = 0
+    for lote in lotes_sin_tc:
+        d = (lote["entry_date"] or "")[:10]
+        if d not in cache:
+            cache[d] = fx_for_date(conn, d)
+        tc = cache[d]
+        if tc and tc > 0:
+            conn.execute("UPDATE positions SET tc_compra=? WHERE id=?",
+                         (round(tc, 4), lote["id"]))
+            tc_completados += 1
+    resultado["tc_compra_completados"] = tc_completados
+
     # ── Sincronizar la cadena y los snapshots (sin el borrador de outliers) ───
     recalc(conn, uid)
     backfill_snapshots(conn, uid)
