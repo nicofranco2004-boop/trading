@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search } from 'lucide-react'
 import { api } from '../utils/api'
+import { filtrarFilas, contarCaen, contarFrenadas } from '../utils/fxPanel'
 import StatCard from '../components/StatCard'
 import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
@@ -1455,6 +1456,20 @@ function FxMigratePanel({ toast }) {
 
   const migrables = (cands?.cuentas || []).filter(c => c.fx_version === 'v1' && !c.bloqueada_por_escala)
 
+  // ── Encontrar algo entre 497 filas ────────────────────────────────────────
+  // Con la lista ordenada por cantidad de ventas, las cuentas que hay que mirar
+  // (las que más le mueven el rendimiento al usuario) quedan desparramadas entre
+  // las que no cambian nada. Buscador + orden por caída + filtros.
+  const [buscar, setBuscar] = useState('')
+  const [orden, setOrden] = useState('default')   // 'default' | 'caida'
+  const [filtro, setFiltro] = useState('todas')   // 'todas' | 'caen' | 'frenadas' | 'sinsim'
+
+  const filas = useMemo(
+    () => filtrarFilas(cands?.cuentas, sims, { buscar, orden, filtro }),
+    [cands, sims, buscar, orden, filtro])
+  const nCaen = useMemo(() => contarCaen(cands?.cuentas, sims), [cands, sims])
+  const nFrenadas = useMemo(() => contarFrenadas(cands?.cuentas, sims), [cands, sims])
+
   // Snapshots con fecha FUTURA: el backfill de fin de mes los escribía también
   // para el mes en curso, con el capital SIN ganancia no realizada. Como el
   // "último snapshot" se elige por fecha máxima, ese punto define el AUM del
@@ -1758,6 +1773,37 @@ function FxMigratePanel({ toast }) {
             </button>
           </div>
 
+          {/* Buscar / ordenar / filtrar: sin esto, las cuentas que hay que mirar
+              quedan perdidas entre 497 filas ordenadas por cantidad de ventas. */}
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <div className="relative">
+              <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-3" />
+              <input value={buscar} onChange={e => setBuscar(e.target.value)}
+                placeholder="Buscar #id"
+                className="pl-7 pr-2 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 border border-line/60 w-32" />
+            </div>
+            <button onClick={() => setOrden(orden === 'caida' ? 'default' : 'caida')}
+              className={`px-2.5 py-1.5 rounded-md ${orden === 'caida' ? 'bg-violet-600 text-white' : 'bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0'}`}>
+              {orden === 'caida' ? '↓ Por caída del rendimiento' : 'Ordenar por caída'}
+            </button>
+            {[
+              ['todas', `Todas (${(cands.cuentas || []).length})`],
+              ['caen', `Cambian +50 pts (${nCaen})`],
+              ['frenadas', `Frenadas (${nFrenadas})`],
+              ['sinsim', 'Sin simular'],
+            ].map(([k, label]) => (
+              <button key={k} onClick={() => setFiltro(k)}
+                className={`px-2.5 py-1.5 rounded-md ${filtro === k ? 'bg-ink-0 text-bg-0' : 'bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0'}`}>
+                {label}
+              </button>
+            ))}
+            {(buscar || orden !== 'default' || filtro !== 'todas') && (
+              <button onClick={() => { setBuscar(''); setOrden('default'); setFiltro('todas') }}
+                className="px-2 py-1.5 text-ink-3 hover:text-ink-0">Limpiar</button>
+            )}
+            <span className="text-ink-3 ml-auto">{filas.length} de {(cands.cuentas || []).length}</span>
+          </div>
+
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
@@ -1773,7 +1819,7 @@ function FxMigratePanel({ toast }) {
                 </tr>
               </thead>
               <tbody>
-                {(cands.cuentas || []).map(c => {
+                {filas.map(c => {
                   const s = sims[c.user_id]
                   const bloq = c.bloqueada_por_escala
                   const v2 = c.fx_version === 'v2'
