@@ -12218,7 +12218,7 @@ def admin_diagnose_scale(limit_ops: int = 500000, dias_canilla: int = 90,
         conn.close()
 
 @app.post("/api/admin/fx-migrate-user")
-def admin_fx_migrate_user(user_id: int, apply: bool = False,
+def admin_fx_migrate_user(user_id: int, apply: bool = False, force: bool = False,
                           uid: int = Depends(get_admin_user)):
     """Migra UNA cuenta de FX v1 (dólar vivo del import) a v2 (TC de la fecha de
     cada operación), con las DOS patas —ventas y flujos— en una sola transacción.
@@ -12251,7 +12251,8 @@ def admin_fx_migrate_user(user_id: int, apply: bool = False,
             conn, user_id, helpers=None,
             recalc=_recalc_pnl_realized_from_ops,
             backfill_snapshots=_import_persister._backfill_snapshots_from_monthly,
-            recompute_netdep=_recompute_snapshots_netdep_for_user)
+            recompute_netdep=_recompute_snapshots_netdep_for_user,
+            force=force)
 
     if not apply:
         # Dry-run: copia física de la base, misma función, se descarta al final.
@@ -12458,6 +12459,7 @@ def admin_fx_migrate_batch(body: FxMigrateBatchIn, uid: int = Depends(get_admin_
                         conn.execute(f"RELEASE s{n}")
                     else:
                         conn.execute(f"ROLLBACK TO s{n}")
+                        conn.execute(f"RELEASE s{n}")   # sin esto se acumulan
                 except Exception as e:
                     conn.execute(f"ROLLBACK TO s{n}")
                     log.exception("fx-migrate-batch: cuenta %s falló", au)

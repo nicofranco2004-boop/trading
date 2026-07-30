@@ -80,10 +80,14 @@ def _metricas(conn, uid: int) -> Dict[str, Any]:
 
 
 def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
-                    recompute_netdep) -> Dict[str, Any]:
+                    recompute_netdep, force: bool = False) -> Dict[str, Any]:
     """Migra la cuenta `uid` a FX v2. NO commitea ni rollbackea: el caller decide
     (así el dry-run corre esta MISMA función sobre una copia de la base y el apply
     la corre sobre la real — un solo código, cero divergencia dry-run/apply).
+
+    `force=True` deja pasar una cuenta que la verificación frenó (delta de P&L o
+    de aportado implausible, cash tocado, ventas con el TC mal). Es para el caso
+    entendido y revisado a mano; el default es NO migrarla.
     """
     version = fx_version(conn, uid)
     if version == FX_V2:
@@ -312,12 +316,39 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     # una cuenta chica con un delta grande legítimo.
     _n_ventas = max(int(antes.get("ventas") or 0), 1)
     _d_pnl = abs(float(despues["pnl_ventas_usd"] or 0) - float(antes["pnl_ventas_usd"] or 0))
-    _implausible = _d_pnl > 100_000 and (_d_pnl / _n_ventas) > 1_000
+    # El umbral era `>100k Y >1000/venta`, y el "Y" dejaba pasar lo peor: medido
+    # en el dry-run masivo, una cuenta con 1.203 ventas y Δ P&L de US$ 339.593
+    # (282/venta) salía en VERDE. Ahora alcanza con CUALQUIERA de los dos: una
+    # magnitud absoluta grande, o un delta por venta fuera del rango sano
+    # (medido: cuentas sanas 0-378/venta incluso con miles de ventas).
+    _implausible = _d_pnl > 100_000 or ((_d_pnl / _n_ventas) > 1_000 and _d_pnl > 10_000)
+
+    # ── El APORTADO se MIDE y se muestra, pero NO frena ───────────────────────
+    # El aportado es el denominador del rendimiento, así que moverlo le cambia el
+    # retorno al usuario. La tentación es frenar cuando salta mucho — pero un
+    # salto grande es justamente LA FIRMA DE LA REPARACIÓN, no del daño: un flujo
+    # en pesos de 2013 estampado al dólar de hoy (1415) y re-derivado al de su
+    # fecha (~5) multiplica el aportado por ~280, y está bien. La fixture de
+    # `test_tc_compra_de_lotes_importados_se_completa` es exactamente ese caso
+    # (+835%) y es el comportamiento correcto.
+    # No hay umbral —ni absoluto ni relativo ni de dirección— que separe
+    # reparación de daño sin conocer la ÉPOCA de los flujos de esa cuenta. Así
+    # que esto se reporta con el "antes" al lado, para que el operador lo juzgue,
+    # y el freno queda para las señales que sí tienen separación medida.
+    _ap_antes = float(antes.get("deposits_usd") or 0) - float(antes.get("withdrawals_usd") or 0)
+    _ap_despues = float(despues.get("deposits_usd") or 0) - float(despues.get("withdrawals_usd") or 0)
+    _d_ap = abs(_ap_despues - _ap_antes)
+    _d_ap_pct = (_d_ap / abs(_ap_antes)) if abs(_ap_antes) > 1 else None
 
     resultado["verificacion"] = {
         "ventas_al_tc_de_su_fecha": f"{ok_tc}/{total_chk}",
         "delta_pnl_implausible": _implausible,
         "delta_pnl_por_venta": round(_d_pnl / _n_ventas, 2),
+        # El panel necesita el aportado ANTES para poder juzgar: "+3.320.849" no
+        # dice nada sin saber si la cuenta tenía 3 millones o 20 mil.
+        "aportado_antes_usd": round(_ap_antes, 2),
+        "aportado_despues_usd": round(_ap_despues, 2),
+        "aportado_delta_pct": round(_d_ap_pct * 100, 1) if _d_ap_pct is not None else None,
         "en_pares_salteados": en_pares_salteados,
         "sin_serie_fx": sin_serie_fx,
         "flujos_manuales_usd_no_migrables": round(flujos_manuales_usd, 2),
@@ -350,4 +381,35 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
                                  "resetea el MtM del mes abierto y contaminaría la "
                                  "lectura; se repone solo en la próxima visita del "
                                  "usuario al dashboard.")
+
+    # ── GATE SERVER-SIDE: la verificación FRENA, no solo informa ──────────────
+    # Hasta acá `ok` seguía en True aunque la verificación saliera en rojo: el
+    # único freno era que el operador viera el semáforo y destildara la fila a
+    # mano. Con el apply masivo eso no alcanza (se puede aplicar sin simular, y
+    # el server aceptaba lo que le mandaran). Ahora las mismas señales que se
+    # reportan DECIDEN, y el endpoint hace rollback.
+    #
+    # Medido sobre las ~400 cuentas del dry-run masivo (2026-07-29), estos son
+    # los tres motivos con evidencia:
+    #   · cash tocado             → invariante duro, nunca debería pasar
+    #   · alguna venta con TC ≠ el de su fecha → la migración no logró su objetivo
+    #   · delta implausible       → el P&L ya estaba corrupto y migrar lo multiplica
+    _frenos = []
+    if not resultado["verificacion"]["cash_intacto"]:
+        _frenos.append("el cash cambió (tiene que quedar intacto)")
+    if mal_tc:
+        _frenos.append(f"{len(mal_tc)} venta(s) quedaron con un TC distinto al de su fecha")
+    if _implausible:
+        _frenos.append(f"Δ P&L implausible (US$ {round(_d_pnl / _n_ventas, 2)}/venta sobre "
+                       f"US$ {round(_d_pnl, 2)} totales): el P&L ya estaba corrupto y "
+                       "migrar lo multiplica")
+    if _frenos and not force:
+        resultado["ok"] = False
+        resultado["motivo"] = ("la verificación no pasó: " + " · ".join(_frenos)
+                               + ". La migración se revierte. Si es un caso conocido "
+                               "y querés forzarla igual, re-corré con force=true.")
+        resultado["frenos"] = _frenos
+    elif _frenos:
+        resultado["forzado"] = _frenos
+
     return resultado

@@ -1178,14 +1178,26 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
         if snap_date > hoy.isoformat():
             continue          # mes en curso: el snapshot diario del cron ya lo cubre
         cap_final = r["capital_final"] or 0
-        # UPSERT (UNIQUE constraint en (user_id, date) lo permite)
+        # INSERT-only: si ya HAY un snapshot para esa fecha, NO se pisa.
+        #
+        # ⚠️ Antes esto era un UPSERT que sobreescribía `total_value` con el
+        # `capital_final` del mes. Y `capital_final` de un mes CERRADO viene de
+        # `_repair_monthly_chain`, que fuerza `pnl_unrealized = 0` → o sea, el
+        # capital AL COSTO. El snapshot que ya estaba ahí, en cambio, lo escribió
+        # el cron nocturno con el valor a MERCADO. Resultado del pisado: la curva
+        # de evolución quedaba con un diente hacia abajo en cada fin de mes y el
+        # CAGR (que desde `cb2824c` se calcula sobre snapshots reducidos a fin de
+        # mes) bajaba artificialmente. Y el snapshot real no se recupera.
+        #
+        # Este helper existe para que una cuenta recién importada TENGA curva
+        # (rellenar huecos), no para corregir mediciones reales. `net_deposited`
+        # tampoco hace falta actualizarlo acá: el único caller que lo necesita
+        # (el migrador FX) corre `_recompute_snapshots_netdep_for_user` después,
+        # que lo recalcula para TODOS los snapshots.
         conn.execute(
             """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
                VALUES (?,?,?,?,?)
-               ON CONFLICT(user_id, date) DO UPDATE SET
-                 total_value = excluded.total_value,
-                 total_invested = excluded.total_invested,
-                 net_deposited = excluded.net_deposited""",
+               ON CONFLICT(user_id, date) DO NOTHING""",
             (uid, snap_date, cap_final, net_dep, net_dep),
         )
 

@@ -1743,6 +1743,20 @@ function FxMigratePanel({ toast }) {
                                   {icono} {v.ventas_al_tc_de_su_fecha} ventas al TC de su fecha
                                   {' · '}cash {v.cash_intacto ? 'intacto' : '⚠️ CAMBIÓ'}
                                   {' · '}TCs en flujos {v.tcs_distintos_en_flujos?.antes}→{v.tcs_distintos_en_flujos?.despues}
+                                  {/* El aportado ANTES, para poder juzgar el Δ: "+US$ 3.320.849"
+                                      no dice nada sin saber si la cuenta tenía 3 millones o 20 mil.
+                                      Un múltiplo alto NO es necesariamente daño — es la firma de la
+                                      reparación (un flujo de 2013 dolarizado a 1415 y re-derivado a
+                                      ~5 se multiplica ×280). Lo que hay que mirar es si el múltiplo
+                                      es coherente con la ÉPOCA de los flujos de esa cuenta. */}
+                                  {v.aportado_antes_usd != null ? (
+                                    <> · aportado US$ {Math.round(v.aportado_antes_usd).toLocaleString()}
+                                      {' → '}US$ {Math.round(v.aportado_despues_usd).toLocaleString()}
+                                      {v.aportado_delta_pct != null && Math.abs(v.aportado_delta_pct) >= 1
+                                        ? ` (${v.aportado_delta_pct > 0 ? '+' : ''}${v.aportado_delta_pct}% · ×${(v.aportado_despues_usd / (v.aportado_antes_usd || 1)).toFixed(1)})`
+                                        : ''}
+                                    </>
+                                  ) : ''}
                                   {v.delta_pnl_implausible ? ` · ⚠️ Δ P&L IMPLAUSIBLE (US$ ${Math.round(v.delta_pnl_por_venta).toLocaleString()}/venta) — el P&L ya estaba corrupto y migrar lo multiplica` : ''}
                                   {(s.rebuild?.errores || []).length ? ` · ⚠️ ${s.rebuild.errores.length} activo(s) con error de rebuild` : ''}
                                   {(v.ventas_con_tc_distinto || []).length ? ` · ${v.ventas_con_tc_distinto.length} venta(s) con TC distinto` : ''}
