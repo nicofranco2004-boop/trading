@@ -1424,6 +1424,23 @@ function FxMigratePanel({ toast }) {
     return () => { vivo = false }
   }, [])
 
+  const [aportado, setAportado] = useState(null)
+
+  // Abre el desglose del aportado por año de UNA cuenta. Es la evidencia que la
+  // simulación no da: si los DEPOSIT son de años viejos (TC bajo) y los WITHDRAW
+  // de años recientes (TC alto), el salto es real — esa plata entró cuando el
+  // dólar valía menos. Si depósitos y retiros son del MISMO año y el neto igual
+  // explota, hay que mirar si son transferencias internas contadas como flujo.
+  async function verAportado(userId) {
+    setAportado({ user_id: userId, loading: true })
+    try {
+      setAportado(await api.get(`/admin/fx-aportado-breakdown?user_id=${userId}`))
+    } catch (e) {
+      toast.push('Error: ' + e.message, { type: 'error' })
+      setAportado(null)
+    }
+  }
+
   async function cargar(preserveSims = false) {
     setLoading(true)
     try {
@@ -1614,6 +1631,60 @@ function FxMigratePanel({ toast }) {
             <StatCard label="Ya migradas (v2)" value={String(cands.v2_ya_migradas)} />
           </div>
 
+          {/* Desglose del aportado por año — el "por qué" del salto. Se abre
+              clickeando el #id de cualquier fila. */}
+          {aportado && (
+            <div className="rounded-lg border border-violet-500/40 bg-violet-500/5 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <b className="text-sm">De qué años viene el aportado de #{aportado.user_id}</b>
+                <button onClick={() => setAportado(null)}
+                  className="text-xs px-2 py-1 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0">Cerrar</button>
+              </div>
+              {aportado.loading ? <div className="text-xs text-ink-3">Calculando…</div> : (
+                <>
+                  <div className="text-xs text-ink-2">
+                    Aportado neto US$ {Math.round(aportado.aportado_neto_v1 || 0).toLocaleString()}
+                    {' → '}US$ {Math.round(aportado.aportado_neto_v2 || 0).toLocaleString()}
+                    {aportado.factor != null ? ` (×${aportado.factor})` : ''}
+                    {aportado.filas_sin_tc_en_serie ? ` · ${aportado.filas_sin_tc_en_serie} fila(s) sin TC en la serie` : ''}
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs tabular">
+                      <thead className="text-ink-3">
+                        <tr className="border-b border-line/40 text-left">
+                          <th className="py-1 pr-3">Año</th><th className="py-1 pr-3">Movimiento</th>
+                          <th className="py-1 pr-3 text-right">Filas</th>
+                          <th className="py-1 pr-3 text-right">Pesos</th>
+                          <th className="py-1 pr-3 text-right">USD ahora</th>
+                          <th className="py-1 pr-3 text-right">USD migrado</th>
+                          <th className="py-1 pr-3 text-right">Dólar usado</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(aportado.por_anio || []).map((f, i) => (
+                          <tr key={i} className="border-b border-line/20">
+                            <td className="py-1 pr-3">{f.anio}</td>
+                            <td className={`py-1 pr-3 ${f.op === 'DEPOSIT' ? 'text-emerald-500' : 'text-amber-500'}`}>
+                              {f.op === 'DEPOSIT' ? 'Depósito' : 'Retiro'}
+                            </td>
+                            <td className="py-1 pr-3 text-right">{f.filas}</td>
+                            <td className="py-1 pr-3 text-right">{Math.round(f.ars).toLocaleString()}</td>
+                            <td className="py-1 pr-3 text-right">{Math.round(f.usd_v1).toLocaleString()}</td>
+                            <td className="py-1 pr-3 text-right font-medium">{Math.round(f.usd_v2).toLocaleString()}</td>
+                            <td className="py-1 pr-3 text-right text-ink-3">
+                              {f.tc_implicito_v1 ?? '—'} → {f.tc_implicito_v2 ?? '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="text-[11px] text-ink-3 leading-relaxed">{aportado.como_leerlo}</div>
+                </>
+              )}
+            </div>
+          )}
+
           <div className="rounded-lg border border-line/60 dark:border-line/40 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <span className="text-xs text-ink-2 flex-1 min-w-[280px]">
@@ -1713,7 +1784,16 @@ function FxMigratePanel({ toast }) {
                           disabled={bloq || v2 || !!running}
                           onChange={() => toggle(c.user_id)} />
                       </td>
-                      <td className="py-1.5 pr-3 tabular">#{c.user_id}{c.tier ? ` · ${c.tier}` : ''}</td>
+                      {/* El "por qué" del salto del aportado. La simulación dice CUÁNTO
+                          se mueve; sin el desglose por año no se puede saber si ×18 es
+                          la reparación (depósitos viejos, dólar barato) o el neteo de
+                          depósitos viejos contra retiros nuevos. Read-only. */}
+                      <td className="py-1.5 pr-3 tabular">
+                        <button className="hover:underline hover:text-violet-400"
+                          title="Ver de qué años viene el aportado"
+                          onClick={() => verAportado(c.user_id)}>#{c.user_id}</button>
+                        {c.tier ? ` · ${c.tier}` : ''}
+                      </td>
                       <td className="py-1.5 pr-3">
                         {v2 ? <span className="text-emerald-500">v2 ✓</span>
                           : bloq ? <span className="text-amber-500">bloqueada (escala ×{c.ventas_con_escala_rota})</span>

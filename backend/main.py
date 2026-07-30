@@ -12416,6 +12416,88 @@ def admin_fx_migrate_candidates(uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+@app.get("/api/admin/fx-aportado-breakdown")
+def admin_fx_aportado_breakdown(user_id: int, uid: int = Depends(get_admin_user)):
+    """Por qué el aportado de una cuenta se multiplica ×11 o ×18 al migrar.
+
+    La simulación dice CUÁNTO se mueve el aportado, pero no POR QUÉ, y sin el
+    porqué no se puede decidir: un aportado que se multiplica ×18 es correcto si
+    los depósitos son de 2020 (dólar ~80) y sólo se veían mal por estar
+    dolarizados al de hoy; y es sospechoso si sale de netear depósitos VIEJOS
+    contra retiros NUEVOS, o de transferencias internas contadas como flujo.
+
+    Esto abre el aportado por AÑO y por dirección, con el TC implícito de cada
+    tramo. Read-only: no escribe ni migra nada.
+    """
+    conn = get_db()
+    try:
+        filas = conn.execute(
+            """SELECT substr(n.date,1,4) anio, n.operation_type op,
+                      COUNT(*) filas,
+                      SUM(n.gross_amount) ars,
+                      SUM(n.gross_amount_usd) usd_v1
+                 FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed'
+                  AND UPPER(COALESCE(n.currency,''))='ARS'
+                  AND n.operation_type IN ('DEPOSIT','WITHDRAW')
+                  AND n.gross_amount IS NOT NULL
+                GROUP BY anio, op ORDER BY anio, op""", (user_id,)).fetchall()
+        # El USD v2 se re-deriva fila por fila (el TC es el del DÍA, no el del
+        # año): agregarlo por año recién después es lo único fiel al migrador.
+        crudas = conn.execute(
+            """SELECT substr(n.date,1,4) anio, n.operation_type op, n.date, n.gross_amount
+                 FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed'
+                  AND UPPER(COALESCE(n.currency,''))='ARS'
+                  AND n.operation_type IN ('DEPOSIT','WITHDRAW')
+                  AND n.gross_amount IS NOT NULL""", (user_id,)).fetchall()
+        cache, v2, sin_tc = {}, {}, 0
+        for r in crudas:
+            d = (r["date"] or "")[:10]
+            if d not in cache:
+                cache[d] = _fx.fx_for_date(conn, d)
+            tc = cache[d]
+            if not tc:
+                sin_tc += 1
+                continue
+            k = (r["anio"], r["op"])
+            v2[k] = v2.get(k, 0.0) + (float(r["gross_amount"] or 0) / tc)
+
+        out, tot_v1, tot_v2 = [], 0.0, 0.0
+        for f in filas:
+            k = (f["anio"], f["op"])
+            signo = 1 if f["op"] == "DEPOSIT" else -1
+            u1 = float(f["usd_v1"] or 0)
+            u2 = float(v2.get(k, 0.0))
+            tot_v1 += signo * u1
+            tot_v2 += signo * u2
+            ars = float(f["ars"] or 0)
+            out.append({
+                "anio": f["anio"], "op": f["op"], "filas": f["filas"],
+                "ars": round(ars, 2),
+                "usd_v1": round(u1, 2), "usd_v2": round(u2, 2),
+                "tc_implicito_v1": round(ars / u1, 1) if u1 else None,
+                "tc_implicito_v2": round(ars / u2, 1) if u2 else None,
+            })
+        return {
+            "user_id": user_id,
+            "aportado_neto_v1": round(tot_v1, 2),
+            "aportado_neto_v2": round(tot_v2, 2),
+            "factor": round(tot_v2 / tot_v1, 2) if tot_v1 else None,
+            "filas_sin_tc_en_serie": sin_tc,
+            "por_anio": out,
+            "como_leerlo": ("Si los DEPOSIT son de años viejos (TC v2 bajo) y los WITHDRAW "
+                            "de años recientes (TC v2 alto), el salto del aportado es real: "
+                            "esa plata entró cuando el dólar valía menos. Si en cambio los "
+                            "depósitos y los retiros son del MISMO año y el neto igual explota, "
+                            "hay que mirar si son transferencias internas contadas como flujo."),
+        }
+    finally:
+        conn.close()
+
+
 class FxMigrateBatchIn(BaseModel):
     user_ids: List[int] = Field(..., min_length=1, max_length=1000)
 
