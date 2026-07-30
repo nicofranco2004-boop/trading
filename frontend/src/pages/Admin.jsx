@@ -1406,6 +1406,23 @@ function FxMigratePanel({ toast }) {
   const [running, setRunning] = useState(null)    // 'sim' | 'apply' | null
   const [progress, setProgress] = useState(null)
   const [futuros, setFuturos] = useState(null)    // snapshots con fecha futura
+  const [stale, setStale] = useState(false)      // el bundle del browser quedó viejo
+
+  // El auto-update no recarga mientras estás trabajando (por diseño), así que se
+  // puede simular 400 cuentas con código viejo y no enterarse. Acá el panel
+  // compara su propio build contra el del server y avisa ANTES de que confíes en
+  // un resultado calculado con reglas que ya cambiaron.
+  useEffect(() => {
+    let vivo = true
+    fetch(`/version.json?t=${Date.now()}`, { cache: 'no-store', credentials: 'omit' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        const mio = (typeof __BUILD_ID__ !== 'undefined' && __BUILD_ID__) || null
+        if (vivo && d?.version && mio && d.version !== mio) setStale(true)
+      })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [])
 
   async function cargar(preserveSims = false) {
     setLoading(true)
@@ -1554,6 +1571,15 @@ function FxMigratePanel({ toast }) {
         </button>
       </div>
 
+      {stale && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-500">
+          <b>Tu navegador tiene una versión vieja de esta pantalla.</b> Los resultados que simules
+          ahora pueden estar calculados con reglas que ya cambiaron.{' '}
+          <button onClick={() => window.location.reload(true)} className="underline font-semibold">
+            Recargar
+          </button>
+        </div>
+      )}
       <p className="text-xs text-ink-3 leading-relaxed">
         Las cuentas viejas tienen el P&L y los depósitos dolarizados al <b>dólar del día en que importaron</b>
         (una venta de 2021 dividida por ~1450 en vez de ~190). Acá se migran al TC de la fecha de cada
