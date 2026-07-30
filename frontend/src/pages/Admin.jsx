@@ -1694,6 +1694,52 @@ function FxMigratePanel({ toast }) {
                       </tbody>
                     </table>
                   </div>
+                  {/* Las filas crudas que mandan. Es lo que cierra el diagnóstico:
+                      con el archivo, el broker y la fila original se ve si la fecha
+                      la rompió el parser o si ya venía mal del export. */}
+                  {(aportado.top_filas || []).length > 0 && (
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-ink-2 hover:text-ink-0 py-1">
+                        Las filas más pesadas (de dónde salen)
+                      </summary>
+                      <div className="overflow-x-auto mt-1">
+                        <table className="w-full text-[11px] tabular">
+                          <thead className="text-ink-3">
+                            <tr className="border-b border-line/40 text-left">
+                              <th className="py-1 pr-3">Fecha</th><th className="py-1 pr-3">Mov.</th>
+                              <th className="py-1 pr-3 text-right">Pesos</th>
+                              <th className="py-1 pr-3 text-right">Dólar</th>
+                              <th className="py-1 pr-3 text-right">USD migrado</th>
+                              <th className="py-1 pr-3 text-right">USD hoy</th>
+                              <th className="py-1 pr-3">Broker</th>
+                              <th className="py-1 pr-3">Archivo</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {aportado.top_filas.map((f, i) => (
+                              <tr key={i} className="border-b border-line/20 align-top">
+                                <td className="py-1 pr-3 whitespace-nowrap">{(f.date || '').slice(0, 10)}</td>
+                                <td className={`py-1 pr-3 ${f.op === 'DEPOSIT' ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                  {f.op === 'DEPOSIT' ? 'Dep.' : 'Ret.'}
+                                </td>
+                                <td className="py-1 pr-3 text-right">{Math.round(f.ars).toLocaleString()}</td>
+                                <td className="py-1 pr-3 text-right text-ink-3">{f.tc ?? '—'}</td>
+                                <td className="py-1 pr-3 text-right font-medium">{f.usd_v2 != null ? Math.round(f.usd_v2).toLocaleString() : '—'}</td>
+                                <td className="py-1 pr-3 text-right text-ink-3">{Math.round(f.usd_hoy).toLocaleString()}</td>
+                                <td className="py-1 pr-3">{f.broker || '—'}</td>
+                                <td className="py-1 pr-3 max-w-[180px] truncate" title={f.fila_original || ''}>
+                                  {f.archivo || f.parser || '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="text-[10px] text-ink-3 mt-1">
+                          Pasá el mouse por el archivo para ver la fila tal como vino en el export.
+                        </p>
+                      </div>
+                    </details>
+                  )}
                   <div className="text-[11px] text-ink-3 leading-relaxed">{aportado.como_leerlo}</div>
                 </>
               )}

@@ -12481,6 +12481,48 @@ def admin_fx_aportado_breakdown(user_id: int, uid: int = Depends(get_admin_user)
                 "tc_implicito_v1": round(ars / u1, 1) if u1 else None,
                 "tc_implicito_v2": round(ars / u2, 1) if u2 else None,
             })
+        # ── LAS FILAS QUE MANDAN, UNA POR UNA ────────────────────────────────
+        # El desglose por año mostró la firma de un problema que no es del FX:
+        # cuentas con depósitos fechados en 2019-2020 cuyo monto EN PESOS tiene
+        # magnitud de hoy (#324: 9 filas de 14,6 M de pesos c/u en 2019, contra
+        # 73 mil por depósito en 2020). Al dólar de 2019 (42) esos 131 M dan
+        # US$ 3,1 M de "aportado" — el 92% del total de la cuenta. Con el dólar
+        # de hoy pasaban desapercibidos; el TC histórico los amplifica ×33.
+        # Para saber de dónde salen hace falta la fila cruda: fecha exacta,
+        # broker y ARCHIVO que la importó.
+        top = []
+        for r in sorted(
+                crudas,
+                key=lambda x: (float(x["gross_amount"] or 0) / (cache.get((x["date"] or "")[:10]) or 1e9)),
+                reverse=True)[:15]:
+            d = (r["date"] or "")[:10]
+            tc = cache.get(d)
+            # La FILA CRUDA es lo que cierra el diagnóstico: si el raw_json trae
+            # una fecha reciente y `date` quedó en 2019, la rompió el parser; si
+            # el archivo ya venía con 2019, el problema es el export del broker.
+            det = conn.execute(
+                """SELECT n.date, n.operation_type op, n.gross_amount, n.notes,
+                          n.asset_name, b.broker, b.file_name, b.parser_format,
+                          rr.raw_json
+                     FROM import_normalized_tx n
+                     JOIN import_batches b ON b.id = n.batch_id
+                     LEFT JOIN import_raw_rows rr ON rr.id = n.raw_row_id
+                    WHERE b.user_id=? AND n.date=? AND n.gross_amount=?
+                      AND n.operation_type=? LIMIT 1""",
+                (user_id, r["date"], r["gross_amount"], r["op"])).fetchone()
+            top.append({
+                "date": r["date"], "op": r["op"],
+                "ars": round(float(r["gross_amount"] or 0), 2),
+                "tc": round(tc, 2) if tc else None,
+                "usd_v2": round(float(r["gross_amount"] or 0) / tc, 2) if tc else None,
+                "usd_hoy": round(float(r["gross_amount"] or 0) / 1415.0, 2),
+                "broker": det["broker"] if det else None,
+                "archivo": det["file_name"] if det else None,
+                "parser": det["parser_format"] if det else None,
+                "detalle": ((det["notes"] or det["asset_name"] or "")[:80]) if det else None,
+                "fila_original": (det["raw_json"] or "")[:400] if det else None,
+            })
+
         return {
             "user_id": user_id,
             "aportado_neto_v1": round(tot_v1, 2),
@@ -12488,11 +12530,13 @@ def admin_fx_aportado_breakdown(user_id: int, uid: int = Depends(get_admin_user)
             "factor": round(tot_v2 / tot_v1, 2) if tot_v1 else None,
             "filas_sin_tc_en_serie": sin_tc,
             "por_anio": out,
-            "como_leerlo": ("Si los DEPOSIT son de años viejos (TC v2 bajo) y los WITHDRAW "
-                            "de años recientes (TC v2 alto), el salto del aportado es real: "
-                            "esa plata entró cuando el dólar valía menos. Si en cambio los "
-                            "depósitos y los retiros son del MISMO año y el neto igual explota, "
-                            "hay que mirar si son transferencias internas contadas como flujo."),
+            "top_filas": top,
+            "como_leerlo": ("Mirá los PESOS POR FILA de cada año: tienen que crecer con el "
+                            "tiempo (inflación). Si un año viejo tiene depósitos mucho más "
+                            "grandes en pesos que los años recientes, esas filas NO son de ese "
+                            "año — es una fecha mal parseada, y el TC histórico la amplifica "
+                            "×20 o ×35. En 'Las filas más pesadas' está el archivo y el broker "
+                            "de donde salió cada una."),
         }
     finally:
         conn.close()
