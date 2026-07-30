@@ -1576,6 +1576,39 @@ function FxMigratePanel({ toast }) {
             <StatCard label="Ya migradas (v2)" value={String(cands.v2_ya_migradas)} />
           </div>
 
+          <div className="rounded-lg border border-line/60 dark:border-line/40 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <span className="text-xs text-ink-2 flex-1 min-w-[280px]">
+                <b>Snapshots con fecha futura</b> — el backfill de fin de mes también escribía el
+                mes EN CURSO: queda fechado en el futuro y con el capital SIN la ganancia no
+                realizada. Como el "último snapshot" se elige por fecha máxima, ese punto define el
+                AUM del asesor y la punta del gráfico hasta fin de mes. Ya no se generan; esto
+                limpia los que quedaron.
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button onClick={() => limpiarFuturos(false)} disabled={!!running}
+                  className="text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
+                  {running === 'cleanup' ? 'Contando…' : 'Contar'}
+                </button>
+                {futuros?.snapshots_futuros > 0 && !futuros.applied && (
+                  <button onClick={() => limpiarFuturos(true)} disabled={!!running}
+                    className="text-xs px-3 py-1.5 rounded-md bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-50">
+                    Limpiar {futuros.snapshots_futuros}
+                  </button>
+                )}
+              </div>
+            </div>
+            {futuros && (
+              <p className={`text-xs ${futuros.snapshots_futuros && !futuros.applied ? 'text-amber-500' : 'text-emerald-500'}`}>
+                {futuros.snapshots_futuros
+                  ? (futuros.applied
+                      ? `✓ ${futuros.snapshots_futuros} snapshot(s) futuro(s) borrado(s) de ${futuros.cuentas} cuenta(s)`
+                      : `${futuros.snapshots_futuros} snapshot(s) futuro(s) en ${futuros.cuentas} cuenta(s) — apretá "Limpiar"`)
+                  : '✓ Sin snapshots futuros'}
+              </p>
+            )}
+          </div>
+
           <div className="flex items-center gap-2 flex-wrap">
             <button onClick={() => setSel(new Set(migrables.slice(0, 10).map(c => c.user_id)))}
               disabled={!!running}
