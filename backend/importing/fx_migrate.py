@@ -95,21 +95,24 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     # inflado ×100 sin la firma pnl_pct que hoy lo delata — el "crimen perfecto"
     # documentado en project_sell_scale_per100. Esas ~25 cuentas necesitan su
     # procedimiento propio (cash + foto de tenencia) ANTES de migrar FX.
+    # El chequeo va sobre las columnas FUENTE (import_normalized_tx), no sobre
+    # operations: cualquier rebuild posterior al deploy del guard de escala
+    # "limpia" el exit_price de operations y borra la firma, pero el CASH sigue
+    # inflado. La fuente es inmutable — la firma no se puede borrar de ahí.
     escala_rota = conn.execute(
-        """SELECT COUNT(*) n FROM operations o
-             JOIN import_op_links l ON l.operation_id = o.id
-             JOIN import_normalized_tx n2
-                  ON n2.batch_id = l.batch_id AND n2.raw_row_id = l.raw_row_id
-            WHERE o.user_id=? AND o.op_type='Venta'
-              AND o.exit_price IS NOT NULL AND o.quantity IS NOT NULL
-              AND n2.gross_amount IS NOT NULL AND n2.gross_amount <> 0
+        """SELECT COUNT(*) n FROM import_normalized_tx n2
+             JOIN import_batches b ON b.id = n2.batch_id
+            WHERE b.user_id=? AND b.status='confirmed'
+              AND n2.operation_type IN ('BUY','SELL')
+              AND n2.unit_price IS NOT NULL AND n2.unit_price <> 0
               AND n2.quantity IS NOT NULL AND n2.quantity <> 0
-              AND ABS((o.exit_price * o.quantity) /
-                      (n2.gross_amount * o.quantity / n2.quantity) - 1) > 0.02""",
+              AND n2.gross_amount IS NOT NULL AND n2.gross_amount <> 0
+              AND ((n2.unit_price * n2.quantity) / n2.gross_amount > 5
+                   OR (n2.unit_price * n2.quantity) / n2.gross_amount < 0.2)""",
         (uid,)).fetchone()["n"]
     if escala_rota:
         return {"ok": False, "user_id": uid,
-                "motivo": (f"la cuenta tiene {escala_rota} venta(s) con el bug de "
+                "motivo": (f"la cuenta tiene {escala_rota} fila(s) importada(s) con el bug de "
                            "ESCALA (per-100). Migrarla ahora dejaría el cash inflado "
                            "sin la firma que lo detecta. Primero el procedimiento de "
                            "escala (ver /api/admin/diagnose-scale), después el FX."),
@@ -150,13 +153,21 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
                            "sin_tc_en_serie": sin_tc}
 
     # ── Capturar overrides que el rebuild pisa ────────────────────────────────
+    # Se capturan TODAS las filas de los grupos que tienen ALGÚN override —
+    # incluidas las que no lo tienen. Si un grupo mezcla un lote con tc_compra y
+    # otro sin, restaurar "el único valor" contagiaría el override al lote que
+    # nunca lo tuvo (reproducido en el audit): grupo mixto ⇒ ambiguo ⇒ se reporta.
     overrides = conn.execute(
         """SELECT broker, asset, COALESCE(currency,'') ccy,
                   price_override, tc_compra, notes
              FROM positions
             WHERE user_id=? AND is_cash=0
-              AND (price_override IS NOT NULL OR tc_compra IS NOT NULL
-                   OR notes IS NOT NULL)""", (uid,)).fetchall()
+              AND (broker, asset, COALESCE(currency,'')) IN (
+                  SELECT broker, asset, COALESCE(currency,'')
+                    FROM positions
+                   WHERE user_id=? AND is_cash=0
+                     AND (price_override IS NOT NULL OR tc_compra IS NOT NULL
+                          OR notes IS NOT NULL))""", (uid, uid)).fetchall()
     por_grupo: Dict[tuple, list] = {}
     for o in overrides:
         por_grupo.setdefault((o["broker"], o["asset"], o["ccy"]), []).append(o)
@@ -181,6 +192,16 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
         errores.extend(r.get("errors") or [])
     resultado["rebuild"] = {"batches": len(batches), "grupos_reconstruidos": reconstruidos,
                             "pares_salteados": salteados, "errores": errores}
+    if errores:
+        # "O sale todo, o no sale nada" — un activo que el rebuild no pudo replayar
+        # dejaría sus ventas al TC viejo con la cuenta marcada v2 y SIN camino de
+        # reintento (la segunda corrida diría "ya está en v2"). ok=False hace que
+        # el endpoint haga rollback y el operador vea el motivo.
+        resultado["ok"] = False
+        resultado["motivo"] = (f"el rebuild falló en {len(errores)} activo(s) — "
+                               "la migración se revierte entera para no dejar la "
+                               "cuenta a medias. Detalle en rebuild.errores.")
+        return resultado
 
     # ── Restaurar overrides no ambiguos ───────────────────────────────────────
     restaurados, ambiguos = 0, []
@@ -213,25 +234,50 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     #  2. los flujos dejaron de estar todos al mismo TC (la firma del bug era UN
     #     solo TC para años de depósitos; ahora tiene que haber muchos)
     #  3. el cash NO se movió (el migrador no lo toca; si cambió, algo anda mal)
+    # Las ventas de los pares SALTEADOS (data manual) conservan su TC viejo a
+    # propósito: excluirlas del conteo o el x/y mezcla "quedó mal" con "quedó
+    # como debía" y el operador aprende a ignorar el semáforo. Ídem las fechas
+    # fuera de la serie FX: van a su propio contador, no a mal_tc.
+    _skip_pairs = {(sp.get("broker"), sp.get("asset")) for sp in salteados}
     ventas_chk = conn.execute(
-        """SELECT o.date, o.fx_to_usd FROM operations o
+        """SELECT o.date, o.broker, o.asset, o.fx_to_usd FROM operations o
              JOIN import_op_links l ON l.operation_id = o.id
             WHERE o.user_id=? AND o.op_type='Venta'
               AND o.fx_to_usd IS NOT NULL AND o.fx_to_usd > 1""", (uid,)).fetchall()
     ok_tc, mal_tc = 0, []
+    en_pares_salteados, sin_serie_fx = 0, 0
+    total_chk = 0
     _vcache: Dict[str, Optional[float]] = {}
     for v in ventas_chk:
+        if (v["broker"], v["asset"]) in _skip_pairs:
+            en_pares_salteados += 1
+            continue
         d = (v["date"] or "")[:10]
         if d not in _vcache:
             _vcache[d] = fx_for_date(conn, d)
         esperado = _vcache[d]
-        if esperado and abs(float(v["fx_to_usd"]) / esperado - 1) <= 0.01:
+        if not esperado:
+            sin_serie_fx += 1
+            continue
+        total_chk += 1
+        if abs(float(v["fx_to_usd"]) / esperado - 1) <= 0.01:
             ok_tc += 1
         else:
             mal_tc.append({"fecha": d, "fx_estampado": round(float(v["fx_to_usd"]), 2),
-                           "fx_de_la_fecha": round(esperado, 2) if esperado else None})
+                           "fx_de_la_fecha": round(esperado, 2)})
+    # Flujos MANUALES (botón Depositar/Retirar): viven agregados por mes en
+    # monthly_entries.manual_deposits/withdrawals, YA en USD y sin el monto ARS
+    # original — NO SE PUEDEN re-derivar. Se declaran para que el operador sepa
+    # que esa parte del aportado conserva el TC del momento de la carga.
+    _man = conn.execute(
+        "SELECT ROUND(COALESCE(SUM(manual_deposits),0)+COALESCE(SUM(manual_withdrawals),0),2) t "
+        "FROM monthly_entries WHERE user_id=? AND broker='global'", (uid,)).fetchone()
+    flujos_manuales_usd = float(_man["t"] or 0) if _man else 0.0
     resultado["verificacion"] = {
-        "ventas_al_tc_de_su_fecha": f"{ok_tc}/{len(ventas_chk)}",
+        "ventas_al_tc_de_su_fecha": f"{ok_tc}/{total_chk}",
+        "en_pares_salteados": en_pares_salteados,
+        "sin_serie_fx": sin_serie_fx,
+        "flujos_manuales_usd_no_migrables": round(flujos_manuales_usd, 2),
         "ventas_con_tc_distinto": mal_tc[:5],
         "tcs_distintos_en_flujos": {"antes": antes["tcs_distintos_en_flujos"],
                                     "despues": _metricas(conn, uid)["tcs_distintos_en_flujos"]},
@@ -240,17 +286,26 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
             "WHERE user_id=? AND is_cash=1 GROUP BY broker", (uid,))},
         "nota": "antes los flujos estaban TODOS al mismo TC (la firma del bug); "
                 "después tiene que haber un TC por fecha. `cash_intacto` tiene que "
-                "ser true: el migrador no toca la caja. Las ventas de pares "
-                "salteados (manuales) no entran acá: conservan su TC viejo a "
-                "propósito.",
+                "ser true. `en_pares_salteados` y `sin_serie_fx` quedan al TC viejo "
+                "A PROPÓSITO (no son fallas). `flujos_manuales_usd_no_migrables` es "
+                "la parte del aportado que no se puede re-derivar (se guardó en USD "
+                "sin el monto original en pesos).",
     }
 
     despues = _metricas(conn, uid)
     resultado["despues"] = despues
+    # capital_final NO entra al delta: el recalc resetea el pnl_unrealized del
+    # mes abierto (lo repone el sync del dashboard en la próxima visita), así que
+    # su antes/después mezcla el efecto FX con ese artefacto y confunde la
+    # decisión. Queda visible en antes/despues, con esta nota.
     resultado["delta"] = {
         k: round((despues[k] or 0) - (antes[k] or 0), 2)
         for k in ("pnl_ventas_usd", "deposits_usd", "withdrawals_usd",
-                  "pnl_realized_usd", "capital_final")
+                  "pnl_realized_usd")
         if isinstance(antes.get(k), (int, float)) or isinstance(despues.get(k), (int, float))
     }
+    resultado["nota_capital"] = ("capital_final se excluye del delta: el recalc "
+                                 "resetea el MtM del mes abierto y contaminaría la "
+                                 "lectura; se repone solo en la próxima visita del "
+                                 "usuario al dashboard.")
     return resultado

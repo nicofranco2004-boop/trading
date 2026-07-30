@@ -1406,16 +1406,31 @@ function FxMigratePanel({ toast }) {
   const [running, setRunning] = useState(null)    // 'sim' | 'apply' | null
   const [progress, setProgress] = useState(null)
 
-  async function cargar() {
+  async function cargar(preserveSims = false) {
     setLoading(true)
     try {
       const r = await api.get('/admin/fx-migrate-candidates')
-      setCands(r); setSims({}); setSel(new Set())
+      setCands(r)
+      // La verificación de lo recién aplicado es el mecanismo de seguridad del
+      // flujo: NO se borra al refrescar estados (solo con "Recargar" manual).
+      if (!preserveSims) { setSims({}); setSel(new Set()) }
     } catch (e) { toast.push('Error al cargar: ' + e.message, { type: 'error' }) }
     finally { setLoading(false) }
   }
 
   const migrables = (cands?.cuentas || []).filter(c => c.fx_version === 'v1' && !c.bloqueada_por_escala)
+
+  // Semáforo de la verificación: rojo si CUALQUIER señal falla, no solo el cash.
+  function nivelVerif(s) {
+    if (!s?.ok || !s.verificacion) return null
+    const v = s.verificacion
+    const [ok, tot] = String(v.ventas_al_tc_de_su_fecha || '0/0').split('/').map(Number)
+    if (!v.cash_intacto || (v.ventas_con_tc_distinto || []).length > 0 ||
+        (s.rebuild?.errores || []).length > 0 || (tot > 0 && ok < tot)) return 'rojo'
+    if (v.en_pares_salteados > 0 || v.sin_serie_fx > 0 ||
+        (v.flujos_manuales_usd_no_migrables || 0) > 0) return 'ambar'
+    return 'verde'
+  }
 
   function toggle(uid) {
     const s = new Set(sel)
@@ -1428,9 +1443,24 @@ function FxMigratePanel({ toast }) {
     if (!ids.length) return
     if (apply) {
       const sinSim = ids.filter(id => !sims[id]?.ok)
+      const rojas = ids.filter(id => nivelVerif(sims[id]) === 'rojo')
+      if (rojas.length) {
+        // La simulación de estas cuentas FALLÓ su propia verificación: no se
+        // aplican en tanda, punto. Se destildan y se sigue con el resto.
+        toast.push(`${rojas.length} cuenta(s) con verificación en ROJO quedan fuera: ` +
+                   rojas.map(id => '#' + id).join(', '), { type: 'error' })
+        const limpio = ids.filter(id => !rojas.includes(id))
+        setSel(new Set(limpio))
+        if (!limpio.length) return
+        ids.length = 0; ids.push(...limpio)
+      }
       if (sinSim.length && !confirm(`${sinSim.length} cuenta(s) sin simulación previa. ¿Aplicar igual?`)) return
-      if (!confirm(`¿Migrar ${ids.length} cuenta(s) al TC histórico? Cambia el P&L en USD y el capital ` +
-                   `aportado de esas cuentas (el % por operación NO cambia). Hacé un backup antes.`)) return
+      const dPnl = ids.reduce((a, id) => a + (sims[id]?.delta?.pnl_ventas_usd || 0), 0)
+      const dDep = ids.reduce((a, id) => a + ((sims[id]?.delta?.deposits_usd || 0) - (sims[id]?.delta?.withdrawals_usd || 0)), 0)
+      if (!confirm(`¿Migrar ${ids.length} cuenta(s) al TC histórico?\n` +
+                   `Δ P&L de ventas (simulado): US$ ${Math.round(dPnl).toLocaleString()}\n` +
+                   `Δ Aportado neto (simulado): US$ ${Math.round(dDep).toLocaleString()}\n` +
+                   `El % por operación NO cambia. Hacé un backup antes.`)) return
     }
     setRunning(apply ? 'apply' : 'sim')
     setProgress({ done: 0, total: ids.length })
@@ -1439,7 +1469,16 @@ function FxMigratePanel({ toast }) {
       try {
         out[ids[i]] = await api.post(`/admin/fx-migrate-user?user_id=${ids[i]}&apply=${apply}`)
       } catch (e) {
-        out[ids[i]] = { ok: false, motivo: e.message }
+        const msg = String(e.message || '')
+        if (apply && msg.includes('ya está en v2')) {
+          // El apply anterior llegó al server aunque la conexión se haya cortado
+          // (timeout del proxy): "ya está en v2" en un RETRY significa ÉXITO.
+          out[ids[i]] = { ok: true, applied: true, motivo: 'migrada (el intento anterior había llegado)' }
+        } else {
+          out[ids[i]] = { ok: false, motivo: msg + (apply
+            ? ' — OJO: si fue un timeout, la migración puede haber terminado igual en el servidor; recargá y fijate si quedó v2.'
+            : '') }
+        }
       }
       setProgress({ done: i + 1, total: ids.length })
       setSims({ ...out })
@@ -1448,7 +1487,7 @@ function FxMigratePanel({ toast }) {
     if (apply) {
       const okN = ids.filter(id => out[id]?.ok && out[id]?.applied).length
       toast.push(`Migradas ${okN}/${ids.length} cuentas`, { type: okN === ids.length ? 'success' : 'error' })
-      await cargar()   // refrescar estados v1/v2
+      await cargar(true)   // refrescar estados v1/v2 SIN borrar la verificación
     }
   }
 
@@ -1503,10 +1542,10 @@ function FxMigratePanel({ toast }) {
               className="text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
               Seleccionar 10 más chicas
             </button>
-            <button onClick={() => setSel(new Set(migrables.map(c => c.user_id)))}
+            <button onClick={() => setSel(new Set(migrables.filter(c => !sims[c.user_id]?.applied).slice(0, 50).map(c => c.user_id)))}
               disabled={!!running}
               className="text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
-              Seleccionar todas las migrables ({migrables.length})
+              Seleccionar próximas 50 (de {migrables.length})
             </button>
             <div className="flex-1" />
             <button onClick={() => correr(false)} disabled={!sel.size || !!running}
@@ -1563,17 +1602,25 @@ function FxMigratePanel({ toast }) {
                         {s?.ok ? fmt((s.delta?.deposits_usd || 0) - (s.delta?.withdrawals_usd || 0)) : '—'}
                       </td>
                       <td className="py-1.5 text-ink-3">
-                        {s && !s.ok ? (s.motivo || '').slice(0, 80)
+                        {s && !s.ok ? <span className="text-red-400">{(s.motivo || '').slice(0, 110)}</span>
                           : s?.ok && s.verificacion
-                            ? <>
-                                <span className={s.verificacion.cash_intacto ? 'text-emerald-500' : 'text-red-400'}>
-                                  ✓ {s.verificacion.ventas_al_tc_de_su_fecha} ventas al TC de su fecha
-                                  {' · '}cash {s.verificacion.cash_intacto ? 'intacto' : '⚠️ CAMBIÓ'}
-                                  {' · '}TCs en flujos {s.verificacion.tcs_distintos_en_flujos?.antes}→{s.verificacion.tcs_distintos_en_flujos?.despues}
+                            ? (() => {
+                                const v = s.verificacion
+                                const nivel = nivelVerif(s)
+                                const color = nivel === 'verde' ? 'text-emerald-500'
+                                  : nivel === 'ambar' ? 'text-amber-500' : 'text-red-400'
+                                const icono = nivel === 'verde' ? '✓' : nivel === 'ambar' ? '~' : '✗'
+                                return <span className={color}>
+                                  {icono} {v.ventas_al_tc_de_su_fecha} ventas al TC de su fecha
+                                  {' · '}cash {v.cash_intacto ? 'intacto' : '⚠️ CAMBIÓ'}
+                                  {' · '}TCs en flujos {v.tcs_distintos_en_flujos?.antes}→{v.tcs_distintos_en_flujos?.despues}
+                                  {(s.rebuild?.errores || []).length ? ` · ⚠️ ${s.rebuild.errores.length} activo(s) con error de rebuild` : ''}
+                                  {(v.ventas_con_tc_distinto || []).length ? ` · ${v.ventas_con_tc_distinto.length} venta(s) con TC distinto` : ''}
+                                  {v.en_pares_salteados ? ` · ${v.en_pares_salteados} venta(s) de pares manuales (TC viejo, esperado)` : ''}
+                                  {v.sin_serie_fx ? ` · ${v.sin_serie_fx} pre-serie FX (TC viejo)` : ''}
+                                  {(v.flujos_manuales_usd_no_migrables || 0) > 0 ? ` · US$ ${Math.round(v.flujos_manuales_usd_no_migrables).toLocaleString()} de flujos manuales no migrables` : ''}
                                 </span>
-                                {s.rebuild?.pares_salteados?.length
-                                  ? ` · ${s.rebuild.pares_salteados.length} par(es) manuales sin migrar` : ''}
-                              </>
+                              })()
                             : c.ventas_manuales > 0 ? `${c.ventas_manuales} venta(s) manual(es)` : ''}
                       </td>
                     </tr>

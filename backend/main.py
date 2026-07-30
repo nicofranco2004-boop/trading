@@ -12237,6 +12237,15 @@ def admin_fx_migrate_user(user_id: int, apply: bool = False,
     """
     from importing import fx_migrate as _fxm
 
+    _c0 = get_db()
+    try:
+        if not _c0.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone():
+            # Sin esto, un uid inexistente (typo, cuenta borrada entre Cargar y
+            # Aplicar) caía en "la cuenta ya está en v2" — activamente engañoso.
+            raise HTTPException(status_code=404, detail=f"el usuario {user_id} no existe")
+    finally:
+        _c0.close()
+
     def _correr(conn):
         return _fxm.migrate_user_fx(
             conn, user_id, helpers=None,
@@ -12287,6 +12296,14 @@ def admin_fx_migrate_user(user_id: int, apply: bool = False,
             return out
         conn.commit()
         out["applied"] = True
+        # El P&L y el aportado del usuario acaban de cambiar: sin esto, el chat de
+        # IA / Novedades / Diagnóstico le hablarían de los números viejos hasta 24h
+        # (el propio docstring de _ai_cache_invalidate lo llama "el riesgo de
+        # credibilidad más alto del sistema").
+        try:
+            _ai_cache_invalidate(user_id)
+        except Exception:
+            log.warning("fx-migrate: no se pudo invalidar el cache de IA de %s", user_id)
         log.info("fx-migrate APLICADO user_id=%s delta=%s", user_id, out.get("delta"))
         return out
     except HTTPException:
@@ -12336,19 +12353,22 @@ def admin_fx_migrate_candidates(uid: int = Depends(get_admin_user)):
         # Escala per-100: una sola pasada arrancando por los LINKS (una vez, no
         # por usuario) — operations se resuelve por PK y la tx por el índice de
         # batch. El predicado es el mismo del guard del migrador.
+        # Sobre las columnas FUENTE (inmutables): un rebuild posterior "limpia"
+        # operations.exit_price y borraría la firma, pero el cash sigue roto.
+        # Umbral 5×/0,2 (no 2%): la firma de escala real es per-100/per-1000;
+        # una comisión embebida del 1-3% NO debe bloquear la cuenta.
         escala = {r["u"]: r["n"] for r in conn.execute(
-            """SELECT o.user_id u, COUNT(*) n
-                 FROM import_op_links l
-                 JOIN operations o ON o.id = l.operation_id
-                 JOIN import_normalized_tx n2
-                      ON n2.batch_id = l.batch_id AND n2.raw_row_id = l.raw_row_id
-                WHERE o.op_type='Venta'
-                  AND o.exit_price IS NOT NULL AND o.quantity IS NOT NULL
-                  AND n2.gross_amount IS NOT NULL AND n2.gross_amount <> 0
+            """SELECT b.user_id u, COUNT(*) n
+                 FROM import_normalized_tx n2
+                 JOIN import_batches b ON b.id = n2.batch_id
+                WHERE b.status='confirmed'
+                  AND n2.operation_type IN ('BUY','SELL')
+                  AND n2.unit_price IS NOT NULL AND n2.unit_price <> 0
                   AND n2.quantity IS NOT NULL AND n2.quantity <> 0
-                  AND ABS((o.exit_price * o.quantity) /
-                          (n2.gross_amount * o.quantity / n2.quantity) - 1) > 0.02
-                GROUP BY o.user_id""")}
+                  AND n2.gross_amount IS NOT NULL AND n2.gross_amount <> 0
+                  AND ((n2.unit_price * n2.quantity) / n2.gross_amount > 5
+                       OR (n2.unit_price * n2.quantity) / n2.gross_amount < 0.2)
+                GROUP BY b.user_id""")}
 
         candidatos = []
         for au in universo:
