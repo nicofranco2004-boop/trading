@@ -12479,6 +12479,52 @@ def admin_fx_migrate_batch(body: FxMigrateBatchIn, uid: int = Depends(get_admin_
             pass
 
 
+@app.post("/api/admin/cleanup-future-snapshots")
+def admin_cleanup_future_snapshots(apply: bool = False,
+                                   uid: int = Depends(get_admin_user)):
+    """Borra los snapshots con fecha FUTURA de todas las cuentas.
+
+    `_backfill_snapshots_from_monthly` escribía un snapshot de "fin de mes" también
+    para el mes EN CURSO: queda fechado en el futuro (ej. 31/07 escrito el 29/07) y
+    con el capital al costo, porque el recalc previo pone pnl_unrealized=0. Como
+    `_latest_snapshots` elige por MAX(date), ese punto se convierte en el "último"
+    de la cuenta y define el AUM del asesor y la punta del gráfico de evolución
+    hasta que termine el mes.
+
+    Un snapshot fechado en el futuro es incorrecto por definición, así que borrarlo
+    no pierde información: el del cron diario (con valor de mercado real) y el de
+    fin de mes cuando el mes efectivamente cierre lo reemplazan.
+
+    apply=false (default) solo cuenta. Ya no se generan nuevos (persister.py), pero
+    esto limpia los que quedaron de corridas anteriores.
+    """
+    conn = get_db()
+    try:
+        hoy = datetime.utcnow().date().isoformat()
+        futuros = conn.execute(
+            "SELECT user_id, COUNT(*) n, MIN(date) d0, MAX(date) d1 FROM snapshots "
+            "WHERE date > ? GROUP BY user_id ORDER BY n DESC", (hoy,)).fetchall()
+        detalle = [{"user_id": f["user_id"], "snapshots": f["n"],
+                    "desde": f["d0"], "hasta": f["d1"]} for f in futuros]
+        total = sum(f["n"] for f in futuros)
+        if apply and total:
+            with conn:
+                conn.execute("DELETE FROM snapshots WHERE date > ?", (hoy,))
+            log.info("cleanup-future-snapshots: borrados %s de %s cuentas",
+                     total, len(futuros))
+        return {"ok": True, "hoy": hoy, "snapshots_futuros": total,
+                "cuentas": len(futuros), "detalle": detalle[:40],
+                "applied": bool(apply and total),
+                "nota": ("apply=false solo cuenta. Un snapshot con fecha futura es "
+                         "incorrecto por definición: lo reemplazan el del cron diario "
+                         "y el de fin de mes cuando el mes cierre.")}
+    except Exception as e:
+        log.exception("cleanup-future-snapshots FAILED")
+        raise HTTPException(status_code=500, detail=f"cleanup falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 
 
 @app.get("/api/admin/commissions-debug")

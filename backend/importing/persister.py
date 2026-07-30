@@ -1159,13 +1159,24 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
     cum_dep = 0.0
     cum_wd = 0.0
     import calendar
-    from datetime import date as _date
+    from datetime import date as _date, datetime as _dt
+    hoy = _dt.utcnow().date()
+    # Un snapshot de fin de mes para un mes que TODAVÍA NO TERMINÓ está fechado en
+    # el futuro y su valor es el capital al costo (el recalc pone pnl_unrealized=0),
+    # o sea SIN la ganancia no realizada. Y como `_latest_snapshots` elige por
+    # MAX(date), ese punto futuro y deflactado pasa a ser el "último" de la cuenta
+    # hasta fin de mes: define el AUM del asesor y la punta del gráfico de
+    # evolución. Se limpian los que ya se escribieron y no se escriben más.
+    conn.execute("DELETE FROM snapshots WHERE user_id=? AND date > ?",
+                 (uid, hoy.isoformat()))
     for r in rows:
         cum_dep += r["deposits"] or 0
         cum_wd += r["withdrawals"] or 0
         net_dep = cum_dep - cum_wd
         last_day = calendar.monthrange(r["year"], r["month"])[1]
         snap_date = _date(r["year"], r["month"], last_day).isoformat()
+        if snap_date > hoy.isoformat():
+            continue          # mes en curso: el snapshot diario del cron ya lo cubre
         cap_final = r["capital_final"] or 0
         # UPSERT (UNIQUE constraint en (user_id, date) lo permite)
         conn.execute(

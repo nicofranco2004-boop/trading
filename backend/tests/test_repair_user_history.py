@@ -207,3 +207,41 @@ class RepairUserHistoryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SnapshotFuturoTest(RepairUserHistoryTest):
+    """Un snapshot de "fin de mes" para el mes EN CURSO queda fechado en el futuro y
+    con el capital al costo (el recalc pone pnl_unrealized=0). Como _latest_snapshots
+    elige por MAX(date), ese punto define el AUM del asesor y la punta del gráfico
+    hasta fin de mes."""
+
+    def test_no_escribe_snapshot_del_mes_en_curso(self):
+        from datetime import datetime
+        hoy = datetime.utcnow().date()
+        self._monthly(hoy.year, hoy.month, 1000, 5000)      # mes ABIERTO
+        self.conn.commit()
+        with self.conn:
+            ps._backfill_snapshots_from_monthly(self.conn, self.uid)
+        futuros = self.conn.execute(
+            "SELECT COUNT(*) c FROM snapshots WHERE user_id=? AND date > ?",
+            (self.uid, hoy.isoformat())).fetchone()["c"]
+        self.assertEqual(futuros, 0)
+
+    def test_limpia_los_futuros_que_ya_estaban(self):
+        from datetime import datetime, timedelta
+        hoy = datetime.utcnow().date()
+        futuro = (hoy + timedelta(days=5)).isoformat()
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+            "VALUES (?,?,?,?,?)", (self.uid, futuro, 999.0, 0, 0))
+        self._monthly(2026, 5, 1000, 5000)                  # un mes YA cerrado
+        self.conn.commit()
+        with self.conn:
+            ps._backfill_snapshots_from_monthly(self.conn, self.uid)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM snapshots WHERE user_id=? AND date=?",
+            (self.uid, futuro)).fetchone())
+        # …y el mes cerrado sí se escribe.
+        self.assertIsNotNone(self.conn.execute(
+            "SELECT 1 FROM snapshots WHERE user_id=? AND date='2026-05-31'",
+            (self.uid,)).fetchone())
