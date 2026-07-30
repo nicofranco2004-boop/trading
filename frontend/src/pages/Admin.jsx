@@ -1514,6 +1514,10 @@ function FxMigratePanel({ toast }) {
         {' '}(corre sobre una copia, no toca nada) <b>→ revisar el antes/después → Aplicar</b>. El % por
         operación no cambia; el P&L en USD y el capital aportado sí. Las cuentas <b>bloqueadas por escala</b>
         {' '}(bug per-100) van por su reparación propia antes.
+        <br />
+        <b>Filas ARS</b> = todas las filas en pesos que se re-estampan (compras, ventas y depósitos). El
+        <b> Δ Aportado</b> solo lo mueven los depósitos/retiros importados: si una cuenta tiene muchas filas
+        pero Δ Aportado 0, su capital entró por carga manual (ver "flujos manuales no migrables" en Notas).
       </p>
 
       {progress && (
@@ -1566,7 +1570,7 @@ function FxMigratePanel({ toast }) {
                   <th className="py-1.5 pr-3">Usuario</th>
                   <th className="py-1.5 pr-3">Estado</th>
                   <th className="py-1.5 pr-3 text-right">Ventas</th>
-                  <th className="py-1.5 pr-3 text-right">Flujos ARS</th>
+                  <th className="py-1.5 pr-3 text-right">Filas ARS</th>
                   <th className="py-1.5 pr-3 text-right">Δ P&L ventas</th>
                   <th className="py-1.5 pr-3 text-right">Δ Aportado</th>
                   <th className="py-1.5">Notas</th>
