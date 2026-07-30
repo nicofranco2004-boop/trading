@@ -298,12 +298,26 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     # monthly_entries.manual_deposits/withdrawals, YA en USD y sin el monto ARS
     # original — NO SE PUEDEN re-derivar. Se declaran para que el operador sepa
     # que esa parte del aportado conserva el TC del momento de la carga.
+    despues = _metricas(conn, uid)
     _man = conn.execute(
         "SELECT ROUND(COALESCE(SUM(manual_deposits),0)+COALESCE(SUM(manual_withdrawals),0),2) t "
         "FROM monthly_entries WHERE user_id=? AND broker='global'", (uid,)).fetchone()
     flujos_manuales_usd = float(_man["t"] or 0) if _man else 0.0
+    # ── PLAUSIBILIDAD: la migración MULTIPLICA el P&L por el TC histórico ─────
+    # En una cuenta sana eso mueve centavos por venta. En una con el P&L ya
+    # corrupto (pesos guardados como dólares) lo multiplica por ~8: no la
+    # arregla, la empeora. Medido sobre 400 cuentas reales, la separación es
+    # tajante — sanas: US$ 0-378 por venta (incluso con 4.350 ventas); corruptas:
+    # US$ 2.888-347.527. Se pide magnitud absoluta Y por venta para no marcar a
+    # una cuenta chica con un delta grande legítimo.
+    _n_ventas = max(int(antes.get("ventas") or 0), 1)
+    _d_pnl = abs(float(despues["pnl_ventas_usd"] or 0) - float(antes["pnl_ventas_usd"] or 0))
+    _implausible = _d_pnl > 100_000 and (_d_pnl / _n_ventas) > 1_000
+
     resultado["verificacion"] = {
         "ventas_al_tc_de_su_fecha": f"{ok_tc}/{total_chk}",
+        "delta_pnl_implausible": _implausible,
+        "delta_pnl_por_venta": round(_d_pnl / _n_ventas, 2),
         "en_pares_salteados": en_pares_salteados,
         "sin_serie_fx": sin_serie_fx,
         "flujos_manuales_usd_no_migrables": round(flujos_manuales_usd, 2),
@@ -321,7 +335,6 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
                 "sin el monto original en pesos).",
     }
 
-    despues = _metricas(conn, uid)
     resultado["despues"] = despues
     # capital_final NO entra al delta: el recalc resetea el pnl_unrealized del
     # mes abierto (lo repone el sync del dashboard en la próxima visita), así que

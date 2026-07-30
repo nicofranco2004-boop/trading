@@ -1446,7 +1446,8 @@ function FxMigratePanel({ toast }) {
     const v = s.verificacion
     const [ok, tot] = String(v.ventas_al_tc_de_su_fecha || '0/0').split('/').map(Number)
     if (!v.cash_intacto || (v.ventas_con_tc_distinto || []).length > 0 ||
-        (s.rebuild?.errores || []).length > 0 || (tot > 0 && ok < tot)) return 'rojo'
+        (s.rebuild?.errores || []).length > 0 || (tot > 0 && ok < tot) ||
+        v.delta_pnl_implausible) return 'rojo'
     if (v.en_pares_salteados > 0 || v.sin_serie_fx > 0 ||
         (v.flujos_manuales_usd_no_migrables || 0) > 0) return 'ambar'
     return 'verde'
@@ -1716,6 +1717,7 @@ function FxMigratePanel({ toast }) {
                                   {icono} {v.ventas_al_tc_de_su_fecha} ventas al TC de su fecha
                                   {' · '}cash {v.cash_intacto ? 'intacto' : '⚠️ CAMBIÓ'}
                                   {' · '}TCs en flujos {v.tcs_distintos_en_flujos?.antes}→{v.tcs_distintos_en_flujos?.despues}
+                                  {v.delta_pnl_implausible ? ` · ⚠️ Δ P&L IMPLAUSIBLE (US$ ${Math.round(v.delta_pnl_por_venta).toLocaleString()}/venta) — el P&L ya estaba corrupto y migrar lo multiplica` : ''}
                                   {(s.rebuild?.errores || []).length ? ` · ⚠️ ${s.rebuild.errores.length} activo(s) con error de rebuild` : ''}
                                   {(v.ventas_con_tc_distinto || []).length ? ` · ${v.ventas_con_tc_distinto.length} venta(s) con TC distinto` : ''}
                                   {v.en_pares_salteados ? ` · ${v.en_pares_salteados} venta(s) de pares manuales (TC viejo, esperado)` : ''}
