@@ -1405,6 +1405,7 @@ function FxMigratePanel({ toast }) {
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(null)    // 'sim' | 'apply' | null
   const [progress, setProgress] = useState(null)
+  const [futuros, setFuturos] = useState(null)    // snapshots con fecha futura
 
   async function cargar(preserveSims = false) {
     setLoading(true)
@@ -1419,6 +1420,25 @@ function FxMigratePanel({ toast }) {
   }
 
   const migrables = (cands?.cuentas || []).filter(c => c.fx_version === 'v1' && !c.bloqueada_por_escala)
+
+  // Snapshots con fecha FUTURA: el backfill de fin de mes los escribía también
+  // para el mes en curso, con el capital SIN ganancia no realizada. Como el
+  // "último snapshot" se elige por fecha máxima, ese punto define el AUM del
+  // asesor y la punta del gráfico hasta fin de mes. Ya no se generan; esto
+  // limpia los que quedaron.
+  async function limpiarFuturos(apply) {
+    if (apply && !confirm(`¿Borrar ${futuros?.snapshots_futuros} snapshot(s) con fecha futura ` +
+                          `de ${futuros?.cuentas} cuenta(s)? Un snapshot fechado en el futuro es ` +
+                          `incorrecto por definición: lo reemplazan el diario del cron y el de ` +
+                          `fin de mes cuando el mes cierre.`)) return
+    setRunning('cleanup')
+    try {
+      const r = await api.post(`/admin/cleanup-future-snapshots?apply=${apply}`)
+      setFuturos(r)
+      if (apply) toast.push(`Limpiados ${r.snapshots_futuros} snapshots futuros`, { type: 'success' })
+    } catch (e) { toast.push('Error: ' + e.message, { type: 'error' }) }
+    finally { setRunning(null) }
+  }
 
   // Semáforo de la verificación: rojo si CUALQUIER señal falla, no solo el cash.
   function nivelVerif(s) {

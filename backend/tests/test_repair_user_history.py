@@ -245,3 +245,37 @@ class SnapshotFuturoTest(RepairUserHistoryTest):
         self.assertIsNotNone(self.conn.execute(
             "SELECT 1 FROM snapshots WHERE user_id=? AND date='2026-05-31'",
             (self.uid,)).fetchone())
+
+
+class CleanupFuturosEndpointTest(RepairUserHistoryTest):
+    """El endpoint que limpia los snapshots futuros que quedaron de corridas previas."""
+
+    def test_cuenta_y_borra_solo_los_futuros(self):
+        from datetime import datetime, timedelta
+        hoy = datetime.utcnow().date()
+        futuro = (hoy + timedelta(days=3)).isoformat()
+        pasado = (hoy - timedelta(days=3)).isoformat()
+        for d, v in ((futuro, 111.0), (pasado, 222.0), (hoy.isoformat(), 333.0)):
+            self.conn.execute(
+                "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+                "VALUES (?,?,?,?,?)", (self.uid, d, v, 0, 0))
+        self.conn.commit()
+
+        # apply=false solo cuenta
+        r = main.admin_cleanup_future_snapshots(apply=False, uid=self.uid)
+        self.assertEqual(r["snapshots_futuros"], 1)
+        self.assertFalse(r["applied"])
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (self.uid,)).fetchone()["c"], 3)
+
+        # apply=true borra SOLO el futuro
+        r2 = main.admin_cleanup_future_snapshots(apply=True, uid=self.uid)
+        self.assertTrue(r2["applied"])
+        quedan = [x["date"] for x in self.conn.execute(
+            "SELECT date FROM snapshots WHERE user_id=? ORDER BY date", (self.uid,))]
+        self.assertEqual(quedan, [pasado, hoy.isoformat()])   # el de HOY no se toca
+
+    def test_sin_futuros_es_no_op(self):
+        r = main.admin_cleanup_future_snapshots(apply=True, uid=self.uid)
+        self.assertEqual(r["snapshots_futuros"], 0)
+        self.assertFalse(r["applied"])
