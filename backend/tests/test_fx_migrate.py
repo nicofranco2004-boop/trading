@@ -318,3 +318,41 @@ class GuardEscalaTest(FxMigrateTest):
         self.assertEqual(out["ventas_con_escala_rota"], 1)
         # Y nada se movió: sigue v1, pnl viejo intacto.
         self.assertEqual(fxmod.fx_version(self.conn, self.uid), fxmod.FX_V1)
+
+
+class BatchDryRunTest(FxMigrateTest):
+    """Simular en lote: UNA copia de la base para N cuentas, cada una en su
+    savepoint. La base real no se toca y una cuenta que falla no arrastra al resto."""
+
+    def test_batch_simula_varias_sin_tocar_la_base(self):
+        self._importar_historia_v1()
+        u2 = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved) VALUES (?,?,1)",
+            ("batch2@test", "x")).lastrowid
+        self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
+                          (u2, "IOL", "ARS"))
+        fxmod.set_fx_version(self.conn, u2, fxmod.FX_V1)
+        self.conn.commit()
+        antes = self._estado()
+
+        r = main.admin_fx_migrate_batch(
+            main.FxMigrateBatchIn(user_ids=[self.uid, u2, 999999]), uid=self.uid)
+
+        self.assertEqual(r["total"], 3)
+        self.assertFalse(r["applied"])
+        # La cuenta con historia simula OK y muestra el efecto real…
+        r1 = r["resultados"][str(self.uid)]
+        self.assertTrue(r1["ok"], r1)
+        self.assertAlmostEqual(r1["despues"]["pnl_ventas_usd"],
+                               round(20000 / MEP_VTA, 2), places=1)
+        # …la inexistente no rompe el lote, se reporta y sigue.
+        self.assertIn(str(999999), r["resultados"])
+        # …y la base REAL quedó intacta: sigue v1 con los números viejos.
+        self.assertEqual(self._estado(), antes)
+        self.assertEqual(fxmod.fx_version(self.conn, self.uid), fxmod.FX_V1)
+
+    def test_batch_dedup_de_ids_repetidos(self):
+        self._importar_historia_v1()
+        r = main.admin_fx_migrate_batch(
+            main.FxMigrateBatchIn(user_ids=[self.uid, self.uid, self.uid]), uid=self.uid)
+        self.assertEqual(r["total"], 1)

@@ -1465,6 +1465,22 @@ function FxMigratePanel({ toast }) {
     setRunning(apply ? 'apply' : 'sim')
     setProgress({ done: 0, total: ids.length })
     const out = { ...sims }
+
+    // Simular = UNA sola copia de la base para todo el lote (el endpoint por
+    // cuenta copia la base entera cada vez: 579 cuentas = 579 copias).
+    if (!apply) {
+      try {
+        const r = await api.post('/admin/fx-migrate-batch', { user_ids: ids })
+        for (const [k, v] of Object.entries(r.resultados || {})) out[k] = v
+        setSims({ ...out })
+        setProgress({ done: ids.length, total: ids.length })
+      } catch (e) {
+        toast.push('Error al simular el lote: ' + e.message, { type: 'error' })
+      }
+      setRunning(null); setProgress(null)
+      return
+    }
+
     for (let i = 0; i < ids.length; i++) {
       try {
         out[ids[i]] = await api.post(`/admin/fx-migrate-user?user_id=${ids[i]}&apply=${apply}`)
@@ -1549,8 +1565,26 @@ function FxMigratePanel({ toast }) {
             <button onClick={() => setSel(new Set(migrables.filter(c => !sims[c.user_id]?.applied).slice(0, 50).map(c => c.user_id)))}
               disabled={!!running}
               className="text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
-              Seleccionar próximas 50 (de {migrables.length})
+              Próximas 50
             </button>
+            <button onClick={() => setSel(new Set(migrables.filter(c => !sims[c.user_id]?.applied).map(c => c.user_id)))}
+              disabled={!!running}
+              className="text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
+              Seleccionar todas ({migrables.filter(c => !sims[c.user_id]?.applied).length})
+            </button>
+            {(() => {
+              // Destildar lo que la simulación marcó mal: rojas (verificación
+              // fallida) + las que ni pudieron simular (bloqueadas, errores).
+              const malas = [...sel].filter(id =>
+                sims[id] && (!sims[id].ok || nivelVerif(sims[id]) === 'rojo'))
+              return malas.length > 0 && (
+                <button onClick={() => setSel(new Set([...sel].filter(id => !malas.includes(id))))}
+                  disabled={!!running}
+                  className="text-xs px-2.5 py-1.5 rounded-md bg-red-500/15 border border-red-500/30 text-red-400 hover:text-red-300 disabled:opacity-50">
+                  Destildar las {malas.length} con problema
+                </button>
+              )
+            })()}
             <div className="flex-1" />
             <button onClick={() => correr(false)} disabled={!sel.size || !!running}
               className="text-xs px-3 py-1.5 rounded-md bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
@@ -1577,7 +1611,7 @@ function FxMigratePanel({ toast }) {
                 </tr>
               </thead>
               <tbody>
-                {(cands.cuentas || []).slice(0, 200).map(c => {
+                {(cands.cuentas || []).map(c => {
                   const s = sims[c.user_id]
                   const bloq = c.bloqueada_por_escala
                   const v2 = c.fx_version === 'v2'
@@ -1632,9 +1666,7 @@ function FxMigratePanel({ toast }) {
                 })}
               </tbody>
             </table>
-            {(cands.cuentas || []).length > 200 && (
-              <p className="text-xs text-ink-3 mt-1">Mostrando 200 de {cands.cuentas.length}. Migrá estas y recargá.</p>
-            )}
+            <p className="text-xs text-ink-3 mt-1">{(cands.cuentas || []).length} cuentas.</p>
           </div>
         </>
       )}

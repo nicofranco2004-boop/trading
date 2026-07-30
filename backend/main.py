@@ -12405,6 +12405,80 @@ def admin_fx_migrate_candidates(uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+class FxMigrateBatchIn(BaseModel):
+    user_ids: List[int] = Field(..., min_length=1, max_length=1000)
+
+
+@app.post("/api/admin/fx-migrate-batch")
+def admin_fx_migrate_batch(body: FxMigrateBatchIn, uid: int = Depends(get_admin_user)):
+    """Simula (dry-run) la migración de MUCHAS cuentas con UNA sola copia de la base.
+
+    El dry-run por cuenta copia la base entera cada vez: para 579 cuentas serían 579
+    copias. Acá se copia UNA vez y se corren todas las simulaciones sobre esa copia,
+    que después se descarta. Cada cuenta va en su propio SAVEPOINT: si una falla,
+    se revierte solo esa y las demás siguen.
+
+    Corre el MISMO `migrate_user_fx` que el apply — lo que muestra es lo que pasa.
+
+    SOLO DRY-RUN a propósito: el apply sigue siendo de a una cuenta
+    (/api/admin/fx-migrate-user?apply=true), cada una en su transacción sobre la base
+    real, para que una falla no arrastre al resto y se pueda frenar a mitad.
+    """
+    from importing import fx_migrate as _fxm
+    import shutil, tempfile
+
+    ids = list(dict.fromkeys(body.user_ids))     # dedup preservando el orden
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    try:
+        src_conn = get_db()
+        try:
+            dst = sqlite3.connect(tmp.name)
+            src_conn.backup(dst)                  # copia consistente aun con writers
+            dst.close()
+        finally:
+            src_conn.close()
+
+        conn = sqlite3.connect(tmp.name)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")    # igual que get_db: cero divergencia
+        resultados = {}
+        try:
+            for n, au in enumerate(ids):
+                conn.execute(f"SAVEPOINT s{n}")
+                try:
+                    r = _fxm.migrate_user_fx(
+                        conn, au, helpers=None,
+                        recalc=_recalc_pnl_realized_from_ops,
+                        backfill_snapshots=_import_persister._backfill_snapshots_from_monthly,
+                        recompute_netdep=_recompute_snapshots_netdep_for_user)
+                    r["applied"] = False
+                    resultados[str(au)] = r
+                    if r.get("ok"):
+                        conn.execute(f"RELEASE s{n}")
+                    else:
+                        conn.execute(f"ROLLBACK TO s{n}")
+                except Exception as e:
+                    conn.execute(f"ROLLBACK TO s{n}")
+                    log.exception("fx-migrate-batch: cuenta %s falló", au)
+                    resultados[str(au)] = {"ok": False, "user_id": au, "applied": False,
+                                           "motivo": f"{type(e).__name__}: {e}"}
+        finally:
+            conn.close()
+        return {"total": len(ids), "resultados": resultados, "applied": False,
+                "nota": "dry-run sobre UNA copia compartida; la base real no se tocó."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("fx-migrate-batch FAILED")
+        raise HTTPException(status_code=500, detail=f"fx-migrate-batch falló: {type(e).__name__}: {e}")
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
 
 
 @app.get("/api/admin/commissions-debug")
