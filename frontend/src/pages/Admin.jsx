@@ -1489,14 +1489,25 @@ function FxMigratePanel({ toast }) {
     // Simular = UNA sola copia de la base para todo el lote (el endpoint por
     // cuenta copia la base entera cada vez: 579 cuentas = 579 copias).
     if (!apply) {
-      try {
-        const r = await api.post('/admin/fx-migrate-batch', { user_ids: ids })
-        for (const [k, v] of Object.entries(r.resultados || {})) out[k] = v
+      // En TANDAS: el batch copia la base una vez por request, así que mandar 497
+      // cuentas en un solo pedido se pasa del timeout del proxy (~30s) y se pierde
+      // todo. De a 25 cada request queda corto, y si una tanda falla se reporta
+      // sola sin arrastrar a las demás.
+      const CHUNK = 25
+      let fallidas = 0
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const tanda = ids.slice(i, i + CHUNK)
+        try {
+          const r = await api.post('/admin/fx-migrate-batch', { user_ids: tanda })
+          for (const [k, v] of Object.entries(r.resultados || {})) out[k] = v
+        } catch (e) {
+          fallidas += tanda.length
+          for (const id of tanda) out[id] = { ok: false, motivo: 'no se pudo simular: ' + e.message }
+        }
         setSims({ ...out })
-        setProgress({ done: ids.length, total: ids.length })
-      } catch (e) {
-        toast.push('Error al simular el lote: ' + e.message, { type: 'error' })
+        setProgress({ done: Math.min(i + CHUNK, ids.length), total: ids.length })
       }
+      if (fallidas) toast.push(`${fallidas} cuenta(s) no se pudieron simular — reintentá esas`, { type: 'error' })
       setRunning(null); setProgress(null)
       return
     }
