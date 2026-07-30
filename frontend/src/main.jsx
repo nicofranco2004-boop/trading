@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { HelmetProvider } from 'react-helmet-async'
 import App from './App'
+import ErrorBoundary from './components/ErrorBoundary'
 import { ToastProvider } from './components/Toast'
 import { initAnalytics } from './utils/analytics'
 import { initMetaPixel } from './utils/metaPixel'
@@ -85,11 +86,13 @@ window.addEventListener('unhandledrejection', (event) => {
 })
 
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <HelmetProvider>
-    <BrowserRouter>
-      <ToastProvider>
-        <App />
-      </ToastProvider>
-    </BrowserRouter>
-  </HelmetProvider>
+  <ErrorBoundary>
+    <HelmetProvider>
+      <BrowserRouter>
+        <ToastProvider>
+          <App />
+        </ToastProvider>
+      </BrowserRouter>
+    </HelmetProvider>
+  </ErrorBoundary>
 )
