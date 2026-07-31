@@ -288,6 +288,12 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 "_broker": ev["broker"],
                 "_asset": ev["asset_symbol"],
                 "_asset_type": ev.get("asset_type"),
+                # TC de compra del evento. ANTES el rebuild lo perdía (el INSERT
+                # de _write_rebuilt lo clavaba en None) → toda cuenta importada
+                # con al menos una venta se quedaba SIN tc_compra, y el modo
+                # "Costo en dólares → dólar de la compra" no hacía nada (caía en
+                # silencio al dólar de hoy). Bug reportado por un usuario.
+                "tc_compra": ev.get("tc_compra"),
             })
             continue
 
@@ -529,7 +535,8 @@ def _full_events(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[st
     rows = conn.execute(
         f"""SELECT n.id, n.batch_id, n.raw_row_id, n.date, n.broker, n.asset_symbol,
                   n.asset_name, n.operation_type, n.quantity, n.unit_price, n.gross_amount,
-                  n.fees, n.currency, n.asset_type, n.transfer_out, n.created_position_id
+                  n.fees, n.currency, n.asset_type, n.transfer_out, n.created_position_id,
+                  n.tc_compra
              FROM import_normalized_tx n
              JOIN import_batches b ON b.id = n.batch_id
             WHERE b.user_id = ?
@@ -642,6 +649,37 @@ def _write_buy_tombstones(conn, consumed_keys: set,
         )
 
 
+def _lot_tc_compra(conn, lot: Dict[str, Any]):
+    """TC de compra que se persiste al reconstruir el lote.
+
+    Preferimos el que trae el evento (`import_normalized_tx.tc_compra`, que el
+    parser estampó). Si el lote es en PESOS y no lo trae, lo completamos con la
+    cotización HISTÓRICA de la fecha de entrada — mismo criterio que el alta
+    manual (main.py) y que la migración FX. Nunca inventamos TC para un lote en
+    dólares (ahí el costo ya está en USD y `costBasisRate` no lo usa).
+    """
+    tc = lot.get("tc_compra")
+    try:
+        if tc is not None and float(tc) > 0:
+            return float(tc)
+    except (TypeError, ValueError):
+        pass
+    if (lot.get("currency") or "").upper() != "ARS":
+        return None
+    entry = lot.get("entry_date")
+    if not entry:
+        return None
+    try:
+        try:
+            from fx import fx_for_date
+        except ImportError:  # pragma: no cover
+            from ..fx import fx_for_date
+        rate = fx_for_date(conn, entry)
+        return float(rate) if rate and float(rate) > 0 else None
+    except Exception:
+        return None
+
+
 def _write_rebuilt(conn, uid: int, replay: Dict[str, List[Dict[str, Any]]]) -> None:
     """Inserta los lotes abiertos + ventas reconstruidos y re-vincula para revert."""
     for lot in replay["open_lots"]:
@@ -659,7 +697,7 @@ def _write_rebuilt(conn, uid: int, replay: Dict[str, List[Dict[str, Any]]]) -> N
                    commissions, currency, asset_type)
                VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?)""",
             (uid, lot["_broker"], lot["_asset"], lot["buy_price"], lot["qty"],
-             lot["invested"], None, None, None, lot["entry_date"],
+             lot["invested"], _lot_tc_compra(conn, lot), None, None, lot["entry_date"],
              lot["commissions"], lot["currency"], at),
         )
         position_id = cur.lastrowid

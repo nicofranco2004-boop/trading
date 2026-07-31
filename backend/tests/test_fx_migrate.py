@@ -219,7 +219,18 @@ class FxMigrateTest(unittest.TestCase):
         antes = self.conn.execute(
             "SELECT tc_compra FROM positions WHERE user_id=? AND asset='GGAL' AND is_cash=0",
             (self.uid,)).fetchone()
-        self.assertIsNone(antes["tc_compra"])          # el parser genérico no lo trae
+        # Desde el fix del rebuild (2026-07-30) el IMPORT ya deja puesto el TC
+        # histórico de la fecha de compra, aunque el parser no lo traiga: antes
+        # `_write_rebuilt` lo clavaba en None y la vista "dólar de la compra"
+        # quedaba muerta para toda cuenta importada. Eso es lo que se afirma acá.
+        self.assertIsNotNone(antes["tc_compra"],
+                             "el import debe completar el tc_compra con el TC de la fecha")
+        # …y ahora simulamos el estado LEGACY (los lotes que YA están en la base,
+        # importados antes de ese fix) — que es justo lo que esta migración repara.
+        self.conn.execute(
+            "UPDATE positions SET tc_compra=NULL WHERE user_id=? AND asset='GGAL'",
+            (self.uid,))
+        self.conn.commit()
 
         with self.conn:
             out = fxm.migrate_user_fx(self.conn, self.uid, helpers=None,
@@ -227,7 +238,10 @@ class FxMigrateTest(unittest.TestCase):
                                       backfill_snapshots=ps._backfill_snapshots_from_monthly,
                                       recompute_netdep=main._recompute_snapshots_netdep_for_user)
         self.assertTrue(out["ok"], out)
-        self.assertGreaterEqual(out["tc_compra_completados"], 1)
+        # El contador puede dar 0: el rebuild que corre DENTRO de la migración ya
+        # completa el TC (fix del 2026-07-30), así que al paso posterior no le
+        # queda nada. Lo que se garantiza es el ESTADO FINAL (assert de abajo).
+        self.assertIn("tc_compra_completados", out)
         lote = self.conn.execute(
             "SELECT tc_compra FROM positions WHERE user_id=? AND asset='GGAL' AND is_cash=0",
             (self.uid,)).fetchone()

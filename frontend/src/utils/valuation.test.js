@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit } from './valuation.js'
 import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
@@ -896,5 +896,63 @@ describe('computeBrokerValue — agregado DCA multi-lote: invertido USD purchase
     const r2 = computeBrokerValue([lotB, lotA], prices, arsBroker(), TCB, TCB, null, 'purchase')
     expect(r1.invested).toBeCloseTo(expected)
     expect(r2.invested).toBeCloseTo(expected)
+  })
+})
+
+// ─── avgCostUsdPerUnit — el "Precio prom." en dólares ────────────────────────
+// Bug real (2026-07-30): la celda dividía el costo en pesos por el dólar de HOY,
+// ignorando el tc_compra del lote y el toggle "Costo en dólares". El usuario
+// cargó TC 1448,6 y veía 14,23 (dólar de hoy 1523,07) en vez de 14,96.
+describe('avgCostUsdPerUnit', () => {
+  const HOY = 1523.07
+  const meli = { asset: 'MELI', quantity: 10, invested: 216732.82, commissions: 1432.83, tc_compra: 1448.6, currency: 'ARS' }
+
+  it('caso del usuario: purchase usa SU tc_compra, today usa el dólar de hoy', () => {
+    expect(avgCostUsdPerUnit(meli, HOY, 'purchase', true)).toBeCloseTo(14.96, 2)
+    expect(avgCostUsdPerUnit(meli, HOY, 'today', true)).toBeCloseTo(14.23, 2)
+  })
+
+  it("modo 'today' es byte-idéntico al cálculo viejo (invested/qty/rate)", () => {
+    const viejo = meli.invested / meli.quantity / HOY
+    expect(avgCostUsdPerUnit(meli, HOY, 'today', true)).toBe(viejo)
+    // …y sin tc_compra, 'purchase' cae al dólar de hoy igual que antes.
+    const sinTc = { ...meli, tc_compra: null }
+    expect(avgCostUsdPerUnit(sinTc, HOY, 'purchase', true)).toBe(viejo)
+  })
+
+  it('multi-lote: promedio ponderado e independiente del orden', () => {
+    const a = { asset: 'MELI', quantity: 10, invested: 120000, tc_compra: 1200, currency: 'ARS' }
+    const b = { asset: 'MELI', quantity: 5, invested: 75000, tc_compra: 1500, currency: 'ARS' }
+    const agg = (lots) => ({ asset: 'MELI', quantity: 15, invested: 195000, tc_compra: lots[0].tc_compra, currency: 'ARS', _lots: lots })
+    // (120000/1200 + 75000/1500) / 15 = (100 + 50) / 15 = 10
+    const esperado = 10
+    expect(avgCostUsdPerUnit(agg([a, b]), HOY, 'purchase', true)).toBeCloseTo(esperado, 6)
+    expect(avgCostUsdPerUnit(agg([b, a]), HOY, 'purchase', true)).toBeCloseTo(esperado, 6)
+    // El tc_compra del agregado (el del PRIMER lote) daría 195000/1200/15 = 10.83
+    // o 195000/1500/15 = 8.67 según el orden — justamente lo que NO debe pasar.
+    expect(avgCostUsdPerUnit(agg([a, b]), HOY, 'purchase', true))
+      .toBeCloseTo(avgCostUsdPerUnit(agg([b, a]), HOY, 'purchase', true), 10)
+  })
+
+  it('lote de costo EN DÓLARES dentro de un broker ARS no se divide', () => {
+    // CEDEAR comprado a dólar-MEP: invested ya está en USD (currency USD).
+    const usdLot = { asset: 'AAPL', quantity: 10, invested: 140, currency: 'USD', asset_type: 'CEDEAR' }
+    expect(avgCostUsdPerUnit(usdLot, HOY, 'today', true)).toBeCloseTo(14, 6)
+    // Antes daba 140/10/1523 = 0,0092 (colapsado ~1500×).
+    expect(avgCostUsdPerUnit(usdLot, HOY, 'today', true)).toBeGreaterThan(1)
+  })
+
+  it('cash, sin cantidad o sin costo → null', () => {
+    expect(avgCostUsdPerUnit({ is_cash: true, quantity: 0, invested: 100 }, HOY, 'today', true)).toBe(null)
+    expect(avgCostUsdPerUnit({ quantity: 0, invested: 100 }, HOY, 'today', true)).toBe(null)
+    expect(avgCostUsdPerUnit({ quantity: 10, invested: 0 }, HOY, 'today', true)).toBe(null)
+  })
+
+  it('INVARIANTE: promedio × cantidad === costo ruteado (sin comisiones)', () => {
+    for (const modo of ['today', 'purchase']) {
+      const prom = avgCostUsdPerUnit(meli, HOY, modo, true)
+      const rate = modo === 'purchase' ? meli.tc_compra : HOY
+      expect(prom * meli.quantity).toBeCloseTo(meli.invested / rate, 6)
+    }
   })
 })

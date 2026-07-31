@@ -24,7 +24,7 @@ import { nextPaymentForPosition } from '../utils/bondSchedule'
 import BondDetailRow from '../components/BondDetail'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -971,6 +971,13 @@ function PositionsDesktop() {
     return ((p.invested || 0) + (p.commissions || 0)) / costBasisRate(p, rate, costBasis)
   }
 
+  // Precio promedio por unidad en USD, ruteado por el modo (columna "Precio
+  // prom." en vista dólares). La lógica vive en valuation.js para poder testearla
+  // pura; acá solo inyectamos el modo activo. Ver avgCostUsdPerUnit.
+  function routedAvgPriceUsd(p, rate, isArsBroker) {
+    return avgCostUsdPerUnit(p, rate, costBasis, isArsBroker)
+  }
+
   function calcUSDT(p) {
     if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null, investedUsd: p.invested }
     // Lote en PESOS (currency='ARS') en una cuenta USD → estilo-ARS por el MEP
@@ -1699,6 +1706,9 @@ function PositionsDesktop() {
                             ? adjPnlUsd / c.invUsd
                             : (c.invUsd > 0 && c.pnlUsd != null ? c.pnlUsd / c.invUsd : null))
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
+                      // En vista USD el promedio se rutea por el modo (ver
+                      // routedAvgPriceUsd); en 'today' da lo mismo que antes.
+                      const avgPriceUsdDisp = routedAvgPriceUsd(p, tcBlue, true)
                       const dvArs = dvFor(p, true)
                       const expanded = isBond && !isLot && expandedBonds.has(bondKey)
                       // colSpan del detalle de bono = total de columnas de la fila.
@@ -1788,7 +1798,9 @@ function PositionsDesktop() {
                             )}
                           </td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
-                          <td className={`${tdClass} text-ink-2 tabular`}>{avgPriceArs != null ? (isArsDisp ? `ARS ${ars(avgPriceArs)}` : `USD ${usd(avgPriceArs / tcBlue)}`) : '—'}</td>
+                          <td className={`${tdClass} text-ink-2 tabular`}>{isArsDisp
+                            ? (avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—')
+                            : (avgPriceUsdDisp != null ? `USD ${usd(avgPriceUsdDisp)}` : '—')}</td>
                           <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{isArsDisp ? `ARS ${ars(c.priceArs)}` : `USD ${usd(c.priceArs / tcBlue)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                           {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs(p.invested) : (c.invUsd != null ? fmtUsd(c.invUsd) : '—'))}</td>}
                           {showDetail && isArsDisp && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
@@ -1925,8 +1937,18 @@ function PositionsDesktop() {
                     const adjPnlPct = (isBond && adjPnl != null && adjPnlCost > 0)
                       ? adjPnl / adjPnlCost
                       : c.pnlPct
+                    // Lote(s) cuyo COSTO está en pesos alojados en una cuenta USD
+                    // (acción AR/bono comprado en pesos, CEDEAR sin sibling): ahí
+                    // `p.buy_price`/`p.invested` están en PESOS y mostrarlos como
+                    // dólares infla ~1500×. Esos van por el ruteo (que además
+                    // respeta el tc_compra del lote); el resto conserva EXACTO el
+                    // comportamiento previo (buy_price primero).
+                    const _lotsUsd = (p._lots && p._lots.length) ? p._lots : [p]
+                    const _anyCostInPesos = _lotsUsd.some(l => costInPesos(l))
                     const avgPrice = (!p.is_cash && p.quantity > 0)
-                      ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
+                      ? (_anyCostInPesos
+                        ? routedAvgPriceUsd(p, tcCedear, false)
+                        : (p.buy_price ?? (p.invested ? p.invested / p.quantity : null)))
                       : null
                     const dvUsd = dvFor(p, false)
                     const expanded = isBond && !isLot && expandedBonds.has(bondKey)

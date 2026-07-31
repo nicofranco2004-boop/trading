@@ -648,3 +648,43 @@ export function computePf(pf, asOf) {
     devengadoHoy, valorHoy, tnaEquiv, teaEquiv,
   }
 }
+
+/**
+ * avgCostUsdPerUnit — costo promedio POR UNIDAD en USD, ruteado por el modo
+ * "Costo en dólares" ('today' | 'purchase').
+ *
+ * Es la columna "Precio prom." de Cartera cuando la vista está en dólares.
+ * ANTES esa celda hacía `invested / quantity / dólarDeHoy`: ignoraba el
+ * `tc_compra` del lote Y el toggle (devolvía el mismo número en los dos modos).
+ * Reporte real de un usuario: cargó su compra con TC 1448,6 y veía USD 14,23
+ * (= costo ÷ dólar de hoy 1523) en vez de 14,96.
+ *
+ * Reglas:
+ *  · Multi-lote (`p._lots`): suma POR LOTE, cada uno a SU tc_compra, y divide por
+ *    la cantidad total → promedio ponderado e INDEPENDIENTE del orden. Nunca usar
+ *    el `tc_compra` del agregado: es el del PRIMER lote.
+ *  · Un lote cuyo costo YA está en dólares no se divide (CEDEAR comprado a MEP o
+ *    bono/FCI USD dentro de un broker ARS) — dividirlo lo colapsaba ~1500×.
+ *  · SIN comisiones, igual que la columna en pesos, para que ambas vistas midan
+ *    lo mismo. En modo 'today' el resultado es idéntico al cálculo previo.
+ *
+ * @param p            posición o agregado (con `_lots` si es multi-lote)
+ * @param rate         dólar de hoy del riel que corresponda (MEP/blue)
+ * @param costBasis    'today' | 'purchase'
+ * @param isArsBroker  ¿la posición vive en un broker en pesos?
+ * @returns number|null — null si es cash, no hay cantidad o no hay costo.
+ */
+export function avgCostUsdPerUnit(p, rate, costBasis = 'today', isArsBroker = false) {
+  const qty = p?.quantity || 0
+  if (!p || p.is_cash || qty <= 0) return null
+  const lots = (p._lots && p._lots.length) ? p._lots : [p]
+  let cost = 0
+  for (const l of lots) {
+    const inv = l?.invested || 0
+    if (!inv) continue
+    // Mismo criterio de "el costo está en pesos" que lotMissingPurchaseRate.
+    const costIsPesos = isArsBroker ? !costInUsd(l) : costInPesos(l)
+    cost += costIsPesos ? inv / costBasisRate(l, rate, costBasis) : inv
+  }
+  return cost > 0 ? cost / qty : null
+}

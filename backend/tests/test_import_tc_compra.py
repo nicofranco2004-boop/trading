@@ -114,6 +114,30 @@ class ImportTcCompraE2E(unittest.TestCase):
         self._import(csv)
         self.assertIsNone(self._tc("AAPL"))
 
+    def test_tc_survives_rebuild_con_venta_parcial(self):
+        """El caso que los tests de arriba NO ejercitaban.
+
+        Con un CSV solo-compra el rebuild sale por `skipped_no_sell` y ni toca
+        los lotes: el "survives rebuild" pasaba en verde sin probar nada. Apenas
+        hay UNA venta, el activo entra al replay y `_write_rebuilt` reinsertaba
+        los lotes con tc_compra HARDCODEADO en None → toda cuenta importada con
+        ventas se quedaba sin TC y el modo "dólar de la compra" no hacía nada.
+        """
+        csv = (HEADER +
+               "5/3/2025,COMPRA NORMAL,BMB,TSLA,10,1000,10000,8.0,1250,0,ARS,\n"
+               "6/3/2025,VENTA NORMAL,BMB,TSLA,4,1200,4800,3.8,1263,0,ARS,\n"
+               ).encode("utf-8")
+        self._import(csv)
+        # queda 1 lote abierto de 6 nominales, reconstruido por el replay
+        row = self.conn.execute(
+            "SELECT quantity, tc_compra FROM positions "
+            "WHERE user_id=? AND asset='TSLA' AND is_cash=0", (self.uid,)).fetchone()
+        self.assertIsNotNone(row, "debería quedar el remanente abierto")
+        self.assertAlmostEqual(row["quantity"], 6, places=6)
+        self.assertIsNotNone(row["tc_compra"],
+                             "el rebuild borraba el tc_compra del lote sobreviviente")
+        self.assertAlmostEqual(row["tc_compra"], 1250, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()
