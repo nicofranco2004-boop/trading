@@ -1663,6 +1663,18 @@ function FxMigratePanel({ toast }) {
                     {aportado.factor != null ? ` (×${aportado.factor})` : ''}
                     {aportado.filas_sin_tc_en_serie ? ` · ${aportado.filas_sin_tc_en_serie} fila(s) sin TC en la serie` : ''}
                   </div>
+                  {/* El seed del "Estado inicial" no se re-estampa: su monto está en
+                      pesos de HOY y su fecha es `earliest − 1 día`. Se muestra aparte
+                      para que se entienda por qué no figura en el desglose. */}
+                  {(aportado.sinteticas?.filas || 0) > 0 && (
+                    <div className="text-[11px] text-emerald-500/90">
+                      + {aportado.sinteticas.filas} fila(s) del "Estado inicial"
+                      ({Math.round(aportado.sinteticas.ars).toLocaleString()} pesos, desde{' '}
+                      {(aportado.sinteticas.desde || '').slice(0, 10)}) — quedan al dólar de HOY,
+                      no se re-estampan: el usuario tipeó ese monto en pesos de hoy y el wizard
+                      lo fechó un día antes del primer movimiento.
+                    </div>
+                  )}
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs tabular">
                       <thead className="text-ink-3">

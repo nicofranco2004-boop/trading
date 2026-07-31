@@ -274,13 +274,44 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     # ── PATA 1: re-estampar los flujos con el TC de la fecha de cada uno ──────
     # Se re-estampa TODA fila ARS con gross_amount (no solo DEPOSIT/WITHDRAW):
     # gross_amount_usd lo leen también el recalc de monthly y /api/movements.
+    #
+    # ⛔ MENOS LAS SINTÉTICAS DEL "ESTADO INICIAL". El wizard, cuando el archivo
+    # deja el cash en negativo (un export de ÓRDENES no trae ningún depósito, así
+    # que TODAS las compras sobregiran), le pregunta al usuario "¿cuánto efectivo
+    # tenés HOY?" y emite un depósito sintético por la diferencia — pero lo fecha
+    # UN DÍA ANTES del primer movimiento del archivo (seed.py `_minus_one_day`).
+    # O sea: monto en pesos de HOY, fecha la más VIEJA de la cuenta. Con el dólar
+    # de hoy eso era consistente y daba un número correcto; con el TC histórico se
+    # divide por el dólar de 2019 y se multiplica ×33.
+    #
+    # Medido en prod, cuenta #324: una sola fila de 130.667.268 pesos fechada
+    # 2019-07-21 —un DOMINGO, la firma de "earliest − 1 día"— daba US$ 3.090.522
+    # migrados, el 92% del aportado de la cuenta. Los otros 217 depósitos del
+    # mismo archivo van de 800 mil a 15 millones de pesos.
+    #
+    # Estas filas se reconocen porque el INSERT del seed (persister.py) OMITE la
+    # columna `fingerprint`, mientras que toda fila parseada la lleva
+    # (pipeline.py). Se agrega el match por `notes` como red: excluir de más es
+    # el lado seguro — la fila se queda con el dólar de hoy, que es exactamente
+    # la moneda en la que el usuario tipeó el monto.
     filas = conn.execute(
         """SELECT n.id, n.date, n.gross_amount
              FROM import_normalized_tx n
              JOIN import_batches b ON b.id = n.batch_id
             WHERE b.user_id=? AND b.status='confirmed'
               AND UPPER(COALESCE(n.currency,''))='ARS'
-              AND n.gross_amount IS NOT NULL""", (uid,)).fetchall()
+              AND n.gross_amount IS NOT NULL
+              AND n.fingerprint IS NOT NULL
+              AND COALESCE(n.notes,'') NOT LIKE 'Estado inicial%'""", (uid,)).fetchall()
+    sinteticas = conn.execute(
+        """SELECT COUNT(*) n, ROUND(COALESCE(SUM(n2.gross_amount_usd),0),2) usd
+             FROM import_normalized_tx n2
+             JOIN import_batches b ON b.id = n2.batch_id
+            WHERE b.user_id=? AND b.status='confirmed'
+              AND UPPER(COALESCE(n2.currency,''))='ARS'
+              AND n2.gross_amount IS NOT NULL
+              AND (n2.fingerprint IS NULL
+                   OR COALESCE(n2.notes,'') LIKE 'Estado inicial%')""", (uid,)).fetchone()
     cache: Dict[str, Optional[float]] = {}
     sin_tc = 0
     restamped = 0
@@ -297,7 +328,11 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
             (float(f["gross_amount"]) / tc, f["id"]))
         restamped += 1
     resultado["flujos"] = {"ars_totales": len(filas), "re_estampados": restamped,
-                           "sin_tc_en_serie": sin_tc}
+                           "sin_tc_en_serie": sin_tc,
+                           # Las del "Estado inicial" quedan al dólar de hoy A
+                           # PROPÓSITO: su monto lo tipeó el usuario en pesos de hoy.
+                           "sinteticas_no_re_estampadas": sinteticas["n"] if sinteticas else 0,
+                           "sinteticas_usd": sinteticas["usd"] if sinteticas else 0}
 
     # ── Capturar overrides que el rebuild pisa ────────────────────────────────
     # Se capturan TODAS las filas de los grupos que tienen ALGÚN override —

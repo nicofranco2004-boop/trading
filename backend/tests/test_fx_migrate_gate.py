@@ -212,6 +212,50 @@ class AdvertenciaNoFrenaTest(unittest.TestCase):
         self.assertIn("_fechas_mal", src[i:i + 1200])
 
 
+class SeedSinteticoNoSeReEstampaTest(unittest.TestCase):
+    """El depósito del "Estado inicial" NO se re-estampa: su monto está en pesos
+    de HOY (el usuario lo tipeó en el wizard) y su fecha es la más VIEJA de la
+    cuenta (`earliest − 1 día`). Aplicarle el TC de esa fecha lo multiplica ×33.
+
+    Caso real, cuenta #324: 130.667.268 pesos fechados 2019-07-21 (un DOMINGO —
+    la firma de "earliest − 1 día", ningún broker bookea en domingo) daban
+    US$ 3.090.522, el 92% del aportado de la cuenta.
+    """
+
+    def test_la_query_excluye_las_sinteticas(self):
+        src = inspect_source()
+        i = src.index("PATA 1: re-estampar")
+        bloque = src[i:i + 2400]
+        self.assertIn("n.fingerprint IS NOT NULL", bloque)
+        self.assertIn("NOT LIKE 'Estado inicial%'", bloque)
+
+    def test_se_reporta_cuantas_quedaron_afuera(self):
+        src = inspect_source()
+        self.assertIn("sinteticas_no_re_estampadas", src)
+        self.assertIn("sinteticas_usd", src)
+
+    def test_la_firma_del_seed_existe_en_el_generador(self):
+        # Si alguien cambia el texto de la nota, el match por `notes` deja de
+        # servir — pero queda el de fingerprint. Este test avisa igual.
+        import inspect
+        import importing.seed as sd
+        src = inspect.getsource(sd)
+        self.assertIn("Estado inicial", src)
+        self.assertIn("_minus_one_day", src)
+
+    def test_el_insert_del_seed_sigue_sin_fingerprint(self):
+        """La exclusión se apoya en que el INSERT del seed omite `fingerprint`.
+        Si algún día se lo agregan, la mitad del filtro deja de discriminar."""
+        import inspect
+        import importing.persister as ps
+        src = inspect.getsource(ps)
+        i = src.index("_synthetic_seed")
+        bloque = src[i:i + 1800]
+        self.assertIn("INSERT INTO import_normalized_tx", bloque)
+        cols = bloque[bloque.index("INSERT INTO import_normalized_tx"):][:400]
+        self.assertNotIn("fingerprint", cols)
+
+
 class RendimientoVisibleTest(unittest.TestCase):
     """El panel tiene que mostrar el número que el usuario va a ver."""
 

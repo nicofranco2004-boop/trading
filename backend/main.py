@@ -12442,6 +12442,8 @@ def admin_fx_aportado_breakdown(user_id: int, uid: int = Depends(get_admin_user)
                   AND UPPER(COALESCE(n.currency,''))='ARS'
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW')
                   AND n.gross_amount IS NOT NULL
+                  AND n.fingerprint IS NOT NULL
+                  AND COALESCE(n.notes,'') NOT LIKE 'Estado inicial%'
                 GROUP BY anio, op ORDER BY anio, op""", (user_id,)).fetchall()
         # El USD v2 se re-deriva fila por fila (el TC es el del DÍA, no el del
         # año): agregarlo por año recién después es lo único fiel al migrador.
@@ -12452,7 +12454,24 @@ def admin_fx_aportado_breakdown(user_id: int, uid: int = Depends(get_admin_user)
                 WHERE b.user_id=? AND b.status='confirmed'
                   AND UPPER(COALESCE(n.currency,''))='ARS'
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW')
-                  AND n.gross_amount IS NOT NULL""", (user_id,)).fetchall()
+                  AND n.gross_amount IS NOT NULL
+                  AND n.fingerprint IS NOT NULL
+                  AND COALESCE(n.notes,'') NOT LIKE 'Estado inicial%'""", (user_id,)).fetchall()
+        # Las del "Estado inicial" se cuentan aparte y NO entran en el desglose:
+        # el migrador ya no las re-estampa (su monto está en pesos de hoy y su
+        # fecha es `earliest − 1 día`, ver fx_migrate.py). Mostrarlas acá haría
+        # ver un salto del aportado que ya no va a ocurrir.
+        sint = conn.execute(
+            """SELECT COUNT(*) n, ROUND(COALESCE(SUM(n2.gross_amount),0),2) ars,
+                      MIN(n2.date) desde
+                 FROM import_normalized_tx n2
+                 JOIN import_batches b ON b.id = n2.batch_id
+                WHERE b.user_id=? AND b.status='confirmed'
+                  AND UPPER(COALESCE(n2.currency,''))='ARS'
+                  AND n2.operation_type IN ('DEPOSIT','WITHDRAW')
+                  AND (n2.fingerprint IS NULL
+                       OR COALESCE(n2.notes,'') LIKE 'Estado inicial%')""",
+            (user_id,)).fetchone()
         cache, v2, sin_tc = {}, {}, 0
         for r in crudas:
             d = (r["date"] or "")[:10]
@@ -12531,6 +12550,9 @@ def admin_fx_aportado_breakdown(user_id: int, uid: int = Depends(get_admin_user)
             "filas_sin_tc_en_serie": sin_tc,
             "por_anio": out,
             "top_filas": top,
+            "sinteticas": {"filas": sint["n"] if sint else 0,
+                           "ars": sint["ars"] if sint else 0,
+                           "desde": sint["desde"] if sint else None},
             "como_leerlo": ("Mirá los PESOS POR FILA de cada año: tienen que crecer con el "
                             "tiempo (inflación). Si un año viejo tiene depósitos mucho más "
                             "grandes en pesos que los años recientes, esas filas NO son de ese "
