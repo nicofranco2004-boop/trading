@@ -168,6 +168,18 @@ export default function PositionDetailMobile() {
 
   const avgPrice = !p.is_cash && qty > 0 ? invested / qty : null
 
+  // Costo del lote EN EL MISMO RIEL que `priceLocal` y el P&L de arriba.
+  // Caso roto: un lote comprado en PESOS dentro de una cuenta USD (acción AR
+  // o bono sin sibling) tiene `invested`/`avgPrice` en PESOS, pero priceLocal
+  // sale en USD y `lotShowsUsd` los rotulaba a los tres como USD → "Precio
+  // promedio $21.530,00 USD" con pesos crudos (~1500× inflado). Convertimos
+  // el costo con el mismo ruteo que el resto (tc_compra en modo 'purchase').
+  const _costEnPesosEnCuentaUsd = !p.is_cash && !isAR && costInPesos(p)
+  const investedDisp = _costEnPesosEnCuentaUsd
+    ? invested / costBasisRate(p, tcCedear, costBasis)
+    : invested
+  const avgPriceDisp = !p.is_cash && qty > 0 ? investedDisp / qty : null
+
   // Moneda de los labels de precio/costo del lote. Normalmente ARS en broker ARS,
   // USD en broker USD. PERO un lote de COSTO EN DÓLARES en un broker ARS (bono/ON/
   // FCI-USD, CEDEAR-MEP de Balanz → currency='USD') tiene invested/avgPrice/priceLocal
@@ -255,10 +267,10 @@ export default function PositionDetailMobile() {
           {!p.is_cash && (
             <>
               <DetailRow label="Cantidad" value={formatQty(qty)} />
-              {avgPrice != null && (
+              {avgPriceDisp != null && (
                 <DetailRow
                   label="Precio promedio"
-                  value={lotShowsUsd ? `$${avgPrice.toFixed(2)} USD` : `${formatLocalPrice(avgPrice)} ARS`}
+                  value={lotShowsUsd ? `$${avgPriceDisp.toFixed(2)} USD` : `${formatLocalPrice(avgPriceDisp)} ARS`}
                   bordered
                 />
               )}
@@ -271,7 +283,7 @@ export default function PositionDetailMobile() {
               )}
               <DetailRow
                 label="Invertido"
-                value={lotShowsUsd ? `$${Math.round(invested).toLocaleString('en-US')} USD` : `${formatLocalPrice(invested)} ARS`}
+                value={lotShowsUsd ? `$${Math.round(investedDisp).toLocaleString('en-US')} USD` : `${formatLocalPrice(investedDisp)} ARS`}
                 bordered
               />
               <DetailRow

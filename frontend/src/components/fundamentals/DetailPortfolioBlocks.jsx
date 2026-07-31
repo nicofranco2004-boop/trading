@@ -13,7 +13,7 @@ import { useState, useEffect } from 'react'
 import { Wallet, Scale } from 'lucide-react'
 import Panel from '../Panel'
 import { api } from '../../utils/api'
-import { costInPesos, costInUsd, valueEquityLot, isArUsdBroker } from '../../utils/valuation'
+import { costInPesos, costInUsd, valueEquityLot, isArUsdBroker, costBasisRate } from '../../utils/valuation'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 
 const baseOf = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
@@ -23,7 +23,7 @@ const fmtPct = (n, sign = false) => (n == null ? '—' : (sign && n >= 0 ? '+' :
 
 // Costo USD de un lote (sin precio live): pesos→USD por el dólar financiero, USD
 // queda como está. Espeja la convención de valueLot/valueEquityLot para el COSTO.
-function lotCostUsd(p, isAR, tc) {
+function lotCostUsd(p, isAR, tc, costBasis = 'today') {
   const invested = p.invested || 0
   // Lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR comprado en dólar-MEP →
   // currency='USD') que vive en un broker ARS: el costo YA está en USD → NO se
@@ -31,7 +31,12 @@ function lotCostUsd(p, isAR, tc) {
   // Gateado a broker ARS: una acción US genuina en broker USD cae al último return
   // (invested, ya en USD) — mismo resultado, pero sin aplicarle semántica "es-ARS".
   if (isAR && costInUsd(p)) return invested
-  if (costInPesos(p) || isAR) return invested / tc
+  // Ruteado por el modo "Costo en dólares": en 'purchase' va al tc_compra del
+  // lote (los dólares que REALMENTE puso), en 'today' al dólar de hoy. Antes
+  // esta pantalla dividía siempre por el de hoy — el toggle no existía acá y
+  // el 'costo prom US$', el P&L% y el marcador "Tu costo" del espectro 52w
+  // mostraban que compró más caro (o más barato) de lo que compró.
+  if (costInPesos(p) || isAR) return invested / costBasisRate(p, tc, costBasis)
   return invested
 }
 
@@ -66,7 +71,7 @@ function PriceSpectrum({ low, high, current, fairValue, cost }) {
 }
 
 export default function DetailPortfolioBlocks({ ticker, data }) {
-  const { valuationDollar } = useCurrency()
+  const { valuationDollar, costBasis } = useCurrency()
   const [positions, setPositions] = useState(null)
   const [brokers, setBrokers] = useState([])
   const [dolar, setDolar] = useState(null)
@@ -123,7 +128,7 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
       const broker = brokerByName[p.broker]
       const isAR = broker?.currency === 'ARS'
       qty += p.quantity || 0
-      costUsd += lotCostUsd(p, isAR, tc)
+      costUsd += lotCostUsd(p, isAR, tc, costBasis)
       brk.add(p.broker)
       lots.push({ p, broker })
       const local = p.asset_type === 'CEDEAR' || isAR || isArUsdBroker(p.broker)
@@ -136,7 +141,7 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
       // Valor real a mercado: cada lote por su propio tipo (CEDEAR→.BA÷MEP, acción
       // US→precio US). valueEquityLot ya trae el clamp anti-distorsión (trustMktValue).
       let valueUsd = 0
-      for (const { p, broker } of lots) valueUsd += valueEquityLot(p, broker, prices, tc, tc).valueUsd
+      for (const { p, broker } of lots) valueUsd += valueEquityLot(p, broker, prices, tc, tc, costBasis).valueUsd
 
       // costOnAxis = tu costo EN LA ESCALA del precio mostrado (la acción US). Para un
       // CEDEAR/acción AR hay que multiplicar por el ratio (CEDEARs por acción); sino

@@ -568,6 +568,17 @@ function PositionsDesktop() {
     setModal('edit')
   }
 
+  // Número tolerante a la coma decimal (es-AR). El campo TC Compra es un
+  // <input type="number">: según el browser/locale, tipear "1448,6" puede llegar
+  // como "1448,6" y `+valor` daba NaN → se mandaba null y el backend BORRABA el
+  // TC que ya estaba (ahora el PUT usa COALESCE, pero igual conviene no perder
+  // lo que el usuario escribió). Devuelve null solo si de verdad no hay número.
+  function _numLoose(v) {
+    if (v === '' || v == null) return null
+    const n = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'))
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+
   async function save() {
     const body = {
       ...form,
@@ -578,7 +589,7 @@ function PositionsDesktop() {
       // inválido: div-by-zero). Antes mandábamos tc_compra:0 → el PUT daba 422 y,
       // sin manejo de error, el modal fallaba EN SILENCIO ("el botón no guarda").
       // Muchas posiciones importadas vienen con TC=0 → no se podían editar.
-      tc_compra: form.tc_compra !== '' && +form.tc_compra > 0 ? +form.tc_compra : null,
+      tc_compra: _numLoose(form.tc_compra),
       commissions: form.commissions !== '' ? +form.commissions : 0,
       entry_date: form.entry_date || null,
       // Moneda del lote (mismo ticker en ARS vs USD). Vacío → el backend la
