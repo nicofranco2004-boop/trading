@@ -19,10 +19,18 @@ import { api } from '../utils/api'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
-import { usd } from '../utils/format'
+import { usd as usdFmt, ars as arsFmt } from '../utils/format'
+import { useMoneyFormat } from '../contexts/CurrencyContext'
 
-// usd() formatea negativos con paréntesis — para deltas del libro queremos ±.
-const signedUsd = (n) => (n >= 0 ? `+${usd(n, 0)}` : `−${usd(Math.abs(n), 0)}`)
+// El libro calcula en USD; la MONEDA DE DISPLAY sigue la elección del asesor
+// en Config → Tipos de cambio (mismo CurrencyContext que el resto de la app;
+// la conversión usa el dólar elegido, MEP por default). Cada componente que
+// muestra plata llama useMoneyFormat() y arma sus helpers con esta factory.
+const moneyHelpers = ({ isArs, convert }) => {
+  const money = (v, d = 0) => (isArs ? arsFmt(convert(v)) : usdFmt(v, d))
+  const smoney = (n) => (n >= 0 ? `+${money(n, 0)}` : `−${money(Math.abs(n), 0)}`)
+  return { money, smoney }
+}
 const signedPct = (n) => (n >= 0 ? `+${n}%` : `${n}%`)
 
 export default function AdvisorDashboard() {
@@ -134,6 +142,7 @@ const btnPrimary = 'inline-flex items-center gap-1.5 text-xs font-medium text-wh
 // (GET /advisor/book), solo cambió de página.
 
 function BookHero({ book }) {
+  const { money, smoney } = moneyHelpers(useMoneyFormat())
   const { aum, flows_month: flows } = book
   const [detailOpen, setDetailOpen] = useState(false)
   if (!aum || aum.clients === 0) return null
@@ -158,7 +167,7 @@ function BookHero({ book }) {
           {hasAum ? (
             <>
               <p className="text-3xl font-semibold text-ink-0 tabular-nums leading-none">
-                {usd(aum.total_usd, 0)}
+                {money(aum.total_usd, 0)}
               </p>
               <p className="text-[10.5px] text-ink-3 mt-1.5">
                 La suma de las carteras de todos tus clientes
@@ -182,7 +191,7 @@ function BookHero({ book }) {
           <div>
             <p className="text-[11.5px] text-ink-3 mb-1">Últimos 7 días</p>
             <p className={`text-sm font-medium tabular-nums ${aum.delta_7d_usd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-              {signedUsd(aum.delta_7d_usd)}
+              {smoney(aum.delta_7d_usd)}
               {aum.delta_7d_pct != null && ` · ${signedPct(aum.delta_7d_pct)}`}
             </p>
           </div>
@@ -191,11 +200,11 @@ function BookHero({ book }) {
           <div>
             <p className="text-[11.5px] text-ink-3 mb-1">Aportes − retiros (este mes)</p>
             <p className="text-sm font-medium text-ink-0 tabular-nums">
-              {signedUsd(flows.net_deposited_usd)}
+              {smoney(flows.net_deposited_usd)}
             </p>
             <p className="text-[10.5px] text-ink-3 mt-0.5 tabular-nums">
               Plata que entró/salió de las cuentas · el mercado {flows.market_effect_usd >= 0 ? 'sumó ' : 'restó '}
-              {usd(Math.abs(flows.market_effect_usd), 0)}
+              {money(Math.abs(flows.market_effect_usd), 0)}
             </p>
           </div>
         )}
@@ -223,6 +232,7 @@ const COMP_COLORS = ['#8B7DFF', '#7466E8', '#5F53C4', '#4C429E', '#3D357E']
 const DETAIL_GRID = { display: 'grid', gridTemplateColumns: '1.5fr 0.9fr 1fr 1.35fr 1.25fr', gap: '12px', alignItems: 'center' }
 
 function BookDetailModal({ onClose }) {
+  const { money, smoney } = moneyHelpers(useMoneyFormat())
   const [data, setData] = useState(null)
   const [error, setError] = useState(false)
   const [sortBy, setSortBy] = useState('cap')   // 'cap' | 'var'
@@ -316,7 +326,7 @@ function BookDetailModal({ onClose }) {
                   return (
                     <div key={c.client_uid} style={DETAIL_GRID} className="bg-bg-2 rounded-md px-3 py-2.5">
                       <span className="text-[13px] font-medium text-ink-0 truncate">{c.label}</span>
-                      <span className="text-right text-[13px] text-ink-0 tabular-nums">{usd(c.value_usd, 0)}</span>
+                      <span className="text-right text-[13px] text-ink-0 tabular-nums">{money(c.value_usd, 0)}</span>
                       <span className="flex items-center justify-end gap-2">
                         <b className="text-xs font-medium text-ink-1 tabular-nums">{c.share_pct != null ? `${c.share_pct}%` : '—'}</b>
                         <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
@@ -324,15 +334,15 @@ function BookDetailModal({ onClose }) {
                         </span>
                       </span>
                       <span className={`text-right text-[13px] font-medium tabular-nums ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                        {signedUsd(c.delta_7d_usd)}
+                        {smoney(c.delta_7d_usd)}
                         <span className="block text-[10.5px] text-ink-3 font-normal mt-0.5">
                           {Math.abs(flows) >= 1
-                            ? `${flows >= 0 ? 'aportó' : 'retiró'} ${usd(Math.abs(flows), 0)} · mercado ${signedUsd(c.market_7d_usd)}`
+                            ? `${flows >= 0 ? 'aportó' : 'retiró'} ${money(Math.abs(flows), 0)} · mercado ${smoney(c.market_7d_usd)}`
                             : `${c.delta_7d_pct != null ? signedPct(c.delta_7d_pct) : '—'} · todo mercado`}
                         </span>
                       </span>
                       <span className="flex items-center justify-end gap-2.5">
-                        <span className={`text-xs tabular-nums ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{signedUsd(c.delta_7d_usd)}</span>
+                        <span className={`text-xs tabular-nums ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{smoney(c.delta_7d_usd)}</span>
                         <span className="relative w-20 h-3 shrink-0">
                           <i className="absolute left-1/2 -top-0.5 -bottom-0.5 w-px bg-line-3" />
                           <i
@@ -359,7 +369,7 @@ function BookDetailModal({ onClose }) {
                       </span>
                       {c.state === 'new' ? (
                         <>
-                          <span className="text-right text-[13px] text-ink-1 tabular-nums">{usd(c.value_usd, 0)}</span>
+                          <span className="text-right text-[13px] text-ink-1 tabular-nums">{money(c.value_usd, 0)}</span>
                           <span className="flex items-center justify-end gap-2">
                             <b className="text-xs font-medium text-ink-2 tabular-nums">{c.share_pct != null ? `${c.share_pct}%` : '—'}</b>
                             <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
@@ -408,6 +418,7 @@ const EVO_RANGES = [
 ]
 
 function BookEvolution({ series, error }) {
+  const { money, smoney } = moneyHelpers(useMoneyFormat())
   const [range, setRange] = useState('3M')
 
   const { visible, baseline } = useMemo(() => {
@@ -467,14 +478,17 @@ function BookEvolution({ series, error }) {
     )
   }
 
-  const fmtShort = (v) => {
+  const { isArs, convert } = useMoneyFormat()
+  const fmtShort = (vUsd) => {
+    const v = isArs ? convert(vUsd) : vUsd
+    const sym = isArs ? '$' : 'US$'
     const abs = Math.abs(v)
-    if (abs >= 1e9) return `US$${(v / 1e9).toFixed(1)}B`
-    if (abs >= 1e6) return `US$${(v / 1e6).toFixed(1)}M`
-    if (abs >= 1e3) return `US$${Math.round(v / 1e3)}k`
-    return `US$${Math.round(v)}`
+    if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(1)}B`
+    if (abs >= 1e6) return `${sym}${(v / 1e6).toFixed(1)}M`
+    if (abs >= 1e3) return `${sym}${Math.round(v / 1e3)}k`
+    return `${sym}${Math.round(v)}`
   }
-  const signed = (n) => (n >= 0 ? `+${usd(n, 0)}` : `−${usd(Math.abs(n), 0)}`)
+  const signed = (n) => (n >= 0 ? `+${money(n, 0)}` : `−${money(Math.abs(n), 0)}`)
   const vals = visible.flatMap(p => [p.aum_usd, p.net_deposited_usd])
   const mn = Math.min(...vals), mx = Math.max(...vals)
 
@@ -490,7 +504,7 @@ function BookEvolution({ series, error }) {
             <p className="text-[11px] text-ink-3 mt-0.5 ml-[21px]">
               En el período: el mercado {delta.market >= 0 ? 'sumó' : 'restó'}{' '}
               <span className={delta.market >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}>
-                {usd(Math.abs(delta.market), 0)}
+                {money(Math.abs(delta.market), 0)}
               </span>
               {' · '}aportes netos <span className="text-ink-1">{signed(delta.flows)}</span>
               {delta.clients !== 0 && (
@@ -536,7 +550,7 @@ function BookEvolution({ series, error }) {
                               boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
               labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 5 }}
               itemStyle={{ color: '#F4F4F0', fontSize: 12.5, padding: '2px 0' }}
-              formatter={(v, name) => [usd(v, 0), name === 'aum_usd' ? 'Administrado' : 'Aportado neto']}
+              formatter={(v, name) => [money(v, 0), name === 'aum_usd' ? 'Administrado' : 'Aportado neto']}
               labelFormatter={(label, payload) => {
                 const p = payload?.[0]?.payload
                 return p ? `${p.date} · ${p.clients} cliente${p.clients === 1 ? '' : 's'}` : label
@@ -603,6 +617,7 @@ function CallQueue({ queues, onOpen }) {
 }
 
 function StarSection({ star }) {
+  const { money, smoney } = moneyHelpers(useMoneyFormat())
   const Row = ({ r, tone }) => {
     // Cada columna muestra SU plata (lo que pierden los que pierden / ganan
     // los que ganan) — el neto agregado contradecía el título cuando un
@@ -617,7 +632,7 @@ function StarSection({ star }) {
             : `${r.clients_green} de ${r.clients_total} cliente${r.clients_total === 1 ? '' : 's'} en verde`}
         </span>
         <span className={`text-xs font-medium tabular-nums ${pnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-          {signedUsd(pnl)}
+          {smoney(pnl)}
         </span>
       </div>
     )

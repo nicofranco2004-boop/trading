@@ -27104,7 +27104,15 @@ def _advisor_book_chat_context(uid: int) -> dict:
             "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
         ).fetchone()
         tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
-        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else tc_blue
+        # MEP: la fila MÁS NUEVA puede venir solo-blue (el cron nocturno no
+        # trae mep) → buscamos la última fila CON mep (audit: si no, el libro
+        # entero se valuaba al blue ~5% abajo un fin de semana cualquiera).
+        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else None
+        if tc_mep is None:
+            _fxm = conn.execute(
+                "SELECT mep_venta FROM fx_rates_daily WHERE mep_venta IS NOT NULL "
+                "ORDER BY date DESC LIMIT 1").fetchone()
+            tc_mep = float(_fxm["mep_venta"]) if _fxm else tc_blue
 
         valued, skipped = _advisor_positions_valued(conn, ids, tc_blue, tc_mep)
         latest = _latest_snapshots(conn, ids)
@@ -27127,14 +27135,21 @@ def _advisor_book_chat_context(uid: int) -> dict:
             agg_tot = per_client.get(cid, {}).get("tot", 0.0)
             denom[cid] = max(snap_tv, agg_tot) or 1.0
 
+        _ph_nd = ",".join("?" * len(ids))
+        _max_nd_chat = {r["user_id"]: float(r["m"] or 0) for r in conn.execute(
+            f"SELECT user_id, MAX(net_deposited) m FROM snapshots WHERE user_id IN ({_ph_nd}) GROUP BY user_id",
+            ids).fetchall()}
         clients = []
         for cid in ids:
             snap = latest.get(cid)
             aum = round(float(snap["total_value"])) if snap and snap["total_value"] is not None else None
             nd = float(snap["net_deposited"] or 0) if snap else 0.0
-            # Base mínima USD 100 — mismo guard que la distribución del libro.
-            ret = (round((float(snap["total_value"]) - nd) / nd * 100, 1)
-                   if snap and nd >= 100 else None)
+            # Denominador = MAX(net_deposited) histórico, MISMA definición que
+            # la distribución del libro (audit: acá quedaba el nd actual → el
+            # chat decía +20.000% donde el dashboard decía +20%).
+            base_nd = max(_max_nd_chat.get(cid, 0.0), nd)
+            ret = (round((float(snap["total_value"]) - nd) / base_nd * 100, 1)
+                   if snap and base_nd >= 100 else None)
             agg = per_client.get(cid, {"tot": 0.0, "pos": []})
             top = sorted(agg["pos"], key=lambda r: -r["value_usd"])[:5]
             clients.append({
@@ -27540,7 +27555,15 @@ def advisor_reports_generate(data: AdvisorReportIn, request: Request,
             "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
         ).fetchone()
         tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
-        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else tc_blue
+        # MEP: la fila MÁS NUEVA puede venir solo-blue (el cron nocturno no
+        # trae mep) → buscamos la última fila CON mep (audit: si no, el libro
+        # entero se valuaba al blue ~5% abajo un fin de semana cualquiera).
+        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else None
+        if tc_mep is None:
+            _fxm = conn.execute(
+                "SELECT mep_venta FROM fx_rates_daily WHERE mep_venta IS NOT NULL "
+                "ORDER BY date DESC LIMIT 1").fetchone()
+            tc_mep = float(_fxm["mep_venta"]) if _fxm else tc_blue
 
         out, skipped = [], []
         for cid in targets[:200]:
@@ -28370,12 +28393,25 @@ def advisor_book(uid: int = Depends(get_current_user)):
             "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
         ).fetchone()
         tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
-        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else tc_blue
+        # MEP: la fila MÁS NUEVA puede venir solo-blue (el cron nocturno no
+        # trae mep) → buscamos la última fila CON mep (audit: si no, el libro
+        # entero se valuaba al blue ~5% abajo un fin de semana cualquiera).
+        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else None
+        if tc_mep is None:
+            _fxm = conn.execute(
+                "SELECT mep_venta FROM fx_rates_daily WHERE mep_venta IS NOT NULL "
+                "ORDER BY date DESC LIMIT 1").fetchone()
+            tc_mep = float(_fxm["mep_venta"]) if _fxm else tc_blue
 
-        today = _dt.utcnow().date()
+        # Fecha "hoy" en ART (UTC-3): los snapshots se estampan con fecha ART
+        # (cron 23:59 ART) — cortar en UTC corría el mes 3 horas antes (audit).
+        today = (_dt.utcnow() - _td(hours=3)).date()
         latest = _latest_snapshots(conn, ids)
         asof_7d = _snapshots_asof(conn, ids, (today - _td(days=7)).isoformat())
-        asof_month = _snapshots_asof(conn, ids, today.replace(day=1).isoformat())
+        # Base del mes = ÚLTIMO día del mes anterior. El snapshot fechado el 1°
+        # es el CIERRE del día 1 (ya incluye sus flujos) → usarlo de base
+        # borraba los depósitos del día 1 (audit off-by-one).
+        asof_month = _snapshots_asof(conn, ids, (today.replace(day=1) - _td(days=1)).isoformat())
 
         # ── AUM + deltas (solo clientes CON snapshot; los nuevos no restan) ──
         total = sum(float(r["total_value"] or 0) for r in latest.values())
@@ -28385,8 +28421,12 @@ def advisor_book(uid: int = Depends(get_current_user)):
             # Comparar solo clientes presentes en AMBOS cortes (base comparable)
             # y con FECHAS distintas: con el cron caído, latest == asof y un
             # "+0 · +0%" mentiría que la semana fue plana.
+            # Piso de antigüedad de la base (audit): un cliente con snapshots
+            # frenados 60 días metía su delta de 2 meses en "últimos 7 días".
+            _floor7 = (today - _td(days=14)).isoformat()
             common = [i for i in latest if i in asof
-                      and str(latest[i]["date"]) != str(asof[i]["date"])]
+                      and str(latest[i]["date"]) != str(asof[i]["date"])
+                      and str(asof[i]["date"]) >= _floor7]
             if not common:
                 return None, None
             now_v = sum(float(latest[i]["total_value"] or 0) for i in common)
@@ -28398,7 +28438,7 @@ def advisor_book(uid: int = Depends(get_current_user)):
 
         # ── Captación del mes (Δ net_deposited desde el 1° del mes, en USD) ──
         flows = None
-        _stale_floor = (today.replace(day=1) - _td(days=7)).isoformat()
+        _stale_floor = (today.replace(day=1) - _td(days=8)).isoformat()
         common_m = [i for i in latest if i in asof_month
                     and str(latest[i]["date"]) != str(asof_month[i]["date"])
                     # Base demasiado vieja (cron caído): depósitos del mes
