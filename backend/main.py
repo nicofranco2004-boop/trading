@@ -22504,8 +22504,15 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # no cubre.
     _forced_tool = "register_group_op" if book_mode else "register_trade"
     _group_intent = bool(book_mode and _GROUP_INTENT_RE.search(last_user_msg or ""))
+    # "vendile/vendé" en book-mode NO fuerza la tool: register_group_op es solo
+    # COMPRAS, y forzarla armaba un draft de COMPRA donde el asesor dictó una
+    # venta (audit). Sin forzado, el modelo responde la regla del prompt
+    # ("las ventas se registran cliente por cliente").
+    _sell_dictation = bool(book_mode and re.search(r"\bvend[eéií]", (last_user_msg or "").lower())
+                           and not re.search(r"\bcompr", (last_user_msg or "").lower()))
     _force_register = (
-        not _UNDO_ONLY_RE.search(last_user_msg or "")
+        not _sell_dictation
+        and not _UNDO_ONLY_RE.search(last_user_msg or "")
         and not _has_question
         and (_is_trade_intent(last_user_msg) or _group_intent
              or (_flow_open and _draft0.get("status") == "gathering")
@@ -26697,7 +26704,7 @@ def advisor_invite_client(
         link = conn.execute(
             "SELECT label FROM advisor_clients WHERE advisor_uid=? AND client_uid=?",
             (uid, client_uid)).fetchone()
-        client_label = (link["label"] if link and link["label"] else (client["name"] or "tu cuenta"))
+        client_label = (client["name"] or (link["label"] if link else None) or "tu cuenta")
 
         # Tope diario por cliente (no por asesor): un reenvío inmediato para
         # corregir un typo sigue funcionando (no es un cooldown), pero corta
@@ -26724,13 +26731,20 @@ def advisor_invite_client(
                    VALUES (?,?,?,?,?)""",
                 (client_uid, uid, token, email_norm, expires))
         claim_url = f"{_frontend_url()}/claim?token={token}"
+        # El envío es LA operación (audit: un fallo silencioso dejaba al asesor
+        # esperando a un cliente que nunca recibió nada). send devuelve bool.
+        sent = False
         try:
             from billing import emails
-            emails.send_advisor_claim(
+            sent = emails.send_advisor_claim(
                 to=email_norm, advisor_name=advisor_name, client_label=client_label,
                 claim_url=claim_url, expires_days=ADVISOR_CLAIM_TTL_DAYS)
         except Exception as ex:
             log.error("Advisor claim email failed uid=%s client=%s: %s", uid, client_uid, ex)
+        # Sin RESEND_API_KEY (dev/tests) no hay envío posible — no es una falla.
+        from billing.emails import _api_key as _resend_key
+        if not sent and _resend_key():
+            raise HTTPException(502, "No pudimos mandar el email. Probá de nuevo en unos minutos.")
         return {"ok": True, "email": email_norm}
     finally:
         conn.close()
@@ -27515,7 +27529,7 @@ def advisor_reports_generate(data: AdvisorReportIn, request: Request,
     try:
         _require_advisor(conn, uid)
         # Fallback SIN el uid interno (el label va a una página pública; audit).
-        links = {r["client_uid"]: (r["label"] or r["name"] or "Cliente")
+        links = {r["client_uid"]: (r["name"] or r["label"] or "Cliente")
                  for r in conn.execute(
                      """SELECT ac.client_uid, ac.label, u.name
                         FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
@@ -28050,6 +28064,16 @@ def _register_group_op_handler(inp: dict, uid: int, request_id=None,
                               "Operación grupal")}
 
         summary = _group_op_summary(asset, ccy, price, date_s, prows)
+        # Los EXCLUIDOS viajan DENTRO del summary (audit: se devolvían solo al
+        # modelo, que podía no narrarlos → "registrale a Juan, Ana y Pedro" con
+        # un Juan ambiguo ejecutaba 2 de 3 y el éxito decía "0 filas afuera").
+        # Adentro del summary llegan sí o sí al epílogo, a la confirmación y
+        # al mensaje de éxito determinístico.
+        _excl = problems + row_problems
+        if _excl:
+            summary += " · ⚠️ NO entran: " + "; ".join(str(p) for p in _excl[:6])
+        # Total del lote (audit: era el número que faltaba para confirmar).
+        summary += f" · TOTAL {ccy} {total_notional:,.0f}"
         payload = {"asset": asset, "asset_type": fields.get("asset_type"),
                    "currency": ccy, "entry_date": date_s,
                    "rows": [{k: v for k, v in p.items() if k != "_label"} for p in prows]}

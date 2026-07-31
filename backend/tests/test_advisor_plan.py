@@ -1322,7 +1322,12 @@ class GroupOpChatTest(AdvisorBase):
         r = self._build()
         self.assertEqual(r["status"], "needs_confirmation")
         self.assertIn("Juan P", r["summary"])
-        self.assertNotIn("Ana G", r["summary"])
+        # Audit: los excluidos DEBEN viajar dentro del summary (antes se
+        # devolvían solo al modelo y podían no narrarse nunca).
+        self.assertIn("NO entran", r["summary"])
+        self.assertIn("Ana G", r["summary"])
+        self.assertIn("solo lectura", r["summary"])
+        self.assertIn("TOTAL", r["summary"])
         self.assertTrue(any("solo lectura" in p for p in r["excluded"]))
 
     def test_undo_del_ultimo_lote(self):
