@@ -138,6 +138,33 @@ class ImportTcCompraE2E(unittest.TestCase):
                              "el rebuild borraba el tc_compra del lote sobreviviente")
         self.assertAlmostEqual(row["tc_compra"], 1250, places=2)
 
+    def test_tc_se_completa_con_el_historico_si_el_parser_no_lo_trae(self):
+        """Solo 6 de 18 parsers emiten TC. Para un lote en PESOS sin TC, el
+        persister lo completa con la cotización de la FECHA de la operación
+        (antes quedaba NULL y la vista "dólar de la compra" no tenía con qué
+        calcular). No inventa TC para lotes en dólares."""
+        # La serie histórica tiene que existir: sin dato NO se inventa TC.
+        self.conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?,?,?,?)", ("2025-03-05", 1180.0, 1195.0, "test"))
+        self.conn.commit()
+        csv = (HEADER +
+               "5/3/2025,COMPRA NORMAL,BMB,PAMP,10,1000,10000,,,0,ARS,\n"
+               ).encode("utf-8")
+        self._import(csv)
+        tc = self._tc("PAMP")
+        self.assertIsNotNone(tc, "un lote en pesos sin TC debe recibir el histórico")
+        self.assertAlmostEqual(tc, 1195.0, places=2)   # el MEP de ESA fecha
+
+    def test_sin_serie_historica_no_inventa_tc(self):
+        """Si no hay cotización para la fecha, el TC queda NULL — nunca se
+        rellena con el dólar de hoy (sería el bug que estamos arreglando)."""
+        csv = (HEADER +
+               "5/3/1999,COMPRA NORMAL,BMB,TXAR,10,1000,10000,,,0,ARS,\n"
+               ).encode("utf-8")
+        self._import(csv)
+        self.assertIsNone(self._tc("TXAR"))
+
 
 if __name__ == "__main__":
     unittest.main()

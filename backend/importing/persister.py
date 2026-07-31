@@ -156,10 +156,26 @@ def persist_batch(
                 # para que `_apply_cash_flow` use el mismo USD que la DB.
                 from .pipeline import _stamp_gross_amount_usd, _read_user_tc_blue
                 _tc_blue_seed = _read_user_tc_blue(conn, uid)
-                _h = fx_version(conn, uid) == FX_V2
-                gross_usd = _stamp_gross_amount_usd(st.currency, st.gross_amount, _tc_blue_seed,
-                                                    conn=conn if _h else None,
-                                                    date=st.date if _h else None)
+                # ⛔ EL SEED NO VA AL TC DE SU FECHA, NUNCA — ni siquiera en v2.
+                #
+                # Acá había un `fx_version(...) == FX_V2` que, para una cuenta v2,
+                # dolarizaba esta fila con `fx_for_date(st.date)`. Y `st.date` es
+                # `seed_date` = UN DÍA ANTES del primer movimiento del archivo
+                # (seed.py `_minus_one_day`), o sea la fecha más vieja de la cuenta,
+                # mientras que el MONTO lo tipeó el usuario recién, en el wizard,
+                # en pesos de HOY ("¿cuánto efectivo tenés hoy en {broker}?").
+                #
+                # Monto de hoy ÷ dólar de 2019 = ×33. Es exactamente el bug que se
+                # arregló en el migrador (fx_migrate.py, que ya no re-estampa estas
+                # filas), pero por el camino del IMPORT: sin esto, cada cuenta que
+                # pasa a v2 vuelve a generarlo en su próximo import. Medido en prod
+                # sobre #324: una fila de 130.667.268 pesos fechada 2019-07-21 —un
+                # domingo, la firma de "earliest − 1 día"— daba US$ 3.090.522, el
+                # 92% del aportado de la cuenta.
+                #
+                # Las filas REALES del archivo sí van al TC de su fecha (pipeline.py):
+                # ahí la fecha y el monto pertenecen al mismo momento. Acá no.
+                gross_usd = _stamp_gross_amount_usd(st.currency, st.gross_amount, _tc_blue_seed)
                 st.gross_amount_usd = gross_usd
                 conn.execute(
                     """INSERT INTO import_normalized_tx
@@ -476,6 +492,20 @@ def reconciled_unit_price(unit_price, quantity, gross_amount, asset_type=None):
     return up
 
 
+def _tc_for_date(conn, date_str):
+    """Cotización histórica ARS/USD de `date_str`, o None. Aislado para que un
+    fallo del módulo fx nunca rompa un import (el TC es un extra de display)."""
+    try:
+        try:
+            from fx import fx_for_date
+        except ImportError:  # pragma: no cover
+            from ..fx import fx_for_date
+        v = fx_for_date(conn, date_str)
+        return float(v) if v and float(v) > 0 else None
+    except Exception:
+        return None
+
+
 def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
     """Compra → INSERT positions + debit cash. Equivalente a POST /positions."""
     qty = float(tx.quantity or 0)
@@ -489,13 +519,20 @@ def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
     if lot_currency == "USDT":
         lot_currency = "USD"
 
+    # TC de compra: el del parser manda; si no lo trae y el lote es en PESOS, lo
+    # completamos con la cotización HISTÓRICA de la fecha de la operación — mismo
+    # criterio que el alta manual (main.py) y que el rebuild. Solo 6 de 18 parsers
+    # emiten TC, así que sin esto la mayoría de los lotes importados nacían con
+    # NULL y la vista "Costo en dólares → dólar de la compra" quedaba muerta.
+    _tc = tx.tc_compra if (tx.tc_compra and tx.tc_compra > 0) else None
+    if _tc is None and lot_currency == "ARS" and tx.date:
+        _tc = _tc_for_date(conn, tx.date)
     cur = conn.execute(
         """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
            invested, tc_compra, price_override, notes, entry_date, commissions, currency, asset_type)
            VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?)""",
         (uid, tx.broker, tx.asset_symbol, unit if unit > 0 else None, qty,
-         invested,
-         (tx.tc_compra if (tx.tc_compra and tx.tc_compra > 0) else None),
+         invested, _tc,
          None, tx.notes, tx.date, fees, lot_currency,
          (tx.asset_type or None)),
     )

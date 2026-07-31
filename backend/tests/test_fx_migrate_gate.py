@@ -265,11 +265,14 @@ class SeedSinteticoNoSeReEstampaTest(unittest.TestCase):
         import inspect
         import importing.persister as ps
         src = inspect.getsource(ps)
+        # Desde la marca del seed hasta SU insert, sin depender de cuánto
+        # comentario haya en el medio.
         i = src.index("_synthetic_seed")
-        bloque = src[i:i + 1800]
-        self.assertIn("INSERT INTO import_normalized_tx", bloque)
-        cols = bloque[bloque.index("INSERT INTO import_normalized_tx"):][:400]
-        self.assertNotIn("fingerprint", cols)
+        j = src.index("INSERT INTO import_normalized_tx", i)
+        cols = src[j:src.index("VALUES", j)]
+        self.assertNotIn("fingerprint", cols,
+                         "el INSERT del seed ahora lleva fingerprint: la exclusión "
+                         "del re-estampado en fx_migrate.py se apoya en que NO lo lleve")
 
 
 class RendimientoVisibleTest(unittest.TestCase):

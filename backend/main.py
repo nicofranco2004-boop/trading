@@ -6573,9 +6573,26 @@ def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
 @app.put("/api/positions/{pid}")
 def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
+    # tc_compra va con COALESCE: un null NO borra el TC que ya estaba. Antes lo
+    # pisaba, así que editar cualquier otro campo de la posición podía DESTRUIR
+    # en silencio un tipo de cambio correcto (basta con que el input rechace la
+    # coma decimal y mande null). Para setearlo hay que mandar un valor > 0.
+    if (p.tc_compra is None and not p.is_cash
+            and (p.currency or "").upper() == "ARS" and p.entry_date):
+        # Mismo relleno que el alta: si el lote es en pesos y quedó sin TC, se
+        # completa con la cotización histórica de la fecha de entrada.
+        try:
+            _row_tc = conn.execute(
+                "SELECT tc_compra FROM positions WHERE id=? AND user_id=?", (pid, uid)
+            ).fetchone()
+            if not (_row_tc and _row_tc["tc_compra"]):
+                p.tc_compra = _fx.fx_for_date(conn, p.entry_date)
+        except Exception:
+            pass
     conn.execute(
         """UPDATE positions SET broker=?, asset=?, is_cash=?, buy_price=?, quantity=?,
-           invested=?, tc_compra=?, price_override=?, notes=?, commissions=?,
+           invested=?, tc_compra=COALESCE(?, tc_compra), price_override=?, notes=?,
+           commissions=?,
            entry_date=COALESCE(?, entry_date),
            asset_type=COALESCE(?, asset_type),
            currency=COALESCE(?, currency)
@@ -9496,7 +9513,7 @@ def get_movements(uid: int = Depends(get_effective_user)):
         tx_rows = conn.execute(
             """SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes
+                      t.currency, t.fees, t.notes, t.gross_amount_usd
                 FROM import_normalized_tx t
                 JOIN import_batches b ON t.batch_id = b.id
                 WHERE b.user_id = ? AND b.status = 'confirmed'
@@ -9509,9 +9526,22 @@ def get_movements(uid: int = Depends(get_effective_user)):
             cur = (d.get("currency") or "USD").upper()
             amt = _safe_float_or_none(d.get("gross_amount")) or 0
             fees = _safe_float_or_none(d.get("fees")) or 0
-            # Convertir a USD si está en ARS
-            amount_usd = amt / tc_blue if cur == "ARS" and tc_blue > 0 else amt
-            fees_usd = fees / tc_blue if cur == "ARS" and tc_blue > 0 else fees
+            # Convertir a USD si está en ARS. Preferimos el `gross_amount_usd` que
+            # el pipeline ya estampó con el TC de LA FECHA de la operación; el
+            # tc_blue de hoy es el ÚLTIMO recurso (filas viejas sin estampar).
+            # Antes se usaba siempre el de hoy: una compra de 2021 se dividía por
+            # ~1500 y el movimiento aparecía con un monto irreal.
+            stamped = _safe_float_or_none(d.get("gross_amount_usd"))
+            if cur == "ARS":
+                _rate_row = (amt / stamped) if (stamped and stamped > 0 and amt) else None
+                amount_usd = stamped if stamped is not None else (amt / tc_blue if tc_blue > 0 else amt)
+                # Las fees comparten el TC de SU fila (derivado del estampado) para
+                # que no queden mezcladas con el dólar de hoy.
+                _fee_rate = _rate_row if (_rate_row and _rate_row > 0) else (tc_blue if tc_blue > 0 else None)
+                fees_usd = (fees / _fee_rate) if _fee_rate else fees
+            else:
+                amount_usd = amt
+                fees_usd = fees
             movements.append({
                 "id": f"tx-{d['id']}",
                 "kind": "movement",
