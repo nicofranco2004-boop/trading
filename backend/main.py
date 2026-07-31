@@ -26624,12 +26624,17 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
         ph = ",".join("?" * len(ids))
         # claim_status: 'claimed' (ya reclamó, loguea sola) > 'invited' (invite
         # mandado, esperando) > 'shadow' (default, el asesor la administra 100%)
-        invited_ids = {r["user_id"] for r in conn.execute(
-            f"""SELECT DISTINCT user_id FROM advisor_claim_tokens
-                WHERE user_id IN ({ph}) AND used_at IS NULL
-                  AND expires_at > datetime('now')""",
-            ids,
-        ).fetchall()}
+        # Última invitación por cliente (audit: la invitación vencida
+        # desaparecía sin aviso y el asesor re-tipeaba el email de memoria).
+        invites = {}
+        for r in conn.execute(
+                f"""SELECT user_id, email, created_at, expires_at, used_at
+                    FROM advisor_claim_tokens WHERE user_id IN ({ph})
+                    ORDER BY created_at ASC""", ids).fetchall():
+            invites[r["user_id"]] = r   # la más nueva pisa (orden ASC)
+        _now_iso = datetime.utcnow().isoformat()
+        invited_ids = {u for u, r in invites.items()
+                       if r["used_at"] is None and r["expires_at"] > _now_iso}
         # Último snapshot por cliente (AUM + fecha)
         snaps = {r["user_id"]: r for r in conn.execute(
             f"""SELECT s.user_id, s.date, s.total_value
@@ -26662,6 +26667,9 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
                 "permission": r["permission"],
                 "notes": r["notes"],
                 "phone": r["phone"],
+                "invited_email": (invites[cid]["email"] if cid in invites else None),
+                "invite_expired": bool(cid in invites and invites[cid]["used_at"] is None
+                                       and invites[cid]["expires_at"] <= _now_iso),
                 "created_at": r["created_at"],
                 "claim_status": claim_status,
                 "aum_usd": (float(snap["total_value"]) if snap and snap["total_value"] is not None else None),
@@ -26856,9 +26864,19 @@ def claim_preview(token: str, request: Request):
             "SELECT expires_at FROM advisor_claim_tokens WHERE token=?", (token,)).fetchone()
         if exp and datetime.fromisoformat(exp["expires_at"]) < datetime.utcnow():
             raise HTTPException(400, "El link expiró. Pedile a tu asesor que te invite de nuevo.")
+        # Marca del asesor (audit): el claim es EL momento donde el cliente
+        # decide confiar — mostrar logo/matrícula si el asesor los cargó.
+        prof = conn.execute(
+            """SELECT ap.display_name, ap.cnv_matricula, ap.logo_data
+               FROM advisor_profile ap
+               JOIN advisor_claim_tokens ct ON ct.advisor_uid = ap.advisor_uid
+               WHERE ct.token=?""", (token,)).fetchone()
         return {
-            "advisor_name": row["advisor_name"] or row["advisor_email"].split("@")[0],
+            "advisor_name": (prof["display_name"] if prof and prof["display_name"] else None)
+                            or row["advisor_name"] or row["advisor_email"].split("@")[0],
             "label": row["label"],
+            "advisor_matricula": (prof["cnv_matricula"] if prof else None),
+            "advisor_logo": (prof["logo_data"] if prof else None),
         }
     finally:
         conn.close()
@@ -27469,12 +27487,17 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
             a["value_usd"] += v["value_usd"]; a["invested_usd"] += v["invested_usd"]
         valued = list(_agg.values())
     tot_valued = sum(v["value_usd"] for v in valued)
-    denom = max(value_end or 0.0, tot_valued) or 1.0
+    # En modo costo el numerador es COSTO → el denominador debe serlo también
+    # (audit: max(value_end) mezclaba costo/valor de mercado y el % no era ni
+    # una cosa ni la otra).
+    denom = (tot_valued if holdings_basis == "cost"
+             else max(value_end or 0.0, tot_valued)) or 1.0
     holdings = [
         {"asset": v["asset"], "value_usd": round(v["value_usd"]),
          # Sin snapshot no hay total CON cash → mejor sin % que un % inflado
          # (audit: "AAPL 100%" para un cliente mitad cash).
-         "weight_pct": (round(v["value_usd"] / denom * 100) if value_end else None)}
+         "weight_pct": (round(v["value_usd"] / denom * 100)
+                        if (value_end or holdings_basis == "cost") else None)}
         for v in sorted(valued, key=lambda r: -r["value_usd"])[:6]
     ]
     # "Lo que más movió": P&L total NO realizado por tenencia (solo con
@@ -27554,6 +27577,9 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
         "base_date": base_date,
         "base_note": base_note,   # 'onboarding' | 'stale' | None (el informe lo aclara)
         "holdings_basis": holdings_basis,
+        # Las tenencias se valúan HOY (no al cierre del período) — el papel lo
+        # rotula (audit: cartera de julio bajo un encabezado de junio, sin fecha).
+        "holdings_as_of": (datetime.utcnow() - timedelta(hours=3)).date().isoformat(),
         "movers": movers,
         "note": (note or "").strip() or None,
         "claimed": bool(conn.execute(

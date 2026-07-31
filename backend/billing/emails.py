@@ -991,11 +991,15 @@ def send_advisor_claim(*, to: str, advisor_name: str, client_label: str,
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu asesor te invitó a Rendi</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        <b>{safe_advisor}</b> te está siguiendo en Rendi y ya cargó tu cartera
-        (<b>{safe_label}</b>) para que puedas verla vos también.
+        <b>{safe_advisor}</b>, tu asesor financiero, ya cargó tu cartera
+        (<b>{safe_label}</b>) en Rendi para que la veas vos también.
+      </p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Rendi es donde vas a ver tu cartera actualizada todos los días: cuánto vale,
+        cómo evolucionó y qué tenés — sin planillas ni llamados para preguntar.
       </p>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 24px;">
-        Creá tu contraseña para entrar a tu cuenta:
+        Creá tu contraseña para entrar:
       </p>
       <div style="text-align:center;margin:28px 0;">
         <a href="{claim_url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
@@ -1009,18 +1013,20 @@ def send_advisor_claim(*, to: str, advisor_name: str, client_label: str,
         {claim_url}
       </p>
       <p style="font-size:13px;color:#6b7280;line-height:1.6;">
-        El link vence en <b>{expires_days} días</b>. Si no reconocés a {safe_advisor}
-        o no querés crear tu cuenta, ignorá este email — no se crea nada sin este link.
+        El link vence en <b>{expires_days} días</b>. Si no reconocés a {safe_advisor},
+        ignorá este email: nadie puede entrar a esta cuenta sin este link, y podés
+        pedirle a tu asesor que la elimine cuando quieras.
       </p>
     """
     text = (
         f"Tu asesor te invitó a Rendi\n\n"
-        f"{advisor_name} te está siguiendo en Rendi y ya cargó tu cartera ({client_label}) "
-        f"para que puedas verla vos también.\n\n"
+        f"{advisor_name}, tu asesor financiero, ya cargó tu cartera ({client_label}) en Rendi "
+        f"para que la veas vos también. Rendi es donde vas a ver tu cartera actualizada "
+        f"todos los días: cuánto vale, cómo evolucionó y qué tenés.\n\n"
         f"Para crear tu contraseña y entrar, abrí este link:\n"
         f"{claim_url}\n\n"
         f"El link vence en {expires_days} días.\n\n"
-        f"Si no reconocés a {advisor_name}, ignorá este email — no se crea nada sin el link.\n\n"
+        f"Si no reconocés a {advisor_name}, ignorá este email: nadie puede entrar sin este link.\n\n"
         f"— Rendi"
     )
     return _send(to, f"{advisor_name} te invitó a ver tu cartera en Rendi",

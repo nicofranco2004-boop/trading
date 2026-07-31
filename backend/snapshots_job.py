@@ -220,6 +220,26 @@ def compute_broker_value_usd(
                 cash_usd = cash_ars / cedear_rate if cedear_rate > 0 else 0
                 value += cash_usd
                 invested += cash_usd  # cash ARS: value USD = invested USD (no FX gain)
+            elif (p.get('asset') or '').upper() in _CS:
+                # Cripto en broker ARS (Cocos/Balanz, no exchange): se valúa al
+                # SPOT USD del activo × factor del broker (dólar-cripto→MEP,
+                # misma SSoT que la rama USD). El COSTO va literal si el lote
+                # está en USD (audit: caía a la rama genérica y se dividía por
+                # el MEP → US$30.000 aparecían como US$20 en AUM/estrella/
+                # exposure/informe); si está en pesos, ÷MEP como el resto.
+                asset = (p.get('asset') or '').upper()
+                ccy = (p.get('currency') or '').upper()
+                cf = _cb_factor(asset, broker_name, override is not None, _cripto_rate, cedear_rate)
+                inv_usd = (real_cost if ccy in ('USD', 'USDT')
+                           else (real_cost / cedear_rate if cedear_rate > 0 else 0)) * cf
+                invested += inv_usd
+                spot = override if override is not None else prices.get(asset)
+                if spot is not None:
+                    mkt_usd = spot * (p.get('quantity') or 0) * cf
+                    trust = _trust_mkt_value(mkt_usd, inv_usd, asset_type, has_override=override is not None)
+                    value += mkt_usd if trust else inv_usd
+                else:
+                    value += inv_usd
             elif _cost_in_usd(p):
                 # Lote de COSTO EN DÓLARES en un broker ARS (bono/ON/FCI-USD, o CEDEAR
                 # comprado en dólar-MEP). Costo YA en USD → NO ÷MEP; el valor va por el

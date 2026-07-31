@@ -201,7 +201,9 @@ const CLAIM_BADGE = {
 }
 
 function ClientCard({ c, onOpen, onNotes, onInvite, onRevoke, menuOpen, onToggleMenu }) {
-  const badge = CLAIM_BADGE[c.claim_status]
+  const badge = c.invite_expired && c.claim_status !== 'claimed'
+    ? { label: 'Invitación vencida', cls: 'bg-rendi-warn/10 text-rendi-warn' }
+    : CLAIM_BADGE[c.claim_status]
   return (
     <div
       role="button"
@@ -432,7 +434,7 @@ function NotesModal({ client, onClose, onSaved }) {
 
 function InviteModal({ client, onClose, onSent }) {
   const toast = useToast()
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(client.invited_email || '')
   const [sending, setSending] = useState(false)
   const [err, setErr] = useState(null)
   const alreadyInvited = client.claim_status === 'invited'

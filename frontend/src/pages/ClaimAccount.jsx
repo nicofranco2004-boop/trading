@@ -162,11 +162,15 @@ export default function ClaimAccount() {
                   <UserRound size={22} className="text-data-violet" strokeWidth={1.75} />
                 </div>
                 <h1 className="text-xl font-semibold text-ink-0 mb-1.5">
+                  {preview.advisor_logo && (
+                    <img src={preview.advisor_logo} alt="" className="h-10 mx-auto mb-3 rounded" />
+                  )}
                   {preview.advisor_name} te invitó a Rendi
                 </h1>
                 <p className="text-sm text-ink-2 leading-relaxed">
                   {preview.label
-                    ? <>Ya tenés <span className="text-ink-0 font-medium">{preview.label}</span> cargada — creá tu contraseña para entrar a verla.</>
+                    ? <>Ya tenés <span className="text-ink-0 font-medium">{preview.label}</span> cargada — creá tu contraseña para entrar a verla.
+                        {preview.advisor_matricula && <span className="block text-[11px] text-ink-3 mt-1">Asesor con matrícula CNV N° {preview.advisor_matricula} (declarada por el asesor)</span>}</>
                     : 'Creá tu contraseña para entrar a tu cuenta.'}
                 </p>
               </div>

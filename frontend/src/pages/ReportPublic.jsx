@@ -159,8 +159,9 @@ export default function ReportPublic() {
                 <div style={{ fontSize: 16, fontWeight: 750, color: r.ret_pct >= 0 ? P.up : P.down }}>{r.ret_pct >= 0 ? '+' : ''}{r.ret_pct}%</div>
               </div>
               <div style={{ flex: 1, minWidth: 150, padding: '10px 14px' }}>
-                <div style={{ fontSize: 10.5, color: P.ink2 }}>Dólar MEP en el mismo lapso</div>
+                <div style={{ fontSize: 10.5, color: P.ink2 }}>Suba del dólar MEP en el período</div>
                 <div style={{ fontSize: 16, fontWeight: 750 }}>{r.mep_var_pct >= 0 ? '+' : ''}{r.mep_var_pct}% <span style={{ fontSize: 10, fontWeight: 400, color: P.ink3 }}>(en pesos)</span></div>
+                <div style={{ fontSize: 9, color: P.ink3, marginTop: 2 }}>Es cuánto subió el dólar, no un retorno comparable: tu resultado ya está medido en dólares.</div>
               </div>
             </div>
           )}
@@ -192,7 +193,7 @@ export default function ReportPublic() {
             </div>
             {/* Tenencias */}
             <div>
-              <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Principales tenencias{r.holdings_basis === 'cost' ? ' (a valor de compra)' : ''}</div>
+              <div style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, margin: '6px 0 8px' }}>Principales tenencias{r.holdings_basis === 'cost' ? ' (a valor de compra)' : ''}{r.holdings_as_of ? ` — al ${r.holdings_as_of}` : ''}</div>
               {(r.holdings || []).map((h, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, padding: '4px 0' }}>
                   <b style={{ width: 64, flexShrink: 0 }}>{h.asset}</b>
