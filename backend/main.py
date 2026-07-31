@@ -14792,6 +14792,19 @@ LÍMITES (idénticos al modo normal, con más razón acá): describís y compar�
 # Prompt FREE — version stripped del coach. Diseño deliberado: descriptivo,
 # breve, sin interpretación. La diferenciación con Pro está en el contenido,
 # no en el modelo (mismo Haiku para los dos tiers — más barato y consistente).
+# Addendum cuando quien chatea es el ASESOR dentro de la cuenta de un cliente
+# (audit: el prompt retail le hablaba al asesor como si fuera el dueño — "tu
+# cartera", contención emocional, preguntas-coach). Registro profesional.
+_AI_CHAT_SYSTEM_ADVISOR_IN_CLIENT = """
+
+CONTEXTO DE AUDIENCIA (PISA LO ANTERIOR EN TONO):
+Estás hablando con el ASESOR FINANCIERO del dueño de esta cartera, no con el dueño.
+- Referite a la cartera en tercera persona: "la cartera del cliente", "su posición en NVDA" — NUNCA "tu cartera" ni "tus operaciones".
+- Nada de contención emocional ni preguntas-coach ("¿qué tesis tenías?"): es un profesional analizando la cuenta de un tercero.
+- Sin glosario inline obligatorio: podés usar términos técnicos directos (drawdown, TWR) sin mini-definiciones.
+- Describí y cuantificá; el asesor decide qué hacer con su cliente.
+"""
+
 _AI_CHAT_SYSTEM_FREE = """Sos el asistente de Rendi para usuarios del plan Free. Tu rol es responder preguntas del usuario sobre su portfolio con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
 
 ROL
@@ -19275,8 +19288,15 @@ _GROUP_OP_TOOL = {
         "required": [],
     },
 }
+# Fuera del toolset del asesor: las de ESCRITURA (register/undo escribirían en
+# su cuenta de trabajo vacía) y las de LECTURA scopeadas a user_id=uid — en
+# book-mode uid es el asesor, así que get_asset_operations/monthly_detail/
+# realized_vs consultaban SU cuenta vacía y respondían "0 operaciones" con
+# confianza sobre el libro (audit: falso negativo con formato de dato duro).
 _AI_TOOLS_ADVISOR = [t for t in _AI_TOOLS
-                     if t["name"] not in ("register_trade", "undo_last_trade")] + [_GROUP_OP_TOOL]
+                     if t["name"] not in ("register_trade", "undo_last_trade",
+                                          "get_asset_operations", "get_monthly_detail",
+                                          "get_realized_vs_unrealized")] + [_GROUP_OP_TOOL]
 
 
 def _execute_ai_tool(name: str, input_data: dict, uid: int, request_id=None,
@@ -20018,6 +20038,14 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
     try:
         # Resolver tier del user al inicio — afecta cache key, prompt y mensaje 429.
         tier = quota.get_tier(conn, uid)
+        # Lente del asesor (mismo fix que /api/ai/chat, audit): dentro de un
+        # cliente Free/Plus, el que mira es el ASESOR → tier pro (prompts con
+        # causalidad + follow-ups sin upsell). Los contadores siguen en el
+        # cliente (uid), consistente con el chat.
+        _lens_auth = getattr(request.state, "rendi_auth_uid", uid)
+        if uid != _lens_auth and tier in ("free", "plus") \
+                and quota.get_tier(conn, _lens_auth) == "advisor":
+            tier = "pro"
 
         # Follow-ups son exclusivos Pro — el diferencial real del paywall.
         # Free Y Plus que intentan follow-up reciben 403 con upgrade payload
@@ -22213,6 +22241,9 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
     if book_mode:
         base_system = _AI_CHAT_SYSTEM + _AI_CHAT_SYSTEM_ADVISOR
+    elif _lens_override == "pro" or (uid != _lens_auth and quota.get_tier(conn, _lens_auth) == "advisor"):
+        # Asesor mirando la cuenta de un cliente (cualquier tier del cliente).
+        base_system = base_system + _AI_CHAT_SYSTEM_ADVISOR_IN_CLIENT
     # Pro chat max_tokens: 1000 → 800 (audit #3 cost control) → 1200 (2026-07,
     # bug reportado por Nico): con 800, las preguntas amplias ("¿cómo está mi
     # portfolio?") generaban prosa larga que se comía TODO el presupuesto → la
@@ -27139,6 +27170,24 @@ def _advisor_book_chat_context(uid: int) -> dict:
         _max_nd_chat = {r["user_id"]: float(r["m"] or 0) for r in conn.execute(
             f"SELECT user_id, MAX(net_deposited) m FROM snapshots WHERE user_id IN ({_ph_nd}) GROUP BY user_id",
             ids).fetchall()}
+        # Cash por cliente en USD (audit: el chip "¿quién tiene plata sin invertir?"
+        # y el ejemplo del prompt pedían un dato que el contexto NO tenía → el
+        # modelo lo inventaba). ARS al MEP del día; USD directo.
+        _cash_by: dict = {}
+        for _cr in conn.execute(
+                f"SELECT p.user_id u, p.invested inv, COALESCE(b.currency,'ARS') c "
+                f"FROM positions p LEFT JOIN brokers b ON b.user_id=p.user_id AND b.name=p.broker "
+                f"WHERE p.user_id IN ({_ph_nd}) AND p.is_cash=1", ids).fetchall():
+            _amt = float(_cr["inv"] or 0)
+            _usd = _amt / tc_mep if _cr["c"] == "ARS" and tc_mep else _amt
+            if _usd > 0:
+                _cash_by[_cr["u"]] = _cash_by.get(_cr["u"], 0.0) + _usd
+        # Notas privadas del asesor (su CRM): la señal más útil para "¿a quién
+        # llamo hoy?" — capeadas y sanitizadas como todo texto del contexto.
+        _notes_by = {r["client_uid"]: _ctx_txt(r["notes"], 140) for r in conn.execute(
+            "SELECT client_uid, notes FROM advisor_clients "
+            "WHERE advisor_uid=? AND status='active' AND notes IS NOT NULL AND notes != ''",
+            (uid,)).fetchall()}
         clients = []
         for cid in ids:
             snap = latest.get(cid)
@@ -27158,6 +27207,8 @@ def _advisor_book_chat_context(uid: int) -> dict:
                 # hace semanas (cron caído) como el AUM de HOY (audit).
                 "as_of": str(snap["date"]) if snap else None,
                 "n_pos": len(agg["pos"]),
+                "cash_usd": round(_cash_by.get(cid, 0.0)),
+                **({"note": _notes_by[cid]} if cid in _notes_by else {}),
                 "top": [{"asset": _ctx_txt(t["asset"], 40), "value_usd": round(t["value_usd"]),
                          "weight_pct": round(t["value_usd"] / denom[cid] * 100)} for t in top],
             })
