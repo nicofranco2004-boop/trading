@@ -1963,6 +1963,7 @@ function FxMigratePanel({ toast }) {
                                   ) : ''}
                                   {v.denominador_roto ? <span className="text-red-400"> · ⛔ {v.denominador_roto}</span> : ''}
                                   {v.fechas_sospechosas ? <span className="text-red-400"> · ⛔ {v.fechas_sospechosas}</span> : ''}
+                                  {v.fechas_aviso ? <span className="text-amber-400"> · ⚠️ {v.fechas_aviso}</span> : ''}
                                   {v.cae_de_ganar_a_perder_todo && !v.fechas_sospechosas
                                     ? <span className="text-amber-400"> · ⚠️ pasa de ganar a perder casi todo lo aportado — revisá el desglose por año</span>
                                     : ''}

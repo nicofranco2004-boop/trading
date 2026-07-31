@@ -155,7 +155,7 @@ def cae_de_ganar_a_perder_todo(rend_antes, rend_despues):
             and rend_antes > 0 > -80 > rend_despues)
 
 
-def fechas_sospechosas(conn, uid, ratio=10.0, min_filas=3):
+def fechas_sospechosas(conn, uid, ratio=50.0, ratio_aviso=10.0, min_filas=3):
     """Depósitos en pesos que NO pueden ser del año que dicen. Esto sí frena.
 
     En Argentina los montos nominales en pesos sólo crecen: un depósito típico
@@ -183,7 +183,9 @@ def fechas_sospechosas(conn, uid, ratio=10.0, min_filas=3):
                 WHERE b.user_id=? AND b.status='confirmed'
                   AND UPPER(COALESCE(n.currency,''))='ARS'
                   AND n.operation_type='DEPOSIT'
-                  AND n.gross_amount IS NOT NULL AND n.gross_amount > 0""",
+                  AND n.gross_amount IS NOT NULL AND n.gross_amount > 0
+                  AND n.fingerprint IS NOT NULL
+                  AND COALESCE(n.notes,'') NOT LIKE 'Estado inicial%'""",
             (uid,)).fetchall()
     except Exception:
         return None
@@ -210,16 +212,24 @@ def fechas_sospechosas(conn, uid, ratio=10.0, min_filas=3):
             if med[nuevo] <= 0:
                 continue
             r = med[viejo] / med[nuevo]
-            if r > ratio and (peor is None or r > peor[2]):
+            # Se captura desde el umbral de AVISO; `ratio` (más alto) decide
+            # después si además frena.
+            if r > ratio_aviso and (peor is None or r > peor[2]):
                 peor = (viejo, nuevo, r)
     if not peor:
         return None
     viejo, nuevo, r = peor
-    return (f"{len(por_anio[viejo])} depósito(s) fechados en {viejo} son {round(r)}× más "
-            f"grandes EN PESOS que los de {nuevo} — con la inflación tendría que ser al "
-            f"revés. Esas filas no son de {viejo}: es una fecha mal parseada, y el TC "
-            f"histórico de {viejo} las amplifica en vez de corregirlas. Mirá el desglose "
-            "del aportado por año antes de migrar esta cuenta")
+    txt = (f"{len(por_anio[viejo])} depósito(s) fechados en {viejo} son {round(r)}× más "
+           f"grandes EN PESOS que los de {nuevo} — con la inflación tendría que ser al revés")
+    if r > ratio:
+        return {"frena": True, "viejo": viejo, "nuevo": nuevo, "ratio": round(r, 1),
+                "motivo": txt + (f". Un múltiplo así no lo explica ningún cambio de hábito: "
+                                 f"esas filas no son de {viejo}, y el TC histórico las "
+                                 "amplifica en vez de corregirlas. Mirá el desglose del "
+                                 "aportado por año antes de migrar esta cuenta")}
+    return {"frena": False, "viejo": viejo, "nuevo": nuevo, "ratio": round(r, 1),
+            "motivo": txt + (". Puede ser fecha mal parseada o simplemente que aportaba más "
+                             "antes — con este múltiplo no se distingue, así que no frena")}
 
 
 def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
@@ -537,7 +547,9 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     _rend_antes = antes.get("rendimiento_pct")
     _rend_despues = despues.get("rendimiento_pct")
     _denominador_roto = denominador_roto(_val, _ap_dash_antes, _ap_dash_despues, _rend_despues)
-    _fechas_mal = fechas_sospechosas(conn, uid)
+    _fechas = fechas_sospechosas(conn, uid)
+    _fechas_mal = _fechas["motivo"] if (_fechas and _fechas["frena"]) else None
+    _fechas_aviso = _fechas["motivo"] if (_fechas and not _fechas["frena"]) else None
     _cae_fuerte = cae_de_ganar_a_perder_todo(_rend_antes, _rend_despues)
 
     resultado["verificacion"] = {
@@ -558,6 +570,7 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
         "rendimiento_despues_pct": _rend_despues,
         "denominador_roto": _denominador_roto,
         "fechas_sospechosas": _fechas_mal,
+        "fechas_aviso": _fechas_aviso,
         "cae_de_ganar_a_perder_todo": _cae_fuerte,
         # El recalc pone en CERO el capital_inicio del primer mes de todo broker
         # con actividad (main.py, _repair_monthly_chain). Si el usuario había

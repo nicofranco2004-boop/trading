@@ -136,10 +136,12 @@ class FechasSospechosasTest(unittest.TestCase):
         c.row_factory = sqlite3.Row
         c.execute("CREATE TABLE import_batches (id TEXT, user_id INT, status TEXT)")
         c.execute("CREATE TABLE import_normalized_tx (batch_id TEXT, date TEXT, "
-                  "currency TEXT, operation_type TEXT, gross_amount REAL)")
+                  "currency TEXT, operation_type TEXT, gross_amount REAL, "
+                  "notes TEXT, fingerprint TEXT)")
         c.execute("INSERT INTO import_batches VALUES ('b1', 1, 'confirmed')")
-        c.executemany("INSERT INTO import_normalized_tx VALUES ('b1',?,'ARS','DEPOSIT',?)",
-                      depositos)
+        # fingerprint no-nulo = fila parseada de verdad (las del seed lo tienen NULL).
+        c.executemany("INSERT INTO import_normalized_tx VALUES "
+                      "('b1',?,'ARS','DEPOSIT',?,NULL,'fp')", depositos)
         return c
 
     def test_caza_el_patron_de_324(self):
@@ -148,14 +150,17 @@ class FechasSospechosasTest(unittest.TestCase):
         d += [(f"2020-01-{10+i:02d}", 73_576) for i in range(19)]
         m = fxm.fechas_sospechosas(self._conn(d), 1)
         self.assertIsNotNone(m)
-        self.assertIn("2019", m)
-        self.assertIn("fecha mal parseada", m)
+        self.assertTrue(m["frena"], m)          # 198× es inequívoco
+        self.assertEqual(m["viejo"], "2019")
 
     def test_caza_el_patron_de_595(self):
         # 7 depósitos de 7,2 M en 2019 contra 622 mil en 2024.
         d = [(f"2019-0{i+1}-10", 7_200_813) for i in range(7)]
         d += [(f"2024-0{i+1}-10", 622_400) for i in range(5)]
-        self.assertIsNotNone(fxm.fechas_sospechosas(self._conn(d), 1))
+        m = fxm.fechas_sospechosas(self._conn(d), 1)
+        self.assertIsNotNone(m)
+        # 11,6× es ambiguo: puede ser fecha mal o que aportaba más antes.
+        self.assertFalse(m["frena"], m)
 
     def test_una_cuenta_sana_no_dispara(self):
         # Los montos crecen con la inflación, que es lo normal.
@@ -163,12 +168,23 @@ class FechasSospechosasTest(unittest.TestCase):
              + [("2024-05-10", 846_000)] * 4 + [("2026-05-10", 5_000_000)] * 4)
         self.assertIsNone(fxm.fechas_sospechosas(self._conn(d), 1))
 
+    def test_el_seed_no_cuenta(self):
+        """El "Estado inicial" ya no se re-estampa, así que no puede causar el
+        daño que este detector previene: mirarlo sería un falso positivo."""
+        c = self._conn([(f"2024-0{i+1}-01", 100_000) for i in range(4)])
+        c.executemany(
+            "INSERT INTO import_normalized_tx VALUES ('b1',?,'ARS','DEPOSIT',?,?,NULL)",
+            [(f"2019-0{i+1}-01", 130_000_000, "Estado inicial — depósito sintético (Rendi)")
+             for i in range(3)])
+        self.assertIsNone(fxm.fechas_sospechosas(c, 1))
+
     def test_un_deposito_grande_aislado_NO_es_sospechoso(self):
         # Una herencia, la venta de un auto: un depósito grande en 2019 y después
         # montos chicos. Con mediana + min_filas esto no puede marcar.
         d = [("2019-03-01", 20_000_000)] + [(f"2019-0{i+4}-01", 50_000) for i in range(5)]
         d += [(f"2021-0{i+1}-01", 200_000) for i in range(4)]
-        self.assertIsNone(fxm.fechas_sospechosas(self._conn(d), 1))
+        m = fxm.fechas_sospechosas(self._conn(d), 1)
+        self.assertFalse(m and m["frena"], m)
 
     def test_un_solo_anio_no_se_puede_juzgar(self):
         # Sin dos años no hay comparación posible: no se inventa un freno.
