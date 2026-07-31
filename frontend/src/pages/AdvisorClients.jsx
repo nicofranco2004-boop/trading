@@ -25,6 +25,8 @@ import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
+import { whatsappUrl } from '../utils/support'
+import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import Modal from '../components/Modal'
@@ -218,14 +220,27 @@ function ClientCard({ c, onOpen, onNotes, onInvite, onRevoke, menuOpen, onToggle
             )}
           </p>
         </div>
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+        {c.phone && (
+          <a
+            href={whatsappUrl(`Hola ${(c.name || c.label || '').split(' ')[0]}!`, c.phone)}
+            target="_blank" rel="noreferrer noopener"
+            onClick={(e) => e.stopPropagation()}
+            aria-label="Escribirle por WhatsApp"
+            className="p-1.5 rounded-md text-[#25D366] hover:bg-[#25D366]/10 transition-colors"
+          >
+            <WhatsAppIcon size={14} />
+          </a>
+        )}
         <button
           type="button"
           onClick={onToggleMenu}
           aria-label="Opciones del cliente"
-          className="p-1.5 -m-1 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors flex-shrink-0"
+          className="p-1.5 -m-1 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
         >
           <MoreVertical size={14} strokeWidth={1.75} />
         </button>
+        </div>
         {menuOpen && (
           <div className="absolute right-3 top-10 z-20 w-52 bg-bg-1 border border-line rounded-lg shadow-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
             {c.claim_status !== 'claimed' && (
@@ -305,6 +320,7 @@ function AddClientModal({ onClose, onCreated }) {
   const toast = useToast()
   const [label, setLabel] = useState('')
   const [name, setName] = useState('')
+  const [phone, setPhone] = useState('')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState(null)
 
@@ -314,7 +330,7 @@ function AddClientModal({ onClose, onCreated }) {
     setSaving(true)
     setErr(null)
     try {
-      await api.post('/advisor/clients', { label: label.trim(), name: name.trim() || null })
+      await api.post('/advisor/clients', { label: label.trim(), name: name.trim() || null, phone: phone.trim() || null })
       toast.push(`Cliente "${label.trim()}" creado — entrá y cargale su cartera`)
       onCreated()
     } catch (ex) {
@@ -335,6 +351,13 @@ function AddClientModal({ onClose, onCreated }) {
           <label htmlFor="adv-name" className="block text-xs text-ink-2 mb-1">Nombre real (opcional)</label>
           <input id="adv-name" className={inputCls} value={name} maxLength={100}
                  onChange={(e) => setName(e.target.value)} placeholder="Juan Pérez" />
+        </div>
+        <div>
+          <label htmlFor="adv-phone" className="block text-xs text-ink-2 mb-1">Celular (opcional)</label>
+          <input id="adv-phone" value={phone} onChange={e => setPhone(e.target.value)}
+            placeholder="Ej: 5491122334455 (con código de país)"
+            className="w-full text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none" />
+          <p className="text-[11px] text-ink-3 mt-1">Para escribirle por WhatsApp directo desde Rendi.</p>
         </div>
         <p className="text-[11px] text-ink-3 leading-relaxed">
           Se crea una cuenta administrada por vos. Después entrás a su Rendi y le cargás
@@ -359,13 +382,14 @@ function AddClientModal({ onClose, onCreated }) {
 function NotesModal({ client, onClose, onSaved }) {
   const toast = useToast()
   const [notes, setNotes] = useState(client.notes || '')
+  const [phone, setPhone] = useState(client.phone || '')
   const [saving, setSaving] = useState(false)
 
   const save = async () => {
     if (saving) return
     setSaving(true)
     try {
-      await api.patch(`/advisor/clients/${client.client_uid}`, { notes })
+      await api.patch(`/advisor/clients/${client.client_uid}`, { notes, phone: phone.trim() || null })
       toast.push('Notas guardadas')
       onSaved()
     } catch (e) {
@@ -383,8 +407,14 @@ function NotesModal({ client, onClose, onSaved }) {
         value={notes}
         maxLength={2000}
         onChange={(e) => setNotes(e.target.value)}
-        placeholder="Fee acordado, perfil, próxima llamada… Solo vos ves esto."
+        placeholder="Comisión acordada, perfil, próxima llamada… Solo vos ves esto."
       />
+      <div className="mt-3">
+        <label className="block text-xs text-ink-2 mb-1">Celular (WhatsApp)</label>
+        <input value={phone} onChange={(e) => setPhone(e.target.value)}
+          placeholder="Ej: 5491122334455 (con código de país)"
+          className={inputCls} />
+      </div>
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={onClose} className="text-xs text-ink-2 hover:text-ink-0 px-3 py-2 transition-colors">Cancelar</button>
         <button type="button" onClick={save} disabled={saving}

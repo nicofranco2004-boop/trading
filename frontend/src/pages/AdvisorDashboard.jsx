@@ -19,6 +19,8 @@ import { api } from '../utils/api'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
+import { whatsappUrl } from '../utils/support'
+import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { usd as usdFmt, ars as arsFmt } from '../utils/format'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
 
@@ -602,6 +604,15 @@ function CallQueue({ queues, onOpen }) {
                 </span>
               ))}
             </div>
+            {q.phone && (
+              <a
+                href={whatsappUrl(`Hola ${(q.label || '').split(' ')[0]}! Estuve revisando tu cartera y quiero comentarte un par de cosas. ¿Cuándo te queda cómodo un llamado?`, q.phone)}
+                target="_blank" rel="noreferrer noopener"
+                className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1 flex-shrink-0"
+              >
+                <WhatsAppIcon size={11} /> Escribirle
+              </a>
+            )}
             <button
               type="button"
               onClick={() => onOpen(q)}
@@ -739,6 +750,7 @@ function ReportModal({ onClose }) {
   const [profileError, setProfileError] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [results, setResults] = useState(null)
+  const [history, setHistory] = useState(null)   // null=cerrado; 'loading'; array
 
   useEffect(() => {
     api.get('/advisor/clients').then(d => {
@@ -838,6 +850,7 @@ function ReportModal({ onClose }) {
   // ── Resultados ──
   if (results) {
     const p = PERIODS.find(x => x.key === period)
+    const phoneOf = Object.fromEntries((clients || []).map(c => [c.client_uid, c.phone]))
     return (
       <Modal title={`${results.length} informe${results.length === 1 ? '' : 's'} listo${results.length === 1 ? '' : 's'} · ${p?.label ?? ''} (${p?.start} → ${p?.end})`} onClose={onClose} wide>
         <p className="text-xs text-ink-2 mb-3">
@@ -856,10 +869,17 @@ function ReportModal({ onClose }) {
                   className="text-[11px] font-semibold text-data-violet border border-data-violet/30 hover:bg-data-violet/10 rounded-md px-2.5 py-1.5 transition-colors">
                   Copiar link
                 </button>
-                <button type="button" onClick={() => copy(r.wa_text, 'Texto copiado — pegalo en WhatsApp')}
-                  className="text-[11px] font-medium text-ink-2 hover:text-ink-0 border border-line rounded-md px-2.5 py-1.5 transition-colors">
-                  Texto WhatsApp
-                </button>
+                {phoneOf[r.client_uid] ? (
+                  <a href={whatsappUrl(r.wa_text, phoneOf[r.client_uid])} target="_blank" rel="noreferrer noopener"
+                    className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
+                    <WhatsAppIcon size={11} /> Mandar por WhatsApp
+                  </a>
+                ) : (
+                  <button type="button" onClick={() => copy(r.wa_text, 'Texto copiado — pegalo en WhatsApp')}
+                    className="text-[11px] font-medium text-ink-2 hover:text-ink-0 border border-line rounded-md px-2.5 py-1.5 transition-colors">
+                    Texto WhatsApp
+                  </button>
+                )}
                 <a href={r.url} target="_blank" rel="noopener noreferrer"
                   className="text-[11px] font-medium text-ink-2 hover:text-ink-0 border border-line rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
                   Abrir <ExternalLink size={10} strokeWidth={2} />
@@ -870,6 +890,46 @@ function ReportModal({ onClose }) {
         </div>
         <div className="flex justify-end pt-3">
           <button type="button" onClick={onClose} className={btnPrimary}>Listo</button>
+        </div>
+      </Modal>
+    )
+  }
+
+  if (Array.isArray(history)) {
+    return (
+      <Modal title={`Informes enviados (${history.length})`} onClose={onClose} wide>
+        {history.length === 0 ? (
+          <p className="text-xs text-ink-3 py-6 text-center">Todavía no generaste informes.</p>
+        ) : (
+          <div className="border border-line/60 rounded-lg divide-y divide-line/40 max-h-96 overflow-y-auto">
+            {history.map(r => (
+              <div key={r.id} className="flex items-center gap-2 px-3 py-2.5 flex-wrap">
+                <div className="min-w-[150px]">
+                  <span className="text-sm font-medium text-ink-0">{r.client}</span>
+                  <span className="block text-[10px] text-ink-3">{r.period_start} → {r.period_end} · generado {String(r.created_at || '').slice(0, 10)}</span>
+                </div>
+                <div className="ml-auto flex items-center gap-1.5">
+                  <button type="button" onClick={() => copy(r.url, 'Link copiado')}
+                    className="text-[11px] font-semibold text-data-violet border border-data-violet/30 hover:bg-data-violet/10 rounded-md px-2.5 py-1.5 transition-colors">
+                    Copiar link
+                  </button>
+                  {r.phone && r.wa_text && (
+                    <a href={whatsappUrl(r.wa_text, r.phone)} target="_blank" rel="noreferrer noopener"
+                      className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
+                      <WhatsAppIcon size={11} /> WhatsApp
+                    </a>
+                  )}
+                  <a href={r.url} target="_blank" rel="noopener noreferrer"
+                    className="text-[11px] font-medium text-ink-2 hover:text-ink-0 border border-line rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
+                    Abrir <ExternalLink size={10} strokeWidth={2} />
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex justify-end pt-3">
+          <button type="button" onClick={() => setHistory(null)} className={btnPrimary}>Volver</button>
         </div>
       </Modal>
     )
@@ -957,7 +1017,12 @@ function ReportModal({ onClose }) {
           Rendi aparece solo en el pie.
         </p>
 
-        <div className="flex justify-end gap-2 pt-1">
+        <div className="flex items-center gap-2 pt-1">
+          <button type="button" disabled={history === 'loading'}
+            onClick={() => { setHistory('loading'); api.get('/advisor/reports').then(d => setHistory(d.reports || [])).catch(() => setHistory([])) }}
+            className="text-xs text-data-violet hover:underline px-1 py-2 transition-colors mr-auto">
+            {history === 'loading' ? 'Cargando…' : 'Informes enviados'}
+          </button>
           <button type="button" onClick={onClose} className="text-xs text-ink-2 hover:text-ink-0 px-3 py-2 transition-colors">Cancelar</button>
           <button type="button" onClick={generate}
                   disabled={generating || clients === null || !checked?.size} className={btnPrimary}>

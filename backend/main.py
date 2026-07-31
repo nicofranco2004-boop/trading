@@ -1209,6 +1209,11 @@ def init_db():
         );
     """)
 
+    # Migración: teléfono del cliente (lote 4 del audit — botón WhatsApp).
+    _ac_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_clients)").fetchall()]
+    if _ac_cols and 'phone' not in _ac_cols:
+        conn.executescript("ALTER TABLE advisor_clients ADD COLUMN phone TEXT;")
+
     # Migración: anchor_price para el modo "Desde ahora" (la tabla alerts ya existe
     # en prod sin esta columna → CREATE IF NOT EXISTS no la agrega).
     _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
@@ -26496,11 +26501,21 @@ ADVISOR_MAX_CLIENTS = 500  # cap duro por asesor (anti-spam + tope de IN(...) en
 class AdvisorClientIn(BaseModel):
     label: str = Field(..., min_length=1, max_length=MAX_STR)  # cómo lo ve el asesor ("Juan P — cartera agresiva")
     name: Optional[str] = Field(None, max_length=MAX_STR)      # nombre real (opcional)
+    phone: Optional[str] = Field(None, max_length=32)          # celular p/ WhatsApp (opcional)
 
 
 class AdvisorClientPatchIn(BaseModel):
     label: Optional[str] = Field(None, min_length=1, max_length=MAX_STR)
     notes: Optional[str] = Field(None, max_length=MAX_NOTES)
+    phone: Optional[str] = Field(None, max_length=32)
+
+
+def _norm_phone(v):
+    """Normaliza a dígitos para wa.me (deja solo números; '' → None)."""
+    if v is None:
+        return None
+    d = re.sub(r"\D", "", str(v))
+    return d or None
 
 
 @app.post("/api/advisor/clients")
@@ -26537,9 +26552,9 @@ def advisor_create_client(
             client_uid = cur.lastrowid
             conn.execute(
                 """INSERT INTO advisor_clients
-                       (advisor_uid, client_uid, link_type, permission, status, label, consent_ref)
-                   VALUES (?,?,'managed','read_write','active',?,?)""",
-                (uid, client_uid, data.label.strip(),
+                       (advisor_uid, client_uid, link_type, permission, status, label, phone, consent_ref)
+                   VALUES (?,?,'managed','read_write','active',?,?,?)""",
+                (uid, client_uid, data.label.strip(), _norm_phone(data.phone),
                  f"managed-by-advisor:{uid}:{datetime.utcnow().isoformat()}"),
             )
         return {
@@ -26548,6 +26563,38 @@ def advisor_create_client(
             "link_type": "managed",
             "permission": "read_write",
         }
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/reports")
+def advisor_list_reports(uid: int = Depends(get_current_user)):
+    """Historial de informes generados por el asesor (audit: los links públicos
+    vivían solo en el useState del modal — cerrarlo era perderlos). Devuelve
+    cliente, período, link y fecha; el más nuevo primero. Cap 200."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        rows = conn.execute(
+            """SELECT r.id, r.client_uid, r.period_start, r.period_end, r.token,
+                      r.wa_text, r.created_at, ac.label, ac.phone, u.name
+               FROM advisor_reports r
+               LEFT JOIN advisor_clients ac
+                 ON ac.advisor_uid = r.advisor_uid AND ac.client_uid = r.client_uid
+               LEFT JOIN users u ON u.id = r.client_uid
+               WHERE r.advisor_uid = ?
+               ORDER BY r.created_at DESC LIMIT 200""",
+            (uid,),
+        ).fetchall()
+        base = _frontend_url()
+        return {"reports": [{
+            "id": r["id"], "client_uid": r["client_uid"],
+            "client": (r["name"] or r["label"] or f"Cliente {r['client_uid']}"),
+            "phone": r["phone"],
+            "period_start": r["period_start"], "period_end": r["period_end"],
+            "url": f"{base}/i/{r['token']}", "created_at": r["created_at"],
+            "wa_text": r["wa_text"],
+        } for r in rows]}
     finally:
         conn.close()
 
@@ -26564,7 +26611,7 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
         _require_advisor(conn, uid)
         links = conn.execute(
             """SELECT ac.client_uid, ac.label, ac.link_type, ac.permission,
-                      ac.notes, ac.created_at, u.name, u.approved
+                      ac.notes, ac.phone, ac.created_at, u.name, u.approved
                FROM advisor_clients ac
                JOIN users u ON u.id = ac.client_uid
                WHERE ac.advisor_uid = ? AND ac.status = 'active'
@@ -26614,6 +26661,7 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
                 "link_type": r["link_type"],
                 "permission": r["permission"],
                 "notes": r["notes"],
+                "phone": r["phone"],
                 "created_at": r["created_at"],
                 "claim_status": claim_status,
                 "aum_usd": (float(snap["total_value"]) if snap and snap["total_value"] is not None else None),
@@ -26645,7 +26693,7 @@ def advisor_patch_client(
     uid: int = Depends(get_current_user),
 ):
     """Edita label y/o notas PRIVADAS del vínculo (el cliente nunca las ve)."""
-    if data.label is None and data.notes is None:
+    if data.label is None and data.notes is None and data.phone is None:
         raise HTTPException(400, "Nada para actualizar")
     conn = get_db()
     try:
@@ -26660,6 +26708,10 @@ def advisor_patch_client(
                 conn.execute(
                     "UPDATE advisor_clients SET notes=? WHERE advisor_uid=? AND client_uid=?",
                     (data.notes, uid, client_uid))
+            if data.phone is not None:
+                conn.execute(
+                    "UPDATE advisor_clients SET phone=? WHERE advisor_uid=? AND client_uid=?",
+                    (_norm_phone(data.phone), uid, client_uid))
         return {"ok": True}
     finally:
         conn.close()
@@ -28429,11 +28481,13 @@ def advisor_book(uid: int = Depends(get_current_user)):
     try:
         _require_advisor(conn, uid)
         ids = _advisor_client_ids(conn, uid)
+        _roster_rows = conn.execute(
+            """SELECT ac.client_uid, ac.label, ac.phone, u.name
+               FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+               WHERE ac.advisor_uid=? AND ac.status='active'""", (uid,)).fetchall()
         labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
-                  for r in conn.execute(
-                      """SELECT ac.client_uid, ac.label, u.name
-                         FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
-                         WHERE ac.advisor_uid=? AND ac.status='active'""", (uid,)).fetchall()}
+                  for r in _roster_rows}
+        phones = {r["client_uid"]: r["phone"] for r in _roster_rows if r["phone"]}
         if not ids:
             return {"aum": {"total_usd": None, "clients": 0, "with_data": 0},
                     "flows_month": None, "distribution": None,
@@ -28656,6 +28710,7 @@ def advisor_book(uid: int = Depends(get_current_user)):
                     pass
             if reasons:
                 queues.append({"client_uid": cid, "label": labels.get(cid),
+                               "phone": phones.get(cid),
                                "reasons": reasons})
 
         newest_date = max((str(r["date"]) for r in latest.values()), default=None)

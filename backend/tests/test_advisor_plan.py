@@ -1806,3 +1806,34 @@ class AuditGrandeTest(AdvisorBase):
         self.assertIsNone(p["base_note"])
         self.assertEqual(p["flows_usd"], 10000.0)
         self.assertEqual(p["market_usd"], 500.0)
+
+
+class PhoneAndReportsTest(AdvisorBase):
+    def test_phone_crud_y_normalizacion(self):
+        r = self.http.post("/api/advisor/clients",
+                           json={"label": "Tel Test", "phone": "+54 9 11 2233-4455"},
+                           headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        cid = r.json()["client_uid"]
+        roster = self.http.get("/api/advisor/clients", headers=self._hdr(self.advisor)).json()["clients"]
+        me = next(c for c in roster if c["client_uid"] == cid)
+        self.assertEqual(me["phone"], "5491122334455")   # normalizado a dígitos
+        # PATCH actualiza y re-normaliza
+        r = self.http.patch(f"/api/advisor/clients/{cid}",
+                            json={"phone": "549 (291) 437-0000"},
+                            headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        roster = self.http.get("/api/advisor/clients", headers=self._hdr(self.advisor)).json()["clients"]
+        me = next(c for c in roster if c["client_uid"] == cid)
+        self.assertEqual(me["phone"], "5492914370000")
+
+    def test_reports_list_solo_asesor(self):
+        r = self.http.get("/api/advisor/reports", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("reports", r.json())
+        # un usuario común no puede listar informes de asesor
+        conn = main.get_db()
+        conn.execute("INSERT INTO users (id,email,name,password_hash) VALUES (9901,'comun@x.co','C','x')")
+        conn.commit(); conn.close()
+        r = self.http.get("/api/advisor/reports", headers=self._hdr(9901))
+        self.assertEqual(r.status_code, 403)
