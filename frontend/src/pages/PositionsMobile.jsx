@@ -1548,6 +1548,10 @@ const BrokerSection = memo(function BrokerSection({
 const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
   const cur = p.isAR ? 'ARS' : 'USD'
   const [aiOpen, setAiOpen] = useState(false)
+  // Propio: `navigate` vive en PositionsMobile y este componente es hermano,
+  // no hijo — sin este hook, tocar la fila tiraba ReferenceError y el detalle
+  // mobile era inalcanzable.
+  const navigate = useNavigate()
 
   const actions = p._isAgg
     ? [
