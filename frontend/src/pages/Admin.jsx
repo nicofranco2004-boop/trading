@@ -1698,7 +1698,7 @@ function FxMigratePanel({ toast }) {
                       con el archivo, el broker y la fila original se ve si la fecha
                       la rompió el parser o si ya venía mal del export. */}
                   {(aportado.top_filas || []).length > 0 && (
-                    <details className="text-xs">
+                    <details className="text-xs" open>
                       <summary className="cursor-pointer text-ink-2 hover:text-ink-0 py-1">
                         Las filas más pesadas (de dónde salen)
                       </summary>
@@ -1727,8 +1727,13 @@ function FxMigratePanel({ toast }) {
                                 <td className="py-1 pr-3 text-right font-medium">{f.usd_v2 != null ? Math.round(f.usd_v2).toLocaleString() : '—'}</td>
                                 <td className="py-1 pr-3 text-right text-ink-3">{Math.round(f.usd_hoy).toLocaleString()}</td>
                                 <td className="py-1 pr-3">{f.broker || '—'}</td>
-                                <td className="py-1 pr-3 max-w-[180px] truncate" title={f.fila_original || ''}>
-                                  {f.archivo || f.parser || '—'}
+                                <td className="py-1 pr-3 max-w-[320px]">
+                                  <div className="truncate">{f.archivo || f.parser || '—'}</div>
+                                  {f.fila_original && (
+                                    <div className="text-[10px] text-ink-3 truncate" title={f.fila_original}>
+                                      {f.fila_original}
+                                    </div>
+                                  )}
                                 </td>
                               </tr>
                             ))}
@@ -1945,6 +1950,10 @@ function FxMigratePanel({ toast }) {
                                     </span>
                                   ) : ''}
                                   {v.denominador_roto ? <span className="text-red-400"> · ⛔ {v.denominador_roto}</span> : ''}
+                                  {v.fechas_sospechosas ? <span className="text-red-400"> · ⛔ {v.fechas_sospechosas}</span> : ''}
+                                  {v.cae_de_ganar_a_perder_todo && !v.fechas_sospechosas
+                                    ? <span className="text-amber-400"> · ⚠️ pasa de ganar a perder casi todo lo aportado — revisá el desglose por año</span>
+                                    : ''}
                                   {(v.baseline_borrada_usd || 0) !== 0
                                     ? <span className="text-amber-400"> · ⚠️ se borra el capital inicial cargado a mano (US$ {Math.round(v.baseline_borrada_usd).toLocaleString()})</span>
                                     : ''}

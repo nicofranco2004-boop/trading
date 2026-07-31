@@ -108,7 +108,7 @@ def _metricas(conn, uid: int) -> Dict[str, Any]:
     }
 
 
-def denominador_roto(valor, ap_antes, ap_despues, rend_despues):
+def denominador_roto(valor, ap_antes, ap_despues, rend_despues, rend_antes=None):
     """El único freno del aportado que NO es cuestión de criterio, sino aritmética.
 
     La MAGNITUD del salto del aportado no distingue reparación de daño (un flujo
@@ -139,6 +139,87 @@ def denominador_roto(valor, ap_antes, ap_despues, rend_despues):
                 f"US$ {round(ap_despues, 2)} contra una cartera de US$ {round(valor, 2)}): "
                 "el denominador quedó casi en cero")
     return None
+
+
+def cae_de_ganar_a_perder_todo(rend_antes, rend_despues):
+    """ADVERTENCIA, no freno: la cuenta pasaría de ganar a perder >80%.
+
+    Es un heurístico de COMPORTAMIENTO, no una prueba de que el dato esté mal:
+    perder el 80% de lo aportado es perfectamente posible. La fixture de
+    `test_migracion_mueve_las_dos_patas` da exactamente este salto (+2,0% →
+    −89,1%) con datos sanos, y frenarla estaría mal. Por eso se muestra en el
+    panel para que se mire, y quien frena de verdad es `fechas_sospechosas`,
+    que sí tiene una firma específica de dato roto.
+    """
+    return (rend_antes is not None and rend_despues is not None
+            and rend_antes > 0 > -80 > rend_despues)
+
+
+def fechas_sospechosas(conn, uid, ratio=10.0, min_filas=3):
+    """Depósitos en pesos que NO pueden ser del año que dicen. Esto sí frena.
+
+    En Argentina los montos nominales en pesos sólo crecen: un depósito típico
+    de 2019 tiene que ser MUCHO más chico que uno de 2024. Cuando pasa al revés,
+    esas filas no son de ese año — es una fecha mal parseada.
+
+    Medido en prod (2026-07-30), #324: 9 "depósitos" de 14,6 M de pesos fechados
+    en 2019, contra 73 mil por depósito en 2020 y 5 M en 2026. La serie
+    2020→2026 crece prolija con la inflación y 2019 se sale 200×. Al dólar de
+    2019 (42,3) esos 131 M dan US$ 3,1 M = el 92% del aportado de la cuenta.
+    Con el dólar de hoy el error era invisible (131 M / 1415 = 92 mil, un número
+    plausible); el TC histórico lo amplifica ×33. Misma firma en #595, donde los
+    RETIROS del mismo 2019 son de 11.700 pesos: nadie deposita siete millones y
+    retira once mil.
+
+    Se usa la MEDIANA y se exige `min_filas` en el año viejo para no marcar al
+    que hizo UN depósito grande (una herencia, la venta de un auto) y después
+    siguió con montos chicos. Devuelve el motivo (str) o None.
+    """
+    try:
+        filas = conn.execute(
+            """SELECT substr(n.date,1,4) anio, n.gross_amount monto
+                 FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed'
+                  AND UPPER(COALESCE(n.currency,''))='ARS'
+                  AND n.operation_type='DEPOSIT'
+                  AND n.gross_amount IS NOT NULL AND n.gross_amount > 0""",
+            (uid,)).fetchall()
+    except Exception:
+        return None
+
+    por_anio: Dict[str, list] = {}
+    for r in filas:
+        if r["anio"]:
+            por_anio.setdefault(r["anio"], []).append(float(r["monto"]))
+    if len(por_anio) < 2:
+        return None
+
+    def _mediana(xs):
+        s = sorted(xs)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+    med = {a: _mediana(v) for a, v in por_anio.items()}
+    anios = sorted(med)
+    peor = None
+    for i, viejo in enumerate(anios):
+        if len(por_anio[viejo]) < min_filas or med[viejo] <= 0:
+            continue
+        for nuevo in anios[i + 1:]:
+            if med[nuevo] <= 0:
+                continue
+            r = med[viejo] / med[nuevo]
+            if r > ratio and (peor is None or r > peor[2]):
+                peor = (viejo, nuevo, r)
+    if not peor:
+        return None
+    viejo, nuevo, r = peor
+    return (f"{len(por_anio[viejo])} depósito(s) fechados en {viejo} son {round(r)}× más "
+            f"grandes EN PESOS que los de {nuevo} — con la inflación tendría que ser al "
+            f"revés. Esas filas no son de {viejo}: es una fecha mal parseada, y el TC "
+            f"histórico de {viejo} las amplifica en vez de corregirlas. Mirá el desglose "
+            "del aportado por año antes de migrar esta cuenta")
 
 
 def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
@@ -421,6 +502,8 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     _rend_antes = antes.get("rendimiento_pct")
     _rend_despues = despues.get("rendimiento_pct")
     _denominador_roto = denominador_roto(_val, _ap_dash_antes, _ap_dash_despues, _rend_despues)
+    _fechas_mal = fechas_sospechosas(conn, uid)
+    _cae_fuerte = cae_de_ganar_a_perder_todo(_rend_antes, _rend_despues)
 
     resultado["verificacion"] = {
         "ventas_al_tc_de_su_fecha": f"{ok_tc}/{total_chk}",
@@ -439,6 +522,8 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
         "rendimiento_antes_pct": _rend_antes,
         "rendimiento_despues_pct": _rend_despues,
         "denominador_roto": _denominador_roto,
+        "fechas_sospechosas": _fechas_mal,
+        "cae_de_ganar_a_perder_todo": _cae_fuerte,
         # El recalc pone en CERO el capital_inicio del primer mes de todo broker
         # con actividad (main.py, _repair_monthly_chain). Si el usuario había
         # cargado a mano "empecé con US$ X" en /mensual, migrar se lo borra y el
@@ -500,6 +585,8 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
         _frenos.append(f"{len(mal_tc)} venta(s) quedaron con un TC distinto al de su fecha")
     if _denominador_roto:
         _frenos.append(_denominador_roto)
+    if _fechas_mal:
+        _frenos.append(_fechas_mal)
     if _implausible:
         _frenos.append(f"Δ P&L implausible (US$ {round(_d_pnl / _n_ventas, 2)}/venta sobre "
                        f"US$ {round(_d_pnl, 2)} totales): el P&L ya estaba corrupto y "

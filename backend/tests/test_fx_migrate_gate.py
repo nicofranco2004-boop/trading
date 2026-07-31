@@ -124,6 +124,94 @@ class DenominadorRotoTest(unittest.TestCase):
         self.assertIsNone(fxm.denominador_roto(0, 2_820, -1_477_984, None))
 
 
+class FechasSospechosasTest(unittest.TestCase):
+    """La inflación argentina no va para atrás: un depósito típico de 2019 tiene
+    que ser MUCHO más chico en pesos que uno de 2024. Cuando pasa al revés, esas
+    filas no son de ese año. Números reales del panel del 2026-07-30."""
+
+    def _conn(self, depositos):
+        """depositos: lista de (fecha, monto)."""
+        import sqlite3
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        c.execute("CREATE TABLE import_batches (id TEXT, user_id INT, status TEXT)")
+        c.execute("CREATE TABLE import_normalized_tx (batch_id TEXT, date TEXT, "
+                  "currency TEXT, operation_type TEXT, gross_amount REAL)")
+        c.execute("INSERT INTO import_batches VALUES ('b1', 1, 'confirmed')")
+        c.executemany("INSERT INTO import_normalized_tx VALUES ('b1',?,'ARS','DEPOSIT',?)",
+                      depositos)
+        return c
+
+    def test_caza_el_patron_de_324(self):
+        # 9 depósitos de 14,6 M en 2019 contra 73 mil por depósito en 2020.
+        d = [(f"2019-0{i+1}-15", 14_571_098) for i in range(9)]
+        d += [(f"2020-01-{10+i:02d}", 73_576) for i in range(19)]
+        m = fxm.fechas_sospechosas(self._conn(d), 1)
+        self.assertIsNotNone(m)
+        self.assertIn("2019", m)
+        self.assertIn("fecha mal parseada", m)
+
+    def test_caza_el_patron_de_595(self):
+        # 7 depósitos de 7,2 M en 2019 contra 622 mil en 2024.
+        d = [(f"2019-0{i+1}-10", 7_200_813) for i in range(7)]
+        d += [(f"2024-0{i+1}-10", 622_400) for i in range(5)]
+        self.assertIsNotNone(fxm.fechas_sospechosas(self._conn(d), 1))
+
+    def test_una_cuenta_sana_no_dispara(self):
+        # Los montos crecen con la inflación, que es lo normal.
+        d = ([("2020-05-10", 73_000)] * 4 + [("2022-05-10", 326_000)] * 4
+             + [("2024-05-10", 846_000)] * 4 + [("2026-05-10", 5_000_000)] * 4)
+        self.assertIsNone(fxm.fechas_sospechosas(self._conn(d), 1))
+
+    def test_un_deposito_grande_aislado_NO_es_sospechoso(self):
+        # Una herencia, la venta de un auto: un depósito grande en 2019 y después
+        # montos chicos. Con mediana + min_filas esto no puede marcar.
+        d = [("2019-03-01", 20_000_000)] + [(f"2019-0{i+4}-01", 50_000) for i in range(5)]
+        d += [(f"2021-0{i+1}-01", 200_000) for i in range(4)]
+        self.assertIsNone(fxm.fechas_sospechosas(self._conn(d), 1))
+
+    def test_un_solo_anio_no_se_puede_juzgar(self):
+        # Sin dos años no hay comparación posible: no se inventa un freno.
+        # Es el caso de la fixture de test_fx_migrate (un depósito, 2021).
+        d = [(f"2021-0{i+1}-01", 1_000_000) for i in range(5)]
+        self.assertIsNone(fxm.fechas_sospechosas(self._conn(d), 1))
+
+    def test_pocas_filas_en_el_anio_viejo_no_alcanzan(self):
+        # min_filas=3: con 2 filas grandes no se marca (podría ser real).
+        d = [("2019-03-01", 20_000_000), ("2019-04-01", 20_000_000)]
+        d += [(f"2023-0{i+1}-01", 100_000) for i in range(4)]
+        self.assertIsNone(fxm.fechas_sospechosas(self._conn(d), 1))
+
+    def test_cuenta_sin_depositos_no_rompe(self):
+        self.assertIsNone(fxm.fechas_sospechosas(self._conn([]), 1))
+
+
+class AdvertenciaNoFrenaTest(unittest.TestCase):
+    """"De ganar a perder todo" es un heurístico de comportamiento, no prueba de
+    dato roto: perder el 80% es posible. Se muestra, no frena."""
+
+    def test_detecta_el_salto(self):
+        self.assertTrue(fxm.cae_de_ganar_a_perder_todo(10.9, -87.7))    # #324
+        self.assertTrue(fxm.cae_de_ganar_a_perder_todo(39.7, -92.3))    # #814
+
+    def test_no_marca_caidas_moderadas(self):
+        self.assertFalse(fxm.cae_de_ganar_a_perder_todo(127.4, -23.3))  # #587
+        self.assertFalse(fxm.cae_de_ganar_a_perder_todo(79.0, -58.3))   # #558
+
+    def test_no_marca_al_que_ya_venia_perdiendo(self):
+        self.assertFalse(fxm.cae_de_ganar_a_perder_todo(-21.5, -95.6))  # #735
+
+    def test_no_esta_en_los_frenos(self):
+        src = inspect_source()
+        i = src.index("_frenos = []")
+        self.assertNotIn("cae_de_ganar_a_perder_todo", src[i:i + 1200])
+
+    def test_fechas_sospechosas_SI_frena(self):
+        src = inspect_source()
+        i = src.index("_frenos = []")
+        self.assertIn("_fechas_mal", src[i:i + 1200])
+
+
 class RendimientoVisibleTest(unittest.TestCase):
     """El panel tiene que mostrar el número que el usuario va a ver."""
 
