@@ -51,6 +51,7 @@ import {
   computeAssetTypeBreakdown,
   netCapitalContributed,
   monthlyReturnArs,
+  applyMtmToMonthly,
 } from '../utils/insightsModel'
 import {
   simulateSp500,
@@ -211,7 +212,10 @@ function InsightsDesktop({ _embeddedTab }) {
         api.get('/positions'),
         api.get('/brokers'),
         api.get('/benchmarks').catch(() => null),
-        api.get('/snapshots?days=30').catch(() => []),
+        // Historia completa, no 30 días: los snapshots son la serie a valor de
+        // MERCADO y ahora corrigen toda la cadena mensual (applyMtmToMonthly),
+        // no solo el detalle diario del último mes.
+        api.get('/snapshots?days=3650').catch(() => []),
         api.get('/dolar').catch(() => null),
         api.get('/operations').catch(() => []),
         api.get('/insights/commissions').catch(() => null),
@@ -373,8 +377,15 @@ function InsightsDesktop({ _embeddedTab }) {
   const unrealizedPnl = totalPortfolio - totalCostBasis
 
   // ── Cumulative performance series (monthly + today) ──
-  const globalMonthly = [...monthly.filter(m => m.broker === 'global')].sort((a, b) =>
-    a.year !== b.year ? a.year - b.year : a.month - b.month
+  // ÚNICO punto de entrada de la cadena mensual: todo lo de abajo (las 4 series,
+  // Sharpe/CAGR/vol/Sortino, drawdown, mejor/peor mes, los shadows de benchmark)
+  // se deriva de acá. Por eso la corrección a valor de mercado se aplica UNA vez,
+  // en el origen, en vez de parchear cada consumidor.
+  const globalMonthly = applyMtmToMonthly(
+    [...monthly.filter(m => m.broker === 'global')].sort((a, b) =>
+      a.year !== b.year ? a.year - b.year : a.month - b.month
+    ),
+    snapshots,
   )
   const monthKey = (y, m) => `${y}-${String(m).padStart(2, '0')}`
 

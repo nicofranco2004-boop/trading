@@ -41,7 +41,12 @@ function monthKey(year, month) {
 export function netCapitalContributed(globalMonthly) {
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return 0
-  const baseline = sorted[0].capital_inicio || 0
+  // El baseline del APORTADO es un concepto de costo — la plata que el usuario
+  // puso — y no puede contaminarse con valor de mercado. `applyMtmToMonthly`
+  // puede reemplazar `capital_inicio` por el snapshot MtM; cuando lo hace deja
+  // el original en `capital_inicio_costo` y acá se usa ese. Sin esta línea, el
+  // "Capital aportado" del hero se infla en silencio con la ganancia latente.
+  const baseline = sorted[0].capital_inicio_costo ?? sorted[0].capital_inicio ?? 0
   const flows = sorted.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
   return baseline + flows
 }
@@ -560,4 +565,74 @@ export function monthlyReturnArs({ ci, cf, net, fxPrev, fx, isImportInitial = fa
   // +300% es un outlier real, no un error de cálculo, y truncarlo acá mientras
   // otros motores no lo truncan es justamente lo que desalinea las pantallas.
   return Math.max(raw, -0.99)
+}
+
+
+// ─── Valor de MERCADO en la cadena mensual ──────────────────────────────────
+//
+// EL PROBLEMA: para todo mes CERRADO el backend fuerza
+//     capital_final = capital_inicio + deposits − withdrawals + pnl_realized
+// con pnl_unrealized = 0 (main.py, _repair_monthly_chain). Sustituyendo en
+// Modified Dietz, el retorno de cada mes histórico queda
+//     (cf − ci − net) / (ci + 0,5·net)  ≡  pnl_realized / (ci + 0,5·net)
+// o sea CERO movimiento de mercado: la línea de Insights mide únicamente lo que
+// se realizó. Todo lo no realizado de años entra de golpe en el mes en curso —
+// el único que cierra a valor live — y ahí encima lo trunca el tope mensual.
+//
+// Lo que el usuario ve: su "+8,8% acumulado" contra "S&P 500 +17,2%", cuando el
+// S&P se mide 100% a mercado todos los meses. Está comparando sus ganancias
+// REALIZADAS contra el mercado completo del índice. La subestimación es
+// sistemática. Es la misma clase de defecto que el "−64,9% fantasma", y Reportes
+// ya la parchea leyendo snapshots (reporting/builder.py, AUDIT C-2).
+//
+// LA CORRECCIÓN: los snapshots son la serie MtM diaria (total_value = Σ posiciones
+// × precio). Se reemplazan capital_inicio/capital_final por el snapshot del cierre
+// del mes anterior y el del cierre de este mes. Los flujos NO se tocan: siguen
+// siendo el registro contable de monthly_entries.
+//
+// ⚠️ LA REGLA QUE NO SE PUEDE ROMPER: ci y cf de un mismo mes tienen que estar en
+// LA MISMA BASE. Mezclar (ci a costo, cf a mercado) es exactamente lo que fabrica
+// el fantasma. Por eso un mes cerrado solo se convierte si existen LOS DOS
+// snapshots; si falta alguno queda a costo, igual que hoy — sin regresión.
+// El mes EN CURSO es la excepción y el caso más importante: su cf ya viene a
+// mercado (sync live), así que le alcanza con el snapshot del mes anterior para
+// quedar consistente — y es justo el mes que hoy absorbe todo el no realizado.
+export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date()) {
+  const filas = globalMonthly || []
+  if (!filas.length || !snapshots?.length) return filas
+
+  // Último snapshot de cada mes (los snapshots vienen diarios y ascendentes,
+  // pero no confiamos en el orden: nos quedamos con la fecha máxima del mes).
+  const ultimoDelMes = new Map()
+  for (const s of snapshots) {
+    const d = s?.date
+    const v = Number(s?.total_value)
+    if (!d || !(v > 0)) continue
+    const mk = String(d).slice(0, 7)
+    const prev = ultimoDelMes.get(mk)
+    if (!prev || d > prev.date) ultimoDelMes.set(mk, { date: d, value: v })
+  }
+  if (!ultimoDelMes.size) return filas
+
+  const mesAnterior = (y, m) => (m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`)
+  const hoyY = today.getFullYear()
+  const hoyM = today.getMonth() + 1
+
+  return filas.map(m => {
+    const mk = `${m.year}-${String(m.month).padStart(2, '0')}`
+    const snapPrev = ultimoDelMes.get(mesAnterior(m.year, m.month))
+    const snapCur = ultimoDelMes.get(mk)
+    const enCurso = m.year === hoyY && m.month === hoyM
+
+    if (enCurso) {
+      // cf ya está a mercado; solo falta que el arranque esté en la misma base.
+      if (!snapPrev) return m
+      return { ...m, capital_inicio: snapPrev.value,
+               capital_inicio_costo: m.capital_inicio, mtm: 'inicio' }
+    }
+    // Mes cerrado: los dos lados o ninguno.
+    if (!snapPrev || !snapCur) return m
+    return { ...m, capital_inicio: snapPrev.value, capital_final: snapCur.value,
+             capital_inicio_costo: m.capital_inicio, mtm: 'ambos' }
+  })
 }
