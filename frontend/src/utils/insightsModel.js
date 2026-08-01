@@ -510,3 +510,54 @@ export function computeProfitFactor(operations = []) {
 
   return { profitFactor, grossWin, grossLoss, total: valid.length }
 }
+
+
+// ─── Retorno mensual EN PESOS ───────────────────────────────────────────────
+//
+// EL BUG QUE ESTO ARREGLA (medido en producción, 2026-08-01):
+// La serie ARS convertía `ci`, `cf` y `net` con el FX del MISMO mes. Escrito así,
+// el FX se cancela EXACTO en el cociente de Modified Dietz:
+//
+//     (cf·fx − ci·fx − net·fx) / (ci·fx + 0,5·net·fx)
+//       = fx·(cf − ci − net) / (fx·(ci + 0,5·net))
+//       = (cf − ci − net) / (ci + 0,5·net)          ← el retorno EN DÓLARES
+//
+// O sea: el "retorno en pesos" era el retorno en dólares con otra etiqueta, para
+// cualquier fx > 0. Verificado numéricamente: cartera +1%/mes USD con el blue
+// subiendo 5%/mes daba TWR ARS == TWR USD con diferencia 7e-18 (ruido de float).
+//
+// Consecuencia visible: el veredicto "Inflación" divide ese retorno (dólares) por
+// la inflación del INDEC (pesos). Le falta exactamente el factor blue_fin/blue_ini,
+// así que INVIERTE EL SIGNO: en una ventana de 12 meses reportaba −10,3%
+// ("le perdés a la inflación") donde lo correcto era +5,1% ("le ganás"). El sesgo
+// es siempre en contra del usuario y crece con la ventana (79,9pp desde 2021).
+//
+// LA CORRECCIÓN: el capital inicial vale lo que valía en pesos AL PRINCIPIO del
+// mes — o sea al FX del mes ANTERIOR. Ahí el salto de devaluación aparece como
+// retorno, que es exactamente lo que la serie tiene que capturar.
+//
+// Los flujos van al FX de mitad de período (media geométrica), consistente con el
+// supuesto de Modified Dietz de que los flujos ocurren a mitad del mes. Es media
+// GEOMÉTRICA y no aritmética porque un tipo de cambio compone.
+//
+// ⚠️ EL RIEL TIENE QUE SER EL MISMO EN TODA LA CADENA (todo blue, o todo MEP). Lo
+// que mueve el retorno es el cociente fx_k / fx_{k−1}: mezclar rieles en un solo
+// paso mete un salto espurio del tamaño del cambio de la brecha.
+export function monthlyReturnArs({ ci, cf, net, fxPrev, fx, isImportInitial = false }) {
+  const _ci = ci || 0, _cf = cf || 0, _net = net || 0
+  // Sin FX utilizable no hay serie en pesos: devolvemos null para que el caller
+  // decida (mostrar nada es correcto; caer al retorno USD sería volver al bug).
+  if (!(fx > 0) || !(fxPrev > 0)) return null
+
+  const ciArs = _ci * fxPrev
+  const cfArs = _cf * fx
+  const netArs = _net * Math.sqrt(fxPrev * fx)
+
+  const avgArs = isImportInitial ? netArs : ciArs + 0.5 * netArs
+  if (!(avgArs > 0)) return 0
+  const raw = (cfArs - ciArs - netArs) / avgArs
+  // Piso en −99%: una cartera no puede perder más de todo. Sin techo: un mes de
+  // +300% es un outlier real, no un error de cálculo, y truncarlo acá mientras
+  // otros motores no lo truncan es justamente lo que desalinea las pantallas.
+  return Math.max(raw, -0.99)
+}

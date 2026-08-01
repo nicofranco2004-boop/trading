@@ -50,6 +50,7 @@ import {
   computeBrokerConcentration,
   computeAssetTypeBreakdown,
   netCapitalContributed,
+  monthlyReturnArs,
 } from '../utils/insightsModel'
 import {
   simulateSp500,
@@ -468,6 +469,7 @@ function InsightsDesktop({ _embeddedTab }) {
     let cumRealized = 0
     let cumIdxArs = 1.0
     let cumRealizedArs = 0
+    let fxPrevChart = fxBase   // el fx del mes anterior — sin esto el fx se cancela
     const baselineArs = baseline * (fxBase || 0)
     // Capital aportado NETO (deposits - withdrawals) acumulado. Coincide
     // con lo que muestra el Dashboard. Si Pablo deposita $200k y retira
@@ -519,15 +521,13 @@ function InsightsDesktop({ _embeddedTab }) {
         total: totalPct,
       })
 
-      // ARS: misma fórmula TWR, con flujos al fx del mes
+      // ARS: mismo TWR pero con el capital inicial al fx del mes ANTERIOR. Si los
+      // tres términos van al fx del MISMO mes, el fx se cancela en el cociente y
+      // esta línea "en pesos" es la línea en dólares. Ver monthlyReturnArs().
       if (fxBase && bench?.dolar_blue) {
         const fx = lookupDolar(monthKey(m.year, m.month)) || fxBase
-        const ciArs = ci * fx
-        const cfArs = cf * fx
-        const netArs = net * fx
-        const avgArs = isImportInitial ? netArs : ciArs + 0.5 * netArs
-        const rArsRaw = avgArs > 0 ? (cfArs - ciArs - netArs) / avgArs : 0
-        const rArs = Math.max(rArsRaw, -0.99)
+        const rArs = monthlyReturnArs({ ci, cf, net, fxPrev: fxPrevChart, fx, isImportInitial }) ?? 0
+        fxPrevChart = fx
         cumIdxArs *= (1 + rArs)
         cumRealizedArs += (m.pnl_realized || 0) * fx
 
@@ -557,17 +557,25 @@ function InsightsDesktop({ _embeddedTab }) {
       const realLive = denomLive > 0 ? +((cumRealized / denomLive) * 100).toFixed(2) : 0
       seriesUsd.push({ key: 'today', label: 'Hoy', realized: realLive, total: totalLive })
 
-      // ARS "Hoy" — extiende cumIdxArs igual que en USD
-      if (fxBase && tcBlue) {
-        const lastCfArs = lastCf * tcBlue
-        const valueArsLive = totalPortfolio * tcBlue
+      // ARS "Hoy" — el cierre del último mes vale a SU fx, el valor de hoy al de
+      // hoy. Los dos al mismo tcBlue (como estaba) hacía que el tramo final
+      // tampoco viera la devaluación.
+      // Los dos lados salen del mapa `dolar_blue`, NO de tcBlue: tcBlue es el MEP
+      // (pickFinancialRate), y como lo que mueve el retorno es el cociente
+      // fx_hoy/fx_últimoMes, mezclar rieles metería un salto espurio del tamaño
+      // del cambio de la brecha blue-MEP.
+      const fxHoyChart = dolarKeys.length ? bench.dolar_blue[dolarKeys[dolarKeys.length - 1]] : null
+      if (fxBase && fxHoyChart) {
+        const lastCfArs = lastCf * fxPrevChart
+        const valueArsLive = totalPortfolio * fxHoyChart
         if (lastCfArs > 0) {
           const rLiveArs = (valueArsLive - lastCfArs) / lastCfArs
           const rLiveArsClamped = Math.max(rLiveArs, -0.99)
           cumIdxArs *= (1 + rLiveArsClamped)
         }
         const totalArsLive = +((cumIdxArs - 1) * 100).toFixed(2)
-        const denomArsLive = safeDenom(cumNetDeposits, peakNetDeposits) * tcBlue
+        // Mismo riel que el numerador (cumRealizedArs se acumuló al blue de cada mes).
+        const denomArsLive = safeDenom(cumNetDeposits, peakNetDeposits) * fxHoyChart
         const realArsLive = denomArsLive > 0 ? +((cumRealizedArs / denomArsLive) * 100).toFixed(2) : 0
         seriesArs.push({ key: 'today', label: 'Hoy', realized: realArsLive, total: totalArsLive })
       }
@@ -721,6 +729,9 @@ function InsightsDesktop({ _embeddedTab }) {
     out.push({ key: firstKey, label: benchLabel(firstKey), total: 0, realized: 0 })
 
     let idxArs = 0
+    // El FX del mes ANTERIOR: sin esto el retorno "en pesos" era el retorno en
+    // dólares (el fx se cancelaba arriba y abajo). Ver monthlyReturnArs().
+    let fxPrevArs = blueBase
     for (const m of arsMonthly) {
       const isFirst = idxArs === 0
       idxArs++
@@ -729,15 +740,12 @@ function InsightsDesktop({ _embeddedTab }) {
       const net = (m.deposits || 0) - (m.withdrawals || 0)
       const ci = m.capital_inicio || 0
       const cf = m.capital_final || 0
-      // TWR en pesos (Modified Dietz con flujos al fx del mes) — fórmula idéntica
-      // a seriesArs del chart principal, para que ambas líneas coincidan.
-      const ciArs = ci * fx
-      const cfArs = cf * fx
-      const netArs = net * fx
+      // TWR en pesos: el capital inicial vale al FX del mes anterior y los flujos
+      // a mitad de período, así el salto de devaluación entra como retorno.
       const isImportInitial = isFirst && ci === 0 && net > 0
-      const avgArs = isImportInitial ? netArs : ciArs + 0.5 * netArs
-      const rArsRaw = avgArs > 0 ? (cfArs - ciArs - netArs) / avgArs : 0
-      const rArs = Math.max(rArsRaw, -0.99)
+      const rArs = monthlyReturnArs({ ci, cf, net, fxPrev: fxPrevArs, fx, isImportInitial }) ?? 0
+      const netArs = net * Math.sqrt(fxPrevArs * fx)
+      fxPrevArs = fx
       // El mes-1 es el ancla (0%) — no se cuenta su retorno intra-mes (ver benchSeriesUsd).
       if (!isFirst) cumIdxArs *= (1 + rArs)
       // Realized% (MWR sobre denom estable — secundario, línea punteada)
@@ -757,8 +765,15 @@ function InsightsDesktop({ _embeddedTab }) {
       .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto).value, 0)
     if (arsLiveUsd > 0) {
       const lastM = arsMonthly[arsMonthly.length - 1]
-      const lastCfArs = (lastM.capital_final || 0) * tcBlue
-      const valueNowArs = arsLiveUsd * tcBlue
+      // El punto "Hoy" tenía el MISMO bug que el loop: los dos lados al mismo
+      // tcBlue ⇒ el FX se cancelaba y el tramo final tampoco veía la devaluación.
+      // El cierre del último mes vale a SU FX; el valor de hoy, al de hoy.
+      // Los dos salen del riel `dolar_blue` a propósito: lo que mueve el retorno
+      // es el cociente fx_hoy/fx_últimoMes, y mezclar rieles (tcBlue es MEP)
+      // metería un salto espurio del tamaño de la brecha.
+      const fxHoy = blueKeys.length ? bench.dolar_blue[blueKeys[blueKeys.length - 1]] : null
+      const lastCfArs = (lastM.capital_final || 0) * fxPrevArs
+      const valueNowArs = arsLiveUsd * (fxHoy || fxPrevArs)
       if (lastCfArs > 0) {
         const rLiveArs = (valueNowArs - lastCfArs) / lastCfArs
         cumIdxArs *= (1 + Math.max(rLiveArs, -0.99))
@@ -2064,6 +2079,7 @@ function InsightsDesktop({ _embeddedTab }) {
             cumulativeReturnPct={cumulativeReturnPct}
             benchmarkReturnPct={benchmarkReturnPct}
             benchmarkLabel={benchmarkLabel}
+            ventanaMeses={effectiveRange}
             currency={currency}
           />
         )

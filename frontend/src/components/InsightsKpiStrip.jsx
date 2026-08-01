@@ -7,6 +7,8 @@
 //   4) Rendimiento acum.    → TWRR vs benchmark si está
 //   5) Win rate · trades    → ratio de operaciones cerradas
 
+import { labelVentanaMeses } from '../utils/format'
+
 const SEV_LABEL = { urgent: 'HI', warn: 'MED', positive: 'POS', info: 'LO' }
 const SEV_TONE = {
   urgent:   'text-rendi-neg',
@@ -29,8 +31,11 @@ export default function InsightsKpiStrip({
   cumulativeReturnPct,
   benchmarkReturnPct,
   benchmarkLabel,
+  ventanaMeses,
   currency = 'USD',
 }) {
+  const ventanaLabel = labelVentanaMeses(ventanaMeses)
+
   // ── 1) Findings buckets ────────────────────────────────────────────────────
   const buckets = { urgent: 0, warn: 0, positive: 0, info: 0 }
   for (const d of diagnosis) {
@@ -94,14 +99,20 @@ export default function InsightsKpiStrip({
         tone={ddTone}
         sub={ddMax != null ? `peak histórico ${fmtPctShort(ddMax, { decimals: 1 })}%` : 'TWRR'}
       />
+      {/* La ventana va EN EL TÍTULO, no en el subtítulo: "Acumulado" a secas se
+          lee como "desde siempre" y en realidad es el rango visible del gráfico
+          (12 meses por defecto), que cambia en silencio con los tabs 1A/2A/5A/MAX.
+          Sin el rótulo, este número se compara mentalmente contra el "Rendimiento
+          anual" del Dashboard —que sí es toda la historia, y anualizado— y no hay
+          forma de darse cuenta de que miden cosas distintas. */}
       <KpiCell
-        label={`Acumulado · ${currency}`}
+        label={`Acumulado ${ventanaLabel} · ${currency}`}
         value={cumulativeReturnPct != null ? `${fmtPctShort(cumulativeReturnPct, { decimals: 1, showPlus: true })}%` : '—'}
         tone={rendTone}
         sub={
           benchmarkReturnPct != null
-            ? `vs ${benchmarkLabel}: ${fmtPctShort(benchmarkReturnPct, { decimals: 1, showPlus: true })}%`
-            : 'TWRR ajustado'
+            ? `vs ${benchmarkLabel}: ${fmtPctShort(benchmarkReturnPct, { decimals: 1, showPlus: true })}% · mismo período`
+            : 'TWRR ajustado · sin anualizar'
         }
       />
       <KpiCell

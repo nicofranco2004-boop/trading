@@ -134,3 +134,14 @@ export const MONTHS = [
   'ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO',
   'JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'
 ]
+
+// Rótulo de la ventana de tiempo de una métrica acumulada ("1A", "6m", "histórico").
+// Existe porque la card "Acumulado" no decía sobre qué período medía: por defecto
+// son los últimos 12 meses y cambia en silencio con los tabs 1A/2A/5A/MAX. Sin el
+// rótulo, ese número se compara mentalmente contra el "Rendimiento anual" del
+// Dashboard —que es toda la historia Y anualizado— y parecen contradecirse cuando
+// en realidad miden cosas distintas.
+export function labelVentanaMeses(meses) {
+  if (!meses || !(meses > 0)) return 'histórico'
+  return meses % 12 === 0 ? `${meses / 12}A` : `${meses}m`
+}
