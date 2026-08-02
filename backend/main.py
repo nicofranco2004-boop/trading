@@ -9249,6 +9249,74 @@ def _rollover_all_brokers(conn, uid: int) -> int:
     return total_created
 
 
+@app.get("/api/insights/mtm-audit")
+def insights_mtm_audit(uid: int = Depends(get_effective_user)):
+    """Read-only: reconcilia mes a mes la cadena a COSTO (monthly_entries) contra
+    la cadena a MERCADO (snapshots), que es lo que hace applyMtmToMonthly en el
+    frontend. Existe porque las dos daban resultados incompatibles en producción
+    (Dashboard +18,4% anual vs Insights −5,2% acumulado) y no se puede decidir
+    cuál está mal sin ver los meses. No escribe nada."""
+    conn = get_db()
+    try:
+        filas = conn.execute(
+            "SELECT year, month, capital_inicio, capital_final, deposits, withdrawals, "
+            "pnl_realized FROM monthly_entries WHERE user_id=? AND broker='global' "
+            "ORDER BY year, month", (uid,)).fetchall()
+        # Último snapshot de cada mes.
+        snaps = {}
+        for r in conn.execute(
+                "SELECT date, total_value FROM snapshots WHERE user_id=? "
+                "AND total_value > 0 ORDER BY date", (uid,)):
+            snaps[r["date"][:7]] = {"date": r["date"], "value": round(r["total_value"], 2)}
+    finally:
+        conn.close()
+
+    def mk(y, m): return f"{y}-{m:02d}"
+    def prev(y, m): return f"{y-1}-12" if m == 1 else f"{y}-{m-1:02d}"
+    def dietz(ci, cf, net):
+        den = ci + 0.5 * net
+        return round((cf - ci - net) / den, 6) if den > 0 else None
+
+    hoy_y, hoy_m = (lambda d: (int(d[:4]), int(d[5:7])))(_iso_today())
+    out, cum_costo, cum_mtm = [], 1.0, 1.0
+    for f in filas:
+        k = mk(f["year"], f["month"])
+        net = (f["deposits"] or 0) - (f["withdrawals"] or 0)
+        ci_c, cf_c = f["capital_inicio"] or 0, f["capital_final"] or 0
+        r_c = dietz(ci_c, cf_c, net)
+        sp, sc = snaps.get(prev(f["year"], f["month"])), snaps.get(k)
+        en_curso = f["year"] == hoy_y and f["month"] == hoy_m
+        if en_curso and sp:
+            ci_m, cf_m, modo = sp["value"], cf_c, "inicio"
+        elif sp and sc:
+            ci_m, cf_m, modo = sp["value"], sc["value"], "ambos"
+        else:
+            ci_m, cf_m, modo = ci_c, cf_c, "sin-cobertura"
+        r_m = dietz(ci_m, cf_m, net)
+        if r_c is not None: cum_costo *= 1 + max(r_c, -0.99)
+        if r_m is not None: cum_mtm *= 1 + max(r_m, -0.99)
+        out.append({
+            "mes": k, "modo": modo,
+            "costo": {"ci": round(ci_c, 2), "cf": round(cf_c, 2), "r_pct": None if r_c is None else round(r_c * 100, 2)},
+            "mercado": {"ci": round(ci_m, 2), "cf": round(cf_m, 2), "r_pct": None if r_m is None else round(r_m * 100, 2)},
+            "net_flow": round(net, 2),
+            "delta_pp": None if (r_c is None or r_m is None) else round((r_m - r_c) * 100, 2),
+        })
+
+    peores = sorted([o for o in out if o["delta_pp"] is not None],
+                    key=lambda o: o["delta_pp"])[:5]
+    return {
+        "meses": len(out),
+        "snapshots_por_mes": len(snaps),
+        "primer_snapshot": min(snaps) if snaps else None,
+        "meses_sin_cobertura": [o["mes"] for o in out if o["modo"] == "sin-cobertura"],
+        "acumulado_costo_pct": round((cum_costo - 1) * 100, 2),
+        "acumulado_mercado_pct": round((cum_mtm - 1) * 100, 2),
+        "los_5_meses_que_mas_restan": peores,
+        "detalle": out,
+    }
+
+
 @app.get("/api/monthly")
 def get_monthly(uid: int = Depends(get_effective_user)):
     conn = get_db()
