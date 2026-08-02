@@ -69,19 +69,35 @@ export function CurrencyProvider({ children }) {
   })
 
   // "Costo en dólares" — con qué dólar contamos lo INVERTIDO en un lote en pesos:
-  //   • 'today'    (default) → el dólar de hoy, igual que el valor (FX-neutral): el
-  //     P&L USD refleja solo cómo rindió el activo.
-  //   • 'purchase' → el tc_compra del lote (los dólares que realmente pusiste): el
-  //     P&L incluye la devaluación del peso desde que compraste.
+  //   • 'purchase' (DEFAULT) → el tc_compra del lote: los dólares que realmente
+  //     pusiste. El P&L incluye la devaluación del peso desde que compraste.
+  //   • 'today' → el dólar de hoy, igual que el valor (FX-neutral): el P&L USD
+  //     refleja solo cómo rindió el activo, sin el efecto del tipo de cambio.
   // SOLO afecta el COSTO (columna Invertido USD) de lotes en pesos; el valor de
   // mercado siempre va al dólar de hoy. Preferencia de display per-device, igual
   // que el dólar de valuación — NO viaja al backend ni a la IA (que razonan a hoy).
+  //
+  // EL DEFAULT ERA 'today' Y ESTABA MAL. Reportado por un usuario con el número
+  // exacto: una compra de ALUA a 880 pesos el 7/5/24 (tc_compra 1048, bien
+  // estampado en la base) le mostraba US$ 0,58 en vez de 0,84 — porque 880/1517 =
+  // 0,58 y 1517 es el MEP de HOY. El síntoma que describió es literal: en
+  // Positions.jsx la columna "TC Compra" imprime 1048 y la de al lado divide por
+  // 1517. Dos celdas contiguas, dos tipos de cambio distintos.
+  // "Cuánto me costó en dólares" son los dólares que pusiste, no los que valdría
+  // hoy esa plata; y desde la migración a fx v2 los flujos y el P&L de las ventas
+  // ya van al TC de su fecha, así que dejar el costo a hoy era la única pieza
+  // fuera de eje. El modo 'today' sigue disponible en /config para quien quiera
+  // leer el rendimiento sin el efecto del dólar.
+  //
+  // Se respeta a quien haya elegido 'today' A MANO (queda guardado explícito);
+  // sólo cambia para el que nunca tocó la preferencia — que es casi todo el mundo,
+  // porque el control vive en /config y no hay nada en la toolbar de Cartera.
   const [costBasis, setCostBasisRaw] = useState(() => {
-    if (typeof window === 'undefined') return 'today'
+    if (typeof window === 'undefined') return 'purchase'
     try {
-      return localStorage.getItem(CB_STORAGE_KEY) === 'purchase' ? 'purchase' : 'today'
+      return localStorage.getItem(CB_STORAGE_KEY) === 'today' ? 'today' : 'purchase'
     } catch {
-      return 'today'
+      return 'purchase'
     }
   })
 
@@ -172,7 +188,7 @@ export const useCurrency = () => {
       isArs: false, isUsd: true,
       tcBlue: DEFAULT_TC_BLUE, setTcBlue: () => {},
       valuationDollar: 'mep', setValuationDollar: () => {},
-      costBasis: 'today', setCostBasis: () => {},
+      costBasis: 'purchase', setCostBasis: () => {},
       dolar: null,
     }
   }

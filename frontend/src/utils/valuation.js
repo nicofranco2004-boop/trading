@@ -219,7 +219,11 @@ export function holdingHasReliableFundamentals(p, arsBrokerNames) {
  *     la devaluación. Fallback al rate de hoy si el lote no tiene tc_compra (>0) →
  *     nunca divide por cero ni colapsa el lote. SOLO afecta el COSTO, nunca el valor.
  */
-export function costBasisRate(p, currentRate, costBasis = 'today') {
+export function costBasisRate(p, currentRate, costBasis = 'purchase') {
+  // El default del PARÁMETRO acompaña al del contexto. Cuando eran distintos
+  // ('today' acá, contexto aparte) cualquier caller que se olvidara de pasar
+  // `costBasis` volvía al dólar de hoy en silencio — el mismo bug que reportó el
+  // usuario de ALUA, pero sin nada en pantalla que lo delatara.
   return (costBasis === 'purchase' && p?.tc_compra > 0) ? p.tc_compra : currentRate
 }
 

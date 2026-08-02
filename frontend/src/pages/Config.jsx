@@ -510,19 +510,20 @@ export default function Config() {
             <div className="min-w-0 mb-3">
               <h2 className="text-sm font-medium text-ink-1">Costo en dólares</h2>
               <p className="text-xs text-ink-3 mt-0.5">
-                Con qué dólar contamos lo que invertiste. <b>Dólar de hoy</b> (default): tu
-                ganancia en USD refleja solo cómo rindió el activo. <b>Dólar de la compra</b>:
-                incluye la devaluación del peso desde que compraste. Cambia el <b>Invertido</b> y
-                el <b>P&L en dólares</b> de la Cartera; el valor de mercado y las cifras en pesos
-                no se tocan.
+                Con qué dólar contamos lo que invertiste. <b>Dólar de la compra</b> (default):
+                los dólares que realmente pusiste, así que tu ganancia en USD incluye la
+                devaluación del peso desde que compraste. <b>Dólar de hoy</b>: tu ganancia
+                refleja solo cómo rindió el activo, sin el efecto del tipo de cambio. Cambia el
+                <b> Invertido</b> y el <b>P&L en dólares</b> de la Cartera; el valor de mercado y
+                las cifras en pesos no se tocan.
               </p>
             </div>
             <div className="inline-flex rounded-md border border-line overflow-hidden">
               {[
-                { id: 'today', label: 'Dólar de hoy' },
                 { id: 'purchase', label: 'Dólar de la compra' },
+                { id: 'today', label: 'Dólar de hoy' },
               ].map(opt => {
-                const active = (costBasis || 'today') === opt.id
+                const active = (costBasis || 'purchase') === opt.id
                 return (
                   <button
                     key={opt.id}
@@ -532,7 +533,7 @@ export default function Config() {
                       active
                         ? 'bg-rendi-accent text-white'
                         : 'bg-bg-1 text-ink-2 hover:text-ink-0 hover:bg-bg-2'
-                    } ${opt.id === 'purchase' ? 'border-l border-line' : ''}`}
+                    } ${opt.id === 'today' ? 'border-l border-line' : ''}`}
                     aria-pressed={active}
                   >
                     {opt.label}

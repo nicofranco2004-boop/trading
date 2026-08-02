@@ -738,7 +738,7 @@ describe('computeBrokerValue — ON con override per-100 cae a costo (no infla l
   })
 })
 
-// ─── Modo costBasis: 'today' (FX-neutral, default) vs 'purchase' (dólar de compra) ──
+// ─── Modo costBasis: 'purchase' (dólar de compra, DEFAULT) vs 'today' (FX-neutral) ──
 describe('costBasisRate — chokepoint del divisor del costo', () => {
   it("today → siempre el rate actual (aunque haya tc_compra)", () => {
     expect(costBasisRate(pos({ tc_compra: TC1 }), TCB, 'today')).toBe(TCB)
@@ -750,8 +750,21 @@ describe('costBasisRate — chokepoint del divisor del costo', () => {
     expect(costBasisRate(pos({ tc_compra: null }), TCB, 'purchase')).toBe(TCB)
     expect(costBasisRate(pos({ tc_compra: 0 }), TCB, 'purchase')).toBe(TCB)
   })
-  it("default (sin 3er arg) = today", () => {
-    expect(costBasisRate(pos({ tc_compra: TC1 }), TCB)).toBe(TCB)
+  it("default (sin 3er arg) = purchase, igual que el contexto", () => {
+    // Cuando este default era 'today' y el del contexto era otro, cualquier
+    // caller que se olvidara del 3er argumento volvía al dólar de hoy en
+    // silencio — el mismo bug, pero sin nada en pantalla que lo delatara.
+    expect(costBasisRate(pos({ tc_compra: TC1 }), TCB)).toBe(TC1)
+  })
+
+  it("el caso REAL que reportó el usuario: ALUA 880 pesos, tc_compra 1048", () => {
+    // Compra del 7/5/24 a 880 ARS. Con el default viejo la app mostraba
+    // 880/1517 = 0,58 (el MEP de HOY) mientras la columna de al lado imprimía
+    // 1048. Con el default nuevo da 0,84, que es lo que el usuario calcula.
+    const MEP_HOY = 1517
+    const alua = pos({ tc_compra: 1048 })
+    expect(880 / costBasisRate(alua, MEP_HOY)).toBeCloseTo(0.84, 2)
+    expect(880 / costBasisRate(alua, MEP_HOY, 'today')).toBeCloseTo(0.58, 2)
   })
 })
 
