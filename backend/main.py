@@ -1757,10 +1757,36 @@ def init_db():
             created_position_id INTEGER,
             created_operation_id INTEGER,
             transfer_out INTEGER NOT NULL DEFAULT 0,
-            tc_compra REAL
+            tc_compra REAL,
+            -- Tombstone reversible para borrar una operación importada sin destruir
+            -- el log de auditoría. El rebuild lo respeta (rebuild._full_events filtra
+            -- excluded_at IS NULL) → la fila excluida NUNCA se re-deriva ni resucita
+            -- en un re-import. NULL = viva. Ver project_delete_ops_cascade.
+            excluded_at TEXT,
+            excluded_by INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_import_norm_batch
             ON import_normalized_tx(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_import_norm_excluded
+            ON import_normalized_tx(batch_id, excluded_at);
+
+        -- Journal para deshacer borrados de operaciones MANUALES (sin
+        -- import_op_links, no reproducibles por el rebuild). Guardamos el snapshot
+        -- JSON de lo borrado + los deltas de cash/tenencia para poder re-insertar
+        -- en un undo. Las importadas NO usan esto (su undo = limpiar excluded_at).
+        CREATE TABLE IF NOT EXISTS deleted_ops_journal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token TEXT NOT NULL,            -- agrupa un borrado (para el undo de N filas)
+            kind TEXT NOT NULL,             -- 'imported' | 'manual'
+            payload_json TEXT NOT NULL,     -- op row + deltas (broker, cash, lote restaurado…)
+            since_date TEXT,
+            broker TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            undone_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_deleted_ops_journal_tok
+            ON deleted_ops_journal(user_id, token);
 
         -- Mapping auxiliar: una fila puede crear múltiples positions/operations
         -- (ej.: SELL FIFO genera N rows en operations). Acá guardamos todos los
@@ -1829,6 +1855,16 @@ def init_db():
     norm_cols = _table_cols(conn, 'import_normalized_tx')
     if norm_cols and 'tc_compra' not in norm_cols:
         conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN tc_compra REAL")
+
+    # Migración (2026-08): tombstone `excluded_at`/`excluded_by` para borrar una
+    # operación importada sin destruir el log (el rebuild lo respeta en _full_events
+    # → no resucita al re-importar). Ver project_delete_ops_cascade.
+    norm_cols = _table_cols(conn, 'import_normalized_tx')
+    if norm_cols and 'excluded_at' not in norm_cols:
+        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN excluded_at TEXT")
+        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN excluded_by INTEGER")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_excluded "
+                     "ON import_normalized_tx(batch_id, excluded_at)")
 
     # Migración: route_by_currency en import_batches. Cuando es 1 y el broker
     # del batch es ARS, las filas USD/USDT se ruteán al sub-broker USD al persistir.
@@ -9590,6 +9626,7 @@ def get_movements(uid: int = Depends(get_effective_user)):
                 FROM import_normalized_tx t
                 JOIN import_batches b ON t.batch_id = b.id
                 WHERE b.user_id = ? AND b.status = 'confirmed'
+                  AND t.excluded_at IS NULL
                 ORDER BY t.date DESC""",
             (uid,),
         ).fetchall()
@@ -9675,6 +9712,7 @@ def get_movements(uid: int = Depends(get_effective_user)):
                 FROM import_normalized_tx t
                 JOIN import_batches b ON t.batch_id = b.id
                 WHERE b.user_id = ? AND b.status = 'confirmed'
+                  AND t.excluded_at IS NULL
                   AND UPPER(t.operation_type) IN ('DEPOSIT', 'WITHDRAW')
                 GROUP BY t.broker, y, m""",
             (tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, uid),
@@ -10002,6 +10040,7 @@ def get_commissions_total(uid: int = Depends(get_effective_user)):
                  JOIN import_batches b ON b.id = n.batch_id
                 WHERE b.user_id=?
                   AND b.status='confirmed'
+                  AND n.excluded_at IS NULL
                   AND (n.operation_type IN ('FEE','IMPUESTO')
                        OR (n.fees IS NOT NULL AND n.fees > 0))""",
             (uid,),
@@ -10244,7 +10283,8 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
                       t.currency, t.fees, t.notes
                FROM import_normalized_tx t
                JOIN import_batches b ON t.batch_id = b.id
-               WHERE b.user_id = ? AND b.status = 'confirmed'""",
+               WHERE b.user_id = ? AND b.status = 'confirmed'
+                 AND t.excluded_at IS NULL""",
             (uid,),
         ).fetchall()
         for r in tx_rows:
@@ -10672,16 +10712,236 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
     return dict(row)
 
 
+def _config_tc_blue(conn, uid: int) -> float:
+    """tc_blue del config del user (fallback 1415). Mismo criterio que _recalc."""
+    r = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,)
+    ).fetchone()
+    try:
+        v = float(r["value"]) if r else 1415.0
+        return v if v > 0 else 1415.0
+    except (TypeError, ValueError):
+        return 1415.0
+
+
+def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
+    """Borra UNA operación con cascada TOTAL a todo cálculo. Ver
+    project_delete_ops_cascade.
+
+    Fase 1: soporta VENTAS IMPORTADAS de activos no-bono reproducibles (safe). El
+    resto (manuales, bonos, compras, activos con data manual mezclada) se BLOQUEA
+    con mensaje claro — llega en la próxima versión. Mejor bloquear que corromper.
+
+    Cascada (orden crítico): reversar el CASH que la venta acreditó (el rebuild NO
+    lo toca) → tombstone la fila fuente (excluded_at → NO resucita en re-import) →
+    re-derivar el FIFO del activo (restaura tenencia, borra la venta) →
+    _cascade_after_movement_delete (monthly chain → recalc pnl → purga+backfill
+    snapshots). Reversible vía POST /api/operations/undo/{token}."""
+    import json as _json
+    import secrets as _secrets
+
+    op = conn.execute(
+        "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)
+    ).fetchone()
+    if not op:
+        raise HTTPException(404, "Operación no encontrada")
+
+    link = conn.execute(
+        "SELECT batch_id, raw_row_id FROM import_op_links WHERE operation_id=? LIMIT 1",
+        (oid,),
+    ).fetchone()
+    if not link:
+        raise HTTPException(400,
+            "Por ahora solo se pueden borrar operaciones IMPORTADAS. El borrado de "
+            "las cargadas a mano llega en la próxima versión.")
+
+    batch_id, raw_row_id = link["batch_id"], link["raw_row_id"]
+    src = conn.execute(
+        """SELECT n.* FROM import_normalized_tx n
+             JOIN import_batches b ON b.id = n.batch_id
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?
+              AND b.status='confirmed' AND n.excluded_at IS NULL""",
+        (batch_id, raw_row_id, uid),
+    ).fetchone()
+    if not src:
+        raise HTTPException(404, "La operación ya no existe en la fuente")
+
+    if (src["operation_type"] or "").upper() != "SELL":
+        raise HTTPException(400,
+            "Por ahora solo se pueden borrar VENTAS desde acá. Depósitos, dividendos "
+            "e intereses se borran desde la vista de movimientos; compras y bonos "
+            "llegan en la próxima versión.")
+    if (src["asset_type"] or "").upper() == "BOND":
+        raise HTTPException(400,
+            "El borrado de operaciones de bonos todavía no está disponible (tienen "
+            "amortizaciones y cupones enlazados). Llega en la próxima versión.")
+    # Venta SINTÉTICA de reconciliación de foto (transfer_out=1, cierre a costo):
+    # borrarla RESTAURARÍA una tenencia que la foto declaró cerrada, divergiendo de
+    # lo importado. Bloqueamos (además su gross=0 haría no-op la reversa de cash).
+    if src["transfer_out"]:
+        raise HTTPException(400,
+            "Esta venta viene de una foto de tenencia (cierre a costo), no de una "
+            "operación real, así que no se puede borrar por separado.")
+
+    broker = src["broker"] or op["broker"] or ""
+    asset = src["asset_symbol"] or op["asset"] or ""
+    pair = _import_persister.broker_pair(conn, uid, broker)
+    if not _import_rebuild._is_safe_to_rebuild(conn, uid, pair, asset):
+        raise HTTPException(409,
+            "Este activo tiene operaciones cargadas a mano mezcladas con las "
+            "importadas, así que todavía no se puede borrar una sola. (Próxima versión.)")
+
+    # Renta fija SIN catalogar (letras/ONs/provinciales que se importan como
+    # asset_type OTHER/'' → el guard de BOND no las agarra). Re-derivar ignoraría
+    # sus cupones/amortizaciones enlazados y sobre-estimaría la tenencia. Señal
+    # robusta: el activo tiene eventos de renta fija → bloqueamos (Fase 2).
+    _ph_fi = ",".join("?" * len(pair))
+    fixed_income = conn.execute(
+        f"""SELECT 1 FROM operations
+             WHERE user_id=? AND broker IN ({_ph_fi}) AND asset=?
+               AND op_type IN ('Cupón','Cupon','Amortización','Amortizacion','Renta')
+             LIMIT 1""",
+        (uid, *pair, asset),
+    ).fetchone()
+    if fixed_income:
+        raise HTTPException(400,
+            "Esta operación es de un activo de renta fija (tiene cupones o "
+            "amortizaciones enlazados); su borrado todavía no está disponible. "
+            "(Próxima versión.)")
+
+    since_date = (src["date"] or "")[:10] or None
+
+    # 1) CLAIM ATÓMICO: el tombstone es el PRIMER paso y sirve de lock — dos requests
+    #    concurrentes no pueden reversar el cash 2× (la 2da matchea 0 filas → 409).
+    claimed = conn.execute(
+        "UPDATE import_normalized_tx SET excluded_at=datetime('now'), excluded_by=? "
+        "WHERE id=? AND excluded_at IS NULL",
+        (uid, src["id"]),
+    ).rowcount
+    if claimed != 1:
+        raise HTTPException(409, "Esa operación ya se está borrando.")
+
+    # 2) Reversar el CASH que la venta acreditó. El persister acredita EXACTAMENTE
+    #    reconciled_unit_price·qty − fees (persister:611+793) y SOLO si eso es > 0 —
+    #    NO gross_amount − fees: el bruto/settled difiere de precio·cantidad por
+    #    redondeo del precio y por comisión embebida en el monto (Balanz). Espejamos
+    #    la MISMA fórmula → byte-simétrico. El rebuild NO toca el cash: esto es lo
+    #    único que lo corrige.
+    _ueff = _import_persister.reconciled_unit_price(
+        src["unit_price"], src["quantity"], src["gross_amount"], src["asset_type"])
+    proceeds_native = float(_ueff or 0) * float(src["quantity"] or 0) - float(src["fees"] or 0)
+    reversed_cash = proceeds_native if proceeds_native > 0 else 0.0
+    if reversed_cash:
+        _adjust_broker_cash(conn, uid, broker, -reversed_cash)
+
+    # 3) Soltar los links + journal para deshacer (guardamos EXACTAMENTE el monto
+    #    revertido para que el undo re-acredite lo mismo y quede simétrico).
+    conn.execute(
+        "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
+        (batch_id, raw_row_id),
+    )
+    token = _secrets.token_hex(8)
+    conn.execute(
+        """INSERT INTO deleted_ops_journal
+             (user_id, token, kind, payload_json, since_date, broker)
+           VALUES (?,?,?,?,?,?)""",
+        (uid, token, "imported",
+         _json.dumps({"tx_id": src["id"], "batch_id": batch_id, "raw_row_id": raw_row_id,
+                      "cash_reversed": reversed_cash, "broker": broker, "asset": asset}),
+         since_date, broker),
+    )
+
+    # 4) Re-derivar el FIFO del activo desde los eventos que sobreviven (restaura
+    #    tenencia, borra la venta). rebuild_pair_asset corre SIEMPRE (aun sin ventas).
+    tc_blue = _config_tc_blue(conn, uid)
+    _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
+
+    # 5) Cascada de agregados + snapshots — lo que el borrado viejo NO hacía.
+    _cascade_after_movement_delete(conn, uid, since_date, {broker})
+
+    return {"ok": True, "undo_token": token, "broker": broker, "asset": asset}
+
+
 @app.delete("/api/operations/{oid}")
 def delete_operation(oid: int, uid: int = Depends(get_effective_user)):
-    """Delete operation manual + sync cache pnl_realized (audit follow-up)."""
+    """Borra una operación con cascada TOTAL (cash + FIFO/tenencia + monthly +
+    snapshots) y sin resucitar en un re-import. Reversible vía POST .../undo.
+    Ver project_delete_ops_cascade. Fase 1: ventas importadas no-bono; el resto
+    se bloquea con mensaje claro."""
     conn = get_db()
-    conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (oid, uid))
     try:
-        _recalc_pnl_realized_from_ops(conn, uid)
+        result = _delete_operation_cascade(conn, uid, oid)
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        conn.close()
+        raise
     except Exception as ex:
-        log.error("Recalc tras delete_operation falló: %s", ex)
-    conn.commit()
+        conn.rollback()
+        conn.close()
+        log.error("delete_operation cascade falló uid=%s oid=%s: %s", uid, oid, ex)
+        raise HTTPException(500, "No se pudo borrar la operación")
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return result
+
+
+@app.post("/api/operations/undo/{token}")
+def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
+    """Deshace un borrado de operación (toast 'Deshacer'). Importada: limpia el
+    tombstone + devuelve el cash + re-deriva + cascada (la venta reaparece)."""
+    conn = get_db()
+    try:
+        j = conn.execute(
+            "SELECT * FROM deleted_ops_journal "
+            "WHERE user_id=? AND token=? AND undone_at IS NULL",
+            (uid, token),
+        ).fetchone()
+        # No cerramos acá: el `except HTTPException` es el único punto de cierre
+        # (cerrar antes del raise dejaba la conn cerrada y el rollback tiraba 500).
+        if not j:
+            raise HTTPException(404, "Nada para deshacer")
+        if j["kind"] != "imported":
+            raise HTTPException(400, "Este borrado no se puede deshacer automáticamente")
+        import json as _json
+        p = _json.loads(j["payload_json"])
+        # Guard (mismo que el delete): rebuild_pair_asset limpia TODO el activo y
+        # re-deriva solo lo importado. Si desde el borrado el activo ganó data manual,
+        # deshacer la BORRARÍA en silencio → bloqueamos.
+        pair = _import_persister.broker_pair(conn, uid, p["broker"])
+        if not _import_rebuild._is_safe_to_rebuild(conn, uid, pair, p["asset"]):
+            raise HTTPException(409,
+                "No se puede deshacer: desde que borraste, el activo tiene "
+                "operaciones cargadas a mano que se perderían al restaurar.")
+        # CLAIM ATÓMICO: marcar undone_at ES el lock — un doble-click/retry no puede
+        # re-acreditar el cash 2× (la 2da matchea 0 filas → 409). El rollback lo
+        # revierte si algo falla después (todo en la misma tx).
+        claimed = conn.execute(
+            "UPDATE deleted_ops_journal SET undone_at=datetime('now') "
+            "WHERE id=? AND undone_at IS NULL", (j["id"],)).rowcount
+        if claimed != 1:
+            raise HTTPException(409, "Ese borrado ya se deshizo.")
+        conn.execute(
+            "UPDATE import_normalized_tx SET excluded_at=NULL, excluded_by=NULL "
+            "WHERE id=? AND batch_id=?",
+            (p["tx_id"], p["batch_id"]),
+        )
+        cash = float(p.get("cash_reversed") or 0)
+        if cash:
+            _adjust_broker_cash(conn, uid, p["broker"], cash)
+        tc_blue = _config_tc_blue(conn, uid)
+        _import_rebuild.rebuild_pair_asset(conn, uid, p["broker"], p["asset"], tc_blue=tc_blue)
+        _cascade_after_movement_delete(conn, uid, j["since_date"], {p["broker"]})
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        conn.close()
+        raise
+    except Exception as ex:
+        conn.rollback()
+        conn.close()
+        log.error("undo_delete_operation falló uid=%s token=%s: %s", uid, token, ex)
+        raise HTTPException(500, "No se pudo deshacer")
     conn.close()
     _ai_cache_invalidate(uid)
     return {"ok": True}
@@ -23505,7 +23765,8 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
                      "skipped_manual": sorted(set(unsafe)), "capped": bool(capped)}
     mx = conn.execute(
         f"SELECT MAX(n.date) d FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
-        f"WHERE b.user_id=? AND b.status='confirmed' AND n.broker IN ({ph}) "
+        f"WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL "
+        f"AND n.broker IN ({ph}) "
         f"AND n.operation_type IN ('BUY','SELL')",
         (uid, *pair_l)).fetchone()
     red_date = max(seed_date, mx["d"]) if mx and mx["d"] else seed_date

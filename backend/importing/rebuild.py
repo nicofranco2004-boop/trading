@@ -541,6 +541,7 @@ def _full_events(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[st
              JOIN import_batches b ON b.id = n.batch_id
             WHERE b.user_id = ?
               AND b.status = 'confirmed'
+              AND n.excluded_at IS NULL
               AND n.broker IN ({_ph})
               AND n.asset_symbol = ?
               AND n.operation_type IN (?, ?)
@@ -880,3 +881,57 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         "skipped_no_sell": skipped_no_sell,
         "errors": errors,
     }
+
+
+def rebuild_pair_asset(conn, uid: int, broker: str, asset: str, *,
+                       tc_blue: float = 1415.0) -> Dict[str, Any]:
+    """Re-deriva el FIFO de UN (par padre↔'· USD', activo) desde sus eventos
+    importados que SOBREVIVEN (excluded_at IS NULL, filtrado en _full_events).
+
+    A diferencia de `rebuild_fifo_after_import`, corre SIEMPRE — NO saltea el caso
+    "sin ventas". Es la primitiva del BORRADO de operaciones: al tombstonear una
+    venta, el activo puede quedar sin ventas y hay que restaurar la tenencia igual
+    (el replay reconstruye los lotes abiertos desde las compras). El caller DEBE
+    haber chequeado `_is_safe_to_rebuild` antes (no tocamos data manual).
+
+    Devuelve {"open_lots": n, "sells": n}. Atómico por SAVEPOINT."""
+    pair = broker_pair(conn, uid, broker)
+    events = _full_events(conn, uid, pair, asset)
+    _use_hist = fx_version(conn, uid) == FX_V2
+
+    _ph_pair = ",".join("?" * len(pair))
+    br = conn.execute(
+        f"""SELECT currency FROM brokers
+             WHERE user_id=? AND name IN ({_ph_pair}) AND parent_broker_id IS NULL
+             ORDER BY id ASC LIMIT 1""",
+        (uid, *pair),
+    ).fetchone()
+    broker_currency = (br["currency"] if br else "USD") or "USD"
+    if broker_currency == "USDT":
+        broker_currency = "USD"
+    if broker_currency not in ("ARS", "USD"):
+        broker_currency = "USD"
+
+    grp_is_exchange = any(_is_exchange_broker(b) for b in pair)
+    replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue,
+                           use_hist=_use_hist, conn=conn, is_exchange=grp_is_exchange)
+
+    conn.execute("SAVEPOINT rebuild_del")
+    try:
+        old_buy_pos = _clear_old_state(conn, uid, pair, asset, events)
+        _write_rebuilt(conn, uid, replay)
+        _ensure_monthly_rows(conn, uid, replay["operations"])
+        surviving_buys = {
+            (l["batch_id"], l["raw_row_id"])
+            for l in replay["open_lots"]
+            if l.get("batch_id") and l.get("raw_row_id")
+        }
+        consumed = set(old_buy_pos.keys()) - surviving_buys
+        if consumed:
+            _write_buy_tombstones(conn, consumed, old_buy_pos)
+        conn.execute("RELEASE rebuild_del")
+    except Exception:
+        conn.execute("ROLLBACK TO rebuild_del")
+        conn.execute("RELEASE rebuild_del")
+        raise
+    return {"open_lots": len(replay["open_lots"]), "sells": len(replay["operations"])}

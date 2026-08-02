@@ -140,9 +140,15 @@ function OperationsDesktop() {
   }
 
   async function del(id) {
-    if (!confirm('¿Eliminar esta operación? La acción no se puede deshacer.')) return
-    await api.delete(`/operations/${id}`)
-    load()
+    if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
+    try {
+      await api.delete(`/operations/${id}`)
+      await load()
+    } catch (ex) {
+      // El backend bloquea con mensaje claro los casos que aún no soporta
+      // (manuales, bonos, activos con data manual mezclada).
+      alert(ex?.message || 'No se pudo borrar la operación.')
+    }
   }
 
   // KPIs sobre todas las ops, no las filtradas.

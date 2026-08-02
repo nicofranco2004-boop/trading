@@ -1295,7 +1295,8 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
     blocked_ops = conn.execute(
         """SELECT operation_type, COUNT(*) c
              FROM import_normalized_tx
-            WHERE batch_id=? AND operation_type IN ('SELL','FX_ARS_TO_USD','FX_USD_TO_ARS','FUTURES_PNL')
+            WHERE batch_id=? AND excluded_at IS NULL
+              AND operation_type IN ('SELL','FX_ARS_TO_USD','FX_USD_TO_ARS','FUTURES_PNL')
             GROUP BY operation_type""",
         (batch_id,),
     ).fetchall()
@@ -1347,10 +1348,13 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
     brokers_touched = set()
     tc_blue = _read_tc_blue(conn, uid)
 
-    # Revertir en orden inverso al aplicado
+    # Revertir en orden inverso al aplicado. Saltamos las filas ya tombstoneadas
+    # por un borrado de operación (excluded_at): sus side-effects ya se revirtieron
+    # y sus import_op_links se borraron → re-procesarlas rompería (la venta) o
+    # doble-revertiría. Así un batch cuyas ventas se borraron sí se puede revertir.
     txs = conn.execute(
         """SELECT * FROM import_normalized_tx
-            WHERE batch_id=?
+            WHERE batch_id=? AND excluded_at IS NULL
             ORDER BY date DESC, id DESC""",
         (batch_id,),
     ).fetchall()
