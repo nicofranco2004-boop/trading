@@ -394,13 +394,39 @@ export function computeCAGR(monthlyReturns) {
       months: monthlyReturns.length,
     }
   }
-  const n = monthlyReturns.length
+  // El exponente va sobre el TIEMPO TRANSCURRIDO, no sobre la cantidad de meses
+  // que sobrevivieron los filtros. `computeMonthlyReturns` descarta meses sin
+  // capital (start ≤ 100) y outliers, y anualizar sobre los que quedaron
+  // INFLABA el número: medido, un usuario que estuvo 12 meses afuera del mercado
+  // en el medio de su historia veía +26,8% anual cuando su plata, sobre los 30
+  // meses reales, rindió +10,0% — 16,9pp de aire. Con un import que trae meses
+  // vacíos al principio (patrón habitual) el aire era de 14,2pp.
+  //
+  // El span sale de la PRIMERA y la ÚLTIMA clave conservada, que es justo lo que
+  // queremos y no un simple max−min del calendario:
+  //   · los meses vacíos del ARRANQUE (típicos de un import) quedan afuera — no
+  //     corresponde penalizar por meses en los que todavía no invertía;
+  //   · los huecos del MEDIO sí cuentan — esa plata existía y no rindió nada.
+  // Para un usuario invertido de forma continua no cambia nada: span == n.
+  const primera = monthlyReturns[0].key
+  const ultima = monthlyReturns[monthlyReturns.length - 1].key
+  const span = mesesEntre(primera, ultima)
+  const n = span || monthlyReturns.length
   const cagr = Math.pow(1 + totalGrowth, 12 / n) - 1
   return {
     cagr,
     totalGrowth,
-    months: n,
+    months: n,                              // meses transcurridos (lo que se anualiza y se muestra)
+    monthsWithData: monthlyReturns.length,  // meses que efectivamente tuvieron retorno
   }
+}
+
+// Meses transcurridos entre dos claves "YYYY-MM", ambas inclusive.
+function mesesEntre(desde, hasta) {
+  const [y1, m1] = String(desde || '').split('-').map(Number)
+  const [y2, m2] = String(hasta || '').split('-').map(Number)
+  if (!y1 || !m1 || !y2 || !m2) return 0
+  return (y2 - y1) * 12 + (m2 - m1) + 1
 }
 
 

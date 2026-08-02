@@ -1914,15 +1914,31 @@ function InsightsDesktop({ _embeddedTab }) {
 
   // Veredicto comparativo — items que también muestra ArAlternativesVerdict.
   // Los extraemos a una const para reusarlos en el render Y en los params IA.
+  // Las tres celdas responden preguntas DISTINTAS con matemáticas distintas, y
+  // hasta acá se veían iguales: mismo formato, mismo "Le ganás", mismo % grande.
+  // Poner tres números no comparables uno al lado del otro es justamente lo que
+  // hace que alguien reste "17,2 − 8,8" y saque una conclusión que no se sostiene.
+  // Cada una lleva ahora su base escrita.
   const verdictItems = [
-    { key: 'plazo_fijo', label: 'Plazo fijo UVA', pct: vsPlazoFijo?.pct ?? null },
-    { key: 'dolar', label: 'Dólar', pct: vsDolar?.pct ?? null },
+    {
+      key: 'plazo_fijo', label: 'Plazo fijo UVA', pct: vsPlazoFijo?.pct ?? null,
+      nota: 'tu patrimonio de hoy vs la misma plata en UVA',
+    },
+    {
+      key: 'dolar', label: 'Dólar', pct: vsDolar?.pct ?? null,
+      nota: 'tu patrimonio de hoy vs la misma plata en dólares',
+    },
     {
       key: 'inflacion',
       label: 'Inflación',
       pct: (portfolioReturnArsPctRaw != null && isFinite(portfolioReturnArsPctRaw) && inflationCumArsWindow?.cumPct != null)
         ? ((1 + portfolioReturnArsPctRaw / 100) / (1 + inflationCumArsWindow.cumPct / 100) - 1) * 100
         : null,
+      // Otra pregunta y otra base: es el retorno REAL (time-weighted) de la pata
+      // en PESOS, no una comparación de patrimonios. Y solo cubre los brokers en
+      // pesos — callarlo hace creer que habla de toda la cartera.
+      nota: `retorno real de tus brokers en pesos${inflationCumArsWindow?.monthsCounted
+        ? ` · ${inflationCumArsWindow.monthsCounted} ${inflationCumArsWindow.monthsCounted === 1 ? 'mes' : 'meses'}` : ''}`,
     },
   ]
 

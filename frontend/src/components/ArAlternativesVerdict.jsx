@@ -42,15 +42,22 @@ export default function ArAlternativesVerdict({ items }) {
               <span className={`block font-semibold text-[24px] leading-none tabular num mt-2 ${color}`}>
                 {win ? '+' : ''}{it.pct.toFixed(1)}%
               </span>
+              {/* La base de CADA celda, en la celda. Las tres se calculan
+                  distinto y sin esto no hay forma de saberlo mirando. */}
+              {it.nota && (
+                <span className="block text-[11px] text-ink-3 leading-snug mt-2">{it.nota}</span>
+              )}
             </div>
           )
         })}
       </div>
 
       <p className="text-[12px] text-ink-3 mt-4 leading-relaxed">
-        Compara tu patrimonio actual contra lo que valdría hoy si la misma plata —
-        con los mismos aportes y retiros— hubiera ido a cada alternativa.
-        La inflación se mide como retorno real (ya descontada).
+        <b>Plazo fijo UVA</b> y <b>Dólar</b> comparan tu patrimonio de hoy contra lo que
+        valdría si la misma plata —con los mismos aportes y retiros— hubiera ido ahí.
+        <b> Inflación</b> es otra cosa: el retorno real de tu pata en pesos, ya descontado
+        el IPC. <b>Los tres porcentajes no se restan entre sí</b> — cada uno responde una
+        pregunta distinta.
       </p>
     </div>
   )
