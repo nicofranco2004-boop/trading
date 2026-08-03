@@ -19,6 +19,7 @@ from .schema import (
     AT_STOCK, AT_CEDEAR, AT_ETF, AT_CRYPTO, AT_FIAT, AT_BOND, AT_OTHER,
 )
 from .fci_map import resolve_fci_symbol
+from .tickers_cd import consolidate_cd
 
 
 # Día y mes aceptan 1 o 2 dígitos (\d{1,2}): muchos exports / CSV editados en
@@ -310,6 +311,17 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
             _fci_sym = resolve_fci_symbol(asset_raw)
             if _fci_sym:
                 asset_symbol = _fci_sym
+        else:
+            # Pata dólar/cable → el ticker base. Un MEP son dos operaciones el
+            # mismo día sobre el mismo instrumento (compra AL30 en pesos, vende
+            # AL30D en dólares), pero el broker las exporta con tickers distintos
+            # y el replay FIFO arma un ledger por símbolo EXACTO: quedan dos
+            # libros separados, la compra abierta como activo fantasma y la venta
+            # sin stock con P&L 0. Bajo el mismo símbolo, la maquinaria que ya
+            # existe (BUY-first, _cancel_conduit_pairs, spill cross-currency) las
+            # netea sola. Gateado a BOND/STOCK/CEDEAR: en FUND el sufijo D/C es
+            # legítimo, y en cripto/fiat no existe la pata dólar.
+            asset_symbol = consolidate_cd(asset_raw, asset_type)
 
         # Construcción específica por op_type
         tx = NormalizedTx(
