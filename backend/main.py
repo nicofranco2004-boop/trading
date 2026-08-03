@@ -9304,9 +9304,10 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
         # Último snapshot de cada mes.
         snaps = {}
         for r in conn.execute(
-                "SELECT date, total_value FROM snapshots WHERE user_id=? "
+                "SELECT date, total_value, net_deposited FROM snapshots WHERE user_id=? "
                 "AND total_value > 0 ORDER BY date", (uid,)):
-            snaps[r["date"][:7]] = {"date": r["date"], "value": round(r["total_value"], 2)}
+            snaps[r["date"][:7]] = {"date": r["date"], "value": round(r["total_value"], 2),
+                                    "nd": round(r["net_deposited"] or 0, 2)}
     finally:
         conn.close()
 
@@ -9334,8 +9335,11 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
         r_m = dietz(ci_m, cf_m, net)
         if r_c is not None: cum_costo *= 1 + max(r_c, -0.99)
         if r_m is not None: cum_mtm *= 1 + max(r_m, -0.99)
+        flujo_snap = (round(sc["nd"] - sp["nd"], 2) if (sp and sc) else None)
         out.append({
             "mes": k, "modo": modo,
+            "flujo_snapshot": flujo_snap,
+            "flujo_discrepa": (None if flujo_snap is None else round(flujo_snap - net, 2)),
             "costo": {"ci": round(ci_c, 2), "cf": round(cf_c, 2), "r_pct": None if r_c is None else round(r_c * 100, 2)},
             "mercado": {"ci": round(ci_m, 2), "cf": round(cf_m, 2), "r_pct": None if r_m is None else round(r_m * 100, 2)},
             "net_flow": round(net, 2),
@@ -9344,7 +9348,15 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
 
     peores = sorted([o for o in out if o["delta_pp"] is not None],
                     key=lambda o: o["delta_pp"])[:5]
+    disc = [o for o in out if o.get("flujo_discrepa") is not None
+            and abs(o["flujo_discrepa"]) > 1]
     return {
+        "veredicto": ("las 2 fuentes DISCREPAN en los flujos → el parche mezcla fuentes"
+                      if disc else
+                      "los flujos COINCIDEN → la brecha de nivel es no-realizado real"),
+        "meses_con_flujo_discrepante": [{"mes": o["mes"], "monthly": o["net_flow"],
+                                         "snapshot": o["flujo_snapshot"],
+                                         "dif": o["flujo_discrepa"]} for o in disc],
         "meses": len(out),
         "snapshots_por_mes": len(snaps),
         "primer_snapshot": min(snaps) if snaps else None,

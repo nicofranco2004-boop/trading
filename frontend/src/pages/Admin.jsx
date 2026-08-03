@@ -1454,6 +1454,24 @@ function MtmAuditPanel({ toast }) {
             <StatCard label="Meses" value={`${data.meses}`} />
             <StatCard label="Meses con snapshot" value={`${data.snapshots_por_mes}`} />
           </div>
+          {/* EL DATO QUE DECIDE: si las dos fuentes discrepan en los FLUJOS, el
+              parche está mezclando fuentes (valores de una, flujos de la otra) y
+              el desencuentro entra como retorno inventado. Si coinciden, la
+              brecha de nivel es no-realizado genuino y la cadena de mercado es
+              la que tiene razón. */}
+          {data.veredicto && (
+            <p className={`text-xs font-medium ${
+              (data.meses_con_flujo_discrepante || []).length ? 'text-red-400' : 'text-emerald-500'}`}>
+              {data.veredicto}
+              {(data.meses_con_flujo_discrepante || []).length > 0 && (
+                <span className="block font-normal text-ink-2 mt-1">
+                  {data.meses_con_flujo_discrepante.map(x =>
+                    `${x.mes}: contabilidad ${x.monthly} vs snapshot ${x.snapshot} (dif ${x.dif})`
+                  ).join(' · ')}
+                </span>
+              )}
+            </p>
+          )}
           {data.meses_sin_cobertura?.length > 0 && (
             <p className="text-xs text-amber-500">
               <b>{data.meses_sin_cobertura.length} mes(es) sin cobertura de snapshots</b> — quedan a
