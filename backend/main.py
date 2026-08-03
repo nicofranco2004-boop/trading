@@ -26885,6 +26885,15 @@ def health_check():
         "ok": True,
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "service": "rendi-api",
+        # El commit que está corriendo. Sin esto, "health 200" no distingue
+        # "deployó mi cambio" de "sigue el de antes" — y verificar un deploy de
+        # backend contra el /version.json del FRONTEND es engañoso: Vercel tarda
+        # segundos y Railway minutos, así que el front puede estar al día
+        # mientras el back todavía sirve código viejo. Pasó dos veces el mismo
+        # día: se corrió un diagnóstico contra el backend anterior y el
+        # resultado se leyó como si fuera del nuevo.
+        "commit": (os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+                   or os.environ.get("GIT_COMMIT_SHA") or "unknown")[:40],
     }
 
 
