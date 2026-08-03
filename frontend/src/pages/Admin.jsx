@@ -1461,12 +1461,12 @@ function MtmAuditPanel({ toast }) {
               la que tiene razón. */}
           {data.veredicto && (
             <p className={`text-xs font-medium ${
-              (data.meses_con_flujo_discrepante || []).length ? 'text-red-400' : 'text-emerald-500'}`}>
+              (data.meses_con_fuentes_distintas || []).length ? 'text-red-400' : 'text-emerald-500'}`}>
               {data.veredicto}
-              {(data.meses_con_flujo_discrepante || []).length > 0 && (
+              {(data.meses_con_fuentes_distintas || []).length > 0 && (
                 <span className="block font-normal text-ink-2 mt-1">
-                  {data.meses_con_flujo_discrepante.map(x =>
-                    `${x.mes}: contabilidad ${x.monthly} vs snapshot ${x.snapshot} (dif ${x.dif})`
+                  {data.meses_con_fuentes_distintas.map(x =>
+                    `${x.mes}: ΔG ${x.delta_G} (${x.pct}% del capital) → ${x.delta_pp}pp`
                   ).join(' · ')}
                 </span>
               )}
@@ -1489,6 +1489,7 @@ function MtmAuditPanel({ toast }) {
                   <th className="py-1.5 pr-3 text-right">Mercado ci→cf</th>
                   <th className="py-1.5 pr-3 text-right">r mercado</th>
                   <th className="py-1.5 pr-3 text-right">Flujo</th>
+                  <th className="py-1.5 pr-3 text-right" title="capital_final − total_invested: las 2 bases de COSTO, sin componente de mercado">ΔG</th>
                   <th className="py-1.5 text-right">Δ</th>
                 </tr>
               </thead>
@@ -1502,6 +1503,11 @@ function MtmAuditPanel({ toast }) {
                     <td className="py-1.5 pr-3 text-right tabular text-ink-3">{o.mercado.ci} → {o.mercado.cf}</td>
                     <td className="py-1.5 pr-3 text-right tabular">{pct(o.mercado.r_pct)}</td>
                     <td className="py-1.5 pr-3 text-right tabular text-ink-3">{o.net_flow}</td>
+                    <td className={`py-1.5 pr-3 text-right tabular ${
+                      o.delta_G_pct == null ? 'text-ink-3'
+                        : Math.abs(o.delta_G_pct) > 2 ? 'text-red-400 font-medium' : 'text-ink-3'}`}>
+                      {o.delta_G_pct == null ? '—' : `${o.delta_G_pct}%`}
+                    </td>
                     <td className={`py-1.5 text-right tabular font-medium ${
                       o.delta_pp == null ? 'text-ink-3'
                         : o.delta_pp < -10 ? 'text-red-400'

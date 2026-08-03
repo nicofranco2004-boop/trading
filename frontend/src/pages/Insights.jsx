@@ -386,6 +386,11 @@ function InsightsDesktop({ _embeddedTab }) {
       a.year !== b.year ? a.year - b.year : a.month - b.month
     ),
     snapshots,
+    undefined,
+    // El cierre del mes EN CURSO tiene que ser el valor de mercado, NO el
+    // capital_final de la contabilidad: ese incluye la ganancia ya retirada.
+    // Misma base que snapshot.total_value (posiciones + cash).
+    totalPortfolio,
   )
   const monthKey = (y, m) => `${y}-${String(m).padStart(2, '0')}`
 
