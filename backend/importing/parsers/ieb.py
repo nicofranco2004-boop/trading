@@ -15,7 +15,10 @@ point-decimal; los vacíos vienen como '-'):
 
   - `Referencia`  : ticker (EWZ, AL30, YPFD, BMA…) o bucket especial
                     ('MM Pesos', 'CAUCION', 'DOLAR', 'Ciclo Nova').
-  - `Operación`   : código de tipo (ver _OP_MAP / _resolve_op).
+  - `Operación`   : el export de la WEB trae la descripción larga ("COMPRA
+                    NORMAL", "DEPOSITO TITULOS TRANSF.", "R.COBRO"); otros
+                    exports traen el código corto (CPRA/VTAS/DETR). `_label_to_code`
+                    normaliza las dos formas al mismo código antes de `_resolve_op`.
   - `Cantidad`    : con signo (+ compra / − venta). Tomamos abs().
   - `Importe ARS` / `Importe divisas` : mutuamente excluyentes; cuál aplica lo
                     dice `Divisa`. Negativo = sale plata (compra/fee), positivo = entra.
@@ -74,6 +77,104 @@ _OP_MAP = {
 
 # Códigos que llevan la moneda forzada a USD (sufijo '$' / 'U$').
 _USD_OPS = {"CPU$", "VTU$"}
+
+# ── Etiquetas descriptivas del export REAL de la web ─────────────────────────
+#
+# El .xlsx que baja el usuario NO trae los códigos cortos (CPRA/VTAS/DETR…) sino
+# la descripción completa: "COMPRA NORMAL", "DEPOSITO TITULOS TRANSF.", "R.COBRO".
+# El parser se escribió contra un export de demo con códigos, así que sobre el
+# archivo real rechazaba el 100% de las filas (medido: 305/305 IEB_OP_UNKNOWN).
+#
+# Se normalizan a los códigos canónicos ANTES de resolver el tipo, así toda la
+# lógica de abajo —el wash PAGW↔COBW, la rama DETR, la moneda por columna— sigue
+# funcionando igual y los códigos cortos del demo/tests no se rompen.
+_LABEL_TO_CODE = {
+    # Trades. "PARIDAD" = la pata en dólares de la misma especie (la moneda sale
+    # de qué columna de importe viene llena, no del texto).
+    "COMPRA NORMAL": "CPRA",
+    "COMPRA PARIDAD": "CPRA",
+    "COMPRA TRAIDING PARIDAD": "CPRA",   # sic: el export escribe "TRAIDING"
+    "VENTA": "VTAS",
+    "VENTA PARIDAD": "VTAS",
+    "VENTA TRAINDIG PARIDAD": "VTAS",    # sic: y acá "TRAINDIG"
+    # Renta.
+    "DIVIDENDOS": "DIV",
+    "DEBITO RET DIVIDENDOS": "ND",       # retención sobre el dividendo = cargo
+    # Cargos.
+    "GASTOS CV C/IVA": "ND",             # comisión de compra/venta con IVA
+    "NOTA DE DEBITO MEMBRESIA PESOS": "ND",
+    "NOTA DE CRED MEMBRESIA PESOS": "NCMP",   # devolución de la membresía
+    # Caja.
+    "R COBRO": "COBW",
+    "RECIBO DE COBRO": "COBW",
+    "RECIBO DE COBRO WEB": "COBW",
+    "RECIBO DE COBRO USD WEB": "COBW",
+    "O PAGO": "PAGW",
+    "ORDEN DE PAGO WEB": "PAGW",
+    "ORDEN DE PAGO USD WEB": "PAGW",
+    # Transferencia de títulos entre brokers.
+    "DEPOSITO TITULOS TRANSF": "DETR",
+    "RETIRO TITULOS TRANSF": "RETR",
+}
+
+
+def _norm_label(s: str) -> str:
+    """Etiqueta de `Operación` comparable: mayúsculas, sin tildes, sin puntos,
+    espacios colapsados.
+
+    El export real trae dobles espacios ('VENTA  PARIDAD') y erratas del propio
+    broker ('TRAIDING'/'TRAINDIG' en la misma planilla) — ninguna de las dos debe
+    cambiar el mapeo.
+    """
+    if not s:
+        return ""
+    s = s.strip().upper()
+    for a, b in (("Á", "A"), ("É", "E"), ("Í", "I"), ("Ó", "O"), ("Ú", "U"), ("Ñ", "N")):
+        s = s.replace(a, b)
+    return " ".join(s.replace(".", " ").split())
+
+
+def _label_to_code(label: str) -> str:
+    """`Operación` (etiqueta larga o código corto) → código canónico.
+
+    Devuelve SIEMPRE un string: si no se reconoce, la etiqueta normalizada sin
+    espacios, para que `_resolve_op` falle y la fila se reporte con su texto
+    original en vez de desaparecer en silencio.
+    """
+    lab = _norm_label(label)
+    if not lab:
+        return ""
+    if lab in _LABEL_TO_CODE:
+        return _LABEL_TO_CODE[lab]
+
+    # ── Patrones para variantes que no estén en el mapa exacto ────────────────
+    # ⚠️ EL ORDEN IMPORTA: "DEBITO RET DIVIDENDOS" contiene "DIVIDENDO", así que
+    # los cargos se resuelven ANTES que la renta o quedarían como ingreso.
+    if (lab.startswith("DEBITO") or lab.startswith("NOTA DE DEBITO")
+            or lab.startswith("GASTOS") or lab.startswith("COMISION")
+            or lab.startswith("IMPUESTO") or lab.startswith("ARANCEL")
+            or lab.startswith("DERECHO") or "RETENCION" in lab):
+        return "ND"
+    if lab.startswith("NOTA DE CRED"):
+        return "NCMP"
+    # Títulos que entran/salen de la cuenta (migración desde/hacia otro broker).
+    if lab.startswith("DEPOSITO TITULOS") or lab.startswith("DEPOSITO DE TITULOS"):
+        return "DETR"
+    if lab.startswith("RETIRO TITULOS") or lab.startswith("RETIRO DE TITULOS"):
+        return "RETR"
+    if lab.startswith("COMPRA"):
+        return "CPRA"
+    if lab.startswith("VENTA"):
+        return "VTAS"
+    if lab.startswith("DIVIDENDO") or lab.startswith("RENTA") or lab.startswith("AMORTIZA"):
+        return "DIV"
+    if "RECIBO DE COBRO" in lab or lab.startswith("R COBRO") or lab.startswith("COBRO"):
+        return "COBW"
+    if "ORDEN DE PAGO" in lab or lab.startswith("O PAGO") or lab.startswith("PAGO"):
+        return "PAGW"
+
+    # Código corto (CPRA, VTAS, DETR, NDMP, CU$V…) o etiqueta desconocida.
+    return lab.replace(" ", "")
 
 # Códigos de caución (repo): CCCD = constitución (sale plata), CCTE = vencimiento
 # (vuelve con interés). Mismo criterio que Cocos.
@@ -219,7 +320,7 @@ class IebParser(Parser):
 
         _pagw_keys, _cobw_keys = set(), set()
         for _r in all_rows:
-            _c = G(_r, "operacion").upper().replace(" ", "")
+            _c = _label_to_code(G(_r, "operacion"))
             if _c in ("PAGW", "COBW"):
                 _k = _pc_key(_r)
                 if _k:
@@ -228,7 +329,7 @@ class IebParser(Parser):
 
         for idx, row in enumerate(all_rows, start=1):
             ref = G(row, "referencia")
-            code = G(row, "operacion").upper().replace(" ", "")
+            code = _label_to_code(G(row, "operacion"))
             if not code:
                 continue  # fila sin operación
 
@@ -280,6 +381,26 @@ class IebParser(Parser):
                         "monto": str(round(_cost, 4)), "monto_usd": "", "tc": "",
                         "comisiones": "0", "moneda": moneda, "asset_type": "",
                         "asset_name": ref, "notas": _notas + " (cash compensatorio)",
+                    }))
+                continue
+
+            # RETR = el título SALIÓ de la cuenta (transferencia a otro broker).
+            # No es una venta: no entró plata y no hay resultado que realizar →
+            # `_transfer_out` cierra el lote A COSTO con P&L 0, sin generar cash
+            # (mismo criterio que PPI "Retiro de Títulos" y Binance).
+            if code == "RETR":
+                _qty = _num(G(row, "cantidad"))
+                _ref_up = ref.strip().upper()
+                _fecha = (G(row, "fechaemision") or G(row, "fechaliquidacion"))[:10]
+                _nro = G(row, "nrodeoperacion")
+                if _ref_up and _qty:
+                    result.raw_rows.append(RawRow(row_index=idx, data={
+                        "fecha": _fecha, "tipo": "VENTA", "broker": BROKER_NAME,
+                        "activo": _ref_up, "cantidad": str(abs(_qty)),
+                        "precio": "0", "monto": "0", "monto_usd": "", "tc": "",
+                        "comisiones": "0", "moneda": moneda, "asset_type": "",
+                        "asset_name": ref, "_transfer_out": "1",
+                        "notas": (f"Op. {_nro} · " if _nro else "") + "IEB:RETR transferencia saliente",
                     }))
                 continue
 
