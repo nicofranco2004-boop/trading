@@ -280,6 +280,7 @@ export default function Admin() {
 
       <CurrencyBackfillPanel toast={toast} />
 
+      <MtmAuditPanel toast={toast} />
       <FxMigratePanel toast={toast} />
 
       <RepairUserPanel toast={toast} />
@@ -1393,6 +1394,113 @@ function MtmBackfillPanel({ toast }) {
     </div>
   )
 }
+
+// ─── MtmAuditPanel — reconcilia la cadena a COSTO contra la de MERCADO ──────
+// Existe porque después de portar el parche MtM a Insights, la MISMA cuenta
+// mostraba dos números incompatibles: Dashboard "Anual +18,4% · 19 meses"
+// (cadena a costo) contra Insights "Acumulado histórico −5,2%" (cadena a
+// mercado), y el drawdown máximo pasó de −8,7% a −26,5%. No se puede decidir
+// cuál está mal leyendo el código: hay que ver los meses.
+// Va como BOTÓN y no como link al endpoint porque abrir la URL del backend a
+// mano no lleva la sesión ("Token inválido") — mismo pozo que el cleanup.
+function MtmAuditPanel({ toast }) {
+  const [data, setData] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function correr() {
+    setBusy(true)
+    try {
+      setData(await api.get('/insights/mtm-audit'))
+    } catch (e) {
+      toast.push('Error: ' + e.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const pct = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Activity size={16} className="text-violet-500" />
+          <h2 className="font-semibold text-ink-0">Costo vs Mercado — reconciliación mensual</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          {data && (
+            <button
+              onClick={() => { navigator.clipboard?.writeText(JSON.stringify(data, null, 1)); toast.push('JSON copiado') }}
+              className="text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0">
+              Copiar JSON
+            </button>
+          )}
+          <button onClick={correr} disabled={busy}
+            className="text-xs px-3 py-1.5 rounded-md bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+            {busy ? 'Calculando…' : 'Reconciliar mi cuenta'}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Compara, mes por mes, el retorno que sale de <b>monthly_entries</b> (a costo: los meses
+        cerrados llevan <code>pnl_unrealized = 0</code>) contra el que sale de los <b>snapshots</b>
+        {' '}(a mercado). Solo lee. Sirve para decidir cuál de las dos cadenas está mal cuando
+        Dashboard e Insights se contradicen.
+      </p>
+
+      {data && (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <StatCard label="Acumulado a COSTO" value={pct(data.acumulado_costo_pct)} />
+            <StatCard label="Acumulado a MERCADO" value={pct(data.acumulado_mercado_pct)} />
+            <StatCard label="Meses" value={`${data.meses}`} />
+            <StatCard label="Meses con snapshot" value={`${data.snapshots_por_mes}`} />
+          </div>
+          {data.meses_sin_cobertura?.length > 0 && (
+            <p className="text-xs text-amber-500">
+              <b>{data.meses_sin_cobertura.length} mes(es) sin cobertura de snapshots</b> — quedan a
+              costo: {data.meses_sin_cobertura.join(', ')}
+            </p>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-ink-3 text-left border-b border-line/60">
+                  <th className="py-1.5 pr-3">Mes</th>
+                  <th className="py-1.5 pr-3">Modo</th>
+                  <th className="py-1.5 pr-3 text-right">Costo ci→cf</th>
+                  <th className="py-1.5 pr-3 text-right">r costo</th>
+                  <th className="py-1.5 pr-3 text-right">Mercado ci→cf</th>
+                  <th className="py-1.5 pr-3 text-right">r mercado</th>
+                  <th className="py-1.5 pr-3 text-right">Flujo</th>
+                  <th className="py-1.5 text-right">Δ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data.detalle || []).map(o => (
+                  <tr key={o.mes} className="border-b border-line/30">
+                    <td className="py-1.5 pr-3 tabular">{o.mes}</td>
+                    <td className="py-1.5 pr-3 text-ink-3">{o.modo}</td>
+                    <td className="py-1.5 pr-3 text-right tabular text-ink-3">{o.costo.ci} → {o.costo.cf}</td>
+                    <td className="py-1.5 pr-3 text-right tabular">{pct(o.costo.r_pct)}</td>
+                    <td className="py-1.5 pr-3 text-right tabular text-ink-3">{o.mercado.ci} → {o.mercado.cf}</td>
+                    <td className="py-1.5 pr-3 text-right tabular">{pct(o.mercado.r_pct)}</td>
+                    <td className="py-1.5 pr-3 text-right tabular text-ink-3">{o.net_flow}</td>
+                    <td className={`py-1.5 text-right tabular font-medium ${
+                      o.delta_pp == null ? 'text-ink-3'
+                        : o.delta_pp < -10 ? 'text-red-400'
+                        : o.delta_pp > 10 ? 'text-emerald-500' : 'text-ink-2'}`}>
+                      {o.delta_pp == null ? '—' : `${o.delta_pp > 0 ? '+' : ''}${o.delta_pp}pp`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 
 // ─── FxMigratePanel — migrar cuentas al TC histórico (dólar de la fecha de cada op) ──
 // Las cuentas viejas tienen TODO dolarizado al dólar del día en que importaron (medido:
