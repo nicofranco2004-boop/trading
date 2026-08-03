@@ -99,26 +99,28 @@ describe('applyMtmToMonthly — mes cerrado', () => {
 })
 
 describe('applyMtmToMonthly — mes EN CURSO', () => {
-  it('le alcanza el snapshot del mes anterior: su cierre ya es live', () => {
-    // El mes en curso es el que HOY absorbe todo el no realizado histórico,
-    // porque su cf viene del sync live y su ci de la cadena a costo.
+  it('arranca en el snapshot previo y cierra en el VALOR DE MERCADO', () => {
+    // Estos dos tests codificaban el comportamiento equivocado: daban por bueno
+    // el capital_final de la contabilidad como cierre "ya a mercado". No lo es
+    // —incluye la ganancia retirada—, así que ahora el cierre se pasa aparte.
     const out = applyMtmToMonthly(
       [mes(2026, 8, { capital_inicio: 1050, capital_final: 1300 })],
-      [snap('2026-07-31', 1200)], HOY)
+      [snap('2026-07-31', 1200)], HOY, 1290)
     expect(out[0].capital_inicio).toBe(1200)
-    expect(out[0].capital_final).toBe(1300)   // intacto
+    expect(out[0].capital_final).toBe(1290)          // mercado, no 1300
+    expect(out[0].capital_final_contable).toBe(1300)
     expect(out[0].mtm).toBe('inicio')
   })
 
-  it('mata el salto fantasma: 23,8% inventado pasa a 8,3% real', () => {
+  it('mata el salto fantasma: 23,8% inventado pasa a 7,5% real', () => {
     const antes = mes(2026, 8, { capital_inicio: 1050, capital_final: 1300 })
-    const [despues] = applyMtmToMonthly([antes], [snap('2026-07-31', 1200)], HOY)
+    const [despues] = applyMtmToMonthly([antes], [snap('2026-07-31', 1200)], HOY, 1290)
     expect(rDietz(antes)).toBeCloseTo(250 / 1050, 6)    // +23,8% de un mes
-    expect(rDietz(despues)).toBeCloseTo(100 / 1200, 6)  // +8,3%, lo que pasó de verdad
+    expect(rDietz(despues)).toBeCloseTo(90 / 1200, 6)   // +7,5%, contra mercado
   })
 
   it('sin snapshot del mes anterior queda como está', () => {
-    const out = applyMtmToMonthly([mes(2026, 8)], [snap('2026-08-14', 1300)], HOY)
+    const out = applyMtmToMonthly([mes(2026, 8)], [snap('2026-08-14', 1300)], HOY, 1290)
     expect(out[0].mtm).toBeUndefined()
   })
 })
@@ -186,5 +188,49 @@ describe('el aportado NO se contamina con valor de mercado', () => {
     const filas = [mes(2026, 5, { capital_inicio: 1000, deposits: 200 })]
     expect(netCapitalContributed(applyMtmToMonthly(filas, [], HOY)))
       .toBe(netCapitalContributed(filas))
+  })
+})
+
+// ── Mes en curso: el cierre es MERCADO, no la contabilidad ──────────────────
+// `capital_final` de la cadena mensual vale aportado + realizado + no-realizado,
+// e incluye la GANANCIA YA RETIRADA — plata que salió de la cartera. Usarlo como
+// cierre contra un arranque que sale del snapshot (mercado puro) fabricaba esa
+// diferencia entera como retorno. Números reales de producción.
+describe('mes en curso — el cierre tiene que ser valor de mercado', () => {
+  const AGO = new Date('2026-08-02T12:00:00Z')
+  const filaReal = mes(2026, 8, {
+    capital_inicio: 8700.48,
+    capital_final: 9132.15,          // = aportado + realizado + no-realizado
+    deposits: 105.12, withdrawals: 0,
+  })
+  const VALOR_REAL = 8552.75         // lo que vale la cartera de verdad
+  const snapJul = snap('2026-07-31', 8329.87)
+
+  it('EL BUG: sin el valor live fabricaba los 579,40 de ganancia retirada', () => {
+    const [conBug] = applyMtmToMonthly([filaReal], [snapJul], AGO)  // sin live → no toca
+    // Sin valor live la función ya NO convierte: cae a costo en vez de inventar.
+    expect(conBug.mtm).toBeUndefined()
+  })
+
+  it('con el valor live da +1,40%, que es el "Este mes" del Dashboard', () => {
+    const [ok] = applyMtmToMonthly([filaReal], [snapJul], AGO, VALOR_REAL)
+    expect(ok.mtm).toBe('inicio')
+    expect(ok.capital_inicio).toBe(8329.87)
+    expect(ok.capital_final).toBe(VALOR_REAL)
+    // (8552.75 − 8329.87 − 105.12) / (8329.87 + 52.56) = +1,405%
+    expect(rDietz(ok)).toBeCloseTo(0.01405, 5)
+    // El +8,32% que reportaba antes queda descartado por más de 6,9 puntos.
+    const conCfContable = { ...ok, capital_final: 9132.15 }
+    expect(rDietz(conCfContable) - rDietz(ok)).toBeCloseTo(0.0691, 3)
+  })
+
+  it('preserva el capital_final contable para poder auditarlo', () => {
+    const [ok] = applyMtmToMonthly([filaReal], [snapJul], AGO, VALOR_REAL)
+    expect(ok.capital_final_contable).toBe(9132.15)
+  })
+
+  it('sin valor live no inventa: queda a costo', () => {
+    expect(applyMtmToMonthly([filaReal], [snapJul], AGO, 0)[0].mtm).toBeUndefined()
+    expect(applyMtmToMonthly([filaReal], [snapJul], AGO, null)[0].mtm).toBeUndefined()
   })
 })

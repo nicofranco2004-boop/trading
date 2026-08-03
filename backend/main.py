@@ -9390,10 +9390,10 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
         # Último snapshot de cada mes.
         snaps = {}
         for r in conn.execute(
-                "SELECT date, total_value, net_deposited FROM snapshots WHERE user_id=? "
+                "SELECT date, total_value, total_invested FROM snapshots WHERE user_id=? "
                 "AND total_value > 0 ORDER BY date", (uid,)):
             snaps[r["date"][:7]] = {"date": r["date"], "value": round(r["total_value"], 2),
-                                    "nd": round(r["net_deposited"] or 0, 2)}
+                                    "inv": round(r["total_invested"] or 0, 2)}
     finally:
         conn.close()
 
@@ -9421,11 +9421,14 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
         r_m = dietz(ci_m, cf_m, net)
         if r_c is not None: cum_costo *= 1 + max(r_c, -0.99)
         if r_m is not None: cum_mtm *= 1 + max(r_m, -0.99)
-        flujo_snap = (round(sc["nd"] - sp["nd"], 2) if (sp and sc) else None)
+        g_ini = (round((f["capital_inicio"] or 0) - sp["inv"], 2) if sp else None)
+        g_fin = (round((f["capital_final"] or 0) - sc["inv"], 2) if sc else None)
+        d_g = (round(g_fin - g_ini, 2) if (g_ini is not None and g_fin is not None) else None)
+        base = max(abs(ci_c), abs(cf_c), 1.0)
+        d_g_pct = (round(d_g / base * 100, 2) if d_g is not None else None)
         out.append({
             "mes": k, "modo": modo,
-            "flujo_snapshot": flujo_snap,
-            "flujo_discrepa": (None if flujo_snap is None else round(flujo_snap - net, 2)),
+            "G_ini": g_ini, "G_fin": g_fin, "delta_G": d_g, "delta_G_pct": d_g_pct,
             "costo": {"ci": round(ci_c, 2), "cf": round(cf_c, 2), "r_pct": None if r_c is None else round(r_c * 100, 2)},
             "mercado": {"ci": round(ci_m, 2), "cf": round(cf_m, 2), "r_pct": None if r_m is None else round(r_m * 100, 2)},
             "net_flow": round(net, 2),
@@ -9434,15 +9437,24 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
 
     peores = sorted([o for o in out if o["delta_pp"] is not None],
                     key=lambda o: o["delta_pp"])[:5]
-    disc = [o for o in out if o.get("flujo_discrepa") is not None
-            and abs(o["flujo_discrepa"]) > 1]
+    # ΔG = −(revaluación FX del costo en pesos). No tiene componente de mercado:
+    # si ΔG es chico, la diferencia entre las dos cadenas ES movimiento de precios
+    # y la de mercado tiene razón. Si ΔG es grande, las fuentes describen
+    # portafolios distintos ese mes y convertirlo fabrica retorno.
+    disc = [o for o in out if o.get("delta_G_pct") is not None
+            and abs(o["delta_G_pct"]) > 2]
     return {
-        "veredicto": ("las 2 fuentes DISCREPAN en los flujos → el parche mezcla fuentes"
+        "veredicto": ("las 2 fuentes describen PORTAFOLIOS DISTINTOS en esos meses "
+                      "(ΔG grande) → convertirlos fabrica retorno"
                       if disc else
-                      "los flujos COINCIDEN → la brecha de nivel es no-realizado real"),
-        "meses_con_flujo_discrepante": [{"mes": o["mes"], "monthly": o["net_flow"],
-                                         "snapshot": o["flujo_snapshot"],
-                                         "dif": o["flujo_discrepa"]} for o in disc],
+                      "ΔG chico en todos los meses → la diferencia ES mercado: "
+                      "la cadena de mercado tiene razón"),
+        "nota_G": ("G = capital_final − total_invested (las dos bases de COSTO). "
+                   "ΔG = −revaluación FX del costo en pesos, o sea SIN componente "
+                   "de mercado: aísla el desencuentro de fuentes del movimiento de precios."),
+        "meses_con_fuentes_distintas": [{"mes": o["mes"], "delta_G": o["delta_G"],
+                                         "pct": o["delta_G_pct"],
+                                         "delta_pp": o["delta_pp"]} for o in disc],
         "meses": len(out),
         "snapshots_por_mes": len(snaps),
         "primer_snapshot": min(snaps) if snaps else None,
@@ -26873,6 +26885,15 @@ def health_check():
         "ok": True,
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "service": "rendi-api",
+        # El commit que está corriendo. Sin esto, "health 200" no distingue
+        # "deployó mi cambio" de "sigue el de antes" — y verificar un deploy de
+        # backend contra el /version.json del FRONTEND es engañoso: Vercel tarda
+        # segundos y Railway minutos, así que el front puede estar al día
+        # mientras el back todavía sirve código viejo. Pasó dos veces el mismo
+        # día: se corrió un diagnóstico contra el backend anterior y el
+        # resultado se leyó como si fuera del nuevo.
+        "commit": (os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+                   or os.environ.get("GIT_COMMIT_SHA") or "unknown")[:40],
     }
 
 

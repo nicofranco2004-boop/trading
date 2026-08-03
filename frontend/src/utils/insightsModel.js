@@ -597,7 +597,8 @@ export function monthlyReturnArs({ ci, cf, net, fxPrev, fx, isImportInitial = fa
 // El mes EN CURSO es la excepción y el caso más importante: su cf ya viene a
 // mercado (sync live), así que le alcanza con el snapshot del mes anterior para
 // quedar consistente — y es justo el mes que hoy absorbe todo el no realizado.
-export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date()) {
+export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date(),
+                                  valorMercadoLive = null) {
   const filas = globalMonthly || []
   if (!filas.length || !snapshots?.length) return filas
 
@@ -625,10 +626,24 @@ export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date()) 
     const enCurso = m.year === hoyY && m.month === hoyM
 
     if (enCurso) {
-      // cf ya está a mercado; solo falta que el arranque esté en la misma base.
-      if (!snapPrev) return m
-      return { ...m, capital_inicio: snapPrev.value,
-               capital_inicio_costo: m.capital_inicio, mtm: 'inicio' }
+      // ⚠️ ACÁ ESTABA EL PEOR ERROR DE ESTA FUNCIÓN. El comentario anterior decía
+      // que el cf del mes en curso "ya viene a mercado por el sync live". Es
+      // FALSO: `capital_final` de la cadena mensual vale
+      //     aportado + realizado + no-realizado
+      // y eso incluye la GANANCIA YA RETIRADA — plata que salió de la cartera.
+      // Medido en producción: cf = 9.132,15 contra un valor real de 8.552,75.
+      // Los 579,40 de diferencia son exactamente las "ganancias retiradas" que el
+      // Dashboard muestra aparte (su `accountingGap`).
+      // Con ci del snapshot (mercado puro, sin ese gap) y cf de la contabilidad
+      // (mercado + gap), el mes fabricaba los 579,40 enteros como retorno:
+      // reportaba +8,32% donde lo real era +1,40% — y el +1,40% es, al centavo,
+      // el "Este mes +USD 117,76" que el propio Dashboard ya mostraba.
+      // Por eso el cierre del mes en curso tiene que ser el VALOR DE MERCADO
+      // live, la misma base que `snapshot.total_value` (posiciones + cash).
+      if (!snapPrev || !(valorMercadoLive > 0)) return m
+      return { ...m, capital_inicio: snapPrev.value, capital_final: valorMercadoLive,
+               capital_inicio_costo: m.capital_inicio,
+               capital_final_contable: m.capital_final, mtm: 'inicio' }
     }
     // Mes cerrado: los dos lados o ninguno.
     if (!snapPrev || !snapCur) return m
