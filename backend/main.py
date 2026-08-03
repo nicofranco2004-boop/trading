@@ -1767,8 +1767,6 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_import_norm_batch
             ON import_normalized_tx(batch_id);
-        CREATE INDEX IF NOT EXISTS idx_import_norm_excluded
-            ON import_normalized_tx(batch_id, excluded_at);
 
         -- Journal para deshacer borrados de operaciones MANUALES (sin
         -- import_op_links, no reproducibles por el rebuild). Guardamos el snapshot
@@ -1863,6 +1861,11 @@ def init_db():
     if norm_cols and 'excluded_at' not in norm_cols:
         conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN excluded_at TEXT")
         conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN excluded_by INTEGER")
+    # El índice va ACÁ, después del ALTER, y FUERA del if: en el bloque de esquema
+    # corría antes de que la columna existiera y tumbaba el arranque contra
+    # cualquier base ya creada ("no such column: excluded_at" → boot loop → 502).
+    # Fuera del if porque una base que ya migró en un boot anterior igual lo necesita.
+    if 'excluded_at' in (_table_cols(conn, 'import_normalized_tx') or []):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_excluded "
                      "ON import_normalized_tx(batch_id, excluded_at)")
 
