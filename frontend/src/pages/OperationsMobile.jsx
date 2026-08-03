@@ -56,16 +56,33 @@ export default function OperationsMobile() {
   const [result, setResult] = useState('all')
   const [broker, setBroker] = useState('all')
 
-  useEffect(() => {
-    track('operations_mobile_viewed')
-    Promise.all([
+  async function load() {
+    const [o, b] = await Promise.all([
       api.get('/operations').catch(() => []),
       api.get('/brokers').catch(() => []),
-    ]).then(([o, b]) => {
-      setOps(o || [])
-      setBrokers(b || [])
-    }).finally(() => setLoading(false))
+    ])
+    setOps(o || [])
+    setBrokers(b || [])
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    track('operations_mobile_viewed')
+    load()
   }, [])
+
+  // Borrar una operación con cascada (mismo endpoint probado del desktop). El
+  // backend recalcula P&L/tenencia/snapshots y bloquea con mensaje claro los
+  // casos que aún no soporta (manuales, bonos, activos con data manual mezclada).
+  async function del(op) {
+    if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
+    try {
+      await api.delete(`/operations/${op.id}`)
+      await load()
+    } catch (ex) {
+      alert(ex?.message || 'No se pudo borrar la operación.')
+    }
+  }
 
   // Filtros aplicados
   const filtered = useMemo(() => {
@@ -210,7 +227,7 @@ export default function OperationsMobile() {
       ) : (
         <ul>
           {grouped.map(([date, items]) => (
-            <DayGroup key={date} date={date} ops={items} />
+            <DayGroup key={date} date={date} ops={items} onDelete={del} />
           ))}
         </ul>
       )}
@@ -264,7 +281,7 @@ export default function OperationsMobile() {
 
 // ─── Day group ────────────────────────────────────────────────────────────
 
-function DayGroup({ date, ops }) {
+function DayGroup({ date, ops, onDelete }) {
   // El subtotal del DÍA se arma convirtiendo CADA op con SU FX y sumando eso
   // (convert-then-sum) — así coincide con las filas que despliega.
   // Antes tomaba el `fx_to_usd` de la PRIMERA op con fx>0 y lo aplicaba a todo
@@ -290,7 +307,7 @@ function DayGroup({ date, ops }) {
         </span>
       </div>
       <ul>
-        {ops.map(op => <OperationRow key={op.id} op={op} />)}
+        {ops.map(op => <OperationRow key={op.id} op={op} onDelete={onDelete} />)}
       </ul>
     </li>
   )
@@ -298,7 +315,7 @@ function DayGroup({ date, ops }) {
 
 // ─── Row ──────────────────────────────────────────────────────────────────
 
-function OperationRow({ op }) {
+function OperationRow({ op, onDelete }) {
   // Phase C audit fix H1: cada operación usa su propio FX histórico.
   const histMoney = useHistoricalMoney()
   const isWin = op.pnl_usd != null && op.pnl_usd > 0
@@ -353,6 +370,17 @@ function OperationRow({ op }) {
           </div>
         )}
       </div>
+
+      {onDelete && (
+        <button
+          type="button"
+          onClick={() => onDelete(op)}
+          aria-label="Eliminar operación"
+          className="flex-shrink-0 -mr-1 p-1.5 text-ink-3 hover:text-rendi-neg transition-colors"
+        >
+          <Trash2 size={15} strokeWidth={1.75} />
+        </button>
+      )}
     </li>
   )
 }
