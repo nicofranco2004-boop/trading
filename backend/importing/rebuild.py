@@ -103,8 +103,14 @@ def _days_apart(d1: Optional[str], d2: Optional[str]) -> Optional[int]:
 # genuino (con P&L real), no una conversión de moneda.
 _CONDUIT_WINDOW_DAYS = 7
 
+# Tipos donde una compra y una venta de igual nominal en monedas distintas NO son
+# un conducto: en CRIPTO vendés exacto lo que compraste (el match de nominal no
+# discrimina nada) y en FUND/FIAT la pata dólar del MEP directamente no existe.
+_CONDUIT_BLOCKED_TYPES = {"CRYPTO", "FIAT", "FUND"}
 
-def _cancel_conduit_pairs(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+def _cancel_conduit_pairs(events: List[Dict[str, Any]], *,
+                          is_exchange: bool = False) -> List[Dict[str, Any]]:
     """Cancela pares de CONDUCTO dólar-MEP de BONOS antes del FIFO.
 
     Un conducto = una COMPRA y una VENTA del MISMO bono, en monedas DISTINTAS,
@@ -131,7 +137,21 @@ def _cancel_conduit_pairs(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         for e in events
     )
     if not is_bond:
-        return events
+        # NO-BONOS: el mismo conducto existe con CEDEARs y acciones AR (comprar
+        # GGAL en pesos y vender GGALD en dólares es un MEP igual que con AL30),
+        # pero acá el margen de error es más chico, así que se entra con dos
+        # guardas y una restricción extra (ver el `s_idx < b_idx` de abajo).
+        #
+        # Guarda 1 — exchange cripto afuera. El asset_type NO alcanza: un altcoin
+        # sin hint (PEPE, WIF) cae en OTHER y pasaría el filtro de tipos. El
+        # broker sí lo sabe. Este guard es LOAD-BEARING, no decorativo: sin él se
+        # cancelan pares legítimos de Binance.
+        if is_exchange:
+            return events
+        # Guarda 2 — tipos donde el conducto no existe.
+        if any(((e.get("asset_type") or guess_asset_type(e.get("asset_symbol") or "")) or "").upper()
+               in _CONDUIT_BLOCKED_TYPES for e in events):
+            return events
 
     buys = [e for e in events if e["operation_type"] == OP_BUY]
     sells = [e for e in events if e["operation_type"] == OP_SELL]
@@ -153,6 +173,11 @@ def _cancel_conduit_pairs(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         elif e["operation_type"] == OP_SELL:
             sells_by_ccy[c] = sells_by_ccy.get(c, 0.0) + q
 
+    # Orden de llegada al replay: los eventos vienen ya ordenados por
+    # (fecha, BUY-first, id). Para los NO-bonos hace falta saber si la venta cae
+    # ANTES que la compra — ver el `s_idx < b_idx` de más abajo.
+    _pos = {id(e): i for i, e in enumerate(events)}
+
     for s in sells:
         s_ccy = _norm_cur(s["currency"])
         s_qty = _num(s["quantity"])
@@ -172,6 +197,15 @@ def _cancel_conduit_pairs(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             dd = _days_apart(s["date"], b["date"])
             if dd is None or dd > _CONDUIT_WINDOW_DAYS:
                 continue                                # muy separados → round-trip genuino
+            # RESTRICCIÓN SOLO PARA NO-BONOS: la venta tiene que llegar ANTES que
+            # la compra. Ése es exactamente el caso que el spill cross-currency de
+            # `_replay_asset` no puede alcanzar —cuando vende primero no hay lote
+            # de dónde salir y se sintetiza una semilla al precio de venta, que es
+            # el fantasma— y es el ÚNICO que este cambio toca. Compra-antes-de-
+            # venta ya lo resuelve el spill y se deja intacto: medido sobre 9
+            # escenarios, el único resultado que cambia es el bug reportado.
+            if not is_bond and _pos.get(id(s), 0) >= _pos.get(id(b), 0):
+                continue
             if best is None or dd < best[0]:
                 best = (dd, b)
         if best is not None:
@@ -826,7 +860,8 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         # genuina del bono. `events` completo se usa para _clear_old_state (resetea
         # todos los links); el replay corre sobre los eventos sin conductos.
         grp_is_exchange = any(_is_exchange_broker(b) for b in pair)
-        replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue,
+        replay = _replay_asset(_cancel_conduit_pairs(events, is_exchange=grp_is_exchange),
+                               broker_currency, tc_blue,
                                use_hist=_use_hist,
                                conn=conn, is_exchange=grp_is_exchange)
         # Los lotes/ops ya cargan su _broker desde el evento (neteo cross-broker):
@@ -913,7 +948,8 @@ def rebuild_pair_asset(conn, uid: int, broker: str, asset: str, *,
         broker_currency = "USD"
 
     grp_is_exchange = any(_is_exchange_broker(b) for b in pair)
-    replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue,
+    replay = _replay_asset(_cancel_conduit_pairs(events, is_exchange=grp_is_exchange),
+                           broker_currency, tc_blue,
                            use_hist=_use_hist, conn=conn, is_exchange=grp_is_exchange)
 
     conn.execute("SAVEPOINT rebuild_del")
