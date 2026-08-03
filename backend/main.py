@@ -6754,6 +6754,56 @@ def _applicable_splits(base_symbol: str, entry: str, wm: str, foto_wm: str = "")
     return out
 
 
+# Un lote cargado a mano / por CSV suele venir SIN la fecha real de compra (queda
+# la del import). Si esa fecha cae después del split, _applicable_splits lo
+# descarta como "comprado post-split" y el usuario nunca ve el aviso — aunque las
+# cantidades sean las VIEJAS (reporte de un usuario con el CEDEAR de SPY, ago-2026).
+# No alcanza con ignorar la fecha: si cargó las cantidades de HOY (ya post-split),
+# ajustar las volvería a multiplicar. Hace falta EVIDENCIA de que el lote está en
+# la escala vieja, y la da el PRECIO: si lo cargó a ~F veces lo que cotiza hoy, el
+# precio es pre-split.
+#
+# La banda es ANGOSTA a propósito: un falso positivo acá multiplica la tenencia
+# del usuario por F (destructivo), mientras que un falso negativo solo deja el
+# aviso sin salir (lo que ya venía pasando). [0.75, 1.30] tolera que el precio se
+# haya movido ~±30% entre la compra y hoy. Límite conocido y aceptado: una caída
+# real de exactamente F veces es indistinguible de un split — con esta banda esos
+# casos quedan AFUERA (no ofrecemos nada) en vez de romper la posición.
+_SPLIT_PRICE_LO, _SPLIT_PRICE_HI = 0.75, 1.30
+
+
+def _cached_ba_price(conn, base_symbol: str, broker: str, uid: int):
+    """Último precio conocido del `.BA` (pesos), SOLO si el lote está en un broker
+    en pesos — así se compara contra buy_price en la MISMA moneda. Un CEDEAR
+    dentro de un broker USD tiene el costo en dólares y el `.BA` en pesos: sin FX
+    no son comparables, y ahí preferimos no opinar (devolvemos None). Usa el cache
+    de precios: cero red en el request."""
+    try:
+        br = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+            (uid, broker)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not br or (br["currency"] or "").upper() != "ARS":
+        return None
+    from snapshots_job import read_last_prices
+    px = read_last_prices(conn, [f"{base_symbol}.BA"]).get(f"{base_symbol}.BA")
+    try:
+        px = float(px or 0)
+    except (TypeError, ValueError):
+        return None
+    return px if px > 0 else None
+
+
+def _splits_solo_excluidos_por_fecha(base_symbol: str, entry: str, wm: str, foto_wm: str = ""):
+    """Splits que pasarían todos los filtros salvo el de `entry` (fecha de compra)."""
+    if not entry:
+        return []
+    sin_fecha = _applicable_splits(base_symbol, "", wm, foto_wm=foto_wm)
+    con_fecha = {d for d, _ in _applicable_splits(base_symbol, entry, wm, foto_wm=foto_wm)}
+    return [(d, f) for d, f in sin_fecha if d not in con_fecha]
+
+
 def _foto_split_watermarks(conn, uid: int) -> dict:
     """Fecha de la FOTO de tenencia (Resumen) por (broker, activo), de las tx seed
     'Tenencia — apertura' (fechadas a la fecha REAL de la foto = seed_date; NO las
@@ -6892,7 +6942,22 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
         # Re-derivar los splits aplicables EN EL SERVER (no confiar en el cliente).
         applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)
         if not applicable:
-            return {**dict(row), "already_applied": True}
+            # MISMA 2ª pasada que /split-check (SSoT): descartado por la fecha de
+            # compra pero con evidencia de PRECIO de que el lote está en la escala
+            # vieja. Sin esto el botón del aviso devolvía "ya estaba aplicado" y no
+            # hacía nada — la evidencia se re-verifica acá, no se confía en el front.
+            por_fecha = _splits_solo_excluidos_por_fecha(base, entry, wm, foto_wm)
+            f_tot = 1.0
+            for _, f in por_fecha:
+                f_tot *= f
+            px_hoy = _cached_ba_price(conn, base, row["broker"], uid)
+            buy_px = float(row["buy_price"] or 0)
+            if not (por_fecha and px_hoy and buy_px and f_tot):
+                return {**dict(row), "already_applied": True}
+            ratio = (buy_px / px_hoy) / f_tot
+            if not (_SPLIT_PRICE_LO <= ratio <= _SPLIT_PRICE_HI):
+                return {**dict(row), "already_applied": True}
+            applicable = por_fecha
         combined = 1.0
         for _, f in applicable:
             combined *= f
@@ -6969,8 +7034,24 @@ def positions_split_check(uid: int = Depends(get_effective_user)):
             wm = max(wm, _foto_wm_for(r["broker"], base, _corp_map, _pair_cache, conn, uid))
             foto_wm = _foto_wm_for(r["broker"], base, _foto_map, _pair_cache, conn, uid)
             applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)  # SSoT con /adjust-ratio
+            evidencia = "fecha"
             if not applicable:
-                continue
+                # 2ª pasada: descartado por la fecha de compra, pero el PRECIO
+                # cargado delata que el lote está en la escala vieja (ver helper).
+                por_fecha = _splits_solo_excluidos_por_fecha(base, entry, wm, foto_wm)
+                if not por_fecha:
+                    continue
+                f_tot = 1.0
+                for _, f in por_fecha:
+                    f_tot *= f
+                px_hoy = _cached_ba_price(conn, base, r["broker"], uid)
+                buy_px = float(r["buy_price"] or 0)
+                if not (px_hoy and buy_px and f_tot):
+                    continue
+                ratio = (buy_px / px_hoy) / f_tot     # ≈1 → el precio es pre-split
+                if not (_SPLIT_PRICE_LO <= ratio <= _SPLIT_PRICE_HI):
+                    continue
+                applicable, evidencia = por_fecha, "precio"
             combined = 1.0
             for _, f in applicable:
                 combined *= f
@@ -6983,6 +7064,11 @@ def positions_split_check(uid: int = Depends(get_effective_user)):
                 "ex_date": max(d for d, _ in applicable),
                 "current_qty": cur_qty,
                 "suggested_qty": round(cur_qty * combined, 6),
+                # 'fecha' = la compra es anterior al split (certeza).
+                # 'precio' = la fecha no sirve pero el precio cargado delata la
+                #            escala vieja → el front lo pregunta en vez de afirmarlo.
+                "evidence": evidencia,
+                "buy_price": round(float(r["buy_price"] or 0), 6),
                 "raw_splits": [{"ex_date": d, "factor": f} for d, f in applicable],
             })
         return {"suggestions": suggestions}

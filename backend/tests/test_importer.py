@@ -6435,6 +6435,93 @@ class SplitRatioAdjustTest(unittest.TestCase):
         assets = [s["asset"] for s in res.json()["suggestions"]]
         self.assertNotIn("AAPL", assets)
 
+    # ── 2ª pasada: el lote no tiene fecha real de compra (CSV / carga manual) ──
+    # Reporte de un usuario (ago-2026): cargó su cartera por CSV, el CEDEAR de SPY
+    # quedó con la fecha del import (posterior al split) y el aviso nunca salía,
+    # aunque las cantidades eran las viejas. La fecha no sirve como señal; el
+    # PRECIO sí: si lo cargó a ~3× lo que cotiza hoy, está en la escala vieja.
+
+    def _pos_sin_fecha_real(self, buy_price, broker="Balanz", qty=10):
+        conn = main.get_db()
+        cur = conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                   invested, entry_date, asset_type)
+               VALUES (?,?,'SPY',0,?,?,?,'2026-08-01','CEDEAR')""",
+            (self.uid, broker, buy_price, qty, buy_price * qty),
+        )
+        pid = cur.lastrowid
+        conn.execute(
+            "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) "
+            "VALUES ('SPY.BA', 15000, datetime('now'))")
+        conn.commit()
+        conn.close()
+        return pid
+
+    def _check(self):
+        from unittest.mock import patch
+        with patch.object(main, "_fetch_ba_splits", return_value=list(SPY_SPLITS)):
+            res = self.client.get(
+                "/api/positions/split-check",
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+        self.assertEqual(res.status_code, 200, res.text)
+        return {s["pid"]: s for s in res.json()["suggestions"]}
+
+    def test_precio_pre_split_se_detecta_aunque_la_fecha_diga_que_no(self):
+        # Cargado a 45.000 con el .BA hoy en 15.000 → ratio 3 = el split.
+        pid = self._pos_sin_fecha_real(45000)
+        s = self._check()
+        self.assertIn(pid, s)
+        self.assertEqual(s[pid]["evidence"], "precio")
+        self.assertAlmostEqual(s[pid]["factor"], 3.0)
+        self.assertAlmostEqual(s[pid]["suggested_qty"], 30.0)
+
+    def test_precio_post_split_no_se_ofrece(self):
+        # Ya cargó las cantidades y el precio de HOY → ajustar lo rompería (×3).
+        pid = self._pos_sin_fecha_real(15500)
+        self.assertNotIn(pid, self._check())
+
+    def test_caida_real_no_dispara_el_aviso(self):
+        # Bajó a la mitad, pero eso NO es el ratio del split (2×, no 3×) → no
+        # opinamos. Preferimos no avisar antes que multiplicar mal la tenencia.
+        pid = self._pos_sin_fecha_real(30000)
+        self.assertNotIn(pid, self._check())
+
+    def test_sin_precio_conocido_no_opina(self):
+        conn = main.get_db()
+        conn.execute("DELETE FROM asset_last_price WHERE symbol='SPY.BA'")
+        conn.commit()
+        conn.close()
+        pid = self._pos_sin_fecha_real(45000)
+        conn = main.get_db()
+        conn.execute("DELETE FROM asset_last_price WHERE symbol='SPY.BA'")
+        conn.commit()
+        conn.close()
+        self.assertNotIn(pid, self._check())
+
+    def test_broker_usd_no_compara_precios_de_distinta_moneda(self):
+        # Costo en USD vs .BA en pesos: sin FX no son comparables → no se ofrece.
+        conn = main.get_db()
+        _add_broker(conn, self.uid, "IBKR", "USDT")
+        conn.commit()
+        conn.close()
+        pid = self._pos_sin_fecha_real(45000, broker="IBKR")
+        self.assertNotIn(pid, self._check())
+
+    def test_el_boton_ajusta_de_verdad_en_el_caso_por_precio(self):
+        # SSoT: /adjust-ratio re-verifica la evidencia; si no, devolvía
+        # "already_applied" y el botón del aviso no hacía nada.
+        pid = self._pos_sin_fecha_real(45000)
+        res = self._adjust(pid)
+        self.assertEqual(res.status_code, 200, res.text)
+        r = self._row(pid)
+        self.assertAlmostEqual(r["quantity"], 30.0)
+        self.assertAlmostEqual(r["buy_price"], 15000.0, places=2)
+        self.assertAlmostEqual(r["invested"], 450000.0)      # NO cambia
+        # Idempotente: un segundo POST no vuelve a multiplicar
+        self._adjust(pid)
+        self.assertAlmostEqual(self._row(pid)["quantity"], 30.0)
+
 
 if __name__ == "__main__":
     unittest.main()

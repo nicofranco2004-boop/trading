@@ -62,6 +62,16 @@ export default function SplitRatioBanner({ onAdjusted }) {
               No perdiste plata — cambió el ratio del CEDEAR (split). Ajustá para que el P&amp;L deje de
               mostrar una diferencia que no es real.
             </p>
+            {/* Cuando la posición no tiene fecha real de compra (CSV / carga a
+                mano), la detección se apoya en el precio cargado: es una
+                sospecha fundada, no una certeza → se PREGUNTA, no se afirma. */}
+            {suggestions.some((s) => s.evidence === 'precio') && (
+              <p className="text-ink-2 mt-1">
+                Ojo: {suggestions.filter((s) => s.evidence === 'precio').map((s) => baseTicker(s.asset)).join(', ')}{' '}
+                no tiene la fecha real de compra, así que lo deducimos del precio que cargaste.
+                Si ya cargaste las cantidades actualizadas del broker, no lo ajustes.
+              </p>
+            )}
             <div className="mt-2 flex flex-wrap gap-2">
               {suggestions.map((s) => (
                 <button
@@ -101,6 +111,14 @@ export default function SplitRatioBanner({ onAdjusted }) {
                 <span>queda igual</span>
               </div>
             </div>
+            {active.evidence === 'precio' && (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/[0.07] px-3 py-2 text-xs text-ink-1">
+                Esta posición no tiene fecha de compra real, así que nos guiamos por el precio que
+                cargaste ({fmt(active.buy_price)}), que parece anterior al cambio de ratio.
+                <strong className="text-ink-0"> Confirmá solo si la cantidad que ves es la de antes del split.</strong>{' '}
+                Si ya la habías actualizado, cerrá esto: ajustar la multiplicaría de más.
+              </p>
+            )}
             <p className="text-ink-3 text-xs">
               Corrige la pérdida fantasma: el precio de hoy ya está al ratio nuevo, pero la cantidad
               guardada estaba al viejo.
