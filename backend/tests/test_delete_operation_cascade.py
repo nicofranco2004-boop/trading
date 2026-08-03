@@ -234,5 +234,68 @@ class DeleteCascade(unittest.TestCase):
         self.assertEqual(cm.exception.status_code, 400)
 
 
+    # ── Fase 2: borrar el historial ENTERO de un activo ─────────────────────
+    def test_delete_entire_asset_history(self):
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        self.assertAlmostEqual(self._open_qty(), 6.0, places=6)
+        self.assertAlmostEqual(self._global_pnl(), 200.0, places=2)   # 4*(200-150)
+        self.assertAlmostEqual(self._cash(), -700.0, places=2)        # -1500 + 800
+
+        with self.conn:
+            res = main._delete_asset_history_cascade(self.conn, self.uid, "AAPL")
+        self.assertEqual(res["count"], 2)
+        # Activo entero fuera: sin lotes fantasma, sin ventas, P&L 0, cash sin huella.
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
+        self.assertEqual(len(self._ventas()), 0)
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)           # +1500 -800 revertido
+        self._probe()
+
+        # NO resucita al re-derivar.
+        with self.conn:
+            tc = ps._read_tc_blue(self.conn, uid=self.uid)
+            rb.rebuild_pair_asset(self.conn, self.uid, "IBKR", "AAPL", tc_blue=tc)
+            main._recalc_pnl_realized_from_ops(self.conn, self.uid)
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+
+    def test_undo_asset_history(self):
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        with self.conn:
+            res = main._delete_asset_history_cascade(self.conn, self.uid, "AAPL")
+        j = self.conn.execute(
+            "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
+        p = json.loads(j["payload_json"])
+        with self.conn:
+            for tid in p["tx_ids"]:
+                self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (tid,))
+            for b, delta in p["cash_by_broker"].items():
+                main._adjust_broker_cash(self.conn, self.uid, b, -float(delta))
+            for pr in p["pairs"]:
+                rb.rebuild_pair_asset(self.conn, self.uid, pr[0], "AAPL",
+                                      tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], set(p["brokers"]))
+        self.assertAlmostEqual(self._open_qty(), 6.0, places=6)
+        self.assertAlmostEqual(self._global_pnl(), 200.0, places=2)
+        self.assertAlmostEqual(self._cash(), -700.0, places=2)
+        self._probe()
+
+
+    def test_delete_asset_blocked_if_dividend(self):
+        # Blocker del review: un activo con un dividendo enlazado NO se puede borrar
+        # entero todavía (dejaría el dividendo vivo) → 400.
+        self._import(_csv("2024-03-15,COMPRA,IBKR,GGAL,10,20,200,,,0,USD,"))
+        self.conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd, currency)
+               VALUES (?,?,?,?,?,?,?)""",
+            (self.uid, "2024-06-01", "IBKR", "GGAL", "Dividendo", 5, "USD"))
+        self.conn.commit()
+        with self.assertRaises(main.HTTPException) as cm:
+            main._delete_asset_history_cascade(self.conn, self.uid, "GGAL")
+        self.assertEqual(cm.exception.status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

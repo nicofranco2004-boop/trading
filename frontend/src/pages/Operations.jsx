@@ -151,6 +151,27 @@ function OperationsDesktop() {
     }
   }
 
+  // Borrar TODO el historial de un activo (compras + ventas, todos los brokers).
+  // Alto blast radius → confirmación explícita que nombra el activo, cuántas
+  // operaciones y en qué brokers, y aclara que recalcula todo.
+  async function delGroup(g) {
+    const asset = g.key
+    const n = g.count
+    const where = (g.brokers && g.brokers.length) ? g.brokers.join(', ') : 'tu cartera'
+    if (!confirm(
+      `¿Borrar TODO el historial de ${asset}?\n\n` +
+      `Se borran ${n} ${n === 1 ? 'operación' : 'operaciones'} (compras y ventas) en ${where}. ` +
+      `${asset} deja de contar en tu P&L, rendimiento, métricas y la curva de evolución. ` +
+      `Se recalcula todo. Podés deshacerlo.`
+    )) return
+    try {
+      await api.delete(`/assets/history?asset=${encodeURIComponent(asset)}`)
+      await load()
+    } catch (ex) {
+      alert(ex?.message || 'No se pudo borrar el activo.')
+    }
+  }
+
   // KPIs sobre todas las ops, no las filtradas.
   // P&L Realizado: convert-then-sum (cada trade a SU FX histórico). Sumar los USD
   // y convertir el total al dólar de hoy re-expresaba ganancias viejas al MEP
@@ -487,6 +508,7 @@ function OperationsDesktop() {
                       isOpen={isOpen}
                       onToggle={() => toggleGroup(g.key)}
                       histMoney={histMoney}
+                      onDeleteGroup={groupBy === 'asset' ? delGroup : null}
                     />
                     {isOpen && g.rows.map(op => (
                       <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} indent />
@@ -650,7 +672,7 @@ function TradeRow({ op, histMoney, onEdit, onDelete, indent = false }) {
 // filas usan el FX de su fecha: un grupo de UN trade mostraba dos números
 // distintos (reporte real: header +$147.007 vs su única fila +$135.444, mismo
 // pnl_usd × dos dólares). El invariante que garantiza esto es `total === Σ filas`.
-function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney }) {
+function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup }) {
   const { label, count, brokers } = group
   // Signo, color y flecha salen del MISMO número que se imprime. Derivarlos del
   // USD crudo podía contradecir lo mostrado: un grupo con +100 USD de 2021 (fx 190)
@@ -700,9 +722,22 @@ function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney }) {
           {hasPnl ? fmtConvertedRaw(pnlDisp, histMoney.currency, { signed: true, decimals: 2 }) : '—'}
         </span>
       </td>
-      {/* Resto (P&L % · acciones · flecha) — hint del P&L */}
-      <td className="px-3 py-2.5 text-ink-3 text-[12px] text-right font-medium" colSpan={3}>
-        {hasPnl ? 'P&L total' : ''}
+      {/* Resto (P&L % · acciones) — hint del P&L + tacho para borrar el activo entero */}
+      <td className="px-3 py-2.5 text-right" colSpan={3}>
+        <div className="inline-flex items-center gap-2 justify-end">
+          {hasPnl && <span className="text-ink-3 text-[12px] font-medium">P&L total</span>}
+          {onDeleteGroup && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onDeleteGroup(group) }}
+              aria-label={`Borrar todo el historial de ${label}`}
+              title={`Borrar todo el historial de ${label}`}
+              className="p-1 text-ink-3 hover:text-rendi-neg transition-colors"
+            >
+              <Trash2 size={14} strokeWidth={1.75} />
+            </button>
+          )}
+        </div>
       </td>
     </tr>
   )
