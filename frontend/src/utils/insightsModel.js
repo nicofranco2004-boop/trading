@@ -609,6 +609,16 @@ export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date(),
     const d = s?.date
     const v = Number(s?.total_value)
     if (!d || !(v > 0)) continue
+    // ⚠️ SNAPSHOT SINTÉTICO: no lo sacó el cron, lo fabricó
+    // `_backfill_snapshots_from_monthly` tras un import, escribiendo
+    // `total_value = capital_final del mes` — o sea LA MISMA CADENA A COSTO,
+    // congelada en el momento del backfill. Convertir un mes con eso no lo pasa
+    // a mercado: lo pasa a una copia VIEJA de la contabilidad, y la diferencia
+    // que aparece contra la columna de costo es solo cuánto se revisó el
+    // capital_final desde entonces. Es estrictamente peor que dejarlo a costo.
+    // Medido en una cuenta real: 17 de 19 meses eran sintéticos, o sea que su
+    // curva "a mercado" era la cadena de costo vieja de punta a punta.
+    if (s?.sintetico) continue
     const mk = String(d).slice(0, 7)
     const prev = ultimoDelMes.get(mk)
     if (!prev || d > prev.date) ultimoDelMes.set(mk, { date: d, value: v })

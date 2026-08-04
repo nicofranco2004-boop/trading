@@ -234,3 +234,46 @@ describe('mes en curso — el cierre tiene que ser valor de mercado', () => {
     expect(applyMtmToMonthly([filaReal], [snapJul], AGO, null)[0].mtm).toBeUndefined()
   })
 })
+
+// ── Snapshots SINTÉTICOS ────────────────────────────────────────────────────
+// `_backfill_snapshots_from_monthly` fabrica fotos de fin de mes tras un import,
+// con total_value = capital_final (la MISMA cadena a costo) congelado. Usarlas
+// no pasa el mes a mercado: lo pasa a una copia vieja de la contabilidad.
+// Medido en una cuenta real: 17 de 19 meses eran sintéticos.
+describe('un snapshot fabricado no es mercado', () => {
+  const sint = (date, total_value) => ({ date, total_value, sintetico: true })
+
+  it('los ignora: el mes queda a costo', () => {
+    const out = applyMtmToMonthly(
+      [mes(2026, 5)], [sint('2026-04-30', 1000), sint('2026-05-31', 1200)], HOY)
+    expect(out[0].mtm).toBeUndefined()
+    expect(out[0].capital_final).toBe(1050)
+  })
+
+  it('uno sintético y uno real tampoco alcanza', () => {
+    const out = applyMtmToMonthly(
+      [mes(2026, 5)], [sint('2026-04-30', 1000), snap('2026-05-31', 1200)], HOY)
+    expect(out[0].mtm).toBeUndefined()
+  })
+
+  it('los reales siguen funcionando igual', () => {
+    const out = applyMtmToMonthly(
+      [mes(2026, 5)], [snap('2026-04-30', 1000), snap('2026-05-31', 1200)], HOY)
+    expect(out[0].mtm).toBe('ambos')
+  })
+
+  it('el mes EN CURSO no convierte con un arranque fabricado', () => {
+    const out = applyMtmToMonthly(
+      [mes(2026, 8, { capital_inicio: 1050, capital_final: 1300 })],
+      [sint('2026-07-31', 1200)], HOY, 1290)
+    expect(out[0].mtm).toBeUndefined()
+  })
+
+  it('sin el flag (respuesta vieja del backend) se comporta como antes', () => {
+    // No romper si el backend todavía no manda `sintetico`.
+    const out = applyMtmToMonthly(
+      [mes(2026, 5)],
+      [{ date: '2026-04-30', total_value: 1000 }, { date: '2026-05-31', total_value: 1200 }], HOY)
+    expect(out[0].mtm).toBe('ambos')
+  })
+})

@@ -3937,12 +3937,30 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
     days = max(1, min(days, 3650))
     conn = get_db()
     rows = conn.execute(
-        "SELECT date, total_value, total_invested, net_deposited, fx_to_usd_blue "
+        "SELECT date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json "
         "FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT ?",
         (uid, days),
     ).fetchall()
     conn.close()
-    return list(reversed([dict(r) for r in rows]))
+    out = []
+    for r in rows:
+        d = dict(r)
+        # ⚠️ `sintetico`: esta fila NO la sacó el cron, la FABRICÓ
+        # `_backfill_snapshots_from_monthly` (persister.py:1175) tras un import,
+        # escribiendo `total_value = capital_final del mes` — o sea la cadena a
+        # COSTO — y `total_invested = net_deposited acumulado`. Sirve para que el
+        # chart tenga puntos, pero NO es una medición de mercado: es la
+        # contabilidad copiada y congelada en el momento del backfill.
+        # El cron escribe blue Y composición; el backfill, ninguno de los dos.
+        # Medido en una cuenta real: 17 de 19 meses eran sintéticos, así que su
+        # curva "a mercado" era la cadena de costo vieja.
+        # El pop va FUERA del `and`: si se deja adentro, el corto-circuito lo
+        # saltea cuando hay blue y la composición por activo se filtra al
+        # frontend en cada una de las 3.650 filas.
+        _hold = d.pop("holdings_json", None)
+        d["sintetico"] = (d.get("fx_to_usd_blue") is None and not (_hold or "").strip())
+        out.append(d)
+    return list(reversed(out))
 
 
 # ─── Phase C: FX history endpoint ────────────────────────────────────────────
