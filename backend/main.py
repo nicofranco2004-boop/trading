@@ -9374,6 +9374,107 @@ def _rollover_all_brokers(conn, uid: int) -> int:
     return total_created
 
 
+@app.get("/api/insights/gap-month")
+def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
+    """Read-only: baja la "Diferencia sin explicar" de un mes a la OPERACIÓN.
+
+    La identidad del mes es
+        ΔG = flujos + realizado − Δcosto
+    o sea: si la contabilidad anota una ganancia realizada, los ingresos quedan
+    en la cuenta y el costo de lo que tenés tiene que subir casi lo mismo. Cuando
+    no sube, o la ganancia es falsa o los ingresos se fueron sin registrarse.
+
+    Para separar los dos casos se compara, venta por venta, el `pnl_pct` que
+    quedó guardado contra el que implican los PRECIOS. Esa comparación es libre
+    de moneda (las dos son ratios), así que no depende del TC ni de que
+    `operations.currency` esté cargado — que en la mayoría de las filas es NULL.
+
+    Firma de un P&L inventado: `pnl_pct` gigante con `exit/entry` cerca de 1
+    (el bug per-100 de bonos), o `pnl_pct` que no se parece a `exit/entry − 1`.
+    """
+    if not re.match(r"^\d{4}-\d{2}$", mes or ""):
+        raise HTTPException(400, "mes tiene que ser YYYY-MM")
+    y, m = int(mes[:4]), int(mes[5:7])
+    conn = get_db()
+    try:
+        fila = conn.execute(
+            "SELECT capital_inicio, capital_final, deposits, withdrawals, pnl_realized "
+            "FROM monthly_entries WHERE user_id=? AND broker='global' AND year=? AND month=?",
+            (uid, y, m)).fetchone()
+        prev_mes = f"{y-1}-12" if m == 1 else f"{y}-{m-1:02d}"
+        def _snap(mk):
+            r = conn.execute(
+                "SELECT date, total_value, total_invested FROM snapshots WHERE user_id=? "
+                "AND date LIKE ? AND total_value > 0 ORDER BY date DESC LIMIT 1",
+                (uid, mk + "%")).fetchone()
+            return dict(r) if r else None
+        sp, sc = _snap(prev_mes), _snap(mes)
+        ops = conn.execute(
+            "SELECT id, date, broker, asset, op_type, entry_price, exit_price, quantity, "
+            "pnl_usd, pnl_pct, commissions, entry_date FROM operations "
+            "WHERE user_id=? AND date LIKE ? ORDER BY ABS(COALESCE(pnl_usd,0)) DESC",
+            (uid, mes + "%")).fetchall()
+    finally:
+        conn.close()
+
+    if not fila:
+        raise HTTPException(404, f"no hay fila mensual para {mes}")
+
+    flujos = (fila["deposits"] or 0) - (fila["withdrawals"] or 0)
+    realizado = (fila["capital_final"] or 0) - (fila["capital_inicio"] or 0) - flujos
+    d_costo = ((sc["total_invested"] - sp["total_invested"])
+               if (sp and sc and sp["total_invested"] is not None
+                   and sc["total_invested"] is not None) else None)
+    d_g = (round(flujos + realizado - d_costo, 2) if d_costo is not None else None)
+
+    detalle = []
+    for o in ops:
+        ep, xp = o["entry_price"] or 0, o["exit_price"] or 0
+        pct_guardado = o["pnl_pct"]
+        # El % que implican los precios. Libre de moneda: es una ratio.
+        pct_precios = ((xp / ep - 1) * 100) if ep > 0 and xp else None
+        desvio = (round(pct_guardado - pct_precios, 2)
+                  if (pct_guardado is not None and pct_precios is not None) else None)
+        # La identidad exacta: pnl_pct ≡ 100·pnl_usd/invertido ⇒ invertido = 100·pnl/pct
+        invertido = (round(100 * o["pnl_usd"] / pct_guardado, 2)
+                     if (pct_guardado not in (None, 0) and o["pnl_usd"] is not None) else None)
+        detalle.append({
+            "id": o["id"], "fecha": o["date"], "broker": o["broker"], "activo": o["asset"],
+            "tipo": o["op_type"], "cantidad": o["quantity"],
+            "precio_entrada": ep, "precio_salida": xp,
+            "ratio_precio": round(xp / ep, 4) if ep > 0 and xp else None,
+            "pnl_usd": round(o["pnl_usd"] or 0, 2),
+            "pnl_pct_guardado": pct_guardado,
+            "pnl_pct_por_precios": (round(pct_precios, 2) if pct_precios is not None else None),
+            "desvio_pp": desvio,
+            "invertido_implicito": invertido,
+            "comisiones": o["commissions"] or 0,
+            # Un P&L es SOSPECHOSO cuando el % guardado no se parece al que dan
+            # los precios. El umbral relativo evita marcar redondeos en ops chicas.
+            "sospechosa": bool(desvio is not None and abs(desvio) > 5
+                               and abs(desvio) > abs(pct_precios or 0) * 0.1),
+        })
+
+    sospechosas = [d for d in detalle if d["sospechosa"]]
+    return {
+        "mes": mes,
+        "identidad": {
+            "flujos": round(flujos, 2),
+            "realizado_del_mes": round(realizado, 2),
+            "delta_costo": (round(d_costo, 2) if d_costo is not None else None),
+            "delta_G": d_g,
+            "lectura": ("ΔG = flujos + realizado − Δcosto. Si el realizado entró de verdad, "
+                        "el costo tiene que subir casi lo mismo; lo que falta es ΔG."),
+        },
+        "snapshots": {"anterior": sp, "del_mes": sc},
+        "operaciones": len(detalle),
+        "sospechosas": len(sospechosas),
+        "pnl_de_las_sospechosas": round(sum(d["pnl_usd"] for d in sospechosas), 2),
+        "las_sospechosas": sospechosas[:20],
+        "detalle": detalle[:60],
+    }
+
+
 @app.get("/api/insights/mtm-audit")
 def insights_mtm_audit(uid: int = Depends(get_effective_user)):
     """Read-only: reconcilia mes a mes la cadena a COSTO (monthly_entries) contra

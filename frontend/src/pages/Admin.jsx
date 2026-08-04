@@ -1406,6 +1406,9 @@ function MtmBackfillPanel({ toast }) {
 function MtmAuditPanel({ toast }) {
   const [data, setData] = useState(null)
   const [busy, setBusy] = useState(false)
+  // Segundo nivel: bajar la "Diferencia sin explicar" de un mes a la OPERACIÓN.
+  const [mes, setMes] = useState('')
+  const [gap, setGap] = useState(null)
 
   async function correr() {
     setBusy(true)
@@ -1417,6 +1420,14 @@ function MtmAuditPanel({ toast }) {
   }
 
   const pct = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
+
+  async function verMes(m) {
+    setMes(m); setBusy(true); setGap(null)
+    try {
+      setGap(await api.get(`/insights/gap-month?mes=${m}`))
+    } catch (e) { toast.push('Error: ' + e.message, { type: 'error' }) }
+    finally { setBusy(false) }
+  }
 
   return (
     <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
@@ -1478,6 +1489,50 @@ function MtmAuditPanel({ toast }) {
               costo: {data.meses_sin_cobertura.join(', ')}
             </p>
           )}
+          {gap && (
+            <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-3 space-y-2">
+              <p className="text-xs text-ink-1">
+                <b>{gap.mes}</b> — flujos {gap.identidad.flujos} · realizado {gap.identidad.realizado_del_mes}
+                {' '}· Δcosto {gap.identidad.delta_costo ?? '—'} · <b>ΔG {gap.identidad.delta_G ?? '—'}</b>
+              </p>
+              <p className="text-[11px] text-ink-3">{gap.identidad.lectura}</p>
+              <p className={`text-xs font-medium ${gap.sospechosas ? 'text-red-400' : 'text-emerald-500'}`}>
+                {gap.sospechosas
+                  ? `${gap.sospechosas} de ${gap.operaciones} operaciones con el P&L incoherente con sus precios · US$ ${gap.pnl_de_las_sospechosas} involucrados`
+                  : `Las ${gap.operaciones} operaciones del mes tienen el P&L coherente con sus precios — la diferencia no sale de una venta mal calculada`}
+              </p>
+              {gap.las_sospechosas?.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="text-ink-3 text-left border-b border-line/60">
+                        <th className="py-1 pr-2">Fecha</th><th className="py-1 pr-2">Activo</th>
+                        <th className="py-1 pr-2 text-right">Precio</th>
+                        <th className="py-1 pr-2 text-right">P&L US$</th>
+                        <th className="py-1 pr-2 text-right">% guardado</th>
+                        <th className="py-1 pr-2 text-right">% por precios</th>
+                        <th className="py-1 text-right">Desvío</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gap.las_sospechosas.map(o => (
+                        <tr key={o.id} className="border-b border-line/30">
+                          <td className="py-1 pr-2 tabular">{o.fecha}</td>
+                          <td className="py-1 pr-2">{o.activo} <span className="text-ink-3">({o.broker})</span></td>
+                          <td className="py-1 pr-2 text-right tabular text-ink-3">{o.precio_entrada} → {o.precio_salida}</td>
+                          <td className="py-1 pr-2 text-right tabular">{o.pnl_usd}</td>
+                          <td className="py-1 pr-2 text-right tabular text-red-400">{o.pnl_pct_guardado}%</td>
+                          <td className="py-1 pr-2 text-right tabular">{o.pnl_pct_por_precios}%</td>
+                          <td className="py-1 text-right tabular text-red-400">{o.desvio_pp}pp</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
@@ -1496,7 +1551,13 @@ function MtmAuditPanel({ toast }) {
               <tbody>
                 {(data.detalle || []).map(o => (
                   <tr key={o.mes} className="border-b border-line/30">
-                    <td className="py-1.5 pr-3 tabular">{o.mes}</td>
+                    <td className="py-1.5 pr-3 tabular">
+                      <button onClick={() => verMes(o.mes)}
+                        className="underline decoration-dotted hover:text-violet-400"
+                        title="Ver de qué operación sale la diferencia de este mes">
+                        {o.mes}
+                      </button>
+                    </td>
                     <td className="py-1.5 pr-3 text-ink-3">{o.modo}</td>
                     <td className="py-1.5 pr-3 text-right tabular text-ink-3">{o.costo.ci} → {o.costo.cf}</td>
                     <td className="py-1.5 pr-3 text-right tabular">{pct(o.costo.r_pct)}</td>
