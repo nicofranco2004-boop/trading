@@ -1496,6 +1496,30 @@ function MtmAuditPanel({ toast }) {
                 {' '}· Δcosto {gap.identidad.delta_costo ?? '—'} · <b>ΔG {gap.identidad.delta_G ?? '—'}</b>
               </p>
               <p className="text-[11px] text-ink-3">{gap.identidad.lectura}</p>
+              {/* Triangular el "realizado" del mes por sus tres caminos aísla el
+                  eslabón roto: si la cadena no coincide con lo guardado,
+                  capital_final no cierra con su propia fórmula; si lo guardado no
+                  coincide con las operaciones, el cache quedó desincronizado. */}
+              {gap.realizado_triangulado && (() => {
+                const t = gap.realizado_triangulado
+                const rompeCadena = Math.abs(t.cadena_vs_guardado) > 1
+                const rompeOps = Math.abs(t.guardado_vs_operaciones) > 1
+                return (
+                  <div className="rounded-md border border-line/60 p-2 space-y-1">
+                    <p className="text-[11px] text-ink-2">
+                      Realizado del mes por tres caminos: cadena <b>{t.implicito_por_la_cadena}</b>
+                      {' '}· guardado <b>{t.guardado_en_monthly}</b> · operaciones <b>{t.suma_de_operaciones}</b>
+                    </p>
+                    <p className={`text-[11px] font-medium ${rompeCadena || rompeOps ? 'text-red-400' : 'text-emerald-500'}`}>
+                      {rompeCadena
+                        ? `capital_final NO cierra con su fórmula: sobran ${t.cadena_vs_guardado}`
+                        : rompeOps
+                          ? `el realizado guardado no coincide con las operaciones: difieren ${t.guardado_vs_operaciones}`
+                          : 'los tres coinciden'}
+                    </p>
+                  </div>
+                )
+              })()}
               {/* El color sigue al VEREDICTO, no a "cero sospechosas": un mes sin
                   operaciones, o con operaciones que no se pueden verificar, no es
                   verde — es "no sé". */}

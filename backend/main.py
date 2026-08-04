@@ -9421,6 +9421,15 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
         raise HTTPException(404, f"no hay fila mensual para {mes}")
 
     flujos = (fila["deposits"] or 0) - (fila["withdrawals"] or 0)
+    # TRES formas de decir "cuánto se realizó este mes". Tienen que coincidir:
+    #   · implícito  — lo que exige la cadena: cf − ci − flujos
+    #   · guardado   — la columna monthly_entries.pnl_realized
+    #   · operaciones— la suma de operations.pnl_usd del mes
+    # Si el implícito no coincide con el guardado, la cadena mensual está
+    # descuadrada por dentro (capital_final no cierra con su propia fórmula).
+    # Si el guardado no coincide con las operaciones, el cache de realizado
+    # quedó desincronizado de las operaciones que lo tienen que producir.
+    # Triangular los tres dice EXACTAMENTE dónde está el corte.
     realizado = (fila["capital_final"] or 0) - (fila["capital_inicio"] or 0) - flujos
     d_costo = ((sc["total_invested"] - sp["total_invested"])
                if (sp and sc and sp["total_invested"] is not None
@@ -9551,6 +9560,17 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
                "lectura": ("si el blue casi no se movió, el FX no explica el ΔG"
                            if fx_var is not None else "sin blue estampado en los snapshots")},
         "movimientos_de_tenencia": movs[:25],
+        "realizado_triangulado": {
+            "implicito_por_la_cadena": round(realizado, 2),
+            "guardado_en_monthly": round(fila["pnl_realized"] or 0, 2),
+            "suma_de_operaciones": round(sum(d["pnl_usd"] for d in detalle), 2),
+            "cadena_vs_guardado": round(realizado - (fila["pnl_realized"] or 0), 2),
+            "guardado_vs_operaciones": round((fila["pnl_realized"] or 0)
+                                             - sum(d["pnl_usd"] for d in detalle), 2),
+            "lectura": ("los tres tienen que coincidir. Si falla el primero, capital_final no "
+                        "cierra con su propia fórmula; si falla el segundo, el realizado "
+                        "guardado no se corresponde con las operaciones del mes."),
+        },
         "identidad": {
             "flujos": round(flujos, 2),
             "realizado_del_mes": round(realizado, 2),
