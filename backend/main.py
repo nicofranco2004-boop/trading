@@ -10234,19 +10234,16 @@ def _delete_one_movement(conn, uid: int, mid: str):
             "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, broker),
         ).fetchone()
         broker_ccy = ((broker_row["currency"] if broker_row else "USD") or "USD").upper()
-        # El flujo manual NO persiste el monto NATIVO ni el FX del momento
-        # (cash/flow solo estampa manual_* en USD). En un broker ARS, revertir el
-        # cash con el tc_blue ACTUAL dejaría un residual FANTASMA (el blue se mueve
-        # con la inflación). Bloqueamos el borrado de manuales en pesos hasta
-        # persistir el nativo (follow-up). Importados (tx-) y manuales en USD →
-        # reversa EXACTA (nativo == USD).
-        if broker_ccy == "ARS":
-            raise HTTPException(400,
-                "El borrado de depósitos/retiros manuales en pesos todavía no está "
-                "disponible (para no dejar el saldo mal por el cambio del dólar). "
-                "Los importados y los movimientos en dólares sí se pueden borrar.")
+        # El flujo manual guarda manual_* SOLO en USD (no el nativo ni el FX del
+        # momento). En un broker ARS revertimos el cash por el NATIVO aproximado al
+        # blue de HOY (manual_usd × blue). Si el blue se movió desde que se cargó,
+        # queda un pequeño residual en el SALDO del broker — pero el capital APORTADO
+        # queda EXACTO (ponemos el manual del mes en 0 abajo). En USD nativo == USD
+        # → reversa exacta. (Follow-up: persistir el nativo al crear para que los
+        # nuevos se reviertan al centavo.)
+        native = manual_usd * _config_tc_blue(conn, uid) if broker_ccy == "ARS" else manual_usd
         # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
-        _adjust_broker_cash(conn, uid, broker, -manual_usd if direction == "dep" else manual_usd)
+        _adjust_broker_cash(conn, uid, broker, -native if direction == "dep" else native)
         # Poner el manual del mes en 0 → _recalc recompone deposits = imports + 0.
         conn.execute(
             f"UPDATE monthly_entries SET {col}=0 WHERE id=? AND user_id=?", (me_id, uid),

@@ -370,5 +370,41 @@ class DeleteCascade(unittest.TestCase):
         self._probe()
 
 
+    # ── Fase 2.x: depósito manual EN PESOS ahora se puede borrar (aproximado) ──
+    def test_delete_manual_ars_deposit_unblocked(self):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            (self.uid, "tc_blue", "1000"))
+        self.conn.execute(
+            "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (self.uid, "Cocos", "ARS"))
+        # cash del broker: 50.000 pesos
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, invested) VALUES (?,?,?,1,?)",
+            (self.uid, "Cocos", "ARS", 50000.0))
+        # depósito manual de 50 USD (= 50.000 pesos al blue 1000)
+        self.conn.execute(
+            """INSERT INTO monthly_entries
+                 (user_id, broker, year, month, deposits, withdrawals,
+                  capital_inicio, capital_final, pnl_realized, manual_deposits, manual_withdrawals)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (self.uid, "Cocos", 2025, 1, 50, 0, 0, 50, 0, 50.0, 0))
+        self.conn.commit()
+        me_id = self.conn.execute(
+            "SELECT id FROM monthly_entries WHERE broker='Cocos'").fetchone()["id"]
+
+        with self.conn:
+            main._delete_one_movement(self.conn, self.uid, f"me-{me_id}-dep")
+
+        # Aportado EXACTO: el manual del mes queda en 0.
+        md = self.conn.execute(
+            "SELECT manual_deposits FROM monthly_entries WHERE id=?", (me_id,)).fetchone()["manual_deposits"]
+        self.assertAlmostEqual(md or 0, 0.0, places=6)
+        # Cash: 50.000 − (50 USD × 1000) = 0.
+        cash = self.conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND broker='Cocos' AND is_cash=1",
+            (self.uid,)).fetchone()["invested"]
+        self.assertAlmostEqual(cash, 0.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
