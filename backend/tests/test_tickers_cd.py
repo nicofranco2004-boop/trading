@@ -102,6 +102,62 @@ class NoSeToquenTest(unittest.TestCase):
         self.assertEqual(CD_ASSET_TYPES, {"BOND", "STOCK", "CEDEAR"})
 
 
+class CedearBrasilenoTest(unittest.TestCase):
+    """PETR3 (pesos) y PETRD (dólares) son el mismo activo.
+
+    Reportado por un usuario de IOL con su export real: 21 operaciones de PETR3 y
+    14 de PETRD que nunca se cruzaban. La regla genérica no alcanza — sacarle la D
+    a PETRD da "PETR", que no existe ni cotiza (BYMA lo lista PETR3.BA).
+    """
+
+    def test_petrd_va_a_petr3(self):
+        self.assertEqual(strip_cd_suffix("PETRD"), "PETR3")
+
+    def test_tambien_sin_asset_type(self):
+        # IOL manda asset_type vacío → el normalizador cae a OTHER. Si el mapa
+        # pasara por el gate de tipos sería letra muerta justo para IOL.
+        self.assertEqual(consolidate_cd("PETRD", "OTHER"), "PETR3")
+        self.assertEqual(consolidate_cd("PETRD", None), "PETR3")
+
+    def test_el_subyacente_no_se_toca(self):
+        self.assertEqual(consolidate_cd("PETR3", "OTHER"), "PETR3")
+
+    def test_el_mapa_gana_a_la_regla_generica(self):
+        # Sin el mapa, PETRD → PETR (le saca la D). Con el mapa → PETR3.
+        self.assertNotEqual(strip_cd_suffix("PETRD"), "PETR")
+
+    def test_los_bonos_terminados_en_digito_siguen_intactos(self):
+        # Los 36 tickers terminados en dígito del export real: sólo UNO era
+        # brasileño. Una regla de prefijo habría arrasado con el resto.
+        for t in ("AL30", "GD30", "GD35", "TX26", "TZXD5", "DGCU2", "TGNO4",
+                  "TECO2", "AY24", "PBA25", "A2E7", "TTM26", "T30J6"):
+            self.assertEqual(consolidate_cd(t, "BOND"), t, t)
+            self.assertEqual(strip_cd_suffix(t), t, t)
+
+
+class SinDuplicacionTest(unittest.TestCase):
+    """El algoritmo vivía copiado en el parser de IOL y en el helper. Un fix en
+    una sola copia se perdía en silencio — que es lo que pasó con el mapeo
+    brasileño."""
+
+    def test_iol_delega_en_el_helper(self):
+        import inspect
+        import importing.parsers.iol as iol
+        src = inspect.getsource(iol._clean_ticker)
+        self.assertIn("strip_cd_suffix", src)
+
+    def test_iol_no_tiene_su_propia_lista(self):
+        import inspect
+        import importing.parsers.iol as iol
+        src = inspect.getsource(iol)
+        self.assertNotIn("_KNOWN_CD_TICKERS = {", src)
+
+    def test_iol_produce_el_mismo_resultado(self):
+        from importing.parsers.iol import _clean_ticker
+        for t in ("PETRD", "AL30D", "GD30C", "AMD", "GOLD", "INTC", "BA.C"):
+            self.assertEqual(_clean_ticker(t), strip_cd_suffix(t), t)
+
+
 class NormalizerAplicaLaConsolidacionTest(unittest.TestCase):
     """El chokepoint: un solo lugar decide el símbolo de toda fila importada."""
 

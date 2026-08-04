@@ -82,6 +82,8 @@ from __future__ import annotations
 import csv
 import io
 import re
+
+from ..tickers_cd import strip_cd_suffix, KNOWN_CD_TICKERS, BR_DOLLAR_LEG
 from typing import List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
@@ -90,17 +92,8 @@ from ..schema import ParseResult, RawRow, RowError
 # Headers que identifican un export de IOL. Si aparecen al menos 3, asumimos IOL.
 _REQUIRED_HEADERS = {"tipomov", "canttitulos", "concert", "monto", "nrodeboleto"}
 
-# Tickers conocidos que terminan en C/D de forma LEGÍTIMA (no son la pata dólar
-# de otro). Espejo de los símbolos de frontend/src/utils/tickers.js que terminan
-# en C/D — para no estropear AMD→AM, GOLD→GOL, INTC→INT, etc. Si tickers.js suma
-# uno nuevo terminado en C/D, agregalo acá.
-_KNOWN_CD_TICKERS = {
-    "AMC", "AMD", "BAC", "BBD", "BND", "BTC", "CAC", "CARC", "CRWD", "DBC",
-    "EGLD", "ETC", "FBTC", "GBTC", "GD", "GILD", "GLD", "GOLD", "HD", "HOOD",
-    "INTC", "JD", "KLAC", "LCID", "LQD", "LTC", "MATIC", "MCD", "MPC", "NOC",
-    "PDD", "SAND", "SSEC", "TSMC", "USDC", "WBD", "WFC", "WLD", "XLC", "YPFD",
-    "ZEC",
-}
+# La lista de tickers que legítimamente terminan en C/D vive en
+# `importing/tickers_cd.py` (KNOWN_CD_TICKERS) — una sola copia.
 
 # Pistas de moneda en la columna Tipo Cuenta.
 _CUENTA_USD_HINTS = ("dolar", "u$s", "us$", "usd", "exterior", "cable", "ccl", "mep")
@@ -190,24 +183,18 @@ def _has_usd_suffix(raw_ticker: str) -> bool:
 
 
 def _clean_ticker(raw_ticker: str, is_fci: bool = False) -> str:
-    """Normaliza el ticker del Tipo Mov. al símbolo base de Rendi:
-       - quita el sufijo de moneda 'US$' / 'U$S'
-       - quita el sufijo dólar/cable 'D'/'C' (consolida la pata dólar con el
-         subyacente), salvo que sea un ticker conocido que legítimamente termina
-         en C/D (AMD, GOLD, INTC, …).
-    NO quita la D/C cuando:
-       • es un FCI (`is_fci`): su ticker no es una pata dólar-MEP y suele terminar
-         en D/C legítimamente (IOLDOLD, …) → truncarlo lo desalinea de la foto;
-       • el ticker tiene un punto (BA.C, BR.K…): el punto ya marca la clase y la
-         letra final es parte del símbolo, no un sufijo dólar/cable.
+    """Normaliza el ticker del Tipo Mov. al símbolo base de Rendi.
+
+    DELEGA en `importing.tickers_cd.strip_cd_suffix`, que es la SSoT: quita el
+    sufijo de moneda US$/U$S, resuelve la pata dólar de los CEDEARs brasileños
+    (PETRD → PETR3) y consolida el sufijo D/C con el subyacente, respetando los
+    tickers que legítimamente terminan en C/D (AMD, GOLD, INTC…).
+
+    Este algoritmo vivía duplicado acá y en `tickers_cd.py`, con dos copias de la
+    misma lista de excepciones. Un fix aplicado a una sola se perdía en silencio —
+    que es exactamente lo que pasó con el mapeo brasileño.
     """
-    t = raw_ticker.strip().upper()
-    t = re.sub(r"\s*(US\$|U\$S)$", "", t).strip()
-    if is_fci or "." in t:
-        return t
-    if len(t) >= 3 and t[-1] in ("D", "C") and t not in _KNOWN_CD_TICKERS:
-        t = t[:-1]
-    return t
+    return strip_cd_suffix(raw_ticker, is_fci=is_fci)
 
 
 # Resolución de operación: prefijo del Tipo Mov. (lo de antes del paréntesis,
@@ -255,7 +242,15 @@ def _has_dollar_suffix(raw_ticker: Optional[str]) -> bool:
     if not raw_ticker:
         return False
     t = re.sub(r"\s*(US\$|U\$S)$", "", raw_ticker.strip().upper()).strip()
-    return len(t) >= 3 and t[-1] in ("D", "C") and t not in _KNOWN_CD_TICKERS
+    # Los CEDEARs brasileños del mapa (PETRD…) NO se marcan como pata dólar acá,
+    # a propósito: ya se consolidan al subyacente por símbolo, y marcarlos los
+    # expondría además a `_detect_iol_conduits`, que aparea por base + nominal +
+    # mismo día y podría colapsar dos trades reales en una conversión FX. El
+    # neteo de conductos de estos activos queda en manos del rebuild, que tiene
+    # las guardas de moneda net-short y de ventana.
+    if t in BR_DOLLAR_LEG:
+        return False
+    return len(t) >= 3 and t[-1] in ("D", "C") and t not in KNOWN_CD_TICKERS
 
 
 def _days_between(a: Optional[str], b: Optional[str]) -> Optional[int]:

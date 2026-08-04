@@ -48,6 +48,30 @@ KNOWN_CD_TICKERS = {
 # termina en D/C legítimamente: IOLDOLD…), y cripto/fiat tampoco.
 CD_ASSET_TYPES = {"BOND", "STOCK", "CEDEAR"}
 
+# ── CEDEARs de acciones BRASILEÑAS ────────────────────────────────────────────
+# Usan el ticker de Bovespa, que lleva un sufijo NUMÉRICO de clase (3 = ordinaria,
+# 4 = preferida, 11 = unit): PETR3, VALE3, ITUB4… Su pata dólar en el broker se
+# forma sacando ese número y agregando la D — o sea PETR3 ↔ PETRD.
+#
+# La regla genérica de abajo NO puede resolverlo: sacarle la D a PETRD da "PETR",
+# que no existe (ni cotiza: BYMA lo lista como PETR3.BA). Y sin consolidar
+# tampoco matchean. Hace falta el par explícito.
+#
+# Reportado por un usuario de IOL con su export real: 21 operaciones de PETR3 y
+# 14 de PETRD que nunca se cruzaban. Las ventas en dólares no encontraban stock,
+# se les sintetizaba un lote al precio de venta (P&L 0 — se ve en la app como
+# "P. Entrada = P. Salida") y le quedaba abierto un remanente de PETR3 que ya
+# había vendido.
+#
+# ES UN MAPA EXACTO, NO UNA REGLA, y a propósito: una regla de prefijo sobre
+# tickers terminados en dígito arrasaría con los bonos y letras argentinos, que
+# son casi todos (AL30, GD30, TX26, TZXD5, DGCU2, TGNO4…). En el export de ese
+# usuario había 36 tickers terminados en número y sólo UNO era brasileño.
+# Se agregan pares de a uno, verificados contra un export real.
+BR_DOLLAR_LEG = {
+    "PETRD": "PETR3",
+}
+
 
 def strip_cd_suffix(raw_ticker: str, is_fci: bool = False) -> str:
     """Devuelve el ticker base: le saca el sufijo de moneda y la D/C final.
@@ -64,6 +88,11 @@ def strip_cd_suffix(raw_ticker: str, is_fci: bool = False) -> str:
     if not t:
         return t
     t = re.sub(r"\s*(US\$|U\$S)$", "", t).strip()
+    # Pata dólar de un CEDEAR brasileño: lookup EXACTO, antes que cualquier regla.
+    # Va incluso para FCI y para tickers con punto: es un dict escrito a mano, sólo
+    # puede tocar los símbolos que alguien puso ahí.
+    if t in BR_DOLLAR_LEG:
+        return BR_DOLLAR_LEG[t]
     if is_fci or "." in t:
         return t
     if len(t) >= 3 and t[-1] in ("D", "C") and t not in KNOWN_CD_TICKERS:
@@ -79,6 +108,15 @@ def consolidate_cd(raw_ticker: str, asset_type: str | None) -> str:
     lado seguro, porque un ticker consolidado de más partiría en dos el historial
     de un activo que estaba bien.
     """
-    if not raw_ticker or (asset_type or "").upper() not in CD_ASSET_TYPES:
+    if not raw_ticker:
+        return raw_ticker
+    # El mapa brasileño NO pasa por el gate de tipos: es un lookup exacto y los
+    # parsers rara vez clasifican estas filas (IOL manda asset_type vacío → el
+    # normalizador cae a OTHER, que no está en CD_ASSET_TYPES). Sin esta línea el
+    # mapa sería letra muerta justo para el broker que lo reportó.
+    _up = raw_ticker.strip().upper()
+    if _up in BR_DOLLAR_LEG:
+        return BR_DOLLAR_LEG[_up]
+    if (asset_type or "").upper() not in CD_ASSET_TYPES:
         return raw_ticker
     return strip_cd_suffix(raw_ticker, is_fci=False)
