@@ -989,9 +989,14 @@ function MovementsView() {
   // refetch de /movements. Los KPIs de la página se recomputan solos; el gráfico
   // del dashboard/evolución se corrige al navegar/recargar (lo lee del backend).
   async function handleDelete(m) {
-    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto' }[m.type] || 'movimiento'
-    const monto = m.amount_usd ? ` de ${fmtUsd(m.amount_usd)}` : ''
-    if (!window.confirm(`¿Borrar este ${label}${monto}?\n\nSe recalculan tu cartera, el capital aportado y la evolución. No se puede deshacer.`)) return
+    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta' }[m.type] || 'movimiento'
+    const isTrade = m.type === 'BUY' || m.type === 'SELL'
+    const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
+    const monto = m.amount_usd ? ` (${fmtUsd(m.amount_usd)})` : ''
+    const efecto = isTrade
+      ? 'Se recalcula todo: cartera, P&L, rendimiento, capital aportado y la evolución. Deja de contar en todos los cálculos.'
+      : 'Se recalculan tu cartera, el capital aportado y la evolución. La operación deja de contar en todos los cálculos.'
+    if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
     setDeletingId(m.id)
     try {
       await api.delete(`/movements/${encodeURIComponent(m.id)}`)
@@ -1281,9 +1286,10 @@ function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
 // indent: cuando la fila es detalle de un grupo (modo agrupado), la atenuamos
 // e indentamos la primera celda con un marquito "└" — mismo recurso visual que
 // los lotes en Positions.
-// Tipos borrables en v1 (cash-flows). Compras/ventas van a fase futura (rebuild
-// FIFO) → sin tacho. Alineado con _DELETABLE_CASHFLOW_TYPES del backend.
-const DELETABLE_MOVEMENT_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO']
+// Tipos borrables: cash-flows + trades (compras/ventas rutean al motor de cascada
+// del backend). El backend bloquea con mensaje claro lo que aún no soporta
+// (manuales en pesos, bonos, compras ya vendidas, activos con data manual mezclada).
+const DELETABLE_MOVEMENT_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO', 'BUY', 'SELL']
 
 function MovementRow({ m, indent = false, onDelete, deleting = false }) {
   // Phase C (audit fix H1): cada movimiento usa SU PROPIO FX histórico para

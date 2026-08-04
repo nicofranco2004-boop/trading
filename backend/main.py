@@ -10222,6 +10222,47 @@ def _delete_one_movement(conn, uid: int, mid: str):
     raise HTTPException(400, "id de movimiento no reconocido")
 
 
+def _route_tx_delete(conn, uid: int, mid: str):
+    """Rutea el borrado de un movimiento IMPORTADO (tx-{n}). Los cash-flows van al
+    reverso clásico; las COMPRAS/VENTAS importadas van al motor de cascada FIFO
+    (una venta importada aparece como tx-, no op-; una compra como tx-, no pos-)."""
+    try:
+        tx_id = int(mid[3:])
+    except ValueError:
+        raise HTTPException(400, "id de movimiento inválido")
+    tx = conn.execute(
+        """SELECT n.operation_type, n.batch_id, n.raw_row_id FROM import_normalized_tx n
+             JOIN import_batches b ON b.id = n.batch_id
+            WHERE n.id=? AND b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL""",
+        (tx_id, uid),
+    ).fetchone()
+    if not tx:
+        raise HTTPException(404, "Movimiento no encontrado")
+    op = (tx["operation_type"] or "").upper()
+    if op == "SELL":
+        link = conn.execute(
+            "SELECT operation_id FROM import_op_links WHERE batch_id=? AND raw_row_id=? "
+            "AND operation_id IS NOT NULL LIMIT 1", (tx["batch_id"], tx["raw_row_id"])).fetchone()
+        if link:
+            _delete_operation_cascade(conn, uid, link["operation_id"])
+            return
+        raise HTTPException(404, "La venta ya no existe")
+    if op == "BUY":
+        link = conn.execute(
+            "SELECT position_id FROM import_op_links WHERE batch_id=? AND raw_row_id=? "
+            "AND position_id IS NOT NULL LIMIT 1", (tx["batch_id"], tx["raw_row_id"])).fetchone()
+        if link:
+            _delete_position_cascade(conn, uid, link["position_id"])
+            return
+        # La compra se vendió entera (su lote ya no existe) → borrar la venta primero.
+        raise HTTPException(409,
+            "Esta compra ya se vendió, así que no se puede borrar sola. Borrá primero "
+            "la venta (en Solo P/L) o usá 'borrar todo el historial' del activo.")
+    # Cash-flow → reverso clásico + cascada.
+    since_date, brokers = _delete_one_movement(conn, uid, mid)
+    _cascade_after_movement_delete(conn, uid, since_date, brokers)
+
+
 @app.delete("/api/movements/{movement_id}")
 def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
     """Borra UN movimiento individual (vista Operaciones) y recalcula la cascada:
@@ -10235,8 +10276,27 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
         conn = get_db()
         try:
             with conn:  # tx atómica: reverso + cascada
-                since_date, brokers = _delete_one_movement(conn, uid, mid)
-                _cascade_after_movement_delete(conn, uid, since_date, brokers)
+                if mid.startswith("op-"):
+                    # op-{n}-buy / op-{n}-sell → borrar la operación (trade cerrado)
+                    # con el motor de Fase 1, que hace su propia cascada.
+                    try:
+                        oid = int(mid.split("-")[1])
+                    except (IndexError, ValueError):
+                        raise HTTPException(400, "id de movimiento inválido")
+                    _delete_operation_cascade(conn, uid, oid)
+                elif mid.startswith("pos-"):
+                    # pos-{n} → lote abierto MANUAL (los importados vienen como tx-).
+                    try:
+                        pid = int(mid[4:])
+                    except ValueError:
+                        raise HTTPException(400, "id de movimiento inválido")
+                    _delete_position_cascade(conn, uid, pid)
+                elif mid.startswith("tx-"):
+                    # Importado: cash-flow → reverso clásico; compra/venta → cascada FIFO.
+                    _route_tx_delete(conn, uid, mid)
+                else:
+                    since_date, brokers = _delete_one_movement(conn, uid, mid)
+                    _cascade_after_movement_delete(conn, uid, since_date, brokers)
         finally:
             conn.close()
 
@@ -11094,6 +11154,117 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
 
     # 5) Cascada de agregados + snapshots — lo que el borrado viejo NO hacía.
+    _cascade_after_movement_delete(conn, uid, since_date, {broker})
+
+    return {"ok": True, "undo_token": token, "broker": broker, "asset": asset}
+
+
+def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
+    """Borra un LOTE ABIERTO (una compra que todavía no se vendió) con cascada TOTAL.
+    Espeja _delete_operation_cascade pero sobre el evento BUY. Fase 2.x: solo compras
+    IMPORTADAS de activos no-bono reproducibles y NO consumidas por una venta.
+
+    Reversa el cash que la compra debitó (invested+fees), tombstonea el BUY fuente
+    (no resucita) y rebuild_pair_asset re-deriva el activo sin ese lote. Reversible."""
+    import json as _json
+    import secrets as _secrets
+
+    pos = conn.execute(
+        "SELECT * FROM positions WHERE id=? AND user_id=? AND is_cash=0", (pos_id, uid),
+    ).fetchone()
+    if not pos:
+        raise HTTPException(404, "Posición no encontrada")
+
+    link = conn.execute(
+        "SELECT batch_id, raw_row_id FROM import_op_links WHERE position_id=? LIMIT 1", (pos_id,),
+    ).fetchone()
+    if not link:
+        raise HTTPException(400,
+            "Por ahora solo se pueden borrar compras IMPORTADAS. Las cargadas a mano "
+            "llegan en la próxima versión.")
+
+    batch_id, raw_row_id = link["batch_id"], link["raw_row_id"]
+    src = conn.execute(
+        """SELECT n.* FROM import_normalized_tx n
+             JOIN import_batches b ON b.id = n.batch_id
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?
+              AND b.status='confirmed' AND n.excluded_at IS NULL""",
+        (batch_id, raw_row_id, uid),
+    ).fetchone()
+    if not src:
+        raise HTTPException(404, "La compra ya no existe en la fuente")
+    if (src["operation_type"] or "").upper() != "BUY":
+        raise HTTPException(400, "Esta fila no es una compra importada.")
+    if (src["asset_type"] or "").upper() == "BOND":
+        raise HTTPException(400,
+            "El borrado de bonos todavía no está disponible. (Próxima versión.)")
+    # Compra PARCIALMENTE vendida: si la posición tiene menos cantidad que la compra
+    # original, una venta la consumió → borrar el BUY dejaría esa venta huérfana
+    # (costo fabricado). Bloqueamos: primero borrá la venta (Solo P/L) o el activo entero.
+    if abs(float(pos["quantity"] or 0) - float(src["quantity"] or 0)) > 1e-6:
+        raise HTTPException(409,
+            "Esta compra ya se vendió en parte, así que no se puede borrar sola. Borrá "
+            "primero la venta (en Solo P/L) o usá 'borrar todo el historial' del activo.")
+
+    broker = src["broker"] or pos["broker"] or ""
+    asset = src["asset_symbol"] or pos["asset"] or ""
+    pair = _import_persister.broker_pair(conn, uid, broker)
+    if not _import_rebuild._is_safe_to_rebuild(conn, uid, pair, asset):
+        raise HTTPException(409,
+            "Este activo tiene operaciones cargadas a mano mezcladas con las "
+            "importadas, así que todavía no se puede borrar una sola. (Próxima versión.)")
+    _ph = ",".join("?" * len(pair))
+    if conn.execute(
+        f"""SELECT 1 FROM operations WHERE user_id=? AND broker IN ({_ph}) AND asset=?
+             AND op_type IN ('Cupón','Cupon','Amortización','Amortizacion','Renta',
+                             'Dividendo','Interés','Interes') LIMIT 1""",
+        (uid, *pair, asset),
+    ).fetchone():
+        raise HTTPException(400,
+            "Este activo tiene cupones, amortizaciones o dividendos enlazados; su "
+            "borrado llega en la próxima versión.")
+
+    since_date = (src["date"] or "")[:10] or None
+
+    # 1) CLAIM ATÓMICO: tombstone primero (lock anti-concurrencia).
+    if conn.execute(
+        "UPDATE import_normalized_tx SET excluded_at=datetime('now'), excluded_by=? "
+        "WHERE id=? AND excluded_at IS NULL", (uid, src["id"]),
+    ).rowcount != 1:
+        raise HTTPException(409, "Esa compra ya se está borrando.")
+
+    # 2) Reversar el cash que la compra DEBITÓ: invested+fees (invested=gross_amount
+    #    o reconciled·qty si es NULL, persister:513). Devolvemos esa plata.
+    if src["gross_amount"] is not None:
+        invested = float(src["gross_amount"])
+    else:
+        invested = float(_import_persister.reconciled_unit_price(
+            src["unit_price"], src["quantity"], src["gross_amount"], src["asset_type"]) or 0) \
+            * float(src["quantity"] or 0)
+    cash_reversed = invested + float(src["fees"] or 0)
+    if cash_reversed:
+        _adjust_broker_cash(conn, uid, broker, cash_reversed)
+
+    # 3) Soltar el link + journal para deshacer.
+    conn.execute(
+        "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?", (batch_id, raw_row_id))
+    token = _secrets.token_hex(8)
+    conn.execute(
+        """INSERT INTO deleted_ops_journal
+             (user_id, token, kind, payload_json, since_date, broker)
+           VALUES (?,?,?,?,?,?)""",
+        (uid, token, "imported",
+         # `cash_reversed` = lo que el UNDO debe re-aplicar para revertir. El delete
+         # DEVOLVIÓ +cash_reversed, así que el undo debe RE-DEBITAR → guardamos el negado
+         # (la venta guarda +proceeds porque su delete restó; misma convención).
+         _json.dumps({"tx_id": src["id"], "batch_id": batch_id, "raw_row_id": raw_row_id,
+                      "cash_reversed": -cash_reversed, "broker": broker, "asset": asset}),
+         since_date, broker),
+    )
+
+    # 4) Re-derivar el activo (el lote desaparece) + cascada.
+    tc_blue = _config_tc_blue(conn, uid)
+    _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
     _cascade_after_movement_delete(conn, uid, since_date, {broker})
 
     return {"ok": True, "undo_token": token, "broker": broker, "asset": asset}

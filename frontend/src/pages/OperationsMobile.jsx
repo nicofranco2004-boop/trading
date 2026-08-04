@@ -450,8 +450,9 @@ const MOVE_TYPE_META = {
   BUY:      { label: 'Compra',    Icon: TrendingUp,      tone: null },
   SELL:     { label: 'Venta',     Icon: TrendingDown,    tone: null },
 }
-// Alineado con _DELETABLE_CASHFLOW_TYPES del backend (trades → fase futura).
-const DELETABLE_MOVE_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO']
+// Cash-flows + trades (compras/ventas rutean al motor de cascada del backend, que
+// bloquea con mensaje claro lo que aún no soporta).
+const DELETABLE_MOVE_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO', 'BUY', 'SELL']
 
 function MovementsMobile() {
   const money = useMoneyFormat()
@@ -468,9 +469,14 @@ function MovementsMobile() {
   useEffect(() => { track('movements_mobile_viewed'); load() }, [])
 
   async function handleDelete(m) {
+    const isTrade = m.type === 'BUY' || m.type === 'SELL'
     const label = (MOVE_TYPE_META[m.type]?.label || 'movimiento').toLowerCase()
-    const monto = m.amount_usd ? ` de ${money.fmtMoney(m.amount_usd)}` : ''
-    if (!window.confirm(`¿Borrar este ${label}${monto}?\n\nSe recalcula tu cartera, el capital aportado y la evolución. No se puede deshacer.`)) return
+    const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
+    const monto = m.amount_usd ? ` (${money.fmtMoney(m.amount_usd)})` : ''
+    const efecto = isTrade
+      ? 'Se recalcula todo: cartera, P&L, rendimiento, capital aportado y evolución.'
+      : 'Se recalcula tu cartera, el capital aportado y la evolución.'
+    if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto} Deja de contar en todos los cálculos.`)) return
     setDeletingId(m.id)
     try {
       await api.delete(`/movements/${encodeURIComponent(m.id)}`)

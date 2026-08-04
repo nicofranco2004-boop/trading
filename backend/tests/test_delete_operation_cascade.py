@@ -297,5 +297,78 @@ class DeleteCascade(unittest.TestCase):
         self.assertEqual(cm.exception.status_code, 400)
 
 
+    # ── Fase 2.x: borrar un LOTE ABIERTO (compra sin vender) desde Movimientos ──
+    def _pos_id(self, asset="AAPL"):
+        r = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND asset=? AND is_cash=0 LIMIT 1",
+            (self.uid, asset)).fetchone()
+        return r["id"] if r else None
+
+    def test_delete_open_position(self):
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)
+        self.assertAlmostEqual(self._cash(), -1500.0, places=2)
+        with self.conn:
+            main._delete_position_cascade(self.conn, self.uid, self._pos_id())
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)   # lote borrado
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)       # -1500 + 1500 devuelto
+        self._probe()
+
+    def test_delete_position_blocked_if_partially_sold(self):
+        # La compra ya se vendió en parte → borrar el lote dejaría la venta huérfana → 409.
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        self.assertAlmostEqual(self._open_qty(), 6.0, places=6)
+        with self.assertRaises(main.HTTPException) as cm:
+            main._delete_position_cascade(self.conn, self.uid, self._pos_id())
+        self.assertEqual(cm.exception.status_code, 409)
+
+    def test_undo_open_position(self):
+        # El undo de una COMPRA re-debita el cash (signo opuesto a la venta).
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        with self.conn:
+            res = main._delete_position_cascade(self.conn, self.uid, self._pos_id())
+        j = self.conn.execute(
+            "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
+        p = json.loads(j["payload_json"])
+        with self.conn:
+            self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (p["tx_id"],))
+            main._adjust_broker_cash(self.conn, self.uid, p["broker"], float(p["cash_reversed"]))
+            rb.rebuild_pair_asset(self.conn, self.uid, p["broker"], p["asset"],
+                                  tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], {p["broker"]})
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)
+        self.assertAlmostEqual(self._cash(), -1500.0, places=2)   # re-debitado
+        self._probe()
+
+
+    # ── Wiring end-to-end: borrar trades importados desde Movimientos (id tx-) ──
+    def test_delete_imported_buy_via_tx_route(self):
+        # Una COMPRA importada aparece como tx- (no pos-). El router la manda a
+        # _delete_position_cascade. (El bug que el review cazó: antes daba 400.)
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='BUY' AND asset_symbol='AAPL'"
+        ).fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)
+        self._probe()
+
+    def test_delete_imported_sell_via_tx_route(self):
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='SELL' AND asset_symbol='AAPL'"
+        ).fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)   # tenencia restaurada
+        self.assertEqual(len(self._ventas()), 0)
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+        self._probe()
+
+
 if __name__ == "__main__":
     unittest.main()
