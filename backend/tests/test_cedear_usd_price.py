@@ -66,6 +66,7 @@ class CedearUsdPriceTest(unittest.TestCase):
              patch.object(main, "_prices_cache_get", side_effect=lambda syms: ({}, list(syms))), \
              patch.object(main, "_prices_cache_set"), \
              patch.object(main, "_resolve_ar_bond_price", return_value=None), \
+             patch.object(main, "_resolve_ar_equity_price", return_value=None), \
              patch.object(main, "_fill_last_known_prices"):
             return main.get_prices(symbols, self.uid)
 

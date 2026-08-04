@@ -83,6 +83,9 @@ class CryptoArsPriceTest(unittest.TestCase):
             st.enter_context(patch.object(main, "_prices_cache_get", side_effect=lambda syms: ({}, list(syms))))
             st.enter_context(patch.object(main, "_prices_cache_set"))
             st.enter_context(patch.object(main, "_resolve_ar_bond_price", return_value=None))
+            # Igual que el de bonos: las fuentes AR se stubean para aislar la
+            # conversión que estos tests miden (si no, el fallback sale a la red).
+            st.enter_context(patch.object(main, "_resolve_ar_equity_price", return_value=None))
             st.enter_context(patch.object(main, "_fill_last_known_prices"))
             if cripto is not _SENTINEL:
                 st.enter_context(patch.object(main, "_current_cripto_rate", return_value=cripto))

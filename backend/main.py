@@ -5919,6 +5919,77 @@ def _data912_peso_per_usd(prices):
     return 1450.0
 
 
+_data912_eq_cache = {'data': None, 'ts': 0}
+
+
+def _fetch_data912_equities():
+    """Fetch + cache de precios live de BYMA para CEDEARs y acciones AR.
+
+    Mismo patrón y mismo TTL que `_fetch_data912_bonds`; si data912 cae devolvemos
+    el cache anterior (stale, pero mejor que nada) o {}.
+
+    POR QUÉ EXISTE (medido 2026-08-04): yfinance devuelve barras de .BA **con
+    volumen pero con Close/Open/High/Low en NaN**. Ese día MSFT.BA operó 1,2 M de
+    nominales y AMZN.BA 3,3 M, y las dos barras vinieron enteras en NaN. Como el
+    fallback per-símbolo toma el último close NO nulo, esas posiciones quedaban al
+    cierre de DOS ruedas antes mientras el resto de la tabla mostraba el del día:
+    MSFT 24.340 contra 25.660 reales (−5,4%) y AMZN 2.978 contra 3.117,50 (−4,7%).
+    En una cartera de 10 M eso son ~134 mil pesos de menos, y el usuario lo ve al
+    lado del número de su broker. No hay dónde caer dentro de la barra —los cuatro
+    campos OHLC vienen nulos—, así que hace falta otra fuente.
+    """
+    now = time.time()
+    cached = _data912_eq_cache['data']
+    if cached is not None and now - _data912_eq_cache['ts'] < DATA912_TTL:
+        return cached
+    try:
+        result = {}
+        for endpoint in ('arg_cedears', 'arg_stocks'):
+            r = requests.get(f"https://data912.com/live/{endpoint}", timeout=8)
+            if r.status_code != 200:
+                continue
+            for item in r.json():
+                sym = item.get('symbol')
+                close = item.get('c')
+                if sym and close and close > 0:
+                    result[sym] = {'c': float(close), 'pct': item.get('pct_change')}
+        if result:  # sólo pisamos el cache si hubo data nueva
+            _data912_eq_cache['data'] = result
+            _data912_eq_cache['ts'] = now
+        return result
+    except Exception:
+        return cached or {}
+
+
+def _resolve_ar_equity_price(symbol):
+    """Precio en pesos de un CEDEAR o acción argentina, del feed live de BYMA.
+
+    SÓLO para símbolos con sufijo `.BA` (los pide el broker ARS). Un ticker sin
+    sufijo viene de un broker en dólares: devolver ahí el precio en pesos de BYMA
+    sería un error de ~1500×.
+
+    Se saltean dos familias a propósito, que tienen su propio camino más abajo en
+    `get_prices` y que este prefetch les robaría:
+      • cripto en broker ARS (`BTC.BA`): no cotiza en BYMA, se resuelve por
+        `<COIN>-USD` × dólar cripto — y un ticker de coin podría colisionar con el
+        de un CEDEAR.
+      • CEDEARs que las fuentes cotizan en USD (`CEDEAR_USD_RATIOS`): se derivan
+        del subyacente US × CCL ÷ ratio.
+
+    Devuelve None si no está en el universo de data912 → el caller cae a yfinance.
+    """
+    if not symbol or not symbol.endswith('.BA'):
+        return None
+    base = symbol[:-3]
+    if base in CRYPTO_SYMBOLS or base in CEDEAR_USD_RATIOS:
+        return None
+    row = (_fetch_data912_equities() or {}).get(base)
+    if not row:
+        return None
+    px = row.get('c')
+    return px if px and px > 0 else None
+
+
 def _resolve_ar_bond_price(symbol):
     """Resuelve el precio per-1 VN de un bono AR usando data912.
 
@@ -6224,6 +6295,17 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
         pass
 
     for sym in [s for s in yf_targets if result[s] is None]:
+        # ANTES de `_fetch_one`: si el batch no resolvió un .BA, la causa típica es
+        # que yfinance devolvió la barra del día ENTERA en NaN (ver
+        # `_fetch_data912_equities`). `_fetch_one` toma el último cierre no nulo, o
+        # sea un precio de ruedas anteriores, y lo devuelve como si fuera de hoy —
+        # sin marcar nada. El feed live de BYMA tiene el del día. Sólo entra acá,
+        # cuando yfinance ya falló: para los símbolos que resuelve bien no cambia
+        # nada.
+        ar_eq = _resolve_ar_equity_price(sym)
+        if ar_eq is not None:
+            result[sym] = ar_eq
+            continue
         yf_t = sym_to_yf[sym]
         price = _fetch_one(yf_t)
         if price is None and not sym.endswith('.BA') and sym not in CRYPTO_YF:
@@ -6334,6 +6416,12 @@ def get_prev_close(symbols: str, uid: int = Depends(get_effective_user)):
         if not data.empty:
             close = data.get("Close") if hasattr(data, 'get') else (data["Close"] if "Close" in data.columns else None)
             if close is not None and not (hasattr(close, 'empty') and close.empty):
+                # Fechas de las ruedas con dato de ALGÚN símbolo — la referencia
+                # para saber si un símbolo puntual se quedó atrás.
+                try:
+                    close_dates = list(close.dropna(how='all').index)
+                except Exception:
+                    close_dates = []
                 for sym, yf_t in sym_to_yf.items():
                     try:
                         # Multi-ticker → columna por ticker; single-ticker → Series directa.
@@ -6344,7 +6432,17 @@ def get_prev_close(symbols: str, uid: int = Depends(get_effective_user)):
                         else:
                             ser = None
                         if ser is not None and len(ser) >= 2:
-                            prev = float(ser.iloc[-2])
+                            # Si la última barra VÁLIDA de este símbolo es más vieja
+                            # que la última del lote, yfinance se salteó la rueda del
+                            # día (barra en NaN) y /api/prices ya sirve el precio del
+                            # feed live de BYMA. Entonces el cierre anterior es el
+                            # último que SÍ tiene yfinance, no el de antes: si no,
+                            # la variación diaria compara dos ruedas salteadas y
+                            # muestra un movimiento viejo como si fuera de hoy.
+                            _stale = (len(close_dates) > 0 and len(ser) > 0
+                                      and ser.index[-1] != close_dates[-1]
+                                      and _resolve_ar_equity_price(sym) is not None)
+                            prev = float(ser.iloc[-1] if _stale else ser.iloc[-2])
                             if not math.isnan(prev) and prev > 0:
                                 result[sym] = prev
                     except Exception:
