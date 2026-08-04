@@ -1496,10 +1496,13 @@ function MtmAuditPanel({ toast }) {
                 {' '}· Δcosto {gap.identidad.delta_costo ?? '—'} · <b>ΔG {gap.identidad.delta_G ?? '—'}</b>
               </p>
               <p className="text-[11px] text-ink-3">{gap.identidad.lectura}</p>
-              <p className={`text-xs font-medium ${gap.sospechosas ? 'text-red-400' : 'text-emerald-500'}`}>
-                {gap.sospechosas
-                  ? `${gap.sospechosas} de ${gap.operaciones} operaciones con el P&L incoherente con sus precios · US$ ${gap.pnl_de_las_sospechosas} involucrados`
-                  : `Las ${gap.operaciones} operaciones del mes tienen el P&L coherente con sus precios — la diferencia no sale de una venta mal calculada`}
+              {/* El color sigue al VEREDICTO, no a "cero sospechosas": un mes sin
+                  operaciones, o con operaciones que no se pueden verificar, no es
+                  verde — es "no sé". */}
+              <p className={`text-xs font-medium ${
+                gap.sospechosas ? 'text-red-400'
+                  : gap.verificables > 0 ? 'text-emerald-500' : 'text-amber-500'}`}>
+                {gap.veredicto}
               </p>
               {gap.las_sospechosas?.length > 0 && (
                 <div className="overflow-x-auto">

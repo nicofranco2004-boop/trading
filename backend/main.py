@@ -9456,8 +9456,31 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
         })
 
     sospechosas = [d for d in detalle if d["sospechosa"]]
+    # Un "verde" sin datos NO es verde. Dos formas de llegar a cero sospechosas
+    # sin haber verificado nada: que el mes no tenga ventas, o que las que hay no
+    # tengan `pnl_pct` cargado (sin él la comparación contra los precios no se
+    # puede hacer). Se reportan aparte para que el veredicto sea honesto.
+    verificables = [d for d in detalle
+                    if d["pnl_pct_guardado"] is not None and d["pnl_pct_por_precios"] is not None]
+    sin_verificar = len(detalle) - len(verificables)
+    if not detalle:
+        veredicto = f"{mes} no tiene NINGUNA operación registrada — la diferencia no sale de una venta"
+    elif not verificables:
+        veredicto = (f"{len(detalle)} operación(es) en el mes, pero NINGUNA se puede verificar "
+                     "(les falta pnl_pct o los precios) — no se puede concluir nada")
+    elif sospechosas:
+        veredicto = (f"{len(sospechosas)} de {len(verificables)} verificables tienen el P&L "
+                     f"incoherente con sus precios · US$ "
+                     f"{round(sum(d['pnl_usd'] for d in sospechosas), 2)} involucrados")
+    else:
+        veredicto = (f"las {len(verificables)} operaciones verificables tienen el P&L coherente con "
+                     "sus precios — la diferencia NO sale de una venta mal calculada"
+                     + (f" (ojo: {sin_verificar} sin verificar)" if sin_verificar else ""))
     return {
         "mes": mes,
+        "veredicto": veredicto,
+        "verificables": len(verificables),
+        "sin_verificar": sin_verificar,
         "identidad": {
             "flujos": round(flujos, 2),
             "realizado_del_mes": round(realizado, 2),
