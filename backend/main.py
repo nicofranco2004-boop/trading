@@ -9466,6 +9466,11 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
         except Exception:
             return {}
     hi, hf = (_hold(sp) if sp else {}), (_hold(sc) if sc else {})
+    # `holdings_json` y `fx_to_usd_blue` se empezaron a poblar tarde. Si el
+    # snapshot de arranque no tiene composición, TODO figura como "APARECE" y el
+    # diff miente: no es que los activos nacieron, es que no había con qué
+    # comparar. Se dice explícitamente en vez de mostrar un diff falso.
+    sin_composicion = (not hi) or (not hf)
     movs = []
     for act in sorted(set(hi) | set(hf)):
         vi, vf = hi.get(act), hf.get(act)
@@ -9474,6 +9479,8 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
                      "evento": ("APARECE" if vi is None else
                                 "DESAPARECE" if vf is None else "")})
     movs.sort(key=lambda x: -abs(x["delta"]))
+    if sin_composicion:
+        movs = []
 
     # ── El test del FX ──────────────────────────────────────────────────────
     # La teoría dice ΔG = −(revaluación del costo en pesos). Si el blue no se
@@ -9482,6 +9489,21 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
     b_i = (sp or {}).get("fx_to_usd_blue")
     b_f = (sc or {}).get("fx_to_usd_blue")
     fx_var = (round((b_f / b_i - 1) * 100, 2) if (b_i and b_f) else None)
+
+    # ── La hipótesis del P&L sin contrapartida de costo ─────────────────────
+    # Un futuro liquida resultado SIN que exista una posición con costo. Lo mismo
+    # un dividendo o un interés: entran como realizado pero no nacen de vender
+    # algo que estaba costeado. En la cadena mensual suben `capital_final`; en el
+    # snapshot no suben `total_invested`. Esa asimetría es exactamente ΔG.
+    # Si la suma de estas operaciones se parece al ΔG del mes, la causa es ésta.
+    _SIN_COSTO = ("futuro", "dividendo", "interes", "interés", "cupon", "cupón", "renta")
+    def _es_sin_costo(d):
+        t = f"{d.get('tipo') or ''} {d.get('activo') or ''}".lower()
+        return any(k in t for k in _SIN_COSTO)
+    sin_costo = [d for d in detalle if _es_sin_costo(d)]
+    pnl_sin_costo = round(sum(d["pnl_usd"] for d in sin_costo), 2)
+    explica = (round(pnl_sin_costo / d_g * 100, 1)
+               if (d_g not in (None, 0)) else None)
 
     sospechosas = [d for d in detalle if d["sospechosa"]]
     # Un "verde" sin datos NO es verde. Dos formas de llegar a cero sospechosas
@@ -9516,6 +9538,15 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
                                "falta": ("pnl_pct" if d["pnl_pct_guardado"] is None else "precios")}
                               for d in detalle
                               if d["pnl_pct_guardado"] is None or d["pnl_pct_por_precios"] is None][:20],
+        "pnl_sin_contrapartida_de_costo": {
+            "total": pnl_sin_costo,
+            "operaciones": [{"fecha": d["fecha"], "activo": d["activo"], "tipo": d["tipo"],
+                             "pnl_usd": d["pnl_usd"]} for d in sin_costo][:25],
+            "explica_del_delta_G_pct": explica,
+            "lectura": ("futuros, dividendos e intereses suman P&L realizado sin mover el "
+                        "costo de la tenencia — si su total se parece al ΔG, ahí está la causa"),
+        },
+        "sin_composicion_guardada": sin_composicion,
         "fx": {"blue_ini": b_i, "blue_fin": b_f, "variacion_pct": fx_var,
                "lectura": ("si el blue casi no se movió, el FX no explica el ΔG"
                            if fx_var is not None else "sin blue estampado en los snapshots")},

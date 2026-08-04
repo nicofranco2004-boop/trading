@@ -1515,6 +1515,33 @@ function MtmAuditPanel({ toast }) {
                   </b>
                 )} — {gap.fx?.lectura}
               </p>
+              {/* LA HIPÓTESIS FUERTE: futuros, dividendos e intereses suman P&L
+                  realizado sin mover el costo de la tenencia. Si su total se
+                  parece al ΔG del mes, la causa es ésa. */}
+              {gap.pnl_sin_contrapartida_de_costo?.operaciones?.length > 0 && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 space-y-1">
+                  <p className="text-[11px] text-amber-500 font-medium">
+                    P&L sin contrapartida de costo: US$ {gap.pnl_sin_contrapartida_de_costo.total}
+                    {gap.pnl_sin_contrapartida_de_costo.explica_del_delta_G_pct != null && (
+                      <> — explica el <b>{gap.pnl_sin_contrapartida_de_costo.explica_del_delta_G_pct}%</b> del ΔG</>
+                    )}
+                  </p>
+                  <p className="text-[10px] text-ink-3">{gap.pnl_sin_contrapartida_de_costo.lectura}</p>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-ink-2">
+                    {gap.pnl_sin_contrapartida_de_costo.operaciones.map((o, i) => (
+                      <span key={i} className="tabular">
+                        {o.fecha} <b>{o.activo}</b> ({o.tipo}) {o.pnl_usd > 0 ? '+' : ''}{o.pnl_usd}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {gap.sin_composicion_guardada && (
+                <p className="text-[11px] text-ink-3">
+                  Sin composición guardada en alguno de los dos cierres — no se puede diffear la
+                  tenencia de este mes (los snapshots viejos no guardaban <code>holdings_json</code>).
+                </p>
+              )}
               {gap.movimientos_de_tenencia?.length > 0 && (
                 <div className="overflow-x-auto">
                   <p className="text-[11px] text-ink-2 font-medium mb-1">Qué se movió en la tenencia</p>
