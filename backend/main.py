@@ -11403,8 +11403,9 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
             "llegan en la próxima versión.")
     if (src["asset_type"] or "").upper() == "BOND":
         raise HTTPException(400,
-            "El borrado de operaciones de bonos todavía no está disponible (tienen "
-            "amortizaciones y cupones enlazados). Llega en la próxima versión.")
+            "Los bonos no se borran de a una operación (tienen amortizaciones y "
+            "cupones enlazados). Usá 'Borrar todo el historial' del activo (agrupando "
+            "por activo) para sacarlo entero.")
     # Venta SINTÉTICA de reconciliación de foto (transfer_out=1, cierre a costo):
     # borrarla RESTAURARÍA una tenencia que la foto declaró cerrada, divergiendo de
     # lo importado. Bloqueamos (además su gross=0 haría no-op la reversa de cash).
@@ -11436,8 +11437,8 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     if fixed_income:
         raise HTTPException(400,
             "Esta operación es de un activo de renta fija (tiene cupones o "
-            "amortizaciones enlazados); su borrado todavía no está disponible. "
-            "(Próxima versión.)")
+            "amortizaciones enlazados). No se borra de a una: usá 'Borrar todo el "
+            "historial' del activo (agrupando por activo) para sacarlo entero.")
 
     since_date = (src["date"] or "")[:10] or None
 
@@ -11530,7 +11531,8 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
         raise HTTPException(400, "Esta fila no es una compra importada.")
     if (src["asset_type"] or "").upper() == "BOND":
         raise HTTPException(400,
-            "El borrado de bonos todavía no está disponible. (Próxima versión.)")
+            "Los bonos no se borran de a una compra. Usá 'Borrar todo el historial' "
+            "del activo (agrupando por activo) para sacarlo entero.")
     # Compra PARCIALMENTE vendida: si la posición tiene menos cantidad que la compra
     # original, una venta la consumió → borrar el BUY dejaría esa venta huérfana
     # (costo fabricado). Bloqueamos: primero borrá la venta (Solo P/L) o el activo entero.
@@ -11554,8 +11556,9 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
         (uid, *pair, asset),
     ).fetchone():
         raise HTTPException(400,
-            "Este activo tiene cupones, amortizaciones o dividendos enlazados; su "
-            "borrado llega en la próxima versión.")
+            "Este activo tiene cupones, amortizaciones o dividendos enlazados. No se "
+            "borra de a una compra: usá 'Borrar todo el historial' del activo "
+            "(agrupando por activo) para sacarlo entero.")
 
     since_date = (src["date"] or "")[:10] or None
 
@@ -11695,7 +11698,10 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
 
     Con TODOS los eventos del activo tombstoneados, rebuild_pair_asset corre con
     eventos vacíos → borra las positions/operations derivadas (orphan-guard gratis).
-    Bloquea (all-or-nothing) bonos, renta fija, transfer_out y data manual mezclada."""
+    Soporta BONOS y renta fija (cupones/amortizaciones/dividendos/intereses): sus
+    eventos NO nacen del FIFO, así que los reversamos a mano (cash + fila operations)
+    y los guardamos en el journal para recrearlos en el undo. Bloquea (all-or-nothing)
+    transfer_out (cierres de foto) y data manual de trades mezclada."""
     import json as _json
     import secrets as _secrets
 
@@ -11721,9 +11727,7 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
             seen.add(pr)
             pairs.append(list(pr))
 
-    # Validaciones all-or-nothing (mejor bloquear que corromper; Fase 2.x soporta el resto).
-    if any((r["asset_type"] or "").upper() == "BOND" for r in rows):
-        raise HTTPException(400, "El borrado de bonos todavía no está disponible. (Próxima versión.)")
+    # Validaciones all-or-nothing (mejor bloquear que corromper).
     if any(r["transfer_out"] for r in rows):
         raise HTTPException(400,
             "Este activo tiene cierres de foto de tenencia; todavía no se puede "
@@ -11741,41 +11745,90 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
             raise HTTPException(409,
                 "Este activo tiene operaciones cargadas a mano mezcladas con las "
                 "importadas, así que todavía no se puede borrar entero. (Próxima versión.)")
-        _ph = ",".join("?" * len(pr))
-        # Cupón/amort (renta fija) Y dividendos/intereses: el borrado por-activo solo
-        # tombstonea BUY/SELL, así que esas filas dejarían P&L y cash vivos → el activo
-        # NO desaparecería del todo. Bloqueamos hasta soportarlas (Fase 2.x).
-        if conn.execute(
-            f"""SELECT 1 FROM operations WHERE user_id=? AND broker IN ({_ph}) AND asset=?
-                 AND op_type IN ('Cupón','Cupon','Amortización','Amortizacion','Renta',
-                                 'Dividendo','Interés','Interes') LIMIT 1""",
-            (uid, *pr, asset),
-        ).fetchone():
-            raise HTTPException(400,
-                "Este activo tiene cupones, amortizaciones o dividendos enlazados; su "
-                "borrado entero llega en la próxima versión.")
+
+    # ── Renta fija: cupones, amortizaciones, dividendos e intereses ────────────
+    # rebuild_pair_asset SOLO re-deriva BUY/SELL (los cupones/dividendos NO nacen del
+    # FIFO: los crea el persister). Así que juntamos esos eventos del activo y los
+    # reversamos a mano: el cash que acreditaron + su fila en `operations`. Guardamos
+    # un snapshot de cada operation en el journal para RECREARLA en el undo (el rebuild
+    # no las vuelve a traer). Cada operation trae su link import (l_batch/l_raw) si es
+    # importada, o NULL si fue cargada a mano (1-click cupón/amort del bono).
+    all_pair_brokers = sorted({b for pr in pairs for b in pr})
+    _phb = ",".join("?" * len(all_pair_brokers))
+    rf_ops = conn.execute(
+        f"""SELECT o.id, o.date, o.broker, o.asset, o.op_type, o.pnl_usd, o.quantity,
+                   o.commissions, o.notes, o.currency, o.fx_to_usd, o.cost_basis_consumed,
+                   l.batch_id AS l_batch, l.raw_row_id AS l_raw
+              FROM operations o
+              LEFT JOIN import_op_links l ON l.operation_id = o.id
+             WHERE o.user_id=? AND o.broker IN ({_phb}) AND o.asset=?
+               AND o.op_type IN ('Cupón','Cupon','Amortización','Amortizacion','Renta',
+                                 'Dividendo','Interés','Interes')""",
+        (uid, *all_pair_brokers, asset),
+    ).fetchall()
+
+    # Renta fija CARGADA A MANO (1-click cupón/amort, sin import link): su P&L hoy
+    # se guarda distinto que el importado (bug pre-existente de bond-cashflow), así que
+    # reversarla acá dejaría el P&L inconsistente. La bloqueamos hasta unificar ese
+    # modelo. El caso dominante (bono importado con sus cupones/amort importados) sí va.
+    if any(o["l_batch"] is None for o in rf_ops):
+        raise HTTPException(400,
+            "Este activo tiene cupones o amortizaciones cargados a mano (no importados); "
+            "su borrado entero llega en la próxima versión.")
+
+    # Para cada renta-fija importada ubicamos su fila fuente (import_normalized_tx) — es
+    # la que acreditó el cash (gross_amount nativo) y hay que tombstonear para que no
+    # resucite en un re-import. Guardamos un snapshot de la operation para recrearla en
+    # el undo (el rebuild solo trae BUY/SELL).
+    rf_tx_rows, rf_op_snaps = [], []
+    for o in rf_ops:
+        rf_op_snaps.append({
+            "date": o["date"], "broker": o["broker"], "asset": o["asset"],
+            "op_type": o["op_type"], "pnl_usd": o["pnl_usd"], "quantity": o["quantity"],
+            "commissions": o["commissions"], "notes": o["notes"], "currency": o["currency"],
+            "fx_to_usd": o["fx_to_usd"], "cost_basis_consumed": o["cost_basis_consumed"],
+            "l_batch": o["l_batch"], "l_raw": o["l_raw"],
+        })
+        tx = conn.execute(
+            """SELECT n.* FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
+                WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=? AND n.excluded_at IS NULL""",
+            (o["l_batch"], o["l_raw"], uid),
+        ).fetchone()
+        if tx:
+            rf_tx_rows.append(tx)
+
+    trade_tx_ids = [r["id"] for r in rows]
+    rf_tx_ids = [t["id"] for t in rf_tx_rows]
+    all_tx_ids = trade_tx_ids + rf_tx_ids
 
     dates = [(r["date"] or "")[:10] for r in rows if r["date"]]
+    dates += [(t["date"] or "")[:10] for t in rf_tx_rows if t["date"]]
+    dates += [(o["date"] or "")[:10] for o in rf_ops if o["date"]]
     since_date = min(dates) if dates else None
     brokers_touched = {(r["broker"] or "") for r in rows if r["broker"]}
+    brokers_touched |= {(o["broker"] or "") for o in rf_ops if o["broker"]}
 
-    tx_ids = [r["id"] for r in rows]
-
-    # 1) CLAIM ATÓMICO PRIMERO (como Fase 1): tombstoneamos TODAS las filas de una.
-    #    Si otra request concurrente ya tombstoneó alguna, matcheamos menos filas →
-    #    409, sin reversar el cash. Evita el doble-crédito por borrado concurrente.
-    _ph_ids = ",".join("?" * len(tx_ids))
+    # 1) CLAIM ATÓMICO PRIMERO (como Fase 1): tombstoneamos TODAS las filas importadas
+    #    (trades + renta fija) de una. Si otra request concurrente ya tombstoneó alguna,
+    #    matcheamos menos → 409, sin reversar el cash. Evita el doble-crédito.
+    _ph_ids = ",".join("?" * len(all_tx_ids))
     claimed = conn.execute(
         f"UPDATE import_normalized_tx SET excluded_at=datetime('now'), excluded_by=? "
-        f"WHERE id IN ({_ph_ids}) AND excluded_at IS NULL", (uid, *tx_ids),
+        f"WHERE id IN ({_ph_ids}) AND excluded_at IS NULL", (uid, *all_tx_ids),
     ).rowcount
-    if claimed != len(tx_ids):
+    if claimed != len(all_tx_ids):
         raise HTTPException(409, "Ese activo ya se está borrando.")
 
     # 2) Reversar el cash por evento (byte-simétrico con el persister) + soltar links.
     #    COMPRA debitó invested+fees, con invested=gross_amount o reconciled·qty si
     #    gross es NULL (persister:513). VENTA acreditó reconciled·qty−fees si >0.
     cash_by_broker: dict = {}
+
+    def _rev(broker_name: str, delta: float) -> None:
+        if delta and broker_name:
+            _adjust_broker_cash(conn, uid, broker_name, delta)
+            cash_by_broker[broker_name] = cash_by_broker.get(broker_name, 0.0) + delta
+
     for r in rows:
         b = r["broker"] or ""
         if (r["operation_type"] or "").upper() == "BUY":
@@ -11785,48 +11838,59 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
                 invested = float(_import_persister.reconciled_unit_price(
                     r["unit_price"], r["quantity"], r["gross_amount"], r["asset_type"]) or 0) \
                     * float(r["quantity"] or 0)
-            delta = invested + float(r["fees"] or 0)
+            _rev(b, invested + float(r["fees"] or 0))
         else:
             _ueff = _import_persister.reconciled_unit_price(
                 r["unit_price"], r["quantity"], r["gross_amount"], r["asset_type"])
             proceeds = float(_ueff or 0) * float(r["quantity"] or 0) - float(r["fees"] or 0)
-            delta = -proceeds if proceeds > 0 else 0.0
-        if delta and b:
-            _adjust_broker_cash(conn, uid, b, delta)
-            cash_by_broker[b] = cash_by_broker.get(b, 0.0) + delta
+            _rev(b, -proceeds if proceeds > 0 else 0.0)
         conn.execute(
             "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
             (r["batch_id"], r["raw_row_id"]))
 
-    # 3) Re-derivar cada par: con eventos vacíos rebuild_pair_asset borra las
-    #    positions/operations derivadas del activo (orphan-guard sin código extra).
+    # 2b) Renta fija: reversar el cash que acreditó (−gross_amount del tx, igual que
+    #     borrar un cupón suelto) y borrar su fila en `operations` (rebuild NO la
+    #     re-deriva) + su link. El snapshot ya está guardado para el undo.
+    for t in rf_tx_rows:
+        _rev(t["broker"] or "", -float(t["gross_amount"] or 0))
+    for o in rf_ops:
+        conn.execute(
+            "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
+            (o["l_batch"], o["l_raw"]))
+        conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (o["id"], uid))
+
+    # 3) Re-derivar cada par: con los BUY/SELL tombstoneados rebuild_pair_asset borra
+    #    las positions/operations(Venta) derivadas del activo (orphan-guard). La renta
+    #    fija ya la borramos arriba.
     tc_blue = _config_tc_blue(conn, uid)
     for pr in pairs:
         _import_rebuild.rebuild_pair_asset(conn, uid, pr[0], asset, tc_blue=tc_blue)
 
-    # 4) Journal para deshacer.
+    # 4) Journal para deshacer (con los snapshots de renta fija para recrearlas).
     token = _secrets.token_hex(8)
     conn.execute(
         """INSERT INTO deleted_ops_journal
              (user_id, token, kind, payload_json, since_date, broker)
            VALUES (?,?,?,?,?,?)""",
         (uid, token, "imported_asset",
-         _json.dumps({"tx_ids": tx_ids, "cash_by_broker": cash_by_broker, "asset": asset,
-                      "pairs": pairs, "brokers": sorted(brokers_touched)}),
+         _json.dumps({"tx_ids": all_tx_ids, "cash_by_broker": cash_by_broker, "asset": asset,
+                      "pairs": pairs, "brokers": sorted(brokers_touched),
+                      "rf_ops": rf_op_snaps}),
          since_date, (sorted(brokers_touched)[0] if brokers_touched else "")),
     )
 
     # 5) Cascada de agregados + snapshots.
     _cascade_after_movement_delete(conn, uid, since_date, brokers_touched)
 
-    return {"ok": True, "undo_token": token, "asset": asset, "count": len(rows)}
+    return {"ok": True, "undo_token": token, "asset": asset, "count": len(rows) + len(rf_ops)}
 
 
 @app.delete("/api/assets/history")
 def delete_asset_history(asset: str, uid: int = Depends(get_effective_user)):
-    """Borra TODO el historial importado de un activo (compras + ventas, todos los
-    brokers) con cascada TOTAL. Reversible vía POST /api/assets/undo/{token}. Fase 2:
-    ventas/compras importadas no-bono; bloquea el resto con mensaje claro."""
+    """Borra TODO el historial importado de un activo (compras, ventas, cupones,
+    amortizaciones y dividendos, todos los brokers) con cascada TOTAL. Reversible vía
+    POST /api/assets/undo/{token}. Soporta bonos y renta fija; bloquea foto de tenencia
+    y data manual de trades mezclada."""
     conn = get_db()
     try:
         result = _delete_asset_history_cascade(conn, uid, asset)
@@ -11875,7 +11939,7 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
                       JOIN import_batches b ON b.id = n.batch_id
                      WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
                        AND n.broker IN ({_phg}) AND n.asset_symbol=?
-                       AND n.operation_type IN ('BUY','SELL')""",
+                       AND n.operation_type IN ('BUY','SELL','DIVIDEND','INTEREST')""",
                 (uid, *pr, asset),
             ).fetchall()
             if any(row["id"] not in _idset for row in fresh):
@@ -11896,6 +11960,40 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
         tc_blue = _config_tc_blue(conn, uid)
         for pr in pairs:
             _import_rebuild.rebuild_pair_asset(conn, uid, pr[0], asset, tc_blue=tc_blue)
+        # El rebuild restaura el nominal ORIGINAL del bono; si estaba amortizado, hay
+        # que volver a bajar la cantidad por el calendario de amortización (mismo sweep
+        # que corre en cada import). Sin esto, deshacer el borrado de un bono ya
+        # amortizado lo mostraría al 100% del face + el cash del cupón → sobre-valuado.
+        _import_maturity.sweep_bond_amortizations(conn, uid)
+        # Recrear las operations de renta fija que el delete borró (rebuild solo trae
+        # BUY/SELL). El cash ya se re-acreditó arriba vía cash_by_broker. Re-linkeamos
+        # las importadas a su raw row para que el revert las siga tratando como tales.
+        for snap in (p.get("rf_ops") or []):
+            cur = conn.execute(
+                """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd,
+                     quantity, commissions, notes, currency, fx_to_usd, cost_basis_consumed)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (uid, snap.get("date"), snap.get("broker"), snap.get("asset"),
+                 snap.get("op_type"), snap.get("pnl_usd"), snap.get("quantity"),
+                 snap.get("commissions"), snap.get("notes"), snap.get("currency"),
+                 snap.get("fx_to_usd"), snap.get("cost_basis_consumed")),
+            )
+            if snap.get("l_batch") is not None:
+                new_oid = cur.lastrowid
+                conn.execute(
+                    "INSERT INTO import_op_links (batch_id, raw_row_id, operation_id) VALUES (?,?,?)",
+                    (snap["l_batch"], snap["l_raw"], new_oid))
+                conn.execute(
+                    "UPDATE import_normalized_tx SET created_operation_id=? WHERE batch_id=? AND raw_row_id=?",
+                    (new_oid, snap["l_batch"], snap["l_raw"]))
+            # Asegurar que exista la fila del mes para que _recalc (abajo) aterrice el
+            # P&L del cupón/dividendo: _recalc solo recompone meses YA presentes en
+            # monthly_entries, y el rebuild solo crea los de BUY/SELL. Espeja al persister.
+            _pnl = float(snap.get("pnl_usd") or 0)
+            if _pnl and snap.get("date"):
+                _y, _m = int(snap["date"][:4]), int(snap["date"][5:7])
+                _update_monthly_pnl_realized(conn, uid, snap["broker"], _y, _m, _pnl)
+                _update_monthly_pnl_realized(conn, uid, "global", _y, _m, _pnl)
         _cascade_after_movement_delete(conn, uid, j["since_date"], set(p.get("brokers") or []))
         conn.commit()
     except HTTPException:

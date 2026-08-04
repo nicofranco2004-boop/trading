@@ -160,7 +160,8 @@ function OperationsDesktop() {
     const where = (g.brokers && g.brokers.length) ? g.brokers.join(', ') : 'tu cartera'
     if (!confirm(
       `¿Borrar TODO el historial de ${asset}?\n\n` +
-      `Se borran ${n} ${n === 1 ? 'operación' : 'operaciones'} (compras y ventas) en ${where}. ` +
+      `Se borran ${n} ${n === 1 ? 'operación' : 'operaciones'} (compras, ventas y, si es un bono, ` +
+      `sus cupones y amortizaciones) en ${where}. ` +
       `${asset} deja de contar en tu P&L, rendimiento, métricas y la curva de evolución. ` +
       `Se recalcula todo. Podés deshacerlo.`
     )) return

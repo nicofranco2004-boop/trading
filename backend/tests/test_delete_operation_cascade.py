@@ -283,17 +283,118 @@ class DeleteCascade(unittest.TestCase):
         self._probe()
 
 
-    def test_delete_asset_blocked_if_dividend(self):
-        # Blocker del review: un activo con un dividendo enlazado NO se puede borrar
-        # entero todavía (dejaría el dividendo vivo) → 400.
-        self._import(_csv("2024-03-15,COMPRA,IBKR,GGAL,10,20,200,,,0,USD,"))
+    # ── Fase 2.x: BONOS y renta fija (cupones/amortizaciones/dividendos) ─────────
+    def _ops_count(self, asset):
+        return self.conn.execute(
+            "SELECT COUNT(*) c FROM operations WHERE user_id=? AND asset=?",
+            (self.uid, asset)).fetchone()["c"]
+
+    def test_delete_asset_with_imported_dividend(self):
+        # Antes BLOQUEADO. Ahora: una acción con un dividendo IMPORTADO se borra entera:
+        # el dividendo se reversa (cash −monto, P&L −monto) junto con compras/ventas.
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2024-06-01,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,"))
+        self.assertAlmostEqual(self._cash(), -1450.0, places=2)     # -1500 +50
+        self.assertAlmostEqual(self._global_pnl(), 50.0, places=2)  # dividendo = income
+        with self.conn:
+            res = main._delete_asset_history_cascade(self.conn, self.uid, "AAPL")
+        self.assertEqual(res["count"], 2)                           # compra + dividendo
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)         # +1500 -50 revertido
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)   # dividendo fuera del P&L
+        self.assertEqual(self._ops_count("AAPL"), 0)                # la fila del dividendo se fue
+        self._probe()
+
+    def test_delete_bond_with_coupon(self):
+        # Un BONO (asset_type BOND) con compra + renta (cupón): antes bloqueado, ahora
+        # se borra entero. La renta se reversa (cash) y desaparece de operations.
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AL30,100,60,6000,,,0,USD,"))
+        self._import(_csv("2024-09-01,RENTA,IBKR,AL30,,,120,,,0,USD,"))
+        # Tag de bono (data912 no está en el sandbox de tests) para ejercitar el path.
+        self.conn.execute("UPDATE import_normalized_tx SET asset_type='BOND' WHERE asset_symbol='AL30'")
+        self.conn.commit()
+        self.assertAlmostEqual(self._cash(), -5880.0, places=2)     # -6000 +120
+        with self.conn:
+            main._delete_asset_history_cascade(self.conn, self.uid, "AL30")
+        self.assertAlmostEqual(self._open_qty("AL30"), 0.0, places=6)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)         # +6000 -120 revertido
+        self.assertEqual(self._ops_count("AL30"), 0)
+        self._probe()
+
+    def test_undo_asset_with_dividend(self):
+        # El undo recrea la fila del dividendo que el rebuild NO trae (la crea el
+        # persister) + la re-linkea, y restaura cash y P&L. Replica el endpoint.
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2024-06-01,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,"))
+        with self.conn:
+            res = main._delete_asset_history_cascade(self.conn, self.uid, "AAPL")
+        j = self.conn.execute(
+            "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
+        p = json.loads(j["payload_json"])
+        with self.conn:
+            for tid in p["tx_ids"]:
+                self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (tid,))
+            for b, delta in p["cash_by_broker"].items():
+                main._adjust_broker_cash(self.conn, self.uid, b, -float(delta))
+            for pr in p["pairs"]:
+                rb.rebuild_pair_asset(self.conn, self.uid, pr[0], "AAPL",
+                                      tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
+            for snap in p.get("rf_ops", []):
+                cur = self.conn.execute(
+                    """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd,
+                         quantity, commissions, notes, currency, fx_to_usd, cost_basis_consumed)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (self.uid, snap.get("date"), snap.get("broker"), snap.get("asset"),
+                     snap.get("op_type"), snap.get("pnl_usd"), snap.get("quantity"),
+                     snap.get("commissions"), snap.get("notes"), snap.get("currency"),
+                     snap.get("fx_to_usd"), snap.get("cost_basis_consumed")))
+                if snap.get("l_batch") is not None:
+                    self.conn.execute(
+                        "INSERT INTO import_op_links (batch_id, raw_row_id, operation_id) VALUES (?,?,?)",
+                        (snap["l_batch"], snap["l_raw"], cur.lastrowid))
+                _pnl = float(snap.get("pnl_usd") or 0)
+                if _pnl and snap.get("date"):
+                    _y, _m = int(snap["date"][:4]), int(snap["date"][5:7])
+                    main._update_monthly_pnl_realized(self.conn, self.uid, snap["broker"], _y, _m, _pnl)
+                    main._update_monthly_pnl_realized(self.conn, self.uid, "global", _y, _m, _pnl)
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], set(p["brokers"]))
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)
+        self.assertAlmostEqual(self._cash(), -1450.0, places=2)
+        self.assertAlmostEqual(self._global_pnl(), 50.0, places=2)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) c FROM operations WHERE user_id=? AND asset='AAPL' AND op_type='Dividendo'",
+            (self.uid,)).fetchone()["c"], 1)                        # el dividendo volvió
+        self._probe()
+
+    def test_undo_asset_with_dividend_via_endpoint(self):
+        # Cobertura del ENDPOINT real de undo (no replay a mano): recrea el dividendo,
+        # re-linkea, re-corre el sweep y restaura P&L/cash. Cubre lo que el replay omite.
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2024-06-01,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,"))
+        with self.conn:
+            res = main._delete_asset_history_cascade(self.conn, self.uid, "AAPL")
+        self.conn.commit()
+        main.undo_delete_asset_history(res["undo_token"], uid=self.uid)
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)
+        self.assertAlmostEqual(self._cash(), -1450.0, places=2)
+        self.assertAlmostEqual(self._global_pnl(), 50.0, places=2)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) c FROM operations WHERE user_id=? AND asset='AAPL' AND op_type='Dividendo'",
+            (self.uid,)).fetchone()["c"], 1)
+        self._probe()
+
+    def test_delete_asset_manual_coupon_blocked(self):
+        # Cupón CARGADO A MANO (1-click, sin import link) sobre un activo importado:
+        # su P&L se modela distinto que el importado → bloqueamos el borrado entero
+        # (mejor bloquear que dejar el P&L inconsistente) con un 400 claro.
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AL30,100,60,6000,,,0,USD,"))
         self.conn.execute(
-            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd, currency)
-               VALUES (?,?,?,?,?,?,?)""",
-            (self.uid, "2024-06-01", "IBKR", "GGAL", "Dividendo", 5, "USD"))
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd, currency, fx_to_usd)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (self.uid, "2024-09-01", "IBKR", "AL30", "Cupón", 100, "USD", 1.0))
         self.conn.commit()
         with self.assertRaises(main.HTTPException) as cm:
-            main._delete_asset_history_cascade(self.conn, self.uid, "GGAL")
+            main._delete_asset_history_cascade(self.conn, self.uid, "AL30")
         self.assertEqual(cm.exception.status_code, 400)
 
 
