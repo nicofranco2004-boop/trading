@@ -738,6 +738,18 @@ def init_db():
             logging.getLogger(__name__).warning("backfill manual_flows falló (no fatal): %s", _ex)
         conn.commit()
 
+    # manual_*_native: monto NATIVO (moneda del broker) del flujo manual, para
+    # revertir EXACTO al borrar un depósito/retiro manual en pesos (manual_* solo
+    # guarda el USD → sin esto el reverso del cash en ARS aproxima al blue de hoy).
+    # NULL/0 en filas viejas → el borrado cae al aproximado. SIN índice (a propósito:
+    # un CREATE INDEX sobre columna nueva en el schema causó una caída de boot, ver
+    # project_migration_index_order).
+    cols = _table_cols(conn, 'monthly_entries')
+    if cols and 'manual_deposits_native' not in cols:
+        conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_deposits_native REAL DEFAULT 0")
+        conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_withdrawals_native REAL DEFAULT 0")
+        conn.commit()
+
     # operations
     cols = _table_cols(conn, 'operations')
     if not cols:
@@ -7792,7 +7804,8 @@ def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
     except (ValueError, TypeError, IndexError):
         now = datetime.utcnow()
         y, m = now.year, now.month
-    _update_monthly_flow(conn, uid, broker, y, m, 'deposit', amount_usd, is_manual=True)
+    _update_monthly_flow(conn, uid, broker, y, m, 'deposit', amount_usd, is_manual=True,
+                         native_amount=shortfall)
     _update_monthly_flow(conn, uid, 'global', y, m, 'deposit', amount_usd, is_manual=True)
     _repair_monthly_chain(conn, uid, broker)
     _repair_monthly_chain(conn, uid, 'global')
@@ -7843,7 +7856,8 @@ def _update_monthly_pnl_realized(conn, uid: int, broker: str, year: int, month: 
 
 
 def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
-                         direction: str, amount: float, is_manual: bool = False) -> None:
+                         direction: str, amount: float, is_manual: bool = False,
+                         native_amount: float = None) -> None:
     """Suma amount a deposits (o withdrawals) del mes actual del broker.
     Ajusta capital_final en la misma dirección.
 
@@ -7868,26 +7882,25 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
     ).fetchone()
 
     if row:
-        if direction == 'deposit':
-            extra = ", manual_deposits = COALESCE(manual_deposits,0) + ?" if is_manual else ""
-            args = (amount, amount, amount, uid, broker, year, month) if is_manual \
-                else (amount, amount, uid, broker, year, month)
-            conn.execute(
-                f"""UPDATE monthly_entries
-                   SET deposits = deposits + ?, capital_final = capital_final + ?{extra}
-                   WHERE user_id=? AND broker=? AND year=? AND month=?""",
-                args,
-            )
-        else:
-            extra = ", manual_withdrawals = COALESCE(manual_withdrawals,0) + ?" if is_manual else ""
-            args = (amount, amount, amount, uid, broker, year, month) if is_manual \
-                else (amount, amount, uid, broker, year, month)
-            conn.execute(
-                f"""UPDATE monthly_entries
-                   SET withdrawals = withdrawals + ?, capital_final = capital_final - ?{extra}
-                   WHERE user_id=? AND broker=? AND year=? AND month=?""",
-                args,
-            )
+        col_amt = "deposits" if direction == 'deposit' else "withdrawals"
+        cap_sign = "+" if direction == 'deposit' else "-"
+        man_col = "manual_deposits" if direction == 'deposit' else "manual_withdrawals"
+        nat_col = "manual_deposits_native" if direction == 'deposit' else "manual_withdrawals_native"
+        sets = [f"{col_amt} = {col_amt} + ?", f"capital_final = capital_final {cap_sign} ?"]
+        args = [amount, amount]
+        if is_manual:
+            sets.append(f"{man_col} = COALESCE({man_col},0) + ?")
+            args.append(amount)
+            # Acumular el NATIVO solo si el caller lo pasa (broker; en 'global' es USD).
+            if native_amount is not None:
+                sets.append(f"{nat_col} = COALESCE({nat_col},0) + ?")
+                args.append(native_amount)
+        args += [uid, broker, year, month]
+        conn.execute(
+            f"UPDATE monthly_entries SET {', '.join(sets)} "
+            f"WHERE user_id=? AND broker=? AND year=? AND month=?",
+            tuple(args),
+        )
         return
 
     # Row no existe
@@ -7919,6 +7932,8 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
     withdrawals = 0.0 if direction == 'deposit' else amount
     man_dep = amount if (is_manual and direction == 'deposit') else 0.0
     man_wit = amount if (is_manual and direction == 'withdraw') else 0.0
+    man_dep_nat = native_amount if (is_manual and direction == 'deposit' and native_amount is not None) else 0.0
+    man_wit_nat = native_amount if (is_manual and direction == 'withdraw' and native_amount is not None) else 0.0
     cap_final = cap_inicio + (amount if direction == 'deposit' else -amount)
     # SIN clamp a 0: el clamp era asimétrico con el path UPDATE y rompía el
     # neto-0 de una transferencia cuya pata retiro CREA la fila del mes (el
@@ -7929,10 +7944,11 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
         """INSERT INTO monthly_entries
            (user_id, year, month, broker, deposits, withdrawals,
             manual_deposits, manual_withdrawals,
+            manual_deposits_native, manual_withdrawals_native,
             pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-           VALUES (?,?,?,?,?,?,?,?,0,0,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
         (uid, year, month, broker, deposits, withdrawals,
-         man_dep, man_wit, cap_inicio, cap_final),
+         man_dep, man_wit, man_dep_nat, man_wit_nat, cap_inicio, cap_final),
     )
 
 
@@ -8024,7 +8040,7 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
             amount_usd = magnitude / data.tc_blue if currency == 'ARS' else magnitude
 
             _update_monthly_flow(conn, uid, data.broker_name, target_year, target_month,
-                                 direction, amount_usd, is_manual=True)
+                                 direction, amount_usd, is_manual=True, native_amount=magnitude)
             _update_monthly_flow(conn, uid, 'global', target_year, target_month,
                                  direction, amount_usd, is_manual=True)
             _repair_monthly_chain(conn, uid, data.broker_name)
@@ -8111,7 +8127,8 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                     pass
             amount_usd = data.amount / data.tc_blue if currency == 'ARS' else data.amount
             _update_monthly_flow(conn, uid, data.broker_name, _fy, _fm,
-                                 data.direction, amount_usd, is_manual=True)
+                                 data.direction, amount_usd, is_manual=True,
+                                 native_amount=data.amount)
             _update_monthly_flow(conn, uid, 'global', _fy, _fm,
                                  data.direction, amount_usd, is_manual=True)
             # Phase 8 — repair chain for both touched brokers.
@@ -10275,29 +10292,30 @@ def _delete_one_movement(conn, uid: int, mid: str):
         broker = row["broker"] or ""
         direction = parts[2]
         col = "manual_deposits" if direction == "dep" else "manual_withdrawals"
+        nat_col = "manual_deposits_native" if direction == "dep" else "manual_withdrawals_native"
         manual_usd = float((row[col] if col in row.keys() else 0) or 0)
         if manual_usd <= 0:
             raise HTTPException(404, "No hay un movimiento manual para borrar en ese mes")
-        # Reverso del cash: el flujo manual movió is_cash en NATIVO. manual_* está
-        # en USD → convertimos a nativo por la moneda del broker (aprox por tc_blue
-        # actual para ARS; exacto para USD).
         broker_row = conn.execute(
             "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, broker),
         ).fetchone()
         broker_ccy = ((broker_row["currency"] if broker_row else "USD") or "USD").upper()
-        # El flujo manual guarda manual_* SOLO en USD (no el nativo ni el FX del
-        # momento). En un broker ARS revertimos el cash por el NATIVO aproximado al
-        # blue de HOY (manual_usd × blue). Si el blue se movió desde que se cargó,
-        # queda un pequeño residual en el SALDO del broker — pero el capital APORTADO
-        # queda EXACTO (ponemos el manual del mes en 0 abajo). En USD nativo == USD
-        # → reversa exacta. (Follow-up: persistir el nativo al crear para que los
-        # nuevos se reviertan al centavo.)
-        native = manual_usd * _config_tc_blue(conn, uid) if broker_ccy == "ARS" else manual_usd
+        # Reverso del cash (nativo del broker). Preferimos el NATIVO EXACTO guardado al
+        # crear (manual_*_native). Si la fila es vieja y no lo tiene, aproximamos por el
+        # blue de HOY (residual chico en el saldo). En ambos casos el capital APORTADO
+        # queda EXACTO porque abajo ponemos el manual del mes en 0.
+        stored_native = float((row[nat_col] if nat_col in row.keys() else 0) or 0)
+        if stored_native > 0:
+            native = stored_native
+        elif broker_ccy == "ARS":
+            native = manual_usd * _config_tc_blue(conn, uid)
+        else:
+            native = manual_usd
         # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
         _adjust_broker_cash(conn, uid, broker, -native if direction == "dep" else native)
-        # Poner el manual del mes en 0 → _recalc recompone deposits = imports + 0.
+        # Poner el manual del mes (USD + nativo) en 0 → _recalc recompone deposits.
         conn.execute(
-            f"UPDATE monthly_entries SET {col}=0 WHERE id=? AND user_id=?", (me_id, uid),
+            f"UPDATE monthly_entries SET {col}=0, {nat_col}=0 WHERE id=? AND user_id=?", (me_id, uid),
         )
         since = f"{int(row['year']):04d}-{int(row['month']):02d}-01"
         return since, {broker}

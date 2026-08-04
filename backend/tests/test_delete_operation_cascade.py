@@ -406,5 +406,33 @@ class DeleteCascade(unittest.TestCase):
         self.assertAlmostEqual(cash, 0.0, places=2)
 
 
+    def test_delete_manual_ars_deposit_native_exact(self):
+        # Con el nativo guardado al crear, la reversa es EXACTA (no aproxima al blue).
+        self.conn.execute(
+            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            (self.uid, "tc_blue", "1200"))   # blue de HOY distinto al de creación
+        self.conn.execute(
+            "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (self.uid, "Cocos", "ARS"))
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, invested) VALUES (?,?,?,1,?)",
+            (self.uid, "Cocos", "ARS", 50000.0))
+        # Crear el depósito por el flujo: 50.000 pesos nativo, 50 USD (blue de creación 1000).
+        with self.conn:
+            main._update_monthly_flow(self.conn, self.uid, "Cocos", 2025, 1, "deposit",
+                                      50.0, is_manual=True, native_amount=50000.0)
+        me_id = self.conn.execute(
+            "SELECT id FROM monthly_entries WHERE broker='Cocos'").fetchone()["id"]
+        nat = self.conn.execute(
+            "SELECT manual_deposits_native FROM monthly_entries WHERE id=?", (me_id,)).fetchone()[0]
+        self.assertAlmostEqual(nat or 0, 50000.0, places=2)   # nativo persistido
+        with self.conn:
+            main._delete_one_movement(self.conn, self.uid, f"me-{me_id}-dep")
+        cash = self.conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND broker='Cocos' AND is_cash=1",
+            (self.uid,)).fetchone()["invested"]
+        # EXACTO: 50.000 − 50.000 = 0 (no 50.000 − 50×1200 = −10.000 del aproximado).
+        self.assertAlmostEqual(cash, 0.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
