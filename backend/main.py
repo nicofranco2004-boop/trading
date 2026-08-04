@@ -9522,7 +9522,20 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
                 "SELECT date, total_value, total_invested, fx_to_usd_blue, holdings_json "
                 "FROM snapshots WHERE user_id=? AND date LIKE ? AND total_value > 0 "
                 "ORDER BY date DESC LIMIT 1", (uid, mk + "%")).fetchone()
-            return dict(r) if r else None
+            if not r:
+                return None
+            d = dict(r)
+            # ¿Esta foto la sacó el cron o la FABRICÓ el backfill?
+            # `_backfill_snapshots_from_monthly` (persister.py:1175) escribe
+            #     total_value    = capital_final del mes      ← la cadena a COSTO
+            #     total_invested = net_deposited acumulado    ← NO es un costo
+            # y no escribe ni el blue ni la composición. El cron sí escribe los dos.
+            # O sea: sin blue Y sin holdings ⇒ fila sintética, y entonces su
+            # "valor de mercado" es una copia de la contabilidad congelada en el
+            # momento del backfill — no una medición del mercado.
+            d["sintetico"] = (d.get("fx_to_usd_blue") is None
+                              and not (d.get("holdings_json") or "").strip())
+            return d
         sp, sc = _snap(prev_mes), _snap(mes)
         ops = conn.execute(
             "SELECT id, date, broker, asset, op_type, entry_price, exit_price, quantity, "
@@ -9719,10 +9732,18 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
         # Último snapshot de cada mes.
         snaps = {}
         for r in conn.execute(
-                "SELECT date, total_value, total_invested FROM snapshots WHERE user_id=? "
-                "AND total_value > 0 ORDER BY date", (uid,)):
-            snaps[r["date"][:7]] = {"date": r["date"], "value": round(r["total_value"], 2),
-                                    "inv": round(r["total_invested"] or 0, 2)}
+                "SELECT date, total_value, total_invested, fx_to_usd_blue, holdings_json "
+                "FROM snapshots WHERE user_id=? AND total_value > 0 ORDER BY date", (uid,)):
+            snaps[r["date"][:7]] = {
+                "date": r["date"], "value": round(r["total_value"], 2),
+                "inv": round(r["total_invested"] or 0, 2),
+                # Sin blue Y sin composición ⇒ la fila la fabricó
+                # `_backfill_snapshots_from_monthly`, que escribe
+                # total_value = capital_final (la cadena a COSTO) y
+                # total_invested = net_deposited acumulado. Para esos meses la
+                # columna "mercado" NO es mercado: es la contabilidad congelada.
+                "sintetico": (r["fx_to_usd_blue"] is None
+                              and not (r["holdings_json"] or "").strip())}
     finally:
         conn.close()
 
@@ -9755,8 +9776,10 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
         d_g = (round(g_fin - g_ini, 2) if (g_ini is not None and g_fin is not None) else None)
         base = max(abs(ci_c), abs(cf_c), 1.0)
         d_g_pct = (round(d_g / base * 100, 2) if d_g is not None else None)
+        _sint = bool((sp or {}).get("sintetico") or (sc or {}).get("sintetico"))
         out.append({
-            "mes": k, "modo": modo,
+            "mes": k, "modo": ("sintetico" if _sint and modo != "sin-cobertura" else modo),
+            "snapshot_sintetico": _sint,
             "G_ini": g_ini, "G_fin": g_fin, "delta_G": d_g, "delta_G_pct": d_g_pct,
             "costo": {"ci": round(ci_c, 2), "cf": round(cf_c, 2), "r_pct": None if r_c is None else round(r_c * 100, 2)},
             "mercado": {"ci": round(ci_m, 2), "cf": round(cf_m, 2), "r_pct": None if r_m is None else round(r_m * 100, 2)},
@@ -9772,7 +9795,27 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
     # portafolios distintos ese mes y convertirlo fabrica retorno.
     disc = [o for o in out if o.get("delta_G_pct") is not None
             and abs(o["delta_G_pct"]) > 2]
+    _sints = [o["mes"] for o in out if o.get("snapshot_sintetico")]
+    # La prueba: en los meses sintéticos, total_invested = net_deposited acumulado,
+    # así que Δcosto ≡ flujos y por lo tanto ΔG ≡ realizado. Si eso se cumple, el
+    # ΔG de esos meses NO es un descuadre contable: es el artefacto de comparar un
+    # costo real contra un proxy.
+    _pred = [{"mes": o["mes"],
+              "delta_G": o["delta_G"],
+              "realizado": round((o["costo"]["cf"] - o["costo"]["ci"] - o["net_flow"]), 2),
+              "coincide": (o["delta_G"] is not None
+                           and abs(o["delta_G"] - (o["costo"]["cf"] - o["costo"]["ci"] - o["net_flow"]))
+                           <= max(15.0, abs(o["delta_G"]) * 0.05))}
+             for o in out if o.get("snapshot_sintetico") and o["delta_G"] is not None]
     return {
+        "snapshots_sinteticos": {
+            "meses": _sints,
+            "prediccion": ("en un mes sintético, total_invested = net_deposited acumulado ⇒ "
+                           "Δcosto ≡ flujos ⇒ ΔG ≡ realizado. Si coincide, ese ΔG no es un "
+                           "descuadre: es el artefacto de comparar costo real contra un proxy."),
+            "verificacion": _pred,
+            "aciertos": f"{sum(1 for x in _pred if x['coincide'])}/{len(_pred)}",
+        },
         "veredicto": ("las 2 fuentes describen PORTAFOLIOS DISTINTOS en esos meses "
                       "(ΔG grande) → convertirlos fabrica retorno"
                       if disc else

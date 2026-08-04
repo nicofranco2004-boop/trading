@@ -1483,6 +1483,28 @@ function MtmAuditPanel({ toast }) {
               )}
             </p>
           )}
+          {/* ⚠️ LO MÁS IMPORTANTE DEL PANEL. `_backfill_snapshots_from_monthly`
+              fabrica snapshots de fin de mes con total_value = capital_final (la
+              cadena a COSTO) y total_invested = net_deposited acumulado. Para esos
+              meses la columna "mercado" NO es mercado: es la contabilidad
+              congelada en el momento del backfill. Se reconocen porque no tienen
+              ni blue ni composición — el cron sí los escribe. */}
+          {data.snapshots_sinteticos?.meses?.length > 0 && (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-1">
+              <p className="text-xs text-red-400 font-medium">
+                {data.snapshots_sinteticos.meses.length} mes(es) con snapshot SINTÉTICO —
+                su columna "mercado" no es mercado: {data.snapshots_sinteticos.meses.join(', ')}
+              </p>
+              <p className="text-[11px] text-ink-3">{data.snapshots_sinteticos.prediccion}</p>
+              <p className="text-[11px] text-ink-2">
+                Predicción verificada en <b>{data.snapshots_sinteticos.aciertos}</b> de los meses
+                sintéticos con ΔG medible:{' '}
+                {data.snapshots_sinteticos.verificacion.map(v =>
+                  `${v.mes} ΔG ${v.delta_G} vs realizado ${v.realizado}${v.coincide ? ' ✓' : ' ✗'}`
+                ).join(' · ')}
+              </p>
+            </div>
+          )}
           {data.meses_sin_cobertura?.length > 0 && (
             <p className="text-xs text-amber-500">
               <b>{data.meses_sin_cobertura.length} mes(es) sin cobertura de snapshots</b> — quedan a
