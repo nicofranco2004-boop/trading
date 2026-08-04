@@ -22,6 +22,7 @@ import InlineAIButton from '../components/ai/InlineAIButton'
 import { track } from '../utils/track'
 import { nextPaymentForPosition } from '../utils/bondSchedule'
 import BondDetailRow from '../components/BondDetail'
+import ReturnFxHint from '../components/ReturnFxHint'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit } from '../utils/valuation'
@@ -1888,6 +1889,11 @@ function PositionsDesktop() {
                           <span className={`font-bold ${colorClass(footPnl)}`}>{hidden ? '••••••' : (isArsDisp ? `${r.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(r.pnlArs))}` : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`)}</span>
                           {r.invArs > 0 && (
                             <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${footPnl >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(isArsDisp ? r.pnlArs / r.invArs : (r.invested > 0 ? r.pnlUsd / r.invested : 0))}</span>
+                          )}
+                          {!hidden && (
+                            <ReturnFxHint pnlArs={r.pnlArs} invArs={r.invArs}
+                                          pnlUsd={r.pnlUsd} invUsd={r.invested}
+                                          isArsDisp={isArsDisp} />
                           )}
                         </span>
                       </td>

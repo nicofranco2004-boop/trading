@@ -13,7 +13,7 @@ import { HelpCircle } from 'lucide-react'
  *     <p className="text-ink-3">Fórmula: (valor − HWM) / HWM</p>
  *   </InfoTooltip>
  */
-export default function InfoTooltip({ children, label = 'Cómo se calcula', size = 13, align = 'right' }) {
+export default function InfoTooltip({ children, label = 'Cómo se calcula', size = 13, align = 'right', side = 'bottom' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -50,7 +50,7 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
       </button>
       {open && (
         <div
-          className={`absolute z-30 top-full mt-1 w-64 px-3 py-2.5 rounded-lg bg-bg-2 dark:bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${align === 'right' ? 'right-0' : 'left-0'}`}
+          className={`absolute z-30 w-64 px-3 py-2.5 rounded-lg bg-bg-2 dark:bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${align === 'right' ? 'right-0' : 'left-0'} ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}
           role="tooltip"
         >
           {children}
