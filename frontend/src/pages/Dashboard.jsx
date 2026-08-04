@@ -36,6 +36,7 @@ import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
+import { applyMtmToMonthly } from '../utils/insightsModel'
 
 const REFRESH_MS = 90_000
 
@@ -572,11 +573,20 @@ function PersonalDashboard() {
   // Guard: <3 meses de historial no se muestra (anualizar un período corto
   // amplifica ruido; ver doc de computeCAGR).
   const cagrVar = useMemo(() => {
-    const mr = computeMonthlyReturns(monthly.filter(m => m.broker === 'global'))
+    // La cadena mensual a COSTO no mide mercado: en los meses cerrados el
+    // backend fuerza pnl_unrealized = 0, así que (cf − ci − net) ≡ pnl_realized.
+    // Sin esto, "Anual" era el realizado encadenado — medido en una cuenta real,
+    // +33% donde el retorno de verdad era +2,99%. Y peor: Insights ya lee la
+    // cadena a mercado, así que las dos pantallas se contradecían.
+    // `totalValuePositions` y NO `totalValue`: los snapshots no incluyen el plazo
+    // fijo, y cerrar el mes en curso con una base distinta a la del arranque es
+    // exactamente lo que fabrica retorno.
+    const mr = computeMonthlyReturns(applyMtmToMonthly(
+      monthly.filter(m => m.broker === 'global'), snapshots, undefined, totalValuePositions))
     if (mr.length < 3) return null
     const c = computeCAGR(mr)
     return c ? { pct: c.cagr, months: c.months } : null
-  }, [monthly])
+  }, [monthly, snapshots, totalValuePositions])
 
   if (loading) return <DashboardSkeleton />
 
