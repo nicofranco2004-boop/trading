@@ -36,6 +36,7 @@ import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
+import { applyMtmToMonthly } from '../utils/insightsModel'
 
 const REFRESH_MS = 90_000
 
@@ -237,10 +238,16 @@ function PersonalDashboard() {
   // ── Discrepancia contable ───────────────────────────────────────────────────
   // Identidad: realizedPnl + unrealizedPnl = totalReturnUsd + discrepancia
   //
-  // Si discrepancia > 0: hay ganancias que se cerraron y luego salieron del
-  //   portfolio (retiros que llevaron ganancias). El sistema las contabiliza
-  //   como realizedPnl pero ya no aparecen en totalValue ni en netDeposited.
-  //   Label: "Ganancias retiradas".
+  // Si discrepancia > 0: la cartera vale MENOS de lo que explican los flujos y
+  //   el P&L registrados. Antes esto se rotulaba "Ganancias retiradas", y era
+  //   FALSO: `netDeposited` YA resta los retiros (ver netDepositedBase abajo),
+  //   así que un retiro registrado da discrepancia CERO — probado con los cuatro
+  //   casos (retirar toda la ganancia, parte, nada, o solo capital). Además, si
+  //   fueran retiros la serie solo podría CRECER; medida en una cuenta real baja
+  //   cuatro veces y salta ±800 en un mes.
+  //   Causas reales: comisiones/impuestos no imputados, P&L realizado inflado
+  //   (costo de venta mal), o tenencias valuadas por debajo del costo.
+  //   Label: "Diferencia sin explicar" — porque eso es lo que es.
   //
   // Si discrepancia < 0: la cartera vale más de lo que explican los flujos
   //   registrados. Típicamente: dividendos/intereses cobrados que no se
@@ -572,11 +579,20 @@ function PersonalDashboard() {
   // Guard: <3 meses de historial no se muestra (anualizar un período corto
   // amplifica ruido; ver doc de computeCAGR).
   const cagrVar = useMemo(() => {
-    const mr = computeMonthlyReturns(monthly.filter(m => m.broker === 'global'))
+    // La cadena mensual a COSTO no mide mercado: en los meses cerrados el
+    // backend fuerza pnl_unrealized = 0, así que (cf − ci − net) ≡ pnl_realized.
+    // Sin esto, "Anual" era el realizado encadenado — medido en una cuenta real,
+    // +33% donde el retorno de verdad era +2,99%. Y peor: Insights ya lee la
+    // cadena a mercado, así que las dos pantallas se contradecían.
+    // `totalValuePositions` y NO `totalValue`: los snapshots no incluyen el plazo
+    // fijo, y cerrar el mes en curso con una base distinta a la del arranque es
+    // exactamente lo que fabrica retorno.
+    const mr = computeMonthlyReturns(applyMtmToMonthly(
+      monthly.filter(m => m.broker === 'global'), snapshots, undefined, totalValuePositions))
     if (mr.length < 3) return null
     const c = computeCAGR(mr)
     return c ? { pct: c.cagr, months: c.months } : null
-  }, [monthly])
+  }, [monthly, snapshots, totalValuePositions])
 
   if (loading) return <DashboardSkeleton />
 
@@ -744,7 +760,7 @@ function PersonalDashboard() {
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
               <p className="text-ink-3">{gapIsOutflow
-                ? 'Hubo retiros que incluían ganancias — esa plata salió de la cartera pero sigue contabilizada como realizada (ver "Ganancias retiradas").'
+                ? 'La cartera vale menos de lo que explican tus flujos y tu P&L. No son retiros: los retiros ya están restados del aportado (ver "Diferencia sin explicar").'
                 : 'La cartera tiene plusvalía no clasificada como P&L realizado, típicamente dividendos cobrados o intereses sobre cash (ver "Dividendos e intereses").'}
               </p>
             </>
@@ -802,22 +818,25 @@ function PersonalDashboard() {
         />
         {showAccountingGap && (
           <KpiCell
-            label={gapIsOutflow ? 'Ganancias retiradas' : 'Dividendos e intereses'}
+            label={gapIsOutflow ? 'Diferencia sin explicar' : 'Dividendos e intereses'}
             value={fmt(Math.abs(accountingGap))}
             tone={gapIsOutflow ? undefined : 'pos'}
-            sub={gapIsOutflow ? 'fuera de la cartera' : 'no cargados como P&L'}
+            sub={gapIsOutflow ? 'revisar — no son retiros' : 'no cargados como P&L'}
             info={
               gapIsOutflow ? (
                 <>
                   <p className="font-medium text-ink-0">Qué es</p>
-                  <p>Plata que se cerró como ganancia y luego salió de la cuenta vía retiros.</p>
+                  <p>Tu cartera vale <strong>menos</strong> de lo que explican tus depósitos y tu P&L. Es un descuadre, no una categoría de plata.</p>
                   <div className="border-t border-line/60 my-1.5" />
                   <p className="font-medium text-ink-0">Cómo se calcula</p>
                   <p className="text-ink-3 font-mono text-[11px]">= (realizado + no realizado) − resultado total</p>
-                  <p className="text-ink-3">Esto cierra el cálculo: lo que tenés HOY + lo que retiraste = todo lo que pusiste + todo lo que ganaste.</p>
+                  <p className="text-ink-3">Equivale a: aportado + realizado − costo de lo que tenés hoy.</p>
                   <div className="border-t border-line/60 my-1.5" />
-                  <p className="font-medium text-ink-1">Ejemplo</p>
-                  <p className="text-ink-3">Si retiraste $180k para impuestos y de esos $73k eran ganancias acumuladas en cash, esos $73k aparecen acá. El sistema los cuenta como realizados (porque se cobraron), pero ya no están en tu cartera.</p>
+                  <p className="font-medium text-ink-1">No son retiros</p>
+                  <p className="text-ink-3">Retirar ganancias da <strong>cero</strong> acá: el retiro ya se resta del capital aportado, así que tu rendimiento no cambia por sacar plata. Antes esta card decía "Ganancias retiradas" y era incorrecto.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-medium text-ink-1">Qué mirar</p>
+                  <p className="text-ink-3">Comisiones o impuestos que no quedaron imputados, una venta con el costo mal cargado (infla el realizado), o una tenencia valuada por debajo de su costo.</p>
                 </>
               ) : (
                 <>

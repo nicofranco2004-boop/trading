@@ -234,5 +234,177 @@ class DeleteCascade(unittest.TestCase):
         self.assertEqual(cm.exception.status_code, 400)
 
 
+    # ── Fase 2: borrar el historial ENTERO de un activo ─────────────────────
+    def test_delete_entire_asset_history(self):
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        self.assertAlmostEqual(self._open_qty(), 6.0, places=6)
+        self.assertAlmostEqual(self._global_pnl(), 200.0, places=2)   # 4*(200-150)
+        self.assertAlmostEqual(self._cash(), -700.0, places=2)        # -1500 + 800
+
+        with self.conn:
+            res = main._delete_asset_history_cascade(self.conn, self.uid, "AAPL")
+        self.assertEqual(res["count"], 2)
+        # Activo entero fuera: sin lotes fantasma, sin ventas, P&L 0, cash sin huella.
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
+        self.assertEqual(len(self._ventas()), 0)
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)           # +1500 -800 revertido
+        self._probe()
+
+        # NO resucita al re-derivar.
+        with self.conn:
+            tc = ps._read_tc_blue(self.conn, uid=self.uid)
+            rb.rebuild_pair_asset(self.conn, self.uid, "IBKR", "AAPL", tc_blue=tc)
+            main._recalc_pnl_realized_from_ops(self.conn, self.uid)
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+
+    def test_undo_asset_history(self):
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        with self.conn:
+            res = main._delete_asset_history_cascade(self.conn, self.uid, "AAPL")
+        j = self.conn.execute(
+            "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
+        p = json.loads(j["payload_json"])
+        with self.conn:
+            for tid in p["tx_ids"]:
+                self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (tid,))
+            for b, delta in p["cash_by_broker"].items():
+                main._adjust_broker_cash(self.conn, self.uid, b, -float(delta))
+            for pr in p["pairs"]:
+                rb.rebuild_pair_asset(self.conn, self.uid, pr[0], "AAPL",
+                                      tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], set(p["brokers"]))
+        self.assertAlmostEqual(self._open_qty(), 6.0, places=6)
+        self.assertAlmostEqual(self._global_pnl(), 200.0, places=2)
+        self.assertAlmostEqual(self._cash(), -700.0, places=2)
+        self._probe()
+
+
+    def test_delete_asset_blocked_if_dividend(self):
+        # Blocker del review: un activo con un dividendo enlazado NO se puede borrar
+        # entero todavía (dejaría el dividendo vivo) → 400.
+        self._import(_csv("2024-03-15,COMPRA,IBKR,GGAL,10,20,200,,,0,USD,"))
+        self.conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd, currency)
+               VALUES (?,?,?,?,?,?,?)""",
+            (self.uid, "2024-06-01", "IBKR", "GGAL", "Dividendo", 5, "USD"))
+        self.conn.commit()
+        with self.assertRaises(main.HTTPException) as cm:
+            main._delete_asset_history_cascade(self.conn, self.uid, "GGAL")
+        self.assertEqual(cm.exception.status_code, 400)
+
+
+    # ── Fase 2.x: borrar un LOTE ABIERTO (compra sin vender) desde Movimientos ──
+    def _pos_id(self, asset="AAPL"):
+        r = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND asset=? AND is_cash=0 LIMIT 1",
+            (self.uid, asset)).fetchone()
+        return r["id"] if r else None
+
+    def test_delete_open_position(self):
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)
+        self.assertAlmostEqual(self._cash(), -1500.0, places=2)
+        with self.conn:
+            main._delete_position_cascade(self.conn, self.uid, self._pos_id())
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)   # lote borrado
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)       # -1500 + 1500 devuelto
+        self._probe()
+
+    def test_delete_position_blocked_if_partially_sold(self):
+        # La compra ya se vendió en parte → borrar el lote dejaría la venta huérfana → 409.
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        self.assertAlmostEqual(self._open_qty(), 6.0, places=6)
+        with self.assertRaises(main.HTTPException) as cm:
+            main._delete_position_cascade(self.conn, self.uid, self._pos_id())
+        self.assertEqual(cm.exception.status_code, 409)
+
+    def test_undo_open_position(self):
+        # El undo de una COMPRA re-debita el cash (signo opuesto a la venta).
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        with self.conn:
+            res = main._delete_position_cascade(self.conn, self.uid, self._pos_id())
+        j = self.conn.execute(
+            "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
+        p = json.loads(j["payload_json"])
+        with self.conn:
+            self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (p["tx_id"],))
+            main._adjust_broker_cash(self.conn, self.uid, p["broker"], float(p["cash_reversed"]))
+            rb.rebuild_pair_asset(self.conn, self.uid, p["broker"], p["asset"],
+                                  tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], {p["broker"]})
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)
+        self.assertAlmostEqual(self._cash(), -1500.0, places=2)   # re-debitado
+        self._probe()
+
+
+    # ── Wiring end-to-end: borrar trades importados desde Movimientos (id tx-) ──
+    def test_delete_imported_buy_via_tx_route(self):
+        # Una COMPRA importada aparece como tx- (no pos-). El router la manda a
+        # _delete_position_cascade. (El bug que el review cazó: antes daba 400.)
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='BUY' AND asset_symbol='AAPL'"
+        ).fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)
+        self._probe()
+
+    def test_delete_imported_sell_via_tx_route(self):
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='SELL' AND asset_symbol='AAPL'"
+        ).fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)   # tenencia restaurada
+        self.assertEqual(len(self._ventas()), 0)
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+        self._probe()
+
+
+    # ── Fase 2.x: depósito manual EN PESOS ahora se puede borrar (aproximado) ──
+    def test_delete_manual_ars_deposit_unblocked(self):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            (self.uid, "tc_blue", "1000"))
+        self.conn.execute(
+            "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (self.uid, "Cocos", "ARS"))
+        # cash del broker: 50.000 pesos
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, invested) VALUES (?,?,?,1,?)",
+            (self.uid, "Cocos", "ARS", 50000.0))
+        # depósito manual de 50 USD (= 50.000 pesos al blue 1000)
+        self.conn.execute(
+            """INSERT INTO monthly_entries
+                 (user_id, broker, year, month, deposits, withdrawals,
+                  capital_inicio, capital_final, pnl_realized, manual_deposits, manual_withdrawals)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (self.uid, "Cocos", 2025, 1, 50, 0, 0, 50, 0, 50.0, 0))
+        self.conn.commit()
+        me_id = self.conn.execute(
+            "SELECT id FROM monthly_entries WHERE broker='Cocos'").fetchone()["id"]
+
+        with self.conn:
+            main._delete_one_movement(self.conn, self.uid, f"me-{me_id}-dep")
+
+        # Aportado EXACTO: el manual del mes queda en 0.
+        md = self.conn.execute(
+            "SELECT manual_deposits FROM monthly_entries WHERE id=?", (me_id,)).fetchone()["manual_deposits"]
+        self.assertAlmostEqual(md or 0, 0.0, places=6)
+        # Cash: 50.000 − (50 USD × 1000) = 0.
+        cash = self.conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND broker='Cocos' AND is_cash=1",
+            (self.uid,)).fetchone()["invested"]
+        self.assertAlmostEqual(cash, 0.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
