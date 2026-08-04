@@ -9404,9 +9404,9 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
         prev_mes = f"{y-1}-12" if m == 1 else f"{y}-{m-1:02d}"
         def _snap(mk):
             r = conn.execute(
-                "SELECT date, total_value, total_invested FROM snapshots WHERE user_id=? "
-                "AND date LIKE ? AND total_value > 0 ORDER BY date DESC LIMIT 1",
-                (uid, mk + "%")).fetchone()
+                "SELECT date, total_value, total_invested, fx_to_usd_blue, holdings_json "
+                "FROM snapshots WHERE user_id=? AND date LIKE ? AND total_value > 0 "
+                "ORDER BY date DESC LIMIT 1", (uid, mk + "%")).fetchone()
             return dict(r) if r else None
         sp, sc = _snap(prev_mes), _snap(mes)
         ops = conn.execute(
@@ -9455,6 +9455,34 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
                                and abs(desvio) > abs(pct_precios or 0) * 0.1),
         })
 
+    # ── Composición: qué activo se movió ────────────────────────────────────
+    # Si el P&L por operación está bien pero el costo igual no cuadra, lo que
+    # cambió no fue una venta sino la TENENCIA: un import, una foto de tenencia,
+    # un split. Diffear los holdings de los dos cierres nombra el activo.
+    # (holdings_json guarda value_usd por activo, sin cash.)
+    def _hold(sn):
+        try:
+            return {h["asset"]: h["value_usd"] for h in json.loads(sn["holdings_json"] or "[]")}
+        except Exception:
+            return {}
+    hi, hf = (_hold(sp) if sp else {}), (_hold(sc) if sc else {})
+    movs = []
+    for act in sorted(set(hi) | set(hf)):
+        vi, vf = hi.get(act), hf.get(act)
+        movs.append({"activo": act, "valor_ini": vi, "valor_fin": vf,
+                     "delta": round((vf or 0) - (vi or 0), 2),
+                     "evento": ("APARECE" if vi is None else
+                                "DESAPARECE" if vf is None else "")})
+    movs.sort(key=lambda x: -abs(x["delta"]))
+
+    # ── El test del FX ──────────────────────────────────────────────────────
+    # La teoría dice ΔG = −(revaluación del costo en pesos). Si el blue no se
+    # movió entre los dos cierres, el FX NO puede explicar el ΔG y hay que
+    # buscar en otro lado. Se reporta para poder descartarlo con un número.
+    b_i = (sp or {}).get("fx_to_usd_blue")
+    b_f = (sc or {}).get("fx_to_usd_blue")
+    fx_var = (round((b_f / b_i - 1) * 100, 2) if (b_i and b_f) else None)
+
     sospechosas = [d for d in detalle if d["sospechosa"]]
     # Un "verde" sin datos NO es verde. Dos formas de llegar a cero sospechosas
     # sin haber verificado nada: que el mes no tenga ventas, o que las que hay no
@@ -9481,6 +9509,17 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
         "veredicto": veredicto,
         "verificables": len(verificables),
         "sin_verificar": sin_verificar,
+        # Por qué no se pudieron verificar — si son compras es normal; si son
+        # ventas sin pnl_pct, eso ya es un hallazgo en sí mismo.
+        "las_sin_verificar": [{"fecha": d["fecha"], "activo": d["activo"], "tipo": d["tipo"],
+                               "pnl_usd": d["pnl_usd"],
+                               "falta": ("pnl_pct" if d["pnl_pct_guardado"] is None else "precios")}
+                              for d in detalle
+                              if d["pnl_pct_guardado"] is None or d["pnl_pct_por_precios"] is None][:20],
+        "fx": {"blue_ini": b_i, "blue_fin": b_f, "variacion_pct": fx_var,
+               "lectura": ("si el blue casi no se movió, el FX no explica el ΔG"
+                           if fx_var is not None else "sin blue estampado en los snapshots")},
+        "movimientos_de_tenencia": movs[:25],
         "identidad": {
             "flujos": round(flujos, 2),
             "realizado_del_mes": round(realizado, 2),

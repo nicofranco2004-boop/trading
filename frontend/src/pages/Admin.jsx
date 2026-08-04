@@ -1504,6 +1504,44 @@ function MtmAuditPanel({ toast }) {
                   : gap.verificables > 0 ? 'text-emerald-500' : 'text-amber-500'}`}>
                 {gap.veredicto}
               </p>
+              {/* Si el P&L por operación está bien, lo que se movió fue la TENENCIA.
+                  El diff de holdings entre los dos cierres nombra el activo, y el
+                  blue estampado descarta (o no) al FX con un número. */}
+              <p className="text-[11px] text-ink-2">
+                Blue {gap.fx?.blue_ini ?? '—'} → {gap.fx?.blue_fin ?? '—'}
+                {gap.fx?.variacion_pct != null && (
+                  <b className={Math.abs(gap.fx.variacion_pct) < 2 ? ' text-ink-3' : ' text-amber-500'}>
+                    {' '}({gap.fx.variacion_pct > 0 ? '+' : ''}{gap.fx.variacion_pct}%)
+                  </b>
+                )} — {gap.fx?.lectura}
+              </p>
+              {gap.movimientos_de_tenencia?.length > 0 && (
+                <div className="overflow-x-auto">
+                  <p className="text-[11px] text-ink-2 font-medium mb-1">Qué se movió en la tenencia</p>
+                  <table className="w-full text-[11px]">
+                    <tbody>
+                      {gap.movimientos_de_tenencia.filter(m => m.evento || Math.abs(m.delta) > 50).map(m => (
+                        <tr key={m.activo} className="border-b border-line/30">
+                          <td className="py-1 pr-2 font-medium">{m.activo}</td>
+                          <td className="py-1 pr-2 text-right tabular text-ink-3">
+                            {m.valor_ini ?? '—'} → {m.valor_fin ?? '—'}
+                          </td>
+                          <td className="py-1 pr-2 text-right tabular">{m.delta}</td>
+                          <td className={`py-1 ${m.evento ? 'text-amber-500 font-medium' : 'text-ink-3'}`}>
+                            {m.evento}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {gap.las_sin_verificar?.length > 0 && (
+                <p className="text-[11px] text-ink-3">
+                  <b>Sin verificar:</b>{' '}
+                  {gap.las_sin_verificar.map(o => `${o.fecha} ${o.activo} (${o.tipo || '—'})`).join(' · ')}
+                </p>
+              )}
               {gap.las_sospechosas?.length > 0 && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-[11px]">
