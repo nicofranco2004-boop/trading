@@ -498,6 +498,39 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
     except Exception:
         pass
 
+    # CEDEARs y acciones AR que yfinance no resolvió: mismo agujero que en
+    # /api/prices — devuelve la barra del día con volumen pero OHLC en NaN, el
+    # símbolo queda en None y más abajo `apply_last_known_prices` lo completa con
+    # el precio de AYER. O sea: el snapshot nocturno —el que alimenta la curva de
+    # evolución y el CAGR— valuaba esas posiciones a un precio viejo, en silencio.
+    # Sólo rellena los que quedaron sin precio: a los que yfinance resolvió no los
+    # toca (mismo criterio quirúrgico que el endpoint).
+    _sin_precio_yf = [s for s in symbols if result.get(s) is None]
+    _rescatados = 0
+    try:
+        from main import _resolve_ar_equity_price as _rep
+        for s in _sin_precio_yf:
+            ep = _rep(s)
+            if ep is not None:
+                result[s] = ep
+                _rescatados += 1
+    except Exception:
+        pass
+
+    # SEÑAL DIARIA: cuántos símbolos no pudo dar yfinance y cuántos rescató BYMA.
+    # Es el aviso que faltaba — el guard de cobertura de más abajo sólo mira si
+    # FALTA el precio, y un precio VIEJO lo pasa limpito porque existe. Que quede
+    # en el log del job significa enterarnos nosotros y no por un usuario
+    # comparando contra su broker.
+    if _sin_precio_yf:
+        log.warning(
+            "precios: %d/%d símbolos sin dato de yfinance (%s%s) — BYMA rescató %d",
+            len(_sin_precio_yf), len(symbols),
+            ", ".join(_sin_precio_yf[:8]),
+            "…" if len(_sin_precio_yf) > 8 else "",
+            _rescatados,
+        )
+
     return result
 
 

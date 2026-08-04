@@ -6112,6 +6112,38 @@ def _prices_cache_set(prices: dict) -> None:
             _PRICE_CACHE[sym] = (now, price)
 
 
+# ─── Procedencia del precio: de dónde salió y de qué rueda ───────────────────
+#
+# POR QUÉ: hasta acá /api/prices devolvía un número PELADO. Nada río abajo —ni la
+# tabla, ni la variación diaria, ni el snapshot nocturno— podía distinguir "el
+# precio de hoy" de "un precio de hace tres ruedas". Por eso el agujero de las
+# barras en NaN (ver `_fetch_data912_equities`) fue invisible hasta que un usuario
+# comparó contra su broker: el número EXISTÍA, solo que era viejo, y el guard de
+# cobertura que ya había sólo mira si FALTA.
+#
+# Va en un dict aparte y no dentro de `_PRICE_CACHE` para no cambiar la forma de su
+# tupla (la leen otros lados). Misma TTL que los precios.
+_PRICE_META: dict = {}
+
+
+def _prices_meta_set(meta: dict) -> None:
+    now = time.time()
+    with _PRICE_CACHE_LOCK:
+        for sym, m in meta.items():
+            _PRICE_META[sym] = (now, m)
+
+
+def _prices_meta_get(symbols) -> dict:
+    now = time.time()
+    out = {}
+    with _PRICE_CACHE_LOCK:
+        for sym in symbols:
+            e = _PRICE_META.get(sym)
+            if e is not None and (now - e[0]) < _PRICE_CACHE_TTL_S:
+                out[sym] = e[1]
+    return out
+
+
 def _fill_last_known_prices(result: dict) -> None:
     """Best-effort: persiste los precios reales recién obtenidos y completa los
     símbolos en None con su ÚLTIMO precio conocido (tabla asset_last_price), en
@@ -6194,7 +6226,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     # en < 5ms.
     cached_results, uncached_symbols = _prices_cache_get(sym_list)
     if not uncached_symbols:
-        return {**cached_results, **fci_prices}
+        return {**cached_results, **fci_prices, '__meta': _prices_meta_get(sym_list)}
 
     # Hay misses — procesamos solo los uncached. Resultado base incluye lo
     # que ya teníamos cacheado para no perderlo en el merge final.
@@ -6219,7 +6251,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
         # Solo había símbolos resolved por data912 — persistir y salir.
         _fill_last_known_prices(result)
         _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
-        return {**result, **fci_prices}
+        return {**result, **fci_prices, '__meta': _prices_meta_get(sym_list)}
 
     # Cripto en broker ARS: el frontend pide '<CRIPTO>.BA' (sufijo ARS, igual que
     # un CEDEAR) pero la cripto NO cotiza en BYMA — cotiza en USD globalmente. La
@@ -6266,6 +6298,12 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
 
     yf_tickers = list(set(sym_to_yf.values()))
 
+    # Procedencia (ver `_PRICE_META`): de qué fuente salió cada precio y de qué
+    # rueda. `px_as_of` se llena con el batch; `px_src` a medida que se resuelve.
+    px_as_of: dict = {}
+    px_src: dict = {}
+    newest_bar = None
+
     try:
         tickers_str = " ".join(yf_tickers)
         # period="1mo" es más confiable que "5d" — cubre findes y feriados
@@ -6276,9 +6314,31 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
 
             if close is not None and not (hasattr(close, 'empty') and close.empty):
                 if hasattr(close, 'dropna'):
-                    last = close.dropna(how='all').iloc[-1] if len(close.dropna(how='all')) > 0 else None
+                    _rows = close.dropna(how='all')
+                    last = _rows.iloc[-1] if len(_rows) > 0 else None
+                    # La rueda más nueva con dato de ALGÚN símbolo: la referencia
+                    # para saber cuál se quedó atrás.
+                    _newest = str(_rows.index[-1])[:10] if len(_rows) > 0 else None
                 else:
                     last = None
+                    _newest = None
+
+                # Fecha del último cierre VÁLIDO de cada símbolo. Un símbolo cuya
+                # última barra es más vieja que `_newest` tiene un hueco: yfinance
+                # se salteó su rueda (barra en NaN) o directamente no la trae.
+                for sym, yf_t in sym_to_yf.items():
+                    try:
+                        if hasattr(close, 'columns') and yf_t in getattr(close, 'columns', []):
+                            _s = close[yf_t].dropna()
+                        elif not hasattr(close, 'columns'):
+                            _s = close.dropna()
+                        else:
+                            _s = None
+                        if _s is not None and len(_s) > 0:
+                            px_as_of[sym] = str(_s.index[-1])[:10]
+                    except Exception:
+                        pass
+                newest_bar = _newest
 
                 if last is not None:
                     for sym, yf_t in sym_to_yf.items():
@@ -6289,6 +6349,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
                                 val = float(last)
                             if not math.isnan(val) and val > 0:
                                 result[sym] = val
+                                px_src[sym] = 'yf'
                         except Exception:
                             pass
     except Exception:
@@ -6305,12 +6366,17 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
         ar_eq = _resolve_ar_equity_price(sym)
         if ar_eq is not None:
             result[sym] = ar_eq
+            px_src[sym] = 'byma'
             continue
         yf_t = sym_to_yf[sym]
         price = _fetch_one(yf_t)
         if price is None and not sym.endswith('.BA') and sym not in CRYPTO_YF:
             price = _fetch_one(f"{sym}-USD")
         result[sym] = price
+        if price is not None:
+            # `_fetch_one` devuelve el último cierre NO nulo: si la rueda de este
+            # símbolo se salteó, esto es de una rueda anterior. Queda marcado.
+            px_src[sym] = 'yf'
 
     # Cripto-ARS: el precio fetcheado vino en USD (BTC-USD). Lo pasamos a pesos al
     # DÓLAR CRIPTO → prices['BTC.BA'] = spot×cripto (en ARS, coherente con los demás
@@ -6332,12 +6398,33 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
 
     # Último precio conocido: completa los que quedaron en None (yfinance/data912
     # fallaron) con su último precio real → el frontend no cae a cost basis.
+    _before_last_known = {s for s in uncached_symbols if result.get(s) is not None}
     _fill_last_known_prices(result)
+    for sym in uncached_symbols:
+        if result.get(sym) is not None and sym not in _before_last_known:
+            px_src[sym] = 'last_known'
+
+    # Procedencia: un precio de una rueda anterior a la más nueva del lote —o
+    # completado con el último conocido— NO es el de hoy. Se marca para que la
+    # tabla lo pueda decir en vez de hacerlo pasar por actual.
+    _meta = {}
+    for sym in uncached_symbols:
+        if result.get(sym) is None:
+            continue
+        src = px_src.get(sym)
+        as_of = px_as_of.get(sym)
+        stale = (src == 'last_known') or bool(
+            src == 'yf' and as_of and newest_bar and as_of < newest_bar)
+        if stale or src:
+            _meta[sym] = {'src': src, 'as_of': as_of, 'stale': stale}
+    _prices_meta_set(_meta)
 
     # Persistir todos los uncached que acabamos de fetchear (incluyendo None
     # para los que fallaron — evita retry storm si Yahoo está down).
     _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
-    return {**result, **fci_prices}
+    # `__meta` no puede colisionar con un ticker y ningún caller itera el objeto
+    # (todos hacen prices[sym]) — verificado antes de agregarlo.
+    return {**result, **fci_prices, '__meta': _prices_meta_get(sym_list)}
 
 
 @app.get("/api/prices/prev-close")

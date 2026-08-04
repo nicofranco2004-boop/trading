@@ -23,6 +23,7 @@ import { track } from '../utils/track'
 import { nextPaymentForPosition } from '../utils/bondSchedule'
 import BondDetailRow from '../components/BondDetail'
 import ReturnFxHint from '../components/ReturnFxHint'
+import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit } from '../utils/valuation'
@@ -1523,6 +1524,10 @@ function PositionsDesktop() {
           />
         </div>
       )}
+
+      {/* `__meta` ya viene acotado a los símbolos de ESTA cartera (el endpoint
+          responde sólo lo que se le pidió), así que no hace falta filtrar más. */}
+      {hasAnyPosition && <StalePricesNotice meta={prices.__meta} />}
 
       {hasAnyPosition && displayBrokers.map(({ broker, indent, parentName }, bi) => {
         // Filtro por broker (single-select): si hay uno elegido y no es éste,

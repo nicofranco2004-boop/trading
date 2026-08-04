@@ -116,6 +116,31 @@ class BaNanBarTest(unittest.TestCase):
                           return_value={"BTC": {"c": 1.0, "pct": 0.0}}):
             self.assertIsNone(main._resolve_ar_equity_price("BTC.BA"))
 
+    def test_meta_marca_de_donde_salio_cada_precio(self):
+        """El precio deja de ser un número pelado: viene con su fuente y su rueda.
+        Ese dato es el que faltaba para que un hueco se vea en vez de pasar por
+        precio de hoy."""
+        out = self._prices("MSFT.BA,TSLA.BA")
+        meta = out["__meta"]
+        # MSFT lo rescató el feed live → no está atrasado.
+        self.assertEqual(meta["MSFT.BA"]["src"], "byma")
+        self.assertFalse(meta["MSFT.BA"]["stale"])
+        # TSLA salió del batch de yfinance, de la rueda más nueva.
+        self.assertEqual(meta["TSLA.BA"]["src"], "yf")
+        self.assertEqual(meta["TSLA.BA"]["as_of"], "2026-08-03")
+        self.assertFalse(meta["TSLA.BA"]["stale"])
+
+    def test_meta_marca_stale_cuando_el_precio_es_de_una_rueda_vieja(self):
+        """EL CASO QUE IMPORTA: sin cobertura de BYMA, el precio sale igual (mejor
+        viejo que ninguno) pero queda MARCADO como de otra rueda. Antes salía
+        idéntico a uno del día y nada lo distinguía."""
+        out = self._prices("MSFT.BA", byma={})
+        self.assertEqual(out["MSFT.BA"], 24340.0)
+        m = out["__meta"]["MSFT.BA"]
+        self.assertEqual(m["src"], "yf")
+        self.assertEqual(m["as_of"], "2026-07-31")   # su última barra válida
+        self.assertTrue(m["stale"])                  # el lote llegó al 03-08
+
     def test_prev_close_no_saltea_la_rueda(self):
         """La variación diaria tiene que comparar ruedas CONSECUTIVAS. Si el precio
         de hoy sale del feed (03-08) y el anterior se toma como `iloc[-2]` de la
