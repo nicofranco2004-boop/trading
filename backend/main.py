@@ -10449,10 +10449,28 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
     """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
     revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
     autoritativo (recompone monthly desde fuentes, excluyendo lo ya borrado) →
-    purgar snapshots desde la fecha afectada (diarios + month-ends + hoy) →
-    re-backfill de month-ends. El caller ya borró la fila fuente y revirtió el
-    cash ANTES de llamar esto. La invalidación de la cache IA la hace el caller
-    tras el commit."""
+    refrescar snapshots desde la fecha afectada → re-backfill de month-ends. El
+    caller ya borró la fila fuente y revirtió el cash ANTES de llamar esto. La
+    invalidación de la cache IA la hace el caller tras el commit.
+
+    SNAPSHOTS — NO se borran los REALES (bug corregido; antes esto purgaba TODO
+    desde `since_date`). `total_value` de una foto del cron es una MEDICIÓN a
+    mercado (con los precios, el blue y la composición de ESE día) y NO se puede
+    re-derivar. Al borrarla, el backfill la reescribía desde monthly_entries, o
+    sea capital AL COSTO (el recalc pone pnl_unrealized=0) → borrar UN dividendo
+    de hace 3 años aplanaba la curva, el CAGR y el AUM del asesor para siempre, y
+    sin vuelta atrás. El `ON CONFLICT DO NOTHING` del backfill existe justamente
+    para no pisarlas, pero quedaba inerte porque acá se borraba la fila primero.
+
+    Borrar un movimiento NO cambia lo que valía la cartera aquel día. Entonces:
+      • SINTÉTICAS (las fabricó el backfill: sin blue ni holdings — misma
+        heurística que `sintetico` en el informe mensual): son derivadas → se
+        borran y el backfill las recrea ya corregidas.
+      • REALES: se conservan. Solo se les recomputa `net_deposited` (el capital
+        aportado, que SÍ cambió) con la SSoT `compute_net_deposited_db`.
+      • HOY: se borra siempre — la reescribe la próxima visita/cron con el estado
+        vivo, que es justamente el que acaba de cambiar.
+    """
     for b in brokers_touched:
         if b:
             _repair_monthly_chain(conn, uid, b)
@@ -10460,7 +10478,22 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
     _recalc_pnl_realized_from_ops(conn, uid)
     today = datetime.utcnow().strftime("%Y-%m-%d")
     if since_date:
-        conn.execute("DELETE FROM snapshots WHERE user_id=? AND date >= ?", (uid, since_date))
+        conn.execute(
+            """DELETE FROM snapshots
+                WHERE user_id=? AND date >= ? AND fx_to_usd_blue IS NULL
+                  AND COALESCE(TRIM(holdings_json), '') = ''""",
+            (uid, since_date),
+        )
+        from snapshots_job import compute_net_deposited_db as _cnd
+        for s in conn.execute(
+            "SELECT id, date FROM snapshots WHERE user_id=? AND date >= ?",
+            (uid, since_date),
+        ).fetchall():
+            conn.execute(
+                "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?",
+                (_cnd(conn, uid, as_of_date=s["date"], broker_filter="global",
+                      include_baseline=True), s["id"], uid),
+            )
     conn.execute("DELETE FROM snapshots WHERE user_id=? AND date = ?", (uid, today))
     _import_persister._backfill_snapshots_from_monthly(conn, uid)
 

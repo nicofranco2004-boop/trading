@@ -366,6 +366,45 @@ class DeleteCascade(unittest.TestCase):
             (self.uid,)).fetchone()["c"], 1)                        # el dividendo volvió
         self._probe()
 
+    # ── Regresión CRÍTICA: borrar NO puede destruir la curva real a mercado ─────
+    def test_delete_preserves_real_snapshots(self):
+        """Antes: la cascada purgaba TODOS los snapshots desde la fecha del ítem
+        borrado y el backfill los reescribía al COSTO → borrar un dividendo viejo
+        aplanaba años de curva, irrecuperable. Ahora la medición se conserva y solo
+        se le recomputa el capital aportado."""
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2024-06-01,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,"))
+        # Foto REAL del cron (tiene blue + composición): vale 25.000 a mercado.
+        self.conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested,
+                 net_deposited, fx_to_usd_blue, holdings_json)
+               VALUES (?,?,?,?,?,?,?)""",
+            (self.uid, "2024-07-10", 25000.0, 1500.0, 1500.0, 1180.0, '[{"a":"AAPL"}]'))
+        # Foto SINTÉTICA del backfill (sin blue ni composición): es derivada.
+        self.conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+               VALUES (?,?,?,?,?)""",
+            (self.uid, "2024-07-31", 1550.0, 1500.0, 1500.0))
+        self.conn.commit()
+
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='DIVIDEND'").fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+
+        real = self.conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=? AND date='2024-07-10'",
+            (self.uid,)).fetchone()
+        self.assertIsNotNone(real, "la foto REAL a mercado se borró (curva destruida)")
+        self.assertAlmostEqual(real["total_value"], 25000.0, places=2,
+                               msg="la foto real fue reescrita al costo")
+        # La sintética sí se regenera desde monthly (ya corregido) — no queda stale.
+        syn = self.conn.execute(
+            "SELECT fx_to_usd_blue, holdings_json FROM snapshots WHERE user_id=? AND date='2024-07-31'",
+            (self.uid,)).fetchone()
+        if syn:
+            self.assertIsNone(syn["fx_to_usd_blue"])   # si existe, es la recreada
+
     def test_undo_asset_with_dividend_via_endpoint(self):
         # Cobertura del ENDPOINT real de undo (no replay a mano): recrea el dividendo,
         # re-linkea, re-corre el sweep y restaura P&L/cash. Cubre lo que el replay omite.
