@@ -189,8 +189,8 @@ function PositionsDesktop() {
   const tcMep = pickFinancialRate(dolar, valuationDollar) || config.tc_mep || 1415
   // MEP ESTRICTO (no sigue el toggle MEP/CCL): para conversiones rotuladas
   // literalmente "MEP" (cross-currency de bonos) — así el badge no miente mostrando
-  // un CCL/blue, y queda byte-idéntico al comportamiento previo a la feature.
-  const tcMepStrict = dolar?.mep?.venta || config.tc_mep || 1415
+  // un CCL/blue. Al MEDIO como el resto de la valuación (no a la punta de compra).
+  const tcMepStrict = dolar?.mep?.medio ?? dolar?.mep?.venta ?? config.tc_mep ?? 1415
   // Dólar para valuar CEDEARs (sigue el toggle MEP/CCL del user). Se compran por
   // dólar financiero (plata local), así que valuamos a ese — es lo que muestra el
   // broker (Cocos). tcMep ya cascadea mep/ccl/blue vía pickFinancialRate.

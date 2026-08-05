@@ -562,32 +562,35 @@ export default function Config() {
             </span>
           </div>
           <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
+            {/* `value` = el dólar de valuación (medio); compra/venta = el detalle
+                crudo del spread. Así el número grande coincide con el que la app
+                usa para valuar, y abajo se ve de dónde sale. */}
             <FxCell
               first
               label="Blue"
               sub="ARS/USD"
-              value={dolar?.blue?.venta}
+              value={dolar?.blue?.medio ?? dolar?.blue?.venta}
               compra={dolar?.blue?.compra}
               venta={dolar?.blue?.venta}
             />
             <FxCell
               label="MEP"
               sub="ARS/USD"
-              value={dolar?.mep?.venta}
+              value={dolar?.mep?.medio ?? dolar?.mep?.venta}
               compra={dolar?.mep?.compra}
               venta={dolar?.mep?.venta}
             />
             <FxCell
               label="CCL"
               sub="ARS/USD"
-              value={dolar?.ccl?.venta}
+              value={dolar?.ccl?.medio ?? dolar?.ccl?.venta}
               compra={dolar?.ccl?.compra}
               venta={dolar?.ccl?.venta}
             />
             <FxCell
               label="Cripto"
               sub="ARS/USDT"
-              value={dolar?.cripto?.venta}
+              value={dolar?.cripto?.medio ?? dolar?.cripto?.venta}
               compra={dolar?.cripto?.compra}
               venta={dolar?.cripto?.venta}
             />

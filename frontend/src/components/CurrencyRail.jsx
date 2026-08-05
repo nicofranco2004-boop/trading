@@ -33,9 +33,11 @@ export default function CurrencyRail({ className = '' }) {
   const { currency, valuationDollar, setCurrency, setValuationDollar, dolar } = useCurrency()
   const active = currency === 'ARS' ? 'ars' : (valuationDollar === 'ccl' ? 'ccl' : 'mep')
 
+  // El selector muestra el MEDIO — el mismo dólar con el que se valúa la cartera
+  // (no la punta de venta), para que la tasa de abajo coincida con el total.
   const subFor = {
-    mep: fmtRate(dolar?.mep?.venta),
-    ccl: fmtRate(dolar?.ccl?.venta),
+    mep: fmtRate(dolar?.mep?.medio ?? dolar?.mep?.venta),
+    ccl: fmtRate(dolar?.ccl?.medio ?? dolar?.ccl?.venta),
     ars: 'ARS',
   }
 

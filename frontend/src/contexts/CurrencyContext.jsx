@@ -42,7 +42,12 @@ const DEFAULT_TC_BLUE = 1415
  * @returns {number|undefined} rate ARS/USD, o undefined si no hay dato (caller pone fallback)
  */
 export function pickFinancialRate(dolar, pref) {
-  const mep = dolar?.mep?.venta, ccl = dolar?.ccl?.venta, blue = dolar?.blue?.venta
+  // `medio` = (compra+venta)/2, el dólar de VALUACIÓN que estampa el backend
+  // (_fetch_dolar). Es lo que muestran los brokers (Cocos/IOL valúan al medio, no
+  // a la punta de compra); antes usábamos `.venta` y la cartera daba ~0,7% menos
+  // que el broker. Fallback a `.venta` para el caché viejo del endpoint.
+  const rate = c => c?.medio ?? c?.venta
+  const mep = rate(dolar?.mep), ccl = rate(dolar?.ccl), blue = rate(dolar?.blue)
   return (pref === 'ccl' ? (ccl || mep) : (mep || ccl)) || blue
 }
 

@@ -3583,8 +3583,34 @@ def _fetch_dolar(casa: str):
         venta = float(j.get("venta") or 0) or None
         if not venta:
             return None
-        return {"compra": compra, "venta": venta, "updated_at": j.get("fechaActualizacion")}
+        # `medio` = el dólar de VALUACIÓN: (compra+venta)/2. Es el que Rendi usa
+        # para expresar la cartera en USD, porque es lo que muestra el broker
+        # (Cocos/IOL/Balanz valúan al medio, no a la punta de compra). Antes se
+        # valuaba a `venta` (la punta cara) → un usuario veía US$ 6.884 donde
+        # Cocos le mostraba 6.933: los mismos pesos, dividido por 1.529,71 vs
+        # 1.518,4 (= el medio de su propio spread). La punta cruda queda para el
+        # display "Vendés a / Comprás a".
+        medio = round((compra + venta) / 2, 2) if compra else venta
+        return {"compra": compra, "venta": venta, "medio": medio,
+                "updated_at": j.get("fechaActualizacion")}
     except Exception:
+        return None
+
+
+def _val_rate(obj):
+    """Tasa de VALUACIÓN de una casa de dólar: el punto medio, con fallback a
+    venta. `medio` lo estampa `_fetch_dolar`; el fallback cubre el caché viejo (de
+    antes de este cambio) y cualquier casa sin `compra`. `obj` puede ser el dict
+    de la casa o un número pelado (compat)."""
+    if not isinstance(obj, dict):
+        try:
+            return float(obj) if obj and float(obj) > 0 else None
+        except (TypeError, ValueError):
+            return None
+    v = obj.get("medio") or obj.get("venta")
+    try:
+        return float(v) if v and float(v) > 0 else None
+    except (TypeError, ValueError):
         return None
 
 
@@ -3806,10 +3832,9 @@ def _display_ccl(conn, uid: int) -> float:
         cached = _dolar_cache.get("data") if _dolar_cache else None
         if cached:
             for casa in ("ccl", "mep", "cripto"):
-                obj = cached.get(casa)
-                v = obj.get("venta") if isinstance(obj, dict) else obj
-                if v and float(v) > 0:
-                    return float(v)
+                v = _val_rate(cached.get(casa))
+                if v:
+                    return v
     except (TypeError, ValueError, AttributeError):
         pass
     return _user_tc_blue(conn, uid)
@@ -3823,10 +3848,9 @@ def _current_ccl():
         cached = _dolar_cache.get("data") if _dolar_cache else None
         if cached:
             for casa in ("ccl", "mep", "cripto"):
-                obj = cached.get(casa)
-                v = obj.get("venta") if isinstance(obj, dict) else obj
-                if v and float(v) > 0:
-                    return float(v)
+                v = _val_rate(cached.get(casa))
+                if v:
+                    return v
     except (TypeError, ValueError, AttributeError):
         pass
     return None
@@ -3842,10 +3866,9 @@ def _current_cedear_rate():
         cached = _dolar_cache.get("data") if _dolar_cache else None
         if cached:
             for casa in ("mep", "ccl", "cripto"):
-                obj = cached.get(casa)
-                v = obj.get("venta") if isinstance(obj, dict) else obj
-                if v and float(v) > 0:
-                    return float(v)
+                v = _val_rate(cached.get(casa))
+                if v:
+                    return v
     except (TypeError, ValueError, AttributeError):
         pass
     return None
@@ -3858,6 +3881,11 @@ def _current_cripto_rate():
     try:
         cached = _dolar_cache.get("data") if _dolar_cache else None
         if cached:
+            # La cripto NO pasa al medio: su premium es el RATIO cripto/MEP y el
+            # frontend lee `dolar.cripto.venta` crudo en ~8 lugares. Mover solo el
+            # backend partiría la valuación frontend↔backend de la cripto de
+            # broker. Queda en venta (byte-idéntico); solo el dólar financiero
+            # (MEP/CCL/blue) pasó al medio.
             obj = cached.get("cripto")
             v = obj.get("venta") if isinstance(obj, dict) else obj
             if v and float(v) > 0:
@@ -20892,36 +20920,25 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         }
 
     elif name == "get_fx_rates":
-        # M12: cotización del dólar (mismo caché que /api/dolar). Devolvemos
-        # solo la venta (lo relevante para valuar/convertir).
+        # M12: cotización del dólar (mismo caché que /api/dolar). Devolvemos el
+        # MEDIO — el mismo dólar con el que la app valúa la cartera. Si la IA
+        # citara la venta, sus números no cuadrarían con la tabla que ve el user.
         try:
             d = _get_dolar_data() or {}
         except Exception as ex:
             log.warning("get_fx_rates: _get_dolar_data falló: %s", ex)
             return {"error": "No pude obtener las cotizaciones del dólar ahora."}
 
-        def _venta(casa):
-            obj = d.get(casa)
-            try:
-                v = obj.get("venta") if isinstance(obj, dict) else obj
-                return round(float(v), 2) if v and float(v) > 0 else None
-            except (TypeError, ValueError):
-                return None
-
-        rates = {
-            "mep": _venta("mep"),
-            "ccl": _venta("ccl"),
-            "blue": _venta("blue"),
-            "cripto": _venta("cripto"),
-        }
+        rates = {casa: (round(r, 2) if (r := _val_rate(d.get(casa))) else None)
+                 for casa in ("mep", "ccl", "blue", "cripto")}
         if not any(v for v in rates.values()):
             return {"error": "Cotizaciones del dólar no disponibles ahora."}
         return {
             "rates_ars_per_usd": rates,
             "note": (
-                "Pesos por dólar (venta), HOY. La cartera del usuario se valúa al "
-                "MEP (la cripto de exchange al spot); el blue es solo referencia. "
-                "Citá SIEMPRE cuál dólar usaste."
+                "Pesos por dólar (punto medio compra/venta), HOY. La cartera del "
+                "usuario se valúa al MEP (la cripto de exchange al spot); el blue "
+                "es solo referencia. Citá SIEMPRE cuál dólar usaste."
             ),
         }
 

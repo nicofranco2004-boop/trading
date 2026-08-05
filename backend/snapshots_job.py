@@ -412,7 +412,9 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
         _ccl = _cur_ccl()
         if not _ccl:
             _d = _fd("contadoconliqui")  # cron sin caché de dólar → fetch directo
-            _ccl = (_d or {}).get("venta")
+            # medio, igual que la valuación live: `_fetch_dolar` lo estampa, con
+            # fallback a venta para caché/casas sin compra.
+            _ccl = (_d or {}).get("medio") or (_d or {}).get("venta")
 
     def _to_yf_us(s):
         # Acción US: yfinance cotiza las CLASES con guión ('BRK-B'). Un import US

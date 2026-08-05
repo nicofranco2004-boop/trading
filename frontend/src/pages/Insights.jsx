@@ -1845,7 +1845,9 @@ function InsightsDesktop({ _embeddedTab }) {
       inflation_ar_last_12m_pct: inflLast12,
       inflation_ar_last_month_pct: inflLastMonth,
       dolar_blue_venta: tcBlue,
-      dolar_mep_venta: dolar?.mep?.venta || null,
+      // El MEP que la IA cita tiene que ser el mismo con el que la app valúa (el
+      // medio), no la punta de compra — si no, sus números no cuadran con la tabla.
+      dolar_mep_venta: (dolar?.mep?.medio ?? dolar?.mep?.venta) || null,
     },
   }
 
