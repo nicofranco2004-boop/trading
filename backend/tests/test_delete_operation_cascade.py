@@ -366,6 +366,26 @@ class DeleteCascade(unittest.TestCase):
             (self.uid,)).fetchone()["c"], 1)                        # el dividendo volvió
         self._probe()
 
+    # ── Regresión: la base de amortización no puede contar filas borradas ──────
+    def test_bond_genuine_net_excludes_deleted(self):
+        """Antes `_bond_genuine_net` no filtraba `excluded_at`: tras borrar el
+        historial de un bono y re-importarlo sumaba los nominales VIEJOS + los nuevos
+        → base al doble, factor ≥1, el sweep no amortizaba y el bono se mostraba al
+        100% del face."""
+        from importing import maturity as mt
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AL30,720,60,43200,,,0,USD,"))
+        self.conn.execute("UPDATE import_normalized_tx SET asset_type='BOND' WHERE asset_symbol='AL30'")
+        self.conn.commit()
+        pair = list(ps.broker_pair(self.conn, self.uid, "IBKR"))
+        self.assertAlmostEqual(mt._bond_genuine_net(self.conn, self.uid, pair, "AL30"),
+                               720.0, places=2)
+        # Se borra el historial → las filas quedan tombstoneadas, no borradas.
+        with self.conn:
+            main._delete_asset_history_cascade(self.conn, self.uid, "AL30")
+        self.assertAlmostEqual(
+            mt._bond_genuine_net(self.conn, self.uid, pair, "AL30"), 0.0, places=2,
+            msg="la base de amortización sigue contando el bono borrado → se duplica al re-importar")
+
     # ── Regresión: borrar un cash-flow NO puede revivir en el próximo import ────
     def test_deleted_cashflow_is_tombstoned_not_deleted(self):
         """Antes se hacía DELETE físico de la fila fuente: como el dedup del import
