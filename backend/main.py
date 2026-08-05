@@ -307,7 +307,12 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
                              month_str: str, tc_blue: float):
     """(imp_deposits_usd, imp_withdrawals_usd) — suma de DEPOSIT/WITHDRAW de batches
     CONFIRMED para (uid, broker, período). broker='global' = cross-broker. Prefiere
-    gross_amount_usd stamped al write-time; fallback a conversión ARS con tc_blue."""
+    gross_amount_usd stamped al write-time; fallback a conversión ARS con tc_blue.
+
+    Excluye las filas tombstoneadas (`excluded_at`): esta query ES la fuente de
+    `monthly_entries.deposits/withdrawals` en `_recalc_pnl_realized_from_ops`, o sea
+    del CAPITAL APORTADO. Sin este filtro, un depósito borrado seguiría contando en el
+    aportado para siempre (y el rendimiento se mediría contra plata que el user sacó)."""
     tx_broker_filter = "" if broker == "global" else " AND n.broker = ?"
     tx_broker_args = () if broker == "global" else (broker,)
     try:
@@ -320,7 +325,7 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
                        ), 0) AS s_usd
                 FROM import_normalized_tx n
                 JOIN import_batches b ON b.id = n.batch_id
-                WHERE b.user_id=? AND b.status='confirmed'
+                WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
                   AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')
                   AND strftime('%Y', n.date)=? AND strftime('%m', n.date)=?
                   {tx_broker_filter}
@@ -10444,6 +10449,29 @@ _TRADE_BLOCK_MSG = (
     "comisiones. El borrado de compras/ventas llega pronto."
 )
 
+_SEED_BLOCK_MSG = (
+    "Este movimiento es parte de la foto de tenencia / estado inicial con la que "
+    "abriste la cuenta, no una operación real. Para sacarlo hay que revertir esa "
+    "importación desde Importaciones."
+)
+
+
+def _is_synthetic_seed_row(src) -> bool:
+    """True si la fila viene de la apertura por FOTO de tenencia / 'Estado inicial'.
+
+    Esas aperturas emiten UN depósito sintético COMPARTIDO que fondea VARIAS compras
+    semilla. Borrar una pata sola descuadra: borrar la compra devuelve cash que nunca
+    entró (efectivo inventado), y borrar el depósito deja el saldo en negativo con la
+    tenencia intacta y el capital aportado en 0 → rendimiento infinito.
+
+    Vive en un helper porque la guarda ya existía en el borrado por-activo pero NO en
+    las otras dos puertas (posición y movimiento): centralizarla evita que la próxima
+    puerta se olvide de nuevo."""
+    notes = (src["notes"] or "") if "notes" in src.keys() else ""
+    return (notes.startswith(_import_tenencia.TENENCIA_APERTURA_NOTE_PREFIX)
+            or notes.startswith("Estado inicial")
+            or notes.startswith("Tenencia — aporte inicial sintético"))
+
 
 def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) -> None:
     """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
@@ -10512,7 +10540,8 @@ def _delete_one_movement(conn, uid: int, mid: str):
         tx = conn.execute(
             """SELECT n.* FROM import_normalized_tx n
                  JOIN import_batches b ON b.id = n.batch_id
-                WHERE n.id=? AND b.user_id=? AND b.status='confirmed'""",
+                WHERE n.id=? AND b.user_id=? AND b.status='confirmed'
+                  AND n.excluded_at IS NULL""",
             (tx_id, uid),
         ).fetchone()
         if not tx:
@@ -10520,9 +10549,25 @@ def _delete_one_movement(conn, uid: int, mid: str):
         op = (tx["operation_type"] or "").upper()
         if op not in _DELETABLE_CASHFLOW_TYPES:
             raise HTTPException(400, _TRADE_BLOCK_MSG)
+        if _is_synthetic_seed_row(tx):
+            raise HTTPException(400, _SEED_BLOCK_MSG)
         broker = tx["broker"] or ""
         amount = float(tx["gross_amount"] or 0)  # nativo del broker
-        # Reverso del CASH (única cosa que _recalc no recompone). Espeja
+        # 1) TOMBSTONE + CLAIM ATÓMICO, ANTES de tocar el cash (mismo patrón que los
+        #    trades). Es tombstone y no DELETE físico porque el dedup del import arma su
+        #    set de fingerprints con las filas que SIGUEN en la tabla: borrada la fila, el
+        #    próximo export SOLAPADO (Balanz/Cocos/PPI/IEB mandan el histórico completo)
+        #    no la reconocía como duplicada y la RE-IMPORTABA — volvía la plata al saldo y
+        #    el depósito al capital aportado, sin aviso y en cada import. Con `excluded_at`
+        #    el fingerprint sobrevive → el dedup la saltea para siempre.
+        #    Y va PRIMERO porque ES el lock: antes el saldo se leía antes de escribir,
+        #    así que dos borrados solapados se pisaban y dejaban plata fantasma.
+        if conn.execute(
+            "UPDATE import_normalized_tx SET excluded_at=datetime('now'), excluded_by=? "
+            "WHERE id=? AND excluded_at IS NULL", (uid, tx_id),
+        ).rowcount != 1:
+            raise HTTPException(409, "Ese movimiento ya se está borrando.")
+        # 2) Reverso del CASH (única cosa que _recalc no recompone). Espeja
         # revert_batch por op_type (persister.py:1142-1224): DEPOSIT/DIVIDEND/
         # INTEREST SUMARON cash → restamos; WITHDRAW/FEE/IMPUESTO RESTARON → devolvemos.
         if op in ("DEPOSIT", "DIVIDEND", "INTEREST"):
@@ -10549,8 +10594,6 @@ def _delete_one_movement(conn, uid: int, mid: str):
             "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
             (tx["batch_id"], tx["raw_row_id"]),
         )
-        # Borrar la fila fuente → _recalc la excluye del recompute de deposits/pnl.
-        conn.execute("DELETE FROM import_normalized_tx WHERE id=?", (tx_id,))
         since = (tx["date"] or "")[:10] or None
         return since, {broker}
 
@@ -11584,6 +11627,15 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
         raise HTTPException(400,
             "Los bonos no se borran de a una compra. Usá 'Borrar todo el historial' "
             "del activo (agrupando por activo) para sacarlo entero.")
+    # Lote SEMILLA de la foto de tenencia: lo fondea un depósito sintético COMPARTIDO
+    # que este borrado no sabe reversar → devolvía cash inventado. La guarda existía en
+    # el borrado por-activo pero faltaba acá (misma puerta, distinto camino).
+    if _is_synthetic_seed_row(src):
+        raise HTTPException(400, _SEED_BLOCK_MSG)
+    if src["transfer_out"]:
+        raise HTTPException(400,
+            "Esta fila viene de un cierre de foto de tenencia, no de una compra real, "
+            "así que no se puede borrar por separado.")
     # Compra PARCIALMENTE vendida: si la posición tiene menos cantidad que la compra
     # original, una venta la consumió → borrar el BUY dejaría esa venta huérfana
     # (costo fabricado). Bloqueamos: primero borrá la venta (Solo P/L) o el activo entero.
@@ -11786,11 +11838,8 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     # Activos abiertos desde una FOTO de tenencia / estado inicial: su lote seed lo
     # fondea un DEPÓSITO sintético COMPARTIDO (no por activo) que este borrado no
     # sabe reversar proporcionalmente → dejaría el cash inflado. Bloqueamos.
-    if any(((r["notes"] or "").startswith(_import_tenencia.TENENCIA_APERTURA_NOTE_PREFIX)
-            or (r["notes"] or "").startswith("Estado inicial")) for r in rows):
-        raise HTTPException(400,
-            "Este activo se abrió desde una foto de tenencia / estado inicial; su "
-            "borrado entero llega en la próxima versión.")
+    if any(_is_synthetic_seed_row(r) for r in rows):
+        raise HTTPException(400, _SEED_BLOCK_MSG)
     for pr in pairs:
         if not _import_rebuild._is_safe_to_rebuild(conn, uid, pr, asset):
             raise HTTPException(409,

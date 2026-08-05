@@ -366,6 +366,46 @@ class DeleteCascade(unittest.TestCase):
             (self.uid,)).fetchone()["c"], 1)                        # el dividendo volvió
         self._probe()
 
+    # ── Regresión: borrar un cash-flow NO puede revivir en el próximo import ────
+    def test_deleted_cashflow_is_tombstoned_not_deleted(self):
+        """Antes se hacía DELETE físico de la fila fuente: como el dedup del import
+        usa los fingerprints que SIGUEN en la tabla, el próximo export solapado la
+        re-importaba y volvía a sumar la plata. Ahora queda tombstoneada."""
+        self._import(_csv("2024-03-10,DEPOSITO,IBKR,,,,10000,,,0,USD,"))
+        self.assertAlmostEqual(self._cash(), 10000.0, places=2)
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='DEPOSIT'").fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)
+        # La fila SIGUE existiendo (tombstone) → su fingerprint frena el re-import.
+        row = self.conn.execute(
+            "SELECT excluded_at FROM import_normalized_tx WHERE id=?", (tx["id"],)).fetchone()
+        self.assertIsNotNone(row, "la fila se borró físicamente → va a resucitar")
+        self.assertIsNotNone(row["excluded_at"], "la fila no quedó tombstoneada")
+        # Y el capital aportado quedó en 0 (el filtro de excluded_at en flows).
+        self.assertAlmostEqual(float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0),
+            0.0, places=2, msg="el depósito borrado sigue contando en capital aportado")
+
+    def test_seed_rows_are_blocked_everywhere(self):
+        """La compra semilla y el depósito sintético de la foto de tenencia no se
+        pueden borrar sueltos: los fondea un depósito COMPARTIDO. La guarda estaba
+        solo en el borrado por-activo."""
+        self._import(_csv("2024-01-02,DEPOSITO,IBKR,,,,900000,,,0,USD,"
+                          "Tenencia — aporte inicial sintético (Rendi)"))
+        self._import(_csv("2024-01-02,COMPRA,IBKR,GGAL,100,5000,500000,,,0,USD,"
+                          "Tenencia — aporte inicial sintético (Rendi)"))
+        dep = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='DEPOSIT'").fetchone()
+        buy = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='BUY'").fetchone()
+        for tid, what in ((dep["id"], "depósito sintético"), (buy["id"], "compra semilla")):
+            with self.assertRaises(main.HTTPException, msg=f"{what} no bloqueado") as cm:
+                main._route_tx_delete(self.conn, self.uid, f"tx-{tid}")
+            self.assertEqual(cm.exception.status_code, 400, f"{what}: status inesperado")
+
     # ── Regresión CRÍTICA: borrar NO puede destruir la curva real a mercado ─────
     def test_delete_preserves_real_snapshots(self):
         """Antes: la cascada purgaba TODOS los snapshots desde la fecha del ítem
