@@ -243,53 +243,18 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
     que no linkea las semillas)."""
     lots: List[Dict[str, Any]] = []   # lotes abiertos, FIFO desde el frente
     operations: List[Dict[str, Any]] = []
-    # Monedas en las que el activo TUVO una compra real (no seeds) en este replay.
-    # Distingue una tenencia GENUINA same-currency ya vendida (no spill) de un
-    # holding cross-currency-only vendido en otra moneda (sí spill, dólar-MEP).
-    seen_buy_ccy: set = set()
-
-    # ── Pass 1: presupuesto de spill cross-currency AGREGADO ───────────────────
-    # El neteo dólar-MEP cierra una compra en una moneda con una venta en la OTRA.
-    # La decisión per-venta de abajo (never_held_same / full_net) cubre el conducto
-    # puro y el neteo total de UNA venta, pero NO el caso en que la pata cruzada se
-    # consume GRADUALMENTE en muchas ventas chicas (Balanz: un ticker con decenas de
-    # operaciones — la pata USD se cierra de a poco y ninguna venta sola la cancela
-    # entera, así que full_net nunca dispara y queda fantasma). Para eso precomputamos
-    # sobre TODO el timeline del par cuánto de la pata opuesta puede consumir cada
-    # moneda de venta, y lo usamos como capacidad EXTRA de spill (tomamos el MÁXIMO
-    # con la per-venta → NUNCA quitamos capacidad, solo sumamos el caso gradual; así
-    # no se regresiona el neteo bidireccional/conducto que ya andaba).
-    def _ccy_of(ev):
-        c = _norm_cur(ev["currency"]) or broker_currency
-        return c if c in ("ARS", "USD") else broker_currency
-    _net_buy = {"ARS": 0.0, "USD": 0.0}
-    _net_sell = {"ARS": 0.0, "USD": 0.0}
-    for ev in events:
-        c = _ccy_of(ev)
-        if c not in _net_buy:
-            continue
-        if ev["operation_type"] == OP_BUY:
-            _net_buy[c] += _num(ev["quantity"])
-        elif ev["operation_type"] == OP_SELL:
-            _net_sell[c] += _num(ev["quantity"])
-    _oversell = {c: max(0.0, _net_sell[c] - _net_buy[c]) for c in _net_buy}
-    _genuine_leg = {c: max(0.0, _net_buy[c] - _net_sell[c]) for c in _net_buy}
-    # Presupuesto por moneda de venta C (otra moneda O). ASIMÉTRICO por la mecánica
-    # dólar-MEP: vender USD de más baja PROPORCIONALMENTE el nominal ARS (spill
-    # parcial — vendiste en dólares lo que compraste en pesos); vender ARS de más solo
-    # cancela la pata USD si la consume ENTERA (binario), para preservar una tenencia
-    # USD genuina (5 ARS + 5 USD, venta 7 ARS → no toca los 5 USD).
-    budget_left = {"ARS": 0.0, "USD": 0.0}
-    for _C in ("ARS", "USD"):
-        _O = "USD" if _C == "ARS" else "ARS"
-        if _oversell[_C] <= _EPS:
-            budget_left[_C] = 0.0
-        elif _net_buy[_C] <= _EPS or _C == "USD":
-            # conducto puro (cualquier dirección) o venta USD oversold → spill PARCIAL
-            budget_left[_C] = min(_oversell[_C], _genuine_leg[_O])
-        else:
-            # venta ARS oversold con compras ARS genuinas → BINARIO (full-net o nada)
-            budget_left[_C] = _genuine_leg[_O] if _oversell[_C] >= _genuine_leg[_O] - _EPS else 0.0
+    # NO HAY PASS 1. El replay es estrictamente CAUSAL: cada venta decide con los
+    # lotes que existen en ESE momento, sin mirar el futuro.
+    #
+    # Hasta 2026-08-04 acá se precomputaba un "presupuesto de spill" sobre el neto
+    # de TODO el timeline —futuro incluido— y ese era el único lookahead del
+    # motor. Lo sacó el pool único (ver el bloque de la venta, más abajo). Era
+    # además el que hacía que agregar filas VIEJAS reescribiera ventas ya cerradas.
+    #
+    # Si volvés a necesitar una decisión global, tené presente que rompe esta
+    # propiedad: `_full_events` replaya SIEMPRE todo el historial confirmado del
+    # par, así que cualquier agregado sobre `events` incluye operaciones que en el
+    # momento de la venta todavía no habían pasado.
 
     for ev in events:
         op = ev["operation_type"]
@@ -304,7 +269,6 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                                               ev.get("asset_type")))
             invested = _num(ev["gross_amount"]) if ev["gross_amount"] is not None else unit * qty
             fees = _num(ev["fees"])
-            seen_buy_ccy.add(_norm_cur(ev["currency"]) or broker_currency)
             lots.append({
                 "qty": qty,
                 "invested": invested,
@@ -371,21 +335,6 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             lots.append(seed)
             return seed
 
-        # ¿Consumir la OTRA moneda del par (spill cross-currency = neteo dólar-MEP)?
-        # Sí en dos casos:
-        #   (a) el activo NUNCA tuvo una compra en la moneda de la venta → la venta es
-        #       ENTERAMENTE cross-currency (vendió en pesos lo que compró en dólares;
-        #       ej. BMA comprado 10 USD, vendido 4 ARS → consume 4 de la pata USD).
-        #       OJO: "nunca tuvo" (seen_buy_ccy), NO "no tiene AHORA" — si tuvo lotes
-        #       same-currency y se vendieron (split-sell), NO es conduit (audit).
-        #   (b) el oversell en la moneda de la venta consume ENTERA la pata de la otra
-        #       moneda — la pata USD compensa EXACTO el oversell ARS → tenencia TOTAL
-        #       del activo ≈ 0 (conversión: comprado USD en el sibling, vendido de más
-        #       en ARS en el padre; ej. AAPL 11 ARS + 2 USD, venta 13 ARS).
-        # Si HAY lotes same-currency y el oversell es MENOR que la pata cross-currency,
-        # esa pata es GENUINA (no un conduit) → NO la tocamos; el faltante se cubre con
-        # un seed same-currency. Así no destruimos una tenencia dual-currency real
-        # (audit 2026-06-26: 5 ARS + 5 USD, venta 7 ARS NO debe comerse la pata USD).
         # ── POOL ÚNICO (2026-08-04) ───────────────────────────────────────────
         # Un CEDEAR/bono/acción es UN activo: si comprás 100 nominales, tenés 100,
         # y podés venderlos en la moneda que quieras. La moneda determina el COSTO
@@ -404,10 +353,26 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
         #
         # Ahora no hay presupuesto: si hay lotes reales disponibles, se consumen.
         # Se fabrica un lote SÓLO cuando no hay nada, que es el caso legítimo de
-        # history-as-truth (el usuario tenía los títulos de antes del export).
+        # history-as-truth (el usuario tenía los títulos de antes del export) y lo
+        # cubre test_sell_without_history_seeds.
         #
-        # Se conserva el orden "misma moneda primero": es la elección de QUÉ lote
-        # consumir y mantenerla acota el cambio de costo al mínimo necesario.
+        # LO QUE ESTE MODELO REEMPLAZA (audit 2026-06-26): antes, si había lotes
+        # same-currency y el oversell era MENOR que la pata de la otra moneda, esa
+        # pata se consideraba GENUINA y no se tocaba — el faltante se cubría con un
+        # lote fabricado (5 ARS + 5 USD, venta 7 ARS dejaba los 5 USD intactos y
+        # quedaban 5). Protegía a quien importó un período parcial, pero es
+        # exactamente lo que dejaba los 650 abiertos de Nubank. Hoy quedan 3.
+        # Los dos criterios son incompatibles; la elección es de producto.
+        #
+        # LIMITACIÓN CONOCIDA — el orden dentro del día decide qué lote paga.
+        # `_same` va antes que `_other` sin mirar `entry_date`, así que esto NO es
+        # FIFO puro sobre el pool: si el lote de la moneda de la venta es el más
+        # nuevo, se consume primero. Y como `date` no tiene hora (schema.py:205),
+        # las operaciones del mismo día empatan y el desempate lo termina fijando
+        # `n.id ASC` = el orden en que llegó la fila. Es PREEXISTENTE (se reproduce
+        # con una sola moneda: test_orden_mismodia.py, ±400 USD) pero el pool único
+        # AMPLÍA la superficie, porque ahora el empate también decide qué moneda
+        # paga, y con ella un costo convertido por FX. Ver test_orden_filas_pool.py.
         spill_qty = min(max(0.0, oversell_same), _other_total)
 
         # Same-currency primero; la pata cruzada se capa a spill_qty DENTRO del loop.
@@ -544,7 +509,6 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
 
         # El spill cross-currency consumido descuenta del presupuesto agregado, así
         # las ventas posteriores no vuelven a cruzar de más.
-        budget_left[currency] = max(0.0, budget_left.get(currency, 0.0) - spill_taken)
         # limpiar lotes agotados
         lots = [l for l in lots if l["qty"] > _EPS]
 
