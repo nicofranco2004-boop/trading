@@ -467,6 +467,234 @@ class DeleteCascade(unittest.TestCase):
             mt._bond_genuine_net(self.conn, self.uid, pair, "AL30"), 0.0, places=2,
             msg="la base de amortización sigue contando el bono borrado → se duplica al re-importar")
 
+    # ── Paso 1 de "borrar lo cargado a mano": cada camino deja su rastro ───────
+    def test_manual_paths_stamp_undo_meta(self):
+        """Una venta hecha con el botón 'Vender' y una tipeada en el formulario son
+        IDÉNTICAS en la base, pero la primera movió cash y lotes. Sin estampar de dónde
+        salió cada fila, borrarlas es adivinar. Cada camino guarda lo suyo."""
+        import json as _j
+        # (a) Trade tipeado: no toca cash ni lotes → basta con la marca.
+        op = main.create_operation(main.OperationIn(
+            date="2024-05-02", broker=self.BROKER, asset="AAPL", op_type="Venta",
+            pnl_usd=25.0), uid=self.uid)
+        meta = _j.loads(self.conn.execute(
+            "SELECT undo_meta_json FROM operations WHERE id=?", (op["id"],)
+        ).fetchone()["undo_meta_json"])
+        self.assertEqual(meta["src"], "manual_form")
+
+        # (b) Posición manual: guarda lo que debitó y el autodepósito que disparó
+        #     (sin saldo previo, el alta AUTO-DEPOSITA → hay que poder revertirlo).
+        pos = main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        pmeta = _j.loads(self.conn.execute(
+            "SELECT undo_meta_json FROM positions WHERE id=?", (pos["id"],)
+        ).fetchone()["undo_meta_json"])
+        self.assertEqual(pmeta["src"], "manual_position")
+        self.assertAlmostEqual(pmeta["cost"], 200.0, places=2)
+        self.assertIsNotNone(pmeta["autodep"], "no se guardó el autodepósito → capital fantasma al borrar")
+        self.assertAlmostEqual(pmeta["autodep"]["native"], 200.0, places=2)
+        self.assertEqual(pmeta["autodep"]["ym"], "2024-05")
+
+        # (c) Venta FIFO: guarda una FOTO del lote que consumió — sin eso la
+        #     tenencia es irrecuperable.
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        smeta = _j.loads(self.conn.execute(
+            "SELECT undo_meta_json FROM operations WHERE asset='MELI' AND op_type='Venta' "
+            "ORDER BY id DESC LIMIT 1").fetchone()["undo_meta_json"])
+        self.assertEqual(smeta["src"], "fifo_sell")
+        self.assertAlmostEqual(smeta["cash"], 300.0, places=2)       # 2 × 150
+        self.assertAlmostEqual(smeta["lot"]["quantity"], 2.0, places=6)
+        self.assertAlmostEqual(smeta["lot"]["invested"], 200.0, places=2)
+        self.assertAlmostEqual(smeta["lot"]["consumed"], 2.0, places=6)
+
+    # ── Paso 2: borrar de verdad lo cargado a mano ────────────────────────────
+    def test_delete_manual_form_operation(self):
+        """Trade tipeado: no movió cash ni lotes → sale del P&L y listo."""
+        op = main.create_operation(main.OperationIn(
+            date="2024-05-02", broker=self.BROKER, asset="AAPL", op_type="Venta",
+            pnl_usd=25.0), uid=self.uid)
+        self.assertAlmostEqual(self._global_pnl(), 25.0, places=2)
+        with self.conn:
+            main._delete_operation_cascade(self.conn, self.uid, op["id"])
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+        self.assertEqual(self._ops_count("AAPL"), 0)
+        self._probe()
+
+    def test_delete_manual_position_reverses_autodeposit(self):
+        """Posición manual sin saldo previo: el alta AUTO-DEPOSITA. Borrarla tiene que
+        dejar el cash Y el capital aportado como estaban — devolver el costo entero
+        deja las dos cosas infladas."""
+        pos = main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)        # autodep 200 − costo 200
+        aportado = lambda: float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0)
+        self.assertAlmostEqual(aportado(), 200.0, places=2)
+        main.delete_position(pos["id"], uid=self.uid)
+        self.assertAlmostEqual(self._open_qty("MELI"), 0.0, places=6)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2,
+                               msg="quedó cash fantasma (se devolvió el costo entero)")
+        self.assertAlmostEqual(aportado(), 0.0, places=2,
+                               msg="quedó capital aportado fantasma del autodepósito")
+
+    def test_delete_manual_fifo_sell_restores_lot(self):
+        """Venta con el botón 'Vender': borrarla tiene que RESTAURAR el lote que
+        consumió y descontar el cash que acreditó."""
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        self.assertAlmostEqual(self._open_qty("MELI"), 0.0, places=6)   # lote consumido
+        self.assertAlmostEqual(self._cash(), 300.0, places=2)           # 2 × 150
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE asset='MELI' AND op_type='Venta' "
+            "ORDER BY id DESC LIMIT 1").fetchone()["id"]
+        with self.conn:
+            main._delete_operation_cascade(self.conn, self.uid, oid)
+        self.assertAlmostEqual(self._open_qty("MELI"), 2.0, places=6,
+                               msg="el lote consumido NO se restauró")
+        self.assertAlmostEqual(self._cash(), 0.0, places=2,
+                               msg="no se descontó el cash que la venta acreditó")
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+        self._probe()
+
+    # ── Deshacer el borrado manual (round-trip completo) ──────────────────────
+    def _aportado(self):
+        return float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0)
+
+    def test_undo_manual_form_operation(self):
+        op = main.create_operation(main.OperationIn(
+            date="2024-05-02", broker=self.BROKER, asset="AAPL", op_type="Venta",
+            pnl_usd=25.0), uid=self.uid)
+        self.conn.commit()
+        res = main.delete_operation(op["id"], uid=self.uid)
+        self.assertTrue(res.get("undo_token"), "el borrado manual no ofrece deshacer")
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+        main.undo_delete_operation(res["undo_token"], uid=self.uid)
+        self.assertAlmostEqual(self._global_pnl(), 25.0, places=2)
+        self.assertEqual(self._ops_count("AAPL"), 1)
+        self._probe()
+
+    def test_undo_manual_position_restores_cash_and_aportado(self):
+        pos = main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        self.conn.commit()
+        cash0, ap0 = self._cash(), self._aportado()
+        res = main.delete_position(pos["id"], uid=self.uid)
+        self.assertTrue(res.get("undo_token"))
+        self.assertAlmostEqual(self._aportado(), 0.0, places=2)
+        main.undo_delete_operation(res["undo_token"], uid=self.uid)
+        self.assertAlmostEqual(self._open_qty("MELI"), 2.0, places=6, msg="la posición no volvió")
+        self.assertAlmostEqual(self._cash(), cash0, places=2, msg="el cash no volvió a como estaba")
+        self.assertAlmostEqual(self._aportado(), ap0, places=2,
+                               msg="el capital aportado no volvió (autodepósito)")
+
+    def test_undo_manual_fifo_sell_reconsumes_lot(self):
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        self.conn.commit()
+        qty0, cash0, pnl0 = self._open_qty("MELI"), self._cash(), self._global_pnl()
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE asset='MELI' AND op_type='Venta' "
+            "ORDER BY id DESC LIMIT 1").fetchone()["id"]
+        res = main.delete_operation(oid, uid=self.uid)
+        self.assertAlmostEqual(self._open_qty("MELI"), 2.0, places=6)   # lote restaurado
+        main.undo_delete_operation(res["undo_token"], uid=self.uid)
+        # Deshacer = la venta vuelve: el lote se re-consume y el cash vuelve a entrar.
+        self.assertAlmostEqual(self._open_qty("MELI"), qty0, places=6,
+                               msg="el lote no se volvió a consumir")
+        self.assertAlmostEqual(self._cash(), cash0, places=2)
+        self.assertAlmostEqual(self._global_pnl(), pnl0, places=2)
+        self._probe()
+
+    def test_undo_manual_is_idempotent(self):
+        op = main.create_operation(main.OperationIn(
+            date="2024-05-02", broker=self.BROKER, asset="AAPL", op_type="Venta",
+            pnl_usd=25.0), uid=self.uid)
+        self.conn.commit()
+        res = main.delete_operation(op["id"], uid=self.uid)
+        main.undo_delete_operation(res["undo_token"], uid=self.uid)
+        with self.assertRaises(main.HTTPException) as cm:   # doble-click no duplica
+            main.undo_delete_operation(res["undo_token"], uid=self.uid)
+        self.assertIn(cm.exception.status_code, (404, 409))
+        self.assertEqual(self._ops_count("AAPL"), 1)
+        self.assertAlmostEqual(self._global_pnl(), 25.0, places=2)
+
+    def test_delete_manual_position_blocked_if_lot_changed(self):
+        """Hallazgo del review (reproducido): el lote es MUTABLE — una venta parcial lo
+        achica pero la foto del alta NO se actualiza. Devolver el `cost` de la foto
+        fabricaba cash (alta 400 → vender 2 → borrar el remanente devolvía 400 en vez
+        de 200). Se bloquea, igual que una compra importada parcialmente vendida."""
+        main._adjust_broker_cash(self.conn, self.uid, self.BROKER, 1000.0)
+        self.conn.commit()
+        pos = main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=4, buy_price=100,
+            invested=400, entry_date="2024-05-03"), uid=self.uid)
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        cash_antes = self._cash()
+        with self.assertRaises(main.HTTPException) as cm:
+            main.delete_position(pos["id"], uid=self.uid)
+        self.assertEqual(cm.exception.status_code, 409)
+        self.assertAlmostEqual(self._cash(), cash_antes, places=2,
+                               msg="se fabricó cash con el costo congelado")
+
+    def test_undo_manual_blocked_if_world_changed(self):
+        """El undo manual re-aplica deltas guardados contra el mundo de HOY. Si el lote
+        cambió, esos deltas dejan de ser un reverso (tenencia negativa). Se frena."""
+        main._adjust_broker_cash(self.conn, self.uid, self.BROKER, 1000.0)
+        self.conn.commit()
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=10, buy_price=50,
+            invested=500, entry_date="2024-05-03"), uid=self.uid)
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=4, exit_price=80,
+            date="2024-06-01"), uid=self.uid)
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE op_type='Venta' ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        self.conn.commit()
+        res = main.delete_operation(oid, uid=self.uid)          # lote vuelve a 10
+        # Entre el borrado y el deshacer, el usuario vende casi todo.
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=9, exit_price=90,
+            date="2024-07-01"), uid=self.uid)
+        self.conn.commit()
+        qty_antes = self._open_qty("MELI")
+        with self.assertRaises(main.HTTPException) as cm:
+            main.undo_delete_operation(res["undo_token"], uid=self.uid)
+        self.assertEqual(cm.exception.status_code, 409)
+        self.assertAlmostEqual(self._open_qty("MELI"), qty_antes, places=6,
+                               msg="el undo dejó la tenencia negativa")
+        self.assertGreaterEqual(self._open_qty("MELI"), 0.0)
+
+    def test_delete_manual_legacy_row_is_blocked(self):
+        """Fila vieja (sin la foto de reverso): su reverso NO es derivable → se
+        bloquea con mensaje claro en vez de arriesgar saldo/tenencia."""
+        oid = self.conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd)
+               VALUES (?,?,?,?,?,?)""",
+            (self.uid, "2023-01-05", self.BROKER, "AAPL", "Venta", 10)).lastrowid
+        self.conn.commit()
+        with self.assertRaises(main.HTTPException) as cm:
+            main._delete_operation_cascade(self.conn, self.uid, oid)
+        self.assertEqual(cm.exception.status_code, 400)
+
     # ── Regresión: borrar un cash-flow NO puede revivir en el próximo import ────
     def test_deleted_cashflow_is_tombstoned_not_deleted(self):
         """Antes se hacía DELETE físico de la fila fuente: como el dedup del import

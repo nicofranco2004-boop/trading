@@ -34,15 +34,21 @@ def _today_art() -> str:
 
 def get_config(conn, uid: int) -> dict:
     row = conn.execute(
-        "SELECT up_pct, down_pct, channel, active FROM advisor_alerts WHERE advisor_uid=?",
-        (uid,)).fetchone()
+        "SELECT a.up_pct, a.down_pct, a.channel, a.active, "
+        "       CASE WHEN g.id IS NULL THEN NULL ELSE a.group_id END group_id "
+        "FROM advisor_alerts a LEFT JOIN advisor_groups g "
+        "  ON g.id = a.group_id AND g.advisor_uid = a.advisor_uid "
+        "WHERE a.advisor_uid=?", (uid,)).fetchone()
     if not row:
-        return {"up_pct": None, "down_pct": None, "channel": "both", "active": False}
+        return {"up_pct": None, "down_pct": None, "channel": "both",
+                "active": False, "group_id": None}
     return {"up_pct": row["up_pct"], "down_pct": row["down_pct"],
-            "channel": row["channel"] or "both", "active": bool(row["active"])}
+            "channel": row["channel"] or "both", "active": bool(row["active"]),
+            "group_id": row["group_id"]}
 
 
-def set_config(conn, uid: int, up_pct=None, down_pct=None, channel=None, active=None):
+def set_config(conn, uid: int, up_pct=None, down_pct=None, channel=None, active=None,
+               group_id="__keep__"):
     conn.execute("INSERT OR IGNORE INTO advisor_alerts (advisor_uid) VALUES (?)", (uid,))
     sets, params = [], []
     if up_pct is not None:
@@ -51,6 +57,15 @@ def set_config(conn, uid: int, up_pct=None, down_pct=None, channel=None, active=
         sets.append("down_pct=?"); params.append(down_pct or None)
     if channel is not None:
         sets.append("channel=?"); params.append(channel)
+    if group_id != "__keep__":
+        # None = todo el libro. Re-armamos SOLO si el alcance cambió de verdad:
+        # el front manda el campo en cada guardado (tocar el canal no debería
+        # resetear el estado de nadie).
+        prev = conn.execute("SELECT group_id FROM advisor_alerts WHERE advisor_uid=?",
+                            (uid,)).fetchone()
+        sets.append("group_id=?"); params.append(group_id)
+        if (prev["group_id"] if prev else None) != group_id:
+            conn.execute("UPDATE advisor_alert_state SET armed=1 WHERE advisor_uid=?", (uid,))
     if active is not None:
         sets.append("active=?"); params.append(1 if active else 0)
         # Prender de nuevo re-arma a todos: el movimiento que ya pasó no
@@ -149,7 +164,8 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
     # para siempre": sin él, un asesor con el plan vencido seguía recibiendo
     # los nombres y los movimientos de sus ex-clientes sin poder apagarlo
     # (la UI ya no le muestra el switch). Mismo criterio que advisor_brief.
-    q = ("SELECT a.advisor_uid, a.up_pct, a.down_pct, a.channel FROM advisor_alerts a "
+    q = ("SELECT a.advisor_uid, a.up_pct, a.down_pct, a.channel, a.group_id "
+         "FROM advisor_alerts a "
          "JOIN users u ON u.id = a.advisor_uid "
          "WHERE a.active=1 AND (a.up_pct IS NOT NULL OR a.down_pct IS NOT NULL) "
          "AND u.tier='advisor' AND COALESCE(u.managed_by,0)=0")
@@ -182,10 +198,42 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 continue
             labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
                       for r in links}
+            # Alcance: todo el libro, o sólo los clientes del grupo elegido.
+            # El grupo es una REGLA, así que se re-evalúa en cada corrida: si
+            # hoy ya no cumple, hoy no genera aviso. Grupo borrado → sin avisos
+            # (no caemos a "todo el libro", que sería avisar de más en silencio).
+            gid = cfg["group_id"] if "group_id" in cfg.keys() else None
+            if gid:
+                import advisor_groups as ag
+                g = ag.get_group(conn, uid, gid)
+                if not g:
+                    continue
+                members = {c["client_uid"] for c in ag.evaluate(conn, uid, g["rules"], g["excluded"])}
+                # Al que queda AFUERA hay que re-armarlo igual. Si no, uno que
+                # ya disparó y después dejó de cumplir la regla se quedaba con
+                # armed=0 para siempre: el día que volvía al grupo —justo
+                # cuando el asesor lo quiere mirar— no avisaba nunca más.
+                # (Al que ya disparó HOY no: sigue valiendo 1 aviso por día.)
+                _out = [k for k in labels if k not in members]
+                if _out:
+                    _oph = ",".join("?" * len(_out))
+                    conn.execute(
+                        "UPDATE advisor_alert_state SET armed=1 WHERE advisor_uid=? "
+                        "AND COALESCE(last_fired_date,'') <> ? "
+                        f"AND client_uid IN ({_oph})",
+                        (uid, today, *_out))
+                labels = {k: v for k, v in labels.items() if k in members}
+                if not labels:
+                    continue
             ids = list(labels)
 
             import advisor_brief
             live = advisor_brief.live_book_values(conn, ids, price_cache)
+            # live_book_values PERSISTE los precios que trajo → deja abierta una
+            # transacción de escritura. Se cierra ACÁ: lo que sigue hace red
+            # (push + email) y con el lock tomado toda la app come
+            # 'database is locked' cada 10 minutos.
+            conn.commit()
             if not live:
                 continue
             ph = ",".join("?" * len(ids))
@@ -228,16 +276,25 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
 
                 verbo = "subió" if side == "up" else "cayó"
                 msg = f"La cartera de {labels.get(cid)} {verbo} {abs(pct):.1f}% hoy"
-                p_ok, e_ok = _deliver(conn, uid, cfg["channel"] or "both",
-                                      "Rendi · Movimiento en tu libro", msg)
-                conn.execute(
+                # Sellar el estado y el evento ANTES de mandar: el envío son dos
+                # llamadas HTTP y no puede correr con el write-lock tomado. Si el
+                # push/email falla, el aviso igual queda registrado UNA vez —
+                # mejor eso que mandarlo dos veces o trabar la app entera.
+                _set_state(conn, uid, cid, 0, today)
+                _ev = conn.execute(
                     """INSERT INTO advisor_alert_events
                        (advisor_uid, client_uid, kind, message, pct, fired_at,
                         delivered_push, delivered_email)
-                       VALUES (?,?,'client_move',?,?,?,?,?)""",
-                    (uid, cid, msg, round(pct, 2), datetime.utcnow().isoformat(),
-                     1 if p_ok else 0, 1 if e_ok else 0))
-                _set_state(conn, uid, cid, 0, today)
+                       VALUES (?,?,'client_move',?,?,?,0,0)""",
+                    (uid, cid, msg, round(pct, 2), datetime.utcnow().isoformat()))
+                _evid = _ev.lastrowid
+                conn.commit()
+                p_ok, e_ok = _deliver(conn, uid, cfg["channel"] or "both",
+                                      "Rendi · Movimiento en tu libro", msg)
+                conn.execute("UPDATE advisor_alert_events SET delivered_push=?, "
+                             "delivered_email=? WHERE id=?",
+                             (1 if p_ok else 0, 1 if e_ok else 0, _evid))
+                conn.commit()
                 fired += 1
         except Exception as ex:
             log.error("advisor alerts uid=%s falló: %s", uid, ex)
