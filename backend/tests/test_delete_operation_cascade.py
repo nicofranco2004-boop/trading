@@ -366,6 +366,26 @@ class DeleteCascade(unittest.TestCase):
             (self.uid,)).fetchone()["c"], 1)                        # el dividendo volvió
         self._probe()
 
+    # ── El endpoint DEBE devolver el undo_token (el botón "Deshacer" depende) ──
+    def test_delete_movement_returns_undo_token(self):
+        """`delete_movement` descartaba el token de las cascadas y devolvía solo
+        {'ok': True} → el frontend no tenía con qué deshacer y el confirm prometía
+        algo imposible. Ahora lo propaga, y el token sirve de verdad."""
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='SELL'").fetchone()
+        self.conn.commit()
+        res = main.delete_movement(f"tx-{tx['id']}", uid=self.uid)
+        self.assertTrue(res.get("ok"))
+        self.assertTrue(res.get("undo_token"), "sin undo_token no hay cómo deshacer")
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)   # venta borrada
+        # Y el token funciona contra el endpoint real de undo: la venta vuelve.
+        main.undo_delete_operation(res["undo_token"], uid=self.uid)
+        self.assertAlmostEqual(self._open_qty(), 6.0, places=6)
+        self.assertEqual(len(self._ventas()), 1)
+        self._probe()
+
     # ── Regresión: la base de amortización no puede contar filas borradas ──────
     def test_bond_genuine_net_excludes_deleted(self):
         """Antes `_bond_genuine_net` no filtraba `excluded_at`: tras borrar el

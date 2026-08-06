@@ -10721,16 +10721,14 @@ def _route_tx_delete(conn, uid: int, mid: str):
             "SELECT operation_id FROM import_op_links WHERE batch_id=? AND raw_row_id=? "
             "AND operation_id IS NOT NULL LIMIT 1", (tx["batch_id"], tx["raw_row_id"])).fetchone()
         if link:
-            _delete_operation_cascade(conn, uid, link["operation_id"])
-            return
+            return _delete_operation_cascade(conn, uid, link["operation_id"])
         raise HTTPException(404, "La venta ya no existe")
     if op == "BUY":
         link = conn.execute(
             "SELECT position_id FROM import_op_links WHERE batch_id=? AND raw_row_id=? "
             "AND position_id IS NOT NULL LIMIT 1", (tx["batch_id"], tx["raw_row_id"])).fetchone()
         if link:
-            _delete_position_cascade(conn, uid, link["position_id"])
-            return
+            return _delete_position_cascade(conn, uid, link["position_id"])
         # La compra se vendió entera (su lote ya no existe) → borrar la venta primero.
         raise HTTPException(409,
             "Esta compra ya se vendió, así que no se puede borrar sola. Borrá primero "
@@ -10748,6 +10746,10 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
     intereses, comisiones). Compras/ventas → 400 (rebuild FIFO, fase futura). El id
     es el compuesto de /api/movements (tx-/me-/op-/pos-)."""
     mid = (movement_id or "").strip()
+    # El token de deshacer que devuelven las cascadas se propaga al frontend (antes
+    # se tiraba acá, así que el "podés deshacerlo" del confirm era mentira: no había
+    # forma de llegar al endpoint de undo).
+    out: dict = {}
 
     def _do():
         conn = get_db()
@@ -10760,17 +10762,17 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
                         oid = int(mid.split("-")[1])
                     except (IndexError, ValueError):
                         raise HTTPException(400, "id de movimiento inválido")
-                    _delete_operation_cascade(conn, uid, oid)
+                    out.update(_delete_operation_cascade(conn, uid, oid) or {})
                 elif mid.startswith("pos-"):
                     # pos-{n} → lote abierto MANUAL (los importados vienen como tx-).
                     try:
                         pid = int(mid[4:])
                     except ValueError:
                         raise HTTPException(400, "id de movimiento inválido")
-                    _delete_position_cascade(conn, uid, pid)
+                    out.update(_delete_position_cascade(conn, uid, pid) or {})
                 elif mid.startswith("tx-"):
                     # Importado: cash-flow → reverso clásico; compra/venta → cascada FIFO.
-                    _route_tx_delete(conn, uid, mid)
+                    out.update(_route_tx_delete(conn, uid, mid) or {})
                 else:
                     since_date, brokers = _delete_one_movement(conn, uid, mid)
                     _cascade_after_movement_delete(conn, uid, since_date, brokers)
@@ -10779,7 +10781,7 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
 
     _run_with_lock_retry(_do)
     _ai_cache_invalidate(uid)
-    return {"ok": True}
+    return {"ok": True, **({"undo_token": out["undo_token"]} if out.get("undo_token") else {})}
 
 
 @app.get("/api/insights/commissions")
@@ -11548,8 +11550,8 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     if (src["asset_type"] or "").upper() == "BOND":
         raise HTTPException(400,
             "Los bonos no se borran de a una operación (tienen amortizaciones y "
-            "cupones enlazados). Usá 'Borrar todo el historial' del activo (agrupando "
-            "por activo) para sacarlo entero.")
+            "cupones enlazados). Se borran enteros: en Operaciones, agrupá por activo "
+            "y usá el tacho del activo (por ahora, desde la computadora).")
     # Venta SINTÉTICA de reconciliación de foto (transfer_out=1, cierre a costo):
     # borrarla RESTAURARÍA una tenencia que la foto declaró cerrada, divergiendo de
     # lo importado. Bloqueamos (además su gross=0 haría no-op la reversa de cash).
@@ -11581,8 +11583,8 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     if fixed_income:
         raise HTTPException(400,
             "Esta operación es de un activo de renta fija (tiene cupones o "
-            "amortizaciones enlazados). No se borra de a una: usá 'Borrar todo el "
-            "historial' del activo (agrupando por activo) para sacarlo entero.")
+            "amortizaciones enlazados). No se borra de a una: en Operaciones, agrupá "
+            "por activo y usá el tacho del activo (por ahora, desde la computadora).")
 
     since_date = (src["date"] or "")[:10] or None
 
@@ -11675,8 +11677,8 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
         raise HTTPException(400, "Esta fila no es una compra importada.")
     if (src["asset_type"] or "").upper() == "BOND":
         raise HTTPException(400,
-            "Los bonos no se borran de a una compra. Usá 'Borrar todo el historial' "
-            "del activo (agrupando por activo) para sacarlo entero.")
+            "Los bonos no se borran de a una compra. Se borran enteros: en Operaciones, "
+            "agrupá por activo y usá el tacho del activo (por ahora, desde la computadora).")
     # Lote SEMILLA de la foto de tenencia: lo fondea un depósito sintético COMPARTIDO
     # que este borrado no sabe reversar → devolvía cash inventado. La guarda existía en
     # el borrado por-activo pero faltaba acá (misma puerta, distinto camino).
@@ -11710,8 +11712,8 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
     ).fetchone():
         raise HTTPException(400,
             "Este activo tiene cupones, amortizaciones o dividendos enlazados. No se "
-            "borra de a una compra: usá 'Borrar todo el historial' del activo "
-            "(agrupando por activo) para sacarlo entero.")
+            "borra de a una compra: en Operaciones, agrupá por activo y usá el tacho "
+            "del activo (por ahora, desde la computadora).")
 
     since_date = (src["date"] or "")[:10] or None
 

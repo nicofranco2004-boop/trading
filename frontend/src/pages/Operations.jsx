@@ -21,6 +21,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
+import { useToast } from '../components/Toast'
 
 const PAGE_SIZE = 50
 
@@ -64,6 +65,10 @@ function OperationsDesktop() {
 
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
+  const toast = useToast()
+  // Borrados en curso: deshabilita el tacho mientras corre. Sin esto el doble-click
+  // mandaba dos DELETE y el 2do terminaba en un error después de un borrado exitoso.
+  const [busyDel, setBusyDel] = useState({})
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [filterAsset, setFilterAsset] = useState('')
@@ -139,37 +144,67 @@ function OperationsDesktop() {
     load()
   }
 
+  // Ofrece DESHACER de verdad. Cada borrado devuelve un `undo_token`; antes se
+  // tiraba a la basura, así que el "podés deshacerlo" del confirm era mentira.
+  function offerUndo(res, undoBase, msg) {
+    const token = res?.undo_token
+    if (!token) { toast.push(msg, { type: 'success' }); return }
+    toast.push(msg, {
+      type: 'success',
+      duration: 12000,
+      actionLabel: 'Deshacer',
+      onAction: async () => {
+        try {
+          await api.post(`${undoBase}/${token}`)
+          await load()
+          toast.push('Listo, lo restauramos.', { type: 'success' })
+        } catch (ex) {
+          toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
+        }
+      },
+    })
+  }
+
   async function del(id) {
     if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
+    setBusyDel(b => ({ ...b, [`op-${id}`]: true }))
     try {
-      await api.delete(`/operations/${id}`)
+      const res = await api.delete(`/operations/${id}`)
       await load()
+      offerUndo(res, '/operations/undo', 'Operación borrada.')
     } catch (ex) {
       // El backend bloquea con mensaje claro los casos que aún no soporta
       // (manuales, bonos, activos con data manual mezclada).
-      alert(ex?.message || 'No se pudo borrar la operación.')
+      toast.push(ex?.message || 'No se pudo borrar la operación.', { type: 'error', duration: 8000 })
+    } finally {
+      setBusyDel(b => { const n = { ...b }; delete n[`op-${id}`]; return n })
     }
   }
 
-  // Borrar TODO el historial de un activo (compras + ventas, todos los brokers).
-  // Alto blast radius → confirmación explícita que nombra el activo, cuántas
-  // operaciones y en qué brokers, y aclara que recalcula todo.
+  // Borrar TODO el historial de un activo (compras + ventas + renta fija, todos los
+  // brokers). Alto blast radius → confirmación explícita que nombra el activo.
+  // NO promete un número: `g.count` sale del grupo FILTRADO y solo cuenta ventas, así
+  // que mentía. El total real lo devuelve el backend y lo mostramos después.
   async function delGroup(g) {
     const asset = g.key
-    const n = g.count
-    const where = (g.brokers && g.brokers.length) ? g.brokers.join(', ') : 'tu cartera'
     if (!confirm(
       `¿Borrar TODO el historial de ${asset}?\n\n` +
-      `Se borran ${n} ${n === 1 ? 'operación' : 'operaciones'} (compras, ventas y, si es un bono, ` +
-      `sus cupones y amortizaciones) en ${where}. ` +
+      `Se borran TODAS sus operaciones (compras, ventas y, si es un bono, sus cupones ` +
+      `y amortizaciones) en TODOS tus brokers — no solo las que estás viendo ahora. ` +
       `${asset} deja de contar en tu P&L, rendimiento, métricas y la curva de evolución. ` +
-      `Se recalcula todo. Podés deshacerlo.`
+      `Se recalcula todo. Vas a poder deshacerlo.`
     )) return
+    setBusyDel(b => ({ ...b, [`grp-${asset}`]: true }))
     try {
-      await api.delete(`/assets/history?asset=${encodeURIComponent(asset)}`)
+      const res = await api.delete(`/assets/history?asset=${encodeURIComponent(asset)}`)
       await load()
+      const n = res?.count
+      offerUndo(res, '/assets/undo',
+        `${asset} borrado${n ? ` (${n} ${n === 1 ? 'operación' : 'operaciones'})` : ''}.`)
     } catch (ex) {
-      alert(ex?.message || 'No se pudo borrar el activo.')
+      toast.push(ex?.message || 'No se pudo borrar el activo.', { type: 'error', duration: 8000 })
+    } finally {
+      setBusyDel(b => { const n = { ...b }; delete n[`grp-${asset}`]; return n })
     }
   }
 
@@ -496,7 +531,7 @@ function OperationsDesktop() {
               )}
               {/* Modo lista plana ('none') — la tabla de siempre, paginada. */}
               {!grouped && pagedOps.map(op => (
-                <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} />
+                <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} deleting={!!busyDel[`op-${op.id}`]} />
               ))}
               {/* Modo agrupado (por activo / mes) — fila-resumen expandible. */}
               {grouped && groups.map(g => {
@@ -510,9 +545,10 @@ function OperationsDesktop() {
                       onToggle={() => toggleGroup(g.key)}
                       histMoney={histMoney}
                       onDeleteGroup={groupBy === 'asset' ? delGroup : null}
+                      deleting={!!busyDel[`grp-${g.key}`]}
                     />
                     {isOpen && g.rows.map(op => (
-                      <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} indent />
+                      <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} indent deleting={!!busyDel[`op-${op.id}`]} />
                     ))}
                   </Fragment>
                 )
@@ -605,7 +641,7 @@ function FilterPill({ label, value, onChange, options }) {
 // lista plana (modo 'none') como en el detalle de un grupo (modo agrupado),
 // donde va atenuada/indentada con "└" — mismo recurso visual que MovementRow.
 // Mantiene las acciones por-trade (analizar/editar/eliminar) en todos los modos.
-function TradeRow({ op, histMoney, onEdit, onDelete, indent = false }) {
+function TradeRow({ op, histMoney, onEdit, onDelete, indent = false, deleting = false }) {
   const isWin = op.pnl_usd != null && op.pnl_usd > 0
   const isLoss = op.pnl_usd != null && op.pnl_usd < 0
   const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
@@ -649,7 +685,7 @@ function TradeRow({ op, histMoney, onEdit, onDelete, indent = false }) {
           <button onClick={() => onEdit(op)} className="text-ink-3 hover:text-ink-0 transition-colors p-1" title="Editar" aria-label={`Editar operación ${op.asset}`}>
             <Pencil size={13} strokeWidth={1.75} aria-hidden="true" />
           </button>
-          <button onClick={() => onDelete(op.id)} className="text-ink-3 hover:text-rendi-neg transition-colors p-1" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}>
+          <button onClick={() => onDelete(op.id)} disabled={deleting} className="text-ink-3 hover:text-rendi-neg transition-colors p-1 disabled:opacity-40 disabled:pointer-events-none" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}>
             <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>
@@ -673,7 +709,7 @@ function TradeRow({ op, histMoney, onEdit, onDelete, indent = false }) {
 // filas usan el FX de su fecha: un grupo de UN trade mostraba dos números
 // distintos (reporte real: header +$147.007 vs su única fila +$135.444, mismo
 // pnl_usd × dos dólares). El invariante que garantiza esto es `total === Σ filas`.
-function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup }) {
+function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
   const { label, count, brokers } = group
   // Signo, color y flecha salen del MISMO número que se imprime. Derivarlos del
   // USD crudo podía contradecir lo mostrado: un grupo con +100 USD de 2021 (fx 190)
@@ -730,10 +766,11 @@ function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGr
           {onDeleteGroup && (
             <button
               type="button"
+              disabled={deleting}
               onClick={(e) => { e.stopPropagation(); onDeleteGroup(group) }}
               aria-label={`Borrar todo el historial de ${label}`}
               title={`Borrar todo el historial de ${label}`}
-              className="p-1 text-ink-3 hover:text-rendi-neg transition-colors"
+              className="p-1 text-ink-3 hover:text-rendi-neg transition-colors disabled:opacity-40 disabled:pointer-events-none"
             >
               <Trash2 size={14} strokeWidth={1.75} />
             </button>
@@ -971,6 +1008,7 @@ function MovementsView() {
   }
 
   const [deletingId, setDeletingId] = useState(null)
+  const toast = useToast()
 
   async function load() {
     setLoading(true)
@@ -1000,10 +1038,32 @@ function MovementsView() {
     if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
     setDeletingId(m.id)
     try {
-      await api.delete(`/movements/${encodeURIComponent(m.id)}`)
+      const res = await api.delete(`/movements/${encodeURIComponent(m.id)}`)
       await load()
+      // Los trades devuelven token de deshacer (cascada reversible). Los cash-flows
+      // todavía no: ahí solo confirmamos, sin prometer nada que no exista.
+      const token = res?.undo_token
+      if (token) {
+        const base = m.type === 'BUY' || m.type === 'SELL' ? '/operations/undo' : null
+        if (base) {
+          toast.push(`Se borró la ${label}${asset}.`, {
+            type: 'success', duration: 12000, actionLabel: 'Deshacer',
+            onAction: async () => {
+              try {
+                await api.post(`${base}/${token}`)
+                await load()
+                toast.push('Listo, lo restauramos.', { type: 'success' })
+              } catch (ex) {
+                toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
+              }
+            },
+          })
+          return
+        }
+      }
+      toast.push(`Se borró la ${label}${asset}.`, { type: 'success' })
     } catch (ex) {
-      alert(ex?.message || 'No se pudo borrar el movimiento.')
+      toast.push(ex?.message || 'No se pudo borrar el movimiento.', { type: 'error', duration: 8000 })
     } finally {
       setDeletingId(null)
     }
