@@ -8,7 +8,7 @@ import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import AlertsManager from '../components/alerts/AlertsManager'
-import BriefPrefs from '../components/advisor/BriefPrefs'
+import AdvisorAlerts from '../components/advisor/AdvisorAlerts'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAlertsContext } from '../contexts/AlertsContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
@@ -18,6 +18,8 @@ export default function Alertas() {
   const { markSeen } = useAlertsContext()
   const { clientCtx } = useAdvisorContext()
   const [searchParams] = useSearchParams()
+  // A su propio nivel el asesor no tiene cartera: sus alertas son del LIBRO.
+  const atOwnLevel = plan.isAdvisor && !clientCtx
 
   // Al entrar a Alertas, marcar los eventos como vistos → apaga el puntito del
   // sidebar (idempotente: no-op en el backend si no hay nada sin ver).
@@ -32,7 +34,9 @@ export default function Alertas() {
     <div className="page-shell-wide">
       <PageHeader
         title="Alertas"
-        subtitle="Avisos de precio objetivo y variación sobre tus activos."
+        subtitle={atOwnLevel
+          ? 'Lo que te avisamos de tu libro: el brief diario y los movimientos de tus clientes.'
+          : 'Avisos de precio objetivo y variación sobre tus activos.'}
       />
       {clientCtx && (
         <div className="mb-4 text-[12.5px] text-ink-1 bg-data-violet/[0.08] border border-data-violet/30 rounded-md px-3 py-2">
@@ -40,10 +44,7 @@ export default function Alertas() {
           email y tus notificaciones), con el nombre de <span className="font-semibold">{clientCtx.label}</span> adelante.
         </div>
       )}
-      <AlertsManager plan={plan} prefill={prefill} />
-      {plan.isAdvisor && !clientCtx && (
-        <div className="mt-4"><BriefPrefs /></div>
-      )}
+      {atOwnLevel ? <AdvisorAlerts /> : <AlertsManager plan={plan} prefill={prefill} />}
     </div>
   )
 }

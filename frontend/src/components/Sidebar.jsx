@@ -101,7 +101,9 @@ export default function Sidebar() {
   const atOwnLevel = isAdvisor && !clientCtx
   const visibleGroups = atOwnLevel ? [] : GROUPS
   const visibleLeaves = visibleGroups.flatMap(g => g.items)
-  const visibleLoose = atOwnLevel ? [] : LOOSE
+  // El asesor SÍ ve Alertas a su nivel (brief del libro + avisos de sus
+  // clientes); lo que no aplica es Importar (no tiene cartera propia).
+  const visibleLoose = atOwnLevel ? LOOSE.filter(i => i.to === '/alertas') : LOOSE
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
 

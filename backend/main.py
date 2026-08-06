@@ -1226,6 +1226,41 @@ def init_db():
         );
     """)
 
+    # Alertas del LIBRO (asesor): "avisame si la cartera de cualquiera de mis
+    # clientes sube/baja X% en el día". Una config por asesor; el estado del
+    # edge-trigger y el tope de 1 aviso/día son POR CLIENTE. El historial se
+    # purga solo a los N días (default 3) — es un feed, no un archivo.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS advisor_alerts (
+            advisor_uid INTEGER PRIMARY KEY,
+            up_pct REAL,                     -- dispara si la cartera sube ≥ up_pct%
+            down_pct REAL,                   -- dispara si cae ≥ down_pct%
+            channel TEXT NOT NULL DEFAULT 'both',
+            active INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS advisor_alert_state (
+            advisor_uid INTEGER NOT NULL,
+            client_uid INTEGER NOT NULL,
+            armed INTEGER NOT NULL DEFAULT 1,
+            last_fired_date TEXT,
+            PRIMARY KEY (advisor_uid, client_uid)
+        );
+        CREATE TABLE IF NOT EXISTS advisor_alert_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            advisor_uid INTEGER NOT NULL,
+            client_uid INTEGER,
+            kind TEXT,                       -- 'client_move' | 'brief'
+            message TEXT,
+            pct REAL,
+            fired_at TEXT DEFAULT (datetime('now')),
+            delivered_push INTEGER NOT NULL DEFAULT 0,
+            delivered_email INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_adv_alert_ev
+            ON advisor_alert_events(advisor_uid, fired_at DESC);
+    """)
+
     # Brief del libro (2x/día, anclado al mercado): log de envíos para que
     # re-correr el cron no duplique emails + preferencias por asesor.
     conn.executescript("""
@@ -27754,9 +27789,19 @@ def alerts_evaluate(request: Request):
     if got != expected:
         raise HTTPException(401, "Token inválido.")
     import alerts_engine as _ae
+    from datetime import datetime as _dtmod
     conn = get_db()
     try:
         result = _ae.evaluate_alerts(conn)
+        # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
+        # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
+        # de alta ningún cron nuevo.
+        try:
+            import advisor_alerts
+            result["advisor"] = advisor_alerts.evaluate(
+                conn, market_open=_ae._market_open_now(_dtmod.utcnow()))
+        except Exception as _ex:
+            log.error("advisor alerts en el cron: %s", _ex)
         return {"ok": True, **result}
     finally:
         conn.close()
@@ -27811,6 +27856,45 @@ def snapshots_run_cron(request: Request):
         _snapshot_cron_running = True
     threading.Thread(target=_run_daily_snapshot_bg, daemon=True).start()
     return {"ok": True, "status": "started"}
+
+
+# ─── Alertas del libro del asesor (movimiento de la cartera de un cliente) ───
+
+class AdvisorAlertIn(BaseModel):
+    up_pct: Optional[float] = Field(None, ge=0, le=100000)
+    down_pct: Optional[float] = Field(None, ge=0, le=100000)
+    channel: Optional[str] = Field(None, max_length=8)
+    active: Optional[bool] = None
+
+
+@app.get("/api/advisor/alerts")
+def advisor_alerts_get(uid: int = Depends(get_current_user)):
+    """Config de la alerta de movimiento + historial (se purga a los 3 días)."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_alerts
+        return {"config": advisor_alerts.get_config(conn, uid),
+                "history": advisor_alerts.history(conn, uid),
+                "history_days": advisor_alerts.HISTORY_DAYS}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/advisor/alerts")
+def advisor_alerts_set(data: AdvisorAlertIn, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        if data.channel is not None and data.channel not in ("push", "email", "both"):
+            raise HTTPException(400, "Canal inválido.")
+        import advisor_alerts
+        with conn:
+            advisor_alerts.set_config(conn, uid, up_pct=data.up_pct, down_pct=data.down_pct,
+                                      channel=data.channel, active=data.active)
+        return {"ok": True, "config": advisor_alerts.get_config(conn, uid)}
+    finally:
+        conn.close()
 
 
 # ─── Brief del libro del asesor (2x/día, anclado al mercado AR) ──────────────

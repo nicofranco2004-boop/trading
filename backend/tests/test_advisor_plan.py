@@ -1933,3 +1933,101 @@ class AdvisorBriefTest(AdvisorBase):
             conn.close()
         r = self.http.get("/api/advisor/brief/preview?kind=open", headers=self._hdr(otro))
         self.assertEqual(r.status_code, 403)
+
+
+class AdvisorClientAlertsTest(AdvisorBase):
+    """Alertas del LIBRO: movimiento de la cartera de un cliente."""
+
+    def test_config_crud_y_gate(self):
+        r = self.http.patch("/api/advisor/alerts",
+                            json={"up_pct": 5, "down_pct": 3, "active": True},
+                            headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        cfg = r.json()["config"]
+        self.assertEqual(cfg["up_pct"], 5)
+        self.assertEqual(cfg["down_pct"], 3)
+        self.assertTrue(cfg["active"])
+        got = self.http.get("/api/advisor/alerts", headers=self._hdr(self.advisor)).json()
+        self.assertTrue(got["config"]["active"])
+        self.assertEqual(got["history_days"], 3)
+        # un usuario común no accede
+        conn = main.get_db()
+        try:
+            cur = conn.execute("INSERT INTO users (email,name,password_hash) VALUES (?,'N','x')",
+                               (f"noadv.{uuid.uuid4().hex[:8]}@x.co",))
+            otro = cur.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.http.get("/api/advisor/alerts", headers=self._hdr(otro)).status_code, 403)
+
+    def test_side_umbral_asimetrico(self):
+        import advisor_alerts as aa
+        self.assertEqual(aa._side(6, 5, 3), "up")
+        self.assertEqual(aa._side(-4, 5, 3), "down")
+        self.assertIsNone(aa._side(2, 5, 3))       # dentro de la banda
+        self.assertIsNone(aa._side(-2, 5, 3))
+        self.assertIsNone(aa._side(None, 5, 3))    # sin dato → no dispara
+        self.assertIsNone(aa._side(-9, 5, None))   # solo mira subas
+
+    def test_edge_trigger_y_uno_por_dia(self):
+        import advisor_alerts as aa, advisor_brief
+        from datetime import datetime as _d, timedelta as _t
+        ayer = (_d.utcnow() - _t(hours=3) - _t(days=1)).date().isoformat()
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR IGNORE INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+                         "VALUES (?,?,10000,9000,9000)", (self.client_uid, ayer))
+            conn.commit()
+            aa.set_config(conn, self.advisor, up_pct=5, down_pct=5, active=True)
+            conn.commit()
+            _orig_deliver, _orig_live = aa._deliver, advisor_brief.live_book_values
+            aa._deliver = lambda *a, **k: (True, True)
+            try:
+                advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 10600}
+                self.assertEqual(aa.evaluate(conn, market_open=True,
+                                             only_uid=self.advisor)["fired"], 1)
+                # sigue arriba → NO re-dispara (edge-trigger)
+                advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 10700}
+                self.assertEqual(aa.evaluate(conn, market_open=True,
+                                             only_uid=self.advisor)["fired"], 0)
+                # vuelve a la banda y se dispara de nuevo el MISMO día → tope 1/día
+                advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 10100}
+                aa.evaluate(conn, market_open=True, only_uid=self.advisor)
+                advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 10900}
+                self.assertEqual(aa.evaluate(conn, market_open=True,
+                                             only_uid=self.advisor)["fired"], 0)
+                # mercado cerrado → nunca evalúa (el % del día está congelado)
+                conn.execute("UPDATE advisor_alert_state SET last_fired_date='2000-01-01', armed=1")
+                conn.commit()
+                self.assertEqual(aa.evaluate(conn, market_open=False,
+                                             only_uid=self.advisor)["fired"], 0)
+                self.assertEqual(aa.evaluate(conn, market_open=True,
+                                             only_uid=self.advisor)["fired"], 1)
+            finally:
+                aa._deliver, advisor_brief.live_book_values = _orig_deliver, _orig_live
+            # el historial registró los disparos
+            self.assertGreaterEqual(len(aa.history(conn, self.advisor)), 1)
+        finally:
+            conn.close()
+
+    def test_historial_se_purga(self):
+        import advisor_alerts as aa
+        from datetime import datetime as _d, timedelta as _t
+        conn = main.get_db()
+        try:
+            conn.execute("""INSERT INTO advisor_alert_events
+                            (advisor_uid, client_uid, kind, message, pct, fired_at)
+                            VALUES (?,?,'client_move','viejo',1.0,?)""",
+                         (self.advisor, self.client_uid,
+                          (_d.utcnow() - _t(days=5)).isoformat()))
+            conn.execute("""INSERT INTO advisor_alert_events
+                            (advisor_uid, client_uid, kind, message, pct, fired_at)
+                            VALUES (?,?,'client_move','fresco',1.0,?)""",
+                         (self.advisor, self.client_uid, _d.utcnow().isoformat()))
+            conn.commit()
+            msgs = [e["message"] for e in aa.history(conn, self.advisor)]
+            self.assertIn("fresco", msgs)
+            self.assertNotIn("viejo", msgs)   # >3 días se purga solo
+        finally:
+            conn.close()
