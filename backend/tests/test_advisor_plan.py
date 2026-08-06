@@ -2107,3 +2107,82 @@ class AdvisorAlertsAuditTest(AdvisorBase):
         self.assertEqual(self._run(11000)["fired"], 0)
         # y con una suba REAL (12.000 = +10% descontando el depósito) sí dispara
         self.assertEqual(self._run(12000)["fired"], 1)
+
+
+class AdvisorGroupsTest(AdvisorBase):
+    """Grupos de clientes: filtros guardados y DINÁMICOS."""
+
+    def test_classify_no_inventa_clases(self):
+        import advisor_groups as ag
+        self.assertEqual(ag.classify("GGAL.BA"), "ar_stock")
+        self.assertEqual(ag.classify("YPFD.BA"), "ar_stock")
+        self.assertEqual(ag.classify("AAPL.BA", "CEDEAR"), "cedear")
+        self.assertEqual(ag.classify("AL30", "BOND"), "bond")
+        self.assertEqual(ag.classify("FCI:balanz-money-market"), "fund")
+        self.assertEqual(ag.classify("BTC", "CRYPTO"), "crypto")
+        self.assertEqual(ag.classify("AAPL"), "us_stock")
+        # lo que no reconoce NO se clasifica (mejor 'otro' que mentir en el %)
+        self.assertEqual(ag.classify("ZZZQQQ"), "otro")
+
+    def test_normalize_descarta_basura(self):
+        import advisor_groups as ag
+        self.assertEqual(ag.normalize_rules({}), {})
+        self.assertEqual(ag.normalize_rules({"aum_min": "no-es-numero"}), {})
+        self.assertEqual(ag.normalize_rules({"aum_min": -5}), {})
+        self.assertEqual(ag.normalize_rules({"class": "inventada"}), {})
+        self.assertEqual(ag.normalize_rules({"class_pct_min": 30}), {})
+        r = ag.normalize_rules({"class": "ar_stock"})
+        self.assertEqual(r["class"], "ar_stock")
+        self.assertEqual(r["class_pct_min"], 1.0)
+
+    def test_crud_y_gate(self):
+        r = self.http.post("/api/advisor/groups",
+                           json={"name": "Los de Amazon", "rules": {"has_asset": "amzn"}},
+                           headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        gid = r.json()["id"]
+        self.assertEqual(r.json()["rules"]["has_asset"], "AMZN")
+        got = self.http.get("/api/advisor/groups", headers=self._hdr(self.advisor)).json()
+        self.assertTrue(any(g["id"] == gid for g in got["groups"]))
+        self.assertTrue(any(c["key"] == "ar_stock" for c in got["classes"]))
+        self.assertEqual(self.http.post("/api/advisor/groups",
+                                        json={"name": "Vacio", "rules": {}},
+                                        headers=self._hdr(self.advisor)).status_code, 400)
+        conn = main.get_db()
+        try:
+            cur = conn.execute("INSERT INTO users (email,name,password_hash) VALUES (?,'N','x')",
+                               (f"nogrp.{uuid.uuid4().hex[:8]}@x.co",))
+            otro = cur.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.http.get("/api/advisor/groups",
+                                       headers=self._hdr(otro)).status_code, 403)
+        self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}",
+                                          headers=self._hdr(self.advisor)).status_code, 200)
+
+    def test_grupo_es_dinamico_y_aisla_por_asesor(self):
+        import advisor_groups as ag
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM positions WHERE user_id=?", (self.client_uid,))
+            conn.execute("INSERT OR IGNORE INTO brokers (user_id,name,currency) VALUES (?,'GrpBroker','USDT')",
+                         (self.client_uid,))
+            conn.commit()
+            rules = ag.normalize_rules({"has_asset": "AMZN"})
+            self.assertEqual(len(ag.evaluate(conn, self.advisor, rules)), 0)
+            conn.execute("""INSERT INTO positions (user_id,broker,asset,asset_type,currency,
+                            is_cash,invested,quantity) VALUES (?,'GrpBroker','AMZN.BA','CEDEAR','USD',0,5000,1)""",
+                         (self.client_uid,))
+            conn.commit()
+            res = ag.evaluate(conn, self.advisor, rules)
+            self.assertEqual([c["client_uid"] for c in res], [self.client_uid])
+            self.assertEqual(len(ag.evaluate(conn, self.advisor, rules,
+                                             excluded=[self.client_uid])), 0)
+            cur = conn.execute("INSERT INTO users (email,name,password_hash,tier) VALUES (?,'Otro','x','advisor')",
+                               (f"otroadv.{uuid.uuid4().hex[:8]}@x.co",))
+            otro_adv = cur.lastrowid
+            conn.commit()
+            self.assertEqual(len(ag.evaluate(conn, otro_adv, rules)), 0)
+        finally:
+            conn.close()

@@ -1226,6 +1226,21 @@ def init_db():
         );
     """)
 
+    # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
+    # recalculan solos). `rules` es JSON con las condiciones; `excluded` la
+    # lista de client_uid sacados a mano del resultado.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS advisor_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            advisor_uid INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            rules TEXT NOT NULL DEFAULT '{}',
+            excluded TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_advisor_groups ON advisor_groups(advisor_uid);
+    """)
+
     # Alertas del LIBRO (asesor): "avisame si la cartera de cualquiera de mis
     # clientes sube/baja X% en el día". Una config por asesor; el estado del
     # edge-trigger y el tope de 1 aviso/día son POR CLIENTE. El historial se
@@ -27868,6 +27883,128 @@ def snapshots_run_cron(request: Request):
 # dos pings solapados mandaban el mail dos veces (el log es check-then-act).
 _brief_cron_lock = threading.Lock()
 _brief_cron_running: dict = {}
+
+
+# ─── Grupos de clientes (filtros guardados, dinámicos) ───────────────────────
+
+class AdvisorGroupIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=60)
+    rules: dict = Field(default_factory=dict)
+    excluded: Optional[list] = None
+
+
+@app.get("/api/advisor/groups")
+def advisor_groups_list(uid: int = Depends(get_current_user)):
+    """Grupos del asesor + cuántos clientes caen en cada uno AHORA."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        groups = ag.list_groups(conn, uid)
+        if groups:
+            prof = ag.client_profiles(conn, uid)          # una sola valuación
+            for g in groups:
+                excl = set(g["excluded"] or [])
+                g["count"] = sum(1 for cid, p in prof.items()
+                                 if cid not in excl and ag.matches(p, g["rules"]))
+                g["description"] = ag.describe(g["rules"])
+        return {"groups": groups,
+                "classes": [{"key": k, "label": v} for k, v in ag.CLASS_LABEL.items()]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/groups")
+def advisor_groups_create(data: AdvisorGroupIn, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        rules = ag.normalize_rules(data.rules)
+        if not rules:
+            raise HTTPException(400, "Elegí al menos una condición para el grupo.")
+        n = conn.execute("SELECT COUNT(*) c FROM advisor_groups WHERE advisor_uid=?",
+                         (uid,)).fetchone()["c"]
+        if n >= ag.MAX_GROUPS:
+            raise HTTPException(403, f"Llegaste al máximo de {ag.MAX_GROUPS} grupos.")
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO advisor_groups (advisor_uid, name, rules, excluded) "
+                "VALUES (?,?,?,?)",
+                (uid, data.name.strip(), json.dumps(rules),
+                 json.dumps([int(x) for x in (data.excluded or [])])))
+        return {"ok": True, "id": cur.lastrowid, "rules": rules,
+                "description": ag.describe(rules)}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/advisor/groups/{group_id}")
+def advisor_groups_update(group_id: int, data: AdvisorGroupIn,
+                          uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        if not ag.get_group(conn, uid, group_id):
+            raise HTTPException(404, "Grupo no encontrado.")
+        rules = ag.normalize_rules(data.rules)
+        if not rules:
+            raise HTTPException(400, "Elegí al menos una condición para el grupo.")
+        with conn:
+            conn.execute(
+                "UPDATE advisor_groups SET name=?, rules=?, excluded=? "
+                "WHERE id=? AND advisor_uid=?",
+                (data.name.strip(), json.dumps(rules),
+                 json.dumps([int(x) for x in (data.excluded or [])]), group_id, uid))
+        return {"ok": True, "rules": rules, "description": ag.describe(rules)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/advisor/groups/{group_id}")
+def advisor_groups_delete(group_id: int, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        with conn:
+            conn.execute("DELETE FROM advisor_groups WHERE id=? AND advisor_uid=?",
+                         (group_id, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/groups/preview")
+def advisor_groups_preview(data: AdvisorGroupIn, uid: int = Depends(get_current_user)):
+    """Quiénes caen con estas condiciones — SIN guardar el grupo."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        rules = ag.normalize_rules(data.rules)
+        if not rules:
+            return {"clients": [], "description": ag.describe({}), "rules": {}}
+        return {"clients": ag.evaluate(conn, uid, rules, data.excluded),
+                "description": ag.describe(rules), "rules": rules}
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/groups/{group_id}/clients")
+def advisor_groups_clients(group_id: int, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        g = ag.get_group(conn, uid, group_id)
+        if not g:
+            raise HTTPException(404, "Grupo no encontrado.")
+        return {"group": {"id": g["id"], "name": g["name"],
+                          "description": ag.describe(g["rules"]), "rules": g["rules"]},
+                "clients": ag.evaluate(conn, uid, g["rules"], g["excluded"])}
+    finally:
+        conn.close()
 
 
 # ─── Alertas del libro del asesor (movimiento de la cartera de un cliente) ───
