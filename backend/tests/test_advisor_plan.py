@@ -2031,3 +2031,79 @@ class AdvisorClientAlertsTest(AdvisorBase):
             self.assertNotIn("viejo", msgs)   # >3 días se purga solo
         finally:
             conn.close()
+
+
+class AdvisorAlertsAuditTest(AdvisorBase):
+    """Fixes del audit adversarial: los tres caminos por los que la alerta
+    podía MENTIR (tier vencido, base vieja, flujo disfrazado de mercado)."""
+
+    def _base_snapshot(self, days_ago=1, value=10000, nd=9000):
+        from datetime import datetime as _d, timedelta as _t
+        day = (_d.utcnow() - _t(hours=3) - _t(days=days_ago)).date().isoformat()
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.client_uid,))
+            conn.execute("INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+                         "VALUES (?,?,?,?,?)", (self.client_uid, day, value, value, nd))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _run(self, live_value):
+        import advisor_alerts as aa, advisor_brief
+        conn = main.get_db()
+        try:
+            aa.set_config(conn, self.advisor, up_pct=5, down_pct=5, active=True)
+            conn.execute("DELETE FROM advisor_alert_state WHERE advisor_uid=?", (self.advisor,))
+            conn.commit()
+            _d0, _l0 = aa._deliver, advisor_brief.live_book_values
+            aa._deliver = lambda *a, **k: (True, True)
+            advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: live_value}
+            try:
+                return aa.evaluate(conn, market_open=True, only_uid=self.advisor)
+            finally:
+                aa._deliver, advisor_brief.live_book_values = _d0, _l0
+        finally:
+            conn.close()
+
+    def test_asesor_con_plan_vencido_no_recibe(self):
+        self._base_snapshot()
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE users SET tier=NULL WHERE id=?", (self.advisor,))
+            conn.commit()
+        finally:
+            conn.close()
+        try:
+            # +6%: dispararía si no fuera por el tier
+            self.assertEqual(self._run(10600)["advisors"], 0)
+        finally:
+            conn = main.get_db()
+            conn.execute("UPDATE users SET tier='advisor' WHERE id=?", (self.advisor,))
+            conn.commit(); conn.close()
+
+    def test_base_vieja_no_se_evalua(self):
+        self._base_snapshot(days_ago=30)          # cron frenado / import viejo
+        self.assertEqual(self._run(10600)["fired"], 0)
+
+    def test_deposito_no_se_disfraza_de_suba(self):
+        from datetime import datetime as _d, timedelta as _t
+        self._base_snapshot(value=10000, nd=9000)
+        hoy = (_d.utcnow() - _t(hours=3)).date()
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM monthly_entries WHERE user_id=? AND broker='global'",
+                         (self.client_uid,))
+            # el cliente aportó 1.000 hoy → nd pasa de 9.000 a 10.000
+            conn.execute("""INSERT INTO monthly_entries
+                            (user_id,broker,year,month,deposits,withdrawals,
+                             capital_inicio,capital_final,pnl_realized,pnl_unrealized)
+                            VALUES (?,'global',?,?,10000,0,0,0,0,0)""",
+                         (self.client_uid, hoy.year, hoy.month))
+            conn.commit()
+        finally:
+            conn.close()
+        # vale 11.000 pero 1.000 fue depósito → 0% real → NO dispara
+        self.assertEqual(self._run(11000)["fired"], 0)
+        # y con una suba REAL (12.000 = +10% descontando el depósito) sí dispara
+        self.assertEqual(self._run(12000)["fired"], 1)

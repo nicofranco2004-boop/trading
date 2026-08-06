@@ -27858,6 +27858,12 @@ def snapshots_run_cron(request: Request):
     return {"ok": True, "status": "started"}
 
 
+# Guarda anti-doble-corrida del brief (mismo patrón que el cron de snapshots):
+# dos pings solapados mandaban el mail dos veces (el log es check-then-act).
+_brief_cron_lock = threading.Lock()
+_brief_cron_running: dict = {}
+
+
 # ─── Alertas del libro del asesor (movimiento de la cartera de un cliente) ───
 
 class AdvisorAlertIn(BaseModel):
@@ -27874,9 +27880,11 @@ def advisor_alerts_get(uid: int = Depends(get_current_user)):
     try:
         _require_advisor(conn, uid)
         import advisor_alerts
-        return {"config": advisor_alerts.get_config(conn, uid),
-                "history": advisor_alerts.history(conn, uid),
-                "history_days": advisor_alerts.HISTORY_DAYS}
+        out = {"config": advisor_alerts.get_config(conn, uid),
+               "history": advisor_alerts.history(conn, uid),
+               "history_days": advisor_alerts.HISTORY_DAYS}
+        conn.commit()   # history() purga lo viejo: sin commit era no-op + write-lock
+        return out
     finally:
         conn.close()
 
@@ -27921,6 +27929,12 @@ def advisor_brief_run_cron(request: Request):
     if kind not in ("open", "close"):
         raise HTTPException(400, "kind debe ser 'open' o 'close'.")
 
+    global _brief_cron_running
+    with _brief_cron_lock:
+        if _brief_cron_running.get(kind):
+            return {"ok": True, "status": "already_running", "kind": kind}
+        _brief_cron_running[kind] = True
+
     def _bg():
         try:
             import advisor_brief
@@ -27928,6 +27942,9 @@ def advisor_brief_run_cron(request: Request):
             log.info("advisor brief %s: %s", kind, res)
         except Exception as ex:
             log.error("advisor brief %s falló: %s", kind, ex)
+        finally:
+            with _brief_cron_lock:
+                _brief_cron_running[kind] = False
 
     threading.Thread(target=_bg, daemon=True).start()
     return {"ok": True, "status": "started", "kind": kind}

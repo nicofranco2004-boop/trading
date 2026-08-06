@@ -580,7 +580,7 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
       </div>
       <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:16px 0 0;">
         Recibís este aviso porque configuraste una alerta en Rendi. Podés editarla o
-        apagarla desde Configuración › Notificaciones.
+        apagarla desde la sección Alertas de Rendi.
       </p>
     """
     text = f"{heading}\n\n{hi}{detail}\n\nVer en Rendi: {url}\n\n— Rendi"
@@ -1276,7 +1276,7 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
       </div>
       <p style="font-size:12px;color:#9ca3af;line-height:1.6;margin:14px 0 0;">
         {'Te lo mandamos cuando abre el mercado argentino.' if is_open else 'Te lo mandamos al cierre del mercado argentino.'}
-        Podés apagarlo en Configuración › Notificaciones.
+        Podés apagarlo en Rendi, en la sección Alertas.
       </p>
     """
     text = (f"{title}\n\n{hi}\n{headline}\n\n" + "\n\n".join(secs_txt)

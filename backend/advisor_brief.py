@@ -106,7 +106,18 @@ def live_book_values(conn, client_ids: list, price_cache: dict) -> dict:
     if not positions:
         return {}
 
-    symbols = build_price_symbols(positions, brokers)
+    # Los símbolos se arman POR CLIENTE: build_price_symbols mira los nombres de
+    # broker sin user_id, así que con la unión un 'Balanz' ARS de un cliente
+    # arrastraba al 'Balanz' USD de otro → clave de precio equivocada y una
+    # caída FANTASMA (audit). Cada cliente resuelve con SUS propios brokers.
+    pos_by_client, brk_by_client = {}, {}
+    for p in positions:
+        pos_by_client.setdefault(p["user_id"], []).append(p)
+    for b in brokers:
+        brk_by_client.setdefault(b["user_id"], []).append(b)
+    sym_by_client = {cid: build_price_symbols(pl, brk_by_client.get(cid, []))
+                     for cid, pl in pos_by_client.items()}
+    symbols = sorted({s for syms in sym_by_client.values() for s in syms})
     missing = [s for s in symbols if s not in price_cache]
     if missing:
         try:
@@ -114,7 +125,9 @@ def live_book_values(conn, client_ids: list, price_cache: dict) -> dict:
             got = {k: v for k, v in fresh.items() if v is not None}
             if got:
                 persist_last_prices(conn, got)   # beneficia al resto de la app
-            price_cache.update(fresh)
+            # Solo los precios REALES entran al cache compartido: cachear un
+            # None propagaba el hueco a los demás asesores de la corrida.
+            price_cache.update(got)
         except Exception as ex:
             log.warning("brief: fetch de precios falló: %s", ex)
     prices = {s: price_cache.get(s) for s in symbols}
@@ -145,8 +158,21 @@ def live_book_values(conn, client_ids: list, price_cache: dict) -> dict:
 
 
 def _fx(conn):
-    """(blue, mep) con el fallback correcto: la fila más nueva puede venir
-    solo-blue (cron nocturno) → se busca la última CON mep."""
+    """(blue, mep) con la MISMA tasa que usa el snapshot nocturno: el MEP MEDIO
+    ((compra+venta)/2, vía _val_rate), no la punta de venta — si no, el valor
+    vivo y el snapshot se valúan con dólares distintos y aparece una pérdida
+    fantasma de ~0,7% todos los días (audit). Fallback: la fila más nueva puede
+    venir solo-blue (cron nocturno) → se busca la última CON mep."""
+    try:
+        import main
+        _live = main._current_cedear_rate()   # medio, misma fuente que el snapshot
+        if _live and float(_live) > 0:
+            fx0 = conn.execute(
+                "SELECT blue_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1").fetchone()
+            return (float(fx0["blue_venta"]) if fx0 and fx0["blue_venta"] else 1415.0,
+                    float(_live))
+    except Exception:
+        pass
     fx = conn.execute(
         "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
     ).fetchone()

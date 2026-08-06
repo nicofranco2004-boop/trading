@@ -41,6 +41,15 @@ export default function AdvisorAlerts() {
       {/* 2. Movimiento fuerte en la cartera de un cliente */}
       {data === null && !error ? (
         <Panel><Skeleton className="h-28" /></Panel>
+      ) : error ? (
+        <Panel>
+          <p className="text-xs text-ink-3 text-center py-4">
+            No pudimos cargar tu alerta de movimiento.{' '}
+            <button type="button" onClick={load} className="text-rendi-accent hover:underline">
+              Reintentar
+            </button>
+          </p>
+        </Panel>
       ) : (
         <ClientMoveAlert
           config={data?.config}

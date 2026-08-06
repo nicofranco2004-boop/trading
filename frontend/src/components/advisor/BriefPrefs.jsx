@@ -21,11 +21,14 @@ export default function BriefPrefs() {
   const toast = useToast()
   const [prefs, setPrefs] = useState(null)
   const [preview, setPreview] = useState(null)   // {kind, data} | 'loading'
+  const [loadError, setLoadError] = useState(false)
 
   useEffect(() => {
     api.get('/advisor/brief/prefs')
-      .then(setPrefs)
-      .catch(() => setPrefs({ brief_open: true, brief_close: true }))
+      .then(d => { setPrefs(d); setLoadError(false) })
+      // Sin dato NO inventamos "prendido": el asesor creería que apagó algo
+      // que sigue mandando (o al revés). Se avisa y se ofrece reintentar.
+      .catch(() => setLoadError(true))
   }, [])
 
   async function toggle(key) {
@@ -57,6 +60,15 @@ export default function BriefPrefs() {
         <p className="text-xs text-ink-3 mt-0.5">Dos mails por día hábil, en los horarios del mercado argentino</p>
       </header>
 
+      {loadError && (
+        <div className="px-4 py-2.5 border-b border-line/30 text-xs text-ink-2">
+          No pudimos leer tu configuración.{' '}
+          <button type="button" className="text-rendi-accent hover:underline"
+            onClick={() => { setLoadError(false); api.get('/advisor/brief/prefs').then(d => setPrefs(d)).catch(() => setLoadError(true)) }}>
+            Reintentar
+          </button>
+        </div>
+      )}
       {ROWS.map((r, i) => {
         const Icon = r.icon
         const on = prefs ? prefs[r.key] : true

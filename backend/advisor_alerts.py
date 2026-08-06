@@ -82,6 +82,16 @@ def purge_old(conn, days: int = HISTORY_DAYS):
         pass
 
 
+def _net_deposited_now(conn, cid: int):
+    """Aportado neto ACTUAL del cliente (misma fuente que el snapshot). None si
+    no se puede calcular → en ese caso no se descuenta nada (conservador)."""
+    try:
+        from snapshots_job import compute_net_deposited_db
+        return float(compute_net_deposited_db(conn, cid, include_baseline=True) or 0.0)
+    except Exception:
+        return None
+
+
 def _side(pct, up_pct, down_pct):
     """'up' | 'down' | None — umbrales asimétricos, cualquiera puede ser None."""
     if pct is None:
@@ -135,17 +145,24 @@ def _deliver(conn, uid: int, channel: str, title: str, body: str) -> tuple:
 def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
     """Evalúa las alertas de todos los asesores que las tengan activas.
     Idempotente y barato: si nadie las configuró, sale al instante."""
-    q = ("SELECT advisor_uid, up_pct, down_pct, channel FROM advisor_alerts "
-         "WHERE active=1 AND (up_pct IS NOT NULL OR down_pct IS NOT NULL)")
+    # El JOIN al tier es la diferencia entre "avisa mientras pagás" y "avisa
+    # para siempre": sin él, un asesor con el plan vencido seguía recibiendo
+    # los nombres y los movimientos de sus ex-clientes sin poder apagarlo
+    # (la UI ya no le muestra el switch). Mismo criterio que advisor_brief.
+    q = ("SELECT a.advisor_uid, a.up_pct, a.down_pct, a.channel FROM advisor_alerts a "
+         "JOIN users u ON u.id = a.advisor_uid "
+         "WHERE a.active=1 AND (a.up_pct IS NOT NULL OR a.down_pct IS NOT NULL) "
+         "AND u.tier='advisor' AND COALESCE(u.managed_by,0)=0")
     params: tuple = ()
     if only_uid is not None:
-        q += " AND advisor_uid=?"
+        q += " AND a.advisor_uid=?"
         params = (only_uid,)
     cfgs = conn.execute(q, params).fetchall()
     if not cfgs:
         return {"advisors": 0, "fired": 0}
 
     purge_old(conn)
+    conn.commit()   # cerrar la transacción de escritura ANTES de tocar la red
     if not market_open:
         # Fuera de rueda el % del día está congelado — evaluar sería re-disparar
         # el movimiento de ayer (la lección del motor de precios).
@@ -172,17 +189,32 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
             if not live:
                 continue
             ph = ",".join("?" * len(ids))
-            snaps = {r["user_id"]: float(r["total_value"] or 0) for r in conn.execute(
-                f"""SELECT s.user_id, s.total_value FROM snapshots s
-                    WHERE s.user_id IN ({ph})
-                      AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
-                                    WHERE s2.user_id = s.user_id)""", ids).fetchall()}
+            # La base tiene que ser un cierre RECIENTE: sin cota, un cliente con
+            # el cron frenado (o recién importado, con un snapshot sintético al
+            # costo) se comparaba contra semanas atrás y el "% del día" era un
+            # invento (audit). 4 días cubre un finde largo.
+            _floor = (datetime.utcnow() - timedelta(hours=3) - timedelta(days=4)).date().isoformat()
+            snaps, base_nd = {}, {}
+            for r in conn.execute(
+                    f"""SELECT s.user_id, s.total_value, s.net_deposited, s.date FROM snapshots s
+                        WHERE s.user_id IN ({ph})
+                          AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
+                                        WHERE s2.user_id = s.user_id)""", ids).fetchall():
+                if str(r["date"]) < _floor:
+                    continue          # base vieja → este cliente no se evalúa
+                snaps[r["user_id"]] = float(r["total_value"] or 0)
+                base_nd[r["user_id"]] = float(r["net_deposited"] or 0)
 
             for cid, now_v in live.items():
                 base = snaps.get(cid) or 0.0
                 if base <= 0:
                     continue
-                pct = (now_v - base) / base * 100.0
+                # Descontar los flujos ocurridos DESPUÉS de la base: un depósito
+                # de hoy no es "la cartera subió" (audit). El net_deposited vivo
+                # sale del mismo lugar que el del snapshot.
+                _nd_now = _net_deposited_now(conn, cid)
+                _flow = (_nd_now - base_nd.get(cid, 0.0)) if _nd_now is not None else 0.0
+                pct = ((now_v - _flow) - base) / base * 100.0
                 side = _side(pct, cfg["up_pct"], cfg["down_pct"])
                 armed, last_date = _sym_state(conn, uid, cid)
                 fired_today = (last_date == today)

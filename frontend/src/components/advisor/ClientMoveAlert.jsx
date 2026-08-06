@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { TrendingUp, TrendingDown, Users } from 'lucide-react'
 import Panel from '../Panel'
 import { api } from '../../utils/api'
+import { usePushNotifications } from '../../hooks/usePushNotifications'
 import { useToast } from '../Toast'
 
 // Coma o punto: en Argentina se tipea "0,5" (mismo helper que las alertas).
@@ -21,22 +22,35 @@ export default function ClientMoveAlert({ config, onSaved }) {
   const [down, setDown] = useState(config?.down_pct != null ? String(config.down_pct) : '')
   const [channel, setChannel] = useState(config?.channel || 'both')
   const [busy, setBusy] = useState(false)
+  const push = usePushNotifications()
   const active = !!config?.active
 
   async function save(nextActive) {
     const u = parseNum(up), d = parseNum(down)
-    if (nextActive && !(u > 0) && !(d > 0)) {
+    // "Baja más de -5" es un error de tipeo natural: lo tomamos como 5 en vez
+    // de descartarlo en silencio (audit).
+    const uAbs = Number.isFinite(u) ? Math.abs(u) : NaN
+    const dAbs = Number.isFinite(d) ? Math.abs(d) : NaN
+    if (nextActive && !(uAbs > 0) && !(dAbs > 0)) {
       toast.push('Poné al menos un umbral: sube y/o baja X%', { type: 'error' })
       return
     }
     setBusy(true)
     try {
       const r = await api.patch('/advisor/alerts', {
-        up_pct: u > 0 ? u : 0, down_pct: d > 0 ? d : 0,
+        up_pct: uAbs > 0 ? uAbs : 0, down_pct: dAbs > 0 ? dAbs : 0,
         channel, active: nextActive,
       })
       onSaved?.(r.config)
+      if (uAbs > 0) setUp(String(uAbs))
+      if (dAbs > 0) setDown(String(dAbs))
       toast.push(nextActive ? 'Alerta activada' : 'Alerta pausada')
+      // Si eligió push y todavía no dio permiso, lo pedimos ahora: si no,
+      // la alerta "anda" pero no le llega nada (audit).
+      if (nextActive && (channel === 'push' || channel === 'both')
+          && push && push.supported && !push.subscribed) {
+        push.subscribe?.()
+      }
     } catch (e) {
       toast.push(e?.message || 'No se pudo guardar', { type: 'error' })
     } finally {
@@ -92,6 +106,9 @@ export default function ClientMoveAlert({ config, onSaved }) {
         </div>
         <p className="text-[11px] text-ink-3 -mt-1">
           Un aviso por cliente por día, solo con el mercado abierto — no te llena la casilla.
+          {(channel === 'push' || channel === 'both') && push && push.supported === false
+            ? ' El push no está disponible en este dispositivo: te va a llegar por email.'
+            : ''}
         </p>
 
         <div className="flex gap-2 pt-1">
