@@ -39,9 +39,23 @@ KNOWN_CD_TICKERS = {
     "AMC", "AMD", "BAC", "BBD", "BND", "BTC", "CAC", "CARC", "CRWD", "DBC",
     "EGLD", "ETC", "FBTC", "GBTC", "GD", "GILD", "GLD", "GOLD", "HD", "HOOD",
     "INTC", "JD", "KLAC", "LCID", "LQD", "LTC", "MATIC", "MCD", "MPC", "NOC",
-    "PDD", "SAND", "SSEC", "TSMC", "USDC", "WBD", "WFC", "WLD", "XLC", "YPFD",
-    "ZEC",
+    "PDD", "SAND", "SCHD", "SID", "SSEC", "TSMC", "USDC", "WBD", "WFC", "WLD",
+    "XLC", "YPFD", "ZEC",
 }
+# SID y SCHD se agregaron el 2026-08-06, reportados por un usuario de IOL:
+#   · SID  = Companhia Siderúrgica Nacional (CEDEAR brasileño, ticker NYSE real).
+#     Su export traía SID (78 filas, especie en pesos) y SIDD (10, pata dólar).
+#     Sin proteger a SID, el motor lo leía como "pata dólar de SI" y lo truncaba:
+#     SID→SI (un símbolo que no cotiza en ningún lado → precio "—" en la cartera)
+#     y SIDD→SID, o sea las dos patas quedaban como activos SEPARADOS. Con SID
+#     protegido, SID queda SID y SIDD consolida a SID: se arreglan los dos
+#     síntomas de una.
+#   · SCHD = Schwab US Dividend Equity. Mismo mecanismo (SCHD→SCH). No lo reportó
+#     nadie todavía; salió del barrido de la allowlist entera.
+# El barrido completo (588 símbolos de tickers.js) dejó UN solo terminado en C/D
+# sin proteger: BA37D (Buenos Aires 2037 USD ley NY), que SÍ es una especie en
+# dólares y por lo tanto SÍ debe truncarse a BA37. Lo cubre
+# test_tickers_cd_sync.py, que vuelve a correr ese barrido en cada test run.
 
 # Tipos de activo donde la pata D/C existe: bonos, acciones argentinas y CEDEARs
 # se operan en pesos y en dólares con el mismo subyacente. Un FCI NO (su ticker
