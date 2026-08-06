@@ -467,6 +467,49 @@ class DeleteCascade(unittest.TestCase):
             mt._bond_genuine_net(self.conn, self.uid, pair, "AL30"), 0.0, places=2,
             msg="la base de amortización sigue contando el bono borrado → se duplica al re-importar")
 
+    # ── Paso 1 de "borrar lo cargado a mano": cada camino deja su rastro ───────
+    def test_manual_paths_stamp_undo_meta(self):
+        """Una venta hecha con el botón 'Vender' y una tipeada en el formulario son
+        IDÉNTICAS en la base, pero la primera movió cash y lotes. Sin estampar de dónde
+        salió cada fila, borrarlas es adivinar. Cada camino guarda lo suyo."""
+        import json as _j
+        # (a) Trade tipeado: no toca cash ni lotes → basta con la marca.
+        op = main.create_operation(main.OperationIn(
+            date="2024-05-02", broker=self.BROKER, asset="AAPL", op_type="Venta",
+            pnl_usd=25.0), uid=self.uid)
+        meta = _j.loads(self.conn.execute(
+            "SELECT undo_meta_json FROM operations WHERE id=?", (op["id"],)
+        ).fetchone()["undo_meta_json"])
+        self.assertEqual(meta["src"], "manual_form")
+
+        # (b) Posición manual: guarda lo que debitó y el autodepósito que disparó
+        #     (sin saldo previo, el alta AUTO-DEPOSITA → hay que poder revertirlo).
+        pos = main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        pmeta = _j.loads(self.conn.execute(
+            "SELECT undo_meta_json FROM positions WHERE id=?", (pos["id"],)
+        ).fetchone()["undo_meta_json"])
+        self.assertEqual(pmeta["src"], "manual_position")
+        self.assertAlmostEqual(pmeta["cost"], 200.0, places=2)
+        self.assertIsNotNone(pmeta["autodep"], "no se guardó el autodepósito → capital fantasma al borrar")
+        self.assertAlmostEqual(pmeta["autodep"]["native"], 200.0, places=2)
+        self.assertEqual(pmeta["autodep"]["ym"], "2024-05")
+
+        # (c) Venta FIFO: guarda una FOTO del lote que consumió — sin eso la
+        #     tenencia es irrecuperable.
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        smeta = _j.loads(self.conn.execute(
+            "SELECT undo_meta_json FROM operations WHERE asset='MELI' AND op_type='Venta' "
+            "ORDER BY id DESC LIMIT 1").fetchone()["undo_meta_json"])
+        self.assertEqual(smeta["src"], "fifo_sell")
+        self.assertAlmostEqual(smeta["cash"], 300.0, places=2)       # 2 × 150
+        self.assertAlmostEqual(smeta["lot"]["quantity"], 2.0, places=6)
+        self.assertAlmostEqual(smeta["lot"]["invested"], 200.0, places=2)
+        self.assertAlmostEqual(smeta["lot"]["consumed"], 2.0, places=6)
+
     # ── Regresión: borrar un cash-flow NO puede revivir en el próximo import ────
     def test_deleted_cashflow_is_tombstoned_not_deleted(self):
         """Antes se hacía DELETE físico de la fila fuente: como el dedup del import

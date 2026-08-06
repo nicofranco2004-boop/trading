@@ -806,6 +806,20 @@ def init_db():
     cols = _table_cols(conn, 'operations')
     if cols and 'notes' not in cols:
         conn.execute("ALTER TABLE operations ADD COLUMN notes TEXT")
+    # ── Reversibilidad de lo CARGADO A MANO ──────────────────────────────────
+    # `undo_meta_json` guarda, en la fila misma, de qué camino salió y TODO lo que
+    # hace falta para deshacerla. Sin esto una venta hecha con el botón "Vender"
+    # (que borra lotes y acredita cash) es INDISTINGUIBLE de una tipeada en el
+    # formulario (que no toca nada): borrar la primera creyendo que es la segunda
+    # deja el saldo inflado y la tenencia comida. Por eso NO se adivina.
+    # ⚠️ VA ACÁ, después de que las tablas existen: puesto arriba (junto a las
+    # migraciones de advisor_*) el `_table_cols` daba vacío en una base NUEVA y la
+    # columna no se agregaba nunca → los INSERT reventaban. Misma familia de bug que
+    # el índice-antes-que-su-columna (project_migration_index_order). ALTER sin índice.
+    for _tbl in ('operations', 'positions'):
+        _c = _table_cols(conn, _tbl)
+        if _c and 'undo_meta_json' not in _c:
+            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN undo_meta_json TEXT")
     # Migración Phase 3D: tracking de moneda nativa y FX al momento del evento.
     # Esto permite convertir operations.pnl_usd (que históricamente guardaba
     # el monto en moneda del broker, no necesariamente USD) a un USD canónico
@@ -6904,13 +6918,26 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
             # user agrega una posición sin haber cargado el depósito, auto-
             # depositamos el faltante (sube cash + capital aportado) antes
             # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
-            _autodep = _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date)
+            _adm: dict = {}
+            _autodep = _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date,
+                                                meta_out=_adm)
             if meta_out is not None:
                 # El caller (op grupal) persiste esto para que el undo acredite
                 # EXACTO lo debitado y revierta el autodepósito si lo hubo.
                 meta_out.update({"cost": cost, "autodep_native": _autodep,
                                  "entry_date": entry_date})
             _adjust_broker_cash(conn, uid, p.broker, -cost)
+            # Reversibilidad del alta manual: guardamos en la fila lo que debitó y el
+            # autodepósito que disparó (si hubo). El borrado tiene que devolver
+            # `cost − autodep` y revertir el flujo mensual del autodepósito; devolver
+            # el costo entero deja cash Y capital aportado fantasma (mismo bug que el
+            # audit del asesor encontró en el undo grupal).
+            import json as _json_pos
+            conn.execute(
+                "UPDATE positions SET undo_meta_json=? WHERE id=? AND user_id=?",
+                (_json_pos.dumps({"src": "manual_position", "cost": cost,
+                                  "autodep": _adm or None, "entry_date": entry_date}),
+                 new_id, uid))
 
     return conn.execute(
         "SELECT * FROM positions WHERE id=? AND user_id=?", (new_id, uid)
@@ -8105,7 +8132,7 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
 
 
 def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
-                             date_iso: str) -> float:
+                             date_iso: str, meta_out: dict = None) -> float:
     """En una acción MANUAL que debita cash (ej: agregar una posición sin haber
     cargado el depósito antes), el cash NUNCA debe quedar negativo. Si `cost_native`
     supera el cash actual del broker, auto-depositamos el faltante: subimos el cash
@@ -8121,7 +8148,12 @@ def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
     Solo para acciones MANUALES. Los imports usan su propio seed y muestran cash
     negativo a propósito (señal de cargar el estado inicial vía el wizard).
 
-    Llamar ANTES de debitar el costo. Devuelve el monto auto-depositado (nativo)."""
+    Llamar ANTES de debitar el costo. Devuelve el monto auto-depositado (nativo).
+
+    `meta_out` (opcional): se completa con {'native','usd','ym'} — lo que hace falta
+    para REVERTIR el autodepósito al borrar la carga manual que lo disparó. Sin esto,
+    borrarla devolvería el costo entero y dejaría capital aportado fantasma (el mismo
+    bug que el audit del asesor encontró en el undo de la operación grupal)."""
     if not cost_native or cost_native <= 0:
         return 0.0
     cash_row = conn.execute(
@@ -8153,6 +8185,8 @@ def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
     _update_monthly_flow(conn, uid, 'global', y, m, 'deposit', amount_usd, is_manual=True)
     _repair_monthly_chain(conn, uid, broker)
     _repair_monthly_chain(conn, uid, 'global')
+    if meta_out is not None:
+        meta_out.update({"native": shortfall, "usd": amount_usd, "ym": f"{y:04d}-{m:02d}"})
     return shortfall
 
 
@@ -8711,12 +8745,23 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
                     )
 
             # 1. Insert operation (con cost_basis_consumed si aplica)
+            # `undo_meta_json`: qué acreditó de cash y —si amortizó— cuánto nominal y
+            # costo le sacó a los lotes. La amortización BAJA la cantidad del bono, y
+            # ese nominal previo no queda en ningún otro lado: sin esta foto el cobro
+            # no se puede deshacer.
+            import json as _json_bond
             conn.execute(
                 """INSERT INTO operations (user_id, date, broker, asset, op_type,
-                   pnl_usd, commissions, notes, currency, fx_to_usd, cost_basis_consumed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   pnl_usd, commissions, notes, currency, fx_to_usd, cost_basis_consumed,
+                   undo_meta_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (uid, data.date, data.broker, data.asset.upper(), op_type,
-                 net_amount, commissions, data.notes, currency, fx_to_usd, cost_basis_consumed),
+                 net_amount, commissions, data.notes, currency, fx_to_usd, cost_basis_consumed,
+                 _json_bond.dumps({"src": "bond_cashflow", "cash": net_amount,
+                                   "flow_type": data.flow_type,
+                                   "qty_decremented": qty_decremented,
+                                   "invested_decremented": invested_decremented,
+                                   "cross_currency_skipped": cross_currency_skipped})),
             )
             # 2. Acreditar cash del broker
             _adjust_cash(conn, uid, data.broker, _cash_asset_for_currency(broker_currency), net_amount)
@@ -9531,6 +9576,31 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                      sell_ccy, fx_stamp),
                 )
                 ops_created.append(cur.lastrowid)
+
+                # Reversibilidad: la venta CONSUME el lote (lo borra o lo achica), y esa
+                # información no vive en ningún otro lado — sin esta foto, borrar la venta
+                # después es IMPOSIBLE (no hay con qué restaurar la tenencia). Guardamos,
+                # en la operación misma, el estado del lote ANTES de tocarlo + lo que esta
+                # pata acreditó de cash. Una venta que barre 3 lotes deja 3 operaciones,
+                # cada una con su lote → borrarlas restaura exactamente lo que había.
+                import json as _json_sell
+                conn.execute(
+                    "UPDATE operations SET undo_meta_json=? WHERE id=? AND user_id=?",
+                    (_json_sell.dumps({
+                        "src": "fifo_sell",
+                        "cash": round(data.exit_price * take - chunk_commission_native, 6),
+                        "pnl_usd": round(pnl_usd, 2),
+                        "lot": {
+                            "id": p["id"], "broker": p["broker"], "asset": p["asset"],
+                            "quantity": pos_qty, "invested": p["invested"],
+                            "buy_price": p["buy_price"], "commissions": pos_buy_commissions,
+                            "entry_date": (p["entry_date"] if "entry_date" in p.keys() else None),
+                            "currency": (p["currency"] if "currency" in p.keys() else None),
+                            "tc_compra": (p["tc_compra"] if "tc_compra" in p.keys() else None),
+                            "asset_type": (p["asset_type"] if "asset_type" in p.keys() else None),
+                            "consumed": take,
+                        },
+                    }), cur.lastrowid, uid))
 
                 # Actualizar / eliminar la posición
                 if take >= pos_qty - 1e-9:
@@ -11540,10 +11610,15 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
     currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
     cur = conn.execute(
         """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price, exit_price,
-           quantity, pnl_usd, pnl_pct, commissions, currency, fx_to_usd)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           quantity, pnl_usd, pnl_pct, commissions, currency, fx_to_usd, undo_meta_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        # `manual_form`: esta fila SOLO existe en `operations` — no movió cash ni lotes
+        # (a diferencia de la venta FIFO o el cobro de bono). Por eso su borrado es
+        # exacto con solo sacarla y recalcular. Estampado explícito: la fila sola no
+        # permite distinguir el camino, y adivinarlo rompe plata.
         (uid, op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
-         op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0, currency, op.fx_to_usd),
+         op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0, currency, op.fx_to_usd,
+         '{"src":"manual_form"}'),
     )
     row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
     # Sync cache de pnl_realized en monthly_entries
