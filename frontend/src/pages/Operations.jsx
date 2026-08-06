@@ -1011,7 +1011,50 @@ function MovementsView({ onChanged }) {
   }
 
   const [deletingId, setDeletingId] = useState(null)
+  const [busyGroup, setBusyGroup] = useState({})
   const toast = useToast()
+
+  // Borrar TODO el historial de un activo desde acá, sin tener que entrar al activo.
+  // Mismo endpoint (y misma cascada) que el tacho de grupo de "Solo P/L".
+  async function delGroup(g) {
+    const asset = g.key
+    if (!confirm(
+      `¿Borrar TODO el historial de ${asset}?\n\n` +
+      `Se borran TODAS sus operaciones (compras, ventas y, si es un bono, sus cupones ` +
+      `y amortizaciones) en TODOS tus brokers — no solo las que estás viendo ahora. ` +
+      `${asset} deja de contar en tu P&L, rendimiento, métricas y la curva de evolución. ` +
+      `Se recalcula todo. Vas a poder deshacerlo.`
+    )) return
+    setBusyGroup(b => ({ ...b, [asset]: true }))
+    try {
+      const res = await api.delete(`/assets/history?asset=${encodeURIComponent(asset)}`)
+      await load()
+      onChanged?.()
+      const n = res?.count
+      const msg = `${asset} borrado${n ? ` (${n} ${n === 1 ? 'operación' : 'operaciones'})` : ''}.`
+      if (res?.undo_token) {
+        toast.push(msg, {
+          type: 'success', duration: 12000, actionLabel: 'Deshacer',
+          onAction: async () => {
+            try {
+              await api.post(`/assets/undo/${res.undo_token}`)
+              await load()
+              onChanged?.()
+              toast.push('Listo, lo restauramos.', { type: 'success' })
+            } catch (ex) {
+              toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
+            }
+          },
+        })
+      } else {
+        toast.push(msg, { type: 'success' })
+      }
+    } catch (ex) {
+      toast.push(ex?.message || 'No se pudo borrar el activo.', { type: 'error', duration: 8000 })
+    } finally {
+      setBusyGroup(b => { const n = { ...b }; delete n[asset]; return n })
+    }
+  }
 
   async function load() {
     setLoading(true)
@@ -1244,6 +1287,8 @@ function MovementsView({ onChanged }) {
                       isOpen={isOpen}
                       onToggle={() => toggleGroup(g.key)}
                       histMoney={histMoney}
+                      onDeleteGroup={groupBy === 'asset' ? delGroup : null}
+                      deleting={!!busyGroup[g.key]}
                     />
                     {isOpen && g.rows.map(m => (
                       <MovementRow key={m.id} m={m} indent onDelete={handleDelete} deleting={deletingId === m.id} />
@@ -1431,8 +1476,13 @@ function MovementRow({ m, indent = false, onDelete, deleting = false }) {
 // ⚠️ CONVERT-THEN-SUM, igual que TradeGroupRow (ver el comentario largo allá):
 // cada fila se convierte con SU FX histórico y recién ahí se suma, para que el
 // total coincida con las filas que despliega.
-function MovementGroupRow({ group, groupBy, isOpen, onToggle, histMoney }) {
+function MovementGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
   const { label, count, brokers } = group
+  // El tacho de "borrar todo el historial" solo aplica a un ACTIVO de verdad: no a
+  // "Sin activo" (depósitos/retiros sueltos) ni a los grupos de puro efectivo, que no
+  // tienen compras ni ventas que borrar.
+  const canDeleteGroup = !!onDeleteGroup && group.key !== '__no_asset__'
+    && group.rows.some(r => r.type === 'BUY' || r.type === 'SELL')
   // Ver TradeGroupRow: signo/color/flecha sobre el número que se muestra.
   const pnl = histMoney.sumConvertedAt(group.rows, r => movPnl(r))
   const pnlDisp = pnl
@@ -1478,9 +1528,23 @@ function MovementGroupRow({ group, groupBy, isOpen, onToggle, histMoney }) {
           {hasPnl ? fmtConvertedRaw(pnlDisp, histMoney.currency, { signed: true, decimals: 2 }) : '—'}
         </span>
       </td>
-      {/* Notas — hint del P&L */}
+      {/* Notas — hint del P&L + tacho del activo entero */}
       <td className="px-3 py-2.5 text-ink-3 text-[12px] font-medium">
-        {hasPnl ? 'P&L realizado' : ''}
+        <div className="inline-flex items-center gap-2 justify-end w-full">
+          {hasPnl ? 'P&L realizado' : ''}
+          {canDeleteGroup && (
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={(e) => { e.stopPropagation(); onDeleteGroup(group) }}
+              aria-label={`Borrar todo el historial de ${label}`}
+              title={`Borrar todo el historial de ${label}`}
+              className="p-1 text-ink-3 hover:text-rendi-neg transition-colors disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <Trash2 size={14} strokeWidth={1.75} aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </td>
     </tr>
   )

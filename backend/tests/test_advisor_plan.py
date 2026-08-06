@@ -2139,6 +2139,94 @@ class AdvisorGroupsIsolationTest(AdvisorBase):
         self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}", headers=h1).status_code, 404)
 
 
+class AdvisorBriefFixesTest(AdvisorBase):
+    """Errores del backlog: el brief y la base del % del día."""
+
+    def test_eventos_de_hoy_aparecen_en_el_brief(self):
+        # La sección consultaba columnas que no existen (kind/date/title vs
+        # event_type/event_date) → explotaba y un except la borraba en
+        # silencio: NUNCA se mostró desde que se escribió.
+        import advisor_brief
+        hoy = advisor_brief._today_art()
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO positions (user_id,broker,asset,quantity,invested,is_cash) "
+                         "VALUES (?,?,?,?,?,0)", (self.client_uid, "Cocos", "AAPL", 10, 1000))
+            conn.execute("INSERT INTO financial_events (ticker,event_type,event_date,fetched_at) "
+                         "VALUES ('AAPL','earnings',?,datetime('now'))", (hoy,))
+            conn.commit()
+            out = advisor_brief.build_brief(conn, self.advisor, "open")
+        finally:
+            conn.close()
+        titulos = [sec["title"] for sec in (out or {}).get("sections", [])]
+        self.assertIn("Eventos de hoy", titulos)
+        sec = next(x for x in out["sections"] if x["title"] == "Eventos de hoy")
+        self.assertEqual(sec["items"][0]["label"], "AAPL")
+        # y en criollo, no con el código interno del evento
+        self.assertIn("Reporte trimestral", sec["items"][0]["detail"])
+        self.assertNotIn("earnings", sec["items"][0]["detail"])
+
+    def test_asunto_del_cierre_no_dice_tu_libro_hoy(self):
+        from billing import emails
+        capt = {}
+        _o = emails._send
+        emails._send = lambda to, subj, *a, **k: capt.setdefault("s", subj) or True
+        try:
+            emails.send_advisor_brief(to="x@y.com", user_name="Nico",
+                                      brief={"kind": "close", "date": "2026-08-06",
+                                             "sections": [], "aum_total_usd": 1000})
+        finally:
+            emails._send = _o
+        self.assertNotIn("Tu libro hoy", capt.get("s", ""))
+
+    def test_snapshot_se_fecha_en_hora_argentina(self):
+        # A las 21:30 ART ya es el día siguiente en UTC: el snapshot quedaba
+        # fechado mañana y pisaba al del cierre real.
+        # Determinístico: se fuerza el helper ART a una fecha reconocible. Con
+        # un assert contra "hoy" a secas el test sólo fallaría entre las 21 y
+        # las 24 (las 3 horas en que UTC y ART difieren de día).
+        h = self._hdr(self.client_uid)
+        _o = main._iso_today
+        main._iso_today = lambda: "2020-01-15"
+        try:
+            self.http.post("/api/snapshots", headers=h,
+                           json={"total_value": 100, "total_invested": 90, "net_deposited": 90})
+        finally:
+            main._iso_today = _o
+        conn = main.get_db()
+        try:
+            d = conn.execute("SELECT date FROM snapshots WHERE user_id=?",
+                             (self.client_uid,)).fetchone()["date"]
+        finally:
+            conn.close()
+        self.assertEqual(d, "2020-01-15", "el snapshot no usa el día ART")
+
+
+class AdvisorAlertBaseTest(AdvisorAlertsAuditTest):
+    """La base del % del día tiene que ser el CIERRE ANTERIOR."""
+
+    def test_un_snapshot_de_hoy_no_puede_ser_la_base(self):
+        # El browser escribe un snapshot intradiario al abrir la app. Si ese
+        # pasaba a ser la base, el % del día se comparaba contra sí mismo:
+        # daba ~0 y la alerta no disparaba nunca.
+        from datetime import datetime as _d, timedelta as _t
+        # nd=0 en las dos puntas: si no, el descuento de flujos (net_deposited
+        # del snapshot vs el vivo) mete un delta propio y el test pasa por el
+        # motivo equivocado — pasaba aun con el bug puesto.
+        self._base_snapshot(days_ago=1, value=10000, nd=0)
+        hoy = (_d.utcnow() - _t(hours=3)).date().isoformat()
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO snapshots (user_id,date,total_value,total_invested,"
+                         "net_deposited) VALUES (?,?,?,?,?)",
+                         (self.client_uid, hoy, 12000, 12000, 0))
+            conn.commit()
+        finally:
+            conn.close()
+        # +20% contra el cierre de AYER → tiene que avisar igual
+        self.assertEqual(self._run(12000)["fired"], 1)
+
+
 class AdvisorGroupsAuditTest(AdvisorBase):
     """Regresiones del audit de los grupos (ff6f7b7)."""
 
