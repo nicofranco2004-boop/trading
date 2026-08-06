@@ -8,6 +8,7 @@ import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import AlertsManager from '../components/alerts/AlertsManager'
+import BriefPrefs from '../components/advisor/BriefPrefs'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAlertsContext } from '../contexts/AlertsContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
@@ -40,6 +41,9 @@ export default function Alertas() {
         </div>
       )}
       <AlertsManager plan={plan} prefill={prefill} />
+      {plan.isAdvisor && !clientCtx && (
+        <div className="mt-4"><BriefPrefs /></div>
+      )}
     </div>
   )
 }

@@ -1837,3 +1837,99 @@ class PhoneAndReportsTest(AdvisorBase):
         conn.commit(); conn.close()
         r = self.http.get("/api/advisor/reports", headers=self._hdr(9901))
         self.assertEqual(r.status_code, 403)
+
+
+class AdvisorBriefTest(AdvisorBase):
+    """Brief del libro 2x/día (apertura + cierre). Seeds idempotentes y una
+    sola conexión por test: la suite comparte la DB y el lock es real."""
+
+    def _seed(self):
+        import advisor_brief
+        from datetime import datetime as _d, timedelta as _t
+        today = advisor_brief._today_art()
+        ayer = (_d.utcnow() - _t(hours=3) - _t(days=1)).date().isoformat()
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR IGNORE INTO fx_rates_daily (date,blue_venta,mep_venta) VALUES (?,1500,1450)", (today,))
+            conn.execute("INSERT OR IGNORE INTO brokers (user_id,name,currency) VALUES (?,'BriefBroker','ARS')",
+                         (self.client_uid,))
+            if not conn.execute("SELECT 1 FROM positions WHERE user_id=? AND broker='BriefBroker'",
+                                (self.client_uid,)).fetchone():
+                conn.execute("INSERT INTO positions (user_id,broker,asset,is_cash,invested) "
+                             "VALUES (?,'BriefBroker','ARS',1,29000000)", (self.client_uid,))
+            conn.execute("INSERT OR IGNORE INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+                         "VALUES (?,?,20000,20000,20000)", (self.client_uid, ayer))
+            conn.commit()
+        finally:
+            conn.close()
+        return today
+
+    def test_brief_apertura_trae_a_quien_llamar(self):
+        import advisor_brief
+        self._seed()
+        conn = main.get_db()
+        try:
+            b = advisor_brief.build_brief(conn, self.advisor, "open")
+        finally:
+            conn.close()
+        self.assertTrue(b, "el brief de apertura no debería venir vacío")
+        self.assertIn("Para llamar hoy", [s["title"] for s in b["sections"]])
+
+    def test_brief_idempotente_por_dia_y_kind(self):
+        import advisor_brief
+        today = self._seed()
+        conn = main.get_db()
+        try:
+            self.assertFalse(advisor_brief.already_sent(conn, self.advisor, "open", today))
+            advisor_brief.mark_sent(conn, self.advisor, "open", today)
+            conn.commit()
+            self.assertTrue(advisor_brief.already_sent(conn, self.advisor, "open", today))
+            # el otro brief del MISMO día sigue pendiente
+            self.assertFalse(advisor_brief.already_sent(conn, self.advisor, "close", today))
+        finally:
+            conn.close()
+
+    def test_prefs_toggle_y_respeto(self):
+        import advisor_brief
+        r = self.http.patch("/api/advisor/brief/prefs", json={"brief_open": False},
+                            headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        got = self.http.get("/api/advisor/brief/prefs", headers=self._hdr(self.advisor)).json()
+        self.assertFalse(got["brief_open"])
+        self.assertTrue(got["brief_close"])
+        conn = main.get_db()
+        try:
+            self.assertFalse(advisor_brief.brief_enabled(conn, self.advisor, "open"))
+            self.assertTrue(advisor_brief.brief_enabled(conn, self.advisor, "close"))
+        finally:
+            conn.close()
+
+    def test_cron_sin_token_cerrado(self):
+        r = self.http.post("/api/advisor/brief/run-cron?kind=open")
+        self.assertIn(r.status_code, (401, 503))
+
+    def test_cron_kind_invalido(self):
+        import os
+        os.environ["ADVISOR_BRIEF_TOKEN"] = "tok-test"
+        try:
+            r = self.http.post("/api/advisor/brief/run-cron?kind=medianoche&token=tok-test")
+            self.assertEqual(r.status_code, 400)
+        finally:
+            os.environ.pop("ADVISOR_BRIEF_TOKEN", None)
+
+    def test_preview_solo_asesor(self):
+        r = self.http.get("/api/advisor/brief/preview?kind=open", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        # uid único (la DB es compartida entre tests: un id fijo colisiona o
+        # se lo lleva puesto otro test que lo convirtió en asesor)
+        conn = main.get_db()
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (email,name,password_hash) VALUES (?,'N','x')",
+                (f"nobrief.{uuid.uuid4().hex[:8]}@x.co",))
+            otro = cur.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        r = self.http.get("/api/advisor/brief/preview?kind=open", headers=self._hdr(otro))
+        self.assertEqual(r.status_code, 403)

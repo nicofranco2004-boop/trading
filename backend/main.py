@@ -1226,6 +1226,17 @@ def init_db():
         );
     """)
 
+    # Brief del libro (2x/día, anclado al mercado): log de envíos para que
+    # re-correr el cron no duplique emails + preferencias por asesor.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS advisor_brief_log (
+            advisor_uid INTEGER NOT NULL,
+            kind TEXT NOT NULL,              -- 'open' (apertura) | 'close' (cierre)
+            date TEXT NOT NULL,              -- fecha ART
+            sent_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (advisor_uid, kind, date)
+        );
+    """)
     # Migración: teléfono del cliente (lote 4 del audit — botón WhatsApp).
     _ac_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_clients)").fetchall()]
     if _ac_cols and 'phone' not in _ac_cols:
@@ -1536,6 +1547,8 @@ def init_db():
             display_name TEXT,
             cnv_matricula TEXT,
             logo_data TEXT,                  -- data-URI (raster, ≤ ~300KB) del logo
+            brief_open INTEGER DEFAULT 1,    -- brief al abrir el mercado (~11:00 ART)
+            brief_close INTEGER DEFAULT 1,   -- brief al cierre (~17:15 ART)
             updated_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -1553,6 +1566,15 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_login_history_user ON login_history(user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
     """)
+
+    # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
+    # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
+    _ap_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_profile)").fetchall()]
+    if _ap_cols and 'brief_open' not in _ap_cols:
+        conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_open INTEGER DEFAULT 1;")
+    if _ap_cols and 'brief_close' not in _ap_cols:
+        conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_close INTEGER DEFAULT 1;")
+
 
     # subscriptions: columnas de idempotencia de emails (idempotent migration
     # para tablas pre-existentes — las new tienen estas cols ya en el CREATE).
@@ -27751,6 +27773,92 @@ def snapshots_run_cron(request: Request):
         _snapshot_cron_running = True
     threading.Thread(target=_run_daily_snapshot_bg, daemon=True).start()
     return {"ok": True, "status": "started"}
+
+
+# ─── Brief del libro del asesor (2x/día, anclado al mercado AR) ──────────────
+
+@app.api_route("/api/advisor/brief/run-cron", methods=["GET", "POST"])
+def advisor_brief_run_cron(request: Request):
+    """Arma y manda el brief del libro a los asesores. `kind=open` (apertura de
+    BYMA, ~11:00 ART: el plan del día) o `kind=close` (cierre, ~17:15 ART: el
+    resultado del día). Lo pega un cron externo días hábiles. Idempotente por
+    (asesor, kind, día) → re-correr no duplica. Corre en background (el fetch de
+    precios del cierre tarda más que el timeout del gateway).
+
+    Auth: header X-Cron-Token o ?token= contra ADVISOR_BRIEF_TOKEN (o el de
+    snapshots como fallback, para no multiplicar secretos)."""
+    expected = ((os.environ.get("ADVISOR_BRIEF_TOKEN") or "").strip()
+                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())
+    if not expected:
+        raise HTTPException(503, "Brief no configurado (falta ADVISOR_BRIEF_TOKEN).")
+    got = (request.headers.get("x-cron-token")
+           or request.query_params.get("token") or "").strip()
+    if got != expected:
+        raise HTTPException(401, "Token inválido.")
+    kind = (request.query_params.get("kind") or "open").strip().lower()
+    if kind not in ("open", "close"):
+        raise HTTPException(400, "kind debe ser 'open' o 'close'.")
+
+    def _bg():
+        try:
+            import advisor_brief
+            res = advisor_brief.run_briefs(kind, get_db)
+            log.info("advisor brief %s: %s", kind, res)
+        except Exception as ex:
+            log.error("advisor brief %s falló: %s", kind, ex)
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "status": "started", "kind": kind}
+
+
+@app.get("/api/advisor/brief/preview")
+def advisor_brief_preview(kind: str = "open", uid: int = Depends(get_current_user)):
+    """Vista previa del brief para el asesor (sin mandar email)."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_brief
+        if kind not in advisor_brief.KINDS:
+            raise HTTPException(400, "kind debe ser 'open' o 'close'.")
+        return {"brief": advisor_brief.build_brief(conn, uid, kind) or None}
+    finally:
+        conn.close()
+
+
+class AdvisorBriefPrefsIn(BaseModel):
+    brief_open: Optional[bool] = None
+    brief_close: Optional[bool] = None
+
+
+@app.get("/api/advisor/brief/prefs")
+def advisor_brief_prefs_get(uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        r = conn.execute("SELECT brief_open, brief_close FROM advisor_profile WHERE advisor_uid=?",
+                         (uid,)).fetchone()
+        return {"brief_open": True if not r or r["brief_open"] is None else bool(r["brief_open"]),
+                "brief_close": True if not r or r["brief_close"] is None else bool(r["brief_close"])}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/advisor/brief/prefs")
+def advisor_brief_prefs_set(data: AdvisorBriefPrefsIn, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO advisor_profile (advisor_uid) VALUES (?)", (uid,))
+            if data.brief_open is not None:
+                conn.execute("UPDATE advisor_profile SET brief_open=? WHERE advisor_uid=?",
+                             (1 if data.brief_open else 0, uid))
+            if data.brief_close is not None:
+                conn.execute("UPDATE advisor_profile SET brief_close=? WHERE advisor_uid=?",
+                             (1 if data.brief_close else 0, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 # ─── Push notifications (Sprint M4) ──────────────────────────────────────────
