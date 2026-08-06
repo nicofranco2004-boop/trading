@@ -760,13 +760,29 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         # campo como "ARS por USD", muestre un P&L de USD 10.000 como "$10.000"
         # (~1500× menos). NULL → el front usa el blue de la fecha, que es correcto.
         fx_stamp = tc_venta if sell_currency == "ARS" else None
+
+        # PRECIO DE ENTRADA EN LA MONEDA DE LA FILA (2026-08-06).
+        # `p["buy_price"]` está en la moneda en que se COMPRÓ y `exit_price` en la
+        # que se VENDIÓ: en una venta cruzada las dos puntas quedaban en unidades
+        # distintas dentro de la misma fila y el usuario leía cosas como
+        # "US$0,34 → US$68,64" (comprado a 0,343 dólares, vendido a 68,64 PESOS).
+        # `entry_invested` ya viene convertido a la moneda de la venta, así que
+        # dividirlo por la cantidad da el precio de entrada en esa misma moneda.
+        # NO cambia ningún P&L —siempre se calculó con `entry_invested`— y en las
+        # ventas de misma moneda el valor es el de siempre.
+        # Espeja rebuild._replay_asset; si tocás uno, tocá el otro.
+        if lot_currency != currency and entry_invested and take > 1e-9:
+            entry_price_fila = entry_invested / take
+        else:
+            entry_price_fila = p["buy_price"]
+
         cur = conn.execute(
             """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
                exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions,
                currency, fx_to_usd)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (uid, op_date, p["broker"], p["asset"], "Venta",
-             p["buy_price"], exit_price, take,
+             entry_price_fila, exit_price, take,
              round(pnl_usd, 2),
              round(pnl_pct, 4) if pnl_pct is not None else None,
              p["entry_date"] if "entry_date" in p.keys() else None,

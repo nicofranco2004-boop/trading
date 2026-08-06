@@ -472,12 +472,34 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
 
             pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
 
+            # PRECIO DE ENTRADA EN LA MONEDA DE LA FILA (2026-08-06).
+            # `lot["buy_price"]` está en la moneda en que se COMPRÓ, y `exit_price`
+            # en la que se VENDIÓ. En una venta cruzada eso dejaba las dos puntas
+            # en unidades distintas dentro de la MISMA fila, sin nada que lo
+            # dijera: el usuario leía "US$0,34 → US$68,64" (un lote comprado a
+            # 0,343 dólares y vendido a 68,64 PESOS) y la fila parecía un
+            # disparate. Reportado con un GD30 real.
+            #
+            # `entry_invested` ya viene convertido a la moneda de la venta (es lo
+            # que usa el P&L de abajo), así que dividirlo por la cantidad da el
+            # precio de entrada en esa misma moneda. Con eso la fila cierra sola:
+            # en el GD30 reportado pasa a 73,75 → 68,64 = −6,9%, que es exacto el
+            # pnl_pct que ya mostraba la fila.
+            #
+            # NO cambia ningún P&L: el resultado siempre se calculó con
+            # `entry_invested`, nunca con `entry_price`. Y en las ventas de misma
+            # moneda —la enorme mayoría— el valor es el de siempre.
+            if is_cross and entry_invested and take > _EPS:
+                entry_price_fila = entry_invested / take
+            else:
+                entry_price_fila = lot["buy_price"]
+
             operations.append({
                 "date": op_date,
                 "broker": ev["broker"],
                 "asset": ev["asset_symbol"],
                 "op_type": "Venta",
-                "entry_price": lot["buy_price"],
+                "entry_price": entry_price_fila,
                 "exit_price": exit_price,
                 "quantity": take,
                 "pnl_usd": round(pnl_usd, 2),
