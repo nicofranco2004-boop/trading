@@ -510,6 +510,73 @@ class DeleteCascade(unittest.TestCase):
         self.assertAlmostEqual(smeta["lot"]["invested"], 200.0, places=2)
         self.assertAlmostEqual(smeta["lot"]["consumed"], 2.0, places=6)
 
+    # ── Paso 2: borrar de verdad lo cargado a mano ────────────────────────────
+    def test_delete_manual_form_operation(self):
+        """Trade tipeado: no movió cash ni lotes → sale del P&L y listo."""
+        op = main.create_operation(main.OperationIn(
+            date="2024-05-02", broker=self.BROKER, asset="AAPL", op_type="Venta",
+            pnl_usd=25.0), uid=self.uid)
+        self.assertAlmostEqual(self._global_pnl(), 25.0, places=2)
+        with self.conn:
+            main._delete_operation_cascade(self.conn, self.uid, op["id"])
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+        self.assertEqual(self._ops_count("AAPL"), 0)
+        self._probe()
+
+    def test_delete_manual_position_reverses_autodeposit(self):
+        """Posición manual sin saldo previo: el alta AUTO-DEPOSITA. Borrarla tiene que
+        dejar el cash Y el capital aportado como estaban — devolver el costo entero
+        deja las dos cosas infladas."""
+        pos = main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)        # autodep 200 − costo 200
+        aportado = lambda: float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0)
+        self.assertAlmostEqual(aportado(), 200.0, places=2)
+        main.delete_position(pos["id"], uid=self.uid)
+        self.assertAlmostEqual(self._open_qty("MELI"), 0.0, places=6)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2,
+                               msg="quedó cash fantasma (se devolvió el costo entero)")
+        self.assertAlmostEqual(aportado(), 0.0, places=2,
+                               msg="quedó capital aportado fantasma del autodepósito")
+
+    def test_delete_manual_fifo_sell_restores_lot(self):
+        """Venta con el botón 'Vender': borrarla tiene que RESTAURAR el lote que
+        consumió y descontar el cash que acreditó."""
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        self.assertAlmostEqual(self._open_qty("MELI"), 0.0, places=6)   # lote consumido
+        self.assertAlmostEqual(self._cash(), 300.0, places=2)           # 2 × 150
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE asset='MELI' AND op_type='Venta' "
+            "ORDER BY id DESC LIMIT 1").fetchone()["id"]
+        with self.conn:
+            main._delete_operation_cascade(self.conn, self.uid, oid)
+        self.assertAlmostEqual(self._open_qty("MELI"), 2.0, places=6,
+                               msg="el lote consumido NO se restauró")
+        self.assertAlmostEqual(self._cash(), 0.0, places=2,
+                               msg="no se descontó el cash que la venta acreditó")
+        self.assertAlmostEqual(self._global_pnl(), 0.0, places=2)
+        self._probe()
+
+    def test_delete_manual_legacy_row_is_blocked(self):
+        """Fila vieja (sin la foto de reverso): su reverso NO es derivable → se
+        bloquea con mensaje claro en vez de arriesgar saldo/tenencia."""
+        oid = self.conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd)
+               VALUES (?,?,?,?,?,?)""",
+            (self.uid, "2023-01-05", self.BROKER, "AAPL", "Venta", 10)).lastrowid
+        self.conn.commit()
+        with self.assertRaises(main.HTTPException) as cm:
+            main._delete_operation_cascade(self.conn, self.uid, oid)
+        self.assertEqual(cm.exception.status_code, 400)
+
     # ── Regresión: borrar un cash-flow NO puede revivir en el próximo import ────
     def test_deleted_cashflow_is_tombstoned_not_deleted(self):
         """Antes se hacía DELETE físico de la fila fuente: como el dedup del import
