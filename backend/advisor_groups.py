@@ -182,16 +182,24 @@ def client_profiles(conn, uid: int, price_cache: dict = None) -> dict:
     # posiciones sin precio conocido (correcto para el P&L), pero para AGRUPAR
     # eso haría desaparecer a un cliente entero por un ticker raro → acá el
     # costo es el PISO: una cartera vale al menos lo que costó.
+    # El motor devuelve UNA FILA POR LOTE (positions tiene una fila por lote
+    # abierto: así lo escribe el rebuild del importador, y el mismo activo en
+    # dos brokers son dos filas más). Por eso se casa LOTE A LOTE y no por
+    # activo: agregar por (cliente, activo) y después sumar ese agregado en
+    # cada fila multiplicaba la cartera por la cantidad de lotes — con 3
+    # compras de AAPL, US$ 15.000 se leían como US$ 45.000 y el cliente
+    # entraba a un grupo "más de US$ 20.000" que no le corresponde.
     mkt = {}
     for v in valued:
         cid = v.get("client_uid")
         asset = (v.get("asset") or "").upper()
         if cid is not None and asset:
-            mkt[(cid, asset)] = mkt.get((cid, asset), 0.0) + float(v.get("value_usd") or 0)
+            mkt.setdefault((cid, asset, v.get("broker")), []).append(
+                float(v.get("value_usd") or 0))
 
     for r in conn.execute(
-            f"""SELECT p.user_id u, p.asset, p.asset_type, p.invested, p.commissions,
-                       COALESCE(b.currency,'ARS') bc
+            f"""SELECT p.user_id u, p.broker, p.asset, p.asset_type, p.invested,
+                       p.commissions, COALESCE(b.currency,'ARS') bc
                 FROM positions p LEFT JOIN brokers b
                   ON b.user_id=p.user_id AND b.name=p.broker
                 WHERE p.user_id IN ({ph}) AND COALESCE(p.is_cash,0)=0""", ids).fetchall():
@@ -202,8 +210,12 @@ def client_profiles(conn, uid: int, price_cache: dict = None) -> dict:
         asset = (r["asset"] or "").upper()
         if not asset:
             continue
-        val = mkt.get((cid, asset))
-        if val is None:
+        # Cada fila consume UN valor de mercado. Las que no tienen (el motor
+        # excluye lo que no puede valuar) caen al costo, que es el piso.
+        lots = mkt.get((cid, asset, r["broker"]))
+        if lots:
+            val = lots.pop()
+        else:
             cost = float(r["invested"] or 0) + float(r["commissions"] or 0)
             val = cost / tc_mep if (r["bc"] == "ARS" and tc_mep) else cost
         p["holdings"] += val

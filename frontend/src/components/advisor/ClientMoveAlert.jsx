@@ -125,7 +125,7 @@ export default function ClientMoveAlert({ config, onSaved }) {
         </div>
         <p className="text-[11px] text-ink-3 -mt-1">
           Un aviso por cliente por día, solo con el mercado abierto — no te llena la casilla.
-          {groupId ? ' El grupo se recalcula en cada chequeo: si un cliente deja de cumplir, deja de avisarte.' : ''}
+          {groupId ? ' Quiénes entran al grupo se resuelve con el último cierre; el movimiento del día se mide en vivo.' : ''}
           {(channel === 'push' || channel === 'both') && push && push.supported === false
             ? ' El push no está disponible en este dispositivo: te va a llegar por email.'
             : ''}

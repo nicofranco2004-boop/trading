@@ -3023,6 +3023,12 @@ def delete_my_account(response: Response, uid: int = Depends(get_effective_user)
                     deleted["advisor_reports"] = deleted.get("advisor_reports", 0) + _n
                 conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
             conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (uid,))
+            # Estas tablas usan advisor_uid, así que el barrido genérico por
+            # user_id no las toca: sin esto sobrevivían los nombres privados de
+            # los grupos, sus reglas y los ids de los ex-clientes excluidos.
+            for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
+                       "advisor_alert_events", "advisor_brief_log"):
+                conn.execute(f"DELETE FROM {_t} WHERE advisor_uid=?", (uid,))
             # Lotes de operación grupal del asesor (sin columna user_id)
             adv_batches = [r["id"] for r in conn.execute(
                 "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (uid,)).fetchall()]
@@ -16536,6 +16542,9 @@ def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
                              (_sid, _sid))
                 conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
             conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (user_id,))
+            for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
+                       "advisor_alert_events", "advisor_brief_log"):
+                conn.execute(f"DELETE FROM {_t} WHERE advisor_uid=?", (user_id,))
             adv_batches = [r["id"] for r in conn.execute(
                 "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (user_id,)).fetchall()]
             if adv_batches:
@@ -28285,7 +28294,14 @@ def alerts_evaluate(request: Request):
     from datetime import datetime as _dtmod
     conn = get_db()
     try:
-        result = _ae.evaluate_alerts(conn)
+        # Cada motor con su propia guarda: sin esto, una excepción en las
+        # alertas de PRECIO tiraba 500 y las del LIBRO no se evaluaban en esa
+        # corrida, sin log propio ni señal de que habían quedado sin correr.
+        try:
+            result = _ae.evaluate_alerts(conn)
+        except Exception as _ex:
+            log.error("alertas de precio en el cron: %s", _ex)
+            result = {"error_precio": str(_ex)}
         # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
         # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
         # de alta ningún cron nuevo.
@@ -28362,7 +28378,10 @@ _brief_cron_running: dict = {}
 class AdvisorGroupIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=60)
     rules: dict = Field(default_factory=dict)
-    excluded: Optional[list] = None
+    # Tipado y capeado: un valor no numérico reventaba con 500 y traceback en
+    # vez de un 422 explicado, y sin tope una sola llamada dejaba ~1,4 MB de
+    # basura en una fila que se lee y parsea en CADA evaluación del grupo.
+    excluded: Optional[List[int]] = Field(None, max_items=2000)
 
 
 @app.get("/api/advisor/groups")
@@ -28404,7 +28423,7 @@ def advisor_groups_create(data: AdvisorGroupIn, uid: int = Depends(get_current_u
                 "INSERT INTO advisor_groups (advisor_uid, name, rules, excluded) "
                 "VALUES (?,?,?,?)",
                 (uid, data.name.strip(), json.dumps(rules),
-                 json.dumps([int(x) for x in (data.excluded or [])])))
+                 json.dumps(data.excluded or [])))
         return {"ok": True, "id": cur.lastrowid, "rules": rules,
                 "description": ag.describe(rules)}
     finally:
@@ -28424,11 +28443,19 @@ def advisor_groups_update(group_id: int, data: AdvisorGroupIn,
         if not rules:
             raise HTTPException(400, "Elegí al menos una condición para el grupo.")
         with conn:
+            # Si el body no trae `excluded`, NO se toca: el asesor que edita
+            # sólo las condiciones no quiere perder los que sacó a mano ("todos
+            # los de Amazon menos Juan, que ya me dijo que no"). Antes ausente y
+            # lista vacía eran lo mismo y Juan volvía al grupo sin aviso.
+            _sets = ["name=?", "rules=?"]
+            _params = [data.name.strip(), json.dumps(rules)]
+            if "excluded" in data.model_fields_set:
+                _sets.append("excluded=?")
+                _params.append(json.dumps(data.excluded or []))
+            _params += [group_id, uid]
             conn.execute(
-                "UPDATE advisor_groups SET name=?, rules=?, excluded=? "
-                "WHERE id=? AND advisor_uid=?",
-                (data.name.strip(), json.dumps(rules),
-                 json.dumps([int(x) for x in (data.excluded or [])]), group_id, uid))
+                f"UPDATE advisor_groups SET {', '.join(_sets)} "
+                "WHERE id=? AND advisor_uid=?", _params)
         return {"ok": True, "rules": rules, "description": ag.describe(rules)}
     finally:
         conn.close()
@@ -28442,6 +28469,18 @@ def advisor_groups_delete(group_id: int, uid: int = Depends(get_current_user)):
         with conn:
             cur = conn.execute("DELETE FROM advisor_groups WHERE id=? AND advisor_uid=?",
                                (group_id, uid))
+            if cur.rowcount:
+                # La alerta del libro que apuntaba a este grupo se quedaba
+                # activa pero MUDA para siempre (el motor no encuentra el grupo
+                # y saltea), y el panel quedaba trabado en 404. Se apaga y se
+                # libera el alcance: apagada se VE, muda no. Tampoco se pasa
+                # sola a "todo el libro" — avisar de más también sería mentir.
+                _n = conn.execute(
+                    "UPDATE advisor_alerts SET group_id=NULL, active=0 "
+                    "WHERE advisor_uid=? AND group_id=?", (uid, group_id)).rowcount
+                if _n:
+                    conn.execute("UPDATE advisor_alert_state SET armed=1 WHERE advisor_uid=?",
+                                 (uid,))
         # Sin filas borradas el grupo no era suyo (o ya no existe): decir "ok"
         # sería mentir con un 200 y dejar el chip vivo en pantalla.
         if cur.rowcount == 0:

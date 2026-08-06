@@ -2139,6 +2139,94 @@ class AdvisorGroupsIsolationTest(AdvisorBase):
         self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}", headers=h1).status_code, 404)
 
 
+class AdvisorGroupsAuditTest(AdvisorBase):
+    """Regresiones del audit de los grupos (ff6f7b7)."""
+
+    def _pos(self, cid, asset, qty, invested, broker="IBKR"):
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR IGNORE INTO brokers (user_id,name,currency) VALUES (?,?,'USD')",
+                         (cid, broker))
+            conn.execute("INSERT INTO positions (user_id,broker,asset,quantity,invested,is_cash) "
+                         "VALUES (?,?,?,?,?,0)", (cid, broker, asset, qty, invested))
+            conn.execute("INSERT OR REPLACE INTO asset_last_price (symbol,price,updated_at) "
+                         "VALUES (?,?,datetime('now'))", (asset, 100.0))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_varios_lotes_del_mismo_activo_no_inflan_la_cartera(self):
+        # 3 compras de 50 AAPL a US$ 100 = US$ 15.000, no 45.000. Antes se
+        # agregaba por activo y después se sumaba ese total en CADA fila, así
+        # que la cartera escalaba con la cantidad de lotes y el cliente entraba
+        # a un grupo "más de US$ 20.000" que no le correspondía.
+        import advisor_groups as ag
+        for _ in range(3):
+            self._pos(self.client_uid, "AAPL", 50, 5000)
+        conn = main.get_db()
+        try:
+            prof = ag.client_profiles(conn, self.advisor)
+            self.assertAlmostEqual(prof[self.client_uid]["total_usd"], 15000, places=2)
+            self.assertEqual(ag.evaluate(conn, self.advisor, {"aum_min": 20000}), [])
+            self.assertEqual(len(ag.evaluate(conn, self.advisor, {"aum_min": 10000})), 1)
+        finally:
+            conn.close()
+
+    def test_patch_sin_excluded_no_borra_las_exclusiones(self):
+        # El asesor sacó a alguien a mano; editar las condiciones no puede
+        # devolverlo al grupo en silencio.
+        import json as _j
+        h = self._hdr(self.advisor)
+        r = self.http.post("/api/advisor/groups", headers=h,
+                             json={"name": "g", "rules": {"has_asset": "AMZN"}, "excluded": [999]})
+        gid = r.json()["id"]
+        self.http.patch(f"/api/advisor/groups/{gid}", headers=h,
+                          json={"name": "g", "rules": {"has_asset": "AMZN", "aum_min": 100}})
+        conn = main.get_db()
+        try:
+            row = conn.execute("SELECT excluded FROM advisor_groups WHERE id=?", (gid,)).fetchone()
+            self.assertEqual(_j.loads(row["excluded"]), [999])
+        finally:
+            conn.close()
+
+    def test_excluded_invalido_da_422_y_no_500(self):
+        h = self._hdr(self.advisor)
+        r = self.http.post("/api/advisor/groups", headers=h,
+                             json={"name": "g", "rules": {"has_asset": "AMZN"},
+                                   "excluded": ["no-soy-un-id"]})
+        self.assertEqual(r.status_code, 422)
+
+    def test_borrar_el_grupo_apaga_la_alerta_en_vez_de_dejarla_muda(self):
+        # Activa-y-muda es la peor combinación: el panel dice "Activa", no
+        # llega nada nunca más, y todo PATCH rebotaba con 404.
+        import advisor_alerts as aa
+        h = self._hdr(self.advisor)
+        gid = self.http.post("/api/advisor/groups", headers=h,
+                               json={"name": "g", "rules": {"has_asset": "AMZN"}}).json()["id"]
+        self.http.patch("/api/advisor/alerts", headers=h,
+                          json={"up_pct": 5, "down_pct": 5, "active": True, "group_id": gid})
+        self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}", headers=h).status_code, 200)
+        cfg = self.http.get("/api/advisor/alerts", headers=h).json()["config"]
+        self.assertIsNone(cfg["group_id"])
+        self.assertFalse(cfg["active"])
+        # y el panel se puede seguir usando (antes: 404 en cada guardado)
+        self.assertEqual(self.http.patch("/api/advisor/alerts", headers=h,
+                                           json={"active": False}).status_code, 200)
+
+    def test_borrar_la_cuenta_se_lleva_los_grupos(self):
+        h = self._hdr(self.advisor)
+        self.http.post("/api/advisor/groups", headers=h,
+                         json={"name": "privado", "rules": {"has_asset": "AMZN"}})
+        self.http.delete("/api/me", headers=h)
+        conn = main.get_db()
+        try:
+            n = conn.execute("SELECT COUNT(*) c FROM advisor_groups WHERE advisor_uid=?",
+                             (self.advisor,)).fetchone()["c"]
+            self.assertEqual(n, 0)
+        finally:
+            conn.close()
+
+
 class AdvisorAlertsGroupScopeTest(AdvisorAlertsAuditTest):
     """La alerta del libro acotada a un grupo: sólo avisa de los que cumplen
     la regla HOY. Hereda el harness (_run / _base_snapshot) del audit."""
@@ -2177,6 +2265,53 @@ class AdvisorAlertsGroupScopeTest(AdvisorAlertsAuditTest):
         self._base_snapshot()
         self._set_scope(None)
         self.assertEqual(self._run(12000)["fired"], 1)
+
+    def test_el_que_sale_del_grupo_y_vuelve_sigue_avisando(self):
+        # Disparó una vez, después dejó de cumplir la regla, y cuando vuelve
+        # —justo cuando el asesor lo quiere mirar— tiene que poder avisar de
+        # nuevo. Antes quedaba con armed=0 para siempre porque el filtro lo
+        # sacaba antes de la rama que re-arma.
+        import advisor_alerts as aa, advisor_brief
+        self._base_snapshot()
+        gid = self._mk_group({"has_asset": "AMZN"})
+        conn = main.get_db()
+        try:
+            aa.set_config(conn, self.advisor, up_pct=5, down_pct=5, active=True)
+            conn.commit()
+        finally:
+            conn.close()
+        self._set_scope(gid)          # el cliente NO tiene AMZN → queda afuera
+        # El armed=0 se siembra DESPUÉS del scope: cambiar el alcance re-arma a
+        # todos, así que sembrarlo antes hacía pasar el test sin probar nada.
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR REPLACE INTO advisor_alert_state "
+                         "(advisor_uid,client_uid,armed) VALUES (?,?,0)",
+                         (self.advisor, self.client_uid))
+            conn.commit()
+        finally:
+            conn.close()
+        # OJO: no se usa self._run — ese helper BORRA advisor_alert_state antes
+        # de cada corrida, y por eso la suite nunca probaba dos corridas
+        # encadenadas (que es exactamente donde vivía este bug).
+        conn = main.get_db()
+        try:
+            _d0, _l0 = aa._deliver, advisor_brief.live_book_values
+            aa._deliver = lambda *a, **k: (True, True)
+            advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 10000}
+            try:
+                aa.evaluate(conn, market_open=True, only_uid=self.advisor)
+            finally:
+                aa._deliver, advisor_brief.live_book_values = _d0, _l0
+        finally:
+            conn.close()
+        conn = main.get_db()
+        try:
+            armed = conn.execute("SELECT armed FROM advisor_alert_state WHERE advisor_uid=? "
+                                 "AND client_uid=?", (self.advisor, self.client_uid)).fetchone()["armed"]
+            self.assertEqual(armed, 1, "el que queda fuera del grupo tiene que re-armarse")
+        finally:
+            conn.close()
 
     def test_grupo_borrado_no_avisa_de_mas(self):
         # Si el grupo ya no existe NO caemos a "todo el libro" en silencio:

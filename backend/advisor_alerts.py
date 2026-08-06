@@ -34,8 +34,11 @@ def _today_art() -> str:
 
 def get_config(conn, uid: int) -> dict:
     row = conn.execute(
-        "SELECT up_pct, down_pct, channel, active, group_id FROM advisor_alerts "
-        "WHERE advisor_uid=?", (uid,)).fetchone()
+        "SELECT a.up_pct, a.down_pct, a.channel, a.active, "
+        "       CASE WHEN g.id IS NULL THEN NULL ELSE a.group_id END group_id "
+        "FROM advisor_alerts a LEFT JOIN advisor_groups g "
+        "  ON g.id = a.group_id AND g.advisor_uid = a.advisor_uid "
+        "WHERE a.advisor_uid=?", (uid,)).fetchone()
     if not row:
         return {"up_pct": None, "down_pct": None, "channel": "both",
                 "active": False, "group_id": None}
@@ -206,6 +209,19 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 if not g:
                     continue
                 members = {c["client_uid"] for c in ag.evaluate(conn, uid, g["rules"], g["excluded"])}
+                # Al que queda AFUERA hay que re-armarlo igual. Si no, uno que
+                # ya disparó y después dejó de cumplir la regla se quedaba con
+                # armed=0 para siempre: el día que volvía al grupo —justo
+                # cuando el asesor lo quiere mirar— no avisaba nunca más.
+                # (Al que ya disparó HOY no: sigue valiendo 1 aviso por día.)
+                _out = [k for k in labels if k not in members]
+                if _out:
+                    _oph = ",".join("?" * len(_out))
+                    conn.execute(
+                        "UPDATE advisor_alert_state SET armed=1 WHERE advisor_uid=? "
+                        "AND COALESCE(last_fired_date,'') <> ? "
+                        f"AND client_uid IN ({_oph})",
+                        (uid, today, *_out))
                 labels = {k: v for k, v in labels.items() if k in members}
                 if not labels:
                     continue
@@ -213,6 +229,11 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
 
             import advisor_brief
             live = advisor_brief.live_book_values(conn, ids, price_cache)
+            # live_book_values PERSISTE los precios que trajo → deja abierta una
+            # transacción de escritura. Se cierra ACÁ: lo que sigue hace red
+            # (push + email) y con el lock tomado toda la app come
+            # 'database is locked' cada 10 minutos.
+            conn.commit()
             if not live:
                 continue
             ph = ",".join("?" * len(ids))
@@ -255,16 +276,25 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
 
                 verbo = "subió" if side == "up" else "cayó"
                 msg = f"La cartera de {labels.get(cid)} {verbo} {abs(pct):.1f}% hoy"
-                p_ok, e_ok = _deliver(conn, uid, cfg["channel"] or "both",
-                                      "Rendi · Movimiento en tu libro", msg)
-                conn.execute(
+                # Sellar el estado y el evento ANTES de mandar: el envío son dos
+                # llamadas HTTP y no puede correr con el write-lock tomado. Si el
+                # push/email falla, el aviso igual queda registrado UNA vez —
+                # mejor eso que mandarlo dos veces o trabar la app entera.
+                _set_state(conn, uid, cid, 0, today)
+                _ev = conn.execute(
                     """INSERT INTO advisor_alert_events
                        (advisor_uid, client_uid, kind, message, pct, fired_at,
                         delivered_push, delivered_email)
-                       VALUES (?,?,'client_move',?,?,?,?,?)""",
-                    (uid, cid, msg, round(pct, 2), datetime.utcnow().isoformat(),
-                     1 if p_ok else 0, 1 if e_ok else 0))
-                _set_state(conn, uid, cid, 0, today)
+                       VALUES (?,?,'client_move',?,?,?,0,0)""",
+                    (uid, cid, msg, round(pct, 2), datetime.utcnow().isoformat()))
+                _evid = _ev.lastrowid
+                conn.commit()
+                p_ok, e_ok = _deliver(conn, uid, cfg["channel"] or "both",
+                                      "Rendi · Movimiento en tu libro", msg)
+                conn.execute("UPDATE advisor_alert_events SET delivered_push=?, "
+                             "delivered_email=? WHERE id=?",
+                             (1 if p_ok else 0, 1 if e_ok else 0, _evid))
+                conn.commit()
                 fired += 1
         except Exception as ex:
             log.error("advisor alerts uid=%s falló: %s", uid, ex)

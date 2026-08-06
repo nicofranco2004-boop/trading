@@ -54,6 +54,11 @@ export default function AdvisorClients() {
   const [groupOpOpen, setGroupOpOpen] = useState(false)
   useEffect(() => {
     if (!group) { setGroupIds(null); return }
+    // Vaciar ANTES de pedir. Si no, mientras viaja el request `groupIds` seguía
+    // valiendo lo de antes (null = "sin grupo" = pasan todos) y el asesor podía
+    // abrir el WhatsApp "del grupo" con TODO el libro adentro, o ver los del
+    // grupo anterior bajo el nombre del nuevo.
+    setGroupIds(undefined)
     let cancel = false
     api.get(`/advisor/groups/${group.id}/clients`)
       .then(d => { if (!cancel) setGroupIds(new Set((d.clients || []).map(c => c.client_uid))) })
@@ -138,8 +143,12 @@ export default function AdvisorClients() {
 
   // Clientes visibles = todos, o los del grupo activo (el grupo es un filtro,
   // no una lista aparte: el roster sigue siendo el mismo).
-  const visibleClients = (clients || []).filter(
-    c => !groupIds || groupIds.has(c.client_uid))
+  // `undefined` = grupo pedido pero todavía no llegó → no mostramos nada
+  // (mostrar "todos" bajo el nombre del grupo es lo que hacía el bug).
+  const groupLoading = group && groupIds === undefined
+  const visibleClients = !group ? (clients || [])
+    : groupLoading ? []
+    : (clients || []).filter(c => groupIds.has(c.client_uid))
 
   return (
     <div className="page-shell-wide" onClick={() => setMenuFor(null)}>
@@ -218,7 +227,9 @@ export default function AdvisorClients() {
         </div>
         {group && visibleClients.length === 0 && (
           <p className="text-xs text-ink-3 text-center py-6">
-            Ningún cliente cumple las condiciones de este grupo ahora mismo.
+            {groupLoading
+              ? 'Buscando quiénes entran en este grupo…'
+              : 'Ningún cliente cumple las condiciones de este grupo ahora mismo.'}
           </p>
         )}
         </>
