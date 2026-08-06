@@ -21711,6 +21711,64 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
 
 # ─── Fundamentals endpoints ────────────────────────────────────────────────
 
+# Cache en memoria del buscador de símbolos. La query es texto libre, así que no
+# va a la tabla de cache de yfinance (que es por ticker). TTL largo: el mapa
+# nombre→ticker no cambia.
+_symsearch_cache: dict = {}
+_SYMSEARCH_TTL = 24 * 3600
+# Bolsas US. yfinance devuelve el MISMO nombre listado en Frankfurt (FRA), Gettex
+# (GER), São Paulo (SAO)… y hasta pares de monedas: sin este filtro, buscar "amd"
+# ofrecía AUDAMD=X y "uber" ofrecía UT8.F antes que UBER.
+_US_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "ASE", "PCX", "BTS", "NAS", "NYS"}
+
+
+@app.get("/api/tickers/search")
+def search_tickers(q: str, uid: int = Depends(get_effective_user)):
+    """Resuelve texto libre —incluido el NOMBRE de la empresa— a tickers reales.
+
+    Existe porque el buscador de "Calidad de cartera" filtraba contra
+    POPULAR_TICKERS, una allowlist de 104 símbolos con apenas 21 acciones US.
+    Reportado por un usuario: no podía comparar AMD contra INTEL. La causa no era
+    el backend (que acepta cualquier ticker y responde por `quoteType`) sino que
+    la gente escribe el NOMBRE — "intel", "uber" — y eso no está en la lista. Al
+    no haber sugerencias, el Enter mandaba el texto crudo como si fuera un
+    ticker: "UBER" funcionaba de casualidad, "INTEL" no existe (es INTC).
+
+    Solo lectura, sin cupo. Devuelve [] ante cualquier problema: es un
+    autocomplete, nunca debe romper la pantalla.
+    """
+    query = (q or "").strip()
+    if len(query) < 2:
+        return {"results": []}
+    key = query.lower()
+    hit = _symsearch_cache.get(key)
+    if hit and (time.time() - hit["ts"]) < _SYMSEARCH_TTL:
+        return {"results": hit["data"]}
+
+    out = []
+    try:
+        import yfinance as _yf
+        for x in (_yf.Search(query, max_results=12).quotes or []):
+            sym = (x.get("symbol") or "").strip().upper()
+            if not sym or (x.get("quoteType") or "").upper() != "EQUITY":
+                continue
+            if (x.get("exchange") or "").upper() not in _US_EXCHANGES:
+                continue
+            out.append({
+                "symbol": sym,
+                "name": (x.get("shortname") or x.get("longname") or sym).strip(),
+                "exchange": x.get("exchange"),
+            })
+            if len(out) >= 8:
+                break
+    except Exception as ex:
+        log.warning("symbol search failed for %r: %s", query, ex)
+        return {"results": []}
+
+    _symsearch_cache[key] = {"ts": time.time(), "data": out}
+    return {"results": out}
+
+
 @app.get("/api/fundamentals/{ticker}")
 def get_fundamentals(ticker: str, uid: int = Depends(get_effective_user)):
     """Scorecard de fundamentales de una acción ("Calidad de cartera").
