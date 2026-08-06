@@ -16122,6 +16122,18 @@ def admin_billing_grant_comp(
         now = _dt.utcnow()
 
         if state["is_active"] and not force:
+            # Preview de lo que haría el force: el frontend lo usa para mostrar la
+            # fecha exacta en el confirm (base = vencimiento actual si sigue
+            # vigente, mismo cálculo que abajo).
+            _base = now
+            if state["active_until"]:
+                try:
+                    _cur = _dt.fromisoformat(str(state["active_until"]).replace("Z", ""))
+                    if _cur > _base:
+                        _base = _cur
+                except (ValueError, TypeError):
+                    pass
+            _would = (_base + _td(days=days)).isoformat()
             return {
                 "ok": False,
                 "changed": False,
@@ -16133,6 +16145,9 @@ def admin_billing_grant_comp(
                 ),
                 "credit_active_until": state["active_until"],
                 "days_remaining": round(state["days_remaining"], 1),
+                "current_plan": state["anchor_plan"],      # plan que ya tiene
+                "requested_plan": plan,                    # plan que le querés dar
+                "would_be_active_until": _would,           # vencimiento tras el force
             }
 
         # Base = el vencimiento actual si sigue vigente (extiende), sino NOW.

@@ -109,8 +109,21 @@ export default function Admin() {
     try {
       let res = await api.post(url)
       if (res?.ok === false && res?.reason === 'credit_already_active') {
-        const until = (res.credit_active_until || '').slice(0, 10)
-        if (!confirm(`${u.email} ya tiene plan activo hasta ${until}. ¿Sumar ${days} días más?`)) return
+        // El caso más común es querer SUBIR de plan (Plus→Pro) a alguien con un
+        // plan vigente. El mensaje viejo decía solo "¿Sumar 30 días más?" — no
+        // mencionaba el cambio de plan, así que el admin lo cancelaba y el grant
+        // "no hacía nada". Ahora distingue upgrade de extensión y muestra la
+        // fecha resultante exacta (la calcula el backend en would_be_active_until).
+        const planNombre = p => p === 'pro' ? 'Pro' : p === 'plus' ? 'Plus' : p === 'advisor' ? 'Asesor' : (p || 'un plan')
+        const cur = res.current_plan
+        const hasta = (res.credit_active_until || '').slice(0, 10)
+        const nuevoHasta = (res.would_be_active_until || '').slice(0, 10)
+        const msg = (cur && cur !== plan)
+          ? `${u.email} tiene ${planNombre(cur)} activo (vence ${hasta}).\n\n`
+            + `Cambiarlo a ${planLabel} AHORA y sumarle ${days} días → queda ${planLabel} hasta ${nuevoHasta}.`
+          : `${u.email} ya tiene ${planLabel} activo (vence ${hasta}).\n\n`
+            + `Extender ${days} días → ${planLabel} hasta ${nuevoHasta}.`
+        if (!confirm(msg)) return
         res = await api.post(url + '&force=true')
       }
       if (res?.ok) {
