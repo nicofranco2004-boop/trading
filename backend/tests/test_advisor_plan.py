@@ -2109,6 +2109,90 @@ class AdvisorAlertsAuditTest(AdvisorBase):
         self.assertEqual(self._run(12000)["fired"], 1)
 
 
+class AdvisorGroupsIsolationTest(AdvisorBase):
+    """El grupo de un asesor no existe para otro — ni para leerlo, ni para
+    borrarlo, ni para apuntarle una alerta."""
+
+    def test_grupo_ajeno_invisible_e_intocable(self):
+        # el "otro" tiene que ser asesor también: si no, el 403 del tier taparía
+        # el aislamiento que queremos probar
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE users SET tier='advisor' WHERE id=?", (self.stranger,))
+            conn.commit()
+        finally:
+            conn.close()
+        h1 = self._hdr(self.advisor)
+        h2 = self._hdr(self.stranger)
+        gid = self.http.post("/api/advisor/groups",
+                             json={"name": "mio", "rules": {"has_asset": "AMZN"}},
+                             headers=h1).json()["id"]
+        self.assertEqual(self.http.get(f"/api/advisor/groups/{gid}/clients", headers=h2).status_code, 404)
+        self.assertEqual(self.http.patch("/api/advisor/alerts", json={"group_id": gid},
+                                         headers=h2).status_code, 404)
+        # borrar el ajeno: 404 y el grupo sigue vivo (antes devolvía 200 sin
+        # borrar nada — un "listo" que no era cierto)
+        self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}", headers=h2).status_code, 404)
+        self.assertEqual([g["name"] for g in self.http.get("/api/advisor/groups", headers=h1).json()["groups"]],
+                         ["mio"])
+        self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}", headers=h1).status_code, 200)
+        self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}", headers=h1).status_code, 404)
+
+
+class AdvisorAlertsGroupScopeTest(AdvisorAlertsAuditTest):
+    """La alerta del libro acotada a un grupo: sólo avisa de los que cumplen
+    la regla HOY. Hereda el harness (_run / _base_snapshot) del audit."""
+
+    def _mk_group(self, rules):
+        import json as _j
+        conn = main.get_db()
+        try:
+            cur = conn.execute(
+                "INSERT INTO advisor_groups (advisor_uid, name, rules, excluded) VALUES (?,?,?,?)",
+                (self.advisor, "Grupo", _j.dumps(rules), "[]"))
+            conn.commit()
+            return cur.lastrowid
+        finally:
+            conn.close()
+
+    def _set_scope(self, gid):
+        import advisor_alerts as aa
+        conn = main.get_db()
+        try:
+            aa.set_config(conn, self.advisor, group_id=gid)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_cliente_fuera_del_grupo_no_dispara(self):
+        # El cliente no tiene AMZN → el grupo "los de Amazon" lo deja afuera,
+        # así que su +20% no genera aviso.
+        self._base_snapshot()
+        gid = self._mk_group({"has_asset": "AMZN"})
+        self._set_scope(gid)
+        self.assertEqual(self._run(12000)["fired"], 0)
+
+    def test_sin_grupo_avisa_de_todo_el_libro(self):
+        # Volver a "todos" reabre el aviso: el scope no queda pegado.
+        self._base_snapshot()
+        self._set_scope(None)
+        self.assertEqual(self._run(12000)["fired"], 1)
+
+    def test_grupo_borrado_no_avisa_de_mas(self):
+        # Si el grupo ya no existe NO caemos a "todo el libro" en silencio:
+        # avisar de más es peor que no avisar.
+        self._base_snapshot()
+        gid = self._mk_group({"has_asset": "AMZN"})
+        self._set_scope(gid)
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM advisor_groups WHERE id=?", (gid,))
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self._run(12000)["fired"], 0)
+
+
 class AdvisorGroupsTest(AdvisorBase):
     """Grupos de clientes: filtros guardados y DINÁMICOS."""
 

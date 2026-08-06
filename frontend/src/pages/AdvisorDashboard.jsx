@@ -761,6 +761,18 @@ function ReportModal({ onClose }) {
     api.get('/advisor/profile').then(p => setBrand({ name: p.name || '', matricula: p.matricula || '', logo: p.logo || null })).catch(() => setProfileError(true))
   }, [])
 
+  // Grupos guardados: generar el informe para "Los de Amazon" sin tildar de a uno.
+  const [groups, setGroups] = useState([])
+  useEffect(() => {
+    api.get('/advisor/groups').then(d => setGroups(d.groups || [])).catch(() => setGroups([]))
+  }, [])
+  async function pickGroup(g) {
+    try {
+      const d = await api.get(`/advisor/groups/${g.id}/clients`)
+      setChecked(new Set((d.clients || []).map(c => c.client_uid)))
+    } catch { /* la selección queda como estaba */ }
+  }
+
   const allChecked = clients && checked && checked.size === clients.length
   const toggleAll = () => {
     if (!clients) return  // roster aún cargando — evita el TypeError del .map
@@ -954,6 +966,16 @@ function ReportModal({ onClose }) {
 
         <div>
           <p className="text-xs text-ink-2 mb-1.5">¿Para quién?</p>
+          {groups.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap mb-2">
+              {groups.map(g => (
+                <button key={g.id} type="button" onClick={() => pickGroup(g)} title={g.description}
+                  className="text-[11px] border border-line hover:border-data-violet/50 text-ink-2 hover:text-ink-0 rounded-full px-2.5 py-1 transition-colors">
+                  {g.name} <span className="opacity-60">{g.count ?? 0}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="border border-line rounded-md max-h-44 overflow-y-auto divide-y divide-line/40">
             <label className="flex items-center gap-2.5 px-3 py-2 text-[12.5px] font-semibold text-ink-0 cursor-pointer hover:bg-bg-2/50">
               <input type="checkbox" className="accent-[#8B7DFF]" checked={!!allChecked}

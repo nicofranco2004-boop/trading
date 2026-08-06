@@ -34,15 +34,18 @@ def _today_art() -> str:
 
 def get_config(conn, uid: int) -> dict:
     row = conn.execute(
-        "SELECT up_pct, down_pct, channel, active FROM advisor_alerts WHERE advisor_uid=?",
-        (uid,)).fetchone()
+        "SELECT up_pct, down_pct, channel, active, group_id FROM advisor_alerts "
+        "WHERE advisor_uid=?", (uid,)).fetchone()
     if not row:
-        return {"up_pct": None, "down_pct": None, "channel": "both", "active": False}
+        return {"up_pct": None, "down_pct": None, "channel": "both",
+                "active": False, "group_id": None}
     return {"up_pct": row["up_pct"], "down_pct": row["down_pct"],
-            "channel": row["channel"] or "both", "active": bool(row["active"])}
+            "channel": row["channel"] or "both", "active": bool(row["active"]),
+            "group_id": row["group_id"]}
 
 
-def set_config(conn, uid: int, up_pct=None, down_pct=None, channel=None, active=None):
+def set_config(conn, uid: int, up_pct=None, down_pct=None, channel=None, active=None,
+               group_id="__keep__"):
     conn.execute("INSERT OR IGNORE INTO advisor_alerts (advisor_uid) VALUES (?)", (uid,))
     sets, params = [], []
     if up_pct is not None:
@@ -51,6 +54,15 @@ def set_config(conn, uid: int, up_pct=None, down_pct=None, channel=None, active=
         sets.append("down_pct=?"); params.append(down_pct or None)
     if channel is not None:
         sets.append("channel=?"); params.append(channel)
+    if group_id != "__keep__":
+        # None = todo el libro. Re-armamos SOLO si el alcance cambió de verdad:
+        # el front manda el campo en cada guardado (tocar el canal no debería
+        # resetear el estado de nadie).
+        prev = conn.execute("SELECT group_id FROM advisor_alerts WHERE advisor_uid=?",
+                            (uid,)).fetchone()
+        sets.append("group_id=?"); params.append(group_id)
+        if (prev["group_id"] if prev else None) != group_id:
+            conn.execute("UPDATE advisor_alert_state SET armed=1 WHERE advisor_uid=?", (uid,))
     if active is not None:
         sets.append("active=?"); params.append(1 if active else 0)
         # Prender de nuevo re-arma a todos: el movimiento que ya pasó no
@@ -149,7 +161,8 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
     # para siempre": sin él, un asesor con el plan vencido seguía recibiendo
     # los nombres y los movimientos de sus ex-clientes sin poder apagarlo
     # (la UI ya no le muestra el switch). Mismo criterio que advisor_brief.
-    q = ("SELECT a.advisor_uid, a.up_pct, a.down_pct, a.channel FROM advisor_alerts a "
+    q = ("SELECT a.advisor_uid, a.up_pct, a.down_pct, a.channel, a.group_id "
+         "FROM advisor_alerts a "
          "JOIN users u ON u.id = a.advisor_uid "
          "WHERE a.active=1 AND (a.up_pct IS NOT NULL OR a.down_pct IS NOT NULL) "
          "AND u.tier='advisor' AND COALESCE(u.managed_by,0)=0")
@@ -182,6 +195,20 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 continue
             labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
                       for r in links}
+            # Alcance: todo el libro, o sólo los clientes del grupo elegido.
+            # El grupo es una REGLA, así que se re-evalúa en cada corrida: si
+            # hoy ya no cumple, hoy no genera aviso. Grupo borrado → sin avisos
+            # (no caemos a "todo el libro", que sería avisar de más en silencio).
+            gid = cfg["group_id"] if "group_id" in cfg.keys() else None
+            if gid:
+                import advisor_groups as ag
+                g = ag.get_group(conn, uid, gid)
+                if not g:
+                    continue
+                members = {c["client_uid"] for c in ag.evaluate(conn, uid, g["rules"], g["excluded"])}
+                labels = {k: v for k, v in labels.items() if k in members}
+                if not labels:
+                    continue
             ids = list(labels)
 
             import advisor_brief

@@ -1266,6 +1266,7 @@ def init_db():
             down_pct REAL,                   -- dispara si cae ≥ down_pct%
             channel TEXT NOT NULL DEFAULT 'both',
             active INTEGER NOT NULL DEFAULT 1,
+            group_id INTEGER,                -- NULL = todo el libro; si no, solo ese grupo
             updated_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS advisor_alert_state (
@@ -1305,6 +1306,12 @@ def init_db():
     _ac_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_clients)").fetchall()]
     if _ac_cols and 'phone' not in _ac_cols:
         conn.executescript("ALTER TABLE advisor_clients ADD COLUMN phone TEXT;")
+
+    # Migración: alerta del libro acotada a un grupo (NULL = todo el libro).
+    # Va DESPUÉS del CREATE de advisor_alerts, nunca antes.
+    _aa_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_alerts)").fetchall()]
+    if _aa_cols and 'group_id' not in _aa_cols:
+        conn.executescript("ALTER TABLE advisor_alerts ADD COLUMN group_id INTEGER;")
 
     # Migración: anchor_price para el modo "Desde ahora" (la tabla alerts ya existe
     # en prod sin esta columna → CREATE IF NOT EXISTS no la agrega).
@@ -28433,8 +28440,12 @@ def advisor_groups_delete(group_id: int, uid: int = Depends(get_current_user)):
     try:
         _require_advisor(conn, uid)
         with conn:
-            conn.execute("DELETE FROM advisor_groups WHERE id=? AND advisor_uid=?",
-                         (group_id, uid))
+            cur = conn.execute("DELETE FROM advisor_groups WHERE id=? AND advisor_uid=?",
+                               (group_id, uid))
+        # Sin filas borradas el grupo no era suyo (o ya no existe): decir "ok"
+        # sería mentir con un 200 y dejar el chip vivo en pantalla.
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Grupo no encontrado.")
         return {"ok": True}
     finally:
         conn.close()
@@ -28479,6 +28490,9 @@ class AdvisorAlertIn(BaseModel):
     down_pct: Optional[float] = Field(None, ge=0, le=100000)
     channel: Optional[str] = Field(None, max_length=8)
     active: Optional[bool] = None
+    # 0 / null explícito = todo el libro; un id = solo ese grupo. `undefined`
+    # (la clave ausente) NO toca el scope: el toggle de on/off no lo pisa.
+    group_id: Optional[int] = Field(None, ge=0)
 
 
 @app.get("/api/advisor/alerts")
@@ -28506,8 +28520,15 @@ def advisor_alerts_set(data: AdvisorAlertIn, uid: int = Depends(get_current_user
             raise HTTPException(400, "Canal inválido.")
         import advisor_alerts
         with conn:
+            gid = "__keep__"
+            if "group_id" in data.model_fields_set:
+                gid = data.group_id or None
+                if gid is not None:
+                    import advisor_groups as ag
+                    if not ag.get_group(conn, uid, gid):
+                        raise HTTPException(404, "Ese grupo no existe.")
             advisor_alerts.set_config(conn, uid, up_pct=data.up_pct, down_pct=data.down_pct,
-                                      channel=data.channel, active=data.active)
+                                      channel=data.channel, active=data.active, group_id=gid)
         return {"ok": True, "config": advisor_alerts.get_config(conn, uid)}
     finally:
         conn.close()

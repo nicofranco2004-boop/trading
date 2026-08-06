@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import GroupsBar from '../components/advisor/GroupsBar'
+import GroupWhatsAppModal from '../components/advisor/GroupWhatsAppModal'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
@@ -46,6 +47,7 @@ export default function AdvisorClients() {
   // Grupo activo (filtro dinámico guardado). null = todos.
   const [group, setGroup] = useState(null)
   const [groupIds, setGroupIds] = useState(null)   // Set de client_uid del grupo
+  const [waGroup, setWaGroup] = useState(false)
   const [error, setError] = useState(null)
   const [addOpen, setAddOpen] = useState(false)
   const [notesFor, setNotesFor] = useState(null)  // cliente cuyo modal de notas está abierto
@@ -190,6 +192,14 @@ export default function AdvisorClients() {
             <button type="button" onClick={() => setGroup(null)} className="text-rendi-accent hover:underline">
               ver todos
             </button>
+            {visibleClients.some(c => c.phone) && (
+              <>
+                {' · '}
+                <button type="button" onClick={() => setWaGroup(true)} className="text-rendi-accent hover:underline">
+                  escribirles por WhatsApp
+                </button>
+              </>
+            )}
           </p>
         )}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -212,6 +222,12 @@ export default function AdvisorClients() {
           </p>
         )}
         </>
+      )}
+
+      {waGroup && group && (
+
+        <GroupWhatsAppModal group={group} clients={visibleClients} onClose={() => setWaGroup(false)} />
+
       )}
 
       {addOpen && <AddClientModal onClose={() => setAddOpen(false)} onCreated={() => { setAddOpen(false); load() }} />}
@@ -534,6 +550,21 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   })
   const [currency, setCurrency] = useState('ARS')
+  // Grupos guardados: en vez de tildar 12 clientes a mano, "Los de Amazon".
+  const [groups, setGroups] = useState([])
+  useEffect(() => {
+    api.get('/advisor/groups').then(d => setGroups(d.groups || [])).catch(() => setGroups([]))
+  }, [])
+  async function applyGroup(g) {
+    try {
+      const d = await api.get(`/advisor/groups/${g.id}/clients`)
+      const ids = new Set((d.clients || []).map(c => c.client_uid))
+      const sel = {}
+      prep.forEach((c) => { sel[c.client_uid] = ids.has(c.client_uid) && c.brokers.length > 0 })
+      setSelected(sel)
+    } catch { /* si falla, la selección queda como estaba */ }
+  }
+
   // Paso 2/3 — clientes + asignación
   const [prep, setPrep] = useState(null)         // respuesta de /prep
   const [selected, setSelected] = useState({})   // client_uid → bool
@@ -698,6 +729,18 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
               Alternar todos
             </button>
           </div>
+          {groups.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[11px] text-ink-3">Elegir por grupo:</span>
+              {groups.map(g => (
+                <button key={g.id} type="button" onClick={() => applyGroup(g)}
+                  title={g.description}
+                  className="text-[11px] border border-line hover:border-data-violet/50 text-ink-2 hover:text-ink-0 rounded-full px-2.5 py-1 transition-colors">
+                  {g.name} <span className="opacity-60">{g.count ?? 0}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="border border-line/60 rounded-lg divide-y divide-line/40 max-h-72 overflow-y-auto">
             {prep.map((c) => (
               <label key={c.client_uid} className={`flex items-center gap-3 px-3 py-2.5 text-sm ${c.brokers.length === 0 ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-bg-1'}`}>

@@ -1,7 +1,7 @@
 // ClientMoveAlert — "avisame si la cartera de cualquiera de mis clientes se
 // mueve X%". Es la alerta de variación % que ya tienen los usuarios, pero un
 // nivel arriba: en vez de un ACTIVO, mira la CARTERA COMPLETA de cada cliente.
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { TrendingUp, TrendingDown, Users } from 'lucide-react'
 import Panel from '../Panel'
 import { api } from '../../utils/api'
@@ -21,6 +21,12 @@ export default function ClientMoveAlert({ config, onSaved }) {
   const [up, setUp] = useState(config?.up_pct != null ? String(config.up_pct) : '')
   const [down, setDown] = useState(config?.down_pct != null ? String(config.down_pct) : '')
   const [channel, setChannel] = useState(config?.channel || 'both')
+  // Alcance: todo el libro, o sólo un grupo guardado ("Los de Amazon").
+  const [groupId, setGroupId] = useState(config?.group_id || 0)
+  const [groups, setGroups] = useState([])
+  useEffect(() => {
+    api.get('/advisor/groups').then(d => setGroups(d.groups || [])).catch(() => setGroups([]))
+  }, [])
   const [busy, setBusy] = useState(false)
   const push = usePushNotifications()
   const active = !!config?.active
@@ -39,7 +45,7 @@ export default function ClientMoveAlert({ config, onSaved }) {
     try {
       const r = await api.patch('/advisor/alerts', {
         up_pct: uAbs > 0 ? uAbs : 0, down_pct: dAbs > 0 ? dAbs : 0,
-        channel, active: nextActive,
+        channel, active: nextActive, group_id: groupId || 0,
       })
       onSaved?.(r.config)
       if (uAbs > 0) setUp(String(uAbs))
@@ -99,6 +105,19 @@ export default function ClientMoveAlert({ config, onSaved }) {
           <span className="text-xs text-ink-3 w-6">%</span>
         </div>
 
+        {groups.length > 0 && (
+          <div className="pt-1">
+            <label className="text-[11px] text-ink-3 block mb-1.5">¿A quiénes vigilo?</label>
+            <select value={groupId} onChange={e => setGroupId(Number(e.target.value))}
+              className="w-full text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 focus:border-rendi-accent/50 outline-none">
+              <option value={0}>Todos mis clientes</option>
+              {groups.map(g => (
+                <option key={g.id} value={g.id}>Solo {g.name} ({g.count ?? 0})</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div className="flex gap-2 flex-wrap pt-1">
           <button type="button" className={seg(channel === 'both')} onClick={() => setChannel('both')}>Push + Email</button>
           <button type="button" className={seg(channel === 'push')} onClick={() => setChannel('push')}>Push</button>
@@ -106,6 +125,7 @@ export default function ClientMoveAlert({ config, onSaved }) {
         </div>
         <p className="text-[11px] text-ink-3 -mt-1">
           Un aviso por cliente por día, solo con el mercado abierto — no te llena la casilla.
+          {groupId ? ' El grupo se recalcula en cada chequeo: si un cliente deja de cumplir, deja de avisarte.' : ''}
           {(channel === 'push' || channel === 'both') && push && push.supported === false
             ? ' El push no está disponible en este dispositivo: te va a llegar por email.'
             : ''}
