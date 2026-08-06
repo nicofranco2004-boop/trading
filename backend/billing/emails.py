@@ -1281,5 +1281,7 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
     """
     text = (f"{title}\n\n{hi}\n{headline}\n\n" + "\n\n".join(secs_txt)
             + f"\n\nAbrir tu libro: {url}\n\n— Rendi")
-    subject = (f"Tu libro hoy · {headline}" if headline else title)[:120]
+    # El asunto tiene que decir de qué brief es: el de cierre salía con el
+    # título del de apertura ("Tu libro hoy") y en la bandeja se confundían.
+    subject = (f"{title} · {headline}" if headline else title)[:120]
     return _send(to, subject, _wrap_html(body_html), text, from_addr=_from_noreply())

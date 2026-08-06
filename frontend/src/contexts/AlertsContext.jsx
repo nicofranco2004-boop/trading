@@ -8,7 +8,7 @@
 //
 // Backend ya listo: alert_events.seen + POST /api/alerts/events/seen + el flag
 // `seen` en GET /api/alerts (useAlerts deriva unseenCount).
-import { createContext, useCallback, useContext, useEffect, useRef } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { useAlerts } from '../hooks/useAlerts'
 import { api } from '../utils/api'
 
@@ -18,6 +18,19 @@ export function AlertsProvider({ children }) {
   const alerts = useAlerts()
   const { refresh } = alerts
 
+  // Los avisos del LIBRO viven en otra tabla (advisor_alert_events) y no salen
+  // de /alerts. Sin esto el puntito no se prendía nunca para un asesor: su
+  // cuenta no tiene alertas de precio propias, así que el contador daba 0
+  // aunque le hubieran avisado de cinco clientes.
+  const [advisorUnseen, setAdvisorUnseen] = useState(0)
+  const loadAdvisor = useCallback(async () => {
+    try {
+      const d = await api.get('/advisor/alerts')
+      setAdvisorUnseen((d.history || []).filter(e => !e.seen).length)
+    } catch { setAdvisorUnseen(0) }   // 401/403 = no es asesor: sin badge
+  }, [])
+  useEffect(() => { loadAdvisor() }, [loadAdvisor])
+
   // Marca todos los eventos como vistos (apaga el badge) y recarga. Idempotente:
   // el backend hace UPDATE ... WHERE seen=0 (no-op si no hay nada sin ver).
   // Silencioso: el indicador no es crítico, un error no debe romper la página.
@@ -26,6 +39,12 @@ export function AlertsProvider({ children }) {
       await api.post('/alerts/events/seen')
       await refresh()
     } catch { /* el badge no es crítico */ }
+    // Los del libro se apagan aparte (endpoint propio); si la cuenta no es
+    // asesora tira 403 y no pasa nada.
+    try {
+      await api.post('/advisor/alerts/events/seen')
+      setAdvisorUnseen(0)
+    } catch { /* no es asesor */ }
   }, [refresh])
 
   // Refrescar al volver a la pestaña (throttle 60s) → capta alertas nuevas sin
@@ -39,12 +58,20 @@ export function AlertsProvider({ children }) {
       if (now - lastRefreshRef.current < 60000) return
       lastRefreshRef.current = now
       refresh()
+      loadAdvisor()
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [refresh])
+  }, [refresh, loadAdvisor])
 
-  return <AlertsCtx.Provider value={{ ...alerts, markSeen }}>{children}</AlertsCtx.Provider>
+  // El sidebar lee UN solo número: los propios + los del libro.
+  const unseenCount = (alerts.unseenCount || 0) + advisorUnseen
+
+  return (
+    <AlertsCtx.Provider value={{ ...alerts, unseenCount, markSeen }}>
+      {children}
+    </AlertsCtx.Provider>
+  )
 }
 
 // Degradación segura: fuera del provider devuelve defaults (sin dot, no-op) en

@@ -1285,7 +1285,8 @@ def init_db():
             pct REAL,
             fired_at TEXT DEFAULT (datetime('now')),
             delivered_push INTEGER NOT NULL DEFAULT 0,
-            delivered_email INTEGER NOT NULL DEFAULT 0
+            delivered_email INTEGER NOT NULL DEFAULT 0,
+            seen INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_adv_alert_ev
             ON advisor_alert_events(advisor_uid, fired_at DESC);
@@ -1306,6 +1307,12 @@ def init_db():
     _ac_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_clients)").fetchall()]
     if _ac_cols and 'phone' not in _ac_cols:
         conn.executescript("ALTER TABLE advisor_clients ADD COLUMN phone TEXT;")
+
+    # Migración: `seen` de los avisos del libro (prende el puntito del sidebar).
+    _ae_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_alert_events)").fetchall()]
+    if _ae_cols and 'seen' not in _ae_cols:
+        conn.executescript(
+            "ALTER TABLE advisor_alert_events ADD COLUMN seen INTEGER NOT NULL DEFAULT 0;")
 
     # Migración: alerta del libro acotada a un grupo (NULL = todo el libro).
     # Va DESPUÉS del CREATE de advisor_alerts, nunca antes.
@@ -4022,7 +4029,9 @@ class SnapshotIn(BaseModel):
 
 @app.post("/api/snapshots")
 def post_snapshot(data: SnapshotIn, uid: int = Depends(get_effective_user)):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    # Día ART, no UTC: después de las 21:00 de acá ya es "mañana" en UTC y el
+    # snapshot quedaba fechado un día adelante, pisando al del cierre real.
+    today = _iso_today()
     # Phase C: stampamos fx_to_usd_blue desde el cache de /dolar (TTL 5min).
     #
     # Audit fix C2 (2026-05-31): NO hacemos fetch sincrónico al dolarapi acá.
@@ -28381,7 +28390,7 @@ class AdvisorGroupIn(BaseModel):
     # Tipado y capeado: un valor no numérico reventaba con 500 y traceback en
     # vez de un 422 explicado, y sin tope una sola llamada dejaba ~1,4 MB de
     # basura en una fila que se lee y parsea en CADA evaluación del grupo.
-    excluded: Optional[List[int]] = Field(None, max_items=2000)
+    excluded: Optional[List[int]] = Field(None, max_length=2000)
 
 
 @app.get("/api/advisor/groups")
@@ -28546,6 +28555,21 @@ def advisor_alerts_get(uid: int = Depends(get_current_user)):
                "history_days": advisor_alerts.HISTORY_DAYS}
         conn.commit()   # history() purga lo viejo: sin commit era no-op + write-lock
         return out
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/alerts/events/seen")
+def advisor_alerts_events_seen(uid: int = Depends(get_current_user)):
+    """Apaga el puntito del sidebar: marca los avisos del libro como vistos.
+    Idempotente (no-op si no hay nada sin ver), igual que el de precio."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        with conn:
+            conn.execute("UPDATE advisor_alert_events SET seen=1 "
+                         "WHERE advisor_uid=? AND seen=0", (uid,))
+        return {"ok": True}
     finally:
         conn.close()
 

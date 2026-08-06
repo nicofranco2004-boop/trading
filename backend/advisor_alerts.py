@@ -82,7 +82,7 @@ def history(conn, uid: int, limit: int = 30) -> list:
     purge_old(conn)
     rows = conn.execute(
         """SELECT id, client_uid, kind, message, pct, fired_at,
-                  delivered_push, delivered_email
+                  delivered_push, delivered_email, seen
            FROM advisor_alert_events WHERE advisor_uid=?
            ORDER BY fired_at DESC LIMIT ?""", (uid, limit)).fetchall()
     return [dict(r) for r in rows]
@@ -243,11 +243,16 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
             # invento (audit). 4 días cubre un finde largo.
             _floor = (datetime.utcnow() - timedelta(hours=3) - timedelta(days=4)).date().isoformat()
             snaps, base_nd = {}, {}
+            # OJO: se excluye HOY a propósito. El browser escribe un snapshot
+            # intradiario al abrir la app, y si ese pasaba a ser la base el
+            # "% del día" se comparaba contra sí mismo → daba ~0 y la alerta
+            # no disparaba nunca. La base tiene que ser el CIERRE ANTERIOR.
             for r in conn.execute(
                     f"""SELECT s.user_id, s.total_value, s.net_deposited, s.date FROM snapshots s
-                        WHERE s.user_id IN ({ph})
+                        WHERE s.user_id IN ({ph}) AND s.date < ?
                           AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
-                                        WHERE s2.user_id = s.user_id)""", ids).fetchall():
+                                        WHERE s2.user_id = s.user_id AND s2.date < ?)""",
+                    ids + [today, today]).fetchall():
                 if str(r["date"]) < _floor:
                     continue          # base vieja → este cliente no se evalúa
                 snaps[r["user_id"]] = float(r["total_value"] or 0)

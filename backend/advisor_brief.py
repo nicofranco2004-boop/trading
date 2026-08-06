@@ -187,6 +187,23 @@ def _fx(conn):
 
 # ─── Armado del brief ─────────────────────────────────────────────────────────
 
+_EVENT_LABELS = {
+    "earnings": "Reporte trimestral",
+    "ex_dividend": "Ex-dividendo",
+    "payment_date": "Pago de dividendo",
+    "split": "Split de acciones",
+    "bond_coupon": "Cupón de bono",
+    "bond_amort": "Amortización",
+    "bond_coupon_amort": "Cupón + amortización",
+    "bond_maturity": "Vencimiento de bono",
+}
+
+
+def _event_label(t: str) -> str:
+    """Mismas etiquetas que ve el usuario en la app (upcomingEvents.js)."""
+    return _EVENT_LABELS.get(t or "", t or "Evento")
+
+
 def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
     """Contenido del brief. Devuelve {} si el asesor no tiene nada que contar
     (sin clientes) — el caller no manda email vacío."""
@@ -229,15 +246,15 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
             if holders:
                 tph = ",".join("?" * len(holders))
                 evs = conn.execute(
-                    f"""SELECT ticker, kind, date, title FROM financial_events
-                        WHERE ticker IN ({tph}) AND date = ?
+                    f"""SELECT ticker, event_type, event_date FROM financial_events
+                        WHERE ticker IN ({tph}) AND event_date = ?
                         ORDER BY ticker LIMIT 6""",
                     list(holders.keys()) + [out["date"]]).fetchall()
                 if evs:
                     out["sections"].append({
                         "title": "Eventos de hoy",
                         "items": [{"label": e["ticker"],
-                                   "detail": f"{e['title'] or e['kind']} · lo "
+                                   "detail": f"{_event_label(e['event_type'])} · lo "
                                              f"{'tiene' if len(holders.get(e['ticker']) or []) == 1 else 'tienen'} "
                                              f"{_clientes(len(holders.get(e['ticker']) or []))}"}
                                   for e in evs]})
@@ -265,11 +282,15 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
         live = live_book_values(conn, ids, cache)
         if live:
             ph = ",".join("?" * len(ids))
+            # Se excluye HOY: el snapshot intradiario que escribe el browser
+            # haría que "cómo cerró hoy" se compare contra un valor de hoy.
+            _hoy = _today_art()
             snaps = {r["user_id"]: r for r in conn.execute(
                 f"""SELECT s.user_id, s.date, s.total_value FROM snapshots s
-                    WHERE s.user_id IN ({ph})
+                    WHERE s.user_id IN ({ph}) AND s.date < ?
                       AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
-                                    WHERE s2.user_id = s.user_id)""", ids).fetchall()}
+                                    WHERE s2.user_id = s.user_id AND s2.date < ?)""",
+                ids + [_hoy, _hoy]).fetchall()}
             # Solo clientes con base: comparar vivo contra su último cierre.
             per = []
             for cid, now_v in live.items():
