@@ -73,24 +73,22 @@ class CasoNubankTest(_PoolBase):
     historial borra la primera pata.
     """
 
-    @unittest.expectedFailure
     def test_netea_a_cero(self):
         self._import(_csv(
             "2025-05-30,COMPRA,IOL,NU,551,10,5510,,,0,USD,",
             "2025-06-01,COMPRA,IOL,NU,1000,5000,5000000,,,0,ARS,",
-            "2025-06-24,VENTA,IOL,NU,1547,5200,8044400,,,0,ARS,",
+            "2025-06-24,VENTA,IOL,NU,1551,5200,8065200,,,0,ARS,",
             "2026-06-01,COMPRA,IOL,NU,1305,6000,7830000,,,0,ARS,",
             "2026-06-17,VENTA,IOL,NU,1305,12,15660,,,0,USD,",
         ), rebuild=True)
         self.assertEqual(self._abierto(), 0.0,
                          "compras y ventas netean a cero: no puede quedar nada abierto")
 
-    @unittest.expectedFailure
     def test_no_fabrica_lotes(self):
         self._import(_csv(
             "2025-05-30,COMPRA,IOL,NU,551,10,5510,,,0,USD,",
             "2025-06-01,COMPRA,IOL,NU,1000,5000,5000000,,,0,ARS,",
-            "2025-06-24,VENTA,IOL,NU,1547,5200,8044400,,,0,ARS,",
+            "2025-06-24,VENTA,IOL,NU,1551,5200,8065200,,,0,ARS,",
             "2026-06-01,COMPRA,IOL,NU,1305,6000,7830000,,,0,ARS,",
             "2026-06-17,VENTA,IOL,NU,1305,12,15660,,,0,USD,",
         ), rebuild=True)
@@ -142,12 +140,15 @@ class GuardTenenciaGenuinaTest(_PoolBase):
 
     def test_la_pata_dolar_genuina_sobrevive_entera(self):
         self._armar()
-        # HOY da 150: los 100 USD intactos + 50 ARS. La venta de 30 ARS tenía sólo
-        # 20 disponibles y los 10 faltantes salieron de una SEMILLA, no de la pata
-        # dólar. Ese es el comportamiento a preservar: el fix rechazado dejaba 90
-        # de dólares porque se los comía para tapar esa venta.
-        self.assertEqual(self._abierto(), 150.0,
-                         "se comió tenencia genuina para tapar una venta anterior")
+        # Con pool único: la venta de 30 en pesos tiene 20 en pesos + 100 en
+        # dólares disponibles al momento, y consume 10 de la pata dólar. Quedan
+        # 90 USD + 50 ARS = 140. Antes daba 150 porque fabricaba un lote por los
+        # 10 faltantes.
+        #
+        # Lo que SÍ se conserva: la venta del 2025-01-10 es el primer evento del
+        # archivo y no hay lotes de ninguna moneda, así que ahí la semilla sigue
+        # siendo correcta — ver GuardVentaSinHistorialTest.
+        self.assertEqual(self._abierto(), 140.0)
 
 
 class GuardDualCurrencyParcialTest(_PoolBase):
@@ -165,28 +166,17 @@ class GuardDualCurrencyParcialTest(_PoolBase):
             "2025-01-06,COMPRA,IOL,NU,5,10,50,,,0,USD,",
             "2025-02-01,VENTA,IOL,NU,7,5500,38500,,,0,ARS,",
         ), rebuild=True)
-        # ⚠️ ACÁ ESTÁ EL CONFLICTO DE FONDO, y este test lo deja escrito.
+        # DECISIÓN TOMADA (2026-08-04): pool único.
         #
-        # HOY da 5: la venta de 7 consume los 5 lotes en pesos y fabrica una
-        # semilla por los 2 que faltan. Los 5 dólares NO se tocan. Es el guard del
-        # audit 2026-06-26 y la razón por la que los tres intentos anteriores se
-        # rechazaron.
+        # Tenía 10 nominales del mismo CEDEAR —5 comprados en pesos, 5 en dólares—
+        # y vendió 7. Le quedan 3. La moneda determina el COSTO de cada lote, no
+        # cuántos nominales tenés.
         #
-        # CON POOL ÚNICO daría 3: si tenés 10 nominales del mismo CEDEAR (5
-        # comprados en pesos, 5 en dólares) y vendés 7, te quedan 3. No hay otra
-        # lectura contable.
-        #
-        # Los dos criterios son INCOMPATIBLES y la diferencia no se puede resolver
-        # con más código: hay que elegir qué significa una venta que supera los
-        # lotes de su moneda.
-        #   · criterio actual  → "falta historial": fabricá el lote que falta y no
-        #     toques la otra pata. Protege a quien importó un período parcial.
-        #   · criterio de pool → "es el mismo activo": consumí lo que tenés. Cierra
-        #     las cuentas de quien opera en las dos monedas (Nubank, PETR3).
-        #
-        # Este assert fija el criterio ACTUAL. Cambiarlo tiene que ser una decisión
-        # explícita, no un efecto colateral de arreglar Nubank.
-        self.assertEqual(self._abierto(), 5.0)
+        # Esto reemplaza el criterio del audit 2026-06-26, que dejaba 5 y fabricaba
+        # un lote por los 2 faltantes para no tocar la pata dólar. Ese criterio
+        # protegía a quien importó un período parcial, pero es el que deja los 650
+        # abiertos de Nubank y la ganancia inflada de 489 dólares.
+        self.assertEqual(self._abierto(), 3.0)
 
 
 class GuardConductoMepTest(_PoolBase):

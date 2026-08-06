@@ -181,28 +181,41 @@ class XBrokerMepNetting(unittest.TestCase):
         # proceeds ARS 1560×(2/13)≈240 → pérdida acotada, lejos de cualquier 100×.
         self.assertLess(abs(self._pnl("AAPL")), 1e6, "P&L del spill cross-currency fuera de rango")
 
-    def test_genuine_dual_currency_partial_oversell_preserves_usd(self):
-        """Tenencia GENUINA dual-currency: 5 ARS + 5 USD. Una venta ARS de 7 (oversell
-        de 2, PERO MENOR que la pata USD de 5) NO debe comerse la pata USD genuina —
-        el faltante se cubre con un seed same-currency (history-as-truth). El spill
-        cross-currency solo aplica cuando el oversell consume ENTERA la pata USD
-        (neteo total dólar-MEP), no a un oversell parcial. Regresión del audit
-        2026-06-26 (over-netting): antes `_same + _other` se comía 2 de la pata USD."""
+    def test_genuine_dual_currency_partial_oversell_consume_la_pata_usd(self):
+        """POOL ÚNICO (decisión del 2026-08-04): 5 ARS + 5 USD son 10 nominales del
+        MISMO activo. Una venta de 7 deja 3.
+
+        Este test decía lo contrario hasta hoy — el criterio del audit 2026-06-26
+        era que la venta consumiera los 5 en pesos y FABRICARA un lote por los 2
+        faltantes, dejando la pata dólar intacta en 5. Ese criterio protegía a quien
+        importó un período parcial de su historial, pero es el que dejaba nominales
+        abiertos que el usuario no tiene y ganancia inflada: medido sobre un export
+        real de IOL (Nubank, 113 operaciones), compras = ventas = 29.996 y el motor
+        dejaba 650 abiertos, 4 lotes fabricados y 489,72 USD de más.
+
+        Lo que SÍ se conserva del criterio viejo: cuando NO hay lotes de ninguna
+        moneda, la venta sigue generando el lote semilla — ver
+        `test_sell_without_history_seeds`. La diferencia es que ahora se fabrica
+        sólo cuando no hay nada, no cuando hay lotes reales disponibles al lado."""
         csv = _csv(
             "2025-07-01,COMPRA,Cocos,GGAL,5,1000,5000,,,0,ARS,",
             "2025-07-02,COMPRA,Cocos,GGAL,5,10,50,,,0,USD,",
             "2026-01-16,VENTA,Cocos,GGAL,7,1200,8400,,,0,ARS,",
         )
         self._import(csv, rebuild=True)
-        self.assertAlmostEqual(self._qty("GGAL", "%· USD%"), 5.0, places=6)   # pata USD GENUINA intacta
-        self.assertAlmostEqual(self._qty("GGAL"), 5.0, places=6)             # total = 5 (USD), ARS 0
+        # 5 en pesos + 5 en dólares − 7 vendidos = 3, todos en la pata dólar.
+        self.assertAlmostEqual(self._qty("GGAL", "%· USD%"), 3.0, places=6)
+        self.assertAlmostEqual(self._qty("GGAL"), 3.0, places=6)
 
-    def test_genuine_dual_currency_split_oversell_preserves_usd(self):
-        """Igual que el anterior pero el oversell ARS llega en DOS ventas (7 + 2). La
-        primera drena los lotes ARS; la segunda ve _same_total==0 y NO debe tratar la
-        pata USD genuina como conduit (case (a)) — el activo SÍ tuvo compra ARS
-        (seen_buy_ccy), así que se preserva. Order-independence (regresión audit
-        2026-06-26: la 2da venta se comía 2 de la pata USD)."""
+    def test_genuine_dual_currency_split_oversell_consume_la_pata_usd(self):
+        """Igual que el anterior pero el oversell llega en DOS ventas (7 + 2).
+
+        Con pool único el resultado no depende de cómo se parta la venta: 10
+        nominales menos 9 vendidos dan 1, tanto si se vende de una como en dos
+        veces. Esa independencia del orden es la propiedad que el test cuida.
+
+        (Antes esperaba 5: cada venta fabricaba su propio lote para no tocar la
+        pata dólar. Ver el test anterior para el porqué del cambio de criterio.)"""
         csv = _csv(
             "2025-07-01,COMPRA,Cocos,GGAL,5,1000,5000,,,0,ARS,",
             "2025-07-02,COMPRA,Cocos,GGAL,5,10,50,,,0,USD,",
@@ -210,8 +223,9 @@ class XBrokerMepNetting(unittest.TestCase):
             "2026-02-16,VENTA,Cocos,GGAL,2,1300,2600,,,0,ARS,",
         )
         self._import(csv, rebuild=True)
-        self.assertAlmostEqual(self._qty("GGAL", "%· USD%"), 5.0, places=6)   # pata USD GENUINA intacta
-        self.assertAlmostEqual(self._qty("GGAL"), 5.0, places=6)
+        # 5 + 5 − (7 + 2) = 1, en la pata dólar.
+        self.assertAlmostEqual(self._qty("GGAL", "%· USD%"), 1.0, places=6)
+        self.assertAlmostEqual(self._qty("GGAL"), 1.0, places=6)
 
     def test_ars_sell_within_lots_preserves_genuine_usd(self):
         """Tenencia USD genuina NO se toca cuando la venta ARS se cubre con lotes ARS:

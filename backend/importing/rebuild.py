@@ -386,18 +386,29 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
         # esa pata es GENUINA (no un conduit) → NO la tocamos; el faltante se cubre con
         # un seed same-currency. Así no destruimos una tenencia dual-currency real
         # (audit 2026-06-26: 5 ARS + 5 USD, venta 7 ARS NO debe comerse la pata USD).
-        full_net = (oversell_same > _EPS and _other_total > _EPS
-                    and oversell_same >= _other_total - _EPS)
-        never_held_same = currency not in seen_buy_ccy
-        do_spill = (_same_total <= _EPS and _other_total > _EPS and never_held_same) or full_net
-
-        # Capacidad de consumo de la OTRA moneda (spill cross-currency), como el MÁX de:
-        #   - per-venta (do_spill): conducto puro o full-net de ESTA venta → toda la pata.
-        #   - agregada (budget_left): el caso gradual del Pass 1.
-        # Tomar el máximo nunca quita capacidad → no regresiona bidireccional/conducto.
-        per_sell_cap = _other_total if do_spill else 0.0
-        spill_cap = max(per_sell_cap, budget_left.get(currency, 0.0))
-        spill_qty = min(max(0.0, oversell_same), _other_total, spill_cap)
+        # ── POOL ÚNICO (2026-08-04) ───────────────────────────────────────────
+        # Un CEDEAR/bono/acción es UN activo: si comprás 100 nominales, tenés 100,
+        # y podés venderlos en la moneda que quieras. La moneda determina el COSTO
+        # de cada lote, no CUÁNTOS nominales tenés.
+        #
+        # Antes esto era un presupuesto ("spill") calculado sobre el NETO de todo
+        # el historial, y cuando no alcanzaba se FABRICABA un lote al precio de
+        # venta. De ahí salían los dos síntomas reportados por usuarios: nominales
+        # abiertos que no existen y ganancia inflada. Medido sobre un export real
+        # de IOL (Nubank, 113 ops): compras 29.996 = ventas 29.996 y el motor
+        # dejaba 650 abiertos, 4 lotes fabricados y 489,72 USD de más.
+        #
+        # La causa: el neto borraba las patas cuando el flujo cruzado era
+        # BIDIRECCIONAL en el tiempo (dólares→pesos en 2025, pesos→dólares en
+        # 2026). Cada dirección necesitaba su propio presupuesto bruto.
+        #
+        # Ahora no hay presupuesto: si hay lotes reales disponibles, se consumen.
+        # Se fabrica un lote SÓLO cuando no hay nada, que es el caso legítimo de
+        # history-as-truth (el usuario tenía los títulos de antes del export).
+        #
+        # Se conserva el orden "misma moneda primero": es la elección de QUÉ lote
+        # consumir y mantenerla acota el cambio de costo al mínimo necesario.
+        spill_qty = min(max(0.0, oversell_same), _other_total)
 
         # Same-currency primero; la pata cruzada se capa a spill_qty DENTRO del loop.
         _consume_from = list(_same)
