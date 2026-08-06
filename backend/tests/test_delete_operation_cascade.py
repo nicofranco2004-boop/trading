@@ -366,6 +366,36 @@ class DeleteCascade(unittest.TestCase):
             (self.uid,)).fetchone()["c"], 1)                        # el dividendo volvió
         self._probe()
 
+    # ── El tacho de CARTERA debe cascadear igual que el de Operaciones ─────────
+    def test_delete_position_endpoint_cascades_when_imported(self):
+        """`DELETE /api/positions/{id}` era un DELETE crudo: la fila desaparecía pero
+        el cash quedaba debitado, la fuente sin tombstonear (el activo RESUCITABA al
+        re-importar) y el link colgado (rompía el borrado bueno desde Movimientos)."""
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self.assertAlmostEqual(self._cash(), -1500.0, places=2)
+        pid = self._pos_id()
+        self.conn.commit()
+        res = main.delete_position(pid, uid=self.uid)
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)   # el cash volvió
+        # La fuente quedó tombstoneada → no resucita al re-derivar.
+        self.assertIsNotNone(self.conn.execute(
+            "SELECT excluded_at FROM import_normalized_tx WHERE operation_type='BUY'"
+        ).fetchone()["excluded_at"], "la compra no quedó tombstoneada → va a resucitar")
+        self.assertTrue(res.get("undo_token"), "sin token no hay cómo deshacer")
+        self._probe()
+
+    def test_delete_position_endpoint_manual_still_works(self):
+        """Las posiciones cargadas a mano (sin link de import) siguen borrándose
+        directo — no hay eventos importados que re-derivar."""
+        pid = self.conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash)
+               VALUES (?,?,?,?,?,0)""", (self.uid, "IBKR", "MELI", 5, 1000)).lastrowid
+        self.conn.commit()
+        main.delete_position(pid, uid=self.uid)
+        self.assertIsNone(self.conn.execute(
+            "SELECT id FROM positions WHERE id=?", (pid,)).fetchone())
+
     # ── El endpoint DEBE devolver el undo_token (el botón "Deshacer" depende) ──
     def test_delete_movement_returns_undo_token(self):
         """`delete_movement` descartaba el token de las cascadas y devolvía solo

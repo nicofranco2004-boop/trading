@@ -6927,9 +6927,45 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
 
 @app.delete("/api/positions/{pid}")
 def delete_position(pid: int, uid: int = Depends(get_effective_user)):
+    """Borra una posición desde Cartera.
+
+    Si es IMPORTADA (tiene `import_op_links`) rutea al motor de cascada, el mismo que
+    usa Operaciones. Antes esto era un DELETE crudo: la fila desaparecía de Cartera
+    pero (a) el cash seguía debitado por esa compra, (b) el capital aportado y la curva
+    seguían contándola (ni un snapshot purgado ni monthly recalculado), (c) la fila
+    fuente NO quedaba tombstoneada → el activo RESUCITABA al re-importar, y (d) el link
+    quedaba colgado apuntando a una position inexistente, con lo cual el borrado BUENO
+    desde Movimientos tiraba 404 para siempre. Era el mismo gesto visual que el tacho de
+    Operaciones con un motor completamente distinto.
+
+    Las MANUALES (sin link) siguen con el borrado directo: no hay eventos importados que
+    re-derivar. Su cash tampoco se reversa — comportamiento previo, no lo cambiamos acá.
+    """
     conn = get_db()
-    conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
-    conn.commit()
+    try:
+        link = conn.execute(
+            "SELECT 1 FROM import_op_links WHERE position_id=? LIMIT 1", (pid,),
+        ).fetchone()
+        if link:
+            # Cascada completa (reversa cash + tombstone + re-derive + snapshots). Puede
+            # bloquear con mensaje claro (bono, compra ya vendida en parte, lote semilla
+            # de foto): mejor frenar que corromper, igual que en Operaciones.
+            result = _delete_position_cascade(conn, uid, pid)
+            conn.commit()
+            conn.close()
+            _ai_cache_invalidate(uid)
+            return result
+        conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        conn.close()
+        raise
+    except Exception as ex:
+        conn.rollback()
+        conn.close()
+        log.error("delete_position falló uid=%s pid=%s: %s", uid, pid, ex)
+        raise HTTPException(500, "No se pudo borrar la posición")
     conn.close()
     _ai_cache_invalidate(uid)
     return {"ok": True}
