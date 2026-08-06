@@ -374,7 +374,7 @@ function OperationsDesktop() {
           componente aparte que fetcha /api/movements (unificado). El return
           temprano evita renderizar el resto de la página (KPIs de trades,
           tabla, modales) que solo aplica al tab "Solo trades". */}
-      {tab === 'all' && <MovementsView />}
+      {tab === 'all' && <MovementsView onChanged={load} />}
       {tab === 'trades' && (
       <>
       {/* KPI strip denso */}
@@ -975,7 +975,10 @@ function buildGroups(rows, groupBy) {
   return groups
 }
 
-function MovementsView() {
+// `onChanged` = el load() del padre. Borrar acá cambia también las operaciones del
+// tab 'Solo P/L', cuyos datos viven en el padre y se cargan una sola vez al montar:
+// sin avisarle, la operación borrada seguía visible ahí (y en sus KPIs) hasta recargar.
+function MovementsView({ onChanged }) {
   // Fase B: formatter atado al toggle global ARS/USD. Lo bajamos a
   // computeMovementKpis y a MovementRow vía props para evitar shadow.
   // Phase C audit fix H1: el HM (historical money) se usa en MovementRow
@@ -1040,6 +1043,7 @@ function MovementsView() {
     try {
       const res = await api.delete(`/movements/${encodeURIComponent(m.id)}`)
       await load()
+      onChanged?.()
       // Los trades devuelven token de deshacer (cascada reversible). Los cash-flows
       // todavía no: ahí solo confirmamos, sin prometer nada que no exista.
       const token = res?.undo_token
@@ -1052,6 +1056,7 @@ function MovementsView() {
               try {
                 await api.post(`${base}/${token}`)
                 await load()
+                onChanged?.()
                 toast.push('Listo, lo restauramos.', { type: 'success' })
               } catch (ex) {
                 toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
