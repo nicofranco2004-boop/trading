@@ -10627,9 +10627,14 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
     para no pisarlas, pero quedaba inerte porque acá se borraba la fila primero.
 
     Borrar un movimiento NO cambia lo que valía la cartera aquel día. Entonces:
-      • SINTÉTICAS (las fabricó el backfill: sin blue ni holdings — misma
-        heurística que `sintetico` en el informe mensual): son derivadas → se
-        borran y el backfill las recrea ya corregidas.
+      • SINTÉTICAS (las fabricó el backfill): son derivadas → se borran y el
+        backfill las recrea ya corregidas. Para identificarlas NO alcanza con
+        "sin blue ni holdings" (la heurística del informe mensual): `POST
+        /api/snapshots` —el que escribe el Dashboard— guarda fx=NULL cuando el
+        caché del dólar está frío y NUNCA escribe holdings, así que una MEDICIÓN
+        real caía en esa red y se borraba igual (verificado con un probe). El
+        backfill solo escribe FIN DE MES, así que exigimos también esa fecha:
+        mismo beneficio, sin llevarse puestas las fotos de media de mes.
       • REALES: se conservan. Solo se les recomputa `net_deposited` (el capital
         aportado, que SÍ cambió) con la SSoT `compute_net_deposited_db`.
       • HOY: se borra siempre — la reescribe la próxima visita/cron con el estado
@@ -10645,7 +10650,8 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
         conn.execute(
             """DELETE FROM snapshots
                 WHERE user_id=? AND date >= ? AND fx_to_usd_blue IS NULL
-                  AND COALESCE(TRIM(holdings_json), '') = ''""",
+                  AND COALESCE(TRIM(holdings_json), '') = ''
+                  AND date = date(date, 'start of month', '+1 month', '-1 day')""",
             (uid, since_date),
         )
         from snapshots_job import compute_net_deposited_db as _cnd

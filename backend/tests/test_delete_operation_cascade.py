@@ -89,6 +89,37 @@ class DeleteCascade(unittest.TestCase):
             main._recalc_pnl_realized_from_ops(self.conn, self.uid)
         return sid
 
+    def _import_dedup(self, csv_bytes: bytes) -> str:
+        """Como `_import` pero replicando el paso de ANTI-DUPLICACIÓN del endpoint real
+        (`import_confirm`, main.py:25697): saltea por fingerprint las filas ya presentes
+        en otro batch confirmado y las borra del normalized del batch nuevo. `_import`
+        lo omite, así que no sirve para probar el escenario de re-import solapado."""
+        with self.conn:
+            payload = pl.run_preview(
+                self.conn, uid=self.uid, file_bytes=csv_bytes, file_name="y.csv",
+                broker_hint=self.BROKER, parser_format="rendi_generic",
+            )
+        sid = payload["session_id"]
+        with self.conn:
+            txs, raw = pl.load_session_for_confirm(self.conn, uid=self.uid, session_id=sid)
+            skip = pl.already_imported_row_indices(self.conn, self.uid, sid, txs,
+                                                   already_skipped=set())
+            if skip:
+                txs = [t for t in txs if t.row_index not in skip]
+                _ph = ",".join("?" * len(skip))
+                self.conn.execute(
+                    f"""DELETE FROM import_normalized_tx
+                         WHERE batch_id=? AND raw_row_id IN (
+                           SELECT id FROM import_raw_rows
+                            WHERE batch_id=? AND row_index IN ({_ph}))""",
+                    (sid, sid, *skip))
+            ps.persist_batch(self.conn, uid=self.uid, batch_id=sid, txs=txs,
+                             raw_row_ids_by_index=raw, helpers=_helpers())
+            tc = ps._read_tc_blue(self.conn, uid=self.uid)
+            rb.rebuild_fifo_after_import(self.conn, self.uid, sid, tc_blue=tc)
+            main._recalc_pnl_realized_from_ops(self.conn, self.uid)
+        return sid
+
     def _open_qty(self, asset="AAPL"):
         return float(self.conn.execute(
             "SELECT COALESCE(SUM(quantity),0) q FROM positions WHERE user_id=? AND asset=? AND is_cash=0",
@@ -459,6 +490,31 @@ class DeleteCascade(unittest.TestCase):
             "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0),
             0.0, places=2, msg="el depósito borrado sigue contando en capital aportado")
 
+    def test_deleted_deposit_does_not_come_back_on_overlapping_reimport(self):
+        """EL escenario real de la resurrección: borrás un depósito y al mes siguiente
+        subís el export SOLAPADO del broker (Balanz/Cocos/PPI/IEB mandan el histórico
+        completo). El depósito NO puede volver ni re-sumar la plata."""
+        self._import(_csv("2024-03-10,DEPOSITO,IBKR,,,,10000,,,0,USD,"))
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='DEPOSIT'").fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)
+
+        # Export del mes siguiente: MISMO depósito + una compra nueva (con el dedup
+        # real del endpoint, que es donde vive la anti-duplicación).
+        self._import_dedup(_csv("2024-03-10,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                                "2024-04-05,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        # El depósito quedó fuera (dedup por fingerprint, que sobrevive al tombstone);
+        # solo entró la compra → cash = -1500, no +8500.
+        self.assertAlmostEqual(self._cash(), -1500.0, places=2,
+                               msg="el depósito borrado RESUCITÓ en el import solapado")
+        self.assertAlmostEqual(float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0),
+            0.0, places=2, msg="el depósito borrado volvió al capital aportado")
+        self._probe()
+
     def test_seed_rows_are_blocked_everywhere(self):
         """La compra semilla y el depósito sintético de la foto de tenencia no se
         pueden borrar sueltos: los fondea un depósito COMPARTIDO. La guarda estaba
@@ -514,6 +570,55 @@ class DeleteCascade(unittest.TestCase):
             (self.uid,)).fetchone()
         if syn:
             self.assertIsNone(syn["fx_to_usd_blue"])   # si existe, es la recreada
+
+    def test_delete_preserves_cold_cache_dashboard_snapshot(self):
+        """`POST /api/snapshots` (el que escribe el Dashboard) guarda fx=NULL cuando el
+        caché del dólar está frío, y NUNCA escribe holdings. O sea que una MEDICIÓN real
+        matchea la heurística 'sin blue ni holdings' y se borraba igual. El backfill solo
+        escribe FIN DE MES → exigimos también esa fecha."""
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2024-06-01,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,"))
+        # Medición real del Dashboard, media de mes, con el caché frío.
+        self.conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested,
+                 net_deposited, fx_to_usd_blue) VALUES (?,?,?,?,?,NULL)""",
+            (self.uid, "2024-07-15", 25000.0, 1500.0, 1500.0))
+        self.conn.commit()
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='DIVIDEND'").fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        row = self.conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=? AND date='2024-07-15'",
+            (self.uid,)).fetchone()
+        self.assertIsNotNone(row, "se borró una medición real del Dashboard (caché frío)")
+        self.assertAlmostEqual(row["total_value"], 25000.0, places=2)
+
+    def test_stale_synthetic_month_end_is_still_regenerated(self):
+        """Contracara: la sintética de FIN DE MES sí tiene que regenerarse, si no queda
+        con el capital_final viejo (que es justo lo que el borrado acaba de cambiar)."""
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2024-06-01,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,"))
+        # El backfill ya escribió el fin de mes: lo ensuciamos para simular el stale.
+        self.conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(user_id, date) DO UPDATE SET total_value=excluded.total_value,
+                 fx_to_usd_blue=NULL, holdings_json=NULL""",
+            (self.uid, "2024-06-30", 99999.0, 1500.0, 1500.0))
+        self.conn.commit()
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='DIVIDEND'").fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        row = self.conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=? AND date='2024-06-30'",
+            (self.uid,)).fetchone()
+        # O se borró, o se recreó con el valor corregido — lo que NO puede es
+        # quedarse con el 99999 stale.
+        if row:
+            self.assertNotAlmostEqual(row["total_value"], 99999.0, places=2,
+                                      msg="la sintética de fin de mes quedó stale")
 
     def test_undo_asset_with_dividend_via_endpoint(self):
         # Cobertura del ENDPOINT real de undo (no replay a mano): recrea el dividendo,
