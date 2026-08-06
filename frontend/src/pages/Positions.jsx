@@ -633,10 +633,40 @@ function PositionsDesktop() {
     }
   }
 
+  // Las posiciones IMPORTADAS ahora pasan por la cascada del backend (revierte el
+  // cash, recalcula todo y deja el tombstone para que no resuciten al re-importar) y
+  // devuelven token de deshacer. Puede bloquear con un mensaje claro (bono, compra ya
+  // vendida en parte, lote de foto de tenencia) → hay que mostrarlo, antes el fallo
+  // era silencioso porque no había try/catch.
   async function del(id) {
-    if (!confirm('¿Eliminar esta posición? La acción no se puede deshacer.')) return
-    await api.delete(`/positions/${id}`)
-    loadAll()
+    if (!confirm(
+      '¿Eliminar esta posición?\n\n' +
+      'Si vino de un import, se recalcula todo: efectivo, capital aportado, ' +
+      'rendimiento y la curva de evolución. Deja de contar en todos los cálculos.'
+    )) return
+    try {
+      const res = await api.delete(`/positions/${id}`)
+      await loadAll()
+      const token = res?.undo_token
+      if (token) {
+        toast.push('Posición borrada.', {
+          type: 'success', duration: 12000, actionLabel: 'Deshacer',
+          onAction: async () => {
+            try {
+              await api.post(`/operations/undo/${token}`)
+              await loadAll()
+              toast.push('Listo, la restauramos.', { type: 'success' })
+            } catch (ex) {
+              toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
+            }
+          },
+        })
+      } else {
+        toast.push('Posición borrada.', { type: 'success' })
+      }
+    } catch (ex) {
+      toast.push(ex?.message || 'No se pudo borrar la posición.', { type: 'error', duration: 8000 })
+    }
   }
 
   function openSell(p) {

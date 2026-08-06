@@ -580,7 +580,7 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
       </div>
       <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:16px 0 0;">
         Recibís este aviso porque configuraste una alerta en Rendi. Podés editarla o
-        apagarla desde Configuración › Notificaciones.
+        apagarla desde la sección Alertas de Rendi.
       </p>
     """
     text = f"{heading}\n\n{hi}{detail}\n\nVer en Rendi: {url}\n\n— Rendi"
@@ -1219,3 +1219,67 @@ def send_recommendation_acknowledgment(user_email: str, user_name: str) -> bool:
         from_addr=_from_noreply(),
         append_footer=False,  # ya tiene su propio cierre, sin WhatsApp
     )
+
+
+def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
+    """Brief del libro del asesor. Dos sabores anclados al mercado argentino:
+    'open' (abre BYMA — el plan del día) y 'close' (cerró — el resultado).
+    `brief` viene de advisor_brief.build_brief(). No-reply (es automático)."""
+    kind = (brief or {}).get("kind") or "open"
+    is_open = kind == "open"
+    # Saludo solo con un nombre que PAREZCA un nombre: las cuentas de trabajo
+    # suelen llamarse "test5" / "asesor01" y saludar con eso queda peor que no
+    # saludar (feedback de Nico viendo el primer brief real).
+    _raw = (user_name or "").strip().split(" ")[0]
+    name = _raw if (len(_raw) >= 3 and _raw.isalpha()) else ""
+    hi = f"Buen día{', ' + name if name else ''}." if is_open else f"Cierre del día{', ' + name if name else ''}."
+    title = "Tu libro hoy" if is_open else "Cómo cerró tu libro"
+
+    aum = brief.get("aum_total_usd")
+    day = brief.get("day") or {}
+    head_bits = []
+    if aum:
+        head_bits.append(f"Administrás US$ {aum:,.0f}".replace(",", "."))
+    if brief.get("clients_n"):
+        head_bits.append(f"{brief['clients_n']} cliente" + ("s" if brief["clients_n"] != 1 else ""))
+    if day.get("delta_usd") is not None:
+        _s = "+" if day["delta_usd"] >= 0 else "−"
+        _p = f" ({day['pct']:+.1f}%)" if day.get("pct") is not None else ""
+        head_bits.append(f"hoy {_s}US$ {abs(day['delta_usd']):,.0f}".replace(",", ".") + _p)
+    headline = " · ".join(head_bits)
+
+    secs_html, secs_txt = [], []
+    for sec in (brief.get("sections") or []):
+        rows = "".join(
+            f'<tr><td style="padding:6px 0;font-size:14px;color:#1a1f2e;width:38%;">'
+            f'<b>{html.escape(str(it.get("label") or ""))}</b></td>'
+            f'<td style="padding:6px 0;font-size:14px;color:#4b5563;">'
+            f'{html.escape(str(it.get("detail") or ""))}</td></tr>'
+            for it in (sec.get("items") or []))
+        secs_html.append(
+            f'<h2 style="font-size:14px;font-weight:600;margin:22px 0 6px;color:#1a1f2e;">'
+            f'{html.escape(sec.get("title") or "")}</h2>'
+            f'<table style="width:100%;border-collapse:collapse;">{rows}</table>')
+        secs_txt.append(sec.get("title", "") + "\n" + "\n".join(
+            f"  - {it.get('label','')}: {it.get('detail','')}" for it in (sec.get("items") or [])))
+
+    url = f"{APP_URL}/dashboard"
+    body_html = f"""
+      <h1 style="font-size:21px;font-weight:700;margin:0 0 6px;">{title}</h1>
+      <p style="font-size:14px;color:#6b7280;margin:0 0 4px;">{html.escape(hi)}</p>
+      {f'<p style="font-size:15px;color:#1a1f2e;margin:0 0 6px;"><b>{html.escape(headline)}</b></p>' if headline else ''}
+      {''.join(secs_html)}
+      <div style="text-align:center;margin:26px 0 6px;">
+        <a href="{url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:13px 30px;border-radius:8px;font-weight:600;font-size:15px;">
+          Abrir mi libro
+        </a>
+      </div>
+      <p style="font-size:12px;color:#9ca3af;line-height:1.6;margin:14px 0 0;">
+        {'Te lo mandamos cuando abre el mercado argentino.' if is_open else 'Te lo mandamos al cierre del mercado argentino.'}
+        Podés apagarlo en Rendi, en la sección Alertas.
+      </p>
+    """
+    text = (f"{title}\n\n{hi}\n{headline}\n\n" + "\n\n".join(secs_txt)
+            + f"\n\nAbrir tu libro: {url}\n\n— Rendi")
+    subject = (f"Tu libro hoy · {headline}" if headline else title)[:120]
+    return _send(to, subject, _wrap_html(body_html), text, from_addr=_from_noreply())

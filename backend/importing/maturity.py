@@ -150,12 +150,16 @@ def synth_letra_ticker(maturity_iso: str) -> Optional[str]:
 def _max_import_date(conn, uid: int) -> Optional[str]:
     """Fecha (ISO) de la última transacción importada y confirmada del usuario.
     Es la 'foto' temporal: solo cerramos letras vencidas dentro de esta ventana
-    (si la data del usuario no llega al vencimiento, la letra sigue viva)."""
+    (si la data del usuario no llega al vencimiento, la letra sigue viva).
+
+    Excluye las filas borradas: una tx tombstoneada ya no es data del usuario y no
+    debería estirar la ventana más allá de lo que realmente importó."""
     row = conn.execute(
         """SELECT MAX(n.date) AS d
              FROM import_normalized_tx n
              JOIN import_batches b ON b.id = n.batch_id
-            WHERE b.user_id = ? AND b.status = 'confirmed'""",
+            WHERE b.user_id = ? AND b.status = 'confirmed'
+              AND n.excluded_at IS NULL""",
         (uid,),
     ).fetchone()
     return row["d"] if row and row["d"] else None
@@ -251,6 +255,12 @@ def _bond_genuine_net(conn, uid: int, brokers: List[str], asset: str) -> float:
     queda inflada (genuino + patas-puente) y la amortización no aplica o aplica mal.
     Idempotente (recalcula desde import_normalized_tx, que los sweeps no tocan).
 
+    Filtra `excluded_at` (filas borradas por el usuario). Sin ese filtro, borrar el
+    historial de un bono y volver a importarlo sumaba los nominales VIEJOS
+    tombstoneados + los nuevos → la base quedaba al doble, el factor daba ≥1 y el
+    sweep no amortizaba: el bono se mostraba al 100% del face (≈56% inflado en AL30)
+    y así se sellaba en los snapshots. Mismo criterio que `rebuild._full_events`.
+
     EXCLUYE las VENTAS que SON la amortización (notes ~ 'amortiz'): algunos brokers
     (Balanz "Renta y Amortización" con cantidad) ya bajan el nominal cerrando la
     cuota como una VENTA al valor de rescate — eso es CORRECTO para el P&L. Pero la
@@ -265,7 +275,7 @@ def _bond_genuine_net(conn, uid: int, brokers: List[str], asset: str) -> float:
         f"""SELECT n.asset_symbol, n.asset_name, n.operation_type, n.quantity,
                    n.currency, n.date
               FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
-             WHERE b.user_id=? AND b.status='confirmed'
+             WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
                AND n.broker IN ({_ph}) AND n.asset_symbol=?
                AND n.operation_type IN (?, ?)
                AND NOT (n.operation_type = ?

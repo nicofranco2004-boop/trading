@@ -1837,3 +1837,352 @@ class PhoneAndReportsTest(AdvisorBase):
         conn.commit(); conn.close()
         r = self.http.get("/api/advisor/reports", headers=self._hdr(9901))
         self.assertEqual(r.status_code, 403)
+
+
+class AdvisorBriefTest(AdvisorBase):
+    """Brief del libro 2x/día (apertura + cierre). Seeds idempotentes y una
+    sola conexión por test: la suite comparte la DB y el lock es real."""
+
+    def _seed(self):
+        import advisor_brief
+        from datetime import datetime as _d, timedelta as _t
+        today = advisor_brief._today_art()
+        ayer = (_d.utcnow() - _t(hours=3) - _t(days=1)).date().isoformat()
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR IGNORE INTO fx_rates_daily (date,blue_venta,mep_venta) VALUES (?,1500,1450)", (today,))
+            conn.execute("INSERT OR IGNORE INTO brokers (user_id,name,currency) VALUES (?,'BriefBroker','ARS')",
+                         (self.client_uid,))
+            if not conn.execute("SELECT 1 FROM positions WHERE user_id=? AND broker='BriefBroker'",
+                                (self.client_uid,)).fetchone():
+                conn.execute("INSERT INTO positions (user_id,broker,asset,is_cash,invested) "
+                             "VALUES (?,'BriefBroker','ARS',1,29000000)", (self.client_uid,))
+            conn.execute("INSERT OR IGNORE INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+                         "VALUES (?,?,20000,20000,20000)", (self.client_uid, ayer))
+            conn.commit()
+        finally:
+            conn.close()
+        return today
+
+    def test_brief_apertura_trae_a_quien_llamar(self):
+        import advisor_brief
+        self._seed()
+        conn = main.get_db()
+        try:
+            b = advisor_brief.build_brief(conn, self.advisor, "open")
+        finally:
+            conn.close()
+        self.assertTrue(b, "el brief de apertura no debería venir vacío")
+        self.assertIn("Para llamar hoy", [s["title"] for s in b["sections"]])
+
+    def test_brief_idempotente_por_dia_y_kind(self):
+        import advisor_brief
+        today = self._seed()
+        conn = main.get_db()
+        try:
+            self.assertFalse(advisor_brief.already_sent(conn, self.advisor, "open", today))
+            advisor_brief.mark_sent(conn, self.advisor, "open", today)
+            conn.commit()
+            self.assertTrue(advisor_brief.already_sent(conn, self.advisor, "open", today))
+            # el otro brief del MISMO día sigue pendiente
+            self.assertFalse(advisor_brief.already_sent(conn, self.advisor, "close", today))
+        finally:
+            conn.close()
+
+    def test_prefs_toggle_y_respeto(self):
+        import advisor_brief
+        r = self.http.patch("/api/advisor/brief/prefs", json={"brief_open": False},
+                            headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        got = self.http.get("/api/advisor/brief/prefs", headers=self._hdr(self.advisor)).json()
+        self.assertFalse(got["brief_open"])
+        self.assertTrue(got["brief_close"])
+        conn = main.get_db()
+        try:
+            self.assertFalse(advisor_brief.brief_enabled(conn, self.advisor, "open"))
+            self.assertTrue(advisor_brief.brief_enabled(conn, self.advisor, "close"))
+        finally:
+            conn.close()
+
+    def test_cron_sin_token_cerrado(self):
+        r = self.http.post("/api/advisor/brief/run-cron?kind=open")
+        self.assertIn(r.status_code, (401, 503))
+
+    def test_cron_kind_invalido(self):
+        import os
+        os.environ["ADVISOR_BRIEF_TOKEN"] = "tok-test"
+        try:
+            r = self.http.post("/api/advisor/brief/run-cron?kind=medianoche&token=tok-test")
+            self.assertEqual(r.status_code, 400)
+        finally:
+            os.environ.pop("ADVISOR_BRIEF_TOKEN", None)
+
+    def test_preview_solo_asesor(self):
+        r = self.http.get("/api/advisor/brief/preview?kind=open", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        # uid único (la DB es compartida entre tests: un id fijo colisiona o
+        # se lo lleva puesto otro test que lo convirtió en asesor)
+        conn = main.get_db()
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (email,name,password_hash) VALUES (?,'N','x')",
+                (f"nobrief.{uuid.uuid4().hex[:8]}@x.co",))
+            otro = cur.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        r = self.http.get("/api/advisor/brief/preview?kind=open", headers=self._hdr(otro))
+        self.assertEqual(r.status_code, 403)
+
+
+class AdvisorClientAlertsTest(AdvisorBase):
+    """Alertas del LIBRO: movimiento de la cartera de un cliente."""
+
+    def test_config_crud_y_gate(self):
+        r = self.http.patch("/api/advisor/alerts",
+                            json={"up_pct": 5, "down_pct": 3, "active": True},
+                            headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        cfg = r.json()["config"]
+        self.assertEqual(cfg["up_pct"], 5)
+        self.assertEqual(cfg["down_pct"], 3)
+        self.assertTrue(cfg["active"])
+        got = self.http.get("/api/advisor/alerts", headers=self._hdr(self.advisor)).json()
+        self.assertTrue(got["config"]["active"])
+        self.assertEqual(got["history_days"], 3)
+        # un usuario común no accede
+        conn = main.get_db()
+        try:
+            cur = conn.execute("INSERT INTO users (email,name,password_hash) VALUES (?,'N','x')",
+                               (f"noadv.{uuid.uuid4().hex[:8]}@x.co",))
+            otro = cur.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.http.get("/api/advisor/alerts", headers=self._hdr(otro)).status_code, 403)
+
+    def test_side_umbral_asimetrico(self):
+        import advisor_alerts as aa
+        self.assertEqual(aa._side(6, 5, 3), "up")
+        self.assertEqual(aa._side(-4, 5, 3), "down")
+        self.assertIsNone(aa._side(2, 5, 3))       # dentro de la banda
+        self.assertIsNone(aa._side(-2, 5, 3))
+        self.assertIsNone(aa._side(None, 5, 3))    # sin dato → no dispara
+        self.assertIsNone(aa._side(-9, 5, None))   # solo mira subas
+
+    def test_edge_trigger_y_uno_por_dia(self):
+        import advisor_alerts as aa, advisor_brief
+        from datetime import datetime as _d, timedelta as _t
+        ayer = (_d.utcnow() - _t(hours=3) - _t(days=1)).date().isoformat()
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR IGNORE INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+                         "VALUES (?,?,10000,9000,9000)", (self.client_uid, ayer))
+            conn.commit()
+            aa.set_config(conn, self.advisor, up_pct=5, down_pct=5, active=True)
+            conn.commit()
+            _orig_deliver, _orig_live = aa._deliver, advisor_brief.live_book_values
+            aa._deliver = lambda *a, **k: (True, True)
+            try:
+                advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 10600}
+                self.assertEqual(aa.evaluate(conn, market_open=True,
+                                             only_uid=self.advisor)["fired"], 1)
+                # sigue arriba → NO re-dispara (edge-trigger)
+                advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 10700}
+                self.assertEqual(aa.evaluate(conn, market_open=True,
+                                             only_uid=self.advisor)["fired"], 0)
+                # vuelve a la banda y se dispara de nuevo el MISMO día → tope 1/día
+                advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 10100}
+                aa.evaluate(conn, market_open=True, only_uid=self.advisor)
+                advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 10900}
+                self.assertEqual(aa.evaluate(conn, market_open=True,
+                                             only_uid=self.advisor)["fired"], 0)
+                # mercado cerrado → nunca evalúa (el % del día está congelado)
+                conn.execute("UPDATE advisor_alert_state SET last_fired_date='2000-01-01', armed=1")
+                conn.commit()
+                self.assertEqual(aa.evaluate(conn, market_open=False,
+                                             only_uid=self.advisor)["fired"], 0)
+                self.assertEqual(aa.evaluate(conn, market_open=True,
+                                             only_uid=self.advisor)["fired"], 1)
+            finally:
+                aa._deliver, advisor_brief.live_book_values = _orig_deliver, _orig_live
+            # el historial registró los disparos
+            self.assertGreaterEqual(len(aa.history(conn, self.advisor)), 1)
+        finally:
+            conn.close()
+
+    def test_historial_se_purga(self):
+        import advisor_alerts as aa
+        from datetime import datetime as _d, timedelta as _t
+        conn = main.get_db()
+        try:
+            conn.execute("""INSERT INTO advisor_alert_events
+                            (advisor_uid, client_uid, kind, message, pct, fired_at)
+                            VALUES (?,?,'client_move','viejo',1.0,?)""",
+                         (self.advisor, self.client_uid,
+                          (_d.utcnow() - _t(days=5)).isoformat()))
+            conn.execute("""INSERT INTO advisor_alert_events
+                            (advisor_uid, client_uid, kind, message, pct, fired_at)
+                            VALUES (?,?,'client_move','fresco',1.0,?)""",
+                         (self.advisor, self.client_uid, _d.utcnow().isoformat()))
+            conn.commit()
+            msgs = [e["message"] for e in aa.history(conn, self.advisor)]
+            self.assertIn("fresco", msgs)
+            self.assertNotIn("viejo", msgs)   # >3 días se purga solo
+        finally:
+            conn.close()
+
+
+class AdvisorAlertsAuditTest(AdvisorBase):
+    """Fixes del audit adversarial: los tres caminos por los que la alerta
+    podía MENTIR (tier vencido, base vieja, flujo disfrazado de mercado)."""
+
+    def _base_snapshot(self, days_ago=1, value=10000, nd=9000):
+        from datetime import datetime as _d, timedelta as _t
+        day = (_d.utcnow() - _t(hours=3) - _t(days=days_ago)).date().isoformat()
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.client_uid,))
+            conn.execute("INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
+                         "VALUES (?,?,?,?,?)", (self.client_uid, day, value, value, nd))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _run(self, live_value):
+        import advisor_alerts as aa, advisor_brief
+        conn = main.get_db()
+        try:
+            aa.set_config(conn, self.advisor, up_pct=5, down_pct=5, active=True)
+            conn.execute("DELETE FROM advisor_alert_state WHERE advisor_uid=?", (self.advisor,))
+            conn.commit()
+            _d0, _l0 = aa._deliver, advisor_brief.live_book_values
+            aa._deliver = lambda *a, **k: (True, True)
+            advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: live_value}
+            try:
+                return aa.evaluate(conn, market_open=True, only_uid=self.advisor)
+            finally:
+                aa._deliver, advisor_brief.live_book_values = _d0, _l0
+        finally:
+            conn.close()
+
+    def test_asesor_con_plan_vencido_no_recibe(self):
+        self._base_snapshot()
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE users SET tier=NULL WHERE id=?", (self.advisor,))
+            conn.commit()
+        finally:
+            conn.close()
+        try:
+            # +6%: dispararía si no fuera por el tier
+            self.assertEqual(self._run(10600)["advisors"], 0)
+        finally:
+            conn = main.get_db()
+            conn.execute("UPDATE users SET tier='advisor' WHERE id=?", (self.advisor,))
+            conn.commit(); conn.close()
+
+    def test_base_vieja_no_se_evalua(self):
+        self._base_snapshot(days_ago=30)          # cron frenado / import viejo
+        self.assertEqual(self._run(10600)["fired"], 0)
+
+    def test_deposito_no_se_disfraza_de_suba(self):
+        from datetime import datetime as _d, timedelta as _t
+        self._base_snapshot(value=10000, nd=9000)
+        hoy = (_d.utcnow() - _t(hours=3)).date()
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM monthly_entries WHERE user_id=? AND broker='global'",
+                         (self.client_uid,))
+            # el cliente aportó 1.000 hoy → nd pasa de 9.000 a 10.000
+            conn.execute("""INSERT INTO monthly_entries
+                            (user_id,broker,year,month,deposits,withdrawals,
+                             capital_inicio,capital_final,pnl_realized,pnl_unrealized)
+                            VALUES (?,'global',?,?,10000,0,0,0,0,0)""",
+                         (self.client_uid, hoy.year, hoy.month))
+            conn.commit()
+        finally:
+            conn.close()
+        # vale 11.000 pero 1.000 fue depósito → 0% real → NO dispara
+        self.assertEqual(self._run(11000)["fired"], 0)
+        # y con una suba REAL (12.000 = +10% descontando el depósito) sí dispara
+        self.assertEqual(self._run(12000)["fired"], 1)
+
+
+class AdvisorGroupsTest(AdvisorBase):
+    """Grupos de clientes: filtros guardados y DINÁMICOS."""
+
+    def test_classify_no_inventa_clases(self):
+        import advisor_groups as ag
+        self.assertEqual(ag.classify("GGAL.BA"), "ar_stock")
+        self.assertEqual(ag.classify("YPFD.BA"), "ar_stock")
+        self.assertEqual(ag.classify("AAPL.BA", "CEDEAR"), "cedear")
+        self.assertEqual(ag.classify("AL30", "BOND"), "bond")
+        self.assertEqual(ag.classify("FCI:balanz-money-market"), "fund")
+        self.assertEqual(ag.classify("BTC", "CRYPTO"), "crypto")
+        self.assertEqual(ag.classify("AAPL"), "us_stock")
+        # lo que no reconoce NO se clasifica (mejor 'otro' que mentir en el %)
+        self.assertEqual(ag.classify("ZZZQQQ"), "otro")
+
+    def test_normalize_descarta_basura(self):
+        import advisor_groups as ag
+        self.assertEqual(ag.normalize_rules({}), {})
+        self.assertEqual(ag.normalize_rules({"aum_min": "no-es-numero"}), {})
+        self.assertEqual(ag.normalize_rules({"aum_min": -5}), {})
+        self.assertEqual(ag.normalize_rules({"class": "inventada"}), {})
+        self.assertEqual(ag.normalize_rules({"class_pct_min": 30}), {})
+        r = ag.normalize_rules({"class": "ar_stock"})
+        self.assertEqual(r["class"], "ar_stock")
+        self.assertEqual(r["class_pct_min"], 1.0)
+
+    def test_crud_y_gate(self):
+        r = self.http.post("/api/advisor/groups",
+                           json={"name": "Los de Amazon", "rules": {"has_asset": "amzn"}},
+                           headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        gid = r.json()["id"]
+        self.assertEqual(r.json()["rules"]["has_asset"], "AMZN")
+        got = self.http.get("/api/advisor/groups", headers=self._hdr(self.advisor)).json()
+        self.assertTrue(any(g["id"] == gid for g in got["groups"]))
+        self.assertTrue(any(c["key"] == "ar_stock" for c in got["classes"]))
+        self.assertEqual(self.http.post("/api/advisor/groups",
+                                        json={"name": "Vacio", "rules": {}},
+                                        headers=self._hdr(self.advisor)).status_code, 400)
+        conn = main.get_db()
+        try:
+            cur = conn.execute("INSERT INTO users (email,name,password_hash) VALUES (?,'N','x')",
+                               (f"nogrp.{uuid.uuid4().hex[:8]}@x.co",))
+            otro = cur.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.http.get("/api/advisor/groups",
+                                       headers=self._hdr(otro)).status_code, 403)
+        self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}",
+                                          headers=self._hdr(self.advisor)).status_code, 200)
+
+    def test_grupo_es_dinamico_y_aisla_por_asesor(self):
+        import advisor_groups as ag
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM positions WHERE user_id=?", (self.client_uid,))
+            conn.execute("INSERT OR IGNORE INTO brokers (user_id,name,currency) VALUES (?,'GrpBroker','USDT')",
+                         (self.client_uid,))
+            conn.commit()
+            rules = ag.normalize_rules({"has_asset": "AMZN"})
+            self.assertEqual(len(ag.evaluate(conn, self.advisor, rules)), 0)
+            conn.execute("""INSERT INTO positions (user_id,broker,asset,asset_type,currency,
+                            is_cash,invested,quantity) VALUES (?,'GrpBroker','AMZN.BA','CEDEAR','USD',0,5000,1)""",
+                         (self.client_uid,))
+            conn.commit()
+            res = ag.evaluate(conn, self.advisor, rules)
+            self.assertEqual([c["client_uid"] for c in res], [self.client_uid])
+            self.assertEqual(len(ag.evaluate(conn, self.advisor, rules,
+                                             excluded=[self.client_uid])), 0)
+            cur = conn.execute("INSERT INTO users (email,name,password_hash,tier) VALUES (?,'Otro','x','advisor')",
+                               (f"otroadv.{uuid.uuid4().hex[:8]}@x.co",))
+            otro_adv = cur.lastrowid
+            conn.commit()
+            self.assertEqual(len(ag.evaluate(conn, otro_adv, rules)), 0)
+        finally:
+            conn.close()

@@ -89,6 +89,37 @@ class DeleteCascade(unittest.TestCase):
             main._recalc_pnl_realized_from_ops(self.conn, self.uid)
         return sid
 
+    def _import_dedup(self, csv_bytes: bytes) -> str:
+        """Como `_import` pero replicando el paso de ANTI-DUPLICACIÓN del endpoint real
+        (`import_confirm`, main.py:25697): saltea por fingerprint las filas ya presentes
+        en otro batch confirmado y las borra del normalized del batch nuevo. `_import`
+        lo omite, así que no sirve para probar el escenario de re-import solapado."""
+        with self.conn:
+            payload = pl.run_preview(
+                self.conn, uid=self.uid, file_bytes=csv_bytes, file_name="y.csv",
+                broker_hint=self.BROKER, parser_format="rendi_generic",
+            )
+        sid = payload["session_id"]
+        with self.conn:
+            txs, raw = pl.load_session_for_confirm(self.conn, uid=self.uid, session_id=sid)
+            skip = pl.already_imported_row_indices(self.conn, self.uid, sid, txs,
+                                                   already_skipped=set())
+            if skip:
+                txs = [t for t in txs if t.row_index not in skip]
+                _ph = ",".join("?" * len(skip))
+                self.conn.execute(
+                    f"""DELETE FROM import_normalized_tx
+                         WHERE batch_id=? AND raw_row_id IN (
+                           SELECT id FROM import_raw_rows
+                            WHERE batch_id=? AND row_index IN ({_ph}))""",
+                    (sid, sid, *skip))
+            ps.persist_batch(self.conn, uid=self.uid, batch_id=sid, txs=txs,
+                             raw_row_ids_by_index=raw, helpers=_helpers())
+            tc = ps._read_tc_blue(self.conn, uid=self.uid)
+            rb.rebuild_fifo_after_import(self.conn, self.uid, sid, tc_blue=tc)
+            main._recalc_pnl_realized_from_ops(self.conn, self.uid)
+        return sid
+
     def _open_qty(self, asset="AAPL"):
         return float(self.conn.execute(
             "SELECT COALESCE(SUM(quantity),0) q FROM positions WHERE user_id=? AND asset=? AND is_cash=0",
@@ -366,6 +397,76 @@ class DeleteCascade(unittest.TestCase):
             (self.uid,)).fetchone()["c"], 1)                        # el dividendo volvió
         self._probe()
 
+    # ── El tacho de CARTERA debe cascadear igual que el de Operaciones ─────────
+    def test_delete_position_endpoint_cascades_when_imported(self):
+        """`DELETE /api/positions/{id}` era un DELETE crudo: la fila desaparecía pero
+        el cash quedaba debitado, la fuente sin tombstonear (el activo RESUCITABA al
+        re-importar) y el link colgado (rompía el borrado bueno desde Movimientos)."""
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self.assertAlmostEqual(self._cash(), -1500.0, places=2)
+        pid = self._pos_id()
+        self.conn.commit()
+        res = main.delete_position(pid, uid=self.uid)
+        self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)   # el cash volvió
+        # La fuente quedó tombstoneada → no resucita al re-derivar.
+        self.assertIsNotNone(self.conn.execute(
+            "SELECT excluded_at FROM import_normalized_tx WHERE operation_type='BUY'"
+        ).fetchone()["excluded_at"], "la compra no quedó tombstoneada → va a resucitar")
+        self.assertTrue(res.get("undo_token"), "sin token no hay cómo deshacer")
+        self._probe()
+
+    def test_delete_position_endpoint_manual_still_works(self):
+        """Las posiciones cargadas a mano (sin link de import) siguen borrándose
+        directo — no hay eventos importados que re-derivar."""
+        pid = self.conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash)
+               VALUES (?,?,?,?,?,0)""", (self.uid, "IBKR", "MELI", 5, 1000)).lastrowid
+        self.conn.commit()
+        main.delete_position(pid, uid=self.uid)
+        self.assertIsNone(self.conn.execute(
+            "SELECT id FROM positions WHERE id=?", (pid,)).fetchone())
+
+    # ── El endpoint DEBE devolver el undo_token (el botón "Deshacer" depende) ──
+    def test_delete_movement_returns_undo_token(self):
+        """`delete_movement` descartaba el token de las cascadas y devolvía solo
+        {'ok': True} → el frontend no tenía con qué deshacer y el confirm prometía
+        algo imposible. Ahora lo propaga, y el token sirve de verdad."""
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2025-06-20,VENTA,IBKR,AAPL,4,200,800,,,0,USD,"))
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='SELL'").fetchone()
+        self.conn.commit()
+        res = main.delete_movement(f"tx-{tx['id']}", uid=self.uid)
+        self.assertTrue(res.get("ok"))
+        self.assertTrue(res.get("undo_token"), "sin undo_token no hay cómo deshacer")
+        self.assertAlmostEqual(self._open_qty(), 10.0, places=6)   # venta borrada
+        # Y el token funciona contra el endpoint real de undo: la venta vuelve.
+        main.undo_delete_operation(res["undo_token"], uid=self.uid)
+        self.assertAlmostEqual(self._open_qty(), 6.0, places=6)
+        self.assertEqual(len(self._ventas()), 1)
+        self._probe()
+
+    # ── Regresión: la base de amortización no puede contar filas borradas ──────
+    def test_bond_genuine_net_excludes_deleted(self):
+        """Antes `_bond_genuine_net` no filtraba `excluded_at`: tras borrar el
+        historial de un bono y re-importarlo sumaba los nominales VIEJOS + los nuevos
+        → base al doble, factor ≥1, el sweep no amortizaba y el bono se mostraba al
+        100% del face."""
+        from importing import maturity as mt
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AL30,720,60,43200,,,0,USD,"))
+        self.conn.execute("UPDATE import_normalized_tx SET asset_type='BOND' WHERE asset_symbol='AL30'")
+        self.conn.commit()
+        pair = list(ps.broker_pair(self.conn, self.uid, "IBKR"))
+        self.assertAlmostEqual(mt._bond_genuine_net(self.conn, self.uid, pair, "AL30"),
+                               720.0, places=2)
+        # Se borra el historial → las filas quedan tombstoneadas, no borradas.
+        with self.conn:
+            main._delete_asset_history_cascade(self.conn, self.uid, "AL30")
+        self.assertAlmostEqual(
+            mt._bond_genuine_net(self.conn, self.uid, pair, "AL30"), 0.0, places=2,
+            msg="la base de amortización sigue contando el bono borrado → se duplica al re-importar")
+
     # ── Regresión: borrar un cash-flow NO puede revivir en el próximo import ────
     def test_deleted_cashflow_is_tombstoned_not_deleted(self):
         """Antes se hacía DELETE físico de la fila fuente: como el dedup del import
@@ -388,6 +489,31 @@ class DeleteCascade(unittest.TestCase):
             "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
             "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0),
             0.0, places=2, msg="el depósito borrado sigue contando en capital aportado")
+
+    def test_deleted_deposit_does_not_come_back_on_overlapping_reimport(self):
+        """EL escenario real de la resurrección: borrás un depósito y al mes siguiente
+        subís el export SOLAPADO del broker (Balanz/Cocos/PPI/IEB mandan el histórico
+        completo). El depósito NO puede volver ni re-sumar la plata."""
+        self._import(_csv("2024-03-10,DEPOSITO,IBKR,,,,10000,,,0,USD,"))
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='DEPOSIT'").fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        self.assertAlmostEqual(self._cash(), 0.0, places=2)
+
+        # Export del mes siguiente: MISMO depósito + una compra nueva (con el dedup
+        # real del endpoint, que es donde vive la anti-duplicación).
+        self._import_dedup(_csv("2024-03-10,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                                "2024-04-05,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        # El depósito quedó fuera (dedup por fingerprint, que sobrevive al tombstone);
+        # solo entró la compra → cash = -1500, no +8500.
+        self.assertAlmostEqual(self._cash(), -1500.0, places=2,
+                               msg="el depósito borrado RESUCITÓ en el import solapado")
+        self.assertAlmostEqual(float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0),
+            0.0, places=2, msg="el depósito borrado volvió al capital aportado")
+        self._probe()
 
     def test_seed_rows_are_blocked_everywhere(self):
         """La compra semilla y el depósito sintético de la foto de tenencia no se
@@ -444,6 +570,55 @@ class DeleteCascade(unittest.TestCase):
             (self.uid,)).fetchone()
         if syn:
             self.assertIsNone(syn["fx_to_usd_blue"])   # si existe, es la recreada
+
+    def test_delete_preserves_cold_cache_dashboard_snapshot(self):
+        """`POST /api/snapshots` (el que escribe el Dashboard) guarda fx=NULL cuando el
+        caché del dólar está frío, y NUNCA escribe holdings. O sea que una MEDICIÓN real
+        matchea la heurística 'sin blue ni holdings' y se borraba igual. El backfill solo
+        escribe FIN DE MES → exigimos también esa fecha."""
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2024-06-01,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,"))
+        # Medición real del Dashboard, media de mes, con el caché frío.
+        self.conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested,
+                 net_deposited, fx_to_usd_blue) VALUES (?,?,?,?,?,NULL)""",
+            (self.uid, "2024-07-15", 25000.0, 1500.0, 1500.0))
+        self.conn.commit()
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='DIVIDEND'").fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        row = self.conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=? AND date='2024-07-15'",
+            (self.uid,)).fetchone()
+        self.assertIsNotNone(row, "se borró una medición real del Dashboard (caché frío)")
+        self.assertAlmostEqual(row["total_value"], 25000.0, places=2)
+
+    def test_stale_synthetic_month_end_is_still_regenerated(self):
+        """Contracara: la sintética de FIN DE MES sí tiene que regenerarse, si no queda
+        con el capital_final viejo (que es justo lo que el borrado acaba de cambiar)."""
+        self._import(_csv("2024-03-15,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"))
+        self._import(_csv("2024-06-01,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,"))
+        # El backfill ya escribió el fin de mes: lo ensuciamos para simular el stale.
+        self.conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(user_id, date) DO UPDATE SET total_value=excluded.total_value,
+                 fx_to_usd_blue=NULL, holdings_json=NULL""",
+            (self.uid, "2024-06-30", 99999.0, 1500.0, 1500.0))
+        self.conn.commit()
+        tx = self.conn.execute(
+            "SELECT id FROM import_normalized_tx WHERE operation_type='DIVIDEND'").fetchone()
+        with self.conn:
+            main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        row = self.conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=? AND date='2024-06-30'",
+            (self.uid,)).fetchone()
+        # O se borró, o se recreó con el valor corregido — lo que NO puede es
+        # quedarse con el 99999 stale.
+        if row:
+            self.assertNotAlmostEqual(row["total_value"], 99999.0, places=2,
+                                      msg="la sintética de fin de mes quedó stale")
 
     def test_undo_asset_with_dividend_via_endpoint(self):
         # Cobertura del ENDPOINT real de undo (no replay a mano): recrea el dividendo,

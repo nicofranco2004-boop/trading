@@ -27,13 +27,17 @@ let toastIdCounter = 0
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
 
-  // push(message, { type?, duration? })
+  // push(message, { type?, duration?, actionLabel?, onAction? })
   // Devuelve el id por si el caller quiere dismissear manualmente.
+  // actionLabel + onAction renderizan un botón dentro del toast (ej: "Deshacer"
+  // tras un borrado). El toast se cierra solo al apretarlo.
   const push = useCallback((message, options = {}) => {
     const id = ++toastIdCounter
     const type = options.type || 'info'
     const duration = options.duration ?? 4000
-    setToasts(t => [...t, { id, message, type, duration }])
+    setToasts(t => [...t, { id, message, type, duration,
+                            actionLabel: options.actionLabel,
+                            onAction: options.onAction }])
     return id
   }, [])
 
@@ -103,6 +107,14 @@ function ToastItem({ toast, onDismiss }) {
       <p className="flex-1 min-w-0 text-sm leading-snug text-ink-0">
         {toast.message}
       </p>
+      {toast.actionLabel && toast.onAction && (
+        <button
+          onClick={() => { clearTimeout(timerRef.current); onDismiss(); toast.onAction() }}
+          className="flex-shrink-0 text-sm font-medium text-rendi-accent hover:underline px-1"
+        >
+          {toast.actionLabel}
+        </button>
+      )}
       <button
         onClick={onDismiss}
         className="flex-shrink-0 text-ink-3 hover:text-ink-0 -mt-0.5 -mr-1 p-1"

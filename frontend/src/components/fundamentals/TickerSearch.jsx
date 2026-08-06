@@ -10,6 +10,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { Search, CornerDownLeft } from 'lucide-react'
 import { POPULAR_TICKERS } from '../../utils/tickers'
+import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
 import AssetTypeBadge from '../AssetTypeBadge'
 
@@ -40,7 +41,37 @@ export default function TickerSearch({ onSelect, autoFocus = false }) {
   const inputRef = useRef(null)
   const containerRef = useRef(null)
 
-  const results = useMemo(() => filterTickers(query), [query])
+  const locales = useMemo(() => filterTickers(query), [query])
+  const [remotos, setRemotos] = useState([])
+
+  // POPULAR_TICKERS tiene 104 símbolos y apenas 21 acciones US. Un usuario
+  // reportó que no podía comparar AMD contra INTEL: la gente escribe el NOMBRE
+  // ("intel", "uber"), eso no está en la lista, y sin sugerencias el Enter
+  // mandaba el texto crudo como ticker — "UBER" acertaba de casualidad, "INTEL"
+  // no existe (es INTC). El backend nunca fue el límite: acepta cualquier
+  // símbolo. Así que la lista local sirve para responder al instante, y para
+  // todo lo demás se pregunta.
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 2) { setRemotos([]); return }
+    let vivo = true
+    const id = setTimeout(() => {
+      api.get(`/tickers/search?q=${encodeURIComponent(q)}`)
+        .then(r => { if (vivo) setRemotos(r?.results || []) })
+        .catch(() => { if (vivo) setRemotos([]) })
+    }, 250)   // debounce: no una request por tecla
+    return () => { vivo = false; clearTimeout(id) }
+  }, [query])
+
+  // Locales primero (instantáneos y con logo/badge), después los del server sin
+  // repetir símbolos.
+  const results = useMemo(() => {
+    const vistos = new Set(locales.map(t => t.symbol.toUpperCase()))
+    const extra = remotos
+      .filter(r => !vistos.has(r.symbol.toUpperCase()))
+      .map(r => ({ symbol: r.symbol, name: r.name, type: 'stock_us', remoto: true }))
+    return [...locales, ...extra].slice(0, MAX_RESULTS)
+  }, [locales, remotos])
 
   useEffect(() => {
     if (autoFocus && inputRef.current) inputRef.current.focus()

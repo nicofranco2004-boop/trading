@@ -1226,6 +1226,67 @@ def init_db():
         );
     """)
 
+    # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
+    # recalculan solos). `rules` es JSON con las condiciones; `excluded` la
+    # lista de client_uid sacados a mano del resultado.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS advisor_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            advisor_uid INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            rules TEXT NOT NULL DEFAULT '{}',
+            excluded TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_advisor_groups ON advisor_groups(advisor_uid);
+    """)
+
+    # Alertas del LIBRO (asesor): "avisame si la cartera de cualquiera de mis
+    # clientes sube/baja X% en el día". Una config por asesor; el estado del
+    # edge-trigger y el tope de 1 aviso/día son POR CLIENTE. El historial se
+    # purga solo a los N días (default 3) — es un feed, no un archivo.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS advisor_alerts (
+            advisor_uid INTEGER PRIMARY KEY,
+            up_pct REAL,                     -- dispara si la cartera sube ≥ up_pct%
+            down_pct REAL,                   -- dispara si cae ≥ down_pct%
+            channel TEXT NOT NULL DEFAULT 'both',
+            active INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS advisor_alert_state (
+            advisor_uid INTEGER NOT NULL,
+            client_uid INTEGER NOT NULL,
+            armed INTEGER NOT NULL DEFAULT 1,
+            last_fired_date TEXT,
+            PRIMARY KEY (advisor_uid, client_uid)
+        );
+        CREATE TABLE IF NOT EXISTS advisor_alert_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            advisor_uid INTEGER NOT NULL,
+            client_uid INTEGER,
+            kind TEXT,                       -- 'client_move' | 'brief'
+            message TEXT,
+            pct REAL,
+            fired_at TEXT DEFAULT (datetime('now')),
+            delivered_push INTEGER NOT NULL DEFAULT 0,
+            delivered_email INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_adv_alert_ev
+            ON advisor_alert_events(advisor_uid, fired_at DESC);
+    """)
+
+    # Brief del libro (2x/día, anclado al mercado): log de envíos para que
+    # re-correr el cron no duplique emails + preferencias por asesor.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS advisor_brief_log (
+            advisor_uid INTEGER NOT NULL,
+            kind TEXT NOT NULL,              -- 'open' (apertura) | 'close' (cierre)
+            date TEXT NOT NULL,              -- fecha ART
+            sent_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (advisor_uid, kind, date)
+        );
+    """)
     # Migración: teléfono del cliente (lote 4 del audit — botón WhatsApp).
     _ac_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_clients)").fetchall()]
     if _ac_cols and 'phone' not in _ac_cols:
@@ -1536,6 +1597,8 @@ def init_db():
             display_name TEXT,
             cnv_matricula TEXT,
             logo_data TEXT,                  -- data-URI (raster, ≤ ~300KB) del logo
+            brief_open INTEGER DEFAULT 1,    -- brief al abrir el mercado (~11:00 ART)
+            brief_close INTEGER DEFAULT 1,   -- brief al cierre (~17:15 ART)
             updated_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -1553,6 +1616,15 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_login_history_user ON login_history(user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
     """)
+
+    # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
+    # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
+    _ap_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_profile)").fetchall()]
+    if _ap_cols and 'brief_open' not in _ap_cols:
+        conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_open INTEGER DEFAULT 1;")
+    if _ap_cols and 'brief_close' not in _ap_cols:
+        conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_close INTEGER DEFAULT 1;")
+
 
     # subscriptions: columnas de idempotencia de emails (idempotent migration
     # para tablas pre-existentes — las new tienen estas cols ya en el CREATE).
@@ -6905,9 +6977,45 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
 
 @app.delete("/api/positions/{pid}")
 def delete_position(pid: int, uid: int = Depends(get_effective_user)):
+    """Borra una posición desde Cartera.
+
+    Si es IMPORTADA (tiene `import_op_links`) rutea al motor de cascada, el mismo que
+    usa Operaciones. Antes esto era un DELETE crudo: la fila desaparecía de Cartera
+    pero (a) el cash seguía debitado por esa compra, (b) el capital aportado y la curva
+    seguían contándola (ni un snapshot purgado ni monthly recalculado), (c) la fila
+    fuente NO quedaba tombstoneada → el activo RESUCITABA al re-importar, y (d) el link
+    quedaba colgado apuntando a una position inexistente, con lo cual el borrado BUENO
+    desde Movimientos tiraba 404 para siempre. Era el mismo gesto visual que el tacho de
+    Operaciones con un motor completamente distinto.
+
+    Las MANUALES (sin link) siguen con el borrado directo: no hay eventos importados que
+    re-derivar. Su cash tampoco se reversa — comportamiento previo, no lo cambiamos acá.
+    """
     conn = get_db()
-    conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
-    conn.commit()
+    try:
+        link = conn.execute(
+            "SELECT 1 FROM import_op_links WHERE position_id=? LIMIT 1", (pid,),
+        ).fetchone()
+        if link:
+            # Cascada completa (reversa cash + tombstone + re-derive + snapshots). Puede
+            # bloquear con mensaje claro (bono, compra ya vendida en parte, lote semilla
+            # de foto): mejor frenar que corromper, igual que en Operaciones.
+            result = _delete_position_cascade(conn, uid, pid)
+            conn.commit()
+            conn.close()
+            _ai_cache_invalidate(uid)
+            return result
+        conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        conn.close()
+        raise
+    except Exception as ex:
+        conn.rollback()
+        conn.close()
+        log.error("delete_position falló uid=%s pid=%s: %s", uid, pid, ex)
+        raise HTTPException(500, "No se pudo borrar la posición")
     conn.close()
     _ai_cache_invalidate(uid)
     return {"ok": True}
@@ -10519,9 +10627,14 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
     para no pisarlas, pero quedaba inerte porque acá se borraba la fila primero.
 
     Borrar un movimiento NO cambia lo que valía la cartera aquel día. Entonces:
-      • SINTÉTICAS (las fabricó el backfill: sin blue ni holdings — misma
-        heurística que `sintetico` en el informe mensual): son derivadas → se
-        borran y el backfill las recrea ya corregidas.
+      • SINTÉTICAS (las fabricó el backfill): son derivadas → se borran y el
+        backfill las recrea ya corregidas. Para identificarlas NO alcanza con
+        "sin blue ni holdings" (la heurística del informe mensual): `POST
+        /api/snapshots` —el que escribe el Dashboard— guarda fx=NULL cuando el
+        caché del dólar está frío y NUNCA escribe holdings, así que una MEDICIÓN
+        real caía en esa red y se borraba igual (verificado con un probe). El
+        backfill solo escribe FIN DE MES, así que exigimos también esa fecha:
+        mismo beneficio, sin llevarse puestas las fotos de media de mes.
       • REALES: se conservan. Solo se les recomputa `net_deposited` (el capital
         aportado, que SÍ cambió) con la SSoT `compute_net_deposited_db`.
       • HOY: se borra siempre — la reescribe la próxima visita/cron con el estado
@@ -10537,18 +10650,25 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
         conn.execute(
             """DELETE FROM snapshots
                 WHERE user_id=? AND date >= ? AND fx_to_usd_blue IS NULL
-                  AND COALESCE(TRIM(holdings_json), '') = ''""",
+                  AND COALESCE(TRIM(holdings_json), '') = ''
+                  AND date = date(date, 'start of month', '+1 month', '-1 day')""",
             (uid, since_date),
         )
         from snapshots_job import compute_net_deposited_db as _cnd
-        for s in conn.execute(
-            "SELECT id, date FROM snapshots WHERE user_id=? AND date >= ?",
-            (uid, since_date),
+        # La SSoT solo mira AÑO-MES (ignora el día: monthly_entries es mensual), así que
+        # todas las fotos de un mismo mes comparten valor. Calculamos una vez por MES y
+        # hacemos un UPDATE por mes: con 3 años de historia son ~36 cuentas en vez de
+        # ~1100, y el borrado no se queda con el lock de escritura recorriendo foto a
+        # foto. Exactamente equivalente, no es una aproximación.
+        for r in conn.execute(
+            "SELECT DISTINCT substr(date,1,7) AS ym FROM snapshots "
+            "WHERE user_id=? AND date >= ?", (uid, since_date),
         ).fetchall():
             conn.execute(
-                "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?",
-                (_cnd(conn, uid, as_of_date=s["date"], broker_filter="global",
-                      include_baseline=True), s["id"], uid),
+                "UPDATE snapshots SET net_deposited=? "
+                " WHERE user_id=? AND date >= ? AND substr(date,1,7)=?",
+                (_cnd(conn, uid, as_of_date=r["ym"], broker_filter="global",
+                      include_baseline=True), uid, since_date, r["ym"]),
             )
     conn.execute("DELETE FROM snapshots WHERE user_id=? AND date = ?", (uid, today))
     _import_persister._backfill_snapshots_from_monthly(conn, uid)
@@ -10699,16 +10819,14 @@ def _route_tx_delete(conn, uid: int, mid: str):
             "SELECT operation_id FROM import_op_links WHERE batch_id=? AND raw_row_id=? "
             "AND operation_id IS NOT NULL LIMIT 1", (tx["batch_id"], tx["raw_row_id"])).fetchone()
         if link:
-            _delete_operation_cascade(conn, uid, link["operation_id"])
-            return
+            return _delete_operation_cascade(conn, uid, link["operation_id"])
         raise HTTPException(404, "La venta ya no existe")
     if op == "BUY":
         link = conn.execute(
             "SELECT position_id FROM import_op_links WHERE batch_id=? AND raw_row_id=? "
             "AND position_id IS NOT NULL LIMIT 1", (tx["batch_id"], tx["raw_row_id"])).fetchone()
         if link:
-            _delete_position_cascade(conn, uid, link["position_id"])
-            return
+            return _delete_position_cascade(conn, uid, link["position_id"])
         # La compra se vendió entera (su lote ya no existe) → borrar la venta primero.
         raise HTTPException(409,
             "Esta compra ya se vendió, así que no se puede borrar sola. Borrá primero "
@@ -10726,6 +10844,10 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
     intereses, comisiones). Compras/ventas → 400 (rebuild FIFO, fase futura). El id
     es el compuesto de /api/movements (tx-/me-/op-/pos-)."""
     mid = (movement_id or "").strip()
+    # El token de deshacer que devuelven las cascadas se propaga al frontend (antes
+    # se tiraba acá, así que el "podés deshacerlo" del confirm era mentira: no había
+    # forma de llegar al endpoint de undo).
+    out: dict = {}
 
     def _do():
         conn = get_db()
@@ -10738,17 +10860,17 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
                         oid = int(mid.split("-")[1])
                     except (IndexError, ValueError):
                         raise HTTPException(400, "id de movimiento inválido")
-                    _delete_operation_cascade(conn, uid, oid)
+                    out.update(_delete_operation_cascade(conn, uid, oid) or {})
                 elif mid.startswith("pos-"):
                     # pos-{n} → lote abierto MANUAL (los importados vienen como tx-).
                     try:
                         pid = int(mid[4:])
                     except ValueError:
                         raise HTTPException(400, "id de movimiento inválido")
-                    _delete_position_cascade(conn, uid, pid)
+                    out.update(_delete_position_cascade(conn, uid, pid) or {})
                 elif mid.startswith("tx-"):
                     # Importado: cash-flow → reverso clásico; compra/venta → cascada FIFO.
-                    _route_tx_delete(conn, uid, mid)
+                    out.update(_route_tx_delete(conn, uid, mid) or {})
                 else:
                     since_date, brokers = _delete_one_movement(conn, uid, mid)
                     _cascade_after_movement_delete(conn, uid, since_date, brokers)
@@ -10757,7 +10879,7 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
 
     _run_with_lock_retry(_do)
     _ai_cache_invalidate(uid)
-    return {"ok": True}
+    return {"ok": True, **({"undo_token": out["undo_token"]} if out.get("undo_token") else {})}
 
 
 @app.get("/api/insights/commissions")
@@ -11526,8 +11648,8 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     if (src["asset_type"] or "").upper() == "BOND":
         raise HTTPException(400,
             "Los bonos no se borran de a una operación (tienen amortizaciones y "
-            "cupones enlazados). Usá 'Borrar todo el historial' del activo (agrupando "
-            "por activo) para sacarlo entero.")
+            "cupones enlazados). Se borran enteros: en Operaciones, agrupá por activo "
+            "y usá el tacho del activo (por ahora, desde la computadora).")
     # Venta SINTÉTICA de reconciliación de foto (transfer_out=1, cierre a costo):
     # borrarla RESTAURARÍA una tenencia que la foto declaró cerrada, divergiendo de
     # lo importado. Bloqueamos (además su gross=0 haría no-op la reversa de cash).
@@ -11559,8 +11681,8 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     if fixed_income:
         raise HTTPException(400,
             "Esta operación es de un activo de renta fija (tiene cupones o "
-            "amortizaciones enlazados). No se borra de a una: usá 'Borrar todo el "
-            "historial' del activo (agrupando por activo) para sacarlo entero.")
+            "amortizaciones enlazados). No se borra de a una: en Operaciones, agrupá "
+            "por activo y usá el tacho del activo (por ahora, desde la computadora).")
 
     since_date = (src["date"] or "")[:10] or None
 
@@ -11653,8 +11775,8 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
         raise HTTPException(400, "Esta fila no es una compra importada.")
     if (src["asset_type"] or "").upper() == "BOND":
         raise HTTPException(400,
-            "Los bonos no se borran de a una compra. Usá 'Borrar todo el historial' "
-            "del activo (agrupando por activo) para sacarlo entero.")
+            "Los bonos no se borran de a una compra. Se borran enteros: en Operaciones, "
+            "agrupá por activo y usá el tacho del activo (por ahora, desde la computadora).")
     # Lote SEMILLA de la foto de tenencia: lo fondea un depósito sintético COMPARTIDO
     # que este borrado no sabe reversar → devolvía cash inventado. La guarda existía en
     # el borrado por-activo pero faltaba acá (misma puerta, distinto camino).
@@ -11688,8 +11810,8 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
     ).fetchone():
         raise HTTPException(400,
             "Este activo tiene cupones, amortizaciones o dividendos enlazados. No se "
-            "borra de a una compra: usá 'Borrar todo el historial' del activo "
-            "(agrupando por activo) para sacarlo entero.")
+            "borra de a una compra: en Operaciones, agrupá por activo y usá el tacho "
+            "del activo (por ahora, desde la computadora).")
 
     since_date = (src["date"] or "")[:10] or None
 
@@ -21711,6 +21833,64 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
 
 # ─── Fundamentals endpoints ────────────────────────────────────────────────
 
+# Cache en memoria del buscador de símbolos. La query es texto libre, así que no
+# va a la tabla de cache de yfinance (que es por ticker). TTL largo: el mapa
+# nombre→ticker no cambia.
+_symsearch_cache: dict = {}
+_SYMSEARCH_TTL = 24 * 3600
+# Bolsas US. yfinance devuelve el MISMO nombre listado en Frankfurt (FRA), Gettex
+# (GER), São Paulo (SAO)… y hasta pares de monedas: sin este filtro, buscar "amd"
+# ofrecía AUDAMD=X y "uber" ofrecía UT8.F antes que UBER.
+_US_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "ASE", "PCX", "BTS", "NAS", "NYS"}
+
+
+@app.get("/api/tickers/search")
+def search_tickers(q: str, uid: int = Depends(get_effective_user)):
+    """Resuelve texto libre —incluido el NOMBRE de la empresa— a tickers reales.
+
+    Existe porque el buscador de "Calidad de cartera" filtraba contra
+    POPULAR_TICKERS, una allowlist de 104 símbolos con apenas 21 acciones US.
+    Reportado por un usuario: no podía comparar AMD contra INTEL. La causa no era
+    el backend (que acepta cualquier ticker y responde por `quoteType`) sino que
+    la gente escribe el NOMBRE — "intel", "uber" — y eso no está en la lista. Al
+    no haber sugerencias, el Enter mandaba el texto crudo como si fuera un
+    ticker: "UBER" funcionaba de casualidad, "INTEL" no existe (es INTC).
+
+    Solo lectura, sin cupo. Devuelve [] ante cualquier problema: es un
+    autocomplete, nunca debe romper la pantalla.
+    """
+    query = (q or "").strip()
+    if len(query) < 2:
+        return {"results": []}
+    key = query.lower()
+    hit = _symsearch_cache.get(key)
+    if hit and (time.time() - hit["ts"]) < _SYMSEARCH_TTL:
+        return {"results": hit["data"]}
+
+    out = []
+    try:
+        import yfinance as _yf
+        for x in (_yf.Search(query, max_results=12).quotes or []):
+            sym = (x.get("symbol") or "").strip().upper()
+            if not sym or (x.get("quoteType") or "").upper() != "EQUITY":
+                continue
+            if (x.get("exchange") or "").upper() not in _US_EXCHANGES:
+                continue
+            out.append({
+                "symbol": sym,
+                "name": (x.get("shortname") or x.get("longname") or sym).strip(),
+                "exchange": x.get("exchange"),
+            })
+            if len(out) >= 8:
+                break
+    except Exception as ex:
+        log.warning("symbol search failed for %r: %s", query, ex)
+        return {"results": []}
+
+    _symsearch_cache[key] = {"ts": time.time(), "data": out}
+    return {"results": out}
+
+
 @app.get("/api/fundamentals/{ticker}")
 def get_fundamentals(ticker: str, uid: int = Depends(get_effective_user)):
     """Scorecard de fundamentales de una acción ("Calidad de cartera").
@@ -27636,9 +27816,19 @@ def alerts_evaluate(request: Request):
     if got != expected:
         raise HTTPException(401, "Token inválido.")
     import alerts_engine as _ae
+    from datetime import datetime as _dtmod
     conn = get_db()
     try:
         result = _ae.evaluate_alerts(conn)
+        # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
+        # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
+        # de alta ningún cron nuevo.
+        try:
+            import advisor_alerts
+            result["advisor"] = advisor_alerts.evaluate(
+                conn, market_open=_ae._market_open_now(_dtmod.utcnow()))
+        except Exception as _ex:
+            log.error("advisor alerts en el cron: %s", _ex)
         return {"ok": True, **result}
     finally:
         conn.close()
@@ -27693,6 +27883,270 @@ def snapshots_run_cron(request: Request):
         _snapshot_cron_running = True
     threading.Thread(target=_run_daily_snapshot_bg, daemon=True).start()
     return {"ok": True, "status": "started"}
+
+
+# Guarda anti-doble-corrida del brief (mismo patrón que el cron de snapshots):
+# dos pings solapados mandaban el mail dos veces (el log es check-then-act).
+_brief_cron_lock = threading.Lock()
+_brief_cron_running: dict = {}
+
+
+# ─── Grupos de clientes (filtros guardados, dinámicos) ───────────────────────
+
+class AdvisorGroupIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=60)
+    rules: dict = Field(default_factory=dict)
+    excluded: Optional[list] = None
+
+
+@app.get("/api/advisor/groups")
+def advisor_groups_list(uid: int = Depends(get_current_user)):
+    """Grupos del asesor + cuántos clientes caen en cada uno AHORA."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        groups = ag.list_groups(conn, uid)
+        if groups:
+            prof = ag.client_profiles(conn, uid)          # una sola valuación
+            for g in groups:
+                excl = set(g["excluded"] or [])
+                g["count"] = sum(1 for cid, p in prof.items()
+                                 if cid not in excl and ag.matches(p, g["rules"]))
+                g["description"] = ag.describe(g["rules"])
+        return {"groups": groups,
+                "classes": [{"key": k, "label": v} for k, v in ag.CLASS_LABEL.items()]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/groups")
+def advisor_groups_create(data: AdvisorGroupIn, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        rules = ag.normalize_rules(data.rules)
+        if not rules:
+            raise HTTPException(400, "Elegí al menos una condición para el grupo.")
+        n = conn.execute("SELECT COUNT(*) c FROM advisor_groups WHERE advisor_uid=?",
+                         (uid,)).fetchone()["c"]
+        if n >= ag.MAX_GROUPS:
+            raise HTTPException(403, f"Llegaste al máximo de {ag.MAX_GROUPS} grupos.")
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO advisor_groups (advisor_uid, name, rules, excluded) "
+                "VALUES (?,?,?,?)",
+                (uid, data.name.strip(), json.dumps(rules),
+                 json.dumps([int(x) for x in (data.excluded or [])])))
+        return {"ok": True, "id": cur.lastrowid, "rules": rules,
+                "description": ag.describe(rules)}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/advisor/groups/{group_id}")
+def advisor_groups_update(group_id: int, data: AdvisorGroupIn,
+                          uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        if not ag.get_group(conn, uid, group_id):
+            raise HTTPException(404, "Grupo no encontrado.")
+        rules = ag.normalize_rules(data.rules)
+        if not rules:
+            raise HTTPException(400, "Elegí al menos una condición para el grupo.")
+        with conn:
+            conn.execute(
+                "UPDATE advisor_groups SET name=?, rules=?, excluded=? "
+                "WHERE id=? AND advisor_uid=?",
+                (data.name.strip(), json.dumps(rules),
+                 json.dumps([int(x) for x in (data.excluded or [])]), group_id, uid))
+        return {"ok": True, "rules": rules, "description": ag.describe(rules)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/advisor/groups/{group_id}")
+def advisor_groups_delete(group_id: int, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        with conn:
+            conn.execute("DELETE FROM advisor_groups WHERE id=? AND advisor_uid=?",
+                         (group_id, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/groups/preview")
+def advisor_groups_preview(data: AdvisorGroupIn, uid: int = Depends(get_current_user)):
+    """Quiénes caen con estas condiciones — SIN guardar el grupo."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        rules = ag.normalize_rules(data.rules)
+        if not rules:
+            return {"clients": [], "description": ag.describe({}), "rules": {}}
+        return {"clients": ag.evaluate(conn, uid, rules, data.excluded),
+                "description": ag.describe(rules), "rules": rules}
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/groups/{group_id}/clients")
+def advisor_groups_clients(group_id: int, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_groups as ag
+        g = ag.get_group(conn, uid, group_id)
+        if not g:
+            raise HTTPException(404, "Grupo no encontrado.")
+        return {"group": {"id": g["id"], "name": g["name"],
+                          "description": ag.describe(g["rules"]), "rules": g["rules"]},
+                "clients": ag.evaluate(conn, uid, g["rules"], g["excluded"])}
+    finally:
+        conn.close()
+
+
+# ─── Alertas del libro del asesor (movimiento de la cartera de un cliente) ───
+
+class AdvisorAlertIn(BaseModel):
+    up_pct: Optional[float] = Field(None, ge=0, le=100000)
+    down_pct: Optional[float] = Field(None, ge=0, le=100000)
+    channel: Optional[str] = Field(None, max_length=8)
+    active: Optional[bool] = None
+
+
+@app.get("/api/advisor/alerts")
+def advisor_alerts_get(uid: int = Depends(get_current_user)):
+    """Config de la alerta de movimiento + historial (se purga a los 3 días)."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_alerts
+        out = {"config": advisor_alerts.get_config(conn, uid),
+               "history": advisor_alerts.history(conn, uid),
+               "history_days": advisor_alerts.HISTORY_DAYS}
+        conn.commit()   # history() purga lo viejo: sin commit era no-op + write-lock
+        return out
+    finally:
+        conn.close()
+
+
+@app.patch("/api/advisor/alerts")
+def advisor_alerts_set(data: AdvisorAlertIn, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        if data.channel is not None and data.channel not in ("push", "email", "both"):
+            raise HTTPException(400, "Canal inválido.")
+        import advisor_alerts
+        with conn:
+            advisor_alerts.set_config(conn, uid, up_pct=data.up_pct, down_pct=data.down_pct,
+                                      channel=data.channel, active=data.active)
+        return {"ok": True, "config": advisor_alerts.get_config(conn, uid)}
+    finally:
+        conn.close()
+
+
+# ─── Brief del libro del asesor (2x/día, anclado al mercado AR) ──────────────
+
+@app.api_route("/api/advisor/brief/run-cron", methods=["GET", "POST"])
+def advisor_brief_run_cron(request: Request):
+    """Arma y manda el brief del libro a los asesores. `kind=open` (apertura de
+    BYMA, ~11:00 ART: el plan del día) o `kind=close` (cierre, ~17:15 ART: el
+    resultado del día). Lo pega un cron externo días hábiles. Idempotente por
+    (asesor, kind, día) → re-correr no duplica. Corre en background (el fetch de
+    precios del cierre tarda más que el timeout del gateway).
+
+    Auth: header X-Cron-Token o ?token= contra ADVISOR_BRIEF_TOKEN (o el de
+    snapshots como fallback, para no multiplicar secretos)."""
+    expected = ((os.environ.get("ADVISOR_BRIEF_TOKEN") or "").strip()
+                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())
+    if not expected:
+        raise HTTPException(503, "Brief no configurado (falta ADVISOR_BRIEF_TOKEN).")
+    got = (request.headers.get("x-cron-token")
+           or request.query_params.get("token") or "").strip()
+    if got != expected:
+        raise HTTPException(401, "Token inválido.")
+    kind = (request.query_params.get("kind") or "open").strip().lower()
+    if kind not in ("open", "close"):
+        raise HTTPException(400, "kind debe ser 'open' o 'close'.")
+
+    global _brief_cron_running
+    with _brief_cron_lock:
+        if _brief_cron_running.get(kind):
+            return {"ok": True, "status": "already_running", "kind": kind}
+        _brief_cron_running[kind] = True
+
+    def _bg():
+        try:
+            import advisor_brief
+            res = advisor_brief.run_briefs(kind, get_db)
+            log.info("advisor brief %s: %s", kind, res)
+        except Exception as ex:
+            log.error("advisor brief %s falló: %s", kind, ex)
+        finally:
+            with _brief_cron_lock:
+                _brief_cron_running[kind] = False
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "status": "started", "kind": kind}
+
+
+@app.get("/api/advisor/brief/preview")
+def advisor_brief_preview(kind: str = "open", uid: int = Depends(get_current_user)):
+    """Vista previa del brief para el asesor (sin mandar email)."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_brief
+        if kind not in advisor_brief.KINDS:
+            raise HTTPException(400, "kind debe ser 'open' o 'close'.")
+        return {"brief": advisor_brief.build_brief(conn, uid, kind) or None}
+    finally:
+        conn.close()
+
+
+class AdvisorBriefPrefsIn(BaseModel):
+    brief_open: Optional[bool] = None
+    brief_close: Optional[bool] = None
+
+
+@app.get("/api/advisor/brief/prefs")
+def advisor_brief_prefs_get(uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        r = conn.execute("SELECT brief_open, brief_close FROM advisor_profile WHERE advisor_uid=?",
+                         (uid,)).fetchone()
+        return {"brief_open": True if not r or r["brief_open"] is None else bool(r["brief_open"]),
+                "brief_close": True if not r or r["brief_close"] is None else bool(r["brief_close"])}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/advisor/brief/prefs")
+def advisor_brief_prefs_set(data: AdvisorBriefPrefsIn, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO advisor_profile (advisor_uid) VALUES (?)", (uid,))
+            if data.brief_open is not None:
+                conn.execute("UPDATE advisor_profile SET brief_open=? WHERE advisor_uid=?",
+                             (1 if data.brief_open else 0, uid))
+            if data.brief_close is not None:
+                conn.execute("UPDATE advisor_profile SET brief_close=? WHERE advisor_uid=?",
+                             (1 if data.brief_close else 0, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 # ─── Push notifications (Sprint M4) ──────────────────────────────────────────

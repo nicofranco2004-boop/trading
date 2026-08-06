@@ -22,6 +22,7 @@ import {
   ArrowRight, ArrowLeft, AlertTriangle, Undo2, Briefcase, Wallet, Mail,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
+import GroupsBar from '../components/advisor/GroupsBar'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
@@ -42,10 +43,22 @@ export default function AdvisorClients() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [clients, setClients] = useState(null)   // null = cargando
+  // Grupo activo (filtro dinámico guardado). null = todos.
+  const [group, setGroup] = useState(null)
+  const [groupIds, setGroupIds] = useState(null)   // Set de client_uid del grupo
   const [error, setError] = useState(null)
   const [addOpen, setAddOpen] = useState(false)
   const [notesFor, setNotesFor] = useState(null)  // cliente cuyo modal de notas está abierto
   const [groupOpOpen, setGroupOpOpen] = useState(false)
+  useEffect(() => {
+    if (!group) { setGroupIds(null); return }
+    let cancel = false
+    api.get(`/advisor/groups/${group.id}/clients`)
+      .then(d => { if (!cancel) setGroupIds(new Set((d.clients || []).map(c => c.client_uid))) })
+      .catch(() => { if (!cancel) setGroupIds(new Set()) })
+    return () => { cancel = true }
+  }, [group])
+
   // Deep-link ?groupop=TICKER (lo emite la IA del libro): abre la operación
   // grupal PRECARGADA con ese activo — la IA nunca registra sola, solo trae
   // al asesor hasta acá con el formulario ya arrancado.
@@ -121,6 +134,11 @@ export default function AdvisorClients() {
     }
   }
 
+  // Clientes visibles = todos, o los del grupo activo (el grupo es un filtro,
+  // no una lista aparte: el roster sigue siendo el mismo).
+  const visibleClients = (clients || []).filter(
+    c => !groupIds || groupIds.has(c.client_uid))
+
   return (
     <div className="page-shell-wide" onClick={() => setMenuFor(null)}>
       <PageHeader
@@ -163,8 +181,19 @@ export default function AdvisorClients() {
       ) : clients.length === 0 ? (
         <EmptyRoster onAdd={() => setAddOpen(true)} />
       ) : (
+        <>
+        <GroupsBar activeId={group?.id || null} onPick={setGroup} />
+        {group && (
+          <p className="text-xs text-ink-3 mb-3">
+            Mostrando <span className="text-ink-1 font-medium">{group.name}</span>
+            {group.description ? ` — ${group.description.toLowerCase()}` : ''} ·{' '}
+            <button type="button" onClick={() => setGroup(null)} className="text-rendi-accent hover:underline">
+              ver todos
+            </button>
+          </p>
+        )}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {clients.map((c) => (
+          {visibleClients.map((c) => (
             <ClientCard
               key={c.client_uid}
               c={c}
@@ -177,6 +206,12 @@ export default function AdvisorClients() {
             />
           ))}
         </div>
+        {group && visibleClients.length === 0 && (
+          <p className="text-xs text-ink-3 text-center py-6">
+            Ningún cliente cumple las condiciones de este grupo ahora mismo.
+          </p>
+        )}
+        </>
       )}
 
       {addOpen && <AddClientModal onClose={() => setAddOpen(false)} onCreated={() => { setAddOpen(false); load() }} />}
