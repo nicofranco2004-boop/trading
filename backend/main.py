@@ -10634,14 +10634,20 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
             (uid, since_date),
         )
         from snapshots_job import compute_net_deposited_db as _cnd
-        for s in conn.execute(
-            "SELECT id, date FROM snapshots WHERE user_id=? AND date >= ?",
-            (uid, since_date),
+        # La SSoT solo mira AÑO-MES (ignora el día: monthly_entries es mensual), así que
+        # todas las fotos de un mismo mes comparten valor. Calculamos una vez por MES y
+        # hacemos un UPDATE por mes: con 3 años de historia son ~36 cuentas en vez de
+        # ~1100, y el borrado no se queda con el lock de escritura recorriendo foto a
+        # foto. Exactamente equivalente, no es una aproximación.
+        for r in conn.execute(
+            "SELECT DISTINCT substr(date,1,7) AS ym FROM snapshots "
+            "WHERE user_id=? AND date >= ?", (uid, since_date),
         ).fetchall():
             conn.execute(
-                "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?",
-                (_cnd(conn, uid, as_of_date=s["date"], broker_filter="global",
-                      include_baseline=True), s["id"], uid),
+                "UPDATE snapshots SET net_deposited=? "
+                " WHERE user_id=? AND date >= ? AND substr(date,1,7)=?",
+                (_cnd(conn, uid, as_of_date=r["ym"], broker_filter="global",
+                      include_baseline=True), uid, since_date, r["ym"]),
             )
     conn.execute("DELETE FROM snapshots WHERE user_id=? AND date = ?", (uid, today))
     _import_persister._backfill_snapshots_from_monthly(conn, uid)
