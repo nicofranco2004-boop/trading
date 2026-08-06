@@ -26154,6 +26154,82 @@ class ImportConfirmIn(BaseModel):
     include_duplicates: Optional[bool] = False
 
 
+def _auto_migrar_fx_post_import(uid: int) -> Optional[dict]:
+    """Pasa la cuenta al tipo de cambio HISTÓRICO (v1 → v2) después de un import.
+
+    POR QUÉ EXISTE
+    ──────────────
+    Una cuenta v1 valúa TODA venta en pesos con el dólar de HOY. En una cuenta con
+    años de historia eso inventa pérdidas y ganancias enormes: medido sobre un GD30
+    real de enero 2022 (comprado a 0,343 USD la lámina, vendido a 68,6415 ARS), v1
+    daba −886,79 USD (−85,9%) y v2 da −71,55 (−6,9%), que es el número verdadero —
+    el bono bajó de 34,3 a 31,9 dólares en esas dos semanas. Un usuario lo reportó
+    como "cuando se cruza una venta en pesos con una compra en dólares te da una
+    pérdida fuera de lugar" (2026-08-06).
+
+    Hasta ahora la migración sólo se disparaba a mano desde el panel admin, así que
+    cualquiera que quedara afuera del lote seguía viendo números falsos sin manera
+    de arreglarlo por su cuenta. Con esto, re-importar alcanza.
+
+    POR QUÉ ES SEGURO
+    ─────────────────
+    · Corre con el import YA COMMITEADO y en su PROPIA conexión: si falla, se
+      cuelga o frena, el import del usuario queda intacto.
+    · Usa el MISMO `migrate_user_fx` que el panel, con los frenos puestos
+      (`force=False`): las cuentas con el bug de escala per-100, con cash tocado,
+      con delta de P&L implausible o con fechas sospechosas NO se migran y quedan
+      en v1 — exactamente como hoy, sin empeorar nada.
+    · Migra la cuenta ENTERA, no sólo el broker importado. Tiene que ser así: los
+      flujos y las ventas son dos patas del mismo cociente y migrar una sola las
+      descorrelaciona (ver el comentario largo en fx.py). Media cuenta migrada es
+      peor que ninguna.
+
+    Devuelve un dict para el response del import (o None si no había nada que
+    hacer), así el frontend puede avisar que los números se recalcularon.
+    """
+    try:
+        from importing import fx_migrate as _fxm
+        from fx import fx_version as _fx_version, FX_V1 as _FX_V1
+    except Exception:
+        return None
+
+    conn = get_db()
+    try:
+        if _fx_version(conn, uid) != _FX_V1:
+            return None
+        out = _fxm.migrate_user_fx(
+            conn, uid, helpers=None,
+            recalc=_recalc_pnl_realized_from_ops,
+            backfill_snapshots=_import_persister._backfill_snapshots_from_monthly,
+            recompute_netdep=_recompute_snapshots_netdep_for_user,
+            force=False)
+        if not out.get("ok"):
+            conn.rollback()
+            log.info("fx-auto: la cuenta %s NO se migró — %s", uid, out.get("motivo"))
+            return {"migrada": False, "motivo": out.get("motivo")}
+        conn.commit()
+        log.info("fx-auto: cuenta %s migrada a v2 tras el import (delta=%s)",
+                 uid, out.get("delta"))
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log.exception("fx-auto: falló la migración de %s — la cuenta queda en v1", uid)
+        return {"migrada": False, "motivo": "error"}
+    finally:
+        conn.close()
+
+    # El P&L y el aportado acaban de cambiar: sin esto el chat de IA, Novedades y
+    # Diagnóstico le hablarían de los números viejos hasta 24h.
+    try:
+        _ai_cache_invalidate(uid)
+    except Exception:
+        log.warning("fx-auto: no se pudo invalidar el cache de IA de %s", uid)
+    return {"migrada": True, "delta": out.get("delta")}
+
+
+
 @app.post("/api/imports/confirm")
 def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)):
     """Confirma el import: aplica los side-effects y marca el batch como 'confirmed'.
@@ -26342,8 +26418,16 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                 import traceback
                 traceback.print_exc()
 
+        # ── Tipo de cambio histórico: migrar la cuenta si todavía está en v1 ──
+        # VA ACÁ A PROPÓSITO: FUERA del `with conn:`, o sea con el import YA
+        # COMMITEADO y en su propia transacción. Si esto se cuelga o falla, el
+        # import queda igual; adentro, un timeout se llevaría puesto el import
+        # entero del usuario.
+        fx_migracion = _auto_migrar_fx_post_import(uid)
+
         return {"ok": True, "batch_id": data.session_id,
                 "skipped_by_user": len(skip_set), "auto_skipped_duplicates": auto_skipped,
+                "fx_migracion": fx_migracion,
                 **summary}
     except HTTPException:
         raise

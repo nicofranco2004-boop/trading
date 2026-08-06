@@ -1815,7 +1815,7 @@ function FxMigratePanel({ toast }) {
     setSel(s)
   }
 
-  async function correr(apply) {
+  async function correr(apply, force = false) {
     const ids = [...sel]
     if (!ids.length) return
     if (apply) {
@@ -1871,7 +1871,7 @@ function FxMigratePanel({ toast }) {
 
     for (let i = 0; i < ids.length; i++) {
       try {
-        out[ids[i]] = await api.post(`/admin/fx-migrate-user?user_id=${ids[i]}&apply=${apply}`)
+        out[ids[i]] = await api.post(`/admin/fx-migrate-user?user_id=${ids[i]}&apply=${apply}${force ? '&force=true' : ''}`)
       } catch (e) {
         const msg = String(e.message || '')
         if (apply && msg.includes('ya está en v2')) {
@@ -2140,6 +2140,28 @@ function FxMigratePanel({ toast }) {
             <button onClick={() => correr(true)} disabled={!sel.size || !!running}
               className="text-xs px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50">
               Aplicar {sel.size ? `(${sel.size})` : ''}
+            </button>
+            {/* FORZAR: para las cuentas que la verificación frenó y ya revisaste.
+                El freno de Δ P&L tiene un umbral ABSOLUTO (>US$100k) que no escala
+                con el tamaño: una cuenta con miles de ventas y un delta por venta
+                sano (la calibración dice 0-378 en sanas, 2.888+ en corruptas) lo
+                cruza igual. El motivo de cada frenada trae el "US$ x/venta" —
+                mirá ESE número antes de forzar, no el total. */}
+            <button
+              onClick={() => {
+                const n = sel.size
+                if (!n) return
+                if (!confirm(
+                  `Forzar la migración de ${n} cuenta${n === 1 ? '' : 's'} SALTEANDO la verificación.\n\n` +
+                  `Hacelo sólo si ya miraste el motivo de la frenada y entendés por qué.\n` +
+                  `En el Δ P&L, el número que importa es el POR VENTA: las cuentas sanas ` +
+                  `dan 0-378 y las corruptas 2.888 o más.\n\nEsto modifica la base.`)) return
+                correr(true, true)
+              }}
+              disabled={!sel.size || !!running}
+              title="Aplica igual aunque la verificación haya frenado la cuenta"
+              className="text-xs px-3 py-1.5 rounded-md bg-amber-600/90 text-white hover:bg-amber-500 disabled:opacity-50">
+              Forzar {sel.size ? `(${sel.size})` : ''}
             </button>
           </div>
 
