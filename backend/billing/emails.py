@@ -1227,7 +1227,11 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
     `brief` viene de advisor_brief.build_brief(). No-reply (es automático)."""
     kind = (brief or {}).get("kind") or "open"
     is_open = kind == "open"
-    name = (user_name or "").strip().split(" ")[0]
+    # Saludo solo con un nombre que PAREZCA un nombre: las cuentas de trabajo
+    # suelen llamarse "test5" / "asesor01" y saludar con eso queda peor que no
+    # saludar (feedback de Nico viendo el primer brief real).
+    _raw = (user_name or "").strip().split(" ")[0]
+    name = _raw if (len(_raw) >= 3 and _raw.isalpha()) else ""
     hi = f"Buen día{', ' + name if name else ''}." if is_open else f"Cierre del día{', ' + name if name else ''}."
     title = "Tu libro hoy" if is_open else "Cómo cerró tu libro"
 

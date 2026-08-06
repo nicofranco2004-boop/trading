@@ -28,6 +28,12 @@ log = logging.getLogger("advisor_brief")
 KINDS = ("open", "close")
 
 
+def _clientes(n: int) -> str:
+    """'1 cliente' / '3 clientes' — nada de 'cliente(s)'."""
+    n = int(n or 0)
+    return f"{n} cliente" + ("" if n == 1 else "s")
+
+
 def _today_art() -> str:
     """Fecha de HOY en horario argentino (UTC-3) — los snapshots se estampan así."""
     return (datetime.utcnow() - timedelta(hours=3)).date().isoformat()
@@ -205,8 +211,9 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
                     out["sections"].append({
                         "title": "Eventos de hoy",
                         "items": [{"label": e["ticker"],
-                                   "detail": f"{e['title'] or e['kind']} · lo tienen "
-                                             f"{len(holders.get(e['ticker']) or [])} cliente(s)"}
+                                   "detail": f"{e['title'] or e['kind']} · lo "
+                                             f"{'tiene' if len(holders.get(e['ticker']) or []) == 1 else 'tienen'} "
+                                             f"{_clientes(len(holders.get(e['ticker']) or []))}"}
                                   for e in evs]})
         except Exception as ex:
             log.warning("brief eventos uid=%s: %s", uid, ex)
@@ -257,13 +264,16 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
                     "as_of_base": max((str(snaps[p["cid"]]["date"]) for p in per), default=None),
                 }
                 movers = sorted(per, key=lambda p: -p["pct"])
-                out["sections"].append({
-                    "title": "Cómo cerraron tus clientes",
-                    "items": ([{"label": movers[0]["label"],
-                                "detail": f"el mejor del día: {movers[0]['pct']:+.1f}%"}]
-                              + ([{"label": movers[-1]["label"],
-                                   "detail": f"el que más cayó: {movers[-1]['pct']:+.1f}%"}]
-                                 if len(movers) > 1 else []))})
+                _best, _worst = movers[0], movers[-1]
+                _items = [{"label": _best["label"],
+                           "detail": ("el mejor del día" if _best["pct"] >= 0
+                                      else "el que menos cayó") + f": {_best['pct']:+.1f}%"}]
+                if len(movers) > 1:
+                    # Si nadie cerró en rojo, "el que más cayó" sería mentira.
+                    _items.append({"label": _worst["label"],
+                                   "detail": ("el que más cayó" if _worst["pct"] < 0
+                                              else "el que menos subió") + f": {_worst['pct']:+.1f}%"})
+                out["sections"].append({"title": "Cómo cerraron tus clientes", "items": _items})
         # Qué activo pesa hoy en el libro (motor estrella — P&L acumulado)
         star = (book.get("star") or {})
         losers = (star.get("losers") or [])[:2]
@@ -271,10 +281,10 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
         items = []
         for w in winners:
             items.append({"label": w.get("asset"),
-                          "detail": f"en verde en {w.get('clients_green') or w.get('clients') or 0} cliente(s)"})
+                          "detail": f"en verde en {_clientes(w.get('clients_green') or w.get('clients') or 0)}"})
         for l in losers:
             items.append({"label": l.get("asset"),
-                          "detail": f"en rojo en {l.get('clients_red') or l.get('clients') or 0} cliente(s)"})
+                          "detail": f"en rojo en {_clientes(l.get('clients_red') or l.get('clients') or 0)}"})
         if items:
             out["sections"].append({"title": "Los activos que mandan en tu libro",
                                     "items": items})
