@@ -779,6 +779,37 @@ class DeleteCascade(unittest.TestCase):
                                msg="el undo dejó la tenencia negativa")
         self.assertGreaterEqual(self._open_qty("MELI"), 0.0)
 
+    def test_bond_amortization_restores_each_lot(self):
+        """Hallazgo del audit: si la amortización barrió VARIOS lotes, borrar el cobro
+        devolvía todo al lote más viejo → el costo unitario de los demás quedaba
+        distorsionado. Ahora se guarda el desglose y se restaura lote por lote."""
+        main._adjust_broker_cash(self.conn, self.uid, self.BROKER, 5000.0)
+        self.conn.commit()
+        # Dos lotes del mismo bono; la amortización de 80 barre el 1ro (50) y parte del 2do.
+        for q, inv, d in ((50, 50, "2024-01-10"), (50, 60, "2024-02-10")):
+            main.create_position(main.PositionIn(
+                broker=self.BROKER, asset="AL30", quantity=q, buy_price=inv / q,
+                invested=inv, entry_date=d, asset_type="BOND"), uid=self.uid)
+        lots0 = {r["id"]: (r["quantity"], r["invested"]) for r in self.conn.execute(
+            "SELECT id, quantity, invested FROM positions WHERE user_id=? AND asset='AL30'",
+            (self.uid,)).fetchall()}
+        self.conn.commit()
+        main.bond_cashflow(main.BondCashflowIn(
+            broker=self.BROKER, asset="AL30", flow_type="amortization", amount=80,
+            date="2024-06-01", decrement_quantity=True), uid=self.uid)
+        self.assertAlmostEqual(self._open_qty("AL30"), 20.0, places=6)   # 100 − 80
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE asset='AL30' ORDER BY id DESC LIMIT 1").fetchone()["id"]
+        self.conn.commit()
+        main.delete_operation(oid, uid=self.uid)
+        # Cada lote vuelve a SU cantidad y SU costo, no todo al más viejo.
+        lots1 = [(round(r["quantity"], 4), round(r["invested"], 4)) for r in self.conn.execute(
+            "SELECT quantity, invested FROM positions WHERE user_id=? AND asset='AL30' "
+            "ORDER BY COALESCE(entry_date,'9999'), id", (self.uid,)).fetchall()]
+        self.assertEqual(sorted(lots1), [(50.0, 50.0), (50.0, 60.0)],
+                         msg=f"los lotes no volvieron a su cantidad Y su costo: {lots1}")
+        self.assertAlmostEqual(self._open_qty("AL30"), 100.0, places=6)
+
     def test_delete_manual_legacy_row_is_blocked(self):
         """Fila vieja (sin la foto de reverso): su reverso NO es derivable → se
         bloquea con mensaje claro en vez de arriesgar saldo/tenencia."""

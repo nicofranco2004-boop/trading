@@ -7945,6 +7945,47 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
 
     Idempotente. Devuelve cantidad de rows actualizados.
     """
+    # Los meses se descubren desde las FUENTES, no solo desde lo que quedó en
+    # monthly_entries. Antes se iteraba únicamente sobre las filas existentes, y como la
+    # GC de abajo borra las que quedan todo-en-cero, un mes cuyas ops se cancelaban entre
+    # sí (una venta +50 y otra −50) desaparecía de la tabla; al borrar DESPUÉS una de las
+    # dos, el recalc ya no visitaba ese mes y el +50 sobreviviente quedaba HUÉRFANO:
+    # invisible en Dashboard/Reportes y con la cadena de capital_final saltada, en
+    # silencio y para siempre. Sembrando los meses que tienen respaldo real, el invariante
+    # SUM(operations.pnl_usd) == SUM(monthly.pnl_realized global) se vuelve estructural y
+    # la GC solo puede borrar meses que de verdad no respalda ninguna fuente.
+    _seed = set()
+    for r in conn.execute(
+        "SELECT DISTINCT broker AS b, CAST(strftime('%Y', date) AS INT) AS y, "
+        "       CAST(strftime('%m', date) AS INT) AS m "
+        "  FROM operations WHERE user_id=? AND date IS NOT NULL", (uid,),
+    ).fetchall():
+        if r["y"] and r["b"]:
+            _seed.add((r["b"], r["y"], r["m"]))
+            _seed.add(("global", r["y"], r["m"]))
+    try:
+        for r in conn.execute(
+            """SELECT DISTINCT n.broker AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
+                      CAST(strftime('%m', n.date) AS INT) AS m
+                 FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id
+                WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
+                  AND n.operation_type IN ('DEPOSIT','WITHDRAW') AND n.date IS NOT NULL""",
+            (uid,),
+        ).fetchall():
+            if r["y"] and r["b"]:
+                _seed.add((r["b"], r["y"], r["m"]))
+                _seed.add(("global", r["y"], r["m"]))
+    except sqlite3.OperationalError:
+        pass          # tablas de import aún no existen (DB fresca)
+    for _b, _y, _m in _seed:
+        conn.execute(
+            """INSERT INTO monthly_entries (user_id, year, month, broker, deposits,
+                 withdrawals, pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+               SELECT ?,?,?,?,0,0,0,0,0,0
+                WHERE NOT EXISTS (SELECT 1 FROM monthly_entries
+                                   WHERE user_id=? AND broker=? AND year=? AND month=?)""",
+            (uid, _y, _m, _b, uid, _b, _y, _m))
+
     rows = conn.execute(
         "SELECT DISTINCT broker, year, month FROM monthly_entries WHERE user_id=?",
         (uid,),
@@ -8801,6 +8842,7 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
             # y también ANTES del decrement (si aplica) — aunque si decrementamos,
             # la versión "read-only" debería dar el mismo número que la "mutate".
             cost_basis_consumed = None
+            amort_detail: list = []      # desglose por lote, para poder deshacer exacto
             qty_decremented = 0.0
             invested_decremented = 0.0
             cross_currency_skipped = False
@@ -8834,7 +8876,8 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
                         )
                     else:
                         qty_decremented, invested_decremented = _amortize_position_fifo(
-                            conn, uid, data.broker, data.asset.upper(), face_to_decrement
+                            conn, uid, data.broker, data.asset.upper(), face_to_decrement,
+                            detail_out=amort_detail
                         )
                         cost_basis_consumed = invested_decremented
                 else:
@@ -8861,6 +8904,10 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
                                    "flow_type": data.flow_type,
                                    "qty_decremented": qty_decremented,
                                    "invested_decremented": invested_decremented,
+                                   # Qué le sacó a CADA lote: sin esto, al borrar el cobro
+                                   # se le devolvía todo al lote más viejo y el costo
+                                   # unitario de los demás quedaba distorsionado.
+                                   "amort_lots": amort_detail or None,
                                    "cross_currency_skipped": cross_currency_skipped})),
             )
             # 2. Acreditar cash del broker
@@ -8948,7 +8995,8 @@ def _compute_amort_cost_basis_fifo(conn, uid: int, broker: str, asset: str, amor
     return round(total_consumed, 6)
 
 
-def _amortize_position_fifo(conn, uid: int, broker: str, asset: str, amort_amount: float):
+def _amortize_position_fifo(conn, uid: int, broker: str, asset: str, amort_amount: float,
+                            detail_out: list = None):
     """Reduce FIFO la quantity + invested de los lotes de (broker, asset).
 
     Conceptualmente: una amortización te devuelve `amort_amount` de face value.
@@ -8985,6 +9033,11 @@ def _amortize_position_fifo(conn, uid: int, broker: str, asset: str, amort_amoun
 
     remaining = qty_to_take
     total_invested_dec = 0.0
+    # Detalle POR LOTE de lo que se consumió. El total agregado no alcanza para
+    # deshacer: si la amortización barrió 3 lotes, devolverle todo al más viejo
+    # distorsiona el costo unitario de cada uno. `detail_out` (opcional) lo expone
+    # para que el borrado del cobro pueda restaurar lote por lote.
+    detail: list = []
     for lot in lots:
         if remaining <= 1e-9:
             break
@@ -8997,17 +9050,25 @@ def _amortize_position_fifo(conn, uid: int, broker: str, asset: str, amort_amoun
         new_invested = (lot['invested'] or 0) * (1 - ratio)
         new_commissions = (lot['commissions'] or 0) * (1 - ratio)
         invested_taken = (lot['invested'] or 0) * ratio
+        com_taken = (lot['commissions'] or 0) * ratio
         total_invested_dec += invested_taken
         if new_qty <= 1e-9:
             # Lote totalmente amortizado — borramos para que no quede zombie.
             conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (lot['id'], uid))
+            _survives = False
         else:
             conn.execute(
                 "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
                 (new_qty, round(new_invested, 6), round(new_commissions, 6), lot['id'], uid),
             )
+            _survives = True
+        detail.append({"id": lot['id'], "take": round(take, 6),
+                       "inv": round(invested_taken, 6), "com": round(com_taken, 6),
+                       "survives": _survives})
         remaining -= take
 
+    if detail_out is not None:
+        detail_out.extend(detail)
     return qty_to_take, round(total_invested_dec, 6)
 
 
@@ -11938,24 +11999,57 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
         qty_dec = float(meta.get("qty_decremented") or 0)
         inv_dec = float(meta.get("invested_decremented") or 0)
         if qty_dec > 0:
-            # La amortización bajó el nominal FIFO; lo devolvemos al lote más viejo
-            # que siga vivo. Si no quedó ninguno, no inventamos una posición.
-            lot = conn.execute(
-                "SELECT id, quantity, invested FROM positions WHERE user_id=? AND broker=? "
-                " AND asset=? AND is_cash=0 ORDER BY COALESCE(entry_date,'9999-12-31'), id LIMIT 1",
-                (uid, broker, op["asset"])).fetchone()
-            if not lot:
-                # El cobro BAJÓ el nominal del bono; si ya no queda lote vivo, devolver
-                # solo el cash y perder el nominal para siempre descuadra la tenencia.
-                raise HTTPException(409,
-                    "Este cobro amortizó el bono y ya no queda nominal donde devolverlo. "
-                    "Restaurá primero la posición del bono.")
-            conn.execute(
-                "UPDATE positions SET quantity=?, invested=? WHERE id=? AND user_id=?",
-                (float(lot["quantity"] or 0) + qty_dec,
-                 float(lot["invested"] or 0) + inv_dec, lot["id"], uid))
-            undo["lot"] = {"mode": "update", "id": lot["id"], "qty": qty_dec,
-                           "inv": inv_dec, "com": 0.0}
+            _no_lot = ("Este cobro amortizó el bono y ya no queda nominal donde "
+                       "devolverlo. Restaurá primero la posición del bono.")
+            detail = meta.get("amort_lots") or None
+            if detail:
+                # Restauramos LOTE POR LOTE lo que la amortización le sacó a cada uno.
+                # Volcarlo todo en el más viejo (lo que se hacía antes) distorsiona el
+                # costo unitario de los demás. Los lotes que la amortización consumió
+                # ENTEROS ya no existen: se re-crean con lo que se les quitó.
+                undo_lots = []
+                for d in detail:
+                    live = conn.execute(
+                        "SELECT id, quantity, invested, commissions FROM positions "
+                        " WHERE id=? AND user_id=? AND is_cash=0", (d.get("id"), uid)).fetchone()
+                    if live:
+                        conn.execute(
+                            "UPDATE positions SET quantity=?, invested=?, commissions=? "
+                            " WHERE id=? AND user_id=?",
+                            (float(live["quantity"] or 0) + float(d.get("take") or 0),
+                             float(live["invested"] or 0) + float(d.get("inv") or 0),
+                             float(live["commissions"] or 0) + float(d.get("com") or 0),
+                             live["id"], uid))
+                        undo_lots.append({"mode": "update", "id": live["id"],
+                                          "qty": d.get("take"), "inv": d.get("inv"),
+                                          "com": d.get("com")})
+                    elif d.get("survives"):
+                        # Sobrevivió a la amortización pero ya no está: lo borró otra
+                        # cosa (una venta). No inventamos tenencia.
+                        raise HTTPException(409, _no_lot)
+                    else:
+                        cur_l = conn.execute(
+                            """INSERT INTO positions (user_id, broker, asset, is_cash,
+                                 quantity, invested, commissions, asset_type)
+                               VALUES (?,?,?,0,?,?,?,?)""",
+                            (uid, broker, op["asset"], float(d.get("take") or 0),
+                             float(d.get("inv") or 0), float(d.get("com") or 0), "BOND"))
+                        undo_lots.append({"mode": "insert", "id": cur_l.lastrowid})
+                undo["lots"] = undo_lots
+            else:
+                # Cobros VIEJOS (sin desglose): mínimo anterior — al lote más viejo vivo.
+                lot = conn.execute(
+                    "SELECT id, quantity, invested FROM positions WHERE user_id=? AND broker=? "
+                    " AND asset=? AND is_cash=0 ORDER BY COALESCE(entry_date,'9999-12-31'), id LIMIT 1",
+                    (uid, broker, op["asset"])).fetchone()
+                if not lot:
+                    raise HTTPException(409, _no_lot)
+                conn.execute(
+                    "UPDATE positions SET quantity=?, invested=? WHERE id=? AND user_id=?",
+                    (float(lot["quantity"] or 0) + qty_dec,
+                     float(lot["invested"] or 0) + inv_dec, lot["id"], uid))
+                undo["lot"] = {"mode": "update", "id": lot["id"], "qty": qty_dec,
+                               "inv": inv_dec, "com": 0.0}
 
     elif src != "manual_form":
         raise HTTPException(400, _MANUAL_LEGACY_MSG)
@@ -12085,6 +12179,13 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
             "asset": pos["asset"], "manual": True}
 
 
+def _stale_undo_msg() -> str:
+    """Mensaje único de 'el mundo cambió desde que borraste' — lo comparten todas las
+    guardas de frescura del undo manual."""
+    return ("No se puede deshacer: cambió algo desde que borraste "
+            "(el activo, el lote o el broker). Cargalo de nuevo a mano.")
+
+
 def _undo_manual_delete(conn, uid: int, j) -> None:
     """Deshace el borrado de una carga MANUAL re-invirtiendo exactamente las acciones
     que el borrado aplicó (quedaron anotadas en el journal). No hay rebuild que
@@ -12169,7 +12270,27 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
         if p.get("cash"):
             _adjust_broker_cash(conn, uid, p.get("cash_broker") or broker,
                                 -float(p["cash"]))
-        # Re-invertir lo que el borrado le devolvió al lote.
+        # Re-invertir lo que el borrado le devolvió a CADA lote (las amortizaciones
+        # restauran varios; el resto, uno solo).
+        for _l in (p.get("lots") or []):
+            if _l.get("mode") == "insert":
+                conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
+                             (_l.get("id"), uid))
+                continue
+            _live = conn.execute(
+                "SELECT id, quantity, invested, commissions FROM positions "
+                " WHERE id=? AND user_id=?", (_l.get("id"), uid)).fetchone()
+            if not _live:
+                raise HTTPException(409, _stale_undo_msg())
+            if (float(_live["quantity"] or 0) < float(_l.get("qty") or 0) - 1e-9):
+                raise HTTPException(409, _stale_undo_msg())
+            conn.execute(
+                "UPDATE positions SET quantity=?, invested=?, commissions=? "
+                " WHERE id=? AND user_id=?",
+                (float(_live["quantity"] or 0) - float(_l.get("qty") or 0),
+                 float(_live["invested"] or 0) - float(_l.get("inv") or 0),
+                 float(_live["commissions"] or 0) - float(_l.get("com") or 0),
+                 _live["id"], uid))
         lot = p.get("lot") or {}
         if lot.get("mode") == "update":
             live = conn.execute(
