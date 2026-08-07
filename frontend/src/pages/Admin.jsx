@@ -293,6 +293,7 @@ export default function Admin() {
 
       <CurrencyBackfillPanel toast={toast} />
 
+      <FciRefreshPanel toast={toast} />
       <MtmAuditPanel toast={toast} />
       <FxMigratePanel toast={toast} />
 
@@ -1407,6 +1408,54 @@ function MtmBackfillPanel({ toast }) {
     </div>
   )
 }
+
+// ─── FciRefreshPanel — re-seedear el catálogo de FCI ────────────────────────
+// El catálogo sale de una allowlist por nombre exacto (backend/pricing/fci.py) y
+// se seedea con un cron diario. Cuando se suman fondos —pasa cada vez que un
+// usuario reporta "falta el mío"— hay que esperar al cron o dispararlo a mano.
+// El endpoint existía pero es POST-only: sin botón, en la práctica había que
+// esperar 24h para que el usuario que reportó pudiera cargar su fondo.
+function FciRefreshPanel({ toast }) {
+  const [r, setR] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function refrescar() {
+    setBusy(true)
+    try {
+      const out = await api.post('/admin/fci/refresh')
+      setR(out)
+      toast.push('Catálogo FCI actualizado', { type: 'success' })
+    } catch (e) {
+      toast.push('Error: ' + e.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <RefreshCw size={16} className="text-violet-500" />
+          <h2 className="font-semibold text-ink-0">Catálogo FCI</h2>
+        </div>
+        <button onClick={refrescar} disabled={busy}
+          className="text-xs px-3 py-1.5 rounded-md bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+          {busy ? 'Actualizando…' : 'Re-seedear y refrescar precios'}
+        </button>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Vuelve a leer la allowlist de <code>pricing/fci.py</code> contra ArgentinaDatos y
+        actualiza las cuotapartes. Corrélo después de sumar fondos nuevos — si no, hay que
+        esperar al cron diario para que el usuario que los pidió pueda cargarlos.
+      </p>
+      {r && (
+        <p className="text-xs text-emerald-500 tabular">
+          {Object.entries(r).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ')}
+        </p>
+      )}
+    </div>
+  )
+}
+
 
 // ─── MtmAuditPanel — reconcilia la cadena a COSTO contra la de MERCADO ──────
 // Existe porque después de portar el parche MtM a Insights, la MISMA cuenta
