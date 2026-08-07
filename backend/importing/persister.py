@@ -1232,8 +1232,8 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
         # (el migrador FX) corre `_recompute_snapshots_netdep_for_user` después,
         # que lo recalcula para TODOS los snapshots.
         conn.execute(
-            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
-               VALUES (?,?,?,?,?)
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source)
+               VALUES (?,?,?,?,?,'import')
                ON CONFLICT(user_id, date) DO NOTHING""",
             (uid, snap_date, cap_final, net_dep, net_dep),
         )

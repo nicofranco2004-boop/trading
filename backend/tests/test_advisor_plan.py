@@ -2258,6 +2258,140 @@ class AdvisorAlertBaseTest(AdvisorAlertsAuditTest):
         self.assertEqual(self._run(12000)["fired"], 1)
 
 
+class TwrFase0Test(AdvisorBase):
+    """Semáforo de datos: clasificar cada snapshot por quién lo escribió."""
+
+    def _snap(self, uid, d, v, fx=None, hold=None, source=None):
+        import json as _j
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO snapshots (user_id,date,total_value,total_invested,"
+                "fx_to_usd_blue,holdings_json,source) VALUES (?,?,?,?,?,?,?)",
+                (uid, d, v, v, fx, _j.dumps(hold) if hold else None, source))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _pos(self, uid, is_cash=0):
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO positions (user_id,broker,asset,quantity,invested,is_cash) "
+                         "VALUES (?,?,?,1,100,?)", (uid, "Cocos", "AAPL", is_cash))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _diag(self, uid):
+        import twr
+        conn = main.get_db()
+        try:
+            return twr.diagnosticar(conn, [uid])[uid]
+        finally:
+            conn.close()
+
+    # ── La prueba negativa dura del plan ────────────────────────────────────
+    def test_cliente_solo_con_cron_no_tiene_ni_un_sintetico(self):
+        # Si acá aparece un sintético, la heurística tiene falsos positivos y NO
+        # se puede usar para excluir tramos. Es el mismo error que ya se cometió
+        # una vez con la detección de fotos "sintéticas" del Dashboard, que
+        # terminó borrando mediciones REALES.
+        import twr
+        self._pos(self.client_uid)
+        for d, v in (("2026-07-10", 100), ("2026-07-11", 101), ("2026-07-12", 102)):
+            self._snap(self.client_uid, d, v, fx=1400,
+                       hold=[{"asset": "AAPL", "value_usd": v}])
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.SINTETICO_COSTO], 0)
+        self.assertEqual(d["por_clase"][twr.MEDICION], 3)
+        self.assertEqual(d["medible_desde"], "2026-07-10")
+        self.assertIsNone(d["motivo"])
+
+    def test_cliente_todo_en_pesos_igual_es_medible(self):
+        # El cron excluye el cash de holdings, así que una cartera 100% en pesos
+        # deja holdings_json en NULL aunque el cron haya corrido perfecto.
+        # Exigir esa columna lo marcaría "no medible" mintiendo.
+        import twr
+        self._pos(self.client_uid, is_cash=1)
+        self._snap(self.client_uid, "2026-07-10", 50, fx=1400)
+        self._snap(self.client_uid, "2026-07-11", 51, fx=1400)
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.MEDICION], 2)
+        self.assertEqual(d["medible_desde"], "2026-07-10")
+
+    def test_historia_importada_no_es_medible(self):
+        import twr
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-05-31", 80)   # fin de mes, nada estampado
+        self._snap(self.client_uid, "2026-06-30", 82)
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.SINTETICO_COSTO], 2)
+        self.assertIsNone(d["medible_desde"])
+        self.assertEqual(d["motivo"], "importado_sin_mediciones")
+
+    def test_una_sola_medicion_no_alcanza(self):
+        # Con un solo borde no hay tramo que medir.
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}])
+        d = self._diag(self.client_uid)
+        self.assertIsNone(d["medible_desde"])
+        self.assertEqual(d["motivo"], "una_sola_medicion")
+
+    def test_la_columna_source_manda_sobre_la_heuristica(self):
+        # Una fila con composición estampada pero source='browser' NO es una
+        # medición: el hecho gana sobre la deducción.
+        import twr
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}], source="browser")
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.INTRADIA], 1)
+        self.assertEqual(d["por_clase"][twr.MEDICION], 0)
+
+    def test_serie_congelada_se_marca(self):
+        # Un precio congelado (ticker delisted en asset_last_price, sin TTL) deja
+        # la serie plana. Es peor que un hueco: el hueco se ve.
+        self._pos(self.client_uid)
+        for d_ in ("2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13"):
+            self._snap(self.client_uid, d_, 100.0, fx=1400,
+                       hold=[{"asset": "AAPL", "value_usd": 100.0}])
+        d = self._diag(self.client_uid)
+        self.assertTrue(d["tramos_planos"])
+        self.assertGreaterEqual(d["tramos_planos"][0]["ruedas"], 3)
+
+    def test_endpoint_del_libro_devuelve_cobertura(self):
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}], source="cron")
+        self._snap(self.client_uid, "2026-07-11", 101, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 101}], source="cron")
+        r = self.http.get("/api/advisor/data-health", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["resumen"]["total"], 1)
+        self.assertEqual(body["resumen"]["medibles"], 1)
+        self.assertEqual(body["resumen"]["cobertura_pct"], 100.0)
+        self.assertEqual(body["clientes"][0]["medible_desde"], "2026-07-10")
+
+    def test_el_semaforo_no_escribe_nada(self):
+        # Read-only es parte del contrato de la Fase 0.
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}])
+        conn = main.get_db()
+        try:
+            antes = conn.execute("SELECT COUNT(*) c FROM snapshots").fetchone()["c"]
+        finally:
+            conn.close()
+        self.http.get("/api/advisor/data-health", headers=self._hdr(self.advisor))
+        conn = main.get_db()
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) c FROM snapshots").fetchone()["c"], antes)
+        finally:
+            conn.close()
+
+
 class AdvisorGroupsAuditTest(AdvisorBase):
     """Regresiones del audit de los grupos (ff6f7b7)."""
 

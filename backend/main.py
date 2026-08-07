@@ -1015,6 +1015,14 @@ def init_db():
             date TEXT NOT NULL,
             total_value REAL NOT NULL,
             total_invested REAL NOT NULL,
+            -- Quién escribió la fila: 'cron' (cierre real a mercado),
+            -- 'browser' (foto intradía del Dashboard) o 'import' (fabricada al
+            -- costo por el backfill). Sin esto había que DEDUCIRLO por la firma
+            -- de las columnas, y el browser con caché de dólar frío deja la
+            -- misma firma que el import. Sólo 'cron' sirve de borde para medir
+            -- un período. Las filas viejas quedan en NULL: para ésas sigue
+            -- valiendo la heurística de twr.clasificar_fila.
+            source TEXT,
             UNIQUE(user_id, date)
         );
         CREATE INDEX IF NOT EXISTS idx_snapshots_user_date ON snapshots(user_id, date);
@@ -1023,6 +1031,9 @@ def init_db():
     # graficar Total Return (value − net_deposited). Compatible con snapshots viejos
     # que tienen net_deposited=0 (legacy: el frontend hace fallback a total_invested).
     snap_cols = _table_cols(conn, 'snapshots')
+    if 'source' not in snap_cols:
+        conn.execute("ALTER TABLE snapshots ADD COLUMN source TEXT")
+        snap_cols = _table_cols(conn, 'snapshots')
     if 'net_deposited' not in snap_cols:
         conn.execute("ALTER TABLE snapshots ADD COLUMN net_deposited REAL NOT NULL DEFAULT 0")
     # Phase C (2026-05-31) — fx_to_usd_blue stamping al momento del snapshot.
@@ -4067,13 +4078,16 @@ def post_snapshot(data: SnapshotIn, request: Request,
 
     conn = get_db()
     conn.execute(
-        """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue)
-           VALUES (?, ?, ?, ?, ?, ?)
+        """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, source)
+           VALUES (?, ?, ?, ?, ?, ?, 'browser')
            ON CONFLICT(user_id, date) DO UPDATE SET
              total_value=excluded.total_value,
              total_invested=excluded.total_invested,
              net_deposited=excluded.net_deposited,
-             fx_to_usd_blue=COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue)""",
+             fx_to_usd_blue=COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue),
+             -- Un cierre del cron NO se degrada a 'browser' por una visita
+             -- posterior: si ya había una medición, la marca se conserva.
+             source=COALESCE(snapshots.source, 'browser')""",
         (uid, today, data.total_value, data.total_invested, data.net_deposited, blue_now),
     )
     conn.commit()
@@ -28501,6 +28515,21 @@ class AdvisorGroupIn(BaseModel):
     # vez de un 422 explicado, y sin tope una sola llamada dejaba ~1,4 MB de
     # basura en una fila que se lee y parsea en CADA evaluación del grupo.
     excluded: Optional[List[int]] = Field(None, max_length=2000)
+
+
+@app.get("/api/advisor/data-health")
+def advisor_data_health(uid: int = Depends(get_current_user)):
+    """Semáforo de datos del libro: por cliente, desde cuándo su historia es una
+    medición a mercado (y si no lo es, por qué). Read-only — no escribe nada.
+    Es el prerrequisito del TWR: sin esto no se puede decir de quién se puede
+    hablar con números y de quién todavía no."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_twr
+        return advisor_twr.salud_del_libro(conn, uid)
+    finally:
+        conn.close()
 
 
 @app.get("/api/advisor/groups")
