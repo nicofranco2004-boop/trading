@@ -681,6 +681,35 @@ class DeleteCascade(unittest.TestCase):
         self.assertAlmostEqual(aportado(), 0.0, places=2, msg="quedó capital aportado fantasma")
         self.assertAlmostEqual(self._open_qty("MELI"), 0.0, places=6)
 
+    def test_recreated_lot_keeps_its_autodeposit(self):
+        """Backlog del review, REPRODUCIDO: si la venta barre el lote entero y después se
+        borra la venta, el lote se RE-CREA. Nacía sin la foto del autodepósito → borrarlo
+        después fabricaba cash y capital aportado (medido: +200 y +200 sobre una cuenta
+        que debía quedar en cero)."""
+        aportado = lambda: float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0)
+        # SIN saldo previo → el alta dispara el autodepósito.
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        self.assertAlmostEqual(aportado(), 200.0, places=2)
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE op_type='Venta' ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        self.conn.commit()
+        main.delete_operation(oid, uid=self.uid)          # el lote se RE-CREA
+        pid = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND is_cash=0", (self.uid,)).fetchone()["id"]
+        main.delete_position(pid, uid=self.uid)           # y ahora se borra
+        self.assertAlmostEqual(self._cash(), 0.0, places=2,
+                               msg="el lote re-creado fabricó cash al borrarlo")
+        self.assertAlmostEqual(aportado(), 0.0, places=2,
+                               msg="el lote re-creado dejó capital aportado fantasma")
+
     def test_undo_manual_blocked_if_world_changed(self):
         """El undo manual re-aplica deltas guardados contra el mundo de HOY. Si el lote
         cambió, esos deltas dejan de ser un reverso (tenencia negativa). Se frena."""
