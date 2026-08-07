@@ -1319,6 +1319,39 @@ def init_db():
     if _ac_cols and 'phone' not in _ac_cols:
         conn.executescript("ALTER TABLE advisor_clients ADD COLUMN phone TEXT;")
 
+    # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
+    # Append-only. Cada mes cerrado se calcula UNA vez y no se reescribe nunca.
+    # Sin esto el número de ayer cambia hoy: `_migrate_snapshots_netdep` corre
+    # en CADA arranque y recalcula el aportado de todas las filas históricas
+    # mientras total_value queda congelado — medido, el mismo trimestre pasa de
+    # +8,0% a −10,9% después de un deploy, sin que nadie toque una posición.
+    # Si el input cambia después, se escribe revision+1 y la UI avisa; jamás se
+    # pisa la revisión vieja. La fila sellada también SOBREVIVE al borrado de
+    # los snapshots que la originaron (revert_batch / delete_broker borran por
+    # rango y se llevan mediciones irrecuperables).
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS twr_periods (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            period_start TEXT NOT NULL,      -- fecha del borde inicial (un cierre real)
+            period_end TEXT NOT NULL,        -- fecha del borde final (un cierre real)
+            month TEXT NOT NULL,             -- 'YYYY-MM' al que pertenece el tramo
+            v0_usd REAL NOT NULL,
+            v1_usd REAL NOT NULL,
+            flow_usd REAL NOT NULL,          -- aportes netos DENTRO del tramo
+            ret REAL NOT NULL,               -- Modified Dietz del tramo
+            quality TEXT NOT NULL,           -- 'ok' | 'flujo_sospechoso' | 'plano'
+            snap_id_start INTEGER,           -- para poder auditar de dónde salió
+            snap_id_end INTEGER,
+            fx_basis TEXT,                   -- qué tasa valuó estos bordes
+            revision INTEGER NOT NULL DEFAULT 1,
+            sealed_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, month, revision)
+        );
+        CREATE INDEX IF NOT EXISTS idx_twr_periods_user
+            ON twr_periods(user_id, month);
+    """)
+
     # Migración: `seen` de los avisos del libro (prende el puntito del sidebar).
     _ae_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_alert_events)").fetchall()]
     if _ae_cols and 'seen' not in _ae_cols:
@@ -28527,6 +28560,23 @@ class AdvisorGroupIn(BaseModel):
     # vez de un 422 explicado, y sin tope una sola llamada dejaba ~1,4 MB de
     # basura en una fila que se lee y parsea en CADA evaluación del grupo.
     excluded: Optional[List[int]] = Field(None, max_length=2000)
+
+
+@app.get("/api/advisor/twr")
+def advisor_twr_endpoint(uid: int = Depends(get_current_user)):
+    """Retorno TIME-WEIGHTED por cliente — el que no se ensucia con los
+    depósitos. Sella los meses cerrados antes de leer (idempotente).
+
+    Siempre viaja con su cobertura al lado: sin decir sobre cuántos meses se
+    midió, el número no se puede publicar."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_twr
+        with conn:
+            return advisor_twr.twr_por_cliente(conn, uid)
+    finally:
+        conn.close()
 
 
 @app.get("/api/advisor/data-health")

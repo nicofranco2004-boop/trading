@@ -68,3 +68,52 @@ def salud_del_libro(conn, advisor_uid: int) -> dict:
             "con_tramos_planos": sum(1 for c in clientes if c["tramos_planos"]),
         },
     }
+
+
+# Debajo de este piso no se muestra porcentaje: se muestra el motivo. Un TWR de
+# dos meses presentado a secas es exactamente el número que después hay que
+# salir a explicar.
+MESES_MINIMOS = 3
+
+
+def twr_por_cliente(conn, advisor_uid: int, sellar_primero: bool = True) -> dict:
+    """TWR de cada cliente del libro, con la cobertura pegada al número.
+
+    Sella los meses cerrados antes de leer (idempotente: si nada cambió, no
+    escribe nada). El TWR del LIBRO — el composite ponderado por capital — es
+    la Fase 2: NO se puede sacar promediando estos números, porque el peso de
+    cada cliente cambia mes a mes.
+    """
+    labels = _clientes_vigentes(conn, advisor_uid)
+    if not labels:
+        return {"clientes": [], "resumen": {"total": 0, "con_twr": 0}}
+
+    out = []
+    for cid, label in sorted(labels.items(), key=lambda kv: kv[1].lower()):
+        if sellar_primero:
+            try:
+                twr.sellar(conn, cid)
+            except Exception as ex:            # un cliente roto no tumba el libro
+                log.warning("twr sellar uid=%s: %s", cid, ex)
+        r = twr.twr_de(conn, cid)
+        meses = r.get("meses", 0)
+        publicable = r["twr"] is not None and meses >= MESES_MINIMOS
+        out.append({
+            "client_uid": cid, "label": label,
+            "twr": r["twr"] if publicable else None,
+            "meses": meses,
+            "desde": r.get("desde"), "hasta": r.get("hasta"),
+            "motivo": None if publicable else (
+                "pocos_meses" if meses else r.get("motivo")),
+            "meses_revisados": r.get("meses_revisados", []),
+            "meses_degradados": r.get("meses_degradados", []),
+        })
+
+    return {
+        "clientes": out,
+        "resumen": {
+            "total": len(out),
+            "con_twr": sum(1 for c in out if c["twr"] is not None),
+            "meses_minimos": MESES_MINIMOS,
+        },
+    }

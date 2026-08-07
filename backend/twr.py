@@ -200,3 +200,193 @@ MOTIVO_TEXTO = {
                          "segunda para medir un período.",
     "sin_mediciones": "Todavía no hay mediciones a mercado de esta cuenta.",
 }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FASE 1 — el primitivo, el sellado y el encadenado
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Un aporte que supera esta fracción del capital inicial se marca para revisar
+# antes de entrar en la cadena: normalmente es un import que reescribió la
+# historia, no plata que entró de verdad.
+FLUJO_SOSPECHOSO = 0.5
+
+
+def dietz(v0: float, v1: float, flow: float):
+    """Modified Dietz de UN tramo. Es EL primitivo: si alguna pantalla calcula
+    el retorno de otra forma, vuelve a haber dos motores.
+
+        r = (v1 − v0 − flujo) / (v0 + 0,5·flujo)
+
+    El 0,5 pondera el aporte como si hubiera entrado a mitad del tramo. Devuelve
+    None cuando el denominador no da para medir (sin capital no hay retorno).
+
+    SIN TECHO. El clamp de +50% que arrastra el lado retail trunca meses reales
+    (+80% en cripto o post-devaluación es perfectamente posible) y encima NO se
+    le aplica al benchmark → el sesgo es sistemático en contra del usuario y se
+    compone mes a mes. El piso de −100% sí: no se puede perder más que todo.
+    """
+    denom = v0 + 0.5 * flow
+    if denom <= 0:
+        return None
+    return max((v1 - v0 - flow) / denom, -1.0)
+
+
+def _fin_de_mes(mes: str) -> str:
+    from datetime import date, timedelta
+    y, m = (int(x) for x in mes.split("-"))
+    return ((date(y + (m == 12), (m % 12) + 1, 1)) - timedelta(days=1)).isoformat()
+
+
+def _hoy_art() -> str:
+    from datetime import datetime, timedelta
+    return (datetime.utcnow() - timedelta(hours=3)).date().isoformat()
+
+
+def bordes_medibles(conn, uid: int) -> list:
+    """Los cierres que sirven de borde, en orden. SOLO mediciones a mercado:
+    una foto intradía del browser o una fila fabricada al costo por el import
+    no son un cierre, y encadenarlas mide cualquier cosa menos el mercado."""
+    con_pos = uid in _usuarios_con_posiciones(conn, [uid])
+    filas = conn.execute(
+        """SELECT id, date, total_value, fx_to_usd_blue, holdings_json, source
+           FROM snapshots WHERE user_id=? AND total_value > 0 ORDER BY date""",
+        (uid,)).fetchall()
+    return [r for r in filas if clasificar_fila(r, con_pos) == MEDICION]
+
+
+def _flujo(conn, uid: int, desde: str, hasta: str) -> float:
+    """Aportes netos entre dos fechas. Sale de la SSoT canónica de la app
+    (`compute_net_deposited_db`), no de una cuenta propia — si el TWR usara su
+    propia definición de flujo, discutiría con el resto de las pantallas."""
+    from snapshots_job import compute_net_deposited_db
+    return (compute_net_deposited_db(conn, uid, as_of_date=hasta)
+            - compute_net_deposited_db(conn, uid, as_of_date=desde))
+
+
+def tramos(conn, uid: int, hasta_mes: str = None) -> list:
+    """Los tramos MENSUALES medibles de un usuario, sin tocar la base.
+
+    El cliente entra recién desde su primer mes CALENDARIO COMPLETO: el mes de
+    alta no se mide. Con capital_inicio = 0 el 0,5 del Dietz infla ese mes
+    (medido: 23,71% reportado contra 20,10% real), y en un libro de asesor
+    TODOS los clientes nuevos tienen ese mes. Excluirlo elimina el sesgo de
+    raíz en vez de estimarlo — es lo que hace GIPS.
+    """
+    bordes = bordes_medibles(conn, uid)
+    if len(bordes) < 2:
+        return []
+    tope = hasta_mes or _hoy_art()[:7]
+
+    # Último borde de cada mes: el cierre del mes.
+    cierre = {}
+    for b in bordes:
+        cierre[b["date"][:7]] = b
+
+    meses = sorted(cierre)
+    out = []
+    for i in range(1, len(meses)):
+        mes = meses[i]
+        if mes >= tope:            # el mes en curso no se sella: todavía no cerró
+            continue
+        b0, b1 = cierre[meses[i - 1]], cierre[mes]
+        v0, v1 = float(b0["total_value"]), float(b1["total_value"])
+        flow = _flujo(conn, uid, b0["date"], b1["date"])
+        r = dietz(v0, v1, flow)
+        if r is None:
+            continue
+        calidad = "ok"
+        if v0 > 0 and abs(flow) > v0 * FLUJO_SOSPECHOSO:
+            calidad = "flujo_sospechoso"
+        elif abs(v1 - v0) <= abs(v0) * PLANO_TOL and abs(flow) <= abs(v0) * PLANO_TOL:
+            calidad = "plano"
+        out.append({
+            "month": mes, "period_start": b0["date"], "period_end": b1["date"],
+            "v0_usd": v0, "v1_usd": v1, "flow_usd": flow, "ret": r,
+            "quality": calidad,
+            "snap_id_start": b0["id"], "snap_id_end": b1["id"],
+            "fx_basis": "mep_medio",
+        })
+    return out
+
+
+_CAMPOS_SELLO = ("period_start", "period_end", "v0_usd", "v1_usd", "flow_usd")
+
+
+def sellar(conn, uid: int, hasta_mes: str = None) -> dict:
+    """Sella los meses cerrados. Idempotente: recalcular no cambia nada si el
+    input no cambió. Si SÍ cambió (un import reescribió la historia, un deploy
+    corrió el hook que recalcula el aportado hacia atrás), se escribe
+    revision+1 — nunca se pisa la revisión vieja. Que la historia haya cambiado
+    es justamente lo que el asesor tiene que poder ver."""
+    nuevos = revisados = 0
+    for t in tramos(conn, uid, hasta_mes):
+        prev = conn.execute(
+            "SELECT * FROM twr_periods WHERE user_id=? AND month=? "
+            "ORDER BY revision DESC LIMIT 1", (uid, t["month"])).fetchone()
+        if prev is not None:
+            igual = all(
+                (abs(float(prev[c]) - float(t[c])) < 0.005) if isinstance(t[c], float)
+                else prev[c] == t[c]
+                for c in _CAMPOS_SELLO)
+            if igual:
+                continue
+            rev = int(prev["revision"]) + 1
+            revisados += 1
+        else:
+            rev = 1
+            nuevos += 1
+        conn.execute(
+            """INSERT INTO twr_periods
+               (user_id, period_start, period_end, month, v0_usd, v1_usd,
+                flow_usd, ret, quality, snap_id_start, snap_id_end, fx_basis, revision)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (uid, t["period_start"], t["period_end"], t["month"], t["v0_usd"],
+             t["v1_usd"], t["flow_usd"], t["ret"], t["quality"],
+             t["snap_id_start"], t["snap_id_end"], t["fx_basis"], rev))
+    return {"sellados": nuevos, "revisados": revisados}
+
+
+def sellados(conn, uid: int, desde_mes: str = None, hasta_mes: str = None) -> list:
+    """La revisión VIGENTE de cada mes sellado, en orden."""
+    q = ["SELECT * FROM twr_periods t WHERE t.user_id=?",
+         "AND t.revision = (SELECT MAX(t2.revision) FROM twr_periods t2 "
+         "WHERE t2.user_id=t.user_id AND t2.month=t.month)"]
+    p = [uid]
+    if desde_mes:
+        q.append("AND t.month >= ?"); p.append(desde_mes)
+    if hasta_mes:
+        q.append("AND t.month <= ?"); p.append(hasta_mes)
+    q.append("ORDER BY t.month")
+    return conn.execute(" ".join(q), p).fetchall()
+
+
+def twr_de(conn, uid: int, desde_mes: str = None, hasta_mes: str = None) -> dict:
+    """El TWR encadenado de un usuario, sobre lo SELLADO.
+
+        TWR = Π(1 + r_mes) − 1
+
+    Devuelve siempre la cobertura pegada al número: un retorno sin decir sobre
+    cuántos meses se midió es exactamente el dato que después hay que salir a
+    explicar. Si la cobertura no alcanza, no se devuelve porcentaje: se
+    devuelve el motivo.
+    """
+    filas = sellados(conn, uid, desde_mes, hasta_mes)
+    if not filas:
+        return {"twr": None, "meses": 0, "motivo": "sin_periodos_sellados"}
+
+    idx = 1.0
+    for f in filas:
+        idx *= (1.0 + float(f["ret"]))
+
+    revisados = [f["month"] for f in filas if int(f["revision"]) > 1]
+    degradados = [f["month"] for f in filas if f["quality"] != "ok"]
+    return {
+        "twr": idx - 1.0,
+        "meses": len(filas),
+        "desde": filas[0]["month"],
+        "hasta": filas[-1]["month"],
+        "meses_revisados": revisados,     # a estos les cambió la historia
+        "meses_degradados": degradados,
+        "motivo": None,
+    }

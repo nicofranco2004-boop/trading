@@ -2258,6 +2258,237 @@ class AdvisorAlertBaseTest(AdvisorAlertsAuditTest):
         self.assertEqual(self._run(12000)["fired"], 1)
 
 
+class TwrInvariantesTest(AdvisorBase):
+    """LAS INVARIANTES. Son la red que atrapa una deducción equivocada del
+    agente reconstructor, y por eso van ANTES que él. Si alguna falla, el
+    número NO se muestra — da igual lo convincente que se vea."""
+
+    def _cliente(self, email):
+        # Sufijo único: la clase del endpoint HEREDA estos tests, así que cada
+        # email se usaría dos veces en la misma corrida y chocaría con el UNIQUE.
+        email = f"{uuid.uuid4().hex[:8]}-{email}"
+        conn = main.get_db()
+        try:
+            uid = conn.execute(
+                "INSERT INTO users (email,password_hash,name) VALUES (?,?,'x')",
+                (email, "h")).lastrowid
+            conn.execute("INSERT INTO positions (user_id,broker,asset,quantity,"
+                         "invested,is_cash) VALUES (?,?,?,1,100,0)", (uid, "B", "AAPL"))
+            conn.commit()
+            return uid
+        finally:
+            conn.close()
+
+    def _serie(self, uid, puntos, flujos=None):
+        """puntos: [(fecha, valor)] como cierres REALES del cron.
+        flujos: {'YYYY-MM': aporte_neto} escrito en monthly_entries (la SSoT)."""
+        import json as _j
+        conn = main.get_db()
+        try:
+            for d, v in puntos:
+                conn.execute(
+                    "INSERT INTO snapshots (user_id,date,total_value,total_invested,"
+                    "fx_to_usd_blue,holdings_json,source) VALUES (?,?,?,?,1400,?,'cron')",
+                    (uid, d, v, v, _j.dumps([{"asset": "AAPL", "value_usd": v}])))
+            for mes, dep in (flujos or {}).items():
+                y, m = (int(x) for x in mes.split("-"))
+                conn.execute(
+                    "INSERT INTO monthly_entries (user_id,broker,year,month,"
+                    "capital_inicio,capital_final,deposits,withdrawals,pnl_realized,"
+                    "pnl_unrealized) VALUES (?,'global',?,?,0,0,?,?,0,0)",
+                    (uid, y, m, max(dep, 0), max(-dep, 0)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _twr(self, uid):
+        import twr
+        conn = main.get_db()
+        try:
+            twr.sellar(conn, uid, hasta_mes="2027-01")
+            conn.commit()
+            return twr.twr_de(conn, uid)
+        finally:
+            conn.close()
+
+    # ── 1. IDENTIDAD ───────────────────────────────────────────────────────
+    def test_sin_flujos_el_encadenado_da_exactamente_final_sobre_inicial(self):
+        # Sin plata entrando ni saliendo, el TWR NO es una aproximación: tiene
+        # que dar EXACTAMENTE v_final/v_inicial − 1. Si no da, el encadenado
+        # está mal y no hay nada más que discutir.
+        uid = self._cliente("ident@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0),
+                          ("2026-03-31", 99.0), ("2026-04-30", 121.0)])
+        r = self._twr(uid)
+        self.assertAlmostEqual(r["twr"], 121.0 / 100.0 - 1.0, places=9)
+
+    # ── 2. NEUTRALIDAD A FLUJOS (la propiedad que DEFINE time-weighted) ─────
+    def test_misma_curva_flujos_distintos_mismo_twr(self):
+        # Dos clientes con exactamente el mismo rendimiento de mercado pero
+        # flujos completamente distintos tienen que dar el MISMO TWR. Es lo que
+        # significa "time-weighted". Si difieren, el número NO es TWR.
+        quieto = self._cliente("quieto@x.com")
+        self._serie(quieto, [("2026-01-31", 100.0), ("2026-02-28", 110.0),
+                             ("2026-03-31", 121.0)])
+
+        # Mismos retornos (+10% y +10%) pero con un aporte de 50 en febrero:
+        #   feb: v0=100, aporta 50 → (v1 − 100 − 50)/(100 + 25) = 0,10 → v1 = 162,5
+        #   mar: +10% sobre 162,5 = 178,75
+        aporta = self._cliente("aporta@x.com")
+        self._serie(aporta, [("2026-01-31", 100.0), ("2026-02-28", 162.5),
+                             ("2026-03-31", 178.75)], flujos={"2026-02": 50.0})
+
+        a, b = self._twr(quieto), self._twr(aporta)
+        self.assertAlmostEqual(a["twr"], b["twr"], places=9)
+        self.assertAlmostEqual(a["twr"], 1.10 * 1.10 - 1, places=9)
+
+    def test_un_retiro_tampoco_mueve_el_twr(self):
+        # La contracara: sacar plata no puede leerse como una caída.
+        #   feb: v0=100, retira 40 → (v1 − 100 + 40)/(100 − 20) = 0,10 → v1 = 68
+        uid = self._cliente("retira@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 68.0)],
+                    flujos={"2026-02": -40.0})
+        self.assertAlmostEqual(self._twr(uid)["twr"], 0.10, places=9)
+
+    # ── 3. EL DEPÓSITO NO ES RENDIMIENTO (el bug del hero, en test) ─────────
+    def test_un_deposito_no_puede_leerse_como_ganancia(self):
+        # Hoy el Δ7d del hero cuenta un depósito entero como rendimiento: en la
+        # simulación daba +58% donde el real era +6,4%. Acá tiene que dar ~0.
+        uid = self._cliente("dep@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        r = self._twr(uid)
+        self.assertAlmostEqual(r["twr"], 0.0, places=6)
+
+    # ── 4. SELLADO: la historia no se mueve sola ───────────────────────────
+    def test_sellar_dos_veces_no_duplica_ni_cambia_nada(self):
+        import twr
+        uid = self._cliente("idem@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        primero = self._twr(uid)
+        conn = main.get_db()
+        try:
+            r2 = twr.sellar(conn, uid, hasta_mes="2027-01")
+            conn.commit()
+            n = conn.execute("SELECT COUNT(*) c FROM twr_periods WHERE user_id=?",
+                             (uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(r2, {"sellados": 0, "revisados": 0})
+        self.assertEqual(n, 1)
+        self.assertAlmostEqual(primero["twr"], self._twr(uid)["twr"], places=9)
+
+    def test_si_le_reescriben_la_historia_se_guarda_revision_nueva(self):
+        # Un import viejo (o el hook que corre en cada deploy) cambia el
+        # aportado hacia atrás. La revisión vieja NO se pisa: queda, y el
+        # asesor tiene que poder ver que la historia le cambió.
+        import twr
+        uid = self._cliente("rev@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 150.0)])
+        self._twr(uid)
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO monthly_entries (user_id,broker,year,month,"
+                         "capital_inicio,capital_final,deposits,withdrawals,"
+                         "pnl_realized,pnl_unrealized) VALUES (?,'global',2026,2,0,0,40,0,0,0)",
+                         (uid,))
+            conn.commit()
+            r = twr.sellar(conn, uid, hasta_mes="2027-01")
+            conn.commit()
+            revs = [x["revision"] for x in conn.execute(
+                "SELECT revision FROM twr_periods WHERE user_id=? AND month='2026-02' "
+                "ORDER BY revision", (uid,)).fetchall()]
+        finally:
+            conn.close()
+        self.assertEqual(r["revisados"], 1)
+        self.assertEqual(revs, [1, 2])                       # la vieja sigue ahí
+        self.assertIn("2026-02", self._twr(uid)["meses_revisados"])
+
+    def test_el_periodo_sellado_sobrevive_al_borrado_de_sus_snapshots(self):
+        # revert_batch y delete_broker borran snapshots por rango y se llevan
+        # mediciones que no se recuperan. El número sellado no puede irse con
+        # ellas.
+        uid = self._cliente("borra@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        antes = self._twr(uid)["twr"]
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM snapshots WHERE user_id=?", (uid,))
+            conn.commit()
+            import twr
+            despues = twr.twr_de(conn, uid)["twr"]
+        finally:
+            conn.close()
+        self.assertAlmostEqual(antes, despues, places=9)
+
+    # ── 5. SOLO MEDICIONES ─────────────────────────────────────────────────
+    def test_una_foto_intradia_no_puede_ser_borde_de_periodo(self):
+        import twr
+        uid = self._cliente("intra@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-03-31", 110.0)])
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO snapshots (user_id,date,total_value,"
+                         "total_invested,fx_to_usd_blue,source) "
+                         "VALUES (?,'2026-02-28',999,999,1400,'browser')", (uid,))
+            conn.commit()
+            meses = [t["month"] for t in twr.tramos(conn, uid, hasta_mes="2027-01")]
+        finally:
+            conn.close()
+        self.assertNotIn("2026-02", meses)     # el 999 no entra a la cadena
+        self.assertEqual(meses, ["2026-03"])
+
+    def test_el_mes_en_curso_no_se_sella(self):
+        import twr
+        from datetime import datetime, timedelta
+        hoy = (datetime.utcnow() - timedelta(hours=3)).date()
+        uid = self._cliente("curso@x.com")
+        conn = main.get_db()
+        try:
+            twr.sellar(conn, uid)
+            n = conn.execute("SELECT COUNT(*) c FROM twr_periods WHERE user_id=? "
+                             "AND month=?", (uid, hoy.strftime("%Y-%m"))).fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0)
+
+    # ── 6. SIN TECHO ───────────────────────────────────────────────────────
+    def test_un_mes_de_mas_80_por_ciento_no_se_trunca(self):
+        # El clamp de +50% del lado retail trunca meses reales y NO se le aplica
+        # al benchmark: el sesgo va sistemáticamente en contra del usuario.
+        import twr
+        self.assertAlmostEqual(twr.dietz(100.0, 180.0, 0.0), 0.80, places=9)
+        self.assertIsNone(twr.dietz(0.0, 50.0, 0.0))          # sin capital no hay retorno
+        self.assertAlmostEqual(twr.dietz(100.0, 0.0, 0.0), -1.0, places=9)
+
+
+class TwrEndpointTest(TwrInvariantesTest):
+    """El TWR expuesto: cobertura pegada, y piso de meses."""
+
+    def test_endpoint_devuelve_el_twr_con_su_cobertura(self):
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, self.client_uid))
+            conn.commit()
+        finally:
+            conn.close()
+        self._serie(self.client_uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0),
+                                      ("2026-03-31", 121.0), ("2026-04-30", 133.1)])
+        r = self.http.get("/api/advisor/twr", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        c = r.json()["clientes"][0]
+        self.assertAlmostEqual(c["twr"], 1.331 - 1, places=6)
+        self.assertEqual(c["meses"], 3)
+
+    def test_con_menos_de_tres_meses_no_se_publica_un_porcentaje(self):
+        self._serie(self.client_uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        r = self.http.get("/api/advisor/twr", headers=self._hdr(self.advisor)).json()
+        c = r["clientes"][0]
+        self.assertIsNone(c["twr"])
+        self.assertEqual(c["motivo"], "pocos_meses")
+        self.assertEqual(c["meses"], 1)
+
+
 class TwrFase0Test(AdvisorBase):
     """Semáforo de datos: clasificar cada snapshot por quién lo escribió."""
 
