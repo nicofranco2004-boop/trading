@@ -4028,7 +4028,18 @@ class SnapshotIn(BaseModel):
 
 
 @app.post("/api/snapshots")
-def post_snapshot(data: SnapshotIn, uid: int = Depends(get_effective_user)):
+def post_snapshot(data: SnapshotIn, request: Request,
+                  uid: int = Depends(get_effective_user)):
+    # El asesor NO escribe la serie histórica de su cliente por mirarla. Este
+    # POST lo dispara el Dashboard al cargar, con los totales calculados en el
+    # browser y el toggle de dólar de QUIEN mira (MEP o CCL) — y hace UPSERT
+    # sobre la fila del día. O sea: con solo abrir la lente de un cliente, el
+    # asesor le pisaba la foto de hoy con SU criterio de valuación, y el último
+    # que miraba ganaba. La serie es la medición del cliente, no la del que
+    # observa. Se acepta el request (el Dashboard postea solo, no tiene sentido
+    # mostrarle un error) pero no se escribe.
+    if request.headers.get(CLIENT_CTX_HEADER):
+        return {"ok": True, "skipped": "contexto de cliente"}
     # Día ART, no UTC: después de las 21:00 de acá ya es "mañana" en UTC y el
     # snapshot quedaba fechado un día adelante, pisando al del cierre real.
     today = _iso_today()

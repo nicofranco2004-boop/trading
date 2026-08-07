@@ -2139,6 +2139,37 @@ class AdvisorGroupsIsolationTest(AdvisorBase):
         self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}", headers=h1).status_code, 404)
 
 
+class AdvisorSnapshotWriteTest(AdvisorBase):
+    """El asesor no escribe la serie del cliente por mirarla."""
+
+    def _snaps(self):
+        conn = main.get_db()
+        try:
+            return conn.execute("SELECT COUNT(*) c FROM snapshots WHERE user_id=?",
+                                (self.client_uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+
+    def test_con_la_lente_puesta_no_escribe_el_snapshot_del_cliente(self):
+        # El Dashboard postea solo al cargar, con los totales del browser y el
+        # toggle de dolar de QUIEN mira, y hace UPSERT sobre la fila del dia:
+        # el asesor le pisaba la foto de hoy a su cliente con solo abrirla.
+        antes = self._snaps()
+        r = self.http.post("/api/snapshots",
+                           headers=self._hdr(self.advisor, client_ctx=self.client_uid),
+                           json={"total_value": 999, "total_invested": 999, "net_deposited": 0})
+        self.assertEqual(r.status_code, 200)          # no le mostramos un error
+        self.assertEqual(self._snaps(), antes)        # pero no escribio nada
+
+    def test_el_cliente_si_escribe_el_suyo(self):
+        # La contracara: sin lente, el flujo normal tiene que seguir andando.
+        antes = self._snaps()
+        r = self.http.post("/api/snapshots", headers=self._hdr(self.client_uid),
+                           json={"total_value": 500, "total_invested": 400, "net_deposited": 400})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._snaps(), antes + 1)
+
+
 class AdvisorBriefFixesTest(AdvisorBase):
     """Errores del backlog: el brief y la base del % del día."""
 
