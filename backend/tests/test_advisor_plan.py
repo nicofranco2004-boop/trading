@@ -2258,6 +2258,177 @@ class AdvisorAlertBaseTest(AdvisorAlertsAuditTest):
         self.assertEqual(self._run(12000)["fired"], 1)
 
 
+class FlujosDeterministaTest(AdvisorBase):
+    """La pasada que resuelve sin modelo. Lo que queda es lo que justifica uno."""
+
+    def _batch(self, uid, broker="Cocos"):
+        import uuid as _u
+        bid = _u.uuid4().hex[:12]
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO import_batches (id,user_id,broker,parser_format,"
+                "file_hash,status) VALUES (?,?,?,'test',?,'done')",
+                (bid, uid, broker, bid))
+            conn.commit()
+        finally:
+            conn.close()
+        return bid
+
+    def _cruda(self, bid, texto, errores="TRANSFER_NOT_SUPPORTED"):
+        import json as _j
+        conn = main.get_db()
+        try:
+            rid = conn.execute(
+                "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status,"
+                "errors_json) VALUES (?,0,?,'error',?)",
+                (bid, _j.dumps({"tipo": texto}), errores)).lastrowid
+            conn.commit()
+            return rid
+        finally:
+            conn.close()
+
+    def _tx(self, bid, fecha, op, asset, qty, broker):
+        conn = main.get_db()
+        try:
+            rid = conn.execute(
+                "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status) "
+                "VALUES (?,0,'{}','ok')", (bid,)).lastrowid
+            conn.execute(
+                "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,"
+                "operation_type,asset_symbol,quantity) VALUES (?,?,?,?,?,?,?)",
+                (bid, rid, fecha, broker, op, asset, qty))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _conn(self):
+        return main.get_db()
+
+    # ── vía 1: lo que el broker escribió en la fila cruda ───────────────────
+    def test_el_texto_original_dice_la_direccion(self):
+        # El normalizador mapea a tipos canónicos y descarta la descripción,
+        # pero la fila cruda queda. Ahí hay que mirar ANTES de deducir nada.
+        import flujos
+        self.assertEqual(flujos.direccion_por_texto("Transferencia Recibida de titulos"),
+                         "entrada")
+        self.assertEqual(flujos.direccion_por_texto("ACAT OUT — journaled shares"),
+                         "salida")
+        self.assertIsNone(flujos.direccion_por_texto("Movimiento varios"))
+
+    def test_resuelve_por_texto_crudo_sin_tocar_el_modelo(self):
+        import flujos
+        bid = self._batch(self.client_uid)
+        self._cruda(bid, "Transferencia Recibida")
+        conn = self._conn()
+        try:
+            r = flujos.reconciliar(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertEqual(r["candidatos"], 1)
+        self.assertEqual(r["resueltos"], 1)
+        self.assertEqual(r["por_via"], {"texto_crudo": 1})
+
+    # ── vía 2: el cruce entre brokers ──────────────────────────────────────
+    def test_una_salida_en_otro_broker_prueba_que_fue_traslado_interno(self):
+        # Salen 12 AAPL de Balanz y entran 12 en IOL: NO es un aporte. Esto no
+        # es un juicio, es una consulta.
+        import flujos
+        bid = self._batch(self.client_uid, broker="Balanz")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Balanz")
+        conn = self._conn()
+        try:
+            par = flujos.cruce_entre_brokers(conn, self.client_uid, "AAPL",
+                                             "2026-04-13", 12, "IOL")
+        finally:
+            conn.close()
+        self.assertIsNotNone(par)
+        self.assertEqual(par["broker"], "Balanz")
+
+    def test_no_casa_una_cantidad_distinta(self):
+        import flujos
+        bid = self._batch(self.client_uid, broker="Balanz")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Balanz")
+        conn = self._conn()
+        try:
+            self.assertIsNone(flujos.cruce_entre_brokers(
+                conn, self.client_uid, "AAPL", "2026-04-13", 30, "IOL"))
+        finally:
+            conn.close()
+
+    def test_no_casa_fuera_de_la_ventana(self):
+        # Un traspaso no liquida el mismo día, pero tampoco tres semanas después.
+        import flujos
+        bid = self._batch(self.client_uid, broker="Balanz")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Balanz")
+        conn = self._conn()
+        try:
+            self.assertIsNone(flujos.cruce_entre_brokers(
+                conn, self.client_uid, "AAPL", "2026-05-20", 12, "IOL"))
+        finally:
+            conn.close()
+
+    def test_no_casa_contra_el_mismo_broker(self):
+        # Una compra y una venta en el MISMO broker no son un traslado.
+        import flujos
+        bid = self._batch(self.client_uid, broker="Cocos")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Cocos")
+        conn = self._conn()
+        try:
+            self.assertIsNone(flujos.cruce_entre_brokers(
+                conn, self.client_uid, "AAPL", "2026-04-13", 12, "Cocos"))
+        finally:
+            conn.close()
+
+    def test_una_venta_borrada_no_sirve_de_contraparte(self):
+        import flujos
+        bid = self._batch(self.client_uid, broker="Balanz")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Balanz")
+        conn = self._conn()
+        try:
+            conn.execute("UPDATE import_normalized_tx SET excluded_at=datetime('now')")
+            conn.commit()
+            self.assertIsNone(flujos.cruce_entre_brokers(
+                conn, self.client_uid, "AAPL", "2026-04-13", 12, "IOL"))
+        finally:
+            conn.close()
+
+    # ── lo que NO resuelve ─────────────────────────────────────────────────
+    def test_sin_texto_ni_contraparte_queda_para_el_agente(self):
+        import flujos
+        bid = self._batch(self.client_uid)
+        self._cruda(bid, "Movimiento sin descripcion")
+        conn = self._conn()
+        try:
+            r = flujos.reconciliar(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertEqual(r["pendientes"], 1)
+        self.assertEqual(r["resueltos"], 0)
+        self.assertTrue(r["detalle_pendientes"][0]["evidencia"])
+
+    def test_un_error_que_no_es_de_traspaso_no_es_candidato(self):
+        # Una fecha mal formateada no es un flujo ambiguo.
+        import flujos
+        bid = self._batch(self.client_uid)
+        self._cruda(bid, "Compra", errores="BAD_DATE")
+        conn = self._conn()
+        try:
+            self.assertEqual(flujos.reconciliar(conn, self.client_uid)["candidatos"], 0)
+        finally:
+            conn.close()
+
+    def test_sin_ambiguedades_la_tasa_es_cien(self):
+        import flujos
+        conn = self._conn()
+        try:
+            r = flujos.reconciliar(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertEqual(r["candidatos"], 0)
+        self.assertEqual(r["tasa_pct"], 100.0)
+
+
 class LedgerReplayTest(AdvisorBase):
     """Reconstruir QUÉ tenía una persona en una fecha pasada."""
 
