@@ -2258,6 +2258,202 @@ class AdvisorAlertBaseTest(AdvisorAlertsAuditTest):
         self.assertEqual(self._run(12000)["fired"], 1)
 
 
+class LedgerReplayTest(AdvisorBase):
+    """Reconstruir QUÉ tenía una persona en una fecha pasada."""
+
+    def _batch(self, uid):
+        import uuid as _u
+        bid = _u.uuid4().hex[:12]
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO import_batches (id,user_id,broker,parser_format,"
+                "file_hash,status) VALUES (?,?,'Cocos','test',?,'done')",
+                (bid, uid, bid))
+            conn.commit()
+        finally:
+            conn.close()
+        return bid
+
+    def _tx(self, bid, fecha, op, asset, qty, broker="Cocos"):
+        conn = main.get_db()
+        try:
+            # raw_row_id es FK: el ledger normalizado siempre cuelga de la
+            # fila cruda del export (que es donde el agente va a mirar cuando
+            # el normalizador simplificó algo).
+            rid = conn.execute(
+                "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status) "
+                "VALUES (?,0,'{}','ok')", (bid,)).lastrowid
+            conn.execute(
+                "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,"
+                "operation_type,asset_symbol,quantity) VALUES (?,?,?,?,?,?,?)",
+                (bid, rid, fecha, broker, op, asset, qty))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _pos(self, uid, asset, qty, broker="Cocos", ccy="ARS"):
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR IGNORE INTO brokers (user_id,name,currency) "
+                         "VALUES (?,?,?)", (uid, broker, ccy))
+            conn.execute("INSERT INTO positions (user_id,broker,asset,quantity,"
+                         "invested,is_cash) VALUES (?,?,?,?,100,0)",
+                         (uid, broker, asset, qty))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _conn(self):
+        return main.get_db()
+
+    # ── el replay ──────────────────────────────────────────────────────────
+    def test_reconstruye_la_tenencia_a_una_fecha_pasada(self):
+        import ledger_replay as lr
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10)
+        self._tx(bid, "2026-02-15", "BUY", "AAPL", 5)
+        self._tx(bid, "2026-03-20", "SELL", "AAPL", 4)
+        conn = self._conn()
+        try:
+            self.assertEqual(lr.tenencia_en(conn, self.client_uid, "2026-01-31"),
+                             {("Cocos", "AAPL"): 10.0})
+            self.assertEqual(lr.tenencia_en(conn, self.client_uid, "2026-02-28"),
+                             {("Cocos", "AAPL"): 15.0})
+            self.assertEqual(lr.tenencia_en(conn, self.client_uid, "2026-03-31"),
+                             {("Cocos", "AAPL"): 11.0})
+        finally:
+            conn.close()
+
+    def test_una_venta_borrada_no_cuenta(self):
+        # El borrado es un tombstone: si el replay ignora excluded_at, la
+        # cartera reconstruida no coincide con la real.
+        import ledger_replay as lr
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "GGAL", 100)
+        self._tx(bid, "2026-01-20", "SELL", "GGAL", 40)
+        conn = self._conn()
+        try:
+            conn.execute("UPDATE import_normalized_tx SET excluded_at=datetime('now') "
+                         "WHERE batch_id=? AND operation_type='SELL'", (bid,))
+            conn.commit()
+            self.assertEqual(lr.tenencia_en(conn, self.client_uid, "2026-02-01"),
+                             {("Cocos", "GGAL"): 100.0})
+        finally:
+            conn.close()
+
+    # ── el chequeo que decide si se le puede creer ─────────────────────────
+    def test_si_el_replay_reproduce_hoy_se_le_puede_creer(self):
+        import ledger_replay as lr
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10)
+        self._pos(self.client_uid, "AAPL", 10)
+        conn = self._conn()
+        try:
+            v = lr.verificar_contra_hoy(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertTrue(v["reproducible"])
+        self.assertEqual(v["diferencias"], [])
+
+    def test_un_traspaso_de_titulos_deja_el_ledger_corto_y_se_detecta(self):
+        # Las transferencias las filtra el validator y NO crean posición: un
+        # export de IOL con traspasos deja la tenencia corta. Si el replay no
+        # lo detecta, devuelve una cartera MÁS CHICA que la real y eso,
+        # encadenado, se lee como una pérdida que nunca existió.
+        import ledger_replay as lr
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10)
+        self._pos(self.client_uid, "AAPL", 10)
+        self._pos(self.client_uid, "MELI", 3)        # llegó por traspaso, sin ledger
+        conn = self._conn()
+        try:
+            v = lr.verificar_contra_hoy(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertFalse(v["reproducible"])
+        self.assertEqual(v["motivo"], "ledger_incompleto")
+        self.assertEqual([d["asset"] for d in v["diferencias"]], ["MELI"])
+
+    def test_posiciones_cargadas_a_mano_no_se_pueden_replayear(self):
+        import ledger_replay as lr
+        self._pos(self.client_uid, "YPFD", 50)       # nunca pasó por un import
+        conn = self._conn()
+        try:
+            v = lr.verificar_contra_hoy(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertFalse(v["reproducible"])
+        self.assertEqual(v["motivo"], "sin_ledger")
+
+    # ── el valor ───────────────────────────────────────────────────────────
+    def test_valua_la_tenencia_con_el_precio_de_esa_fecha(self):
+        import ledger_replay as lr, price_history as ph
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10, broker="IBKR")
+        self._pos(self.client_uid, "AAPL", 10, broker="IBKR", ccy="USD")
+        conn = self._conn()
+        try:
+            ph.guardar(conn, "AAPL", {"2026-01-31": 200.0})
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertEqual(v["valor"], 2000.0)
+        self.assertEqual(v["cobertura_pct"], 100.0)
+        self.assertEqual(v["fx_basis"], "usd")
+
+    def test_una_pata_en_pesos_pasa_por_el_MEP_de_esa_fecha(self):
+        import ledger_replay as lr, price_history as ph
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "GGAL", 100)
+        self._pos(self.client_uid, "GGAL", 100)      # broker Cocos = ARS
+        conn = self._conn()
+        try:
+            ph.guardar(conn, "GGAL.BA", {"2026-01-31": 7000.0})
+            conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,"
+                         "mep_venta) VALUES ('2026-01-31',1500,1400)")
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertAlmostEqual(v["valor"], 100 * 7000.0 / 1400, places=2)
+        self.assertEqual(v["fx_basis"], "mep_venta")
+
+    def test_sin_precio_de_un_activo_NO_se_publica_un_valor_corto(self):
+        # Publicar un borde al que le falta un activo es fabricar una caída.
+        import ledger_replay as lr, price_history as ph
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10, broker="IBKR")
+        self._tx(bid, "2026-01-10", "BUY", "RARO", 5, broker="IBKR")
+        self._pos(self.client_uid, "AAPL", 10, broker="IBKR", ccy="USD")
+        conn = self._conn()
+        try:
+            ph.guardar(conn, "AAPL", {"2026-01-31": 200.0})
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertIsNone(v["valor"])
+        self.assertEqual(v["motivo"], "cobertura_insuficiente")
+        self.assertEqual(v["cobertura_pct"], 50.0)
+
+    def test_sin_FX_no_se_inventa_una_tasa(self):
+        import ledger_replay as lr, price_history as ph
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "GGAL", 100)
+        self._pos(self.client_uid, "GGAL", 100)
+        conn = self._conn()
+        try:
+            ph.guardar(conn, "GGAL.BA", {"2019-01-31": 7000.0})
+            conn.execute("DELETE FROM fx_rates_daily WHERE date <= '2019-01-31'")
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2019-01-31")
+        finally:
+            conn.close()
+        self.assertIsNone(v["valor"])
+
+
 class PrecioHistoricoTest(AdvisorBase):
     """El almacén de precios por fecha — prerrequisito de la reconstrucción."""
 
