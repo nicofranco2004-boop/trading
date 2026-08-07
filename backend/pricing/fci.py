@@ -83,6 +83,12 @@ BROKER_FCI_ALLOWLIST = [
     "Balanz Acciones",         # rentaVariable ARS (Balanz) — reportado por user 2026-07-08; VCP Clase A 163.681,18 (→163,68) vs ArgentinaDatos, fecha 2026-07-08
     "Adcap Acciones",          # rentaVariable ARS (IOL) — ticker CONIOLA, VCP 193.077 confirmado 2026-07-02
     "IAM Renta Dólares",       # rentaFija USD (Cohen/IAM) — ticker IAMRDOA, VCP Clase A 1780,23 (÷1000=1,78) conf. 2026-07-28 vs ArgentinaDatos; user linkeó el fondo 4815 de Cohen con ese nombre EXACTO
+    # IOL (invertirOnline) — reportado por user 2026-08-06 ("faltan todos los de
+    # IOL"). Los 3 base-names cubren sus 13 clases. Verificados contra
+    # ArgentinaDatos el 2026-08-06, con patrimonio real (no fondos fantasma):
+    "IOL Cash Management",     # rentaFija ARS — VCP Clase A 11.746,19 (÷1000=11,75), patrimonio $89.270M
+    "IOL Dólar Ahorro Plus",   # rentaFija USD — VCP Clase D 1.088,59 (÷1000=1,09), patrimonio $257M
+    "IOL Portafolio Potenciado",  # rentaFija ARS — VCP Clase A 1.588,31 (÷1000=1,59), patrimonio $29.205M
 ]
 
 
