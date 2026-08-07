@@ -416,16 +416,56 @@ class DeleteCascade(unittest.TestCase):
         self.assertTrue(res.get("undo_token"), "sin token no hay cómo deshacer")
         self._probe()
 
-    def test_delete_position_endpoint_manual_still_works(self):
-        """Las posiciones cargadas a mano (sin link de import) siguen borrándose
-        directo — no hay eventos importados que re-derivar."""
+    def test_delete_position_endpoint_blocks_legacy_row(self):
+        """Hallazgo del audit: una posición SIN link de import y SIN foto de reverso (fila
+        vieja, o lote semilla que fabricó el rebuild) se borraba en CRUDO — desaparecía de
+        la vista pero el cash y el capital aportado quedaban como estaban, o sea plata que
+        ya no respalda nada. Ahora se bloquea: su reverso no es derivable."""
         pid = self.conn.execute(
             """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash)
                VALUES (?,?,?,?,?,0)""", (self.uid, "IBKR", "MELI", 5, 1000)).lastrowid
         self.conn.commit()
-        main.delete_position(pid, uid=self.uid)
-        self.assertIsNone(self.conn.execute(
+        with self.assertRaises(main.HTTPException) as cm:
+            main.delete_position(pid, uid=self.uid)
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertIsNotNone(self.conn.execute(
             "SELECT id FROM positions WHERE id=?", (pid,)).fetchone())
+
+    def test_delete_manual_position_blocked_if_broker_changed(self):
+        """El broker del lote es mutable (se cambia desde Cartera). Si cambió, el reverso
+        devolvería el cash al broker EQUIVOCADO."""
+        main._adjust_broker_cash(self.conn, self.uid, self.BROKER, 1000.0)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Otro", "USDT"))
+        self.conn.commit()
+        pos = main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        self.conn.execute("UPDATE positions SET broker='Otro' WHERE id=?", (pos["id"],))
+        self.conn.commit()
+        with self.assertRaises(main.HTTPException) as cm:
+            main.delete_position(pos["id"], uid=self.uid)
+        self.assertEqual(cm.exception.status_code, 409)
+
+    def test_delete_month_deposit_blocked_when_autodeposit(self):
+        """🔴 CRÍTICO del audit (reproducido): el 'depósito manual' del mes puede ser en
+        realidad el AUTODEPÓSITO que generó el alta de una posición. Borrarlo suelto
+        dejaba el cash NEGATIVO y el aportado en 0 con la tenencia viva — y por esa rama
+        no hay 'Deshacer'."""
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="AAPL", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-03-05"), uid=self.uid)
+        self.conn.commit()
+        cash0 = self._cash()
+        me = self.conn.execute(
+            "SELECT id FROM monthly_entries WHERE user_id=? AND broker=? AND manual_deposits>0",
+            (self.uid, self.BROKER)).fetchone()
+        self.assertIsNotNone(me, "el autodepósito no quedó registrado")
+        with self.assertRaises(main.HTTPException) as cm:
+            main._delete_one_movement(self.conn, self.uid, f"me-{me['id']}-dep")
+        self.assertEqual(cm.exception.status_code, 409)
+        self.assertAlmostEqual(self._cash(), cash0, places=2)
+        self.assertGreaterEqual(self._cash(), 0.0, "el cash quedó negativo")
 
     # ── El endpoint DEBE devolver el undo_token (el botón "Deshacer" depende) ──
     def test_delete_movement_returns_undo_token(self):

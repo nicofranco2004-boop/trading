@@ -7016,7 +7016,12 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
             conn.execute(
                 "UPDATE positions SET undo_meta_json=? WHERE id=? AND user_id=?",
                 (_json_pos.dumps({"src": "manual_position", "cost": cost,
-                                  "autodep": _adm or None, "entry_date": entry_date}),
+                                  "autodep": _adm or None, "entry_date": entry_date,
+                                  # El broker de la fila es MUTABLE (se puede cambiar
+                                  # desde Cartera); guardamos el de origen para que el
+                                  # borrado detecte el cambio en vez de devolver la plata
+                                  # al broker equivocado.
+                                  "broker": p.broker}),
                  new_id, uid))
 
     return conn.execute(
@@ -7124,8 +7129,11 @@ def delete_position(pid: int, uid: int = Depends(get_effective_user)):
             conn.close()
             _ai_cache_invalidate(uid)
             return result
-        conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
-        conn.commit()
+        # Sin link de import Y sin foto de reverso: es una fila VIEJA (o un lote semilla
+        # que fabricó el rebuild). El DELETE crudo la sacaba de la vista dejando el cash
+        # y el capital aportado como estaban → plata que no respalda nada. Bloqueamos,
+        # igual que el borrado manual de filas legacy: su reverso no es derivable.
+        raise HTTPException(400, _MANUAL_LEGACY_MSG)
     except HTTPException:
         conn.rollback()
         conn.close()
@@ -10764,6 +10772,31 @@ _SEED_BLOCK_MSG = (
 )
 
 
+def _month_has_autodeposit(conn, uid: int, broker: str, year: int, month: int) -> bool:
+    """True si alguna posición VIVA del broker se dio de alta en ese mes disparando un
+    AUTODEPÓSITO (`_autodeposit_if_overdraw`: sin saldo, el alta sube el cash y lo
+    registra como capital aportado).
+
+    Ese aporte aparece en Movimientos como un "depósito manual" del mes, indistinguible
+    de uno que el usuario cargó a mano. Borrarlo suelto rompe las dos patas: el cash
+    queda NEGATIVO y el aportado en 0 con la tenencia viva. Vive en un helper para que
+    toda puerta que borre flujos manuales lo consulte — igual que
+    `_is_synthetic_seed_row`, cuya guarda ya se olvidó en dos puertas distintas."""
+    ym = f"{year:04d}-{month:02d}"
+    for r in conn.execute(
+        "SELECT undo_meta_json FROM positions WHERE user_id=? AND broker=? AND is_cash=0 "
+        " AND undo_meta_json IS NOT NULL", (uid, broker),
+    ).fetchall():
+        try:
+            import json as _j
+            ad = (_j.loads(r["undo_meta_json"]) or {}).get("autodep") or {}
+        except (ValueError, TypeError):
+            continue
+        if ad.get("ym") == ym and float(ad.get("native") or 0) > 0:
+            return True
+    return False
+
+
 def _is_synthetic_seed_row(src) -> bool:
     """True si la fila viene de la apertura por FOTO de tenencia / 'Estado inicial'.
 
@@ -10938,6 +10971,19 @@ def _delete_one_movement(conn, uid: int, mid: str):
         manual_usd = float((row[col] if col in row.keys() else 0) or 0)
         if manual_usd <= 0:
             raise HTTPException(404, "No hay un movimiento manual para borrar en ese mes")
+        # 🔴 AUTODEPÓSITO: parte (o todo) este "depósito manual" puede haberlo generado el
+        # alta de una posición cargada a mano sin saldo — `_autodeposit_if_overdraw` sube
+        # el cash Y lo registra como aportado para que el P&L no mienta. Borrarlo suelto
+        # deja el cash NEGATIVO (justo lo que ese mecanismo existe para impedir) y el
+        # aportado en 0 con la tenencia viva → rendimiento infinito. Y por esta rama no
+        # hay "Deshacer". Bloqueamos y mandamos a borrar la posición, que sí sabe
+        # reversar las dos patas juntas. (Reproducido: cash −200, aportado 0.)
+        if direction == "dep" and _month_has_autodeposit(conn, uid, broker,
+                                                         int(row["year"]), int(row["month"])):
+            raise HTTPException(409,
+                "Parte de este depósito lo generó el alta de una posición que cargaste a "
+                "mano (sin saldo, Rendi lo registra como aporte). Borrá primero esa "
+                "posición desde Cartera y el depósito se va con ella.")
         broker_row = conn.execute(
             "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, broker),
         ).fetchone()
@@ -11898,13 +11944,18 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
                 "SELECT id, quantity, invested FROM positions WHERE user_id=? AND broker=? "
                 " AND asset=? AND is_cash=0 ORDER BY COALESCE(entry_date,'9999-12-31'), id LIMIT 1",
                 (uid, broker, op["asset"])).fetchone()
-            if lot:
-                conn.execute(
-                    "UPDATE positions SET quantity=?, invested=? WHERE id=? AND user_id=?",
-                    (float(lot["quantity"] or 0) + qty_dec,
-                     float(lot["invested"] or 0) + inv_dec, lot["id"], uid))
-                undo["lot"] = {"mode": "update", "id": lot["id"], "qty": qty_dec,
-                               "inv": inv_dec, "com": 0.0}
+            if not lot:
+                # El cobro BAJÓ el nominal del bono; si ya no queda lote vivo, devolver
+                # solo el cash y perder el nominal para siempre descuadra la tenencia.
+                raise HTTPException(409,
+                    "Este cobro amortizó el bono y ya no queda nominal donde devolverlo. "
+                    "Restaurá primero la posición del bono.")
+            conn.execute(
+                "UPDATE positions SET quantity=?, invested=? WHERE id=? AND user_id=?",
+                (float(lot["quantity"] or 0) + qty_dec,
+                 float(lot["invested"] or 0) + inv_dec, lot["id"], uid))
+            undo["lot"] = {"mode": "update", "id": lot["id"], "qty": qty_dec,
+                           "inv": inv_dec, "com": 0.0}
 
     elif src != "manual_form":
         raise HTTPException(400, _MANUAL_LEGACY_MSG)
@@ -11963,6 +12014,31 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
         raise HTTPException(409,
             "Este lote cambió desde que lo cargaste (lo vendiste en parte o lo "
             "editaste), así que no se puede borrar directo. Borrá primero la venta.")
+    # El BROKER también es mutable (se puede cambiar desde Cartera). El reverso usa el
+    # broker de la fila viva, así que si lo movieron el cash volvería al broker
+    # EQUIVOCADO y el aportado quedaría fantasma en el otro.
+    if meta.get("broker") and (meta["broker"] != broker):
+        raise HTTPException(409,
+            "Este lote cambió de broker desde que lo cargaste, así que no se puede "
+            "borrar directo sin descuadrar los saldos.")
+    # Y el AUTODEPÓSITO que fondeó el alta tiene que seguir registrado: si lo borraron
+    # aparte (desde Movimientos), acreditar `cost − autodep` deja el cash corto para
+    # siempre y la reversión del flujo mensual cae en el vacío.
+    if autodep_native > 0:
+        _ym = str(autodep.get("ym") or "")
+        try:
+            _ay, _am = int(_ym[:4]), int(_ym[5:7])
+        except (ValueError, IndexError):
+            _ay = _am = None
+        if _ay:
+            _r = conn.execute(
+                "SELECT manual_deposits_native AS n FROM monthly_entries "
+                " WHERE user_id=? AND broker=? AND year=? AND month=?",
+                (uid, broker, _ay, _am)).fetchone()
+            if not _r or float(_r["n"] or 0) + 1e-6 < autodep_native:
+                raise HTTPException(409,
+                    "El depósito que financió esta compra ya no está registrado, así que "
+                    "borrarla dejaría el saldo descuadrado. Restauralo primero.")
 
     # Snapshot de la fila para poder re-crearla en el undo.
     pos_row = {k: pos[k] for k in pos.keys() if k != "id"}
@@ -12456,6 +12532,16 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
         # Guard (mismo que el delete): rebuild_pair_asset limpia TODO el activo y
         # re-deriva solo lo importado. Si desde el borrado el activo ganó data manual,
         # deshacer la BORRARÍA en silencio → bloqueamos.
+        # El broker tiene que seguir vivo. `_is_safe_to_rebuild` pasa TRIVIALMENTE cuando
+        # el activo no tiene ninguna fila (any() sobre listas vacías), así que si en el
+        # medio se borró el broker (o se usó "Limpiar broker") el undo seguía adelante y
+        # `_adjust_broker_cash` CREABA la posición cash → plata inventada bajo un broker
+        # inexistente, invisible e imborrable desde la UI. El undo manual ya exigía esto.
+        if not conn.execute(
+            "SELECT 1 FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+            (uid, p["broker"])).fetchone():
+            raise HTTPException(409,
+                "No se puede deshacer: el broker de esa operación ya no existe.")
         pair = _import_persister.broker_pair(conn, uid, p["broker"])
         if not _import_rebuild._is_safe_to_rebuild(conn, uid, pair, p["asset"]):
             raise HTTPException(409,
@@ -12726,6 +12812,14 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
         p = _json.loads(j["payload_json"])
         asset, pairs = p["asset"], p["pairs"]
         _idset = set(p["tx_ids"])
+        # Mismo guard que el undo por-operación: si el broker ya no existe, el cash que
+        # devolvemos crearía una posición fantasma bajo un broker inexistente.
+        for _b in (p.get("brokers") or []):
+            if _b and not conn.execute(
+                "SELECT 1 FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+                (uid, _b)).fetchone():
+                raise HTTPException(409,
+                    "No se puede deshacer: uno de los brokers de ese activo ya no existe.")
         for pr in pairs:
             # Guard: si desde el borrado algún par ganó data manual, deshacer la borraría.
             if not _import_rebuild._is_safe_to_rebuild(conn, uid, pr, asset):
@@ -31060,8 +31154,12 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                     if _ay:
                         # amount negativo = reversión (contrato documentado de
                         # _update_monthly_flow)
+                        # `native_amount` negativo también: sin esto `manual_deposits_native`
+                        # queda inflada y el próximo borrado del depósito del mes debita de
+                        # más (misma corrección que en `_delete_manual_position_cascade`).
                         _update_monthly_flow(conn, cid, pos["broker"], _ay, _am,
-                                             'deposit', -float(it["autodep_usd"]), is_manual=True)
+                                             'deposit', -float(it["autodep_usd"]), is_manual=True,
+                                             native_amount=-autodep_n)
                         _update_monthly_flow(conn, cid, 'global', _ay, _am,
                                              'deposit', -float(it["autodep_usd"]), is_manual=True)
                         _repair_monthly_chain(conn, cid, pos["broker"])
