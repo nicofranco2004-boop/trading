@@ -654,6 +654,33 @@ class DeleteCascade(unittest.TestCase):
         self.assertAlmostEqual(self._cash(), cash_antes, places=2,
                                msg="se fabricó cash con el costo congelado")
 
+    def test_restored_lot_keeps_its_autodeposit(self):
+        """Reproducido en el audit: el lote que el borrado de una venta RE-CREA nacía sin
+        la foto del autodepósito → borrarlo después fabricaba cash Y capital aportado
+        (200 y 200 de la nada). Ahora la venta guarda la foto del lote y se la devuelve."""
+        aportado = lambda: float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0)
+        # SIN saldo previo → el alta dispara autodepósito.
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        self.assertAlmostEqual(aportado(), 200.0, places=2)
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE op_type='Venta' ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        self.conn.commit()
+        main.delete_operation(oid, uid=self.uid)          # re-crea el lote
+        pid = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND is_cash=0", (self.uid,)).fetchone()["id"]
+        main.delete_position(pid, uid=self.uid)           # y ahora lo borramos
+        self.assertAlmostEqual(self._cash(), 0.0, places=2, msg="se fabricó cash")
+        self.assertAlmostEqual(aportado(), 0.0, places=2, msg="quedó capital aportado fantasma")
+        self.assertAlmostEqual(self._open_qty("MELI"), 0.0, places=6)
+
     def test_undo_manual_blocked_if_world_changed(self):
         """El undo manual re-aplica deltas guardados contra el mundo de HOY. Si el lote
         cambió, esos deltas dejan de ser un reverso (tenencia negativa). Se frena."""

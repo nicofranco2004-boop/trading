@@ -9663,6 +9663,11 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                             "tc_compra": (p["tc_compra"] if "tc_compra" in p.keys() else None),
                             "asset_type": (p["asset_type"] if "asset_type" in p.keys() else None),
                             "consumed": take,
+                            # La PROPIA foto de reverso del lote (con su autodepósito).
+                            # Sin esto, el lote que el borrado de esta venta re-crea nacía
+                            # con autodep=None y borrarlo después FABRICABA cash y capital
+                            # aportado (medido: 200 y 200 salidos de la nada).
+                            "undo_meta": (p["undo_meta_json"] if "undo_meta_json" in p.keys() else None),
                         },
                     }), cur.lastrowid, uid))
 
@@ -11826,6 +11831,13 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
                      lot.get("buy_price"), consumed, inv_back, lot.get("tc_compra"),
                      lot.get("entry_date"), com_back, lot.get("asset_type"),
                      lot.get("currency"),
+                     # El lote vuelve con SU PROPIA foto de reverso (incluye el
+                     # autodepósito que disparó el alta). Antes nacía con autodep=None y
+                     # borrarlo después FABRICABA cash y capital aportado — reproducido:
+                     # alta 200 sin saldo → vender → borrar la venta → borrar el lote
+                     # dejaba 200 de cash y 200 de aportado salidos de la nada. Para las
+                     # ventas viejas (sin la foto guardada) caemos al mínimo anterior.
+                     lot.get("undo_meta") or
                      _json.dumps({"src": "manual_position", "cost": inv_back or 0,
                                   "autodep": None, "restored_from_sale": oid})))
                 # Para el undo: el lote lo creamos NOSOTROS, así que se borra entero.
