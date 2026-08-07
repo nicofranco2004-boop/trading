@@ -1319,6 +1319,34 @@ def init_db():
     if _ac_cols and 'phone' not in _ac_cols:
         conn.executescript("ALTER TABLE advisor_clients ADD COLUMN phone TEXT;")
 
+    # ─── Precios HISTÓRICOS por símbolo y fecha ──────────────────────────
+    # Hasta acá sólo existía `asset_last_price` (una fila por símbolo con el
+    # último precio): alcanza para valuar HOY y para nada más. Sin serie no se
+    # puede reconstruir cuánto valía una cartera el 31 de enero, y sin eso el
+    # TWR sólo mide desde que el cron empezó a sacar fotos.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS asset_price_history (
+            symbol TEXT NOT NULL,
+            date TEXT NOT NULL,              -- 'YYYY-MM-DD'
+            price REAL NOT NULL,
+            source TEXT,                     -- 'yfinance' | 'data912' | 'fci' | ...
+            fetched_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (symbol, date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_price_hist_symbol
+            ON asset_price_history(symbol, date DESC);
+        -- Qué rango se PIDIÓ por símbolo. Inferir la cobertura de lo que la
+        -- fuente devolvió es un bug: un ticker que empezó a cotizar en 2026
+        -- nunca va a tener datos de 2024, y sin este registro se re-pediría en
+        -- cada corrida para siempre.
+        CREATE TABLE IF NOT EXISTS price_backfill_log (
+            symbol TEXT PRIMARY KEY,
+            desde TEXT NOT NULL,
+            ok INTEGER NOT NULL DEFAULT 1,   -- 0 = la fuente no dio serie
+            fetched_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
     # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
     # Append-only. Cada mes cerrado se calcula UNA vez y no se reescribe nunca.
     # Sin esto el número de ayer cambia hoy: `_migrate_snapshots_netdep` corre

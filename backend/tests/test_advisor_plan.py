@@ -2258,6 +2258,165 @@ class AdvisorAlertBaseTest(AdvisorAlertsAuditTest):
         self.assertEqual(self._run(12000)["fired"], 1)
 
 
+class PrecioHistoricoTest(AdvisorBase):
+    """El almacén de precios por fecha — prerrequisito de la reconstrucción."""
+
+    def _conn(self):
+        return main.get_db()
+
+    def _sym(self, base):
+        # asset_price_history persiste entre tests de la misma corrida y a
+        # propósito NO se pisa un precio ya registrado — sin sufijo único, un
+        # test le fija el precio a otro y el fallo parece del código.
+        return f"{base}-{uuid.uuid4().hex[:6]}"
+
+    def test_guarda_y_lee_el_precio_de_esa_fecha(self):
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("AAPL")
+            ph.guardar(conn, sym, {"2026-01-29": 190.0, "2026-01-30": 195.5})
+            conn.commit()
+            self.assertEqual(ph.precio_en(conn, sym, "2026-01-30"), 195.5)
+        finally:
+            conn.close()
+
+    def test_finde_toma_el_ultimo_cierre_anterior(self):
+        # Los mercados cierran: pedir el precio de un domingo tiene que dar el
+        # cierre del viernes, no None.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("GGAL.BA")
+            ph.guardar(conn, sym, {"2026-01-30": 100.0})   # viernes
+            conn.commit()
+            self.assertEqual(ph.precio_en(conn, sym, "2026-02-01"), 100.0)
+        finally:
+            conn.close()
+
+    def test_un_precio_viejo_no_se_sirve_como_el_de_hoy(self):
+        # Un ticker que dejó de cotizar no puede "tener precio" para siempre:
+        # es lo que deja la serie PLANA, que pasa todos los guards y es peor
+        # que un hueco porque el hueco se ve.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("MUERTO")
+            ph.guardar(conn, sym, {"2026-01-05": 50.0})
+            conn.commit()
+            self.assertEqual(ph.precio_en(conn, sym, "2026-01-08"), 50.0)
+            self.assertIsNone(ph.precio_en(conn, sym, "2026-03-01"))
+        finally:
+            conn.close()
+
+    def test_no_pisa_un_precio_ya_registrado(self):
+        # Un precio guardado es un hecho de esa fecha. Si otra fuente devuelve
+        # algo distinto después, el que vale es el primero.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("AAPL")
+            ph.guardar(conn, sym, {"2026-01-30": 195.5})
+            n = ph.guardar(conn, sym, {"2026-01-30": 999.0}, source="otra")
+            conn.commit()
+            self.assertEqual(n, 0)
+            self.assertEqual(ph.precio_en(conn, sym, "2026-01-30"), 195.5)
+        finally:
+            conn.close()
+
+    def test_descarta_basura_de_la_fuente(self):
+        # yfinance devuelve ruedas de '.BA' con volumen pero OHLC en NaN. Si eso
+        # entra, después se sirve como si fuera un cierre real.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("X.BA")
+            ph.guardar(conn, sym, {"2026-01-05": 0, "2026-01-06": None,
+                                   "2026-01-07": -3, "2026-01-08": 12.5})
+            conn.commit()
+            self.assertIsNone(ph.precio_en(conn, sym, "2026-01-05"))
+            self.assertEqual(ph.precio_en(conn, sym, "2026-01-08"), 12.5)
+        finally:
+            conn.close()
+
+    def test_cobertura_dice_cuales_faltan(self):
+        # Con un símbolo sin precio, el total NO es el total: quien arma un
+        # borde reconstruido tiene que saberlo ANTES de publicar un valor.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("AAPL")
+            ph.guardar(conn, sym, {"2026-01-30": 190.0})
+            conn.commit()
+            raro = self._sym("RARO")
+            c = ph.cobertura(conn, [sym, raro], "2026-01-30")
+            self.assertEqual(c["con_precio"], 1)
+            self.assertEqual(c["faltan"], [raro])
+            self.assertEqual(c["pct"], 50.0)
+        finally:
+            conn.close()
+
+    def test_backfill_es_resumible_y_un_simbolo_roto_no_frena_la_tanda(self):
+        import price_history as ph
+        llamados = []
+
+        def fake(sym, desde):
+            llamados.append(sym)
+            if sym == "ROTO":
+                raise RuntimeError("la fuente falló")
+            return {"2026-01-30": 10.0}
+
+        conn = self._conn()
+        try:
+            a, roto, m = self._sym("AAPL"), "ROTO", self._sym("MSFT")
+            r = ph.backfill(conn, [a, roto, m], "2026-01-01", fetcher=fake)
+            conn.commit()
+            self.assertEqual(r["resueltos"], 2)
+            self.assertEqual(r["sin_serie"], ["ROTO"])
+            # Segunda corrida: lo resuelto no se vuelve a pedir.
+            llamados.clear()
+            ph.backfill(conn, [a, roto, m], "2026-01-01", fetcher=fake)
+            self.assertEqual(llamados, [roto])
+        finally:
+            conn.close()
+
+    def test_el_lote_acota_las_llamadas_a_la_red(self):
+        # El cuello de botella no son los tokens: son los rate limits.
+        import price_history as ph
+        llamados = []
+
+        def fake(sym, desde):
+            llamados.append(sym)
+            return {"2026-01-30": 1.0}
+
+        conn = self._conn()
+        try:
+            r = ph.backfill(conn, [self._sym(f"S{i}") for i in range(10)], "2026-01-01",
+                            fetcher=fake, lote=3)
+            conn.commit()
+            self.assertEqual(len(llamados), 3)
+            self.assertEqual(r["faltan"], 7)
+        finally:
+            conn.close()
+
+    def test_los_simbolos_salen_de_la_misma_resolucion_que_el_snapshot(self):
+        # Un CEDEAR en broker ARS se pide como '.BA'. Reinventar esta resolución
+        # es lo que hizo que un CEDEAR comprado por dólar-MEP pidiera su ticker
+        # US y quedara 15-100x inflado.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            conn.execute("INSERT INTO positions (user_id,broker,asset,asset_type,"
+                         "quantity,invested,is_cash) VALUES (?,?,?,?,1,100,0)",
+                         (self.client_uid, "Cocos", "AAPL", "CEDEAR"))
+            conn.commit()
+            syms = ph.simbolos_de(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertIn("AAPL.BA", syms)
+        self.assertNotIn("AAPL", syms)
+
+
 class TwrInvariantesTest(AdvisorBase):
     """LAS INVARIANTES. Son la red que atrapa una deducción equivocada del
     agente reconstructor, y por eso van ANTES que él. Si alguna falla, el
