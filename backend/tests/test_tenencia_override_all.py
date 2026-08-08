@@ -205,25 +205,48 @@ class _OverrideE2EBase(unittest.TestCase):
 class CocosOverrideE2E(_OverrideE2EBase):
     BROKER = "Cocos"
 
-    def _csv(self, meli_qty):
+    def _csv(self, meli_qty, extra=""):
         return ("instrumento;cantidad;precio;moneda;total\n"
                 f"CEDEAR MERCADOLIBRE INC. (MELI);{meli_qty};21000;ARS;{meli_qty*21000}\n"
                 "CEDEAR APPLE INC. (AAPL);20;22000;ARS;440000\n"
+                + extra +
                 "ARS;1000;1;ARS;1000\n")
 
-    def test_reduces_but_never_removes(self):
+    def test_reduce_y_cierra_lo_ausente_con_foto_completa(self):
         # Rendi: MELI 100, AAPL 20 (match), NVDA 15 (ausente en la foto).
+        # El portfolio_report de Cocos SIEMPRE cierra con el efectivo; cuando lo
+        # trae (como acá), es la cartera entera y lo ausente se da por vendido.
+        # ANTES Cocos estaba clavado en "incompleta" y NVDA quedaba para siempre
+        # — un usuario lo reportó con UL (comprada en 2024, ya no la tenía).
+        # Cartera de 6 posiciones: se toca 1 reducción + 1 cierre. Con menos
+        # posiciones el cap de sanidad (>50% tocado → sólo gap-fill) frena todo,
+        # que es el comportamiento querido para carteras chicas.
         self._import_mov([self._buy("MELI", 100, 21000), self._buy("AAPL", 20, 22000),
-                          self._buy("NVDA", 15, 12000)])
-        pv = self._preview("cocos", "foto.csv", self._csv(60), "text/csv")
+                          self._buy("NVDA", 15, 12000), self._buy("KO", 10, 9000),
+                          self._buy("PG", 10, 9500), self._buy("XOM", 10, 11000)])
+        _extra = ("CEDEAR COCA-COLA COMPANY (KO);10;9000;ARS;90000\n"
+                  "CEDEAR DE PROCTER & GAMBLE (PG);10;9500;ARS;95000\n"
+                  "CEDEAR DE EXXON MOBIL CORPORATION (XOM);10;11000;ARS;110000\n")
+        pv = self._preview("cocos", "foto.csv", self._csv(60, _extra), "text/csv")
         self.assertEqual(pv.status_code, 200, pv.text)
         body = pv.json()
-        # Cocos: reduce (MELI 100→60) pero NUNCA borra ausentes (complete=False).
         self.assertIn("MELI", {r["ticker"] for r in body["override"]["reduced"]})
-        self.assertEqual(body["override"]["removed"], [])
+        self.assertEqual({r["ticker"] for r in body["override"]["removed"]}, {"NVDA"})
         self._confirm(body["session_id"])
         self.assertAlmostEqual(self._held("MELI"), 60, places=3)   # reducido
-        self.assertAlmostEqual(self._held("NVDA"), 15, places=3)   # NO borrado
+        self.assertAlmostEqual(self._held("NVDA"), 0, places=3)    # cerrado
+
+    def test_foto_sin_efectivo_no_cierra_nada(self):
+        # Export parcial (sin las filas de moneda): no se puede concluir que lo
+        # ausente esté vendido → se avisa y NO se toca.
+        self._import_mov([self._buy("MELI", 100, 21000), self._buy("NVDA", 15, 12000)])
+        parcial = ("instrumento;cantidad;precio;moneda;total\n"
+                   "CEDEAR MERCADOLIBRE INC. (MELI);60;21000;ARS;1260000\n")
+        body = self._preview("cocos", "foto.csv", parcial, "text/csv").json()
+        self.assertEqual(body["override"]["removed"], [])
+        self.assertTrue(body["warnings"], "debe avisar que la foto puede ser parcial")
+        self._confirm(body["session_id"])
+        self.assertAlmostEqual(self._held("NVDA"), 15, places=3)   # intacto
 
     def test_amortizing_bond_seeds_in_sibling_partition(self):
         """Change 1 (AL30): un bono amortizante que la foto reporta en AR$ pero que el

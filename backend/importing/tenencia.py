@@ -835,6 +835,7 @@ def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
     snap = TenenciaSnapshot()
     cash_ars = 0.0
     cash_usd = 0.0
+    saw_cash_row = False   # ¿el archivo lista el EFECTIVO? (señal de completitud)
     seen = set()
     for raw in (text or "").splitlines():
         line = raw.strip()
@@ -849,9 +850,10 @@ def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
             continue
         # Filas de CASH: el instrumento ES la moneda ('ARS' / 'USD'), sin ticker.
         if iu in ("ARS", "PESOS", "PESO ARGENTINO", "$"):
-            cash_ars += num(qty_s); continue
-        if iu in ("USD", "U$S", "US$", "DOLARES", "DÓLARES"):
-            cash_usd += num(qty_s); continue
+            cash_ars += num(qty_s); saw_cash_row = True; continue
+        if iu in ("USD", "U$S", "US$", "DOLARES", "DÓLARES", "EXT"):
+            # EXT = saldo de la cuenta del exterior; también es efectivo.
+            cash_usd += num(qty_s); saw_cash_row = True; continue
         ticker = _extract_ticker(instr)
         if not ticker:
             # Letra/LECAP que Cocos exporta SIN ticker entre paréntesis: sintetizamos
@@ -888,6 +890,16 @@ def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
             name=instr[:60]))
     snap.cash_ars = round(cash_ars, 2)
     snap.cash_usd = round(cash_usd, 2)
+    # Completitud: el "portfolio_report" de Cocos ES la cartera entera y siempre
+    # cierra con las filas de EFECTIVO por moneda. Si NO están, lo que subieron es
+    # un recorte (o un export de otra pantalla) y no se puede concluir que un
+    # activo ausente esté vendido → warning, y el override queda en gap-fill.
+    # Sin esta señal Cocos estaba clavado en "incompleto" y una posición ya vendida
+    # se quedaba para siempre en la cartera (reporte de un usuario: UL, 2026-08-08).
+    if not saw_cash_row:
+        snap.warnings.append(
+            "No vimos el efectivo en el archivo — puede ser un export parcial, "
+            "así que no vamos a dar por vendido lo que no aparezca.")
     if snap.holdings:
         snap.total_ars = round(
             sum(h.value for h in snap.holdings if h.currency == "ARS") + cash_ars, 2)

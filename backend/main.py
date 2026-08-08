@@ -26178,11 +26178,14 @@ async def import_tenencia_preview(
                 usd_broker = _ensure_usd_sibling(conn, uid, parent_row)["name"]
 
             # `complete` (habilita BORRAR not_in_snapshot) por broker: Balanz siempre;
-            # Cocos nunca (CSV plano sin señal → sólo reduce); el resto (IEB/BMB/IOL/PPI)
-            # sólo si el parser NO dejó warnings de completitud. Se aplica a AMBAS
-            # particiones (misma foto, misma completitud).
+            # el resto (Cocos/IEB/BMB/IOL/PPI) sólo si el parser NO dejó warnings de
+            # completitud. Se aplica a AMBAS particiones (misma foto, misma completitud).
+            # Cocos estaba clavado en "nunca" por ser un CSV plano sin señal: ahora su
+            # parser avisa cuando falta el EFECTIVO (el portfolio_report siempre lo
+            # trae), así que una foto completa sí puede dar por vendido lo ausente
+            # — antes una posición ya vendida se quedaba para siempre (reporte real).
             _warns_all = getattr(snap, "warnings", None)
-            _complete = True if is_balanz else (False if is_cocos else (not _warns_all))
+            _complete = True if is_balanz else (not _warns_all)
             _all_snap_tk = {h.ticker for h in snap.holdings}   # todas las monedas
             # Qty AGREGADA de Rendi sobre TODO el par (ambas monedas) — para no SEEDEAR
             # de más un activo cross-currency: si la foto lo clasifica en la moneda X
@@ -26268,7 +26271,7 @@ async def import_tenencia_preview(
             # siempre; IEB/BMB sólo si el parser NO dejó warnings de completitud; Cocos
             # NUNCA (su CSV plano no da señal de lectura parcial → sólo reduce, no borra).
             _warns = getattr(snap, "warnings", None)
-            _complete = True if is_balanz else (False if is_cocos else (not _warns))
+            _complete = True if is_balanz else (not _warns)
             if is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol:
                 # La foto PISA (Balanz/IEB/Cocos/BMB) — mismo mecanismo (ventas
                 # transfer_out reversibles + guardas + cap 50%).

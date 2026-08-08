@@ -18,6 +18,7 @@ if BACKEND not in sys.path:
 
 from importing.tenencia import (
     looks_like_cocos_tenencia, parse_cocos_tenencia, compute_reconcile,
+    build_tenencia_seed_txs,
 )
 
 # Números fake (no son de un usuario real) — solo ejercitan el formato.
@@ -91,6 +92,60 @@ class CocosTenenciaTest(unittest.TestCase):
         self.assertAlmostEqual(seeded.get("BMA"), 39)    # hueco a completar
         nis = {t for t, q in rec.not_in_snapshot}
         self.assertIn("AAPL", nis)                       # en Rendi, no en la foto
+
+
+class CocosFotoCompletaTest(unittest.TestCase):
+    """La foto de Cocos ahora PUEDE dar por vendido lo que no lista — pero solo
+    cuando es completa. Antes estaba clavada en "incompleta" y una posición ya
+    vendida se quedaba para siempre en la cartera (un usuario la vio con UL:
+    comprada en 2024, ausente de su portfolio_report de 2026-08-07)."""
+
+    COMPLETA = (
+        "instrumento;cantidad;precio;moneda;total\n"
+        "CEDEAR APPLE INC. (AAPL);2;24800;ARS;49600\n"
+        "ARS;1366,76;1;ARS;1366,76\n"
+        "EXT;5,19;1;EXT;5,19\n"
+        "USD;2,94;1;USD;2,94\n"
+    )
+    PARCIAL = (
+        "instrumento;cantidad;precio;moneda;total\n"
+        "CEDEAR APPLE INC. (AAPL);2;24800;ARS;49600\n"
+    )
+
+    def test_foto_con_efectivo_es_completa(self):
+        snap = parse_cocos_tenencia(self.COMPLETA)
+        self.assertEqual(snap.warnings, [], "el portfolio_report trae el efectivo")
+
+    def test_foto_sin_efectivo_avisa_y_no_borra(self):
+        snap = parse_cocos_tenencia(self.PARCIAL)
+        self.assertTrue(snap.warnings)
+        self.assertIn("efectivo", snap.warnings[0])
+
+    def test_ext_cuenta_como_efectivo(self):
+        # 'EXT' es el saldo de la cuenta del exterior — antes no se sumaba.
+        snap = parse_cocos_tenencia(self.COMPLETA)
+        self.assertAlmostEqual(snap.cash_usd, 5.19 + 2.94, places=2)
+
+    def test_la_posicion_ausente_se_cierra_con_foto_completa(self):
+        # Rendi tiene AAPL (coincide) y UL (no está en la foto) → con complete
+        # se emite la VENTA que cierra UL a costo.
+        snap = parse_cocos_tenencia(self.COMPLETA)
+        rec = compute_reconcile({"AAPL": 2.0, "UL": 1.0}, snap)
+        self.assertEqual([tk for tk, _ in rec.not_in_snapshot], ["UL"])
+        txs = build_tenencia_seed_txs(
+            "Cocos", rec, "2026-08-07", currency="ARS", override=True, complete=True)
+        cierres = [t for t in txs if t.operation_type == "SELL"]
+        self.assertEqual([t.asset_symbol for t in cierres], ["UL"])
+        self.assertEqual(cierres[0].quantity, 1.0)
+        self.assertTrue(cierres[0].transfer_out, "cierra a costo, sin P&L fantasma")
+        self.assertEqual(cierres[0].gross_amount, 0.0, "no genera cash")
+
+    def test_sin_complete_no_se_cierra_nada(self):
+        snap = parse_cocos_tenencia(self.PARCIAL)
+        rec = compute_reconcile({"AAPL": 2.0, "UL": 1.0}, snap)
+        txs = build_tenencia_seed_txs(
+            "Cocos", rec, "2026-08-07", currency="ARS", override=True, complete=False)
+        self.assertEqual([t for t in txs if t.operation_type == "SELL"], [])
 
 
 if __name__ == "__main__":
