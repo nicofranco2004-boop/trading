@@ -496,5 +496,60 @@ class BalanzEmbeddedGateTest(unittest.TestCase):
         self.assertAlmostEqual(float(d["monto"]), 1000.0, places=2)
 
 
+class CambioDeMonedaTest(unittest.TestCase):
+    """"Operación de Cambio" = compra/venta de dólares. Llega en DOS filas del
+    mismo número (una Pesos, otra Dólares, con signos opuestos) y antes NO se
+    reconocía ninguna: en el export real de un usuario eran 32 conversiones que
+    quedaban afuera, así que los pesos gastados en dólares seguían figurando en
+    la cuenta y los dólares nunca entraban (2026-08-08)."""
+
+    def _parse(self, rows):
+        return BalanzMovimientosParser().parse(HDR + "\n" + "\n".join(rows) + "\n")
+
+    COMPRA = [  # pesos SALEN → compró dólares
+        "Operación de Cambio / 68704,,,2019-07-23,0,-1,2019-07-23,Pesos,-499.66",
+        "Operación de Cambio / 68704,,,2019-07-23,0,-1,2019-07-23,Dólares,11.62",
+    ]
+    VENTA = [   # pesos ENTRAN → vendió dólares
+        "Operación de Cambio / 78889,,,2019-08-13,0,-1,2019-08-13,Pesos,39960",
+        "Operación de Cambio / 78889,,,2019-08-13,0,-1,2019-08-13,Dólares,-740",
+    ]
+
+    def test_compra_de_dolares(self):
+        res = self._parse(self.COMPRA)
+        self.assertEqual(res.parse_errors, [])
+        self.assertEqual(len(res.raw_rows), 1, "las dos patas colapsan en UNA fila")
+        d = res.raw_rows[0].data
+        self.assertEqual(d["tipo"], "FX_ARS_USD")
+        self.assertAlmostEqual(float(d["monto"]), 499.66, places=2)      # ARS
+        self.assertAlmostEqual(float(d["monto_usd"]), 11.62, places=2)   # USD
+
+    def test_venta_de_dolares(self):
+        d = self._parse(self.VENTA).raw_rows[0].data
+        self.assertEqual(d["tipo"], "FX_USD_ARS")
+        self.assertAlmostEqual(float(d["monto"]), 39960.0, places=2)
+        self.assertAlmostEqual(float(d["monto_usd"]), 740.0, places=2)
+
+    def test_pata_suelta_no_se_inventa(self):
+        # Sin su par no sabemos el tipo de cambio → mejor reportar que adivinar.
+        res = self._parse([self.COMPRA[0]])
+        self.assertEqual([r.data["tipo"] for r in res.raw_rows], [])
+        self.assertTrue(res.parse_errors)
+
+    def test_mismo_signo_no_es_conversion(self):
+        # Dos patas que cobran (o pagan) las dos no son un cambio de moneda.
+        res = self._parse([
+            "Operación de Cambio / 99,,,2019-07-23,0,-1,2019-07-23,Pesos,-100",
+            "Operación de Cambio / 99,,,2019-07-23,0,-1,2019-07-23,Dólares,-2",
+        ])
+        self.assertEqual([r.data["tipo"] for r in res.raw_rows], [])
+        self.assertTrue(res.parse_errors)
+
+    def test_no_se_mezclan_dos_cambios_del_mismo_dia(self):
+        res = self._parse(self.COMPRA + self.VENTA)
+        tipos = sorted(r.data["tipo"] for r in res.raw_rows)
+        self.assertEqual(tipos, ["FX_ARS_USD", "FX_USD_ARS"])
+
+
 if __name__ == "__main__":
     unittest.main()

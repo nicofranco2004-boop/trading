@@ -261,6 +261,46 @@ class BalanzMovimientosParser(Parser):
         # Indexamos las Liquidación (ticker, fecha, |cantidad|) para saltear su
         # espejo en el loop y no duplicar la tenencia.
         all_rows = list(reader)
+
+        # Pre-pass CAMBIO DE MONEDA: "Operación de Cambio / <nro>" es la compra o
+        # venta de dólares y llega en DOS filas del MISMO número — una en Pesos y
+        # otra en Dólares, con signos opuestos. Antes ninguna se reconocía y las
+        # 32 conversiones de un usuario real quedaban afuera: los pesos gastados
+        # en comprar dólares seguían "en la cuenta" y los dólares nunca entraban,
+        # así que ningún saldo cerraba. Las colapsamos en UNA conversión (el mismo
+        # contrato que usa IOL: monto = ARS, monto_usd = USD).
+        _fx_by_idx: dict = {}     # índice de la fila PESOS → (tipo, ars, usd)
+        _fx_drop: set = set()     # índice de la pata dólar (ya representada)
+        _cambio_groups: dict = {}
+        for _i, _r in enumerate(all_rows):
+            _d = _norm_header(_g(_r, "descripcion"))
+            if not _d.startswith("operacion de cambio"):
+                continue
+            # Clave = el número del comprobante que Balanz pone en la descripción.
+            _nro = _d.split("/")[-1].strip() if "/" in _d else ""
+            _cambio_groups.setdefault((_nro, _g(_r, "fecha")), []).append((_i, _r))
+        for _key, _items in _cambio_groups.items():
+            if len(_items) != 2:
+                continue          # no adivinamos si no son exactamente dos patas
+            _pat = {}
+            for _i, _r in _items:
+                _cc = _norm_ccy(_g(_r, "moneda"))
+                _im = _num(_g(_r, "importe"))
+                if _im is None or _cc not in ("ARS", "USD"):
+                    _pat = {}
+                    break
+                _pat[_cc] = (_i, _im)
+            if set(_pat) != {"ARS", "USD"}:
+                continue
+            (_i_ars, _v_ars), (_i_usd, _v_usd) = _pat["ARS"], _pat["USD"]
+            # Los signos tienen que ser opuestos (una pata paga, la otra cobra).
+            if _v_ars == 0 or _v_usd == 0 or (_v_ars > 0) == (_v_usd > 0):
+                continue
+            # Pesos NEGATIVO = salieron pesos → compró dólares.
+            _op = "FX_ARS_USD" if _v_ars < 0 else "FX_USD_ARS"
+            _fx_by_idx[_i_ars] = (_op, abs(_v_ars), abs(_v_usd))
+            _fx_drop.add(_i_usd)
+
         _fci_liq_keys = set()
         for _r in all_rows:
             if _asset_type(_g(_r, "clase")) == "FUND":
@@ -271,10 +311,26 @@ class BalanzMovimientosParser(Parser):
                     if _tk and _q is not None:
                         _fci_liq_keys.add((_tk, _g(_r, "fecha"), round(abs(_q), 2)))
 
-        for row in all_rows:
+        for _row_i, row in enumerate(all_rows):
             desc_raw = _g(row, "descripcion")
             desc = _norm_header(desc_raw)
             if not desc:
+                continue
+
+            # Cambio de moneda detectado en el pre-pass: una sola fila lleva las
+            # dos patas; la otra ya está representada y se descarta.
+            if _row_i in _fx_drop:
+                continue
+            _fx = _fx_by_idx.get(_row_i)
+            if _fx:
+                _op, _ars, _usd = _fx
+                _emit({
+                    "fecha": _g(row, "fecha"), "tipo": _op, "broker": "Balanz",
+                    "activo": "", "cantidad": "", "precio": "",
+                    "monto": repr(_ars), "monto_usd": repr(_usd), "tc": "",
+                    "comisiones": "0", "moneda": "",
+                    "notas": desc_raw.strip(),
+                })
                 continue
             # Ticker sin espacios: las clases de FCI vienen como "INSTITU A" /
             # "BCACC A" y fragmentaban contra "INSTITUA"/"BCACCA". Ningún ticker
