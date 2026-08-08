@@ -2258,6 +2258,140 @@ class AdvisorAlertBaseTest(AdvisorAlertsAuditTest):
         self.assertEqual(self._run(12000)["fired"], 1)
 
 
+class ReconstruccionVsMedicionTest(AdvisorBase):
+    """La prueba mas dura, y sale gratis: reconstruir un cierre que el cron YA
+    midio y comparar. Si el motor reconstruye distinto de lo que la app midio,
+    un borde reconstruido NO se puede encadenar con uno medido — y sin eso, la
+    reconstruccion entera no sirve por bien que razone el agente."""
+
+    def _setup(self, broker="IBKR", ccy="USD"):
+        import uuid as _u
+        bid = _u.uuid4().hex[:12]
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR IGNORE INTO brokers (user_id,name,currency) "
+                         "VALUES (?,?,?)", (self.client_uid, broker, ccy))
+            conn.execute(
+                "INSERT INTO import_batches (id,user_id,broker,parser_format,"
+                "file_hash,status) VALUES (?,?,?,'test',?,'done')",
+                (bid, self.client_uid, broker, bid))
+            conn.commit()
+        finally:
+            conn.close()
+        return bid
+
+    def _tx(self, bid, fecha, op, asset, qty, monto, broker="IBKR", ccy="USD"):
+        conn = main.get_db()
+        try:
+            rid = conn.execute(
+                "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status) "
+                "VALUES (?,0,'{}','ok')", (bid,)).lastrowid
+            conn.execute(
+                "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,"
+                "operation_type,asset_symbol,quantity,gross_amount,currency) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (bid, rid, fecha, broker, op, asset, qty, monto, ccy))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_el_borde_reconstruido_coincide_con_el_que_midio_el_cron(self):
+        # Mismo motor, misma tenencia, mismos precios -> mismo numero.
+        import ledger_replay as lr, price_history as ph
+        from snapshots_job import compute_broker_value_usd
+
+        bid = self._setup()
+        self._tx(bid, "2026-01-10", "DEPOSIT", None, None, 5000.0)
+        self._tx(bid, "2026-01-15", "BUY", "AAPL", 10, 2000.0)
+
+        conn = main.get_db()
+        try:
+            ph.guardar(conn, "AAPL", {"2026-01-31": 210.0})
+            conn.commit()
+
+            # Lo que mediria el cron con esa misma foto.
+            pos = [{"asset": "AAPL", "asset_type": None, "is_cash": 0,
+                    "quantity": 10, "invested": 2000.0, "commissions": 0,
+                    "price_override": None},
+                   {"asset": "USD", "asset_type": None, "is_cash": 1,
+                    "quantity": 0, "invested": 3000.0, "commissions": 0,
+                    "price_override": None}]
+            medido = compute_broker_value_usd(pos, {"AAPL": 210.0}, "USD", 1400.0,
+                                              broker_name="IBKR")["value"]
+            recon = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+
+        self.assertIsNotNone(recon["valor"])
+        self.assertAlmostEqual(recon["valor"], medido, places=2)
+
+    def test_el_borde_reconstruido_incluye_el_cash(self):
+        # El cron cuenta el efectivo en total_value. Un borde reconstruido sin
+        # cash no es la misma magnitud: encadenarlos fabrica un escalon del
+        # tamano de la liquidez (un cliente 30% en pesos veria -30% que no fue).
+        import ledger_replay as lr, price_history as ph
+        bid = self._setup()
+        # Activo propio: asset_price_history persiste entre tests de la misma
+        # corrida y a propósito NO pisa un precio ya guardado — con el mismo
+        # ticker, otro test le fija el precio a éste.
+        self._tx(bid, "2026-01-10", "DEPOSIT", None, None, 5000.0)
+        self._tx(bid, "2026-01-15", "BUY", "CASHT", 10, 2000.0)
+        conn = main.get_db()
+        try:
+            ph.guardar(conn, "CASHT", {"2026-01-31": 200.0})
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+            saldo = lr.cash_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertAlmostEqual(saldo[("IBKR", "USD")], 3000.0, places=2)
+        # 10 x 200 en acciones + 3000 de cash
+        self.assertAlmostEqual(v["valor"], 5000.0, places=2)
+
+    def test_un_CEDEAR_ya_vendido_se_valua_por_su_BA_y_no_por_el_ticker_US(self):
+        # El asset_type salia de `positions`; para un activo ya vendido esa fila
+        # no existe y el simbolo caia al ticker US -> el bug C1, 15-100x
+        # inflado. Ahora el tipo sale del LEDGER, que si lo conserva.
+        import ledger_replay as lr, price_history as ph
+        # Broker en DÓLARES a propósito: con un broker en pesos el símbolo cae
+        # en '.BA' igual, sin mirar el tipo — y el test pasaría por el motivo
+        # equivocado. Sólo acá el asset_type es lo único que decide.
+        bid = self._setup(broker="IBKR", ccy="USD")
+        self._tx(bid, "2026-01-10", "BUY", "CEDT", 10, 100.0, broker="IBKR", ccy="USD")
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE import_normalized_tx SET asset_type='CEDEAR' "
+                         "WHERE batch_id=?", (bid,))
+            # NO hay fila en positions: el activo se vendio.
+            ph.guardar(conn, "CEDT.BA", {"2026-01-31": 7000.0})
+            conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,"
+                         "mep_venta) VALUES ('2026-01-31',1500,1400)")
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        # Resolvio por '.BA': si hubiera pedido el ticker US no habria precio.
+        self.assertEqual(v["faltan"], [])
+        self.assertIsNotNone(v["valor"])
+
+    def test_un_activo_sin_precio_ni_costo_no_certifica_cobertura(self):
+        # Peso desconocido != peso cero. Certificar una cobertura que no se
+        # midio es exactamente como se publica un borde corto.
+        import ledger_replay as lr, price_history as ph
+        bid = self._setup()
+        self._tx(bid, "2026-01-15", "BUY", "AAPL", 10, 2000.0)
+        self._tx(bid, "2026-01-15", "BUY", "RARO", 5, 0)      # sin monto
+        conn = main.get_db()
+        try:
+            ph.guardar(conn, "AAPL", {"2026-01-31": 200.0})
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertIsNone(v["valor"])
+        self.assertIsNone(v["cobertura_pct"])
+
+
 class FlujosDeterministaTest(AdvisorBase):
     """La pasada que resuelve sin modelo. Lo que queda es lo que justifica uno."""
 
@@ -2561,11 +2695,12 @@ class LedgerReplayTest(AdvisorBase):
     def test_valua_la_tenencia_con_el_precio_de_esa_fecha(self):
         import ledger_replay as lr, price_history as ph
         bid = self._batch(self.client_uid)
-        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10, broker="IBKR")
-        self._pos(self.client_uid, "AAPL", 10, broker="IBKR", ccy="USD")
+        # Ticker propio: los precios persisten entre tests y no se pisan.
+        self._tx(bid, "2026-01-10", "BUY", "VALT", 10, broker="IBKR")
+        self._pos(self.client_uid, "VALT", 10, broker="IBKR", ccy="USD")
         conn = self._conn()
         try:
-            ph.guardar(conn, "AAPL", {"2026-01-31": 200.0})
+            ph.guardar(conn, "VALT", {"2026-01-31": 200.0})
             conn.commit()
             v = lr.valor_en(conn, self.client_uid, "2026-01-31")
         finally:
@@ -2607,7 +2742,10 @@ class LedgerReplayTest(AdvisorBase):
             conn.close()
         self.assertIsNone(v["valor"])
         self.assertEqual(v["motivo"], "cobertura_insuficiente")
-        self.assertEqual(v["cobertura_pct"], 50.0)
+        # La cobertura se mide por VALOR, no por conteo. Acá el activo sin
+        # precio tampoco tiene costo conocido, así que su peso es DESCONOCIDO
+        # — y peso desconocido no se certifica como cobertura.
+        self.assertIsNone(v["cobertura_pct"])
 
     def test_sin_FX_no_se_inventa_una_tasa(self):
         import ledger_replay as lr, price_history as ph

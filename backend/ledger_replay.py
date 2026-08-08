@@ -64,6 +64,48 @@ def tenencia_en(conn, uid: int, fecha: str) -> dict:
     return {k: v for k, v in pos.items() if v > 1e-9}
 
 
+# Operaciones que mueven EFECTIVO. El cron incluye el cash en total_value, asi
+# que un borde reconstruido sin cash no es la misma magnitud que uno medido:
+# encadenarlos fabrica un escalon del tamano de la liquidez. Un cliente con 30%
+# en pesos veria una caida del 30% que nunca existio.
+_CASH_MAS = ("DEPOSIT", "SELL", "DIVIDEND", "INTEREST", "FUTURES_PNL")
+_CASH_MENOS = ("WITHDRAW", "BUY", "FEE", "IMPUESTO")
+
+
+def cash_en(conn, uid: int, fecha: str) -> dict:
+    """{(broker, moneda): saldo} a esa fecha, replayeando el ledger.
+
+    Misma logica que el resto: lo que el ledger no explica, no se inventa. Un
+    saldo negativo se deja como esta y `verificar_contra_hoy` lo va a marcar
+    contra la realidad — es el ledger avisando que le falta un movimiento.
+    """
+    filas = conn.execute(
+        """SELECT n.broker, n.operation_type, n.gross_amount, n.fees, n.taxes,
+                  COALESCE(n.settlement_currency, n.currency) ccy
+           FROM import_normalized_tx n
+           JOIN import_batches b ON b.id = n.batch_id
+           WHERE b.user_id = ? AND n.excluded_at IS NULL AND n.date <= ?
+           ORDER BY n.date ASC, n.id ASC""",
+        (uid, str(fecha)[:10])).fetchall()
+
+    saldos = {}
+    for r in filas:
+        op = r["operation_type"]
+        monto = float(r["gross_amount"] or 0)
+        if monto <= 0:
+            continue
+        k = (r["broker"] or "", (r["ccy"] or "USD").upper())
+        if op in _CASH_MAS:
+            saldos[k] = saldos.get(k, 0.0) + monto
+        elif op in _CASH_MENOS:
+            saldos[k] = saldos.get(k, 0.0) - monto
+        else:
+            continue
+        # Comisiones e impuestos salen del efectivo en cualquier operacion.
+        saldos[k] -= float(r["fees"] or 0) + float(r["taxes"] or 0)
+    return saldos
+
+
 def verificar_contra_hoy(conn, uid: int, tolerancia: float = 0.01) -> dict:
     """¿El replay reproduce la cartera que HOY conocemos?
 
@@ -126,48 +168,122 @@ def _fx_en(conn, fecha: str):
 
 
 def valor_en(conn, uid: int, fecha: str) -> dict:
-    """Cuánto valía la cartera de esta persona en esa fecha, en USD.
+    """Cuanto valia la cartera de esta persona en esa fecha, en USD.
 
-    Devuelve `valor` sólo si la cobertura de precios alcanza. Con un símbolo sin
-    precio el total NO es el total, y publicar un borde corto es fabricar una
-    caída — por eso ante la duda devuelve None con el motivo.
+    ⚠️ NO VALUA POR SU CUENTA. Arma la tenencia historica y se la pasa a
+    `compute_broker_value_usd`, el MISMO motor que usa el snapshot del cron.
+
+    Tener un segundo motor de valuacion es como se vuelve a los ~15 motores de
+    retorno que este trabajo viene a cerrar — y en este repo cada divergencia
+    ya costo un bug con nombre: el cash que el cron cuenta y el replay no
+    (escalon falso del tamano de la liquidez), los bonos per-100, el ratio de
+    CEDEAR, el factor de cripto en broker AR, el price_override. Delegando, un
+    borde reconstruido y uno medido son la MISMA magnitud, que es la unica
+    forma de poder encadenarlos.
+
+    Devuelve `valor` solo si la cobertura de precios alcanza: con un simbolo
+    sin precio el total NO es el total, y publicar un borde corto es fabricar
+    una caida.
     """
     import price_history as ph
+    from snapshots_job import (compute_broker_value_usd, position_price_key,
+                               _broker_name_sets)
 
     ten = tenencia_en(conn, uid, fecha)
-    if not ten:
-        return {"valor": None, "motivo": "sin_tenencia", "fecha": fecha}
+    cash = cash_en(conn, uid, fecha)
+    if not ten and not cash:
+        return {"valor": None, "motivo": "sin_tenencia", "fecha": str(fecha)[:10]}
+
+    brokers = [dict(r) for r in conn.execute(
+        "SELECT id, user_id, name, currency, parent_broker_id FROM brokers WHERE user_id=?",
+        (uid,)).fetchall()]
+    if not brokers:
+        return {"valor": None, "motivo": "sin_brokers", "fecha": str(fecha)[:10]}
+    ars_names, ar_usd_names = _broker_name_sets(brokers)
+    ccy_de = {b["name"]: b["currency"] for b in brokers}
+
+    # asset_type historico: si el activo ya se vendio no esta en `positions`.
+    # Sacarlo de ahi hacia que un CEDEAR vendido pidiera su ticker US en vez
+    # del .BA — el bug C1, 15-100x inflado. El ledger lo conserva.
+    tipos = {}
+    for r in conn.execute(
+            """SELECT UPPER(n.asset_symbol) a, n.asset_type t
+               FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
+               WHERE b.user_id=? AND n.asset_type IS NOT NULL""", (uid,)).fetchall():
+        tipos.setdefault(r["a"], r["t"])
+    for r in conn.execute(
+            "SELECT UPPER(asset) a, asset_type t FROM positions "
+            "WHERE user_id=? AND asset_type IS NOT NULL", (uid,)).fetchall():
+        tipos.setdefault(r["a"], r["t"])
+
+    # Posiciones historicas con la forma que espera el motor canonico.
+    por_broker, syms = {}, set()
+    for (broker, asset), qty in ten.items():
+        p = {"asset": asset, "broker": broker, "asset_type": tipos.get(asset),
+             "is_cash": 0, "quantity": qty, "invested": 0.0, "commissions": 0.0,
+             "price_override": None, "currency": None}
+        por_broker.setdefault(broker, []).append(p)
+        syms.add(position_price_key(p, ars_names, ar_usd_names))
+    for (broker, ccy), saldo in cash.items():
+        if abs(saldo) < 0.005:
+            continue
+        por_broker.setdefault(broker, []).append(
+            {"asset": ccy, "broker": broker, "asset_type": None, "is_cash": 1,
+             "quantity": 0.0, "invested": saldo, "commissions": 0.0,
+             "price_override": None, "currency": ccy})
+
+    precios = {sm: ph.precio_en(conn, sm, fecha) for sm in syms}
+    faltan = sorted(sm for sm, v in precios.items() if v is None)
 
     fx = _fx_en(conn, fecha)
-    total, faltan, necesita_fx = 0.0, [], False
+    if fx is None and any(ccy_de.get(b) == "ARS" for b in por_broker):
+        return {"valor": None, "motivo": "sin_fx", "fecha": str(fecha)[:10],
+                "fx_basis": FX_BASIS}
 
+    hay_ars = any(ccy_de.get(b) == "ARS" for b in por_broker) or any(
+        sm.endswith(".BA") for sm in syms)
+
+    total = 0.0
+    for broker, pos in por_broker.items():
+        r = compute_broker_value_usd(
+            pos, precios, ccy_de.get(broker) or "ARS", fx or 0.0,
+            broker_name=broker, cedear_rate=fx)
+        total += float(r["value"])
+
+    # La cobertura se mide por VALOR, no por conteo: un activo que pesa 40% de
+    # la cartera pasaria el filtro si hay 50 activos mas.
+    valor_faltante, peso_desconocido = 0.0, False
     for (broker, asset), qty in ten.items():
-        sym = _simbolo_de(conn, uid, broker, asset)
-        precio = ph.precio_en(conn, sym, fecha)
-        if precio is None:
-            faltan.append(sym)
-            continue
-        if sym.endswith(".BA"):          # cotiza en pesos → hay que pasarlo a USD
-            necesita_fx = True
-            if fx is None:
-                faltan.append(f"{sym} (sin FX)")
-                continue
-            total += qty * precio / fx
-        else:
-            total += qty * precio
+        sm = position_price_key({"asset": asset, "broker": broker,
+                                 "asset_type": tipos.get(asset)}, ars_names, ar_usd_names)
+        if precios.get(sm) is None:
+            # Sin precio no se sabe cuanto pesa: se usa el costo como piso.
+            c = conn.execute(
+                "SELECT SUM(gross_amount) g FROM import_normalized_tx n "
+                "JOIN import_batches b ON b.id=n.batch_id WHERE b.user_id=? "
+                "AND UPPER(n.asset_symbol)=? AND n.operation_type='BUY'",
+                (uid, asset)).fetchone()
+            costo = float((c["g"] if c else 0) or 0)
+            if costo <= 0:
+                # Sin precio Y sin costo no se sabe cuanto pesa. Tratarlo como
+                # peso CERO seria certificar una cobertura que no se midio:
+                # peso desconocido = no se publica.
+                peso_desconocido = True
+            valor_faltante += costo
 
-    n = len(ten)
-    cubiertos = n - len(faltan)
-    pct = cubiertos / n if n else 1.0
-    ok = pct >= COBERTURA_MINIMA and not (necesita_fx and fx is None)
+    base = abs(total) + valor_faltante
+    pct = (abs(total) / base) if base > 0 else 1.0
+    ok = (not faltan) or (pct >= COBERTURA_MINIMA and not peso_desconocido)
 
     return {
         "valor": round(total, 2) if ok else None,
         "fecha": str(fecha)[:10],
-        "activos": n,
-        "con_precio": cubiertos,
-        "cobertura_pct": round(pct * 100, 1),
-        "faltan": sorted(set(faltan))[:20],
-        "fx_basis": FX_BASIS if necesita_fx else "usd",
+        "activos": len(ten),
+        "con_precio": len(syms) - len(faltan),
+        # None = no se pudo medir el peso de lo que falta. Reportar 100% y a la
+        # vez negarse a publicar seria contradictorio.
+        "cobertura_pct": None if peso_desconocido else round(pct * 100, 1),
+        "faltan": faltan[:20],
+        "fx_basis": FX_BASIS if hay_ars else "usd",
         "motivo": None if ok else "cobertura_insuficiente",
     }
