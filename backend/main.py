@@ -6479,14 +6479,33 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     for sym in uncached_symbols:
         result[sym] = None
 
-    # Phase 3F: prefetch de bonos AR via data912.com (precio live de BYMA).
-    # Para tickers conocidos como bonos AR canje 2020 o CER, resolvemos acá
-    # — yfinance no tiene cobertura. Lo que NO resuelva data912 (acciones,
-    # ETFs, crypto, ONs corporativas con tickers exactos no cubiertos) cae
-    # al path yfinance de abajo.
+    # Procedencia (ver `_PRICE_META`): de qué fuente salió cada precio y de qué
+    # rueda. Se declara ACÁ (antes del prefetch data912) porque el prefetch ya
+    # marca 'byma'. `px_as_of`/`newest_bar` los llena el batch de yfinance.
+    px_as_of: dict = {}
+    px_src: dict = {}
+    newest_bar = None
+
+    # Phase 3F: prefetch via data912.com (precio live de BYMA), PRIMARIO para AR.
+    #  1. Bonos/ONs AR: yfinance no los cubre.
+    #  2. CEDEARs y acciones AR (.BA): data912 es el feed REAL de BYMA — el mismo
+    #     que muestra el broker. yfinance NO es confiable para .BA: devuelve la
+    #     rueda del día en NaN, o el ticker MUERTO/congelado (medido: DISN.BA
+    #     clavado en 10.416 con volumen 0 durante 15 días, cuando BYMA marca
+    #     13.840). Como yfinance devuelve UN número —no None—, el fallback de más
+    #     abajo no se disparaba y se servía el precio viejo. Por eso data912 va
+    #     PRIMERO; yfinance queda de respaldo para lo que data912 no tenga
+    #     (`_resolve_ar_equity_price` ya excluye cripto y los CEDEAR cotizados en
+    #     USD, que tienen su propio camino).
+    # Lo que no resuelva data912 cae al path yfinance de abajo.
     yf_targets = []
     for sym in uncached_symbols:
         ar_price = _resolve_ar_bond_price(sym)
+        if ar_price is None:
+            eq = _resolve_ar_equity_price(sym)
+            if eq is not None:
+                ar_price = eq
+                px_src[sym] = 'byma'
         if ar_price is not None:
             result[sym] = ar_price
         else:
@@ -6542,12 +6561,6 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
             sym_to_yf[sym] = sym
 
     yf_tickers = list(set(sym_to_yf.values()))
-
-    # Procedencia (ver `_PRICE_META`): de qué fuente salió cada precio y de qué
-    # rueda. `px_as_of` se llena con el batch; `px_src` a medida que se resuelve.
-    px_as_of: dict = {}
-    px_src: dict = {}
-    newest_bar = None
 
     try:
         tickers_str = " ".join(yf_tickers)
@@ -6699,6 +6712,32 @@ def get_prev_close(symbols: str, uid: int = Depends(get_effective_user)):
     for sym in uncached_symbols:
         result[sym] = None
 
+    # CEDEARs y acciones AR: el cierre previo sale de data912, la MISMA fuente que
+    # el precio actual (/api/prices ahora sirve .BA desde data912). Es
+    # imprescindible que coincidan: si el actual viene de data912 (DISN 13.840) y
+    # el previo de yfinance —que puede estar congelado (10.416)— la variación
+    # diaria explota (+33% fantasma). Con `pct_change` del feed derivamos el
+    # previo; con el mercado cerrado el feed manda pct=0 → previo = actual (var 0),
+    # nunca el valor viejo de yfinance. Los que data912 no cubre caen al batch.
+    for sym in uncached_symbols:
+        if not sym.endswith('.BA'):
+            continue
+        base = sym[:-3]
+        if base in CRYPTO_SYMBOLS or base in CEDEAR_USD_RATIOS:
+            continue  # su propio camino (cripto USD / subyacente US)
+        row = (_fetch_data912_equities() or {}).get(base)
+        if not row:
+            continue
+        c, pctv = row.get('c'), row.get('pct')
+        if not c or c <= 0:
+            continue
+        try:
+            pctv = float(pctv) if pctv is not None else 0.0
+        except (TypeError, ValueError):
+            pctv = 0.0
+        # pct ≠ 0 → previo real; pct 0 (mercado cerrado) → previo = actual (var 0).
+        result[sym] = (float(c) / (1.0 + pctv / 100.0)) if pctv else float(c)
+
     # Crypto-ARS ('BTC.BA'): mismo criterio que /api/prices — cotiza en USD,
     # se resuelve como '<CRIPTO>-USD' y el cierre previo se devuelve en pesos
     # (× blue del user), así la variación diaria reconcilia con el precio actual
@@ -6755,6 +6794,10 @@ def get_prev_close(symbols: str, uid: int = Depends(get_effective_user)):
                 except Exception:
                     close_dates = []
                 for sym, yf_t in sym_to_yf.items():
+                    # Ya resuelto por data912 (mismo feed que el precio actual): no
+                    # dejar que yfinance —posiblemente congelado— lo pise.
+                    if result.get(sym) is not None:
+                        continue
                     try:
                         # Multi-ticker → columna por ticker; single-ticker → Series directa.
                         if hasattr(close, 'columns') and yf_t in getattr(close, 'columns', []):

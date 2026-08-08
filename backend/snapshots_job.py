@@ -500,22 +500,24 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
     except Exception:
         pass
 
-    # CEDEARs y acciones AR que yfinance no resolvió: mismo agujero que en
-    # /api/prices — devuelve la barra del día con volumen pero OHLC en NaN, el
-    # símbolo queda en None y más abajo `apply_last_known_prices` lo completa con
-    # el precio de AYER. O sea: el snapshot nocturno —el que alimenta la curva de
-    # evolución y el CAGR— valuaba esas posiciones a un precio viejo, en silencio.
-    # Sólo rellena los que quedaron sin precio: a los que yfinance resolvió no los
-    # toca (mismo criterio quirúrgico que el endpoint).
+    # CEDEARs y acciones AR: data912 (BYMA) PRIMARIO, igual que /api/prices. yfinance
+    # no es confiable para .BA — devuelve la barra del día en NaN, o el ticker MUERTO
+    # y congelado (DISN.BA clavado en 10.416 con volumen 0, cuando BYMA marca 13.840).
+    # Como devuelve UN número, no queda en None y el snapshot nocturno —el que alimenta
+    # la curva de evolución y el CAGR— valuaba a ese precio viejo, en silencio, y la
+    # curva divergía del total live. Ahora data912 PISA lo de yfinance para .BA (lo
+    # que no cubre queda en yfinance). Se cuenta aparte lo que estaba SÓLO en yfinance
+    # (None) para la señal diaria.
     _sin_precio_yf = [s for s in symbols if result.get(s) is None]
     _rescatados = 0
     try:
         from main import _resolve_ar_equity_price as _rep
-        for s in _sin_precio_yf:
+        for s in symbols:
             ep = _rep(s)
             if ep is not None:
+                if result.get(s) is None:
+                    _rescatados += 1
                 result[s] = ep
-                _rescatados += 1
     except Exception:
         pass
 

@@ -90,11 +90,31 @@ class BaNanBarTest(unittest.TestCase):
         self.assertEqual(out["MSFT.BA"], 25660.0)
         self.assertNotEqual(out["MSFT.BA"], 24340.0)
 
-    def test_el_simbolo_que_yfinance_resolvio_bien_no_se_toca(self):
-        """La corrección tiene que ser quirúrgica: si yfinance trae la rueda del
-        día, ese precio manda. Si no, le cambiaríamos el número a todos."""
+    def test_el_simbolo_que_data912_no_cubre_usa_yfinance(self):
+        """data912 es primario para .BA, pero lo que NO cubre (TSLA no está en el
+        mock del feed) cae a yfinance — así no perdemos cobertura."""
         out = self._prices("TSLA.BA")
         self.assertEqual(out["TSLA.BA"], 33940.0)
+
+    def test_ticker_muerto_en_yfinance_usa_data912(self):
+        """EL CASO DISN (2026-08-10): yfinance devuelve un valor NO nulo pero
+        CONGELADO (DISN.BA clavado en 10.416, volumen 0, 15 días) mientras BYMA
+        marca 13.840. Como no es NaN, la detección de barra vacía no lo agarra;
+        data912 primario para .BA lo resuelve igual. yfinance devuelve 10.416,
+        data912 13.840 → gana data912."""
+        frozen = pd.DataFrame({"DISN.BA": [10416.0, 10416.0, 10416.0]}, index=_FECHAS)
+        with patch.object(main.yf, "download",
+                          side_effect=lambda *a, **k: pd.concat({"Close": frozen}, axis=1)), \
+             patch.object(main, "_fetch_one", side_effect=lambda t: 10416.0), \
+             patch.object(main, "_prices_cache_get", side_effect=lambda s: ({}, list(s))), \
+             patch.object(main, "_prices_cache_set"), \
+             patch.object(main, "_resolve_ar_bond_price", return_value=None), \
+             patch.object(main, "_fetch_data912_equities",
+                          return_value={"DISN": {"c": 13840.0, "pct": 0.72}}), \
+             patch.object(main, "_fill_last_known_prices"):
+            out = main.get_prices("DISN.BA", self.uid)
+        self.assertEqual(out["DISN.BA"], 13840.0)
+        self.assertNotEqual(out["DISN.BA"], 10416.0)
 
     def test_pedido_mixto(self):
         out = self._prices("MSFT.BA,TSLA.BA")
@@ -141,21 +161,21 @@ class BaNanBarTest(unittest.TestCase):
         self.assertEqual(m["as_of"], "2026-07-31")   # su última barra válida
         self.assertTrue(m["stale"])                  # el lote llegó al 03-08
 
-    def test_prev_close_no_saltea_la_rueda(self):
-        """La variación diaria tiene que comparar ruedas CONSECUTIVAS. Si el precio
-        de hoy sale del feed (03-08) y el anterior se toma como `iloc[-2]` de la
-        serie de yfinance, se compara contra el 30-07 y un movimiento de dos ruedas
-        atrás aparece como si fuera de hoy — eso es lo que mostraba "+15,7% hoy" en
-        AMZN. Para un símbolo atrasado el cierre anterior es su último dato (31-07)."""
+    def test_prev_close_sale_del_mismo_feed_que_el_precio(self):
+        """La variación diaria compara contra la MISMA fuente que el precio actual.
+        Con data912 primario para .BA, el cierre previo se deriva del `pct_change`
+        del feed (25.660 / 1,0542 = 24.340,7), no de la serie de yfinance —que
+        puede estar congelada—. Un símbolo que data912 NO cubre (TSLA acá) cae al
+        cierre previo de yfinance (la rueda previa, 32.880)."""
         with patch.object(main.yf, "download", side_effect=_fake_download), \
              patch.object(main, "_prevclose_cache_get", side_effect=lambda s: ({}, list(s))), \
              patch.object(main, "_prevclose_cache_set", create=True), \
              patch.object(main, "_fetch_prev_close_one", return_value=None), \
              patch.object(main, "_fetch_data912_equities", return_value=_BYMA):
             out = main.get_prev_close("MSFT.BA,TSLA.BA", self.uid)
-        # MSFT se quedó en el 31-07 → su "cierre anterior" es ese, no el del 30-07.
-        self.assertEqual(out["MSFT.BA"], 24340.0)
-        # TSLA está al día → cierre anterior normal (la rueda previa).
+        # MSFT lo cubre data912 (pct 5,42) → previo derivado del feed, misma var.
+        self.assertAlmostEqual(out["MSFT.BA"], 25660.0 / 1.0542, places=1)
+        # TSLA no está en data912 → cierre previo de yfinance (rueda previa).
         self.assertEqual(out["TSLA.BA"], 32880.0)
 
 
