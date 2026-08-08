@@ -48,6 +48,7 @@ export const today = () => new Date().toISOString().slice(0, 10)
 export const EMPTY_POS = {
   broker: '', asset: '', is_cash: false,
   buy_price: '', quantity: '', invested: '', tc_compra: '', commissions: '', notes: '',
+  price_override: '',
   entry_date: '', asset_type: '', currency: '',
 }
 
@@ -563,6 +564,7 @@ function PositionsDesktop() {
       quantity: p.quantity ?? '',
       invested: p.invested ?? '',
       tc_compra: p.tc_compra ?? '',
+      price_override: p.price_override ?? '',
       commissions: p.commissions ?? '',
       notes: p.notes ?? '',
       entry_date: p.entry_date ?? '',
@@ -592,6 +594,10 @@ function PositionsDesktop() {
       // sin manejo de error, el modal fallaba EN SILENCIO ("el botón no guarda").
       // Muchas posiciones importadas vienen con TC=0 → no se podían editar.
       tc_compra: _numLoose(form.tc_compra),
+      // Precio actual a mano: sólo para lo que no cotizamos solos. Vacío → null,
+      // así el activo vuelve a valuarse por el precio de mercado si algún día
+      // empieza a cotizar (mandar 0 lo dejaría clavado en cero).
+      price_override: _numLoose(form.price_override),
       commissions: form.commissions !== '' ? +form.commissions : 0,
       entry_date: form.entry_date || null,
       // Moneda del lote (mismo ticker en ARS vs USD). Vacío → el backend la
@@ -3393,6 +3399,23 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
             step="any"
             placeholder="auto: dólar de la fecha"
             hint="Tipo de cambio del momento de la compra, para el costo equivalente en USD. Si lo dejás vacío, se completa solo con el dólar MEP de la fecha de entrada."
+          />
+        )}
+
+        {/* Precio actual a mano. Va para los activos que no cotizamos solos —
+            un CEDEAR recién listado, una ON del interior, un bono provincial.
+            Sin esto quedaban valuados a lo que costaron (o en "—") y no había
+            forma de corregirlos desde la app: el campo ya existía en el backend
+            (`price_override`) pero nunca se había expuesto. */}
+        {!form.is_cash && (
+          <Field
+            label={`Precio actual (${moneyLabel})`}
+            value={form.price_override}
+            onChange={v => setForm(f => ({ ...f, price_override: v }))}
+            type="number"
+            step="any"
+            placeholder="auto: precio de mercado"
+            hint="Dejalo vacío y lo cotizamos nosotros. Completalo sólo si es un activo que no seguimos, para que la cartera muestre su valor real en vez del precio al que lo compraste."
           />
         )}
 

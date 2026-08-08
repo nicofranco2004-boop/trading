@@ -16,7 +16,7 @@
 //   • Mobile         → bottom sheet full-width con safe-area
 
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet, ChevronDown, ChevronUp, FileText, ArrowRight } from 'lucide-react'
+import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet, ChevronDown, ChevronUp, FileText, ArrowRight, CircleHelp } from 'lucide-react'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
   BONDS_AR_SOV_USD, BONDS_AR_CER, BONDS_AR_ONS, BONDS_US_ETF, CATEGORY_TO_TYPE,
@@ -56,6 +56,11 @@ const CATEGORIES = [
   { id: 'ar_lider',label: 'Panel Líder',   icon: Building2,  list: ARG_LIDER,     hint: 'Acciones argentinas — panel líder' },
   { id: 'ar_gen',  label: 'Panel General', icon: Building2,  list: ARG_GENERAL,   hint: 'Acciones argentinas — panel general' },
   { id: 'indices', label: 'Índices',       icon: Activity,   list: INDICES,       hint: 'S&P 500, Merval, IBOV…' },
+  // Salida de emergencia: las listas de arriba son curadas y SIEMPRE van a estar
+  // incompletas (un CEDEAR nuevo, una ON del interior, un fondo que no está en el
+  // catálogo). Sin esto, el que tiene un activo que no figura simplemente no lo
+  // puede cargar y su cartera queda mal para siempre. Reportado por usuarios.
+  { id: 'otro',    label: 'Otro',          icon: CircleHelp, list: null,          hint: 'No está en la lista — lo cargás vos', freeText: true },
 ]
 
 export default function AddPositionFlow({ onClose, onAssetSelected, brokers = [], initialBroker = null, onPlazoFijo, onCreateBroker }) {
@@ -253,7 +258,9 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
             ? <StepFciPicker list={category.list} onPick={selectTicker} />
             : category?.id === 'letras'
               ? <StepLetraPicker onPick={selectTicker} />
-              : <Step2TickerPicker category={category} onPick={selectTicker} />
+              : category?.id === 'otro'
+                ? <StepOtroPicker onPick={selectTicker} onPlazoFijo={onPlazoFijo} />
+                : <Step2TickerPicker category={category} onPick={selectTicker} />
         )}
       </div>
     </div>
@@ -264,17 +271,22 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
 // Header — botón back (si aplica) + título + cerrar
 // ════════════════════════════════════════════════════════════════════════════
 function FlowHeader({ current, stepNum, total, category, chosenBroker, onBack, onClose }) {
+  // El paso 'otro' es un formulario, no un buscador: "Buscar — Otro" no querría
+  // decir nada. Y las letras tampoco se buscan, se tipean.
+  const esFormLibre = category?.id === 'otro'
   const TITLES = {
     broker: 'Elegí el broker',
     type: 'Elegí el tipo de activo',
-    ticker: `Buscar — ${category?.label || ''}`,
+    ticker: esFormLibre ? 'Cargá el activo' : `Buscar — ${category?.label || ''}`,
   }
   const SUBTITLES = {
     broker: '¿En qué broker entra esta posición?',
     type: chosenBroker
       ? `Va a ${chosenBroker}. Elegí qué tipo de activo querés agregar.`
       : 'Empezá eligiendo qué tipo de activo querés agregar.',
-    ticker: 'Buscá por ticker o nombre. Después cargás precio y cantidad.',
+    ticker: esFormLibre
+      ? 'Decinos qué es y con qué código figura en tu broker.'
+      : 'Buscá por ticker o nombre. Después cargás precio y cantidad.',
   }
 
   return (
@@ -633,6 +645,132 @@ function Step2TickerPicker({ category, onPick }) {
 
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 2 (FCI) — Picker agrupado por fondo. Cada fondo FIMA tiene varias clases
+// ════════════════════════════════════════════════════════════════════════════
+// STEP 2 (Otro) — el activo NO está en ninguna lista: lo describe el usuario.
+//
+// POR QUÉ EXISTE. Las listas de las otras categorías son curadas a mano y van a
+// estar incompletas siempre: un CEDEAR recién listado, una ON del interior, un
+// fondo que no está en el catálogo, un bono provincial. Hasta ahora, el que
+// tenía uno de esos no lo podía cargar y su cartera quedaba mal para siempre —
+// y encima no había forma de que se diera cuenta de por qué.
+//
+// CÓMO FUNCIONA. Pide el código y el TIPO, y devuelve la categoría REAL que el
+// usuario eligió (`bonds`, `cedears`, …). O sea: para el resto del sistema esto
+// es indistinguible de haber elegido el activo de una lista — hereda el mismo
+// asset_type, el mismo badge y la misma lógica de valuación. No hay un camino
+// "raro" paralelo que después haya que mantener aparte.
+//
+// El plazo fijo NO es un ticker (no tiene código ni cotización: es un monto, una
+// tasa y un vencimiento), así que esa opción sale de este flujo y abre el suyo.
+// ════════════════════════════════════════════════════════════════════════════
+const TIPOS_OTRO = [
+  { cat: 'ar_lider', label: 'Acción argentina', ej: 'ALUA, GGAL, YPFD' },
+  { cat: 'cedears',  label: 'CEDEAR',           ej: 'AAPL, NVDA, PETR3' },
+  { cat: 'stocks',   label: 'Acción del exterior', ej: 'TSLA, BABA' },
+  { cat: 'bonds',    label: 'Bono u ON',        ej: 'AL30, YMCXO, BA37D' },
+  { cat: 'letras',   label: 'Letra',            ej: 'S31O5, T30A7' },
+  { cat: 'fci',      label: 'Fondo (FCI)',      ej: 'FIMA Premium' },
+  { cat: 'etfs',     label: 'ETF',              ej: 'SPY, QQQ' },
+  { cat: 'crypto',   label: 'Cripto',           ej: 'BTC, ETH' },
+]
+
+function StepOtroPicker({ onPick, onPlazoFijo }) {
+  const [ticker, setTicker] = useState('')
+  const [nombre, setNombre] = useState('')
+  const [tipo, setTipo] = useState(null)
+  const inputRef = useRef(null)
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  const codigo = ticker.trim().toUpperCase()
+  const listo = codigo.length >= 1 && !!tipo
+
+  function confirm() {
+    if (!listo) return
+    onPick({ s: codigo, n: nombre.trim() || codigo }, tipo)
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
+      <div>
+        <label className="block text-xs text-ink-3 tracking-[0.12em] mb-2 font-medium">
+          Código del activo
+        </label>
+        <input
+          ref={inputRef}
+          type="text"
+          value={ticker}
+          onChange={e => setTicker(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && listo && confirm()}
+          placeholder="Como figura en tu broker — ej. PETR3, YMCXO, BA37D"
+          autoComplete="off"
+          spellCheck="false"
+          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition font-mono font-medium uppercase"
+        />
+      </div>
+
+      <div>
+        <label className="block text-xs text-ink-3 tracking-[0.12em] mb-2 font-medium">
+          ¿Qué es?
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          {TIPOS_OTRO.map(t => (
+            <button
+              key={t.cat}
+              type="button"
+              onClick={() => setTipo(t.cat)}
+              className={`text-left px-3 py-2 rounded-sm border transition ${
+                tipo === t.cat
+                  ? 'border-rendi-accent bg-rendi-accent/10'
+                  : 'border-line hover:bg-bg-2 dark:hover:bg-bg-2/60'
+              }`}
+            >
+              <div className="text-sm text-ink-0 dark:text-white font-medium">{t.label}</div>
+              <div className="text-[11px] text-ink-3 font-mono truncate">{t.ej}</div>
+            </button>
+          ))}
+        </div>
+        {onPlazoFijo && (
+          <button
+            type="button"
+            onClick={onPlazoFijo}
+            className="mt-2 w-full text-left px-3 py-2 rounded-sm border border-line hover:bg-bg-2 dark:hover:bg-bg-2/60 transition"
+          >
+            <div className="text-sm text-ink-0 dark:text-white font-medium">Plazo fijo</div>
+            <div className="text-[11px] text-ink-3">No lleva código — se carga con monto, tasa y vencimiento</div>
+          </button>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-xs text-ink-3 tracking-[0.12em] mb-2 font-medium">
+          Nombre <span className="text-ink-3 normal-case tracking-normal">(opcional)</span>
+        </label>
+        <input
+          type="text"
+          value={nombre}
+          onChange={e => setNombre(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && listo && confirm()}
+          placeholder="Para reconocerlo de un vistazo"
+          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
+        />
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Si no llegamos a cotizarlo solos, lo vamos a mostrar al precio que cargues.
+        Podés actualizarlo cuando quieras desde la posición.
+      </p>
+
+      <button
+        onClick={confirm}
+        disabled={!listo}
+        className="inline-flex items-center justify-center gap-2 bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-sm px-4 py-2.5 transition-colors"
+      >
+        Continuar <ArrowRight size={14} />
+      </button>
+    </div>
+  )
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 2 (Letras) — entrada libre validada por el patrón del ticker.
 // Las letras cambian constantemente (nueva emisión cada semanas), así que no
