@@ -1858,7 +1858,14 @@ class CurrencyRoutingTest(unittest.TestCase):
             ).fetchone()
             self.assertIsNotNone(row, "La posición MELI debió crearse")
             self.assertEqual(row["asset_type"], "CEDEAR")
-            self.assertEqual(row["broker"], "Cocos · USD")
+            # La TENENCIA vive en el broker padre aunque se haya pagado en
+            # dólares: un CEDEAR es la misma especie comprada en pesos o vía
+            # MEP, y el broker la muestra consolidada. Antes esperábamos
+            # "Cocos · USD" y el usuario veía el activo partido en dos filas
+            # con cantidades que no cerraban con su resumen (reporte real con
+            # SPY y GOOGL de Balanz, 2026-08-08). La PLATA sí sale del sibling
+            # USD — eso lo cubre test_balanz_cedear_usd_e2e.
+            self.assertEqual(row["broker"], "Cocos")
         finally:
             conn.close()
 

@@ -221,6 +221,12 @@ class NormalizedTx:
     taxes: float = 0.0
     currency: Optional[str] = None              # moneda del precio/quantity
     settlement_currency: Optional[str] = None   # moneda en que se liquida (cash debit/credit)
+    # Broker del que sale/entra la PLATA cuando no es el mismo donde vive el
+    # ACTIVO. Caso real: un CEDEAR comprado con dólares (MEP) — la tenencia es
+    # la misma especie que la comprada en pesos y el broker la muestra
+    # consolidada, pero la plata salió de la cuenta en dólares. None = el cash
+    # se mueve en `broker` (el caso normal).
+    cash_broker: Optional[str] = None
     notes: Optional[str] = None
     # Fase 4 audit follow-up (2026-05-30): gross_amount_usd stamped al
     # preview/confirm time (con tc_blue del momento del import). El

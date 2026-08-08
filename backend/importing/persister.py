@@ -274,7 +274,20 @@ def persist_batch(
                 # Venta USD → fuente es el sibling
                 new_broker = sib
             elif cur in ("USD", "USDT"):
-                new_broker = sib
+                if op in (OP_BUY, OP_SELL) and (tx.asset_type or "").upper() == "CEDEAR":
+                    # Un CEDEAR es la MISMA especie se pague en pesos o en dólares
+                    # (dólar MEP): el broker lo muestra como UNA tenencia. Antes
+                    # lo mandábamos entero al sub-broker USD y el usuario veía el
+                    # activo partido en dos filas con cantidades distintas, que no
+                    # coincidían con su resumen (reporte real: SPY y GOOGL de
+                    # Balanz). La TENENCIA queda en el broker padre; la PLATA sale
+                    # del sibling, que es de donde salió de verdad.
+                    # Las acciones del EXTERIOR (asset_type STOCK, tickers .E de
+                    # la cuenta cable) siguen yendo al sibling: ahí la tenencia sí
+                    # vive en la cuenta en dólares.
+                    tx.cash_broker = sib
+                else:
+                    new_broker = sib
             if new_broker:
                 tx.broker = new_broker
                 # Sync DB para que el revert lea el broker correcto
@@ -539,7 +552,7 @@ def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
     position_id = cur.lastrowid
     cost_total = invested + fees
     if cost_total > 0:
-        helpers._adjust_broker_cash(conn, uid, tx.broker, -cost_total)
+        helpers._adjust_broker_cash(conn, uid, tx.cash_broker or tx.broker, -cost_total)
 
     _link(conn, batch_id, raw_row_id, position_id=position_id)
 
@@ -791,7 +804,7 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         remaining -= take
 
     if total_proceeds_native > 0:
-        helpers._adjust_broker_cash(conn, uid, tx.broker, total_proceeds_native)
+        helpers._adjust_broker_cash(conn, uid, tx.cash_broker or tx.broker, total_proceeds_native)
 
     op_year, op_month = int(op_date[:4]), int(op_date[5:7])
     # Para brokers ARS, el broker entry guarda P&L ARS-nativo / TC = USD-equivalente
