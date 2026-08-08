@@ -416,16 +416,56 @@ class DeleteCascade(unittest.TestCase):
         self.assertTrue(res.get("undo_token"), "sin token no hay cómo deshacer")
         self._probe()
 
-    def test_delete_position_endpoint_manual_still_works(self):
-        """Las posiciones cargadas a mano (sin link de import) siguen borrándose
-        directo — no hay eventos importados que re-derivar."""
+    def test_delete_position_endpoint_blocks_legacy_row(self):
+        """Hallazgo del audit: una posición SIN link de import y SIN foto de reverso (fila
+        vieja, o lote semilla que fabricó el rebuild) se borraba en CRUDO — desaparecía de
+        la vista pero el cash y el capital aportado quedaban como estaban, o sea plata que
+        ya no respalda nada. Ahora se bloquea: su reverso no es derivable."""
         pid = self.conn.execute(
             """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash)
                VALUES (?,?,?,?,?,0)""", (self.uid, "IBKR", "MELI", 5, 1000)).lastrowid
         self.conn.commit()
-        main.delete_position(pid, uid=self.uid)
-        self.assertIsNone(self.conn.execute(
+        with self.assertRaises(main.HTTPException) as cm:
+            main.delete_position(pid, uid=self.uid)
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertIsNotNone(self.conn.execute(
             "SELECT id FROM positions WHERE id=?", (pid,)).fetchone())
+
+    def test_delete_manual_position_blocked_if_broker_changed(self):
+        """El broker del lote es mutable (se cambia desde Cartera). Si cambió, el reverso
+        devolvería el cash al broker EQUIVOCADO."""
+        main._adjust_broker_cash(self.conn, self.uid, self.BROKER, 1000.0)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Otro", "USDT"))
+        self.conn.commit()
+        pos = main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        self.conn.execute("UPDATE positions SET broker='Otro' WHERE id=?", (pos["id"],))
+        self.conn.commit()
+        with self.assertRaises(main.HTTPException) as cm:
+            main.delete_position(pos["id"], uid=self.uid)
+        self.assertEqual(cm.exception.status_code, 409)
+
+    def test_delete_month_deposit_blocked_when_autodeposit(self):
+        """🔴 CRÍTICO del audit (reproducido): el 'depósito manual' del mes puede ser en
+        realidad el AUTODEPÓSITO que generó el alta de una posición. Borrarlo suelto
+        dejaba el cash NEGATIVO y el aportado en 0 con la tenencia viva — y por esa rama
+        no hay 'Deshacer'."""
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="AAPL", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-03-05"), uid=self.uid)
+        self.conn.commit()
+        cash0 = self._cash()
+        me = self.conn.execute(
+            "SELECT id FROM monthly_entries WHERE user_id=? AND broker=? AND manual_deposits>0",
+            (self.uid, self.BROKER)).fetchone()
+        self.assertIsNotNone(me, "el autodepósito no quedó registrado")
+        with self.assertRaises(main.HTTPException) as cm:
+            main._delete_one_movement(self.conn, self.uid, f"me-{me['id']}-dep")
+        self.assertEqual(cm.exception.status_code, 409)
+        self.assertAlmostEqual(self._cash(), cash0, places=2)
+        self.assertGreaterEqual(self._cash(), 0.0, "el cash quedó negativo")
 
     # ── El endpoint DEBE devolver el undo_token (el botón "Deshacer" depende) ──
     def test_delete_movement_returns_undo_token(self):
@@ -654,6 +694,62 @@ class DeleteCascade(unittest.TestCase):
         self.assertAlmostEqual(self._cash(), cash_antes, places=2,
                                msg="se fabricó cash con el costo congelado")
 
+    def test_restored_lot_keeps_its_autodeposit(self):
+        """Reproducido en el audit: el lote que el borrado de una venta RE-CREA nacía sin
+        la foto del autodepósito → borrarlo después fabricaba cash Y capital aportado
+        (200 y 200 de la nada). Ahora la venta guarda la foto del lote y se la devuelve."""
+        aportado = lambda: float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0)
+        # SIN saldo previo → el alta dispara autodepósito.
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        self.assertAlmostEqual(aportado(), 200.0, places=2)
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE op_type='Venta' ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        self.conn.commit()
+        main.delete_operation(oid, uid=self.uid)          # re-crea el lote
+        pid = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND is_cash=0", (self.uid,)).fetchone()["id"]
+        main.delete_position(pid, uid=self.uid)           # y ahora lo borramos
+        self.assertAlmostEqual(self._cash(), 0.0, places=2, msg="se fabricó cash")
+        self.assertAlmostEqual(aportado(), 0.0, places=2, msg="quedó capital aportado fantasma")
+        self.assertAlmostEqual(self._open_qty("MELI"), 0.0, places=6)
+
+    def test_recreated_lot_keeps_its_autodeposit(self):
+        """Backlog del review, REPRODUCIDO: si la venta barre el lote entero y después se
+        borra la venta, el lote se RE-CREA. Nacía sin la foto del autodepósito → borrarlo
+        después fabricaba cash y capital aportado (medido: +200 y +200 sobre una cuenta
+        que debía quedar en cero)."""
+        aportado = lambda: float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["d"] or 0)
+        # SIN saldo previo → el alta dispara el autodepósito.
+        main.create_position(main.PositionIn(
+            broker=self.BROKER, asset="MELI", quantity=2, buy_price=100,
+            invested=200, entry_date="2024-05-03"), uid=self.uid)
+        self.assertAlmostEqual(aportado(), 200.0, places=2)
+        main.sell_position_fifo(main.SellIn(
+            broker=self.BROKER, asset="MELI", quantity=2, exit_price=150,
+            date="2024-06-01"), uid=self.uid)
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE op_type='Venta' ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        self.conn.commit()
+        main.delete_operation(oid, uid=self.uid)          # el lote se RE-CREA
+        pid = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND is_cash=0", (self.uid,)).fetchone()["id"]
+        main.delete_position(pid, uid=self.uid)           # y ahora se borra
+        self.assertAlmostEqual(self._cash(), 0.0, places=2,
+                               msg="el lote re-creado fabricó cash al borrarlo")
+        self.assertAlmostEqual(aportado(), 0.0, places=2,
+                               msg="el lote re-creado dejó capital aportado fantasma")
+
     def test_undo_manual_blocked_if_world_changed(self):
         """El undo manual re-aplica deltas guardados contra el mundo de HOY. Si el lote
         cambió, esos deltas dejan de ser un reverso (tenencia negativa). Se frena."""
@@ -682,6 +778,37 @@ class DeleteCascade(unittest.TestCase):
         self.assertAlmostEqual(self._open_qty("MELI"), qty_antes, places=6,
                                msg="el undo dejó la tenencia negativa")
         self.assertGreaterEqual(self._open_qty("MELI"), 0.0)
+
+    def test_bond_amortization_restores_each_lot(self):
+        """Hallazgo del audit: si la amortización barrió VARIOS lotes, borrar el cobro
+        devolvía todo al lote más viejo → el costo unitario de los demás quedaba
+        distorsionado. Ahora se guarda el desglose y se restaura lote por lote."""
+        main._adjust_broker_cash(self.conn, self.uid, self.BROKER, 5000.0)
+        self.conn.commit()
+        # Dos lotes del mismo bono; la amortización de 80 barre el 1ro (50) y parte del 2do.
+        for q, inv, d in ((50, 50, "2024-01-10"), (50, 60, "2024-02-10")):
+            main.create_position(main.PositionIn(
+                broker=self.BROKER, asset="AL30", quantity=q, buy_price=inv / q,
+                invested=inv, entry_date=d, asset_type="BOND"), uid=self.uid)
+        lots0 = {r["id"]: (r["quantity"], r["invested"]) for r in self.conn.execute(
+            "SELECT id, quantity, invested FROM positions WHERE user_id=? AND asset='AL30'",
+            (self.uid,)).fetchall()}
+        self.conn.commit()
+        main.bond_cashflow(main.BondCashflowIn(
+            broker=self.BROKER, asset="AL30", flow_type="amortization", amount=80,
+            date="2024-06-01", decrement_quantity=True), uid=self.uid)
+        self.assertAlmostEqual(self._open_qty("AL30"), 20.0, places=6)   # 100 − 80
+        oid = self.conn.execute(
+            "SELECT id FROM operations WHERE asset='AL30' ORDER BY id DESC LIMIT 1").fetchone()["id"]
+        self.conn.commit()
+        main.delete_operation(oid, uid=self.uid)
+        # Cada lote vuelve a SU cantidad y SU costo, no todo al más viejo.
+        lots1 = [(round(r["quantity"], 4), round(r["invested"], 4)) for r in self.conn.execute(
+            "SELECT quantity, invested FROM positions WHERE user_id=? AND asset='AL30' "
+            "ORDER BY COALESCE(entry_date,'9999'), id", (self.uid,)).fetchall()]
+        self.assertEqual(sorted(lots1), [(50.0, 50.0), (50.0, 60.0)],
+                         msg=f"los lotes no volvieron a su cantidad Y su costo: {lots1}")
+        self.assertAlmostEqual(self._open_qty("AL30"), 100.0, places=6)
 
     def test_delete_manual_legacy_row_is_blocked(self):
         """Fila vieja (sin la foto de reverso): su reverso NO es derivable → se

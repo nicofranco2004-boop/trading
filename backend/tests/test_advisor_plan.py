@@ -2139,6 +2139,37 @@ class AdvisorGroupsIsolationTest(AdvisorBase):
         self.assertEqual(self.http.delete(f"/api/advisor/groups/{gid}", headers=h1).status_code, 404)
 
 
+class AdvisorSnapshotWriteTest(AdvisorBase):
+    """El asesor no escribe la serie del cliente por mirarla."""
+
+    def _snaps(self):
+        conn = main.get_db()
+        try:
+            return conn.execute("SELECT COUNT(*) c FROM snapshots WHERE user_id=?",
+                                (self.client_uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+
+    def test_con_la_lente_puesta_no_escribe_el_snapshot_del_cliente(self):
+        # El Dashboard postea solo al cargar, con los totales del browser y el
+        # toggle de dolar de QUIEN mira, y hace UPSERT sobre la fila del dia:
+        # el asesor le pisaba la foto de hoy a su cliente con solo abrirla.
+        antes = self._snaps()
+        r = self.http.post("/api/snapshots",
+                           headers=self._hdr(self.advisor, client_ctx=self.client_uid),
+                           json={"total_value": 999, "total_invested": 999, "net_deposited": 0})
+        self.assertEqual(r.status_code, 200)          # no le mostramos un error
+        self.assertEqual(self._snaps(), antes)        # pero no escribio nada
+
+    def test_el_cliente_si_escribe_el_suyo(self):
+        # La contracara: sin lente, el flujo normal tiene que seguir andando.
+        antes = self._snaps()
+        r = self.http.post("/api/snapshots", headers=self._hdr(self.client_uid),
+                           json={"total_value": 500, "total_invested": 400, "net_deposited": 400})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._snaps(), antes + 1)
+
+
 class AdvisorBriefFixesTest(AdvisorBase):
     """Errores del backlog: el brief y la base del % del día."""
 
@@ -2225,6 +2256,1035 @@ class AdvisorAlertBaseTest(AdvisorAlertsAuditTest):
             conn.close()
         # +20% contra el cierre de AYER → tiene que avisar igual
         self.assertEqual(self._run(12000)["fired"], 1)
+
+
+class ReconstruccionVsMedicionTest(AdvisorBase):
+    """La prueba mas dura, y sale gratis: reconstruir un cierre que el cron YA
+    midio y comparar. Si el motor reconstruye distinto de lo que la app midio,
+    un borde reconstruido NO se puede encadenar con uno medido — y sin eso, la
+    reconstruccion entera no sirve por bien que razone el agente."""
+
+    def _setup(self, broker="IBKR", ccy="USD"):
+        import uuid as _u
+        bid = _u.uuid4().hex[:12]
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR IGNORE INTO brokers (user_id,name,currency) "
+                         "VALUES (?,?,?)", (self.client_uid, broker, ccy))
+            conn.execute(
+                "INSERT INTO import_batches (id,user_id,broker,parser_format,"
+                "file_hash,status) VALUES (?,?,?,'test',?,'done')",
+                (bid, self.client_uid, broker, bid))
+            conn.commit()
+        finally:
+            conn.close()
+        return bid
+
+    def _tx(self, bid, fecha, op, asset, qty, monto, broker="IBKR", ccy="USD"):
+        conn = main.get_db()
+        try:
+            rid = conn.execute(
+                "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status) "
+                "VALUES (?,0,'{}','ok')", (bid,)).lastrowid
+            conn.execute(
+                "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,"
+                "operation_type,asset_symbol,quantity,gross_amount,currency) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (bid, rid, fecha, broker, op, asset, qty, monto, ccy))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_el_borde_reconstruido_coincide_con_el_que_midio_el_cron(self):
+        # Mismo motor, misma tenencia, mismos precios -> mismo numero.
+        import ledger_replay as lr, price_history as ph
+        from snapshots_job import compute_broker_value_usd
+
+        bid = self._setup()
+        self._tx(bid, "2026-01-10", "DEPOSIT", None, None, 5000.0)
+        self._tx(bid, "2026-01-15", "BUY", "AAPL", 10, 2000.0)
+
+        conn = main.get_db()
+        try:
+            ph.guardar(conn, "AAPL", {"2026-01-31": 210.0})
+            conn.commit()
+
+            # Lo que mediria el cron con esa misma foto.
+            pos = [{"asset": "AAPL", "asset_type": None, "is_cash": 0,
+                    "quantity": 10, "invested": 2000.0, "commissions": 0,
+                    "price_override": None},
+                   {"asset": "USD", "asset_type": None, "is_cash": 1,
+                    "quantity": 0, "invested": 3000.0, "commissions": 0,
+                    "price_override": None}]
+            medido = compute_broker_value_usd(pos, {"AAPL": 210.0}, "USD", 1400.0,
+                                              broker_name="IBKR")["value"]
+            recon = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+
+        self.assertIsNotNone(recon["valor"])
+        self.assertAlmostEqual(recon["valor"], medido, places=2)
+
+    def test_el_borde_reconstruido_incluye_el_cash(self):
+        # El cron cuenta el efectivo en total_value. Un borde reconstruido sin
+        # cash no es la misma magnitud: encadenarlos fabrica un escalon del
+        # tamano de la liquidez (un cliente 30% en pesos veria -30% que no fue).
+        import ledger_replay as lr, price_history as ph
+        bid = self._setup()
+        # Activo propio: asset_price_history persiste entre tests de la misma
+        # corrida y a propósito NO pisa un precio ya guardado — con el mismo
+        # ticker, otro test le fija el precio a éste.
+        self._tx(bid, "2026-01-10", "DEPOSIT", None, None, 5000.0)
+        self._tx(bid, "2026-01-15", "BUY", "CASHT", 10, 2000.0)
+        conn = main.get_db()
+        try:
+            ph.guardar(conn, "CASHT", {"2026-01-31": 200.0})
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+            saldo = lr.cash_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertAlmostEqual(saldo[("IBKR", "USD")], 3000.0, places=2)
+        # 10 x 200 en acciones + 3000 de cash
+        self.assertAlmostEqual(v["valor"], 5000.0, places=2)
+
+    def test_un_CEDEAR_ya_vendido_se_valua_por_su_BA_y_no_por_el_ticker_US(self):
+        # El asset_type salia de `positions`; para un activo ya vendido esa fila
+        # no existe y el simbolo caia al ticker US -> el bug C1, 15-100x
+        # inflado. Ahora el tipo sale del LEDGER, que si lo conserva.
+        import ledger_replay as lr, price_history as ph
+        # Broker en DÓLARES a propósito: con un broker en pesos el símbolo cae
+        # en '.BA' igual, sin mirar el tipo — y el test pasaría por el motivo
+        # equivocado. Sólo acá el asset_type es lo único que decide.
+        bid = self._setup(broker="IBKR", ccy="USD")
+        self._tx(bid, "2026-01-10", "BUY", "CEDT", 10, 100.0, broker="IBKR", ccy="USD")
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE import_normalized_tx SET asset_type='CEDEAR' "
+                         "WHERE batch_id=?", (bid,))
+            # NO hay fila en positions: el activo se vendio.
+            ph.guardar(conn, "CEDT.BA", {"2026-01-31": 7000.0})
+            conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,"
+                         "mep_venta) VALUES ('2026-01-31',1500,1400)")
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        # Resolvio por '.BA': si hubiera pedido el ticker US no habria precio.
+        self.assertEqual(v["faltan"], [])
+        self.assertIsNotNone(v["valor"])
+
+    def test_un_activo_sin_precio_ni_costo_no_certifica_cobertura(self):
+        # Peso desconocido != peso cero. Certificar una cobertura que no se
+        # midio es exactamente como se publica un borde corto.
+        import ledger_replay as lr, price_history as ph
+        bid = self._setup()
+        self._tx(bid, "2026-01-15", "BUY", "AAPL", 10, 2000.0)
+        self._tx(bid, "2026-01-15", "BUY", "RARO", 5, 0)      # sin monto
+        conn = main.get_db()
+        try:
+            ph.guardar(conn, "AAPL", {"2026-01-31": 200.0})
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertIsNone(v["valor"])
+        self.assertIsNone(v["cobertura_pct"])
+
+
+class FlujosDeterministaTest(AdvisorBase):
+    """La pasada que resuelve sin modelo. Lo que queda es lo que justifica uno."""
+
+    def _batch(self, uid, broker="Cocos"):
+        import uuid as _u
+        bid = _u.uuid4().hex[:12]
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO import_batches (id,user_id,broker,parser_format,"
+                "file_hash,status) VALUES (?,?,?,'test',?,'done')",
+                (bid, uid, broker, bid))
+            conn.commit()
+        finally:
+            conn.close()
+        return bid
+
+    def _cruda(self, bid, texto, errores="TRANSFER_NOT_SUPPORTED"):
+        import json as _j
+        conn = main.get_db()
+        try:
+            rid = conn.execute(
+                "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status,"
+                "errors_json) VALUES (?,0,?,'error',?)",
+                (bid, _j.dumps({"tipo": texto}), errores)).lastrowid
+            conn.commit()
+            return rid
+        finally:
+            conn.close()
+
+    def _tx(self, bid, fecha, op, asset, qty, broker):
+        conn = main.get_db()
+        try:
+            rid = conn.execute(
+                "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status) "
+                "VALUES (?,0,'{}','ok')", (bid,)).lastrowid
+            conn.execute(
+                "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,"
+                "operation_type,asset_symbol,quantity) VALUES (?,?,?,?,?,?,?)",
+                (bid, rid, fecha, broker, op, asset, qty))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _conn(self):
+        return main.get_db()
+
+    # ── vía 1: lo que el broker escribió en la fila cruda ───────────────────
+    def test_el_texto_original_dice_la_direccion(self):
+        # El normalizador mapea a tipos canónicos y descarta la descripción,
+        # pero la fila cruda queda. Ahí hay que mirar ANTES de deducir nada.
+        import flujos
+        self.assertEqual(flujos.direccion_por_texto("Transferencia Recibida de titulos"),
+                         "entrada")
+        self.assertEqual(flujos.direccion_por_texto("ACAT OUT — journaled shares"),
+                         "salida")
+        self.assertIsNone(flujos.direccion_por_texto("Movimiento varios"))
+
+    def test_resuelve_por_texto_crudo_sin_tocar_el_modelo(self):
+        import flujos
+        bid = self._batch(self.client_uid)
+        self._cruda(bid, "Transferencia Recibida")
+        conn = self._conn()
+        try:
+            r = flujos.reconciliar(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertEqual(r["candidatos"], 1)
+        self.assertEqual(r["resueltos"], 1)
+        self.assertEqual(r["por_via"], {"texto_crudo": 1})
+
+    # ── vía 2: el cruce entre brokers ──────────────────────────────────────
+    def test_una_salida_en_otro_broker_prueba_que_fue_traslado_interno(self):
+        # Salen 12 AAPL de Balanz y entran 12 en IOL: NO es un aporte. Esto no
+        # es un juicio, es una consulta.
+        import flujos
+        bid = self._batch(self.client_uid, broker="Balanz")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Balanz")
+        conn = self._conn()
+        try:
+            par = flujos.cruce_entre_brokers(conn, self.client_uid, "AAPL",
+                                             "2026-04-13", 12, "IOL")
+        finally:
+            conn.close()
+        self.assertIsNotNone(par)
+        self.assertEqual(par["broker"], "Balanz")
+
+    def test_no_casa_una_cantidad_distinta(self):
+        import flujos
+        bid = self._batch(self.client_uid, broker="Balanz")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Balanz")
+        conn = self._conn()
+        try:
+            self.assertIsNone(flujos.cruce_entre_brokers(
+                conn, self.client_uid, "AAPL", "2026-04-13", 30, "IOL"))
+        finally:
+            conn.close()
+
+    def test_no_casa_fuera_de_la_ventana(self):
+        # Un traspaso no liquida el mismo día, pero tampoco tres semanas después.
+        import flujos
+        bid = self._batch(self.client_uid, broker="Balanz")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Balanz")
+        conn = self._conn()
+        try:
+            self.assertIsNone(flujos.cruce_entre_brokers(
+                conn, self.client_uid, "AAPL", "2026-05-20", 12, "IOL"))
+        finally:
+            conn.close()
+
+    def test_no_casa_contra_el_mismo_broker(self):
+        # Una compra y una venta en el MISMO broker no son un traslado.
+        import flujos
+        bid = self._batch(self.client_uid, broker="Cocos")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Cocos")
+        conn = self._conn()
+        try:
+            self.assertIsNone(flujos.cruce_entre_brokers(
+                conn, self.client_uid, "AAPL", "2026-04-13", 12, "Cocos"))
+        finally:
+            conn.close()
+
+    def test_una_venta_borrada_no_sirve_de_contraparte(self):
+        import flujos
+        bid = self._batch(self.client_uid, broker="Balanz")
+        self._tx(bid, "2026-04-12", "SELL", "AAPL", 12, "Balanz")
+        conn = self._conn()
+        try:
+            conn.execute("UPDATE import_normalized_tx SET excluded_at=datetime('now')")
+            conn.commit()
+            self.assertIsNone(flujos.cruce_entre_brokers(
+                conn, self.client_uid, "AAPL", "2026-04-13", 12, "IOL"))
+        finally:
+            conn.close()
+
+    # ── lo que NO resuelve ─────────────────────────────────────────────────
+    def test_sin_texto_ni_contraparte_queda_para_el_agente(self):
+        import flujos
+        bid = self._batch(self.client_uid)
+        self._cruda(bid, "Movimiento sin descripcion")
+        conn = self._conn()
+        try:
+            r = flujos.reconciliar(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertEqual(r["pendientes"], 1)
+        self.assertEqual(r["resueltos"], 0)
+        self.assertTrue(r["detalle_pendientes"][0]["evidencia"])
+
+    def test_un_error_que_no_es_de_traspaso_no_es_candidato(self):
+        # Una fecha mal formateada no es un flujo ambiguo.
+        import flujos
+        bid = self._batch(self.client_uid)
+        self._cruda(bid, "Compra", errores="BAD_DATE")
+        conn = self._conn()
+        try:
+            self.assertEqual(flujos.reconciliar(conn, self.client_uid)["candidatos"], 0)
+        finally:
+            conn.close()
+
+    def test_sin_ambiguedades_la_tasa_es_cien(self):
+        import flujos
+        conn = self._conn()
+        try:
+            r = flujos.reconciliar(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertEqual(r["candidatos"], 0)
+        self.assertEqual(r["tasa_pct"], 100.0)
+
+
+class LedgerReplayTest(AdvisorBase):
+    """Reconstruir QUÉ tenía una persona en una fecha pasada."""
+
+    def _batch(self, uid):
+        import uuid as _u
+        bid = _u.uuid4().hex[:12]
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO import_batches (id,user_id,broker,parser_format,"
+                "file_hash,status) VALUES (?,?,'Cocos','test',?,'done')",
+                (bid, uid, bid))
+            conn.commit()
+        finally:
+            conn.close()
+        return bid
+
+    def _tx(self, bid, fecha, op, asset, qty, broker="Cocos"):
+        conn = main.get_db()
+        try:
+            # raw_row_id es FK: el ledger normalizado siempre cuelga de la
+            # fila cruda del export (que es donde el agente va a mirar cuando
+            # el normalizador simplificó algo).
+            rid = conn.execute(
+                "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status) "
+                "VALUES (?,0,'{}','ok')", (bid,)).lastrowid
+            conn.execute(
+                "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,"
+                "operation_type,asset_symbol,quantity) VALUES (?,?,?,?,?,?,?)",
+                (bid, rid, fecha, broker, op, asset, qty))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _pos(self, uid, asset, qty, broker="Cocos", ccy="ARS"):
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT OR IGNORE INTO brokers (user_id,name,currency) "
+                         "VALUES (?,?,?)", (uid, broker, ccy))
+            conn.execute("INSERT INTO positions (user_id,broker,asset,quantity,"
+                         "invested,is_cash) VALUES (?,?,?,?,100,0)",
+                         (uid, broker, asset, qty))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _conn(self):
+        return main.get_db()
+
+    # ── el replay ──────────────────────────────────────────────────────────
+    def test_reconstruye_la_tenencia_a_una_fecha_pasada(self):
+        import ledger_replay as lr
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10)
+        self._tx(bid, "2026-02-15", "BUY", "AAPL", 5)
+        self._tx(bid, "2026-03-20", "SELL", "AAPL", 4)
+        conn = self._conn()
+        try:
+            self.assertEqual(lr.tenencia_en(conn, self.client_uid, "2026-01-31"),
+                             {("Cocos", "AAPL"): 10.0})
+            self.assertEqual(lr.tenencia_en(conn, self.client_uid, "2026-02-28"),
+                             {("Cocos", "AAPL"): 15.0})
+            self.assertEqual(lr.tenencia_en(conn, self.client_uid, "2026-03-31"),
+                             {("Cocos", "AAPL"): 11.0})
+        finally:
+            conn.close()
+
+    def test_una_venta_borrada_no_cuenta(self):
+        # El borrado es un tombstone: si el replay ignora excluded_at, la
+        # cartera reconstruida no coincide con la real.
+        import ledger_replay as lr
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "GGAL", 100)
+        self._tx(bid, "2026-01-20", "SELL", "GGAL", 40)
+        conn = self._conn()
+        try:
+            conn.execute("UPDATE import_normalized_tx SET excluded_at=datetime('now') "
+                         "WHERE batch_id=? AND operation_type='SELL'", (bid,))
+            conn.commit()
+            self.assertEqual(lr.tenencia_en(conn, self.client_uid, "2026-02-01"),
+                             {("Cocos", "GGAL"): 100.0})
+        finally:
+            conn.close()
+
+    # ── el chequeo que decide si se le puede creer ─────────────────────────
+    def test_si_el_replay_reproduce_hoy_se_le_puede_creer(self):
+        import ledger_replay as lr
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10)
+        self._pos(self.client_uid, "AAPL", 10)
+        conn = self._conn()
+        try:
+            v = lr.verificar_contra_hoy(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertTrue(v["reproducible"])
+        self.assertEqual(v["diferencias"], [])
+
+    def test_un_traspaso_de_titulos_deja_el_ledger_corto_y_se_detecta(self):
+        # Las transferencias las filtra el validator y NO crean posición: un
+        # export de IOL con traspasos deja la tenencia corta. Si el replay no
+        # lo detecta, devuelve una cartera MÁS CHICA que la real y eso,
+        # encadenado, se lee como una pérdida que nunca existió.
+        import ledger_replay as lr
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10)
+        self._pos(self.client_uid, "AAPL", 10)
+        self._pos(self.client_uid, "MELI", 3)        # llegó por traspaso, sin ledger
+        conn = self._conn()
+        try:
+            v = lr.verificar_contra_hoy(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertFalse(v["reproducible"])
+        self.assertEqual(v["motivo"], "ledger_incompleto")
+        self.assertEqual([d["asset"] for d in v["diferencias"]], ["MELI"])
+
+    def test_posiciones_cargadas_a_mano_no_se_pueden_replayear(self):
+        import ledger_replay as lr
+        self._pos(self.client_uid, "YPFD", 50)       # nunca pasó por un import
+        conn = self._conn()
+        try:
+            v = lr.verificar_contra_hoy(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertFalse(v["reproducible"])
+        self.assertEqual(v["motivo"], "sin_ledger")
+
+    # ── el valor ───────────────────────────────────────────────────────────
+    def test_valua_la_tenencia_con_el_precio_de_esa_fecha(self):
+        import ledger_replay as lr, price_history as ph
+        bid = self._batch(self.client_uid)
+        # Ticker propio: los precios persisten entre tests y no se pisan.
+        self._tx(bid, "2026-01-10", "BUY", "VALT", 10, broker="IBKR")
+        self._pos(self.client_uid, "VALT", 10, broker="IBKR", ccy="USD")
+        conn = self._conn()
+        try:
+            ph.guardar(conn, "VALT", {"2026-01-31": 200.0})
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertEqual(v["valor"], 2000.0)
+        self.assertEqual(v["cobertura_pct"], 100.0)
+        self.assertEqual(v["fx_basis"], "usd")
+
+    def test_una_pata_en_pesos_pasa_por_el_MEP_de_esa_fecha(self):
+        import ledger_replay as lr, price_history as ph
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "GGAL", 100)
+        self._pos(self.client_uid, "GGAL", 100)      # broker Cocos = ARS
+        conn = self._conn()
+        try:
+            ph.guardar(conn, "GGAL.BA", {"2026-01-31": 7000.0})
+            conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,"
+                         "mep_venta) VALUES ('2026-01-31',1500,1400)")
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertAlmostEqual(v["valor"], 100 * 7000.0 / 1400, places=2)
+        self.assertEqual(v["fx_basis"], "mep_venta")
+
+    def test_sin_precio_de_un_activo_NO_se_publica_un_valor_corto(self):
+        # Publicar un borde al que le falta un activo es fabricar una caída.
+        import ledger_replay as lr, price_history as ph
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "AAPL", 10, broker="IBKR")
+        self._tx(bid, "2026-01-10", "BUY", "RARO", 5, broker="IBKR")
+        self._pos(self.client_uid, "AAPL", 10, broker="IBKR", ccy="USD")
+        conn = self._conn()
+        try:
+            ph.guardar(conn, "AAPL", {"2026-01-31": 200.0})
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-01-31")
+        finally:
+            conn.close()
+        self.assertIsNone(v["valor"])
+        self.assertEqual(v["motivo"], "cobertura_insuficiente")
+        # La cobertura se mide por VALOR, no por conteo. Acá el activo sin
+        # precio tampoco tiene costo conocido, así que su peso es DESCONOCIDO
+        # — y peso desconocido no se certifica como cobertura.
+        self.assertIsNone(v["cobertura_pct"])
+
+    def test_sin_FX_no_se_inventa_una_tasa(self):
+        import ledger_replay as lr, price_history as ph
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "GGAL", 100)
+        self._pos(self.client_uid, "GGAL", 100)
+        conn = self._conn()
+        try:
+            ph.guardar(conn, "GGAL.BA", {"2019-01-31": 7000.0})
+            conn.execute("DELETE FROM fx_rates_daily WHERE date <= '2019-01-31'")
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2019-01-31")
+        finally:
+            conn.close()
+        self.assertIsNone(v["valor"])
+
+
+class PrecioHistoricoTest(AdvisorBase):
+    """El almacén de precios por fecha — prerrequisito de la reconstrucción."""
+
+    def _conn(self):
+        return main.get_db()
+
+    def _sym(self, base):
+        # asset_price_history persiste entre tests de la misma corrida y a
+        # propósito NO se pisa un precio ya registrado — sin sufijo único, un
+        # test le fija el precio a otro y el fallo parece del código.
+        return f"{base}-{uuid.uuid4().hex[:6]}"
+
+    def test_guarda_y_lee_el_precio_de_esa_fecha(self):
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("AAPL")
+            ph.guardar(conn, sym, {"2026-01-29": 190.0, "2026-01-30": 195.5})
+            conn.commit()
+            self.assertEqual(ph.precio_en(conn, sym, "2026-01-30"), 195.5)
+        finally:
+            conn.close()
+
+    def test_finde_toma_el_ultimo_cierre_anterior(self):
+        # Los mercados cierran: pedir el precio de un domingo tiene que dar el
+        # cierre del viernes, no None.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("GGAL.BA")
+            ph.guardar(conn, sym, {"2026-01-30": 100.0})   # viernes
+            conn.commit()
+            self.assertEqual(ph.precio_en(conn, sym, "2026-02-01"), 100.0)
+        finally:
+            conn.close()
+
+    def test_un_precio_viejo_no_se_sirve_como_el_de_hoy(self):
+        # Un ticker que dejó de cotizar no puede "tener precio" para siempre:
+        # es lo que deja la serie PLANA, que pasa todos los guards y es peor
+        # que un hueco porque el hueco se ve.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("MUERTO")
+            ph.guardar(conn, sym, {"2026-01-05": 50.0})
+            conn.commit()
+            self.assertEqual(ph.precio_en(conn, sym, "2026-01-08"), 50.0)
+            self.assertIsNone(ph.precio_en(conn, sym, "2026-03-01"))
+        finally:
+            conn.close()
+
+    def test_no_pisa_un_precio_ya_registrado(self):
+        # Un precio guardado es un hecho de esa fecha. Si otra fuente devuelve
+        # algo distinto después, el que vale es el primero.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("AAPL")
+            ph.guardar(conn, sym, {"2026-01-30": 195.5})
+            n = ph.guardar(conn, sym, {"2026-01-30": 999.0}, source="otra")
+            conn.commit()
+            self.assertEqual(n, 0)
+            self.assertEqual(ph.precio_en(conn, sym, "2026-01-30"), 195.5)
+        finally:
+            conn.close()
+
+    def test_descarta_basura_de_la_fuente(self):
+        # yfinance devuelve ruedas de '.BA' con volumen pero OHLC en NaN. Si eso
+        # entra, después se sirve como si fuera un cierre real.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("X.BA")
+            ph.guardar(conn, sym, {"2026-01-05": 0, "2026-01-06": None,
+                                   "2026-01-07": -3, "2026-01-08": 12.5})
+            conn.commit()
+            self.assertIsNone(ph.precio_en(conn, sym, "2026-01-05"))
+            self.assertEqual(ph.precio_en(conn, sym, "2026-01-08"), 12.5)
+        finally:
+            conn.close()
+
+    def test_cobertura_dice_cuales_faltan(self):
+        # Con un símbolo sin precio, el total NO es el total: quien arma un
+        # borde reconstruido tiene que saberlo ANTES de publicar un valor.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            sym = self._sym("AAPL")
+            ph.guardar(conn, sym, {"2026-01-30": 190.0})
+            conn.commit()
+            raro = self._sym("RARO")
+            c = ph.cobertura(conn, [sym, raro], "2026-01-30")
+            self.assertEqual(c["con_precio"], 1)
+            self.assertEqual(c["faltan"], [raro])
+            self.assertEqual(c["pct"], 50.0)
+        finally:
+            conn.close()
+
+    def test_backfill_es_resumible_y_un_simbolo_roto_no_frena_la_tanda(self):
+        import price_history as ph
+        llamados = []
+
+        def fake(sym, desde):
+            llamados.append(sym)
+            if sym == "ROTO":
+                raise RuntimeError("la fuente falló")
+            return {"2026-01-30": 10.0}
+
+        conn = self._conn()
+        try:
+            a, roto, m = self._sym("AAPL"), "ROTO", self._sym("MSFT")
+            r = ph.backfill(conn, [a, roto, m], "2026-01-01", fetcher=fake)
+            conn.commit()
+            self.assertEqual(r["resueltos"], 2)
+            self.assertEqual(r["sin_serie"], ["ROTO"])
+            # Segunda corrida: lo resuelto no se vuelve a pedir.
+            llamados.clear()
+            ph.backfill(conn, [a, roto, m], "2026-01-01", fetcher=fake)
+            self.assertEqual(llamados, [roto])
+        finally:
+            conn.close()
+
+    def test_el_lote_acota_las_llamadas_a_la_red(self):
+        # El cuello de botella no son los tokens: son los rate limits.
+        import price_history as ph
+        llamados = []
+
+        def fake(sym, desde):
+            llamados.append(sym)
+            return {"2026-01-30": 1.0}
+
+        conn = self._conn()
+        try:
+            r = ph.backfill(conn, [self._sym(f"S{i}") for i in range(10)], "2026-01-01",
+                            fetcher=fake, lote=3)
+            conn.commit()
+            self.assertEqual(len(llamados), 3)
+            self.assertEqual(r["faltan"], 7)
+        finally:
+            conn.close()
+
+    def test_los_simbolos_salen_de_la_misma_resolucion_que_el_snapshot(self):
+        # Un CEDEAR en broker ARS se pide como '.BA'. Reinventar esta resolución
+        # es lo que hizo que un CEDEAR comprado por dólar-MEP pidiera su ticker
+        # US y quedara 15-100x inflado.
+        import price_history as ph
+        conn = self._conn()
+        try:
+            conn.execute("INSERT INTO positions (user_id,broker,asset,asset_type,"
+                         "quantity,invested,is_cash) VALUES (?,?,?,?,1,100,0)",
+                         (self.client_uid, "Cocos", "AAPL", "CEDEAR"))
+            conn.commit()
+            syms = ph.simbolos_de(conn, self.client_uid)
+        finally:
+            conn.close()
+        self.assertIn("AAPL.BA", syms)
+        self.assertNotIn("AAPL", syms)
+
+
+class TwrInvariantesTest(AdvisorBase):
+    """LAS INVARIANTES. Son la red que atrapa una deducción equivocada del
+    agente reconstructor, y por eso van ANTES que él. Si alguna falla, el
+    número NO se muestra — da igual lo convincente que se vea."""
+
+    def _cliente(self, email):
+        # Sufijo único: la clase del endpoint HEREDA estos tests, así que cada
+        # email se usaría dos veces en la misma corrida y chocaría con el UNIQUE.
+        email = f"{uuid.uuid4().hex[:8]}-{email}"
+        conn = main.get_db()
+        try:
+            uid = conn.execute(
+                "INSERT INTO users (email,password_hash,name) VALUES (?,?,'x')",
+                (email, "h")).lastrowid
+            conn.execute("INSERT INTO positions (user_id,broker,asset,quantity,"
+                         "invested,is_cash) VALUES (?,?,?,1,100,0)", (uid, "B", "AAPL"))
+            conn.commit()
+            return uid
+        finally:
+            conn.close()
+
+    def _serie(self, uid, puntos, flujos=None):
+        """puntos: [(fecha, valor)] como cierres REALES del cron.
+        flujos: {'YYYY-MM': aporte_neto} escrito en monthly_entries (la SSoT)."""
+        import json as _j
+        conn = main.get_db()
+        try:
+            for d, v in puntos:
+                conn.execute(
+                    "INSERT INTO snapshots (user_id,date,total_value,total_invested,"
+                    "fx_to_usd_blue,holdings_json,source) VALUES (?,?,?,?,1400,?,'cron')",
+                    (uid, d, v, v, _j.dumps([{"asset": "AAPL", "value_usd": v}])))
+            for mes, dep in (flujos or {}).items():
+                y, m = (int(x) for x in mes.split("-"))
+                conn.execute(
+                    "INSERT INTO monthly_entries (user_id,broker,year,month,"
+                    "capital_inicio,capital_final,deposits,withdrawals,pnl_realized,"
+                    "pnl_unrealized) VALUES (?,'global',?,?,0,0,?,?,0,0)",
+                    (uid, y, m, max(dep, 0), max(-dep, 0)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _twr(self, uid):
+        import twr
+        conn = main.get_db()
+        try:
+            twr.sellar(conn, uid, hasta_mes="2027-01")
+            conn.commit()
+            return twr.twr_de(conn, uid)
+        finally:
+            conn.close()
+
+    # ── 1. IDENTIDAD ───────────────────────────────────────────────────────
+    def test_sin_flujos_el_encadenado_da_exactamente_final_sobre_inicial(self):
+        # Sin plata entrando ni saliendo, el TWR NO es una aproximación: tiene
+        # que dar EXACTAMENTE v_final/v_inicial − 1. Si no da, el encadenado
+        # está mal y no hay nada más que discutir.
+        uid = self._cliente("ident@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0),
+                          ("2026-03-31", 99.0), ("2026-04-30", 121.0)])
+        r = self._twr(uid)
+        self.assertAlmostEqual(r["twr"], 121.0 / 100.0 - 1.0, places=9)
+
+    # ── 2. NEUTRALIDAD A FLUJOS (la propiedad que DEFINE time-weighted) ─────
+    def test_misma_curva_flujos_distintos_mismo_twr(self):
+        # Dos clientes con exactamente el mismo rendimiento de mercado pero
+        # flujos completamente distintos tienen que dar el MISMO TWR. Es lo que
+        # significa "time-weighted". Si difieren, el número NO es TWR.
+        quieto = self._cliente("quieto@x.com")
+        self._serie(quieto, [("2026-01-31", 100.0), ("2026-02-28", 110.0),
+                             ("2026-03-31", 121.0)])
+
+        # Mismos retornos (+10% y +10%) pero con un aporte de 50 en febrero:
+        #   feb: v0=100, aporta 50 → (v1 − 100 − 50)/(100 + 25) = 0,10 → v1 = 162,5
+        #   mar: +10% sobre 162,5 = 178,75
+        aporta = self._cliente("aporta@x.com")
+        self._serie(aporta, [("2026-01-31", 100.0), ("2026-02-28", 162.5),
+                             ("2026-03-31", 178.75)], flujos={"2026-02": 50.0})
+
+        a, b = self._twr(quieto), self._twr(aporta)
+        self.assertAlmostEqual(a["twr"], b["twr"], places=9)
+        self.assertAlmostEqual(a["twr"], 1.10 * 1.10 - 1, places=9)
+
+    def test_un_retiro_tampoco_mueve_el_twr(self):
+        # La contracara: sacar plata no puede leerse como una caída.
+        #   feb: v0=100, retira 40 → (v1 − 100 + 40)/(100 − 20) = 0,10 → v1 = 68
+        uid = self._cliente("retira@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 68.0)],
+                    flujos={"2026-02": -40.0})
+        self.assertAlmostEqual(self._twr(uid)["twr"], 0.10, places=9)
+
+    # ── 3. EL DEPÓSITO NO ES RENDIMIENTO (el bug del hero, en test) ─────────
+    def test_un_deposito_no_puede_leerse_como_ganancia(self):
+        # Hoy el Δ7d del hero cuenta un depósito entero como rendimiento: en la
+        # simulación daba +58% donde el real era +6,4%. Acá tiene que dar ~0.
+        uid = self._cliente("dep@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        r = self._twr(uid)
+        self.assertAlmostEqual(r["twr"], 0.0, places=6)
+
+    # ── 4. SELLADO: la historia no se mueve sola ───────────────────────────
+    def test_sellar_dos_veces_no_duplica_ni_cambia_nada(self):
+        import twr
+        uid = self._cliente("idem@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        primero = self._twr(uid)
+        conn = main.get_db()
+        try:
+            r2 = twr.sellar(conn, uid, hasta_mes="2027-01")
+            conn.commit()
+            n = conn.execute("SELECT COUNT(*) c FROM twr_periods WHERE user_id=?",
+                             (uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(r2, {"sellados": 0, "revisados": 0})
+        self.assertEqual(n, 1)
+        self.assertAlmostEqual(primero["twr"], self._twr(uid)["twr"], places=9)
+
+    def test_si_le_reescriben_la_historia_se_guarda_revision_nueva(self):
+        # Un import viejo (o el hook que corre en cada deploy) cambia el
+        # aportado hacia atrás. La revisión vieja NO se pisa: queda, y el
+        # asesor tiene que poder ver que la historia le cambió.
+        import twr
+        uid = self._cliente("rev@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 150.0)])
+        self._twr(uid)
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO monthly_entries (user_id,broker,year,month,"
+                         "capital_inicio,capital_final,deposits,withdrawals,"
+                         "pnl_realized,pnl_unrealized) VALUES (?,'global',2026,2,0,0,40,0,0,0)",
+                         (uid,))
+            conn.commit()
+            r = twr.sellar(conn, uid, hasta_mes="2027-01")
+            conn.commit()
+            revs = [x["revision"] for x in conn.execute(
+                "SELECT revision FROM twr_periods WHERE user_id=? AND month='2026-02' "
+                "ORDER BY revision", (uid,)).fetchall()]
+        finally:
+            conn.close()
+        self.assertEqual(r["revisados"], 1)
+        self.assertEqual(revs, [1, 2])                       # la vieja sigue ahí
+        self.assertIn("2026-02", self._twr(uid)["meses_revisados"])
+
+    def test_el_periodo_sellado_sobrevive_al_borrado_de_sus_snapshots(self):
+        # revert_batch y delete_broker borran snapshots por rango y se llevan
+        # mediciones que no se recuperan. El número sellado no puede irse con
+        # ellas.
+        uid = self._cliente("borra@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        antes = self._twr(uid)["twr"]
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM snapshots WHERE user_id=?", (uid,))
+            conn.commit()
+            import twr
+            despues = twr.twr_de(conn, uid)["twr"]
+        finally:
+            conn.close()
+        self.assertAlmostEqual(antes, despues, places=9)
+
+    # ── 5. SOLO MEDICIONES ─────────────────────────────────────────────────
+    def test_una_foto_intradia_no_puede_ser_borde_de_periodo(self):
+        import twr
+        uid = self._cliente("intra@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-03-31", 110.0)])
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO snapshots (user_id,date,total_value,"
+                         "total_invested,fx_to_usd_blue,source) "
+                         "VALUES (?,'2026-02-28',999,999,1400,'browser')", (uid,))
+            conn.commit()
+            meses = [t["month"] for t in twr.tramos(conn, uid, hasta_mes="2027-01")]
+        finally:
+            conn.close()
+        self.assertNotIn("2026-02", meses)     # el 999 no entra a la cadena
+        self.assertEqual(meses, ["2026-03"])
+
+    def test_el_mes_en_curso_no_se_sella(self):
+        import twr
+        from datetime import datetime, timedelta
+        hoy = (datetime.utcnow() - timedelta(hours=3)).date()
+        uid = self._cliente("curso@x.com")
+        conn = main.get_db()
+        try:
+            twr.sellar(conn, uid)
+            n = conn.execute("SELECT COUNT(*) c FROM twr_periods WHERE user_id=? "
+                             "AND month=?", (uid, hoy.strftime("%Y-%m"))).fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0)
+
+    # ── 6. SIN TECHO ───────────────────────────────────────────────────────
+    def test_un_mes_de_mas_80_por_ciento_no_se_trunca(self):
+        # El clamp de +50% del lado retail trunca meses reales y NO se le aplica
+        # al benchmark: el sesgo va sistemáticamente en contra del usuario.
+        import twr
+        self.assertAlmostEqual(twr.dietz(100.0, 180.0, 0.0), 0.80, places=9)
+        self.assertIsNone(twr.dietz(0.0, 50.0, 0.0))          # sin capital no hay retorno
+        self.assertAlmostEqual(twr.dietz(100.0, 0.0, 0.0), -1.0, places=9)
+
+
+class TwrEndpointTest(TwrInvariantesTest):
+    """El TWR expuesto: cobertura pegada, y piso de meses."""
+
+    def test_endpoint_devuelve_el_twr_con_su_cobertura(self):
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, self.client_uid))
+            conn.commit()
+        finally:
+            conn.close()
+        self._serie(self.client_uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0),
+                                      ("2026-03-31", 121.0), ("2026-04-30", 133.1)])
+        r = self.http.get("/api/advisor/twr", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        c = r.json()["clientes"][0]
+        self.assertAlmostEqual(c["twr"], 1.331 - 1, places=6)
+        self.assertEqual(c["meses"], 3)
+
+    def test_con_menos_de_tres_meses_no_se_publica_un_porcentaje(self):
+        self._serie(self.client_uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        r = self.http.get("/api/advisor/twr", headers=self._hdr(self.advisor)).json()
+        c = r["clientes"][0]
+        self.assertIsNone(c["twr"])
+        self.assertEqual(c["motivo"], "pocos_meses")
+        self.assertEqual(c["meses"], 1)
+
+
+class TwrFase0Test(AdvisorBase):
+    """Semáforo de datos: clasificar cada snapshot por quién lo escribió."""
+
+    def _snap(self, uid, d, v, fx=None, hold=None, source=None):
+        import json as _j
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO snapshots (user_id,date,total_value,total_invested,"
+                "fx_to_usd_blue,holdings_json,source) VALUES (?,?,?,?,?,?,?)",
+                (uid, d, v, v, fx, _j.dumps(hold) if hold else None, source))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _pos(self, uid, is_cash=0):
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO positions (user_id,broker,asset,quantity,invested,is_cash) "
+                         "VALUES (?,?,?,1,100,?)", (uid, "Cocos", "AAPL", is_cash))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _diag(self, uid):
+        import twr
+        conn = main.get_db()
+        try:
+            return twr.diagnosticar(conn, [uid])[uid]
+        finally:
+            conn.close()
+
+    # ── La prueba negativa dura del plan ────────────────────────────────────
+    def test_cliente_solo_con_cron_no_tiene_ni_un_sintetico(self):
+        # Si acá aparece un sintético, la heurística tiene falsos positivos y NO
+        # se puede usar para excluir tramos. Es el mismo error que ya se cometió
+        # una vez con la detección de fotos "sintéticas" del Dashboard, que
+        # terminó borrando mediciones REALES.
+        import twr
+        self._pos(self.client_uid)
+        for d, v in (("2026-07-10", 100), ("2026-07-11", 101), ("2026-07-12", 102)):
+            self._snap(self.client_uid, d, v, fx=1400,
+                       hold=[{"asset": "AAPL", "value_usd": v}])
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.SINTETICO_COSTO], 0)
+        self.assertEqual(d["por_clase"][twr.MEDICION], 3)
+        self.assertEqual(d["medible_desde"], "2026-07-10")
+        self.assertIsNone(d["motivo"])
+
+    def test_cliente_todo_en_pesos_igual_es_medible(self):
+        # El cron excluye el cash de holdings, así que una cartera 100% en pesos
+        # deja holdings_json en NULL aunque el cron haya corrido perfecto.
+        # Exigir esa columna lo marcaría "no medible" mintiendo.
+        import twr
+        self._pos(self.client_uid, is_cash=1)
+        self._snap(self.client_uid, "2026-07-10", 50, fx=1400)
+        self._snap(self.client_uid, "2026-07-11", 51, fx=1400)
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.MEDICION], 2)
+        self.assertEqual(d["medible_desde"], "2026-07-10")
+
+    def test_historia_importada_no_es_medible(self):
+        import twr
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-05-31", 80)   # fin de mes, nada estampado
+        self._snap(self.client_uid, "2026-06-30", 82)
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.SINTETICO_COSTO], 2)
+        self.assertIsNone(d["medible_desde"])
+        self.assertEqual(d["motivo"], "importado_sin_mediciones")
+
+    def test_una_sola_medicion_no_alcanza(self):
+        # Con un solo borde no hay tramo que medir.
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}])
+        d = self._diag(self.client_uid)
+        self.assertIsNone(d["medible_desde"])
+        self.assertEqual(d["motivo"], "una_sola_medicion")
+
+    def test_la_columna_source_manda_sobre_la_heuristica(self):
+        # Una fila con composición estampada pero source='browser' NO es una
+        # medición: el hecho gana sobre la deducción.
+        import twr
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}], source="browser")
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.INTRADIA], 1)
+        self.assertEqual(d["por_clase"][twr.MEDICION], 0)
+
+    def test_serie_congelada_se_marca(self):
+        # Un precio congelado (ticker delisted en asset_last_price, sin TTL) deja
+        # la serie plana. Es peor que un hueco: el hueco se ve.
+        self._pos(self.client_uid)
+        for d_ in ("2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13"):
+            self._snap(self.client_uid, d_, 100.0, fx=1400,
+                       hold=[{"asset": "AAPL", "value_usd": 100.0}])
+        d = self._diag(self.client_uid)
+        self.assertTrue(d["tramos_planos"])
+        self.assertGreaterEqual(d["tramos_planos"][0]["ruedas"], 3)
+
+    def test_endpoint_del_libro_devuelve_cobertura(self):
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}], source="cron")
+        self._snap(self.client_uid, "2026-07-11", 101, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 101}], source="cron")
+        r = self.http.get("/api/advisor/data-health", headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["resumen"]["total"], 1)
+        self.assertEqual(body["resumen"]["medibles"], 1)
+        self.assertEqual(body["resumen"]["cobertura_pct"], 100.0)
+        self.assertEqual(body["clientes"][0]["medible_desde"], "2026-07-10")
+
+    def test_el_semaforo_no_escribe_nada(self):
+        # Read-only es parte del contrato de la Fase 0.
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}])
+        conn = main.get_db()
+        try:
+            antes = conn.execute("SELECT COUNT(*) c FROM snapshots").fetchone()["c"]
+        finally:
+            conn.close()
+        self.http.get("/api/advisor/data-health", headers=self._hdr(self.advisor))
+        conn = main.get_db()
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) c FROM snapshots").fetchone()["c"], antes)
+        finally:
+            conn.close()
 
 
 class AdvisorGroupsAuditTest(AdvisorBase):

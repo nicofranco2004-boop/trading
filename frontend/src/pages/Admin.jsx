@@ -109,8 +109,21 @@ export default function Admin() {
     try {
       let res = await api.post(url)
       if (res?.ok === false && res?.reason === 'credit_already_active') {
-        const until = (res.credit_active_until || '').slice(0, 10)
-        if (!confirm(`${u.email} ya tiene plan activo hasta ${until}. ¿Sumar ${days} días más?`)) return
+        // El caso más común es querer SUBIR de plan (Plus→Pro) a alguien con un
+        // plan vigente. El mensaje viejo decía solo "¿Sumar 30 días más?" — no
+        // mencionaba el cambio de plan, así que el admin lo cancelaba y el grant
+        // "no hacía nada". Ahora distingue upgrade de extensión y muestra la
+        // fecha resultante exacta (la calcula el backend en would_be_active_until).
+        const planNombre = p => p === 'pro' ? 'Pro' : p === 'plus' ? 'Plus' : p === 'advisor' ? 'Asesor' : (p || 'un plan')
+        const cur = res.current_plan
+        const hasta = (res.credit_active_until || '').slice(0, 10)
+        const nuevoHasta = (res.would_be_active_until || '').slice(0, 10)
+        const msg = (cur && cur !== plan)
+          ? `${u.email} tiene ${planNombre(cur)} activo (vence ${hasta}).\n\n`
+            + `Cambiarlo a ${planLabel} AHORA y sumarle ${days} días → queda ${planLabel} hasta ${nuevoHasta}.`
+          : `${u.email} ya tiene ${planLabel} activo (vence ${hasta}).\n\n`
+            + `Extender ${days} días → ${planLabel} hasta ${nuevoHasta}.`
+        if (!confirm(msg)) return
         res = await api.post(url + '&force=true')
       }
       if (res?.ok) {
@@ -280,6 +293,7 @@ export default function Admin() {
 
       <CurrencyBackfillPanel toast={toast} />
 
+      <FciRefreshPanel toast={toast} />
       <MtmAuditPanel toast={toast} />
       <FxMigratePanel toast={toast} />
 
@@ -1394,6 +1408,54 @@ function MtmBackfillPanel({ toast }) {
     </div>
   )
 }
+
+// ─── FciRefreshPanel — re-seedear el catálogo de FCI ────────────────────────
+// El catálogo sale de una allowlist por nombre exacto (backend/pricing/fci.py) y
+// se seedea con un cron diario. Cuando se suman fondos —pasa cada vez que un
+// usuario reporta "falta el mío"— hay que esperar al cron o dispararlo a mano.
+// El endpoint existía pero es POST-only: sin botón, en la práctica había que
+// esperar 24h para que el usuario que reportó pudiera cargar su fondo.
+function FciRefreshPanel({ toast }) {
+  const [r, setR] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function refrescar() {
+    setBusy(true)
+    try {
+      const out = await api.post('/admin/fci/refresh')
+      setR(out)
+      toast.push('Catálogo FCI actualizado', { type: 'success' })
+    } catch (e) {
+      toast.push('Error: ' + e.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <RefreshCw size={16} className="text-violet-500" />
+          <h2 className="font-semibold text-ink-0">Catálogo FCI</h2>
+        </div>
+        <button onClick={refrescar} disabled={busy}
+          className="text-xs px-3 py-1.5 rounded-md bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+          {busy ? 'Actualizando…' : 'Re-seedear y refrescar precios'}
+        </button>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Vuelve a leer la allowlist de <code>pricing/fci.py</code> contra ArgentinaDatos y
+        actualiza las cuotapartes. Corrélo después de sumar fondos nuevos — si no, hay que
+        esperar al cron diario para que el usuario que los pidió pueda cargarlos.
+      </p>
+      {r && (
+        <p className="text-xs text-emerald-500 tabular">
+          {Object.entries(r).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ')}
+        </p>
+      )}
+    </div>
+  )
+}
+
 
 // ─── MtmAuditPanel — reconcilia la cadena a COSTO contra la de MERCADO ──────
 // Existe porque después de portar el parche MtM a Insights, la MISMA cuenta

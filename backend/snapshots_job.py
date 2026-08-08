@@ -752,14 +752,17 @@ def take_snapshot_for_user(
     # Phase C: stampamos fx_to_usd_blue (= tc_blue del día) para que cuando
     # el user mire la curva en ARS, cada punto use SU PROPIO blue (no el de hoy).
     conn.execute("""
-        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'cron')
         ON CONFLICT(user_id, date) DO UPDATE SET
             total_value = excluded.total_value,
             total_invested = excluded.total_invested,
             net_deposited = excluded.net_deposited,
             fx_to_usd_blue = COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue),
-            holdings_json = COALESCE(excluded.holdings_json, snapshots.holdings_json)
+            holdings_json = COALESCE(excluded.holdings_json, snapshots.holdings_json),
+            -- El cron SÍ pisa una foto intradía del browser: su cierre es la
+            -- medición buena del día.
+            source = 'cron'
     """, (uid, target_date, total_value, total_invested, net_deposited, tc_blue, holdings_json))
 
     return {

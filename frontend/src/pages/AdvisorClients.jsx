@@ -48,6 +48,18 @@ export default function AdvisorClients() {
   const [group, setGroup] = useState(null)
   const [groupIds, setGroupIds] = useState(null)   // Set de client_uid del grupo
   const [waGroup, setWaGroup] = useState(false)
+  // Semáforo de datos: desde cuándo la historia de cada cliente es una medición
+  // a mercado. Read-only; si falla no rompe nada, sólo no se muestra el chip.
+  const [salud, setSalud] = useState(null)
+  useEffect(() => {
+    api.get('/advisor/data-health')
+      .then(d => {
+        const m = {}
+        for (const c of (d.clientes || [])) m[c.client_uid] = c
+        setSalud({ porCliente: m, resumen: d.resumen })
+      })
+      .catch(() => setSalud(null))
+  }, [])
   const [error, setError] = useState(null)
   const [addOpen, setAddOpen] = useState(false)
   const [notesFor, setNotesFor] = useState(null)  // cliente cuyo modal de notas está abierto
@@ -216,6 +228,7 @@ export default function AdvisorClients() {
             <ClientCard
               key={c.client_uid}
               c={c}
+              salud={salud?.porCliente?.[c.client_uid]}
               menuOpen={menuFor === c.client_uid}
               onToggleMenu={(e) => { e.stopPropagation(); setMenuFor(menuFor === c.client_uid ? null : c.client_uid) }}
               onOpen={() => openClient(c)}
@@ -262,10 +275,28 @@ const CLAIM_BADGE = {
   claimed: { label: 'Su cuenta', cls: 'text-rendi-pos bg-rendi-pos/10' },
 }
 
-function ClientCard({ c, onOpen, onNotes, onInvite, onRevoke, menuOpen, onToggleMenu }) {
+// Mes y año en criollo, desde una fecha ISO: '2025-03-04' → 'marzo 2025'.
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio',
+               'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+function mesDe(iso) {
+  const [y, m] = String(iso || '').split('-')
+  return MESES[Number(m) - 1] ? `${MESES[Number(m) - 1]} ${y}` : iso
+}
+
+function ClientCard({ c, salud, onOpen, onNotes, onInvite, onRevoke, menuOpen, onToggleMenu }) {
   const badge = c.invite_expired && c.claim_status !== 'claimed'
     ? { label: 'Invitación vencida', cls: 'bg-rendi-warn/10 text-rendi-warn' }
     : CLAIM_BADGE[c.claim_status]
+  // Chip del semáforo. Cuando NO se puede medir decimos el motivo, nunca un
+  // número: es más barato no decir nada que decir algo que después hay que
+  // salir a explicar.
+  const chipSalud = !salud ? null : salud.medible_desde
+    ? { txt: `Historia medible desde ${mesDe(salud.medible_desde)}`,
+        cls: 'text-ink-3', title: `${salud.snapshots} cierres guardados` }
+    : { txt: salud.motivo === 'importado_sin_mediciones'
+             ? 'Importado — sin mediciones a mercado'
+             : 'Todavía sin historia medible',
+        cls: 'text-rendi-warn/80', title: salud.motivo_texto || '' }
   return (
     <div
       role="button"
@@ -283,6 +314,11 @@ function ClientCard({ c, onOpen, onNotes, onInvite, onRevoke, menuOpen, onToggle
               <span className={`text-[10px] font-medium rounded px-1.5 py-0.5 ${badge.cls}`}>{badge.label}</span>
             )}
           </p>
+          {chipSalud && (
+            <p className={`text-[10.5px] mt-1 ${chipSalud.cls}`} title={chipSalud.title}>
+              {chipSalud.txt}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0">
         {c.phone && (
