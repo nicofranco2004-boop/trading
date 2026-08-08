@@ -598,6 +598,45 @@ def _is_safe_to_rebuild(conn, uid: int, brokers: List[str], asset: str) -> bool:
     return True
 
 
+def _capturar_precio_manual(conn, uid: int, brokers: List[str], asset: str) -> Optional[float]:
+    """El precio que el usuario cargó a mano para este activo, si hay alguno.
+
+    `positions.price_override` es lo que el usuario escribe en "Precio actual"
+    cuando tenemos un activo que no cotizamos (un CEDEAR recién listado, una ON
+    del interior, un bono provincial) — y también lo que estampa la foto de
+    tenencia de Balanz para los FCI.
+
+    El rebuild borra las posiciones y las vuelve a crear desde los eventos, donde
+    ese dato no existe: sin capturarlo acá, CUALQUIER import posterior se lo
+    borraba en silencio y el activo volvía a valuarse a lo que costó. Medido: con
+    sólo compras no pasaba (el rebuild no reconstruye), pero en cuanto el activo
+    tenía UNA venta, el import siguiente lo perdía.
+
+    Se toma el override de cualquier lote del activo (son todos el mismo precio de
+    mercado: el override es del ACTIVO, aunque la columna viva por lote)."""
+    _ph = ",".join("?" * len(brokers))
+    row = conn.execute(
+        f"SELECT price_override FROM positions "
+        f"WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 "
+        f"  AND price_override IS NOT NULL LIMIT 1",
+        (uid, *brokers, asset),
+    ).fetchone()
+    return float(row["price_override"]) if row and row["price_override"] is not None else None
+
+
+def _restaurar_precio_manual(conn, uid: int, brokers: List[str], asset: str,
+                             precio: Optional[float]) -> None:
+    """Vuelve a poner el precio manual en los lotes que acaba de crear el rebuild."""
+    if precio is None:
+        return
+    _ph = ",".join("?" * len(brokers))
+    conn.execute(
+        f"UPDATE positions SET price_override=? "
+        f"WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0",
+        (precio, uid, *brokers, asset),
+    )
+
+
 def _clear_old_state(conn, uid: int, brokers: List[str], asset: str,
                      events: List[Dict[str, Any]]) -> Dict[tuple, Optional[int]]:
     """Borra los lotes abiertos + ventas import-creadas del activo en los brokers
@@ -850,8 +889,10 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         sp = f"rebuild_{i}"
         conn.execute(f"SAVEPOINT {sp}")
         try:
+            _precio_manual = _capturar_precio_manual(conn, uid, pair, asset)
             old_buy_pos = _clear_old_state(conn, uid, pair, asset, events)
             _write_rebuilt(conn, uid, replay)
+            _restaurar_precio_manual(conn, uid, pair, asset, _precio_manual)
             _ensure_monthly_rows(conn, uid, replay["operations"])
 
             # Tombstones: compras consumidas del todo (sin lote abierto
@@ -929,8 +970,10 @@ def rebuild_pair_asset(conn, uid: int, broker: str, asset: str, *,
 
     conn.execute("SAVEPOINT rebuild_del")
     try:
+        _precio_manual = _capturar_precio_manual(conn, uid, pair, asset)
         old_buy_pos = _clear_old_state(conn, uid, pair, asset, events)
         _write_rebuilt(conn, uid, replay)
+        _restaurar_precio_manual(conn, uid, pair, asset, _precio_manual)
         _ensure_monthly_rows(conn, uid, replay["operations"])
         surviving_buys = {
             (l["batch_id"], l["raw_row_id"])
