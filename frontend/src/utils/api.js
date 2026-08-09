@@ -103,13 +103,16 @@ async function req(method, path, body, opts) {
   // del cliente (o ignora el header en los prefijos exentos).
   if (_clientCtx?.id) headers['X-Rendi-Client-Id'] = String(_clientCtx.id)
 
-  const res = await fetch('/api' + path, {
+  const doFetch = () => fetch('/api' + path, {
     method,
     headers,
     credentials: 'include',  // adjunta la cookie HttpOnly de auth
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: opts?.signal,
   })
+  // GET es idempotente → se reintenta solo. El resto (POST/PATCH/DELETE) no:
+  // repetirlo podría duplicar un alta.
+  const res = method === 'GET' ? await withGatewayRetry(doFetch) : await doFetch()
 
   if (res.status === 401) {
     // Si hay un usuario "conocido" en localStorage y nos rebotan, expiró la
@@ -135,7 +138,11 @@ async function req(method, path, body, opts) {
 // .detail; si no, JSON.stringify como último recurso. Adjuntamos el payload
 // crudo en err.payload por si el caller necesita info adicional (ej. usage).
 async function buildHttpError(res) {
-  let message = `HTTP ${res.status}`
+  let message = GATEWAY_ERRORS.includes(res.status)
+    // Ver GATEWAY_ERRORS: es el servidor reiniciando o despertando, no un
+    // problema del archivo ni de los datos del usuario.
+    ? 'El servidor se está reiniciando — suele tardar menos de un minuto. Probá de nuevo.'
+    : `HTTP ${res.status}`
   let payload = null
   try {
     payload = await res.json()
@@ -152,6 +159,34 @@ async function buildHttpError(res) {
   return err
 }
 
+// Errores de INFRAESTRUCTURA (no del backend): el gateway no pudo hablar con
+// el servidor. Pasa de verdad cada vez que deployamos —el backend reinicia unos
+// segundos— y también cuando estaba dormido. Al usuario le llegaba un críptico
+// "HTTP 502" en medio de una importación (reporte real, 2026-08-08).
+const GATEWAY_ERRORS = [502, 503, 504]
+const RETRY_DELAYS_MS = [800, 2500, 5000]   // ~8s en total, cubre un reinicio
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
+// Reintenta `doFetch` mientras el gateway falle. SOLO para pedidos que se
+// pueden repetir sin efectos: si el servidor llegó a procesar, repetir un
+// alta duplicaría datos. Por eso confirm/borrar NO pasan por acá.
+async function withGatewayRetry(doFetch) {
+  for (let i = 0; ; i++) {
+    let res
+    try {
+      res = await doFetch()
+    } catch (netErr) {
+      // Falla de red (servidor no alcanzable): mismo tratamiento.
+      if (i >= RETRY_DELAYS_MS.length) throw netErr
+      await sleep(RETRY_DELAYS_MS[i])
+      continue
+    }
+    if (!GATEWAY_ERRORS.includes(res.status) || i >= RETRY_DELAYS_MS.length) return res
+    await sleep(RETRY_DELAYS_MS[i])
+  }
+}
+
 async function upload(path, formData) {
   // En demo mode no soportamos imports (el wizard de CSV requiere parsing
   // server-side). Throw inmediato con mensaje claro.
@@ -165,12 +200,18 @@ async function upload(path, formData) {
   // import caía SILENCIOSAMENTE en la cuenta del asesor con el ctx activo.
   const upHeaders = {}
   if (_clientCtx?.id) upHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
-  const res = await fetch('/api' + path, {
+  const doFetch = () => fetch('/api' + path, {
     method: 'POST',
     credentials: 'include',
     headers: upHeaders,
     body: formData,
   })
+  // El PREVIEW solo arma un borrador que el usuario todavía tiene que
+  // confirmar: repetirlo es inofensivo. El CONFIRM no se reintenta solo
+  // (podría duplicar la importación) — ahí el error se explica y decide
+  // la persona.
+  const isPreview = /\/preview(\?|$)/.test(path)
+  const res = isPreview ? await withGatewayRetry(doFetch) : await doFetch()
 
   if (res.status === 401) {
     localStorage.removeItem('rendi_user')
