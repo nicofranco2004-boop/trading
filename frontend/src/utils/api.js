@@ -126,7 +126,7 @@ async function req(method, path, body, opts) {
   }
 
   if (!res.ok) {
-    throw await buildHttpError(res)
+    throw await buildHttpError(res, { write: method !== 'GET' })
   }
 
   return res.json()
@@ -137,11 +137,9 @@ async function req(method, path, body, opts) {
 // — el caso del 429 de IA). Si es dict, intentamos extraer .error / .message /
 // .detail; si no, JSON.stringify como último recurso. Adjuntamos el payload
 // crudo en err.payload por si el caller necesita info adicional (ej. usage).
-async function buildHttpError(res) {
+async function buildHttpError(res, ctx = {}) {
   let message = GATEWAY_ERRORS.includes(res.status)
-    // Ver GATEWAY_ERRORS: es el servidor reiniciando o despertando, no un
-    // problema del archivo ni de los datos del usuario.
-    ? 'El servidor se está reiniciando — suele tardar menos de un minuto. Probá de nuevo.'
+    ? gatewayMessage(ctx)
     : `HTTP ${res.status}`
   let payload = null
   try {
@@ -165,6 +163,26 @@ async function buildHttpError(res) {
 // "HTTP 502" en medio de una importación (reporte real, 2026-08-08).
 const GATEWAY_ERRORS = [502, 503, 504]
 const RETRY_DELAYS_MS = [800, 2500, 5000]   // ~8s en total, cubre un reinicio
+
+// El mensaje de gateway decía "se está reiniciando — suele tardar menos de un
+// minuto. Probá de nuevo." Las dos mitades pueden ser falsas y lo fueron:
+//
+//  · El 2026-08-10 el backend no estaba reiniciando: estaba COLGADO (una
+//    migración de arranque se quedaba con el lock de escritura de SQLite y el
+//    threadpool se llenaba). Duró mucho más de un minuto. La promesa mandaba a
+//    la gente a esperar en vez de a reportarlo.
+//  · "Probá de nuevo" es un consejo peligroso sobre una ESCRITURA: un 502 no
+//    dice si el servidor llegó a procesar. Un usuario que quería darse de baja
+//    vio el cartel y reintentó una cancelación que ya había ocurrido.
+//
+// Así que no prometemos duración, y separamos leer de escribir.
+export function gatewayMessage({ write } = {}) {
+  return write
+    ? 'El servidor no respondió, así que no sabemos si la operación llegó a completarse. ' +
+      'Revisá el estado antes de repetirla — si no cambió nada, volvé a intentar en un rato.'
+    : 'No pudimos conectarnos con el servidor. Suele ser una actualización en curso: ' +
+      'esperá un momento y recargá. Si sigue igual, escribinos a soporte.'
+}
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
@@ -219,7 +237,7 @@ async function upload(path, formData) {
     throw new Error('Unauthorized')
   }
   if (!res.ok) {
-    throw await buildHttpError(res)
+    throw await buildHttpError(res, { write: !isPreview })
   }
   return res.json()
 }
@@ -248,7 +266,7 @@ async function getBlob(path) {
     throw new Error('Unauthorized')
   }
   if (!res.ok) {
-    throw await buildHttpError(res)
+    throw await buildHttpError(res, { write: false })
   }
   return res.blob()
 }
@@ -291,7 +309,7 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
     throw new Error('Unauthorized')
   }
   if (!res.ok || !res.body) {
-    throw await buildHttpError(res)   // 429/403/500 → mismo shape que api.post
+    throw await buildHttpError(res, { write: true })   // 429/403/500 → mismo shape que api.post
   }
 
   const reader = res.body.getReader()

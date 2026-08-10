@@ -3095,41 +3095,55 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
     primera vez" sin ese costo. Irreversible; el frontend confirma fuerte."""
     conn = get_db()
     try:
-        with conn:
-            cleared = {}
-            # Hijas de import primero (por batch_id — no tienen user_id).
-            batch_ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
-            if batch_ids:
-                _ph = ",".join("?" * len(batch_ids))
-                for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                    n = conn.execute(
-                        f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids)).rowcount
-                    if n:
-                        cleared[t] = n
-            n = conn.execute("DELETE FROM import_batches WHERE user_id=?", (uid,)).rowcount
-            if n:
-                cleared["import_batches"] = n
-            # Tablas de cartera (allowlist). Guardas: si alguna no existe en una DB
-            # vieja, seguimos (no rompe el reset por una tabla ausente).
-            for t in _RESET_PORTFOLIO_TABLES:
-                try:
-                    n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (uid,)).rowcount
-                    if n:
-                        cleared[t] = n
-                except sqlite3.OperationalError as ex:
-                    # Tabla ausente en una DB vieja: seguimos (no rompemos el reset
-                    # entero por una). Pero se LOGUEA: un `pass` mudo convertía un
-                    # reset PARCIAL en un "ok" indistinguible del completo.
-                    log.warning("reset_my_data uid=%s: no pude limpiar %s (%s)", uid, t, ex)
-                    cleared[f"{t}:ERROR"] = str(ex)
-            # Solo las keys de config de CARTERA (no las prefs de UX).
-            _kph = ",".join("?" * len(_RESET_CONFIG_KEYS))
-            n = conn.execute(
-                f"DELETE FROM config WHERE user_id=? AND key IN ({_kph})",
-                (uid, *_RESET_CONFIG_KEYS)).rowcount
-            if n:
-                cleared["config"] = n
+        # Reintento ante 'database is locked'. El reset es un DELETE masivo
+        # (una decena de tablas en una transacción) y compite con cualquier otra
+        # escritura; un usuario vio "OperationalError: database is locked" en
+        # pantalla. Re-correrlo es inofensivo: son DELETEs y el rollback del
+        # `with conn:` deja todo como estaba.
+        def _borrar():
+            with conn:
+                cleared = {}
+                # Hijas de import primero (por batch_id — no tienen user_id).
+                batch_ids = [r["id"] for r in conn.execute(
+                    "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+                if batch_ids:
+                    _ph = ",".join("?" * len(batch_ids))
+                    for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+                        n = conn.execute(
+                            f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids)).rowcount
+                        if n:
+                            cleared[t] = n
+                n = conn.execute("DELETE FROM import_batches WHERE user_id=?", (uid,)).rowcount
+                if n:
+                    cleared["import_batches"] = n
+                # Tablas de cartera (allowlist). Guardas: si alguna no existe en una DB
+                # vieja, seguimos (no rompe el reset por una tabla ausente).
+                for t in _RESET_PORTFOLIO_TABLES:
+                    try:
+                        n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (uid,)).rowcount
+                        if n:
+                            cleared[t] = n
+                    except sqlite3.OperationalError as ex:
+                        # 'locked' NO es "tabla ausente": es contención, y hay que
+                        # dejarla salir para que el retro de afuera reintente. Si la
+                        # tragáramos acá, un reset a medias se reportaría como OK.
+                        if "locked" in str(ex).lower():
+                            raise
+                        # Tabla ausente en una DB vieja: seguimos (no rompemos el reset
+                        # entero por una). Pero se LOGUEA: un `pass` mudo convertía un
+                        # reset PARCIAL en un "ok" indistinguible del completo.
+                        log.warning("reset_my_data uid=%s: no pude limpiar %s (%s)", uid, t, ex)
+                        cleared[f"{t}:ERROR"] = str(ex)
+                # Solo las keys de config de CARTERA (no las prefs de UX).
+                _kph = ",".join("?" * len(_RESET_CONFIG_KEYS))
+                n = conn.execute(
+                    f"DELETE FROM config WHERE user_id=? AND key IN ({_kph})",
+                    (uid, *_RESET_CONFIG_KEYS)).rowcount
+                if n:
+                    cleared["config"] = n
+            return cleared
+
+        cleared = _run_with_lock_retry(_borrar)
         # Caches del user: sin esto el chat de IA sigue respondiendo con la cartera
         # RECIÉN BORRADA hasta 60s (_CHAT_VAL_CACHE) y con análisis viejos (TTL 24h).
         # Es el mismo helper que llaman las demás mutaciones (import, borrar broker/
@@ -3140,6 +3154,15 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
         return {"ok": True, "cleared": cleared}
     except HTTPException:
         raise
+    except sqlite3.OperationalError as e:
+        # "database is locked" no le dice NADA al usuario y suena a datos rotos.
+        # Es contención: otra escritura larga tiene el lock. Se reintenta y listo.
+        log.exception("reset_my_data FAILED uid=%s (sqlite)", uid)
+        if "locked" in str(e).lower():
+            raise HTTPException(status_code=503, detail=(
+                "El servidor está ocupado con otra operación y no pudimos "
+                "completar el borrado. No se borró nada — probá de nuevo en un minuto."))
+        raise HTTPException(status_code=500, detail=f"Error al resetear los datos: {type(e).__name__}: {e}")
     except Exception as e:
         log.exception("reset_my_data FAILED uid=%s", uid)
         raise HTTPException(status_code=500, detail=f"Error al resetear los datos: {type(e).__name__}: {e}")
@@ -23930,30 +23953,75 @@ def billing_cancel(request: Request, uid: int = Depends(get_effective_user)):
 
         # Cancelar en Rebill (mp_subscription_id ahora guarda el ID de Rebill
         # — field reusado durante la migración para evitar schema change).
+        #
+        # IDEMPOTENTE A PROPÓSITO. Este endpoint hace dos cosas que pueden
+        # fallar por separado: cancela en Rebill (red) y lo persiste acá
+        # (escritura). Si la primera anda y la segunda no, el usuario ve un
+        # error y REINTENTA — y en ese segundo intento Rebill ya la tiene
+        # cancelada y devuelve 4xx. Antes eso era un 502 y la persona quedaba
+        # trabada para siempre viendo "No pudimos cancelar" sobre una
+        # suscripción que YA estaba cancelada. Así que ante cualquier error
+        # preguntamos el estado real antes de dar la mala noticia.
         try:
             cancel_response = rebill.cancel_subscription(sub["mp_subscription_id"])
         except Exception as ex:
-            log.error("Rebill cancel failed for uid=%s: %s", uid, ex)
-            raise HTTPException(502, f"Error al cancelar en Rebill: {type(ex).__name__}")
+            estado_real = None
+            try:
+                estado_real = (rebill.get_subscription(sub["mp_subscription_id"]) or {}).get("status")
+            except Exception as ex2:
+                log.warning("No se pudo releer la sub en Rebill uid=%s: %s", uid, ex2)
+            if str(estado_real).lower() in ("cancelled", "canceled"):
+                log.info("Rebill cancel uid=%s: ya estaba cancelada, sigo a persistir.", uid)
+                cancel_response = {"status": estado_real}
+            else:
+                log.error("Rebill cancel failed for uid=%s: %s", uid, ex)
+                raise HTTPException(502, f"Error al cancelar en Rebill: {type(ex).__name__}")
 
         # Rebill devuelve el subscription object con nextChargeDate — esa es la
         # fecha en que el user pierde acceso al tier (fin del período cobrado).
         period_end = cancel_response.get("nextChargeDate") if isinstance(cancel_response, dict) else None
 
-        with conn:
-            conn.execute(
-                """UPDATE subscriptions
-                   SET status = 'cancelled', cancelled_at = datetime('now'),
-                       current_period_end = COALESCE(?, current_period_end),
-                       updated_at = datetime('now')
-                   WHERE mp_subscription_id = ?""",
-                (period_end, sub["mp_subscription_id"]),
+        # A esta altura la plata YA dejó de correr: Rebill no cobra más. Lo que
+        # queda es anotarlo de nuestro lado, y eso NO puede voltear la
+        # operación. Reintento ante 'database is locked' (una fila; con el
+        # busy_timeout de por medio, siempre debería entrar).
+        def _persistir():
+            with conn:
+                conn.execute(
+                    """UPDATE subscriptions
+                       SET status = 'cancelled', cancelled_at = datetime('now'),
+                           current_period_end = COALESCE(?, current_period_end),
+                           updated_at = datetime('now')
+                       WHERE mp_subscription_id = ?""",
+                    (period_end, sub["mp_subscription_id"]),
+                )
+
+        sync_pendiente = False
+        try:
+            _run_with_lock_retry(_persistir)
+        except sqlite3.OperationalError as ex:
+            # NO le mentimos al usuario. Está cancelada — decirle "no pudimos"
+            # lo empuja a reintentar o a llamar al banco por una baja que ya
+            # ocurrió. Nuestra fila se reconcilia sola por webhook/billing-sync.
+            sync_pendiente = True
+            log.error(
+                "CANCELACIÓN HUÉRFANA uid=%s sub=%s: cancelada en Rebill pero la "
+                "escritura local falló (%s). Reconcilia el webhook.",
+                uid, sub["mp_subscription_id"], ex,
             )
 
-        # Email de confirmación de cancelación (idempotente)
-        _maybe_send_cancellation_email(conn, sub["mp_subscription_id"], uid)
+        # El mail es cortesía: que falle no puede convertir una baja exitosa en
+        # un error en pantalla.
+        try:
+            _maybe_send_cancellation_email(conn, sub["mp_subscription_id"], uid)
+        except Exception as ex:
+            log.warning("Email de cancelación falló uid=%s: %s", uid, ex)
 
-        return {"status": "cancelled", "subscription_id": sub["mp_subscription_id"]}
+        return {
+            "status": "cancelled",
+            "subscription_id": sub["mp_subscription_id"],
+            "local_sync_pending": sync_pendiente,
+        }
     finally:
         conn.close()
 
