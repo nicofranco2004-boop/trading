@@ -481,3 +481,87 @@ class TrialAvisos(TrialBase):
         fuente = inspect.getsource(subs.run_lifecycle_job)
         self.assertIn("send_due_trial_emails", fuente)
         self.assertIn("trial_emails_sent", fuente)
+
+
+class TrialEmbudo(TrialBase):
+    """La medición. Lo que más importa: que la tasa de conversión se calcule
+    sobre los que TERMINARON el trial — meter a los que están en curso en el
+    denominador hace que el número parezca peor de lo que es."""
+
+    def _otro(self, email, dias_atras=0):
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified) "
+            "VALUES (?,?,1,1)", (email, "x"))
+        uid = cur.lastrowid
+        self.conn.commit()
+        tr.start(self.conn, uid)
+        if dias_atras:
+            r = self.conn.execute(
+                "SELECT trial_started_at a, credit_active_until b, trial_ends_at c "
+                "FROM users WHERE id=?", (uid,)).fetchone()
+            f = lambda s: _iso(datetime.fromisoformat(s) - timedelta(days=dias_atras))
+            self.conn.execute(
+                "UPDATE users SET trial_started_at=?, credit_active_until=?, trial_ends_at=? "
+                "WHERE id=?", (f(r["a"]), f(r["b"]), f(r["c"]), uid))
+            self.conn.commit()
+        return uid
+
+    def test_cuenta_los_activados(self):
+        tr.start(self.conn, self.uid)
+        self._otro("b@rendi.test")
+        f = tr.funnel(self.conn)
+        self.assertEqual(f["activados"], 2)
+        self.assertEqual(f["en_curso"], 2)
+        self.assertEqual(f["terminados"], 0)
+
+    def test_la_tasa_cerrada_ignora_a_los_que_siguen_probando(self):
+        terminado = self._otro("term@rendi.test", dias_atras=20)   # ya terminó
+        self._otro("curso@rendi.test")                              # en curso
+        self._suscribir(terminado)
+        # La sub tiene que quedar DESPUÉS del arranque del trial para contar.
+        self.conn.execute(
+            "UPDATE subscriptions SET created_at=? WHERE user_id=?",
+            (_iso(datetime.utcnow() - timedelta(days=5)), terminado))
+        self.conn.commit()
+        f = tr.funnel(self.conn)
+        self.assertEqual(f["convirtieron"], 1)
+        self.assertEqual(f["terminados"], 1)
+        # 1 de 1 que terminó = 100%, aunque sobre el total sea 50%.
+        self.assertEqual(f["pct_conversion_cerrada"], 100.0)
+        self.assertEqual(f["pct_convirtieron"], 50.0)
+
+    def test_distingue_en_que_momento_pagan(self):
+        pro = self._otro("pro@rendi.test", dias_atras=3)     # está en la semana Pro
+        self._suscribir(pro)
+        self.conn.execute("UPDATE subscriptions SET created_at=? WHERE user_id=?",
+                          (_iso(datetime.utcnow() - timedelta(days=1)), pro))
+        self.conn.commit()
+        f = tr.funnel(self.conn)
+        self.assertEqual(f["cuando_pagan"]["durante_pro"], 1)
+        self.assertEqual(f["cuando_pagan"]["durante_plus"], 0)
+
+    def test_no_cuenta_una_suscripcion_anterior_al_trial(self):
+        # Alguien que ya pagaba y después le dieron un trial por otra vía: su
+        # suscripción vieja no es una conversión del trial.
+        self._suscribir()
+        self.conn.execute("UPDATE subscriptions SET created_at=? WHERE user_id=?",
+                          (_iso(datetime.utcnow() - timedelta(days=200)), self.uid))
+        self.conn.execute("UPDATE users SET trial_started_at=?, trial_ends_at=? WHERE id=?",
+                          (_iso(datetime.utcnow() - timedelta(days=20)),
+                           _iso(datetime.utcnow() - timedelta(days=5)), self.uid))
+        self.conn.commit()
+        self.assertEqual(tr.funnel(self.conn)["convirtieron"], 0)
+
+    def test_reporta_el_estado_de_las_palancas(self):
+        os.environ["TRIALS_MONTHLY_CAP"] = "50"
+        tr.start(self.conn, self.uid)
+        f = tr.funnel(self.conn)
+        self.assertTrue(f["enabled"])
+        self.assertEqual(f["monthly_cap"], 50)
+        self.assertEqual(f["activados_este_mes"], 1)
+
+    def test_sin_trials_no_divide_por_cero(self):
+        f = tr.funnel(self.conn)
+        self.assertEqual(f["activados"], 0)
+        self.assertIsNone(f["pct_convirtieron"])
+        self.assertIsNone(f["pct_conversion_cerrada"])

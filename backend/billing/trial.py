@@ -508,3 +508,107 @@ def send_due_trial_emails(conn) -> int:
     if sent:
         log.info("avisos de trial enviados: %d", sent)
     return sent
+
+
+# ─── Medición ───────────────────────────────────────────────────────────────
+# Sin esto no se puede saber si el trial convierte o solo está regalando Pro.
+# No hace falta instrumentar eventos nuevos: todo sale de lo que ya se guarda
+# (trial_started_at, subscriptions, brokers, operations, ai_usage_daily).
+#
+# Las dos preguntas que importan, en este orden:
+#   1. ¿USARON la app durante el trial? Un trial sin uso no falló al convertir:
+#      falló antes, y el problema es el onboarding, no el precio.
+#   2. De los que la usaron, ¿cuántos pagaron y cuándo?
+
+def funnel(conn, days: int = 90) -> dict:
+    """Embudo del trial de los últimos `days` días."""
+    since = (datetime.utcnow() - timedelta(days=max(1, days))).isoformat()
+    now = datetime.utcnow().isoformat()
+
+    def _one(sql, params=()):
+        try:
+            r = conn.execute(sql, params).fetchone()
+            return int(r[0] if not hasattr(r, "keys") else r["c"]) if r else 0
+        except Exception as ex:
+            log.warning("funnel query falló: %s", ex)
+            return 0
+
+    activados = _one(
+        "SELECT COUNT(*) c FROM users WHERE trial_started_at >= ?", (since,))
+
+    # Importó DESPUÉS de activar: es la señal de que la app tiene datos adentro.
+    # Sin esto el trial corre sobre una app vacía y no demuestra nada.
+    importaron = _one(
+        """SELECT COUNT(DISTINCT u.id) c FROM users u
+            JOIN import_batches b ON b.user_id = u.id
+           WHERE u.trial_started_at >= ? AND b.status='confirmed'
+             AND b.created_at >= u.trial_started_at""", (since,))
+
+    # Usó la IA durante el trial (la razón principal para pasarse a un plan pago).
+    usaron_ia = _one(
+        """SELECT COUNT(DISTINCT u.id) c FROM users u
+            JOIN ai_usage_daily a ON a.user_id = u.id
+           WHERE u.trial_started_at >= ?
+             AND a.date >= date(u.trial_started_at)
+             AND COALESCE(a.analyses_count,0) + COALESCE(a.chat_count,0) > 0""", (since,))
+
+    # Convirtió = se suscribió DESPUÉS de arrancar el trial.
+    convirtieron = _one(
+        """SELECT COUNT(DISTINCT u.id) c FROM users u
+            JOIN subscriptions s ON s.user_id = u.id
+           WHERE u.trial_started_at >= ?
+             AND s.created_at >= u.trial_started_at
+             AND s.status IN ('authorized','cancelled','superseded')""", (since,))
+
+    en_curso = _one(
+        """SELECT COUNT(*) c FROM users
+            WHERE trial_started_at >= ? AND trial_ends_at > ?""", (since, now))
+    terminados = max(0, activados - en_curso)
+
+    # ¿En qué momento pagan? Dice si conviene mover el corte de Pro o los avisos.
+    etapas = {"durante_pro": 0, "durante_plus": 0, "despues": 0}
+    try:
+        for r in conn.execute(
+            """SELECT u.trial_started_at ini, MIN(s.created_at) pago
+                 FROM users u JOIN subscriptions s ON s.user_id = u.id
+                WHERE u.trial_started_at >= ?
+                  AND s.created_at >= u.trial_started_at
+                  AND s.status IN ('authorized','cancelled','superseded')
+                GROUP BY u.id""", (since,)):
+            try:
+                d = (datetime.fromisoformat(str(r["pago"]).replace("Z", ""))
+                     - datetime.fromisoformat(str(r["ini"]).replace("Z", ""))).days
+            except (TypeError, ValueError):
+                continue
+            if d < TRIAL_PRO_DAYS:
+                etapas["durante_pro"] += 1
+            elif d < TRIAL_TOTAL_DAYS:
+                etapas["durante_plus"] += 1
+            else:
+                etapas["despues"] += 1
+    except Exception as ex:
+        log.warning("funnel etapas falló: %s", ex)
+
+    def _pct(n, base):
+        return round(n / base * 100, 1) if base else None
+
+    return {
+        "days": days,
+        "activados": activados,
+        "en_curso": en_curso,
+        "terminados": terminados,
+        "importaron": importaron,
+        "usaron_ia": usaron_ia,
+        "convirtieron": convirtieron,
+        # Sobre los ACTIVADOS: cuánto del embudo se pierde en cada paso.
+        "pct_importaron": _pct(importaron, activados),
+        "pct_usaron_ia": _pct(usaron_ia, activados),
+        "pct_convirtieron": _pct(convirtieron, activados),
+        # La tasa que de verdad mide el trial: sobre los que lo TERMINARON
+        # (los que están en curso todavía no tuvieron su chance de decidir).
+        "pct_conversion_cerrada": _pct(convirtieron, terminados),
+        "cuando_pagan": etapas,
+        "enabled": trials_enabled(),
+        "monthly_cap": monthly_cap(),
+        "activados_este_mes": _activations_this_month(conn),
+    }

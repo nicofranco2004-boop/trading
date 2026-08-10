@@ -12,6 +12,7 @@ export default function Admin() {
   const [stats, setStats] = useState(null)
   const [users, setUsers] = useState([])
   const [conversion, setConversion] = useState(null)
+  const [trialFunnel, setTrialFunnel] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
@@ -46,14 +47,16 @@ export default function Admin() {
     setLoading(true)
     setError('')
     try {
-      const [s, u, c] = await Promise.all([
+      const [s, u, c, t] = await Promise.all([
         api.get('/admin/stats'),
         api.get('/admin/users'),
         api.get('/admin/plan/conversion').catch(() => null),  // optional, no romper si falla
+        api.get('/admin/billing/trial-funnel?days=90').catch(() => null),
       ])
       setStats(s)
       setUsers(u)
       setConversion(c)
+      setTrialFunnel(t)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -273,6 +276,7 @@ export default function Admin() {
 
       {/* ── Conversión Pro (paywall analytics) ─────────────────────────── */}
       <ConversionPanel data={conversion} />
+      <TrialFunnelPanel data={trialFunnel} />
 
       {/* ── Broadcast: mail custom que vos escribís a los usuarios ── */}
       <BroadcastPanel toast={toast} />
@@ -2899,5 +2903,70 @@ function ConvCell({ label, value, hint }) {
       <div className="mt-1.5 text-xl font-medium tabular num leading-none text-ink-0">{value}</div>
       <div className="text-[10px] text-ink-3 mt-1 truncate">{hint}</div>
     </div>
+  )
+}
+
+
+// ─── Embudo del free trial ────────────────────────────────────────────────
+// Responde, en orden: ¿lo activan? ¿usan la app? ¿pagan? Un trial sin uso no
+// falló al convertir — falló antes, y ahí el problema es el onboarding, no el
+// precio. Por eso los pasos intermedios están a la vista y no solo la tasa.
+function TrialFunnelPanel({ data }) {
+  if (!data) return null
+  const {
+    activados, en_curso: enCurso, terminados, importaron, usaron_ia: usaronIa,
+    convirtieron, pct_importaron: pctImp, pct_usaron_ia: pctIa,
+    pct_conversion_cerrada: pctCerrada, cuando_pagan: cuando,
+    enabled, monthly_cap: cap, activados_este_mes: esteMes, days,
+  } = data
+
+  const paso = (label, n, pct, nota) => (
+    <div className="flex items-baseline gap-3 py-1.5">
+      <span className="text-sm text-ink-1 flex-1">{label}</span>
+      <span className="text-sm font-medium text-ink-0 tabular-nums">{n ?? 0}</span>
+      <span className="text-xs text-ink-3 tabular-nums w-14 text-right">
+        {pct != null ? `${pct}%` : '—'}
+      </span>
+      {nota && <span className="text-[11px] text-ink-3">{nota}</span>}
+    </div>
+  )
+
+  return (
+    <section className="bg-bg-1 border border-line rounded-lg p-5 mb-5">
+      <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+        <h2 className="text-sm font-semibold text-ink-0">Free trial · últimos {days} días</h2>
+        <span className={`text-[11px] px-2 py-0.5 rounded-sm ${enabled ? 'bg-rendi-pos/15 text-rendi-pos' : 'bg-rendi-warn/15 text-rendi-warn'}`}>
+          {enabled ? 'activo' : 'apagado'}
+          {cap ? ` · ${esteMes}/${cap} este mes` : ''}
+        </span>
+      </div>
+      <p className="text-xs text-ink-3 mb-3">
+        {enCurso} en curso · {terminados} terminados
+      </p>
+
+      <div className="divide-y divide-line/60">
+        {paso('Activaron la prueba', activados, null)}
+        {paso('…y después importaron', importaron, pctImp, 'la app con datos adentro')}
+        {paso('…y usaron la IA', usaronIa, pctIa)}
+        {paso('…y se suscribieron', convirtieron, null)}
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-line flex items-baseline gap-2 flex-wrap">
+        <span className="text-sm text-ink-2">Conversión sobre los que terminaron:</span>
+        <span className="text-lg font-semibold text-ink-0 tabular-nums">
+          {pctCerrada != null ? `${pctCerrada}%` : '—'}
+        </span>
+        <span className="text-[11px] text-ink-3">
+          (los que siguen probando todavía no decidieron)
+        </span>
+      </div>
+
+      {cuando && (convirtieron > 0) && (
+        <p className="text-xs text-ink-3 mt-2">
+          Pagan: {cuando.durante_pro} en la semana de Pro · {cuando.durante_plus} en los días de Plus
+          · {cuando.despues} después de que terminó.
+        </p>
+      )}
+    </section>
   )
 }

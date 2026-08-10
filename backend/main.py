@@ -23133,6 +23133,25 @@ def billing_trial_start(uid: int = Depends(get_current_user)):
         conn.close()
 
 
+@app.get("/api/admin/billing/trial-funnel")
+def admin_trial_funnel(days: int = 90, uid: int = Depends(get_admin_user)):
+    """Embudo del free trial: activaron → importaron → usaron la IA →
+    convirtieron, más en qué momento pagan. Todo sale de lo que ya se guarda.
+
+    La tasa que importa es `pct_conversion_cerrada` (sobre los que TERMINARON
+    el trial): los que están en curso todavía no tuvieron su chance de
+    decidir, y meterlos en el denominador hace que el número parezca peor de
+    lo que es."""
+    if days < 1 or days > 730:
+        raise HTTPException(422, "days debe estar entre 1 y 730")
+    from billing import trial as _trial
+    conn = get_db()
+    try:
+        return _trial.funnel(conn, days=days)
+    finally:
+        conn.close()
+
+
 @app.get("/api/billing/trial")
 def billing_trial_status(uid: int = Depends(get_current_user)):
     """Estado del trial de la persona logueada: si está activo, en qué etapa,
