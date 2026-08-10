@@ -133,7 +133,7 @@ export default function Insights({ _embeddedTab }) {
 function InsightsDesktop({ _embeddedTab }) {
   const isMobile = useIsMobile()
   const { user } = useAuth()
-  const { valuationDollar, currency } = useCurrency()
+  const { valuationDollar, currency, costBasis } = useCurrency()
   const plan = usePlanFeatures()
   // "Desde tu última visita" — el hook va ARRIBA (antes del guard de loading);
   // el delta se computa con record(snapshot) más abajo, cuando la data existe.
@@ -260,7 +260,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // En un broker AR (Cocos, Balanz…) la cripto se valúa al dólar cripto (MEP-like).
   const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
   const pieData = brokers
-    .map(b => ({ name: b.name, value: +computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto).value.toFixed(2) }))
+    .map(b => ({ name: b.name, value: +computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis).value.toFixed(2) }))
     .filter(x => x.value > 0)
   const totalPortfolio = pieData.reduce((s, x) => s + x.value, 0)
 
@@ -372,7 +372,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
   const totalCostBasis = brokers.reduce((s, b) => {
-    return s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto).invested
+    return s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis).invested
   }, 0)
   const unrealizedPnl = totalPortfolio - totalCostBasis
 
@@ -778,7 +778,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // Punto "Hoy" — valor live de posiciones ARS al blue actual (extiende el TWR)
     const arsLiveUsd = brokers
       .filter(b => arsBrokerNames.has(b.name))
-      .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto).value, 0)
+      .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis).value, 0)
     if (arsLiveUsd > 0) {
       const lastM = arsMonthly[arsMonthly.length - 1]
       // El punto "Hoy" tenía el MISMO bug que el loop: los dos lados al mismo

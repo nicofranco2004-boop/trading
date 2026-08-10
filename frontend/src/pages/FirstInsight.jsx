@@ -24,7 +24,7 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 export default function FirstInsight() {
   const navigate = useNavigate()
   const coachDrawer = useCoachDrawer()
-  const { valuationDollar } = useCurrency()
+  const { valuationDollar, costBasis } = useCurrency()
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
@@ -89,7 +89,7 @@ export default function FirstInsight() {
     if (!brokers.length || !positions.length) return null
     let value = 0, invested = 0
     for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto)
+      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis)
       value += r.value || 0
       invested += r.invested || 0
     }

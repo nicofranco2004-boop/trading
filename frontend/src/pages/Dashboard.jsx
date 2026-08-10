@@ -70,7 +70,7 @@ function PersonalDashboard() {
   // por página → inconsistencias entre desktop y mobile.
   // Migración soft: si el user tenía 'rendi_dashboard_currency' viejo, lo
   // migra al nuevo storage key al primer load.
-  const { currency, setCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
+  const { currency, setCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
   const { hidden, toggle: togglePrivacy } = usePrivacy()
   useEffect(() => {
     try {
@@ -178,7 +178,7 @@ function PersonalDashboard() {
   const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcBlue)
   const pf = pfUsd(usePfRollup(), tcBlue)   // plazos fijos → USD (valor + capital)
 
-  const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto) }))
+  const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis) }))
   const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0) + pf.valueUsd
   const totalCostBasis = brokerTotals.reduce((s, b) => s + b.invested, 0) + pf.investedUsd
   const totalPnl = totalValue - totalCostBasis

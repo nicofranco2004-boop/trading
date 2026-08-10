@@ -43,7 +43,7 @@ export default function HomeMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard.
   // Fase B: además publicamos tcBlue al context para que Reports / charts
   // puedan leer sin re-fetchear /dolar.
-  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
+  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
   const { hidden, toggle: togglePrivacy } = usePrivacy()
   const [positions, setPositions] = useState([])
   const [monthly, setMonthly] = useState([])
@@ -107,7 +107,7 @@ export default function HomeMobile() {
   }, [tcBlue, publishTcBlue])
 
   const totals = useMemo(() => {
-    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto) }))
+    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis) }))
     const totalValue = bt.reduce((s, b) => s + b.value, 0)
     const totalCost = bt.reduce((s, b) => s + b.invested, 0)
     const totalPnl = totalValue - totalCost
@@ -124,7 +124,7 @@ export default function HomeMobile() {
   const tcMep = pickFinancialRate(dolar, 'mep') || tcBlue
   const totalsMep = useMemo(() => {
     if (tcMep === tcCedear) return null  // riel MEP: reusar totals (evita doble cálculo)
-    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcMep, tcMep, tcCripto) }))
+    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcMep, tcMep, tcCripto, costBasis) }))
     return { totalValue: bt.reduce((s, b) => s + b.value, 0) }
   }, [positions, prices, brokers, tcMep, tcCedear, tcCripto])
   const compareValue = totalsMep ? totalsMep.totalValue : totals.totalValue
