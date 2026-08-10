@@ -3036,11 +3036,16 @@ def change_password(data: ChangePasswordIn, response: Response, uid: int = Depen
 # Todo lo de identidad/billing/prefs (users, subscriptions, credit_ledger,
 # user_broker_credentials, alerts, watchlist, import_mappings, advisor_*, los
 # contadores de uso de IA y las tablas globales) NO se toca.
+# ⚠️ NO agregar acá tablas GLOBALES (sin columna user_id): `asset_last_price` y
+# `financial_events` estaban y son caches COMPARTIDOS entre todos los usuarios
+# (keyed por symbol/ticker) — el DELETE tiraba OperationalError y se salteaba en
+# silencio. Si algún día ganaran una columna user_id, este allowlist empezaría a
+# borrarlas de verdad sin que nadie lo decida. Fuera.
 _RESET_PORTFOLIO_TABLES = (
     "brokers", "positions", "archived_positions", "operations",
     "monthly_entries", "snapshots", "plazos_fijos", "goals", "twr_periods",
-    "deleted_ops_journal", "bond_cashflow_skips", "financial_events",
-    "asset_last_price", "ai_analyses_cache", "ai_user_facts",
+    "deleted_ops_journal", "bond_cashflow_skips",
+    "ai_analyses_cache", "ai_user_facts",
 )
 # Keys de config que son de CARTERA (se borran); el resto —onboarding,
 # welcome_email_sent_at, diag_*— son prefs de UX y sobreviven. Borrar fx_version
@@ -3087,8 +3092,12 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
                     n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (uid,)).rowcount
                     if n:
                         cleared[t] = n
-                except sqlite3.OperationalError:
-                    pass  # tabla ausente en esta DB — nada que borrar
+                except sqlite3.OperationalError as ex:
+                    # Tabla ausente en una DB vieja: seguimos (no rompemos el reset
+                    # entero por una). Pero se LOGUEA: un `pass` mudo convertía un
+                    # reset PARCIAL en un "ok" indistinguible del completo.
+                    log.warning("reset_my_data uid=%s: no pude limpiar %s (%s)", uid, t, ex)
+                    cleared[f"{t}:ERROR"] = str(ex)
             # Solo las keys de config de CARTERA (no las prefs de UX).
             _kph = ",".join("?" * len(_RESET_CONFIG_KEYS))
             n = conn.execute(
@@ -3096,6 +3105,12 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
                 (uid, *_RESET_CONFIG_KEYS)).rowcount
             if n:
                 cleared["config"] = n
+        # Caches del user: sin esto el chat de IA sigue respondiendo con la cartera
+        # RECIÉN BORRADA hasta 60s (_CHAT_VAL_CACHE) y con análisis viejos (TTL 24h).
+        # Es el mismo helper que llaman las demás mutaciones (import, borrar broker/
+        # posición) y es justo el síntoma de "datos fantasma" que este botón existe
+        # para eliminar. Es best-effort: no rompe el reset si falla.
+        _ai_cache_invalidate(uid)
         log.info("reset_my_data uid=%s cleared=%s", uid, cleared)
         return {"ok": True, "cleared": cleared}
     except HTTPException:

@@ -114,5 +114,60 @@ class ResetDataTest(unittest.TestCase):
         self.assertEqual(out2["cleared"], {})
 
 
+    def test_invalida_el_cache_del_chat_de_ia(self):
+        """AUDIT: sin esto el chat de IA sigue contestando con la cartera RECIÉN
+        BORRADA hasta 60s (_CHAT_VAL_CACHE, TTL 60) — justo el síntoma de datos
+        fantasma que este botón existe para eliminar. Las demás mutaciones ya
+        llamaban a _ai_cache_invalidate; el reset se lo había olvidado."""
+        main._CHAT_VAL_CACHE[self.UID] = (9e18, ["cartera vieja"], {"total": 999})
+        main.reset_my_data(uid=self.UID)
+        self.assertNotIn(self.UID, main._CHAT_VAL_CACHE,
+                         "el cache de valuación del chat tiene que quedar invalidado")
+
+    def test_allowlist_solo_tablas_con_user_id(self):
+        """AUDIT: `asset_last_price` y `financial_events` estaban en el allowlist y
+        son caches GLOBALES (keyed por symbol/ticker, sin user_id) → el DELETE
+        tiraba OperationalError y se salteaba en silencio. Peor: si mañana ganaran
+        una columna user_id, el reset empezaría a borrarlas de verdad. Este test
+        falla si alguien vuelve a meter una tabla sin user_id."""
+        conn = main.get_db()
+        try:
+            for t in main._RESET_PORTFOLIO_TABLES:
+                cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})")]
+                self.assertTrue(cols, f"{t} no existe como tabla")
+                self.assertIn("user_id", cols,
+                              f"{t} no tiene user_id — es global, no va en el allowlist")
+        finally:
+            conn.close()
+
+    def test_no_toca_billing_aunque_agreguen_tablas(self):
+        """AUDIT: el allowlist es explícito justamente para que una tabla de billing
+        futura no se borre sola. Se fija la invariante: ninguna tabla cuyo nombre
+        huela a billing/identidad puede estar en la lista."""
+        prohibidas = {"users", "subscriptions", "credit_ledger", "billing_events",
+                      "plan_events", "user_broker_credentials", "login_history",
+                      "password_reset_tokens", "email_verification_codes",
+                      "push_subscriptions", "ai_usage_daily", "ai_tool_usage"}
+        self.assertEqual(set(main._RESET_PORTFOLIO_TABLES) & prohibidas, set())
+
+
+class ResetDataContextTest(unittest.TestCase):
+    """AUDIT — el hallazgo más grave posible: que el reset corra sobre la cuenta
+    EQUIVOCADA. `get_effective_user` resuelve el contexto de cliente del Plan
+    Asesor, así que si `/api/me/reset-data` NO estuviera exento, un asesor con un
+    cliente abierto le borraría la cartera AL CLIENTE al tocar su propio botón.
+    Hoy está exento (el prefijo '/api/me' matchea por límite de segmento), pero el
+    propio código avisa que la lista es FAIL-OPEN: todo endpoint nuevo fuera de
+    esos prefijos hereda el contexto. Este test lo deja clavado."""
+
+    def test_el_endpoint_esta_exento_del_contexto_de_cliente(self):
+        path = "/api/me/reset-data"
+        exento = any(path == p or path.startswith(p + "/")
+                     for p in main.CLIENT_CTX_EXEMPT_PREFIXES)
+        self.assertTrue(exento,
+                        "/api/me/reset-data DEBE estar exento del contexto de cliente: "
+                        "si no, un asesor reseteando SUS datos borra los del cliente abierto")
+
+
 if __name__ == "__main__":
     unittest.main()
