@@ -7,6 +7,7 @@
 import { Sparkles, Check, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { track } from '../../utils/track'
+import { TrialCta, TrialFinePrint } from './TrialCta'
 
 const DEFAULT_BENEFITS = [
   'Brokers ilimitados',
@@ -71,10 +72,17 @@ export default function UpgradeModal({
           ))}
         </ul>
 
+        {/* Si nunca usó el trial, probar gratis es un "sí" mucho más fácil
+            que pagar — y el que prueba con su cartera cargada convierte mejor.
+            TrialCta no renderiza nada cuando el server no lo habilita, así que
+            para el resto el modal queda exactamente como antes. */}
+        <TrialCta source={source} onStarted={onClose} />
+        <TrialFinePrint />
+
         <button
           type="button"
           onClick={onUpgradeClick}
-          className="w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm py-2.5 transition-colors"
+          className="w-full mt-2 inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm py-2.5 transition-colors"
         >
           <Sparkles size={13} strokeWidth={1.75} />
           Ver planes y mejorar

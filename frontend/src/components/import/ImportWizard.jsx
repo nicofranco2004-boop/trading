@@ -72,7 +72,29 @@ const STEP_UPLOAD = 'upload'
 const STEP_MAP = 'map'
 const STEP_PREVIEW = 'preview'
 const STEP_SEED = 'seed'
+import { TrialCta, TrialFinePrint, TRIAL_PRO_DAYS } from '../plan/TrialCta'
+import { usePlanFeatures as _usePlanFeaturesTrial } from '../../hooks/usePlanFeatures'
+
 const STEP_DONE = 'done'
+
+/** Oferta del trial en la pantalla de "importación completada". */
+function TrialImportOffer() {
+  const { trial } = _usePlanFeaturesTrial()
+  if (!trial?.can_start) return null
+  return (
+    <div className="rounded-lg border border-data-violet/40 bg-data-violet/[0.07] p-4">
+      <h4 className="text-sm font-semibold text-ink-0 mb-1">
+        Ahora que está tu cartera, probá Rendi Pro gratis
+      </h4>
+      <p className="text-xs text-ink-2 leading-relaxed mb-3">
+        {TRIAL_PRO_DAYS} días con el chat libre y los análisis completos sobre
+        los datos que acabás de cargar, y después una semana de Plus. Sin tarjeta.
+      </p>
+      <TrialCta source="import_done" />
+      <TrialFinePrint />
+    </div>
+  )
+}
 
 // Moneda base por plataforma soportada (rama "de un broker"). Define si
 // preguntamos por el sub-broker USD (solo brokers ARS lo necesitan) y con qué
@@ -2380,6 +2402,13 @@ function DoneStep({ result }) {
           ) : null
         )}
       </div>
+
+      {/* ⭐ EL momento del trial: la cartera acaba de entrar, la app por fin
+          tiene datos adentro y todo lo que se desbloquea se puede probar HOY.
+          Ofrecerlo en el registro sería regalar 15 días de app vacía — que es
+          el riesgo real de este feature. No renderiza nada si el usuario ya lo
+          usó, ya paga, o el trial está apagado. */}
+      <TrialImportOffer />
 
       {/* Cash reconcile — main UX */}
       {needsReconcile && (

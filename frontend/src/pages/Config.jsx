@@ -904,6 +904,7 @@ function PlanHeroFree({ usage }) {
 function PlanHeroPro({ tier = 'pro', usage }) {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const { trial } = usePlanFeatures()
   const count = usage?.analyses_count ?? 0
   const isPlus = tier === 'plus'
   const tierLabel = isPlus ? 'PLUS' : 'PRO'
@@ -927,7 +928,12 @@ function PlanHeroPro({ tier = 'pro', usage }) {
   const subStatus = user?.subscription_status
   const periodEnd = user?.subscription_period_end
   const isCancelled = accessMode === 'cancelled'
-  const isCreditOnly = accessMode === 'credit_only'
+  // El free trial entra en 'credit_only' (tier pago + crédito, sin suscripción)
+  // pero NO cambió de plan ni convirtió nada: necesita su propio texto, o se le
+  // dice "cambiaste de plan… con el crédito convertido" a alguien que recién
+  // activó una prueba gratis (audit).
+  const isTrial = !!trial?.active
+  const isCreditOnly = accessMode === 'credit_only' && !isTrial
   const isAuthorized = accessMode === 'authorized'
 
   // Estado del crédito (modelo Rendi-managed proration). Cuando el user
@@ -1006,14 +1012,20 @@ function PlanHeroPro({ tier = 'pro', usage }) {
 
   const title = isAuthorized
     ? `Rendi ${isPlus ? 'Plus' : 'Pro'} está activo`
-    : isCreditOnly
-      ? `Rendi ${isPlus ? 'Plus' : 'Pro'} con tu crédito convertido`
-      : `Rendi ${isPlus ? 'Plus' : 'Pro'} hasta fin de período`
+    : isTrial
+      ? `Estás probando Rendi ${isPlus ? 'Plus' : 'Pro'}`
+      : isCreditOnly
+        ? `Rendi ${isPlus ? 'Plus' : 'Pro'} con tu crédito convertido`
+        : `Rendi ${isPlus ? 'Plus' : 'Pro'} hasta fin de período`
 
   const descriptionText = isAuthorized
     ? (isPlus
         ? 'Multi-broker, insights completos, comportamiento avanzado y export CSV. Se renueva automáticamente.'
         : 'Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más. Se renueva automáticamente.')
+    : isTrial
+      ? (trial?.stage === 'pro'
+          ? `Prueba gratis: tenés Pro${trial?.days_to_switch != null ? ` por ${trial.days_to_switch} día${trial.days_to_switch === 1 ? '' : 's'} más` : ''} y después seguís con Plus hasta completar los ${trial?.total_days ?? 15} días. No hace falta que hagas nada: no cargamos ninguna tarjeta.`
+          : `Prueba gratis: estás en Plus${trial?.days_left != null ? ` por ${trial.days_left} día${trial.days_left === 1 ? '' : 's'} más` : ''}. Cuando termine tu cuenta vuelve a Free — si querés seguir, elegí un plan.`)
     : isCreditOnly
       ? (periodEndLabel
           ? `Cambiaste de plan: tenés acceso a ${isPlus ? 'Plus' : 'Pro'} hasta el ${periodEndLabel} con el crédito convertido. Después te avisamos para que configures el pago si querés seguir.`

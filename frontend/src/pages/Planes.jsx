@@ -21,6 +21,7 @@ import { useEffect, useState } from 'react'
 import PageMeta from '../components/PageMeta'
 import PageHeader from '../components/PageHeader'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { TrialBanner } from '../components/plan/TrialCta'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
 import { trackEvent } from '../utils/analytics'
@@ -324,11 +325,21 @@ export default function Planes() {
         subtitle="Empezá gratis. Mejorá cuando necesites análisis más profundos, más brokers o features pro."
       />
 
+      {/* Trial en curso: el banner explica en qué etapa está y cuánto le
+          queda. Va ANTES del banner de crédito porque el trial también entra
+          en access_mode='credit_only' y ese texto ("cambiaste de plan… crédito
+          convertido") no aplica a alguien que está probando. */}
+      {trial?.active && (
+        <div className="max-w-3xl mx-auto mb-6">
+          <TrialBanner />
+        </div>
+      )}
+
       {/* Banner contextual según access_mode. Cada estado tiene mensaje propio:
           - authorized: nada (auto-renueva, no hay que avisar)
           - credit_only: "tenés acceso por crédito, cambiá o configurá pago"
           - cancelled: "cancelaste, vence X, reactivá si querés seguir" */}
-      {isCreditOnlyMode && hasCredit && anchorPlan && (
+      {isCreditOnlyMode && hasCredit && anchorPlan && !trial?.active && (
         <div className="max-w-3xl mx-auto mb-6 flex items-center gap-3 border border-data-cyan/40 bg-data-cyan/[0.06] rounded-lg px-4 py-3">
           <Clock size={16} strokeWidth={1.75} className="text-data-cyan flex-shrink-0" />
           <div className="flex-1 min-w-0 text-sm text-ink-1 leading-snug">
