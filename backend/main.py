@@ -1766,6 +1766,14 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_amount_usd REAL")
     if user_cols_after and 'credit_anchor_at' not in user_cols_after:
         conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_at TEXT")
+    # Free trial (15 días: 7 de Pro + 8 de Plus). Se apoya ENTERO en el modelo
+    # de crédito de arriba — trial_started_at solo marca cuándo arrancó (para
+    # saber cuándo bajar de Pro a Plus) y trial_used_at que ya lo usó (uno por
+    # cuenta, para siempre). NULL en ambas = nunca activó un trial.
+    if user_cols_after and 'trial_started_at' not in user_cols_after:
+        conn.execute("ALTER TABLE users ADD COLUMN trial_started_at TEXT")
+    if user_cols_after and 'trial_used_at' not in user_cols_after:
+        conn.execute("ALTER TABLE users ADD COLUMN trial_used_at TEXT")
     conn.commit()
 
     # Ledger de movimientos de crédito — audit trail completo de cada
@@ -23051,6 +23059,40 @@ def plan_track(data: PlanEventIn, uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+@app.post("/api/billing/trial/start")
+def billing_trial_start(uid: int = Depends(get_current_user)):
+    """Activa el free trial de 15 días (7 de Pro + 8 de Plus).
+
+    Deliberadamente usa get_current_user y NO get_effective_user: el trial es
+    de la persona que está logueada. Un asesor mirando la cuenta de un cliente
+    no puede activarle un trial "sin querer" desde el contexto.
+
+    Toda la lógica (elegibilidad, idempotencia, ledger) vive en billing/trial.py."""
+    from billing import trial as _trial
+    conn = get_db()
+    try:
+        res = _trial.start(conn, uid)
+        if not res.get("ok"):
+            # 409: el pedido es válido pero el estado no lo permite (ya lo usó,
+            # ya paga, trial apagado). El frontend lo traduce a un mensaje.
+            raise HTTPException(409, res.get("reason") or "no se puede activar el trial")
+        return res
+    finally:
+        conn.close()
+
+
+@app.get("/api/billing/trial")
+def billing_trial_status(uid: int = Depends(get_current_user)):
+    """Estado del trial de la persona logueada: si está activo, en qué etapa,
+    cuántos días le quedan y si todavía puede activarlo."""
+    from billing import trial as _trial
+    conn = get_db()
+    try:
+        return _trial.status(conn, uid)
+    finally:
+        conn.close()
+
+
 @app.get("/api/plan/features")
 def plan_features(
     request: Request,
@@ -23085,6 +23127,15 @@ def plan_features(
             conn, uid, tier_override="pro" if in_client_ctx else None
         )
         out["client_ctx"] = in_client_ctx
+        # Estado del trial de la PERSONA logueada (no del cliente que el asesor
+        # esté mirando): el banner y el botón son suyos. Nunca rompe el
+        # endpoint — si algo falla, la UI simplemente no ofrece el trial.
+        if not in_client_ctx:
+            try:
+                from billing import trial as _trial
+                out["trial"] = _trial.status(conn, uid)
+            except Exception as ex:
+                log.warning("plan_features: estado de trial falló uid=%s: %s", uid, ex)
         return out
     finally:
         conn.close()

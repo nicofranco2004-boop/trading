@@ -38,6 +38,7 @@ def run_lifecycle_job(conn) -> dict:
         "synced_from_mp": 0,
         "expiration_reminders_sent": 0,
         "credit_expiring_reminders_sent": 0,
+        "trials_stepped_down": 0,
         "unverified_accounts_deleted": 0,
         "errors": 0,
     }
@@ -48,6 +49,14 @@ def run_lifecycle_job(conn) -> dict:
         result["credit_expired_downgraded"] = _downgrade_expired_credit(conn)
     except Exception as ex:
         log.error("credit expiration downgrade failed: %s", ex)
+        result["errors"] += 1
+    # Trials que ya cumplieron su semana de Pro → pasan a Plus. Va ANTES de los
+    # recordatorios para que el mail del día salga con el plan correcto.
+    try:
+        from billing import trial as _trial
+        result["trials_stepped_down"] = _trial.step_down_due_trials(conn)
+    except Exception as ex:
+        log.error("trial step-down failed: %s", ex)
         result["errors"] += 1
     try:
         result["credit_expiring_reminders_sent"] = _send_credit_expiring_reminders(conn)
