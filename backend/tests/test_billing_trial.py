@@ -38,7 +38,9 @@ def _iso(dt):
 class TrialBase(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
-        for t in ("credit_ledger", "subscriptions", "users"):
+        # trial_consumed a propósito: la marca SOBREVIVE al borrado de la
+        # cuenta (ese es el fix), así que entre tests hay que limpiarla a mano.
+        for t in ("credit_ledger", "subscriptions", "trial_consumed", "users"):
             try:
                 self.conn.execute(f"DELETE FROM {t}")
             except Exception:
@@ -70,13 +72,16 @@ class TrialBase(unittest.TestCase):
         """Simula el paso del tiempo moviendo el arranque del trial hacia
         atrás (no se puede mover el reloj del sistema en un test)."""
         row = self.conn.execute(
-            "SELECT trial_started_at, credit_active_until FROM users WHERE id=?",
+            "SELECT trial_started_at, credit_active_until, trial_ends_at FROM users WHERE id=?",
             (self.uid,)).fetchone()
         started = datetime.fromisoformat(row["trial_started_at"]) - timedelta(days=dias)
         until = datetime.fromisoformat(row["credit_active_until"]) - timedelta(days=dias)
+        # trial_ends_at viaja junto: es la marca de "este crédito ES el del
+        # trial" y tiene que seguir coincidiendo con credit_active_until.
+        ends = datetime.fromisoformat(row["trial_ends_at"]) - timedelta(days=dias)
         self.conn.execute(
-            "UPDATE users SET trial_started_at=?, credit_active_until=? WHERE id=?",
-            (_iso(started), _iso(until), self.uid))
+            "UPDATE users SET trial_started_at=?, credit_active_until=?, trial_ends_at=? "
+            "WHERE id=?", (_iso(started), _iso(until), _iso(ends), self.uid))
         self.conn.commit()
 
 
@@ -241,3 +246,123 @@ class TrialCron(TrialBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrialAuditFixes(TrialBase):
+    """Hallazgos del audit del 2026-08-08. Cada test fija un agujero que ya
+    estaba en producción (aunque sin UI, así que nadie llegó a activarlo)."""
+
+    def _otro_user(self, email="otro@rendi.test", **cols):
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified) "
+            "VALUES (?,?,1,1)", (email, "x"))
+        uid = cur.lastrowid
+        for k, v in cols.items():
+            self.conn.execute(f"UPDATE users SET {k}=? WHERE id=?", (v, uid))
+        self.conn.commit()
+        return uid
+
+    # ── El cron NO puede tocar a un Pro que no es del trial ─────────────────
+    def test_no_baja_el_pro_regalado_a_un_ex_trial(self):
+        # Hizo el trial hace meses; hoy el admin le regala Pro por 30 días.
+        tr.start(self.conn, self.uid)
+        self._viajar(120)
+        self.conn.execute(
+            "UPDATE users SET tier='pro', credit_active_until=? WHERE id=?",
+            (_iso(datetime.utcnow() + timedelta(days=30)), self.uid))
+        self.conn.commit()
+        self.assertEqual(tr.step_down_due_trials(self.conn), 0,
+                         "el regalo NO es el crédito del trial")
+        self.assertEqual(self._tier(), "pro")
+
+    def test_no_baja_el_pro_de_una_suscripcion_cancelada_en_gracia(self):
+        # Pagó Pro y canceló: conserva Pro hasta fin de período, sin sub
+        # 'authorized'. Antes el cron se lo bajaba a Plus.
+        tr.start(self.conn, self.uid)
+        self._viajar(120)
+        self.conn.execute(
+            "UPDATE users SET tier='pro', credit_active_until=? WHERE id=?",
+            (_iso(datetime.utcnow() + timedelta(days=22)), self.uid))
+        self.conn.execute(
+            "INSERT INTO subscriptions (user_id, status, external_reference, period, amount_ars) "
+            "VALUES (?, 'cancelled', 'ref-cancel', 'monthly', 10000)", (self.uid,))
+        self.conn.commit()
+        self.assertEqual(tr.step_down_due_trials(self.conn), 0)
+        self.assertEqual(self._tier(), "pro")
+
+    # ── El trial no puede fabricar crédito con plata ────────────────────────
+    def test_no_hereda_el_anchor_de_una_suscripcion_vieja(self):
+        # Ex-suscriptor: el anchor queda pegado y le pone PRECIO al crédito.
+        # Sin limpiarlo, los 15 días gratis valían USD 4,50 y "cambiar de plan"
+        # los convertía en 41 días de Plus.
+        self.conn.execute(
+            """UPDATE users SET credit_anchor_plan='pro', credit_anchor_period='monthly',
+                   credit_anchor_amount_usd=9.0, credit_active_until=? WHERE id=?""",
+            (_iso(datetime.utcnow() - timedelta(days=5)), self.uid))
+        self.conn.commit()
+        self.assertTrue(tr.start(self.conn, self.uid)["ok"])
+        row = self.conn.execute(
+            "SELECT credit_anchor_plan p, credit_anchor_amount_usd a FROM users WHERE id=?",
+            (self.uid,)).fetchone()
+        self.assertIsNone(row["p"], "el anchor viejo tiene que quedar limpio")
+        self.assertIsNone(row["a"])
+        from billing import credits as _c
+        st = _c.get_credit_state(self.conn, self.uid)
+        self.assertEqual(st["remaining_usd"], 0.0, "un trial no vale plata")
+
+    # ── Uno por persona, aunque borre la cuenta ─────────────────────────────
+    def test_borrar_la_cuenta_no_devuelve_el_trial(self):
+        tr.start(self.conn, self.uid)
+        email = self.conn.execute(
+            "SELECT email e FROM users WHERE id=?", (self.uid,)).fetchone()["e"]
+        self.conn.execute("DELETE FROM users WHERE id=?", (self.uid,))
+        self.conn.commit()
+        nuevo = self._otro_user(email=email)      # se registra de nuevo, mismo mail
+        self.assertEqual(tr.start(self.conn, nuevo)["reason"], "already_used")
+
+    # ── Nadie pierde lo que ya tiene ────────────────────────────────────────
+    def test_no_pisa_el_credito_de_alguien_que_ya_tiene_plan(self):
+        futuro = _iso(datetime.utcnow() + timedelta(days=200))
+        self.conn.execute(
+            "UPDATE users SET tier='plus', credit_active_until=? WHERE id=?",
+            (futuro, self.uid))
+        self.conn.commit()
+        tr.start(self.conn, self.uid)
+        row = self.conn.execute(
+            "SELECT tier, credit_active_until c FROM users WHERE id=?", (self.uid,)).fetchone()
+        self.assertEqual(row["c"], futuro, "no se le acorta el plan que ya tenía")
+        self.assertEqual(row["tier"], "plus")
+
+    def test_el_admin_no_se_autodegrada(self):
+        # Un admin tiene límites MÁS altos que Pro: el trial lo bajaría.
+        admin = self._otro_user(email="admin@rendi.test", is_admin=1)
+        self.assertEqual(tr.start(self.conn, admin)["reason"], "not_applicable")
+        self.assertEqual(quota.get_tier(self.conn, admin), "admin")
+
+    # ── La UI no puede contradecir al gate ──────────────────────────────────
+    def test_la_etapa_sigue_al_tier_real_no_al_calendario(self):
+        # Cron caído: pasó el día 8 pero el usuario TODAVÍA tiene Pro.
+        tr.start(self.conn, self.uid)
+        self._viajar(10)
+        self.assertEqual(self._tier(), "pro")
+        self.assertEqual(tr.status(self.conn, self.uid)["stage"], "pro",
+                         "la app no puede decir Plus mientras el gate da Pro")
+        tr.step_down_due_trials(self.conn)
+        self.assertEqual(tr.status(self.conn, self.uid)["stage"], "plus")
+
+    def test_days_to_switch_siempre_presente(self):
+        tr.start(self.conn, self.uid)
+        self.assertIn("days_to_switch", tr.status(self.conn, self.uid))
+        self._viajar(9)
+        tr.step_down_due_trials(self.conn)
+        self.assertIn("days_to_switch", tr.status(self.conn, self.uid))
+
+    # ── Las palancas fallan del lado seguro ─────────────────────────────────
+    def test_el_tope_no_se_recicla_al_borrar_cuentas(self):
+        os.environ["TRIALS_MONTHLY_CAP"] = "1"
+        tr.start(self.conn, self.uid)
+        self.conn.execute("DELETE FROM users WHERE id=?", (self.uid,))
+        self.conn.commit()
+        otro = self._otro_user(email="tercero@rendi.test")
+        self.assertEqual(tr.start(self.conn, otro)["reason"], "monthly_cap_reached",
+                         "el cupo se cuenta sobre el ledger, no sobre users")

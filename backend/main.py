@@ -1774,6 +1774,23 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN trial_started_at TEXT")
     if user_cols_after and 'trial_used_at' not in user_cols_after:
         conn.execute("ALTER TABLE users ADD COLUMN trial_used_at TEXT")
+    # trial_ends_at identifica CUÁL crédito es el del trial: sin esto, "hizo el
+    # trial alguna vez" quedaba pegado y el cron le bajaba el Pro a quien
+    # después recibía un regalo o pagaba y cancelaba (audit).
+    if user_cols_after and 'trial_ends_at' not in user_cols_after:
+        conn.execute("ALTER TABLE users ADD COLUMN trial_ends_at TEXT")
+    conn.commit()
+
+    # Marca de "este email ya usó su trial", en su PROPIA tabla: borrar la
+    # cuenta borra la fila de users, y con ella trial_used_at — lo que
+    # habilitaba trials infinitos con el mismo mail (audit). Guardamos el hash,
+    # que alcanza para comparar y no reconstruye la casilla.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trial_consumed (
+            email_key   TEXT PRIMARY KEY,
+            consumed_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
 
     # Ledger de movimientos de crédito — audit trail completo de cada

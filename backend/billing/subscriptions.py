@@ -185,6 +185,13 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
            WHERE u.tier IN ('pro', 'plus', 'advisor')
              AND u.credit_active_until IS NOT NULL
              AND u.credit_active_until BETWEEN ? AND ?
+             -- El trial NO entra acá: tiene su propia secuencia de avisos, y
+             -- este mail se apoya en la tabla subscriptions para no repetirse
+             -- (un usuario de trial no tiene fila ahí, así que le llegaba TODOS
+             -- los días de los últimos 4, y encima diciendo "tu plan Pro" —
+             -- audit). Se compara contra trial_ends_at: un ex-trial que después
+             -- pague sí tiene que recibir su aviso normal.
+             AND (u.trial_ends_at IS NULL OR u.credit_active_until <> u.trial_ends_at)
              AND NOT EXISTS (
                 SELECT 1 FROM subscriptions s
                 WHERE s.user_id = u.id AND s.status = 'authorized'
@@ -207,6 +214,16 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
             ).fetchone()
             if existing_sent:
                 continue  # ya mandado
+            # Sin fila en subscriptions no hay dónde marcar que ya se envió, así
+            # que el mail saldría en CADA corrida. Preferimos no mandarlo antes
+            # que mandarlo cuatro veces (audit).
+            _has_sub = conn.execute(
+                "SELECT 1 FROM subscriptions WHERE user_id=? LIMIT 1", (r["user_id"],)
+            ).fetchone()
+            if not _has_sub:
+                log.info("credit expiring reminder salteado uid=%s: sin suscripción "
+                         "donde registrar el envío", r["user_id"])
+                continue
 
             try:
                 period_end = datetime.fromisoformat(

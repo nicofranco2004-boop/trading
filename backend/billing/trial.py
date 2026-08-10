@@ -63,24 +63,76 @@ def _activations_this_month(conn) -> int:
     """Cuántos trials se activaron en el mes calendario en curso (UTC)."""
     month_start = datetime.utcnow().replace(
         day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    # Se cuenta sobre el LEDGER, no sobre users: borrar la cuenta no puede
+    # devolver un cupo (audit). El ledger es append-only.
     try:
         row = conn.execute(
-            "SELECT COUNT(*) c FROM users WHERE trial_started_at >= ?",
+            "SELECT COUNT(*) c FROM credit_ledger WHERE kind='trial' AND created_at >= ?",
             (month_start,),
         ).fetchone()
         return int(row["c"] if hasattr(row, "keys") else row[0]) if row else 0
+    except Exception as ex:
+        # Fail-CLOSED: si no podemos contar, no activamos. El tope existe para
+        # acotar el gasto — que se caiga solo justo bajo carga sería lo peor.
+        log.warning("no pudimos contar los trials del mes: %s", ex)
+        return 10 ** 9
+
+
+def _email_of(conn, user_id: int):
+    try:
+        r = conn.execute("SELECT email FROM users WHERE id=?", (user_id,)).fetchone()
+        return r["email"] if r else None
     except Exception:
-        return 0   # ante la duda no bloqueamos (el interruptor sigue disponible)
+        return None
+
+
+def _email_key(email) -> str:
+    """Clave estable del email para recordar quién ya usó su trial. Se guarda
+    HASHEADA: sirve para comparar, no para reconstruir la casilla."""
+    import hashlib
+    return hashlib.sha256((email or "").strip().lower().encode()).hexdigest()
+
+
+def _email_consumed(conn, email) -> bool:
+    """¿Este email ya consumió su trial alguna vez? La marca vive en su propia
+    tabla porque borrar la cuenta borra la fila de users — y con ella
+    trial_used_at, lo que habilitaba trials infinitos con el mismo mail
+    (audit)."""
+    if not email:
+        return False
+    try:
+        return conn.execute(
+            "SELECT 1 FROM trial_consumed WHERE email_key=? LIMIT 1",
+            (_email_key(email),),
+        ).fetchone() is not None
+    except Exception:
+        return False   # la tabla puede no existir en esquemas viejos
+
+
+def _mark_email_consumed(conn, email) -> None:
+    if not email:
+        return
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO trial_consumed (email_key, consumed_at) VALUES (?, ?)",
+            (_email_key(email), datetime.utcnow().isoformat()),
+        )
+    except Exception as ex:
+        log.warning("no pudimos marcar el email como consumido: %s", ex)
 
 
 def _has_paid_sub(conn, user_id: int) -> bool:
+    """Si la consulta falla asumimos QUE SÍ paga (fail-closed): dar por error un
+    trial a un suscriptor le pisaría el plan y le quemaría su único trial. Es
+    preferible no activarlo y que lo reintente (audit)."""
     try:
         return conn.execute(
             "SELECT 1 FROM subscriptions WHERE user_id=? AND status='authorized' LIMIT 1",
             (user_id,),
         ).fetchone() is not None
-    except Exception:
-        return False
+    except Exception as ex:
+        log.warning("no pudimos verificar la suscripción uid=%s: %s", user_id, ex)
+        return True
 
 
 def eligibility(conn, user_id: int) -> dict:
@@ -95,8 +147,13 @@ def eligibility(conn, user_id: int) -> dict:
     def g(k, default=None):
         return row[k] if k in keys else default
 
-    if g("trial_used_at"):
+    if g("trial_used_at") or _email_consumed(conn, g("email")):
         return {"can_start": False, "reason": "already_used"}
+    # Un admin tiene límites MÁS altos que Pro: activarlo lo degradaría 15 días
+    # (get_tier prioriza el override pago sobre is_admin) y le quemaría su
+    # único trial (audit).
+    if bool(g("is_admin")):
+        return {"can_start": False, "reason": "not_applicable"}
     # El plan Asesor es B2B y se otorga aparte; una cuenta administrada por un
     # asesor ya ve Pro por su cuenta.
     tier = (g("tier") or "").strip().lower()
@@ -135,17 +192,29 @@ def start(conn, user_id: int) -> dict:
     until = (now + timedelta(days=TRIAL_TOTAL_DAYS)).isoformat()
     now_iso = now.isoformat()
     with conn:
-        # El UPDATE es condicional sobre trial_used_at IS NULL: dos requests
-        # simultáneos no pueden activar dos veces (uno de los dos no matchea).
+        # trial_ends_at fija CUÁL crédito es el del trial. Sin esto, "usó el
+        # trial alguna vez" quedaba pegado para siempre y el cron le bajaba el
+        # Pro a cualquiera que después recibiera un regalo o pagara y cancelara
+        # (audit: reproducido con usuarios pagos).
+        #
+        # Los anchors se limpian EXPLÍCITAMENTE: son los que le ponen precio a
+        # un crédito. Si quedaba pegado el anchor de una suscripción vieja,
+        # get_credit_state valuaba los 15 días gratis como plata real y
+        # "cambiar de plan" los convertía en 41 días de Plus (audit: plata
+        # fabricada, reproducido).
         cur = conn.execute(
             """UPDATE users
                   SET tier='pro', credit_active_until=?,
-                      trial_started_at=?, trial_used_at=?
-                WHERE id=? AND trial_used_at IS NULL""",
-            (until, now_iso, now_iso, user_id),
+                      trial_started_at=?, trial_used_at=?, trial_ends_at=?,
+                      credit_anchor_plan=NULL, credit_anchor_period=NULL,
+                      credit_anchor_amount_usd=NULL, credit_anchor_at=NULL
+                WHERE id=? AND trial_used_at IS NULL
+                  AND (credit_active_until IS NULL OR credit_active_until <= ?)""",
+            (until, now_iso, now_iso, until, user_id, now_iso),
         )
         if cur.rowcount == 0:
             return {"ok": False, "can_start": False, "reason": "already_used"}
+        _mark_email_consumed(conn, _email_of(conn, user_id))
         try:
             conn.execute(
                 """INSERT INTO credit_ledger
@@ -174,7 +243,8 @@ def status(conn, user_id: int) -> dict:
     used = bool(row["trial_used_at"] if "trial_used_at" in keys else None)
     cau = (row["credit_active_until"] if "credit_active_until" in keys else None)
     out = {"active": False, "used": used, "can_start": False,
-           "stage": None, "days_left": None, "ends_at": cau if started else None,
+           "stage": None, "days_left": None, "days_to_switch": None,
+           "ends_at": cau if started else None,
            "pro_days": TRIAL_PRO_DAYS, "plus_days": TRIAL_PLUS_DAYS,
            "total_days": TRIAL_TOTAL_DAYS}
     if not started:
@@ -189,9 +259,17 @@ def status(conn, user_id: int) -> dict:
     except (TypeError, ValueError):
         return out
     if until_dt and now < until_dt and not _has_paid_sub(conn, user_id):
-        elapsed = (now - started_dt).days
         out["active"] = True
-        out["stage"] = "pro" if elapsed < TRIAL_PRO_DAYS else "plus"
+        # La etapa es el tier EFECTIVO, no el que dice el calendario: si el cron
+        # todavía no corrió, el usuario sigue teniendo Pro de verdad y la UI no
+        # puede anunciarle que ya está en Plus (audit).
+        try:
+            from ai import quota as _q
+            real = _q.get_tier(conn, user_id)
+            out["stage"] = real if real in ("pro", "plus") else None
+        except Exception:
+            elapsed = (now - started_dt).days
+            out["stage"] = "pro" if elapsed < TRIAL_PRO_DAYS else "plus"
         # Días completos que faltan para que se termine TODO el trial.
         out["days_left"] = max(0, (until_dt - now).days + (1 if (until_dt - now).seconds else 0))
         # Días que faltan para el cambio de Pro a Plus (None si ya pasó).
@@ -217,6 +295,12 @@ def step_down_due_trials(conn) -> int:
                   AND trial_started_at IS NOT NULL
                   AND trial_started_at <= ?
                   AND credit_active_until > ?
+                  -- CLAVE: solo si el crédito vigente ES el del trial. Sin esto
+                  -- bajaba a Plus a cualquiera que hubiera hecho el trial y
+                  -- después tuviera Pro por otra vía (regalo, pago cancelado en
+                  -- su período de gracia, cambio de plan) — audit, reproducido.
+                  AND trial_ends_at IS NOT NULL
+                  AND credit_active_until = trial_ends_at
                   AND NOT EXISTS (SELECT 1 FROM subscriptions s
                                    WHERE s.user_id = users.id AND s.status='authorized')""",
             (cutoff, datetime.utcnow().isoformat()),

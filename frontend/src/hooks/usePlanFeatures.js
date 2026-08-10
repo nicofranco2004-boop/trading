@@ -117,6 +117,9 @@ export function usePlanFeatures() {
   const tier = features?.tier || 'free'
   const limits = features?.limits || {}
   const access = features?.access || {}
+  // Free trial: {active, stage, days_left, used, can_start}. Ausente cuando
+  // el asesor mira la cuenta de un cliente (el trial es de quien se loguea).
+  const trial = features?.trial || null
 
   return {
     features,
@@ -125,6 +128,7 @@ export function usePlanFeatures() {
     tier,
     limits,
     access,
+    trial,
     // Helpers
     can: (featureId) => access[featureId] === true,
     limit: (key) => limits[key],

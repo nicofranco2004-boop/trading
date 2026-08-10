@@ -109,7 +109,7 @@ export { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES }
 
 export default function Planes() {
   const navigate = useNavigate()
-  const { tier, loading } = usePlanFeatures()
+  const { tier, loading, trial } = usePlanFeatures()
   const { user } = useAuth()
   const [billingPeriod, setBillingPeriod] = useState('monthly')  // 'monthly' | 'annual'
   const [subscribing, setSubscribing] = useState(false)
@@ -172,6 +172,11 @@ export default function Planes() {
     // su subscription si lo tiene.
     if (tier !== cardPlan) return false
     const subPeriod = user?.subscription_period
+    // Durante el free trial el tier es pro/plus pero NO hay plan contratado:
+    // sin este corte, la card Pro salía "Tu plan actual" (deshabilitada) y la
+    // de Plus "Ya tenés Pro" — o sea, el usuario entraba a pagar justo cuando
+    // más ganas tenía y no podía apretar NADA (audit).
+    if (!subPeriod && trial?.active) return false
     if (!subPeriod) return cardPeriod === 'monthly'  // default monthly para subs sin period
     return subPeriod === cardPeriod
   }
