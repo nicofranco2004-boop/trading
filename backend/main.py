@@ -7470,13 +7470,23 @@ def _applicable_splits(base_symbol: str, entry: str, wm: str, foto_wm: str = "")
 # la escala vieja, y la da el PRECIO: si lo cargó a ~F veces lo que cotiza hoy, el
 # precio es pre-split.
 #
-# La banda es ANGOSTA a propósito: un falso positivo acá multiplica la tenencia
-# del usuario por F (destructivo), mientras que un falso negativo solo deja el
-# aviso sin salir (lo que ya venía pasando). [0.75, 1.30] tolera que el precio se
-# haya movido ~±30% entre la compra y hoy. Límite conocido y aceptado: una caída
-# real de exactamente F veces es indistinguible de un split — con esta banda esos
-# casos quedan AFUERA (no ofrecemos nada) en vez de romper la posición.
-_SPLIT_PRICE_LO, _SPLIT_PRICE_HI = 0.75, 1.30
+# ⚠️ DESACTIVADA (audit 2026-08-10). El razonamiento original estaba INVERTIDO.
+#
+# La idea era: si el precio cargado es ~F veces el de hoy, el lote está en la
+# escala vieja. Pero el ratio se calcula como (buy_price / precio_hoy) / F, así
+# que una caída REAL de exactamente F veces da ratio = 1.0 — el centro exacto de
+# la banda, no afuera como decía el comentario. O sea que la señal disparaba
+# justo en el caso que creía excluir, y aplicar el ajuste MULTIPLICA la tenencia
+# por F. Con splits inversos (F<1) era peor: la banda se cumplía con subidas de
+# 4× a 13%, corrientes en pesos, y el ajuste borraba el 90% de los nominales.
+# Encima el precio venía del cache sin chequear su antigüedad, así que un precio
+# congelado (los .BA se congelan seguido) alcanzaba para disparar todo.
+#
+# No hay banda que arregle esto: dos escenarios distintos producen exactamente
+# el mismo número. Haría falta una señal independiente del precio (histórico a
+# la fecha del split, o coherencia invested/quantity). Hasta entonces, con la
+# fecha de compra alcanza: es lo que había antes y nunca rompió una posición.
+_SPLIT_PRICE_EVIDENCE_ENABLED = False
 
 
 def _cached_ba_price(conn, base_symbol: str, broker: str, uid: int):
@@ -7649,22 +7659,7 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
         # Re-derivar los splits aplicables EN EL SERVER (no confiar en el cliente).
         applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)
         if not applicable:
-            # MISMA 2ª pasada que /split-check (SSoT): descartado por la fecha de
-            # compra pero con evidencia de PRECIO de que el lote está en la escala
-            # vieja. Sin esto el botón del aviso devolvía "ya estaba aplicado" y no
-            # hacía nada — la evidencia se re-verifica acá, no se confía en el front.
-            por_fecha = _splits_solo_excluidos_por_fecha(base, entry, wm, foto_wm)
-            f_tot = 1.0
-            for _, f in por_fecha:
-                f_tot *= f
-            px_hoy = _cached_ba_price(conn, base, row["broker"], uid)
-            buy_px = float(row["buy_price"] or 0)
-            if not (por_fecha and px_hoy and buy_px and f_tot):
-                return {**dict(row), "already_applied": True}
-            ratio = (buy_px / px_hoy) / f_tot
-            if not (_SPLIT_PRICE_LO <= ratio <= _SPLIT_PRICE_HI):
-                return {**dict(row), "already_applied": True}
-            applicable = por_fecha
+            return {**dict(row), "already_applied": True}
         combined = 1.0
         for _, f in applicable:
             combined *= f
@@ -7743,22 +7738,7 @@ def positions_split_check(uid: int = Depends(get_effective_user)):
             applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)  # SSoT con /adjust-ratio
             evidencia = "fecha"
             if not applicable:
-                # 2ª pasada: descartado por la fecha de compra, pero el PRECIO
-                # cargado delata que el lote está en la escala vieja (ver helper).
-                por_fecha = _splits_solo_excluidos_por_fecha(base, entry, wm, foto_wm)
-                if not por_fecha:
-                    continue
-                f_tot = 1.0
-                for _, f in por_fecha:
-                    f_tot *= f
-                px_hoy = _cached_ba_price(conn, base, r["broker"], uid)
-                buy_px = float(r["buy_price"] or 0)
-                if not (px_hoy and buy_px and f_tot):
-                    continue
-                ratio = (buy_px / px_hoy) / f_tot     # ≈1 → el precio es pre-split
-                if not (_SPLIT_PRICE_LO <= ratio <= _SPLIT_PRICE_HI):
-                    continue
-                applicable, evidencia = por_fecha, "precio"
+                continue
             combined = 1.0
             for _, f in applicable:
                 combined *= f
@@ -13062,7 +13042,14 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
             cash_by_broker[broker_name] = cash_by_broker.get(broker_name, 0.0) + delta
 
     for r in rows:
-        b = r["broker"] or ""
+        # La plata vuelve a la cuenta de la que SALIÓ: para un CEDEAR pagado en
+        # dólares eso es el sibling USD aunque la tenencia viva en el padre
+        # (misma regla que el alta y el revert — audit 2026-08-10, si no se
+        # acreditaban pesos en la cuenta en pesos y los dólares se perdían).
+        b = _import_persister.cash_broker_for(
+            conn, uid, r["broker"] or "",
+            r["currency"] if "currency" in r.keys() else None,
+            r["asset_type"] if "asset_type" in r.keys() else None)
         if (r["operation_type"] or "").upper() == "BUY":
             if r["gross_amount"] is not None:
                 invested = float(r["gross_amount"])

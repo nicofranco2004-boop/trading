@@ -184,5 +184,24 @@ class BalanzCedearUsdE2E(unittest.TestCase):
         self.assertEqual(filas, 1)
 
 
+    def test_revertir_deja_las_dos_cuentas_en_cero(self):
+        """Revertir el batch entero tiene que deshacer TODO: depósitos y
+        compras. Si la plata de un CEDEAR pagado en dólares vuelve a la cuenta
+        equivocada, la de pesos queda con un sobrante y la de dólares en
+        negativo — y cada ciclo revertir + re-importar lo compone (audit
+        2026-08-10, reproducido con -150 USD / +150 ARS por vuelta)."""
+        from importing import persister as _ps
+        with self.conn:
+            _ps.revert_batch(self.conn, uid=self.uid, batch_id=self.batch_id,
+                             helpers=_helpers())
+        cash = {r["broker"]: round(float(r["invested"] or 0), 2)
+                for r in self.conn.execute(
+                    "SELECT broker, invested FROM positions WHERE user_id=? AND is_cash=1",
+                    (self.uid,)).fetchall()}
+        for broker, saldo in cash.items():
+            self.assertAlmostEqual(saldo, 0.0, places=2,
+                                   msg=f"{broker} quedó en {saldo} después de revertir todo")
+
+
 if __name__ == "__main__":
     unittest.main()

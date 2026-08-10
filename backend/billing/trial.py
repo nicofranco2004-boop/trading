@@ -233,7 +233,13 @@ def start(conn, user_id: int) -> dict:
     try:
         from billing import emails
         row = conn.execute("SELECT email, name FROM users WHERE id=?", (user_id,)).fetchone()
-        if row and row["email"] and _mark_sent(conn, user_id, MAIL_STARTED):
+        _gano = False
+        if row and row["email"]:
+            with conn:      # transacción propia: sin esto la marca se perdía al
+                _gano = _mark_sent(conn, user_id, MAIL_STARTED)   # cerrar la conexión
+        # El envío va FUERA de toda transacción: httpx tarda hasta 10s y no
+        # puede tener tomado el lock de escritura de SQLite (audit 2026-08-10).
+        if _gano:
             emails.send_trial_started(
                 to=row["email"],
                 user_name=(row["name"] or row["email"].split("@")[0]),
@@ -391,27 +397,37 @@ def _mark_sent(conn, user_id: int, kind: str) -> bool:
 
 
 def _trial_stats(conn, user_id: int) -> dict:
-    """Lo que hizo durante el trial — para el mail final. Un dato suyo
-    convierte mucho más que una lista de features."""
+    """Lo que hizo DURANTE el trial — para el mail final. Un dato suyo convierte
+    mucho más que una lista de features, pero tiene que ser verdad: sin acotar
+    por fecha, a un usuario de un año que no tocó nada en los 15 días el mail le
+    decía "en estos 15 días: 3.480 operaciones importadas" (audit 2026-08-10).
+    Justo al que NO usó el trial, que es el que había que detectar."""
     out = {}
-    for key, sql in (
-        ("brokers", "SELECT COUNT(*) c FROM brokers WHERE user_id=?"),
-        ("operations", "SELECT COUNT(*) c FROM operations WHERE user_id=?"),
+    try:
+        ini = conn.execute(
+            "SELECT trial_started_at t FROM users WHERE id=?", (user_id,)).fetchone()
+        desde = str(ini["t"]) if ini and ini["t"] else None
+    except Exception:
+        desde = None
+    if not desde:
+        return out
+    dia = desde[:10]
+    # Los brokers no tienen fecha de alta confiable → se informa el total, que
+    # para "brokers conectados" es lo que el usuario entiende igual.
+    for key, sql, params in (
+        ("brokers", "SELECT COUNT(*) c FROM brokers WHERE user_id=?", (user_id,)),
+        ("operations",
+         "SELECT COUNT(*) c FROM operations WHERE user_id=? AND date >= ?", (user_id, dia)),
+        ("analyses",
+         "SELECT COALESCE(SUM(analyses_count),0) c FROM ai_usage_daily "
+         "WHERE user_id=? AND date >= ?", (user_id, dia)),
     ):
         try:
-            r = conn.execute(sql, (user_id,)).fetchone()
+            r = conn.execute(sql, params).fetchone()
             if r and r["c"]:
                 out[key] = int(r["c"])
         except Exception:
             pass
-    try:
-        r = conn.execute(
-            "SELECT COALESCE(SUM(analyses_count),0) c FROM ai_usage_daily WHERE user_id=?",
-            (user_id,)).fetchone()
-        if r and r["c"]:
-            out["analyses"] = int(r["c"])
-    except Exception:
-        pass
     return out
 
 
@@ -430,12 +446,17 @@ def send_due_trial_emails(conn) -> int:
     # ── día 7: mañana termina Pro (solo a quien SIGUE en la etapa Pro) ──────
     try:
         rows = conn.execute(
+            # SIN borde inferior ni filtro por tier: la idempotencia ya la da
+            # trial_email_log. Con una ventana de 24h exactas, un cron atrasado
+            # (o el step-down corriendo antes) hacía que este aviso —el que más
+            # convierte— no saliera NUNCA para esa cohorte (audit 2026-08-10).
             """SELECT id, email, name FROM users
-                WHERE tier='pro' AND trial_ends_at IS NOT NULL
+                WHERE trial_ends_at IS NOT NULL
                   AND credit_active_until = trial_ends_at
-                  AND trial_started_at <= ? AND trial_started_at > ?""",
-            ((now - timedelta(days=TRIAL_PRO_DAYS - 1)).isoformat(),
-             (now - timedelta(days=TRIAL_PRO_DAYS)).isoformat()),
+                  AND trial_ends_at > ?
+                  AND trial_started_at <= ?""",
+            (now.isoformat(),
+             (now - timedelta(days=TRIAL_PRO_DAYS - 1)).isoformat()),
         ).fetchall()
     except Exception as ex:
         log.error("trial mails (pro_ending) falló: %s", ex)
@@ -482,12 +503,19 @@ def send_due_trial_emails(conn) -> int:
     # ── día 16: terminó (el crédito ya venció; el tier lo bajó el otro paso) ─
     try:
         rows = conn.execute(
+            # El guard de credit_active_until faltaba acá (las otras dos
+            # ventanas sí lo tienen): sin él, a quien terminó el trial y después
+            # recibió un regalo de Pro le llegaba "tu cuenta volvió a Free"
+            # empujándolo a pagar algo que ya tenía (audit 2026-08-10).
             """SELECT id, email, name FROM users
                 WHERE trial_ends_at IS NOT NULL AND trial_ends_at <= ?
                   AND trial_ends_at > ?
+                  AND (credit_active_until IS NULL
+                       OR credit_active_until <= ?
+                       OR credit_active_until = trial_ends_at)
                   AND NOT EXISTS (SELECT 1 FROM subscriptions s
                                    WHERE s.user_id = users.id AND s.status='authorized')""",
-            (now.isoformat(), (now - timedelta(days=7)).isoformat()),
+            (now.isoformat(), (now - timedelta(days=7)).isoformat(), now.isoformat()),
         ).fetchall()
     except Exception as ex:
         log.error("trial mails (ended) falló: %s", ex)
@@ -537,12 +565,16 @@ def funnel(conn, days: int = 90) -> dict:
         "SELECT COUNT(*) c FROM users WHERE trial_started_at >= ?", (since,))
 
     # Importó DESPUÉS de activar: es la señal de que la app tiene datos adentro.
+    # Las fechas se normalizan a 'YYYY-MM-DD HH:MM:SS': import_batches guarda al
+    # segundo y el trial con microsegundos, así que comparadas crudas TODO lo del
+    # mismo día quedaba afuera — y el día 0 es donde más imports hay, porque el
+    # trial se ofrece justo al terminar uno (audit 2026-08-10).
     # Sin esto el trial corre sobre una app vacía y no demuestra nada.
     importaron = _one(
         """SELECT COUNT(DISTINCT u.id) c FROM users u
             JOIN import_batches b ON b.user_id = u.id
            WHERE u.trial_started_at >= ? AND b.status='confirmed'
-             AND b.created_at >= u.trial_started_at""", (since,))
+             AND b.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)""", (since,))
 
     # Usó la IA durante el trial (la razón principal para pasarse a un plan pago).
     usaron_ia = _one(
@@ -557,13 +589,24 @@ def funnel(conn, days: int = 90) -> dict:
         """SELECT COUNT(DISTINCT u.id) c FROM users u
             JOIN subscriptions s ON s.user_id = u.id
            WHERE u.trial_started_at >= ?
-             AND s.created_at >= u.trial_started_at
+             AND s.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)
              AND s.status IN ('authorized','cancelled','superseded')""", (since,))
 
     en_curso = _one(
         """SELECT COUNT(*) c FROM users
             WHERE trial_started_at >= ? AND trial_ends_at > ?""", (since, now))
     terminados = max(0, activados - en_curso)
+
+    # Conversiones SOLO de los que ya terminaron: el numerador y el denominador
+    # tienen que hablar de la misma gente. Mezclarlos daba más de 100% justo
+    # cuando el trial funciona bien —mucha conversión temprana— que es cuando
+    # más se mira el número (audit 2026-08-10).
+    convirtieron_cerrados = _one(
+        """SELECT COUNT(DISTINCT u.id) c FROM users u
+            JOIN subscriptions s ON s.user_id = u.id
+           WHERE u.trial_started_at >= ? AND u.trial_ends_at <= ?
+             AND s.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)
+             AND s.status IN ('authorized','cancelled','superseded')""", (since, now))
 
     # ¿En qué momento pagan? Dice si conviene mover el corte de Pro o los avisos.
     etapas = {"durante_pro": 0, "durante_plus": 0, "despues": 0}
@@ -572,7 +615,7 @@ def funnel(conn, days: int = 90) -> dict:
             """SELECT u.trial_started_at ini, MIN(s.created_at) pago
                  FROM users u JOIN subscriptions s ON s.user_id = u.id
                 WHERE u.trial_started_at >= ?
-                  AND s.created_at >= u.trial_started_at
+                  AND s.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)
                   AND s.status IN ('authorized','cancelled','superseded')
                 GROUP BY u.id""", (since,)):
             try:
@@ -606,7 +649,8 @@ def funnel(conn, days: int = 90) -> dict:
         "pct_convirtieron": _pct(convirtieron, activados),
         # La tasa que de verdad mide el trial: sobre los que lo TERMINARON
         # (los que están en curso todavía no tuvieron su chance de decidir).
-        "pct_conversion_cerrada": _pct(convirtieron, terminados),
+        "convirtieron_cerrados": convirtieron_cerrados,
+        "pct_conversion_cerrada": _pct(convirtieron_cerrados, terminados),
         "cuando_pagan": etapas,
         "enabled": trials_enabled(),
         "monthly_cap": monthly_cap(),

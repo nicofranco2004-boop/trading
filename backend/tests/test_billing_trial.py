@@ -530,6 +530,38 @@ class TrialEmbudo(TrialBase):
         self.assertEqual(f["pct_conversion_cerrada"], 100.0)
         self.assertEqual(f["pct_convirtieron"], 50.0)
 
+    def test_la_tasa_cerrada_nunca_pasa_de_100(self):
+        # Numerador y denominador tienen que hablar de la MISMA gente: si se
+        # cuentan las conversiones de los que siguen probando contra los que ya
+        # terminaron, el número se va arriba de 100 justo cuando el trial anda
+        # bien (mucha conversión temprana) — audit 2026-08-10.
+        for i in range(3):                       # 3 en curso, todos convierten
+            u = self._otro(f"curso{i}@rendi.test")
+            self._suscribir(u)
+            self.conn.execute("UPDATE subscriptions SET created_at=? WHERE user_id=?",
+                              (_iso(datetime.utcnow()), u))
+        term = self._otro("term2@rendi.test", dias_atras=20)   # 1 terminado, no convierte
+        self.conn.commit()
+        f = tr.funnel(self.conn)
+        self.assertEqual(f["terminados"], 1)
+        self.assertEqual(f["convirtieron"], 3)          # total, incluye en curso
+        self.assertEqual(f["convirtieron_cerrados"], 0) # de los terminados, ninguno
+        self.assertEqual(f["pct_conversion_cerrada"], 0.0)
+        self.assertLessEqual(f["pct_conversion_cerrada"], 100.0)
+
+    def test_cuenta_el_import_del_mismo_dia_que_activo(self):
+        # Los formatos de fecha no coinciden (uno con 'T', otro con espacio) y
+        # comparados como texto el mismo día quedaba SIEMPRE afuera — y el día 0
+        # es donde más imports hay, porque el trial se ofrece justo al terminar
+        # uno (audit 2026-08-10).
+        tr.start(self.conn, self.uid)
+        self.conn.execute(
+            "INSERT INTO import_batches (id, user_id, status, broker, parser_format, "
+            "file_name, file_hash) VALUES (?,?,'confirmed','Cocos','cocos','m.csv','h1')",
+            (f"b-{self.uid}", self.uid))
+        self.conn.commit()
+        self.assertEqual(tr.funnel(self.conn)["importaron"], 1)
+
     def test_distingue_en_que_momento_pagan(self):
         pro = self._otro("pro@rendi.test", dias_atras=3)     # está en la semana Pro
         self._suscribir(pro)

@@ -65,6 +65,37 @@ def blue_for_date(conn, date_str, fallback):
     return fallback
 
 
+def cash_broker_for(conn, uid: int, broker: str, currency, asset_type) -> str:
+    """De qué cuenta sale (o entra) la PLATA de una operación.
+
+    Normalmente es el mismo broker donde vive el activo. La excepción es el
+    CEDEAR comprado con dólares: su tenencia se consolida en el broker padre
+    —es la misma especie que la comprada en pesos, y así la muestra el
+    broker— pero la plata salió de la cuenta en dólares.
+
+    Es DERIVABLE a propósito (no se guarda en ninguna columna): el alta, el
+    revert y el borrado en cascada la calculan igual desde los mismos datos.
+    Cuando esto vivía solo en memoria durante el alta, revertir un CEDEAR
+    comprado en dólares acreditaba PESOS en la cuenta en pesos y los dólares
+    no volvían nunca (audit 2026-08-10, reproducido)."""
+    if (currency or "").upper() not in ("USD", "USDT"):
+        return broker
+    if (asset_type or "").upper() != "CEDEAR":
+        return broker
+    try:
+        row = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+            (uid, broker)).fetchone()
+    except Exception:
+        return broker
+    if not row or (row["currency"] or "").upper() != "ARS":
+        return broker   # ya estamos en la cuenta en dólares
+    for name in broker_pair(conn, uid, broker):
+        if name != broker:
+            return name
+    return broker
+
+
 def broker_pair(conn, uid: int, broker: str) -> List[str]:
     """Nombres del PAR de brokers padre↔'· USD' al que pertenece `broker`.
 
@@ -274,7 +305,8 @@ def persist_batch(
                 # Venta USD → fuente es el sibling
                 new_broker = sib
             elif cur in ("USD", "USDT"):
-                if op in (OP_BUY, OP_SELL) and (tx.asset_type or "").upper() == "CEDEAR":
+                _cb_alta = cash_broker_for(conn, uid, tx.broker, cur, tx.asset_type)
+                if op in (OP_BUY, OP_SELL) and _cb_alta != tx.broker:
                     # Un CEDEAR es la MISMA especie se pague en pesos o en dólares
                     # (dólar MEP): el broker lo muestra como UNA tenencia. Antes
                     # lo mandábamos entero al sub-broker USD y el usuario veía el
@@ -285,7 +317,7 @@ def persist_batch(
                     # Las acciones del EXTERIOR (asset_type STOCK, tickers .E de
                     # la cuenta cable) siguen yendo al sibling: ahí la tenencia sí
                     # vive en la cuenta en dólares.
-                    tx.cash_broker = sib
+                    tx.cash_broker = _cb_alta
                 else:
                     new_broker = sib
             if new_broker:
@@ -1387,7 +1419,13 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                     (tx["created_position_id"], uid),
                 )
             if cost_total > 0:
-                helpers._adjust_broker_cash(conn, uid, tx["broker"], cost_total)
+                # De la MISMA cuenta de la que salió (ver cash_broker_for): para
+                # un CEDEAR pagado en dólares es el sibling USD, no el padre.
+                _cb = cash_broker_for(
+                    conn, uid, tx["broker"],
+                    tx["currency"] if "currency" in tx.keys() else None,
+                    tx["asset_type"] if "asset_type" in tx.keys() else None)
+                helpers._adjust_broker_cash(conn, uid, _cb, cost_total)
 
         elif op == "DEPOSIT":
             amount = float(tx["gross_amount"] or 0)
@@ -1506,7 +1544,11 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                 total_proceeds += exit_p * qty - comm
                 total_pnl_usd += pnl
             if total_proceeds > 0:
-                helpers._adjust_broker_cash(conn, uid, tx["broker"], -total_proceeds)
+                _cb = cash_broker_for(
+                    conn, uid, tx["broker"],
+                    tx["currency"] if "currency" in tx.keys() else None,
+                    tx["asset_type"] if "asset_type" in tx.keys() else None)
+                helpers._adjust_broker_cash(conn, uid, _cb, -total_proceeds)
             if abs(total_pnl_usd) > 1e-6:
                 y, m = int(tx["date"][:4]), int(tx["date"][5:7])
                 helpers._update_monthly_pnl_realized(conn, uid, tx["broker"], y, m, -total_pnl_usd)

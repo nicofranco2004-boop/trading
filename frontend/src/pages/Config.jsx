@@ -992,7 +992,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
   // Estilos por modo: authorized usa violet (autorrenovable), credit_only usa
   // cyan (en período de gracia activo), cancelled usa neutrales (en transición
   // a Free). Single source of truth: accessMode.
-  const containerStyle = isAuthorized
+  const containerStyle = (isAuthorized || isTrial)
     ? 'border-data-violet/40 bg-data-violet/[0.06]'
     : isCreditOnly
       ? 'border-data-cyan/40 bg-data-cyan/[0.05]'
@@ -1000,15 +1000,21 @@ function PlanHeroPro({ tier = 'pro', usage }) {
 
   const badgeStyle = isAuthorized
     ? 'bg-data-violet/15 text-data-violet'
-    : isCreditOnly
-      ? 'bg-data-cyan/15 text-data-cyan'
-      : 'bg-ink-3/15 text-ink-2'
+    : isTrial
+      ? 'bg-data-violet/15 text-data-violet'
+      : isCreditOnly
+        ? 'bg-data-cyan/15 text-data-cyan'
+        : 'bg-ink-3/15 text-ink-2'
 
   const statusPill = isAuthorized
     ? { dotCls: 'bg-rendi-pos', textCls: 'text-rendi-pos', label: 'Activo' }
-    : isCreditOnly
-      ? { dotCls: 'bg-data-cyan', textCls: 'text-data-cyan', label: 'En crédito' }
-      : { dotCls: 'bg-ink-3', textCls: 'text-ink-2', label: 'Cancelado' }
+    : isTrial
+      // Sin esta rama el trial caía al default y la pantalla decía "Cancelado"
+      // justo al lado de "Estás probando Rendi Pro" (audit 2026-08-10).
+      ? { dotCls: 'bg-data-violet', textCls: 'text-data-violet', label: 'En prueba' }
+      : isCreditOnly
+        ? { dotCls: 'bg-data-cyan', textCls: 'text-data-cyan', label: 'En crédito' }
+        : { dotCls: 'bg-ink-3', textCls: 'text-ink-2', label: 'Cancelado' }
 
   const title = isAuthorized
     ? `Rendi ${isPlus ? 'Plus' : 'Pro'} está activo`
