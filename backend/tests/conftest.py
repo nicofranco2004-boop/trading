@@ -32,3 +32,38 @@ if not os.environ.get("DB_PATH"):
                 os.unlink(p)
             except OSError:
                 pass
+
+
+# ─── Una base POR ARCHIVO de test ────────────────────────────────────────────
+# Raíz del problema (medida): main.py lee DB_PATH a IMPORT-TIME y lo guarda en una
+# constante de módulo que usa get_db(). pytest importa TODOS los módulos de test antes
+# de correr nada, así que el PRIMER archivo que hace `import main` fija la base para
+# todo el proceso: los otros 57 setean su temp y no tiene ningún efecto. Los 58
+# terminan compartiendo UNA sola base → se pisan los datos y aparece "database is
+# locked". Por eso pasan aislados y fallan juntos.
+#
+# `--forked` NO alcanza: el padre ya congeló la ruta antes de forkear, así que cada
+# fork hereda la misma y siguen escribiendo al mismo archivo (probado: sigue fallando
+# con UNIQUE constraint failed: users.email).
+#
+# Esto le da a cada MÓDULO su propia base y re-crea el schema. Se re-apunta la
+# constante de main (no solo el env var, que main ya no vuelve a leer).
+import pytest
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _db_por_modulo():
+    import main
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    previo = main.DB_PATH
+    main.DB_PATH = tmp.name
+    os.environ["DB_PATH"] = tmp.name
+    main.init_db()
+    yield
+    main.DB_PATH = previo
+    for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
