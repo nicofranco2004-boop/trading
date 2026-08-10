@@ -3029,6 +3029,84 @@ def change_password(data: ChangePasswordIn, response: Response, uid: int = Depen
     return {"ok": True, "token": token}
 
 
+# Tablas de DATOS DE CARTERA que borra "Empezar de cero" (reset). ALLOWLIST
+# EXPLÍCITO a propósito, NO el barrido dinámico de delete_my_account: un denylist
+# dejaría que una tabla de billing agregada en el futuro se borre por accidente y
+# le resetee el plan a alguien que pagó. Acá se nombra SOLO lo que es cartera.
+# Todo lo de identidad/billing/prefs (users, subscriptions, credit_ledger,
+# user_broker_credentials, alerts, watchlist, import_mappings, advisor_*, los
+# contadores de uso de IA y las tablas globales) NO se toca.
+_RESET_PORTFOLIO_TABLES = (
+    "brokers", "positions", "archived_positions", "operations",
+    "monthly_entries", "snapshots", "plazos_fijos", "goals", "twr_periods",
+    "deleted_ops_journal", "bond_cashflow_skips", "financial_events",
+    "asset_last_price", "ai_analyses_cache", "ai_user_facts",
+)
+# Keys de config que son de CARTERA (se borran); el resto —onboarding,
+# welcome_email_sent_at, diag_*— son prefs de UX y sobreviven. Borrar fx_version
+# es clave: sin esto una cuenta v2 sigue en v2 al re-importar (uno de los
+# "arrastres" que reporta el usuario). Al quedar sin historia, se re-resuelve sola.
+_RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
+
+
+@app.post("/api/me/reset-data")
+def reset_my_data(uid: int = Depends(get_effective_user)):
+    """Empezar de cero SIN borrar la cuenta: limpia toda la cartera (posiciones,
+    operaciones, imports, snapshots, mensuales, objetivos, plazos fijos, cupones,
+    caches de precio, análisis de IA) y los overlays que sobreviven a un re-import
+    (tombstones de operaciones borradas, splits, fotos de tenencia — todos viven en
+    import_normalized_tx / positions, que se borran acá). CONSERVA el login, el
+    email, el plan/suscripción, las credenciales de brokers, alertas y watchlist.
+
+    Por qué existe: borrar un broker y re-importar NO resetea del todo —varios
+    overlays sobreviven al re-import a propósito, para no pisar correcciones
+    manuales— así que si uno estaba mal, se arrastra. Antes la única salida era
+    borrar la cuenta y recrearla (perdés el login y el plan). Esto da el "como la
+    primera vez" sin ese costo. Irreversible; el frontend confirma fuerte."""
+    conn = get_db()
+    try:
+        with conn:
+            cleared = {}
+            # Hijas de import primero (por batch_id — no tienen user_id).
+            batch_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+            if batch_ids:
+                _ph = ",".join("?" * len(batch_ids))
+                for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+                    n = conn.execute(
+                        f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids)).rowcount
+                    if n:
+                        cleared[t] = n
+            n = conn.execute("DELETE FROM import_batches WHERE user_id=?", (uid,)).rowcount
+            if n:
+                cleared["import_batches"] = n
+            # Tablas de cartera (allowlist). Guardas: si alguna no existe en una DB
+            # vieja, seguimos (no rompe el reset por una tabla ausente).
+            for t in _RESET_PORTFOLIO_TABLES:
+                try:
+                    n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (uid,)).rowcount
+                    if n:
+                        cleared[t] = n
+                except sqlite3.OperationalError:
+                    pass  # tabla ausente en esta DB — nada que borrar
+            # Solo las keys de config de CARTERA (no las prefs de UX).
+            _kph = ",".join("?" * len(_RESET_CONFIG_KEYS))
+            n = conn.execute(
+                f"DELETE FROM config WHERE user_id=? AND key IN ({_kph})",
+                (uid, *_RESET_CONFIG_KEYS)).rowcount
+            if n:
+                cleared["config"] = n
+        log.info("reset_my_data uid=%s cleared=%s", uid, cleared)
+        return {"ok": True, "cleared": cleared}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("reset_my_data FAILED uid=%s", uid)
+        raise HTTPException(status_code=500, detail=f"Error al resetear los datos: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.delete("/api/me")
 def delete_my_account(response: Response, uid: int = Depends(get_effective_user)):
     """Cierre de cuenta self-service (irreversible). Cancela la suscripción externa

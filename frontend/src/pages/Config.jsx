@@ -18,6 +18,7 @@ import {
   RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2,
   CheckCircle2, AlertCircle, Trash2, UserRound, CreditCard, ArrowLeftRight,
   LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock, Check, ClipboardList,
+  RotateCcw,
 } from 'lucide-react'
 import { api } from '../utils/api'
 import { useToast } from '../components/Toast'
@@ -180,6 +181,7 @@ export default function Config() {
   const isMobile = useIsMobile()
   const [searchParams, setSearchParams] = useSearchParams()
   const [delState, setDelState] = useState({ loading: false, error: '' })
+  const [resetState, setResetState] = useState({ loading: false, error: '' })
   const [brokers, setBrokers] = useState([])  // sólo para contador en "Cuenta"
   const [dolar, setDolar] = useState(null)
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
@@ -269,6 +271,26 @@ export default function Config() {
       setPwState({ loading: false, error: '', success: 'Contraseña actualizada correctamente.' })
     } catch (err) {
       setPwState({ loading: false, error: err.message, success: '' })
+    }
+  }
+
+  async function resetData() {
+    // Doble confirmación: es destructivo (irreversible) aunque conserve la cuenta.
+    const ok = window.confirm(
+      'Vas a EMPEZAR DE CERO.\n\n' +
+      'Se borra toda tu cartera: brokers, posiciones, operaciones, imports, historial y ' +
+      'snapshots, como si recién entraras a Rendi. Tu cuenta, tu plan y tus credenciales de ' +
+      'brokers NO se tocan.\n\nEsta acción NO se puede deshacer. ¿Seguís?')
+    if (!ok) return
+    const ok2 = window.confirm('Última confirmación: se borra TODA tu cartera. ¿Empezar de cero?')
+    if (!ok2) return
+    setResetState({ loading: true, error: '' })
+    try {
+      await api.post('/me/reset-data')
+      // Recarga dura: la app vuelve a arrancar sin cartera, como una cuenta nueva.
+      window.location.href = '/'
+    } catch (err) {
+      setResetState({ loading: false, error: err.message || 'No se pudo resetear los datos.' })
     }
   }
 
@@ -444,6 +466,36 @@ export default function Config() {
             </form>
           </Panel>
         </div>
+
+        {/* Empezar de cero — borra la cartera pero conserva la cuenta. Es la
+            alternativa al "borrar la cuenta y recrearla" para quien siente que
+            al re-importar le quedan arrastres de datos viejos: acá el reset
+            limpia también los overlays que sobreviven a un re-import (splits,
+            operaciones borradas, fotos de tenencia, el TC histórico). */}
+        <Panel padding="none" className="border-amber-500/30">
+          <div className="px-4 py-3 border-b border-amber-500/20 flex items-center gap-2">
+            <RotateCcw size={14} className="text-amber-500" strokeWidth={1.75} />
+            <h2 className="text-sm font-medium text-amber-500">Empezar de cero</h2>
+          </div>
+          <div className="px-4 py-4 flex items-center justify-between gap-4 flex-wrap">
+            <p className="text-xs text-ink-3 leading-relaxed max-w-md">
+              Borra <b>toda tu cartera</b> (brokers, posiciones, operaciones, imports, historial y
+              snapshots) para volver a importar desde cero, sin arrastres. Tu cuenta, tu plan y las
+              credenciales de brokers <b>se conservan</b>. No se puede deshacer.
+            </p>
+            <div className="flex flex-col items-end gap-1">
+              <button
+                onClick={resetData}
+                disabled={resetState.loading}
+                className="inline-flex items-center gap-1.5 text-xs bg-amber-500/10 hover:bg-amber-500/15 text-amber-500 border border-amber-500/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
+              >
+                <RotateCcw size={12} strokeWidth={1.75} />
+                {resetState.loading ? 'Reseteando…' : 'Empezar de cero'}
+              </button>
+              {resetState.error && <span className="text-[11px] text-rendi-neg">{resetState.error}</span>}
+            </div>
+          </div>
+        </Panel>
 
         {/* Zona de peligro — eliminar cuenta */}
         <Panel padding="none" className="border-rendi-neg/30">
