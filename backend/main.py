@@ -27807,6 +27807,20 @@ def _migrate_snapshots_netdep():
             _log = logging.getLogger(__name__)
             conn = get_db()
             try:
+                # Esta migración repara data corrupta por un bug que YA está
+                # arreglado (pre-75d8634). Corría entera en CADA arranque, para
+                # siempre: cientos de miles de filas sobre ~500 usuarios, cada
+                # vez que se deploya. Se marca hecha y no se repite.
+                # `RENDI_FORCE_SNAPSHOT_MIGRATION=1` la fuerza si hiciera falta.
+                _MARCA = "migr_snapshots_netdep_v1"
+                if not os.environ.get("RENDI_FORCE_SNAPSHOT_MIGRATION"):
+                    _hecho = conn.execute(
+                        "SELECT value FROM config WHERE key=? AND user_id=0", (_MARCA,)
+                    ).fetchone()
+                    if _hecho:
+                        _log.info("Snapshot netdep migration: ya corrió (%s), se saltea.",
+                                  _hecho["value"])
+                        return
                 users = conn.execute(
                     "SELECT DISTINCT user_id FROM snapshots"
                 ).fetchall()
@@ -27844,11 +27858,31 @@ def _migrate_snapshots_netdep():
                             total_pnl_recalc_updates += updates
                             if uid not in pnl_recalc_user_ids:
                                 pnl_recalc_user_ids.append(uid)
+                        # ⚠️ COMMIT POR USUARIO, no uno solo al final.
+                        # Con un único commit después del for, esta migración
+                        # tiene el lock de escritura de SQLite tomado MINUTOS
+                        # (cientos de miles de filas sobre ~500 usuarios). El
+                        # busy_timeout es 15s, así que toda escritura que llegue
+                        # en esa ventana muere con "database is locked" — y
+                        # cuando las requests se apilan esperando, el threadpool
+                        # se llena y la app deja de responder del todo (TCP
+                        # conecta, primer byte nunca llega).
+                        # Medido en producción el 2026-08-10: un usuario no pudo
+                        # cancelar su suscripción y el reset tiró
+                        # OperationalError: database is locked. Pasa DESPUÉS DE
+                        # CADA DEPLOY, porque cada arranque la vuelve a correr.
+                        # Commitear por usuario cambia una ventana de minutos por
+                        # ~500 ventanas de milisegundos.
+                        conn.commit()
                     except Exception as ex:
+                        conn.rollback()
                         _log.warning(
                             "Snapshot migration error for user %s: %s",
                             uid, ex,
                         )
+                conn.execute(
+                    "INSERT OR REPLACE INTO config (key, value, user_id) VALUES (?,?,0)",
+                    (_MARCA, _iso_today()))
                 conn.commit()
                 if total_pnl_recalc_updates > 0:
                     _log.info(
