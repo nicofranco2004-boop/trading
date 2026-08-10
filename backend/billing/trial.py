@@ -228,6 +228,18 @@ def start(conn, user_id: int) -> dict:
         except Exception as ex:   # el ledger es auditoría, no puede voltear el alta
             log.warning("trial ledger insert falló uid=%s: %s", user_id, ex)
     log.info("trial started uid=%s until=%s", user_id, until)
+    # Mail de bienvenida en el momento: el primer día es el que decide si el
+    # trial se usa o se quema. No puede esperar al cron de mañana.
+    try:
+        from billing import emails
+        row = conn.execute("SELECT email, name FROM users WHERE id=?", (user_id,)).fetchone()
+        if row and row["email"] and _mark_sent(conn, user_id, MAIL_STARTED):
+            emails.send_trial_started(
+                to=row["email"],
+                user_name=(row["name"] or row["email"].split("@")[0]),
+                pro_days=TRIAL_PRO_DAYS, total_days=TRIAL_TOTAL_DAYS)
+    except Exception as ex:
+        log.warning("mail de bienvenida del trial falló uid=%s: %s", user_id, ex)
     return {"ok": True, **status(conn, user_id)}
 
 
@@ -328,3 +340,171 @@ def step_down_due_trials(conn) -> int:
             n += 1
     log.info("trial step-down pro→plus: %d usuarios", n)
     return n
+
+
+# ─── Avisos ─────────────────────────────────────────────────────────────────
+# Cuatro mails en 15 días, cada uno con un trabajo distinto:
+#   día 1  → arrancó (con TRES cosas concretas para hacer hoy)
+#   día 7  → mañana termina Pro   ← el que más convierte: avisa ANTES
+#   día 14 → quedan 2 días
+#   día 16 → terminó (con su propio resumen)
+# El del día 8 (ya pasaste a Plus) va SOLO dentro de la app: se avisó el día
+# anterior y dos mails seguidos por lo mismo hacen que dejen de abrirlos justo
+# antes del aviso que importa.
+#
+# La idempotencia es propia (tabla trial_email_log) y NO se apoya en la tabla
+# subscriptions como el resto de los avisos: un usuario de trial no tiene fila
+# ahí, y por eso el aviso genérico de vencimiento le salía todos los días
+# (audit).
+
+MAIL_STARTED = "started"
+MAIL_PRO_ENDING = "pro_ending"
+MAIL_ENDING_SOON = "ending_soon"
+MAIL_ENDED = "ended"
+
+
+def _already_sent(conn, user_id: int, kind: str) -> bool:
+    try:
+        return conn.execute(
+            "SELECT 1 FROM trial_email_log WHERE user_id=? AND kind=? LIMIT 1",
+            (user_id, kind),
+        ).fetchone() is not None
+    except Exception:
+        # Sin poder verificar, NO mandamos: repetir un mail es peor que
+        # saltearlo (audit: el aviso genérico salía 4 días seguidos).
+        return True
+
+
+def _mark_sent(conn, user_id: int, kind: str) -> bool:
+    """Marca ANTES de mandar y devuelve si ganó la carrera. La PK (user_id,
+    kind) hace que dos corridas simultáneas del cron no puedan mandar dos
+    veces el mismo mail."""
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?)",
+            (user_id, kind, datetime.utcnow().isoformat()),
+        )
+        return cur.rowcount > 0
+    except Exception as ex:
+        log.warning("no pudimos registrar el mail de trial %s uid=%s: %s", kind, user_id, ex)
+        return False
+
+
+def _trial_stats(conn, user_id: int) -> dict:
+    """Lo que hizo durante el trial — para el mail final. Un dato suyo
+    convierte mucho más que una lista de features."""
+    out = {}
+    for key, sql in (
+        ("brokers", "SELECT COUNT(*) c FROM brokers WHERE user_id=?"),
+        ("operations", "SELECT COUNT(*) c FROM operations WHERE user_id=?"),
+    ):
+        try:
+            r = conn.execute(sql, (user_id,)).fetchone()
+            if r and r["c"]:
+                out[key] = int(r["c"])
+        except Exception:
+            pass
+    try:
+        r = conn.execute(
+            "SELECT COALESCE(SUM(analyses_count),0) c FROM ai_usage_daily WHERE user_id=?",
+            (user_id,)).fetchone()
+        if r and r["c"]:
+            out["analyses"] = int(r["c"])
+    except Exception:
+        pass
+    return out
+
+
+def send_due_trial_emails(conn) -> int:
+    """Paso del cron: manda los avisos que correspondan hoy. Devuelve cuántos
+    mails salieron. Cada uno se marca ANTES de enviarse, así un fallo del
+    proveedor no genera un reenvío al día siguiente (preferimos perder un
+    aviso antes que repetirlo)."""
+    from billing import emails
+    now = datetime.utcnow()
+    sent = 0
+
+    def _name(r):
+        return (r["name"] or (r["email"] or "").split("@")[0] or "Hola")
+
+    # ── día 7: mañana termina Pro (solo a quien SIGUE en la etapa Pro) ──────
+    try:
+        rows = conn.execute(
+            """SELECT id, email, name FROM users
+                WHERE tier='pro' AND trial_ends_at IS NOT NULL
+                  AND credit_active_until = trial_ends_at
+                  AND trial_started_at <= ? AND trial_started_at > ?""",
+            ((now - timedelta(days=TRIAL_PRO_DAYS - 1)).isoformat(),
+             (now - timedelta(days=TRIAL_PRO_DAYS)).isoformat()),
+        ).fetchall()
+    except Exception as ex:
+        log.error("trial mails (pro_ending) falló: %s", ex)
+        rows = []
+    for r in rows:
+        if _already_sent(conn, r["id"], MAIL_PRO_ENDING):
+            continue
+        with conn:
+            if not _mark_sent(conn, r["id"], MAIL_PRO_ENDING):
+                continue
+        try:
+            emails.send_trial_pro_ending(to=r["email"], user_name=_name(r),
+                                         plus_days=TRIAL_PLUS_DAYS)
+            sent += 1
+        except Exception as ex:
+            log.warning("mail trial pro_ending falló uid=%s: %s", r["id"], ex)
+
+    # ── día 14: quedan 2 días ──────────────────────────────────────────────
+    try:
+        rows = conn.execute(
+            """SELECT id, email, name, trial_ends_at FROM users
+                WHERE trial_ends_at IS NOT NULL
+                  AND credit_active_until = trial_ends_at
+                  AND trial_ends_at > ? AND trial_ends_at <= ?""",
+            (now.isoformat(), (now + timedelta(days=2)).isoformat()),
+        ).fetchall()
+    except Exception as ex:
+        log.error("trial mails (ending_soon) falló: %s", ex)
+        rows = []
+    for r in rows:
+        if _already_sent(conn, r["id"], MAIL_ENDING_SOON):
+            continue
+        with conn:
+            if not _mark_sent(conn, r["id"], MAIL_ENDING_SOON):
+                continue
+        try:
+            d = datetime.fromisoformat(str(r["trial_ends_at"]).replace("Z", ""))
+            emails.send_trial_ending_soon(to=r["email"], user_name=_name(r),
+                                          days_left=max(1, (d - now).days))
+            sent += 1
+        except Exception as ex:
+            log.warning("mail trial ending_soon falló uid=%s: %s", r["id"], ex)
+
+    # ── día 16: terminó (el crédito ya venció; el tier lo bajó el otro paso) ─
+    try:
+        rows = conn.execute(
+            """SELECT id, email, name FROM users
+                WHERE trial_ends_at IS NOT NULL AND trial_ends_at <= ?
+                  AND trial_ends_at > ?
+                  AND NOT EXISTS (SELECT 1 FROM subscriptions s
+                                   WHERE s.user_id = users.id AND s.status='authorized')""",
+            (now.isoformat(), (now - timedelta(days=7)).isoformat()),
+        ).fetchall()
+    except Exception as ex:
+        log.error("trial mails (ended) falló: %s", ex)
+        rows = []
+    for r in rows:
+        if _already_sent(conn, r["id"], MAIL_ENDED):
+            continue
+        with conn:
+            if not _mark_sent(conn, r["id"], MAIL_ENDED):
+                continue
+        try:
+            emails.send_trial_ended(to=r["email"], user_name=_name(r),
+                                    stats=_trial_stats(conn, r["id"]))
+            sent += 1
+        except Exception as ex:
+            log.warning("mail trial ended falló uid=%s: %s", r["id"], ex)
+
+    if sent:
+        log.info("avisos de trial enviados: %d", sent)
+    return sent

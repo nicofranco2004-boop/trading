@@ -38,9 +38,19 @@ def _iso(dt):
 class TrialBase(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
+        # Cualquier transacción que haya quedado abierta en un test anterior
+        # hace que el siguiente espere el busy_timeout entero (~90s) antes de
+        # fallar. Arrancamos siempre en limpio.
+        try:
+            self.conn.rollback()
+        except Exception:
+            pass
         # trial_consumed a propósito: la marca SOBREVIVE al borrado de la
         # cuenta (ese es el fix), así que entre tests hay que limpiarla a mano.
-        for t in ("credit_ledger", "subscriptions", "trial_consumed", "users"):
+        # El orden importa: las que referencian users van ANTES (FK activas).
+        for t in ("credit_ledger", "subscriptions", "trial_consumed",
+                  "trial_email_log", "operations", "positions", "brokers",
+                  "ai_usage_daily", "users"):
             try:
                 self.conn.execute(f"DELETE FROM {t}")
             except Exception:
@@ -52,9 +62,31 @@ class TrialBase(unittest.TestCase):
         self.conn.commit()
         os.environ.pop("TRIALS_ENABLED", None)
         os.environ.pop("TRIALS_MONTHLY_CAP", None)
+        # Nadie manda mails de verdad: sin esto el envío intenta salir a la red,
+        # tarda ~90s y deja la base trabada para los tests que siguen.
+        from billing import emails as _em
+        self.enviados = []
+        self._orig_mails = {}
+        for _fn in ("send_trial_started", "send_trial_pro_ending",
+                    "send_trial_ending_soon", "send_trial_ended"):
+            self._orig_mails[_fn] = getattr(_em, _fn)
+            setattr(_em, _fn, self._spy(_fn))
 
     def tearDown(self):
+        from billing import emails as _em
+        for _fn, _orig in getattr(self, "_orig_mails", {}).items():
+            setattr(_em, _fn, _orig)
+        try:
+            self.conn.rollback()   # no dejar nada abierto para el que sigue
+        except Exception:
+            pass
         self.conn.close()
+
+    def _spy(self, nombre):
+        def _fake(**kw):
+            self.enviados.append((nombre, kw))
+            return True
+        return _fake
 
     def _tier(self):
         """El tier EFECTIVO — lo que realmente gatea las features."""
@@ -366,3 +398,86 @@ class TrialAuditFixes(TrialBase):
         otro = self._otro_user(email="tercero@rendi.test")
         self.assertEqual(tr.start(self.conn, otro)["reason"], "monthly_cap_reached",
                          "el cupo se cuenta sobre el ledger, no sobre users")
+
+
+class TrialAvisos(TrialBase):
+    """Los cuatro mails del trial. Lo que más importa: que NO se repitan —
+    el aviso genérico de vencimiento salía 4 días seguidos porque su
+    idempotencia se apoyaba en una tabla que un usuario de trial no tiene."""
+
+    def _kinds(self):
+        return [r["kind"] for r in self.conn.execute(
+            "SELECT kind FROM trial_email_log WHERE user_id=?", (self.uid,)).fetchall()]
+
+    def test_el_de_bienvenida_sale_al_activar_no_al_dia_siguiente(self):
+        tr.start(self.conn, self.uid)
+        self.assertEqual([n for n, _ in self.enviados], ["send_trial_started"])
+        kw = self.enviados[0][1]
+        self.assertEqual(kw["pro_days"], 7)
+        self.assertEqual(kw["total_days"], 15)
+
+    def test_avisa_la_vispera_del_cambio_a_plus(self):
+        tr.start(self.conn, self.uid)
+        self.enviados.clear()
+        self._viajar(6)                       # día 7: mañana pasa a Plus
+        self.assertEqual(tr.send_due_trial_emails(self.conn), 1)
+        self.assertEqual(self.enviados[0][0], "send_trial_pro_ending")
+
+    def test_ese_aviso_NO_se_repite_al_dia_siguiente(self):
+        tr.start(self.conn, self.uid)
+        self._viajar(6)
+        tr.send_due_trial_emails(self.conn)
+        self.enviados.clear()
+        self._viajar(1)                       # el cron corre de nuevo
+        tr.send_due_trial_emails(self.conn)
+        self.assertEqual([n for n, _ in self.enviados], [],
+                         "un aviso por trial, no uno por día")
+
+    def test_avisa_cuando_faltan_dos_dias(self):
+        tr.start(self.conn, self.uid)
+        self.enviados.clear()
+        self._viajar(13)                      # quedan 2
+        tr.send_due_trial_emails(self.conn)
+        nombres = [n for n, _ in self.enviados]
+        self.assertIn("send_trial_ending_soon", nombres)
+
+    def test_el_de_cierre_sale_una_vez_y_lleva_el_resumen(self):
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Cocos", "ARS"))
+        self.conn.commit()
+        tr.start(self.conn, self.uid)
+        self.enviados.clear()
+        self._viajar(16)                      # terminó
+        tr.send_due_trial_emails(self.conn)
+        cierre = [kw for n, kw in self.enviados if n == "send_trial_ended"]
+        self.assertEqual(len(cierre), 1)
+        self.assertEqual(cierre[0]["stats"].get("brokers"), 1)
+        # Y no vuelve a salir aunque el cron corra otra vez
+        self.enviados.clear()
+        tr.send_due_trial_emails(self.conn)
+        self.assertEqual(self.enviados, [])
+
+    def test_al_que_se_suscribio_no_se_le_manda_el_de_cierre(self):
+        tr.start(self.conn, self.uid)
+        self._suscribir()
+        self.enviados.clear()
+        self._viajar(16)
+        tr.send_due_trial_emails(self.conn)
+        self.assertEqual([n for n, _ in self.enviados], [],
+                         "pagó: no se le anuncia que perdió nada")
+
+    def test_dos_corridas_simultaneas_no_duplican(self):
+        tr.start(self.conn, self.uid)
+        self._viajar(6)
+        tr.send_due_trial_emails(self.conn)
+        tr.send_due_trial_emails(self.conn)
+        self.assertEqual(self._kinds().count(tr.MAIL_PRO_ENDING), 1)
+
+    # El enganche al cron diario ya está cubierto en TrialCron (el job completo
+    # hace llamadas de red que traban la base en el sandbox). Acá probamos la
+    # unidad real: send_due_trial_emails.
+    def test_el_paso_del_cron_esta_declarado_en_el_job(self):
+        import inspect
+        fuente = inspect.getsource(subs.run_lifecycle_job)
+        self.assertIn("send_due_trial_emails", fuente)
+        self.assertIn("trial_emails_sent", fuente)

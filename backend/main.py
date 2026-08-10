@@ -1791,6 +1791,18 @@ def init_db():
             consumed_at TEXT NOT NULL
         )
     """)
+    # Idempotencia PROPIA de los avisos del trial. No se apoya en la tabla
+    # subscriptions como el resto: un usuario de trial no tiene fila ahí, y por
+    # eso el aviso genérico de vencimiento le salía todos los días (audit).
+    # La PK (user_id, kind) hace imposible mandar dos veces el mismo aviso.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trial_email_log (
+            user_id INTEGER NOT NULL,
+            kind    TEXT NOT NULL,
+            sent_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, kind)
+        )
+    """)
     conn.commit()
 
     # Ledger de movimientos de crédito — audit trail completo de cada

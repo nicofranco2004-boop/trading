@@ -1285,3 +1285,150 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
     # título del de apertura ("Tu libro hoy") y en la bandeja se confundían.
     subject = (f"{title} · {headline}" if headline else title)[:120]
     return _send(to, subject, _wrap_html(body_html), text, from_addr=_from_noreply())
+
+
+# ─── Free trial (15 días: 7 de Pro + 8 de Plus) ─────────────────────────────
+# Cuatro mails, cada uno con un trabajo distinto. El del día 8 (cuando pasa a
+# Plus) NO está: ya se avisó el día anterior y va solo dentro de la app — dos
+# mails seguidos por lo mismo cansan y hacen que dejen de abrirlos justo antes
+# del aviso que más importa.
+
+_TRIAL_URL = "https://rendi.finance/planes"
+
+
+def send_trial_started(*, to: str, user_name: str, pro_days: int = 7,
+                       total_days: int = 15) -> bool:
+    """Día 1. Lo importante no es dar la bienvenida: es que haga TRES COSAS
+    concretas hoy. Un trial que arranca sin uso el primer día no se recupera."""
+    plus_days = total_days - pro_days
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Ya tenés Rendi Pro, {user_name}</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Durante los próximos <b>{pro_days} días</b> tenés todo Pro, y después seguís
+        {plus_days} días con Plus. No cargamos ninguna tarjeta: cuando se termina,
+        tu cuenta vuelve a Free sola.
+      </p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 12px;">
+        Tres cosas que te conviene hacer hoy:
+      </p>
+      <ol style="font-size:14px;line-height:1.9;color:#374151;padding-left:20px;margin:0 0 20px;">
+        <li><b>Preguntale lo que quieras al chat</b> — sin las 12 preguntas fijas del plan Free.</li>
+        <li><b>Pedí un análisis de tu cartera</b> y mirá qué te dice sobre concentración y riesgo.</li>
+        <li><b>Sumá tus otros brokers</b>: recién con todo junto los números cierran de verdad.</li>
+      </ol>
+      <p style="font-size:14px;color:#374151;line-height:1.6;">
+        <a href="https://rendi.finance/dashboard" style="color:#8B7BFF;text-decoration:none;font-weight:600;">Entrar a Rendi →</a>
+      </p>
+    """
+    text = (
+        f"Ya tenés Rendi Pro, {user_name}\n\n"
+        f"{pro_days} días con todo Pro y después {plus_days} días de Plus. "
+        f"Sin tarjeta: cuando se termina, tu cuenta vuelve a Free sola.\n\n"
+        "Tres cosas para hacer hoy:\n"
+        "1. Preguntale lo que quieras al chat (sin preguntas fijas).\n"
+        "2. Pedí un análisis de tu cartera.\n"
+        "3. Sumá tus otros brokers.\n\n"
+        "Entrá: https://rendi.finance/dashboard\n\n— Rendi"
+    )
+    return _send(to, "Ya tenés Rendi Pro por 7 días", _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
+
+
+def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int = 8) -> bool:
+    """Día 7 — la víspera. Este es el mail que más convierte: le da tiempo a
+    usar lo que está por perder y a decidir. Después ya es notificar algo
+    consumado."""
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Mañana termina tu semana de Pro</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Hola {user_name}: mañana pasás a Plus por {plus_days} días más. Hoy todavía
+        tenés todo Pro, así que aprovechá:
+      </p>
+      <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
+        <li>El <b>chat libre</b> — a partir de mañana volvés a las preguntas fijas.</li>
+        <li>Los <b>análisis sin freno</b> (60 por semana contra 6 en Plus).</li>
+      </ul>
+      <p style="font-size:14px;color:#374151;line-height:1.6;">
+        Si te está sirviendo, podés quedarte en Pro desde
+        <a href="{_TRIAL_URL}" style="color:#8B7BFF;text-decoration:none;font-weight:600;">acá</a>.
+      </p>
+    """
+    text = (
+        f"Mañana termina tu semana de Pro\n\n"
+        f"Hola {user_name}: mañana pasás a Plus por {plus_days} días más.\n\n"
+        "Hoy todavía tenés el chat libre y los análisis sin freno (60/semana "
+        "contra 6 en Plus). Aprovechalo.\n\n"
+        f"Seguir en Pro: {_TRIAL_URL}\n\n— Rendi"
+    )
+    return _send(to, "Mañana termina tu semana de Pro", _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
+
+
+def send_trial_ending_soon(*, to: str, user_name: str, days_left: int = 2) -> bool:
+    """Día 14. La ventana real para decidir, con los dos planes a la vista."""
+    dias = "1 día" if days_left == 1 else f"{days_left} días"
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Te {'queda' if days_left == 1 else 'quedan'} {dias} de prueba</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Hola {user_name}, en {dias} tu cuenta vuelve a Free: 1 análisis por semana
+        y el chat con preguntas fijas.
+      </p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
+        Si Rendi te está sirviendo, <b>Plus</b> mantiene el multi-broker y los
+        análisis, y <b>Pro</b> te devuelve el chat libre.
+      </p>
+      <p style="font-size:14px;color:#374151;line-height:1.6;">
+        <a href="{_TRIAL_URL}" style="color:#8B7BFF;text-decoration:none;font-weight:600;">Ver los planes →</a>
+      </p>
+    """
+    text = (
+        f"Te {'queda' if days_left == 1 else 'quedan'} {dias} de prueba\n\n"
+        f"Hola {user_name}, después tu cuenta vuelve a Free: 1 análisis por semana "
+        "y el chat con preguntas fijas.\n\n"
+        "Plus mantiene el multi-broker y los análisis; Pro te devuelve el chat libre.\n\n"
+        f"Ver planes: {_TRIAL_URL}\n\n— Rendi"
+    )
+    return _send(to, f"Te {'queda' if days_left == 1 else 'quedan'} {dias} de prueba en Rendi",
+                 _wrap_html(body_html), text, from_addr=_from_noreply())
+
+
+def send_trial_ended(*, to: str, user_name: str, stats: Optional[dict] = None) -> bool:
+    """Día 16. Lleva SU resumen: un dato propio convierte mucho más que una
+    lista de features. Si no hay nada que contar, se omite el bloque."""
+    s = stats or {}
+    filas = []
+    if s.get("brokers"):
+        filas.append(f"{s['brokers']} broker{'s' if s['brokers'] != 1 else ''} conectado{'s' if s['brokers'] != 1 else ''}")
+    if s.get("operations"):
+        filas.append(f"{s['operations']} operaciones importadas")
+    if s.get("analyses"):
+        filas.append(f"{s['analyses']} análisis pedidos")
+    resumen_html = ""
+    if filas:
+        items = "".join(f"<li>{f}</li>" for f in filas)
+        resumen_html = f"""
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 8px;">En estos 15 días:</p>
+      <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">{items}</ul>"""
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Terminó tu prueba</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Hola {user_name}, tu cuenta volvió a Free. Tus datos siguen todos ahí:
+        lo que cambia son los límites.
+      </p>{resumen_html}
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
+        Si querés seguir con el chat libre y los análisis completos, elegí un plan.
+        Cancelás cuando quieras.
+      </p>
+      <p style="font-size:14px;color:#374151;line-height:1.6;">
+        <a href="{_TRIAL_URL}" style="color:#8B7BFF;text-decoration:none;font-weight:600;">Ver los planes →</a>
+      </p>
+    """
+    text = (
+        f"Terminó tu prueba\n\n"
+        f"Hola {user_name}, tu cuenta volvió a Free. Tus datos siguen todos ahí: "
+        "lo que cambia son los límites.\n\n"
+        + (("En estos 15 días: " + ", ".join(filas) + ".\n\n") if filas else "")
+        + f"Ver los planes: {_TRIAL_URL}\n\n— Rendi"
+    )
+    return _send(to, "Terminó tu prueba de Rendi", _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
