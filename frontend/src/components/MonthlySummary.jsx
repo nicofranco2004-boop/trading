@@ -285,8 +285,15 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcBlue for ARS display);
         //               USD stores pnlUsd directly.
         const pnlForBroker = b.currency === 'ARS' ? result.pnlArs / tc : result.pnlUsd
-        // Global aggregate uses pnlUsd ("true USD" P&L: ARS uses tc_compra for cost basis).
-        globalPnlUsd += result.pnlUsd
+        // El GLOBAL suma lo mismo que se persiste por broker. Antes sumaba `pnlUsd`
+        // (costo en USD), que es OTRA convención: el Dashboard —el otro escritor de
+        // este mismo campo— agrega FX-neutral (P&L en pesos ÷ blue de hoy), así que los
+        // dos escribían números distintos en `monthly_entries.pnl_unrealized` y ganaba
+        // el último que corriera. Además `pnlUsd` depende del modo `costBasis`, que es
+        // una preferencia de DISPLAY: lo persistido no puede moverse con un toggle
+        // (mismo criterio que ya se aplica acá con MEP/CCL). `pnlArs/tc` no depende del
+        // modo, así que esto también saca esa dependencia de lo que se guarda.
+        globalPnlUsd += pnlForBroker
         liveTotal += result.value  // valor total en USD (incluye cash convertido)
         if (persistMep) syncs.push(api.post('/monthly/sync-unrealized', { broker: b.name, pnl_unrealized_usd: +pnlForBroker.toFixed(4) }).catch(() => {}))
       }

@@ -1280,6 +1280,11 @@ function PositionsDesktop() {
   const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcBlue
   const heroValue = totals.value + pfValueUsd
   const heroInvested = totals.invested + pfInvestedUsd
+  // ¿Hay tenencia fuera de las tarjetas por broker? La renta fija (bonos/letras/ONs/
+  // FCI) se excluye de esas tarjetas a propósito y vive en su propia zona; el hero sí
+  // la suma. Sirve para avisar por qué sumar las tarjetas no da el total.
+  const hasFixedIncome = useMemo(
+    () => positions.some(p => !p.is_cash && isFixedIncome(p)), [positions])
   const heroPnl = heroValue - heroInvested
   const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
   // Hero en display ARS: cifras mode-INDEPENDENT (pesos nativos + tenencias USD al
@@ -1443,6 +1448,23 @@ function PositionsDesktop() {
           <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
             {brokers.length} {brokers.length === 1 ? 'broker activo' : 'brokers activos'}
           </span>
+          {/* Reconciliación: el hero suma TODO (incluida la renta fija, que vive en su
+              propia zona más abajo, y los plazos fijos, que no tienen tarjeta). Las
+              tarjetas por broker excluyen la renta fija a propósito, así que sumarlas
+              NO da este número — un usuario nos reportó justamente esa diferencia.
+              Solo se muestra cuando efectivamente hay algo fuera de las tarjetas. */}
+          {!hidden && (hasFixedIncome || pfValueUsd > 0) && (
+            <span
+              className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-3 text-[12px]"
+              title={'Este total incluye todo lo que tenés: las tarjetas por broker de acá abajo, '
+                + [hasFixedIncome && 'la zona de Renta Fija', pfValueUsd > 0 && 'los plazos fijos']
+                    .filter(Boolean).join(' y ')
+                + '. Por eso sumar solo las tarjetas da menos.'}
+            >
+              incluye {[hasFixedIncome && 'renta fija', pfValueUsd > 0 && 'plazos fijos']
+                .filter(Boolean).join(' y ')}
+            </span>
+          )}
         </div>
       </div>
 
