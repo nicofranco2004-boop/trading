@@ -204,6 +204,36 @@ export const CEDEARS_LIST = [
   { s: 'XLF', n: 'Financiero (CEDEAR)' }, { s: 'GLD', n: 'Oro (CEDEAR)' },
   { s: 'XLV', n: 'Salud (CEDEAR)' }, { s: 'IBIT', n: 'iShares Bitcoin (CEDEAR)' },
   { s: 'VIG', n: 'Vanguard Dividend Appreciation (CEDEAR)' },
+  // ── Agregados 2026-08-11 ────────────────────────────────────────────────────
+  // Un usuario quiso cargar una compra de CEG (Constellation Energy) y no lo
+  // encontraba. Al barrer los ~1.030 símbolos de BYMA (data912) contra este
+  // allowlist aparecieron 209 faltantes CON VOLUMEN — o sea, papeles que la gente
+  // opera de verdad y que no se podían cargar. Estos son los ~40 más operados.
+  // Nombres verificados uno por uno contra yfinance (no inventados), y todos
+  // cotizan en ARS en BYMA (se excluyeron las patas dólar-MEP/cable —sufijo D/C—,
+  // que NO son tickers nuevos sino la otra pata del mismo activo).
+  { s: 'CEG', n: 'Constellation Energy' }, { s: 'SNDK', n: 'SanDisk' },
+  { s: 'MSTR', n: 'Strategy (MicroStrategy)' }, { s: 'HIMS', n: 'Hims & Hers Health' },
+  { s: 'IREN', n: 'IREN' }, { s: 'GLOB', n: 'Globant' },
+  { s: 'NBIS', n: 'Nebius Group' }, { s: 'CRWV', n: 'CoreWeave' },
+  { s: 'RIOT', n: 'Riot Platforms' }, { s: 'LAR', n: 'Lithium Argentina' },
+  { s: 'SATL', n: 'Satellogic' }, { s: 'SE', n: 'Sea Limited' },
+  { s: 'MP', n: 'MP Materials' }, { s: 'HUT', n: 'Hut 8' },
+  { s: 'KEEL', n: 'Keel Infrastructure' }, { s: 'BMNR', n: 'Bitmine Immersion' },
+  { s: 'BRKB', n: 'Berkshire Hathaway (B)' }, { s: 'SPCE', n: 'Virgin Galactic' },
+  { s: 'BIOX', n: 'Bioceres Crop Solutions' }, { s: 'RGTI', n: 'Rigetti Computing' },
+  { s: 'TRIP', n: 'Tripadvisor' }, { s: 'LAC', n: 'Lithium Americas' },
+  { s: 'ALAB', n: 'Astera Labs' }, { s: 'JMIA', n: 'Jumia Technologies' },
+  { s: 'PAGS', n: 'PagSeguro' }, { s: 'DOW', n: 'Dow' },
+  { s: 'NOKA', n: 'Nokia' }, { s: 'ONDS', n: 'Ondas' },
+  { s: 'STNE', n: 'StoneCo' }, { s: 'AAL', n: 'American Airlines' },
+  { s: 'PATH', n: 'UiPath' }, { s: 'O', n: 'Realty Income' },
+  { s: 'BAK', n: 'Braskem' }, { s: 'GPRK', n: 'GeoPark' },
+  { s: 'HMY', n: 'Harmony Gold' },
+  // ETFs (llevan el sufijo (CEDEAR) como el resto de los ETF de esta lista)
+  { s: 'ETHA', n: 'iShares Ethereum (CEDEAR)' }, { s: 'EWY', n: 'iShares Corea del Sur (CEDEAR)' },
+  { s: 'URA', n: 'Global X Uranio (CEDEAR)' }, { s: 'COPX', n: 'Global X Cobre (CEDEAR)' },
+  { s: 'FXI', n: 'iShares China Large-Cap (CEDEAR)' }, { s: 'ACWI', n: 'iShares MSCI ACWI (CEDEAR)' },
 ]
 
 // CEDEARS_LIST en el shape del buscador (SearchBar/MobileSearch). El símbolo lleva
