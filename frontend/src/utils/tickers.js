@@ -240,6 +240,10 @@ export const CEDEARS_LIST = [
   // que alimenta el alta de CEDEARs y el buscador. Verificados en BYMA hoy:
   // NOW ARS 1.174 (vol 85.478) y ASML ARS 19.580 (vol 9.145). Nombres de yfinance.
   { s: 'NOW', n: 'ServiceNow' }, { s: 'ASML', n: 'ASML Holding' },
+  // MUX: BYMA ARS 15.270 (vol 652 — poco, pero opera). yfinance confirma el
+  // CEDEAR desde las dos puntas: MUX.BA longName 'McEwen Inc.', currency ARS,
+  // y su shortName es literalmente 'MCEWEN INC CEDEAR EACH 2 REP 1'.
+  { s: 'MUX', n: 'McEwen Inc.' },
 ]
 
 // CEDEARS_LIST en el shape del buscador (SearchBar/MobileSearch). El símbolo lleva

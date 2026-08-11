@@ -60,6 +60,7 @@ describe('los CEDEARs que pidieron los usuarios están', () => {
     ['SNDK', 'reportado el 2026-08-11'],
     ['NOW', 'ServiceNow — pedido el 2026-08-11'],
     ['ASML', 'ASML Holding — pedido el 2026-08-11, daba "Sin resultados"'],
+    ['MUX', 'McEwen — pedido el 2026-08-11'],
   ])('%s está en CEDEARS_LIST (%s)', (sym) => {
     expect(simbolos.has(sym)).toBe(true)
   })
