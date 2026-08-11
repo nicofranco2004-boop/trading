@@ -394,8 +394,6 @@ def run_preview(
     if len(file_bytes) > MAX_FILE_BYTES:
         return {"error": f"El archivo excede el límite de {MAX_FILE_BYTES // 1_000_000} MB."}
 
-    cleanup_stale_previews(conn)
-
     fh = _file_hash(file_bytes)
     duplicate_of = find_duplicate_batch(conn, uid, fh)
 
@@ -646,6 +644,13 @@ def run_preview(
     is_multi_broker = (broker_hint is None) and (
         len({t.broker for t in valid_txs}) > 1
     )
+
+    # Limpieza de previews vencidos. VA ACÁ, no al principio de la función: es un
+    # DELETE, o sea la PRIMERA escritura de la transacción — y en SQLite la primera
+    # escritura es la que TOMA el lock. Arriba, el lock quedaba tomado durante todo
+    # el parseo del archivo; con el endpoint corriendo en el event loop eso
+    # congelaba la app entera. Acá se toma recién cuando de verdad vamos a escribir.
+    cleanup_stale_previews(conn)
 
     conn.execute(
         """INSERT INTO import_batches

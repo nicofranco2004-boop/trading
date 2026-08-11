@@ -23479,8 +23479,21 @@ def billing_preview_change_plan(
 
 # ─── Rebill webhook ─────────────────────────────────────────────────────────
 
+async def _raw_body(request: Request) -> bytes:
+    """El body crudo del webhook, para validar la firma.
+
+    Existe para que los handlers de webhook puedan ser `def` en vez de
+    `async def`: lo único que necesitaban de async era esta lectura. Un
+    `async def` con trabajo bloqueante adentro corre SOBRE el event loop y
+    congela la app entera mientras dura (medido: 3s de trabajo = 2,5s de
+    espera para cualquier otro request). Como `def`, FastAPI lo manda al
+    threadpool y el resto sigue atendiéndose.
+    """
+    return await request.body()
+
+
 @app.post("/api/billing/rebill-webhook")
-async def rebill_webhook(request: Request):
+def rebill_webhook(request: Request, raw: bytes = Depends(_raw_body)):
     """Recibe eventos de Rebill server-to-server.
 
     Eventos esperados (los nombres exactos pueden variar según la doc final
@@ -23498,7 +23511,6 @@ async def rebill_webhook(request: Request):
     pasamos con warning.
     """
     from billing import rebill
-    raw = await request.body()
     sig = request.headers.get("x-rebill-signature") or request.headers.get("rebill-signature") or ""
     # Log de headers (debug — sacar después de confirmar el shape)
     debug_headers = {k: v for k, v in request.headers.items() if k.lower().startswith(("x-", "rebill", "webhook"))}
@@ -24126,7 +24138,7 @@ def billing_status(uid: int = Depends(get_effective_user)):
 
 
 @app.post("/api/billing/webhook")
-async def billing_webhook(request: Request):
+def billing_webhook(request: Request, raw: bytes = Depends(_raw_body)):
     """Recibe eventos de MP server-to-server.
 
     Eventos relevantes:
@@ -24141,7 +24153,6 @@ async def billing_webhook(request: Request):
     (con warning) para facilitar dev. En prod siempre validamos.
     """
     from billing import mercadopago
-    raw = await request.body()
     x_signature = request.headers.get("x-signature", "")
     x_request_id = request.headers.get("x-request-id", "")
 
@@ -26085,7 +26096,7 @@ def import_parsers_grouped(uid: int = Depends(get_effective_user)):
 
 
 @app.post("/api/imports/inspect")
-async def import_inspect(
+def import_inspect(
     file: UploadFile = File(...),
     uid: int = Depends(get_effective_user),
 ):
@@ -26099,7 +26110,7 @@ async def import_inspect(
     chunks: List[bytes] = []
     total = 0
     while total <= cap:
-        chunk = await file.read(min(64 * 1024, cap - total + 1))
+        chunk = file.file.read(min(64 * 1024, cap - total + 1))
         if not chunk:
             break
         chunks.append(chunk)
@@ -26117,7 +26128,7 @@ async def import_inspect(
 
 
 @app.post("/api/imports/classify-tenencia")
-async def import_classify_tenencia(
+def import_classify_tenencia(
     files: List[UploadFile] = File(...),
     uid: int = Depends(get_effective_user),
 ):
@@ -26133,7 +26144,7 @@ async def import_classify_tenencia(
         chunks: List[bytes] = []
         total = 0
         while total <= cap:
-            chunk = await f.read(min(64 * 1024, cap - total + 1))
+            chunk = f.file.read(min(64 * 1024, cap - total + 1))
             if not chunk:
                 break
             chunks.append(chunk)
@@ -26239,7 +26250,7 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
 
 
 @app.post("/api/imports/tenencia/preview")
-async def import_tenencia_preview(
+def import_tenencia_preview(
     file: UploadFile = File(...),
     broker: str = Form(...),
     format: Optional[str] = Form(None),
@@ -26255,7 +26266,7 @@ async def import_tenencia_preview(
     chunks: List[bytes] = []
     total = 0
     while total <= cap:
-        chunk = await file.read(min(64 * 1024, cap - total + 1))
+        chunk = file.file.read(min(64 * 1024, cap - total + 1))
         if not chunk:
             break
         chunks.append(chunk)
@@ -26675,7 +26686,7 @@ async def import_tenencia_preview(
 
 
 @app.post("/api/imports/preview")
-async def import_preview(
+def import_preview(
     files: Optional[List[UploadFile]] = File(None),       # multi-file (preferido)
     file: Optional[UploadFile] = File(None),               # legacy, single file
     broker: Optional[str] = Form(None),
@@ -26714,7 +26725,7 @@ async def import_preview(
         chunks: List[bytes] = []
         remaining = MAX_TOTAL_BYTES - total_size + 1  # +1 para detectar overflow
         while remaining > 0:
-            chunk = await f.read(min(64 * 1024, remaining))
+            chunk = f.file.read(min(64 * 1024, remaining))
             if not chunk:
                 break
             chunks.append(chunk)
