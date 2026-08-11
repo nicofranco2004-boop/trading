@@ -114,6 +114,9 @@ function OperationsDesktop() {
       pnl_usd: op.pnl_usd ?? '',
       pnl_pct: op.pnl_pct ?? '',
       commissions: op.commissions ?? '',
+      // El backend decide por la foto de reverso guardada en el alta, no por
+      // este campo; acá es sólo para que el check se vea en el estado correcto.
+      kind: esOpDeFuturos(op) ? 'futures' : null,
     })
     setModal('edit')
   }
@@ -130,6 +133,10 @@ function OperationsDesktop() {
       pnl_usd: form.pnl_usd !== '' && form.pnl_usd !== null ? +form.pnl_usd : null,
       pnl_pct: form.pnl_pct !== '' ? +form.pnl_pct : null,
       commissions: form.commissions !== '' ? +form.commissions : 0,
+      // 'futures' hace que el backend ACREDITE el P&L al efectivo del broker.
+      // Sólo se manda cuando el usuario lo tildó: cualquier otra operación
+      // conserva el comportamiento de siempre (registra P&L y no toca la plata).
+      kind: form.kind === 'futures' ? 'futures' : null,
     }
     if (modal === 'edit') await api.put(`/operations/${form.id}`, body)
     else {
@@ -781,9 +788,21 @@ function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGr
   )
 }
 
+// ¿Esta operación acreditó efectivo al crearse? El backend lo estampa en
+// `undo_meta_json` (src='manual_futures') porque la fila sola no permite
+// distinguir el camino. La API lo devuelve crudo, así que se parsea acá.
+function esOpDeFuturos(op) {
+  try {
+    return JSON.parse(op?.undo_meta_json || '{}')?.src === 'manual_futures'
+  } catch {
+    return false
+  }
+}
+
 // ─── Modal ───────────────────────────────────────────────────────────────────
 
 function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
+  const esFuturos = form.kind === 'futures'
   const inputClass = 'w-full bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2'
   const labelClass = 'block text-[12.5px] text-ink-2 mb-1 font-medium'
   return (
@@ -819,6 +838,7 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
             <input value={form.op_type} onChange={e => setForm(f => ({ ...f, op_type: e.target.value }))} className={inputClass} placeholder="LONG, SHORT, Futuros…" />
           </div>
         </div>
+        {!esFuturos && (
         <div className="grid grid-cols-3 gap-3">
           <div>
             <label className={labelClass}>P. Entrada</label>
@@ -833,6 +853,7 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
             <input type="number" step="any" value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} className={inputClass} />
           </div>
         </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className={labelClass}>P&L (USD)</label>
@@ -850,6 +871,36 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
             <input type="number" step="any" value={form.commissions} onChange={e => setForm(f => ({ ...f, commissions: e.target.value }))} className={inputClass} placeholder="0" />
           </div>
         </div>
+        {/* FUTUROS. Va explícito y no deducido del campo "Tipo" (que es texto
+            libre): esto MUEVE PLATA, y no puede depender de cómo se escribió una
+            palabra. Un usuario cerró un futuro con +47 USDT, no encontró dónde
+            cargarlo y registró solo el P&L — le quedó el efectivo 47 dólares corto. */}
+        <label className="flex items-start gap-2.5 rounded-sm border border-line bg-bg-1 px-3 py-2.5 cursor-pointer hover:border-line-2 transition-colors">
+          <input
+            type="checkbox"
+            checked={esFuturos}
+            onChange={e => {
+              const on = e.target.checked
+              setForm(f => ({
+                ...f,
+                kind: on ? 'futures' : null,
+                // el tipo es sólo la etiqueta que se ve en la tabla
+                op_type: on && !f.op_type ? 'Futuros' : f.op_type,
+                // precios y cantidad no aplican a un resultado de futuros
+                ...(on ? { entry_price: '', exit_price: '', quantity: '' } : {}),
+              }))
+            }}
+            className="mt-0.5 accent-data-violet"
+          />
+          <span className="text-[12.5px] leading-tight">
+            <span className="font-semibold text-ink-0">Resultado de futuros</span>
+            <span className="block text-ink-2 font-medium">
+              Suma el P&L al efectivo del broker, porque esa plata ya está en tu cuenta.
+              No cuenta como capital aportado.
+            </span>
+          </span>
+        </label>
+
         <p className="text-[12.5px] text-ink-2 leading-tight font-medium">
           Atajo: si solo querés registrar la ganancia/pérdida (sin precios ni cantidad), completá únicamente P&L USD.
         </p>
