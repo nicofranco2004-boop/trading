@@ -14,6 +14,7 @@ import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import EmptyState from '../components/EmptyState'
+import InfoTooltip from '../components/InfoTooltip'
 import InsightLine from '../components/InsightLine'
 import { api } from '../utils/api'
 import OperationsMobile from './OperationsMobile'
@@ -875,8 +876,9 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
             libre): esto MUEVE PLATA, y no puede depender de cómo se escribió una
             palabra. Un usuario cerró un futuro con +47 USDT, no encontró dónde
             cargarlo y registró solo el P&L — le quedó el efectivo 47 dólares corto. */}
-        <label className="flex items-start gap-2.5 rounded-sm border border-line bg-bg-1 px-3 py-2.5 cursor-pointer hover:border-line-2 transition-colors">
+        <div className="flex items-start gap-2.5 rounded-sm border border-line bg-bg-1 px-3 py-2.5">
           <input
+            id="op-es-futuros"
             type="checkbox"
             checked={esFuturos}
             onChange={e => {
@@ -890,16 +892,42 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
                 ...(on ? { entry_price: '', exit_price: '', quantity: '' } : {}),
               }))
             }}
-            className="mt-0.5 accent-data-violet"
+            className="mt-0.5 accent-data-violet cursor-pointer"
           />
-          <span className="text-[12.5px] leading-tight">
-            <span className="font-semibold text-ink-0">Resultado de futuros</span>
-            <span className="block text-ink-2 font-medium">
+          <div className="text-[12.5px] leading-tight flex-1 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <label htmlFor="op-es-futuros" className="font-semibold text-ink-0 cursor-pointer">
+                Resultado de futuros
+              </label>
+              {/* Fuera del <label> a propósito: adentro, el click en el (?) toggleaba
+                  el check en vez de abrir la explicación. */}
+              {/* side="top": el cuerpo del modal tiene overflow-y auto y termina
+                  justo debajo de este bloque — abriendo hacia abajo se recortaban
+                  las últimas líneas (medido: el tooltip llegaba a 865 y el
+                  contenedor cortaba en 764). */}
+              <InfoTooltip label="Cómo impacta en tus números" align="left" side="top">
+                <p className="font-semibold text-ink-0">Sube tu capital como GANANCIA.</p>
+                <p>
+                  El resultado entra al efectivo del broker, así que el total de tu
+                  cartera sube (o baja) por ese monto.
+                </p>
+                <p>
+                  Ese mismo monto se cuenta como <strong>ganancia</strong>: suma al
+                  P&L realizado del mes y del broker.
+                </p>
+                <p className="text-ink-3">
+                  No suma al capital aportado — esa plata no la pusiste, la ganaste.
+                  Por eso mejora tu rendimiento, en vez de dejarlo igual como haría
+                  cargarlo de depósito.
+                </p>
+              </InfoTooltip>
+            </div>
+            <p className="text-ink-2 font-medium">
               Suma el P&L al efectivo del broker, porque esa plata ya está en tu cuenta.
               No cuenta como capital aportado.
-            </span>
-          </span>
-        </label>
+            </p>
+          </div>
+        </div>
 
         <p className="text-[12.5px] text-ink-2 leading-tight font-medium">
           Atajo: si solo querés registrar la ganancia/pérdida (sin precios ni cantidad), completá únicamente P&L USD.
