@@ -212,7 +212,7 @@ export const CEDEARS_LIST = [
   // Nombres verificados uno por uno contra yfinance (no inventados), y todos
   // cotizan en ARS en BYMA (se excluyeron las patas dólar-MEP/cable —sufijo D/C—,
   // que NO son tickers nuevos sino la otra pata del mismo activo).
-  { s: 'CEG', n: 'Constellation Energy' }, { s: 'SNDK', n: 'SanDisk' },
+  { s: 'CEG', n: 'Constellation Energy' },
   { s: 'MSTR', n: 'Strategy (MicroStrategy)' }, { s: 'HIMS', n: 'Hims & Hers Health' },
   { s: 'IREN', n: 'IREN' }, { s: 'GLOB', n: 'Globant' },
   { s: 'NBIS', n: 'Nebius Group' }, { s: 'CRWV', n: 'CoreWeave' },
@@ -234,6 +234,12 @@ export const CEDEARS_LIST = [
   { s: 'ETHA', n: 'iShares Ethereum (CEDEAR)' }, { s: 'EWY', n: 'iShares Corea del Sur (CEDEAR)' },
   { s: 'URA', n: 'Global X Uranio (CEDEAR)' }, { s: 'COPX', n: 'Global X Cobre (CEDEAR)' },
   { s: 'FXI', n: 'iShares China Large-Cap (CEDEAR)' }, { s: 'ACWI', n: 'iShares MSCI ACWI (CEDEAR)' },
+  // ── Agregados 2026-08-11 (segunda tanda) ──────────────────────────────────
+  // Pedidos por un usuario que no los encontraba al cargar una compra. Los dos
+  // ya estaban en STOCKS_US (como acción US) pero faltaban acá, que es la lista
+  // que alimenta el alta de CEDEARs y el buscador. Verificados en BYMA hoy:
+  // NOW ARS 1.174 (vol 85.478) y ASML ARS 19.580 (vol 9.145). Nombres de yfinance.
+  { s: 'NOW', n: 'ServiceNow' }, { s: 'ASML', n: 'ASML Holding' },
 ]
 
 // CEDEARS_LIST en el shape del buscador (SearchBar/MobileSearch). El símbolo lleva
