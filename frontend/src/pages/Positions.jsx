@@ -3349,10 +3349,29 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-ink-1 cursor-pointer">
-          <input type="checkbox" checked={form.is_cash} onChange={e => setForm(f => ({ ...f, is_cash: e.target.checked }))} />
-          Es cash
-        </label>
+        {/* "Es cash" solo al EDITAR una fila que YA es efectivo (corregir un saldo
+            mal importado). Al CREAR está oculto a propósito: esta alta NO registra
+            el aporte —`_insert_manual_position` saltea toda la contabilidad con
+            `if not p.is_cash` (main.py)— así que cargar efectivo por acá subía el
+            valor de la cartera sin subir el "aportado", y Rendi lo leía como
+            GANANCIA. El camino correcto es Depósito, que sí lo asienta en
+            monthly_entries. */}
+        {mode !== 'add' && form.is_cash && (
+          <label className="flex items-center gap-2 text-sm text-ink-1 cursor-pointer">
+            <input type="checkbox" checked={form.is_cash} onChange={e => setForm(f => ({ ...f, is_cash: e.target.checked }))} />
+            Es cash
+          </label>
+        )}
+
+        {/* Donde estaba el checkbox: el usuario que venía a cargar efectivo por acá
+            necesita saber a dónde ir, si no queda buscando la opción que sacamos. */}
+        {mode === 'add' && (
+          <p className="text-xs text-ink-3 leading-relaxed bg-bg-2/50 border border-line rounded-md px-3 py-2">
+            ¿Querés registrar <b className="text-ink-2">efectivo</b>? Cerrá esto y usá
+            <b className="text-ink-2"> Movimiento de cash</b> (Depósito o Retiro) desde el menú
+            del broker: por ahí queda contado como aporte y tu rendimiento no se distorsiona.
+          </p>
+        )}
 
         {!form.is_cash && (
           <>
