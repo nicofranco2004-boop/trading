@@ -11,7 +11,8 @@
 // porque recién ahí la app tiene datos adentro y el trial demuestra algo.
 
 import { useState } from 'react'
-import { Sparkles, Loader2 } from 'lucide-react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { Sparkles, Loader2, ArrowRight } from 'lucide-react'
 import { api } from '../../utils/api'
 import { usePlanFeatures, refreshPlanFeatures } from '../../hooks/usePlanFeatures'
 import { track } from '../../utils/track'
@@ -51,10 +52,12 @@ export function trialNotice(trial) {
   return null
 }
 
-/** Texto de días restantes para el encabezado del banner. */
+/** Cuántos días le quedan, como frase entera para la barra. null si no hay dato.
+ *  El día 0 no es "0 días": el trial sigue activo, le queda menos de uno. */
 export function trialDaysLabel(days) {
   if (days == null) return null
-  return days === 1 ? 'último día' : `${days} días restantes`
+  if (days <= 0) return 'Te queda menos de un día.'
+  return days === 1 ? 'Te queda 1 día.' : `Te quedan ${days} días.`
 }
 
 /** Botón "Probar gratis". No renderiza NADA si el server no lo habilita. */
@@ -117,35 +120,55 @@ export function TrialFinePrint({ className = '' }) {
   )
 }
 
-/** Barra de estado mientras el trial corre. Null si no hay trial activo. */
+/** Barra de estado mientras el trial corre. Null si no hay trial activo.
+ *
+ *  Va montada en el shell de la app (App.jsx), al lado del DemoBanner y con
+ *  su misma forma: antes vivía SOLO en /planes, que es una pantalla a la que
+ *  no entra nadie salvo que ya esté por pagar — o sea, el aviso del día 8
+ *  ("mañana pasás a Plus") no lo veía prácticamente ninguno. El aviso in-app
+ *  del cambio de etapa es la mitad del mecanismo del trial encadenado; si no
+ *  se ve, el usuario pierde Pro sin enterarse de que lo tenía. */
 export function TrialBanner({ onSeePlans }) {
   const { trial } = usePlanFeatures()
+  const navigate = useNavigate()
+  const { pathname } = useLocation()
   if (!trial?.active) return null
 
   const { stage, days_left: left } = trial
   const plan = stage === 'plus' ? 'Plus' : 'Pro'
   const aviso = trialNotice(trial)
   const diasLabel = trialDaysLabel(left)
+  // En /planes el botón no lleva a ningún lado nuevo.
+  const enPlanes = pathname === '/planes'
+
+  function verPlanes() {
+    track('trial_banner_plans_clicked', { stage })
+    if (onSeePlans) onSeePlans()
+    else navigate('/planes')
+  }
 
   return (
-    <div className="mb-4 rounded-lg border border-data-violet/40 bg-data-violet/[0.07] px-3.5 py-2.5">
-      <div className="flex items-center gap-2.5 flex-wrap">
-        <Sparkles size={14} strokeWidth={1.75} className="text-data-violet flex-shrink-0" />
-        <p className="text-sm text-ink-0 font-medium">
-          Estás probando Rendi {plan}
-          {diasLabel && (
-            <span className="text-ink-2 font-normal">{' · '}{diasLabel}</span>
-          )}
-        </p>
-        <button
-          type="button"
-          onClick={() => { track('trial_banner_plans_clicked', { stage }); onSeePlans?.() }}
-          className="ml-auto text-xs font-medium text-data-violet hover:underline"
-        >
-          Ver planes
-        </button>
+    <div className="sticky top-0 z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm">
+      <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
+        <div className="flex items-center gap-2 min-w-0">
+          <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
+          <p className="text-xs text-ink-1 min-w-0">
+            <span className="font-medium text-ink-0">Estás probando Rendi {plan}.</span>
+            {diasLabel && <span className="text-ink-3">{' '}{diasLabel}</span>}
+            {aviso && <span className="text-ink-2">{' '}{aviso}</span>}
+          </p>
+        </div>
+        {!enPlanes && (
+          <button
+            type="button"
+            onClick={verPlanes}
+            className="flex-shrink-0 inline-flex items-center gap-1 text-xs bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors"
+          >
+            Ver planes
+            <ArrowRight size={11} strokeWidth={2} />
+          </button>
+        )}
       </div>
-      {aviso && <p className="text-xs text-ink-2 mt-1 pl-6">{aviso}</p>}
     </div>
   )
 }

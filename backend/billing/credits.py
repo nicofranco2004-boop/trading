@@ -156,6 +156,10 @@ def grant_payment_credit(
         - El crédito remanente al plan VIEJO se preserva (no se pisa)
         - Se EXTIENDE active_until por los días del nuevo período al rate nuevo
         - El anchor pasa a ser el plan/period nuevos
+      • Si el user tiene ventana viva SIN anchor (free trial):
+        - Los días de prueba que le quedan se RESPETAN enteros
+        - active_until = fin_de_la_prueba + period_days
+        - anchor = plan/period del cobro
       • Si el user no tenía credit_active_until o ya venció:
         - active_until = NOW + period_days
         - anchor = plan/period del cobro
@@ -213,6 +217,19 @@ def grant_payment_credit(
         remaining_days_at_new_rate = remaining_usd_at_old_rate / new_rate if new_rate > 0 else 0
         total_days = remaining_days_at_new_rate + period_days
         new_active_until = now + timedelta(days=total_days)
+    elif state["is_active"]:
+        # Ventana viva SIN anchor = free trial. El tiempo regalado no se valúa
+        # en plata (no hay rate que convertir), así que no se "convierte": se
+        # respeta tal cual y el período PAGADO empieza a correr recién cuando
+        # la prueba termina.
+        # Antes esto caía en el else y el pago PISABA lo que le quedaba de
+        # prueba: con 10 días restantes pagabas un mes y recibías 30 en vez
+        # de 40 — o sea, pagar temprano te daba menos que esperar al día 15.
+        try:
+            base = _parse_iso(state["active_until"])
+        except Exception:
+            base = now
+        new_active_until = max(base, now) + timedelta(days=period_days)
     else:
         # Sin crédito previo — empieza ventana desde NOW.
         new_active_until = now + timedelta(days=period_days)

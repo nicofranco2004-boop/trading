@@ -66,14 +66,16 @@ describe('trialNotice — el aviso del banner', () => {
 
 describe('trialDaysLabel', () => {
   it('plural, singular y ausente', () => {
-    expect(trialDaysLabel(12)).toBe('12 días restantes')
-    expect(trialDaysLabel(1)).toBe('último día')
+    expect(trialDaysLabel(12)).toBe('Te quedan 12 días.')
+    expect(trialDaysLabel(1)).toBe('Te queda 1 día.')
     expect(trialDaysLabel(null)).toBeNull()
     expect(trialDaysLabel(undefined)).toBeNull()
   })
 
-  it('el día 0 no dice "0 días restantes"', () => {
-    // El trial todavía está activo pero le queda menos de un día.
-    expect(trialDaysLabel(0)).toBe('0 días restantes')
+  it('el día 0 no dice "0 días"', () => {
+    // El trial todavía está activo: le queda menos de un día, no cero.
+    // (El test anterior afirmaba justo lo contrario de lo que decía su nombre.)
+    expect(trialDaysLabel(0)).toBe('Te queda menos de un día.')
+    expect(trialDaysLabel(-1)).toBe('Te queda menos de un día.')
   })
 })

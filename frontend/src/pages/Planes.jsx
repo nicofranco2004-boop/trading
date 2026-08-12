@@ -21,7 +21,6 @@ import { useEffect, useState } from 'react'
 import PageMeta from '../components/PageMeta'
 import PageHeader from '../components/PageHeader'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
-import { TrialBanner } from '../components/plan/TrialCta'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
 import { trackEvent } from '../utils/analytics'
@@ -141,6 +140,12 @@ export default function Planes() {
   const isAdmin = tier === 'admin'
   const hasProTier = isPro || isAdmin
   const hasPlusOrBetter = isPlus || isPro || isAdmin
+  // El Pro de la PRUEBA no es un Pro comprado. Sin este corte, durante los 7
+  // días de Pro el usuario veía la card de Plus deshabilitada ("Ya tenés Pro")
+  // y ni siquiera el toggle mensual/anual — o sea, el día 8, cuando pierde Pro
+  // y el mensaje es "quedate con Plus", el botón de Plus no se podía apretar.
+  // (El audit anterior curó esto solo en la card de Pro, vía isCurrentAnchor.)
+  const hasPaidProTier = hasProTier && !trial?.active
 
   // Estado del crédito (modelo Rendi-managed proration)
   const creditDays = Number(user?.credit_days_remaining || 0)
@@ -329,9 +334,17 @@ export default function Planes() {
           queda. Va ANTES del banner de crédito porque el trial también entra
           en access_mode='credit_only' y ese texto ("cambiaste de plan… crédito
           convertido") no aplica a alguien que está probando. */}
+      {/* El estado del trial lo muestra la barra del shell (App.jsx), visible
+          en toda la app. Acá va lo que solo importa frente a los precios: el
+          que está probando y mira planes tiene UNA duda —"¿si pago ahora
+          pierdo lo que me queda?"— y la respuesta es no. Decirla saca el
+          motivo para esperar al último día. */}
       {trial?.active && (
-        <div className="max-w-3xl mx-auto mb-6">
-          <TrialBanner />
+        <div className="max-w-3xl mx-auto mb-6 text-center">
+          <p className="text-xs text-ink-2 leading-relaxed">
+            Si te suscribís ahora no perdés nada: los días que te quedan de prueba
+            se suman al plan que pagues.
+          </p>
         </div>
       )}
 
@@ -382,7 +395,7 @@ export default function Planes() {
               Pro/Admin SIN crédito, lo ocultamos (nada que cambiar). Si tiene
               crédito (modelo proration), lo mostramos siempre porque puede
               elegir un nuevo plan/period y convertir el crédito. */}
-          {(!hasProTier || canChangePlan) && (
+          {(!hasPaidProTier || canChangePlan) && (
             <div className="flex justify-center mb-6">
               <div className="inline-flex bg-bg-2 border border-line/60 rounded-sm p-0.5">
                 <button
@@ -435,7 +448,7 @@ export default function Planes() {
                 cardPlan: 'plus',
                 cardPeriod: billingPeriod,
                 isCurrent: plusIsCurrent,
-                otherTier: hasProTier && !canChangePlan,
+                otherTier: hasPaidProTier && !canChangePlan,
                 canChangePlan,
                 subscribing,
                 hasCredit,

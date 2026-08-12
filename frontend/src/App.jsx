@@ -13,6 +13,9 @@ import { PageSkeleton } from './components/Skeleton'
 import MobileTabBar from './components/mobile/MobileTabBar'
 import MobileTopBar from './components/mobile/MobileTopBar'
 import DemoBanner from './components/DemoBanner'
+// Barra del free trial — en el shell, no en /planes: el aviso del día 8
+// ("mañana pasás a Plus") tiene que verlo el que está usando la app.
+import { TrialBanner } from './components/plan/TrialCta'
 import SupportWhatsAppFab from './components/SupportWhatsAppFab'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
@@ -353,6 +356,7 @@ function Layout() {
       >
         <ClientContextBar />
         <DemoBanner />
+        <TrialBanner />
         <Suspense fallback={<PageFallback />}>
           <AppRoutes />
         </Suspense>

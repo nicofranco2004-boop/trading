@@ -176,6 +176,70 @@ class OrdenDeLasOperaciones(TrialQuePagaBase):
         self.assertEqual(self._estado_sub(), "superseded")
 
 
+class PagarDuranteLaPrueba(TrialQuePagaBase):
+    """Los días de prueba que quedan NO se pierden al pagar: el plan pagado
+    arranca cuando la prueba termina. Si no, pagar temprano da menos días que
+    esperar al día 15 — un incentivo al revés."""
+
+    def _dias_de_credito(self):
+        u = self._user()
+        return (credits_mod._parse_iso(u["credit_active_until"])
+                - datetime.utcnow()).total_seconds() / 86400.0
+
+    def _pagar(self, plan="pro", period="monthly"):
+        return credits_mod.grant_payment_credit(
+            self.conn, user_id=self.uid, plan=plan, period=period)
+
+    def test_los_dias_que_quedan_de_prueba_se_suman_al_mes_pagado(self):
+        self._arrancar_trial()          # 15 días de prueba
+        self.conn.execute(              # ya usó 5: le quedan 10
+            "UPDATE users SET credit_active_until=? WHERE id=?",
+            ((datetime.utcnow() + timedelta(days=10)).isoformat(), self.uid))
+        self.conn.commit()
+
+        self._pagar()                   # paga un mes
+
+        # 10 de prueba + 30 pagados = 40, no 30.
+        self.assertAlmostEqual(self._dias_de_credito(), 40, delta=0.1)
+
+    def test_pagar_temprano_nunca_da_menos_que_pagar_tarde(self):
+        # La propiedad que importa, medida directamente.
+        self._arrancar_trial()
+        temprano = None
+        for restantes in (14, 1):
+            self.conn.execute(
+                """UPDATE users SET credit_active_until=?, credit_anchor_plan=NULL,
+                                    credit_anchor_period=NULL WHERE id=?""",
+                ((datetime.utcnow() + timedelta(days=restantes)).isoformat(), self.uid))
+            self.conn.commit()
+            self._pagar()
+            dias = self._dias_de_credito()
+            if temprano is None:
+                temprano = dias
+            else:
+                self.assertGreaterEqual(temprano, dias)
+
+    def test_el_pago_deja_el_anchor_del_plan_comprado(self):
+        self._arrancar_trial()
+        self._pagar(plan="plus", period="monthly")
+        u = self._user()
+        self.assertEqual(u["credit_anchor_plan"], "plus")
+        self.assertEqual(u["credit_anchor_period"], "monthly")
+
+    def test_el_usuario_sin_prueba_sigue_arrancando_desde_hoy(self):
+        # Regresión: el camino normal (free que paga) no cambia.
+        self._pagar()
+        self.assertAlmostEqual(self._dias_de_credito(), 30, delta=0.1)
+
+    def test_el_credito_pago_vigente_sigue_convirtiendose_por_plata(self):
+        # Regresión: CON anchor la regla sigue siendo valuar el remanente en
+        # USD y reconvertirlo, no sumar días crudos.
+        self._con_anchor(plan="plus", period="monthly", dias=15)   # 15d × $4/30 = $2
+        self._pagar(plan="pro", period="monthly")                  # $9/30 = $0.30/día
+        # $2 / 0.30 = 6.67 días + 30 comprados ≈ 36.67 (NO 45)
+        self.assertAlmostEqual(self._dias_de_credito(), 36.67, delta=0.2)
+
+
 class FallbackDelWebhook(TrialQuePagaBase):
     """Si el ledger falla, el usuario tiene que quedarse con lo que PAGÓ."""
 

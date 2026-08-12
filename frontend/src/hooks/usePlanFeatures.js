@@ -64,6 +64,12 @@ export function refreshPlanFeatures() {
   _version += 1
   try { localStorage.removeItem(LS_KEY) } catch { /* ignore */ }
   _notify()
+  // Devolvemos la promesa del refetch. Sin esto `await refreshPlanFeatures()`
+  // resuelve al instante (undefined) y el que llama sigue viendo los datos
+  // viejos: el botón "Probar gratis" quedaba habilitado un rato DESPUÉS de
+  // activar la prueba. _fetch() ya deduplica por _inflight, así que esto no
+  // dispara un request extra sobre el que acaban de lanzar los listeners.
+  return _fetch()
 }
 
 async function _fetch() {
