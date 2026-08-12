@@ -80,6 +80,15 @@ def _helpers():
 
 # ─── HIGH A: lotes de costo-cero (Dividendo en acciones / Split) ─────────────
 
+@unittest.skip(
+    "El parser de Resultados de Balanz está BLOQUEADO a propósito desde e4eed6c: "
+    "ese export no trae depósitos ni retiros, así que importarlo dejaba el capital "
+    "aportado negativo y el P&L inflado (~78× en un caso real). `parse()` corta con "
+    "BALANZ_RESULTADOS_NO_SOPORTADO y redirige al export de Movimientos, así que todo "
+    "lo que estos tests ejercitan es código muerto. Se dejan (no se borran) porque "
+    "documentan el comportamiento a restaurar si algún día se re-habilita; el bloqueo "
+    "en sí lo cubre BalanzResultadosBloqueadoTest."
+)
 class ZeroCostLotsTest(unittest.TestCase):
     def test_dividendo_en_acciones_importa_a_costo_cero(self):
         # Antes: Precio Compra=0 → _pos(0)=None → lote tirado en silencio.
@@ -125,6 +134,7 @@ class ZeroCostLotsTest(unittest.TestCase):
 # ─── HIGH B: Reducción de capital cierra la posición ─────────────────────────
 
 class CapitalReductionTest(unittest.TestCase):
+    @unittest.skip("parser de Resultados bloqueado — ver e4eed6c")
     def test_reduccion_de_capital_emite_venta_a_cero(self):
         # Antes: PrecioVenta=0 → la VENTA no se emitía → DESP quedaba fantasma.
         r = _parse(
@@ -133,6 +143,7 @@ class CapitalReductionTest(unittest.TestCase):
         rows = _rows_for(r, "DESP")
         self.assertEqual(rows, [("COMPRA", "22600.0", "1.0"), ("VENTA", "0.0", "1.0")])
 
+    @unittest.skip("parser de Resultados bloqueado — ver e4eed6c")
     def test_venta_de_cierre_marca_corporate_close_y_pasa_validacion(self):
         r = _parse(
             "1,CEDEAR DESPEGAR.COM CORP.,2024-12-23,2024-12-20,0,Pesos,Pesos,"
@@ -147,6 +158,7 @@ class CapitalReductionTest(unittest.TestCase):
         self.assertEqual([e.code for e in verrs], [])
         self.assertEqual(len(valid), 2)  # COMPRA + VENTA, ninguna descartada
 
+    @unittest.skip("parser de Resultados bloqueado — ver e4eed6c")
     def test_devolucion_de_capital_tambien_cierra(self):
         r = _parse(
             "1,ALGO,2024-12-23,2024-12-20,0,Pesos,Pesos,"
@@ -154,6 +166,7 @@ class CapitalReductionTest(unittest.TestCase):
         self.assertEqual(_rows_for(r, "ABC"),
                          [("COMPRA", "500.0", "1.0"), ("VENTA", "0.0", "1.0")])
 
+    @unittest.skip("parser de Resultados bloqueado — ver e4eed6c")
     def test_ggalx_split_mas_reduccion_neto_cero(self):
         # Ambos precios 0: Split (compra costo-cero) + Reducción (venta a 0).
         # Antes se tiraba entera (sin rastro); ahora deja COMPRA 0 + VENTA 0.
@@ -188,6 +201,15 @@ class CapitalReductionTest(unittest.TestCase):
 
 # ─── LOW: asset_type a renta + Descripcion→asset_name + Tipo desconocido ─────
 
+@unittest.skip(
+    "El parser de Resultados de Balanz está BLOQUEADO a propósito desde e4eed6c: "
+    "ese export no trae depósitos ni retiros, así que importarlo dejaba el capital "
+    "aportado negativo y el P&L inflado (~78× en un caso real). `parse()` corta con "
+    "BALANZ_RESULTADOS_NO_SOPORTADO y redirige al export de Movimientos, así que todo "
+    "lo que estos tests ejercitan es código muerto. Se dejan (no se borran) porque "
+    "documentan el comportamiento a restaurar si algún día se re-habilita; el bloqueo "
+    "en sí lo cubre BalanzResultadosBloqueadoTest."
+)
 class LowSeverityFixesTest(unittest.TestCase):
     def test_dividendo_lleva_asset_type(self):
         r = _parse("0,CEDEAR AMZN,2026-06-17,,0,,Dólares,,Dividendo,,,AMZN,Cedears,Dividendo,,0.13,")
@@ -229,6 +251,15 @@ class LowSeverityFixesTest(unittest.TestCase):
 
 # ─── Persist end-to-end: el efecto económico real ───────────────────────────
 
+@unittest.skip(
+    "El parser de Resultados de Balanz está BLOQUEADO a propósito desde e4eed6c: "
+    "ese export no trae depósitos ni retiros, así que importarlo dejaba el capital "
+    "aportado negativo y el P&L inflado (~78× en un caso real). `parse()` corta con "
+    "BALANZ_RESULTADOS_NO_SOPORTADO y redirige al export de Movimientos, así que todo "
+    "lo que estos tests ejercitan es código muerto. Se dejan (no se borran) porque "
+    "documentan el comportamiento a restaurar si algún día se re-habilita; el bloqueo "
+    "en sí lo cubre BalanzResultadosBloqueadoTest."
+)
 class BalanzPersistTest(unittest.TestCase):
     def setUp(self):
         conn = main.get_db()
@@ -328,3 +359,15 @@ class FlagInjectionHardeningTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BalanzResultadosBloqueadoTest(unittest.TestCase):
+    """El export de Resultados NO se importa (e4eed6c): no trae el efectivo, así que
+    dejaba el capital aportado negativo y el P&L inflado. Este test es el que importa
+    ahora: si alguien re-habilita el parseo sin querer, esto lo caza."""
+
+    def test_resultados_devuelve_el_redirect_a_movimientos(self):
+        r = _parse("1000,BONO GD30,2026-06-25,2025-05-29,4785,Pesos,,Boleto,,66.0,,GD30,Bonos - Dólar,No Realizado,,,")
+        self.assertEqual([e.code for e in r.parse_errors], ["BALANZ_RESULTADOS_NO_SOPORTADO"])
+        self.assertEqual(len(r.raw_rows), 0, "no debe emitir filas: el import quedaría mal")
+        self.assertIn("MOVIMIENTOS", r.parse_errors[0].message.upper())
