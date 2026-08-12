@@ -382,6 +382,18 @@ def preview_plan_change(conn, user_id: int, new_plan: str, new_period: str) -> d
             "reason": "no_active_credit",
             "current_state": state,
         }
+    if not state["anchor_plan"] or not state["anchor_period"]:
+        # Ventana de acceso vigente pero SIN anchor: hay acceso, no hay plan
+        # pago que convertir. El caso normal hoy es el free trial (arranca a
+        # propósito sin anchor: el tiempo regalado no vale plata, y darle uno
+        # es exactamente lo que fabricaba 41 días de Plus — audit 2026-08-09).
+        # Antes esto caía en el camino feliz y devolvía eligible=True con
+        # remaining_usd=0 → 0 días; el confirm después reventaba en 500.
+        return {
+            "eligible": False,
+            "reason": "no_anchor",
+            "current_state": state,
+        }
     if state["anchor_plan"] == new_plan and state["anchor_period"] == new_period:
         return {
             "eligible": False,

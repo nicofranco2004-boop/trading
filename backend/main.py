@@ -23804,12 +23804,19 @@ def billing_change_plan(
     """Cambia el plan del user manteniendo el crédito remanente.
 
     Flujo:
-      1. Verifica que el user tenga crédito activo (active_until > NOW).
-      2. Cancela la suscripción Rebill actual (no más cobros automáticos).
-      3. Convierte el crédito remanente al daily_rate del plan nuevo →
+      1. Verifica que el user tenga un plan pago convertible (crédito activo
+         CON anchor).
+      2. Convierte el crédito remanente al daily_rate del plan nuevo →
          credit_active_until se reajusta (más días si el nuevo es más
-         barato, menos si es más caro).
-      4. Actualiza user.tier y anchor.
+         barato, menos si es más caro) + actualiza user.tier y anchor.
+      3. Recién entonces cancela la suscripción Rebill (no más cobros).
+
+    ⚠️ EL ORDEN DE 2 Y 3 NO ES ESTÉTICO. Antes se cancelaba primero, y la
+    baja quedaba COMMITEADA aunque la conversión fallara después: el user
+    terminaba sin la suscripción que había pagado y sin el plan nuevo, con
+    un 500 en la cara. Convirtiendo primero, el peor caso es que Rebill le
+    cobre un período más — y ese cobro le suma crédito, así que recibe algo
+    a cambio. Ninguna falla puede dejarlo pagando por nada.
 
     Resultado: el user accede al tier nuevo SIN pagar de nuevo. Cuando
     se le acabe el crédito, el cron lifecycle lo baja a Free y se le
@@ -23818,6 +23825,8 @@ def billing_change_plan(
     Errores:
       • 400 si quiere cambiar al mismo plan (no-op).
       • 404 si no tiene crédito activo (debe usar /subscribe en su lugar).
+      • 409 si tiene acceso pero sin plan pago detrás (free trial): no hay
+        crédito que convertir, tiene que suscribirse.
     """
     # Rate limit por user — 3 intentos en 10 min. Cambio de plan es costoso
     # (cancelación + recálculo de crédito), no debe spamearse.
@@ -23835,22 +23844,53 @@ def billing_change_plan(
                 "error": "No tenés crédito activo para convertir.",
                 "hint": "use_subscribe",
             })
+        if not state["anchor_plan"] or not state["anchor_period"]:
+            # Tiene acceso vigente pero no hay plan pago detrás: es el free
+            # trial (arranca sin anchor a propósito). No hay crédito que
+            # convertir. Antes esto seguía de largo, cancelaba la suscripción
+            # y recién ahí convert_plan tiraba ValueError → 500 con la baja
+            # ya commiteada.
+            raise HTTPException(409, {
+                "error": "Tu acceso actual no es un plan pago, así que no hay crédito para convertir.",
+                "hint": "use_subscribe",
+                "reason": "no_anchor",
+            })
         if state["anchor_plan"] == data.plan and state["anchor_period"] == data.period:
             raise HTTPException(400, {
                 "error": "Ya estás en este plan.",
             })
 
-        # 2. Cancelar la subscription Rebill actual (si hay)
-        # No falla si no existe — el user puede estar ya en modo crédito puro.
+        # 2. Ubicar la subscription Rebill vigente. Acá solo se LEE: la baja
+        # va DESPUÉS de convertir (ver el ⚠️ del docstring).
         existing_sub = conn.execute(
             """SELECT id, mp_subscription_id FROM subscriptions
                WHERE user_id = ? AND status = 'authorized'
                ORDER BY created_at DESC LIMIT 1""",
             (uid,),
         ).fetchone()
-        cancelled_sub_id = None
-        if existing_sub and existing_sub["mp_subscription_id"]:
-            cancelled_sub_id = existing_sub["mp_subscription_id"]
+        cancelled_sub_id = (
+            existing_sub["mp_subscription_id"]
+            if existing_sub and existing_sub["mp_subscription_id"] else None
+        )
+
+        # 3. Convertir crédito al plan nuevo
+        try:
+            result = billing_credits.convert_plan(
+                conn,
+                user_id=uid,
+                new_plan=data.plan,
+                new_period=data.period,
+                cancelled_subscription_id=cancelled_sub_id,
+                note=f"User-initiated plan change from /api/billing/change-plan",
+            )
+        except Exception as ex:
+            log.exception("convert_plan falló para user %s: %s", uid, ex)
+            raise HTTPException(500, f"Error al convertir crédito: {type(ex).__name__}")
+
+        # 4. Conversión hecha: ahora sí cortamos el cobro automático. Si algo
+        # de esto falla, el user ya tiene su plan nuevo — lo único que puede
+        # pasar es un cobro de más, que se le acredita como crédito.
+        if cancelled_sub_id:
             try:
                 rebill.cancel_subscription(cancelled_sub_id)
             except Exception as ex:
@@ -23874,20 +23914,6 @@ def billing_change_plan(
                        WHERE id = ?""",
                     (existing_sub["id"],),
                 )
-
-        # 3. Convertir crédito al plan nuevo
-        try:
-            result = billing_credits.convert_plan(
-                conn,
-                user_id=uid,
-                new_plan=data.plan,
-                new_period=data.period,
-                cancelled_subscription_id=cancelled_sub_id,
-                note=f"User-initiated plan change from /api/billing/change-plan",
-            )
-        except Exception as ex:
-            log.exception("convert_plan falló para user %s: %s", uid, ex)
-            raise HTTPException(500, f"Error al convertir crédito: {type(ex).__name__}")
 
         track_event = "subscription_plan_changed"  # también lo loggeamos del lado server
         log.info(
@@ -24202,19 +24228,58 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
         # PERO el tier ya quedó en pago: si lo dejamos SIN credit_active_until, el
         # cron (filtra credit_active_until IS NOT NULL) y la red de seguridad de
         # get_tier (fail-open si no hay fecha) NO lo agarrarían → Pro permanente.
-        # Seteamos un crédito fallback del período cobrado si todavía no hay
-        # ninguno. Una renovación de Rebill posterior lo extiende; si nunca
-        # renueva, el cron/red de seguridad lo baja al vencer.
+        # Seteamos un crédito fallback del período cobrado. Una renovación de
+        # Rebill posterior lo extiende; si nunca renueva, el cron/red de
+        # seguridad lo baja al vencer.
         try:
             from datetime import datetime as _dt, timedelta as _td
-            _fb_until = (_dt.utcnow() + _td(days=365 if period == "annual" else 30)).isoformat()
-            with conn:
-                conn.execute(
-                    "UPDATE users SET credit_active_until = ? "
-                    "WHERE id = ? AND credit_active_until IS NULL",
-                    (_fb_until, uid),
-                )
-            log.warning("Rebill: seteado credit_active_until fallback (%s) para user %s tras fallo del ledger", _fb_until, uid)
+            from billing import credits as _cr
+            _fb_dt = _dt.utcnow() + _td(days=365 if period == "annual" else 30)
+            # Solo EXTIENDE, nunca acorta. El `IS NULL` que había acá no
+            # alcanzaba: un user EN FREE TRIAL ya tiene credit_active_until
+            # (los 15 días del trial), así que el fallback no disparaba nunca
+            # y el período que ACABABA DE PAGAR quedaba recortado a lo que le
+            # quedara de prueba — pagaba un mes y recibía tres días.
+            _cur_row = conn.execute(
+                "SELECT credit_active_until FROM users WHERE id = ?", (uid,)).fetchone()
+            _cur_raw = _cur_row["credit_active_until"] if _cur_row else None
+            _cur_dt = None
+            if _cur_raw:
+                # Comparar parseado y no como texto: hay fechas guardadas con
+                # 'T' y otras con espacio, y ' ' < 'T' invierte el orden dentro
+                # del mismo día.
+                try:
+                    _cur_dt = _cr._parse_iso(_cur_raw)
+                except Exception:
+                    _cur_dt = None
+            if _cur_dt is None or _cur_dt < _fb_dt:
+                # El anchor va junto con la fecha: sin él el user queda con
+                # acceso pero "sin plan pago detrás" — no puede cambiar de
+                # plan ni ser reparado con restore-tier, aunque pagó. Solo si
+                # el par está en el catálogo (si grant_payment_credit falló
+                # JUSTAMENTE por un plan/period inválido, no lo perpetuamos).
+                _valid = (plan, period) in _cr.PLAN_PRICES_USD
+                with conn:
+                    if _valid:
+                        conn.execute(
+                            """UPDATE users
+                               SET credit_active_until = ?, credit_anchor_plan = ?,
+                                   credit_anchor_period = ?,
+                                   credit_anchor_amount_usd = COALESCE(?, ?),
+                                   credit_anchor_at = ?
+                               WHERE id = ?""",
+                            (_fb_dt.isoformat(), plan, period, amount_usd,
+                             _cr.PLAN_PRICES_USD[(plan, period)],
+                             _dt.utcnow().isoformat(), uid),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE users SET credit_active_until = ? WHERE id = ?",
+                            (_fb_dt.isoformat(), uid))
+                log.warning(
+                    "Rebill: seteado credit_active_until fallback (%s, anchor=%s) para user %s "
+                    "tras fallo del ledger (venía de %s)",
+                    _fb_dt.isoformat(), f"{plan}/{period}" if _valid else "-", uid, _cur_raw or "NULL")
         except Exception as ex2:
             log.error("fallback credit_active_until falló para user %s: %s", uid, ex2)
 

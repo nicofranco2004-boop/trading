@@ -524,6 +524,7 @@ export default function Planes() {
       {changeModal && (
         <ChangePlanModal
           state={changeModal}
+          trialActive={!!trial?.active}
           subscribing={subscribing}
           onConfirm={confirmChangePlan}
           onClose={() => setChangeModal(null)}
@@ -618,7 +619,7 @@ function ctaForPlan({ cardPlan, cardPeriod, isCurrent, otherTier, canChangePlan,
 
 
 // ─── Modal de confirmación con preview del cambio ──────────────────────────
-function ChangePlanModal({ state, subscribing, onConfirm, onClose }) {
+function ChangePlanModal({ state, trialActive, subscribing, onConfirm, onClose }) {
   const { plan, period, preview, loading } = state
   const planLabel = plan === 'pro' ? 'Pro' : 'Plus'
   const periodLabel = period === 'annual' ? 'anual' : 'mensual'
@@ -708,7 +709,15 @@ function ChangePlanModal({ state, subscribing, onConfirm, onClose }) {
             <p className="text-sm text-ink-2 mb-4">
               {preview?.reason === 'same_plan'
                 ? 'Ya estás en este plan.'
-                : 'No podemos cambiar de plan en este momento. Probá suscribirte normal.'}
+                : preview?.reason === 'no_anchor'
+                  // Hay acceso vigente pero no hay plan pago detrás: el caso
+                  // normal es el free trial. Antes acá el backend decía que sí
+                  // se podía (con 0 días), y confirmar cancelaba la suscripción
+                  // y devolvía un 500.
+                  ? (trialActive
+                      ? 'Estás usando la prueba gratis, así que no hay crédito de un plan pago para convertir. Podés suscribirte al plan que quieras cuando quieras.'
+                      : 'Tu acceso actual no viene de un plan pago, así que no hay crédito para convertir. Si creés que es un error, escribinos y lo miramos.')
+                  : 'No podemos cambiar de plan en este momento. Probá suscribirte normal.'}
             </p>
             <button
               type="button"
