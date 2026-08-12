@@ -13,6 +13,7 @@ import AIDiscoveryBanner from '../components/ai/AIDiscoveryBanner'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
+import CurrencyToggle from '../components/CurrencyToggle'
 import { DashboardSkeleton } from '../components/Skeleton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import BenchmarksLine from '../components/BenchmarksLine'
@@ -724,6 +725,10 @@ function PersonalDashboard() {
                 : 'Para brokers ARS, la conversión a USD se hace al blue actual.'}
             </p>
           </InfoTooltip>
+          {/* Mismo toggle que Cartera (estado global compartido): el Dashboard ya
+              respetaba la preferencia de moneda en todos sus números, pero no
+              tenía cómo cambiarla — había que ir hasta Cartera y volver. */}
+          <CurrencyToggle className="ml-auto" />
         </div>
         <div className="text-[30px] sm:text-[34px] leading-none font-semibold text-ink-0 tabular">
           <PrivacyMask><FlashValue value={portfolioTotal}><AnimatedNumber value={portfolioTotal} format={fmt} /></FlashValue></PrivacyMask>

@@ -24,6 +24,7 @@ import { nextPaymentForPosition } from '../utils/bondSchedule'
 import BondDetailRow from '../components/BondDetail'
 import ReturnFxHint from '../components/ReturnFxHint'
 import StalePricesNotice from '../components/StalePricesNotice'
+import CurrencyToggle from '../components/CurrencyToggle'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api, errorMessage } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit } from '../utils/valuation'
@@ -1504,29 +1505,10 @@ function PositionsDesktop() {
           options={[{ id: 'all', label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]}
         />
         <FilterPill label="Ordenar" value={sortBy} onChange={setSortBy} options={SORT_OPTIONS} />
-        {/* Toggle global de moneda (USD | ARS). Convierte TODAS las tarjetas de
-            broker + tablas al tipo de cambio activo (mismo state que el hero y el
-            resto de la app — persiste en localStorage 'rendi_display_currency'). */}
-        <div className="inline-flex items-center rounded-full border border-line-2 bg-bg-2 p-0.5" role="group" aria-label="Moneda de visualización">
-          <button
-            type="button"
-            onClick={() => setCurrency('USD')}
-            aria-pressed={!isArsDisp}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition ${!isArsDisp ? 'bg-data-violet/15 text-data-violet' : 'text-ink-2 hover:text-ink-0'}`}
-            title="Mostrar toda la cartera en dólares"
-          >
-            USD
-          </button>
-          <button
-            type="button"
-            onClick={() => setCurrency('ARS')}
-            aria-pressed={isArsDisp}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition ${isArsDisp ? 'bg-data-violet/15 text-data-violet' : 'text-ink-2 hover:text-ink-0'}`}
-            title="Mostrar toda la cartera en pesos (al tipo de cambio activo)"
-          >
-            ARS
-          </button>
-        </div>
+        {/* Toggle global de moneda (USD | ARS) — componente compartido con el
+            Dashboard. Mismo state global (localStorage 'rendi_display_currency'),
+            así que da igual desde dónde lo toques. */}
+        <CurrencyToggle />
         <button
           type="button"
           onClick={() => setShowAllLots(v => !v)}
