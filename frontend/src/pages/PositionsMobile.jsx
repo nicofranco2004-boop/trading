@@ -37,7 +37,7 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -1708,7 +1708,9 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
         <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={p._isLot ? 22 : 28} />
         <div className="min-w-0">
           <div className="text-[13px] font-semibold text-ink-0 leading-none truncate">
-            {fciLabel(p.asset)}
+            {/* cashAssetLabel: el efectivo del sub-broker dólar de un broker AR se
+                guarda como 'USDT' (centinela interno) pero son dólares reales. */}
+            {p.is_cash ? cashAssetLabel(p) : fciLabel(p.asset)}
           </div>
           <div className="text-[10px] font-mono text-ink-3 leading-none mt-1 truncate flex items-center gap-1">
             {p.is_cash

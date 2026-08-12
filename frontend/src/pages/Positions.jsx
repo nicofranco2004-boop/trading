@@ -28,7 +28,7 @@ import StalePricesNotice from '../components/StalePricesNotice'
 import CurrencyToggle from '../components/CurrencyToggle'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api, errorMessage } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -1797,7 +1797,7 @@ function PositionsDesktop() {
                               <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                               <div className="min-w-0">
                                 <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
-                                  {p.is_cash ? p.asset : (
+                                  {p.is_cash ? cashAssetLabel(p) : (
                                     <button
                                       type="button"
                                       onClick={() => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
@@ -2037,7 +2037,7 @@ function PositionsDesktop() {
                             <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                             <div className="min-w-0">
                               <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
-                                {p.is_cash ? p.asset : (
+                                {p.is_cash ? cashAssetLabel(p) : (
                                   <button
                                     type="button"
                                     onClick={() => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
@@ -2433,7 +2433,7 @@ function PositionsDesktop() {
                 autoFocus
               >
                 {brokers.map(b => (
-                  <option key={b.id} value={b.name}>{b.name} ({b.currency})</option>
+                  <option key={b.id} value={b.name}>{b.name} ({brokerCurrencyLabel(b, brokers)})</option>
                 ))}
               </select>
             </div>
@@ -3310,7 +3310,7 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
                 onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
                 className={inputClass}
               >
-                {brokers.map(b => <option key={b.id} value={b.name}>{b.name} ({b.currency})</option>)}
+                {brokers.map(b => <option key={b.id} value={b.name}>{b.name} ({brokerCurrencyLabel(b, brokers)})</option>)}
               </select>
             )}
           </div>

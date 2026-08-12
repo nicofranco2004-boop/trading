@@ -147,6 +147,47 @@ export function setBrokersRegistry(brokers) {
  * pierda el sufijo "· USD". Fallback al sufijo del nombre si el registro no está
  * poblado o el broker es desconocido (datos viejos / carga temprana).
  */
+/**
+ * brokerCurrencyLabel — la moneda que se le MUESTRA al usuario.
+ *
+ * `brokers.currency` guarda 'USDT' como centinela INTERNO de "bucket dólar", para
+ * unificar cripto y tradfi en el motor (así lo documenta `_ensure_usd_sibling` en
+ * el backend: "el currency field es plumbing interno"). Pero en un sub-broker
+ * dólar de un broker argentino —"Cocos · USD", comprado por dólar-MEP— lo que hay
+ * son DÓLARES REALES, no Tether: mostrar "Cocos · USD (USDT)" es un error de
+ * etiqueta y confunde.
+ *
+ * En un exchange (Binance) el USDT sí es lo que el usuario tiene, así que ahí no
+ * se toca. El discriminador es el mismo que `isArUsdBroker`: moneda ≠ ARS con
+ * padre ARS.
+ *
+ * Es SOLO presentación — no cambia `brokers.currency` ni la valuación.
+ */
+export function brokerCurrencyLabel(broker, brokers) {
+  const ccy = (broker?.currency || '').toUpperCase()
+  if (ccy !== 'USDT') return broker?.currency
+  const parent = (brokers || []).find(b => b.id === broker?.parent_broker_id)
+  if (parent && (parent.currency || '').toUpperCase() === 'ARS') return 'USD'
+  // Fallback por nombre para datos viejos sin parent_broker_id (mismo criterio
+  // que el fallback de isArUsdBroker).
+  if (!broker?.parent_broker_id && /·\s*USD$/.test(broker?.name || '')) return 'USD'
+  return broker?.currency
+}
+
+/**
+ * cashAssetLabel — el nombre que se muestra en una fila de EFECTIVO.
+ *
+ * `/api/cash/flow` crea la posición cash del sub-broker dólar con asset 'USDT'
+ * (mismo centinela interno que `brokers.currency`). En "Cocos · USD" eso son
+ * dólares reales, no Tether. Se corrige en el display —y no en el dato— para que
+ * también se vea bien en las cuentas que YA tienen esa fila creada, sin migración.
+ */
+export function cashAssetLabel(p) {
+  if (!p?.is_cash) return p?.asset
+  if ((p.asset || '').toUpperCase() !== 'USDT') return p.asset
+  return isArUsdBroker(p.broker) ? 'USD' : p.asset
+}
+
 export function isArUsdBroker(brokerName) {
   const b = _brokersByName.get(brokerName)
   if (b) {
