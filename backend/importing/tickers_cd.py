@@ -39,9 +39,14 @@ KNOWN_CD_TICKERS = {
     "AMC", "AMD", "BAC", "BBD", "BND", "BTC", "CAC", "CARC", "CRWD", "DBC",
     "EGLD", "ETC", "FBTC", "GBTC", "GD", "GILD", "GLD", "GOLD", "HD", "HOOD",
     "INTC", "JD", "KLAC", "LCID", "LQD", "LTC", "MATIC", "MCD", "MPC", "NOC",
-    "PDD", "SAND", "SCHD", "SID", "SSEC", "TSMC", "USDC", "WBD", "WFC", "WLD",
-    "XLC", "YPFD", "ZEC",
+    "LAC", "PDD", "SAND", "SCHD", "SID", "SSEC", "TSMC", "USDC", "WBD", "WFC",
+    "WLD", "XLC", "YPFD", "ZEC",
 }
+# LAC (Lithium Americas) entró a la allowlist de CEDEARs en f60502d y lo cazó
+# `test_tickers_cd_sync` — el mismo guard que se escribió para SID. Termina en "C", así
+# que el motor lo leía como pata-C de "LA" y lo truncaba. Verificado con yfinance:
+# LAC = 3,26 USD y LAC.BA = 5.170 ARS cotizan; "LA" está delisted (no existe). Sin
+# proteger, un usuario con LAC lo veía con precio "—".
 # SID y SCHD se agregaron el 2026-08-06, reportados por un usuario de IOL:
 #   · SID  = Companhia Siderúrgica Nacional (CEDEAR brasileño, ticker NYSE real).
 #     Su export traía SID (78 filas, especie en pesos) y SIDD (10, pata dólar).

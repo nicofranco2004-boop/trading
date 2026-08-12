@@ -8600,6 +8600,21 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
     )
 
 
+def _autodeposit_rate(conn, uid: int, date_iso) -> float:
+    """Dólar con el que se dolariza un AUTODEPÓSITO (el aporte que Rendi registra
+    cuando cargás una posición sin saldo). Es el MEP de la FECHA de la compra.
+
+    Vive en un helper porque lo consumen dos caminos —el alta manual y la operación
+    grupal del asesor— y tienen que coincidir: si el que aplica y el que revierte usan
+    rates distintos, el undo devuelve un monto que no es el que se aplicó."""
+    live = _current_cedear_rate()          # MEP live (cascada mep→ccl→cripto)
+    fallback = live or _user_tc_blue(conn, uid)
+    try:
+        return _fx.fx_for_date(conn, date_iso, fallback=fallback) or fallback
+    except Exception:
+        return fallback
+
+
 def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
                              date_iso: str, meta_out: dict = None) -> float:
     """En una acción MANUAL que debita cash (ej: agregar una posición sin haber
@@ -8642,7 +8657,14 @@ def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
         "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1", (uid, broker),
     ).fetchone()
     currency = (br["currency"] if br else "USDT")
-    tcb = _user_tc_blue(conn, uid)
+    # Dólar del AUTODEPÓSITO = MEP de la FECHA de la compra. `fx_for_date` prefiere el
+    # MEP del día y solo cae al blue histórico si ese día no hay MEP.
+    # Antes usaba `_user_tc_blue`, que lee `config.tc_blue`: un número GUARDADO que
+    # arranca en 1415 y solo cambia si alguien lo edita a mano. O sea que este aporte
+    # —que ES capital aportado, el denominador del rendimiento— se dolarizaba con un
+    # tipo de cambio viejo y ajeno al MEP que usa el resto de la app, y encima con el de
+    # HOY aunque la compra fuera retroactiva.
+    tcb = _autodeposit_rate(conn, uid, date_iso)
     amount_usd = (shortfall / tcb) if (currency == "ARS" and tcb > 0) else shortfall
     try:
         y, m = int(date_iso[:4]), int(date_iso[5:7])
@@ -31765,10 +31787,12 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
                 _adep_n = float(meta.get("autodep_native") or 0)
                 _adep_usd = None
                 if _adep_n > 0:
-                    # Misma conversión que _autodeposit_if_overdraw (ARS→USD al
-                    # blue del cliente) — se persiste para revertir el flujo.
+                    # Misma conversión que _autodeposit_if_overdraw (ahora MEP de la
+                    # fecha) — se persiste para revertir el flujo. Tiene que usar el
+                    # MISMO rate o el undo revierte un monto distinto del aplicado.
                     _bc = broker_ccy.get((row["client_uid"], row["broker"]))
-                    _tcb = _user_tc_blue(conn, row["client_uid"]) if _bc == "ARS" else 0
+                    _tcb = (_autodeposit_rate(conn, row["client_uid"], meta.get("entry_date"))
+                            if _bc == "ARS" else 0)
                     _adep_usd = round(_adep_n / _tcb, 2) if (_bc == "ARS" and _tcb > 0) else round(_adep_n, 2)
                 conn.execute(
                     """INSERT INTO advisor_op_batch_items

@@ -127,5 +127,53 @@ class CashAutodepositTest(unittest.TestCase):
         self.assertAlmostEqual(self._global_deposits(), 100.0, places=2)     # 100k ARS / 1000
 
 
+class AutodepositRateTest(unittest.TestCase):
+    """El autodepósito ES capital aportado (el denominador del rendimiento), así que el
+    dólar con que se dolariza importa. Antes usaba `config.tc_blue`: un número GUARDADO
+    que arranca en 1415 y solo cambia a mano — ajeno al MEP que usa el resto de la app, y
+    encima el de HOY aunque la compra fuera retroactiva. Ahora: MEP de la FECHA."""
+
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("positions", "monthly_entries", "config", "brokers", "users", "fx_rates_daily"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            ("adr@rendi.test", "x")).lastrowid
+        self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
+                          (self.uid, "Cocos", "ARS"))
+        # El valor viejo y ajeno que se usaba antes.
+        self.conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_blue','1415',?)", (self.uid,))
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(fx_rates_daily)")]
+        if "mep_venta" not in cols:
+            self.conn.execute("ALTER TABLE fx_rates_daily ADD COLUMN mep_venta REAL")
+        self.conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?,?,?,?)", ("2024-05-03", 1050.0, 1180.0, "test"))
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_usa_el_mep_de_la_fecha_no_el_config_viejo(self):
+        self.assertAlmostEqual(
+            main._autodeposit_rate(self.conn, self.uid, "2024-05-03"), 1180.0, places=2,
+            msg="no tomó el MEP de esa fecha")
+
+    def test_el_capital_aportado_sale_al_mep_de_la_compra(self):
+        main.create_position(main.PositionIn(
+            broker="Cocos", asset="GGAL", quantity=100, buy_price=1180,
+            invested=118000, entry_date="2024-05-03"), uid=self.uid)
+        aportado = float(self.conn.execute(
+            "SELECT COALESCE(SUM(deposits),0) v FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["v"] or 0)
+        # 118.000 / 1180 = 100. Con el 1415 viejo daba 83,39 (20% menos aportado → el
+        # rendimiento salía inflado porque el denominador quedaba chico).
+        self.assertAlmostEqual(aportado, 100.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
