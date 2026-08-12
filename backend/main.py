@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.exception_handlers import http_exception_handler
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json
@@ -153,6 +155,45 @@ def clear_auth_cookie(response: Response) -> None:
     response.delete_cookie(key=COOKIE_NAME, path="/")
 
 app = FastAPI(title="Rendi", docs_url=None, redoc_url=None)  # disable public docs in prod
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _log_server_errors(request: Request, exc: StarletteHTTPException):
+    """Deja en los logs la CAUSA de todo 5xx. Sin esto no quedaba rastro de nada.
+
+    El patrón que se repite 27 veces en este archivo es:
+
+        except Exception as ex:
+            raise HTTPException(500, f"Error al registrar flujo de caja: {ex}")
+
+    Eso arma un mensaje lindo para el browser y TIRA EL TRACEBACK a la basura: 25
+    de esas 27 no loguean nada, así que en Railway no queda ni una línea. Un
+    usuario reportó "no puedo registrar un depósito" y del lado del servidor no
+    había absolutamente nada que mirar — ni el tipo de excepción, ni la query, ni
+    el archivo. Diagnosticar eso es adivinar.
+
+    `raise X` adentro de un `except Y` encadena el original en `X.__context__`,
+    con su traceback intacto. O sea que la información nunca se perdió: nadie la
+    estaba leyendo. Este handler la lee UNA vez, acá, en lugar de tocar los 27
+    call-sites (y de que el 28 se olvide).
+
+    Sin `__context__` (un `raise HTTPException(503, ...)` deliberado, como el del
+    cron sin token) loguea una sola línea sin traceback: es una decisión del
+    código, no un accidente, y no queremos ruido de stack en cada ping.
+
+    Delega en el handler default de FastAPI → la respuesta que ve el cliente NO
+    cambia.
+    """
+    if exc.status_code >= 500:
+        original = exc.__context__
+        if isinstance(original, BaseException):
+            log.error("%d en %s %s — %s", exc.status_code, request.method,
+                      request.url.path, exc.detail, exc_info=original)
+        else:
+            log.error("%d en %s %s — %s", exc.status_code, request.method,
+                      request.url.path, exc.detail)
+    return await http_exception_handler(request, exc)
+
 
 # CORS — origins explícitos (allow_credentials no admite "*"). Nota: el frontend
 # web pega a rutas relativas (/api/...) y Vercel proxea a Railway server-side,

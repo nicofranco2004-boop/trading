@@ -157,6 +157,35 @@ async function buildHttpError(res, ctx = {}) {
   return err
 }
 
+// Mensaje mostrable de un error que salió de `req()`. Existe porque la forma del
+// error de ESTE cliente (fetch → { message, status, payload }) no es la de axios
+// (`e.response.data.detail`), y ya hubo pantallas leyendo la de axios: `detail`
+// daba siempre undefined y el usuario veía el texto genérico pase lo que pase,
+// incluso ante un 500 que traía la causa exacta adentro.
+//
+// El caso que `buildHttpError` no cubre bien es el 422 de Pydantic, donde
+// `detail` es una LISTA de errores por campo: ahí caía en JSON.stringify y al
+// usuario le llegaba un choclo de JSON. Acá lo traducimos a "campo: qué pasa".
+//
+// Devuelve '' si no hay nada legible, para que el caller ponga SU fallback (que
+// tiene contexto: "no se pudo guardar la posición" ≠ "no se pudo borrar").
+export function errorMessage(e) {
+  const detail = e?.payload?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    const partes = detail
+      .map(d => {
+        // loc = ['body', 'campo', ...] — el primer tramo es siempre dónde vino
+        // (body/query/path) y al usuario no le dice nada.
+        const campo = Array.isArray(d?.loc) ? d.loc.slice(1).join('.') : ''
+        return campo ? `${campo}: ${d?.msg || 'valor inválido'}` : (d?.msg || '')
+      })
+      .filter(Boolean)
+    if (partes.length) return partes.join(' · ')
+  }
+  return e?.message || ''
+}
+
 // Errores de INFRAESTRUCTURA (no del backend): el gateway no pudo hablar con
 // el servidor. Pasa de verdad cada vez que deployamos —el backend reinicia unos
 // segundos— y también cuando estaba dormido. Al usuario le llegaba un críptico

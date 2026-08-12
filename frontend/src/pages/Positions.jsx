@@ -25,7 +25,7 @@ import BondDetailRow from '../components/BondDetail'
 import ReturnFxHint from '../components/ReturnFxHint'
 import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
-import { api } from '../utils/api'
+import { api, errorMessage } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -631,9 +631,15 @@ function PositionsDesktop() {
       setModal(null)
       loadAll()
     } catch (e) {
-      const detail = e?.response?.data?.detail
+      // `e.response.data.detail` es la forma de AXIOS, y en este proyecto no hay
+      // axios: `api.js` usa fetch y arma el error con { message, status, payload }.
+      // O sea que `detail` daba SIEMPRE undefined y el toast caía siempre al
+      // genérico — el usuario veía "Revisá los datos" incluso cuando el backend
+      // devolvía un 500 explicando la causa exacta. El error real nunca llegaba
+      // a la pantalla y tampoco quedaba en los logs del server: ciego de los dos
+      // lados. Ahora leemos la forma que este cliente sí produce.
       toast.push(
-        typeof detail === 'string' ? detail : 'No se pudo guardar la posición. Revisá los datos e intentá de nuevo.',
+        errorMessage(e) || 'No se pudo guardar la posición. Revisá los datos e intentá de nuevo.',
         { type: 'error' },
       )
     }

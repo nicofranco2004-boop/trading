@@ -281,7 +281,15 @@ export default function PositionsMobile() {
         broker_name: cashFlowForm.broker,
         direction: cashFlowForm.direction,
         amount,
-        currency: cashFlowForm.currency,
+        // `tc_blue` es el TC con el que el depósito en pesos se asienta en
+        // monthly_entries (que vive en USD) — o sea, el CAPITAL APORTADO, que es
+        // el denominador del rendimiento. Mobile no lo mandaba: `CashFlowIn` no
+        // valida campos de más, así que el `currency` que sí mandábamos se
+        // ignoraba en silencio y `tc_blue` caía a su default DURO de 1415. Todo
+        // depósito en pesos hecho desde el celular quedaba asentado a un dólar
+        // inventado, y el aportado salía torcido en la proporción del desvío.
+        // Desktop (Positions.jsx) siempre mandó el real; esto los empareja.
+        tc_blue: tcBlue,
       })
       track('cash_flow_recorded', {
         broker: cashFlowForm.broker,
