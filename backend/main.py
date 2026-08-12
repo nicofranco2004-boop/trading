@@ -10920,6 +10920,28 @@ def _futuro_a_dict(r) -> dict:
     return d
 
 
+def _pnl_en_moneda_del_broker(conn, uid: int, broker: str, pnl_usd: float, fecha: str) -> float:
+    """Convierte un P&L expresado en USD a la moneda NATIVA del broker.
+
+    AUDIT 2026-08-12. `_adjust_broker_cash` recibe la moneda del broker —así lo
+    dice su contrato y así lo usa el importador— pero los futuros le pasaban
+    `pnl_usd` directo. Con un broker en USDT no se nota (1:1). Con uno en PESOS
+    —el dólar futuro de Rofex/Matba se opera en ARS— 100 dólares de ganancia
+    entraban como 100 PESOS: medido, un saldo de 1.000.000 quedó en 1.000.100 en
+    vez de sumar ~145.000. El error es del orden del tipo de cambio.
+
+    `operations.pnl_usd` y `monthly_entries` siguen en USD (es lo que esperan sus
+    consumidores); lo único que se convierte es la pata de efectivo.
+    """
+    row = conn.execute("SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+                       (uid, broker)).fetchone()
+    ccy = ((row["currency"] if row else None) or "USD").upper()
+    if ccy in ("USD", "USDT", "USDC", "BUSD"):
+        return pnl_usd
+    tc = _fx.fx_for_date(conn, fecha, fallback=_user_tc_blue(conn, uid))
+    return pnl_usd * float(tc or 1)
+
+
 @app.get("/api/futures")
 def list_futures(include_closed: bool = False, uid: int = Depends(get_effective_user)):
     """Posiciones de futuros. Por defecto sólo las ABIERTAS."""
@@ -11032,6 +11054,17 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
             pnl = round(bruto - float(data.commissions or 0), 2)
             fecha = data.closed_at or _iso_today()
 
+            # CLAIM ATÓMICO: marcar cerrada ES el lock. El chequeo de arriba no
+            # alcanza — dos cierres en paralelo lo pasan los dos (el SELECT no
+            # toma lock) y acreditan el resultado DOS VECES. Medido en el audit:
+            # dos requests simultáneos dejaron 2.000 de efectivo en vez de 1.500.
+            # Acá el segundo matchea 0 filas y se corta antes de tocar plata.
+            if conn.execute(
+                "UPDATE futures_positions SET closed_at=? "
+                " WHERE id=? AND user_id=? AND closed_at IS NULL",
+                (fecha, fid, uid)).rowcount != 1:
+                raise HTTPException(400, "Esa posición ya se está cerrando.")
+
             moneda = _resolve_op_currency(conn, uid, pos["broker"], None)
             cur = conn.execute(
                 """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
@@ -11044,13 +11077,13 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
                              "cash_broker": pos["broker"], "futuro_id": fid})),
             )
             if pnl:
-                _adjust_broker_cash(conn, uid, pos["broker"], pnl)
+                _adjust_broker_cash(conn, uid, pos["broker"],
+                                    _pnl_en_moneda_del_broker(conn, uid, pos["broker"], pnl, fecha))
                 y, m = int(fecha[:4]), int(fecha[5:7])
                 _update_monthly_pnl_realized(conn, uid, pos["broker"], y, m, pnl)
                 _update_monthly_pnl_realized(conn, uid, "global", y, m, pnl)
 
-            conn.execute("UPDATE futures_positions SET closed_at=? WHERE id=? AND user_id=?",
-                         (fecha, fid, uid))
+
         try:
             _recalc_pnl_realized_from_ops(conn, uid)
             conn.commit()
@@ -12437,7 +12470,9 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
         if pnl_cash:
             # Mismo helper que usa el import — una sola implementación del movimiento
             # de efectivo. Un P&L negativo lo DESCUENTA, que es lo correcto.
-            _adjust_broker_cash(conn, uid, op.broker, pnl_cash)
+            # El efectivo va en la MONEDA DEL BROKER; el P&L se guarda en USD.
+            _adjust_broker_cash(conn, uid, op.broker,
+                                _pnl_en_moneda_del_broker(conn, uid, op.broker, pnl_cash, op.date))
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
         # Sync cache de pnl_realized en monthly_entries
         try:
@@ -12700,6 +12735,19 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
                                "inv": inv_dec, "com": 0.0}
 
     elif src == "manual_futures":
+        # Si esta operación salió de CERRAR una posición de futuros, borrarla tiene
+        # que devolver también la posición al estado abierto. Sin esto (medido en el
+        # audit) el efectivo y el P&L volvían bien pero la posición quedaba marcada
+        # como cerrada: desaparecía de la lista de abiertas y su resultado ya no
+        # existía en ningún lado. Se perdía en silencio.
+        fut_id = meta.get("futuro_id")
+        if fut_id:
+            if conn.execute(
+                "UPDATE futures_positions SET closed_at=NULL "
+                " WHERE id=? AND user_id=? AND closed_at IS NOT NULL",
+                (fut_id, uid)).rowcount:
+                undo["futuro_reabierto"] = {"id": fut_id, "closed_at": (op["date"] or "")[:10]}
+
         # Al crearse acreditó el resultado al efectivo (o lo descontó, si fue
         # pérdida). Devolvemos exactamente eso. El monto sale de la foto y no del
         # pnl_usd actual: si la operación se editó después, el efectivo que se movió
@@ -12927,6 +12975,11 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
                 _update_monthly_pnl_realized(conn, uid, 'global', _y, _m, _pnl)
             except (ValueError, IndexError):
                 pass
+        # Si el borrado REABRIÓ una posición de futuros, el undo la vuelve a cerrar.
+        _fr = p.get("futuro_reabierto")
+        if _fr:
+            conn.execute("UPDATE futures_positions SET closed_at=? WHERE id=? AND user_id=?",
+                         (_fr.get("closed_at"), _fr.get("id"), uid))
         # Re-invertir el cash que el borrado movió, en el MISMO broker que tocó.
         if p.get("cash"):
             _adjust_broker_cash(conn, uid, p.get("cash_broker") or broker,

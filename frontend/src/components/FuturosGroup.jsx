@@ -101,7 +101,11 @@ export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
     const r = noRealizado(f, precios[f.base_asset])
     return r ? acc + r.pnl : acc
   }, 0)
-  const hayPrecios = futuros.some(f => precios[f.base_asset] != null)
+  const conPrecio = futuros.filter(f => precios[f.base_asset] != null).length
+  const hayPrecios = conPrecio > 0
+  // Si a alguna le falta el precio, el total NO la incluye. Decirlo: un total
+  // que parece completo y no lo es es peor que no mostrarlo.
+  const totalParcial = hayPrecios && conPrecio < futuros.length
 
   return (
     <div className="mt-6 rounded-md border border-line bg-bg-1 overflow-hidden">
@@ -114,7 +118,9 @@ export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
           {hayPrecios && (
             <span className={`text-sm font-semibold ${totalNoRealizado >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
               {totalNoRealizado >= 0 ? '+' : ''}{usd(totalNoRealizado)}
-              <span className="text-[11px] text-ink-3 font-medium ml-1">no realizado</span>
+              <span className="text-[11px] text-ink-3 font-medium ml-1">
+                {totalParcial ? `no realizado · ${conPrecio} de ${futuros.length}` : 'no realizado'}
+              </span>
             </span>
           )}
           <button onClick={() => setFormAbierto(true)}
