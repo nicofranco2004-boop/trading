@@ -310,6 +310,21 @@ def get_db():
     conn.execute("PRAGMA temp_store=MEMORY")
     # mmap_size: 256MB de memory-mapped I/O acelera lecturas grandes.
     conn.execute("PRAGMA mmap_size=268435456")
+    # journal_size_limit: dejar que SQLite RECORTE el -wal después de cada
+    # checkpoint. Sin esto el default en Linux es -1 = no recortar nunca: el
+    # archivo sólo se reusa desde el offset 0, así que UNA transacción grande
+    # (el confirm de un import es una sola tx: parseo + persist + rebuild FIFO)
+    # deja el -wal en su tamaño máximo PARA SIEMPRE. Medido en prod: 183,59 MB
+    # de -wal con sólo ~300 frames vivos — 99% del archivo era espacio muerto
+    # ocupando volumen. Con el disco al 97%, esos 183 MB eran parte del problema.
+    #
+    # 64MB no es un techo de cuánto puede CRECER —una tx grande lo pasa igual—:
+    # es a partir de cuánto se RECORTA al terminar. Medido acá con una tx de
+    # 180k inserts: sin límite el -wal pica en 82,6 MB y ahí queda clavado para
+    # siempre; con el límite pica igual en 82,6 MB y el tráfico normal posterior
+    # lo devuelve a 67,1 MB (el límite). No cambia semántica ni durabilidad:
+    # sólo autoriza a truncar el archivo después de cada checkpoint.
+    conn.execute("PRAGMA journal_size_limit=67108864")
     return conn
 
 
@@ -3088,23 +3103,26 @@ def me(uid: int = Depends(get_effective_user)):
 @app.post("/api/auth/change-password")
 def change_password(data: ChangePasswordIn, response: Response, uid: int = Depends(get_effective_user)):
     conn = get_db()
-    row = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
-    if not row or not pwd_ctx.verify(data.current_password, row["password_hash"]):
+    try:
+        row = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
+        if not row or not pwd_ctx.verify(data.current_password, row["password_hash"]):
+            conn.close()
+            raise HTTPException(401, "Contraseña actual incorrecta")
+        new_hash = pwd_ctx.hash(data.new_password)
+        conn.execute(
+            "UPDATE users SET password_hash=?, password_changed_at=datetime('now') WHERE id=?",
+            (new_hash, uid),
+        )
+        conn.commit()
+        pca = conn.execute("SELECT password_changed_at FROM users WHERE id=?", (uid,)).fetchone()["password_changed_at"]
         conn.close()
-        raise HTTPException(401, "Contraseña actual incorrecta")
-    new_hash = pwd_ctx.hash(data.new_password)
-    conn.execute(
-        "UPDATE users SET password_hash=?, password_changed_at=datetime('now') WHERE id=?",
-        (new_hash, uid),
-    )
-    conn.commit()
-    pca = conn.execute("SELECT password_changed_at FROM users WHERE id=?", (uid,)).fetchone()["password_changed_at"]
-    conn.close()
-    # Token nuevo con el pca actualizado para que la sesión actual siga válida
-    # (los JWTs viejos del mismo user quedaron invalidados al bumpear pca).
-    token = create_token(uid, pca)
-    set_auth_cookie(response, token)
-    return {"ok": True, "token": token}
+        # Token nuevo con el pca actualizado para que la sesión actual siga válida
+        # (los JWTs viejos del mismo user quedaron invalidados al bumpear pca).
+        token = create_token(uid, pca)
+        set_auth_cookie(response, token)
+        return {"ok": True, "token": token}
+    finally:
+        conn.close()
 
 
 # Tablas de DATOS DE CARTERA que borra "Empezar de cero" (reset). ALLOWLIST
@@ -3930,13 +3948,16 @@ def get_config(uid: int = Depends(get_effective_user)):
 @app.put("/api/config")
 def update_config(data: ConfigUpdate, uid: int = Depends(get_effective_user)):
     conn = get_db()
-    if data.tc_mep is not None:
-        conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_mep', ?, ?)", (str(data.tc_mep), uid))
-    if data.tc_blue is not None:
-        conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_blue', ?, ?)", (str(data.tc_blue), uid))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
+    try:
+        if data.tc_mep is not None:
+            conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_mep', ?, ?)", (str(data.tc_mep), uid))
+        if data.tc_blue is not None:
+            conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_blue', ?, ?)", (str(data.tc_blue), uid))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 # ─── Dólar (auto-update blue/MEP) ────────────────────────────────────────────
@@ -4332,22 +4353,25 @@ def post_snapshot(data: SnapshotIn, request: Request,
         _persist_blue_for_date(today, float(blue_now), source='dolarapi', mep=mep_now)
 
     conn = get_db()
-    conn.execute(
-        """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, source)
-           VALUES (?, ?, ?, ?, ?, ?, 'browser')
-           ON CONFLICT(user_id, date) DO UPDATE SET
-             total_value=excluded.total_value,
-             total_invested=excluded.total_invested,
-             net_deposited=excluded.net_deposited,
-             fx_to_usd_blue=COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue),
-             -- Un cierre del cron NO se degrada a 'browser' por una visita
-             -- posterior: si ya había una medición, la marca se conserva.
-             source=COALESCE(snapshots.source, 'browser')""",
-        (uid, today, data.total_value, data.total_invested, data.net_deposited, blue_now),
-    )
-    conn.commit()
-    conn.close()
-    return {"ok": True, "date": today, "fx_to_usd_blue": blue_now}
+    try:
+        conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, source)
+               VALUES (?, ?, ?, ?, ?, ?, 'browser')
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 total_value=excluded.total_value,
+                 total_invested=excluded.total_invested,
+                 net_deposited=excluded.net_deposited,
+                 fx_to_usd_blue=COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue),
+                 -- Un cierre del cron NO se degrada a 'browser' por una visita
+                 -- posterior: si ya había una medición, la marca se conserva.
+                 source=COALESCE(snapshots.source, 'browser')""",
+            (uid, today, data.total_value, data.total_invested, data.net_deposited, blue_now),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "date": today, "fx_to_usd_blue": blue_now}
+    finally:
+        conn.close()
 
 
 @app.get("/api/snapshots")
@@ -7318,38 +7342,41 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
     # pisaba, así que editar cualquier otro campo de la posición podía DESTRUIR
     # en silencio un tipo de cambio correcto (basta con que el input rechace la
     # coma decimal y mande null). Para setearlo hay que mandar un valor > 0.
-    if (p.tc_compra is None and not p.is_cash
-            and (p.currency or "").upper() == "ARS" and p.entry_date):
-        # Mismo relleno que el alta: si el lote es en pesos y quedó sin TC, se
-        # completa con la cotización histórica de la fecha de entrada.
-        try:
-            _row_tc = conn.execute(
-                "SELECT tc_compra FROM positions WHERE id=? AND user_id=?", (pid, uid)
-            ).fetchone()
-            if not (_row_tc and _row_tc["tc_compra"]):
-                p.tc_compra = _fx.fx_for_date(conn, p.entry_date)
-        except Exception:
-            pass
-    conn.execute(
-        """UPDATE positions SET broker=?, asset=?, is_cash=?, buy_price=?, quantity=?,
-           invested=?, tc_compra=COALESCE(?, tc_compra), price_override=?, notes=?,
-           commissions=?,
-           entry_date=COALESCE(?, entry_date),
-           asset_type=COALESCE(?, asset_type),
-           currency=COALESCE(?, currency)
-           WHERE id=? AND user_id=?""",
-        (p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
-         p.invested, p.tc_compra, p.price_override, p.notes, p.commissions or 0,
-         p.entry_date, (p.asset_type or None), p.currency, pid, uid),
-    )
-    conn.commit()
-    # FIXED: include user_id in SELECT to prevent IDOR data leak
-    row = conn.execute("SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "Not found")
-    _ai_cache_invalidate(uid)
-    return dict(row)
+    try:
+        if (p.tc_compra is None and not p.is_cash
+                and (p.currency or "").upper() == "ARS" and p.entry_date):
+            # Mismo relleno que el alta: si el lote es en pesos y quedó sin TC, se
+            # completa con la cotización histórica de la fecha de entrada.
+            try:
+                _row_tc = conn.execute(
+                    "SELECT tc_compra FROM positions WHERE id=? AND user_id=?", (pid, uid)
+                ).fetchone()
+                if not (_row_tc and _row_tc["tc_compra"]):
+                    p.tc_compra = _fx.fx_for_date(conn, p.entry_date)
+            except Exception:
+                pass
+        conn.execute(
+            """UPDATE positions SET broker=?, asset=?, is_cash=?, buy_price=?, quantity=?,
+               invested=?, tc_compra=COALESCE(?, tc_compra), price_override=?, notes=?,
+               commissions=?,
+               entry_date=COALESCE(?, entry_date),
+               asset_type=COALESCE(?, asset_type),
+               currency=COALESCE(?, currency)
+               WHERE id=? AND user_id=?""",
+            (p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
+             p.invested, p.tc_compra, p.price_override, p.notes, p.commissions or 0,
+             p.entry_date, (p.asset_type or None), p.currency, pid, uid),
+        )
+        conn.commit()
+        # FIXED: include user_id in SELECT to prevent IDOR data leak
+        row = conn.execute("SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(404, "Not found")
+        _ai_cache_invalidate(uid)
+        return dict(row)
+    finally:
+        conn.close()
 
 
 @app.delete("/api/positions/{pid}")
@@ -7889,72 +7916,81 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
     # Si el capital salió de un broker que ya estaba en Rendi, debitamos su cash
     # (si no, sería doble conteo: el cash queda + el PF se suma). Si no se indica
     # source_broker, se asume plata nueva de afuera de Rendi.
-    if p.source_broker:
-        br = conn.execute(
-            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
-            (uid, p.source_broker),
-        ).fetchone()
-        if not br:
-            conn.close()
-            raise HTTPException(400, "Broker de origen no encontrado")
-        cur_c = (br["currency"] or "").upper()
-        ok_match = (p.moneda == "ARS" and cur_c == "ARS") or (p.moneda != "ARS" and cur_c in ("USD", "USDT"))
-        if not ok_match:
-            conn.close()
-            raise HTTPException(400, "La moneda del broker de origen no coincide con la del plazo fijo")
-        # El cash del broker de origen no puede quedar negativo: si el PF supera
-        # el cash disponible, auto-depositamos el faltante (sube cash + capital
-        # aportado) antes de debitar. Mismo criterio que en altas de posición.
-        _autodeposit_if_overdraw(conn, uid, p.source_broker, float(p.capital), p.fecha_inicio)
-        _adjust_broker_cash(conn, uid, p.source_broker, -float(p.capital))
-    cur = conn.execute(
-        """INSERT INTO plazos_fijos
-               (user_id, banco, capital, moneda, tasa, rate_type,
-                fecha_inicio, plazo_dias, fecha_vencimiento, renovacion_auto, modalidad,
-                pago_frecuencia_meses, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (uid, p.banco, p.capital, p.moneda, p.tasa, p.rate_type,
-         p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
-         (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes),
-    )
-    conn.commit()
-    pid = cur.lastrowid
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return {"ok": True, "id": pid, "fecha_vencimiento": venc}
+    try:
+        if p.source_broker:
+            br = conn.execute(
+                "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+                (uid, p.source_broker),
+            ).fetchone()
+            if not br:
+                conn.close()
+                raise HTTPException(400, "Broker de origen no encontrado")
+            cur_c = (br["currency"] or "").upper()
+            ok_match = (p.moneda == "ARS" and cur_c == "ARS") or (p.moneda != "ARS" and cur_c in ("USD", "USDT"))
+            if not ok_match:
+                conn.close()
+                raise HTTPException(400, "La moneda del broker de origen no coincide con la del plazo fijo")
+            # El cash del broker de origen no puede quedar negativo: si el PF supera
+            # el cash disponible, auto-depositamos el faltante (sube cash + capital
+            # aportado) antes de debitar. Mismo criterio que en altas de posición.
+            _autodeposit_if_overdraw(conn, uid, p.source_broker, float(p.capital), p.fecha_inicio)
+            _adjust_broker_cash(conn, uid, p.source_broker, -float(p.capital))
+        cur = conn.execute(
+            """INSERT INTO plazos_fijos
+                   (user_id, banco, capital, moneda, tasa, rate_type,
+                    fecha_inicio, plazo_dias, fecha_vencimiento, renovacion_auto, modalidad,
+                    pago_frecuencia_meses, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (uid, p.banco, p.capital, p.moneda, p.tasa, p.rate_type,
+             p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
+             (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes),
+        )
+        conn.commit()
+        pid = cur.lastrowid
+        conn.close()
+        _ai_cache_invalidate(uid)
+        return {"ok": True, "id": pid, "fecha_vencimiento": venc}
+    finally:
+        conn.close()
 
 
 @app.put("/api/plazos-fijos/{pid}")
 def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
     venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
     conn = get_db()
-    row = conn.execute("SELECT id FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid)).fetchone()
-    if not row:
+    try:
+        row = conn.execute("SELECT id FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid)).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Plazo fijo no encontrado")
+        conn.execute(
+            """UPDATE plazos_fijos SET banco=?, capital=?, moneda=?, tasa=?, rate_type=?,
+                   fecha_inicio=?, plazo_dias=?, fecha_vencimiento=?, renovacion_auto=?,
+                   modalidad=?, pago_frecuencia_meses=?, notes=?
+               WHERE id=? AND user_id=?""",
+            (p.banco, p.capital, p.moneda, p.tasa, p.rate_type, p.fecha_inicio,
+             p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
+             (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes, pid, uid),
+        )
+        conn.commit()
         conn.close()
-        raise HTTPException(404, "Plazo fijo no encontrado")
-    conn.execute(
-        """UPDATE plazos_fijos SET banco=?, capital=?, moneda=?, tasa=?, rate_type=?,
-               fecha_inicio=?, plazo_dias=?, fecha_vencimiento=?, renovacion_auto=?,
-               modalidad=?, pago_frecuencia_meses=?, notes=?
-           WHERE id=? AND user_id=?""",
-        (p.banco, p.capital, p.moneda, p.tasa, p.rate_type, p.fecha_inicio,
-         p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
-         (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes, pid, uid),
-    )
-    conn.commit()
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return {"ok": True, "fecha_vencimiento": venc}
+        _ai_cache_invalidate(uid)
+        return {"ok": True, "fecha_vencimiento": venc}
+    finally:
+        conn.close()
 
 
 @app.delete("/api/plazos-fijos/{pid}")
 def delete_plazo_fijo(pid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
-    conn.execute("DELETE FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid))
-    conn.commit()
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return {"ok": True}
+    try:
+        conn.execute("DELETE FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid))
+        conn.commit()
+        conn.close()
+        _ai_cache_invalidate(uid)
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 def _pf_value(row, as_of_iso=None):
@@ -8001,25 +8037,28 @@ def renovar_plazo_fijo(pid: int, uid: int = Depends(get_effective_user)):
     """Renueva el PF: arranca un período nuevo desde el vencimiento, con capital
     = capital + interés (reinvierte todo). Mismo plazo y tasa."""
     conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
-        (pid, uid),
-    ).fetchone()
-    if not row:
+    try:
+        row = conn.execute(
+            "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
+            (pid, uid),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Plazo fijo no encontrado")
+        val = _pf_value(row)
+        nuevo_capital = round(val["valor_vencimiento"], 2)
+        nuevo_inicio = row["fecha_vencimiento"]
+        nuevo_venc = _pf_vencimiento(nuevo_inicio, row["plazo_dias"])
+        conn.execute(
+            "UPDATE plazos_fijos SET capital=?, fecha_inicio=?, fecha_vencimiento=? WHERE id=? AND user_id=?",
+            (nuevo_capital, nuevo_inicio, nuevo_venc, pid, uid),
+        )
+        conn.commit()
         conn.close()
-        raise HTTPException(404, "Plazo fijo no encontrado")
-    val = _pf_value(row)
-    nuevo_capital = round(val["valor_vencimiento"], 2)
-    nuevo_inicio = row["fecha_vencimiento"]
-    nuevo_venc = _pf_vencimiento(nuevo_inicio, row["plazo_dias"])
-    conn.execute(
-        "UPDATE plazos_fijos SET capital=?, fecha_inicio=?, fecha_vencimiento=? WHERE id=? AND user_id=?",
-        (nuevo_capital, nuevo_inicio, nuevo_venc, pid, uid),
-    )
-    conn.commit()
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return {"ok": True, "capital": nuevo_capital, "fecha_inicio": nuevo_inicio, "fecha_vencimiento": nuevo_venc}
+        _ai_cache_invalidate(uid)
+        return {"ok": True, "capital": nuevo_capital, "fecha_inicio": nuevo_inicio, "fecha_vencimiento": nuevo_venc}
+    finally:
+        conn.close()
 
 
 class CobrarIn(BaseModel):
@@ -8032,55 +8071,58 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
     como cash ahí (debe coincidir la moneda). El interés es la ganancia realizada
     — el PF cerrado retiene sus datos para las métricas."""
     conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
-        (pid, uid),
-    ).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404, "Plazo fijo no encontrado")
-    val = _pf_value(row)
-    monto = round(val["valor_hoy"], 2)
-    credited = None
-    if data.broker:
-        br = conn.execute(
-            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
-            (uid, data.broker),
+    try:
+        row = conn.execute(
+            "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
+            (pid, uid),
         ).fetchone()
-        if not br:
+        if not row:
             conn.close()
-            raise HTTPException(400, "Broker no encontrado")
-        cur = (br["currency"] or "").upper()
-        pf_ars = (row["moneda"] or "ARS").upper() == "ARS"
-        ok_match = (pf_ars and cur == "ARS") or ((not pf_ars) and cur in ("USD", "USDT"))
-        if not ok_match:
-            conn.close()
-            raise HTTPException(400, "La moneda del broker no coincide con la del plazo fijo")
-        _adjust_broker_cash(conn, uid, data.broker, monto)
-        credited = data.broker
-    interes = round(val["interes_hoy"], 2)
-    # Registrar el interés como movimiento (ganancia realizada) — mismo patrón
-    # que un cupón de bono → aparece en Movimientos. Broker = el cobrado, o el
-    # banco si se retiró. `pnl_usd` va en moneda nativa + currency/fx_to_usd.
-    if interes > 0:
-        from datetime import datetime as _dt_op
-        moneda = (row["moneda"] or "ARS").upper()
-        fx = 1.0 if moneda in ("USD", "USDT") else None
+            raise HTTPException(404, "Plazo fijo no encontrado")
+        val = _pf_value(row)
+        monto = round(val["valor_hoy"], 2)
+        credited = None
+        if data.broker:
+            br = conn.execute(
+                "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+                (uid, data.broker),
+            ).fetchone()
+            if not br:
+                conn.close()
+                raise HTTPException(400, "Broker no encontrado")
+            cur = (br["currency"] or "").upper()
+            pf_ars = (row["moneda"] or "ARS").upper() == "ARS"
+            ok_match = (pf_ars and cur == "ARS") or ((not pf_ars) and cur in ("USD", "USDT"))
+            if not ok_match:
+                conn.close()
+                raise HTTPException(400, "La moneda del broker no coincide con la del plazo fijo")
+            _adjust_broker_cash(conn, uid, data.broker, monto)
+            credited = data.broker
+        interes = round(val["interes_hoy"], 2)
+        # Registrar el interés como movimiento (ganancia realizada) — mismo patrón
+        # que un cupón de bono → aparece en Movimientos. Broker = el cobrado, o el
+        # banco si se retiró. `pnl_usd` va en moneda nativa + currency/fx_to_usd.
+        if interes > 0:
+            from datetime import datetime as _dt_op
+            moneda = (row["moneda"] or "ARS").upper()
+            fx = 1.0 if moneda in ("USD", "USDT") else None
+            conn.execute(
+                """INSERT INTO operations
+                       (user_id, date, broker, asset, op_type, pnl_usd, currency, fx_to_usd, notes)
+                   VALUES (?, ?, ?, ?, 'Interés PF', ?, ?, ?, ?)""",
+                (uid, _dt_op.utcnow().strftime('%Y-%m-%d'), data.broker or row["banco"],
+                 row["banco"], interes, moneda, fx, f"Interés plazo fijo · {row['banco']}"),
+            )
         conn.execute(
-            """INSERT INTO operations
-                   (user_id, date, broker, asset, op_type, pnl_usd, currency, fx_to_usd, notes)
-               VALUES (?, ?, ?, ?, 'Interés PF', ?, ?, ?, ?)""",
-            (uid, _dt_op.utcnow().strftime('%Y-%m-%d'), data.broker or row["banco"],
-             row["banco"], interes, moneda, fx, f"Interés plazo fijo · {row['banco']}"),
+            "UPDATE plazos_fijos SET closed_at=datetime('now') WHERE id=? AND user_id=?",
+            (pid, uid),
         )
-    conn.execute(
-        "UPDATE plazos_fijos SET closed_at=datetime('now') WHERE id=? AND user_id=?",
-        (pid, uid),
-    )
-    conn.commit()
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return {"ok": True, "monto": monto, "interes": interes, "acreditado_en": credited}
+        conn.commit()
+        conn.close()
+        _ai_cache_invalidate(uid)
+        return {"ok": True, "monto": monto, "interes": interes, "acreditado_en": credited}
+    finally:
+        conn.close()
 
 
 # Cache en memoria de las tasas de PF (cambian 1×/día). TTL 6h; si el fetch
@@ -10626,40 +10668,46 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
 @app.put("/api/monthly/{eid}")
 def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
-    with conn:  # tx: update + repair atómico
-        man_dep, man_wit = _derive_manual_flows(
-            conn, uid, e.broker, e.year, e.month, e.deposits, e.withdrawals)
-        conn.execute(
-            """UPDATE monthly_entries SET deposits=?, withdrawals=?,
-               manual_deposits=?, manual_withdrawals=?, pnl_realized=?,
-               pnl_unrealized=?, capital_inicio=?, capital_final=? WHERE id=? AND user_id=?""",
-            (e.deposits, e.withdrawals, man_dep, man_wit, e.pnl_realized, e.pnl_unrealized,
-             e.capital_inicio, e.capital_final, eid, uid),
-        )
-        _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
-    # FIXED: include user_id in SELECT to prevent IDOR data leak
-    row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "Not found")
-    _ai_cache_invalidate(uid)
-    return dict(row)
+    try:
+        with conn:  # tx: update + repair atómico
+            man_dep, man_wit = _derive_manual_flows(
+                conn, uid, e.broker, e.year, e.month, e.deposits, e.withdrawals)
+            conn.execute(
+                """UPDATE monthly_entries SET deposits=?, withdrawals=?,
+                   manual_deposits=?, manual_withdrawals=?, pnl_realized=?,
+                   pnl_unrealized=?, capital_inicio=?, capital_final=? WHERE id=? AND user_id=?""",
+                (e.deposits, e.withdrawals, man_dep, man_wit, e.pnl_realized, e.pnl_unrealized,
+                 e.capital_inicio, e.capital_final, eid, uid),
+            )
+            _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
+        # FIXED: include user_id in SELECT to prevent IDOR data leak
+        row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(404, "Not found")
+        _ai_cache_invalidate(uid)
+        return dict(row)
+    finally:
+        conn.close()
 
 
 @app.delete("/api/monthly/{eid}")
 def delete_monthly(eid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     # Capturar el broker ANTES del delete para poder repair la chain.
-    target = conn.execute(
-        "SELECT broker FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)
-    ).fetchone()
-    with conn:  # tx: delete + repair atómico
-        conn.execute("DELETE FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid))
-        if target:
-            _repair_monthly_chain(conn, uid, target['broker'])  # Phase 8
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return {"ok": True}
+    try:
+        target = conn.execute(
+            "SELECT broker FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)
+        ).fetchone()
+        with conn:  # tx: delete + repair atómico
+            conn.execute("DELETE FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid))
+            if target:
+                _repair_monthly_chain(conn, uid, target['broker'])  # Phase 8
+        conn.close()
+        _ai_cache_invalidate(uid)
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 # ─── Operations ──────────────────────────────────────────────────────────────
@@ -12072,56 +12120,59 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
     porque uno leía cache stale ($889) y otro recomputaba on-the-fly ($854).
     """
     conn = get_db()
-    currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
-
-    # FUTUROS: el cierre de un futuro deja la plata en la cuenta, así que además
-    # del P&L hay que acreditar el efectivo. Sin esto el usuario queda con el saldo
-    # corto y la única "solución" a mano —cargar un depósito— le mete el resultado
-    # DOS VECES en el capital del mes (una como ganancia y otra como aporte) y
-    # además le ensucia el capital aportado, que es el denominador del rendimiento.
-    es_futuros = (op.kind or "").strip().lower() == "futures"
-    pnl_cash = float(op.pnl_usd or 0) if es_futuros else 0.0
-
-    # `undo_meta_json` guarda el CAMINO de creación, porque la fila sola no permite
-    # distinguirlo y adivinarlo rompe plata:
-    #   manual_form     — SOLO existe la fila de P&L; borrarla es sacarla y recalcular.
-    #   manual_futures  — además acreditó efectivo; el borrado tiene que devolverlo,
-    #                     y guardamos CUÁNTO para revertir exacto aunque la fila se
-    #                     haya editado después.
-    undo_meta = (json.dumps({"src": "manual_futures", "cash": pnl_cash})
-                 if es_futuros else '{"src":"manual_form"}')
-
-    cur = conn.execute(
-        """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price, exit_price,
-           quantity, pnl_usd, pnl_pct, commissions, currency, fx_to_usd, undo_meta_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (uid, op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
-         op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0, currency, op.fx_to_usd,
-         undo_meta),
-    )
-    if pnl_cash:
-        # Mismo helper que usa el import — una sola implementación del movimiento
-        # de efectivo. Un P&L negativo lo DESCUENTA, que es lo correcto.
-        _adjust_broker_cash(conn, uid, op.broker, pnl_cash)
-    row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
-    # Sync cache de pnl_realized en monthly_entries
     try:
-        # Asegurar que exista la fila del mes ANTES del recalc: `_recalc` solo recompone
-        # meses YA presentes en monthly_entries, así que un trade tipeado en un mes sin
-        # actividad previa no aterrizaba en el P&L mensual (quedaba solo en operations →
-        # el total del mes no lo contaba). El recalc de abajo pisa el valor con
-        # SUM(operations), así que esto no puede doblar el conteo.
-        if op.pnl_usd:
-            _y, _m = int(op.date[:4]), int(op.date[5:7])
-            _update_monthly_pnl_realized(conn, uid, op.broker, _y, _m, float(op.pnl_usd))
-            _update_monthly_pnl_realized(conn, uid, 'global', _y, _m, float(op.pnl_usd))
-        _recalc_pnl_realized_from_ops(conn, uid)
-    except Exception as ex:
-        log.error("Recalc tras create_operation falló: %s", ex)
-    conn.commit()
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return dict(row)
+        currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
+
+        # FUTUROS: el cierre de un futuro deja la plata en la cuenta, así que además
+        # del P&L hay que acreditar el efectivo. Sin esto el usuario queda con el saldo
+        # corto y la única "solución" a mano —cargar un depósito— le mete el resultado
+        # DOS VECES en el capital del mes (una como ganancia y otra como aporte) y
+        # además le ensucia el capital aportado, que es el denominador del rendimiento.
+        es_futuros = (op.kind or "").strip().lower() == "futures"
+        pnl_cash = float(op.pnl_usd or 0) if es_futuros else 0.0
+
+        # `undo_meta_json` guarda el CAMINO de creación, porque la fila sola no permite
+        # distinguirlo y adivinarlo rompe plata:
+        #   manual_form     — SOLO existe la fila de P&L; borrarla es sacarla y recalcular.
+        #   manual_futures  — además acreditó efectivo; el borrado tiene que devolverlo,
+        #                     y guardamos CUÁNTO para revertir exacto aunque la fila se
+        #                     haya editado después.
+        undo_meta = (json.dumps({"src": "manual_futures", "cash": pnl_cash})
+                     if es_futuros else '{"src":"manual_form"}')
+
+        cur = conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price, exit_price,
+               quantity, pnl_usd, pnl_pct, commissions, currency, fx_to_usd, undo_meta_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (uid, op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
+             op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0, currency, op.fx_to_usd,
+             undo_meta),
+        )
+        if pnl_cash:
+            # Mismo helper que usa el import — una sola implementación del movimiento
+            # de efectivo. Un P&L negativo lo DESCUENTA, que es lo correcto.
+            _adjust_broker_cash(conn, uid, op.broker, pnl_cash)
+        row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
+        # Sync cache de pnl_realized en monthly_entries
+        try:
+            # Asegurar que exista la fila del mes ANTES del recalc: `_recalc` solo recompone
+            # meses YA presentes en monthly_entries, así que un trade tipeado en un mes sin
+            # actividad previa no aterrizaba en el P&L mensual (quedaba solo en operations →
+            # el total del mes no lo contaba). El recalc de abajo pisa el valor con
+            # SUM(operations), así que esto no puede doblar el conteo.
+            if op.pnl_usd:
+                _y, _m = int(op.date[:4]), int(op.date[5:7])
+                _update_monthly_pnl_realized(conn, uid, op.broker, _y, _m, float(op.pnl_usd))
+                _update_monthly_pnl_realized(conn, uid, 'global', _y, _m, float(op.pnl_usd))
+            _recalc_pnl_realized_from_ops(conn, uid)
+        except Exception as ex:
+            log.error("Recalc tras create_operation falló: %s", ex)
+        conn.commit()
+        conn.close()
+        _ai_cache_invalidate(uid)
+        return dict(row)
+    finally:
+        conn.close()
 
 
 @app.put("/api/operations/{oid}")
@@ -12136,55 +12187,58 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
     nuevo, que es lo único correcto cuando la plata cambia de cuenta.
     """
     conn = get_db()
-    currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
-
-    prev = conn.execute(
-        "SELECT broker, undo_meta_json FROM operations WHERE id=? AND user_id=?",
-        (oid, uid)).fetchone()
-    meta_prev = {}
-    if prev and prev["undo_meta_json"]:
-        try:
-            meta_prev = json.loads(prev["undo_meta_json"]) or {}
-        except (ValueError, TypeError):
-            meta_prev = {}
-    es_futuros = meta_prev.get("src") == "manual_futures"
-
-    undo_meta_nuevo = None
-    if es_futuros:
-        cash_antes = float(meta_prev.get("cash") or 0)
-        cash_ahora = float(op.pnl_usd or 0)
-        broker_antes = meta_prev.get("cash_broker") or (prev["broker"] if prev else op.broker)
-        if broker_antes != op.broker:
-            _adjust_broker_cash(conn, uid, broker_antes, -cash_antes)
-            _adjust_broker_cash(conn, uid, op.broker, cash_ahora)
-        elif cash_ahora != cash_antes:
-            _adjust_broker_cash(conn, uid, op.broker, cash_ahora - cash_antes)
-        undo_meta_nuevo = json.dumps({"src": "manual_futures", "cash": cash_ahora,
-                                      "cash_broker": op.broker})
-
-    conn.execute(
-        """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
-           exit_price=?, quantity=?, pnl_usd=?, pnl_pct=?, commissions=?,
-           currency=?, fx_to_usd=?,
-           undo_meta_json=COALESCE(?, undo_meta_json)
-           WHERE id=? AND user_id=?""",
-        (op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
-         op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0,
-         currency, op.fx_to_usd, undo_meta_nuevo, oid, uid),
-    )
-    # FIXED: include user_id in SELECT to prevent IDOR data leak
-    row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404, "Not found")
     try:
-        _recalc_pnl_realized_from_ops(conn, uid)
-    except Exception as ex:
-        log.error("Recalc tras update_operation falló: %s", ex)
-    conn.commit()
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return dict(row)
+        currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
+
+        prev = conn.execute(
+            "SELECT broker, undo_meta_json FROM operations WHERE id=? AND user_id=?",
+            (oid, uid)).fetchone()
+        meta_prev = {}
+        if prev and prev["undo_meta_json"]:
+            try:
+                meta_prev = json.loads(prev["undo_meta_json"]) or {}
+            except (ValueError, TypeError):
+                meta_prev = {}
+        es_futuros = meta_prev.get("src") == "manual_futures"
+
+        undo_meta_nuevo = None
+        if es_futuros:
+            cash_antes = float(meta_prev.get("cash") or 0)
+            cash_ahora = float(op.pnl_usd or 0)
+            broker_antes = meta_prev.get("cash_broker") or (prev["broker"] if prev else op.broker)
+            if broker_antes != op.broker:
+                _adjust_broker_cash(conn, uid, broker_antes, -cash_antes)
+                _adjust_broker_cash(conn, uid, op.broker, cash_ahora)
+            elif cash_ahora != cash_antes:
+                _adjust_broker_cash(conn, uid, op.broker, cash_ahora - cash_antes)
+            undo_meta_nuevo = json.dumps({"src": "manual_futures", "cash": cash_ahora,
+                                          "cash_broker": op.broker})
+
+        conn.execute(
+            """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
+               exit_price=?, quantity=?, pnl_usd=?, pnl_pct=?, commissions=?,
+               currency=?, fx_to_usd=?,
+               undo_meta_json=COALESCE(?, undo_meta_json)
+               WHERE id=? AND user_id=?""",
+            (op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
+             op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0,
+             currency, op.fx_to_usd, undo_meta_nuevo, oid, uid),
+        )
+        # FIXED: include user_id in SELECT to prevent IDOR data leak
+        row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Not found")
+        try:
+            _recalc_pnl_realized_from_ops(conn, uid)
+        except Exception as ex:
+            log.error("Recalc tras update_operation falló: %s", ex)
+        conn.commit()
+        conn.close()
+        _ai_cache_invalidate(uid)
+        return dict(row)
+    finally:
+        conn.close()
 
 
 def _config_tc_blue(conn, uid: int) -> float:
@@ -13383,41 +13437,50 @@ def list_goals(uid: int = Depends(get_effective_user)):
 @app.post("/api/goals")
 def create_goal(g: GoalIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
-    cur = conn.execute(
-        "INSERT INTO goals (user_id, target_usd, target_date, expected_return_pct, label) VALUES (?,?,?,?,?)",
-        (uid, g.target_usd, g.target_date, g.expected_return_pct, g.label),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM goals WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return dict(row)
+    try:
+        cur = conn.execute(
+            "INSERT INTO goals (user_id, target_usd, target_date, expected_return_pct, label) VALUES (?,?,?,?,?)",
+            (uid, g.target_usd, g.target_date, g.expected_return_pct, g.label),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM goals WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
+        conn.close()
+        _ai_cache_invalidate(uid)
+        return dict(row)
+    finally:
+        conn.close()
 
 
 @app.put("/api/goals/{gid}")
 def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
-    conn.execute(
-        "UPDATE goals SET target_usd=?, target_date=?, expected_return_pct=?, label=? WHERE id=? AND user_id=?",
-        (g.target_usd, g.target_date, g.expected_return_pct, g.label, gid, uid),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM goals WHERE id=? AND user_id=?", (gid, uid)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "Not found")
-    _ai_cache_invalidate(uid)
-    return dict(row)
+    try:
+        conn.execute(
+            "UPDATE goals SET target_usd=?, target_date=?, expected_return_pct=?, label=? WHERE id=? AND user_id=?",
+            (g.target_usd, g.target_date, g.expected_return_pct, g.label, gid, uid),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM goals WHERE id=? AND user_id=?", (gid, uid)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(404, "Not found")
+        _ai_cache_invalidate(uid)
+        return dict(row)
+    finally:
+        conn.close()
 
 
 @app.delete("/api/goals/{gid}")
 def delete_goal(gid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
-    conn.execute("DELETE FROM goals WHERE id=? AND user_id=?", (gid, uid))
-    conn.commit()
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return {"ok": True}
+    try:
+        conn.execute("DELETE FROM goals WHERE id=? AND user_id=?", (gid, uid))
+        conn.commit()
+        conn.close()
+        _ai_cache_invalidate(uid)
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 @app.get("/api/goals/{gid}/diagnostic")
@@ -16095,90 +16158,93 @@ def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_a
 
     threshold = max(0, int(data.threshold))
     conn = get_db()
-    rows = conn.execute("""
-        SELECT u.id, u.email, u.name, u.created_at, u.email_verified,
-               u.reengagement_email_sent_at,
-               (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
-               (SELECT COUNT(*) FROM positions p
-                  WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
-        FROM users u
-        WHERE COALESCE(u.is_admin,0) = 0
-          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
-        ORDER BY u.created_at ASC
-    """).fetchall()
+    try:
+        rows = conn.execute("""
+            SELECT u.id, u.email, u.name, u.created_at, u.email_verified,
+                   u.reengagement_email_sent_at,
+                   (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
+                   (SELECT COUNT(*) FROM positions p
+                      WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
+            FROM users u
+            WHERE COALESCE(u.is_admin,0) = 0
+              AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+            ORDER BY u.created_at ASC
+        """).fetchall()
 
-    targets = []
-    for r in rows:
-        d = dict(r)
-        if data.only_verified and not d.get("email_verified"):
-            continue
-        if not (d.get("email") or "").strip():
-            continue
-        activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
-        if activity > threshold:
-            continue
-        d["activity"] = activity
-        targets.append(d)
+        targets = []
+        for r in rows:
+            d = dict(r)
+            if data.only_verified and not d.get("email_verified"):
+                continue
+            if not (d.get("email") or "").strip():
+                continue
+            activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
+            if activity > threshold:
+                continue
+            d["activity"] = activity
+            targets.append(d)
 
-    # Primero los que nunca recibieron el mail, después por antigüedad.
-    targets.sort(key=lambda x: (x.get("reengagement_email_sent_at") is not None,
-                                x.get("created_at") or ""))
-    if data.limit and data.limit > 0:
-        targets = targets[: data.limit]
+        # Primero los que nunca recibieron el mail, después por antigüedad.
+        targets.sort(key=lambda x: (x.get("reengagement_email_sent_at") is not None,
+                                    x.get("created_at") or ""))
+        if data.limit and data.limit > 0:
+            targets = targets[: data.limit]
 
-    # ── DRY RUN: mostrar a quién le caería, sin enviar ──
-    if not data.confirm:
+        # ── DRY RUN: mostrar a quién le caería, sin enviar ──
+        if not data.confirm:
+            conn.close()
+            return {
+                "dry_run": True,
+                "threshold": threshold,
+                "only_verified": data.only_verified,
+                "total_candidates": len(targets),
+                "already_sent": sum(1 for t in targets if t.get("reengagement_email_sent_at")),
+                "recipients": [
+                    {"id": t["id"], "email": t["email"], "name": t.get("name"),
+                     "activity": t["activity"], "ops": int(t.get("ops") or 0),
+                     "pos": int(t.get("pos") or 0), "created_at": t.get("created_at"),
+                     "already_sent_at": t.get("reengagement_email_sent_at")}
+                    for t in targets
+                ],
+            }
+
+        # ── ENVÍO REAL ──
+        sent, failed, skipped = [], [], []
+        for t in targets:
+            if t.get("reengagement_email_sent_at") and not data.resend:
+                skipped.append({"id": t["id"], "email": t["email"]})
+                continue
+            ok = False
+            try:
+                ok = emails.send_reengagement(to=t["email"], user_name=(t.get("name") or ""))
+            except Exception as ex:
+                log.error("re-engagement send error for %s: %s", t["email"], ex)
+                ok = False
+            if ok:
+                try:
+                    conn.execute(
+                        "UPDATE users SET reengagement_email_sent_at=? WHERE id=?",
+                        (_dt.utcnow().isoformat(), t["id"]),
+                    )
+                    conn.commit()
+                except Exception as ex:
+                    log.error("re-engagement stamp failed for %s: %s", t["email"], ex)
+                sent.append({"id": t["id"], "email": t["email"]})
+            else:
+                failed.append({"id": t["id"], "email": t["email"]})
         conn.close()
         return {
-            "dry_run": True,
+            "dry_run": False,
             "threshold": threshold,
-            "only_verified": data.only_verified,
-            "total_candidates": len(targets),
-            "already_sent": sum(1 for t in targets if t.get("reengagement_email_sent_at")),
-            "recipients": [
-                {"id": t["id"], "email": t["email"], "name": t.get("name"),
-                 "activity": t["activity"], "ops": int(t.get("ops") or 0),
-                 "pos": int(t.get("pos") or 0), "created_at": t.get("created_at"),
-                 "already_sent_at": t.get("reengagement_email_sent_at")}
-                for t in targets
-            ],
+            "sent_count": len(sent),
+            "failed_count": len(failed),
+            "skipped_count": len(skipped),
+            "sent": sent,
+            "failed": failed,
+            "skipped": skipped,
         }
-
-    # ── ENVÍO REAL ──
-    sent, failed, skipped = [], [], []
-    for t in targets:
-        if t.get("reengagement_email_sent_at") and not data.resend:
-            skipped.append({"id": t["id"], "email": t["email"]})
-            continue
-        ok = False
-        try:
-            ok = emails.send_reengagement(to=t["email"], user_name=(t.get("name") or ""))
-        except Exception as ex:
-            log.error("re-engagement send error for %s: %s", t["email"], ex)
-            ok = False
-        if ok:
-            try:
-                conn.execute(
-                    "UPDATE users SET reengagement_email_sent_at=? WHERE id=?",
-                    (_dt.utcnow().isoformat(), t["id"]),
-                )
-                conn.commit()
-            except Exception as ex:
-                log.error("re-engagement stamp failed for %s: %s", t["email"], ex)
-            sent.append({"id": t["id"], "email": t["email"]})
-        else:
-            failed.append({"id": t["id"], "email": t["email"]})
-    conn.close()
-    return {
-        "dry_run": False,
-        "threshold": threshold,
-        "sent_count": len(sent),
-        "failed_count": len(failed),
-        "skipped_count": len(skipped),
-        "sent": sent,
-        "failed": failed,
-        "skipped": skipped,
-    }
+    finally:
+        conn.close()
 
 
 @app.post("/api/admin/email/gift-plan")
@@ -16207,112 +16273,115 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
     threshold = max(0, int(data.threshold))
     now = _dt.utcnow()
     conn = get_db()
-    rows = conn.execute("""
-        SELECT u.id, u.email, u.name, u.created_at, u.email_verified, u.tier,
-               u.credit_active_until, u.credit_anchor_amount_usd,
-               u.gift_plan_email_sent_at,
-               (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
-               (SELECT COUNT(*) FROM positions p
-                  WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
-        FROM users u
-        WHERE COALESCE(u.is_admin,0) = 0
-          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
-        ORDER BY u.created_at ASC
-    """).fetchall()
+    try:
+        rows = conn.execute("""
+            SELECT u.id, u.email, u.name, u.created_at, u.email_verified, u.tier,
+                   u.credit_active_until, u.credit_anchor_amount_usd,
+                   u.gift_plan_email_sent_at,
+                   (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
+                   (SELECT COUNT(*) FROM positions p
+                      WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
+            FROM users u
+            WHERE COALESCE(u.is_admin,0) = 0
+              AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+            ORDER BY u.created_at ASC
+        """).fetchall()
 
-    def _has_gift(d):
-        if (d.get("tier") or "free") not in ("plus", "pro"):
-            return False
-        cau = d.get("credit_active_until")
-        if not cau:
-            return False
-        try:
-            if _dt.fromisoformat(str(cau).replace("Z", "")) <= now:
+        def _has_gift(d):
+            if (d.get("tier") or "free") not in ("plus", "pro"):
                 return False
-        except (ValueError, TypeError):
-            return False
-        # comp = sin costo (amount 0); evita marcar a quien paga su plan
-        return float(d.get("credit_anchor_amount_usd") or 0) == 0
+            cau = d.get("credit_active_until")
+            if not cau:
+                return False
+            try:
+                if _dt.fromisoformat(str(cau).replace("Z", "")) <= now:
+                    return False
+            except (ValueError, TypeError):
+                return False
+            # comp = sin costo (amount 0); evita marcar a quien paga su plan
+            return float(d.get("credit_anchor_amount_usd") or 0) == 0
 
-    targets = []
-    for r in rows:
-        d = dict(r)
-        if data.only_verified and not d.get("email_verified"):
-            continue
-        if not (d.get("email") or "").strip():
-            continue
-        activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
-        if activity > threshold:
-            continue
-        d["activity"] = activity
-        d["has_gift"] = _has_gift(d)
-        if data.only_gifted and not d["has_gift"]:
-            continue
-        targets.append(d)
+        targets = []
+        for r in rows:
+            d = dict(r)
+            if data.only_verified and not d.get("email_verified"):
+                continue
+            if not (d.get("email") or "").strip():
+                continue
+            activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
+            if activity > threshold:
+                continue
+            d["activity"] = activity
+            d["has_gift"] = _has_gift(d)
+            if data.only_gifted and not d["has_gift"]:
+                continue
+            targets.append(d)
 
-    targets.sort(key=lambda x: (x.get("gift_plan_email_sent_at") is not None,
-                                x.get("created_at") or ""))
-    if data.limit and data.limit > 0:
-        targets = targets[: data.limit]
+        targets.sort(key=lambda x: (x.get("gift_plan_email_sent_at") is not None,
+                                    x.get("created_at") or ""))
+        if data.limit and data.limit > 0:
+            targets = targets[: data.limit]
 
-    if not data.confirm:
+        if not data.confirm:
+            conn.close()
+            return {
+                "dry_run": True,
+                "threshold": threshold,
+                "only_verified": data.only_verified,
+                "only_gifted": data.only_gifted,
+                "plan_label": data.plan_label,
+                "total_candidates": len(targets),
+                "with_gift": sum(1 for t in targets if t.get("has_gift")),
+                "already_sent": sum(1 for t in targets if t.get("gift_plan_email_sent_at")),
+                "recipients": [
+                    {"id": t["id"], "email": t["email"], "name": t.get("name"),
+                     "activity": t["activity"], "tier": t.get("tier"),
+                     "has_gift": t.get("has_gift"),
+                     "credit_active_until": t.get("credit_active_until"),
+                     "already_sent_at": t.get("gift_plan_email_sent_at")}
+                    for t in targets
+                ],
+            }
+
+        sent, failed, skipped = [], [], []
+        for t in targets:
+            if t.get("gift_plan_email_sent_at") and not data.resend:
+                skipped.append({"id": t["id"], "email": t["email"]})
+                continue
+            ok = False
+            try:
+                ok = emails.send_gift_plan_history(
+                    to=t["email"], user_name=(t.get("name") or ""),
+                    plan_label=(data.plan_label or "Pro"),
+                )
+            except Exception as ex:
+                log.error("gift-plus send error for %s: %s", t["email"], ex)
+                ok = False
+            if ok:
+                try:
+                    conn.execute(
+                        "UPDATE users SET gift_plan_email_sent_at=? WHERE id=?",
+                        (_dt.utcnow().isoformat(), t["id"]),
+                    )
+                    conn.commit()
+                except Exception as ex:
+                    log.error("gift-plus stamp failed for %s: %s", t["email"], ex)
+                sent.append({"id": t["id"], "email": t["email"]})
+            else:
+                failed.append({"id": t["id"], "email": t["email"]})
         conn.close()
         return {
-            "dry_run": True,
+            "dry_run": False,
             "threshold": threshold,
-            "only_verified": data.only_verified,
-            "only_gifted": data.only_gifted,
-            "plan_label": data.plan_label,
-            "total_candidates": len(targets),
-            "with_gift": sum(1 for t in targets if t.get("has_gift")),
-            "already_sent": sum(1 for t in targets if t.get("gift_plan_email_sent_at")),
-            "recipients": [
-                {"id": t["id"], "email": t["email"], "name": t.get("name"),
-                 "activity": t["activity"], "tier": t.get("tier"),
-                 "has_gift": t.get("has_gift"),
-                 "credit_active_until": t.get("credit_active_until"),
-                 "already_sent_at": t.get("gift_plan_email_sent_at")}
-                for t in targets
-            ],
+            "sent_count": len(sent),
+            "failed_count": len(failed),
+            "skipped_count": len(skipped),
+            "sent": sent,
+            "failed": failed,
+            "skipped": skipped,
         }
-
-    sent, failed, skipped = [], [], []
-    for t in targets:
-        if t.get("gift_plan_email_sent_at") and not data.resend:
-            skipped.append({"id": t["id"], "email": t["email"]})
-            continue
-        ok = False
-        try:
-            ok = emails.send_gift_plan_history(
-                to=t["email"], user_name=(t.get("name") or ""),
-                plan_label=(data.plan_label or "Pro"),
-            )
-        except Exception as ex:
-            log.error("gift-plus send error for %s: %s", t["email"], ex)
-            ok = False
-        if ok:
-            try:
-                conn.execute(
-                    "UPDATE users SET gift_plan_email_sent_at=? WHERE id=?",
-                    (_dt.utcnow().isoformat(), t["id"]),
-                )
-                conn.commit()
-            except Exception as ex:
-                log.error("gift-plus stamp failed for %s: %s", t["email"], ex)
-            sent.append({"id": t["id"], "email": t["email"]})
-        else:
-            failed.append({"id": t["id"], "email": t["email"]})
-    conn.close()
-    return {
-        "dry_run": False,
-        "threshold": threshold,
-        "sent_count": len(sent),
-        "failed_count": len(failed),
-        "skipped_count": len(skipped),
-        "sent": sent,
-        "failed": failed,
-        "skipped": skipped,
-    }
+    finally:
+        conn.close()
 
 
 @app.post("/api/admin/email/broadcast")
@@ -16357,92 +16426,95 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
     if plan and plan not in ("free", "plus", "pro"):
         raise HTTPException(400, "plan inválido (usá free/plus/pro o vacío para todos).")
     conn = get_db()
-    rows = conn.execute(
-        "SELECT id, email, name, email_verified, tier "
-        "FROM users WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL "  # sin shadows del Plan Asesor
-        "ORDER BY created_at ASC"
-    ).fetchall()
-    targets = []
-    for r in rows:
-        d = dict(r)
-        if not (d.get("email") or "").strip():
-            continue
-        if data.only_verified and not d.get("email_verified"):
-            continue
-        # Tier EFECTIVO (mismo resolver que el resto de la app): un user stampeado
-        # 'pro'/'plus' con el crédito ya vencido cuenta como 'free' hasta que el cron
-        # reescriba la columna. Leer users.tier crudo mal-targetearía esa ventana.
-        # Los admins ya están excluidos en el SQL → get_tier acá es plus/pro/free.
-        eff = quota.get_tier(conn, d["id"])
-        eff = eff if eff in ("plus", "pro") else "free"
-        if plan and eff != plan:
-            continue
-        d["plan"] = eff
-        targets.append(d)
-    if data.limit and data.limit > 0:
-        targets = targets[: data.limit]
+    try:
+        rows = conn.execute(
+            "SELECT id, email, name, email_verified, tier "
+            "FROM users WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL "  # sin shadows del Plan Asesor
+            "ORDER BY created_at ASC"
+        ).fetchall()
+        targets = []
+        for r in rows:
+            d = dict(r)
+            if not (d.get("email") or "").strip():
+                continue
+            if data.only_verified and not d.get("email_verified"):
+                continue
+            # Tier EFECTIVO (mismo resolver que el resto de la app): un user stampeado
+            # 'pro'/'plus' con el crédito ya vencido cuenta como 'free' hasta que el cron
+            # reescriba la columna. Leer users.tier crudo mal-targetearía esa ventana.
+            # Los admins ya están excluidos en el SQL → get_tier acá es plus/pro/free.
+            eff = quota.get_tier(conn, d["id"])
+            eff = eff if eff in ("plus", "pro") else "free"
+            if plan and eff != plan:
+                continue
+            d["plan"] = eff
+            targets.append(d)
+        if data.limit and data.limit > 0:
+            targets = targets[: data.limit]
 
-    # ── DRY RUN: mostrar a quién le caería, sin enviar ──
-    if not data.confirm:
-        conn.close()
-        return {
-            "dry_run": True,
-            "subject": subject,
-            "only_verified": data.only_verified,
-            "plan": plan,
-            "total_recipients": len(targets),
-            "recipients": [
-                {"id": t["id"], "email": t["email"], "name": t.get("name"), "plan": t["plan"]}
-                for t in targets[:500]
-            ],
-            "truncated": len(targets) > 500,
-        }
+        # ── DRY RUN: mostrar a quién le caería, sin enviar ──
+        if not data.confirm:
+            conn.close()
+            return {
+                "dry_run": True,
+                "subject": subject,
+                "only_verified": data.only_verified,
+                "plan": plan,
+                "total_recipients": len(targets),
+                "recipients": [
+                    {"id": t["id"], "email": t["email"], "name": t.get("name"), "plan": t["plan"]}
+                    for t in targets[:500]
+                ],
+                "truncated": len(targets) > 500,
+            }
 
-    # ── ENVÍO REAL (idempotente por contenido) ──
-    # content_hash identifica ESTE mail (asunto+cuerpo+branded). Antes de mandar a
-    # cada uno miramos broadcast_send_log: si ya recibió este mismo contenido, se
-    # saltea. Commiteamos por envío → si el request muere a mitad (timeout de
-    # gateway, cold-start), re-correr el MISMO broadcast retoma donde quedó en vez
-    # de re-mailear a todos. Un mail con distinto texto tiene otro hash y arranca
-    # de cero, como se espera.
-    content_hash = hashlib.sha256(
-        f"{subject}\x1f{body}\x1f{int(bool(data.branded))}".encode("utf-8")
-    ).hexdigest()
-    sent, failed, skipped = [], [], []
-    for t in targets:
-        email_addr = t["email"]
-        already = conn.execute(
-            "SELECT 1 FROM broadcast_send_log WHERE content_hash=? AND email=?",
-            (content_hash, email_addr),
-        ).fetchone()
-        if already:
-            skipped.append({"id": t["id"], "email": email_addr})
-            continue
-        ok = False
-        try:
-            ok = emails.send_custom(to=email_addr, user_name=(t.get("name") or ""),
-                                    subject=subject, body=body, branded=data.branded)
-        except Exception as ex:
-            log.error("broadcast send error for %s: %s", email_addr, ex)
+        # ── ENVÍO REAL (idempotente por contenido) ──
+        # content_hash identifica ESTE mail (asunto+cuerpo+branded). Antes de mandar a
+        # cada uno miramos broadcast_send_log: si ya recibió este mismo contenido, se
+        # saltea. Commiteamos por envío → si el request muere a mitad (timeout de
+        # gateway, cold-start), re-correr el MISMO broadcast retoma donde quedó en vez
+        # de re-mailear a todos. Un mail con distinto texto tiene otro hash y arranca
+        # de cero, como se espera.
+        content_hash = hashlib.sha256(
+            f"{subject}\x1f{body}\x1f{int(bool(data.branded))}".encode("utf-8")
+        ).hexdigest()
+        sent, failed, skipped = [], [], []
+        for t in targets:
+            email_addr = t["email"]
+            already = conn.execute(
+                "SELECT 1 FROM broadcast_send_log WHERE content_hash=? AND email=?",
+                (content_hash, email_addr),
+            ).fetchone()
+            if already:
+                skipped.append({"id": t["id"], "email": email_addr})
+                continue
             ok = False
-        if ok:
             try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO broadcast_send_log (content_hash, email) VALUES (?, ?)",
-                    (content_hash, email_addr),
-                )
-                conn.commit()
+                ok = emails.send_custom(to=email_addr, user_name=(t.get("name") or ""),
+                                        subject=subject, body=body, branded=data.branded)
             except Exception as ex:
-                log.error("broadcast send-log write failed for %s: %s", email_addr, ex)
-            sent.append({"id": t["id"], "email": email_addr})
-        else:
-            failed.append({"id": t["id"], "email": email_addr})
-    conn.close()
-    log.info("Admin %s broadcast: %d enviados, %d fallidos, %d ya-enviados (subject=%r)",
-             uid, len(sent), len(failed), len(skipped), subject)
-    return {"dry_run": False, "sent_count": len(sent), "failed_count": len(failed),
-            "skipped_count": len(skipped), "sent": sent, "failed": failed,
-            "skipped": skipped}
+                log.error("broadcast send error for %s: %s", email_addr, ex)
+                ok = False
+            if ok:
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO broadcast_send_log (content_hash, email) VALUES (?, ?)",
+                        (content_hash, email_addr),
+                    )
+                    conn.commit()
+                except Exception as ex:
+                    log.error("broadcast send-log write failed for %s: %s", email_addr, ex)
+                sent.append({"id": t["id"], "email": email_addr})
+            else:
+                failed.append({"id": t["id"], "email": email_addr})
+        conn.close()
+        log.info("Admin %s broadcast: %d enviados, %d fallidos, %d ya-enviados (subject=%r)",
+                 uid, len(sent), len(failed), len(skipped), subject)
+        return {"dry_run": False, "sent_count": len(sent), "failed_count": len(failed),
+                "skipped_count": len(skipped), "sent": sent, "failed": failed,
+                "skipped": skipped}
+    finally:
+        conn.close()
 
 
 @app.get("/api/admin/billing/inspect")
@@ -16999,14 +17071,17 @@ def admin_pf_probe(uid: int = Depends(get_admin_user)):
 @app.post("/api/admin/users/{user_id}/approve")
 def admin_approve_user(user_id: int, uid: int = Depends(get_admin_user)):
     conn = get_db()
-    target = conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
-    if not target:
+    try:
+        target = conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            conn.close()
+            raise HTTPException(404, "Usuario no existe")
+        conn.execute("UPDATE users SET approved=1 WHERE id=?", (user_id,))
+        conn.commit()
         conn.close()
-        raise HTTPException(404, "Usuario no existe")
-    conn.execute("UPDATE users SET approved=1 WHERE id=?", (user_id,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 def _wipe_broker_data(conn, uid: int, broker: str) -> dict:

@@ -401,7 +401,20 @@ function PersonalDashboard() {
     // consistentes; el PF solo entra en las métricas estáticas del titular.
     api.post('/snapshots', { total_value: totalValuePositions, total_invested: totalCostBasisPositions, net_deposited: netDepositedPositions })
       .then(() => localStorage.setItem(key, today))
-      .catch(() => {})
+      .catch((e) => {
+        // Un 5xx marca el día IGUAL. Antes el catch se tragaba el error sin
+        // marcar, así que mientras el backend fallara esto se reintentaba en
+        // CADA carga del Dashboard — que es la pantalla de inicio de todos los
+        // usuarios. El 12/08, con el disco lleno, eso convirtió una falla del
+        // servidor en una tormenta de escrituras contra la base que ya no podía
+        // escribir: cada reintento era otro POST que fallaba y (por el bug de
+        // conexiones sin cerrar) podía dejar el lock tomado 15s más.
+        //
+        // El snapshot es oportunista: si hoy no salió, mañana sale, y el cron
+        // del backend snapshotea igual. Reintentar sin techo nunca valió lo que
+        // costaba. Un 4xx tampoco se reintenta: no se va a arreglar solo.
+        if (e?.status >= 400) localStorage.setItem(key, today)
+      })
   }, [loading, lastUpdated, totalValuePositions, totalCostBasisPositions, netDepositedPositions, priceCoverage, valuationDollar])
 
   // ── Sync pnl_unrealized for current month ───────────────────────────────────
