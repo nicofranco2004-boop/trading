@@ -9,6 +9,7 @@ import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
 import PlazosFijosGroup from '../components/PlazosFijosGroup'
+import FuturosGroup from '../components/FuturosGroup'
 import RentaFijaSections from '../components/RentaFijaSections'
 import { isFixedIncome } from '../utils/sections'
 import PfFormModal from '../components/PfFormModal'
@@ -2205,6 +2206,10 @@ function PositionsDesktop() {
         tcMep={tcMepStrict} cerSeries={cerSeries} cerStale={cerStale}
         isArsFor={(p) => brokers.find(b => b.name === p.broker)?.currency === 'ARS'}
         priceFor={(p) => (brokers.find(b => b.name === p.broker)?.currency === 'ARS') ? calcARS(p).priceArs : calcUSDT(p).price} />
+
+      {/* Futuros abiertos: sección propia porque un futuro NO es una tenencia
+          (no tenés el activo, y un short vale al revés). */}
+      <FuturosGroup brokers={brokers} onChange={loadAll} />
 
       {/* Grupo Plazos fijos + su form de alta (lo dispara el flujo o el header del grupo) */}
       <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />

@@ -1172,6 +1172,47 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_pf_user ON plazos_fijos(user_id);
     """)
 
+    # ── Futuros ABIERTOS ────────────────────────────────────────────────────
+    # Tabla PROPIA, no `positions`. En `positions` hay 116 lecturas en el backend
+    # y 7 consumidores en el front, y todas asumen dos cosas que un futuro rompe:
+    # que TENÉS el activo, y que la exposición es POSITIVA. Un short vale al revés
+    # (gana cuando el precio baja), así que meterlo ahí ensuciaría en silencio
+    # cada cálculo de valor y de P&L de la app. Acá el alcance es explícito: sólo
+    # lo ve quien lo pide.
+    #
+    # El MARGEN no se descuenta del efectivo a propósito: en Binance pasar plata
+    # del spot al wallet de futuros es un movimiento INTERNO —la USDT sigue en la
+    # cuenta— y el importador ya ignora esas transferencias por la misma razón.
+    # Descontarlo acá haría que el saldo dejara de cerrar con el del broker.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS futures_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            broker TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            base_asset TEXT,
+            side TEXT NOT NULL DEFAULT 'long',
+            quantity REAL NOT NULL,
+            entry_price REAL NOT NULL,
+            leverage REAL,
+            margin_usd REAL,
+            liquidation_price REAL,
+            opened_at TEXT NOT NULL,
+            notes TEXT,
+            closed_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    # Los índices van DESPUÉS y en su propio executescript. Una migración que creó
+    # un índice sobre una columna que todavía no existía tiró producción ~20 min
+    # con 502 (2026-08-02): dentro de un executescript, si una sentencia falla se
+    # corta el arranque entero.
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_futpos_user ON futures_positions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_futpos_abiertas
+            ON futures_positions(user_id, closed_at);
+    """)
+
     # ─── Secciones de Renta Fija archivadas (borrado reversible) ───────────────
     # Cuando el usuario "elimina" una sección (ej. Bonos USD) que importó mal, NO
     # hard-deleteamos: serializamos sus posiciones a JSON y las sacamos de
@@ -10774,6 +10815,229 @@ class OperationIn(BaseModel):
     @classmethod
     def finite_check(cls, v):
         return _finite(v)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FUTUROS ABIERTOS
+# ═══════════════════════════════════════════════════════════════════════════
+# Fase 2. La Fase 1 dejó cargar el resultado de un futuro YA CERRADO; esto es
+# para el que todavía está abierto, donde lo que importa es el no realizado.
+#
+# Vive en su propia tabla, NO en `positions`. Ver el comentario de la migración:
+# un short vale al revés y `positions` asume exposición positiva en 116 lugares.
+#
+# El no realizado NO se calcula acá: el precio de mercado lo resuelve el
+# frontend, que es donde vive la valuación de toda la app (mismo feed que
+# cotiza BTC). El backend guarda el HECHO —lado, tamaño, precio de entrada— y
+# el cierre, que sí mueve plata, pide el precio de salida explícito.
+
+class FuturoIn(BaseModel):
+    broker: str = Field(..., min_length=1, max_length=MAX_STR)
+    symbol: str = Field(..., min_length=1, max_length=40)
+    side: str = Field('long')
+    quantity: float = Field(..., gt=0, le=_FINITE_BOUND)
+    entry_price: float = Field(..., gt=0, le=_FINITE_BOUND)
+    leverage: Optional[float] = Field(None, gt=0, le=1000)
+    margin_usd: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
+    liquidation_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
+    opened_at: str = Field(..., max_length=10)
+    notes: Optional[str] = Field(None, max_length=MAX_STR)
+
+    @field_validator('side')
+    @classmethod
+    def valid_side(cls, v):
+        v = (v or '').strip().lower()
+        if v not in ('long', 'short'):
+            raise ValueError("side tiene que ser 'long' o 'short'")
+        return v
+
+    @field_validator('opened_at')
+    @classmethod
+    def valid_open_date(cls, v):
+        if not _DATE_RE.match(v):
+            raise ValueError('Fecha inválida, formato esperado: YYYY-MM-DD')
+        return v
+
+
+class FuturoCloseIn(BaseModel):
+    exit_price: float = Field(..., gt=0, le=_FINITE_BOUND)
+    closed_at: Optional[str] = Field(None, max_length=10)
+    # Comisiones del cierre — restan del resultado que se acredita.
+    commissions: Optional[float] = Field(0, ge=0, le=_FINITE_BOUND)
+
+    @field_validator('closed_at')
+    @classmethod
+    def valid_close_date(cls, v):
+        if v and not _DATE_RE.match(v):
+            raise ValueError('Fecha inválida, formato esperado: YYYY-MM-DD')
+        return v
+
+
+def _base_asset_de(symbol: str) -> str:
+    """BTCUSDT → BTC. El feed de precios cotiza el subyacente, no el par.
+
+    Saca el sufijo de la moneda de cotización (USDT/USD/BUSD/USDC) y el ':' o
+    '-PERP' que agregan algunos exchanges. Si no matchea nada devuelve el
+    símbolo tal cual — mejor mostrar "sin precio" que inventar un ticker.
+    """
+    s = (symbol or '').strip().upper()
+    for basura in (':USDT', ':USD', '-PERP', 'PERP', '_PERP', '.P'):
+        if s.endswith(basura):
+            s = s[: -len(basura)]
+    for quote in ('USDT', 'BUSD', 'USDC', 'USD'):
+        if s.endswith(quote) and len(s) > len(quote):
+            return s[: -len(quote)]
+    return s
+
+
+def _futuro_a_dict(r) -> dict:
+    d = dict(r)
+    # `dir` explícito para que el frontend no tenga que re-derivar el signo:
+    # el no realizado de un SHORT es (entrada − mercado) × cantidad.
+    d['dir'] = -1 if (d.get('side') or 'long') == 'short' else 1
+    return d
+
+
+@app.get("/api/futures")
+def list_futures(include_closed: bool = False, uid: int = Depends(get_effective_user)):
+    """Posiciones de futuros. Por defecto sólo las ABIERTAS."""
+    conn = get_db()
+    try:
+        q = "SELECT * FROM futures_positions WHERE user_id=?"
+        if not include_closed:
+            q += " AND closed_at IS NULL"
+        q += " ORDER BY opened_at DESC, id DESC"
+        return [_futuro_a_dict(r) for r in conn.execute(q, (uid,)).fetchall()]
+    finally:
+        conn.close()
+
+
+@app.post("/api/futures")
+def create_futuro(data: FuturoIn, uid: int = Depends(get_effective_user)):
+    conn = get_db()
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO futures_positions
+                     (user_id, broker, symbol, base_asset, side, quantity, entry_price,
+                      leverage, margin_usd, liquidation_price, opened_at, notes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (uid, data.broker, data.symbol.strip().upper(),
+                 _base_asset_de(data.symbol), data.side, data.quantity,
+                 data.entry_price, data.leverage, data.margin_usd,
+                 data.liquidation_price, data.opened_at, data.notes),
+            )
+            row = conn.execute("SELECT * FROM futures_positions WHERE id=? AND user_id=?",
+                               (cur.lastrowid, uid)).fetchone()
+        return _futuro_a_dict(row)
+    finally:
+        conn.close()
+
+
+@app.put("/api/futures/{fid}")
+def update_futuro(fid: int, data: FuturoIn, uid: int = Depends(get_effective_user)):
+    conn = get_db()
+    try:
+        with conn:
+            n = conn.execute(
+                """UPDATE futures_positions
+                      SET broker=?, symbol=?, base_asset=?, side=?, quantity=?,
+                          entry_price=?, leverage=?, margin_usd=?, liquidation_price=?,
+                          opened_at=?, notes=?
+                    WHERE id=? AND user_id=? AND closed_at IS NULL""",
+                (data.broker, data.symbol.strip().upper(), _base_asset_de(data.symbol),
+                 data.side, data.quantity, data.entry_price, data.leverage,
+                 data.margin_usd, data.liquidation_price, data.opened_at, data.notes,
+                 fid, uid),
+            ).rowcount
+            if not n:
+                raise HTTPException(404, "Posición de futuros no encontrada (o ya cerrada)")
+            row = conn.execute("SELECT * FROM futures_positions WHERE id=? AND user_id=?",
+                               (fid, uid)).fetchone()
+        return _futuro_a_dict(row)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/futures/{fid}")
+def delete_futuro(fid: int, uid: int = Depends(get_effective_user)):
+    """Borra la posición ABIERTA. No mueve plata: una posición abierta nunca
+    tocó el efectivo (el margen es interno del broker). Borrar una posición ya
+    cerrada se rechaza — su resultado ya se acreditó y vive como operación, que
+    es lo que hay que borrar (con su propia cascada)."""
+    conn = get_db()
+    try:
+        with conn:
+            row = conn.execute("SELECT closed_at FROM futures_positions WHERE id=? AND user_id=?",
+                               (fid, uid)).fetchone()
+            if not row:
+                raise HTTPException(404, "Posición de futuros no encontrada")
+            if row["closed_at"]:
+                raise HTTPException(400,
+                    "Esa posición ya está cerrada y su resultado se acreditó al efectivo. "
+                    "Borrá la operación de futuros correspondiente en Movimientos.")
+            conn.execute("DELETE FROM futures_positions WHERE id=? AND user_id=?", (fid, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/futures/{fid}/close")
+def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective_user)):
+    """Cierra la posición al precio indicado y ACREDITA el resultado.
+
+    Es el puente con la Fase 1: en vez de duplicar el movimiento de efectivo,
+    calcula el resultado y crea la MISMA operación de futuros que se carga a
+    mano (`kind='futures'`), con su foto de reverso — así se borra y se deshace
+    por el camino que ya está probado.
+
+        long :  (salida − entrada) × cantidad − comisiones
+        short:  (entrada − salida) × cantidad − comisiones
+    """
+    conn = get_db()
+    try:
+        with conn:
+            pos = conn.execute(
+                "SELECT * FROM futures_positions WHERE id=? AND user_id=?", (fid, uid)
+            ).fetchone()
+            if not pos:
+                raise HTTPException(404, "Posición de futuros no encontrada")
+            if pos["closed_at"]:
+                raise HTTPException(400, "Esa posición ya estaba cerrada.")
+
+            direccion = -1 if (pos["side"] or 'long') == 'short' else 1
+            bruto = (data.exit_price - float(pos["entry_price"])) * float(pos["quantity"]) * direccion
+            pnl = round(bruto - float(data.commissions or 0), 2)
+            fecha = data.closed_at or _iso_today()
+
+            moneda = _resolve_op_currency(conn, uid, pos["broker"], None)
+            cur = conn.execute(
+                """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
+                     exit_price, quantity, pnl_usd, pnl_pct, commissions, currency, undo_meta_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (uid, fecha, pos["broker"], pos["symbol"], "Futuros",
+                 pos["entry_price"], data.exit_price, pos["quantity"], pnl, None,
+                 data.commissions or 0, moneda,
+                 json.dumps({"src": "manual_futures", "cash": pnl,
+                             "cash_broker": pos["broker"], "futuro_id": fid})),
+            )
+            if pnl:
+                _adjust_broker_cash(conn, uid, pos["broker"], pnl)
+                y, m = int(fecha[:4]), int(fecha[5:7])
+                _update_monthly_pnl_realized(conn, uid, pos["broker"], y, m, pnl)
+                _update_monthly_pnl_realized(conn, uid, "global", y, m, pnl)
+
+            conn.execute("UPDATE futures_positions SET closed_at=? WHERE id=? AND user_id=?",
+                         (fecha, fid, uid))
+        try:
+            _recalc_pnl_realized_from_ops(conn, uid)
+            conn.commit()
+        except Exception as ex:
+            log.error("Recalc tras close_futuro falló: %s", ex)
+        _ai_cache_invalidate(uid)
+        return {"ok": True, "pnl_usd": pnl, "operation_id": cur.lastrowid, "closed_at": fecha}
+    finally:
+        conn.close()
 
 
 @app.get("/api/operations")
