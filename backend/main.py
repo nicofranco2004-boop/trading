@@ -4465,13 +4465,19 @@ def get_fx_rates(
     days = max(1, min(int(days or 3650), 3650))
     conn = get_db()
     rows = conn.execute(
-        "SELECT date, blue_venta FROM fx_rates_daily "
+        "SELECT date, blue_venta, mep_venta FROM fx_rates_daily "
         "ORDER BY date DESC LIMIT ?",
         (days,),
     ).fetchall()
     conn.close()
-    # Reverse to ascending order — el frontend espera de viejo → nuevo
-    out = [{"date": r["date"], "blue": r["blue_venta"]} for r in reversed(rows)]
+    # Reverse to ascending order — el frontend espera de viejo → nuevo.
+    # `mep` se agrega ADITIVAMENTE: los consumidores existentes siguen leyendo `blue`
+    # y no cambian. Lo usa la vista previa del depósito con fecha, que tiene que mostrar
+    # el MISMO dólar que el backend va a guardar (`fx_for_date` prefiere el MEP): si
+    # mostrara el blue, la previsualización mentiría sobre el capital aportado.
+    out = [{"date": r["date"], "blue": r["blue_venta"],
+            "mep": (r["mep_venta"] if "mep_venta" in r.keys() else None)}
+           for r in reversed(rows)]
     return out
 
 
@@ -8994,7 +9000,18 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                     _fy, _fm = _fd.year, _fd.month
                 except ValueError:
                     pass
-            amount_usd = data.amount / data.tc_blue if currency == 'ARS' else data.amount
+            # Dólar de la FECHA del movimiento, resuelto en el SERVIDOR. Antes se usaba
+            # el `tc_blue` que mandaba el navegador, que es el de HOY: con el calendario
+            # nuevo, cargar un depósito de 2024 lo habría dolarizado al dólar de hoy y
+            # deformado el capital aportado — la misma pata que ya se arregló en el
+            # import (13 años de flujos sellados con un solo dólar). `fx_for_date`
+            # prefiere el MEP de ese día y cae al blue histórico solo si no hay MEP;
+            # el rate del cliente queda de último recurso.
+            if currency == 'ARS':
+                _rate = _fx.fx_for_date(conn, data.date, fallback=data.tc_blue) or data.tc_blue
+                amount_usd = data.amount / _rate if _rate else data.amount
+            else:
+                amount_usd = data.amount
             _update_monthly_flow(conn, uid, data.broker_name, _fy, _fm,
                                  data.direction, amount_usd, is_manual=True,
                                  native_amount=data.amount)

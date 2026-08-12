@@ -175,5 +175,47 @@ class AutodepositRateTest(unittest.TestCase):
         self.assertAlmostEqual(aportado, 100.0, places=2)
 
 
+class CashFlowFechaTest(unittest.TestCase):
+    """El depósito a mano ahora lleva FECHA (calendario en la UI, hoy por defecto) y el
+    dólar lo resuelve el SERVIDOR según esa fecha. Antes el form no mandaba fecha: todo
+    caía en el mes en curso, y el rate era el que mandaba el navegador (el de hoy)."""
+
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("positions", "monthly_entries", "config", "brokers", "users", "fx_rates_daily"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            ("cfd@rendi.test", "x")).lastrowid
+        self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
+                          (self.uid, "Cocos", "ARS"))
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(fx_rates_daily)")]
+        if "mep_venta" not in cols:
+            self.conn.execute("ALTER TABLE fx_rates_daily ADD COLUMN mep_venta REAL")
+        self.conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?,?,?,?)", ("2024-05-03", 1050.0, 1180.0, "test"))
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_deposito_retroactivo_va_al_mes_y_al_dolar_de_esa_fecha(self):
+        # El navegador manda 1415 (el de hoy); el server tiene que ignorarlo y usar el
+        # MEP del 2024-05-03 (1180).
+        main.cash_flow(main.CashFlowIn(broker_name="Cocos", direction="deposit",
+                                       amount=118000, tc_blue=1415, date="2024-05-03"),
+                       uid=self.uid)
+        r = self.conn.execute(
+            "SELECT year, month, deposits FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()
+        self.assertEqual((r["year"], r["month"]), (2024, 5), "no quedó en el mes de la fecha")
+        self.assertAlmostEqual(r["deposits"], 100.0, places=2,
+                               msg="no usó el dólar de esa fecha (al de hoy daba 83,39)")
+
+
 if __name__ == "__main__":
     unittest.main()

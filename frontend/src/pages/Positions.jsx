@@ -5,6 +5,7 @@ import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
+import { useFxHistory } from '../hooks/useFxHistory'
 import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
@@ -117,7 +118,11 @@ function PositionsDesktop() {
   // Estos NO modifican el modal classic — el del top puede coexistir con los antiguos.
   const [form, setForm] = useState(EMPTY_POS)
   const [sellForm, setSellForm] = useState({ broker: '', asset: '', currency: 'USDT', quantity: '', exit_price: '', tc_venta: '', date: '', commissions: '' })
-  const [cashFlowForm, setCashFlowForm] = useState({ broker: '', currency: 'USDT', direction: 'deposit', amount: '', available: 0 })
+  const [cashFlowForm, setCashFlowForm] = useState({ broker: '', currency: 'USDT', direction: 'deposit', amount: '', available: 0,
+    // Fecha del movimiento, HOY por defecto. Antes no existía: todo depósito caía
+    // en el mes en curso, así que uno viejo se registraba en el mes equivocado y
+    // corría la curva de evolución.
+    date: new Date().toISOString().slice(0, 10) })
   // Cash menu (selector broker + direction) — pre-flow del cashflow tradicional.
   const [cashMenuForm, setCashMenuForm] = useState({ broker: '', direction: 'deposit' })
   const [convertForm, setConvertForm] = useState({
@@ -190,6 +195,9 @@ function PositionsDesktop() {
   // zone si JS evalúa el array de deps antes de la declaración de `const`.
   const tcBlue = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
   const tcMep = pickFinancialRate(dolar, valuationDollar) || config.tc_mep || 1415
+  // Cotizaciones históricas: para mostrar a qué dólar se convierte un movimiento
+  // con fecha pasada (el backend usa el mismo criterio para guardarlo).
+  const fxHist = useFxHistory(tcBlue)
   // MEP ESTRICTO (no sigue el toggle MEP/CCL): para conversiones rotuladas
   // literalmente "MEP" (cross-currency de bonos) — así el badge no miente mostrando
   // un CCL/blue. Al MEDIO como el resto de la valuación (no a la punta de compra).
@@ -745,6 +753,7 @@ function PositionsDesktop() {
       direction,
       amount: '',
       available: p.invested || 0,
+      date: new Date().toISOString().slice(0, 10),
     })
     setModal('cashflow')
   }
@@ -794,6 +803,7 @@ function PositionsDesktop() {
       direction: cashMenuForm.direction,
       amount: '',
       available: cashPos?.invested || 0,
+      date: new Date().toISOString().slice(0, 10),
     })
     setModal('cashflow')
   }
@@ -866,6 +876,9 @@ function PositionsDesktop() {
         broker_name: cashFlowForm.broker,
         direction: cashFlowForm.direction,
         amount,
+        date: cashFlowForm.date,
+        // El backend resuelve el dólar por la FECHA; esto queda de fallback para
+        // cuando no hay cotización guardada de ese día.
         tc_blue: tcBlue,
       })
       setModal(null)
@@ -2255,8 +2268,8 @@ function PositionsDesktop() {
           <div className="space-y-4">
             <p className="text-sm text-ink-2">
               {cashFlowForm.direction === 'deposit'
-                ? `Ingresá el monto a depositar. Se acreditará al cash del broker y se registrará como aporte del mes en curso.`
-                : `Ingresá el monto a retirar. Se debitará del cash del broker y se registrará como retiro del mes en curso.`}
+                ? `Ingresá el monto a depositar. Se acreditará al cash del broker y se registrará como aporte del mes de la fecha que elijas.`
+                : `Ingresá el monto a retirar. Se debitará del cash del broker y se registrará como retiro del mes de la fecha que elijas.`}
             </p>
             {cashFlowForm.direction === 'withdraw' && (
               <p className="text-xs text-ink-3">
@@ -2265,6 +2278,14 @@ function PositionsDesktop() {
                 </span>
               </p>
             )}
+            <div>
+              <label className="block text-xs text-ink-3 mb-1">Fecha</label>
+              <DateInput
+                value={cashFlowForm.date || ''}
+                max={new Date().toISOString().slice(0, 10)}
+                onChange={v => setCashFlowForm(f => ({ ...f, date: v || f.date }))}
+              />
+            </div>
             <div>
               <label className="block text-xs text-ink-3 mb-1">
                 Monto ({cashFlowForm.currency})
@@ -2279,15 +2300,25 @@ function PositionsDesktop() {
                 placeholder="0"
               />
             </div>
-            {cashFlowForm.currency === 'ARS' && (
-              <p className="text-xs text-ink-3">
-                Equivalente en USD al blue actual ({tcBlue}):
-                <span className="font-medium text-ink-2 ml-1">
-                  ${usd((+cashFlowForm.amount || 0) / tcBlue)}
-                </span>
-                {' '}· valor que se utilizará en el resumen global.
-              </p>
-            )}
+            {cashFlowForm.currency === 'ARS' && (() => {
+              // El dólar que se va a aplicar es el de la FECHA elegida, no el de hoy.
+              // Mostrarlo evita la caja negra: si el aporte se dolariza a un TC que no
+              // es el de ese día, el capital aportado (denominador del rendimiento)
+              // queda mal y no hay nada en pantalla que lo delate.
+              const hoy = new Date().toISOString().slice(0, 10)
+              const fecha = cashFlowForm.date || hoy
+              const esHoy = fecha >= hoy
+              const tc = esHoy ? tcBlue : (fxHist.getMepOrFallback(fecha) || tcBlue)
+              return (
+                <p className="text-xs text-ink-3">
+                  Equivalente en USD al dólar {esHoy ? 'de hoy' : `del ${fecha.split('-').reverse().join('/')}`} ({Math.round(tc)}):
+                  <span className="font-medium text-ink-2 ml-1">
+                    ${usd((+cashFlowForm.amount || 0) / (tc || 1))}
+                  </span>
+                  {' '}· es el valor que va a contar como capital aportado.
+                </p>
+              )
+            })()}
             <div className="flex justify-end gap-2 pt-1">
               <button
                 onClick={() => setModal(null)}

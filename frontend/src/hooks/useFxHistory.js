@@ -133,12 +133,17 @@ export function useFxHistory(fallbackTcBlue = 1415) {
   const fxIndex = useMemo(() => {
     const dates = []
     const byDate = new Map()
+    const mepByDate = new Map()
     for (const r of sortedRows) {
       if (!r?.date || r?.blue == null) continue
       dates.push(r.date)
       byDate.set(r.date, Number(r.blue))
+      // MEP del día, cuando la fila lo trae. Se guarda APARTE para no cambiar lo que
+      // ven los consumidores actuales (todos leen el blue); lo usa la vista previa del
+      // depósito con fecha, que tiene que mostrar el mismo dólar que el backend guarda.
+      if (r?.mep != null) mepByDate.set(r.date, Number(r.mep))
     }
-    return { dates, byDate }
+    return { dates, byDate, mepByDate }
   }, [sortedRows])
 
   function getRateForDate(dateIso) {
@@ -161,10 +166,35 @@ export function useFxHistory(fallbackTcBlue = 1415) {
     return r != null && r > 0 ? r : fallbackRef.current
   }
 
+  // MEP del día (mismo criterio de "día anterior más cercano"), con caída al blue de
+  // esa fecha y después al fallback. Espeja `fx_for_date` del backend, que prefiere el
+  // MEP: lo usa la vista previa del depósito para no mostrar un dólar distinto del que
+  // se va a guardar. Los consumidores viejos siguen con getRateOrFallback (blue).
+  function getMepOrFallback(dateIso) {
+    if (!dateIso) return fallbackRef.current
+    const { dates, mepByDate } = fxIndex
+    // Guarda: si el índice viene de una respuesta vieja sin `mep`, caemos al blue en
+    // vez de romper. Es la vista previa de un monto: nunca debe tirar la pantalla.
+    if (!mepByDate || !dates || dates.length === 0) return getRateOrFallback(dateIso)
+    const exact = mepByDate.get(dateIso)
+    if (exact != null && exact > 0) return exact
+    let lo = 0, hi = dates.length - 1, best = -1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (dates[mid] <= dateIso) { best = mid; lo = mid + 1 } else { hi = mid - 1 }
+    }
+    for (let i = best; i >= 0; i--) {
+      const v = mepByDate.get(dates[i])
+      if (v != null && v > 0) return v
+    }
+    return getRateOrFallback(dateIso)
+  }
+
   return {
     loaded: !!data,
     getRateForDate,
     getRateOrFallback,
+    getMepOrFallback,
     // Clave estable para memoizar cálculos que dependen de la serie: cambia
     // cuando la serie termina de cargar (o se recarga), no en cada render.
     fxKey: fxIndex.dates.length,
