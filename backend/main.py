@@ -28672,6 +28672,50 @@ def _migrate_fci_ticker_remap():
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _repair_fx_gross_usd(conn) -> int:
+    """Repara el `gross_amount_usd` de las conversiones de moneda ya importadas.
+
+    Una conversión tiene dos monedas, así que la fila no trae `moneda`, y el
+    estampado solo dolarizaba cuando decía literalmente "ARS": el monto EN
+    PESOS quedó guardado como si fueran dólares. Comprar USD 1.000 figuraba
+    como USD 1.400.000 en Movimientos.
+
+    No hace falta ninguna cotización para arreglarlo: por contrato del
+    normalizador, `quantity` de una fila FX SON los dólares de esa misma
+    operación. Idempotente — al segundo pase no hay nada que cambiar.
+    """
+    return conn.execute(
+        """UPDATE import_normalized_tx
+              SET gross_amount_usd = quantity
+            WHERE operation_type IN ('FX_ARS_TO_USD','FX_USD_TO_ARS')
+              AND quantity IS NOT NULL AND quantity > 0
+              AND (gross_amount_usd IS NULL OR gross_amount_usd <> quantity)""").rowcount
+
+
+@app.on_event("startup")
+def _migrate_fx_gross_usd():
+    """Migración al deploy del fix de arriba. Background, idempotente."""
+    import threading
+
+    def worker():
+        try:
+            import time as _time
+            _time.sleep(8)
+            conn = get_db()
+            try:
+                n = _repair_fx_gross_usd(conn)
+                if n:
+                    conn.commit()
+                    logging.getLogger(__name__).info(
+                        "FX gross_amount_usd: %d conversiones re-estampadas a su monto real en USD.", n)
+            finally:
+                conn.close()
+        except Exception as ex:
+            logging.getLogger(__name__).warning("_migrate_fx_gross_usd falló: %s", ex)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def _run_fci_refresh_job():
     """Cron diario: refresca precios de cuotaparte de FCI desde ArgentinaDatos."""
     conn = get_db()

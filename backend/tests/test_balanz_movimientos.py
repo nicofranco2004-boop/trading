@@ -530,6 +530,23 @@ class CambioDeMonedaTest(unittest.TestCase):
         self.assertAlmostEqual(float(d["monto"]), 39960.0, places=2)
         self.assertAlmostEqual(float(d["monto_usd"]), 740.0, places=2)
 
+    def test_el_monto_en_dolares_que_ve_el_usuario_es_el_real(self):
+        """De punta a punta: parser → normalizer → el USD que guarda el import.
+
+        Es el número que sale en Movimientos, y salía ×1400: una conversión no
+        tiene UNA moneda, así que la fila va sin `moneda`, y el estampado solo
+        dolariza cuando dice literalmente "ARS" → guardaba los PESOS rotulados
+        como dólares. Esta compra de USD 11,62 figuraba como USD 499,66."""
+        from importing.normalizer import normalize_rows
+        from importing.pipeline import stamp_tx_gross_usd
+        res = self._parse(self.COMPRA)
+        txs, errs = normalize_rows(res.raw_rows)
+        self.assertEqual(errs, [])
+        self.assertEqual(len(txs), 1)
+        # tc_blue de referencia a propósito distinto del de la operación (43,0):
+        # el resultado no puede depender de él.
+        self.assertAlmostEqual(stamp_tx_gross_usd(txs[0], 1415.0), 11.62, places=2)
+
     def test_pata_suelta_no_se_inventa(self):
         # Sin su par no sabemos el tipo de cambio → mejor reportar que adivinar.
         res = self._parse([self.COMPRA[0]])

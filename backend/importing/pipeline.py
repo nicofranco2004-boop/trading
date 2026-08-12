@@ -13,7 +13,8 @@ import json
 import secrets
 from typing import Any, Dict, List, Optional, Tuple
 
-from .schema import NormalizedTx, RawRow, RowError
+from .schema import (NormalizedTx, RawRow, RowError,
+                     OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS)
 from .parsers.registry import get_parser, autodetect, list_parsers
 from .normalizer import normalize_rows
 from .validator import validate
@@ -97,6 +98,33 @@ def _stamp_gross_amount_usd(currency, gross_amount, tc_blue, conn=None, date=Non
     if tc and tc > 0:
         return float(gross_amount) / float(tc)
     return float(gross_amount)
+
+
+def stamp_tx_gross_usd(tx, tc_blue, conn=None, date=None):
+    """gross_amount_usd de una tx normalizada. Usar SIEMPRE este, no el de
+    arriba: las conversiones de moneda necesitan un camino propio.
+
+    Una conversión tiene DOS monedas, así que la fila no trae `moneda` y el
+    normalizador guarda, por contrato, los pesos en `gross_amount` y los
+    dólares en `quantity` (ver el bloque OP_FX_* de normalizer.py). Con
+    `currency` en None, _stamp_gross_amount_usd no divide —solo lo hace con el
+    literal "ARS"— y estampaba el monto EN PESOS como si fueran dólares:
+    comprar USD 1.000 figuraba como **USD 1.400.000** en Movimientos. Se ve
+    desde que Balanz empezó a traer estas conversiones (`e47db69`).
+
+    Acá no hace falta ninguna cotización: la fila ya trae los dos lados de la
+    operación, que es el dato más exacto que puede haber — mejor que cualquier
+    dólar de referencia, porque es el que el usuario pagó de verdad.
+    """
+    op = getattr(tx, "operation_type", None)
+    if op in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS):
+        usd = getattr(tx, "quantity", None)
+        if usd:
+            return abs(float(usd))
+        # Sin la pata en dólares no inventamos: los pesos están en gross_amount,
+        # así que al menos convertimos como corresponde en vez de mentir ×1400.
+        return _stamp_gross_amount_usd("ARS", tx.gross_amount, tc_blue, conn=conn, date=date)
+    return _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue, conn=conn, date=date)
 
 
 def sanitize_filename(name: Optional[str]) -> str:
@@ -694,7 +722,7 @@ def run_preview(
         fp = _row_fingerprint(tx)
         if fp in existing_fingerprints or _row_fingerprint_legacy(tx) in existing_fingerprints:
             duplicate_row_indices.append(tx.row_index)
-        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_import,
+        gross_usd = stamp_tx_gross_usd(tx, tc_blue_at_import,
                                             conn=conn if _hist else None,
                                             date=tx.date if _hist else None)
         # Audit follow-up: ALSO populate the NormalizedTx in-memory para que el
@@ -972,7 +1000,7 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
                  "qty": tx.quantity, "price": tx.unit_price, "notes": tx.notes},
                 ensure_ascii=False)))
         raw_id = cur.lastrowid
-        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue,
+        gross_usd = stamp_tx_gross_usd(tx, tc_blue,
                                             conn=conn if _hist else None,
                                             date=tx.date if _hist else None)
         tx.gross_amount_usd = gross_usd
@@ -1134,7 +1162,7 @@ def load_session_with_seed_revalidate(
     _hist2 = fx_version(conn, uid) == FX_V2
     for tx in valid_txs:
         fp = _row_fingerprint(tx)
-        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_confirm,
+        gross_usd = stamp_tx_gross_usd(tx, tc_blue_at_confirm,
                                             conn=conn if _hist2 else None,
                                             date=tx.date if _hist2 else None)
         # Audit follow-up: stamp también en el NormalizedTx in-memory para que
