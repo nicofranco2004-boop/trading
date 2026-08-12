@@ -1927,9 +1927,14 @@ function InsightsDesktop({ _embeddedTab }) {
   // hace que alguien reste "17,2 − 8,8" y saque una conclusión que no se sostiene.
   // Cada una lleva ahora su base escrita.
   const verdictItems = [
+    // La UNIDAD va escrita: el UVA se simula EN PESOS (capitaliza con el
+    // coeficiente) y recién después se pasa a dólares al blue de cada mes
+    // (`simulatePlazoFijoUva`, índice uva/blue). La cuenta es correcta, pero sin
+    // decir "medido en dólares" cualquiera lee "me comparan mi rendimiento en USD
+    // contra una tasa en pesos" y desconfía del número — pasó.
     {
       key: 'plazo_fijo', label: 'Plazo fijo UVA', pct: vsPlazoFijo?.pct ?? null,
-      nota: 'tu patrimonio de hoy vs la misma plata en UVA',
+      nota: 'tu patrimonio de hoy vs la misma plata en UVA · medido en dólares',
     },
     {
       key: 'dolar', label: 'Dólar', pct: vsDolar?.pct ?? null,

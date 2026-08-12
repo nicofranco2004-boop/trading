@@ -55,6 +55,9 @@ export default function ArAlternativesVerdict({ items }) {
       <p className="text-[12px] text-ink-3 mt-4 leading-relaxed">
         <b>Plazo fijo UVA</b> y <b>Dólar</b> comparan tu patrimonio de hoy contra lo que
         valdría si la misma plata —con los mismos aportes y retiros— hubiera ido ahí.
+        El plazo fijo UVA se simula <b>en pesos</b> (capitaliza con el coeficiente UVA) y
+        recién después se pasa a <b>dólares</b> al tipo de cambio de cada mes, así los dos
+        lados se miden en la misma moneda y la comparación es válida.
         <b> Inflación</b> es otra cosa: el retorno real de tu pata en pesos, ya descontado
         el IPC. <b>Los tres porcentajes no se restan entre sí</b> — cada uno responde una
         pregunta distinta.
