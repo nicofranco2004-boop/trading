@@ -118,6 +118,7 @@ const GuiaInsightsYReportes = lazy(() => import('./pages/guia/InsightsYReportes'
 const GuiaCoachIA = lazy(() => import('./pages/guia/CoachIA'))
 const GuiaNovedades = lazy(() => import('./pages/guia/Novedades'))
 const GuiaCuentaYPlanes = lazy(() => import('./pages/guia/CuentaYPlanes'))
+const GuiaAsesores = lazy(() => import('./pages/guia/Asesores'))
 
 // Fallback mínimo mientras carga el chunk. El shell (Sidebar / MobileTopBar)
 // queda montado, así que la nav no parpadea — solo el content area se reemplaza.
@@ -248,6 +249,7 @@ function AppRoutes() {
       <Route path="/guia/coach-ia" element={<GuiaCoachIA />} />
       <Route path="/guia/novedades" element={<GuiaNovedades />} />
       <Route path="/guia/cuenta-y-planes" element={<GuiaCuentaYPlanes />} />
+      <Route path="/guia/asesores" element={<GuiaAsesores />} />
       <Route path="/billing/success" element={<BillingSuccess />} />
       <Route path="/billing/pending" element={<BillingPending />} />
       <Route path="/billing/failure" element={<BillingFailure />} />
@@ -302,7 +304,9 @@ function Layout() {
           <Route path="/blog/fifo-cedears-argentina" element={<BlogFifoCedears />} />
           <Route path="/blog/pnl-real-usd-blue-argentina" element={<BlogPnlRealUsdBlue />} />
           <Route path="/blog/comparativa-brokers-argentina" element={<BlogComparativaBrokers />} />
-          {/* Guía / manual público — index + 6 secciones, indexables */}
+          {/* Guía / manual público — index + secciones, indexables. `asesores` no se
+              lista para cuentas de usuario (el index filtra por tier), pero la URL es
+              pública: sirve para mostrarle Rendi a un asesor antes de que tenga cuenta. */}
           <Route path="/guia" element={<Guia />} />
           <Route path="/guia/empezar" element={<GuiaEmpezar />} />
           <Route path="/guia/cartera-y-operaciones" element={<GuiaCarteraYOperaciones />} />
@@ -310,6 +314,7 @@ function Layout() {
           <Route path="/guia/coach-ia" element={<GuiaCoachIA />} />
           <Route path="/guia/novedades" element={<GuiaNovedades />} />
           <Route path="/guia/cuenta-y-planes" element={<GuiaCuentaYPlanes />} />
+          <Route path="/guia/asesores" element={<GuiaAsesores />} />
           <Route path="*" element={<Login />} />
         </Routes>
       </Suspense>

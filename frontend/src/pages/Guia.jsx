@@ -8,10 +8,22 @@
 import { Link } from 'react-router-dom'
 import {
   Rocket, Briefcase, Compass, Sparkles as SparkIcon, Bell, UserCog,
-  ArrowRight, BookOpen,
+  ArrowRight, BookOpen, Users,
 } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
+
+// Sección EXTRA para cuentas de asesor. No va en SECTIONS porque no se le muestra a
+// un usuario común: el índice la antepone solo si el tier es 'advisor'. Lo operativo
+// (cargar posiciones, vender, marcar depósitos) NO se duplica — el asesor hace todo eso
+// adentro de cada cliente, así que le sirven las MISMAS secciones de abajo.
+const SECCION_ASESORES = {
+  to: '/guia/asesores',
+  icon: Users,
+  title: 'Para asesores',
+  desc: 'Tu libro, clientes, grupos dinámicos, operar sobre un grupo entero, alertas e informes con tu marca.',
+}
 
 // Mantener esta lista alineada con las sub-páginas de pages/guia/ y con
 // los links prev/next dentro de cada sub-página.
@@ -61,6 +73,12 @@ const SECTIONS = [
 ]
 
 export default function Guia() {
+  // Misma entrada "Guía" en el sidebar para todos; lo que cambia es QUÉ ve cada uno.
+  // El asesor arranca por su sección propia y sigue con las mismas de siempre, porque
+  // adentro de un cliente opera igual que un usuario.
+  const { user } = useAuth()
+  const esAsesor = user?.tier === 'advisor'
+  const secciones = esAsesor ? [SECCION_ASESORES, ...SECTIONS] : SECTIONS
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
@@ -93,23 +111,23 @@ export default function Guia() {
             </span>
           </div>
           <h1 className="text-3xl md:text-5xl font-semibold tracking-tight mb-4 text-ink-0">
-            Cómo usar Rendi
+            {esAsesor ? 'Cómo usar Rendi como asesor' : 'Cómo usar Rendi'}
           </h1>
           <p className="text-base md:text-lg text-ink-2 max-w-2xl mx-auto leading-relaxed">
-            Todo lo que necesitás saber para sacarle el jugo a Rendi. Desde cargar tu
-            primera operación hasta usar Rendi AI con memoria. 6 secciones, lectura
-            de 5-10 min cada una.
+            {esAsesor
+              ? `Empezá por la sección de asesores: tu libro, tus clientes y los grupos. El resto es igual que para cualquier usuario — cargar posiciones, vender, marcar depósitos — solo que lo hacés adentro de cada cliente. ${secciones.length} secciones, lectura de 5-10 min cada una.`
+              : `Todo lo que necesitás saber para sacarle el jugo a Rendi. Desde cargar tu primera operación hasta usar Rendi AI con memoria. ${SECTIONS.length} secciones, lectura de 5-10 min cada una.`}
           </p>
         </section>
 
         {/* Grid de secciones */}
         <section>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {SECTIONS.map((s) => {
+            {secciones.map((s, i) => {
               const Icon = s.icon
               return (
                 <Link
-                  key={s.n}
+                  key={s.to}
                   to={s.to}
                   className="block border border-line/60 hover:border-data-violet/40 hover:bg-data-violet/[0.03] rounded-lg p-6 transition-colors group"
                 >
@@ -120,7 +138,7 @@ export default function Guia() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-[12.5px] text-ink-2 font-medium">
-                          {s.n} de {SECTIONS.length}
+                          {esAsesor ? `${i + 1} de ${secciones.length}` : `${s.n} de ${SECTIONS.length}`}
                         </span>
                       </div>
                       <h2 className="text-lg font-semibold text-ink-0 mb-1.5 group-hover:text-data-violet transition-colors">
