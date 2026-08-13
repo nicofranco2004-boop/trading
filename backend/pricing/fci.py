@@ -203,20 +203,30 @@ def seed_catalog(conn, funds=None):
         funds = _fetch_all_funds()
     # Freshness: descartamos fondos cerrados/stale cuyo último valor quedó viejo
     # (ej. una clase discontinuada que reporta una fecha de hace meses).
-    dates = [f.get("fecha") for f in funds if f.get("fecha")]
-    cutoff = None
-    if dates:
+    #
+    # POR CATEGORÍA, no global: las 5 categorías de la fuente se actualizan a ritmos
+    # distintos. Medido 2026-08-13: 'otros' venía al día (21 fondos, fecha de hoy) y las
+    # otras cuatro traían 2026-07-21 → el corte global (hoy − 7d) tiraba los 4.067
+    # fondos restantes y el seed quedaba en CERO. O sea: una categoría fresca dejaba al
+    # catálogo entero sin poder incorporar fondos nuevos, en silencio.
+    cutoff_by_cat = {}
+    for f in funds:
+        cat, fecha = f.get("_cat"), f.get("fecha")
+        if cat and fecha and fecha > cutoff_by_cat.get(cat, ""):
+            cutoff_by_cat[cat] = fecha
+    for cat, mx in list(cutoff_by_cat.items()):
         try:
-            cutoff = (datetime.fromisoformat(max(dates)) - timedelta(days=7)).date().isoformat()
+            cutoff_by_cat[cat] = (datetime.fromisoformat(mx) - timedelta(days=7)).date().isoformat()
         except Exception:
-            cutoff = None
+            cutoff_by_cat.pop(cat, None)
     seen, rows = set(), []
     for f in funds:
         name = (f.get("fondo") or "").strip()
         if not name or not _is_seed_fund(name):
             continue
+        cutoff = cutoff_by_cat.get(f.get("_cat"))
         if cutoff and (f.get("fecha") or "") < cutoff:
-            continue  # fondo stale/cerrado
+            continue  # fondo stale/cerrado DENTRO de su categoría
         sym = FCI_PREFIX + _slug(name)
         if sym in seen:
             continue
