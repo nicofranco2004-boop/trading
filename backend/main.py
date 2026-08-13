@@ -16250,7 +16250,13 @@ def admin_diagnose_costo_inconsistente(tol: float = 0.02, limite: int = 200,
         malas, ratios = [], {}
         for r in filas:
             esperado = float(r["buy_price"]) * float(r["quantity"])
-            real = float(r["invested"])
+            # EL COSTO QUE USA EL P&L incluye las comisiones: calcARS/calcUSDT hacen
+            # `realCost = invested + commissions`. La primera versión de este
+            # diagnóstico comparaba sólo contra `invested` y por eso se le escapó
+            # justo el caso que lo originó: un NFLX con `invested` correcto y una
+            # "comisión" de 3.038.265 sobre una compra de 3.051.682 — el 99,6%.
+            # Comparar contra el campo equivocado es no medir nada.
+            real = float(r["invested"]) + float(r["commissions"] or 0)
             if esperado <= 0:
                 continue
             ratio = real / esperado
@@ -16265,14 +16271,23 @@ def admin_diagnose_costo_inconsistente(tol: float = 0.02, limite: int = 200,
                 "asset_type": r["asset_type"], "entry_date": r["entry_date"],
                 "quantity": r["quantity"], "buy_price": r["buy_price"],
                 "costo_segun_buy_price": round(esperado, 2),
-                "invested": round(real, 2),
+                "costo_que_usa_el_pnl": round(real, 2),
+                "invested": round(float(r["invested"]), 2),
                 "commissions": r["commissions"],
+                # Una comisión que es una fracción enorme de la compra no es una
+                # comisión: es otro monto que entró en la columna equivocada.
+                "comision_pct_de_invested": (
+                    round(100.0 * float(r["commissions"] or 0) / float(r["invested"]), 2)
+                    if float(r["invested"]) > 0 else None),
                 "ratio": round(ratio, 4),
                 # Lo que ve el usuario: la grilla muestra buy_price y el P&L usa
                 # invested, así que este es el error que aparece en pantalla.
                 "diferencia": round(real - esperado, 2),
             })
-            k = ("~2x" if 1.9 <= ratio <= 2.1 else
+            comm = float(r["commissions"] or 0)
+            inv = float(r["invested"])
+            k = ("comisión absurda (>50% de la compra)" if inv > 0 and comm / inv > 0.5 else
+                 "~2x" if 1.9 <= ratio <= 2.1 else
                  "~0.5x" if 0.45 <= ratio <= 0.55 else
                  "~100x" if 90 <= ratio <= 110 else
                  "~1/100" if 0.009 <= ratio <= 0.011 else

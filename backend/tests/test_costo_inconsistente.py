@@ -54,29 +54,37 @@ def _limpio():
     yield
 
 
-def _pos(asset, qty, buy, invested, is_cash=0):
+def _pos(asset, qty, buy, invested, is_cash=0, comm=0.0):
     conn = main.get_db()
     with conn:
         conn.execute(
-            """INSERT INTO positions (user_id,broker,asset,is_cash,quantity,buy_price,invested)
-               VALUES (?,?,?,?,?,?,?)""",
-            (UID, "Cocos", asset, is_cash, qty, buy, invested))
+            """INSERT INTO positions (user_id,broker,asset,is_cash,quantity,buy_price,
+                                      invested,commissions)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (UID, "Cocos", asset, is_cash, qty, buy, invested, comm))
     conn.close()
 
 
 def test_encuentra_el_caso_del_nflx():
-    """Los números son los de la pantalla, no inventados."""
-    _pos("NFLX", 1234, 2473.0, 6_089_947.0)
+    """El caso REAL: `invested` está bien, lo que está inflado es la COMISIÓN.
+
+    La primera versión de este diagnóstico comparaba sólo contra `invested` y no
+    lo encontraba — porque el P&L de la grilla usa `invested + commissions`
+    (calcARS: `realCostArs`). Comparar contra el campo equivocado es no medir.
+    """
+    _pos("NFLX", 1234, 2473.0, 3_051_682.0, comm=3_038_265.0)
     r = main.admin_diagnose_costo_inconsistente(uid=1)
 
     assert len(r["posiciones"]) == 1, r["veredicto"]
     p = r["posiciones"][0]
     assert p["asset"] == "NFLX"
     assert p["costo_segun_buy_price"] == 3_051_682.0
-    assert p["invested"] == 6_089_947.0
+    assert p["costo_que_usa_el_pnl"] == 6_089_947.0
+    assert p["invested"] == 3_051_682.0            # el invested estaba BIEN
+    assert p["comision_pct_de_invested"] > 99      # la comisión es el problema
     assert 1.99 <= p["ratio"] <= 2.0, p["ratio"]
-    # El ratio ES el diagnóstico: ~2 apunta a duplicación, no a un problema de FX.
-    assert r["por_forma_del_ratio"].get("~2x") == 1, r["por_forma_del_ratio"]
+    assert r["por_forma_del_ratio"].get("comisión absurda (>50% de la compra)") == 1, \
+        r["por_forma_del_ratio"]
 
 
 def test_el_ggal_sano_de_la_misma_cartera_no_aparece():
