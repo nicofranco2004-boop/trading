@@ -44,7 +44,31 @@ TMP_DB = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 TMP_DB.close()
 os.environ["DB_PATH"] = TMP_DB.name
 
+import pytest  # noqa: E402
+
 import main  # noqa: E402
+
+# ─── Por qué el PRIMER test es sólo-SQLite (migración a Postgres) ─────────────
+# Este archivo mide una propiedad del MOTOR, no de la app: que una conexión con la
+# transacción de escritura abierta bloquee a TODOS los demás escritores. Eso es
+# cierto en SQLite —un solo escritor por archivo, lock RESERVED— y es FALSO en
+# Postgres a propósito: con MVCC, dos escritores que tocan filas distintas no se
+# ven. Es literalmente el motivo de la migración.
+#
+# Así que el primer test no "falla" en Postgres: mide algo que ahí no existe. Se
+# saltea, no se adapta — adaptarlo sería inventarle una propiedad nueva y
+# quedarnos sin el test que sí protege a la producción de HOY, que corre SQLite.
+#
+# ⚠️ QUE NO SE LEA COMO "EN POSTGRES NO PASA NADA". El riesgo equivalente existe y
+# es real, sólo que es OTRO: una conexión filtrada en Postgres queda
+# `idle in transaction` reteniendo los locks de las filas que tocó Y ocupando un
+# lugar del cupo de conexiones — y Supabase da mucho menos margen que las 100 de
+# un Postgres local. El test que cubre ESE riesgo va con el trabajo de los
+# `get_db()` sin proteger (paso 5 de MIGRACION_POSTGRES.md).
+#
+# Los otros dos tests del archivo NO se saltean: uno verifica que el try/finally
+# cierre igual (cierto en los dos motores) y el otro es estructural sobre el
+# código fuente (ni toca la base).
 
 
 def _sonda_escritura(path, timeout_ms=800):
@@ -62,6 +86,10 @@ def _sonda_escritura(path, timeout_ms=800):
         c.close()
 
 
+@pytest.mark.skipif(
+    getattr(main, "USANDO_PG", False),
+    reason="Mide el lock de escritura ÚNICO de SQLite — que en Postgres no existe. "
+           "Ver la nota de abajo: el riesgo equivalente en Postgres es real pero es OTRO.")
 def test_una_conexion_retenida_por_un_traceback_bloquea_a_todos_los_escritores():
     """La mitad 'el bug es real': sin esto, el test de abajo no prueba nada.
 

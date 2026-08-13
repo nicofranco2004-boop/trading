@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import dberrors
+from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 import tempfile
 import time as _time
 from contextlib import contextmanager as _contextmanager
@@ -88,8 +90,8 @@ def _clone_db(real_conn):
                 real_conn.backup(clone)
                 last_exc = None
                 break
-            except sqlite3.OperationalError as ex:
-                if "locked" in str(ex).lower() or "busy" in str(ex).lower():
+            except ERR_OPERACIONAL as ex:
+                if dberrors.es_base_trabada(ex):
                     last_exc = ex
                     _time.sleep(0.25 * (attempt + 1))
                     continue

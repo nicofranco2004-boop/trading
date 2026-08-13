@@ -19,6 +19,8 @@ import logging
 import math
 import re
 import sqlite3
+import dberrors
+from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 from collections import defaultdict
 from datetime import date as date_cls, datetime
 from pathlib import Path
@@ -565,7 +567,7 @@ def persist_last_prices(conn, prices: dict) -> None:
                  price = excluded.price, updated_at = excluded.updated_at""",
             [(s, p, now) for s, p in rows],
         )
-    except sqlite3.OperationalError as e:
+    except ERR_OPERACIONAL as e:
         log.warning(f"persist_last_prices falló (migration pendiente?): {e}")
 
 
@@ -581,7 +583,7 @@ def read_last_prices(conn, symbols: list) -> dict:
             tuple(syms),
         ).fetchall()
         return {r[0]: r[1] for r in rows}
-    except sqlite3.OperationalError:
+    except ERR_OPERACIONAL:
         return {}
 
 
@@ -964,7 +966,7 @@ def run_daily_snapshot(
                 (target, float(tc_blue)),
             )
             conn.commit()
-        except sqlite3.OperationalError as e:
+        except ERR_OPERACIONAL as e:
             log.warning(f"fx_rates_daily insert falló (migration pendiente?): {e}")
 
         # Shadows del plan asesor REVOCADOS (sin vínculo activo, sin login):
@@ -978,7 +980,7 @@ def run_daily_snapshot(
                                               WHERE ac.client_uid = u.id
                                                 AND ac.status = 'active'))"""
             ).fetchall()]
-        except sqlite3.OperationalError:
+        except ERR_OPERACIONAL:
             user_ids = [r[0] for r in conn.execute(
                 "SELECT id FROM users WHERE id IS NOT NULL"
             ).fetchall()]

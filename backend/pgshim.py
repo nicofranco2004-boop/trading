@@ -493,6 +493,19 @@ def _escapar_y_placeholders(sql: str) -> str:
 
     Los strings del SQL se respetan enteros. Hay queries con `LIKE '%@rendi.test'`
     (el `%` es del patrón, no un placeholder) y textos con signos de pregunta.
+
+    ── Placeholders CON NOMBRE (`:user_id`) ─────────────────────────────────────
+    DB-API define cinco estilos y sqlite3 acepta dos: `?` (qmark) y `:nombre`
+    (named), este último con un dict de parámetros. psycopg acepta `%s` y
+    `%(nombre)s`, así que `:nombre` → `%(nombre)s` es una correspondencia EXACTA,
+    no una interpretación: los dos buscan la clave por nombre en el mismo dict.
+
+    Dos cosas que NO son un placeholder y hay que dejar quietas:
+      · `::tipo` — el casteo de Postgres. Y no es hipotético: lo emiten las
+        traducciones de este mismo módulo (`::numeric`, `::timestamp`, `::text`),
+        así que llegan acá sí o sí.
+      · `'12:30'` — dos puntos adentro de un texto. Ya está cubierto por el
+        seguimiento de comillas de arriba.
     """
     salida = []
     en_string = False
@@ -519,6 +532,20 @@ def _escapar_y_placeholders(sql: str) -> str:
             salida.append("%s")
         elif ch == "%":
             salida.append("%%")
+        elif ch == ":":
+            if i + 1 < n and sql[i + 1] == ":":       # `::tipo`, un casteo
+                salida.append("::")
+                i += 2
+                continue
+            j = i + 1
+            while j < n and (sql[j].isalnum() or sql[j] == "_"):
+                j += 1
+            nombre = sql[i + 1:j]
+            if nombre and not nombre[0].isdigit():
+                salida.append(f"%({nombre})s")
+                i = j
+                continue
+            salida.append(ch)          # `:` suelto: no es un placeholder
         else:
             salida.append(ch)
         i += 1
@@ -776,6 +803,7 @@ class Connection:
         # Sin row_factory: el default de psycopg ya devuelve tuplas, y las
         # envolvemos nosotros en `Row` para poder leer por nombre Y por posición.
         self._c = psycopg.connect(dsn, autocommit=False)
+        self._dsn = dsn              # para leer el catálogo aparte (ver _pk_de)
         self.row_factory = None      # el código lo setea; acá siempre devolvemos Row
 
     # ── API de sqlite3 ────────────────────────────────────────────────────────
@@ -786,9 +814,28 @@ class Connection:
         —casi siempre para devolver el id del alta recién hecha— y en Postgres el
         equivalente es RETURNING, que necesita saber el nombre de la columna.
         """
+        # ⚠️ ESTE LOOKUP NO PUEDE TOCAR LA TRANSACCIÓN DEL QUE LLAMÓ. Va en una
+        # CONEXIÓN APARTE, y eso no es cosmético — es la tercera versión, después
+        # de que las dos anteriores rompieran de maneras opuestas:
+        #
+        #   1ª) leía por `self._c` y terminaba con `self._c.rollback()`. La
+        #       transacción no era del SELECT: era la del llamador, y este método
+        #       corre desde `execute()` justo ANTES de un INSERT. Con el caché
+        #       FRÍO —o sea, en el PRIMER INSERT de cada proceso— el rollback se
+        #       llevaba puesto todo lo que el llamador venía haciendo, SIN ERROR.
+        #       Un `CREATE TABLE` + su `INSERT` fallaba con "relation does not
+        #       exist"; una escritura anterior simplemente desaparecía.
+        #   2ª) leía por `self._c` y NO cerraba nada. Se dejaba de perder datos,
+        #       pero la conexión quedaba con una transacción abierta que el
+        #       llamador no había pedido → `idle in transaction` reteniendo locks.
+        #       Medido: volvieron los timeouts en la suite.
+        #
+        # Con una conexión propia el problema no existe en ninguna de las dos
+        # direcciones: no hay transacción ajena que revertir ni que dejar abierta.
+        # Cuesta una conexión efímera UNA vez por proceso (el caché es global).
         if _PKS_CACHE.get("__cargado__") is None:
-            with self._c.cursor() as c:
-                c.execute("""
+            with psycopg.connect(self._dsn, autocommit=True) as cat:
+                for t, col in cat.execute("""
                     SELECT c.relname, a.attname
                       FROM pg_index i
                       JOIN pg_class c ON c.oid = i.indrelid
@@ -796,11 +843,9 @@ class Connection:
                       JOIN pg_attribute a ON a.attrelid = c.oid
                                          AND a.attnum = ANY(i.indkey)
                      WHERE i.indisprimary AND n.nspname = current_schema()
-                """)
-                for t, col in c.fetchall():
+                """).fetchall():
                     _PKS_CACHE.setdefault(t, col)
             _PKS_CACHE["__cargado__"] = True
-            self._c.rollback()      # el SELECT abrió transacción; no la dejamos colgada
         return _PKS_CACHE.get(tabla.lower())
 
     def _cols_de(self, tabla: str):

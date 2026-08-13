@@ -23,6 +23,8 @@ Cada operación escribe una fila en `credit_ledger` para auditoría.
 from __future__ import annotations
 import logging
 import sqlite3
+import dberrors
+from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
@@ -264,7 +266,7 @@ def grant_payment_credit(
                     note or f"Rebill payment ({plan} {period})",
                 ),
             )
-    except sqlite3.IntegrityError as ex:
+    except ERR_INTEGRIDAD as ex:
         # UNIQUE INDEX idx_credit_ledger_payment_dedup falló — race condition entre
         # nuestro SELECT idempotency check y el INSERT. Otro proceso ya lo insertó.
         # El UPDATE a users se rolled-back automático por el `with conn` block.

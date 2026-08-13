@@ -7,6 +7,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json, threading
+import dberrors
+from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 from collections import defaultdict
 
 # ─── Cargar .env del backend antes de leer cualquier variable de entorno ────
@@ -367,8 +369,8 @@ def _run_with_lock_retry(fn, *, attempts: int = 4, base_delay: float = 0.3):
     for i in range(attempts):
         try:
             return fn()
-        except sqlite3.OperationalError as ex:
-            if "locked" in str(ex).lower() and i < attempts - 1:
+        except ERR_OPERACIONAL as ex:
+            if dberrors.es_base_trabada(ex) and i < attempts - 1:
                 _t.sleep(base_delay * (2 ** i))
                 continue
             raise
@@ -416,7 +418,7 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
                 GROUP BY n.operation_type""",
             (tc_blue, tc_blue, uid, year_str, month_str, *tx_broker_args),
         ).fetchall()
-    except sqlite3.OperationalError:
+    except ERR_OPERACIONAL:
         return 0.0, 0.0          # tablas de import aún no existen (DB fresca)
     dep = wit = 0.0
     for f in flow_rows:
@@ -1178,8 +1180,8 @@ def init_db():
     # usamos try/except específico: tragamos sólo "duplicate column", el resto aflora.)
     try:
         conn.execute("ALTER TABLE fx_rates_daily ADD COLUMN mep_venta REAL")
-    except sqlite3.OperationalError as e:
-        if 'duplicate column' not in str(e).lower():
+    except ERR_OPERACIONAL as e:
+        if not dberrors.es_columna_duplicada(e):
             raise  # error real (no "ya existe") → no lo escondemos
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS goals (
@@ -2790,7 +2792,7 @@ def register(data: RegisterIn, request: Request, response: Response,
             "name": data.name or data.email,
             "is_admin": True,
         }
-    except sqlite3.IntegrityError:
+    except ERR_INTEGRIDAD:
         conn.close()
         # Estructurado para que el frontend pueda detectar el caso y ofrecer
         # un botón "Ir al login" en lugar del flow de error genérico.
@@ -3324,7 +3326,7 @@ def _reset_data_worker(uid: int) -> None:
             try:
                 total += conn.execute(f"SELECT COUNT(*) FROM {t} WHERE {where}", args).fetchone()[0]
                 vivas.append((t, where, args))
-            except sqlite3.OperationalError as ex:
+            except ERR_OPERACIONAL as ex:
                 # Tabla ausente en una DB vieja: se saltea, pero se LOGUEA — un
                 # `pass` mudo convertía un reset PARCIAL en un "ok" indistinguible.
                 log.warning("reset uid=%s: no puedo contar %s (%s)", uid, t, ex)
@@ -3702,7 +3704,7 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
         conn.close()
         _ai_cache_invalidate(uid)
         return dict(row)
-    except sqlite3.IntegrityError:
+    except ERR_INTEGRIDAD:
         conn.close()
         raise HTTPException(400, "Ya existe un broker con ese nombre")
 
@@ -3902,7 +3904,7 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                                 f"UPDATE {tbl} SET broker=? WHERE user_id=? AND broker=?",
                                 (new_n, uid, old_n),
                             )
-        except sqlite3.IntegrityError as ex:
+        except ERR_INTEGRIDAD as ex:
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -7906,7 +7908,7 @@ def _cached_ba_price(conn, base_symbol: str, broker: str, uid: int):
         br = conn.execute(
             "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
             (uid, broker)).fetchone()
-    except sqlite3.OperationalError:
+    except ERR_OPERACIONAL:
         return None
     if not br or (br["currency"] or "").upper() != "ARS":
         return None
@@ -8610,7 +8612,7 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
             if r["y"] and r["b"]:
                 _seed.add((r["b"], r["y"], r["m"]))
                 _seed.add(("global", r["y"], r["m"]))
-    except sqlite3.OperationalError:
+    except ERR_OPERACIONAL:
         pass          # tablas de import aún no existen (DB fresca)
     for _b, _y, _m in _seed:
         conn.execute(
@@ -10591,7 +10593,7 @@ def _rollover_to_current_month(conn, uid: int, broker: str) -> int:
                  round(cur_cap_final, 4), round(cur_cap_final, 4)),
             )
             created += 1
-        except sqlite3.IntegrityError:
+        except ERR_INTEGRIDAD:
             # Race: otra request creó la row. Leerla y seguir desde su cap_final.
             existing = conn.execute(
                 """SELECT capital_final FROM monthly_entries
@@ -11041,7 +11043,7 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
         conn.close()
         _ai_cache_invalidate(uid)
         return dict(row)
-    except sqlite3.IntegrityError:
+    except ERR_INTEGRIDAD:
         conn.close()
         raise HTTPException(400, "Ya existe una entrada para ese mes/broker")
 
@@ -24972,7 +24974,7 @@ def billing_cancel(request: Request, uid: int = Depends(get_effective_user)):
         sync_pendiente = False
         try:
             _run_with_lock_retry(_persistir)
-        except sqlite3.OperationalError as ex:
+        except ERR_OPERACIONAL as ex:
             # NO le mentimos al usuario. Está cancelada — decirle "no pudimos"
             # lo empuja a reintentar o a llamar al banco por una baja que ya
             # ocurrió. Nuestra fila se reconcilia sola por webhook/billing-sync.
@@ -26748,7 +26750,7 @@ def _atomic_insert_fact(conn, uid: int, content: str, source: str):
             (uid, content, source, uid, MAX_ACTIVE_FACTS, uid, MAX_TOTAL_FACTS),
         )
         conn.commit()
-    except sqlite3.IntegrityError:
+    except ERR_INTEGRIDAD:
         # UNIQUE constraint violation — el fact ya existe activo. Idempotente:
         # devolvemos el id existente como si fuera un INSERT exitoso.
         try:
@@ -28520,8 +28522,8 @@ def import_wipe_broker(broker: str, uid: int = Depends(get_effective_user)):
         return {"ok": True, "broker": broker, **counts}
     except HTTPException:
         raise
-    except sqlite3.OperationalError as ex:
-        if "locked" in str(ex).lower():
+    except ERR_OPERACIONAL as ex:
+        if dberrors.es_base_trabada(ex):
             raise HTTPException(503, "La base está ocupada procesando otra operación. "
                                      "Esperá unos segundos y probá de nuevo.")
         raise HTTPException(500, f"No se pudo limpiar el broker: {ex}")
@@ -31994,7 +31996,7 @@ def advisor_set_profile(data: AdvisorProfileIn, uid: int = Depends(get_current_u
                     conn.execute(
                         "UPDATE advisor_profile SET logo_data=?, updated_at=datetime('now') WHERE advisor_uid=?",
                         (data.logo_data or None, uid))
-                except sqlite3.OperationalError:
+                except ERR_OPERACIONAL:
                     # Columna ausente (deploy a mitad de camino / migración no
                     # corrida): auto-reparar y reintentar en vez de un 500.
                     conn.execute("ALTER TABLE advisor_profile ADD COLUMN logo_data TEXT")

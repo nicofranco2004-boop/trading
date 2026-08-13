@@ -29,6 +29,8 @@ TMP_DB = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 TMP_DB.close()
 os.environ["DB_PATH"] = TMP_DB.name
 
+import pytest  # noqa: E402
+
 import main  # noqa: E402
 
 
@@ -71,12 +73,25 @@ def test_borra_todo():
     assert _quedan(uid) == (0, 0, 0)
 
 
+@pytest.mark.skipif(
+    getattr(main, "USANDO_PG", False),
+    reason="La sonda abre un sqlite3.connect crudo para medir el lock ÚNICO de "
+           "escritura de SQLite. En Postgres ese lock no existe (MVCC) y la sonda "
+           "ni siquiera llega a la base real: apunta a un archivo SQLite sin "
+           "esquema y devuelve 'no such table'. Mediría la nada.")
 def test_suelta_el_lock_entre_tandas():
     """EL test. Mientras el reset avanza, otro usuario tiene que poder escribir.
 
     Sondeamos con un busy_timeout CORTO (300 ms): si el reset tuviera el lock de
     punta a punta —como antes—, toda sonda daría 'database is locked'. Con tandas,
     entre uno y otro chunk hay ventana y la sonda entra.
+
+    ⚠️ SÓLO-SQLITE (migración a Postgres). Mide una propiedad del MOTOR: que haya
+    un único escritor por base. En Postgres dos escritores sobre filas distintas
+    no se ven, así que la propiedad no aplica — y el test tampoco se puede
+    "adaptar" sin cambiarle el significado. Se saltea y se conserva para SQLite,
+    que es lo que corre en producción HOY. El otro test del archivo
+    (`test_borra_todo`, que el reset termina y no deja nada) sí corre en los dos.
     """
     uid = 9002
     _sembrar(uid, main._RESET_CHUNK * 3)
