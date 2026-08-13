@@ -16203,6 +16203,18 @@ def admin_pg_type_audit(incluir_ok: bool = False, uid: int = Depends(get_admin_u
         conn.close()
 
 
+# Piso absoluto de la limpieza de comisiones, por moneda. Además del 5%, la
+# comisión tiene que superar ESTO para que se borre.
+#
+# El USD está calibrado sobre el fee FIJO de Balanz (~USD 14): por debajo de 25 no
+# tocamos nada, así que ese fee legítimo queda protegido aunque sobre una compra
+# chica represente el 115%.
+# El ARS es el equivalente aproximado, para que la regla sea la misma en las dos
+# monedas y no dependa del MEP del día.
+_PISO_COMISION_USD = 25.0
+_PISO_COMISION_ARS = 35_000.0
+
+
 @app.post("/api/admin/repair-comisiones")
 def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
                             uid: int = Depends(get_admin_user)):
@@ -16243,21 +16255,35 @@ def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
                   AND p.buy_price IS NOT NULL AND p.buy_price > 0"""
         ).fetchall()
 
-        objetivo = []
+        objetivo, bajo_el_piso = [], []
         for r in filas:
             base = float(r["buy_price"]) * float(r["quantity"])
             comm = float(r["commissions"])
             if base <= 0 or comm / base <= 0.05:
                 continue
-            objetivo.append({
+            # PISO ABSOLUTO, además del porcentaje. Un fee FIJO sobre una posición
+            # chica es un porcentaje enorme y ES legítimo: Balanz cobra ~USD 14 y
+            # vimos una compra de USD 12,22 con ese fee — 115%, y está bien.
+            # Sin el piso, la limpieza ensuciaría datos que estaban sanos.
+            #
+            # No hay un número que separe todo: las comisiones falsas de Cocos son
+            # de ~ARS 13.000 (≈USD 9), o sea POR DEBAJO del piso que hace falta
+            # para proteger el fee de Balanz. Por eso las que quedan afuera NO se
+            # descartan en silencio: van en `no_tocadas_por_el_piso` para que
+            # alguien las mire. Ignorar callado es lo único inaceptable.
+            _ccy = (r["currency"] or "").upper()
+            piso = _PISO_COMISION_ARS if _ccy == "ARS" else _PISO_COMISION_USD
+            fila = {
                 "position_id": r["id"], "user_id": r["user_id"], "email": r["email"],
                 "broker": r["broker"], "asset": r["asset"], "currency": r["currency"],
                 "costo_operacion": round(base, 2),
                 "comision_actual": round(comm, 2),
                 "comision_pct": round(100.0 * comm / base, 1),
                 "_undo": r["undo_meta_json"],
-            })
+            }
+            (objetivo if comm > piso else bajo_el_piso).append(fila)
         objetivo.sort(key=lambda x: -x["comision_actual"])
+        bajo_el_piso.sort(key=lambda x: -x["comision_actual"])
         objetivo = objetivo[:limite]
 
         total = round(sum(o["comision_actual"] for o in objetivo), 2)
@@ -16300,6 +16326,17 @@ def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
             "usuarios": len(usuarios),
             "comisiones_falsas_total": total,
             "detalle": objetivo[:200],
+            "no_tocadas_por_el_piso": {
+                "cuantas": len(bajo_el_piso),
+                "por_que": (f"La comisión supera el 5% pero no el piso absoluto "
+                            f"(ARS {_PISO_COMISION_ARS:,.0f} / USD {_PISO_COMISION_USD:,.0f}). "
+                            "Ahí no se puede distinguir una comisión falsa chica de "
+                            "un fee FIJO legítimo sobre una posición chica — Balanz "
+                            "cobra ~USD 14 y eso sobre una compra de USD 12 es 115%, "
+                            "y está bien. Estas hay que mirarlas a mano."),
+                "detalle": [{k: v for k, v in x.items() if k != "_undo"}
+                            for x in bajo_el_piso[:100]],
+            },
             "siguiente_paso": (
                 "Falta re-correr el backfill de snapshots: el snapshot diario guarda "
                 "`invested + commissions` (snapshots_job.py:701 y :850), así que la "

@@ -46,14 +46,14 @@ def _limpio():
     yield
 
 
-def _pos(asset, qty, buy, comm, undo=None):
+def _pos(asset, qty, buy, comm, undo=None, ccy="ARS"):
     conn = main.get_db()
     with conn:
         cur = conn.execute(
             """INSERT INTO positions (user_id,broker,asset,is_cash,quantity,buy_price,
-                                      invested,commissions,undo_meta_json)
-               VALUES (?,?,?,0,?,?,?,?,?)""",
-            (UID, "Balanz", asset, qty, buy, qty * buy, comm, undo))
+                                      invested,commissions,undo_meta_json,currency)
+               VALUES (?,?,?,0,?,?,?,?,?,?)""",
+            (UID, "Balanz", asset, qty, buy, qty * buy, comm, undo, ccy))
         pid = cur.lastrowid
     conn.close()
     return pid
@@ -147,3 +147,59 @@ def test_avisa_que_faltan_los_snapshots():
     _pos("NFLX", 1234, 2473.0, 3_038_265.12)
     r = main.admin_repair_comisiones(apply=True, uid=1)
     assert "snapshot" in r["siguiente_paso"].lower()
+
+
+# ── El piso absoluto ─────────────────────────────────────────────────────────
+
+def test_un_fee_FIJO_sobre_una_posicion_chica_NO_se_toca():
+    """El caso real que motivó el piso: un SMR.E con una compra de USD 12,22 y un
+    fee de USD 14,13. Como porcentaje es 115%, pero ES un fee legítimo —Balanz
+    cobra un fijo—. Sin el piso, la limpieza ensuciaría un dato sano."""
+    pid = _pos("SMR.E", 1, 12.22, 14.13, ccy="USD")
+    r = main.admin_repair_comisiones(apply=True, uid=1)
+
+    assert r["posiciones"] == 0, r["detalle"]
+    assert _leer(pid)["commissions"] == 14.13, "el fee fijo tenía que quedar intacto"
+
+
+def test_lo_que_queda_afuera_por_el_piso_se_REPORTA():
+    """No hay un número que separe todo: las comisiones falsas de Cocos son de
+    ~ARS 13.000, o sea POR DEBAJO del piso que hace falta para proteger el fee de
+    Balanz. Esas quedan sin tocar — pero NO en silencio, que es lo único
+    inaceptable cuando se trata de plata ajena."""
+    _pos("AE38", 49, 528.74, 12_954.25)     # 50% exacto: falsa, pero chica
+    r = main.admin_repair_comisiones(uid=1)
+
+    assert r["posiciones"] == 0
+    assert r["no_tocadas_por_el_piso"]["cuantas"] == 1
+    assert r["no_tocadas_por_el_piso"]["detalle"][0]["asset"] == "AE38"
+    assert "a mano" in r["no_tocadas_por_el_piso"]["por_que"]
+
+
+def test_una_comision_falsa_grande_sigue_cayendo():
+    """El piso no puede volver inútil la limpieza: lo que motivó todo esto son
+    comisiones de cientos de miles."""
+    pid = _pos("NFLX", 1234, 2473.0, 3_038_265.12)
+    r = main.admin_repair_comisiones(apply=True, uid=1)
+
+    assert r["posiciones"] == 1
+    assert _leer(pid)["commissions"] == 0
+
+
+def test_el_piso_depende_de_la_moneda_de_la_posicion():
+    """USD 30 es plata; ARS 30 no es nada. Un piso único en cualquiera de las dos
+    monedas sería demasiado alto o demasiado bajo del otro lado."""
+    usd = _pos("AAPL", 10, 100.0, 30.0, ccy="USD")   # 3% → ni llega al piso
+    ars = _pos("GGAL", 10, 100.0, 30.0, ccy="ARS")   # 3% → tampoco
+    r = main.admin_repair_comisiones(uid=1)
+    assert r["posiciones"] == 0 and r["no_tocadas_por_el_piso"]["cuantas"] == 0
+
+    # ahora con 20% en cada moneda: el USD queda bajo el piso (20 < 25), el ARS no
+    _pos("MSFT", 10, 100.0, 200.0, ccy="USD")        # 200 > 25 → cae
+    _pos("YPFD", 10, 1000.0, 2000.0, ccy="ARS")      # 2000 < 35.000 → no cae
+    r2 = main.admin_repair_comisiones(uid=1)
+    assets = {d["asset"] for d in r2["detalle"]}
+    saltados = {d["asset"] for d in r2["no_tocadas_por_el_piso"]["detalle"]}
+    assert "MSFT" in assets, r2["detalle"]
+    assert "YPFD" in saltados, saltados
+    del usd, ars
