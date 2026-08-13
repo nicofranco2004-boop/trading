@@ -205,6 +205,11 @@ _RE_FROM_SQLITE_MASTER = re.compile(r"\bFROM\s+sqlite_master\b", re.I)
 #
 # Una tabla que no existe devuelve CERO FILAS, no un error — igual que SQLite.
 # main.py:1466 (`if _ac_cols and 'phone' not in _ac_cols`) depende de eso.
+#
+# `current_schema()` y no `'public'` fijo: es el MISMO esquema donde la conexión
+# va a buscar las tablas (el primero del search_path). En producción eso da
+# 'public' y no cambia nada. En los tests, cada módulo trabaja en su propio
+# esquema; con 'public' hardcodeado el catálogo diría que no hay ninguna tabla.
 _TABLE_INFO_SQL = """SELECT (row_number() OVER (ORDER BY a.attnum) - 1)::int   AS cid,
        a.attname::text                                             AS name,
        format_type(a.atttypid, a.atttypmod)                        AS type,
@@ -216,7 +221,7 @@ _TABLE_INFO_SQL = """SELECT (row_number() OVER (ORDER BY a.attnum) - 1)::int   A
   JOIN pg_namespace n    ON n.oid = c.relnamespace
   LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
   LEFT JOIN pg_index i   ON i.indrelid = c.oid AND i.indisprimary
- WHERE n.nspname = 'public' AND c.relname = '{tabla}'
+ WHERE n.nspname = current_schema() AND c.relname = '{tabla}'
    AND a.attnum > 0 AND NOT a.attisdropped
  ORDER BY a.attnum"""
 
@@ -230,13 +235,13 @@ _TABLE_INFO_SQL = """SELECT (row_number() OVER (ORDER BY a.attnum) - 1)::int   A
 _SQLITE_MASTER_SQL = """FROM (
   SELECT tablename::text AS name, 'table'::text AS type,
          tablename::text AS tbl_name, NULL::text AS sql
-    FROM pg_tables  WHERE schemaname = 'public'
+    FROM pg_tables  WHERE schemaname = current_schema()
   UNION ALL
   SELECT indexname::text, 'index'::text, tablename::text, NULL::text
-    FROM pg_indexes WHERE schemaname = 'public'
+    FROM pg_indexes WHERE schemaname = current_schema()
   UNION ALL
   SELECT viewname::text, 'view'::text, viewname::text, NULL::text
-    FROM pg_views   WHERE schemaname = 'public'
+    FROM pg_views   WHERE schemaname = current_schema()
 ) AS sqlite_master"""
 
 # PK por tabla, leída del catálogo una vez por proceso (para emular lastrowid).
@@ -253,6 +258,18 @@ _PKS_CACHE: dict = {}
 # que no se entera del ALTER haría que la migración se saltee una columna.
 _COLS_CACHE: dict = {}
 _RE_DDL = re.compile(r"\b(ALTER|CREATE|DROP)\s+(TABLE|VIEW)\b", re.I)
+
+
+def limpiar_caches():
+    """Vacía los cachés de catálogo (PKs y columnas por tabla).
+
+    Lo usan los tests: cada módulo trabaja en un esquema recién creado. Las
+    columnas son las mismas, así que arrastrar el caché "funcionaría" — hasta
+    que un módulo cambie el esquema y el siguiente lea una foto vieja. El caché
+    se llena de nuevo con la primera consulta, así que borrarlo no cuesta nada.
+    """
+    _PKS_CACHE.clear()
+    _COLS_CACHE.clear()
 
 
 def _escapar_y_placeholders(sql: str) -> str:
@@ -530,7 +547,7 @@ class Connection:
                       JOIN pg_namespace n ON n.oid = c.relnamespace
                       JOIN pg_attribute a ON a.attrelid = c.oid
                                          AND a.attnum = ANY(i.indkey)
-                     WHERE i.indisprimary AND n.nspname = 'public'
+                     WHERE i.indisprimary AND n.nspname = current_schema()
                 """)
                 for t, col in c.fetchall():
                     _PKS_CACHE.setdefault(t, col)
