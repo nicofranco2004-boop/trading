@@ -11419,7 +11419,7 @@ def get_movements(uid: int = Depends(get_effective_user)):
         tx_rows = conn.execute(
             """SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes, t.gross_amount_usd
+                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out
                 FROM import_normalized_tx t
                 JOIN import_batches b ON t.batch_id = b.id
                 WHERE b.user_id = ? AND b.status = 'confirmed'
@@ -11464,6 +11464,11 @@ def get_movements(uid: int = Depends(get_effective_user)):
                 "notes": d.get("notes") or "",
                 "source": "import",
                 "ref_id": d["id"],
+                # No es una venta real: cerró el lote A COSTO (P&L 0, sin cash). La
+                # emite una FOTO de tenencia (activo que la foto no listaba) o un
+                # "Retiro de Títulos". El front lo muestra como "Reabrir posición" en
+                # vez de un borrar genérico, porque eso es literalmente lo que hace.
+                "transfer_out": bool(d.get("transfer_out")) and op_type == "SELL",
             })
 
         # ── 3) Monthly entries (no-global) — solo el RESIDUAL manual ────────
@@ -13305,13 +13310,19 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
             "Los bonos no se borran de a una operación (tienen amortizaciones y "
             "cupones enlazados). Se borran enteros: en Operaciones, agrupá por activo "
             "y usá el tacho del activo (por ahora, desde la computadora).")
-    # Venta SINTÉTICA de reconciliación de foto (transfer_out=1, cierre a costo):
-    # borrarla RESTAURARÍA una tenencia que la foto declaró cerrada, divergiendo de
-    # lo importado. Bloqueamos (además su gross=0 haría no-op la reversa de cash).
-    if src["transfer_out"]:
-        raise HTTPException(400,
-            "Esta venta viene de una foto de tenencia (cierre a costo), no de una "
-            "operación real, así que no se puede borrar por separado.")
+    # Venta SINTÉTICA de cierre a costo (transfer_out=1): la emitió una FOTO de
+    # tenencia para cerrar un activo que la foto no listaba, o un "Retiro de Títulos".
+    # Se PUEDE borrar, y es el borrado más seguro que tenemos: el persister NO acreditó
+    # cash (fuerza proceeds 0, persister:769) ni P&L (0), así que la única cascada real
+    # es el rebuild, que re-abre el lote desde las compras que sobreviven.
+    #
+    # Antes esto se bloqueaba "para no divergir de lo importado" y era un CALLEJÓN SIN
+    # SALIDA cuando la foto se equivocaba (no cubría esa cuenta, el parser leyó parcial,
+    # el ticker vino distinto): el usuario veía una posición VIVA cerrada, el tacho del
+    # activo entero también lo bloqueaba, y revertir el batch tampoco la recreaba
+    # (revert_batch nuclear no recrea lotes consumidos por una venta). Borrar el cierre
+    # ES la reparación — por eso el frontend lo ofrece como "Reabrir posición".
+    is_transfer_out = bool(src["transfer_out"])
 
     broker = src["broker"] or op["broker"] or ""
     asset = src["asset_symbol"] or op["asset"] or ""
@@ -13357,10 +13368,18 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     #    redondeo del precio y por comisión embebida en el monto (Balanz). Espejamos
     #    la MISMA fórmula → byte-simétrico. El rebuild NO toca el cash: esto es lo
     #    único que lo corrige.
-    _ueff = _import_persister.reconciled_unit_price(
-        src["unit_price"], src["quantity"], src["gross_amount"], src["asset_type"])
-    proceeds_native = float(_ueff or 0) * float(src["quantity"] or 0) - float(src["fees"] or 0)
-    reversed_cash = proceeds_native if proceeds_native > 0 else 0.0
+    #    EXCEPCIÓN transfer_out: el persister fuerza proceeds 0 (no entró plata), así
+    #    que la reversa también es 0 — derivarla de precio×cantidad inventaría un
+    #    débito. Hoy esas filas vienen con precio y monto 0 (el flag solo se aplica en
+    #    ese caso), pero lo hacemos EXPLÍCITO para que siga siendo simétrico si alguna
+    #    vez un parser marca transfer_out en una fila con precio.
+    if is_transfer_out:
+        reversed_cash = 0.0
+    else:
+        _ueff = _import_persister.reconciled_unit_price(
+            src["unit_price"], src["quantity"], src["gross_amount"], src["asset_type"])
+        proceeds_native = float(_ueff or 0) * float(src["quantity"] or 0) - float(src["fees"] or 0)
+        reversed_cash = proceeds_native if proceeds_native > 0 else 0.0
     if reversed_cash:
         _adjust_broker_cash(conn, uid, broker, -reversed_cash)
 
@@ -13657,8 +13676,10 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     # Validaciones all-or-nothing (mejor bloquear que corromper).
     if any(r["transfer_out"] for r in rows):
         raise HTTPException(400,
-            "Este activo tiene cierres de foto de tenencia; todavía no se puede "
-            "borrar entero. (Próxima versión.)")
+            "Este activo tiene un cierre que generó una foto de tenencia, no una venta "
+            "real. Sacalo primero de a uno: en Movimientos, abrí el grupo del activo y "
+            "borrá esa fila (dice «cierre de … a costo») — eso REABRE la posición. "
+            "Después vas a poder borrar el historial entero si querés.")
     # Activos abiertos desde una FOTO de tenencia / estado inicial: su lote seed lo
     # fondea un DEPÓSITO sintético COMPARTIDO (no por activo) que este borrado no
     # sabe reversar proporcionalmente → dejaría el cash inflado. Bloqueamos.

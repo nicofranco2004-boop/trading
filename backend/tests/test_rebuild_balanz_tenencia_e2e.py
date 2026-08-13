@@ -403,6 +403,74 @@ class BalanzFotoOverrideE2E(unittest.TestCase):
         self.assertAlmostEqual(self._held("SPY"), 63.0, places=6)   # padre → reducido
         self.assertAlmostEqual(self._held("GGAL"), 0.0, places=6)   # padre → eliminado
 
+    def test_borrar_cierre_de_foto_reabre_la_posicion(self):
+        # EL CASO DEL USUARIO: la foto no listaba GGAL (cuenta que no cubría, parser
+        # parcial, ticker distinto…) y lo cerró, pero la posición estaba VIVA. Sacar
+        # ese cierre desde Movimientos la REABRE con su costo original — antes estaba
+        # bloqueado y era un callejón sin salida (el tacho del activo entero también
+        # bloqueaba, y el revert nuclear no recrea lotes consumidos).
+        self._import_mov(self._mk_mov())
+        self._import_foto(self._mk_foto())
+        self.assertAlmostEqual(self._held("GGAL"), 0.0, places=6)
+        cash_antes = self._cash("Balanz")
+
+        # La fila tal como la ve el tacho de Movimientos: tx-{id}, transfer_out=1.
+        tx = self.conn.execute(
+            """SELECT n.id, n.transfer_out FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id=n.batch_id
+                WHERE b.user_id=? AND n.asset_symbol='GGAL' AND n.operation_type='SELL'
+                  AND n.excluded_at IS NULL""", (self.uid,)).fetchone()
+        self.assertIsNotNone(tx, "la foto tenía que haber emitido el cierre de GGAL")
+        self.assertTrue(tx["transfer_out"])
+
+        with self.conn:
+            res = main._route_tx_delete(self.conn, self.uid, f"tx-{tx['id']}")
+        self.assertTrue(res.get("undo_token"), "el borrado tiene que ser reversible")
+
+        # Posición de vuelta, cierre GONE, y el EFECTIVO NO SE TOCA (ese cierre nunca
+        # movió plata: si la reversa derivara proceeds de precio×cantidad, acá saltaría).
+        self.assertAlmostEqual(self._held("GGAL"), 10.0, places=6)
+        self.assertEqual(self._sell_pnl("GGAL"), [])
+        self.assertAlmostEqual(self._cash("Balanz"), cash_antes, places=2)
+        # El resto de la foto queda intacto (no se deshizo el override entero).
+        self.assertAlmostEqual(self._held("SPY"), 63.0, places=6)
+        self.assertAlmostEqual(self._held("AAPL"), 3.0, places=6)
+
+        # NO RESUCITA: re-derivar (como haría un import futuro) lo deja reabierto.
+        with self.conn:
+            tc = ps._read_tc_blue(self.conn, uid=self.uid)
+            rb.rebuild_pair_asset(self.conn, self.uid, self.BROKER, "GGAL", tc_blue=tc)
+        self.assertAlmostEqual(self._held("GGAL"), 10.0, places=6)
+
+        # Y el undo vuelve a cerrarlo, sin tocar el cash (mismo camino que el endpoint).
+        import json as _json
+        j = self.conn.execute(
+            "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
+        p = _json.loads(j["payload_json"])
+        self.assertAlmostEqual(float(p["cash_reversed"]), 0.0, places=6,
+                               msg="un cierre a costo no acreditó cash: no hay nada que reversar")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (p["tx_id"],))
+            main._adjust_broker_cash(self.conn, self.uid, p["broker"], float(p["cash_reversed"]))
+            rb.rebuild_pair_asset(self.conn, self.uid, p["broker"], p["asset"],
+                                  tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], {p["broker"]})
+        self.assertAlmostEqual(self._held("GGAL"), 0.0, places=6)
+        self.assertAlmostEqual(self._cash("Balanz"), cash_antes, places=2)
+
+    def test_borrar_activo_entero_con_cierre_de_foto_explica_como_seguir(self):
+        # El tacho del ACTIVO entero sigue bloqueado (ese camino borra TODO el
+        # historial, no reabre), pero ya no es un callejón: el mensaje manda al
+        # camino que sí funciona.
+        from fastapi import HTTPException
+        self._import_mov(self._mk_mov())
+        self._import_foto(self._mk_foto())
+        with self.assertRaises(HTTPException) as cm:
+            with self.conn:
+                main._delete_asset_history_cascade(self.conn, self.uid, "GGAL")
+        self.assertIn("Movimientos", cm.exception.detail)
+
     def test_safe_revert_bloquea_override_con_ventas(self):
         # El batch de override trae VENTAS sintéticas → el revert SAFE lo bloquea
         # con mensaje claro (no corrompe). El nuclear (editar y rehacer) sí puede.
