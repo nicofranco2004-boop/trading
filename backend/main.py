@@ -6895,12 +6895,20 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     # resolvemos aparte desde la tabla fci_prices (refrescada 1x/día por cron).
     # El precio guardado ya es por cuotaparte (vcp/1000). Se mergea en cada return.
     fci_prices = {}
+    # Procedencia del precio de fondos: {símbolo: {'src':'fci','as_of':fecha}}. Viaja
+    # en `__meta` (mismo canal que la procedencia de acciones) para que la pantalla
+    # pueda decir A QUÉ FECHA está valuado. Sin esto un VCP de hace 3 semanas se ve
+    # igual que uno de hoy — que es exactamente lo que pasó con el corte de la fuente.
+    fci_meta = {}
     fci_syms = [s for s in raw if s.startswith("FCI:")]
     if fci_syms:
         _fci_conn = get_db()
         try:
             from pricing import fci as _fci_mod
-            fci_prices = _fci_mod.get_prices_for(_fci_conn, fci_syms)
+            _fci_detail = _fci_mod.get_prices_detail_for(_fci_conn, fci_syms)
+            fci_prices = {k: v["price"] for k, v in _fci_detail.items()}
+            fci_meta = {k: {"src": "fci", "as_of": v["as_of"]}
+                        for k, v in _fci_detail.items() if v.get("as_of")}
         except Exception as _fci_ex:
             log.warning("FCI price resolve falló: %s", _fci_ex)
         finally:
@@ -6913,7 +6921,11 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     sym_list = sym_list[:MAX_SYMBOLS]
 
     if not sym_list:
-        return dict(fci_prices)
+        # Todos los símbolos pedidos son FCI (no matchean `_SYMBOL_RE`, que es para
+        # tickers de mercado). Este return también lleva `__meta`: si no, la pantalla
+        # que sólo tiene fondos —la sección FCI de Cartera— era justo la única que se
+        # quedaba sin la fecha del precio.
+        return {**fci_prices, '__meta': dict(fci_meta)}
 
     # ─── Layer 1: cache hit fast path ───────────────────────────────────────
     # Si TODOS los símbolos están cacheados frescos (< 60s), devolvemos sin
@@ -6921,7 +6933,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     # en < 5ms.
     cached_results, uncached_symbols = _prices_cache_get(sym_list)
     if not uncached_symbols:
-        return {**cached_results, **fci_prices, '__meta': _prices_meta_get(sym_list)}
+        return {**cached_results, **fci_prices, '__meta': {**_prices_meta_get(sym_list), **fci_meta}}
 
     # Hay misses — procesamos solo los uncached. Resultado base incluye lo
     # que ya teníamos cacheado para no perderlo en el merge final.
@@ -6965,7 +6977,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
         # Solo había símbolos resolved por data912 — persistir y salir.
         _fill_last_known_prices(result)
         _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
-        return {**result, **fci_prices, '__meta': _prices_meta_get(sym_list)}
+        return {**result, **fci_prices, '__meta': {**_prices_meta_get(sym_list), **fci_meta}}
 
     # Cripto en broker ARS: el frontend pide '<CRIPTO>.BA' (sufijo ARS, igual que
     # un CEDEAR) pero la cripto NO cotiza en BYMA — cotiza en USD globalmente. La
@@ -7132,7 +7144,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
     # `__meta` no puede colisionar con un ticker y ningún caller itera el objeto
     # (todos hacen prices[sym]) — verificado antes de agregarlo.
-    return {**result, **fci_prices, '__meta': _prices_meta_get(sym_list)}
+    return {**result, **fci_prices, '__meta': {**_prices_meta_get(sym_list), **fci_meta}}
 
 
 @app.get("/api/prices/prev-close")

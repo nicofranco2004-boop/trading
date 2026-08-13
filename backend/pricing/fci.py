@@ -309,15 +309,27 @@ def bootstrap(conn):
 def get_prices_for(conn, symbols):
     """{symbol: price} para símbolos FCI (prefijo FCI:). Símbolos sin precio
     conocido no aparecen en el dict."""
+    return {s: v["price"] for s, v in get_prices_detail_for(conn, symbols).items()}
+
+
+def get_prices_detail_for(conn, symbols):
+    """{symbol: {price, as_of}} — el precio CON la fecha a la que corresponde.
+
+    La fecha importa: la fuente (ArgentinaDatos/CAFCI) puede dejar de publicar
+    —lo hizo entre el 2026-07-21 y el 2026-08-13, tres semanas— y el precio viejo
+    se seguía mostrando como si fuera de hoy. El valor no es incorrecto, pero
+    presentarlo sin fecha SÍ lo es: el usuario no tiene cómo saber que su fondo
+    está valuado con el VCP de hace tres semanas."""
     syms = [s for s in symbols if (s or "").upper().startswith(FCI_PREFIX)]
     if not syms:
         return {}
     qmarks = ",".join("?" * len(syms))
     rows = conn.execute(
-        f"SELECT symbol, price FROM fci_prices WHERE symbol IN ({qmarks})",
+        f"SELECT symbol, price, as_of_date FROM fci_prices WHERE symbol IN ({qmarks})",
         syms,
     ).fetchall()
-    return {r["symbol"]: r["price"] for r in rows if r["price"] is not None}
+    return {r["symbol"]: {"price": r["price"], "as_of": r["as_of_date"]}
+            for r in rows if r["price"] is not None}
 
 
 def list_catalog(conn):

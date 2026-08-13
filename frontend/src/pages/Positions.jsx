@@ -2260,7 +2260,8 @@ function PositionsDesktop() {
         openBondCashflow={openBondCashflow}
         tcMep={tcMepStrict} cerSeries={cerSeries} cerStale={cerStale}
         isArsFor={(p) => brokers.find(b => b.name === p.broker)?.currency === 'ARS'}
-        priceFor={(p) => (brokers.find(b => b.name === p.broker)?.currency === 'ARS') ? calcARS(p).priceArs : calcUSDT(p).price} />
+        priceFor={(p) => (brokers.find(b => b.name === p.broker)?.currency === 'ARS') ? calcARS(p).priceArs : calcUSDT(p).price}
+        priceMeta={prices?.__meta || null} />
 
       {/* Futuros abiertos: sección propia porque un futuro NO es una tenencia
           (no tenés el activo, y un short vale al revés). */}
