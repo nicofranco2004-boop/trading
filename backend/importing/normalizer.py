@@ -9,6 +9,7 @@ Reglas:
 - Tipos de operación: acepta los aliases definidos en schema.OP_TYPE_ALIASES.
 """
 from __future__ import annotations
+import logging
 import re
 from typing import List, Optional, Tuple
 from .schema import (
@@ -20,6 +21,14 @@ from .schema import (
 )
 from .fci_map import resolve_fci_symbol
 from .tickers_cd import consolidate_cd
+
+_log = logging.getLogger(__name__)
+
+# Techo de comisión sobre el monto de la operación. Arriba de esto no es una
+# comisión: es otro importe que entró en la columna equivocada (típicamente el
+# monto en pesos sobre un lote en dólares — `fees` viaja sin moneda).
+# 5% deja mucho aire: las comisiones reales que vimos son de 0,55% a 3,67%.
+_FEE_MAX_FRAC = 0.05
 
 
 # Día y mes aceptan 1 o 2 dígitos (\d{1,2}): muchos exports / CSV editados en
@@ -284,8 +293,47 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
             errors.extend(row_errors)
             continue
 
+        # ── Guard: una "comisión" que no es una comisión ──────────────────────
+        # `fees` viaja SIN MONEDA (schema.py: gross_amount tiene currency/tc/
+        # usd_amount, fees es un float pelado) y se guarda tal cual en
+        # positions.commissions. El P&L de Cartera hace `invested + commissions`,
+        # así que si un parser emite la comisión en PESOS sobre un lote en
+        # DÓLARES, el costo se infla y la posición muestra una pérdida que no
+        # existe.
+        #
+        # Medido en prod el 2026-08-13: 469 posiciones de ~78 usuarios con
+        # comisiones absurdas. Un NFLX con "comisión" del 99,56% de la compra
+        # mostraba -48,1% cuando en realidad ganaba +3,5%. Los Balanz·USD tenían
+        # un ratio CONSTANTE por usuario y un MEP implícito coherente (1567 en
+        # dos filas del mismo usuario) — la firma de pesos-sobre-dólares.
+        #
+        # 5% es el techo: las comisiones legítimas que vimos son de 0,55% (IOL) y
+        # 3,67% (Juan Martin Portfolio). Arriba de eso ya no es una comisión.
+        # Se pone en CERO y no se descarta la fila: el costo sin comisión es
+        # mucho más correcto que el costo con una comisión inventada.
+        #
+        # NO aplica a las filas que SON un cargo (OP_FEE): ahí el monto ES la
+        # comisión y la comparación no tiene sentido.
+        if fees and op_type != OP_FEE:
+            _base = abs(gross_amount or 0) or (abs((quantity or 0) * (unit_price or 0)))
+            if _base > 0 and abs(fees) / _base > _FEE_MAX_FRAC:
+                _pct = 100.0 * abs(fees) / _base
+                _log.warning(
+                    "fila %s: comisión implausible (%.1f%% de %.2f) — la pongo en 0. "
+                    "broker=%s activo=%s fees=%s", ridx, _pct, _base,
+                    d.get("broker"), asset_raw, fees)
+                notes_fee = (f"⚠ Comisión de {_pct:,.0f}% descartada por implausible "
+                             f"(era {fees:,.2f}). Revisá el archivo del broker.")
+                fees = 0.0
+            else:
+                notes_fee = None
+        else:
+            notes_fee = None
+
         currency = _norm_currency(d.get("moneda"))
         notes = (d.get("notas") or "").strip() or None
+        if notes_fee:
+            notes = f"{notes} · {notes_fee}" if notes else notes_fee
         # asset_name: nombre completo del instrumento si el parser lo pasa (ej.
         # Cocos manda "BONO TESORO ... V.14/02/25 (T2X5)"). Sirve para derivar el
         # vencimiento de bonos cuyo ticker no lo codifica (sweep de vencimientos).
