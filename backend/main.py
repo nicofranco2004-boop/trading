@@ -16057,6 +16057,31 @@ def admin_commissions_debug(email: str = "", user_id: int = 0,
         conn.close()
 
 
+@app.get("/api/admin/pg-type-audit")
+def admin_pg_type_audit(incluir_ok: bool = False, uid: int = Depends(get_admin_user)):
+    """Diagnóstico READ-ONLY: qué datos de la base actual RECHAZARÍA Postgres.
+
+    Existe para decidir la migración con un número en vez de con una intuición.
+    SQLite tipifica LAXO —una columna REAL acepta '' o un texto sin chistar— y
+    Postgres no. Después de meses de imports de una decena de brokers, lo que
+    define si migrar son dos semanas o seis no es cuánto SQL hay que reescribir
+    (eso ya está contado) sino cuántas filas REALES no van a entrar.
+
+    Y el peor caso no es que la carga falle ruidosa: es que un cast "arreglador"
+    convierta un '' en 0 y le cambie el número a alguien en silencio.
+
+    GET para abrirlo desde el browser logueado como admin, igual que
+    /api/admin/disk-usage. No escribe nada. Las tablas gigantes se muestrean (lo
+    dice en la respuesta) para no sostener una lectura larga: eso frena el
+    checkpoint del WAL, que es parte de lo que nos mordió el 12/08."""
+    from scripts.pg_type_audit import auditar
+    conn = get_db()
+    try:
+        return auditar(conn, incluir_ok=incluir_ok)
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/disk-usage")
 def admin_disk_usage(uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY: uso de disco de los filesystems relevantes + los
