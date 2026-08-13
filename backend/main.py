@@ -8514,7 +8514,15 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     for r in conn.execute(
         "SELECT DISTINCT broker AS b, CAST(strftime('%Y', date) AS INT) AS y, "
         "       CAST(strftime('%m', date) AS INT) AS m "
-        "  FROM operations WHERE user_id=? AND date IS NOT NULL", (uid,),
+        # El LIKE filtra las fechas mal formadas ANTES del CAST. En SQLite una
+        # fecha rota daba NULL y la fila se salteaba sola (el `if r["y"]` de
+        # abajo); en Postgres el CAST corta con error y se cae el recálculo
+        # entero. El patrón saca exactamente las filas que SQLite ya descartaba
+        # —vacías, basura, o con día/mes de un dígito— así que no cambia ningún
+        # número. `_` vale por un caracter y `%` deja pasar la hora, igual en los
+        # dos motores.
+        "  FROM operations WHERE user_id=? AND date IS NOT NULL "
+        "    AND date LIKE '____-__-__%'", (uid,),
     ).fetchall():
         if r["y"] and r["b"]:
             _seed.add((r["b"], r["y"], r["m"]))
@@ -8525,7 +8533,8 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
                       CAST(strftime('%m', n.date) AS INT) AS m
                  FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id
                 WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
-                  AND n.operation_type IN ('DEPOSIT','WITHDRAW') AND n.date IS NOT NULL""",
+                  AND n.operation_type IN ('DEPOSIT','WITHDRAW') AND n.date IS NOT NULL
+                  AND n.date LIKE '____-__-__%'""",  # ver el LIKE de arriba
             (uid,),
         ).fetchall():
             if r["y"] and r["b"]:
@@ -11548,6 +11557,10 @@ def get_movements(uid: int = Depends(get_effective_user)):
                 WHERE b.user_id = ? AND b.status = 'confirmed'
                   AND t.excluded_at IS NULL
                   AND UPPER(t.operation_type) IN ('DEPOSIT', 'WITHDRAW')
+                  -- Éste no tenía ni el filtro de nulos, y agrupa por y/m: una
+                  -- sola fecha rota tiraba abajo el agregado completo. Ver el
+                  -- LIKE de _seed más arriba.
+                  AND t.date LIKE '____-__-__%'
                 GROUP BY t.broker, y, m""",
             (tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, uid),
         ).fetchall()

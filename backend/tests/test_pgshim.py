@@ -120,3 +120,214 @@ def test_una_columna_que_no_existe_avisa():
     r = Row(["id"], (1,))
     with pytest.raises(IndexError):
         r["no_existe"]
+
+
+# ── El catálogo: PRAGMA table_info y sqlite_master ───────────────────────────
+
+def test_pragma_table_info_se_convierte_en_una_consulta_al_catalogo():
+    """Los 9 sitios de main.py sólo leen el NOMBRE de la columna, así que la
+    traducción tiene que devolver una columna llamada `name` — y en la misma
+    posición que SQLite (la 1), porque el código lee de las dos formas."""
+    q = traducir("PRAGMA table_info(positions)")
+    assert "pg_attribute" in q, q
+    assert "AS name" in q, q
+    assert "'positions'" in q, q
+    # el orden de las columnas es el de SQLite: cid, name, type, notnull, ...
+    assert q.index("AS cid") < q.index("AS name") < q.index("AS type"), q
+
+
+def test_pragma_table_info_acepta_el_nombre_entre_comillas():
+    """scripts/pg_type_audit.py lo escribe así."""
+    assert "'import_raw_rows'" in traducir('PRAGMA table_info("import_raw_rows")')
+
+
+def test_los_otros_pragma_no_se_tocan():
+    """Sólo `table_info` se traduce. Los demás PRAGMA son configuración de SQLite
+    y tienen que seguir de largo: si el traductor se los comiera, `foreign_keys=ON`
+    se apagaría en silencio y las cascadas de borrado dejarían de correr."""
+    for p in ("PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON",
+              "PRAGMA busy_timeout=15000", "PRAGMA page_count"):
+        assert traducir(p) == p, p
+
+
+def test_sqlite_master_se_convierte_en_el_catalogo_de_postgres():
+    """La query real de main.py:3467, que después BORRA de cada tabla que liste.
+    Si devolviera un índice o una vista, el DELETE reventaría."""
+    q = traducir(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    assert "pg_tables" in q, q
+    assert "AS sqlite_master" in q, q
+    # el % del LIKE sigue escapado después de la sustitución
+    assert "'sqlite_%%'" in q, q
+
+
+def test_sqlite_master_conserva_el_filtro_por_tipo():
+    """`type` tiene que existir como columna: las 5 queries filtran por él."""
+    q = traducir("SELECT name FROM sqlite_master WHERE type='table'")
+    assert "AS type" in q, q
+    assert "'index'" in q and "'view'" in q, "faltan los otros tipos que tiene SQLite"
+
+
+# ── El caché de columnas ─────────────────────────────────────────────────────
+
+def test_un_DDL_invalida_el_cache_de_columnas():
+    """LO QUE MÁS IMPORTA del caché. init_db() mira las columnas, hace ALTER TABLE
+    y vuelve a mirar. Si el caché no se entera del ALTER, la migración cree que la
+    columna ya está y se la saltea — y la app arranca con una tabla incompleta."""
+    from pgshim import _RE_DDL
+    for ddl in ("ALTER TABLE advisor_clients ADD COLUMN phone TEXT",
+                "CREATE TABLE IF NOT EXISTS fci_catalog (symbol TEXT PRIMARY KEY)",
+                "DROP TABLE viejo",
+                "alter table x add column y text"):
+        assert _RE_DDL.search(ddl), ddl
+
+
+def test_una_query_normal_no_invalida_el_cache():
+    """Si un SELECT cualquiera limpiara el caché, el caché no serviría de nada."""
+    from pgshim import _RE_DDL
+    for q in ("SELECT * FROM positions WHERE user_id=?",
+              "UPDATE users SET name=? WHERE id=?",
+              "INSERT INTO operations (asset) VALUES (?)",
+              "DELETE FROM snapshots WHERE date < ?"):
+        assert not _RE_DDL.search(q), q
+
+
+def test_el_cursor_cacheado_se_lee_igual_que_el_de_verdad():
+    """El código lee el resultado por posición (`r[1]`) Y por nombre (`c["name"]`)."""
+    from pgshim import CursorCacheado, Row
+    filas = [Row(["cid", "name", "type"], (0, "id", "bigint")),
+             Row(["cid", "name", "type"], (1, "broker", "text"))]
+    cur = CursorCacheado(filas)
+    assert [r[1] for r in cur.fetchall()] == ["id", "broker"]
+    assert [c["name"] for c in CursorCacheado(filas).fetchall()] == ["id", "broker"]
+    assert CursorCacheado(filas).fetchone()[1] == "id"
+    assert CursorCacheado([]).fetchall() == []      # tabla que no existe
+
+
+# ── Fechas con modificadores ─────────────────────────────────────────────────
+# Los valores esperados NO están escritos a mano: se comparan contra lo que
+# devuelve SQLite de verdad, que es la definición de "no cambió nada".
+
+def _sqlite_dice(expr, params=()):
+    import sqlite3
+    return sqlite3.connect(":memory:").execute("SELECT " + expr, params).fetchone()[0]
+
+
+@pytest.mark.parametrize("expr", [
+    "datetime('now', '+2 days')",          # advisor_brief.py:269
+    "datetime('now','-7 days')",           # main.py:16397 y 16400
+    "date('now', '-30 days')",             # main.py:16473/16483/16497
+    "datetime('now', '-30 days')",         # main.py:16564
+    "datetime('now', '-1 day')",           # main.py:31056
+    "datetime('now', '-6 hours')",         # importing/pipeline.py:195
+])
+def test_las_fechas_con_modificador_dan_LO_MISMO_que_sqlite(expr):
+    """Cada expresión es una que está HOY en producción. La traducción tiene que
+    devolver el mismo texto que devolvía SQLite, con el mismo formato: las
+    columnas de fecha son `text` y el código las compara como strings."""
+    import psycopg
+    import os
+    dsn = os.environ.get("DATABASE_URL", "").strip()
+    if not dsn:
+        pytest.skip("sin DATABASE_URL no hay Postgres contra qué comparar")
+    with psycopg.connect(dsn, autocommit=True) as p:
+        pg = p.execute(traducir("SELECT " + expr)).fetchone()[0]
+    assert pg == _sqlite_dice(expr)
+
+
+def test_el_ultimo_dia_del_mes_incluido_febrero_bisiesto():
+    """main.py:11782 borra las fotos que caen el último día del mes. Si esto se
+    tradujera mal, borraría las fotos equivocadas."""
+    for fecha, esperado in [("2026-02-05", "2026-02-28"),   # febrero normal
+                            ("2024-02-10", "2024-02-29"),   # bisiesto
+                            ("2025-12-20", "2025-12-31"),   # fin de año
+                            ("2025-07-03", "2025-07-31")]:  # mes de 31
+        expr = f"date('{fecha}','start of month','+1 month','-1 day')"
+        assert _sqlite_dice(expr) == esperado, "cambió lo que hace SQLite"
+        assert "date_trunc('month'" in traducir("SELECT " + expr)
+
+
+def test_el_modificador_que_llega_como_dato_sigue_siendo_un_parametro():
+    """main.py:23160 y billing/subscriptions.py:334 pasan el modificador como
+    dato ('-7 days', '+30 days'). No se puede resolver al traducir: tiene que
+    seguir siendo un placeholder y que Postgres lo lea como intervalo."""
+    q = traducir("SELECT date('now', ?)")
+    assert "%s" in q, q
+    assert "::interval" in q, q
+
+
+@pytest.mark.parametrize("mod", [
+    "weekday 0", "localtime", "unixepoch", "start of week", "+1 fortnight",
+])
+def test_un_modificador_desconocido_avisa_en_vez_de_adivinar(mod):
+    """LA REGLA DE ORO de esta capa. SQLite acepta muchas más formas de las que
+    traducimos. Adivinar mal una fecha no rompe nada visible: mueve un corte de
+    período y cambia un número. Preferimos que explote."""
+    with pytest.raises(NotImplementedError):
+        traducir(f"SELECT date('now', '{mod}')")
+
+
+def test_no_toca_lo_que_apenas_se_parece():
+    for q in ("SELECT * FROM t WHERE update(x, 'y')",
+              "SELECT to_char(fecha, 'YYYY')",
+              "UPDATE t SET last_date = ? WHERE id = ?"):
+        assert "to_char((" not in traducir(q), q
+
+
+def test_la_base_puede_ser_un_agregado():
+    """ai/quota.py:250 — `date(MIN(date), '+7 days')`, el "cuándo se te resetea la
+    cuota de IA". El paréntesis del MIN cortaba el match y la expresión llegaba
+    cruda a Postgres, que no tiene una función `date` de dos argumentos."""
+    q = traducir("SELECT date(MIN(date), '+7 days') FROM ai_usage_daily")
+    assert "to_char(" in q, q
+    assert "MIN(date)" in q, "se perdió el agregado"
+    assert "interval '+7 day'" in q, q
+
+
+@pytest.mark.parametrize("expr", [
+    "date('2026-08-13 17:30:00')",     # billing/subscriptions.py:333
+    "date('2026-03-09 08:00:00')",     # billing/trial.py:584
+])
+def test_date_de_un_argumento_sobre_columna_devuelve_TEXTO(expr):
+    """Postgres acepta `date(columna)` y NO rompe — por eso es peligroso: devuelve
+    un objeto fecha en vez del texto 'YYYY-MM-DD' que devolvía SQLite. En
+    ai/quota.py ese valor sale derecho al usuario."""
+    q = traducir("SELECT " + expr)
+    assert "to_char(" in q, q
+    assert "'YYYY-MM-DD'" in q, q
+    assert _sqlite_dice(expr) == "2026-08-13" or _sqlite_dice(expr) == "2026-03-09"
+
+
+def test_date_now_sin_modificador_sigue_como_estaba():
+    """No romper lo que ya andaba: `date('now')` y `datetime('now')` los traducen
+    las reglas viejas, que ya tenían test."""
+    assert traducir("SELECT date('now')") == "SELECT " + \
+        "to_char(now() at time zone 'utc', 'YYYY-MM-DD')"
+
+
+# ── MIN/MAX de dos argumentos ────────────────────────────────────────────────
+
+def test_min_max_de_dos_argumentos_pasan_a_least_greatest():
+    """En Postgres MIN/MAX son agregados de UN argumento: `MAX(0, x-1)` no existe.
+    Son los 2 sitios que rompen de entrada: el "nunca bajo cero" del contador de
+    chat (ai/quota.py:401) y el backfill de precios (price_history.py:143)."""
+    assert "GREATEST(0, chat_count - 1)" in traducir(
+        "UPDATE ai_usage_daily SET chat_count = MAX(0, chat_count - 1)")
+    assert "LEAST(price_backfill_log.desde, excluded.desde)" in traducir(
+        "INSERT INTO t VALUES (?) ON CONFLICT(symbol) DO UPDATE SET "
+        "desde=MIN(price_backfill_log.desde, excluded.desde)")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT MIN(date) FROM ai_usage_daily",              # agregado de verdad
+    "SELECT MAX(date) FROM ai_usage_daily",
+    "SELECT MIN(COALESCE(a,0)) FROM t",                  # 1 arg con coma anidada
+    "SELECT MAX(CASE WHEN x THEN a ELSE b END) FROM t",
+    "SELECT MIN(a), MAX(b) FROM t",                      # dos agregados
+    "SELECT nombre FROM t WHERE x='MIN(a, b)'",          # adentro de un texto
+])
+def test_los_agregados_de_verdad_no_se_tocan(sql):
+    """Confundir un agregado con un LEAST cambiaría el resultado de la consulta
+    sin que nadie se entere. Por eso se cuentan paréntesis y no se usa un regex."""
+    assert traducir(sql) == traducir(sql).replace("LEAST", "MIN").replace("GREATEST", "MAX")
+    assert "LEAST" not in traducir(sql) and "GREATEST" not in traducir(sql), sql

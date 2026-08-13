@@ -187,7 +187,13 @@ def ensure_tables(conn):
         );
         CREATE TABLE IF NOT EXISTS fci_prices (
             symbol     TEXT PRIMARY KEY,
-            price      REAL,
+            -- DOUBLE PRECISION y no REAL: estas dos tablas se crean acá y no en
+            -- el esquema, así que no pasan por el traductor que convierte los
+            -- tipos. En SQLite `REAL` son 8 bytes, pero en Postgres son 4 —unos
+            -- 7 dígitos significativos— y esto es una columna de PRECIOS: un vcp
+            -- como 1234567.89 se guardaría redondeado. `DOUBLE PRECISION` vale
+            -- en los dos motores y en SQLite es exactamente lo mismo que REAL.
+            price      DOUBLE PRECISION,
             moneda     TEXT,
             as_of_date TEXT,
             fetched_at TEXT
