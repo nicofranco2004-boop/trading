@@ -7567,6 +7567,265 @@ def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
         raise HTTPException(500, f"Error al crear posición: {ex}")
 
 
+class PositionGroupEditIn(BaseModel):
+    """Edición a nivel GRUPO (todos los lotes de un mismo broker+activo+moneda)."""
+    broker: str
+    asset: str                                   # el activo ACTUAL (identifica al grupo)
+    currency: Optional[str] = None               # el grupo se arma por moneda (la fila agregada también)
+    new_asset: Optional[str] = None              # renombrar el ticker
+    avg_price: Optional[float] = Field(None, gt=0)   # nuevo precio PROMEDIO ponderado
+    tc_mode: Optional[str] = None                # 'historical' | 'fixed'
+    tc_value: Optional[float] = Field(None, gt=0)
+
+
+def _group_lots(conn, uid: int, broker: str, asset: str, currency: Optional[str]):
+    """Los lotes abiertos del grupo, en el MISMO criterio que la fila agregada del
+    frontend (broker + activo + moneda). Sin la moneda, un CEDEAR con patas ARS y USD
+    se editaría junto y el promedio mezclaría monedas."""
+    sql = ("SELECT * FROM positions WHERE user_id=? AND broker=? AND asset=? AND is_cash=0")
+    args = [uid, broker, asset]
+    if currency:
+        sql += " AND UPPER(COALESCE(currency,''))=?"
+        args.append(currency.upper())
+    return conn.execute(sql + " ORDER BY entry_date, id", args).fetchall()
+
+
+def _src_tx_for_position(conn, uid: int, pid: int):
+    """La fila del import que creó ese lote, o None si se cargó a mano. Editar SOLO
+    `positions` no alcanza: el próximo import re-deriva el lote desde acá y la
+    corrección se deshace sola (el usuario ve que "no le quedó guardado")."""
+    link = conn.execute(
+        "SELECT batch_id, raw_row_id FROM import_op_links WHERE position_id=? LIMIT 1", (pid,),
+    ).fetchone()
+    if not link:
+        return None
+    return conn.execute(
+        """SELECT n.* FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=? AND n.excluded_at IS NULL""",
+        (link["batch_id"], link["raw_row_id"], uid),
+    ).fetchone()
+
+
+def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
+    """Edita TODOS los lotes de un activo de una sola vez. Reversible.
+
+    La fila agregada de Cartera es una VISTA (se calcula al vuelo), no un registro:
+    editarla = aplicar una regla a cada lote. Hay dos reglas y cada campo usa la que
+    corresponde — mezclarlas es lo que rompía el costo FIFO:
+
+      • `new_asset` → IGUALAR: el mismo ticker en todos. No hay nada que ponderar.
+      • `avg_price` → ESCALAR: cada lote se multiplica por k = nuevo/actual. El
+        promedio resultante da EXACTO el pedido (Σ(inv·k)/Σq = k·prom) y se preserva
+        la FORMA: el lote barato sigue siendo el barato. Igualar todos al promedio
+        daría bien el total pero mal cada lote, y el FIFO consume de a uno.
+      • `tc_mode` → 'historical': el TC de la FECHA de cada lote (lo mismo que hace el
+        alta manual); 'fixed': un único TC para todos. Un TC no se prorratea — no es
+        una magnitud repartible como la plata.
+
+    La cantidad NO se edita acá: repartirla exige decidir de qué lote sacar, y eso
+    cambia el FIFO y las fechas de compra. Eso sigue siendo por lote.
+    """
+    import json as _json
+    import secrets as _secrets
+
+    broker = (p.broker or "").strip()
+    asset = (p.asset or "").strip()
+    new_asset = (p.new_asset or "").strip()
+    if not broker or not asset:
+        raise HTTPException(400, "Falta el broker o el activo")
+    if p.tc_mode and p.tc_mode not in ("historical", "fixed"):
+        raise HTTPException(400, "tc_mode inválido")
+    if p.tc_mode == "fixed" and not p.tc_value:
+        raise HTTPException(400, "Falta el tipo de cambio")
+    if not new_asset and p.avg_price is None and not p.tc_mode:
+        raise HTTPException(400, "No mandaste ningún cambio")
+
+    lots = _group_lots(conn, uid, broker, asset, p.currency)
+    if not lots:
+        raise HTTPException(404, "No encontramos esa posición")
+
+    total_qty = sum(float(l["quantity"] or 0) for l in lots)
+    total_inv = sum(float(l["invested"] or 0) for l in lots)
+
+    # Snapshot ANTES de tocar nada (undo). Guardamos por id, así el undo no
+    # depende de que el grupo siga existiendo con la misma clave.
+    snap_lots, snap_src = [], []
+    for l in lots:
+        snap_lots.append({"id": l["id"], "asset": l["asset"], "buy_price": l["buy_price"],
+                          "invested": l["invested"], "tc_compra": l["tc_compra"]})
+        src = _src_tx_for_position(conn, uid, l["id"])
+        if src:
+            snap_src.append({"id": src["id"], "asset_symbol": src["asset_symbol"],
+                             "unit_price": src["unit_price"], "gross_amount": src["gross_amount"],
+                             "tc_compra": src["tc_compra"] if "tc_compra" in src.keys() else None})
+
+    # ── Precio promedio: escalado proporcional ────────────────────────
+    if p.avg_price is not None:
+        if total_qty <= 0:
+            raise HTTPException(400, "La posición no tiene cantidad para promediar")
+        if total_inv > 0:
+            k = (float(p.avg_price) * total_qty) / total_inv
+            for l in lots:
+                new_inv = float(l["invested"] or 0) * k
+                new_price = (float(l["buy_price"]) * k) if l["buy_price"] is not None else None
+                conn.execute(
+                    "UPDATE positions SET invested=?, buy_price=COALESCE(?, buy_price) "
+                    "WHERE id=? AND user_id=?", (new_inv, new_price, l["id"], uid))
+                src = _src_tx_for_position(conn, uid, l["id"])
+                if src:
+                    conn.execute(
+                        "UPDATE import_normalized_tx SET unit_price=?, gross_amount=? WHERE id=?",
+                        (float(src["unit_price"] or 0) * k if src["unit_price"] is not None else None,
+                         float(src["gross_amount"] or 0) * k if src["gross_amount"] is not None else None,
+                         src["id"]))
+        else:
+            # Todo el grupo a costo 0 (lotes semilla / transferencias): no hay
+            # proporción que preservar → el precio pedido va igual en todos.
+            for l in lots:
+                q = float(l["quantity"] or 0)
+                conn.execute(
+                    "UPDATE positions SET invested=?, buy_price=? WHERE id=? AND user_id=?",
+                    (float(p.avg_price) * q, float(p.avg_price), l["id"], uid))
+
+    # ── Tipo de cambio ────────────────────────────────────────────────
+    if p.tc_mode:
+        for l in lots:
+            if p.tc_mode == "fixed":
+                tc = float(p.tc_value)
+            else:
+                tc = _fx.fx_for_date(conn, l["entry_date"]) if l["entry_date"] else None
+                if not tc:
+                    continue     # fecha pre-serie: mejor dejar el que había que romperlo
+            conn.execute("UPDATE positions SET tc_compra=? WHERE id=? AND user_id=?",
+                         (tc, l["id"], uid))
+            src = _src_tx_for_position(conn, uid, l["id"])
+            if src:
+                conn.execute("UPDATE import_normalized_tx SET tc_compra=? WHERE id=?",
+                             (tc, src["id"]))
+
+    # ── Renombrar el activo ───────────────────────────────────────────
+    if new_asset and new_asset != asset:
+        for l in lots:
+            conn.execute("UPDATE positions SET asset=? WHERE id=? AND user_id=?",
+                         (new_asset, l["id"], uid))
+            src = _src_tx_for_position(conn, uid, l["id"])
+            if src:
+                conn.execute("UPDATE import_normalized_tx SET asset_symbol=? WHERE id=?",
+                             (new_asset, src["id"]))
+        # Las operaciones (ventas, cupones) del MISMO par van con el ticker:
+        # si no, quedan colgadas de un activo que ya no existe.
+        pair = _import_persister.broker_pair(conn, uid, broker)
+        _ph = ",".join("?" * len(pair))
+        conn.execute(
+            f"UPDATE operations SET asset=? WHERE user_id=? AND broker IN ({_ph}) AND asset=?",
+            (new_asset, uid, *pair, asset))
+
+    token = _secrets.token_hex(8)
+    conn.execute(
+        """INSERT INTO deleted_ops_journal (user_id, token, kind, payload_json, since_date, broker)
+           VALUES (?,?,?,?,?,?)""",
+        (uid, token, "position_group_edit",
+         _json.dumps({"lots": snap_lots, "src": snap_src, "asset": asset,
+                      "new_asset": new_asset or None, "broker": broker,
+                      "pair": list(_import_persister.broker_pair(conn, uid, broker))}),
+         None, broker))
+    return {"ok": True, "lots": len(lots), "undo_token": token, "asset": new_asset or asset}
+
+
+@app.patch("/api/positions/group")
+def edit_position_group(p: PositionGroupEditIn, uid: int = Depends(get_effective_user)):
+    """Editar la posición ENTERA (todos sus lotes) desde Cartera. Ver _edit_position_group."""
+    conn = get_db()
+    try:
+        with conn:      # tx atómica: o quedan todos los lotes editados, o ninguno
+            out = _edit_position_group(conn, uid, p)
+    except HTTPException:
+        conn.close()
+        raise
+    except Exception as ex:
+        conn.close()
+        log.error("edit_position_group falló uid=%s %s: %s", uid, p.asset, ex)
+        raise HTTPException(500, "No se pudo editar la posición")
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return out
+
+
+def _undo_edit_position_group(conn, uid: int, token: str) -> dict:
+    """Deshace una edición de grupo: restaura cada lote (y su fila de import) a los
+    valores que tenía, por id."""
+    import json as _json
+
+    j = conn.execute(
+        "SELECT * FROM deleted_ops_journal WHERE user_id=? AND token=? AND kind='position_group_edit'",
+        (uid, token)).fetchone()
+    if not j:
+        raise HTTPException(404, "No encontramos esa edición")
+    # CLAIM ATÓMICO: marcar undone_at ES el lock (un doble-click no restaura 2×).
+    if conn.execute(
+        "UPDATE deleted_ops_journal SET undone_at=datetime('now') "
+        "WHERE id=? AND undone_at IS NULL", (j["id"],)).rowcount != 1:
+        raise HTTPException(409, "Esa edición ya se deshizo.")
+    pl = _json.loads(j["payload_json"])
+    for l in pl.get("lots", []):
+        conn.execute(
+            "UPDATE positions SET asset=?, buy_price=?, invested=?, tc_compra=? "
+            "WHERE id=? AND user_id=?",
+            (l["asset"], l["buy_price"], l["invested"], l["tc_compra"], l["id"], uid))
+    for s in pl.get("src", []):
+        conn.execute(
+            "UPDATE import_normalized_tx SET asset_symbol=?, unit_price=?, gross_amount=?, "
+            "tc_compra=? WHERE id=?",
+            (s["asset_symbol"], s["unit_price"], s["gross_amount"], s["tc_compra"], s["id"]))
+    if pl.get("new_asset"):
+        pair = pl.get("pair") or [pl.get("broker")]
+        _ph = ",".join("?" * len(pair))
+        conn.execute(
+            f"UPDATE operations SET asset=? WHERE user_id=? AND broker IN ({_ph}) AND asset=?",
+            (pl["asset"], uid, *pair, pl["new_asset"]))
+    return {"ok": True}
+
+
+@app.post("/api/positions/group/undo/{token}")
+def undo_edit_position_group(token: str, uid: int = Depends(get_effective_user)):
+    """Deshacer del toast tras editar la posición entera."""
+    conn = get_db()
+    try:
+        with conn:
+            out = _undo_edit_position_group(conn, uid, token)
+    except HTTPException:
+        conn.close()
+        raise
+    except Exception as ex:
+        conn.close()
+        log.error("undo_edit_position_group falló uid=%s token=%s: %s", uid, token, ex)
+        raise HTTPException(500, "No se pudo deshacer")
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return out
+
+
+@app.get("/api/positions/group/context")
+def position_group_context(broker: str, asset: str, currency: Optional[str] = None,
+                           uid: int = Depends(get_effective_user)):
+    """Contexto para el modal de edición de grupo: cuántas VENTAS ya registradas tiene
+    el activo (esas conservan el resultado calculado con el costo anterior — el usuario
+    tiene que saberlo antes de tocar el promedio) y cuántos lotes vienen de un import."""
+    conn = get_db()
+    try:
+        lots = _group_lots(conn, uid, (broker or "").strip(), (asset or "").strip(), currency)
+        pair = _import_persister.broker_pair(conn, uid, (broker or "").strip())
+        _ph = ",".join("?" * len(pair))
+        sales = conn.execute(
+            f"""SELECT COUNT(*) c FROM operations WHERE user_id=? AND broker IN ({_ph})
+                 AND asset=? AND op_type='Venta'""",
+            (uid, *pair, (asset or "").strip())).fetchone()["c"]
+        imported = sum(1 for l in lots if _src_tx_for_position(conn, uid, l["id"]))
+        return {"lots": len(lots), "sales": int(sales or 0), "imported_lots": imported}
+    finally:
+        conn.close()
+
+
 @app.put("/api/positions/{pid}")
 def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_user)):
     conn = get_db()

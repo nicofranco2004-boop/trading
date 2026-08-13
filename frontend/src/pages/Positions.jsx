@@ -108,6 +108,10 @@ function PositionsDesktop() {
   const toast = useToast()
   const navigate = useNavigate()
   const [modal, setModal] = useState(null)
+  // Edición a nivel grupo: la fila agregada que se está editando + su contexto
+  // (ventas registradas / lotes importados) para los avisos del modal.
+  const [groupTarget, setGroupTarget] = useState(null)
+  const [groupCtx, setGroupCtx] = useState(null)
   // Plazos fijos: el form se abre desde el flujo de alta o el header del grupo.
   const [pfFormOpen, setPfFormOpen] = useState(false)
   const [pfReloadKey, setPfReloadKey] = useState(0)
@@ -580,6 +584,44 @@ function PositionsDesktop() {
       entry_date: p.entry_date ?? '',
     })
     setModal('edit')
+  }
+
+  // Editar la posición ENTERA (fila agregada de N lotes). Pide el contexto al backend
+  // (ventas ya registradas / lotes importados) para poder avisar ANTES de tocar nada.
+  async function openEditGroup(p) {
+    setGroupTarget(p)
+    setGroupCtx(null)
+    setModal('edit-group')
+    try {
+      const q = new URLSearchParams({ broker: p.broker, asset: p.asset })
+      if (p.currency) q.set('currency', p.currency)
+      setGroupCtx(await api.get(`/positions/group/context?${q.toString()}`))
+    } catch { /* el aviso es un extra: si falla, el modal igual funciona */ }
+  }
+
+  async function saveGroup(changes) {
+    const p = groupTarget
+    try {
+      const res = await api.patch('/positions/group', {
+        broker: p.broker, asset: p.asset, currency: p.currency || undefined, ...changes,
+      })
+      setModal(null)
+      loadAll()
+      toast.push(`Listo: ${res.lots} ${res.lots === 1 ? 'lote actualizado' : 'lotes actualizados'}.`, {
+        type: 'success', duration: 12000, actionLabel: 'Deshacer',
+        onAction: async () => {
+          try {
+            await api.post(`/positions/group/undo/${res.undo_token}`)
+            loadAll()
+            toast.push('Listo, lo dejamos como estaba.', { type: 'success' })
+          } catch (ex) {
+            toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
+          }
+        },
+      })
+    } catch (ex) {
+      toast.push(ex?.message || 'No se pudo editar la posición.', { type: 'error', duration: 8000 })
+    }
   }
 
   // Número tolerante a la coma decimal (es-AR). El campo TC Compra es un
@@ -1916,7 +1958,7 @@ function PositionsDesktop() {
                                   subtitle={`${p.asset} · ${p.broker}`}
                                 />
                               )}
-                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openBuy: openBuyForPosition, openSell, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
+                              <ActionMenu items={buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy: openBuyForPosition, openSell, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                             </div>
                           </td>
                         </tr>
@@ -2144,7 +2186,7 @@ function PositionsDesktop() {
                                 subtitle={`${p.asset} · ${p.broker}`}
                               />
                             )}
-                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openBuy: openBuyForPosition, openSell, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
+                            <ActionMenu items={buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy: openBuyForPosition, openSell, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                           </div>
                         </td>
                       </tr>
@@ -2212,7 +2254,7 @@ function PositionsDesktop() {
       {/* Zona Renta Fija: bonos/letras/FCI agrupados cross-broker, con borrado/restore por sección */}
       <RentaFijaSections positions={positions} valuePos={valuePos} brokers={brokers}
         displayCurrency={displayCurrency} tcBlue={tcBlue} onChanged={loadAll}
-        onEdit={openEdit} onDelete={del}
+        onEdit={openEdit} onDelete={del} onEditGroup={openEditGroup}
         bondCashflowsByKey={bondCashflowsByKey}
         pendingDatesByKey={pendingDatesByKey}
         openBondCashflow={openBondCashflow}
@@ -2257,6 +2299,15 @@ function PositionsDesktop() {
           onChangeAsset={modal === 'add'
             ? () => { setForm(f => ({ ...f, asset: '' })); setModal('add-flow') }
             : undefined}
+        />
+      )}
+
+      {modal === 'edit-group' && groupTarget && (
+        <EditGroupModal
+          group={groupTarget}
+          ctx={groupCtx}
+          onClose={() => setModal(null)}
+          onSave={saveGroup}
         />
       )}
 
@@ -2819,7 +2870,171 @@ function sortBrokersForDisplay(brokers) {
   return out
 }
 
-function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, openAlert, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
+// Editar la posición ENTERA (todos sus lotes). La fila agregada es una VISTA, no un
+// registro: cada campo baja a los lotes con una regla distinta, y la pantalla tiene
+// que decir cuál, porque no son intercambiables (ver el docstring del endpoint).
+export function EditGroupModal({ group, ctx, onClose, onSave }) {
+  const lots = group?._lots || []
+  const totalQty = lots.reduce((s, l) => s + (l.quantity || 0), 0)
+  const totalInv = lots.reduce((s, l) => s + (l.invested || 0), 0)
+  const avgNow = totalQty > 0 ? totalInv / totalQty : 0
+  const isARS = (group?.currency || '').toUpperCase() === 'ARS'
+
+  const [asset, setAsset] = useState(group?.asset || '')
+  const [avg, setAvg] = useState('')
+  const [tcMode, setTcMode] = useState('')          // '' | 'historical' | 'fixed'
+  const [tcValue, setTcValue] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const avgNum = avg === '' ? null : parseFloat(String(avg).replace(',', '.'))
+  const k = (avgNum && avgNow > 0) ? avgNum / avgNow : null
+  const renamed = asset && asset !== group?.asset
+  const nothing = !renamed && avgNum == null && !tcMode
+  const badAvg = avg !== '' && !(avgNum > 0)
+  const badTc = tcMode === 'fixed' && !(parseFloat(String(tcValue).replace(',', '.')) > 0)
+
+  const fmtN = n => n == null ? '—' : Number(n).toLocaleString('es-AR', { maximumFractionDigits: 2 })
+
+  return (
+    <Modal title={`Editar ${group?.asset || 'posición'} · ${lots.length} lotes`} onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-xs text-ink-3 leading-relaxed">
+          Los cambios se aplican a los <b className="text-ink-2">{lots.length} lotes</b> juntos.
+          Las cantidades y las fechas de compra no se tocan — eso sigue siendo lote por lote
+          (repartir cantidad cambiaría el orden en que se venden).
+        </p>
+
+        <div>
+          <label className="block text-xs text-ink-3 mb-1">Activo</label>
+          <TickerSearch value={asset} onChange={setAsset} currency={group?.currency} />
+          {renamed && (
+            <p className="text-[11px] text-ink-3 mt-1">
+              Se renombra en los {lots.length} lotes, en sus operaciones y en el import que
+              los creó (si no, la próxima importación lo volvería a dejar como estaba).
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-xs text-ink-3 mb-1">
+            Precio promedio {isARS ? '(ARS)' : '(USD)'} — hoy {fmtN(avgNow)}
+          </label>
+          <input
+            value={avg} onChange={e => setAvg(e.target.value)} inputMode="decimal"
+            placeholder={`Dejalo vacío para no tocarlo (${fmtN(avgNow)})`}
+            className="w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+          />
+          {k && (
+            <p className="text-[11px] text-ink-3 mt-1">
+              Se reparte proporcional: cada lote se multiplica por {k.toFixed(4)}. El lote más
+              barato sigue siendo el más barato.
+            </p>
+          )}
+        </div>
+
+        {/* Preview: sin esto el usuario acepta a ciegas un cambio sobre N lotes. */}
+        {k && (
+          <div className="rounded-md border border-line overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-ink-3">
+                <tr className="border-b border-line/60">
+                  <th className="text-left px-2 py-1.5 font-normal">Lote</th>
+                  <th className="text-right px-2 py-1.5 font-normal">Cant.</th>
+                  <th className="text-right px-2 py-1.5 font-normal">Antes</th>
+                  <th className="text-right px-2 py-1.5 font-normal">Después</th>
+                </tr>
+              </thead>
+              <tbody className="text-ink-2 tabular">
+                {lots.slice(0, 4).map(l => {
+                  const before = l.buy_price || (l.quantity ? (l.invested || 0) / l.quantity : 0)
+                  return (
+                    <tr key={l.id} className="border-b border-line/40 last:border-0">
+                      <td className="px-2 py-1.5 text-ink-3">{l.entry_date || '—'}</td>
+                      <td className="px-2 py-1.5 text-right">{fmtN(l.quantity)}</td>
+                      <td className="px-2 py-1.5 text-right">{fmtN(before)}</td>
+                      <td className="px-2 py-1.5 text-right text-ink-0">{fmtN(before * k)}</td>
+                    </tr>
+                  )
+                })}
+                {lots.length > 4 && (
+                  <tr><td colSpan={4} className="px-2 py-1.5 text-ink-3">
+                    …y {lots.length - 4} lotes más, con el mismo factor.
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {isARS && (
+          <div>
+            <label className="block text-xs text-ink-3 mb-1">Tipo de cambio de la compra</label>
+            <div className="space-y-1.5">
+              {[
+                ['', 'No tocarlo'],
+                ['historical', 'Usar el dólar de la fecha de cada lote'],
+                ['fixed', 'Poner uno solo para todos'],
+              ].map(([v, label]) => (
+                <label key={v} className="flex items-center gap-2 text-sm text-ink-1 cursor-pointer">
+                  <input type="radio" name="tcmode" checked={tcMode === v}
+                         onChange={() => setTcMode(v)} />
+                  {label}
+                </label>
+              ))}
+            </div>
+            {tcMode === 'fixed' && (
+              <input
+                value={tcValue} onChange={e => setTcValue(e.target.value)} inputMode="decimal"
+                placeholder="Ej.: 1400"
+                className="mt-2 w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+              />
+            )}
+            {tcMode === 'historical' && (
+              <p className="text-[11px] text-ink-3 mt-1">
+                Rendi ya sabe el dólar de cada día: a cada lote le pone el de SU fecha. Es lo
+                más fiel — no inventa nada.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Las ventas ya registradas conservan el resultado que se calculó con el costo
+            anterior: cambiar el costo ahora no las reescribe. Decirlo antes, no después. */}
+        {avgNum != null && ctx?.sales > 0 && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/25 rounded-md px-3 py-2">
+            Ojo: este activo ya tiene {ctx.sales} {ctx.sales === 1 ? 'venta registrada' : 'ventas registradas'}.
+            Su resultado quedó calculado con el costo anterior y no se recalcula.
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose}
+                  className="px-4 py-2 text-sm text-ink-2 hover:text-ink-0">Cancelar</button>
+          <button
+            type="button"
+            disabled={nothing || badAvg || badTc || saving}
+            onClick={async () => {
+              setSaving(true)
+              try {
+                await onSave({
+                  new_asset: renamed ? asset : undefined,
+                  avg_price: avgNum ?? undefined,
+                  tc_mode: tcMode || undefined,
+                  tc_value: tcMode === 'fixed' ? parseFloat(String(tcValue).replace(',', '.')) : undefined,
+                })
+              } finally { setSaving(false) }
+            }}
+            className="px-4 py-2 text-sm rounded-md font-semibold text-white bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {saving ? 'Guardando…' : `Aplicar a ${lots.length} lotes`}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy, openSell, openAlert, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
   // Fila AGREGADA (varios lotes del mismo ticker): editar/eliminar son POR LOTE
   // (la posición agregada es sintética, no un registro real — no hay un único id
   // que editar, y promediar rompería el costo FIFO y las fechas de compra).
@@ -2831,10 +3046,13 @@ function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, openAlert,
       { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
       { label: 'Crear alerta',    icon: <Bell size={13} />,         onClick: () => openAlert(p) },
       { divider: true },
-      // Un solo control de lotes: expande (donde se edita/elimina cada lote) y,
-      // ya desplegado, colapsa. Sin "Ver lotes" aparte (era redundante).
-      { label: expanded ? `Ocultar lotes (${lotCount})` : `Editar lotes (${lotCount})`,
-        icon: expanded ? <ChevronUp size={13} /> : <Pencil size={13} />, onClick: onToggleLots },
+      // Dos caminos distintos, y antes había uno solo: "Editar lotes" (que en
+      // realidad solo DESPLEGABA) era la única puerta, así que corregir el ticker
+      // de una posición de 17 lotes pedía 17 ediciones — y ni siquiera aparecía
+      // "Editar posición", porque la fila agregada no es un registro real.
+      { label: expanded ? `Ocultar lotes (${lotCount})` : `Ver lotes (${lotCount})`,
+        icon: expanded ? <ChevronUp size={13} /> : <LayersIcon size={13} />, onClick: onToggleLots },
+      { label: 'Editar posición', icon: <Pencil size={13} />, onClick: () => openEditGroup(p) },
     ]
   }
   if (p.is_cash) {

@@ -58,7 +58,7 @@ const shortDate = (iso) => {
 
 export default function RentaFijaSections({
   positions = [], valuePos, brokers = [], displayCurrency = 'USD', tcBlue = 1,
-  onChanged, onEdit, onDelete,
+  onChanged, onEdit, onDelete, onEditGroup,
   // v2 — plumbing del detalle (opcionales: sin ellos la card degrada con gracia)
   bondCashflowsByKey = null, pendingDatesByKey = null, openBondCashflow = null,
   tcMep = null, cerSeries = null, cerStale = false, isArsFor = null, priceFor = null,
@@ -244,7 +244,7 @@ export default function RentaFijaSections({
                 tcMep={tcMep} cerSeries={cerSeries} cerStale={cerStale}
                 expanded={!!expanded[p.id]}
                 onToggle={() => setExpanded(e => ({ ...e, [p.id]: !e[p.id] }))}
-                onEdit={onEdit} onDelete={onDelete}
+                onEdit={onEdit} onDelete={onDelete} onEditGroup={onEditGroup}
                 openBondCashflow={openBondCashflow}
               />
             ))}
@@ -278,7 +278,7 @@ export default function RentaFijaSections({
 function BondCardRow({
   p, v, lots = null, isAgg = false,
   fmtMoney, summary, pendingDates, isArs, isArsDisp, tcBlue, price, tcMep, cerSeries, cerStale,
-  expanded, onToggle, onEdit, onDelete, openBondCashflow,
+  expanded, onToggle, onEdit, onDelete, onEditGroup, openBondCashflow,
 }) {
   const meta = getBondMeta(p.asset)
   const moneyLabel = isArs ? 'ARS' : 'USD'
@@ -386,6 +386,16 @@ function BondCardRow({
                 lote adentro de la expansión. */}
             {!isAgg && onEdit && (
               <button onClick={() => onEdit(p)} title="Editar posición"
+                className="p-1.5 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition">
+                <Pencil size={13} />
+              </button>
+            )}
+            {/* Agregado: editar la posición ENTERA (activo, precio promedio, TC) en
+                un solo gesto. Antes acá NO había lápiz y corregir un fondo de 17
+                lotes pedía 17 ediciones — que es como llegó el caso que motivó esto. */}
+            {isAgg && onEditGroup && (
+              <button onClick={() => onEditGroup({ ...p, _lots: lots || [] })}
+                title={`Editar la posición entera (${lotCount} lotes)`}
                 className="p-1.5 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition">
                 <Pencil size={13} />
               </button>
