@@ -7,6 +7,11 @@ import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
 
+// Nombre de cada plan, en un solo lugar. Estaba escrito inline en tres sitios
+// del grant y ninguno contemplaba 'advisor', asi que el Plan Asesor se
+// anunciaba como Plus (en los confirms) o como Pro (en el mail al usuario).
+const PLAN_LABEL = { free: 'Free', plus: 'Plus', pro: 'Pro', advisor: 'Asesor', admin: 'Admin' }
+
 export default function Admin() {
   const { user } = useAuth()
   const [stats, setStats] = useState(null)
@@ -106,8 +111,16 @@ export default function Admin() {
   async function grantComp(u, plan) {
     setGiftPickerFor(null)
     const days = 30
-    const planLabel = plan === 'pro' ? 'Pro' : 'Plus'
-    if (!confirm(`¿Dar ${planLabel} por ${days} días a ${u.email}? Es de cortesía (gratis) y se vence solo.`)) return
+    // ⚠️ Antes: `plan === 'pro' ? 'Pro' : 'Plus'`. El Plan Asesor se sumó al
+    // picker pero no acá, así que caía en el else: al regalar ASESOR, los dos
+    // confirms y el toast decían "Plus". Nico apretó "Asesor" y leyó "Extender
+    // 30 días → Plus", que es exactamente lo que NO quería hacer, y canceló.
+    const planLabel = PLAN_LABEL[plan] || plan
+    const esAsesor = plan === 'advisor'
+    if (!confirm(
+      `¿Dar ${planLabel} por ${days} días a ${u.email}? Es de cortesía (gratis) y se vence solo.`
+      + (esAsesor ? '\n\nEl Plan Asesor REEMPLAZA el plan de usuario que tenga y le habilita Clientes.' : '')
+    )) return
     const url = `/admin/billing/grant-comp?email=${encodeURIComponent(u.email)}&plan=${plan}&days=${days}`
     try {
       let res = await api.post(url)
@@ -117,15 +130,29 @@ export default function Admin() {
         // mencionaba el cambio de plan, así que el admin lo cancelaba y el grant
         // "no hacía nada". Ahora distingue upgrade de extensión y muestra la
         // fecha resultante exacta (la calcula el backend en would_be_active_until).
-        const planNombre = p => p === 'pro' ? 'Pro' : p === 'plus' ? 'Plus' : p === 'advisor' ? 'Asesor' : (p || 'un plan')
         const cur = res.current_plan
         const hasta = (res.credit_active_until || '').slice(0, 10)
         const nuevoHasta = (res.would_be_active_until || '').slice(0, 10)
-        const msg = (cur && cur !== plan)
-          ? `${u.email} tiene ${planNombre(cur)} activo (vence ${hasta}).\n\n`
-            + `Cambiarlo a ${planLabel} AHORA y sumarle ${days} días → queda ${planLabel} hasta ${nuevoHasta}.`
-          : `${u.email} ya tiene ${planLabel} activo (vence ${hasta}).\n\n`
-            + `Extender ${days} días → ${planLabel} hasta ${nuevoHasta}.`
+        // Tres casos distintos, y antes dos se contaban como el mismo:
+        //  1. Mismo plan            → es una EXTENSIÓN.
+        //  2. Otro plan             → es un REEMPLAZO (el que tenía se va).
+        //  3. Sin plan ancla (null) → tiene tiempo activo pero NINGÚN plan
+        //     colgado: es el estado normal de quien está en prueba gratis (ver
+        //     project_free_trial). Caía en la rama 1 y afirmaba "ya tiene Plus
+        //     activo" sobre un usuario que la tabla de al lado muestra en free.
+        let msg
+        if (!cur) {
+          msg = `${u.email} tiene un período activo hasta ${hasta}, sin plan asociado`
+              + ` (típico de una prueba gratis).\n\n`
+              + `Darle ${planLabel} lo reemplaza: queda ${planLabel} hasta ${nuevoHasta}.`
+        } else if (cur !== plan) {
+          msg = `${u.email} tiene ${PLAN_LABEL[cur] || cur} activo (vence ${hasta}).\n\n`
+              + `Al darle ${planLabel}, ${PLAN_LABEL[cur] || cur} SE VA y queda ${planLabel} hasta ${nuevoHasta}.`
+        } else {
+          msg = `${u.email} ya tiene ${planLabel} activo (vence ${hasta}).\n\n`
+              + `Extender ${days} días → ${planLabel} hasta ${nuevoHasta}.`
+        }
+        if (esAsesor) msg += '\n\nAdemás le habilita Clientes y su cuenta pasa a ser el libro.'
         if (!confirm(msg)) return
         res = await api.post(url + '&force=true')
       }
