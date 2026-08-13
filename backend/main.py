@@ -3370,11 +3370,12 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
     Para reactivarlo: RENDI_RESET_DATA_ENABLED=1. El worker y el endpoint de status
     quedan intactos a propósito — lo único que cambia es esta puerta."""
     if os.environ.get("RENDI_RESET_DATA_ENABLED") != "1":
+        # OJO si se te ocurre ofrecer "lo hacemos por vos": sería ESTE MISMO código y
+        # ESTE MISMO lock. Hacerlo a mano con tráfico encima reproduce el incidente.
         raise HTTPException(503,
             "«Empezar de cero» está pausado por unos días mientras migramos la base. "
             "Lo dejamos en pausa a propósito: al borrar tanta información de una, la app "
-            "se ponía lenta para todos los usuarios a la vez. Vuelve muy pronto. Si "
-            "necesitás limpiar tu cartera ahora, escribinos y lo hacemos por vos.")
+            "se ponía lenta para todos los usuarios a la vez. Vuelve muy pronto.")
     st = _reset_estado(uid)
     if st.get("estado") == "corriendo":
         # Idempotente: dos clicks no lanzan dos borrados. Devolvemos el que corre.

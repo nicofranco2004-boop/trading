@@ -509,8 +509,7 @@ export default function Config() {
               <br /><br />
               <b className="text-amber-500">Pausado unos días.</b> Al borrar tanta información de
               una, la app se ponía lenta para todos los usuarios a la vez. Lo estamos resolviendo
-              con un cambio de base de datos y vuelve muy pronto. Si necesitás limpiar tu cartera
-              ahora, escribinos y lo hacemos por vos.
+              con un cambio de base de datos y vuelve muy pronto.
             </p>
             <div className="flex flex-col items-end gap-1">
               {/* ⛔ PAUSADO. El borrado en sí funciona (corre en segundo plano y por
