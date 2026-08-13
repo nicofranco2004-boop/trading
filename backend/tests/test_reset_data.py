@@ -85,7 +85,16 @@ class ResetDataTest(unittest.TestCase):
 
         Sin este wait los tests serían una carrera contra el thread.
         """
-        out = main.reset_my_data(uid=self.UID)
+        # El endpoint está PAUSADO en prod (503) porque el reset desbordaba la cola de
+        # escritura de SQLite y el "database is locked" le salía a TODOS los usuarios,
+        # no al que reseteaba. La MAQUINARIA sigue siendo correcta y se sigue testeando:
+        # abrimos la palanca acá para no perder la cobertura cuando se reactive.
+        # El bloqueo en sí lo cubre ResetDataPausadoTest.
+        os.environ["RENDI_RESET_DATA_ENABLED"] = "1"
+        try:
+            out = main.reset_my_data(uid=self.UID)
+        finally:
+            os.environ.pop("RENDI_RESET_DATA_ENABLED", None)
         self.assertTrue(out["ok"])
         for _ in range(200):                      # 200 × 50ms = 10s de techo
             st = main.reset_my_data_status(uid=self.UID)
@@ -190,3 +199,15 @@ class ResetDataContextTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResetDataPausadoTest(unittest.TestCase):
+    """El botón está pausado a propósito: sin la palanca, el endpoint tiene que
+    RECHAZAR. Si alguien lo reactiva sin querer, este test lo caza."""
+
+    def test_sin_la_palanca_devuelve_503(self):
+        os.environ.pop("RENDI_RESET_DATA_ENABLED", None)
+        with self.assertRaises(main.HTTPException) as cm:
+            main.reset_my_data(uid=1)
+        self.assertEqual(cm.exception.status_code, 503)
+        self.assertIn("pausado", cm.exception.detail.lower())

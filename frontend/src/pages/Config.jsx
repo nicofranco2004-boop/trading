@@ -505,18 +505,27 @@ export default function Config() {
             <p className="text-xs text-ink-3 leading-relaxed max-w-md">
               Borra <b>toda tu cartera</b> (brokers, posiciones, operaciones, imports, historial y
               snapshots) para volver a importar desde cero, sin arrastres. Tu cuenta, tu plan y las
-              credenciales de brokers <b>se conservan</b>. No se puede deshacer.
+              credenciales de brokers <b>se conservan</b>.
+              <br /><br />
+              <b className="text-amber-500">Pausado unos días.</b> Al borrar tanta información de
+              una, la app se ponía lenta para todos los usuarios a la vez. Lo estamos resolviendo
+              con un cambio de base de datos y vuelve muy pronto. Si necesitás limpiar tu cartera
+              ahora, escribinos y lo hacemos por vos.
             </p>
             <div className="flex flex-col items-end gap-1">
+              {/* ⛔ PAUSADO. El borrado en sí funciona (corre en segundo plano y por
+                  tandas), pero la base es SQLite de un solo escritor y ya recibe
+                  escrituras en cada carga de página: el reset desbordaba la cola y el
+                  "database is locked" no le salía al que reseteaba sino a TODOS. Se
+                  reactiva cuando la base deje de ser single-writer. El backend
+                  también lo bloquea (503), así que esto es solo para no ofrecerlo. */}
               <button
-                onClick={resetData}
-                disabled={resetState.loading}
-                className="inline-flex items-center gap-1.5 text-xs bg-amber-500/10 hover:bg-amber-500/15 text-amber-500 border border-amber-500/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
+                disabled
+                title="Pausado unos días mientras migramos la base"
+                className="inline-flex items-center gap-1.5 text-xs bg-bg-2 text-ink-3 border border-line px-3 py-2 rounded-sm cursor-not-allowed"
               >
                 <RotateCcw size={12} strokeWidth={1.75} />
-                {resetState.loading
-                  ? `Reseteando… ${Math.round(resetState.pct)}%`
-                  : 'Empezar de cero'}
+                Próximamente
               </button>
               {/* Barra + qué está borrando. Sin esto el botón decía "Reseteando…"
                   durante minutos y no se distinguía de un cuelgue. El % es real:

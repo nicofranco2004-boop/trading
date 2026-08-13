@@ -3355,7 +3355,26 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
     botón se quedaba en "Reseteando…" sin distinguirse de un cuelgue — que es
     exactamente lo que reportó el usuario.
 
-    El progreso se consulta en GET /api/me/reset-data/status."""
+    El progreso se consulta en GET /api/me/reset-data/status.
+
+    ⛔ DESACTIVADO (2026-08-13). No por un bug del reset: el borrado ya corre en
+    segundo plano y por tandas, con índice por batch_id y liberando el lock entre
+    tanda y tanda. El problema es de FONDO y está diagnosticado arriba, en get_db:
+    esta base es SQLite de ~933 MB con UN SOLO ESCRITOR y recibe escrituras en cada
+    carga de página (persist de precios, de news). El reset agrega la presión justa
+    para que la cola desborde, y entonces `database is locked` NO le aparece al que
+    resetea: le aparece a TODOS. Un botón que un usuario aprieta y degrada la app
+    entera no puede quedar disponible.
+
+    Se levanta solo cuando la base deje de ser single-writer (migración en curso).
+    Para reactivarlo: RENDI_RESET_DATA_ENABLED=1. El worker y el endpoint de status
+    quedan intactos a propósito — lo único que cambia es esta puerta."""
+    if os.environ.get("RENDI_RESET_DATA_ENABLED") != "1":
+        raise HTTPException(503,
+            "«Empezar de cero» está pausado por unos días mientras migramos la base. "
+            "Lo dejamos en pausa a propósito: al borrar tanta información de una, la app "
+            "se ponía lenta para todos los usuarios a la vez. Vuelve muy pronto. Si "
+            "necesitás limpiar tu cartera ahora, escribinos y lo hacemos por vos.")
     st = _reset_estado(uid)
     if st.get("estado") == "corriendo":
         # Idempotente: dos clicks no lanzan dos borrados. Devolvemos el que corre.
