@@ -227,5 +227,43 @@ class GrantCompDiasExactosTest(unittest.TestCase):
         self.assertLess(body["would_be_active_until"], antes)
 
 
+class PanelMuestraAsesorTest(unittest.TestCase):
+    """Lo que el panel MUESTRA en la columna Plan.
+
+    Nico regalo el Plan Asesor, el grant lo escribio bien... y la fila siguio
+    diciendo `free`. `_shape_admin_user_row` derivaba el plan con
+    `raw_tier in ("plus","pro")` y 'advisor' caia en el else. Parecia que el
+    regalo no se habia aplicado, cuando en la base ya era asesor.
+    """
+
+    def setUp(self):
+        self.client = TestClient(main.app)
+        self.tag = uuid.uuid4().hex[:10]
+        conn = main.get_db()
+        self.admin_uid = _mk_user(conn, f"adm3-{self.tag}@rendi.test", is_admin=1)
+        self.asesor_uid = _mk_user(conn, f"ases-{self.tag}@rendi.test", tier="advisor")
+        conn.execute("UPDATE users SET credit_active_until = ?, credit_anchor_plan = 'advisor' WHERE id = ?",
+                     ((datetime.utcnow() + timedelta(days=30)).isoformat(), self.asesor_uid))
+        conn.commit(); conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.admin_uid)}"}
+
+    def _fila(self):
+        r = self.client.get("/api/admin/users/search",
+                            params={"q": f"ases-{self.tag}@rendi.test"}, headers=self.h)
+        self.assertEqual(r.status_code, 200)
+        filas = r.json()["users"] if isinstance(r.json(), dict) else r.json()
+        self.assertEqual(len(filas), 1)
+        return filas[0]
+
+    def test_la_columna_plan_dice_advisor_no_free(self):
+        self.assertEqual(self._fila()["plan"], "advisor")
+
+    def test_no_lo_marca_como_afectado_por_el_bug_de_downgrade(self):
+        """`billing_affected` significa 'pago y le quedo el tier en free'. Un
+        asesor bien seteado no es eso; marcarlo invitaria a 'restaurarlo' y
+        pisarle el plan."""
+        self.assertFalse(self._fila()["billing_affected"])
+
+
 if __name__ == "__main__":
     unittest.main()

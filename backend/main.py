@@ -17134,7 +17134,11 @@ def _shape_admin_user_row(r, now_iso: str) -> dict:
     anchor = (d.get("credit_anchor_plan") or "").strip().lower()
     if d["is_admin"]:
         d["plan"] = "admin"
-    elif raw_tier in ("plus", "pro"):
+    elif raw_tier in ("plus", "pro", "advisor"):
+        # ⚠️ 'advisor' faltaba en esta lista: una cuenta de asesor caía en el
+        # else y el panel la mostraba en **free**. Nico regalaba el Plan Asesor,
+        # el grant lo escribía bien (users.tier='advisor') y la fila seguía
+        # diciendo free — parecía que no se había aplicado nada.
         d["plan"] = raw_tier
     else:
         d["plan"] = "free"
@@ -17558,7 +17562,12 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
             # reescriba la columna. Leer users.tier crudo mal-targetearía esa ventana.
             # Los admins ya están excluidos en el SQL → get_tier acá es plus/pro/free.
             eff = quota.get_tier(conn, d["id"])
-            eff = eff if eff in ("plus", "pro") else "free"
+            # 'advisor' va en la lista aunque no sea un segmento elegible: si no
+            # está, un ASESOR colapsa a "free" y entra en los envíos apuntados a
+            # free — que son los de upsell. Le llegaría un "pasate a Plus" a
+            # alguien que paga 4-8× un Pro. Así queda fuera de los tres
+            # segmentos, que es lo correcto: no es ninguno de ellos.
+            eff = eff if eff in ("plus", "pro", "advisor") else "free"
             if plan and eff != plan:
                 continue
             d["plan"] = eff

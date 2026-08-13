@@ -1023,14 +1023,18 @@ function PlanBadge({ plan, affected, creditActive, daysRemaining }) {
     admin: 'bg-rendi-accent/15 text-rendi-accent',
     plus: 'bg-data-violet/15 text-data-violet',
     pro: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
+    // El Asesor se distingue del resto a propósito: no es un escalón más de la
+    // escalera Free→Plus→Pro, es otro producto (multi-cliente).
+    advisor: 'bg-data-violet/25 text-data-violet ring-1 ring-data-violet/40',
     free: 'bg-bg-2 text-ink-3 dark:bg-bg-2/60',
   }
   const cls = styles[plan] || styles.free
+  const etiqueta = plan === 'advisor' ? 'asesor' : (plan || 'free')
   const showDays = creditActive && plan !== 'free' && plan !== 'admin' && daysRemaining != null
   const lowDays = showDays && daysRemaining <= 5
   return (
     <span className={`inline-flex items-center text-[12px] px-1.5 py-0.5 rounded font-semibold ${cls}`}>
-      {plan || 'free'}
+      {etiqueta}
       {showDays ? (
         <span
           className={`ml-1 normal-case font-medium ${lowDays ? 'text-amber-700 dark:text-amber-400' : 'opacity-70'}`}
