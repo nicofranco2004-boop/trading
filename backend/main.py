@@ -27681,113 +27681,149 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
             except _import_persister.PersistError as ex:
                 raise HTTPException(400, f"Error en fila {ex.row_index}: {ex.message}")
 
-            # Rebuild FIFO global: el persister es incremental (cada batch se
-            # aplica contra el estado actual), así que importar el historial en
-            # tandas FUERA de orden cronológico rompe el cost basis (una venta
-            # cuyo lote de compra todavía no se cargó usa un lote semilla al
-            # precio de venta → P&L 0 + tenencia fantasma). Esto reconstruye los
-            # lotes abiertos + ventas de cada (broker, activo) tocado replayando
-            # TODO su historial importado en orden de fecha. Idempotente para
-            # data ya ordenada; saltea (broker,activo) con ops manuales. No toca
-            # cash (order-independent). Best-effort: si falla, el batch ya está
-            # persistido — loggeamos y seguimos (el recalc de abajo corre igual).
-            try:
+
+        # ── POST-PROCESO: FUERA de la transacción, cada uno con la suya ──────
+        # Todo lo de acá abajo ya estaba envuelto en try/except con traceback: el
+        # propio código las declara "Best-effort: si falla, el batch ya está
+        # persistido". O sea que su fallo NUNCA hizo rollback — estaban dentro de
+        # la transacción sin necesitarlo, y con eso el lock de ESCRITURA de SQLite
+        # quedaba tomado durante TODO el post-proceso: rebuild FIFO de todo el
+        # historial, dos sweeps, cuatro normalizaciones, el recalc y el backfill de
+        # snapshots. Mientras un usuario importaba, NADIE en Rendi podía guardar
+        # nada (el lock es por BASE, no por usuario).
+        #
+        # Peor: `tag_bonds_from_data912` hace un FETCH DE RED con el lock tomado.
+        # Si data912 tarda, el lock dura lo que tarde la red. Es exactamente el
+        # bug que ya se arregló una vez en el cron de snapshots.
+        #
+        # Lo ATÓMICO —o entra el batch entero o no entra nada— es lo de arriba:
+        # load + dedup + borrado de salteadas + persist. Eso no se toca.
+        # Rebuild FIFO global: el persister es incremental (cada batch se
+        # aplica contra el estado actual), así que importar el historial en
+        # tandas FUERA de orden cronológico rompe el cost basis (una venta
+        # cuyo lote de compra todavía no se cargó usa un lote semilla al
+        # precio de venta → P&L 0 + tenencia fantasma). Esto reconstruye los
+        # lotes abiertos + ventas de cada (broker, activo) tocado replayando
+        # TODO su historial importado en orden de fecha. Idempotente para
+        # data ya ordenada; saltea (broker,activo) con ops manuales. No toca
+        # cash (order-independent). Best-effort: si falla, el batch ya está
+        # persistido — loggeamos y seguimos (el recalc de abajo corre igual).
+        try:
+            with conn:
                 _tc_blue_rb = _import_persister._read_tc_blue(conn, uid)
                 _import_rebuild.rebuild_fifo_after_import(
                     conn, uid, data.session_id, tc_blue=_tc_blue_rb,
                 )
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
-            # Sweep de vencimientos: las letras/LECAPs se rescatan al vencer SIN
-            # una venta explícita — el cash entra como "Renta Y Amortizacion"
-            # (→ dividendo) pero la posición quedaría como tenencia FANTASMA para
-            # siempre (ej. S31O5 12,1M unidades). Cerramos las letras cuyo
-            # vencimiento ya pasó dentro de la ventana de datos importada. No toca
-            # cash (ya entró) ni posiciones manuales. Best-effort.
-            try:
+        # Sweep de vencimientos: las letras/LECAPs se rescatan al vencer SIN
+        # una venta explícita — el cash entra como "Renta Y Amortizacion"
+        # (→ dividendo) pero la posición quedaría como tenencia FANTASMA para
+        # siempre (ej. S31O5 12,1M unidades). Cerramos las letras cuyo
+        # vencimiento ya pasó dentro de la ventana de datos importada. No toca
+        # cash (ya entró) ni posiciones manuales. Best-effort.
+        try:
+            with conn:
                 _import_maturity.sweep_matured_letras(conn, uid)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
-            # Sweep de amortizaciones: los bonos que amortizan (AL30/GD30/…)
-            # devuelven capital en cuotas; el mercado los cotiza por nominal
-            # RESIDUAL, pero Rendi guarda el nominal ORIGINAL (la amortización
-            # entra como dividendo = solo cash). Sin esto la tenencia/valuación
-            # quedan sobrevaluadas y un bono 100% amortizado sigue figurando.
-            # Baja el nominal a (comprado−vendido)×factor_residual(hoy). Idempotente,
-            # no toca cash ni posiciones manuales. Best-effort.
-            try:
+        # Sweep de amortizaciones: los bonos que amortizan (AL30/GD30/…)
+        # devuelven capital en cuotas; el mercado los cotiza por nominal
+        # RESIDUAL, pero Rendi guarda el nominal ORIGINAL (la amortización
+        # entra como dividendo = solo cash). Sin esto la tenencia/valuación
+        # quedan sobrevaluadas y un bono 100% amortizado sigue figurando.
+        # Baja el nominal a (comprado−vendido)×factor_residual(hoy). Idempotente,
+        # no toca cash ni posiciones manuales. Best-effort.
+        try:
+            with conn:
                 _import_maturity.sweep_bond_amortizations(conn, uid)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
-            # Tagear renta fija por el universo de data912 (soberanos, CER, BOPREAL,
-            # ONs): los imports que no etiquetan el tipo (IEB) dejan bonos/ONs como
-            # OTHER → no se agrupan en la zona Renta Fija. Esto los marca BOND sin
-            # lista curada. Best-effort.
-            try:
+        # Tagear renta fija por el universo de data912 (soberanos, CER, BOPREAL,
+        # ONs): los imports que no etiquetan el tipo (IEB) dejan bonos/ONs como
+        # OTHER → no se agrupan en la zona Renta Fija. Esto los marca BOND sin
+        # lista curada. Best-effort.
+        try:
+            # PRECALENTAR ANTES DE ABRIR LA TRANSACCIÓN. `_is_data912_bond` llama a
+            # `_fetch_data912_bonds()`, que es un HTTP con timeout de 8s. Con la
+            # caché fría ese fetch ocurría CON EL LOCK DE ESCRITURA TOMADO: el
+            # lock duraba lo que tardara data912 en contestar, y si contestaba
+            # lento, nadie en Rendi podía guardar nada durante esos segundos.
+            # Es el mismo bug que ya se arregló una vez en el cron de snapshots
+            # ("el cron no retiene el lock a través del fetch de red").
+            # Acá la red va primero y la transacción se abre con el dato ya en
+            # memoria, así el lock dura lo que tarda el UPDATE y nada más.
+            _fetch_data912_bonds()
+            with conn:
                 _import_recompute.tag_bonds_from_data912(conn, uid, is_bond_ticker=_is_data912_bond)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
-            # Normalización de unidad de bonos: el importador puede guardar el costo
-            # "por 100 nominales" (IEB siempre; Balanz a veces) mientras el precio
-            # actual se trae "por 1 VN" → P&L -99% fantasma. Lleva el cost basis a
-            # per-1 detectando la unidad contra el precio de mercado (no rompe lotes
-            # ya per-1). Idempotente, no toca cash. Best-effort.
-            try:
+        # Normalización de unidad de bonos: el importador puede guardar el costo
+        # "por 100 nominales" (IEB siempre; Balanz a veces) mientras el precio
+        # actual se trae "por 1 VN" → P&L -99% fantasma. Lleva el cost basis a
+        # per-1 detectando la unidad contra el precio de mercado (no rompe lotes
+        # ya per-1). Idempotente, no toca cash. Best-effort.
+        try:
+            with conn:
                 _import_recompute.normalize_bond_units(conn, uid, bond_price_per1=_bond_price_per1)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
-            # Comisiones en ARS guardadas en posiciones USD (Balanz reporta Gastos en
-            # pesos aun para trades dólar/cable) → comisión ×MEP infla el costo (P&L
-            # fantasma, ej. YM39O -84%). Las pasa a USD. Best-effort.
-            try:
+        # Comisiones en ARS guardadas en posiciones USD (Balanz reporta Gastos en
+        # pesos aun para trades dólar/cable) → comisión ×MEP infla el costo (P&L
+        # fantasma, ej. YM39O -84%). Las pasa a USD. Best-effort.
+        try:
+            with conn:
                 _import_recompute.normalize_usd_commissions(conn, uid, tc_blue=_tc_blue_rb)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
-            # Auto-recalc post-import: el persister es incremental (cada tx
-            # actualiza monthly_entries por separado vía _update_monthly_*).
-            # Si quedó drift residual de cycles previos (capital_inicio
-            # negativo, pnl_unrealized stale), corremos el recalc canónico
-            # para garantizar que los aggregates queden consistentes. Es
-            # idempotente — re-corre la SUM desde operations + import_normalized_tx.
-            # Corre DESPUÉS del rebuild para que pnl_realized refleje las
-            # operations ya corregidas.
-            try:
+        # Auto-recalc post-import: el persister es incremental (cada tx
+        # actualiza monthly_entries por separado vía _update_monthly_*).
+        # Si quedó drift residual de cycles previos (capital_inicio
+        # negativo, pnl_unrealized stale), corremos el recalc canónico
+        # para garantizar que los aggregates queden consistentes. Es
+        # idempotente — re-corre la SUM desde operations + import_normalized_tx.
+        # Corre DESPUÉS del rebuild para que pnl_realized refleje las
+        # operations ya corregidas.
+        try:
+            with conn:
                 _recalc_pnl_realized_from_ops(conn, uid)
-            except Exception:
-                # No queremos hacer fallar el confirm si el recalc rompe — el
-                # batch ya está persistido. Loggeamos pero seguimos.
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            # No queremos hacer fallar el confirm si el recalc rompe — el
+            # batch ya está persistido. Loggeamos pero seguimos.
+            import traceback
+            traceback.print_exc()
 
-            # Re-backfill de snapshots month-end: persist_batch ya los generó,
-            # pero ANTES del rebuild — con el capital_final viejo. Tras el rebuild
-            # + recalc, capital_final quedó corregido, así que lo re-corremos
-            # (UPSERT idempotente) para que el chart de evolución use el P&L bueno.
-            try:
+        # Re-backfill de snapshots month-end: persist_batch ya los generó,
+        # pero ANTES del rebuild — con el capital_final viejo. Tras el rebuild
+        # + recalc, capital_final quedó corregido, así que lo re-corremos
+        # (UPSERT idempotente) para que el chart de evolución use el P&L bueno.
+        try:
+            with conn:
                 _import_persister._backfill_snapshots_from_monthly(conn, uid)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
-            # ── FCI valuation override de la foto de tenencia (Balanz): estampamos el
-            # precio-por-cuotaparte del Resumen en positions.price_override de los FCI que
-            # Rendi NO cotiza en vivo, así muestran el valor de la foto en vez de caer a
-            # costo. VA AL FINAL: el rebuild reescribe positions con price_override=None,
-            # así que cualquier paso previo lo perdería. Gate a asset_type='FUND'; sólo lo
-            # puebla el path de Balanz (fund_price_overrides NULL en el resto → no-op).
-            try:
+        # ── FCI valuation override de la foto de tenencia (Balanz): estampamos el
+        # precio-por-cuotaparte del Resumen en positions.price_override de los FCI que
+        # Rendi NO cotiza en vivo, así muestran el valor de la foto en vez de caer a
+        # costo. VA AL FINAL: el rebuild reescribe positions con price_override=None,
+        # así que cualquier paso previo lo perdería. Gate a asset_type='FUND'; sólo lo
+        # puebla el path de Balanz (fund_price_overrides NULL en el resto → no-op).
+        try:
+            with conn:
                 _brow = conn.execute(
                     "SELECT broker, fund_price_overrides FROM import_batches WHERE id=?",
                     (data.session_id,)).fetchone()
@@ -27798,9 +27834,9 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                             "WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 "
                             "AND UPPER(asset_type)='FUND'",
                             (_o["po"], uid, _o["broker"], _o["asset"]))
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
         # ── Tipo de cambio histórico: migrar la cuenta si todavía está en v1 ──
         # VA ACÁ A PROPÓSITO: FUERA del `with conn:`, o sea con el import YA
