@@ -54,6 +54,18 @@ import pytest
 @pytest.fixture(autouse=True, scope="module")
 def _db_por_modulo():
     import main
+    # ── Modo Postgres (DATABASE_URL seteada) ─────────────────────────────────
+    # No hay archivo que reemplazar: el aislamiento por módulo se consigue
+    # vaciando el schema y recreándolo. Correr LA MISMA suite contra los dos
+    # motores es todo el punto de la migración — si acá se bifurcara la lógica
+    # de test, estaríamos comparando dos cosas distintas.
+    if getattr(main, "USANDO_PG", False):
+        import psycopg
+        with psycopg.connect(main.DATABASE_URL, autocommit=True) as c:
+            c.execute("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;")
+        main.init_db()
+        yield
+        return
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
     previo = main.DB_PATH

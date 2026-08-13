@@ -294,7 +294,22 @@ def _check_rate_limit(request: Request, max_calls: int, window_seconds: int, suf
 
 # ─── DB helpers ──────────────────────────────────────────────────────────────
 
+# ─── Interruptor SQLite ↔ Postgres ───────────────────────────────────────────
+# Con DATABASE_URL seteada, toda la app habla Postgres a través de `pgshim`, que
+# traduce el SQL de SQLite en un solo lugar. Sin la variable, nada cambia: sigue
+# siendo la SQLite de siempre.
+#
+# Es un interruptor y no una bifurcación a propósito: durante la migración hay
+# que poder correr LA MISMA suite de tests contra los dos motores y comparar. Si
+# el código se bifurca, se testean dos cosas distintas y la comparación no vale.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USANDO_PG = bool(DATABASE_URL)
+
+
 def get_db():
+    if USANDO_PG:
+        import pgshim
+        return pgshim.connect(DATABASE_URL)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     # WAL: lectores no bloquean al writer (multi-user OK)
@@ -467,7 +482,29 @@ def _derive_manual_flows(conn, uid: int, broker: str, year, month,
             max(0.0, float(withdrawals or 0) - imp_wit))
 
 
+def _init_db_postgres():
+    """Aplica el schema de Postgres (idempotente: todo va con IF NOT EXISTS)."""
+    import psycopg
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema_pg.sql")
+    ddl = open(ruta).read()
+    with psycopg.connect(DATABASE_URL, autocommit=True) as c:
+        for s in [x.strip() for x in ddl.split(";\n") if x.strip()]:
+            try:
+                c.execute(s)
+            except psycopg.errors.DuplicateObject:
+                pass          # la FK ya existía (ADD FOREIGN KEY no tiene IF NOT EXISTS)
+
+
 def init_db():
+    if USANDO_PG:
+        # En Postgres NO se replican las 46 migraciones incrementales: son la
+        # HISTORIA del schema de SQLite (crear, después ALTER, después el índice).
+        # Postgres arranca de cero y sólo necesita el RESULTADO, que está en
+        # schema_pg.sql, generado a partir del schema final real. Traducir 46
+        # migraciones sería 46 oportunidades de equivocarse para llegar al mismo
+        # lugar.
+        _init_db_postgres()
+        return
     conn = get_db()
 
     conn.executescript("""
