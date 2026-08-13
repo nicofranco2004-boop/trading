@@ -310,21 +310,29 @@ def get_db():
     conn.execute("PRAGMA temp_store=MEMORY")
     # mmap_size: 256MB de memory-mapped I/O acelera lecturas grandes.
     conn.execute("PRAGMA mmap_size=268435456")
-    # journal_size_limit: dejar que SQLite RECORTE el -wal después de cada
-    # checkpoint. Sin esto el default en Linux es -1 = no recortar nunca: el
-    # archivo sólo se reusa desde el offset 0, así que UNA transacción grande
-    # (el confirm de un import es una sola tx: parseo + persist + rebuild FIFO)
-    # deja el -wal en su tamaño máximo PARA SIEMPRE. Medido en prod: 183,59 MB
-    # de -wal con sólo ~300 frames vivos — 99% del archivo era espacio muerto
-    # ocupando volumen. Con el disco al 97%, esos 183 MB eran parte del problema.
+    # journal_size_limit: DESACTIVADO a propósito. Ver abajo.
     #
-    # 64MB no es un techo de cuánto puede CRECER —una tx grande lo pasa igual—:
-    # es a partir de cuánto se RECORTA al terminar. Medido acá con una tx de
-    # 180k inserts: sin límite el -wal pica en 82,6 MB y ahí queda clavado para
-    # siempre; con el límite pica igual en 82,6 MB y el tráfico normal posterior
-    # lo devuelve a 67,1 MB (el límite). No cambia semántica ni durabilidad:
-    # sólo autoriza a truncar el archivo después de cada checkpoint.
-    conn.execute("PRAGMA journal_size_limit=67108864")
+    # Lo puse el 12/08 para que el -wal de 183 MB se recortara solo (sin límite,
+    # el default en Linux es -1 = no recortar nunca, así que una transacción
+    # grande deja el archivo en su máximo para siempre). El ahorro de disco es
+    # real y está medido.
+    #
+    # Pero el 13/08 volvieron los `database is locked` masivos, y este PRAGMA es
+    # sospechoso: recortar el -wal exige lock EXCLUSIVO sobre el WAL, y lo pide
+    # después de CADA checkpoint. En una base tranquila no se nota; en ésta
+    # —933 MB, escrituras constantes desde caminos de lectura (persist_last_prices,
+    # persist news)— agrega bloqueo de escritores justo donde ya había cola.
+    #
+    # No está probado que sea la causa. Se saca porque es la variable MÁS NUEVA
+    # del sistema y la más barata de descartar: una línea. Si los locks siguen
+    # igual sin esto, queda descartado y el problema es la contención de
+    # escritura de fondo (que es lo que de verdad hay que resolver: hoy cada
+    # carga de página dispara escrituras contra una base de un solo escritor).
+    #
+    # Para volver a ponerlo cuando el incidente esté cerrado, medir antes con
+    # `PRAGMA wal_checkpoint(PASSIVE)` cuántos frames VIVOS hay: si son ~300 de
+    # 44.000, el archivo es espacio muerto y conviene un checkpoint(TRUNCATE)
+    # puntual en una ventana tranquila, no un recorte en cada commit.
     return conn
 
 
