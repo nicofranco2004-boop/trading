@@ -21,7 +21,7 @@ techo es estructural: con más usuarios vuelve. Postgres lo resuelve de raíz.
 
     /private/tmp/claude-501/-Users-nicolaspussetto-Documents-trading/adc4a925-dbdb-4165-a5e3-826b55c1200c/scratchpad/mainwt
 
-Rama **`spike/postgres`**, commit `49f6e90`. **NO se deploya** — es un spike.
+Rama **`spike/postgres`**, commit `e7c3f1e`. **NO se deploya** — es un spike.
 Producción va por `main` y está estable (`8f4edfe`).
 
 ⚠️ macOS purga `/private/tmp` en sesiones largas. Si el worktree no está, los
@@ -43,11 +43,11 @@ commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
 - **Audit de datos sobre PRODUCCIÓN** (`GET /api/admin/pg-type-audit`, ya deployado):
   425 columnas, 60 tablas → **LIMPIO**. No hay texto en columnas numéricas ni nulls
   donde no van. El riesgo grande de la migración está descartado con datos reales.
-- **Medición**: **88,8%** (2.525 de 2.842), commit `49f6e90`. Suite COMPLETA,
-  **y ahora el número significa algo**: cero timeouts y cero errores de
-  infraestructura (ver la sección del aislamiento). Antes de eso el porcentaje
-  no era ni reproducible — la misma suite en el mismo commit daba 77,4% en una
-  corrida y 71,9% en otra, porque dependía de qué se trababa con qué.
+- **Medición**: **95,8%** (2.716 de 2.836), commit `e7c3f1e`. Suite COMPLETA en
+  **1 minuto**, **y el número significa algo**: cero timeouts y cero errores de
+  infraestructura (ver la sección del aislamiento). Antes de arreglar eso el
+  porcentaje no era ni reproducible — la misma suite en el mismo commit daba
+  77,4% en una corrida y 71,9% en otra, según qué se trababa con qué.
 
 ## Sesión 13/08 (tarde) — hecho y medido
 
@@ -99,30 +99,34 @@ un error.**
 
 ## Lo que falta
 
-Con el aislamiento arreglado, las 317 fallas que quedan son TODAS de código: no
-hay ni un timeout ni un error de infraestructura escondido adentro. Clasificadas
-sobre la corrida real (no contando sitios a mano):
+Las 120 fallas que quedan son TODAS de código: ni un timeout ni un error de
+infraestructura escondido adentro. Clasificadas sobre la corrida real (no contando
+sitios a mano — ver más abajo por qué eso importa):
 
 | Qué | Fallas | Peso |
 |---|---|---|
-| **`INSERT OR REPLACE` → `ON CONFLICT` explícito** | **237** | **75%** |
-| `AssertionError` (diferencia de resultado a mirar una por una) | 22 | 7% |
-| `sqlite3.<X>Error` / `sqlite3.connect` → shim y `get_db()` | 17 | 5% |
-| Placeholders con nombre `:user_id` (sale como error de sintaxis) | 12 | 4% |
-| `printf()` → `format()`/concatenación | 8 | 3% |
-| Otros sueltos (`AmbiguousColumn`, constraints, `rowid`) | 21 | 6% |
+| `printf(...)` → no existe en Postgres (`format()` o concatenación) | 33 | 28% |
+| `AssertionError` — diferencias de resultado, a mirar una por una | 33 | 28% |
+| `sqlite3.<X>Error` / `sqlite3.connect` → shim y `get_db()` | 17 | 14% |
+| Placeholders con nombre `:user_id` (sale como error de sintaxis) | 12 | 10% |
+| Varios (`Connection.backup` que el shim no emula, y sueltos) | 12 | 10% |
+| `AmbiguousColumn` (`SET x = x + 1` sin calificar la tabla) | 5 | 4% |
+| `NotImplementedError` del shim que queda | 5 | 4% |
+| Constraints y una tabla de test que no existe | 3 | 2% |
 
-⚠️ **Un solo ítem es tres cuartos de lo que queda.** El doc anterior tenía
-`INSERT OR REPLACE` anotado como "9 sitios"; son 24 en el código (lo dice el
-docstring de `pgshim`) y explican 237 fallas. Es trabajo mecánico —por cada uno
-hay que leer el índice único de la tabla y escribir el `ON CONFLICT (...)` —
-pero es EL trabajo que queda. El shim levanta un error explícito en cada uno, así
-que ninguno puede pasar en silencio.
+Ya no hay un ítem dominante: el más grande es 28% y son dos empatados. Los dos
+primeros son de naturaleza distinta — `printf` es mecánico, los `AssertionError`
+son los que pueden esconder una diferencia de resultado REAL y merecen mirarse de
+a uno.
 
-⚠️ **El plan original de 80 sitios subestimaba.** Aparecieron 4 categorías que no
-estaban contadas: fechas con modificador (15), `MIN`/`MAX` de dos argumentos (2),
-placeholders con nombre (12 fallas) y fechas mal formadas (3). No es más difícil;
-es más largo. Asumir que la lista está completa es el error a evitar.
+⚠️ **CÓMO CONTAR, que es la lección que este proyecto ya dio dos veces.** El
+docstring de `pgshim` decía "INSERT OR REPLACE (24 sitios)" y el plan original
+decía 9: **ninguno de los dos era un conteo, eran estimaciones**. El número real
+era 9 de app (2 de ellos código muerto) + 56 de tests, y 17 consultas distintas
+sobre 6 tablas explicaban las 237 fallas. **Clasificá las fallas de la corrida
+real; no cuentes sitios a ojo.** Del mismo modo, el plan de "80 sitios"
+subestimaba: aparecieron fechas con modificador (15), `MIN`/`MAX` de dos
+argumentos (2), placeholders con nombre (12) y fechas mal formadas (3).
 
 ## El aislamiento de tests: ARREGLADO (`49f6e90`)
 
@@ -172,31 +176,101 @@ Resultado, comparado test por test contra la misma suite en el mismo Postgres:
 SQLite quedó idéntico (2.780/2.826, las mismas 46 preexistentes), verificado
 corriendo la suite con y sin los cambios.
 
-## Hallazgo para el punto 4 (Supabase): las conexiones no se cierran solas
+## Hallazgo para el punto 4 (Supabase): ~36 conexiones sin proteger
 
-Hay **277 `conn = get_db()` en el código de la app y ningún `with`**. Si salta una
-excepción antes del `close()`, en SQLite no pasa casi nada; en Postgres esa conexión
-queda **`idle in transaction`**, reteniendo los locks de todo lo que tocó, hasta que
-el recolector de Python la junte. Es lo mismo que colgaba los tests.
+⚠️ **Corrección de una versión anterior de este doc, que decía "277 conexiones sin
+cerrar".** Ese número era cierto pero engañoso: contaba que no hay ningún `with`, y
+`with` no es la única forma de cerrar. Medido de nuevo sobre el AST, no con grep:
 
-En local hay 100 conexiones de margen. **Supabase da bastante menos**, así que esto
-puede aparecer como "la app se traba" recién allá. No está arreglado. La forma
-prolija es que `get_db()` sea un context manager y que los 277 sitios usen `with`;
-la barata es un `try/finally`. Los relojes que puse en el conftest son de TESTS:
-en producción no hay nada equivalente puesto.
+| | sitios | |
+|---|---|---|
+| `conn = get_db()` en código de app | 277 | |
+| …que cierran con `try/finally` | **233 (84%)** | hace lo mismo que un `with`, escrito distinto |
+| …expuestos (el `close()` se saltea si salta una excepción) | 44 | |
+| …de esos, en scripts de dev/one-off | 8 | no los ve un usuario |
+| **…en código servido a usuarios (todos en `main.py`)** | **36** | esto es lo que hay que arreglar |
+
+Por qué importa igual: cuando uno de esos 36 se salta el `close()`, en SQLite casi no
+se nota; en Postgres la conexión queda **`idle in transaction`** reteniendo los locks
+de todo lo que tocó. **Es exactamente la misma traba que tiró la app el 12 y el 13/08**,
+y es el mismo mecanismo que colgaba la suite de tests.
+
+En local hay 100 conexiones de margen. **Supabase da bastante menos.** Conviene
+arreglarlo ANTES de ir a Supabase — pero es una tarea chica y acotada (36 sitios en un
+archivo), no el riesgo grande que sugería el número viejo. La forma prolija es que
+`get_db()` sea un context manager; la barata es envolver esos 36 en `try/finally`.
+
+Nota: los relojes (`lock_timeout`, `idle_in_transaction_session_timeout`) que tapan
+esto en la suite son **de TESTS**, están en `conftest.py`. En producción no hay nada
+equivalente puesto.
+
+## `INSERT OR REPLACE` → `ON CONFLICT`: HECHO (`e7c3f1e`), y lo que enseñó
+
+De 88,8% a **95,8%** (+187 tests), cero regresiones, suite de 6:21 a **1 minuto**.
+SQLite quedó idéntico (2.784/2.830, las mismas 46 preexistentes).
+
+**LA TRAMPA, para que no se pierda:** `INSERT OR REPLACE` en SQLite **no es un
+upsert** — BORRA la fila y la reinserta. Entonces (1) las columnas que la query no
+nombra se PIERDEN, y (2) se disparan los `ON DELETE CASCADE`. `ON CONFLICT DO
+UPDATE` no hace ninguna de las dos, así que convertir "obvio" cambia comportamiento
+**en las dos direcciones**.
+
+- **Cascada: no aplicaba acá**, verificado. En todo el esquema hay 6 FKs con
+  `ON DELETE CASCADE` (`brokers.parent_broker_id` y las de `import_*`), y ninguna
+  apunta a las 6 tablas tocadas.
+- **Columnas perdidas: sí aplicaba, y en UN lugar importaba.** `config`,
+  `bond_indices_daily` y `asset_last_price` nombran todas sus columnas → conversión
+  equivalente. El que cambia es `_backfill_fx_rates_if_empty` (main.py).
+
+### El bug latente que apareció: el backfill del blue borraba el MEP histórico
+
+Escribía `(date, blue_venta, source)` sobre una tabla de CINCO columnas, así que
+cada re-escritura dejaba **`mep_venta` en NULL**. Que era bug y no intención se ve
+en el mismo archivo, no en una corazonada:
+
+- `_persist_blue_for_date` la protege: `COALESCE(excluded.mep_venta, fx_rates_daily.mep_venta)`
+- el cron de `snapshots_job.py` ni la nombra
+- `_backfill_mep_rates_if_missing` sólo rellena `WHERE mep_venta IS NULL` → **un MEP
+  borrado NO se auto-cura nunca**
+
+Los otros dos escritores de esa tabla ya la cuidaban; el backfill era el único que
+la borraba. Y sin `mep_venta`, `fx.py` se cae del riel MEP al **blue en silencio**
+para todo el histórico: número equivocado, no error. Ahora **sobrevive**.
+`fetched_at` sí se sigue refrescando —eso era correcto, la fila se reescribe con
+dato recién traído— puesto explícito en el SET, porque el `DO UPDATE` si no se
+quedaría con el viejo (el cambio silencioso al revés).
+
+Tiene su test: `tests/test_fx_backfill_upsert.py`. Corre la CONSTANTE de main
+(`SQL_BACKFILL_FX_BLUE`, extraída justo para eso) y **no una copia pegada**, así que
+si alguien edita la consulta el test se entera. Verificado que **falla con el
+comportamiento viejo y pasa con el nuevo**, en los dos motores.
+
+**El guardarraíl del shim se queda puesto**: un `INSERT OR REPLACE` nuevo sigue
+siendo rechazado con `NotImplementedError`, para que pase por el mismo análisis.
+
+Dato lateral que confunde si no se sabe: 10 tests de `test_entry_price_moneda` y
+`test_orden_*` pasaron de "falla" a **xfail**. No se están tapando — son defectos
+ABIERTOS marcados `@unittest.expectedFailure` que antes ni llegaban a correr (el
+`NotImplementedError` los mataba en el `setUp`). Postgres ahora coincide EXACTO
+con SQLite en esos 12.
 
 ## Orden sugerido
 
 1. ~~Arreglar el aislamiento de tests~~ ✅ `49f6e90`.
-2. Los sitios que quedan en la tabla de arriba. **Empezá por `INSERT OR REPLACE`:
-   es 75% de lo que falta y es mecánico.**
-3. **Copiador de datos** SQLite→Postgres. Verificación obligatoria: filas por tabla
+2. ~~`INSERT OR REPLACE` → `ON CONFLICT`~~ ✅ `e7c3f1e`.
+3. Lo que queda de la tabla de arriba. `printf` y los placeholders con nombre son
+   mecánicos; **los 33 `AssertionError` son los que pueden esconder una diferencia
+   de resultado real** y hay que mirarlos de a uno.
+4. **Copiador de datos** SQLite→Postgres. Verificación obligatoria: filas por tabla
    **y** totales de plata por usuario (invertido, P&L, efectivo). Contar filas no
    detecta un número mal convertido.
-4. **Probar contra Supabase de verdad.** Todo lo medido hasta acá es Postgres local,
+5. **Los 36 `get_db()` expuestos** (ver la sección de más arriba). Va ACÁ y no
+   después: es la misma traba que tiró la app el 12 y 13/08, y Supabase da mucho
+   menos margen de conexiones que los 100 del Postgres local.
+6. **Probar contra Supabase de verdad.** Todo lo medido hasta acá es Postgres local,
    sin red de por medio. Ahí se nota lo que hace demasiadas idas y vueltas — como el
-   `_table_cols()` que en esta sesión hubo que cachear.
-5. **`.env`** con los nombres de variable y `.gitignore`. Los valores los pone el
+   `_table_cols()` que hubo que cachear.
+7. **`.env`** con los nombres de variable y `.gitignore`. Los valores los pone el
    dueño: no manejes contraseñas en texto plano.
 
 ## Decisiones ya tomadas — no las revisites sin motivo
