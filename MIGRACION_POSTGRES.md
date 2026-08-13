@@ -43,38 +43,98 @@ commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
 - **Audit de datos sobre PRODUCCIÓN** (`GET /api/admin/pg-type-audit`, ya deployado):
   425 columnas, 60 tablas → **LIMPIO**. No hay texto en columnas numéricas ni nulls
   donde no van. El riesgo grande de la migración está descartado con datos reales.
-- **Medición**: **~74%** de los ~2.740 tests pasa contra Postgres sin tocar una sola
-  query. (Ojo: la primera muestra dio 88% y bajó al avanzar; usá 74%, no 88%.)
+- **Medición**: **77,4%** (2.231 de 2.883), commit `36a2974`. Medida sobre la suite
+  COMPLETA. Los números viejos de este doc (88%, después 74%) eran muestras
+  parciales; la corrida entera daba 68,8% antes de la sesión del 13/08 a la tarde.
 
-## Lo que falta: 80 sitios de conversión manual
+## Sesión 13/08 (tarde) — hecho y medido
 
-Contados en el código. Todo lo demás lo tapa el shim.
+Commit `36a2974`. De 68,8% a 77,4% (+271 tests). **Cero regresiones en SQLite**:
+verificado corriendo la suite con y sin los cambios y comparando falla por falla —
+las mismas 46 preexistentes, ni una más.
 
-| Qué | Sitios |
-|---|---|
-| `sqlite3.<X>Error` → excepciones del shim | 21 |
-| `sqlite3.connect` → `get_db()` | 16 |
-| `PRAGMA` varios (borrar, son de SQLite) | 16 |
-| `PRAGMA table_info` → `information_schema` | 10 |
-| `INSERT OR REPLACE` → `ON CONFLICT` explícito | 9 |
-| `sqlite_master` → `information_schema` | 5 |
-| `rowid` → la clave primaria | 3 |
+- **Los 15 de `PRAGMA table_info` + `sqlite_master`: en UN lugar, no en 15.** Se
+  revisó uno por uno: ninguno de los 9 de `main.py` necesita más que el NOMBRE de la
+  columna (todos hacen `r[1]` o `c["name"]`). El único que lee el tipo es
+  `scripts/pg_type_audit.py`, que corre contra SQLite a propósito. Verificado contra
+  el esquema real: 58 tablas, 0 diferencias de columnas ni de orden.
+- **Con caché, y el caché no es opcional.** La primera versión andaba pero BAJÓ el
+  resultado (1960→1734). En SQLite preguntar las columnas es gratis; en Postgres es
+  una consulta, y `_table_cols()` se llama ~20 veces por request. Era un problema de
+  PRODUCCIÓN disfrazado de problema de tests: contra Supabase serían ~20 viajes por
+  pantalla. Se invalida con cualquier DDL — sin eso `init_db()` creería que una
+  columna ya está y se la saltearía.
+- **Fechas con modificador: 15 sitios, no 12.** `datetime('now')` ya se traducía;
+  `datetime('now','-7 days')` no. Faltaban en la cuenta a mano: `date(MIN(x),'+7
+  days')` (el paréntesis cortaba el match) y dos `date(columna)` que Postgres ACEPTA
+  pero devolviendo un objeto fecha en vez del texto `'YYYY-MM-DD'`. Probado corriendo
+  la misma expresión en las dos bases: **15 de 15 idénticos**, con bisiesto y fines
+  de mes. Lo que no sabe traducir, LEVANTA error explícito.
+- **`MIN(a,b)`/`MAX(a,b)` → `LEAST`/`GREATEST`** (2 sitios). En Postgres son
+  agregados de UN argumento: no dan otro resultado, no existen. Se cuentan paréntesis
+  y no se usa regex: confundir `MIN(COALESCE(a,0))` con dos argumentos cambiaría una
+  consulta en silencio.
+- **Fechas mal formadas** (3 sitios). SQLite daba NULL y la fila se salteaba sola;
+  Postgres corta con error. Se filtran ANTES del `CAST` con un `LIKE '____-__-__%'`
+  que se comporta igual en los dos motores. Uno de los 3 no tenía ni el filtro de
+  nulos y agrupaba por año/mes: una sola fecha rota tiraba abajo el agregado entero.
+- **FCI `price REAL` → `DOUBLE PRECISION`.** Esa tabla se crea fuera del esquema
+  (`pricing/fci.py:177`) así que no pasa por el traductor de tipos; en Postgres `REAL`
+  son 4 bytes y redondeaba los precios. En SQLite es idéntico.
 
-`INSERT OR REPLACE` y `rowid` **avisan solos**: el shim los rechaza con
-`NotImplementedError` explicando qué hacer, en vez de convertirlos mal en silencio.
+## La incógnita del plazo: RESUELTA
+
+Las `AssertionError` **no eran diferencias semánticas**. Verificado, no asumido:
+bajaron de 42 a 27 **sin tocar un solo test**, sólo arreglando los errores de fecha.
+De las 38 originales: 15 eran cascada visible, 14 ya fallaban en SQLite
+(preexistentes: parsers, clasificación de noticias, un test de threads), 9 eran
+cascada silenciosa. **No apareció ninguna diferencia semántica real.**
+
+El mecanismo de las 9 silenciosas es el que hay que tener presente: el error de
+Postgres cae adentro de un `try/except Exception` (ej. `billing/subscriptions.py`),
+se traga, y la función devuelve un default. **El usuario ve un número equivocado, no
+un error.**
+
+## Lo que falta
+
+| Qué | Sitios | Estado |
+|---|---|---|
+| `sqlite3.<X>Error` → excepciones del shim | 21 | pendiente |
+| `sqlite3.connect` → `get_db()` | 16 | pendiente |
+| `INSERT OR REPLACE` → `ON CONFLICT` explícito | 9 | pendiente (avisa solo) |
+| Placeholders con nombre `:user_id` | ~12 fallas | **NO estaba en los 80** |
+| `rowid` → la clave primaria | 3 | pendiente (avisa solo) |
+| `PRAGMA` varios | 16 | mayoría inerte: `get_db()` corta antes |
+
+⚠️ **El plan original de 80 sitios subestimaba.** Ya aparecieron 4 categorías que no
+estaban contadas: fechas con modificador (15), `MIN`/`MAX` de dos argumentos (2),
+placeholders con nombre (~12 fallas) y fechas mal formadas (3). No es más difícil;
+es más largo. Asumir que la lista está completa es el error a evitar.
+
+## Los 472 timeouts NO son de la app
+
+**Causa raíz encontrada y verificada con un experimento.** `tests/conftest.py` aísla
+cada módulo con `DROP SCHEMA public CASCADE`. Con SQLite cada módulo tenía su propio
+ARCHIVO; con Postgres los 58 comparten UNA base, y el `DROP SCHEMA` **se cuelga
+indefinidamente** si un test anterior dejó una conexión abierta. Medido: se colgó 8s
+y murió por timeout. Con `--timeout=10`, eso es exactamente un `Failed: Timeout`.
+
+Mientras esto no se arregle, **el porcentaje miente**: mezcla "código roto" con "base
+trabada". Es la brújula de todo lo demás y está desviada.
 
 ## Orden sugerido
 
-1. **Los 15 de `PRAGMA table_info` + `sqlite_master`.** Probablemente destraben
-   muchas fallas en cascada.
-2. **Re-medir** el porcentaje.
-3. **Averiguar si las `AssertionError` que quedan son cascada o semántica.** Es la
-   única incógnita que puede mover el plazo. NO lo asumas: verificalo.
-4. Los 65 sitios restantes.
-5. **Copiador de datos** SQLite→Postgres. Verificación obligatoria: filas por tabla
+1. **Arreglar el aislamiento de tests** (un esquema o una base por módulo, en vez de
+   `DROP SCHEMA` sobre una compartida). Es lo que más mueve el número de una sola vez
+   y lo que hace que las mediciones siguientes signifiquen algo.
+2. Los sitios que quedan en la tabla de arriba.
+3. **Copiador de datos** SQLite→Postgres. Verificación obligatoria: filas por tabla
    **y** totales de plata por usuario (invertido, P&L, efectivo). Contar filas no
    detecta un número mal convertido.
-6. **`.env`** con los nombres de variable y `.gitignore`. Los valores los pone el
+4. **Probar contra Supabase de verdad.** Todo lo medido hasta acá es Postgres local,
+   sin red de por medio. Ahí se nota lo que hace demasiadas idas y vueltas — como el
+   `_table_cols()` que en esta sesión hubo que cachear.
+5. **`.env`** con los nombres de variable y `.gitignore`. Los valores los pone el
    dueño: no manejes contraseñas en texto plano.
 
 ## Decisiones ya tomadas — no las revisites sin motivo
