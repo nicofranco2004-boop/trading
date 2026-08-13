@@ -80,6 +80,11 @@ from snapshots_job import (
     build_price_symbols,
     _user_tc_cedear,
     apply_last_known_prices,
+    # Usados directo por el buffer de últimos precios: `apply_last_known_prices`
+    # hace persistir+completar en un solo paso, y el buffer necesita separarlos
+    # (completar en cada request, persistir 1×/minuto).
+    persist_last_prices,
+    read_last_prices,
 )
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -6759,18 +6764,93 @@ def _prices_meta_get(symbols) -> dict:
     return out
 
 
-def _fill_last_known_prices(result: dict) -> None:
-    """Best-effort: persiste los precios reales recién obtenidos y completa los
-    símbolos en None con su ÚLTIMO precio conocido (tabla asset_last_price), en
-    vez de dejar que el frontend caiga a cost basis (lo que rompe la variación
-    diaria). Muta `result` in-place. Nunca levanta — si falla, deja todo igual."""
+# ─── Buffer de "último precio conocido" ──────────────────────────────────────
+# `/api/prices` es el endpoint más caliente del stack (Dashboard, Cartera,
+# Insights, Home, Goals y Events lo pegan en cada montaje de página) y ESCRIBÍA
+# en cada llamada. O sea: el volumen de escritura de Rendi escalaba con las
+# VISITAS, no con las operaciones de la gente. Diez personas mirando su cartera
+# generaban más escrituras que diez cargando movimientos.
+#
+# Sobre SQLite —un solo escritor para toda la base— eso es una cola que no drena:
+# es lo que se veía en el log del 13/08, con `persist_last_prices falló: database
+# is locked` mezclado con las escrituras reales de los usuarios muriendo al lado.
+#
+# Ahora los precios se acumulan en memoria y bajan a disco como MUCHO una vez por
+# minuto, en UNA sola transacción con todos los símbolos juntos. El dato no se
+# pierde ni envejece para quien lee: las lecturas consultan el buffer PRIMERO,
+# que siempre está más fresco que la tabla.
+_last_price_buf: dict = {}
+_last_price_buf_lock = threading.Lock()
+_last_price_flushed_at = 0.0
+_LAST_PRICE_FLUSH_S = 60
+
+
+def _flush_last_prices_si_toca(forzar: bool = False) -> int:
+    """Baja el buffer a disco si pasó el intervalo. Devuelve cuántos símbolos bajó.
+
+    Un solo hilo hace el trabajo: el resto ve el timestamp ya actualizado y sigue
+    de largo sin ni siquiera intentar tomar el lock de escritura.
+    """
+    global _last_price_flushed_at
+    ahora = time.time()
+    with _last_price_buf_lock:
+        if not _last_price_buf:
+            return 0
+        if not forzar and (ahora - _last_price_flushed_at) < _LAST_PRICE_FLUSH_S:
+            return 0
+        _last_price_flushed_at = ahora          # reservado ANTES de escribir:
+        pendientes = dict(_last_price_buf)      # así nadie más entra en paralelo
+        _last_price_buf.clear()
     try:
         conn = get_db()
         try:
-            apply_last_known_prices(conn, result)
-            conn.commit()
+            with conn:
+                persist_last_prices(conn, pendientes)
         finally:
             conn.close()
+        return len(pendientes)
+    except Exception:
+        # Si la bajada falla, los precios vuelven al buffer: son el fallback de
+        # valuación cuando el mercado no cotiza, perderlos degrada la cartera a
+        # cost basis. Los del buffer nuevo ganan (son más nuevos).
+        with _last_price_buf_lock:
+            for s, p in pendientes.items():
+                _last_price_buf.setdefault(s, p)
+        return 0
+
+
+def _fill_last_known_prices(result: dict) -> None:
+    """Completa los símbolos sin precio con el último conocido, y encola los
+    nuevos para persistir. Muta `result` in-place. Nunca levanta.
+
+    Sin esto el frontend cae a cost basis para lo que hoy no cotiza, y eso rompe
+    la variación diaria (muestra el precio al que compraste como si fuera el de
+    hoy). Antes esto ESCRIBÍA en cada request; ahora encola y baja 1×/minuto.
+    """
+    try:
+        buenos = {s: p for s, p in (result or {}).items() if p is not None}
+        faltan = [s for s, p in (result or {}).items() if p is None]
+
+        with _last_price_buf_lock:
+            _last_price_buf.update(buenos)
+            # El buffer es más FRESCO que la tabla: se consulta primero.
+            for s in list(faltan):
+                if s in _last_price_buf:
+                    result[s] = _last_price_buf[s]
+                    faltan.remove(s)
+
+        # Sólo vamos a la base por lo que no está ni en el resultado ni en el
+        # buffer. Es una LECTURA: en WAL no compite con los escritores.
+        if faltan:
+            conn = get_db()
+            try:
+                for s, p in read_last_prices(conn, faltan).items():
+                    if p is not None:
+                        result[s] = p
+            finally:
+                conn.close()
+
+        _flush_last_prices_si_toca()
     except Exception:
         pass
 
@@ -29041,6 +29121,18 @@ def _start_scheduler():
 def _stop_scheduler():
     if _scheduler.running:
         _scheduler.shutdown(wait=False)
+    # Bajar lo que quedó encolado en el buffer de precios. Railway redeploya
+    # seguido; sin esto, cada deploy tira hasta un minuto de últimos-precios y
+    # los activos que hoy no cotizan vuelven a valuarse a cost basis (o sea,
+    # muestran lo que pagaste como si fuera el precio de hoy) hasta que el
+    # mercado los cotice de nuevo. Es una sola transacción y es lo último que
+    # hace el proceso.
+    try:
+        n = _flush_last_prices_si_toca(forzar=True)
+        if n:
+            log.info("shutdown: bajé %d últimos-precios pendientes", n)
+    except Exception:
+        pass
 
 
 # ─── Admin endpoints ────────────────────────────────────────────────────────
