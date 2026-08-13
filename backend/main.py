@@ -6,7 +6,7 @@ from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List
-import sqlite3, os, secrets, time, hashlib, hmac, json
+import sqlite3, os, secrets, time, hashlib, hmac, json, threading
 from collections import defaultdict
 
 # ─── Cargar .env del backend antes de leer cualquier variable de entorno ────
@@ -3199,95 +3199,172 @@ _RESET_PORTFOLIO_TABLES = (
 _RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
 
 
+# ─── Progreso del reset ──────────────────────────────────────────────────────
+# El reset borra hasta un millón de filas (las tablas de import son el 93% de la
+# base). En una sola transacción eso tiene el lock de ESCRITURA de SQLite tomado
+# de punta a punta: mientras un usuario resetea, NADIE en Rendi puede guardar
+# nada. Encima el request quedaba colgado minutos y el botón sólo decía
+# "Reseteando…", indistinguible de un cuelgue.
+#
+# Ahora el borrado corre en un thread y por CHUNKS, soltando el lock entre tanda
+# y tanda para que las escrituras de los demás se cuelen. Este dict es lo que
+# mira el frontend para dibujar la barra.
+_reset_progress: dict = {}
+_reset_lock = threading.Lock()
+
+# Filas por tanda. Chico = el lock se suelta seguido (mejor para los demás) pero
+# más overhead de transacción; grande = al revés. 5000 borra ~1M de filas en
+# ~200 tandas, cada una de milisegundos.
+_RESET_CHUNK = 5000
+
+
+def _reset_estado(uid: int) -> dict:
+    with _reset_lock:
+        return dict(_reset_progress.get(uid) or {})
+
+
+def _reset_set(uid: int, **kw) -> None:
+    with _reset_lock:
+        st = _reset_progress.setdefault(uid, {})
+        st.update(kw)
+
+
+def _borrar_en_chunks(conn, uid: int, tabla: str, where: str, args: tuple) -> int:
+    """Borra en tandas, UNA TRANSACCIÓN POR TANDA.
+
+    `DELETE ... LIMIT` no está disponible en todos los builds de SQLite (pide
+    SQLITE_ENABLE_UPDATE_DELETE_LIMIT), así que acotamos por rowid, que funciona
+    siempre. Entre tanda y tanda el lock queda libre: ahí es donde entran las
+    escrituras del resto de los usuarios.
+    """
+    total = 0
+    while True:
+        with conn:
+            n = conn.execute(
+                f"DELETE FROM {tabla} WHERE rowid IN ("
+                f"  SELECT rowid FROM {tabla} WHERE {where} LIMIT {_RESET_CHUNK})",
+                args,
+            ).rowcount
+        if not n:
+            return total
+        total += n
+        _reset_set(uid, hechas=_reset_estado(uid).get("hechas", 0) + n)
+
+
+def _reset_data_worker(uid: int) -> None:
+    """Corre el borrado completo. Publica progreso en `_reset_progress`.
+
+    ATOMICIDAD: en chunks el reset ya NO es atómico — si el proceso muere a
+    mitad, la cartera queda a medio borrar. Es un intercambio deliberado y es
+    seguro por una razón concreta: el estado objetivo es "vacío", así que la
+    operación es IDEMPOTENTE Y CONVERGENTE — volver a correrla termina el
+    trabajo. Lo contrario (un lock de varios minutos que voltea la app para
+    todos) no tiene esa propiedad.
+    """
+    conn = get_db()
+    try:
+        batch_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+        _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
+
+        # Plan de trabajo + total, para que la barra sea real y no una animación.
+        plan = []
+        if batch_ids:
+            for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+                plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
+            plan.append(("import_batches", "user_id=?", (uid,)))
+        for t in _RESET_PORTFOLIO_TABLES:
+            plan.append((t, "user_id=?", (uid,)))
+
+        total = 0
+        vivas = []
+        for t, where, args in plan:
+            try:
+                total += conn.execute(f"SELECT COUNT(*) FROM {t} WHERE {where}", args).fetchone()[0]
+                vivas.append((t, where, args))
+            except sqlite3.OperationalError as ex:
+                # Tabla ausente en una DB vieja: se saltea, pero se LOGUEA — un
+                # `pass` mudo convertía un reset PARCIAL en un "ok" indistinguible.
+                log.warning("reset uid=%s: no puedo contar %s (%s)", uid, t, ex)
+        _reset_set(uid, estado="corriendo", total=total, hechas=0, tabla=None, cleared={})
+
+        cleared = {}
+        for t, where, args in vivas:
+            _reset_set(uid, tabla=t)
+            n = _run_with_lock_retry(lambda: _borrar_en_chunks(conn, uid, t, where, args))
+            if n:
+                cleared[t] = n
+
+        # Las keys de config de CARTERA (no las prefs de UX). Son 3 filas: sin chunks.
+        _kph = ",".join("?" * len(_RESET_CONFIG_KEYS))
+        with conn:
+            n = conn.execute(
+                f"DELETE FROM config WHERE user_id=? AND key IN ({_kph})",
+                (uid, *_RESET_CONFIG_KEYS)).rowcount
+        if n:
+            cleared["config"] = n
+
+        # Sin esto el chat de IA sigue respondiendo con la cartera RECIÉN BORRADA
+        # hasta 60s — justo el síntoma de "datos fantasma" que este botón elimina.
+        _ai_cache_invalidate(uid)
+        log.info("reset_my_data uid=%s cleared=%s", uid, cleared)
+        _reset_set(uid, estado="listo", cleared=cleared, tabla=None)
+    except Exception as e:
+        log.exception("reset_my_data FAILED uid=%s", uid)
+        # El mensaje tiene que decir que se puede reintentar: en chunks, lo ya
+        # borrado quedó borrado y re-correr termina el trabajo.
+        _reset_set(uid, estado="error", error=(
+            "Se cortó a mitad del borrado. Lo que ya se borró quedó borrado — "
+            "volvé a tocar 'Empezar de cero' y termina el trabajo. "
+            f"({type(e).__name__})"))
+    finally:
+        conn.close()
+
+
+@app.get("/api/me/reset-data/status")
+def reset_my_data_status(uid: int = Depends(get_effective_user)):
+    """Progreso del reset, para la barra. Sin corrida previa → 'inactivo'."""
+    st = _reset_estado(uid)
+    if not st:
+        return {"estado": "inactivo"}
+    total, hechas = st.get("total") or 0, st.get("hechas") or 0
+    return {
+        "estado": st.get("estado", "inactivo"),
+        "total": total,
+        "hechas": min(hechas, total) if total else hechas,
+        "pct": round(100.0 * min(hechas, total) / total, 1) if total else (100.0 if st.get("estado") == "listo" else 0.0),
+        "tabla": st.get("tabla"),
+        "cleared": st.get("cleared"),
+        "error": st.get("error"),
+    }
+
+
 @app.post("/api/me/reset-data")
 def reset_my_data(uid: int = Depends(get_effective_user)):
     """Empezar de cero SIN borrar la cuenta: limpia toda la cartera (posiciones,
     operaciones, imports, snapshots, mensuales, objetivos, plazos fijos, cupones,
     caches de precio, análisis de IA) y los overlays que sobreviven a un re-import
-    (tombstones de operaciones borradas, splits, fotos de tenencia — todos viven en
-    import_normalized_tx / positions, que se borran acá). CONSERVA el login, el
-    email, el plan/suscripción, las credenciales de brokers, alertas y watchlist.
+    (tombstones, splits, fotos de tenencia — viven en import_normalized_tx /
+    positions, que se borran acá). CONSERVA login, email, plan/suscripción,
+    credenciales de brokers, alertas y watchlist.
 
-    Por qué existe: borrar un broker y re-importar NO resetea del todo —varios
-    overlays sobreviven al re-import a propósito, para no pisar correcciones
-    manuales— así que si uno estaba mal, se arrastra. Antes la única salida era
-    borrar la cuenta y recrearla (perdés el login y el plan). Esto da el "como la
-    primera vez" sin ese costo. Irreversible; el frontend confirma fuerte."""
-    conn = get_db()
-    try:
-        # Reintento ante 'database is locked'. El reset es un DELETE masivo
-        # (una decena de tablas en una transacción) y compite con cualquier otra
-        # escritura; un usuario vio "OperationalError: database is locked" en
-        # pantalla. Re-correrlo es inofensivo: son DELETEs y el rollback del
-        # `with conn:` deja todo como estaba.
-        def _borrar():
-            with conn:
-                cleared = {}
-                # Hijas de import primero (por batch_id — no tienen user_id).
-                batch_ids = [r["id"] for r in conn.execute(
-                    "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
-                if batch_ids:
-                    _ph = ",".join("?" * len(batch_ids))
-                    for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                        n = conn.execute(
-                            f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids)).rowcount
-                        if n:
-                            cleared[t] = n
-                n = conn.execute("DELETE FROM import_batches WHERE user_id=?", (uid,)).rowcount
-                if n:
-                    cleared["import_batches"] = n
-                # Tablas de cartera (allowlist). Guardas: si alguna no existe en una DB
-                # vieja, seguimos (no rompe el reset por una tabla ausente).
-                for t in _RESET_PORTFOLIO_TABLES:
-                    try:
-                        n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (uid,)).rowcount
-                        if n:
-                            cleared[t] = n
-                    except sqlite3.OperationalError as ex:
-                        # 'locked' NO es "tabla ausente": es contención, y hay que
-                        # dejarla salir para que el retro de afuera reintente. Si la
-                        # tragáramos acá, un reset a medias se reportaría como OK.
-                        if "locked" in str(ex).lower():
-                            raise
-                        # Tabla ausente en una DB vieja: seguimos (no rompemos el reset
-                        # entero por una). Pero se LOGUEA: un `pass` mudo convertía un
-                        # reset PARCIAL en un "ok" indistinguible del completo.
-                        log.warning("reset_my_data uid=%s: no pude limpiar %s (%s)", uid, t, ex)
-                        cleared[f"{t}:ERROR"] = str(ex)
-                # Solo las keys de config de CARTERA (no las prefs de UX).
-                _kph = ",".join("?" * len(_RESET_CONFIG_KEYS))
-                n = conn.execute(
-                    f"DELETE FROM config WHERE user_id=? AND key IN ({_kph})",
-                    (uid, *_RESET_CONFIG_KEYS)).rowcount
-                if n:
-                    cleared["config"] = n
-            return cleared
+    ARRANCA EL TRABAJO Y VUELVE AL INSTANTE. Antes borraba todo dentro del
+    request, en UNA transacción: con las tablas de import (el 93% de la base,
+    ~1M de filas) eso son minutos con el lock de ESCRITURA de SQLite tomado, o
+    sea Rendi entero sin poder guardar nada mientras un usuario resetea. Y el
+    botón se quedaba en "Reseteando…" sin distinguirse de un cuelgue — que es
+    exactamente lo que reportó el usuario.
 
-        cleared = _run_with_lock_retry(_borrar)
-        # Caches del user: sin esto el chat de IA sigue respondiendo con la cartera
-        # RECIÉN BORRADA hasta 60s (_CHAT_VAL_CACHE) y con análisis viejos (TTL 24h).
-        # Es el mismo helper que llaman las demás mutaciones (import, borrar broker/
-        # posición) y es justo el síntoma de "datos fantasma" que este botón existe
-        # para eliminar. Es best-effort: no rompe el reset si falla.
-        _ai_cache_invalidate(uid)
-        log.info("reset_my_data uid=%s cleared=%s", uid, cleared)
-        return {"ok": True, "cleared": cleared}
-    except HTTPException:
-        raise
-    except sqlite3.OperationalError as e:
-        # "database is locked" no le dice NADA al usuario y suena a datos rotos.
-        # Es contención: otra escritura larga tiene el lock. Se reintenta y listo.
-        log.exception("reset_my_data FAILED uid=%s (sqlite)", uid)
-        if "locked" in str(e).lower():
-            raise HTTPException(status_code=503, detail=(
-                "El servidor está ocupado con otra operación y no pudimos "
-                "completar el borrado. No se borró nada — probá de nuevo en un minuto."))
-        raise HTTPException(status_code=500, detail=f"Error al resetear los datos: {type(e).__name__}: {e}")
-    except Exception as e:
-        log.exception("reset_my_data FAILED uid=%s", uid)
-        raise HTTPException(status_code=500, detail=f"Error al resetear los datos: {type(e).__name__}: {e}")
-    finally:
-        conn.close()
+    El progreso se consulta en GET /api/me/reset-data/status."""
+    st = _reset_estado(uid)
+    if st.get("estado") == "corriendo":
+        # Idempotente: dos clicks no lanzan dos borrados. Devolvemos el que corre.
+        return {"ok": True, "estado": "corriendo", "ya_corriendo": True}
+    _reset_set(uid, estado="corriendo", total=0, hechas=0, tabla=None,
+               cleared={}, error=None)
+    threading.Thread(target=_reset_data_worker, args=(uid,), daemon=True,
+                     name=f"reset-{uid}").start()
+    return {"ok": True, "estado": "corriendo"}
 
 
 @app.delete("/api/me")

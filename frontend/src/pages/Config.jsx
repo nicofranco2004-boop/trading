@@ -181,7 +181,10 @@ export default function Config() {
   const isMobile = useIsMobile()
   const [searchParams, setSearchParams] = useSearchParams()
   const [delState, setDelState] = useState({ loading: false, error: '' })
-  const [resetState, setResetState] = useState({ loading: false, error: '' })
+  // `pct`/`tabla` alimentan la barra. El reset puede tardar minutos en una cuenta
+  // con mucho import, y "Reseteando…" a secas no se distingue de un cuelgue —
+  // reporte textual del usuario: "no sé si estaría cargando o si está bugeado".
+  const [resetState, setResetState] = useState({ loading: false, error: '', pct: 0, tabla: null })
   const [brokers, setBrokers] = useState([])  // sólo para contador en "Cuenta"
   const [dolar, setDolar] = useState(null)
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
@@ -284,13 +287,34 @@ export default function Config() {
     if (!ok) return
     const ok2 = window.confirm('Última confirmación: se borra TODA tu cartera. ¿Empezar de cero?')
     if (!ok2) return
-    setResetState({ loading: true, error: '' })
+    setResetState({ loading: true, error: '', pct: 0, tabla: null })
     try {
+      // Arranca y vuelve al instante: el borrado corre en el server, por tandas.
       await api.post('/me/reset-data')
+    } catch (err) {
+      setResetState({ loading: false, error: err.message || 'No se pudo resetear los datos.', pct: 0, tabla: null })
+      return
+    }
+    // Polleo el progreso. Un fallo suelto del GET no cancela nada: el trabajo
+    // sigue del lado del server, así que reintentamos en el próximo tick en vez
+    // de mostrar un error que no es.
+    while (true) {
+      await new Promise(r => setTimeout(r, 700))
+      let st
+      try {
+        st = await api.get('/me/reset-data/status')
+      } catch { continue }
+      if (st.estado === 'corriendo') {
+        setResetState({ loading: true, error: '', pct: st.pct || 0, tabla: st.tabla })
+        continue
+      }
+      if (st.estado === 'error') {
+        setResetState({ loading: false, error: st.error || 'No se pudo resetear los datos.', pct: 0, tabla: null })
+        return
+      }
       // Recarga dura: la app vuelve a arrancar sin cartera, como una cuenta nueva.
       window.location.href = '/'
-    } catch (err) {
-      setResetState({ loading: false, error: err.message || 'No se pudo resetear los datos.' })
+      return
     }
   }
 
@@ -490,9 +514,29 @@ export default function Config() {
                 className="inline-flex items-center gap-1.5 text-xs bg-amber-500/10 hover:bg-amber-500/15 text-amber-500 border border-amber-500/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
               >
                 <RotateCcw size={12} strokeWidth={1.75} />
-                {resetState.loading ? 'Reseteando…' : 'Empezar de cero'}
+                {resetState.loading
+                  ? `Reseteando… ${Math.round(resetState.pct)}%`
+                  : 'Empezar de cero'}
               </button>
-              {resetState.error && <span className="text-[11px] text-rendi-neg">{resetState.error}</span>}
+              {/* Barra + qué está borrando. Sin esto el botón decía "Reseteando…"
+                  durante minutos y no se distinguía de un cuelgue. El % es real:
+                  sale de filas borradas sobre filas contadas al empezar. */}
+              {resetState.loading && (
+                <div className="w-52 flex flex-col gap-1" role="progressbar"
+                     aria-valuenow={Math.round(resetState.pct)} aria-valuemin={0} aria-valuemax={100}
+                     aria-label="Progreso del borrado">
+                  <div className="h-1 w-full bg-amber-500/15 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-amber-500 rounded-full transition-[width] duration-500 ease-out"
+                      style={{ width: `${Math.max(2, Math.min(100, resetState.pct))}%` }}
+                    />
+                  </div>
+                  <span className="text-[11px] text-ink-3 tabular-nums">
+                    {resetState.tabla ? `Borrando ${resetState.tabla}…` : 'Contando lo que hay que borrar…'}
+                  </span>
+                </div>
+              )}
+              {resetState.error && <span className="text-[11px] text-rendi-neg max-w-52 text-right">{resetState.error}</span>}
             </div>
           </div>
         </Panel>

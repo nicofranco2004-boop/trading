@@ -12,6 +12,7 @@ Corre con: cd backend && python3 -m pytest tests/test_reset_data.py
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -73,15 +74,36 @@ class ResetDataTest(unittest.TestCase):
         finally:
             c.close()
 
+    def _resetear(self):
+        """Dispara el reset y ESPERA a que termine, devolviendo el estado final.
+
+        El endpoint dejó de ser síncrono: borrar hasta un millón de filas en una
+        sola transacción tenía el lock de escritura tomado minutos y dejaba a
+        toda la app sin poder guardar (incidente del 13/08). Ahora arranca un
+        thread que borra por tandas y devuelve al instante; `cleared` —lo que
+        estos tests verifican— pasó a viajar en GET /api/me/reset-data/status.
+
+        Sin este wait los tests serían una carrera contra el thread.
+        """
+        out = main.reset_my_data(uid=self.UID)
+        self.assertTrue(out["ok"])
+        for _ in range(200):                      # 200 × 50ms = 10s de techo
+            st = main.reset_my_data_status(uid=self.UID)
+            if st["estado"] != "corriendo":
+                self.assertEqual(st["estado"], "listo", st.get("error"))
+                return st
+            time.sleep(0.05)
+        self.fail("el reset no terminó en 10s")
+
     def test_borra_la_cartera(self):
-        main.reset_my_data(uid=self.UID)
+        self._resetear()
         for tbl in ("brokers", "positions", "operations", "snapshots"):
             self.assertEqual(self._n(tbl), 0, f"{tbl} debería quedar vacío")
         # las 3 keys de config de CARTERA se van...
         self.assertEqual(self._n("config", "AND key IN ('fx_version','tc_blue','tc_mep')"), 0)
 
     def test_conserva_identidad_plan_y_prefs(self):
-        main.reset_my_data(uid=self.UID)
+        self._resetear()
         # el usuario sigue, con su plan
         c = main.get_db()
         tier = c.execute("SELECT tier FROM users WHERE id=?", (self.UID,)).fetchone()
@@ -98,9 +120,7 @@ class ResetDataTest(unittest.TestCase):
         self.assertEqual(self._n("config", "AND key IN ('onboarding','welcome_email_sent_at')"), 2)
 
     def test_reporta_lo_que_borro(self):
-        out = main.reset_my_data(uid=self.UID)
-        self.assertTrue(out["ok"])
-        cleared = out["cleared"]
+        cleared = self._resetear()["cleared"]
         self.assertEqual(set(cleared) & {"subscriptions", "credit_ledger",
                          "user_broker_credentials", "users", "alerts", "watchlist"}, set(),
                          "el reporte NO debe incluir ninguna tabla protegida")
@@ -108,10 +128,9 @@ class ResetDataTest(unittest.TestCase):
         self.assertEqual(cleared["config"], 3)  # solo las 3 keys de cartera
 
     def test_idempotente(self):
-        main.reset_my_data(uid=self.UID)
-        out2 = main.reset_my_data(uid=self.UID)  # segunda vez: nada que borrar
-        self.assertTrue(out2["ok"])
-        self.assertEqual(out2["cleared"], {})
+        self._resetear()
+        st2 = self._resetear()   # segunda vez: nada que borrar
+        self.assertEqual(st2["cleared"], {})
 
 
     def test_invalida_el_cache_del_chat_de_ia(self):
@@ -120,7 +139,7 @@ class ResetDataTest(unittest.TestCase):
         fantasma que este botón existe para eliminar. Las demás mutaciones ya
         llamaban a _ai_cache_invalidate; el reset se lo había olvidado."""
         main._CHAT_VAL_CACHE[self.UID] = (9e18, ["cartera vieja"], {"total": 999})
-        main.reset_my_data(uid=self.UID)
+        self._resetear()
         self.assertNotIn(self.UID, main._CHAT_VAL_CACHE,
                          "el cache de valuación del chat tiene que quedar invalidado")
 
