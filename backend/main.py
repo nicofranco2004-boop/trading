@@ -4314,13 +4314,26 @@ def _backfill_fx_rates_if_empty():
                 #    escritores de esta tabla: _persist_blue_for_date (arriba, con
                 #    COALESCE(excluded.mep_venta, fx_rates_daily.mep_venta)) y el cron
                 #    de snapshots_job.py (que ni la nombra). Este backfill era el único
-                #    que la borraba, y le pisaba el trabajo a
-                #    _backfill_mep_rates_if_missing, que sólo rellena WHERE mep_venta
-                #    IS NULL → un mep borrado no se auto-cura nunca. Sin mep, fx.py cae
-                #    del riel MEP al blue EN SILENCIO para todo el histórico (y
-                #    ledger_replay directamente no valúa la pata en pesos). Este
-                #    backfill trae BLUE, no mep: no tiene nada mejor que poner ahí,
-                #    sólo tenía con qué romper.
+                #    que la borraba, y encima trae BLUE, no mep: no tenía nada mejor
+                #    que poner ahí, sólo tenía con qué romper.
+                #
+                #    ⚠️ QUÉ TAN GRAVE ES, sin exagerar (una versión anterior de este
+                #    comentario decía dos cosas que se verificaron FALSAS):
+                #      · "un mep borrado no se auto-cura nunca" → ES FALSO.
+                #        _backfill_mep_rates_if_missing hace
+                #        `UPDATE … WHERE date=? AND mep_venta IS NULL`, y un mep
+                #        borrado queda NULL: entra en ese WHERE igual que uno que
+                #        nunca se cargó. Se re-rellena en el arranque siguiente.
+                #      · "sin mep, fx.py cae al blue" → ES FALSO. `fx.py:_lookup`
+                #        pone el `IS NOT NULL` adentro del WHERE, así que agarra el
+                #        MEP del día ANTERIOR. Para caer al blue habría que vaciar
+                #        la serie entera.
+                #    Además esta función arranca con `if cnt > 0: return`: sólo
+                #    escribe con la tabla VACÍA, donde no hay ningún mep que borrar.
+                #    Para hacer daño hace falta una carrera con el `requests.get` de
+                #    abajo, y el daño máximo es UNA fila (la de hoy).
+                #    O sea: el arreglo es correcto y vale —deja a este escritor igual
+                #    que sus dos hermanos— pero NO es un incendio de producción.
                 #
                 # 2) fetched_at SÍ se refresca (igual que antes). El REPLACE lo
                 #    reseteaba por su DEFAULT; ese comportamiento es el correcto —la
@@ -18824,7 +18837,7 @@ def _record_tool_usage(uid: int, tool_name: str) -> None:
                 """INSERT INTO ai_tool_usage(user_id, date, tool_name, count)
                    VALUES (?, ?, ?, 1)
                    ON CONFLICT(user_id, date, tool_name) DO UPDATE SET
-                     count = count + 1""",
+                     count = ai_tool_usage.count + 1""",
                 (uid, today, tool_name),
             )
             conn.commit()

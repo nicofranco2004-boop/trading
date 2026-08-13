@@ -321,8 +321,8 @@ def record_analysis(conn, user_id: int, cost_usd_cents: int = 0) -> None:
             """INSERT INTO ai_usage_daily (user_id, date, analyses_count, cost_usd_cents)
                VALUES (?, ?, 1, ?)
                ON CONFLICT(user_id, date) DO UPDATE SET
-                 analyses_count = analyses_count + 1,
-                 cost_usd_cents = cost_usd_cents + excluded.cost_usd_cents""",
+                 analyses_count = ai_usage_daily.analyses_count + 1,
+                 cost_usd_cents = ai_usage_daily.cost_usd_cents + excluded.cost_usd_cents""",
             (user_id, today, cost_usd_cents),
         )
 
@@ -334,8 +334,8 @@ def record_hub_query(conn, user_id: int, cost_usd_cents: int = 0) -> None:
             """INSERT INTO ai_usage_daily (user_id, date, hub_queries_count, cost_usd_cents)
                VALUES (?, ?, 1, ?)
                ON CONFLICT(user_id, date) DO UPDATE SET
-                 hub_queries_count = hub_queries_count + 1,
-                 cost_usd_cents = cost_usd_cents + excluded.cost_usd_cents""",
+                 hub_queries_count = ai_usage_daily.hub_queries_count + 1,
+                 cost_usd_cents = ai_usage_daily.cost_usd_cents + excluded.cost_usd_cents""",
             (user_id, today, cost_usd_cents),
         )
 
@@ -350,8 +350,8 @@ def record_chat(conn, user_id: int, cost_usd_cents: int = 0) -> None:
             """INSERT INTO ai_usage_daily (user_id, date, chat_count, cost_usd_cents)
                VALUES (?, ?, 1, ?)
                ON CONFLICT(user_id, date) DO UPDATE SET
-                 chat_count = chat_count + 1,
-                 cost_usd_cents = cost_usd_cents + excluded.cost_usd_cents""",
+                 chat_count = ai_usage_daily.chat_count + 1,
+                 cost_usd_cents = ai_usage_daily.cost_usd_cents + excluded.cost_usd_cents""",
             (user_id, today, cost_usd_cents),
         )
 
@@ -380,7 +380,7 @@ def reserve_chat(conn, user_id: int, tier_override: str = None) -> tuple[bool, d
                 WHERE (SELECT COALESCE(SUM(chat_count), 0) FROM ai_usage_daily
                         WHERE user_id = ? AND date >= ?) < ?
                ON CONFLICT(user_id, date) DO UPDATE SET
-                 chat_count = chat_count + 1
+                 chat_count = ai_usage_daily.chat_count + 1
                WHERE (SELECT COALESCE(SUM(chat_count), 0) FROM ai_usage_daily
                         WHERE user_id = ? AND date >= ?) < ?""",
             (user_id, today.isoformat(), user_id, window_start, limit,
@@ -417,7 +417,7 @@ def record_chat_cost(conn, user_id: int, cost_usd_cents: int = 0) -> None:
             """INSERT INTO ai_usage_daily (user_id, date, cost_usd_cents)
                VALUES (?, ?, ?)
                ON CONFLICT(user_id, date) DO UPDATE SET
-                 cost_usd_cents = cost_usd_cents + excluded.cost_usd_cents""",
+                 cost_usd_cents = ai_usage_daily.cost_usd_cents + excluded.cost_usd_cents""",
             (user_id, today, cost_usd_cents),
         )
 
@@ -453,7 +453,7 @@ def reserve_diag_dismiss(conn, user_id: int) -> tuple[bool, dict]:
                 WHERE (SELECT COALESCE(SUM(diag_dismiss_count), 0) FROM ai_usage_daily
                         WHERE user_id = ? AND date >= ?) < ?
                ON CONFLICT(user_id, date) DO UPDATE SET
-                 diag_dismiss_count = diag_dismiss_count + 1
+                 diag_dismiss_count = ai_usage_daily.diag_dismiss_count + 1
                WHERE (SELECT COALESCE(SUM(diag_dismiss_count), 0) FROM ai_usage_daily
                         WHERE user_id = ? AND date >= ?) < ?""",
             (user_id, today.isoformat(), user_id, window_start, limit,

@@ -7,16 +7,21 @@ tenerlo escrito porque es la clase de cosa que se revierte sin querer:
 
 `INSERT OR REPLACE` en SQLite no es un upsert: BORRA la fila y la reinserta. Como
 la query nombra sólo (date, blue_venta, source), cada vez que corría sobre una
-fecha existente dejaba `mep_venta` en NULL. Y `mep_venta` en NULL no rompe nada
-visible — hace que fx.py se caiga del riel MEP al blue EN SILENCIO para todo el
-histórico. Es un número equivocado, no un error.
+fecha existente dejaba `mep_venta` en NULL.
 
 Que el borrado era un bug y no una intención se ve en que los otros DOS escritores
 de la misma tabla ya protegen la columna:
   · `_persist_blue_for_date` (main.py) → COALESCE(excluded.mep_venta, fx_rates_daily.mep_venta)
   · el cron de snapshots_job.py        → ni la nombra
-y en que `_backfill_mep_rates_if_missing` sólo rellena `WHERE mep_venta IS NULL`:
-un MEP borrado por el backfill NO se auto-cura nunca.
+
+QUÉ TAN GRAVE ES, sin exagerar. Una versión anterior de este archivo decía que un
+mep borrado "no se auto-cura nunca" y que sin mep fx.py "cae al blue". Las dos
+cosas se verificaron FALSAS: `_backfill_mep_rates_if_missing` re-rellena por
+`WHERE mep_venta IS NULL` (un borrado queda NULL y entra igual), y `fx.py:_lookup`
+pone el `IS NOT NULL` adentro del WHERE, así que agarra el MEP del día anterior.
+Encima el backfill sólo corre con la tabla vacía. El arreglo vale igual —deja a
+este escritor igual que sus dos hermanos, y saca una forma de romper— pero es
+defensa en profundidad, no un incendio.
 
 Los tests corren la CONSTANTE de main (`SQL_BACKFILL_FX_BLUE`), no una copia
 pegada acá: si alguien edita la consulta en main.py, estos tests se enteran.

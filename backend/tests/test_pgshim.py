@@ -89,11 +89,32 @@ def test_insert_or_replace_NO_se_adivina():
     assert "ON CONFLICT" in str(e.value)
 
 
-def test_rowid_para_ruidoso():
-    """No existe en Postgres. Si pasara callado, el DELETE por tandas del reset
-    borraría cualquier cosa."""
-    with pytest.raises(NotImplementedError):
-        traducir("DELETE FROM t WHERE rowid IN (SELECT rowid FROM t LIMIT 5000)")
+def test_rowid_adentro_de_un_delete_pasa_a_ctid():
+    """El borrado por tandas del reset: `DELETE … WHERE rowid IN (SELECT rowid …
+    LIMIT n)`, que existe porque `DELETE … LIMIT` no está en todos los builds de
+    SQLite.
+
+    `ctid` es la posición FÍSICA de la fila en Postgres y CAMBIA cuando la fila se
+    actualiza o pasa un VACUUM — por eso no es un reemplazo general del rowid.
+    Pero adentro de UNA sentencia el valor no se escapa: se lee y se usa en el
+    mismo statement, sin ventana para que la fila se mueva. Verificado contra
+    Postgres: sobre 10 filas, dos tandas de LIMIT 4 borran 4 y 4.
+    """
+    out = traducir("DELETE FROM t WHERE rowid IN (SELECT rowid FROM t WHERE u=? LIMIT 5000)")
+    assert "ctid" in out and "rowid" not in out
+    assert "LIMIT 5000" in out
+
+
+def test_rowid_fuera_de_un_delete_sigue_ruidoso():
+    """LA GARANTÍA QUE NO SE NEGOCIA. Afuera del DELETE el valor SÍ sobrevive a la
+    sentencia —alguien se lo guarda y lo usa después— y ahí el ctid ya puede
+    apuntar a otra fila. Si eso pasara callado, un UPDATE o un DELETE posterior
+    tocaría cualquier cosa. Se rechaza."""
+    for sql in ("SELECT rowid FROM t WHERE u=?",
+                "UPDATE t SET x=1 WHERE rowid=?",
+                "INSERT INTO t (a) SELECT rowid FROM u"):
+        with pytest.raises(NotImplementedError):
+            traducir(sql)
 
 
 # ── Parámetros ───────────────────────────────────────────────────────────────

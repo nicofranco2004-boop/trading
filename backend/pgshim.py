@@ -30,6 +30,19 @@ Lo que traduce:
                                             comparaciones de string del código
                                             dejarían de funcionar en silencio)
   IFNULL               → COALESCE
+  MIN(a,b) / MAX(a,b)  → LEAST / GREATEST  (en Postgres son agregados de UN
+                                            argumento: no dan otro resultado, no
+                                            existen)
+  printf('%04d-%02d',…)→ lpad(…) || '-' || lpad(…)   (sólo enteros con ceros
+                                            adelante; cualquier otro formato
+                                            LEVANTA error)
+  round(x, n)          → round(x::numeric, n)::double precision   (la de dos
+                                            argumentos en Postgres es sólo para
+                                            numeric; el casteo de VUELTA a double
+                                            no es cosmético: si no, vuelve un
+                                            Decimal y `Decimal + float` es un
+                                            TypeError lejos de donde se originó)
+  rowid, en un DELETE  → ctid    (ver abajo)
   True/False en params → 1/0     (las columnas 0/1 quedaron smallint a propósito;
                                   psycopg mandaría boolean y Postgres lo rechaza)
 
@@ -44,8 +57,18 @@ Lo que NO traduce, a propósito:
     este docstring era una estimación, nunca un conteo).
     ESTE GUARDARRAÍL SE QUEDA PUESTO: si alguien escribe un INSERT OR REPLACE
     nuevo mañana, tiene que pasar por el mismo análisis y no colarse traducido.
-  · rowid (3 sitios). No existe en Postgres. Se cambian por la PK.
-  Ambos se detectan y LEVANTAN un error claro en vez de fallar raro.
+  · rowid FUERA de un DELETE. Adentro de un DELETE se traduce solo a `ctid` (el
+    valor no sale de la sentencia, así que la inestabilidad del ctid no importa).
+    Afuera el valor SÍ sobrevive y el ctid puede pasar a apuntar a otra fila, así
+    que se rechaza: usá la clave primaria.
+  · Referencias PELADAS adentro de `ON CONFLICT … DO UPDATE SET`
+    (`count = count + 1`, `COALESCE(excluded.x, x)`). Ahí hay DOS filas a la
+    vista, la de la tabla y `excluded`. SQLite elige la de la tabla; Postgres
+    corta con "column reference is ambiguous". No se traduce sola porque
+    calificar mal un contador lo cambia sin avisar — y estos sitios suelen estar
+    adentro de un try/except que se traga el error: en Postgres no sale como
+    error, sale como "la alerta no se mandó" o "el contador no subió".
+  Todos se detectan y LEVANTAN un error claro en vez de fallar raro.
 """
 import re
 
@@ -180,6 +203,188 @@ def _traducir_fecha(m: re.Match) -> str:
     if fn == "date":
         expr = f"({expr})::date"
     return f"to_char({expr}, '{fmt}')"
+# ── Referencias ambiguas adentro de ON CONFLICT … DO UPDATE SET ──────────────
+# LA CATEGORÍA MÁS CALLADA DESPUÉS DE LAS FECHAS. Adentro de un DO UPDATE SET hay
+# DOS filas a la vista: la que ya estaba en la tabla y la que se quiso insertar
+# (`excluded`). SQLite resuelve una referencia pelada como "la de la tabla".
+# Postgres la RECHAZA:  column reference "x" is ambiguous.
+#
+#   armed=excluded.armed, last_fired_date=COALESCE(excluded.last_fired_date,
+#                                                  last_fired_date)   ← ésta
+#   count = count + 1                                                 ← y ésta
+#
+# Por qué se detecta acá y no se traduce sola: la traducción correcta sería
+# calificar con el nombre de la tabla, y eso exige saber CUÁL es la tabla y qué
+# columnas tiene. Se puede, pero el patrón `x = x + 1` es justo donde un error
+# de calificación cambia un contador sin avisar. Se levanta un error explícito y
+# se convierte a mano, igual que INSERT OR REPLACE.
+#
+# Por qué importa más de lo que parece: los sitios que la usan suelen estar
+# adentro de un `try/except Exception` que loguea y sigue (advisor_alerts.py:304,
+# main.py:18830). En Postgres eso NO sale como error — sale como "la alerta no se
+# mandó" o "el contador no subió". Número equivocado, no pantalla de error.
+_RE_DO_UPDATE_SET = re.compile(
+    r"\bDO\s+UPDATE\s+SET\b(.*?)(?=\bWHERE\b|\bRETURNING\b|$)", re.I | re.S)
+_RE_SET_TARGET = re.compile(r"(?:^|,)\s*\"?(\w+)\"?\s*=", re.I)
+_RE_EXCLUDED_COL = re.compile(r"\bexcluded\s*\.\s*\"?(\w+)\"?", re.I)
+_RE_CALIFICADA = re.compile(r"\b\w+\s*\.\s*\w+")
+# Un identificador NO precedido por punto y NO seguido de `(` (eso sería función).
+_RE_IDENT_PELADO = re.compile(r"(?<![\w.\"])([A-Za-z_]\w*)(?!\s*\()")
+_PALABRAS_SQL = {
+    "excluded", "null", "true", "false", "and", "or", "not", "case", "when",
+    "then", "else", "end", "is", "in", "like", "between", "interval", "default",
+    "cast", "as", "distinct", "current_schema", "current_date", "current_timestamp",
+}
+
+
+def _columnas_ambiguas(sql: str) -> list:
+    """Columnas peladas del lado derecho de un DO UPDATE SET.
+
+    Conservador a propósito: sólo marca identificadores que YA sabemos que son
+    columnas de la tabla, porque aparecen como destino del SET o como
+    `excluded.<col>` en la misma sentencia. Un nombre que no cumpla eso se deja
+    pasar: preferimos que se escape uno raro a romper una query que hoy anda.
+    """
+    encontradas = []
+    for m in _RE_DO_UPDATE_SET.finditer(sql):
+        cuerpo = m.group(1)
+        conocidas = {c.lower() for c in _RE_SET_TARGET.findall(cuerpo)}
+        conocidas |= {c.lower() for c in _RE_EXCLUDED_COL.findall(cuerpo)}
+        if not conocidas:
+            continue
+        for asignacion in re.split(r",(?![^()]*\))", cuerpo):
+            if "=" not in asignacion:
+                continue
+            derecha = asignacion.split("=", 1)[1]
+            derecha = _RE_CALIFICADA.sub(" ", derecha)   # las calificadas están bien
+            for ident in _RE_IDENT_PELADO.findall(derecha):
+                if ident.lower() in _PALABRAS_SQL:
+                    continue
+                if ident.lower() in conocidas:
+                    encontradas.append(ident)
+    return encontradas
+
+
+# ── printf('%04d-%02d', year, month) → lpad(...) || '-' || lpad(...) ─────────
+# SQLite tiene `printf`; Postgres tiene `format`, pero con OTRA sintaxis (`%s`,
+# sin ancho ni relleno). Los 2 sitios que existen hacen lo mismo: pegar año y mes
+# con ceros adelante para armar un 'YYYY-MM' comparable como texto — que es como
+# el código compara fechas en todos lados.
+#
+# Se traducen SÓLO los formatos de enteros con relleno de ceros (`%0Nd`) y texto
+# literal. Cualquier otro especificador LEVANTA error: printf acepta un montón de
+# formas y traducirlas a ojo es exactamente como se cambia un número sin que nadie
+# se entere.
+_RE_PRINTF = re.compile(r"\bprintf\s*\(\s*'([^']*)'\s*,\s*", re.I)
+_RE_FMT_TROZO = re.compile(r"%0(\d+)d|%(.)")
+
+
+def _traducir_printf(sql: str) -> str:
+    while True:
+        m = _RE_PRINTF.search(sql)
+        if not m:
+            return sql
+        # los argumentos, contando paréntesis (puede haber funciones adentro)
+        i, prof, arg, args = m.end(), 1, [], []
+        while i < len(sql) and prof:
+            ch = sql[i]
+            if ch == "(":
+                prof += 1
+            elif ch == ")":
+                prof -= 1
+                if not prof:
+                    break
+            if ch == "," and prof == 1:
+                args.append("".join(arg).strip())
+                arg = []
+            else:
+                arg.append(ch)
+            i += 1
+        args.append("".join(arg).strip())
+
+        fmt, partes, usados = m.group(1), [], 0
+        pos = 0
+        for f in _RE_FMT_TROZO.finditer(fmt):
+            if f.start() > pos:
+                partes.append("'" + fmt[pos:f.start()].replace("'", "''") + "'")
+            if f.group(1) is None:
+                raise NotImplementedError(
+                    f"printf con el formato '%{f.group(2)}' no se traduce solo. "
+                    "Sólo están soportados los enteros con ceros adelante (%04d) y "
+                    "el texto literal. Agregalo a _traducir_printf con su test.\n  "
+                    + " ".join(sql.split())[:160])
+            if usados >= len(args):
+                raise NotImplementedError(
+                    "printf con menos argumentos que especificadores.\n  "
+                    + " ".join(sql.split())[:160])
+            partes.append(f"lpad(({args[usados]})::text, {int(f.group(1))}, '0')")
+            usados += 1
+            pos = f.end()
+        if pos < len(fmt):
+            partes.append("'" + fmt[pos:].replace("'", "''") + "'")
+        sql = sql[:m.start()] + "(" + " || ".join(partes) + ")" + sql[i + 1:]
+
+
+# ── round(x, n) ──────────────────────────────────────────────────────────────
+# En SQLite `round` toma dos argumentos sobre cualquier número. En Postgres la
+# versión de dos argumentos existe SÓLO para `numeric`: con una columna
+# `double precision` corta con "function round(double precision, integer) does
+# not exist".
+#
+# Se castea a numeric para redondear Y SE VUELVE A double precision. Ese segundo
+# casteo no es cosmético: sin él la columna vuelve como `Decimal` de Python, y
+# `Decimal + float` no es un número raro — es un TypeError que revienta lejos del
+# lugar donde se originó. SQLite devuelve float, así que volver a float es lo que
+# mantiene las dos bases dando lo mismo.
+#
+# El de UN argumento no se toca: `round(x)` existe igual en los dos.
+_RE_ROUND = re.compile(r"\bround\s*\(", re.I)
+
+
+def _traducir_round(sql: str) -> str:
+    if not _RE_ROUND.search(sql):
+        return sql
+    marca = _posiciones_en_string(sql)
+    salida, i = [], 0
+    while True:
+        m = _RE_ROUND.search(sql, i)
+        if not m:
+            salida.append(sql[i:])
+            break
+        if marca[m.start()]:                     # adentro de un texto: no se toca
+            salida.append(sql[i:m.end()])
+            i = m.end()
+            continue
+        # argumentos, contando paréntesis
+        j, prof, args, arg, en_str = m.end(), 1, [], [], False
+        while j < len(sql) and prof:
+            ch = sql[j]
+            if en_str:
+                en_str = ch != "'"
+            elif ch == "'":
+                en_str = True
+            elif ch == "(":
+                prof += 1
+            elif ch == ")":
+                prof -= 1
+                if not prof:
+                    break
+            if ch == "," and prof == 1 and not en_str:
+                args.append("".join(arg).strip())
+                arg = []
+            else:
+                arg.append(ch)
+            j += 1
+        args.append("".join(arg).strip())
+        salida.append(sql[i:m.start()])
+        if len(args) == 2:
+            salida.append(f"(round(({args[0]})::numeric, {args[1]})::double precision)")
+        else:
+            salida.append(sql[m.start():j + 1])   # un solo argumento: igual en ambos
+        i = j + 1
+    return "".join(salida)
+
+
 _RE_INSERT_IGNORE = re.compile(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", re.I)
 _RE_INSERT_REPLACE = re.compile(r"\bINSERT\s+OR\s+REPLACE\s+INTO\b", re.I)
 _RE_ROWID = re.compile(r"\browid\b", re.I)
@@ -339,8 +544,42 @@ def traducir(sql: str) -> str:
             "hay conflicto (ON CONFLICT (...) DO UPDATE). Convertí esta query a "
             "mano.\n  " + " ".join(sql.split())[:160])
     if _RE_ROWID.search(sql):
+        # ── `rowid` adentro de UN DELETE → `ctid` ────────────────────────────
+        # Postgres tiene `ctid`, que es la posición física de la fila. NO es lo
+        # mismo que el rowid de SQLite: el rowid es estable y el ctid CAMBIA
+        # cuando la fila se actualiza o pasa un VACUUM. Guardarse un ctid para
+        # usarlo después es un bug esperando.
+        #
+        # Pero adentro de UNA SOLA sentencia DELETE el ctid no se escapa a
+        # ningún lado: se lee y se usa en el mismo statement, sin ventana para
+        # que la fila se mueva. Ahí sí es el equivalente exacto, y es el patrón
+        # del borrado por tandas de main.py:
+        #     DELETE FROM t WHERE rowid IN (SELECT rowid FROM t WHERE … LIMIT n)
+        # que existe porque `DELETE … LIMIT` no está en todos los builds de
+        # SQLite.
+        #
+        # Cualquier OTRO uso —un SELECT que devuelve el rowid, un UPDATE que lo
+        # compara contra uno guardado— sigue RECHAZADO, porque ahí el valor sí
+        # sobrevive a la sentencia y ctid no sirve.
+        if re.match(r"\s*DELETE\b", sql, re.I):
+            sql = _RE_ROWID.sub("ctid", sql)
+        else:
+            raise NotImplementedError(
+                "`rowid` no existe en Postgres. Adentro de un DELETE se traduce "
+                "solo a `ctid`; acá no, porque el valor sale de la sentencia y el "
+                "ctid de Postgres cambia cuando la fila se actualiza. Usá la "
+                "clave primaria de la tabla.\n  "
+                + " ".join(sql.split())[:160])
+    ambiguas = _columnas_ambiguas(sql)
+    if ambiguas:
         raise NotImplementedError(
-            "`rowid` no existe en Postgres. Usá la clave primaria de la tabla.\n  "
+            "referencia ambigua adentro de ON CONFLICT … DO UPDATE SET: "
+            + ", ".join(sorted(set(ambiguas)))
+            + ". Adentro del DO UPDATE hay DOS filas a la vista (la de la tabla y "
+              "`excluded`), así que la columna pelada no dice cuál. SQLite elige la "
+              "de la tabla; Postgres corta con 'column reference is ambiguous'. "
+              "Calificala con el nombre de la tabla — `mitabla.columna` — que es lo "
+              "que SQLite estaba haciendo.\n  "
             + " ".join(sql.split())[:160])
 
     # Las fechas viven como TEXTO 'YYYY-MM-DD'. Cortar el string es exactamente
@@ -356,6 +595,8 @@ def traducir(sql: str) -> str:
     sql = _RE_DATE_NOW.sub(_HOY_TXT, sql)
     sql = _RE_IFNULL.sub("COALESCE(", sql)
     sql = _traducir_minmax(sql)
+    sql = _traducir_printf(sql)
+    sql = _traducir_round(sql)
 
     # INSERT OR IGNORE → INSERT … ON CONFLICT DO NOTHING. El DO NOTHING va al
     # final, después de los VALUES, y sólo si la query no traía ya un ON CONFLICT.

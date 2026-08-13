@@ -129,7 +129,7 @@ def _set_state(conn, uid: int, cid: int, armed: int, fired_date=None):
     conn.execute(
         "INSERT INTO advisor_alert_state (advisor_uid, client_uid, armed, last_fired_date) "
         "VALUES (?,?,?,?) ON CONFLICT(advisor_uid, client_uid) DO UPDATE SET "
-        "armed=excluded.armed, last_fired_date=COALESCE(excluded.last_fired_date, last_fired_date)",
+        "armed=excluded.armed, last_fired_date=COALESCE(excluded.last_fired_date, advisor_alert_state.last_fired_date)",
         (uid, cid, armed, fired_date))
 
 
