@@ -150,8 +150,16 @@ def fx_version(conn, uid: int) -> str:
             "OR EXISTS(SELECT 1 FROM operations WHERE user_id=?)",
             (uid, uid)).fetchone()[0]
         version = FX_V1 if tiene_historia else FX_V2
+        # Conflicto por la PK entera (key, user_id): `fx_version` es POR CUENTA, no
+        # global. Nombra las 3 columnas de `config`, así que no hay nada que se
+        # pierda respecto del INSERT OR REPLACE de antes (que borraba y reinsertaba).
+        # DO UPDATE y no DO NOTHING: acá se llega justo cuando la fila NO existe o
+        # trae un valor basura (el `if row[0] in (FX_V1, FX_V2)` de arriba ya devolvió
+        # si era válido). Con DO NOTHING una fila corrupta quedaría corrupta para
+        # siempre y la cuenta re-resolvería su versión en cada llamada.
         conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (uid, _FX_VERSION_KEY, version))
         return version
     except Exception:
@@ -163,6 +171,12 @@ def fx_version(conn, uid: int) -> str:
 def set_fx_version(conn, uid: int, version: str) -> None:
     if version not in (FX_V1, FX_V2):
         raise ValueError(f"fx_version inválida: {version}")
+    # Conflicto por la PK entera (key, user_id). Pisar es el PUNTO de esta función:
+    # el migrador FX la llama al final de la transacción para estampar v2 sobre la
+    # v1 que la cuenta ya tenía, así que la rama que corre de verdad es el DO UPDATE.
+    # DO NOTHING la dejaría en v1 con las dos patas del TC ya migradas = peor que no
+    # migrar. Nombra las 3 columnas de `config`: no se pierde ninguna.
     conn.execute(
-        "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+        "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+        "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
         (uid, _FX_VERSION_KEY, version))

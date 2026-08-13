@@ -584,12 +584,20 @@ class AdvisorBookTest(AdvisorBase):
     def setUp(self):
         super().setUp()
         conn = main.get_db()
-        # FX conocido para aserciones (OR REPLACE: clave = fecha de hoy)
+        # FX conocido para aserciones (clave = fecha de hoy). Acá el conflicto SÍ
+        # pasa: AdvisorBase NO limpia fx_rates_daily y otras clases del módulo
+        # siembran la MISMA fecha de hoy (líneas ~1171 y ~1558), sobre la misma
+        # base del módulo. Tiene que ser DO UPDATE y no DO NOTHING para que el
+        # 1400/1000 quede sí o sí (aunque hoy las 3 escriban lo mismo, un cambio
+        # de valores en una sola clase no puede depender del orden de ejecución).
+        # `fetched_at` no se nombra: ningún SELECT de la app la lee.
         import datetime as _d
         self.today = _d.date.today()
         conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-            "VALUES (?, 1400, 1000, 'manual')", (self.today.isoformat(),))
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, 1400, 1000, 'manual') ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "source=EXCLUDED.source", (self.today.isoformat(),))
         # Cliente 1 (self.client_uid, broker Cocos ARS): snapshots + posiciones
         conn.execute(
             "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
@@ -614,9 +622,15 @@ class AdvisorBookTest(AdvisorBase):
             """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
                VALUES (?,?,?,?,?,1,'ARS')""",
             (self.client_uid, "Cocos", "Pesos", 1, 500000))
+        # asset_last_price tiene 3 columnas (symbol, price, updated_at) y las
+        # nombra a las 3 ⇒ la conversión es EQUIVALENTE, no se pierde nada.
+        # El conflicto sí ocurre (GGAL.BA lo siembran también las clases de las
+        # líneas ~1182 y ~1571 sobre la misma base del módulo), por eso DO UPDATE.
         for sym, price in (("GGAL.BA", 15000.0), ("AL30.BA", 10000.0)):
             conn.execute(
-                "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,datetime('now'))",
+                "INSERT INTO asset_last_price (symbol, price, updated_at) "
+                "VALUES (?,?,datetime('now')) ON CONFLICT (symbol) DO UPDATE SET "
+                "price=EXCLUDED.price, updated_at=EXCLUDED.updated_at",
                 (sym, price))
         conn.commit()
         conn.close()
@@ -1167,9 +1181,14 @@ class BookChatContextTest(AdvisorBase):
         conn = main.get_db()
         import datetime as _d
         today = _d.date.today()
+        # Misma fecha de hoy que siembran otras clases del módulo ⇒ el conflicto
+        # ocurre y tiene que PISAR (DO UPDATE). `fetched_at` no se nombra: nadie
+        # la lee, así que da lo mismo que sobreviva.
         conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-            "VALUES (?, 1400, 1000, 'manual')", (today.isoformat(),))
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, 1400, 1000, 'manual') ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "source=EXCLUDED.source", (today.isoformat(),))
         conn.execute(
             "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
             "VALUES (?,?,?,?,?)", (self.client_uid, today.isoformat(), 700.0, 800.0, 500.0))
@@ -1178,8 +1197,11 @@ class BookChatContextTest(AdvisorBase):
             """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
                VALUES (?,?,?,?,?,0,'ARS')""",
             (self.client_uid, "Cocos", "GGAL", 10, 100000))
+        # Las 3 columnas de la tabla están nombradas ⇒ equivalente al OR REPLACE.
         conn.execute(
-            "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,datetime('now'))",
+            "INSERT INTO asset_last_price (symbol, price, updated_at) "
+            "VALUES (?,?,datetime('now')) ON CONFLICT (symbol) DO UPDATE SET "
+            "price=EXCLUDED.price, updated_at=EXCLUDED.updated_at",
             ("GGAL.BA", 15000.0))
         conn.commit(); conn.close()
 
@@ -1554,9 +1576,14 @@ class AdvisorReportsTest(AdvisorBase):
         self.today = _d.date.today()
         self.start = (self.today - _d.timedelta(days=30)).isoformat()
         self.end = self.today.isoformat()
+        # Misma fecha de hoy que siembran otras clases del módulo ⇒ el conflicto
+        # ocurre y tiene que PISAR (DO UPDATE). `fetched_at` no se nombra: nadie
+        # la lee, así que da lo mismo que sobreviva.
         conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-            "VALUES (?, 1400, 1000, 'manual')", (self.today.isoformat(),))
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, 1400, 1000, 'manual') ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "source=EXCLUDED.source", (self.today.isoformat(),))
         # Base ANTERIOR al período + cierre: mercado = (1200-1000) - (900-800) = +100
         for (d, tv, nd) in ((self.today - _d.timedelta(days=40), 1000.0, 800.0),
                             (self.today - _d.timedelta(days=1), 1200.0, 900.0)):
@@ -1567,8 +1594,11 @@ class AdvisorReportsTest(AdvisorBase):
             """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
                VALUES (?,?,?,?,?,0,'ARS')""",
             (self.client_uid, "Cocos", "GGAL", 10, 100000))
+        # Las 3 columnas de la tabla están nombradas ⇒ equivalente al OR REPLACE.
         conn.execute(
-            "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,datetime('now'))",
+            "INSERT INTO asset_last_price (symbol, price, updated_at) "
+            "VALUES (?,?,datetime('now')) ON CONFLICT (symbol) DO UPDATE SET "
+            "price=EXCLUDED.price, updated_at=EXCLUDED.updated_at",
             ("GGAL.BA", 15000.0))
         conn.commit(); conn.close()
         main._rate_store.pop("testclient|report_pub_ip", None)
@@ -2364,8 +2394,16 @@ class ReconstruccionVsMedicionTest(AdvisorBase):
                          "WHERE batch_id=?", (bid,))
             # NO hay fila en positions: el activo se vendio.
             ph.guardar(conn, "CEDT.BA", {"2026-01-31": 7000.0})
-            conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,"
-                         "mep_venta) VALUES ('2026-01-31',1500,1400)")
+            # Otro test del módulo siembra la MISMA fecha con los MISMOS valores
+            # (1500/1400), así que el DO UPDATE es un no-op cuando choca.
+            # `source` y `fetched_at` quedan fuera del SET a propósito: el
+            # OR REPLACE las reseteaba a su DEFAULT y ahora sobreviven, pero
+            # ninguno de los dos escritores de esta fecha pone `source`
+            # (queda 'unknown' igual) y `ledger_replay` sólo lee `mep_venta`.
+            conn.execute("INSERT INTO fx_rates_daily (date,blue_venta,mep_venta) "
+                         "VALUES ('2026-01-31',1500,1400) "
+                         "ON CONFLICT (date) DO UPDATE SET "
+                         "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta")
             conn.commit()
             v = lr.valor_en(conn, self.client_uid, "2026-01-31")
         finally:
@@ -2717,8 +2755,13 @@ class LedgerReplayTest(AdvisorBase):
         conn = self._conn()
         try:
             ph.guardar(conn, "GGAL.BA", {"2026-01-31": 7000.0})
-            conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,"
-                         "mep_venta) VALUES ('2026-01-31',1500,1400)")
+            # Gemelo del sitio de arriba: misma fecha, mismos valores. El MEP
+            # 1400 es el que este test asserta (100×7000/1400), así que pisar es
+            # obligatorio (DO NOTHING dejaría el que puso el otro test).
+            conn.execute("INSERT INTO fx_rates_daily (date,blue_venta,mep_venta) "
+                         "VALUES ('2026-01-31',1500,1400) "
+                         "ON CONFLICT (date) DO UPDATE SET "
+                         "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta")
             conn.commit()
             v = lr.valor_en(conn, self.client_uid, "2026-01-31")
         finally:
@@ -3297,8 +3340,15 @@ class AdvisorGroupsAuditTest(AdvisorBase):
                          (cid, broker))
             conn.execute("INSERT INTO positions (user_id,broker,asset,quantity,invested,is_cash) "
                          "VALUES (?,?,?,?,?,0)", (cid, broker, asset, qty, invested))
-            conn.execute("INSERT OR REPLACE INTO asset_last_price (symbol,price,updated_at) "
-                         "VALUES (?,?,datetime('now'))", (asset, 100.0))
+            # Helper llamado VARIAS veces por test con el mismo activo (3 lotes
+            # de AAPL) ⇒ el conflicto es la norma acá. Las 3 columnas de la
+            # tabla están nombradas, así que DO UPDATE es exactamente lo mismo
+            # que el borrar-y-reinsertar de antes.
+            conn.execute("INSERT INTO asset_last_price (symbol,price,updated_at) "
+                         "VALUES (?,?,datetime('now')) "
+                         "ON CONFLICT (symbol) DO UPDATE SET "
+                         "price=EXCLUDED.price, updated_at=EXCLUDED.updated_at",
+                         (asset, 100.0))
             conn.commit()
         finally:
             conn.close()
@@ -3433,8 +3483,25 @@ class AdvisorAlertsGroupScopeTest(AdvisorAlertsAuditTest):
         # todos, así que sembrarlo antes hacía pasar el test sin probar nada.
         conn = main.get_db()
         try:
-            conn.execute("INSERT OR REPLACE INTO advisor_alert_state "
-                         "(advisor_uid,client_uid,armed) VALUES (?,?,0)",
+            # ⚠️ ÚNICO sitio de este archivo donde el OR REPLACE SÍ borraba una
+            # columna: `advisor_alert_state` tiene 4 (advisor_uid, client_uid,
+            # armed, last_fired_date) y acá se nombran 3. El borrado de
+            # `last_fired_date` es INTENCIONAL y load-bearing, así que se
+            # replica poniéndola explícita en el SET:
+            #   la rama que este test prueba (advisor_alerts.py:221) re-arma con
+            #   `... WHERE COALESCE(last_fired_date,'') <> hoy`. Si dejáramos
+            #   sobrevivir un last_fired_date = HOY, el UPDATE no tocaría la
+            #   fila, armed seguiría en 0 y el test fallaría por una razón que
+            #   no tiene nada que ver con el bug que fija.
+            # Hoy la fila todavía no existe cuando se llega acá (set_config y
+            # _set_scope sólo hacen UPDATE, no INSERT, y este test no pasa por
+            # _run), o sea que el DO UPDATE no llega a correr — pero se deja
+            # escrito para que siga siendo el estado "nunca disparó" si mañana
+            # alguien mete una corrida antes.
+            conn.execute("INSERT INTO advisor_alert_state "
+                         "(advisor_uid,client_uid,armed) VALUES (?,?,0) "
+                         "ON CONFLICT (advisor_uid, client_uid) DO UPDATE SET "
+                         "armed=EXCLUDED.armed, last_fired_date=NULL",
                          (self.advisor, self.client_uid))
             conn.commit()
         finally:

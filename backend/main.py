@@ -4137,10 +4137,30 @@ def get_config(uid: int = Depends(get_effective_user)):
 def update_config(data: ConfigUpdate, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
+        # Upsert (migración a Postgres): reemplaza `INSERT OR REPLACE`, que en SQLite
+        # BORRA la fila y la reinserta. Acá es equivalente porque la query nombra las
+        # TRES columnas de `config` (key, value, user_id): no hay ninguna columna que
+        # se pierda al reinsertar. El conflicto va por la PK COMPUESTA (key, user_id):
+        # cada usuario pisa SU tc_mep, no el de los demás.
+        # DO UPDATE y no DO NOTHING: pisar el valor viejo es exactamente lo que el
+        # usuario pidió al tipear el TC. Con DO NOTHING guardar sería un no-op mudo y
+        # el GET de arriba le seguiría mostrando el valor anterior (o el 1415 del
+        # setdefault) sin ningún error.
+        # Se nombran las columnas a propósito: el VALUES posicional de antes asumía el
+        # orden (key, value, user_id) del CREATE TABLE — hoy coincide (init_db y
+        # schema_pg.sql), pero la próxima columna que se agregue lo rompe en silencio.
         if data.tc_mep is not None:
-            conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_mep', ?, ?)", (str(data.tc_mep), uid))
+            conn.execute(
+                """INSERT INTO config (key, value, user_id) VALUES ('tc_mep', ?, ?)
+                   ON CONFLICT (key, user_id) DO UPDATE SET value = EXCLUDED.value""",
+                (str(data.tc_mep), uid))
         if data.tc_blue is not None:
-            conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_blue', ?, ?)", (str(data.tc_blue), uid))
+            # Gemelo del anterior: clave DISTINTA ('tc_blue'), o sea fila distinta —
+            # los dos statements no interactúan entre sí.
+            conn.execute(
+                """INSERT INTO config (key, value, user_id) VALUES ('tc_blue', ?, ?)
+                   ON CONFLICT (key, user_id) DO UPDATE SET value = EXCLUDED.value""",
+                (str(data.tc_blue), uid))
         conn.commit()
         conn.close()
         return {"ok": True}
@@ -4245,6 +4265,18 @@ def _persist_blue_for_date(date_str: str, blue: float, source: str = 'snapshot_c
                 pass
 
 
+# La sentencia vive acá afuera, y no adentro de la función, para que el test que
+# fija su semántica (tests/test_fx_backfill_upsert.py) se ate a ESTA consulta y no
+# a una copia pegada. Si mañana alguien le saca el `mep_venta` de encima —o se lo
+# agrega al SET— el test lo ve. Con una copia en el test, no.
+SQL_BACKFILL_FX_BLUE = """INSERT INTO fx_rates_daily (date, blue_venta, source)
+   VALUES (?, ?, ?)
+   ON CONFLICT(date) DO UPDATE SET
+     blue_venta = EXCLUDED.blue_venta,
+     source     = EXCLUDED.source,
+     fetched_at = datetime('now')"""
+
+
 def _backfill_fx_rates_if_empty():
     """Si fx_rates_daily está vacía, hace pull de argentinadatos.com
     (~5 años de daily blue). Idempotent — solo corre una vez.
@@ -4271,10 +4303,35 @@ def _backfill_fx_rates_if_empty():
                     except (TypeError, ValueError):
                         continue
             if rows:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, source) VALUES (?, ?, ?)",
-                    rows,
-                )
+                # ⚠️ DECISIÓN EXPLÍCITA (migración a Postgres): esto NO es una
+                # traducción mecánica del `INSERT OR REPLACE` — le CAMBIA el
+                # comportamiento a propósito, en dos puntos.
+                #
+                # 1) mep_venta SOBREVIVE (antes se perdía). INSERT OR REPLACE borraba
+                #    la fila y la reinsertaba, así que las columnas que esta query NO
+                #    nombra quedaban en NULL. Acá mep_venta ni se menciona en el SET →
+                #    el DO UPDATE la deja intacta. Es lo que ya hacen los otros DOS
+                #    escritores de esta tabla: _persist_blue_for_date (arriba, con
+                #    COALESCE(excluded.mep_venta, fx_rates_daily.mep_venta)) y el cron
+                #    de snapshots_job.py (que ni la nombra). Este backfill era el único
+                #    que la borraba, y le pisaba el trabajo a
+                #    _backfill_mep_rates_if_missing, que sólo rellena WHERE mep_venta
+                #    IS NULL → un mep borrado no se auto-cura nunca. Sin mep, fx.py cae
+                #    del riel MEP al blue EN SILENCIO para todo el histórico (y
+                #    ledger_replay directamente no valúa la pata en pesos). Este
+                #    backfill trae BLUE, no mep: no tiene nada mejor que poner ahí,
+                #    sólo tenía con qué romper.
+                #
+                # 2) fetched_at SÍ se refresca (igual que antes). El REPLACE lo
+                #    reseteaba por su DEFAULT; ese comportamiento es el correcto —la
+                #    fila se reescribe con un dato recién traído de la API— así que lo
+                #    dejamos EXPLÍCITO en el SET. Sin esta línea el DO UPDATE
+                #    conservaría el fetched_at viejo, que es otro cambio silencioso.
+                #
+                # Dejar en executemany (una sentencia por fila): un INSERT
+                # multi-VALUES con dos veces la misma fecha lo rechaza Postgres
+                # ("ON CONFLICT DO UPDATE command cannot affect row a second time").
+                conn.executemany(SQL_BACKFILL_FX_BLUE, rows)
                 conn.commit()
                 logging.info(f"fx_rates_daily backfill: {len(rows)} filas insertadas")
         except Exception as e:
@@ -28954,8 +29011,20 @@ def _migrate_snapshots_netdep():
                             "Snapshot migration error for user %s: %s",
                             uid, ex,
                         )
+                # Upsert (migración a Postgres): equivalente al `INSERT OR REPLACE`
+                # anterior porque la query nombra las TRES columnas de `config`
+                # (key, value, user_id) — no hay columna que se pierda al reinsertar.
+                # user_id=0 es la fila GLOBAL (marca de migración, no config de un
+                # usuario); se relee más arriba con `WHERE key=? AND user_id=0`. El
+                # conflicto igual va por la PK ENTERA (key, user_id) aunque el user_id
+                # sea literal: no hay índice único sobre `key` sola.
+                # DO UPDATE: con RENDI_FORCE_SNAPSHOT_MIGRATION=1 la migración se
+                # re-corre y la marca tiene que quedar con la fecha de HOY. DO NOTHING
+                # dejaría la fecha vieja y el log diría "ya corrió (fecha vieja)"
+                # mintiendo.
                 conn.execute(
-                    "INSERT OR REPLACE INTO config (key, value, user_id) VALUES (?,?,0)",
+                    """INSERT INTO config (key, value, user_id) VALUES (?,?,0)
+                       ON CONFLICT (key, user_id) DO UPDATE SET value = EXCLUDED.value""",
                     (_MARCA, _iso_today()))
                 conn.commit()
                 if total_pnl_recalc_updates > 0:

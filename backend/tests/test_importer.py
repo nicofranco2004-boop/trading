@@ -3415,8 +3415,14 @@ class CrossCurrencyLotSellTest(unittest.TestCase):
         self.uid = _new_user(conn, email=f"xc-{id(self)}@rendi.test")
         _add_broker(conn, self.uid, "Cocos", "ARS")
         # Cargar TC blue para que el persister haga las conversiones (key/value)
+        # Conflicto por la PK compuesta (key, user_id). La query nombra las 3
+        # columnas de `config`, así que el DO UPDATE es equivalente al
+        # borrar-y-reinsertar de antes: no hay columna que se pierda. Además el uid
+        # es nuevo en cada setUp (_new_user con email único), o sea que la fila no
+        # existe y la rama de update ni se toca.
         conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, 'tc_blue', '1415')",
+            "INSERT INTO config (user_id, key, value) VALUES (?, 'tc_blue', '1415') "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid,),
         )
         conn.commit()
@@ -4035,8 +4041,12 @@ class FxStampedPerEventTest(unittest.TestCase):
         self.uid = _new_user(conn, email=f"fxstamp-{id(self)}@rendi.test")
         _add_broker(conn, self.uid, "Cocos", "ARS")
         # Set tc_blue inicial = 1000
+        # Igual que arriba: 3 de 3 columnas nombradas, conflicto por (key, user_id),
+        # y el uid del setUp es nuevo (este setUp limpia operations/monthly_entries/
+        # brokers pero NO config — no hace falta: la fila de este uid no existe).
         conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, 'tc_blue', '1000')",
+            "INSERT INTO config (user_id, key, value) VALUES (?, 'tc_blue', '1000') "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid,),
         )
         conn.commit()
@@ -5955,10 +5965,23 @@ class CrossCurrencyRealizedPnlTest(unittest.TestCase):
         # config para la venta y solo miraba la serie para el costo de un lote ARS;
         # ahora las dos patas salen de `fx_for_date`, así que el fixture tiene que
         # tener las dos fechas o el TC de venta cae por carry-forward al de compra.
+        # Conflicto por la PK (date). La query no nombra `mep_venta` ni `fetched_at`:
+        #  • mep_venta se DEJA SOBREVIVIR (antes el borrar-y-reinsertar la ponía en
+        #    NULL). Es el mismo criterio que el escritor real de esta tabla
+        #    (_persist_blue_for_date, main.py:4246): este seed trae BLUE, no MEP, así
+        #    que no tiene nada mejor que poner ahí, sólo tenía con qué romper.
+        #  • fetched_at SÍ se refresca explícito, que es lo que hacía el DEFAULT al
+        #    reinsertar.
+        # En la práctica ninguna de las dos ramas corre: el setUp vacía fx_rates_daily
+        # y las dos fechas son distintas entre sí, así que son dos INSERT limpios.
         conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, source) VALUES ('2024-11-01', 1000, 'test')")
+            "INSERT INTO fx_rates_daily (date, blue_venta, source) VALUES ('2024-11-01', 1000, 'test') "
+            "ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, "
+            "source=EXCLUDED.source, fetched_at=datetime('now')")
         conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, source) VALUES ('2025-10-01', 1500, 'test')")
+            "INSERT INTO fx_rates_daily (date, blue_venta, source) VALUES ('2025-10-01', 1500, 'test') "
+            "ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, "
+            "source=EXCLUDED.source, fetched_at=datetime('now')")
         conn.commit()
         conn.close()
 
@@ -6457,9 +6480,17 @@ class SplitRatioAdjustTest(unittest.TestCase):
                VALUES (?,'Balanz','SPY',0,45000,10,450000,'2026-08-01','CEDEAR')""",
             (self.uid,))
         pid = cur.lastrowid
+        # Conflicto por la PK (symbol). La query nombra las 3 columnas de
+        # asset_last_price, así que no hay nada que se pierda: el DO UPDATE es
+        # equivalente al borrar-y-reinsertar. Acá la rama de update SÍ puede correr
+        # (asset_last_price es un cache global que ningún setUp limpia, y una segunda
+        # corrida sobre la misma DB ya tiene la fila de 'SPY.BA'), y pisa igual que
+        # antes: precio 15000 y updated_at de ahora.
         conn.execute(
-            "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) "
-            "VALUES ('SPY.BA', 15000, datetime('now'))")
+            "INSERT INTO asset_last_price (symbol, price, updated_at) "
+            "VALUES ('SPY.BA', 15000, datetime('now')) "
+            "ON CONFLICT (symbol) DO UPDATE SET price=EXCLUDED.price, "
+            "updated_at=EXCLUDED.updated_at")
         conn.commit()
         conn.close()
         from unittest.mock import patch

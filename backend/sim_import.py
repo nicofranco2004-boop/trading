@@ -39,7 +39,13 @@ def run(path, parser_format="balanz_movimientos", broker="Balanz", tc_blue=1582.
     uid = conn.execute("INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
                        ("sim@rendi.test", "x")).lastrowid
     conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (uid, broker, "ARS"))
-    conn.execute("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+    # ON CONFLICT (key, user_id) = la PK de `config`. Acá la tabla quedó vacía dos
+    # líneas arriba (el DELETE incluye `config`), así que nunca hay con qué chocar:
+    # la conversión es semánticamente idéntica al INSERT OR REPLACE. Se convierte
+    # igual porque este script usa main.get_db() y, con DATABASE_URL seteada, rutea
+    # al pgshim, que rechaza INSERT OR REPLACE con NotImplementedError.
+    conn.execute("INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+                 "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
                  (uid, "tc_blue", str(tc_blue)))
     conn.commit()
 

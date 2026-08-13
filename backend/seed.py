@@ -19,6 +19,13 @@ def seed():
     conn = sqlite3.connect(DB_PATH)
 
     # Config
+    # NO CONVERTIDO a ON CONFLICT (migración a Postgres): código muerto e inválido.
+    # Muerto: el sys.exit(1) de la línea 10 corre a nivel de módulo, así que a estas
+    # líneas no se llega ni corriendo ni importando el archivo. Inválido: el VALUES
+    # posicional da 2 valores para las 3 columnas de `config` (key, value, user_id)
+    # — SQLite tira "table config has 3 columns but 2 values were supplied". No se
+    # arregla a ojo (habría que inventar el uid, y este script es pre-multi-tenancy);
+    # además abre la DB con sqlite3.connect() directo, sin pasar por el shim.
     conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_mep', '1415')")
     conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_blue', '1415')")
 

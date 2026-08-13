@@ -45,9 +45,16 @@ class FxForDateTest(unittest.TestCase):
         for d, b, m in [("2021-01-15", BLUE_2021, MEP_2021),
                         ("2021-06-15", BLUE_2021, MEP_2021),
                         ("2026-07-01", 1400.0, 1440.0)]:
+            # ON CONFLICT en vez de OR REPLACE (Postgres no tiene OR REPLACE).
+            # Acá la rama DO UPDATE es INALCANZABLE: el DELETE de arriba deja la
+            # tabla vacía y las 3 fechas son distintas entre sí. `fetched_at` no
+            # se nombra (nadie la lee en toda la app; el único SELECT que la
+            # tocaría no existe), así que da igual que sobreviva.
             self.conn.execute(
-                "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
-                "VALUES (?,?,?,?)", (d, b, m, "test"))
+                "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
+                "VALUES (?,?,?,?) ON CONFLICT (date) DO UPDATE SET "
+                "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+                "source=EXCLUDED.source", (d, b, m, "test"))
         self.conn.commit()
 
     def tearDown(self):
@@ -73,8 +80,15 @@ class FxForDateTest(unittest.TestCase):
     def test_un_dia_sin_mep_no_apaga_la_cobertura(self):
         """El `IS NOT NULL` va en el WHERE. Si se tomara la fila más reciente y
         recién ahí se validara, este caso devolvería el fallback."""
+        # 2021-06-16 NO está en el setUp (que siembra 15/01, 15/06 y 01/07/2026):
+        # es una fila nueva, el DO UPDATE no llega a correr. Igual se deja el
+        # mep_venta=NULL explícito en el SET porque el PUNTO del test es que ese
+        # día NO tenga MEP: si mañana alguien siembra esa fecha en el setUp, el
+        # ON CONFLICT tiene que seguir dejándola sin MEP, no heredar el de antes.
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta) VALUES (?,?,NULL)",
+            "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta) VALUES (?,?,NULL) "
+            "ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta",
             ("2021-06-16", BLUE_2021))
         self.conn.commit()
         self.assertEqual(fx_for_date(self.conn, "2021-06-16", fallback=TC_VIVO), MEP_2021)
@@ -82,8 +96,11 @@ class FxForDateTest(unittest.TestCase):
     def test_es_deterministica(self):
         """El bug que habilita: el mismo replay en dos momentos daba 1.490 vs 1.433."""
         a = fx_for_date(self.conn, "2021-06-15", fallback=TC_VIVO)
+        # Fecha nueva (2026-07-29 no la siembra nadie): el DO UPDATE no corre.
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta) VALUES (?,?,?)",
+            "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta) VALUES (?,?,?) "
+            "ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta",
             ("2026-07-29", 1500.0, 1550.0))     # el dólar de hoy cambia…
         self.conn.commit()
         self.assertEqual(fx_for_date(self.conn, "2021-06-15", fallback=TC_VIVO), a)  # …la venta vieja no
@@ -109,9 +126,13 @@ class MotorUsaElTcDeLaFechaTest(unittest.TestCase):
             ("fx@test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
                           (self.uid, "IOL", "ARS"))
+        # Rama DO UPDATE inalcanzable: el DELETE de arriba vacía fx_rates_daily.
+        # `fetched_at` no se nombra (no la lee nadie).
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
-            "VALUES (?,?,?,?)", ("2021-06-15", BLUE_2021, MEP_2021, "test"))
+            "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
+            "VALUES (?,?,?,?) ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "source=EXCLUDED.source", ("2021-06-15", BLUE_2021, MEP_2021, "test"))
         self.conn.commit()
 
     def tearDown(self):
@@ -184,9 +205,13 @@ class FlujosUsanElTcDeSuFechaTest(unittest.TestCase):
         self.conn = main.get_db()
         try: self.conn.execute("DELETE FROM fx_rates_daily")
         except Exception: pass
+        # Rama DO UPDATE inalcanzable: el DELETE de arriba vacía fx_rates_daily.
+        # `fetched_at` no se nombra (no la lee nadie).
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
-            "VALUES (?,?,?,?)", ("2021-06-15", BLUE_2021, MEP_2021, "test"))
+            "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
+            "VALUES (?,?,?,?) ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "source=EXCLUDED.source", ("2021-06-15", BLUE_2021, MEP_2021, "test"))
         self.conn.commit()
 
     def tearDown(self):
@@ -240,9 +265,13 @@ class VentaManualUsdSobreBrokerArsTest(unittest.TestCase):
             ("usdars@test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
                           (self.uid, "IOL", "ARS"))          # broker en PESOS
+        # Rama DO UPDATE inalcanzable: el DELETE de arriba vacía fx_rates_daily.
+        # `fetched_at` no se nombra (no la lee nadie).
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
-            "VALUES (?,?,?,?)", ("2026-07-01", 1400.0, 1440.0, "test"))
+            "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
+            "VALUES (?,?,?,?) ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "source=EXCLUDED.source", ("2026-07-01", 1400.0, 1440.0, "test"))
         self.conn.execute(                                   # lote en DÓLARES
             "INSERT INTO positions (user_id,broker,asset,is_cash,buy_price,quantity,"
             "invested,entry_date,commissions,currency) VALUES (?,?,?,0,?,?,?,?,?,?)",
@@ -289,9 +318,13 @@ class TcCompraAutofillTest(unittest.TestCase):
             ("tcauto@test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
                           (self.uid, "IOL", "ARS"))
+        # Rama DO UPDATE inalcanzable: el DELETE de arriba vacía fx_rates_daily.
+        # `fetched_at` no se nombra (no la lee nadie).
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
-            "VALUES (?,?,?,?)", ("2021-06-15", BLUE_2021, MEP_2021, "test"))
+            "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
+            "VALUES (?,?,?,?) ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "source=EXCLUDED.source", ("2021-06-15", BLUE_2021, MEP_2021, "test"))
         self.conn.commit()
 
     def tearDown(self):

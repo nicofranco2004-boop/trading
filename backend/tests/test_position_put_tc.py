@@ -36,9 +36,20 @@ class PutTcCompraTest(unittest.TestCase):
             ("puttc@test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
                           (self.uid, "Balanz", "ARS"))
+        # Conflicto por la PK (date). Se nombran las 4 columnas de dato; la única
+        # que queda afuera es `fetched_at`, que el INSERT OR REPLACE reseteaba a
+        # su DEFAULT datetime('now'). La ponemos EXPLÍCITA en el SET para no
+        # perder ese refresh (mismo criterio que _persist_blue_for_date en
+        # main.py). Nadie en este archivo lee fetched_at, y setUp vacía
+        # fx_rates_daily antes de sembrar la única fila: el DO UPDATE no corre.
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-            "VALUES (?,?,?,?)", ("2026-03-03", 1440.0, 1448.6, "test"))
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (date) DO UPDATE SET "
+            "  blue_venta = EXCLUDED.blue_venta, "
+            "  mep_venta  = EXCLUDED.mep_venta, "
+            "  source     = EXCLUDED.source, "
+            "  fetched_at = datetime('now')", ("2026-03-03", 1440.0, 1448.6, "test"))
         self.pid = self.conn.execute(
             """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
                invested, tc_compra, entry_date, commissions, currency, asset_type)

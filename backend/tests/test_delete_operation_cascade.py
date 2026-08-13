@@ -1082,8 +1082,13 @@ class DeleteCascade(unittest.TestCase):
 
     # ── Fase 2.x: depósito manual EN PESOS ahora se puede borrar (aproximado) ──
     def test_delete_manual_ars_deposit_unblocked(self):
+        # ON CONFLICT en vez de INSERT OR REPLACE: mismo SQL en SQLite y Postgres.
+        # Conflicto por la PK entera (key, user_id). Se nombran las 3 columnas de
+        # `config`, o sea que no hay nada que el borrar-y-reinsertar perdiera; y
+        # setUp vacía `config` antes de cada test, así que acá siempre inserta.
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid, "tc_blue", "1000"))
         self.conn.execute(
             "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (self.uid, "Cocos", "ARS"))
@@ -1118,8 +1123,13 @@ class DeleteCascade(unittest.TestCase):
 
     def test_delete_manual_ars_deposit_native_exact(self):
         # Con el nativo guardado al crear, la reversa es EXACTA (no aproxima al blue).
+        # Mismo criterio que el test de arriba: conflicto por (key, user_id), las 3
+        # columnas nombradas, tabla vaciada por setUp → el DO UPDATE no llega a correr.
+        # (Si algún día este test seteara tc_blue dos veces, DO UPDATE pisa igual que
+        # el REPLACE viejo: el valor nuevo gana.)
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid, "tc_blue", "1200"))   # blue de HOY distinto al de creación
         self.conn.execute(
             "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (self.uid, "Cocos", "ARS"))

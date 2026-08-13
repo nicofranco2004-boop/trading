@@ -61,13 +61,25 @@ class FxMigrateTest(unittest.TestCase):
             ("fxmig@test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
                           (self.uid, "IOL", "ARS"))
+        # ON CONFLICT en vez de INSERT OR REPLACE: mismo SQL en SQLite y Postgres.
+        # Conflicto por la PK entera (key, user_id); nombra las 3 columnas de
+        # `config` y setUp ya vació la tabla → siempre inserta, nunca actualiza.
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (user_id,key,value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id,key,value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid, "tc_blue", str(TC_VIVO)))
+        # Idem para la serie histórica: el DELETE de arriba incluye fx_rates_daily,
+        # así que el DO UPDATE no llega a correr y no hay columna que se pierda.
+        # `fetched_at` queda fuera del SET a propósito: en el INSERT toma su DEFAULT
+        # igual que antes, y ningún test de este archivo la lee.
         for d, m in [("2021-01-15", MEP_DEP), ("2021-06-15", MEP_VTA)]:
             self.conn.execute(
-                "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
-                "VALUES (?,?,?,?)", (d, m - 10, m, "test"))
+                "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
+                "VALUES (?,?,?,?) "
+                "ON CONFLICT (date) DO UPDATE SET "
+                "  blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+                "  source=EXCLUDED.source",
+                (d, m - 10, m, "test"))
         self.conn.commit()
 
     def tearDown(self):

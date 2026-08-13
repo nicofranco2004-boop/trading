@@ -79,9 +79,25 @@ class EventsPortfolioTest(unittest.TestCase):
         conn = main.get_db()
         with conn:
             conn.execute(
-                """INSERT OR REPLACE INTO financial_events
+                # Conflicto por la UNIQUE(ticker, event_type, event_date), NO por `id`
+                # (el id es un AUTOINCREMENT surrogate). La única columna que la query
+                # no nombra es justamente `id`: con INSERT OR REPLACE la fila se
+                # borraba y se reinsertaba, así que el id CAMBIABA; con DO UPDATE
+                # sobrevive. Se deja sobrevivir a propósito (es el comportamiento del
+                # upsert real de producción, el de `_refresh_events_for_tickers` en
+                # main.py) y no rompe nada: ningún test lee el id, ni hay FK que
+                # apunte a financial_events(id).
+                # De todos modos hoy el DO UPDATE ni corre: setUp hace
+                # DELETE FROM financial_events y ningún test siembra dos veces la
+                # misma (ticker, event_type, event_date).
+                """INSERT INTO financial_events
                    (ticker, event_type, event_date, details, confirmed, source, fetched_at)
-                   VALUES (?, ?, ?, ?, ?, 'yfinance', '2026-05-12T00:00:00Z')""",
+                   VALUES (?, ?, ?, ?, ?, 'yfinance', '2026-05-12T00:00:00Z')
+                   ON CONFLICT (ticker, event_type, event_date) DO UPDATE SET
+                       details    = EXCLUDED.details,
+                       confirmed  = EXCLUDED.confirmed,
+                       source     = EXCLUDED.source,
+                       fetched_at = EXCLUDED.fetched_at""",
                 (ticker, event_type, date, json.dumps(details or {}), confirmed),
             )
         # Marcar como ya fetcheado para evitar re-fetch via yfinance real
@@ -234,9 +250,19 @@ class PopularEventsTest(unittest.TestCase):
         conn = main.get_db()
         with conn:
             conn.execute(
-                """INSERT OR REPLACE INTO financial_events
+                # Idéntico a _seed_event: conflicto por la UNIQUE(ticker, event_type,
+                # event_date), no por `id`. La única columna sin nombrar es el `id`
+                # AUTOINCREMENT, que antes cambiaba (borrar+reinsertar) y ahora
+                # sobrevive; nadie lo lee. Acá tampoco hay re-seed de la misma clave
+                # (setUp limpia la tabla), así que el DO UPDATE no llega a correr.
+                """INSERT INTO financial_events
                    (ticker, event_type, event_date, details, confirmed, source, fetched_at)
-                   VALUES (?, ?, ?, ?, 1, 'yfinance', '2026-05-12T00:00:00Z')""",
+                   VALUES (?, ?, ?, ?, 1, 'yfinance', '2026-05-12T00:00:00Z')
+                   ON CONFLICT (ticker, event_type, event_date) DO UPDATE SET
+                       details    = EXCLUDED.details,
+                       confirmed  = EXCLUDED.confirmed,
+                       source     = EXCLUDED.source,
+                       fetched_at = EXCLUDED.fetched_at""",
                 (ticker, event_type, date, json.dumps(details or {})),
             )
         conn.close()

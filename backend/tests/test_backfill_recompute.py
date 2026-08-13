@@ -68,7 +68,13 @@ class BackfillRecomputeTest(unittest.TestCase):
             ("backfill@rendi.test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, self.BROKER, "ARS"))
-        self.conn.execute("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+        # ON CONFLICT en vez de INSERT OR REPLACE: el mismo SQL corre en SQLite y
+        # en Postgres. Conflicto por la PK entera (key, user_id) — `key` sola no
+        # es única. La query nombra las 3 columnas de `config`, así que no hay
+        # columna que el borrar-y-reinsertar estuviera perdiendo; y el DELETE de
+        # arriba deja la tabla vacía, así que acá siempre corre el INSERT.
+        self.conn.execute("INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+                          "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
                           (self.uid, "tc_blue", "1000"))
         self.conn.commit()
 
@@ -240,7 +246,10 @@ class BackfillEndpointTest(unittest.TestCase):
             ("plebe@rendi.test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.admin, "Cocos", "ARS"))
-        self.conn.execute("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+        # Igual que arriba: conflicto por (key, user_id), las 3 columnas nombradas,
+        # y la tabla recién vaciada → el DO UPDATE es defensivo, no corre.
+        self.conn.execute("INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+                          "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
                           (self.admin, "tc_blue", "1000"))
         self.conn.commit()
         # import fuera de orden en la cuenta admin → AAPL fantasma (10).

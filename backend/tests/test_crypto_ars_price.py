@@ -63,8 +63,13 @@ class CryptoArsPriceTest(unittest.TestCase):
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
             ("crypto@rendi.test", "x"))
         self.uid = cur.lastrowid
+        # Conflicto por la PK compuesta (key, user_id) — nunca por `key` sola.
+        # La query nombra las 3 columnas de `config`, así que no hay ninguna
+        # columna que el viejo INSERT OR REPLACE borrara: conversión equivalente.
+        # (Además setUp vacía `config`, así que acá siempre es un INSERT limpio.)
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid, "tc_blue", str(self.TC_BLUE)))
         self.conn.commit()
 

@@ -58,7 +58,12 @@ class ImportTcCompraE2E(unittest.TestCase):
         self.uid = cur.lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, self.BROKER, "ARS"))
-        self.conn.execute("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+        # ON CONFLICT en vez de INSERT OR REPLACE: mismo SQL en SQLite y Postgres.
+        # Conflicto por la PK entera (key, user_id) — `key` sola no es única.
+        # Nombra las 3 columnas de `config` y setUp vacía la tabla antes de cada
+        # test, así que no hay nada que se pierda ni actualización que ejecutar.
+        self.conn.execute("INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+                          "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
                           (self.uid, "tc_blue", "1500"))
         self.conn.commit()
 
@@ -144,9 +149,20 @@ class ImportTcCompraE2E(unittest.TestCase):
         (antes quedaba NULL y la vista "dólar de la compra" no tenía con qué
         calcular). No inventa TC para lotes en dólares."""
         # La serie histórica tiene que existir: sin dato NO se inventa TC.
+        # ON CONFLICT en vez de INSERT OR REPLACE (mismo SQL en SQLite y Postgres).
+        # setUp NO vacía fx_rates_daily, así que si esa fecha ya estuviera cargada el
+        # DO UPDATE la pisa con la del fixture — que es lo que hacía el REPLACE y lo
+        # que el test necesita (asserta el MEP 1195 de ESA fecha).
+        # `fetched_at` no va en el SET: antes el REPLACE se la reseteaba al DEFAULT,
+        # ahora sobrevive. Da igual acá — nadie la lee (fx.py no mira fetched_at) y
+        # el fixture no tiene un valor mejor que poner.
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-            "VALUES (?,?,?,?)", ("2025-03-05", 1180.0, 1195.0, "test"))
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (date) DO UPDATE SET "
+            "  blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "  source=EXCLUDED.source",
+            ("2025-03-05", 1180.0, 1195.0, "test"))
         self.conn.commit()
         csv = (HEADER +
                "5/3/2025,COMPRA NORMAL,BMB,PAMP,10,1000,10000,,,0,ARS,\n"

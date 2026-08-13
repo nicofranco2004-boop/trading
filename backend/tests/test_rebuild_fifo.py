@@ -77,8 +77,16 @@ class _Base(unittest.TestCase):
         self.conn.close()
 
     def _set_tc_blue(self, v: float):
+        # Conflicto por la PK compuesta (key, user_id) — nunca por `key` sola.
+        # La query nombra las 3 columnas de `config`: no hay columna que el viejo
+        # INSERT OR REPLACE borrara al reinsertar. Conversión equivalente.
+        # DO UPDATE y no DO NOTHING a propósito: esto es un SETTER, y el nombre
+        # promete que la segunda llamada con otro valor PISA a la primera (hoy
+        # sólo se llama una vez por test, pero DO NOTHING lo volvería un no-op
+        # silencioso el día que alguien cambie el TC a mitad de un caso).
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid, "tc_blue", str(v)),
         )
         self.conn.commit()

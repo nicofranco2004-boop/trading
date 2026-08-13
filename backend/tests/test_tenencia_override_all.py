@@ -129,7 +129,12 @@ class _OverrideE2EBase(unittest.TestCase):
             (f"ovr-{self.BROKER}@rendi.test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, self.BROKER, "ARS"))
-        self.conn.execute("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+        # ON CONFLICT en vez de INSERT OR REPLACE: mismo SQL en SQLite y Postgres.
+        # Conflicto por la PK entera (key, user_id). Nombra las 3 columnas de
+        # `config`, así que no hay columna que el borrar-y-reinsertar perdiera,
+        # y el DELETE de arriba deja la tabla vacía → acá siempre inserta.
+        self.conn.execute("INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+                          "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
                           (self.uid, "tc_blue", "1000"))
         self.conn.commit()
         self.token = main.create_token(self.uid)
@@ -254,7 +259,12 @@ class CocosOverrideE2E(_OverrideE2EBase):
         donde YA viven sus lotes → se siembra en la partición USD, no en la ARS (evita
         duplicar el bono en dos monedas). Verificamos la MONEDA del to_seed."""
         SIB = "Cocos · USD"
-        self.conn.execute("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+        # Mismo criterio que en setUp. Es otra CLAVE ('tc_mep' vs el 'tc_blue' que
+        # siembra setUp), o sea otra fila: no se pisan entre sí. Conflicto por
+        # (key, user_id) igual, y con las 3 columnas nombradas la conversión es
+        # equivalente al REPLACE de antes.
+        self.conn.execute("INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+                          "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
                           (self.uid, "tc_mep", "1415"))   # holdings→MEP
         _pid = self.conn.execute("SELECT id FROM brokers WHERE user_id=? AND name=?",
                                  (self.uid, self.BROKER)).fetchone()["id"]

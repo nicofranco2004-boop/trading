@@ -67,8 +67,13 @@ class XBrokerMepNetting(unittest.TestCase):
         self.conn.execute(
             "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
             (self.uid, self.BROKER, "ARS"))
+        # Conflicto por la PK compuesta (key, user_id) — nunca por `key` sola.
+        # La query nombra las 3 columnas de `config`: no hay columna que el viejo
+        # INSERT OR REPLACE borrara al reinsertar. Conversión equivalente.
+        # (setUp vacía `config` y este es el único escritor: siempre INSERT limpio.)
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid, "tc_blue", "1000"))
         self.conn.commit()
 

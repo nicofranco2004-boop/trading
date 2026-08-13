@@ -34,9 +34,16 @@ Lo que traduce:
                                   psycopg mandaría boolean y Postgres lo rechaza)
 
 Lo que NO traduce, a propósito:
-  · INSERT OR REPLACE (24 sitios). Necesita saber por QUÉ columna hay conflicto y
-    eso no se puede adivinar sin leer el índice único de cada tabla. Se convierten
-    a mano, uno por uno, con su ON CONFLICT explícito.
+  · INSERT OR REPLACE. Necesita saber por QUÉ columna hay conflicto y eso no se
+    puede adivinar sin leer el índice único de cada tabla. Peor: en SQLite NO es
+    un upsert — BORRA la fila y la reinserta, así que las columnas que la query no
+    nombra se PIERDEN y se disparan los ON DELETE CASCADE. Una regla automática
+    cambiaría eso en silencio en las dos direcciones. Se convirtieron a mano, uno
+    por uno, con su ON CONFLICT explícito (ya está hecho: 9 sitios de app —de los
+    cuales 2 en seed.py son código muerto— y 56 de tests; el "24 sitios" que decía
+    este docstring era una estimación, nunca un conteo).
+    ESTE GUARDARRAÍL SE QUEDA PUESTO: si alguien escribe un INSERT OR REPLACE
+    nuevo mañana, tiene que pasar por el mismo análisis y no colarse traducido.
   · rowid (3 sitios). No existe en Postgres. Se cambian por la PK.
   Ambos se detectan y LEVANTAN un error claro en vez de fallar raro.
 """

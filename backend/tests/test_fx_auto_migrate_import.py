@@ -43,10 +43,23 @@ class _AutoFxBase(_Base):
             "CREATE TABLE IF NOT EXISTS fx_rates_daily "
             "(date TEXT PRIMARY KEY, mep_venta REAL, blue_venta REAL)")
         # Serie real (aprox) de las fechas del caso reportado.
+        # ON CONFLICT en vez de INSERT OR REPLACE (mismo SQL en SQLite y Postgres).
+        # OJO, acá SÍ hay un cambio de comportamiento, y es a propósito: `_Base.setUp`
+        # NO vacía fx_rates_daily, así que estas 3 fechas se re-escriben en CADA test.
+        # El REPLACE viejo borraba la fila entera y reponía `source`/`fetched_at` con
+        # sus DEFAULT ('unknown' / now); con DO UPDATE esas dos columnas SOBREVIVEN.
+        # Se deja que sobrevivan porque este fixture no tiene nada mejor que poner ahí
+        # y nadie las lee (fx.py no mira source ni fetched_at, y ningún test los
+        # asserta) — sólo se pisan los dos valores que el fixture sí define.
+        # Tampoco se las nombra en el SET a propósito: si el CREATE TABLE de arriba
+        # llegara a ganar, la tabla tendría 3 columnas y `source` ni existiría.
         for d, mep in (("2021-12-01", 195.0), ("2022-01-07", 205.0), ("2022-01-24", 215.0)):
             self.conn.execute(
-                "INSERT OR REPLACE INTO fx_rates_daily (date, mep_venta, blue_venta) "
-                "VALUES (?,?,?)", (d, mep, mep))
+                "INSERT INTO fx_rates_daily (date, mep_venta, blue_venta) "
+                "VALUES (?,?,?) "
+                "ON CONFLICT (date) DO UPDATE SET "
+                "  mep_venta=EXCLUDED.mep_venta, blue_venta=EXCLUDED.blue_venta",
+                (d, mep, mep))
         self.conn.commit()
 
     def _version(self):
@@ -56,8 +69,15 @@ class _AutoFxBase(_Base):
         return r[0] if r else None
 
     def _set_version(self, v):
+        # ON CONFLICT en vez de INSERT OR REPLACE (mismo SQL en SQLite y Postgres).
+        # Conflicto por la PK entera (key, user_id): fx_version es POR CUENTA.
+        # Nombra las 3 columnas de `config`, así que la conversión es equivalente.
+        # DO UPDATE y no DO NOTHING: el punto del helper es FORZAR la versión —
+        # la fila puede existir ya (la puso el propio motor al resolverla), y con
+        # DO NOTHING el test creería que forzó v1 mientras la cuenta sigue en v2.
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid, "fx_version", v))
         self.conn.commit()
 

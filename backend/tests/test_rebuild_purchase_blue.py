@@ -35,7 +35,13 @@ class RebuildPurchaseBlueTest(unittest.TestCase):
     def test_uses_purchase_date_blue(self):
         # Blue de la compra = 500 (tc_blue de hoy = 1415).
         # Costo USD = 100.000 / 500 = 200 → pnl = 300 − 200 = +100.
-        self.conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta) VALUES ('2022-01-10', 500)")
+        # ON CONFLICT en vez de INSERT OR REPLACE: mismo SQL en SQLite y Postgres.
+        # Acá no se pierde nada aunque la query no nombre mep_venta/source/fetched_at:
+        # el setUp hace `DELETE FROM fx_rates_daily`, así que la tabla arranca vacía y
+        # el conflicto nunca puede darse. El DO UPDATE está por consistencia.
+        self.conn.execute(
+            "INSERT INTO fx_rates_daily (date, blue_venta) VALUES ('2022-01-10', 500) "
+            "ON CONFLICT(date) DO UPDATE SET blue_venta = EXCLUDED.blue_venta")
         self.conn.commit()
         out = rb._replay_asset(self._events(), "ARS", 1415.0, conn=self.conn)
         self.assertEqual(len(out["operations"]), 1)

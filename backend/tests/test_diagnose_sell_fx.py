@@ -69,9 +69,23 @@ class DiagnoseSellFxTest(unittest.TestCase):
         # Serie FX: 2021 al 180, 2025-2026 al 1450 (el motor usó 1450 para TODAS).
         for d, b in [("2021-01-15", BLUE_2021), ("2021-06-15", BLUE_2021),
                      ("2025-11-13", 1450.0), ("2026-01-10", 1500.0)]:
+            # Conflicto por la PK (date). La query nombra las 4 columnas de dato
+            # (date, blue_venta, mep_venta, source); la única que NO nombra es
+            # `fetched_at`, que el INSERT OR REPLACE reseteaba a su DEFAULT
+            # datetime('now'). Lo dejamos EXPLÍCITO en el SET para conservar ese
+            # comportamiento (mismo criterio que _persist_blue_for_date en
+            # main.py): la fila se reescribe con dato nuevo, así que el timestamp
+            # se refresca. Ningún test de este archivo lee fetched_at, y setUp
+            # vacía fx_rates_daily con fechas distintas, así que el DO UPDATE ni
+            # llega a ejercitarse hoy.
             self.conn.execute(
-                "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
-                "VALUES (?,?,?,?)", (d, b, b * 1.05, "test"))
+                "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta,source) "
+                "VALUES (?,?,?,?) "
+                "ON CONFLICT (date) DO UPDATE SET "
+                "  blue_venta = EXCLUDED.blue_venta, "
+                "  mep_venta  = EXCLUDED.mep_venta, "
+                "  source     = EXCLUDED.source, "
+                "  fetched_at = datetime('now')", (d, b, b * 1.05, "test"))
         self.bid = "b-sellfx"
         self.conn.execute(
             "INSERT INTO import_batches (id,user_id,broker,parser_format,file_hash,status) "

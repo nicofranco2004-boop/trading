@@ -40,12 +40,22 @@ def _new_user(conn, email: str) -> int:
 
 def _seed_cer(conn, rows):
     """Inserta directamente en bond_indices_daily, bypassing el fetcher."""
+    # Conflicto por la PK (index_name, date). La query nombra las 5 columnas de
+    # la tabla, así que el viejo INSERT OR REPLACE no borraba nada: conversión
+    # equivalente. Además setUp() hace DELETE FROM bond_indices_daily y ningún
+    # test siembra dos veces la misma fecha, así que el DO UPDATE ni se ejercita.
+    # Fila por fila (no un multi-VALUES): Postgres rechaza un ON CONFLICT DO
+    # UPDATE que toque la misma clave dos veces en la misma sentencia.
     with conn:
         for date, value in rows:
             conn.execute(
-                """INSERT OR REPLACE INTO bond_indices_daily
+                """INSERT INTO bond_indices_daily
                    (index_name, date, value, source, updated_at)
-                   VALUES ('CER', ?, ?, 'test', '2026-05-11T00:00:00Z')""",
+                   VALUES ('CER', ?, ?, 'test', '2026-05-11T00:00:00Z')
+                   ON CONFLICT (index_name, date) DO UPDATE SET
+                     value      = EXCLUDED.value,
+                     source     = EXCLUDED.source,
+                     updated_at = EXCLUDED.updated_at""",
                 (date, value),
             )
 

@@ -94,8 +94,13 @@ class CashAutodepositTest(unittest.TestCase):
 
     def test_ars_buy_autodeposit_converted_usd(self):
         self._broker("Cocos", "ARS")
+        # Conflicto por la PK compuesta (key, user_id) de `config`. La query nombra
+        # las 3 columnas de la tabla, así que no hay nada que se pierda al convertir:
+        # el DO UPDATE es equivalente al borrar-y-reinsertar de antes. Igual el
+        # setUp hace DELETE FROM config, así que acá nunca hay conflicto real.
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid, "tc_blue", "1000"))
         self.conn.commit()
         main.create_position(self._pos("Cocos", asset="GGAL", invested=100000.0), self.uid)
@@ -115,8 +120,11 @@ class CashAutodepositTest(unittest.TestCase):
     def test_plazo_fijo_funding_no_cash_floors_at_zero(self):
         # Crear un PF desde un broker sin cash suficiente → mismo auto-deposit.
         self._broker("Banco Galicia", "ARS")
+        # Mismo caso que test_ars_buy_autodeposit_converted_usd: 3 de 3 columnas
+        # nombradas, conflicto por (key, user_id), y la tabla arranca vacía.
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
             (self.uid, "tc_blue", "1000"))
         self.conn.commit()
         pf = main.PlazoFijoIn(banco="Galicia", capital=100000.0, moneda="ARS",
@@ -146,13 +154,33 @@ class AutodepositRateTest(unittest.TestCase):
         self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
                           (self.uid, "Cocos", "ARS"))
         # El valor viejo y ajeno que se usaba antes.
-        self.conn.execute("INSERT OR REPLACE INTO config VALUES ('tc_blue','1415',?)", (self.uid,))
+        # Se nombran las columnas a propósito: el VALUES posicional asumía el orden
+        # (key, value, user_id) del CREATE TABLE — coincide hoy, pero la próxima
+        # columna que se agregue a `config` lo rompe en silencio. Cubre las 3
+        # columnas, conflicto por la PK (key, user_id); setUp vacía la tabla antes.
+        self.conn.execute(
+            "INSERT INTO config (key, value, user_id) VALUES ('tc_blue','1415',?) "
+            "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
+            (self.uid,))
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(fx_rates_daily)")]
         if "mep_venta" not in cols:
             self.conn.execute("ALTER TABLE fx_rates_daily ADD COLUMN mep_venta REAL")
+        # Conflicto por la PK (date). La query NO nombra `fetched_at`: con
+        # INSERT OR REPLACE esa columna se reseteaba por su DEFAULT, así que la
+        # ponemos EXPLÍCITA en el SET para conservar exactamente eso (mismo criterio
+        # que el escritor real, _persist_blue_for_date en main.py:4246). Da igual en
+        # la práctica —setUp vacía fx_rates_daily y se siembra una sola fila, o sea
+        # que el DO UPDATE no llega a correr, y ningún test lee fetched_at— pero se
+        # deja escrito para que nadie copie de acá un upsert que pierde el refresh.
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-            "VALUES (?,?,?,?)", ("2024-05-03", 1050.0, 1180.0, "test"))
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (date) DO UPDATE SET "
+            "  blue_venta = EXCLUDED.blue_venta, "
+            "  mep_venta  = EXCLUDED.mep_venta, "
+            "  source     = EXCLUDED.source, "
+            "  fetched_at = datetime('now')",
+            ("2024-05-03", 1050.0, 1180.0, "test"))
         self.conn.commit()
 
     def tearDown(self):
@@ -195,9 +223,18 @@ class CashFlowFechaTest(unittest.TestCase):
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(fx_rates_daily)")]
         if "mep_venta" not in cols:
             self.conn.execute("ALTER TABLE fx_rates_daily ADD COLUMN mep_venta REAL")
+        # Idéntico al seed de AutodepositRateTest: conflicto por la PK (date) y
+        # `fetched_at` explícito en el SET (antes lo reseteaba el DEFAULT al
+        # reinsertar). La tabla arranca vacía, así que el DO UPDATE no corre.
         self.conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-            "VALUES (?,?,?,?)", ("2024-05-03", 1050.0, 1180.0, "test"))
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (date) DO UPDATE SET "
+            "  blue_venta = EXCLUDED.blue_venta, "
+            "  mep_venta  = EXCLUDED.mep_venta, "
+            "  source     = EXCLUDED.source, "
+            "  fetched_at = datetime('now')",
+            ("2024-05-03", 1050.0, 1180.0, "test"))
         self.conn.commit()
 
     def tearDown(self):
