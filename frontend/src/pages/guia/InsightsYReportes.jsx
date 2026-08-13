@@ -1,12 +1,13 @@
 // /guia/insights-y-reportes — sección 3 del manual
 
 import GuidePage from '../../components/guide/GuidePage'
+import AdvisorNote from '../../components/guide/AdvisorNote'
 import ReturnsDiagram from '../../components/guide/ReturnsDiagram'
 
 export default function InsightsYReportes() {
   return (
     <GuidePage
-      section="3 de 6"
+      n={3}
       title="Insights y reportes"
       intro="Las 5 cards de análisis automático, el timeline histórico de 12 meses, los detectores de comportamiento y cómo exportar el CSV para tu contador."
       prev={{ to: '/guia/cartera-y-operaciones', label: 'Cartera y operaciones' }}
@@ -15,6 +16,31 @@ export default function InsightsYReportes() {
       metaDescription="Las 5 cards de Insights, timeline histórico, 12 detectores de comportamiento y export CSV consolidado para AFIP en Rendi."
       canonicalPath="/guia/insights-y-reportes"
     >
+      <AdvisorNote>
+        <p>
+          Este análisis es <strong>por cliente</strong>: lo ves entrando a su cuenta, y lo
+          ves <strong>completo</strong> —con lente Pro— aunque el cliente esté en plan
+          Free. Es lo que conviene mirar antes de llamarlo: dónde está concentrado, qué le
+          rindió y qué no.
+        </p>
+        <p>
+          Dos cosas de acá tienen su versión propia del lado tuyo, y están en la sección
+          Para asesores:
+        </p>
+        <ul>
+          <li>
+            Para <strong>mandarle</strong> algo al cliente, no exportes el CSV: generá el{' '}
+            <strong>informe del período</strong> desde Tu libro, que sale listo y con tu
+            logo.
+          </li>
+          <li>
+            El número de <strong>tu gestión</strong> no está en esta sección: es el{' '}
+            <strong>TWR del libro</strong>, y vive en Tu libro. Descuenta los depósitos y
+            retiros del cliente, así mide tus decisiones y no cuánta plata puso él.
+          </li>
+        </ul>
+      </AdvisorNote>
+
       <h2>Las 5 cards de Insights</h2>
       <p>
         En <strong>Insights</strong> tenés 5 análisis automáticos de tu cartera:

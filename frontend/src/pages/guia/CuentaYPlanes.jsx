@@ -1,11 +1,12 @@
 // /guia/cuenta-y-planes — sección 6 del manual
 
 import GuidePage from '../../components/guide/GuidePage'
+import AdvisorNote from '../../components/guide/AdvisorNote'
 
 export default function CuentaYPlanes() {
   return (
     <GuidePage
-      section="6 de 6"
+      n={6}
       title="Cuenta y planes"
       intro="Configurar tu cuenta, gestionar brokers, planes Free/Plus/Pro, cambio de plan con conversión de crédito y cómo cancelar."
       prev={{ to: '/guia/novedades', label: 'Novedades y alertas' }}
@@ -13,6 +14,29 @@ export default function CuentaYPlanes() {
       metaDescription="Cómo configurar tu cuenta, cambiar de plan, cancelar tu suscripción y gestionar brokers en Rendi."
       canonicalPath="/guia/cuenta-y-planes"
     >
+      <AdvisorNote>
+        <p>
+          <strong>Los planes de esta sección no son el tuyo.</strong> Free, Plus y Pro son
+          los planes individuales, para alguien que sigue su propia cartera. Vos tenés el{' '}
+          <strong>Plan Asesor</strong>, que es más grande: incluye a todos tus clientes con
+          visión Pro —aunque ellos estén en Free—, la operación grupal, el chat libre y el
+          resumen de carteras. Si entrás a Planes vas a ver eso mismo: tu estado, no las
+          cards para comprar.
+        </p>
+        <p>
+          Por eso <strong>no hay botón</strong> para cambiar de plan, cancelar o pasar a
+          Pro. Cualquier cambio en tu Plan Asesor —límite de clientes, facturación o
+          baja— lo resolvemos por <strong>WhatsApp</strong>, con el link que está en esa
+          misma pantalla, en el día.
+        </p>
+        <p>
+          El resto de la sección sí es tuyo tal cual: tus datos, tu contraseña, la moneda
+          con la que valuás, las notificaciones y el soporte. Ojo con una cosa: lo que
+          configures acá es de <strong>tu</strong> cuenta. La configuración de cada cliente
+          vive en la cuenta de él, y la ves cuando entrás.
+        </p>
+      </AdvisorNote>
+
       <h2>Configuración</h2>
       <p>
         En <strong>Configuración</strong> tenés:

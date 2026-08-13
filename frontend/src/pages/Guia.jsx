@@ -34,6 +34,7 @@ const SECTIONS = [
     icon: Rocket,
     title: 'Empezar',
     desc: 'Crear cuenta, agregar broker, importar CSV o cargar tu primera operación manual.',
+    descAsesor: 'Agregar el broker, importar el CSV y cargar la primera operación — adentro de la cuenta de cada cliente.',
   },
   {
     n: 2,
@@ -41,6 +42,7 @@ const SECTIONS = [
     icon: Briefcase,
     title: 'Cartera y operaciones',
     desc: 'Posiciones, compra/venta con FIFO, bonos AR, CEDEARs, crypto y resumen mensual.',
+    descAsesor: 'La cartera de cada cliente: comprar y vender con FIFO, bonos AR, CEDEARs y marcarle los depósitos.',
   },
   {
     n: 3,
@@ -48,6 +50,7 @@ const SECTIONS = [
     icon: Compass,
     title: 'Insights y reportes',
     desc: 'Las 5 cards de análisis, timeline histórico, detectores de comportamiento y export CSV.',
+    descAsesor: 'El análisis de cada cliente con lente Pro: qué mirar antes de llamarlo y qué mandarle en el informe.',
   },
   {
     n: 4,
@@ -55,6 +58,7 @@ const SECTIONS = [
     icon: SparkIcon,
     title: 'Rendi AI',
     desc: '12 preguntas guiadas, chat libre (Pro), registrar operaciones por chat, memoria persistente y cuotas semanales.',
+    descAsesor: 'A tu nivel responde sobre TODO tu libro ("¿a quiénes les pega esta noticia?"); adentro de un cliente, sobre su cartera.',
   },
   {
     n: 5,
@@ -62,6 +66,7 @@ const SECTIONS = [
     icon: Bell,
     title: 'Novedades y alertas',
     desc: 'Eventos del mercado, noticias filtradas por tus tickers, noticias macro generales y alertas de precio objetivo o variación %.',
+    descAsesor: 'Novedades de los activos de todos tus clientes juntos. Tu única alerta hoy: cuando la cartera de un cliente sube o baja X%.',
   },
   {
     n: 6,
@@ -69,6 +74,7 @@ const SECTIONS = [
     icon: UserCog,
     title: 'Cuenta y planes',
     desc: 'Configuración, planes Free/Plus/Pro, cambio de plan, cancelación y push notifications.',
+    descAsesor: 'Tus datos, seguridad, moneda de valuación y notificaciones. Los planes Free/Plus/Pro no son los tuyos.',
   },
 ]
 
@@ -145,7 +151,11 @@ export default function Guia() {
                         {s.title}
                       </h2>
                       <p className="text-sm text-ink-2 leading-relaxed mb-3">
-                        {s.desc}
+                        {/* Las secciones compartidas tienen DOS bajadas: el asesor
+                            hace lo mismo pero adentro de un cliente, y en tres casos
+                            (IA, alertas, planes) lo del usuario directamente no
+                            aplica a su cuenta. Ver AdvisorNote. */}
+                        {(esAsesor && s.descAsesor) || s.desc}
                       </p>
                       <div className="inline-flex items-center gap-1.5 text-xs text-data-violet font-medium">
                         Leer sección
@@ -183,8 +193,14 @@ export default function Guia() {
               to="/planes"
               className="block border border-line/60 hover:border-line-3 rounded-sm px-4 py-3 transition-colors"
             >
-              <div className="text-sm font-medium text-ink-1 mb-0.5">Planes y precios</div>
-              <div className="text-xs text-ink-3">Free, Plus y Pro.</div>
+              <div className="text-sm font-medium text-ink-1 mb-0.5">
+                {esAsesor ? 'Tu Plan Asesor' : 'Planes y precios'}
+              </div>
+              {/* Free/Plus/Pro son los planes INDIVIDUALES: al asesor no le aplican
+                  (la pantalla /planes ya se lo dice, ver Planes.jsx). */}
+              <div className="text-xs text-ink-3">
+                {esAsesor ? 'Free, Plus y Pro no son el tuyo.' : 'Free, Plus y Pro.'}
+              </div>
             </Link>
           </div>
         </section>

@@ -9,9 +9,9 @@ import GuidePage from '../../components/guide/GuidePage'
 export default function Asesores() {
   return (
     <GuidePage
-      section="Para asesores"
+      n={0}
       title="Para asesores"
-      intro="Si tu cuenta es de asesor, Rendi cambia: en vez de una cartera propia ves TU LIBRO — todos tus clientes juntos. Acá está lo que es exclusivo tuyo: clientes, grupos, operación grupal, alertas e informes con tu marca. Todo lo operativo (cargar posiciones, vender, marcar depósitos) funciona igual que para cualquier usuario y está en las secciones siguientes: lo hacés adentro de cada cliente."
+      intro="Si tu cuenta es de asesor, Rendi cambia: en vez de una cartera propia ves TU LIBRO — todos tus clientes juntos. Acá está lo que es exclusivo tuyo: clientes, grupos, operación grupal, la IA del libro, alertas e informes con tu marca. Lo operativo (cargar posiciones, vender, marcar depósitos) lo hacés adentro de cada cliente y funciona igual, así que está en las secciones siguientes — y en cada una vas a encontrar un bloque violeta 'Si sos asesor' con lo que cambia para vos."
       next={{ to: '/guia/empezar', label: 'Empezar' }}
       metaTitle="Guía para asesores — Rendi"
       metaDescription="Cómo funciona Rendi para asesores financieros: tu libro, clientes, grupos, operación grupal, alertas, informes con tu marca y el brief diario."
@@ -74,11 +74,50 @@ export default function Asesores() {
         mensaje que se personaliza para cada uno.
       </p>
 
+      <h2>La IA de tu libro</h2>
+      <p>
+        A tu nivel, <strong>Rendi AI responde mirando todas las carteras de tus clientes
+        juntas</strong>. Es la diferencia más grande contra la IA de un usuario, que solo
+        ve una cartera.
+      </p>
+      <p>
+        Sirve sobre todo para lo que a mano es tedioso: <strong>quién tiene qué</strong>.
+        Preguntale “¿quiénes tienen AL30 y cuánto pesa en cada cartera?” y te cruza todo
+        el libro. También te ordena rankings de clientes, la concentración por activo y
+        qué se movió.
+      </p>
+      <p>
+        Además podés <strong>dictarle una compra grupal</strong>: “registrale a Juan
+        300.000 pesos y a Ana 400.000 del CEDEAR de Tesla a 58.900”. Te la deja armada
+        para que la confirmes, igual que la operación grupal de la pantalla. Solo compras:
+        las ventas van cliente por cliente desde la app.
+      </p>
+      <p>
+        Cuando <strong>entrás a un cliente</strong>, la IA te sigue: pasa a responder con
+        los datos de esa cartera. El <strong>chat libre</strong> ya viene en tu plan, en
+        los dos niveles.
+      </p>
+
       <h2>Alertas del libro</h2>
       <p>
-        Una sección propia que te avisa lo que se movió del lado de tus clientes, sin que
-        tengas que entrar a mirar uno por uno. Queda un <strong>historial</strong> de lo
-        avisado, así podés ver qué pasó mientras no estabas.
+        A tu nivel no tenés alertas de precio: tenés dos avisos, y los dos son sobre el
+        libro. Están juntos en <strong>Alertas</strong>.
+      </p>
+      <p>
+        El principal es <strong>Movimiento en la cartera de un cliente</strong>: te
+        avisamos cuando la cartera de <em>cualquiera</em> de tus clientes se mueve más de
+        lo que vos digas. Ponés un umbral para <strong>suba</strong> y otro para{' '}
+        <strong>baja</strong>, en <strong>porcentaje</strong> (no en pesos), y podés dejar
+        uno solo de los dos. Elegís si te llega por push, por mail o por los dos.
+      </p>
+      <p>
+        Queda un <strong>historial</strong> de lo avisado, así ves qué pasó mientras no
+        mirabas.
+      </p>
+      <p>
+        El otro es el <strong>brief diario</strong>, acá abajo. Y si querés seguir un
+        precio puntual de un cliente, entrá a su cuenta y creá la alerta ahí: el aviso te
+        llega a vos, con el nombre del cliente adelante.
       </p>
 
       <h2>Informes con tu marca</h2>

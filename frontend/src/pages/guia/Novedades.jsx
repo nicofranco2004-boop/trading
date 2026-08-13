@@ -1,11 +1,12 @@
 // /guia/novedades — sección 5 del manual
 
 import GuidePage from '../../components/guide/GuidePage'
+import AdvisorNote from '../../components/guide/AdvisorNote'
 
 export default function Novedades() {
   return (
     <GuidePage
-      section="5 de 6"
+      n={5}
       title="Novedades y alertas"
       intro="Eventos del mercado que afectan tus tickers + noticias filtradas por tu cartera + noticias macro generales, y alertas que te avisan cuando un activo llega a un precio o se mueve un % que vos definís."
       prev={{ to: '/guia/coach-ia', label: 'Rendi AI' }}
@@ -14,6 +15,41 @@ export default function Novedades() {
       metaDescription="Cómo funcionan los eventos del mercado, las noticias filtradas por tu cartera y las alertas de precio y variación en Rendi."
       canonicalPath="/guia/novedades"
     >
+      <AdvisorNote>
+        <p>
+          <strong>Novedades</strong> a tu nivel es <strong>cross-cliente</strong>: los
+          eventos y las noticias salen de los activos de <em>todos</em> tus clientes
+          juntos, no de una cartera tuya. Todo lo que dice esta sección sobre eventos y
+          noticias vale igual; lo único que cambia es de dónde sale la lista de tickers.
+        </p>
+        <p>
+          <strong>Alertas es otra cosa para vos.</strong> Hoy no tenés alertas de precio a
+          tu nivel: tenés dos avisos, y los dos son sobre el libro.
+        </p>
+        <ul>
+          <li>
+            <strong>Movimiento en la cartera de un cliente.</strong> Te avisamos cuando la
+            cartera de cualquiera de tus clientes se mueve más de lo que vos digas.
+            Ponés un umbral para <strong>suba</strong> y otro para <strong>baja</strong>,
+            en <strong>porcentaje</strong> (no en plata), y podés poner uno solo de los
+            dos. Elegís si te llega por push, por mail o por los dos, y queda un{' '}
+            <strong>historial</strong> de lo avisado para ver qué pasó mientras no
+            mirabas.
+          </li>
+          <li>
+            <strong>El brief diario de tu libro</strong>, que se configura en la misma
+            pantalla. Está explicado en la sección Para asesores.
+          </li>
+        </ul>
+        <p>
+          Las alertas de <strong>precio objetivo y variación</strong> que describe esta
+          sección sí existen, pero <strong>adentro de cada cliente</strong>: entrás a su
+          cuenta, las creás sobre sus activos, y el aviso te llega{' '}
+          <strong>a vos</strong> —a tu mail y a tus notificaciones— con el nombre del
+          cliente adelante para que sepas de quién es.
+        </p>
+      </AdvisorNote>
+
       <h2>Cómo llegar</h2>
       <p>
         Sección <strong>Novedades</strong> en el sidebar. Tiene 2 tabs arriba:{' '}

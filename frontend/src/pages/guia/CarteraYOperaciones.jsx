@@ -1,11 +1,12 @@
 // /guia/cartera-y-operaciones — sección 2 del manual
 
 import GuidePage from '../../components/guide/GuidePage'
+import AdvisorNote from '../../components/guide/AdvisorNote'
 
 export default function CarteraYOperaciones() {
   return (
     <GuidePage
-      section="2 de 6"
+      n={2}
       title="Cartera y operaciones"
       intro="Cómo funcionan las posiciones, FIFO al vender, bonos AR, CEDEARs, crypto y el resumen mensual."
       prev={{ to: '/guia/empezar', label: 'Empezar' }}
@@ -14,6 +15,30 @@ export default function CarteraYOperaciones() {
       metaDescription="Cómo gestionar posiciones, vender con FIFO, registrar bonos AR (AL30, GD30, TX26), CEDEARs y crypto en Rendi."
       canonicalPath="/guia/cartera-y-operaciones"
     >
+      <AdvisorNote>
+        <p>
+          Fijate que a tu nivel <strong>no tenés Cartera ni Movimientos en el menú</strong>:
+          aparecen cuando entrás a un cliente, porque las carteras son de ellos. Todo lo de
+          esta sección —posiciones, comprar y vender con FIFO, bonos, CEDEARs, cripto,
+          marcar depósitos, el resumen mensual— funciona <strong>exactamente igual</strong>,
+          solo que lo hacés adentro de su cuenta y con su plata.
+        </p>
+        <p>
+          Dos cosas que te ahorran tiempo y que un usuario común no tiene:
+        </p>
+        <ul>
+          <li>
+            Si la <strong>misma compra</strong> va para varios clientes, no la cargues uno
+            por uno: usá la <strong>operación grupal</strong> desde Clientes (o dictásela a
+            Rendi AI). Se anota en todos de una, y si te equivocaste se deshace entera.
+          </li>
+          <li>
+            Las <strong>ventas</strong> sí van cliente por cliente, desde la cuenta de cada
+            uno, como cuenta esta sección.
+          </li>
+        </ul>
+      </AdvisorNote>
+
       <h2>Posiciones</h2>
       <p>
         En <strong>Posiciones</strong> ves todo lo que tenés vivo, agrupado por broker.
