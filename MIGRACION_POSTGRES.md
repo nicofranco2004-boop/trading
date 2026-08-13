@@ -1,6 +1,6 @@
 # Migración SQLite → Postgres (Supabase) — estado y prompt de continuación
 
-Sesión del 2026-08-13. Pegá el bloque de abajo en una sesión nueva.
+Última sesión: 2026-08-13 (noche). Pegá el bloque de abajo en una sesión nueva.
 
 ---
 
@@ -21,7 +21,7 @@ techo es estructural: con más usuarios vuelve. Postgres lo resuelve de raíz.
 
     /private/tmp/claude-501/-Users-nicolaspussetto-Documents-trading/adc4a925-dbdb-4165-a5e3-826b55c1200c/scratchpad/mainwt
 
-Rama **`spike/postgres`**, commit `6020812`. **NO se deploya** — es un spike.
+Rama **`spike/postgres`**, commit `49f6e90`. **NO se deploya** — es un spike.
 Producción va por `main` y está estable (`8f4edfe`).
 
 ⚠️ macOS purga `/private/tmp` en sesiones largas. Si el worktree no está, los
@@ -43,9 +43,11 @@ commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
 - **Audit de datos sobre PRODUCCIÓN** (`GET /api/admin/pg-type-audit`, ya deployado):
   425 columnas, 60 tablas → **LIMPIO**. No hay texto en columnas numéricas ni nulls
   donde no van. El riesgo grande de la migración está descartado con datos reales.
-- **Medición**: **77,4%** (2.231 de 2.883), commit `36a2974`. Medida sobre la suite
-  COMPLETA. Los números viejos de este doc (88%, después 74%) eran muestras
-  parciales; la corrida entera daba 68,8% antes de la sesión del 13/08 a la tarde.
+- **Medición**: **88,8%** (2.525 de 2.842), commit `49f6e90`. Suite COMPLETA,
+  **y ahora el número significa algo**: cero timeouts y cero errores de
+  infraestructura (ver la sección del aislamiento). Antes de eso el porcentaje
+  no era ni reproducible — la misma suite en el mismo commit daba 77,4% en una
+  corrida y 71,9% en otra, porque dependía de qué se trababa con qué.
 
 ## Sesión 13/08 (tarde) — hecho y medido
 
@@ -97,37 +99,97 @@ un error.**
 
 ## Lo que falta
 
-| Qué | Sitios | Estado |
-|---|---|---|
-| `sqlite3.<X>Error` → excepciones del shim | 21 | pendiente |
-| `sqlite3.connect` → `get_db()` | 16 | pendiente |
-| `INSERT OR REPLACE` → `ON CONFLICT` explícito | 9 | pendiente (avisa solo) |
-| Placeholders con nombre `:user_id` | ~12 fallas | **NO estaba en los 80** |
-| `rowid` → la clave primaria | 3 | pendiente (avisa solo) |
-| `PRAGMA` varios | 16 | mayoría inerte: `get_db()` corta antes |
+Con el aislamiento arreglado, las 317 fallas que quedan son TODAS de código: no
+hay ni un timeout ni un error de infraestructura escondido adentro. Clasificadas
+sobre la corrida real (no contando sitios a mano):
 
-⚠️ **El plan original de 80 sitios subestimaba.** Ya aparecieron 4 categorías que no
+| Qué | Fallas | Peso |
+|---|---|---|
+| **`INSERT OR REPLACE` → `ON CONFLICT` explícito** | **237** | **75%** |
+| `AssertionError` (diferencia de resultado a mirar una por una) | 22 | 7% |
+| `sqlite3.<X>Error` / `sqlite3.connect` → shim y `get_db()` | 17 | 5% |
+| Placeholders con nombre `:user_id` (sale como error de sintaxis) | 12 | 4% |
+| `printf()` → `format()`/concatenación | 8 | 3% |
+| Otros sueltos (`AmbiguousColumn`, constraints, `rowid`) | 21 | 6% |
+
+⚠️ **Un solo ítem es tres cuartos de lo que queda.** El doc anterior tenía
+`INSERT OR REPLACE` anotado como "9 sitios"; son 24 en el código (lo dice el
+docstring de `pgshim`) y explican 237 fallas. Es trabajo mecánico —por cada uno
+hay que leer el índice único de la tabla y escribir el `ON CONFLICT (...)` —
+pero es EL trabajo que queda. El shim levanta un error explícito en cada uno, así
+que ninguno puede pasar en silencio.
+
+⚠️ **El plan original de 80 sitios subestimaba.** Aparecieron 4 categorías que no
 estaban contadas: fechas con modificador (15), `MIN`/`MAX` de dos argumentos (2),
-placeholders con nombre (~12 fallas) y fechas mal formadas (3). No es más difícil;
+placeholders con nombre (12 fallas) y fechas mal formadas (3). No es más difícil;
 es más largo. Asumir que la lista está completa es el error a evitar.
 
-## Los 472 timeouts NO son de la app
+## El aislamiento de tests: ARREGLADO (`49f6e90`)
 
-**Causa raíz encontrada y verificada con un experimento.** `tests/conftest.py` aísla
-cada módulo con `DROP SCHEMA public CASCADE`. Con SQLite cada módulo tenía su propio
-ARCHIVO; con Postgres los 58 comparten UNA base, y el `DROP SCHEMA` **se cuelga
-indefinidamente** si un test anterior dejó una conexión abierta. Medido: se colgó 8s
-y murió por timeout. Con `--timeout=10`, eso es exactamente un `Failed: Timeout`.
+Eran **618 tests** (527 errores + 91 timeouts) que no eran fallas de la app.
 
-Mientras esto no se arregle, **el porcentaje miente**: mezcla "código roto" con "base
-trabada". Es la brújula de todo lo demás y está desviada.
+**La causa raíz era más grande que lo que decía este doc.** La sesión anterior
+había identificado el `DROP SCHEMA public CASCADE` colgado; eso es la mitad.
+Capturado en vivo con `pg_stat_activity` durante una corrida:
+
+    estado                 consulta
+    ---------------------  --------------------------------------------
+    idle in transaction    (un test anterior que escribió y no cerró)
+    active + Lock          INSERT INTO users (email, ...)   ← esperando
+
+**No es sólo el armado de la base: son los tests normales entre sí.** Un test deja
+la transacción abierta con un `users.email` adentro; el siguiente inserta ese mismo
+email y espera a que la primera termine. Nunca termina.
+
+Por qué en SQLite no pasaba, que es el dato que ordena todo: cada módulo tenía su
+ARCHIVO, **y una conexión de sqlite3 sólo abre transacción al ESCRIBIR**. psycopg
+con `autocommit=False` la abre hasta para un `SELECT`, y se queda con los locks de
+todo lo que tocó. La misma línea de código se comporta distinto en cada motor.
+
+El arreglo tiene tres partes y las tres hacen falta: un **esquema por módulo** (el
+equivalente real del archivo por módulo), **cortar las conexiones huérfanas** al
+empezar cada módulo (Postgres acepta 100, y cada traceback que pytest guarda para
+el reporte final mantiene viva la conexión de ese test), y **dos relojes de
+Postgres cuyo ORDEN es el arreglo**:
+
+    idle_in_transaction (3s)  <  lock_timeout (7s)  <  --timeout de pytest (10s)
+
+Al revés —que es como lo escribí la primera vez— el test que espera se rinde ANTES
+de que Postgres mate a la conexión fugada: sigue fallando pudiendo pasar. Medido
+con las dos configuraciones: con el orden malo corta a los 4,0s con `lock timeout`;
+con el bueno espera 3,0s y **pasa**.
+
+Resultado, comparado test por test contra la misma suite en el mismo Postgres:
+
+| | antes | después |
+|---|---|---|
+| Postgres | 2.042/2.842 = **71,9%** | 2.525/2.842 = **88,8%** |
+| errores de infraestructura | 527 | **0** |
+| timeouts | 91 | **0** |
+| duración | 19:41 | **6:21** |
+| **regresiones** | — | **0** |
+
+SQLite quedó idéntico (2.780/2.826, las mismas 46 preexistentes), verificado
+corriendo la suite con y sin los cambios.
+
+## Hallazgo para el punto 4 (Supabase): las conexiones no se cierran solas
+
+Hay **277 `conn = get_db()` en el código de la app y ningún `with`**. Si salta una
+excepción antes del `close()`, en SQLite no pasa casi nada; en Postgres esa conexión
+queda **`idle in transaction`**, reteniendo los locks de todo lo que tocó, hasta que
+el recolector de Python la junte. Es lo mismo que colgaba los tests.
+
+En local hay 100 conexiones de margen. **Supabase da bastante menos**, así que esto
+puede aparecer como "la app se traba" recién allá. No está arreglado. La forma
+prolija es que `get_db()` sea un context manager y que los 277 sitios usen `with`;
+la barata es un `try/finally`. Los relojes que puse en el conftest son de TESTS:
+en producción no hay nada equivalente puesto.
 
 ## Orden sugerido
 
-1. **Arreglar el aislamiento de tests** (un esquema o una base por módulo, en vez de
-   `DROP SCHEMA` sobre una compartida). Es lo que más mueve el número de una sola vez
-   y lo que hace que las mediciones siguientes signifiquen algo.
-2. Los sitios que quedan en la tabla de arriba.
+1. ~~Arreglar el aislamiento de tests~~ ✅ `49f6e90`.
+2. Los sitios que quedan en la tabla de arriba. **Empezá por `INSERT OR REPLACE`:
+   es 75% de lo que falta y es mecánico.**
 3. **Copiador de datos** SQLite→Postgres. Verificación obligatoria: filas por tabla
    **y** totales de plata por usuario (invertido, P&L, efectivo). Contar filas no
    detecta un número mal convertido.
@@ -160,7 +222,10 @@ trabada". Es la brújula de todo lo demás y está desviada.
 cd <scratchpad>
 python3 -c "import pgserver,pathlib;print(pgserver.get_server(pathlib.Path('pgdata').absolute(),cleanup_mode=None).get_uri())" > pg_uri.txt
 
-# suite contra Postgres  (--timeout es obligatorio: hay tests que cuelgan)
+# suite contra Postgres. Tarda ~6:20 y NO debería dar ningún timeout: si aparece
+# uno, es una regresión del aislamiento, no una falla de la app. El --timeout=10
+# se deja puesto justamente como alarma (y porque los relojes del conftest —3s y
+# 7s— están calibrados para cortar ANTES que él).
 cd mainwt/backend
 DATABASE_URL="$(cat ../../pg_uri.txt)" python3 -m pytest tests -q --timeout=10
 
