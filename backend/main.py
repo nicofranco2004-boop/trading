@@ -16203,6 +16203,115 @@ def admin_pg_type_audit(incluir_ok: bool = False, uid: int = Depends(get_admin_u
         conn.close()
 
 
+@app.post("/api/admin/repair-comisiones")
+def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
+                            uid: int = Depends(get_admin_user)):
+    """Pone en CERO las comisiones implausibles ya escritas en `positions`.
+
+    El guard del normalizer impide que entren nuevas; esto limpia las 469 que ya
+    están. Sin esto, 78 usuarios siguen viendo pérdidas que no existen: el P&L de
+    Cartera calcula `invested + commissions`, así que una comisión inventada se
+    come la ganancia (un NFLX mostraba -48,1% cuando ganaba +3,5%).
+
+    MISMO CRITERIO que el import (5% de buy_price × quantity), a propósito: si el
+    umbral de limpieza fuera distinto del de entrada, quedarían filas que el
+    guard dejaría pasar pero la limpieza borra, o al revés.
+
+    DRY-RUN POR DEFECTO. Con `apply=false` (el default) NO escribe nada: devuelve
+    exactamente lo que haría. Hay que pedir `apply=true` explícitamente. Es plata
+    de gente y el error de "corrí el script sin mirar" no se puede deshacer con
+    un ctrl-Z.
+
+    REVERSIBLE: el valor viejo queda guardado en `undo_meta_json` bajo la clave
+    `comision_reparada`. Se MERGEA con lo que ya hubiera —esa columna guarda el
+    CAMINO de creación (`src`) y la cascada de borrado lo lee—: pisarla rompería
+    el borrado de esas posiciones.
+
+    NO toca: las que no tienen buy_price (no hay contra qué comparar), el cash,
+    ni las comisiones legítimas — los USD 10 de Balanz son un fee real.
+    """
+    conn = get_db()
+    try:
+        filas = conn.execute(
+            """SELECT p.id, p.user_id, u.email, p.broker, p.asset, p.currency,
+                      p.quantity, p.buy_price, p.invested, p.commissions, p.undo_meta_json
+                 FROM positions p
+                 LEFT JOIN users u ON u.id = p.user_id
+                WHERE p.is_cash = 0
+                  AND p.commissions IS NOT NULL AND p.commissions > 0
+                  AND p.quantity  IS NOT NULL AND p.quantity  > 0
+                  AND p.buy_price IS NOT NULL AND p.buy_price > 0"""
+        ).fetchall()
+
+        objetivo = []
+        for r in filas:
+            base = float(r["buy_price"]) * float(r["quantity"])
+            comm = float(r["commissions"])
+            if base <= 0 or comm / base <= 0.05:
+                continue
+            objetivo.append({
+                "position_id": r["id"], "user_id": r["user_id"], "email": r["email"],
+                "broker": r["broker"], "asset": r["asset"], "currency": r["currency"],
+                "costo_operacion": round(base, 2),
+                "comision_actual": round(comm, 2),
+                "comision_pct": round(100.0 * comm / base, 1),
+                "_undo": r["undo_meta_json"],
+            })
+        objetivo.sort(key=lambda x: -x["comision_actual"])
+        objetivo = objetivo[:limite]
+
+        total = round(sum(o["comision_actual"] for o in objetivo), 2)
+        usuarios = sorted({o["user_id"] for o in objetivo})
+
+        if apply:
+            # Por TANDAS, soltando el lock entre medio. Una transacción sobre
+            # cientos de filas tiene el lock de escritura tomado todo ese rato y
+            # deja al resto de la app sin poder guardar (lección del 13/08).
+            hechas = 0
+            for i in range(0, len(objetivo), 200):
+                with conn:
+                    for o in objetivo[i:i + 200]:
+                        try:
+                            meta = json.loads(o["_undo"]) if o["_undo"] else {}
+                            if not isinstance(meta, dict):
+                                meta = {}
+                        except (ValueError, TypeError):
+                            meta = {}
+                        meta["comision_reparada"] = {
+                            "antes": o["comision_actual"],
+                            "pct": o["comision_pct"],
+                            "fecha": datetime.utcnow().strftime("%Y-%m-%d"),
+                        }
+                        conn.execute(
+                            "UPDATE positions SET commissions=0, undo_meta_json=? "
+                            "WHERE id=? AND user_id=?",
+                            (json.dumps(meta), o["position_id"], o["user_id"]))
+                        hechas += 1
+            log.warning("repair-comisiones APLICADO: %d posiciones, %d usuarios, "
+                        "%.2f de comisiones falsas borradas", hechas, len(usuarios), total)
+
+        for o in objetivo:
+            o.pop("_undo", None)
+        return {
+            "aplicado": apply,
+            "veredicto": (f"{'Corregidas' if apply else 'Se corregirían'} "
+                          f"{len(objetivo)} posiciones de {len(usuarios)} usuarios"),
+            "posiciones": len(objetivo),
+            "usuarios": len(usuarios),
+            "comisiones_falsas_total": total,
+            "detalle": objetivo[:200],
+            "siguiente_paso": (
+                "Falta re-correr el backfill de snapshots: el snapshot diario guarda "
+                "`invested + commissions` (snapshots_job.py:701 y :850), así que la "
+                "curva de evolución sigue con el número viejo hasta que se recompute."
+                if apply else
+                "Esto fue un SIMULACRO — no se escribió nada. Para aplicarlo de "
+                "verdad: POST con ?apply=true"),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diagnose-costo-inconsistente")
 def admin_diagnose_costo_inconsistente(tol: float = 0.02, limite: int = 200,
                                        uid: int = Depends(get_admin_user)):
