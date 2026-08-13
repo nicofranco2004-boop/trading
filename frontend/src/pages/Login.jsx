@@ -202,7 +202,10 @@ export default function Login() {
         navigate(`/verify-email?email=${encodeURIComponent(data.email || cleanEmail)}`)
         return
       }
-      login(data.token, data.name, { is_admin: !!data.is_admin, email: data.email || cleanEmail })
+      // await: login() ahora hidrata el user completo (tier incluido) desde
+      // /auth/me. Esperarlo antes de navegar evita que un asesor aterrice en
+      // la vista de usuario y recién después salte a su libro.
+      await login(data.token, data.name, { is_admin: !!data.is_admin, email: data.email || cleanEmail })
       navigate('/')
     } catch (err) {
       setError(err.message)
