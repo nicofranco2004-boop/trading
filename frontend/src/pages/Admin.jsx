@@ -152,6 +152,14 @@ export default function Admin() {
           msg = `${u.email} ya tiene ${planLabel} activo (vence ${hasta}).\n\n`
               + `Extender ${days} días → ${planLabel} hasta ${nuevoHasta}.`
         }
+        // Al CAMBIAR de plan los días arrancan hoy (pedido de Nico: "30 exactos"),
+        // así que si le quedaba MÁS que eso, el cambio le acorta el vencimiento.
+        // Es la única forma de que le saque algo sin querer → se avisa fuerte y
+        // decide él, con las dos fechas a la vista.
+        if (nuevoHasta && hasta && nuevoHasta < hasta) {
+          msg += `\n\n⚠️ OJO: hoy le queda hasta ${hasta} y le va a quedar hasta ${nuevoHasta}.`
+               + ` Le estás ACORTANDO el acceso (los ${days} días del plan nuevo arrancan hoy).`
+        }
         if (esAsesor) msg += '\n\nAdemás le habilita Clientes y su cuenta pasa a ser el libro.'
         if (!confirm(msg)) return
         res = await api.post(url + '&force=true')

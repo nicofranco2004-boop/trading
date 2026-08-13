@@ -17856,6 +17856,40 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+def _grant_base(state: dict, plan: str, now):
+    """Desde cuándo se cuentan los `days` de un grant-comp.
+
+    Dos reglas, según si el grant EXTIENDE o CAMBIA el plan:
+
+    • MISMO plan → desde el vencimiento vigente. "Dale 30 días más" tiene que
+      sumar 30 días, no reiniciarlos: arrancar de hoy le ACORTARÍA el acceso a
+      alguien que tiene 60 por delante.
+
+    • OTRO plan (o ninguno) → desde HOY. El plan viejo se va, así que los 30
+      días son 30 días del plan nuevo, exactos — pedido de Nico al regalar el
+      Plan Asesor a un piloto que tenía tiempo suelto: antes se apilaban y "30
+      días de Asesor" terminaban siendo casi 60.
+      Ojo: `anchor_plan` NULL (prueba gratis) cae acá, que es lo correcto —
+      no hay plan que extender.
+
+    ⚠️ Si el que tenía era un plan PAGO con más de `days` por delante, esto le
+    acorta el vencimiento. Es deliberado (el plan cambió), pero por eso el
+    endpoint devuelve `would_be_active_until` y el panel avisa cuando la fecha
+    nueva es ANTERIOR a la vigente: la decisión la toma el admin viéndola.
+    """
+    base = now
+    mismo_plan = (state.get("anchor_plan") or "").strip().lower() == plan
+    if mismo_plan and state.get("is_active") and state.get("active_until"):
+        try:
+            from datetime import datetime as __dt
+            cur = __dt.fromisoformat(str(state["active_until"]).replace("Z", ""))
+            if cur > base:
+                base = cur
+        except (ValueError, TypeError):
+            pass
+    return base
+
+
 @app.post("/api/admin/billing/grant-comp")
 def admin_billing_grant_comp(
     email: str,
@@ -17881,8 +17915,11 @@ def admin_billing_grant_comp(
     Salvaguardas:
       • plan ∈ {'plus','pro'}; days ∈ [1, 366].
       • Si el user YA tiene crédito activo, NO apila por accidente: devuelve
-        ok:false salvo force=true. Con force, extiende DESDE el vencimiento
-        actual (suma `days`), nunca acorta.
+        ok:false salvo force=true.
+      • Con force, la fecha la decide `_grant_base`: mismo plan → extiende
+        desde el vencimiento actual (nunca acorta); plan distinto → arranca
+        HOY, así "30 días de X" son 30 exactos y no se apilan sobre el plan
+        que se está reemplazando.
     """
     from datetime import datetime as _dt, timedelta as _td
 
@@ -17910,17 +17947,10 @@ def admin_billing_grant_comp(
 
         if state["is_active"] and not force:
             # Preview de lo que haría el force: el frontend lo usa para mostrar la
-            # fecha exacta en el confirm (base = vencimiento actual si sigue
-            # vigente, mismo cálculo que abajo).
-            _base = now
-            if state["active_until"]:
-                try:
-                    _cur = _dt.fromisoformat(str(state["active_until"]).replace("Z", ""))
-                    if _cur > _base:
-                        _base = _cur
-                except (ValueError, TypeError):
-                    pass
-            _would = (_base + _td(days=days)).isoformat()
+            # fecha exacta en el confirm (mismo cálculo que abajo — si cambian
+            # las reglas de la base, cambiarlas en LOS DOS lados o el cartel
+            # promete una fecha y el grant escribe otra).
+            _would = (_grant_base(state, plan, now) + _td(days=days)).isoformat()
             return {
                 "ok": False,
                 "changed": False,
@@ -17937,16 +17967,7 @@ def admin_billing_grant_comp(
                 "would_be_active_until": _would,           # vencimiento tras el force
             }
 
-        # Base = el vencimiento actual si sigue vigente (extiende), sino NOW.
-        base = now
-        if state["is_active"] and state["active_until"]:
-            try:
-                cur = _dt.fromisoformat(str(state["active_until"]).replace("Z", ""))
-                if cur > base:
-                    base = cur
-            except (ValueError, TypeError):
-                pass
-        new_active_until = base + _td(days=days)
+        new_active_until = _grant_base(state, plan, now) + _td(days=days)
         after_iso = new_active_until.isoformat()
         before_iso = state["active_until"]
 
