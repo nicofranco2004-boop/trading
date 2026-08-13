@@ -16203,6 +16203,101 @@ def admin_pg_type_audit(incluir_ok: bool = False, uid: int = Depends(get_admin_u
         conn.close()
 
 
+@app.get("/api/admin/diagnose-costo-inconsistente")
+def admin_diagnose_costo_inconsistente(tol: float = 0.02, limite: int = 200,
+                                       uid: int = Depends(get_admin_user)):
+    """Diagnóstico READ-ONLY: posiciones donde `buy_price × quantity ≠ invested`.
+
+    POR QUÉ IMPORTA. La grilla de Cartera muestra el precio de compra desde
+    `buy_price`, pero el P&L lo calcula con `invested` (Positions.jsx: la columna
+    hace `p.buy_price ?? invested/quantity`, y `calcARS`/`calcUSDT` hacen
+    `valor − invested`). Mientras los dos coincidan da igual cuál se use. Cuando
+    NO coinciden, la fila se contradice sola: muestra un precio de compra por
+    debajo del precio actual y al lado un P&L negativo enorme.
+
+    Caso que lo destapó: un NFLX con quantity=1234, buy_price=2473 (o sea un costo
+    de 3.051.682) pero un `invested` que el P&L usa como 6.089.947 — casi exacto el
+    doble. La fila decía "compré a 2.473, hoy vale 2.560" y al lado "-48,1%".
+
+    EL RATIO ES EL DIAGNÓSTICO, por eso se devuelve:
+      ≈ 2,0        → duplicación (re-import solapado, o una foto de tenencia que
+                     corrigió la CANTIDAD y dejó el `invested` acumulado)
+      ≈ 1000-1600  → una pata en pesos contada como dólares (o al revés)
+      ≈ 100        → bono per-100 contra per-1
+      disperso     → carga a mano / comisiones mal sumadas
+
+    No dice cuál de los dos valores es el correcto: dice DÓNDE se contradicen y
+    con qué forma. Con eso se decide si el fix es de datos o de código.
+
+    Sólo mira posiciones abiertas y no-cash, y con los dos campos cargados: una
+    posición importada sin `buy_price` NO es una inconsistencia (la grilla ya cae
+    a `invested/quantity` y todo cierra).
+    """
+    conn = get_db()
+    try:
+        filas = conn.execute(
+            """SELECT p.id, p.user_id, u.email, p.broker, p.asset, p.currency,
+                      p.quantity, p.buy_price, p.invested, p.commissions,
+                      p.asset_type, p.entry_date
+                 FROM positions p
+                 LEFT JOIN users u ON u.id = p.user_id
+                WHERE p.is_cash = 0
+                  AND p.quantity  IS NOT NULL AND p.quantity  > 0
+                  AND p.buy_price IS NOT NULL AND p.buy_price > 0
+                  AND p.invested  IS NOT NULL AND p.invested  > 0"""
+        ).fetchall()
+
+        malas, ratios = [], {}
+        for r in filas:
+            esperado = float(r["buy_price"]) * float(r["quantity"])
+            real = float(r["invested"])
+            if esperado <= 0:
+                continue
+            ratio = real / esperado
+            # `tol` como fracción: 0.02 = ignorar hasta 2% de diferencia. Ese
+            # colchón es para el redondeo y para las comisiones prorrateadas, que
+            # sí pueden meter unas décimas sin que haya nada roto.
+            if abs(ratio - 1.0) <= tol:
+                continue
+            malas.append({
+                "position_id": r["id"], "user_id": r["user_id"], "email": r["email"],
+                "broker": r["broker"], "asset": r["asset"], "currency": r["currency"],
+                "asset_type": r["asset_type"], "entry_date": r["entry_date"],
+                "quantity": r["quantity"], "buy_price": r["buy_price"],
+                "costo_segun_buy_price": round(esperado, 2),
+                "invested": round(real, 2),
+                "commissions": r["commissions"],
+                "ratio": round(ratio, 4),
+                # Lo que ve el usuario: la grilla muestra buy_price y el P&L usa
+                # invested, así que este es el error que aparece en pantalla.
+                "diferencia": round(real - esperado, 2),
+            })
+            k = ("~2x" if 1.9 <= ratio <= 2.1 else
+                 "~0.5x" if 0.45 <= ratio <= 0.55 else
+                 "~100x" if 90 <= ratio <= 110 else
+                 "~1/100" if 0.009 <= ratio <= 0.011 else
+                 "~FX (1000-1600x)" if 1000 <= ratio <= 1600 else
+                 "~1/FX" if 0.0006 <= ratio <= 0.001 else
+                 "otro")
+            ratios[k] = ratios.get(k, 0) + 1
+
+        malas.sort(key=lambda x: -abs(x["diferencia"]))
+        return {
+            "veredicto": (f"{len(malas)} posiciones con el costo contradictorio"
+                          if malas else "Ninguna: buy_price × quantity cierra con invested en todas"),
+            "posiciones_revisadas": len(filas),
+            "tolerancia_usada": tol,
+            "por_forma_del_ratio": ratios,
+            "usuarios_afectados": len({m["user_id"] for m in malas}),
+            "posiciones": malas[:limite],
+            "nota": ("La grilla muestra `buy_price` y el P&L usa `invested`. Cuando "
+                     "no coinciden, la fila se contradice: precio de compra abajo "
+                     "del actual y P&L negativo. El RATIO dice la causa probable."),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/disk-usage")
 def admin_disk_usage(uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY: uso de disco de los filesystems relevantes + los
