@@ -43,7 +43,7 @@ commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
 - **Audit de datos sobre PRODUCCIÓN** (`GET /api/admin/pg-type-audit`, ya deployado):
   425 columnas, 60 tablas → **LIMPIO**. No hay texto en columnas numéricas ni nulls
   donde no van. El riesgo grande de la migración está descartado con datos reales.
-- **Medición**: **98,4%** (2.809 de 2.855) y **0 fallas propias de la migración**
+- **Medición**: **98,4%** (2.841 de 2.887) y **0 fallas propias de la migración**
   (las 46 que quedan fallan igual en SQLite). Suite COMPLETA en
   **1 minuto**, **y el número significa algo**: cero timeouts y cero errores de
   infraestructura (ver la sección del aislamiento). Antes de arreglar eso el
@@ -102,21 +102,131 @@ un error.**
 
 **CERO fallas propias de la migración** (sesión 6). Postgres queda en **46 fallas y
 las 46 fallan IGUAL en SQLite** — son las preexistentes de siempre. Medido con la
-suite COMPLETA en los dos motores y comparado test por test:
+suite COMPLETA en los dos motores y comparado test por test.
 
 | | antes (`bf5226a`) | ahora |
 |---|---|---|
-| Postgres | 57 fallas (2.790 pasan) | **46 fallas (2.809 pasan)** |
-| SQLite | 46 fallas (2.795 pasan) | **46 fallas (2.815 pasan)** |
-| fallas SÓLO de Postgres | 11 | **0** |
+| Postgres | 57 fallas (2.790 pasan) | **46 fallas (2.841 pasan)** |
+| SQLite | 46 fallas (2.795 pasan) | **46 fallas (2.840 pasan)** |
+| fallas SÓLO de Postgres | 11 | **0** (salteadas, no arregladas) |
 | regresiones | — | **0 en los dos motores** |
+| **¿reproducible?** | sí | **sí: dos corridas seguidas dan el MISMO set de fallas** |
 
-Las 11 eran TODAS el mismo ítem, `Connection.backup`, y salieron del camino
-crítico por decisión (abajo), no por arreglo.
+**Cobertura tapada: ninguna.** El delta de skips (57→64) son los 7 tests de
+`test_verificar_copia` que piden `PG_DSN_VERIF`, todos nuevos. El +32 que pasa son
+los tres archivos nuevos (21+5+6). La cuenta cierra exacta: ningún test que pasaba
+antes se volvió skip.
+
+⚠️ **Los 11 de `Connection.backup` NO se arreglaron: se SALTEARON.** Están marcados
+`skipIf(USANDO_PG)` porque la herramienta quedó sólo-SQLite por decisión. La
+diferencia importa al leer la tabla: "propias: 11 → 0" no quiere decir que ahora
+anden, quiere decir que ya no se cuentan.
 
 ⚠️ **Comparar SIEMPRE contra la baseline de SQLite antes de llamar "nueva" a una
 falla.** El total de Postgres arrastra las 46 preexistentes y da una sensación de
 deuda que no existe.
+
+### 🔴 El número no era reproducible, y eso era más grave que las fallas
+
+**Medido:** la misma suite, en el mismo commit, dio **46, 47 y 49** fallas en
+corridas distintas, **con víctimas distintas cada vez** (una vez un test del
+asesor, otra los 3 de `test_orden_filas_pool` con `NotNullViolation` en
+`brokers.user_id`). Nueve corridas aisladas dieron 46 las nueve.
+
+**La causa NO era una fuga adentro de la suite: era otra suite corriendo al mismo
+tiempo contra la misma base.** La firma quedó en el traceback:
+`AdminShutdown: terminating connection due to administrator command`. El único
+lugar del proyecto que llama a `pg_terminate_backend` es `conftest.py:150`, y lo
+hacía sobre **TODOS** los pids de la base. Dos cosas se pisaban:
+
+- el `pg_terminate_backend` mataba las conexiones de la corrida de al lado, en
+  medio de un test;
+- los nombres de esquema salían del nombre del módulo, o sea que las dos corridas
+  **usaban el mismo** y una dropeaba el esquema que la otra estaba usando.
+
+**Arreglado**: el pid va en el `application_name` de cada conexión **y** adelante
+de cada nombre de esquema, más un barrido de los esquemas que dejó una corrida
+muerta (con `os.kill(pid, 0)` para no borrarle los suyos a la corrida de al lado).
+
+**Verificado con el detector, no con una corazonada.** Lanzando a propósito un
+segundo pytest contra la misma base mientras corre la suite completa:
+
+| | antes | después |
+|---|---|---|
+| fallas | **49** | **46** |
+| `AdminShutdown` en el log | 10 | **0** |
+
+Test: `tests/test_aislamiento_entre_corridas.py`.
+
+**Por qué importa más que tres fallas:** este proyecto se pasó tres sesiones
+logrando que el número de la suite SIGNIFIQUE algo (antes daba 77,4% y 71,9% en el
+mismo commit según qué se trabara con qué). Un número que cambia según lo que corra
+en otra terminal es el mismo problema disfrazado, y arruina la única herramienta
+que tenemos para decir "esto no rompió nada".
+
+### 🔴 Y adentro apareció un bug de PRODUCCIÓN: `lastrowid` = None en silencio
+
+El `NotNullViolation` en `brokers.user_id` no lo causaba el broker: lo causaba el
+`lastrowid` del INSERT anterior, que volvía `None`. Reproducido de forma
+determinística, fuera de los tests.
+
+`pgshim` emula `lastrowid` agregando `RETURNING "<pk>"`, y para eso lee la PK del
+catálogo y la cachea. Dos defectos juntos:
+
+1. **La invalidación era asimétrica.** Un `CREATE TABLE` limpiaba `_COLS_CACHE`
+   pero **no** `_PKS_CACHE` (`:868`). Una tabla creada después del primer INSERT
+   del proceso quedaba "sin PK" para siempre.
+2. **"No la encontré" y "no tiene PK" eran el mismo `None`.** Hay 18 tablas del
+   esquema que legítimamente no tienen PK, así que `None` parecía normal.
+
+Y el caso peor: si el catálogo devolvía CERO tablas (esquema equivocado, o recién
+dropeado por el otro proceso), se cacheaba ese vacío y **todas** las tablas
+quedaban sin PK. A partir de ahí cada INSERT devolvía `lastrowid=None` **sin
+ningún error**, y las claves foráneas entraban en NULL.
+
+**El modo de falla es el que más caro sale en este proyecto: el error se convierte
+en un número equivocado.** Con `NOT NULL` se ve como un error una fila más tarde;
+sin `NOT NULL`, queda una fila colgada de nada.
+
+**¿Muerde en producción?** Medido: en un arranque real el caché **ni se carga**
+durante `init_db` — en Postgres `init_db` no pasa por el shim, usa psycopg crudo
+(`main.py:539-549`). O sea que el caché se llena en el primer INSERT de la primera
+request, con las 58 tablas ya creadas. **Pero hay tablas que se crean EN CALIENTE,
+fuera de `init_db`** (`pricing/fci.py:177` y `:188`), y ésas caen justo en la
+ventana.
+
+**Arreglado**: un fallo de caché **relee el catálogo una vez** antes de concluir
+"no tiene PK", el negativo se memoiza en `_SIN_PK` (para no pagar una consulta por
+INSERT en las 18 tablas sin PK), el DDL invalida **los tres** cachés, y un catálogo
+vacío **levanta** en vez de cachearse.
+
+Test: `tests/test_pgshim_pk_cache.py`. **Verificado que falla con el comportamiento
+viejo**: con el `_pk_de` original, `lastrowid` vuelve `None` y 3 de los 5 tests se
+caen.
+
+⚠️ **Dato del proceso, que vale para la próxima:** revertir sólo la invalidación
+del DDL **no** hacía fallar los tests — la parte que de verdad arregla el bug es la
+relectura al fallar el caché. La invalidación es defensa en profundidad. Si no se
+revierte el arreglo COMPLETO, uno se convence de que el test prueba algo que no
+prueba.
+
+**Las DOS víctimas observadas eran el mismo bug**, y eso es lo que cierra el caso:
+`test_advisor_plan` hace `INSERT INTO brokers (user_id, …)` con el id que devolvió
+el INSERT anterior (`test_advisor_plan.py:57-60`) — la misma forma exacta que
+`test_orden_filas_pool`. Las dos fallas de más son "el id que devolvió un INSERT
+vino `None`".
+
+### Fuga entre módulos que SÍ existe pero hoy no muerde: `_rate_store`
+
+Apareció en la revisión de código y conviene anotarla antes de que sorprenda. El
+rate limiter guarda en un dict global con clave `f"{ip}|{suffix}"` (`main.py:301`).
+En los tests la IP es siempre `"testclient"` y los uid **reinician con cada
+esquema**, así que las cuentas se acumulan entre módulos y nadie las resetea (sólo
+hay 4 `pop` y todos en un archivo). Hoy no rompe nada —ningún test pega
+`/api/register` y ninguna de las fallas observadas está detrás de un límite— pero
+es una fuga real: el día que un test nuevo caiga detrás de un rate limit, va a
+fallar según qué módulo corrió antes. **No se tocó**: arreglarlo sin una falla que
+lo demuestre sería cambiar código por una corazonada.
 
 ### `Connection.backup`: FUERA DEL CAMINO CRÍTICO — marcado sólo-SQLite
 
@@ -529,9 +639,9 @@ el mismo traceback. Recién si no hay ninguno de los dos es una diferencia real.
    fallas propias que quedan, y está diseñado y atacado, sólo falta decidir.
    **Antes de eso, el piso de cordura de `_apply_safe`**, que es más urgente y no
    depende de la migración.
-5. **Copiador de datos** SQLite→Postgres. **La verificación se escribe PRIMERO**
-   (diseño abajo). Si se escribe el copiador antes, uno termina aceptando lo que
-   el copiador produzca.
+5. **Copiador de datos** SQLite→Postgres. La verificación ✅ está **escrita y
+   probada** (`backend/scripts/verificar_copia.py` + `tests/test_verificar_copia.py`,
+   28 casos). Falta el copiador.
 6. ~~Los `get_db()` expuestos~~ ✅ sesión 6 — `main.db_abierta()` + barrido AST.
 7. **Probar contra Supabase de verdad.** Todo lo medido hasta acá es Postgres local,
    sin red de por medio. Ahí se nota lo que hace demasiadas idas y vueltas — como el
@@ -539,7 +649,52 @@ el mismo traceback. Recién si no hay ninguno de los dos es una diferencia real.
 8. **`.env`** con los nombres de variable y `.gitignore`. Los valores los pone el
    dueño: no manejes contraseñas en texto plano.
 
-## El copiador de datos: DISEÑO DE LA VERIFICACIÓN (se escribe ANTES del copiador)
+## El copiador: LA VERIFICACIÓN ✅ ESCRITA Y PROBADA (sesión 6)
+
+`backend/scripts/verificar_copia.py` + `tests/test_verificar_copia.py` (28 casos).
+Los cuatro niveles del diseño de abajo están implementados y **probados rompiendo
+una copia a propósito, de a UNA cosa por vez**. Las cinco roturas saltan:
+
+| se rompe | lo agarra |
+|---|---|
+| una fila de menos en `operations` | nivel 1 **y** nivel 2 (la ganancia de ese usuario) |
+| un número a un float de distancia | nivel 1 y nivel 2 |
+| un `Decimal` con otro valor donde iba `float` | nivel 2 |
+| una secuencia sin `setval()` | nivel 3 |
+| `raw_json` vaciado con DELETE en vez de UPDATE | nivel 0 |
+
+Y —tan importante como lo anterior— **las que NO tienen que saltar, no saltan**: el
+`int` 1500 de SQLite contra el `float` 1500.0 de psycopg, un `Decimal` con el MISMO
+valor, y un `raw_json` vaciado bien con UPDATE. Una verificación que grita con
+copias sanas es una que uno aprende a ignorar.
+
+**Tres cosas que se aprendieron implementándola y no estaban en el diseño:**
+
+1. **"Cambiar el último decimal" no siempre existe.** `1500.0000000000001` **es**
+   `1500.0`: la distancia entre dos floats vecinos cerca de 1500 es 2,27e-13, así
+   que 1e-13 queda por debajo de medio paso y Python lo redondea al mismo número.
+   El primer test que escribí fallaba por eso, y el test estaba mal, no el código.
+   Se usa `math.nextafter`, que da la diferencia mínima que SÍ existe.
+2. **Los totales se suman en Python y en `Decimal`, no con `SUM()` en SQL.** La
+   suma de floats no es asociativa: dos motores sumando las MISMAS filas en
+   distinto orden pueden diferir en el último bit, y eso obligaría a inventar una
+   tolerancia — que es exactamente donde se esconde un error de conversión. En
+   `Decimal` es exacta y no depende del orden, así que se compara **sin tolerancia**.
+3. **El digest de cada tabla es INDEPENDIENTE DEL ORDEN** (se hashea cada fila y se
+   SUMAN los hashes). Así no hace falta un `ORDER BY` que se comporte igual en los
+   dos motores — y no se comporta: con NULLs, SQLite los ordena primero y Postgres
+   al final. Se suman y no se hace XOR para que dos filas idénticas no se cancelen.
+
+**Verificado también contra el esquema REAL de 58 tablas**: usa exactamente tres
+tipos (`text`, `bigint`, `double precision`) y la normalización los conoce a los
+tres. Quedó como test: el día que alguien agregue una columna `numeric` o
+`boolean`, avisa **antes** de que la verificación la normalice mal en silencio.
+
+⚠️ Los tests que necesitan Postgres se saltean solos si no está `PG_DSN_VERIF`. Es
+una variable **aparte** de `DATABASE_URL` a propósito: apuntan a otra base, así que
+no se pisan con la suite.
+
+## El diseño de la verificación (referencia)
 
 Es el paso donde de verdad se juega la plata de 1.084 personas. **La verificación
 va primero, y no es negociable el orden**: escrito el copiador antes, uno mira lo

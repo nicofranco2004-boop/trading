@@ -456,8 +456,22 @@ _SQLITE_MASTER_SQL = """FROM (
     FROM pg_views   WHERE schemaname = current_schema()
 ) AS sqlite_master"""
 
-# PK por tabla, leída del catálogo una vez por proceso (para emular lastrowid).
+# PK por tabla, leída del catálogo (para emular lastrowid).
 _PKS_CACHE: dict = {}
+
+# Tablas que se CONFIRMÓ que no tienen PK (hay 18 en el esquema: config,
+# fx_rates_daily, asset_last_price…). Se guardan aparte del caché de PKs para
+# poder distinguir dos cosas que antes eran la misma:
+#
+#     "esta tabla no tiene PK"          → correcto, lastrowid=None está bien
+#     "esta tabla no estaba cuando leí" → BUG: lastrowid=None sin motivo
+#
+# Antes las dos daban `None` y no había forma de saber cuál era. Una tabla creada
+# DESPUÉS de que el caché se cargó caía en el segundo caso y devolvía None para
+# siempre, en silencio. Ahora un fallo de caché relee el catálogo UNA vez antes de
+# concluir, y el resultado negativo se memoiza acá para que no cueste una consulta
+# por INSERT.
+_SIN_PK: set = set()
 
 # Columnas por tabla. En SQLite `PRAGMA table_info` es instantáneo (lee memoria);
 # acá es una consulta de verdad, y `_table_cols()` se llama ~20 veces por request.
@@ -472,6 +486,24 @@ _COLS_CACHE: dict = {}
 _RE_DDL = re.compile(r"\b(ALTER|CREATE|DROP)\s+(TABLE|VIEW)\b", re.I)
 
 
+def _invalidar_por_ddl():
+    """Un DDL invalida los TRES cachés de catálogo, no sólo el de columnas.
+
+    ⚠️ Acá estaba el bug. Este punto limpiaba `_COLS_CACHE` y dejaba intacto
+    `_PKS_CACHE`, así que una tabla creada DESPUÉS del primer INSERT del proceso
+    quedaba marcada "sin PK" para siempre. El síntoma no era un error: era un
+    `lastrowid=None` silencioso, o sea claves foráneas en NULL. La asimetría era
+    invisible porque los dos cachés se limpiaban juntos en `limpiar_caches()`,
+    que es el camino que usan los tests — el que no pasaba por acá.
+
+    Hay tablas que se crean EN CALIENTE, fuera de `init_db` (`pricing/fci.py:177`
+    y `:188`), así que la ventana existe en producción y no sólo en los tests.
+    """
+    _COLS_CACHE.clear()
+    _PKS_CACHE.clear()
+    _SIN_PK.clear()
+
+
 def limpiar_caches():
     """Vacía los cachés de catálogo (PKs y columnas por tabla).
 
@@ -482,6 +514,7 @@ def limpiar_caches():
     """
     _PKS_CACHE.clear()
     _COLS_CACHE.clear()
+    _SIN_PK.clear()
 
 
 def _escapar_y_placeholders(sql: str) -> str:
@@ -833,20 +866,54 @@ class Connection:
         # Con una conexión propia el problema no existe en ninguna de las dos
         # direcciones: no hay transacción ajena que revertir ni que dejar abierta.
         # Cuesta una conexión efímera UNA vez por proceso (el caché es global).
+        clave = tabla.lower()
         if _PKS_CACHE.get("__cargado__") is None:
-            with psycopg.connect(self._dsn, autocommit=True) as cat:
-                for t, col in cat.execute("""
-                    SELECT c.relname, a.attname
-                      FROM pg_index i
-                      JOIN pg_class c ON c.oid = i.indrelid
-                      JOIN pg_namespace n ON n.oid = c.relnamespace
-                      JOIN pg_attribute a ON a.attrelid = c.oid
-                                         AND a.attnum = ANY(i.indkey)
-                     WHERE i.indisprimary AND n.nspname = current_schema()
-                """).fetchall():
-                    _PKS_CACHE.setdefault(t, col)
-            _PKS_CACHE["__cargado__"] = True
-        return _PKS_CACHE.get(tabla.lower())
+            self._cargar_pks()
+        if clave in _PKS_CACHE:
+            return _PKS_CACHE[clave]
+        if clave in _SIN_PK:
+            return None
+        # No está en el caché. Puede ser que de verdad no tenga PK (hay 18 tablas
+        # así) o que se haya CREADO después de que el caché se cargó. Se relee UNA
+        # vez y recién ahí se concluye. Ver el comentario de _SIN_PK.
+        self._cargar_pks()
+        if clave in _PKS_CACHE:
+            return _PKS_CACHE[clave]
+        _SIN_PK.add(clave)
+        return None
+
+    def _cargar_pks(self):
+        """Lee del catálogo la PK de cada tabla del esquema activo."""
+        encontradas = 0
+        with psycopg.connect(self._dsn, autocommit=True) as cat:
+            for t, col in cat.execute("""
+                SELECT c.relname, a.attname
+                  FROM pg_index i
+                  JOIN pg_class c ON c.oid = i.indrelid
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                  JOIN pg_attribute a ON a.attrelid = c.oid
+                                     AND a.attnum = ANY(i.indkey)
+                 WHERE i.indisprimary AND n.nspname = current_schema()
+            """).fetchall():
+                _PKS_CACHE[t] = col
+                encontradas += 1
+        if encontradas == 0:
+            # ⚠️ NO se cachea este estado, y se corta fuerte. Un esquema sin NI UNA
+            # tabla con PK no es un estado posible de esta app: significa que
+            # estamos mirando el esquema equivocado (search_path mal, o el esquema
+            # recién dropeado por otro proceso). Si se cacheara, TODAS las tablas
+            # quedarían marcadas "sin PK" para siempre en este proceso, y a partir
+            # de ahí cada INSERT devolvería `lastrowid=None` **sin ningún error**:
+            # las claves foráneas entrarían en NULL y el usuario vería filas
+            # colgadas de nada. Reproducido y medido — ver
+            # tests/test_pgshim_pk_cache.py.
+            raise RuntimeError(
+                "pgshim: el catálogo no devolvió NINGUNA tabla con clave primaria. "
+                "Se está mirando un esquema vacío o inexistente (¿search_path mal "
+                "puesto, o el esquema lo borró otro proceso?). Se corta acá a "
+                "propósito: seguir haría que cada INSERT devolviera lastrowid=None "
+                "en silencio y las claves foráneas quedaran en NULL.")
+        _PKS_CACHE["__cargado__"] = True
 
     def _cols_de(self, tabla: str):
         """Las columnas de una tabla, del caché. Ver `_COLS_CACHE`."""
@@ -866,7 +933,7 @@ class Connection:
         if m:
             return CursorCacheado(self._cols_de(m.group(1)))
         if _RE_DDL.search(sql):
-            _COLS_CACHE.clear()
+            _invalidar_por_ddl()
 
         q = traducir(sql)
         p = _normalizar_params(params)
@@ -893,7 +960,7 @@ class Connection:
         """Cada sentencia por separado: psycopg no acepta multi-statement con
         parámetros, y además así un fallo dice CUÁL sentencia falló."""
         if _RE_DDL.search(sql):
-            _COLS_CACHE.clear()      # casi todo executescript es DDL de migración
+            _invalidar_por_ddl()     # casi todo executescript es DDL de migración
         cur = self._c.cursor()
         for s in [x.strip() for x in sql.split(";") if x.strip()]:
             cur.execute(traducir(s))

@@ -113,6 +113,19 @@ _LOCK_TIMEOUT = "7s"
 _PG_DSN_BASE = None          # el DSN como vino del entorno, sin opciones
 _PG_ESQUEMA_PREVIO = None    # se borra recién cuando ya nadie lo está usando
 
+# ── Que DOS suites a la vez no se pisen ──────────────────────────────────────
+# El aislamiento de abajo mata conexiones y dropea esquemas. Sin firma, mataba
+# TODAS las conexiones de la base — incluidas las de otra corrida de la suite en
+# otra terminal. El síntoma medido: la misma suite, en el mismo commit, daba 46,
+# 47 y 49 fallas según qué otra cosa estuviera corriendo, con víctimas distintas
+# cada vez y un `AdminShutdown: terminating connection due to administrator
+# command` adentro del traceback. **El número dejaba de significar algo, que es
+# justo lo que este proyecto se pasó tres sesiones arreglando.**
+#
+# Con el pid adentro del nombre, cada corrida mata sólo lo suyo. Y los esquemas
+# también llevan el pid, así que dos corridas no comparten ni un nombre.
+_APP_NAME = f"rendi_suite_{os.getpid()}"
+
 
 def _pg_dsn(esquema: str) -> str:
     from psycopg.conninfo import make_conninfo
@@ -129,7 +142,8 @@ def _pg_dsn(esquema: str) -> str:
         _PG_DSN_BASE,
         options=(f"-c search_path={esquema} "
                  f"-c lock_timeout={_LOCK_TIMEOUT} "
-                 f"-c idle_in_transaction_session_timeout={_IDLE_TX_TIMEOUT}"),
+                 f"-c idle_in_transaction_session_timeout={_IDLE_TX_TIMEOUT} "
+                 f"-c application_name={_APP_NAME}"),
     )
 
 
@@ -140,17 +154,25 @@ def _aislar_postgres(main, nombre_modulo: str):
 
     if _PG_DSN_BASE is None:
         _PG_DSN_BASE = main.DATABASE_URL
+        _barrer_esquemas_huerfanos(_PG_DSN_BASE)
 
     # Los identificadores de Postgres son de 63 bytes. Los nombres de módulo son
     # cortos, pero cortar acá evita que un archivo nuevo rompa la suite entera.
-    esquema = "t_" + re.sub(r"\W", "_", nombre_modulo)[-58:]
+    # El pid va adelante para que dos corridas simultáneas NUNCA compartan un
+    # nombre de esquema: si lo compartieran, una dropearía el esquema que la otra
+    # está usando en ese mismo momento.
+    _pre = f"t{os.getpid()}_"
+    esquema = _pre + re.sub(r"\W", "_", nombre_modulo)[-(60 - len(_pre)):]
 
     with psycopg.connect(_PG_DSN_BASE, autocommit=True) as c:
+        # SÓLO nuestras conexiones. Antes esto mataba todas las de la base y se
+        # llevaba puesta cualquier otra corrida de la suite — ver _APP_NAME.
         c.execute("""
             SELECT pg_terminate_backend(pid)
               FROM pg_stat_activity
              WHERE datname = current_database()
-               AND pid <> pg_backend_pid()""")
+               AND application_name = %s
+               AND pid <> pg_backend_pid()""", (_APP_NAME,))
         # El esquema del módulo anterior se borra ACÁ y no en su teardown: ahí
         # todavía tenía conexiones vivas y el DROP se habría colgado igual que
         # antes. Recién ahora, con los backends cortados, no hay quién bloquee.
@@ -164,6 +186,32 @@ def _aislar_postgres(main, nombre_modulo: str):
     main.DATABASE_URL = _pg_dsn(esquema)
     pgshim.limpiar_caches()
     main.init_db()
+
+
+def _barrer_esquemas_huerfanos(dsn):
+    """Borra los esquemas `t<pid>_…` de corridas que ya no existen.
+
+    Con el pid adentro del nombre —que es lo que impide que dos corridas se pisen—
+    una suite que muere a mitad (Ctrl-C, kill, un crash) deja sus esquemas para
+    siempre. Al arrancar barremos los de pids que ya no están vivos. Los de la
+    corrida de al lado, si la hay, se quedan: ese es justamente el punto.
+    """
+    import psycopg
+    with psycopg.connect(dsn, autocommit=True) as c:
+        vivos = {p for (p,) in c.execute(
+            "SELECT DISTINCT pid FROM pg_stat_activity WHERE datname=current_database()")}
+        for (nombre,) in c.execute(
+                "SELECT nspname FROM pg_namespace WHERE nspname ~ '^t[0-9]+_'").fetchall():
+            try:
+                pid = int(nombre.split("_", 1)[0][1:])
+            except ValueError:
+                continue
+            if pid in vivos or pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, 0)          # ¿el proceso todavía existe?
+            except OSError:
+                c.execute(f'DROP SCHEMA IF EXISTS "{nombre}" CASCADE')
 
 
 @pytest.fixture(autouse=True, scope="module")
