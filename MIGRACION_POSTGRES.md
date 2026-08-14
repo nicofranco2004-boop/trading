@@ -43,7 +43,7 @@ commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
 - **Audit de datos sobre PRODUCCIÓN** (`GET /api/admin/pg-type-audit`, ya deployado):
   425 columnas, 60 tablas → **LIMPIO**. No hay texto en columnas numéricas ni nulls
   donde no van. El riesgo grande de la migración está descartado con datos reales.
-- **Medición**: **98,4%** (2.841 de 2.887) y **0 fallas propias de la migración**
+- **Medición**: **98,4%** (2.850 de 2.896) y **0 fallas propias de la migración**
   (las 46 que quedan fallan igual en SQLite). Suite COMPLETA en
   **1 minuto**, **y el número significa algo**: cero timeouts y cero errores de
   infraestructura (ver la sección del aislamiento). Antes de arreglar eso el
@@ -106,16 +106,24 @@ suite COMPLETA en los dos motores y comparado test por test.
 
 | | antes (`bf5226a`) | ahora |
 |---|---|---|
-| Postgres | 57 fallas (2.790 pasan) | **46 fallas (2.841 pasan)** |
-| SQLite | 46 fallas (2.795 pasan) | **46 fallas (2.840 pasan)** |
+| Postgres | 57 fallas (2.790 pasan) | **45-46 fallas (2.854 pasan)** |
+| SQLite | 46 fallas (2.795 pasan) | **45-46 fallas (2.847 pasan)** |
+| **fallas estables, sin el flaky** | — | **45 en los DOS motores, idénticas** |
 | fallas SÓLO de Postgres | 11 | **0** (salteadas, no arregladas) |
 | regresiones | — | **0 en los dos motores** |
-| **¿reproducible?** | sí | **sí: dos corridas seguidas dan el MISMO set de fallas** |
 
-**Cobertura tapada: ninguna.** El delta de skips (57→64) son los 7 tests de
-`test_verificar_copia` que piden `PG_DSN_VERIF`, todos nuevos. El +32 que pasa son
-los tres archivos nuevos (21+5+6). La cuenta cierra exacta: ningún test que pasaba
-antes se volvió skip.
+⚠️ **El "45-46" es UN test preexistente que flipea, y flipea en los DOS motores:**
+`test_cedear_usd_price::SnapshotsJobCedearTest::test_snapshot_converts_bac`.
+Sacándolo de la cuenta, los dos motores dan **exactamente las mismas 45 fallas**, y
+"propias de Postgres" da 0 sin ninguna aclaración. Si una corrida lo muestra como
+"propia de Postgres" es porque SQLite lo acertó esa vez, no porque haya una
+diferencia de motor.
+
+**Cobertura tapada: ninguna, y la cuenta cierra exacta.** En Postgres los +41 que
+pasan son los cuatro archivos nuevos; los +7 skips son los tests de
+`test_verificar_copia` que piden `PG_DSN_VERIF`. En SQLite los +9 skips son los 9
+tests nuevos de `test_pgshim_pk_cache`, que ahí no aplican (el caché de PKs sólo
+existe en modo Postgres). Ningún test que pasaba antes se volvió skip.
 
 ⚠️ **Los 11 de `Connection.backup` NO se arreglaron: se SALTEARON.** Están marcados
 `skipIf(USANDO_PG)` porque la herramienta quedó sólo-SQLite por decisión. La
@@ -176,8 +184,8 @@ catálogo y la cachea. Dos defectos juntos:
 1. **La invalidación era asimétrica.** Un `CREATE TABLE` limpiaba `_COLS_CACHE`
    pero **no** `_PKS_CACHE` (`:868`). Una tabla creada después del primer INSERT
    del proceso quedaba "sin PK" para siempre.
-2. **"No la encontré" y "no tiene PK" eran el mismo `None`.** Hay 18 tablas del
-   esquema que legítimamente no tienen PK, así que `None` parecía normal.
+2. **"No la encontré" y "no tiene PK" eran el mismo `None`.** Y como se creía que
+   había tablas sin PK, `None` parecía normal.
 
 Y el caso peor: si el catálogo devolvía CERO tablas (esquema equivocado, o recién
 dropeado por el otro proceso), se cacheaba ese vacío y **todas** las tablas
@@ -197,24 +205,168 @@ ventana.
 
 **Arreglado**: un fallo de caché **relee el catálogo una vez** antes de concluir
 "no tiene PK", el negativo se memoiza en `_SIN_PK` (para no pagar una consulta por
-INSERT en las 18 tablas sin PK), el DDL invalida **los tres** cachés, y un catálogo
-vacío **levanta** en vez de cachearse.
+INSERT), el DDL invalida **los tres** cachés, y un catálogo vacío **levanta** en vez
+de cachearse.
 
 Test: `tests/test_pgshim_pk_cache.py`. **Verificado que falla con el comportamiento
 viejo**: con el `_pk_de` original, `lastrowid` vuelve `None` y 3 de los 5 tests se
 caen.
 
-⚠️ **Dato del proceso, que vale para la próxima:** revertir sólo la invalidación
-del DDL **no** hacía fallar los tests — la parte que de verdad arregla el bug es la
-relectura al fallar el caché. La invalidación es defensa en profundidad. Si no se
-revierte el arreglo COMPLETO, uno se convence de que el test prueba algo que no
-prueba.
+#### ⚠️ Las dos defensas se TAPABAN entre sí en los tests
+
+Es la lección más reusable de todo esto. El arreglo tiene **dos** mecanismos
+independientes, y el "verificado que falla con el comportamiento viejo" se había
+hecho sacando **los dos a la vez**. Mutando cada uno por separado:
+
+| se muta | resultado |
+|---|---|
+| sólo A (el DDL limpia sólo `_COLS_CACHE`) | **5 passed** — no lo agarra |
+| sólo B (sin la relectura del catálogo) | **5 passed** — no lo agarra |
+| las dos juntas | 2 failed ✅ |
+
+O sea: alguien podía borrar **una** de las dos y el CI quedaba verde. Y las dos
+existen por motivos distintos, así que perder cualquiera es perder cobertura real.
+
+**Ahora hay un test por defensa**, y mutando cada una por separado caen 3 y 3:
+
+- **Defensa A** — `DefensaA_ElDDLInvalidaLosTresCachesTest`. Assertea sobre el
+  **ESTADO del caché**, no sobre `lastrowid`: un test que mirara `lastrowid` no
+  puede aislar A, porque la relectura de B lo rescata igual. Y **no llama a
+  `limpiar_caches()`**: ése es el camino manual que usan los fixtures, y usarlo
+  tapaba exactamente lo que se quiere medir.
+- **Defensa B** — `DefensaB_LaRelecturaAnteUnFalloDeCacheTest`. La tabla la crea
+  **OTRA conexión**. Ése es el escenario de PRODUCCIÓN y el que la suite no cubría:
+  en los tests viejos el `CREATE TABLE` pasaba por el shim, así que la invalidación
+  de A limpiaba el caché y la relectura no hacía falta nunca. En producción el DDL
+  lo corre otro proceso (`pricing/fci.py:ensure_tables`, los workers), nuestro
+  proceso no se entera, y lo único que evita el `lastrowid=None` es la relectura.
+
+**La regla, para la próxima: si un arreglo tiene N defensas, mutá las N por
+separado.** Mutarlas juntas prueba que el arreglo *entero* sirve, no que cada parte
+haga falta — y es justo lo que hace que una se pueda borrar sin que nadie se entere.
+
+#### La misma forma apareció en OTROS TRES lugares de esta sesión
+
+Se la buscó a propósito, como categoría, en todo lo que se tocó. Los tres estaban
+igual: dos mecanismos, un solo test, y el test lo satisfacía cualquiera de los dos.
+
+| dónde | las dos defensas | ahora |
+|---|---|---|
+| **el tope del backfill** | el corte de TANDA (`return`) y el salteo POR USUARIO (`continue`) | 2 tests nuevos: una tanda MIXTA (un usuario que pasa el tope adentro de una tanda abortada) y una con UN solo frenado (donde la tanda no aborta). Mutando cada freno cae **su** test |
+| **el hash de fila** de la verificación | el prefijo de largo y el separador `\x1f` | 2 tests con colisiones reales: `('1','abcdefghi1k')` vs `('11abcdefghi','k')` colisiona sin separador; `('a\x1fb','c')` vs `('a','b\x1fc')` colisiona sin prefijo |
+| **el aviso 501 del ensayo por clon** | el `exigir_clon_soportado` y el pase-directo del `except` | ver abajo: era peor que un tapón, era un agujero |
+
+⚠️ **Del tope del backfill, el detalle que importa:** los tests que había armaban 4
+usuarios y a los 4 les hacían borrar 10 de 10 — o sea que los 4 quedaban frenados y
+el salteo individual los cubría uno por uno. **El corte de tanda nunca era lo que
+salvaba nada**, y sacándolo la suite quedaba verde. Con una tanda MIXTA (un usuario
+que borra 2 de 10, que pasa el tope, junto a tres que borran todo) el corte es lo
+único que impide escribirle a ese usuario mientras el resumen dice "no se escribió
+nada". Ahora hay un test para eso.
+
+#### 🔴 Y el aviso 501 era CÓDIGO MUERTO para 6 de los 7 endpoints
+
+El docstring del handler afirmaba —lo escribí yo— que *"el único endpoint que
+necesita además una línea propia es `admin_backfill_recompute`"*. **Falso.** Son
+SIETE los endpoints admin que pueden llegar a un clon, y **seis** tenían un
+`except Exception` que se tragaba la excepción antes de que llegara al handler:
+`admin_backfill_mtm` y `admin_backfill_currency` (clonan a través de sus scripts) y
+los tres `admin_fx_migrate_*` (clonan directo). Seguían devolviendo el mismo 500
+críptico que el arreglo decía haber eliminado.
+
+Arreglado en los 8 `except Exception` de esos endpoints, más un **barrido con AST**
+(`NingunEndpointSeTragaElAvisoTest`) que falla si aparece el octavo — porque
+arreglar seis a mano deja el problema esperando al séptimo. Verificado sacando el
+pase de UN endpoint: el barrido lo nombra.
+
+#### ⚠️ Y un dato falso más: "18 tablas sin PK" era CERO
+
+El comentario de `pgshim` decía que había 18 tablas sin clave primaria, y eso
+sostenía la idea de que un `None` de `_pk_de` era "a veces normal". **Es falso.**
+Verificado por tres caminos independientes:
+
+    schema_pg.sql (texto)          58 tablas, 0 sin PK
+    catálogo real de Postgres      58 tablas, 0 sin PK
+    init_db de SQLite              58 tablas, 0 sin PK
+
+Y las 2 que `pricing/fci.py` crea en caliente también tienen PK (`symbol TEXT
+PRIMARY KEY` las dos). **El 18 salió de contar tablas sin columna `id`**, que es
+otra cosa: `config` tiene `PRIMARY KEY (key, user_id)`, `fx_rates_daily` la tiene
+en `date`, `asset_last_price` en `symbol`. Es el quinto conteo mal hecho del
+proyecto, y del mismo tipo que los otros cuatro: **medir una cosa y nombrarla como
+otra.**
+
+**Y la corrección importa más que el número.** Si ninguna tabla puede quedarse sin
+PK, entonces un `None` de `_pk_de` es **siempre** un bug, no "a veces normal" — y
+tratarlo como caso esperado es justamente lo que hacía que el bug se escondiera tan
+bien. Se tradujo a tres cosas:
+
+- **Un test estructural** (`TodasLasTablasTienenPKTest`) que exige PK en todas las
+  tablas del esquema. Si mañana alguien agrega una sin PK, tiene que decidirlo a
+  propósito y no colarse haciendo que `lastrowid=None` vuelva a parecer normal.
+- **La decisión escrita** de qué hace `_pk_de` cuando no encuentra la tabla después
+  de releer: **devuelve `None` y LOGUEA un warning, no levanta.** El motivo está en
+  el código: una migración futura podría agregar legítimamente una tabla sin PK, y
+  convertir eso en "la app no arranca" es peor que un `lastrowid=None` en una tabla
+  a la que nadie le pide el lastrowid. El riesgo que importaba —una tabla que SÍ
+  tiene PK devolviendo `None`— ya lo cierra la relectura.
+- **Un bug que apareció por el camino:** 11 de las 58 tablas tienen **PK
+  compuesta**, así que el catálogo devuelve varias filas por tabla. La consulta no
+  tenía `ORDER BY`, o sea que se quedaba con "la que llegara primero" —no
+  determinístico— y mi primera versión del arreglo cambió `setdefault` por
+  asignación directa, que la volvía "la última". Ahora se **elige**: gana la columna
+  de identidad (que es la que de verdad emula el `lastrowid` de SQLite) y, si no
+  hay, la de menor `attnum`. Con sus dos tests.
 
 **Las DOS víctimas observadas eran el mismo bug**, y eso es lo que cierra el caso:
 `test_advisor_plan` hace `INSERT INTO brokers (user_id, …)` con el id que devolvió
 el INSERT anterior (`test_advisor_plan.py:57-60`) — la misma forma exacta que
 `test_orden_filas_pool`. Las dos fallas de más son "el id que devolvió un INSERT
 vino `None`".
+
+### ⚠️ Quedaban DOS tests flaky más, y ninguno era de la migración
+
+Arreglado lo del conftest, cinco corridas seguidas dieron **46, 46, 46, 47 y 47** —
+pero las dos de 47 fallaron en tests DISTINTOS, y ninguno tenía que ver con
+Postgres. Eran dos defectos independientes de tests, los dos escondidos detrás del
+mismo síntoma ("a veces da 47").
+
+**El del RELOJ — arreglado.**
+`test_pgshim::test_las_fechas_con_modificador_dan_LO_MISMO_que_sqlite`. Comparaba
+con `==` exacto dos lecturas de `now()` tomadas en **instantes distintos**: una a
+Postgres por la red y otra a un SQLite en memoria. Cuando el borde de segundo caía
+entre las dos:
+
+    AssertionError: assert '2026-08-14 10:35:47' == '2026-08-14 10:35:48'
+
+Era culpa del test, no de la traducción. Ahora exige lo que de verdad quiere probar
+y **con más dureza que antes**: el FORMATO carácter por carácter (una `T` de más o
+unos microsegundos romperían las comparaciones de string del código) y el MOMENTO
+con 2 segundos de gracia — que es la distancia entre las dos lecturas, no una
+tolerancia sobre el resultado. **Dos segundos no pueden tapar nada**: el modificador
+más chico que traducimos es de UNA HORA.
+Verificado mutando la traducción en dos direcciones: con una hora de más → falla;
+con formato ISO (`T` en vez de espacio) → 5 fallas con el mensaje del formato.
+
+**El de la RED — NO se tocó, a propósito.**
+`test_ai_builders_phase2::TestHomeBuilder::test_shape_with_empty_db` sale a
+internet: `build()` → `get_indices_strip()` → `_fetch_batch_quotes()` →
+`yf.download(['ETH-USD','BTC-USD','^GSPC','^MERV',…])`, una consulta real a Yahoo
+Finance. Cuando Yahoo tarda más de 10s, el `--timeout=10` la mata:
+
+    E   Failed: Timeout (>10.0s) from pytest-timeout
+    /…/yfinance/multi.py:158: Failed
+
+Corriendo el test solo pasa 8 de 8; sólo aparece con la suite completa, que es
+cuando la máquina está cargada. **Es un defecto de diseño de un test preexistente**
+—un test unitario no debería salir a la red— y no de la migración: parece de
+Postgres nada más porque la corrida de Postgres es la que lleva `--timeout=10` y la
+de SQLite no. Mockearlo es tocar un test ajeno por un motivo distinto del que
+estamos trabajando, así que queda anotado y no cambiado.
+
+**Recomendación**: mockear `yf.download` ahí. Mientras tanto, si una corrida da 47 y
+la falla de más es ésa, **es la red, no una regresión** — miralo en el traceback
+antes de salir a buscar nada.
 
 ### Fuga entre módulos que SÍ existe pero hoy no muerde: `_rate_store`
 
@@ -690,9 +842,22 @@ tipos (`text`, `bigint`, `double precision`) y la normalización los conoce a lo
 tres. Quedó como test: el día que alguien agregue una columna `numeric` o
 `boolean`, avisa **antes** de que la verificación la normalice mal en silencio.
 
-⚠️ Los tests que necesitan Postgres se saltean solos si no está `PG_DSN_VERIF`. Es
-una variable **aparte** de `DATABASE_URL` a propósito: apuntan a otra base, así que
-no se pisan con la suite.
+⚠️ **EL NIVEL 3 NO CORRE EN LA SUITE NORMAL, y hay que saberlo.** Los 7 tests que
+necesitan Postgres se saltean solos si no está `PG_DSN_VERIF` — una variable
+**aparte** de `DATABASE_URL` a propósito, porque apuntan a otra base y así no se
+pisan con la suite. El costo es que el nivel de las secuencias (el que evita que el
+primer alta después de migrar choque contra un id existente) **queda salteado en las
+dos corridas medidas**: los 21 tests locales corren con `revisar_secuencias=False`
+porque SQLite no tiene secuencias.
+
+Está verificado, pero hay que correrlo a mano y **antes de migrar de verdad hay que
+correrlo sí o sí**:
+
+```bash
+PG_DSN_VERIF="postgresql://…/otra_base" python3 -m pytest tests/test_verificar_copia.py -q
+```
+
+Con la variable puesta: **28 pasan, 0 se saltean**.
 
 ## El diseño de la verificación (referencia)
 

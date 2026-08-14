@@ -189,6 +189,84 @@ class ElBackfillNoVaciaCarterasTest(unittest.TestCase):
         f = res["frenados"][0]
         self.assertEqual((f["borraria"], f["tiene"], f["pct"]), (10, 10, 100.0))
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "pasa por safe_backfill, que clona la base: sólo-SQLite")
+    def test_tanda_MIXTA_el_freno_de_tanda_tampoco_toca_al_usuario_SANO(self):
+        """Aísla el freno de TANDA, que hasta ahora ningún test probaba.
+
+        ⚠️ POR QUÉ HACE FALTA ESTE CASO. Los otros tests arman 4 usuarios y a los
+        4 les hacen borrar 10 de 10: los 4 quedan frenados, así que el salteo
+        individual de la pasada 2 los cubre uno por uno y el `return` de la tanda
+        **nunca es lo que salva nada**. Sacándolo, la suite quedaba verde.
+
+        Acá hay un usuario que SÍ pasaría el tope (borra 2 de 10) metido en una
+        tanda que se aborta. Es el único escenario donde el `return` es lo único
+        que impide escribir: sin él, ese usuario se toca mientras el resumen dice
+        "no se escribió nada".
+        """
+        sano = self.uids[0]
+        # Al sano le dejamos 8 de sus 10 posiciones (borra 2 → por debajo del piso
+        # de 5, así que su plan PASA el tope de usuario).
+        def recompute_mixto(clone_conn, uid, **kw):
+            if uid == sano:
+                clone_conn.execute(
+                    "DELETE FROM positions WHERE user_id=? AND asset IN ('ACC0','ACC1')",
+                    (uid,))
+            else:
+                clone_conn.execute("DELETE FROM positions WHERE user_id=?", (uid,))
+
+        original = rb.recompute_user
+        rb.recompute_user = recompute_mixto
+        try:
+            res = rb.safe_backfill(self.conn, self.uids, recalc=lambda *a, **k: None,
+                                   apply=True)
+        finally:
+            rb.recompute_user = original
+
+        self.assertTrue(res["tanda_abortada"], res)
+        # 3 frenados de 4 con cambios: pasa el 25% y llega al piso de 3.
+        self.assertEqual(len(res["frenados"]), 3, res["frenados"])
+        self.assertNotIn(sano, [f["uid"] for f in res["frenados"]])
+        self.assertEqual(
+            self._posiciones(sano), 10,
+            "la tanda se abortó pero igual se le escribió al usuario que pasaba el "
+            "tope: falta el corte de la tanda ANTES de la pasada de escritura")
+
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "pasa por safe_backfill, que clona la base: sólo-SQLite")
+    def test_UN_solo_usuario_frenado_no_aborta_la_tanda_pero_igual_se_lo_saltea(self):
+        """Aísla el freno POR USUARIO, que tampoco tenía test propio.
+
+        Con UN solo frenado la tanda NO se aborta (hacen falta 3 y más del 25%),
+        así que el `continue` de la pasada 2 es lo único que separa a ese usuario
+        del DELETE. `TopePorUsuarioTest` prueba la función que decide, pero no que
+        `safe_backfill` le haga caso.
+        """
+        malo = self.uids[0]
+
+        def recompute_uno_malo(clone_conn, uid, **kw):
+            if uid == malo:
+                clone_conn.execute("DELETE FROM positions WHERE user_id=?", (uid,))
+            # los demás quedan igual → sin cambios, no entran en los planes
+
+        original = rb.recompute_user
+        rb.recompute_user = recompute_uno_malo
+        try:
+            res = rb.safe_backfill(self.conn, self.uids, recalc=lambda *a, **k: None,
+                                   apply=True)
+        finally:
+            rb.recompute_user = original
+
+        self.assertFalse(res["tanda_abortada"],
+                         "con UN solo frenado la tanda no tiene que abortarse")
+        self.assertEqual([f["uid"] for f in res["frenados"]], [malo], res["frenados"])
+        self.assertEqual(
+            self._posiciones(malo), 10,
+            "al usuario frenado le borraron las posiciones igual: la pasada de "
+            "escritura no está respetando el tope por usuario")
+        msg = " ".join(e["error"] for e in res["errors"])
+        self.assertIn("FRENADO POR EL TOPE", msg)
+
     def test_sin_tope_la_cartera_se_vacia(self):
         """La contraprueba: el comportamiento VIEJO sí vaciaba.
 

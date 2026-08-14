@@ -213,9 +213,22 @@ async def _ensayo_por_clon_no_disponible(request: Request,
     así el botón avisa en vez de tirar un error críptico de psycopg.
 
     Va en UN handler y no en cada endpoint por el mismo motivo que el de arriba:
-    para que el cuarto call-site que aparezca no se olvide. El único endpoint que
-    necesita además una línea propia es `admin_backfill_recompute`, porque tiene
-    un `except Exception` que se lo tragaría antes de llegar hasta acá.
+    para que el call-site que aparezca mañana no se olvide.
+
+    ⚠️ **CORRECCIÓN: este docstring decía que "el único endpoint que necesita además
+    una línea propia es `admin_backfill_recompute`". Era FALSO.** Son SIETE los
+    endpoints que pueden llegar a un clon, y **seis** tienen un `except Exception`
+    que se traga la excepción antes de que llegue hasta acá — con lo cual este
+    handler era código muerto para ellos y seguían devolviendo el mismo 500
+    críptico que el arreglo decía haber eliminado (`admin_backfill_mtm` y
+    `admin_backfill_currency` clonan a través de sus scripts; los tres
+    `admin_fx_migrate_*` clonan directo).
+
+    Ahora cada `except Exception` de esos endpoints tiene delante un
+    `except EnsayoPorClonNoDisponible: raise`. Y como arreglar seis a mano deja el
+    problema esperando al séptimo, hay un **barrido con AST** que falla si aparece
+    un endpoint que pueda clonar y no deje pasar la excepción:
+    `tests/test_ensayo_clon_solo_sqlite.py::NingunEndpointSeTragaElAvisoTest`.
     """
     log.warning("ensayo por clon pedido con DATABASE_URL puesta — %s %s",
                 request.method, request.url.path)
@@ -14785,6 +14798,8 @@ def admin_backfill_mtm(apply: bool = False, offset: int = 0, limit: int = 0,
         return summary
     except HTTPException:
         raise
+    except dberrors.EnsayoPorClonNoDisponible:
+        raise                 # sólo-SQLite: que suba al handler que da 501
     except Exception as e:
         # Mismo criterio que admin_backfill_recompute: un endpoint admin de
         # diagnóstico NUNCA debe tragarse su error como un 500 opaco. Devolvemos
@@ -14833,6 +14848,8 @@ def admin_backfill_currency(apply: bool = False, offset: int = 0, limit: int = 0
         return summary
     except HTTPException:
         raise
+    except dberrors.EnsayoPorClonNoDisponible:
+        raise                 # sólo-SQLite: que suba al handler que da 501
     except Exception as e:
         log.exception("admin_backfill_currency FAILED apply=%s offset=%s limit=%s", apply, offset, limit)
         raise HTTPException(status_code=500, detail=f"backfill-currency falló: {type(e).__name__}: {e}")
@@ -15785,6 +15802,8 @@ def admin_fx_migrate_user(user_id: int, apply: bool = False, force: bool = False
                 conn.close()
         except HTTPException:
             raise
+        except dberrors.EnsayoPorClonNoDisponible:
+            raise                 # sólo-SQLite: que suba al handler que da 501
         except Exception as e:
             log.exception("fx-migrate dry-run FAILED user_id=%s", user_id)
             raise HTTPException(status_code=500, detail=f"fx-migrate dry-run falló: {type(e).__name__}: {e}")
@@ -15808,6 +15827,8 @@ def admin_fx_migrate_user(user_id: int, apply: bool = False, force: bool = False
         # credibilidad más alto del sistema").
         try:
             _ai_cache_invalidate(user_id)
+        except dberrors.EnsayoPorClonNoDisponible:
+            raise                 # sólo-SQLite: que suba al handler que da 501
         except Exception:
             log.warning("fx-migrate: no se pudo invalidar el cache de IA de %s", user_id)
         log.info("fx-migrate APLICADO user_id=%s delta=%s", user_id, out.get("delta"))
@@ -15815,6 +15836,8 @@ def admin_fx_migrate_user(user_id: int, apply: bool = False, force: bool = False
     except HTTPException:
         conn.rollback()
         raise
+    except dberrors.EnsayoPorClonNoDisponible:
+        raise                 # sólo-SQLite: que suba al handler que da 501
     except Exception as e:
         conn.rollback()
         log.exception("fx-migrate APPLY FAILED user_id=%s — rollback", user_id)
@@ -15904,6 +15927,8 @@ def admin_fx_migrate_candidates(uid: int = Depends(get_admin_user)):
             "v2_ya_migradas": sum(1 for c in candidatos if c["fx_version"] == "v2"),
             "cuentas": candidatos,
         }
+    except dberrors.EnsayoPorClonNoDisponible:
+        raise                 # sólo-SQLite: que suba al handler que da 501
     except Exception as e:
         log.exception("fx-migrate-candidates FAILED")
         raise HTTPException(status_code=500, detail=f"fx-migrate-candidates falló: {type(e).__name__}: {e}")
@@ -16114,6 +16139,8 @@ def admin_fx_migrate_batch(body: FxMigrateBatchIn, uid: int = Depends(get_admin_
                     else:
                         conn.execute(f"ROLLBACK TO s{n}")
                         conn.execute(f"RELEASE s{n}")   # sin esto se acumulan
+                except dberrors.EnsayoPorClonNoDisponible:
+                    raise                 # sólo-SQLite: que suba al handler que da 501
                 except Exception as e:
                     conn.execute(f"ROLLBACK TO s{n}")
                     log.exception("fx-migrate-batch: cuenta %s falló", au)
@@ -16125,6 +16152,8 @@ def admin_fx_migrate_batch(body: FxMigrateBatchIn, uid: int = Depends(get_admin_
                 "nota": "dry-run sobre UNA copia compartida; la base real no se tocó."}
     except HTTPException:
         raise
+    except dberrors.EnsayoPorClonNoDisponible:
+        raise                 # sólo-SQLite: que suba al handler que da 501
     except Exception as e:
         log.exception("fx-migrate-batch FAILED")
         raise HTTPException(status_code=500, detail=f"fx-migrate-batch falló: {type(e).__name__}: {e}")

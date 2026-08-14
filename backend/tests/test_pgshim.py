@@ -245,15 +245,50 @@ def _sqlite_dice(expr, params=()):
 def test_las_fechas_con_modificador_dan_LO_MISMO_que_sqlite(expr):
     """Cada expresión es una que está HOY en producción. La traducción tiene que
     devolver el mismo texto que devolvía SQLite, con el mismo formato: las
-    columnas de fecha son `text` y el código las compara como strings."""
+    columnas de fecha son `text` y el código las compara como strings.
+
+    ⚠️ **Este test era FLAKY y era culpa del test, no de la traducción.** Comparaba
+    dos lecturas de `now()` tomadas en instantes distintos —una a Postgres por la
+    red, otra a un SQLite en memoria— con `==` exacto. Cuando el borde de segundo
+    caía entre las dos, fallaba:
+
+        AssertionError: assert '2026-08-14 10:35:47' == '2026-08-14 10:35:48'
+
+    Medido: 1 de cada ~5 corridas de la suite completa. Era ruido que hacía dudar
+    del número entero.
+
+    Ahora se exige lo que el test de verdad quiere probar, y con la misma dureza:
+      · el FORMATO, carácter por carácter (una `T` de más, una zona horaria pegada
+        o los microsegundos romperían las comparaciones de string del código, y eso
+        se sigue detectando exacto);
+      · el MOMENTO, con 2 segundos de gracia — que es la distancia entre las dos
+        lecturas, no una tolerancia sobre el resultado. Dos segundos no pueden
+        tapar ningún error real: el más chico de los modificadores que traducimos
+        es de UNA HORA.
+    """
     import psycopg
     import os
+    import re
+    from datetime import datetime
     dsn = os.environ.get("DATABASE_URL", "").strip()
     if not dsn:
         pytest.skip("sin DATABASE_URL no hay Postgres contra qué comparar")
     with psycopg.connect(dsn, autocommit=True) as p:
         pg = p.execute(traducir("SELECT " + expr)).fetchone()[0]
-    assert pg == _sqlite_dice(expr)
+    lite = _sqlite_dice(expr)
+
+    # 1) El formato, exacto: dígitos donde van dígitos y separadores donde van.
+    forma = lambda s: re.sub(r"\d", "9", s)
+    assert forma(pg) == forma(lite), (
+        f"cambió el FORMATO de la traducción: Postgres {pg!r} vs SQLite {lite!r}")
+
+    # 2) El momento, con la gracia justa del muestreo.
+    fmt = "%Y-%m-%d %H:%M:%S" if " " in lite else "%Y-%m-%d"
+    dif = abs((datetime.strptime(pg, fmt) - datetime.strptime(lite, fmt)).total_seconds())
+    assert dif <= 2, (
+        f"la traducción de {expr!r} da otro momento: Postgres {pg!r} vs "
+        f"SQLite {lite!r} ({dif}s de diferencia). Con 2s de gracia, esto sólo "
+        f"salta si la traducción está mal: el modificador más chico es de 1 hora.")
 
 
 def test_el_ultimo_dia_del_mes_incluido_febrero_bisiesto():

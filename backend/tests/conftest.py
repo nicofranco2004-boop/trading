@@ -195,21 +195,26 @@ def _barrer_esquemas_huerfanos(dsn):
     una suite que muere a mitad (Ctrl-C, kill, un crash) deja sus esquemas para
     siempre. Al arrancar barremos los de pids que ya no están vivos. Los de la
     corrida de al lado, si la hay, se quedan: ese es justamente el punto.
+
+    ⚠️ La pregunta "¿ese pid sigue vivo?" se contesta con `os.kill(pid, 0)` y NADA
+    MÁS. La primera versión miraba ADEMÁS los pids de `pg_stat_activity`, y eso
+    estaba mal: ésos son los procesos BACKEND del servidor Postgres, mientras que el
+    pid del nombre del esquema es el del proceso CLIENTE (pytest). Son dos
+    numeraciones distintas, así que la comparación casi nunca acertaba — y cuando
+    acertaba por casualidad hacía justo lo contrario de lo que se busca: saltear un
+    esquema realmente huérfano. Dos chequeos que parecían reforzarse eran uno
+    correcto y uno equivocado.
     """
     import psycopg
     with psycopg.connect(dsn, autocommit=True) as c:
-        vivos = {p for (p,) in c.execute(
-            "SELECT DISTINCT pid FROM pg_stat_activity WHERE datname=current_database()")}
         for (nombre,) in c.execute(
                 "SELECT nspname FROM pg_namespace WHERE nspname ~ '^t[0-9]+_'").fetchall():
             try:
                 pid = int(nombre.split("_", 1)[0][1:])
             except ValueError:
                 continue
-            if pid in vivos or pid == os.getpid():
-                continue
             try:
-                os.kill(pid, 0)          # ¿el proceso todavía existe?
+                os.kill(pid, 0)          # ¿el proceso cliente todavía existe?
             except OSError:
                 c.execute(f'DROP SCHEMA IF EXISTS "{nombre}" CASCADE')
 

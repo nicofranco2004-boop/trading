@@ -16,6 +16,7 @@ Verificado que FALLA con el comportamiento viejo: sacándole el
 `exigir_clon_soportado` a `_clone_db`, el endpoint contesta 500 y el assert de
 `status_code == 501` se cae.
 """
+import os
 import sqlite3
 import unittest
 import unittest.mock
@@ -109,6 +110,72 @@ class ElBotonAvisaClaroEnPostgresTest(unittest.TestCase):
                              headers=self._hdr())
         self.assertEqual(r.status_code, 501, r.text)
         self.assertIn("DATABASE_URL", r.json()["detail"])
+
+
+class NingunEndpointSeTragaElAvisoTest(unittest.TestCase):
+    """El barrido que impide que el próximo endpoint se olvide.
+
+    El aviso llega al usuario por UN handler de la app, pero un `except Exception`
+    en el camino lo intercepta antes y lo convierte en el mismo 500 críptico que se
+    quiso eliminar. Eso ya pasó: el docstring del handler afirmaba que sólo
+    `admin_backfill_recompute` necesitaba la línea propia, y en realidad eran
+    SEIS los endpoints con un `except Exception` en el medio — el handler era
+    código muerto para ellos.
+
+    Arreglar seis a mano deja el problema esperando al séptimo, así que esto lo
+    verifica estructuralmente y no depende de que alguien escriba un test por
+    endpoint.
+    """
+
+    # Endpoints admin que llegan a un clon: directo (`_clone_db` / `.backup()`) o a
+    # través de un script que clona (`backfill_historical_mtm`, `backfill_currency_fix`).
+    QUE_CLONAN = {
+        "admin_backfill_recompute", "admin_repair_snapshots_all",
+        "admin_backfill_mtm", "admin_backfill_currency",
+        "admin_fx_migrate_user", "admin_fx_migrate_candidates",
+        "admin_fx_migrate_batch",
+    }
+
+    def _analizar(self):
+        import ast
+        ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "main.py")
+        arbol = ast.parse(open(ruta, encoding="utf-8").read())
+        out = {}
+        for n in ast.walk(arbol):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                pase = generico = False
+                for x in ast.walk(n):
+                    if isinstance(x, ast.ExceptHandler):
+                        tipo = ast.unparse(x.type) if x.type else "bare"
+                        if "EnsayoPorClonNoDisponible" in tipo:
+                            pase = True
+                        if tipo in ("Exception", "bare"):
+                            generico = True
+                out[n.name] = (pase, generico)
+        return out
+
+    def test_ningun_endpoint_que_clona_se_traga_la_excepcion(self):
+        estado = self._analizar()
+        faltantes = sorted(
+            fn for fn in self.QUE_CLONAN
+            if fn in estado and estado[fn][1] and not estado[fn][0])
+        self.assertEqual(
+            faltantes, [],
+            f"{len(faltantes)} endpoint(s) que pueden clonar tienen un "
+            f"`except Exception` que se traga EnsayoPorClonNoDisponible antes de "
+            f"que llegue al handler, así que devuelven un 500 críptico en vez del "
+            f"501 explicativo: {faltantes}. Agregales "
+            f"`except dberrors.EnsayoPorClonNoDisponible: raise` ANTES del "
+            f"`except Exception`.")
+
+    def test_los_endpoints_de_la_lista_existen(self):
+        """Si alguno se renombra, la lista deja de proteger nada en silencio."""
+        estado = self._analizar()
+        perdidos = sorted(fn for fn in self.QUE_CLONAN if fn not in estado)
+        self.assertEqual(perdidos, [],
+                         f"estos endpoints ya no existen con ese nombre: {perdidos}. "
+                         f"Actualizá QUE_CLONAN o el barrido queda vacío sin avisar.")
 
 
 if __name__ == "__main__":

@@ -144,10 +144,40 @@ class NormalizacionTest(unittest.TestCase):
             vc.canon(1.5, "bigint")
         self.assertEqual(vc.canon(1.0, "bigint"), "1")
 
+    # ── El hash de fila tiene DOS mecanismos y hacen falta LOS DOS ───────────
+    # ⚠️ Este bloque son TRES tests y no uno a propósito. El único test que había
+    # —('ab','c') vs ('a','bc')— lo distingue CUALQUIERA de los dos mecanismos por
+    # separado, así que se podía borrar uno y la suite quedaba verde. Es la misma
+    # forma que el bug del caché de PKs: dos defensas que se tapan entre sí.
+    # Cada uno de los dos de abajo cae si se saca SU mecanismo y sólo el suyo.
     def test_hash_de_fila_no_confunde_los_cortes_entre_campos(self):
-        """('ab','c') y ('a','bc') no pueden dar el mismo hash."""
+        """('ab','c') y ('a','bc') no pueden dar el mismo hash.
+
+        Ojo: este caso NO aísla nada — pasa con cualquiera de los dos mecanismos.
+        Se deja porque es el caso legible; los dos de abajo son los que prueban.
+        """
         self.assertNotEqual(vc.hash_fila(["ab", "c"], ["text", "text"]),
                             vc.hash_fila(["a", "bc"], ["text", "text"]))
+
+    def test_hace_falta_el_SEPARADOR(self):
+        """Con el prefijo de largo pero SIN separador, estos dos colisionan.
+
+        Los dos se codifican `'1111abcdefghi1k'` cuando el largo queda pegado al
+        valor sin nada en el medio. Cae si se borra el `h.update(b"\\x1f")` — y
+        SÓLO si se borra ése.
+        """
+        self.assertNotEqual(vc.hash_fila(["1", "abcdefghi1k"], ["text", "text"]),
+                            vc.hash_fila(["11abcdefghi", "k"], ["text", "text"]))
+
+    def test_hace_falta_el_PREFIJO_DE_LARGO(self):
+        """Con el separador pero SIN prefijo de largo, estos dos colisionan.
+
+        Los dos se codifican `b'\\x1fa\\x1fb\\x1fc'`. Y no es teórico: `\\x1f` puede
+        vivir perfectamente adentro de una columna `text` o de un `raw_json`. Cae
+        si se borra el `h.update(str(len(s)))` — y SÓLO si se borra ése.
+        """
+        self.assertNotEqual(vc.hash_fila(["a\x1fb", "c"], ["text", "text"]),
+                            vc.hash_fila(["a", "b\x1fc"], ["text", "text"]))
 
 
 class CopiaSanaTest(unittest.TestCase):

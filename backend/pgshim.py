@@ -70,9 +70,12 @@ Lo que NO traduce, a propósito:
     error, sale como "la alerta no se mandó" o "el contador no subió".
   Todos se detectan y LEVANTAN un error claro en vez de fallar raro.
 """
+import logging
 import re
 
 import psycopg
+
+_log = logging.getLogger(__name__)
 
 # Los mismos nombres de excepción que el código ya captura en ~21 lugares.
 OperationalError = psycopg.OperationalError
@@ -459,18 +462,32 @@ _SQLITE_MASTER_SQL = """FROM (
 # PK por tabla, leída del catálogo (para emular lastrowid).
 _PKS_CACHE: dict = {}
 
-# Tablas que se CONFIRMÓ que no tienen PK (hay 18 en el esquema: config,
-# fx_rates_daily, asset_last_price…). Se guardan aparte del caché de PKs para
+# Tablas que se CONFIRMÓ que no tienen PK. Se guardan aparte del caché de PKs para
 # poder distinguir dos cosas que antes eran la misma:
 #
-#     "esta tabla no tiene PK"          → correcto, lastrowid=None está bien
+#     "esta tabla no tiene PK"          → lastrowid=None está bien
 #     "esta tabla no estaba cuando leí" → BUG: lastrowid=None sin motivo
 #
 # Antes las dos daban `None` y no había forma de saber cuál era. Una tabla creada
 # DESPUÉS de que el caché se cargó caía en el segundo caso y devolvía None para
 # siempre, en silencio. Ahora un fallo de caché relee el catálogo UNA vez antes de
-# concluir, y el resultado negativo se memoiza acá para que no cueste una consulta
-# por INSERT.
+# concluir, y el negativo se memoiza acá para no pagar una consulta por INSERT.
+#
+# ⚠️ **CORRECCIÓN: hoy este conjunto tiene que quedar VACÍO siempre.** Una versión
+# anterior de este comentario decía "hay 18 tablas así (config, fx_rates_daily,
+# asset_last_price…)". Es FALSO. Verificado por tres caminos independientes —
+# `schema_pg.sql`, el catálogo real de Postgres y el `init_db` de SQLite—:
+# **58 tablas, CERO sin clave primaria**. Las que se citaban tienen PK compuesta o
+# de texto: `config(key, user_id)`, `fx_rates_daily(date)`,
+# `asset_last_price(symbol)`. El 18 salió de contar tablas **sin columna `id`**,
+# que es otra cosa completamente distinta.
+#
+# **Y la corrección importa más que el número**: si ninguna tabla puede quedarse
+# sin PK, entonces un `None` de `_pk_de` es SIEMPRE un bug, no "a veces normal".
+# Tratarlo como caso esperado es justamente lo que hacía que el bug se escondiera
+# tan bien. Por eso hay un test estructural que exige PK en todas las tablas
+# (`tests/test_pgshim_pk_cache.py::TodasLasTablasTienenPKTest`) y por eso llegar
+# acá loguea un warning.
 _SIN_PK: set = set()
 
 # Columnas por tabla. En SQLite `PRAGMA table_info` es instantáneo (lee memoria);
@@ -873,27 +890,64 @@ class Connection:
             return _PKS_CACHE[clave]
         if clave in _SIN_PK:
             return None
-        # No está en el caché. Puede ser que de verdad no tenga PK (hay 18 tablas
-        # así) o que se haya CREADO después de que el caché se cargó. Se relee UNA
-        # vez y recién ahí se concluye. Ver el comentario de _SIN_PK.
+        # No está en el caché. La causa MÁS PROBABLE, y de lejos, es que la tabla
+        # se creó DESPUÉS de que el caché se cargó — típicamente desde otra
+        # conexión u otro proceso (`pricing/fci.py:ensure_tables`). Se relee UNA
+        # vez y recién ahí se concluye.
         self._cargar_pks()
         if clave in _PKS_CACHE:
             return _PKS_CACHE[clave]
+
+        # ── DECISIÓN, escrita a propósito ────────────────────────────────────
+        # Acá llegamos con una tabla que existe en el catálogo y NO tiene clave
+        # primaria. **Hoy eso no puede pasar**: las 58 tablas del esquema tienen
+        # PK, verificado por tres caminos independientes (schema_pg.sql, el
+        # catálogo real de Postgres, y el init_db de SQLite), más las 2 que crea
+        # `pricing/fci.py` en caliente (`symbol TEXT PRIMARY KEY` las dos). Y hay
+        # un test estructural que mantiene esa verdad — ver
+        # `tests/test_pgshim_pk_cache.py::TodasLasTablasTienenPKTest`.
+        #
+        # Aun así **NO se levanta excepción**, y el motivo es concreto: una
+        # migración futura podría agregar legítimamente una tabla sin PK, y
+        # convertir eso en "la app no arranca" es un daño mayor que un
+        # `lastrowid=None` en una tabla a la que nadie le pide el lastrowid. El
+        # riesgo que nos importaba —una tabla que SÍ tiene PK devolviendo None—
+        # ya lo cierra la relectura de arriba.
+        #
+        # Pero se LOGUEA fuerte, una vez por tabla, porque hoy es una condición
+        # imposible: si aparece en los logs, o alguien agregó una tabla sin PK
+        # (decisión que hay que revisar) o estamos mirando el esquema equivocado.
         _SIN_PK.add(clave)
+        _log.warning(
+            "pgshim: la tabla %r existe pero no tiene clave primaria, así que "
+            "lastrowid va a ser None. Hoy TODAS las tablas del esquema tienen PK: "
+            "si ves esto, o se agregó una tabla sin PK (revisalo) o el search_path "
+            "apunta a otro lado.", clave)
         return None
 
     def _cargar_pks(self):
-        """Lee del catálogo la PK de cada tabla del esquema activo."""
+        """Lee del catálogo la PK de cada tabla del esquema activo.
+
+        ⚠️ **La columna se elige, no se toma la que venga.** 11 de las 58 tablas
+        tienen PK COMPUESTA (`config(key,user_id)`, `ai_usage_daily(user_id,date)`,
+        …), o sea que el catálogo devuelve varias filas para la misma tabla. La
+        versión original hacía `setdefault` sobre un SELECT **sin ORDER BY**: se
+        quedaba con "la primera que llegara", que no es determinística. Acá se
+        prefiere la columna de identidad (que es la que de verdad emula el
+        `lastrowid` de SQLite) y, si no hay, la de menor `attnum` — estable entre
+        corridas.
+        """
         encontradas = 0
         with psycopg.connect(self._dsn, autocommit=True) as cat:
             for t, col in cat.execute("""
-                SELECT c.relname, a.attname
+                SELECT DISTINCT ON (c.relname) c.relname, a.attname
                   FROM pg_index i
                   JOIN pg_class c ON c.oid = i.indrelid
                   JOIN pg_namespace n ON n.oid = c.relnamespace
                   JOIN pg_attribute a ON a.attrelid = c.oid
                                      AND a.attnum = ANY(i.indkey)
                  WHERE i.indisprimary AND n.nspname = current_schema()
+                 ORDER BY c.relname, (a.attidentity = '') , a.attnum
             """).fetchall():
                 _PKS_CACHE[t] = col
                 encontradas += 1
