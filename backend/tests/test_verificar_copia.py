@@ -180,6 +180,70 @@ class NormalizacionTest(unittest.TestCase):
                             vc.hash_fila(["a", "b\x1fc"], ["text", "text"]))
 
 
+class UnaTablaQueNoViajoTest(unittest.TestCase):
+    """🔴 El agujero estructural: una tabla que NO se copió era INVISIBLE.
+
+    La lista de qué comparar salía del catálogo del DESTINO (`esquema_pg`), y todo
+    el nivel 1 iteraba sobre esa lista. **Preguntarle al destino qué hay que
+    verificar es preguntarle al sospechoso**: una tabla que no viajó no está en su
+    catálogo, así que no entra al bucle, no genera hallazgo, y la verificación
+    devuelve "ok" con datos que no llegaron.
+
+    Y no es hipotético: producción tiene **60 tablas** y `schema_pg.sql` tiene
+    **58**. Faltan `fci_catalog` y `fci_prices`, que `pricing/fci.py:ensure_tables`
+    crea EN CALIENTE y por eso nunca entraron al esquema — son los precios de los
+    FCI. Verificado corriendo `init_db()` + `ensure_tables()` y contando.
+    """
+
+    def setUp(self):
+        self.o, self.d = _base(), _base()
+        # El origen tiene una tabla más: la que el copiador se olvidó.
+        self.o.executescript(
+            "CREATE TABLE fci_prices (symbol TEXT PRIMARY KEY, price REAL);")
+        self.o.execute("INSERT INTO fci_prices VALUES ('IAMRDOA', 1234.56)")
+        self.o.commit()
+        self.tablas_o = vc.tablas_sqlite(self.o)
+        # El esquema sale del DESTINO, igual que en la vida real.
+        self.esquema = dict(ESQUEMA)
+
+    def test_la_tabla_que_falta_SALTA(self):
+        h = vc.comparar(_cur(self.o), _cur(self.d), self.esquema,
+                        revisar_secuencias=False,
+                        tablas_origen=self.tablas_o)["hallazgos"]
+        faltantes = [x for x in h if x["tabla"] == "fci_prices"]
+        self.assertEqual(len(faltantes), 1, h)
+        self.assertIn("no se copió", faltantes[0]["que"])
+
+    def test_SIN_pasarle_las_tablas_del_origen_es_CIEGA(self):
+        """La contraprueba, y el motivo de que el parámetro exista.
+
+        Es exactamente lo que hacía antes: sin la lista del origen la
+        verificación dice que está todo bien.
+        """
+        r = vc.comparar(_cur(self.o), _cur(self.d), self.esquema,
+                        revisar_secuencias=False)
+        self.assertEqual(r["hallazgos"], [],
+                         "si esto ya no está vacío, el agujero se tapó por otro "
+                         "lado y este test dejó de medir lo que dice medir")
+        self.assertTrue(r["ok"], "devolvía ok con una tabla entera sin copiar")
+
+    def test_una_tabla_de_MAS_en_el_destino_tambien_salta(self):
+        h = vc.comparar(_cur(self.d), _cur(self.o), dict(ESQUEMA, fci_prices=[
+            ("symbol", "text"), ("price", "double precision")]),
+            revisar_secuencias=False,
+            tablas_origen=vc.tablas_sqlite(self.d))["hallazgos"]
+        sobra = [x for x in h if x["tabla"] == "fci_prices"]
+        self.assertEqual(len(sobra), 1, h)
+        self.assertIn("NO en el origen", sobra[0]["que"])
+
+    def test_con_las_dos_bases_iguales_no_se_queja(self):
+        """Que no se vuelva ruido: mismas tablas, cero hallazgos."""
+        r = vc.comparar(_cur(self.d), _cur(self.d), dict(ESQUEMA),
+                        revisar_secuencias=False,
+                        tablas_origen=vc.tablas_sqlite(self.d))
+        self.assertEqual(r["hallazgos"], [], r["hallazgos"])
+
+
 class CopiaSanaTest(unittest.TestCase):
     """Antes de las roturas: dos copias idénticas no pueden dar hallazgos."""
 

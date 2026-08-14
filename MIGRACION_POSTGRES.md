@@ -883,15 +883,38 @@ es *"si `fx_rates_daily` está vacía"* — exactamente lo que pasaría si el co
 salteó esa tabla. En vez de que la falta de datos se vea, la tapa sola.
 Hace falta una palanca para que el **primer** arranque contra Postgres sea callado.
 
-**c) El backup nocturno es SÓLO-SQLITE, y no falla: MIENTE.** `_run_backup_db_job`
-(03:45 UTC) llama a `scripts/backup_db.py`, que abre `sqlite3.connect(DB_PATH)`
-directo — **no pasa por `get_db()` ni mira `DATABASE_URL`** (`backup_db.py:287`).
-Después del pasaje seguiría copiando el archivo SQLite congelado, todas las noches,
-**reportando éxito**. Backups sanos de una base que ya no usa nadie. Es peor que si
-se rompiera, porque un job roto se ve y éste no.
-Antes de cortar hay que decidir de dónde salen los backups de Postgres (los de
-Supabase sirven, pero hay que **confirmar cuáles trae el plan contratado** —
-`[A MEDIR]`— y apagar o adaptar el job para que no dé una señal falsa).
+**c) DOS trabajos escriben SQLite por la ventana, y ninguno de los dos falla:
+MIENTEN.** Hay código que abre `sqlite3.connect(...)` directo, salteando `get_db()`
+— o sea salteando el interruptor que decide el motor. Después del pasaje le siguen
+escribiendo al archivo congelado y **reportan éxito**. Es peor que romperse: un job
+roto se ve, y éstos se ven *sanos*.
+
+Barrido con AST de todo el backend: son **dos** los que tocan datos de producción.
+
+**c-1) El backup nocturno** (`_run_backup_db_job`, 03:45 UTC → `backup_db.py:287`,
+`sqlite3.connect(DB_PATH)`). Seguiría guardando copias impecables de una base que
+ya no usa nadie. Hay que decidir de dónde salen los backups de Postgres — los de
+Supabase sirven, pero hay que **confirmar cuáles trae el plan contratado**
+(`[A MEDIR]`) — y apagar o adaptar el job para que no dé una señal falsa.
+
+**c-2) 🔴 LA FOTO DIARIA** (`snapshots_job.py:945`, `sqlite3.connect(db_path)`), que
+es el peor de los dos y **no lo había visto**. Tiene **TRES disparadores** y los tres
+caen en el mismo lugar: el APScheduler de las 02:59 UTC, el cron externo
+`/api/snapshots/run-cron` y el botón "correr ahora" del panel admin.
+La noche siguiente al pasaje, el job **lee** posiciones de la SQLite congelada,
+**escribe** los snapshots en la SQLite congelada, y loguea que salió bien. La app,
+que lee de Postgres, **se queda sin la foto de ayer** — y de ahí cuelgan la variación
+diaria, los resúmenes mensuales, el TWR y los informes del asesor. Nadie ve un error:
+ven números que no cierran.
+
+⚠️ **Y LA LECCIÓN VALE MÁS QUE LOS DOS CASOS.** Al primero lo encontré a mano y me
+quedé ahí; el segundo apareció en una revisión adversarial, no buscándolo.
+**Encontré el patrón y no barrí la categoría** — el mismo error que este proyecto ya
+pagó cinco veces. Ahora hay un barrido con AST que la cubre entera
+(`tests/test_escritores_solo_sqlite.py`): lista los 11 sitios que abren SQLite
+directo, permite los 9 legítimos **con el motivo escrito**, y falla si aparece uno
+nuevo. Los dos de acá quedan anotados como `PENDIENTE` y el test exige que sigan
+marcados así hasta que se arreglen.
 
 ---
 
@@ -909,30 +932,96 @@ motivo es concreto, no una preferencia de estilo:
 
 **La secuencia:**
 
-    1.  Apagar los tres crons EXTERNOS (ver punto 4). Los primeros.
+    1.  Apagar los tres crons EXTERNOS: borrar los TRES tokens, no uno (ver
+        punto 4 — el del asesor tiene fallback).
     2.  Prender el modo mantenimiento → la app deja de aceptar escrituras.
     3.  Backup de la SQLite, a mano, ahí mismo. No el del cron: uno propio, con
         fecha, guardado FUERA del volumen de Railway.
-    4.  Vaciar `raw_json` de los imports viejos, con UPDATE y NUNCA con DELETE
-        (borrar la fila cascadea y se lleva su movimiento del ledger). Es el 92%
-        de las filas.
-    5.  Correr el copiador.
-    6.  `setval()` en cada secuencia.
-    7.  Correr la VERIFICACIÓN COMPLETA, los cuatro niveles, con `PG_DSN_VERIF`
-        puesta. Si hay UN hallazgo: no se sigue.
-    8.  Prender `DATABASE_URL` y reiniciar, con los escritores del arranque
+    4.  📸 **FOTO "ANTES" del nivel 0** (`foto_para_vaciado`). Va ACÁ, antes de
+        tocar nada. Ver la nota de abajo.
+    5.  Vaciar `raw_json`, con UPDATE, NUNCA con DELETE, y SÓLO de los batches en
+        estado 'confirmed' (ver el bloque rojo de más abajo). Es el 92% de las filas.
+    6.  📸 **FOTO "DESPUÉS"** y correr el NIVEL 0. Si tocó algo que no era
+        `raw_json`: no se sigue.
+    7.  Correr el copiador.
+    8.  `setval()` en cada secuencia.
+    9.  Correr la VERIFICACIÓN COMPLETA (niveles 1, 2 y 3) con `PG_DSN_VERIF`
+        puesta y pasándole `tablas_origen`. Si hay UN hallazgo: no se sigue.
+    10. Prender `DATABASE_URL` y reiniciar, con los escritores del arranque
         apagados (punto 0b).
-    9.  Los chequeos de los primeros 10 minutos (punto 3), con la app TODAVÍA en
+    11. Los chequeos de los primeros 10 minutos (punto 3), con la app TODAVÍA en
         mantenimiento.
-    10. Recién ahí, abrir. Y después prender los crons externos.
+    12. Recién ahí, abrir. Y después prender los crons externos.
 
-**Sobre el paso 4, la duda que va a aparecer y ya está contestada:** *¿vaciar
-`raw_json` no le rompe el import a alguien que lo dejó a medio confirmar?* **No.**
-Verificado en el código: `load_session_for_confirm` reconstruye las filas desde
-`import_normalized_tx` haciendo JOIN con `import_raw_rows`, pero de esa tabla usa
-**sólo `row_index`** — nunca `raw_json` (`importing/pipeline.py:1036-1043`). Lo que
-sí rompería el import pendiente es borrar la FILA, que es exactamente la regla que
-ya estaba escrita.
+🔴 **Por qué los pasos 4 y 6 están separados y no al final.** La primera versión de
+esta secuencia ponía el vaciado en el paso 4 y "la verificación completa" en el 7 —
+y así **el nivel 0 no se puede correr nunca**. El nivel 0 compara una foto de ANTES
+contra una de DESPUÉS del `UPDATE`; si el `UPDATE` ya pasó cuando llegás a
+verificar, el "antes" no existe y no hay con qué comparar. Es el único nivel que
+vigila el único paso irreversible del día, y estaba programado para no correr.
+
+#### 🔴 Antes del paso 5: el esquema tiene 58 tablas y producción tiene 60
+
+Las dos que faltan son **`fci_catalog` y `fci_prices`** — los precios de los FCI.
+No están en `schema_pg.sql` porque `pricing/fci.py:ensure_tables` las crea **en
+caliente**, así que nunca entraron al esquema generado. Verificado corriendo
+`init_db()` y después `ensure_tables()`: 58 → 60.
+
+**Y lo grave no era eso: era que la verificación no lo podía ver.** La lista de qué
+comparar salía del catálogo del **DESTINO** (`esquema_pg`), y todo el nivel 1
+iteraba sobre esa lista. Una tabla que no viajó no está en el catálogo del destino,
+así que **no entraba al bucle, no generaba hallazgo, y la verificación devolvía "ok"
+con dos tablas de datos sin copiar.**
+
+> **Preguntarle al destino qué hay que verificar es preguntarle al sospechoso.** La
+> lista de qué comparar tiene que salir del ORIGEN.
+
+**Arreglado** (`verificar_copia.py`): `comparar()` ahora recibe `tablas_origen` y
+compara los CONJUNTOS antes que nada — una tabla en el origen y no en el destino es
+un hallazgo de nivel 1, y al revés también. Con sus tests, incluida la contraprueba
+que fija el agujero viejo (`test_SIN_pasarle_las_tablas_del_origen_es_CIEGA`).
+
+**Para el día del pasaje:** el copiador tiene que crear esas dos tablas, o
+`ensure_tables` tiene que correr contra Postgres antes de copiar. Se decide al
+escribir el copiador; lo que ya no puede pasar es que se olvide **en silencio**.
+
+#### 🔴 El paso 4 NO es inocuo: hay que acotarlo, y yo lo había dado por seguro
+
+Escribí acá que vaciar `raw_json` no le rompía el import a nadie que lo hubiera
+dejado a medio confirmar, y lo apoyé en haber leído `load_session_for_confirm`
+—que efectivamente usa sólo `row_index`—. **Estaba mal**: miré UN camino de confirm
+y generalicé. Es el mismo error que cometí con los escritores de SQLite, en la misma
+sesión.
+
+**Hay DOS funciones que sí leen `raw_json`:**
+
+**1. `load_session_with_seed_revalidate` (`pipeline.py:1112`) — y es la que usa el
+confirm de verdad** (`main.py:27850`). Exige `status='preview'`, lee `raw_json`, y
+hace `json.loads(r["raw_json"]) if r["raw_json"] else {}`. **Con la columna vacía
+cada fila queda `{}`**, `normalize_rows` no saca ninguna transacción válida, y el
+confirm del usuario **importa CERO operaciones sin dar un solo error.** El usuario
+aprieta "confirmar", la pantalla dice que salió bien, y no entró nada.
+
+**2. `reconstruct_csv_from_batch` (`pipeline.py:1216`)** — es "Editar y rehacer"
+(`main.py:28730`). Vaciar `raw_json` **apaga esa función para siempre** en todos los
+imports viejos.
+
+**Las dos consecuencias, y las dos son decisiones, no detalles:**
+
+- **El UPDATE va acotado a `status='confirmed'`. Nunca a un `preview`.** Un batch en
+  preview es un import que alguien dejó a medio hacer; vaciarlo se lo convierte en
+  una confirmación vacía. La regla queda: *`UPDATE … SET raw_json='' WHERE
+  batch_id IN (SELECT id FROM import_batches WHERE status='confirmed')`* — y nunca
+  `DELETE`, que era la regla que ya estaba.
+- **"Editar y rehacer" se pierde para los imports viejos, y eso hay que decidirlo a
+  propósito.** Es el precio de no migrar 3,1 millones de filas de andamio. Puede
+  estar perfecto — pero es una función que hoy anda y que después no va a andar, y
+  el usuario no se va a enterar hasta que la busque.
+
+⚠️ **Lo que esto enseña, otra vez:** *"verifiqué que no rompe nada"* vale sólo para
+los caminos que abriste. Antes de escribirlo, hay que barrer **todos** los lectores
+de la columna que se toca — `grep raw_json` en `importing/` son ocho líneas y
+contestaba la pregunta bien.
 
 **El paso 4 es el que puede sorprender por otro lado.** La base son 933 MB y el 92%
 de las filas es andamio de import. Vaciar `raw_json` achica muchísimo lo que copiar —
@@ -1000,6 +1089,7 @@ orden, y cada una tiene un criterio de "pasa / no pasa":
 |---|---|---|
 | 1 | `/api/health` | contesta 200 |
 | 2 | Los logs del arranque | cero `NotNullViolation`, cero `relation does not exist`, cero `EnsayoPorClonNoDisponible` inesperado |
+| 0 | **¿contra qué motor está corriendo la app?** | dice Postgres. **Es el primero de todos**: `/api/health` NO toca la base, así que sin esto los otros ocho pasan igual con la app sirviendo desde la SQLite de siempre |
 | 3 | Entrar con la cuenta de prueba | login OK y la Cartera carga |
 | 3b | **Que NO se haya deslogueado todo el mundo** | ver la nota de abajo |
 | 4 | **El total de 3 cuentas elegidas a mano** | coincide con el snapshot de anoche, al centavo |
@@ -1048,10 +1138,23 @@ gate de mantenimiento escriben.
 **Se apagan en el scheduler externo** (donde estén configurados) **y son lo primero
 del día.** No alcanza con el modo mantenimiento: si el gate los deja pasar por ser
 crons, escriben; si no los deja pasar, el scheduler externo va a registrar fallas
-—lo cual está bien, pero hay que saberlo de antemano para no asustarse. Y hay una
-palanca de respaldo: **borrar el token de entorno los desarma solos** (sin
-`ALERTS_CRON_TOKEN` el endpoint contesta 503). Es la red por si el scheduler externo
-no se apagó.
+—lo cual está bien, pero hay que saberlo de antemano para no asustarse.
+
+🔴 **La palanca de respaldo NO funciona para el que manda mails, y eso lo había
+escrito mal.** Puse que "borrar el token de entorno los desarma solos". Es cierto
+para los dos primeros, y **falso justo para el brief del asesor**:
+
+    expected = ((os.environ.get("ADVISOR_BRIEF_TOKEN") or "").strip()
+                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())   # ← fallback
+
+Borrar `ADVISOR_BRIEF_TOKEN` **lo deja armado** con el token de snapshots
+(`main.py:30463-30464`, el fallback está puesto a propósito "para no multiplicar
+secretos"). O sea que la red de seguridad que inventé no cubre **el único cron que
+manda mails**, que es justo el que llamé "la razón número uno".
+
+Para desarmarlo de verdad hay que borrar **los dos** tokens — y borrar
+`SNAPSHOT_CRON_TOKEN` desarma también el cron de snapshots, que es lo que se quiere
+ese día igual. Anotado así: **se borran los tres tokens, no uno.**
 
 **Clase B — APScheduler adentro del proceso.** Arrancan con la app y mueren con
 ella, así que apagar el backend los apaga. Pero **vuelven solos en el reinicio**:
@@ -1143,6 +1246,45 @@ techo se tocó. **`[A MEDIR]`: ese dato está en los logs de Railway de esos dí
 
 ---
 
+### Cinco cosas más que salieron de atacar este plan
+
+El plan se pasó por una revisión adversarial cuando estaba escrito. Además de los
+tres errores míos ya corregidos arriba (el snapshot sólo-SQLite, las 60 tablas, y
+el vaciado de `raw_json`), salieron estas cinco. Las cinco están **verificadas**.
+
+**1. 🔴 Ningún chequeo distingue "migramos" de "la variable no agarró".**
+`/api/health` devuelve `ok`, `timestamp`, `service` y `commit` — **no toca la base**
+(`main.py:30787-30812`). Así que si `DATABASE_URL` no tomó efecto, la app sigue
+sirviendo feliz **desde la SQLite** y los ocho chequeos pasan: el login anda, los
+totales coinciden (¡obvio, es la misma base de siempre!), las pantallas cargan.
+Verificás una migración que no ocurrió.
+**Falta un chequeo 0**: preguntarle a la app **contra qué motor está**. Sin eso, todo
+lo demás mide otra cosa.
+
+**2. `psycopg` no está en `requirements.txt`.** Verificado. Hoy es correcto —esto es
+un spike y así producción no se entera— pero significa que **el paso de prender
+`DATABASE_URL` no puede funcionar** hasta que se agregue. Es un prerrequisito de una
+línea, y es de los que se olvidan porque son obvios.
+
+**3. La verificación es una biblioteca sin programa.** `verificar_copia.py` tiene las
+funciones y los tests, pero **no tiene un `main`**: el paso 9 dice "correr la
+verificación completa" y no hay nada que correr. Hace falta el CLI que ate los cuatro
+niveles, imprima los hallazgos y devuelva un código de salida distinto de cero si
+hay alguno. Va junto con el copiador.
+
+**4. Rebill entra DESDE AFUERA.** Apagamos los tres crons, que es lo que SALE. Pero
+los webhooks de pagos **entran** cuando el proveedor los manda, no cuando nosotros
+queremos. Alguien que pague ese domingo, con la app en mantenimiento, puede quedarse
+sin su plan activado. **Hay que averiguar si Rebill reintenta los webhooks fallidos y
+por cuánto tiempo** — `[A MEDIR]`. Si reintenta, no hay problema; si no, hay que
+revisar los pagos del día a mano.
+
+**5. Nadie mira el disco antes de copiar.** El paso 3 (backup a mano) y un eventual
+`VACUUM` escriben archivos del tamaño de la base **en el mismo volumen de Railway**,
+que ya está al 97% de ocupación con backups viejos según lo que dice este mismo doc
+más abajo. Un backup que no entra es un backup que no existe. **Mirar el espacio
+libre antes es gratis y evita el peor momento posible para descubrirlo.**
+
 ### Los huecos, juntos, para que no se pierdan
 
 | # | qué falta medir | por qué importa |
@@ -1156,6 +1298,8 @@ techo se tocó. **`[A MEDIR]`: ese dato está en los logs de Railway de esos dí
 | 7 | **latencia de abrir UNA conexión contra Supabase** (con red y TLS) | local da 1,03 ms y no hay pool: son 267 `get_db()`. Ver 4-bis(b) |
 | 8 | **por qué puerto se conecta**: directo (5432) o pooler (6543) | con el pooler, las sentencias preparadas de `psycopg` fallan de a ratos. Ver 4-bis(a) |
 | 9 | está puesta `SECRET_KEY` en Railway | si no, el reinicio del pasaje desloguea a los 1.084 |
+| 10 | **¿Rebill reintenta los webhooks fallidos, y por cuánto?** | los pagos ENTRAN durante la ventana; si no reintenta, hay que revisarlos a mano |
+| 11 | **espacio libre en el volumen** antes del backup y del VACUUM | el doc dice que el volumen ya está al 97%; un backup que no entra no existe |
 
 **Ninguno de los nueve se estima. Los nueve se miden antes de comprometer una fecha.**
 
