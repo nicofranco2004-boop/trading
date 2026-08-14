@@ -61,6 +61,16 @@ class ValorRaro(Exception):
     """
 
 
+class OrigenIlegible(Exception):
+    """No se pudo leer del ORIGEN la lista de qué hay que comparar.
+
+    Levanta en vez de seguir con lo que haya: sin esa lista la verificación sólo
+    puede mirar lo que el destino ya tiene, que es exactamente la ceguera que
+    todo este módulo existe para evitar. Una verificación que no sabe qué tiene
+    que comparar no puede decir "ok".
+    """
+
+
 # ── La normalización ─────────────────────────────────────────────────────────
 
 def canon(valor: Any, tipo: str) -> str:
@@ -156,10 +166,58 @@ def esquema_pg(cur) -> Dict[str, List[Tuple[str, str]]]:
     return out
 
 
+def columnas_sqlite(conn: sqlite3.Connection) -> Dict[str, List[str]]:
+    """{tabla: [columnas]} del ORIGEN, leído de SQLite.
+
+    Existe para que la verificación no tenga que preguntarle al destino qué
+    columnas hay que comparar — que era el bug. Ver el NIVEL 1-b.
+    """
+    out: Dict[str, List[str]] = {}
+    for t in tablas_sqlite(conn):
+        out[t] = [r[1] for r in conn.execute(f'PRAGMA table_info("{t}")').fetchall()]
+    return out
+
+
 def tablas_sqlite(conn: sqlite3.Connection) -> set:
     return {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' "
         "AND name NOT LIKE 'sqlite_%'").fetchall()}
+
+
+def catalogo_origen(cur) -> Tuple[set, Dict[str, List[str]]]:
+    """(tablas, {tabla: [columnas]}) del ORIGEN. LO LEE `comparar()` SOLA.
+
+    🔴 **Por qué esto no es un parámetro, y es el punto entero de esta función.**
+    Antes lo era —`tablas_origen=None`, `cols_origen=None`— con un docstring que
+    decía "pasalos SIEMPRE". Eso es una ADVERTENCIA, no un mecanismo: el que no
+    los pasaba se saltaba el chequeo **en silencio** y la verificación volvía a
+    devolver "ok" con tablas sin copiar. La red existía y quedaba sin poner, que
+    es la forma exacta de los últimos errores de este proyecto.
+
+    Sacando el parámetro, olvidarlo no es posible: no hay nada que pasar. Y tapa
+    de paso el error de un piso más arriba —**mirar desde la fuente equivocada**—
+    porque la lista ya no puede venir del destino ni de una variable de hace diez
+    líneas: sale del cursor del ORIGEN que la comparación está usando.
+
+    Si el origen no se puede leer, LEVANTA. Nunca devuelve una lista a medias:
+    una lista corta se ve igual que una completa, y comparar de menos es
+    justamente el modo de falla que da verde con plata perdida.
+    """
+    try:
+        tablas = tablas_sqlite(cur)
+        cols = columnas_sqlite(cur)
+    except Exception as ex:
+        raise OrigenIlegible(
+            f"no se pudo leer el catálogo del ORIGEN ({type(ex).__name__}: {ex}). "
+            f"`comparar()` espera que el origen sea la base SQLite que se está "
+            f"copiando; sin su lista de tablas y columnas la verificación sería "
+            f"ciega a todo lo que no viajó.") from ex
+    if not tablas:
+        raise OrigenIlegible(
+            "el ORIGEN no tiene ninguna tabla. Comparar contra una base vacía da "
+            "'sin hallazgos' sin haber mirado nada: es el falso verde más caro "
+            "posible.")
+    return tablas, cols
 
 
 # ── NIVEL 1: fila por fila ───────────────────────────────────────────────────
@@ -286,25 +344,32 @@ class CursorPg:
 
 def comparar(cur_origen, cur_destino, esquema: Dict[str, List[Tuple[str, str]]],
              *, saltear: Optional[set] = None,
-             revisar_secuencias: bool = True,
-             tablas_origen: Optional[set] = None) -> Dict[str, Any]:
+             revisar_secuencias: bool = True) -> Dict[str, Any]:
     """Compara origen (SQLite) contra destino (Postgres). Devuelve los HALLAZGOS.
 
     Lista vacía = las dos bases dicen lo mismo. Nunca devuelve "está todo bien"
     sin haber mirado: si una tabla no se pudo leer, eso es un hallazgo.
 
+    **QUÉ SE COMPARA LO DECIDE EL ORIGEN, y no hay forma de pedir otra cosa.**
+    La lista de tablas y de columnas se lee acá adentro con `catalogo_origen()`,
+    del mismo cursor del origen que se está comparando. No es un parámetro a
+    propósito: cuando lo era, omitirlo apagaba el chequeo en silencio. Ver el
+    docstring de `catalogo_origen`.
+
+    `esquema` sigue viniendo del DESTINO (`esquema_pg`) porque es lo único que
+    tiene los TIPOS declarados, que es lo que la normalización necesita. La
+    división es la que importa: **el destino aporta los tipos, el origen aporta
+    la lista de qué mirar.** Preguntarle al destino qué verificar es preguntarle
+    al sospechoso.
+
     `revisar_secuencias=False` apaga el NIVEL 3, que es propio de Postgres. Los
     tests lo usan para poder correr las mismas comparaciones SQLite-contra-SQLite
-    y así probar la lógica de detección sin depender de que haya un Postgres.
-
-    ⚠️ **`tablas_origen` no es opcional en la práctica: pasalo SIEMPRE.** Es la
-    lista de tablas del ORIGEN (`tablas_sqlite(conn)`). Sin ella, la verificación
-    sólo mira las tablas que el destino ya tiene, y una tabla que no se copió
-    resulta INVISIBLE. Se deja con default `None` para no romper llamadores
-    viejos, pero el camino de verdad la pasa.
+    y así probar la lógica de detección sin depender de que haya un Postgres. Su
+    default es `True`: apagarlo es un acto explícito, no un olvido.
     """
     hallazgos: List[Dict[str, Any]] = []
     saltear = saltear or set()
+    tablas_origen, cols_origen = catalogo_origen(cur_origen)
 
     # ── NIVEL 1-a: ¿ESTÁN TODAS LAS TABLAS? ─────────────────────────────────
     # 🔴 Acá había un agujero estructural, y era grave: el `esquema` sale del
@@ -321,22 +386,55 @@ def comparar(cur_origen, cur_destino, esquema: Dict[str, List[Tuple[str, str]]],
     # La lección es la de siempre en este proyecto: **preguntarle al destino qué
     # hay que verificar es preguntarle al sospechoso.** La lista de qué comparar
     # tiene que salir del ORIGEN.
-    if tablas_origen is not None:
-        faltan = sorted(t for t in tablas_origen if t not in esquema and t not in saltear)
-        for t in faltan:
+    #
+    # ⚠️ Y el arreglo tuvo DOS etapas, porque la primera se quedó a mitad de
+    # camino: la lista salía del origen pero **por un parámetro opcional**, así
+    # que el que no lo pasaba volvía a tener la ceguera entera, en silencio.
+    # Ahora no hay parámetro: `catalogo_origen()` lo lee arriba, siempre.
+    faltan = sorted(t for t in tablas_origen if t not in esquema and t not in saltear)
+    for t in faltan:
+        hallazgos.append({
+            "nivel": 1, "tabla": t,
+            "que": "la tabla existe en el ORIGEN y NO en el destino: no se copió "
+                   "y el resto de la verificación es ciega a ella"})
+    sobran = sorted(t for t in esquema if t not in tablas_origen and t not in saltear)
+    for t in sobran:
+        hallazgos.append({
+            "nivel": 1, "tabla": t,
+            "que": "la tabla existe en el destino y NO en el origen"})
+    # Ya reportadas: sacarlas del bucle de abajo para no decir dos veces lo
+    # mismo (la de más daría además "no se pudo leer el ORIGEN", que es la
+    # misma noticia con otras palabras y ensucia el informe).
+    saltear = set(saltear) | set(sobran)
+
+    # ── NIVEL 1-b: ¿ESTÁN TODAS LAS COLUMNAS? ───────────────────────────────
+    # 🔴 El MISMO agujero que el de arriba, un piso más abajo, y por poco se
+    # queda sin tapar. La lista de columnas de cada tabla también sale del
+    # catálogo del DESTINO, y `digest_tabla` usa esa lista para leer LAS DOS
+    # bases. O sea que una columna que existe en producción y no en
+    # `schema_pg.sql` **no se copia, no se lee, y no se reporta**: el informe
+    # dice "sin hallazgos" con una columna entera de datos perdida.
+    #
+    # Tapar sólo el nivel de las tablas habría dejado exactamente el mismo bug
+    # esperando un piso más abajo. La regla es la misma y vale en los dos
+    # niveles: **la lista de qué comparar sale del ORIGEN.**
+    for tabla in sorted(set(esquema) & set(cols_origen)):
+        if tabla in saltear:
+            continue
+        en_destino = {c for c, _t in esquema[tabla]}
+        en_origen = set(cols_origen[tabla])
+        faltan_c = sorted(en_origen - en_destino)
+        sobran_c = sorted(en_destino - en_origen)
+        if faltan_c:
             hallazgos.append({
-                "nivel": 1, "tabla": t,
-                "que": "la tabla existe en el ORIGEN y NO en el destino: no se copió "
-                       "y el resto de la verificación es ciega a ella"})
-        sobran = sorted(t for t in esquema if t not in tablas_origen and t not in saltear)
-        for t in sobran:
+                "nivel": 1, "tabla": tabla,
+                "que": f"columnas que están en el ORIGEN y no en el destino: "
+                       f"{faltan_c}. No se copiaron y el digest es ciego a ellas"})
+        if sobran_c:
             hallazgos.append({
-                "nivel": 1, "tabla": t,
-                "que": "la tabla existe en el destino y NO en el origen"})
-        # Ya reportadas: sacarlas del bucle de abajo para no decir dos veces lo
-        # mismo (la de más daría además "no se pudo leer el ORIGEN", que es la
-        # misma noticia con otras palabras y ensucia el informe).
-        saltear = set(saltear) | set(sobran)
+                "nivel": 1, "tabla": tabla,
+                "que": f"columnas que están en el destino y no en el origen: "
+                       f"{sobran_c}"})
 
     # NIVEL 1
     for tabla, cols in sorted(esquema.items()):

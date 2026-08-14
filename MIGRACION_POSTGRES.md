@@ -1,6 +1,6 @@
 # Migración SQLite → Postgres (Supabase) — estado y prompt de continuación
 
-Última sesión: 2026-08-14 (sesión 6). Pegá el bloque de abajo en una sesión nueva.
+Última sesión: 2026-08-14 (sesión 8). Pegá el bloque de abajo en una sesión nueva.
 
 ---
 
@@ -42,7 +42,18 @@ commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
   y no cambia nada. Con ella, la MISMA suite corre contra Postgres.
 - **Audit de datos sobre PRODUCCIÓN** (`GET /api/admin/pg-type-audit`, ya deployado):
   425 columnas, 60 tablas → **LIMPIO**. No hay texto en columnas numéricas ni nulls
-  donde no van. El riesgo grande de la migración está descartado con datos reales.
+  donde no van.
+  ⚠️ **CORRECCIÓN (sesión 7): ese audit NO miró los datos NUEVOS, así que "el riesgo
+  grande está descartado" es más chico de lo que dice.** `pg_type_audit.py` muestrea
+  las tablas de más de 200.000 filas con `SELECT * FROM tabla LIMIT 200000` **sin
+  `ORDER BY`** (`:73-74`), y SQLite sin `ORDER BY` devuelve las filas en orden de
+  `rowid`: o sea **las más VIEJAS**. Las tres tablas de import (~1M de filas cada
+  una) cayeron justo en ese muestreo — y son las que llenan los parsers. Todo lo que
+  escribieron los parsers nuevos (PPI, inviu, Balanz Internacional, Bull Market,
+  Binance) está en la cola y **nunca se auditó**. Un `''` o un texto en una columna
+  numérica ahí no molesta hoy —SQLite lo acepta— y haría fallar al copiador **a mitad
+  de la ventana**. Hay que re-correrlo sobre la copia restaurada sin muestreo, o
+  muestreando la cola (`ORDER BY rowid DESC`), y esperar el mismo LIMPIO.
 - **Medición**: **98,4%** (2.854 de 2.900 en Postgres; 2.846 de 2.892 en SQLite) y
   **0 fallas propias de la migración** — las 46 que quedan **son EXACTAMENTE EL
   MISMO SET en los dos motores**, test por test. Suite COMPLETA en **1 minuto**,
@@ -810,7 +821,7 @@ el mismo traceback. Recién si no hay ninguno de los dos es una diferencia real.
    compararlo.
 6. **Copiador de datos** SQLite→Postgres. La verificación ✅ está **escrita y
    probada** (`backend/scripts/verificar_copia.py` + `tests/test_verificar_copia.py`,
-   30 casos). Falta el copiador.
+   45 casos). Falta el copiador.
 7. ~~Los `get_db()` expuestos~~ ✅ sesión 6 — `main.db_abierta()` + barrido AST.
 8. **Probar contra Supabase de verdad.** Todo lo medido hasta acá es Postgres local,
    sin red de por medio. Ahí se nota lo que hace demasiadas idas y vueltas — como el
@@ -891,8 +902,9 @@ roto se ve, y éstos se ven *sanos*.
 
 Barrido con AST de todo el backend: son **dos** los que tocan datos de producción.
 
-**c-1) El backup nocturno** (`_run_backup_db_job`, 03:45 UTC → `backup_db.py:287`,
-`sqlite3.connect(DB_PATH)`). Seguiría guardando copias impecables de una base que
+**c-1) El backup nocturno** (`_run_backup_db_job`, 03:45 UTC → `run_backup`,
+`backup_db.py:283`, que abre SQLite en `dump_sqlite_consistent:87` **y `:89`** — el
+origen y el destino del dump). Seguiría guardando copias impecables de una base que
 ya no usa nadie. Hay que decidir de dónde salen los backups de Postgres — los de
 Supabase sirven, pero hay que **confirmar cuáles trae el plan contratado**
 (`[A MEDIR]`) — y apagar o adaptar el job para que no dé una señal falsa.
@@ -911,10 +923,30 @@ ven números que no cierran.
 quedé ahí; el segundo apareció en una revisión adversarial, no buscándolo.
 **Encontré el patrón y no barrí la categoría** — el mismo error que este proyecto ya
 pagó cinco veces. Ahora hay un barrido con AST que la cubre entera
-(`tests/test_escritores_solo_sqlite.py`): lista los 11 sitios que abren SQLite
-directo, permite los 9 legítimos **con el motivo escrito**, y falla si aparece uno
-nuevo. Los dos de acá quedan anotados como `PENDIENTE` y el test exige que sigan
-marcados así hasta que se arreglen.
+(`tests/test_escritores_solo_sqlite.py`) y falla si aparece un sitio nuevo.
+
+**Los números, contados corriendo el barrido y no a ojo** (una versión anterior de
+esta línea decía "los 9 legítimos", y el 9 no salía de ningún lado):
+
+| | |
+|---|---|
+| sitios que abren `sqlite3.connect` directo | **11** |
+| entradas en `PERMITIDOS`, cada una con el motivo escrito | **8** |
+| de esas 8, marcadas `PENDIENTE` | **2** |
+
+Son 11 y 8 y no el mismo número porque **tres funciones abren dos veces**
+(`admin_fx_migrate_user`, `admin_fx_migrate_batch` y `dump_sqlite_consistent`, que
+abre el origen y el destino del backup). El permiso es por función, no por línea.
+
+🔴 **Y LA PRECISIÓN QUE MÁS IMPORTA: LA FOTO DIARIA NO ESTÁ ARREGLADA, ESTÁ
+MARCADA.** Es fácil leer el párrafo de arriba como si el barrido hubiera resuelto
+algo, y no resolvió nada de esto. Lo único que hace el barrido es **impedir que
+aparezca un sitio NUEVO**. El que ya está (`snapshots_job.py:945`) **sigue
+escribiendo en SQLite**, y después del pasaje eso significa que la foto de ayer se
+guarda en la base congelada y la app —que lee de Postgres— no la ve. De esa foto
+cuelgan la variación diaria, los resúmenes mensuales, el TWR y los informes del
+asesor. **Nadie ve un error: ven números que no cierran.** Estado real de los dos:
+**detectados y anotados en el plan**, prerrequisitos del pasaje. Sin escribir.
 
 ---
 
@@ -1246,11 +1278,13 @@ techo se tocó. **`[A MEDIR]`: ese dato está en los logs de Railway de esos dí
 
 ---
 
-### Cinco cosas más que salieron de atacar este plan
+### Siete cosas más que salieron de atacar este plan
 
 El plan se pasó por una revisión adversarial cuando estaba escrito. Además de los
 tres errores míos ya corregidos arriba (el snapshot sólo-SQLite, las 60 tablas, y
-el vaciado de `raw_json`), salieron estas cinco. Las cinco están **verificadas**.
+el vaciado de `raw_json`), salieron estas siete. Las siete están **verificadas por mí**, no sólo reportadas:
+el ataque perdió 7 de sus 17 agentes por errores de infraestructura, así que varias
+nunca pasaron por su propio escéptico y no se podían dar por buenas.
 
 **1. 🔴 Ningún chequeo distingue "migramos" de "la variable no agarró".**
 `/api/health` devuelve `ok`, `timestamp`, `service` y `commit` — **no toca la base**
@@ -1261,10 +1295,30 @@ Verificás una migración que no ocurrió.
 **Falta un chequeo 0**: preguntarle a la app **contra qué motor está**. Sin eso, todo
 lo demás mide otra cosa.
 
-**2. `psycopg` no está en `requirements.txt`.** Verificado. Hoy es correcto —esto es
-un spike y así producción no se entera— pero significa que **el paso de prender
-`DATABASE_URL` no puede funcionar** hasta que se agregue. Es un prerrequisito de una
-línea, y es de los que se olvidan porque son obvios.
+**2. 🔴 No es "falta `psycopg`": ES QUE EL CÓDIGO DE POSTGRES NO ESTÁ EN `main`.**
+Verificado con `git cat-file` contra la rama de producción:
+
+    backend/pgshim.py       en main: NO
+    backend/dberrors.py     en main: NO
+    backend/schema_pg.sql   en main: NO
+    psycopg en requirements de main: NO
+
+O sea que **el paso 10 —"prender `DATABASE_URL` y reiniciar"— es imposible**: no hay
+qué prender. Yo lo había anotado como "un prerrequisito de una línea", y es un merge
+más un deploy. Hacer eso el día del pasaje es hacerlo **con el reloj de la ventana
+corriendo y después del vaciado irreversible.**
+
+⚠️ **Y hay una trampa que lo vuelve invisible hasta el peor momento:** `get_db()`
+importa `pgshim` **de forma perezosa y sólo si `USANDO_PG`** (`main.py:344-347`). Así
+que si mergeás días antes **sin** la variable, el deploy sale verde y el faltante no
+se nota. El día del pasaje, con la variable puesta y sin `psycopg` instalado,
+`init_db()` corre al importar el módulo, uvicorn no levanta, y Railway lo deja en
+crash-loop: la app no contesta ni `/api/health`.
+
+**Va días antes, y en producción, sin `DATABASE_URL`** (o sea sin cambiar nada para
+el usuario): agregar `psycopg[binary]` a `requirements.txt`, mergear y deployar, y
+**confirmar por el `commit` que devuelve `/api/health`** que el bundle nuevo está
+arriba — que para eso está ese campo.
 
 **3. La verificación es una biblioteca sin programa.** `verificar_copia.py` tiene las
 funciones y los tests, pero **no tiene un `main`**: el paso 9 dice "correr la
@@ -1279,7 +1333,35 @@ sin su plan activado. **Hay que averiguar si Rebill reintenta los webhooks falli
 por cuánto tiempo** — `[A MEDIR]`. Si reintenta, no hay problema; si no, hay que
 revisar los pagos del día a mano.
 
-**5. Nadie mira el disco antes de copiar.** El paso 3 (backup a mano) y un eventual
+**5. 🔴 El estado "arriba contra Postgres y cerrada al público" NO EXISTE.**
+El único mecanismo de mantenimiento que el plan acepta es apagar el backend — y el
+paso 10 lo prende. Entonces el paso 11 ("los chequeos con la app TODAVÍA en
+mantenimiento") y el paso 12 ("recién ahí, abrir") **son el mismo momento**: hay dos
+pasos y una sola palanca.
+
+Y la consecuencia es justo la que el plan dice querer evitar: durante esos 10 minutos
+de chequeos —que incluyen un import de punta a punta, o sea escrituras— los 1.084
+pueden entrar y operar contra Postgres. **Se cruza el punto de no retorno mientras
+estás decidiendo si la copia sirve**, y el chequeo 4 (los totales al centavo contra
+el snapshot de anoche) deja de ser confiable si alguien operó en el medio.
+
+Esto **asciende el modo mantenimiento de "estaría bueno" a REQUISITO** — contradice
+lo que escribí en el punto 0a y hay que leerlo así. Necesita bypass: 503 para todos
+salvo si viene un token nuestro. La alternativa sin código —sacarle el dominio
+público al servicio en Railway y chequear por la URL interna— **se prueba antes, no
+ese domingo.**
+
+**6. Nadie dijo en qué máquina corre el copiador.** Los pasos 3 a 7 trabajan sobre
+`/data/trading.db`, que vive en el volumen de Railway, y el paso 2 apaga el único
+proceso que lo tiene montado. Las dos salidas rompen algo: dejar el backend prendido
+para tener shell significa copiar una base que se mueve; bajarse el archivo a tu
+máquina suma la bajada de ~933 MB y la subida a Supabase por tu internet — tiempo que
+el hueco #1, medido en laboratorio, **no** mide. Además el paso 3 dice "backup
+guardado FUERA del volumen" y hoy no hay mecanismo: el único endpoint que existe
+(`POST /api/admin/backup-trigger`) escribe **adentro** del volumen, y el destino S3 de
+`backup_db.py` es opcional (`BACKUP_S3_*`) y no se sabe si está configurado.
+
+**7. Nadie mira el disco antes de copiar.** El paso 3 (backup a mano) y un eventual
 `VACUUM` escriben archivos del tamaño de la base **en el mismo volumen de Railway**,
 que ya está al 97% de ocupación con backups viejos según lo que dice este mismo doc
 más abajo. Un backup que no entra es un backup que no existe. **Mirar el espacio
@@ -1300,6 +1382,8 @@ libre antes es gratis y evita el peor momento posible para descubrirlo.**
 | 9 | está puesta `SECRET_KEY` en Railway | si no, el reinicio del pasaje desloguea a los 1.084 |
 | 10 | **¿Rebill reintenta los webhooks fallidos, y por cuánto?** | los pagos ENTRAN durante la ventana; si no reintenta, hay que revisarlos a mano |
 | 11 | **espacio libre en el volumen** antes del backup y del VACUUM | el doc dice que el volumen ya está al 97%; un backup que no entra no existe |
+| 12 | **re-correr el audit de tipos SIN muestreo** (o por la cola) sobre la copia restaurada | el audit original miró las filas más VIEJAS: los parsers nuevos nunca se auditaron |
+| 13 | **¿está configurado `BACKUP_S3_*` en Railway?** | el paso 3 pide el backup FUERA del volumen y hoy no hay mecanismo si eso no está |
 
 **Ninguno de los nueve se estima. Los nueve se miden antes de comprometer una fecha.**
 
@@ -1309,7 +1393,78 @@ pool antes de mover a nadie.
 
 ## El copiador: LA VERIFICACIÓN ✅ ESCRITA Y PROBADA (sesión 6)
 
-`backend/scripts/verificar_copia.py` + `tests/test_verificar_copia.py` (30 casos).
+### 🔴 Sesión 8: la red estaba puesta pero era OPT-IN, y eso la anulaba entera
+
+El agujero de las 60-vs-58 tablas se había tapado **a medias**: `comparar()` recibía
+la lista del origen por un parámetro opcional, `tablas_origen=None`, y el chequeo
+vivía adentro de un `if tablas_origen is not None:`. O sea que **el que no lo pasaba
+volvía a tener la ceguera entera, en silencio**. El docstring decía "pasalo
+SIEMPRE" — y eso es una advertencia, no un mecanismo. Es la forma exacta de los
+últimos cuatro errores del proyecto: la red existe y queda sin poner.
+
+Y no era uno: era **dos**. `cols_origen` tenía el mismo default y el mismo `if`, un
+piso más abajo.
+
+**El arreglo es no tener el parámetro.** `comparar()` ya no lo recibe: lo lee sola
+del cursor del origen con `catalogo_origen()`. Olvidarlo no es posible porque no hay
+nada que pasar, y de paso se cierra el error de un nivel más arriba —**mirar desde
+la fuente equivocada**— porque la lista ya no puede venir del destino ni de una
+variable de hace diez líneas.
+
+- Si el origen no se puede leer, **levanta `OrigenIlegible`**. Nunca devuelve "ok".
+- Si el origen no tiene ninguna tabla, **también levanta**: comparar cero cosas y
+  decir "sin hallazgos" es el falso verde más caro que existe.
+- Un llamador viejo que todavía mande `tablas_origen=` se come un **`TypeError`** en
+  la cara, en vez de que se lo ignoren.
+
+**El momento fue el correcto y salió barato:** los llamadores de `comparar()` eran
+**todos tests** (verificado: `grep` de `verificar_copia` fuera de `tests/` no
+devuelve nada), porque el copiador todavía no existe. Con el copiador y su runner ya
+escritos, el default peligroso habría quedado en el camino de producción.
+
+**El detector, y busca la CATEGORÍA y no estos dos nombres:**
+`tests/test_verificacion_no_es_opt_in.py` barre con AST **todo `scripts/`** —
+incluido el copiador el día que exista— y falla si alguna función tiene un
+parámetro que cumple las tres cosas: default apagado (`None`/`False`), gobierna un
+`if`, y de ese `if` cuelga un hallazgo. Los tres juntos significan *si no me pasás
+esto, no reporto*.
+
+Corriéndolo aparecieron **dos candidatos más, y los dos eran falsos positivos** —
+mirarlos uno por uno es lo que hizo que el detector sirva en vez de ser ruido:
+
+| candidato | por qué NO es la categoría |
+|---|---|
+| `backup_db.run_backup(db_path=None)` | se reasigna en la línea siguiente (`db_path or os.environ…`): el default nunca llega al `if`. Descartado **mecánicamente** por el detector. |
+| `pg_type_audit.auditar(incluir_ok=False)` | lo que agrega esa rama son las columnas que están **bien**; los problemas se reportan siempre. Es verbosidad, no un nivel. Va a `PERMITIDOS` **con el motivo escrito**. |
+
+Y lo que el detector **no** marca, a propósito: `revisar_secuencias=True` también
+apaga un nivel, pero su default lo deja **prendido**. La regla no es "no se puede
+apagar nada", es **"lo que se apaga solo, no vale"**.
+
+**Verificado mutando cada defensa POR SEPARADO** (en este proyecto ya pasó que dos
+se taparan entre sí y el test quedara decorativo):
+
+| mutante | qué cae |
+|---|---|
+| la derivación de **tablas** vuelve a mirar el destino | caen los 2 tests de tablas, **el de columnas sigue verde** |
+| la derivación de **columnas** vuelve a mirar el destino | cae el de columnas, **los de tablas siguen verdes** |
+| el parámetro opcional vuelve (comportamiento viejo entero) | caen 7, incluida la guarda AST |
+| el detector deja de ver los defaults apagados | cae la sonda plantada |
+| el detector deja de exigir que el hallazgo cuelgue del `if` | cae la sonda plantada |
+
+**Y probado sobre la forma REAL, no sólo sobre el mini-esquema de 4 tablas:**
+`init_db()` + `ensure_tables()` (60 tablas) contra `schema_pg.sql` (58), con
+`comparar()` llamada **sin pasarle nada** → `ok=False` y los hallazgos nombran
+`fci_catalog` y `fci_prices`. Salió de yapa que las 58 tablas compartidas tienen
+**0 columnas de diferencia** entre el SQLite real y el esquema de Postgres.
+
+**Medición**: **45 casos, 0 se saltean** con `PG_DSN_VERIF` puesta (eran 30). Suite
+completa en los dos motores: **46 y 46, el mismo set exacto test por test**, y el
+mismo set que la baseline de `a813deb` — cero regresiones.
+
+---
+
+`backend/scripts/verificar_copia.py` + `tests/test_verificar_copia.py` (45 casos).
 Los cuatro niveles del diseño de abajo están implementados y **probados rompiendo
 una copia a propósito, de a UNA cosa por vez**. Las cinco roturas saltan:
 
@@ -1370,7 +1525,7 @@ sí**:
 PG_DSN_VERIF="postgresql://…/otra_base" python3 -m pytest tests/test_verificar_copia.py -q
 ```
 
-Con la variable puesta: **30 pasan, 0 se saltean** (verificado). Sin ella: 23 pasan
+Con la variable puesta: **45 pasan, 0 se saltean** (verificado). Sin ella: 38 pasan
 y 7 se saltean.
 
 ## El diseño de la verificación (referencia)

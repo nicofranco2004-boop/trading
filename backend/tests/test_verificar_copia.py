@@ -202,36 +202,62 @@ class UnaTablaQueNoViajoTest(unittest.TestCase):
             "CREATE TABLE fci_prices (symbol TEXT PRIMARY KEY, price REAL);")
         self.o.execute("INSERT INTO fci_prices VALUES ('IAMRDOA', 1234.56)")
         self.o.commit()
-        self.tablas_o = vc.tablas_sqlite(self.o)
         # El esquema sale del DESTINO, igual que en la vida real.
         self.esquema = dict(ESQUEMA)
 
-    def test_la_tabla_que_falta_SALTA(self):
-        h = vc.comparar(_cur(self.o), _cur(self.d), self.esquema,
-                        revisar_secuencias=False,
-                        tablas_origen=self.tablas_o)["hallazgos"]
-        faltantes = [x for x in h if x["tabla"] == "fci_prices"]
-        self.assertEqual(len(faltantes), 1, h)
-        self.assertIn("no se copió", faltantes[0]["que"])
+    def test_la_tabla_que_falta_SALTA_SIN_QUE_NADIE_PASE_NADA(self):
+        """🔴 EL TEST QUE IMPORTA, y el nombre dice por qué.
 
-    def test_SIN_pasarle_las_tablas_del_origen_es_CIEGA(self):
-        """La contraprueba, y el motivo de que el parámetro exista.
-
-        Es exactamente lo que hacía antes: sin la lista del origen la
-        verificación dice que está todo bien.
+        No se le pasa ninguna lista: `comparar()` la lee sola del origen. Con el
+        comportamiento viejo —`tablas_origen` opcional— esta misma llamada
+        devolvía `[]` y `ok=True` con una tabla entera sin copiar.
         """
         r = vc.comparar(_cur(self.o), _cur(self.d), self.esquema,
                         revisar_secuencias=False)
-        self.assertEqual(r["hallazgos"], [],
-                         "si esto ya no está vacío, el agujero se tapó por otro "
-                         "lado y este test dejó de medir lo que dice medir")
-        self.assertTrue(r["ok"], "devolvía ok con una tabla entera sin copiar")
+        faltantes = [x for x in r["hallazgos"] if x["tabla"] == "fci_prices"]
+        self.assertEqual(len(faltantes), 1, r["hallazgos"])
+        self.assertIn("no se copió", faltantes[0]["que"])
+        self.assertFalse(r["ok"], "no puede decir ok con una tabla sin copiar")
+
+    def test_ya_NO_SE_PUEDE_pasarle_la_lista_a_mano(self):
+        """La red dejó de ser opcional: el parámetro no existe más.
+
+        Importa porque el modo de falla no era pasar una lista mala, era **no
+        pasar ninguna**. Un llamador viejo que todavía la mande se entera con un
+        `TypeError` en la cara en vez de que se la ignoren en silencio.
+        """
+        for kw in ({"tablas_origen": vc.tablas_sqlite(self.o)},
+                   {"cols_origen": vc.columnas_sqlite(self.o)}):
+            with self.assertRaises(TypeError, msg=kw):
+                vc.comparar(_cur(self.o), _cur(self.d), self.esquema,
+                            revisar_secuencias=False, **kw)
+
+    def test_un_origen_que_no_se_puede_leer_LEVANTA_no_devuelve_ok(self):
+        """El otro modo de falla del mismo agujero.
+
+        Si el catálogo del origen no se puede leer, la única respuesta correcta
+        es levantar. Devolver "sin hallazgos" sería no haber mirado nada y
+        decirlo como si estuviera todo bien.
+        """
+        class CursorMudo:
+            def execute(self, sql, params=()):
+                raise RuntimeError("acá no hay sqlite_master")
+
+        with self.assertRaises(vc.OrigenIlegible):
+            vc.comparar(CursorMudo(), _cur(self.d), self.esquema,
+                        revisar_secuencias=False)
+
+    def test_un_origen_VACIO_tambien_LEVANTA(self):
+        """Cero tablas compara cero cosas y da 'ok'. Es el falso verde más caro."""
+        vacia = sqlite3.connect(":memory:")
+        with self.assertRaises(vc.OrigenIlegible):
+            vc.comparar(_cur(vacia), _cur(self.d), self.esquema,
+                        revisar_secuencias=False)
 
     def test_una_tabla_de_MAS_en_el_destino_tambien_salta(self):
         h = vc.comparar(_cur(self.d), _cur(self.o), dict(ESQUEMA, fci_prices=[
             ("symbol", "text"), ("price", "double precision")]),
-            revisar_secuencias=False,
-            tablas_origen=vc.tablas_sqlite(self.d))["hallazgos"]
+            revisar_secuencias=False)["hallazgos"]
         sobra = [x for x in h if x["tabla"] == "fci_prices"]
         self.assertEqual(len(sobra), 1, h)
         self.assertIn("NO en el origen", sobra[0]["que"])
@@ -239,8 +265,58 @@ class UnaTablaQueNoViajoTest(unittest.TestCase):
     def test_con_las_dos_bases_iguales_no_se_queja(self):
         """Que no se vuelva ruido: mismas tablas, cero hallazgos."""
         r = vc.comparar(_cur(self.d), _cur(self.d), dict(ESQUEMA),
-                        revisar_secuencias=False,
-                        tablas_origen=vc.tablas_sqlite(self.d))
+                        revisar_secuencias=False)
+        self.assertEqual(r["hallazgos"], [], r["hallazgos"])
+
+
+class UnaCOLUMNAQueNoViajoTest(unittest.TestCase):
+    """El MISMO agujero que el de las tablas, un piso más abajo — y por poco se
+    queda sin tapar.
+
+    La lista de columnas de cada tabla también salía del catálogo del DESTINO, y
+    `digest_tabla` usa esa lista para leer **las dos** bases. O sea que una columna
+    que existe en producción y no en `schema_pg.sql` no se copia, **no se lee de
+    ninguno de los dos lados**, y no genera hallazgo: el informe dice "sin
+    hallazgos" con una columna entera de datos perdida.
+
+    Tapar sólo el nivel de las tablas habría dejado el mismo bug esperando acá.
+    """
+
+    def setUp(self):
+        self.o, self.d = _base(), _base()
+        # El origen tiene una columna de más en `positions` — como pasaría si
+        # producción tuviera una que `schema_pg.sql` no trae.
+        self.o.execute("ALTER TABLE positions ADD COLUMN tc_compra REAL")
+        self.o.execute("UPDATE positions SET tc_compra = 1350.5 WHERE id=1")
+        self.o.commit()
+
+    def test_la_columna_que_falta_SALTA_SIN_QUE_NADIE_PASE_NADA(self):
+        """Igual que el de las tablas, un piso más abajo y sin pasar nada.
+
+        Es la SEGUNDA defensa y va sola a propósito: mutar la derivación de
+        tablas no hace caer este test, y mutar la de columnas no hace caer aquél.
+        En este proyecto ya pasó que dos defensas se taparan entre sí y el test
+        quedara decorativo.
+        """
+        h = vc.comparar(_cur(self.o), _cur(self.d), dict(ESQUEMA),
+                        revisar_secuencias=False)["hallazgos"]
+        c = [x for x in h if x["tabla"] == "positions" and "tc_compra" in str(x["que"])]
+        self.assertEqual(len(c), 1, h)
+        self.assertIn("ORIGEN y no en el destino", c[0]["que"])
+
+    def test_la_columna_que_falta_NO_la_ve_el_chequeo_de_TABLAS(self):
+        """Que las dos defensas midan cosas distintas, escrito como test.
+
+        Acá las TABLAS son idénticas en los dos lados: si el único hallazgo sale
+        del nivel de tablas, el de columnas no estaría haciendo nada.
+        """
+        h = vc.comparar(_cur(self.o), _cur(self.d), dict(ESQUEMA),
+                        revisar_secuencias=False)["hallazgos"]
+        self.assertEqual([x for x in h if "no se copió" in str(x["que"])], [], h)
+
+    def test_con_las_mismas_columnas_no_se_queja(self):
+        r = vc.comparar(_cur(self.d), _cur(self.d), dict(ESQUEMA),
+                        revisar_secuencias=False)
         self.assertEqual(r["hallazgos"], [], r["hallazgos"])
 
 
