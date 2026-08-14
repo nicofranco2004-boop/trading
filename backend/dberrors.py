@@ -80,3 +80,40 @@ def es_base_trabada(ex) -> bool:
     t = str(ex).lower()
     return ("database is locked" in t or "database is busy" in t   # SQLite
             or "lock timeout" in t or "deadlock detected" in t)    # Postgres
+
+
+# ── El ensayo por clon: SÓLO SQLITE, a propósito ─────────────────────────────
+# Tres herramientas de admin simulan de una forma muy particular: NO calculan qué
+# pasaría, sino que clonan la base ENTERA a un archivo temporal con
+# `sqlite3.Connection.backup()`, corren el proceso de verdad sobre la copia y
+# comparan la foto de antes contra la de después.
+#
+# En Postgres esa fotocopia no existe, y no hay reemplazo de una línea: la copia
+# está adentro del camino de aplicar, no sólo del de simular.
+#
+# DECISIÓN TOMADA (sesión 6): no se migra ahora. Son herramientas de admin, no
+# están en el camino de ningún usuario, y son el único ítem que le queda a la
+# migración. En vez de fallar con un error críptico de psycopg cuando
+# `DATABASE_URL` está puesta, avisan claro. El diseño del reemplazo está escrito
+# en MIGRACION_POSTGRES.md para retomarlo sin apuro.
+class EnsayoPorClonNoDisponible(RuntimeError):
+    """El ensayo por clon pedía una conexión sqlite3 y recibió otra cosa."""
+
+
+def exigir_clon_soportado(conn, herramienta: str) -> None:
+    """Corta ANTES de intentar el clon si el motor no lo soporta.
+
+    Pregunta por la CAPACIDAD (¿es una conexión sqlite3 de verdad?) y no por la
+    variable de entorno: es exactamente la precondición que hace falta, y así
+    tampoco se cuela una conexión del shim por un camino que no mire `DATABASE_URL`.
+    """
+    if isinstance(conn, sqlite3.Connection):
+        return
+    raise EnsayoPorClonNoDisponible(
+        f"«{herramienta}» todavía no funciona con Postgres/Supabase. Esta "
+        f"herramienta simula clonando la base entera con la copia de SQLite "
+        f"(Connection.backup), y en Postgres esa fotocopia no existe. Está "
+        f"marcada como sólo-SQLite a propósito: es de admin, no está en el camino "
+        f"de ningún usuario, y se migra aparte. Para usarla, corré el backend sin "
+        f"la variable DATABASE_URL."
+    )

@@ -137,6 +137,10 @@ class BackfillRecomputeTest(unittest.TestCase):
         self.assertLess(self._qty("AL30"), 1000.0)
         self.assertGreater(self._qty("AL30"), 0.0)
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "el ensayo por clon es sólo-SQLite: clona la base con "
+                     "sqlite3.Connection.backup() y en Postgres no existe "
+                     "(ver dberrors.exigir_clon_soportado)")
     def test_dryrun_no_mutation_then_apply_idempotent(self):
         """run() en dry-run no muta; --apply sí; segundo --apply es no-op."""
         self._import(_csv("2025-06-20,VENTA,Cocos,AAPL,10,200,2000,,,0,ARS,"))
@@ -280,6 +284,10 @@ class BackfillEndpointTest(unittest.TestCase):
         r = self.client.post("/api/admin/backfill-recompute", headers=self._hdr(self.user))
         self.assertEqual(r.status_code, 403, r.text)
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "el ensayo por clon es sólo-SQLite: clona la base con "
+                     "sqlite3.Connection.backup() y en Postgres no existe "
+                     "(ver dberrors.exigir_clon_soportado)")
     def test_full_mode_dryrun_then_apply(self):
         # MODO FULL (safe_only=false): reporta el cambio pero NO toca la base real.
         r = self.client.post("/api/admin/backfill-recompute?apply=false&safe_only=false",
@@ -299,6 +307,10 @@ class BackfillEndpointTest(unittest.TestCase):
         self.assertTrue(r2.json()["applied"])
         self.assertEqual(self._aapl(), 0.0)    # neteado en la real
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "el ensayo por clon es sólo-SQLite: clona la base con "
+                     "sqlite3.Connection.backup() y en Postgres no existe "
+                     "(ver dberrors.exigir_clon_soportado)")
     def test_safe_mode_default_reports_and_applies_phantom(self):
         # MODO SEGURO (default): el AAPL fantasma (no-bono → 0) es un cambio seguro.
         r = self.client.post("/api/admin/backfill-recompute?apply=false", headers=self._hdr(self.admin))

@@ -1,6 +1,6 @@
 # Migración SQLite → Postgres (Supabase) — estado y prompt de continuación
 
-Última sesión: 2026-08-14 (madrugada). Pegá el bloque de abajo en una sesión nueva.
+Última sesión: 2026-08-14 (sesión 6). Pegá el bloque de abajo en una sesión nueva.
 
 ---
 
@@ -21,7 +21,7 @@ techo es estructural: con más usuarios vuelve. Postgres lo resuelve de raíz.
 
     /private/tmp/claude-501/-Users-nicolaspussetto-Documents-trading/adc4a925-dbdb-4165-a5e3-826b55c1200c/scratchpad/mainwt
 
-Rama **`spike/postgres`**, commit `18fa17f`. **NO se deploya** — es un spike.
+Rama **`spike/postgres`**. **NO se deploya** — es un spike.
 Producción va por `main` y está estable (`8f4edfe`).
 
 ⚠️ macOS purga `/private/tmp` en sesiones largas. Si el worktree no está, los
@@ -43,7 +43,8 @@ commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
 - **Audit de datos sobre PRODUCCIÓN** (`GET /api/admin/pg-type-audit`, ya deployado):
   425 columnas, 60 tablas → **LIMPIO**. No hay texto en columnas numéricas ni nulls
   donde no van. El riesgo grande de la migración está descartado con datos reales.
-- **Medición**: **98,0%** (2.790 de 2.847), commit `18fa17f`. Suite COMPLETA en
+- **Medición**: **98,4%** (2.809 de 2.855) y **0 fallas propias de la migración**
+  (las 46 que quedan fallan igual en SQLite). Suite COMPLETA en
   **1 minuto**, **y el número significa algo**: cero timeouts y cero errores de
   infraestructura (ver la sección del aislamiento). Antes de arreglar eso el
   porcentaje no era ni reproducible — la misma suite en el mismo commit daba
@@ -99,16 +100,62 @@ un error.**
 
 ## Lo que falta
 
-**Quedan 57 fallas — pero 46 de ellas fallan IGUAL en SQLite.** Son las
-preexistentes de siempre, no son de la migración. **Lo propio de Postgres son 11**,
-y son TODAS el mismo ítem: **`Connection.backup`**, el ensayo por clon. Está
-diseñado (ver abajo) y esperando que el dueño elija camino.
+**CERO fallas propias de la migración** (sesión 6). Postgres queda en **46 fallas y
+las 46 fallan IGUAL en SQLite** — son las preexistentes de siempre. Medido con la
+suite COMPLETA en los dos motores y comparado test por test:
+
+| | antes (`bf5226a`) | ahora |
+|---|---|---|
+| Postgres | 57 fallas (2.790 pasan) | **46 fallas (2.809 pasan)** |
+| SQLite | 46 fallas (2.795 pasan) | **46 fallas (2.815 pasan)** |
+| fallas SÓLO de Postgres | 11 | **0** |
+| regresiones | — | **0 en los dos motores** |
+
+Las 11 eran TODAS el mismo ítem, `Connection.backup`, y salieron del camino
+crítico por decisión (abajo), no por arreglo.
 
 ⚠️ **Comparar SIEMPRE contra la baseline de SQLite antes de llamar "nueva" a una
 falla.** El total de Postgres arrastra las 46 preexistentes y da una sensación de
-deuda que no existe: 57 suena mucho, 11 es lo que hay.
+deuda que no existe.
 
-### `Connection.backup`: DISEÑADO, sin implementar — falta que el dueño elija
+### `Connection.backup`: FUERA DEL CAMINO CRÍTICO — marcado sólo-SQLite
+
+**DECISIÓN TOMADA (sesión 6): no se migra ahora.** Son herramientas de admin, no
+están en el camino de ningún usuario, y eran el único ítem que le quedaba a la
+migración. Se resuelve después del cambio, sin apuro. El diseño de las tres
+opciones queda escrito más abajo para retomarlo.
+
+Lo implementado es el aviso, no el reemplazo:
+
+- `dberrors.exigir_clon_soportado(conn, herramienta)` corta ANTES de intentar el
+  clon. Pregunta por la **capacidad** (¿es una conexión sqlite3 de verdad?) y no
+  por la variable de entorno: es la precondición real, y así tampoco se cuela una
+  conexión del shim por un camino que no mire `DATABASE_URL`.
+- Puesto en los **4 sitios que clonan**: `recompute_backfill._clone_db` (el helper)
+  y las 3 copias pegadas a mano en `main.py` (reparar snapshots, migrar TC, migrar
+  TC en lote). El quinto `.backup()` del código —`scripts/backup_db.py`— **no se
+  toca**: ese es el backup nocturno de verdad, no un ensayo.
+- Un **handler de la app** lo convierte en **501** con el mensaje explicativo. 501
+  y no 500 a propósito: no se rompió nada, es una capacidad que este motor no
+  tiene. `admin_backfill_recompute` necesita además una línea propia
+  (`except EnsayoPorClonNoDisponible: raise`) porque su `except Exception` se lo
+  tragaría antes de llegar al handler.
+- **Antes**: `500 "backfill falló: AttributeError: 'Connection' object has no
+  attribute 'backup'"`. **Ahora**: `501` con qué pasa y qué hacer.
+- Los 11 tests quedan `skipIf(USANDO_PG)` — son **7 métodos**, no 11: tres clases
+  heredan de otra (`GuardEscalaTest`/`BatchDryRunTest` de `FxMigrateTest`,
+  `SnapshotFuturoTest`/`CleanupFuturosEndpointTest` de `RepairUserHistoryTest`).
+- Test nuevo `tests/test_ensayo_clon_solo_sqlite.py`, **verificado que FALLA con el
+  comportamiento viejo**: sacando los guards, los dos tests de punta a punta se caen
+  con el `AttributeError` de arriba.
+
+⚠️ **Dato que apareció escribiendo el test y conviene saber:** `safe_backfill` corta
+antes de clonar si **ningún usuario de la tanda tiene posiciones** (`with_pos`
+vacío → `return`). O sea que el aviso sólo se dispara cuando hay trabajo real que
+hacer. Un test con un usuario recién creado devuelve 200 y **pasaría por el motivo
+equivocado**.
+
+### El diseño del reemplazo, para retomarlo
 
 El ensayo (dry-run) del backfill **no calcula qué pasaría: lo hace y lo mira.**
 Clona la base entera a un archivo con `sqlite3.Connection.backup()`, corre el
@@ -125,11 +172,27 @@ a mano en `main.py` + los scripts).
    no. El propio docstring dice: *"Para dry-run, pasar una conn a una COPIA — ahí
    el commit es inocuo"*. Todo el diseño se apoya en eso. Es lo que mata la idea
    obvia de "corré todo y hacé ROLLBACK al final".
-3. ⚠️ **El botón por defecto ("Simular", `safe_only=true`) usa el clon como
-   PIZARRÓN, no como garantía**: `safe_backfill` calcula el estado ideal en la
-   copia y después **escribe en la base real en la misma llamada**
-   (`_apply_safe` → `real_conn.commit()`, `:571`). El clon está adentro del camino
-   de APLICAR. Es el modo que ya corrió en producción sobre 830 cuentas.
+3. **El clon está adentro del camino de APLICAR, no sólo del de simular.** En el
+   modo `safe_only` el clon se usa como **PIZARRÓN**: `safe_backfill` calcula el
+   estado ideal en la copia y, **si `apply=true`**, escribe los cambios seguros en
+   la base real (`_apply_safe` → `real_conn.commit()`, `:568-571`). Por eso sacar
+   el clon no es "perder el dry-run": también se lleva puesto el modo que ya corrió
+   en producción sobre 830 cuentas.
+
+> ⚠️ **CORRECCIÓN (sesión 6). Una versión anterior de este doc decía que el botón
+> "Simular" «simula y escribe en la misma llamada». Es FALSO**, verificado en las
+> tres capas. El error fue confundir DOS interruptores distintos:
+> · **`safe_only`** elige QUÉ cambios se consideran (sólo los inequívocos vs. todos).
+>   Su default es `true`.
+> · **`apply`** elige SI se escribe. Su default es `false` (`main.py:14694`), y la
+>   escritura entera está detrás de un `if apply:` (`recompute_backfill.py:568`).
+> Con `safe_only=true, apply=false` —que es exactamente lo que manda el botón
+> "Simular"— el código clasifica sobre la copia y **no toca la base real**.
+> La UI ya tiene los dos botones separados (`Admin.jsx:1050` simular →
+> `runChunks(false)`; `:1057` aplicar → `runChunks(true)` con `confirm()`), y el
+> texto de la propia app ya lo dice bien: *"Simular corre sobre una copia (no toca
+> nada); recién Aplicar modifica"*.
+> **Lo que sí es cierto del mismo hallazgo es el tope que falta — ver abajo.**
 
 **Las tres opciones evaluadas** (cada una atacada por un escéptico buscando la
 secuencia exacta en que escribe de verdad):
@@ -160,16 +223,55 @@ secuencia exacta en que escribe de verdad):
 ### ⚠️ Lo que hay que arreglar ANTES, y no es ninguna de las tres
 
 Verificado en el código: **`_apply_safe` borra posiciones** (`DELETE FROM positions`,
-`:512`) y **no hay ningún tope de cordura en todo el archivo**. Si la copia queda
+`:516`) y **no hay ningún tope de cordura en todo el archivo**. Si la copia queda
 vacía o incompleta, `_classify_safe` lee "esto tenía cantidad y ahora es cero", lo
 marca como fantasma y `_apply_safe` **borra la fila real**. Lo que ve el usuario:
 abre la app y no están sus acciones. Recuperable sólo desde backup.
 
-Eso, más que el botón por defecto simule y escriba en la misma llamada, **es el
-riesgo más grande y el más barato de arreglar**: partir `safe_backfill` en dos
-caminos (uno que sólo lee y reporta, otro que aplica) y poner un piso del tipo "no
-borres más del X% de las posiciones de la tanda". **Vale más que cualquiera de las
+**Es el riesgo más grande y el más barato de arreglar**, y sigue en pie aun sabiendo
+que "Simular" no escribe: el camino de aplicar existe, ya corrió sobre 830 cuentas,
+y hoy no tiene ningún freno. El arreglo es un piso del tipo "si esta tanda borraría
+más del X% de las posiciones, abortá y reportá". **Vale más que cualquiera de las
 tres opciones y no depende de la migración.**
+
+(La otra mitad de la propuesta vieja —"partir `safe_backfill` en dos caminos"— **ya
+está hecha**: el parámetro `apply` es exactamente esa partición.)
+
+#### ✅ HECHO (sesión 6): el tope, con los números que eligió el dueño
+
+**Por usuario:** frená a ese usuario si borrarías **más del 50%** de sus posiciones
+**y** eso son **5 filas o más**.
+**Por tanda:** abortá la tanda entera, sin escribir nada, si **más del 25%** de los
+usuarios con cambios quedaron frenados **y** son **3 o más**.
+
+- **Los pisos absolutos (5 y 3) no son decoración.** Sin ellos el porcentaje frena
+  trabajo legítimo: alguien con 2 letras vencidas pierde el 100% de sus posiciones
+  y está perfecto. Un freno que salta en casos buenos se vuelve ruido que uno
+  aprende a ignorar, y entonces no protege de nada.
+- **Los dos topes tienen trabajos distintos.** El de usuario protege a cada
+  persona; el de tanda detecta que el problema es del PROCESO — si la copia salió
+  mal, TODOS dan "borrá todo" a la vez, y eso no pasa por casualidad.
+- **`safe_backfill` ahora corre en DOS PASADAS y el orden ES el arreglo**:
+  planifica a todos sin escribir → revisa los topes → recién ahí escribe. Si
+  escribiera a medida que avanza, el tope de tanda no serviría para nada: para
+  cuando detectara el problema, los primeros usuarios ya estarían borrados. (Es
+  el mismo error de orden que el de los relojes del `conftest`.)
+- **El ensayo calcula los mismos planes y reporta los mismos frenos**, así
+  "Simular" avisa ANTES de que aprietes "Aplicar".
+- **`_apply_safe` se BORRÓ** en vez de dejarla "por compatibilidad": no la llamaba
+  nadie de afuera (verificado con grep en todo el backend) y un segundo camino que
+  borra posiciones sin pasar por el tope es justo el agujero que esto viene a
+  tapar. Quedó partida en `_plan_safe` (calcula) + `_excede_tope_usuario` (revisa)
+  + `_ejecutar_plan` (escribe, y es la única que borra).
+- Test: `tests/test_backfill_tope_cordura.py`, 9 casos incluidos los bordes (50%
+  justo pasa; 4 filas no alcanzan el piso). **Verificado que falla con el
+  comportamiento viejo**: desactivando el tope, la cartera de los 4 usuarios queda
+  en 0 y `test_no_vacia_la_cartera_de_nadie` se cae.
+
+⚠️ **Dato que apareció escribiendo el test:** el backfill sólo toca posiciones
+creadas por un IMPORT (`_import_linked_position_ids`) y respeta las cargadas a
+mano. Un test que crea posiciones sueltas produce un plan VACÍO y **pasa por el
+motivo equivocado**. Hay que insertar también la fila de `import_op_links`.
 
 ### La única `AssertionError` que queda sin causa visible
 
@@ -236,33 +338,79 @@ Resultado, comparado test por test contra la misma suite en el mismo Postgres:
 SQLite quedó idéntico (2.780/2.826, las mismas 46 preexistentes), verificado
 corriendo la suite con y sin los cambios.
 
-## Hallazgo para el punto 4 (Supabase): ~36 conexiones sin proteger
+## Hallazgo para el punto 4 (Supabase): 33 conexiones sin proteger
 
-⚠️ **Corrección de una versión anterior de este doc, que decía "277 conexiones sin
-cerrar".** Ese número era cierto pero engañoso: contaba que no hay ningún `with`, y
-`with` no es la única forma de cerrar. Medido de nuevo sobre el AST, no con grep:
+⚠️ **Corrección de DOS versiones anteriores de este doc.** La primera decía "277
+conexiones sin cerrar" (cierto pero engañoso: contaba que no hay ningún `with`, y
+`with` no es la única forma de cerrar). La segunda decía 36 expuestos + 8 en
+scripts. **Ninguno de los dos números resiste un recuento con AST.** El bueno:
 
 | | sitios | |
 |---|---|---|
-| `conn = get_db()` en código de app | 277 | |
-| …que cierran con `try/finally` | **233 (84%)** | hace lo mismo que un `with`, escrito distinto |
-| …expuestos (el `close()` se saltea si salta una excepción) | 44 | |
-| …de esos, en scripts de dev/one-off | 8 | no los ve un usuario |
-| **…en código servido a usuarios (todos en `main.py`)** | **36** | esto es lo que hay que arreglar |
+| `conn = get_db()` en código de app | **267** | y son TODOS de la forma `X = get_db()`: no hay ninguna variante exótica |
+| …que cierran con `try/finally` | **234 (88%)** | hace lo mismo que un `with`, escrito distinto |
+| **…expuestos** (el `close()` se saltea si salta una excepción) | **33** | **esto es lo que hay que arreglar** |
+| …en scripts de dev/one-off | **0** | el único fuera de `main.py` (`advisor_brief.py`) está protegido |
+
+Los 33 están **todos en `main.py`** y son endpoints servidos a usuarios:
+`get_current_user`, `login`, `register`, `get_positions`, `sell_position_fifo`,
+`cash_flow`, `delete_operation`, … más 2 ramas de `_execute_ai_tool_inner`.
+
+⚠️ **La trampa de medir esto, que ya hizo fallar dos conteos.** El criterio flojo
+—"¿hay algún `try/finally` en la función que cierre esta variable?"— da **falsos
+protegidos**: `_execute_ai_tool_inner` abre 6 conexiones y las 6 se llaman `conn`,
+así que alcanza con que UNA esté protegida para que las 6 parezcan bien. El
+criterio correcto mira la POSICIÓN en el bloque: el `try` que protege a esta
+conexión es el que viene después de ESTA apertura, en ESTE bloque, y su `finally`
+tiene que cerrar ESTA variable. Con el criterio flojo dan 31; con el estricto, 33.
+Y el estricto de más —"el `try` tiene que ser el statement inmediatamente
+siguiente"— da 35, con 2 falsos positivos: `get_movements` y
+`export_transactions_csv` tienen un `movements: list = []` inocuo en el medio y
+están bien protegidos. **El script del recuento está en el scratchpad
+(`count_getdb2.py`) y clasifica sitio por sitio, no cuenta a ojo.**
 
 Por qué importa igual: cuando uno de esos 36 se salta el `close()`, en SQLite casi no
 se nota; en Postgres la conexión queda **`idle in transaction`** reteniendo los locks
 de todo lo que tocó. **Es exactamente la misma traba que tiró la app el 12 y el 13/08**,
 y es el mismo mecanismo que colgaba la suite de tests.
 
-En local hay 100 conexiones de margen. **Supabase da bastante menos.** Conviene
-arreglarlo ANTES de ir a Supabase — pero es una tarea chica y acotada (36 sitios en un
-archivo), no el riesgo grande que sugería el número viejo. La forma prolija es que
-`get_db()` sea un context manager; la barata es envolver esos 36 en `try/finally`.
-
 Nota: los relojes (`lock_timeout`, `idle_in_transaction_session_timeout`) que tapan
 esto en la suite son **de TESTS**, están en `conftest.py`. En producción no hay nada
 equivalente puesto.
+
+### ✅ HECHO (sesión 6): `main.db_abierta()` + un barrido que impide el 34
+
+⚠️ **LA TRAMPA, y es el motivo de que el helper se llame distinto.** En este código
+`with conn:` **YA significa otra cosa**: confirmar o deshacer la TRANSACCIÓN.
+`Connection.__exit__` hace commit/rollback y **NO cierra** (`pgshim.py:922`, igual
+que `sqlite3` — y de eso depende la atomicidad de todo el código). O sea que
+`with get_db() as conn:` **no cierra nada** y el arreglo parecería hecho sin
+estarlo. Por eso hay un helper nuevo, con otro nombre, y un test que fija esa
+diferencia para que nadie lo "simplifique" más adelante.
+
+- **`db_abierta()`** (`main.py`, al lado de `get_db`). **No commitea**, a propósito:
+  si commiteara al salir, convertiría en permanente el trabajo a medias de
+  cualquier handler que hoy revienta antes de su commit — cambiaría el
+  comportamiento de 33 endpoints en vez de arreglarles el cierre.
+- **Los 33 convertidos** de una, con un transformador que verifica su propio
+  trabajo: re-parsea el archivo y compara la cantidad de statements por función
+  antes/después (tiene que bajar exactamente en la cantidad de `close()` que
+  borró). 70 `close()` borrados, 0 statements perdidos de más.
+- **`tests/test_conexiones_cerradas.py`** — dos cosas: que `db_abierta` cierre
+  aunque el cuerpo explote, y un **barrido con AST de `main.py` que falla si
+  aparece un sitio expuesto nuevo**. Ese es el que impide el 34, y no depende de
+  que alguien se acuerde de escribir un test para su endpoint.
+- El barrido tiene sus propios tests (que encuentre uno malo, que no marque los
+  dos patrones buenos). ⚠️ **Su primera versión marcaba mal** los tres escritores
+  de `fx_rates_daily`, que usan la forma `conn = None; try: conn = get_db() …
+  finally: if conn is not None: conn.close()`. Un barrido con falsos positivos se
+  vuelve ruido que uno aprende a ignorar: hay que probarlo en las dos direcciones.
+
+📌 **Sobre el diff: son ~3.000 líneas, y 1.779 son sólo `init_db` re-indentada.**
+Es la función que crea el esquema — una sola función larguísima con una conexión
+que abre arriba y cierra abajo. No hay nada que revisar ahí más que el sangrado;
+lo verifican el parseo, el conteo de statements y la suite (init_db corre en el
+setup de todos los módulos de test, en los dos motores).
 
 ## `INSERT OR REPLACE` → `ON CONFLICT`: HECHO (`e7c3f1e`), y lo que enseñó
 
@@ -381,17 +529,87 @@ el mismo traceback. Recién si no hay ninguno de los dos es una diferencia real.
    fallas propias que quedan, y está diseñado y atacado, sólo falta decidir.
    **Antes de eso, el piso de cordura de `_apply_safe`**, que es más urgente y no
    depende de la migración.
-5. **Copiador de datos** SQLite→Postgres. Verificación obligatoria: filas por tabla
-   **y** totales de plata por usuario (invertido, P&L, efectivo). Contar filas no
-   detecta un número mal convertido.
-6. **Los 36 `get_db()` expuestos** (ver la sección de más arriba). Va ACÁ y no
-   después: es la misma traba que tiró la app el 12 y 13/08, y Supabase da mucho
-   menos margen de conexiones que los 100 del Postgres local.
+5. **Copiador de datos** SQLite→Postgres. **La verificación se escribe PRIMERO**
+   (diseño abajo). Si se escribe el copiador antes, uno termina aceptando lo que
+   el copiador produzca.
+6. ~~Los `get_db()` expuestos~~ ✅ sesión 6 — `main.db_abierta()` + barrido AST.
 7. **Probar contra Supabase de verdad.** Todo lo medido hasta acá es Postgres local,
    sin red de por medio. Ahí se nota lo que hace demasiadas idas y vueltas — como el
    `_table_cols()` que hubo que cachear.
 8. **`.env`** con los nombres de variable y `.gitignore`. Los valores los pone el
    dueño: no manejes contraseñas en texto plano.
+
+## El copiador de datos: DISEÑO DE LA VERIFICACIÓN (se escribe ANTES del copiador)
+
+Es el paso donde de verdad se juega la plata de 1.084 personas. **La verificación
+va primero, y no es negociable el orden**: escrito el copiador antes, uno mira lo
+que produjo y lo acepta, porque no tiene contra qué compararlo.
+
+**Contar filas NO alcanza.** Un número mal convertido —un costo en pesos leído
+como dólares, un `numeric` redondeado— deja exactamente la misma cantidad de
+filas. Lo que hay que comparar es la PLATA, por usuario.
+
+### Cuatro niveles, y hacen falta los cuatro
+
+**Nivel 0 — vaciar `raw_json` no tocó nada más.**
+El 92% de las filas (3,1 de 3,4 millones) es andamio de import. Se vacía ANTES de
+copiar, con `UPDATE` y **nunca `DELETE`** (borrar la fila cascadea y se lleva su
+movimiento real del ledger). Ese UPDATE es la primera oportunidad de perder plata,
+y ocurre sobre la base REAL. Antes y después, sobre la misma SQLite:
+- cantidad de filas de las 58 tablas, idéntica. Si bajó una sola, alguien usó DELETE.
+- digest de `import_raw_rows` **sin** la columna `raw_json`, idéntico.
+
+**Nivel 1 — fila por fila, exacto (la fuerte).**
+Por tabla: cantidad de filas + un digest del contenido COMPLETO de cada fila,
+ordenado por id. Atrapa una columna que ningún total suma.
+
+⚠️ **La trampa que hay que resolver ANTES de escribir esto, y es donde un bug hace
+que todo parezca bien:** los dos motores devuelven TIPOS distintos para la misma
+columna. psycopg da `Decimal` donde `sqlite3` da `float`; un `text` con fecha puede
+volver como objeto fecha. Si no se normaliza, TODO da distinto, la verificación se
+llena de ruido y uno aprende a ignorarla — que es peor que no tenerla. **La
+normalización lleva su propio test**: valores conocidos, los dos motores, mismo
+digest. Es la pieza más delicada de todo el asunto.
+
+**Nivel 2 — la plata, por usuario (la legible).**
+Por cada uno de los ~1.084 usuarios, leyendo lo que está GUARDADO (no valuado a
+mercado: eso depende de precios y FX, cambia cada minuto, y no es lo que puede
+romper un copiador):
+- **invertido** — Σ `positions.invested` con `is_cash=0`
+- **efectivo** — Σ `positions.invested` con `is_cash=1`
+- **ganancia realizada** — Σ `operations.pnl_usd`
+- **nominales** — Σ `positions.quantity` por (broker, activo)
+
+**Comparados EXACTO, sin tolerancia.** Si hiciera falta una tolerancia, es que algo
+se convirtió mal: estamos copiando las MISMAS filas, no recalculando nada.
+
+**POR USUARIO y no en total**, que es el punto: un total global neteo dos errores
+opuestos —un usuario ×1400 para arriba y otro para abajo— y da bien. Ya pasó en
+este proyecto con el FX.
+
+**Nivel 3 — las secuencias.**
+Las PK son `GENERATED BY DEFAULT` justamente para poder insertar cada fila con su
+id original; después hay que correr `setval()` en cada una. Verificación: por cada
+tabla con id, `last_value` de su secuencia **>** `max(id)`. Sin esto, el próximo
+usuario que se registre choca contra un id que ya existe.
+
+### Cómo se prueba que la verificación sirve
+
+**Rompiendo una copia a propósito, de a una cosa por vez.** Tiene que saltar cada
+una, y hasta que no salten todas el copiador no se escribe:
+
+| se rompe | tiene que saltar |
+|---|---|
+| cambiar un `invested` en el decimal 15 | nivel 1 y 2 |
+| borrar UNA fila de `operations` | nivel 1 y 2 |
+| cambiar un id | nivel 1 |
+| no correr `setval()` | nivel 3 |
+| usar `DELETE` en vez de `UPDATE` en `raw_json` | nivel 0 |
+
+Es la misma regla que el resto del proyecto —*todo test nuevo tiene que fallar con
+el comportamiento viejo*— aplicada a la verificación misma.
+
+**Y corre sobre una copia restaurada de producción, no sobre producción.**
 
 ## Decisiones ya tomadas — no las revisites sin motivo
 

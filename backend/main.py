@@ -7,6 +7,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json, threading
+from contextlib import contextmanager
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 from collections import defaultdict
@@ -202,6 +203,25 @@ async def _log_server_errors(request: Request, exc: StarletteHTTPException):
     return await http_exception_handler(request, exc)
 
 
+@app.exception_handler(dberrors.EnsayoPorClonNoDisponible)
+async def _ensayo_por_clon_no_disponible(request: Request,
+                                         exc: dberrors.EnsayoPorClonNoDisponible):
+    """Las 3 herramientas de admin que simulan CLONANDO la base son sólo-SQLite.
+
+    Se contesta 501 ("no implementado acá") y no 500: no se rompió nada, es una
+    capacidad que este motor no tiene. El mensaje explica qué pasa y qué hacer,
+    así el botón avisa en vez de tirar un error críptico de psycopg.
+
+    Va en UN handler y no en cada endpoint por el mismo motivo que el de arriba:
+    para que el cuarto call-site que aparezca no se olvide. El único endpoint que
+    necesita además una línea propia es `admin_backfill_recompute`, porque tiene
+    un `except Exception` que se lo tragaría antes de llegar hasta acá.
+    """
+    log.warning("ensayo por clon pedido con DATABASE_URL puesta — %s %s",
+                request.method, request.url.path)
+    return JSONResponse(status_code=501, content={"detail": str(exc)})
+
+
 # CORS — origins explícitos (allow_credentials no admite "*"). Nota: el frontend
 # web pega a rutas relativas (/api/...) y Vercel proxea a Railway server-side,
 # así que en prod el browser NUNCA cruza origin y CORS casi no entra en juego.
@@ -358,6 +378,38 @@ def get_db():
     return conn
 
 
+@contextmanager
+def db_abierta():
+    """Abre una conexión y la CIERRA pase lo que pase, incluso si el handler
+    levanta una excepción.
+
+    ⚠️ **NO es `with get_db() as conn:`, y esa confusión es el motivo de que este
+    helper exista con otro nombre.** En este código `with conn:` YA significa otra
+    cosa: confirmar o deshacer la TRANSACCIÓN. `Connection.__exit__` hace
+    commit/rollback y **no cierra** (pgshim.py:922, igual que sqlite3). Escribir
+    `with get_db() as conn:` esperando que cierre deja la conexión abierta y el
+    arreglo parece hecho sin estarlo.
+
+    POR QUÉ IMPORTA, y no es teórico. Cuando un `close()` se saltea:
+      · en SQLite casi no se nota (el recolector de basura termina cerrando);
+      · en Postgres la conexión queda **`idle in transaction`** reteniendo los
+        locks de todo lo que tocó — hasta de un simple SELECT, porque psycopg
+        abre transacción para leer y sqlite3 no. **Es la misma traba que tiró la
+        app el 12 y el 13/08**, y la que colgaba la suite de tests.
+    Supabase da bastante menos margen de conexiones que las 100 del Postgres local.
+
+    NO COMMITEA, a propósito: el que escribe sigue llamando `conn.commit()` como
+    hasta ahora. Si commiteara al salir, convertiría en permanente el trabajo a
+    medias de cualquier handler que hoy revienta antes de su commit — cambiaría
+    el comportamiento de 33 endpoints en vez de arreglarles el cierre.
+    """
+    conn = get_db()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def _run_with_lock_retry(fn, *, attempts: int = 4, base_delay: float = 0.3):
     """Reintenta `fn` ante 'database is locked' de SQLite (contención de escritura),
     con backoff exponencial. Sólo para operaciones de escritura IDEMPOTENTES (wipe,
@@ -507,1787 +559,1786 @@ def init_db():
         # lugar.
         _init_db_postgres()
         return
-    conn = get_db()
+    with db_abierta() as conn:
 
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            name TEXT,
-            password_hash TEXT NOT NULL,
-            is_admin INTEGER NOT NULL DEFAULT 0,
-            approved INTEGER NOT NULL DEFAULT 0,
-            tier TEXT,                         -- override explícito: 'pro' | 'free' | NULL
-            password_changed_at TEXT DEFAULT (datetime('now')),
-            last_login_at TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS brokers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL REFERENCES users(id),
-            name TEXT NOT NULL,
-            currency TEXT NOT NULL DEFAULT 'USDT',
-            parent_broker_id INTEGER REFERENCES brokers(id) ON DELETE CASCADE,
-            UNIQUE(user_id, name)
-        );
-        -- Credenciales read-only por-usuario de brokers con API (Wallbit). La
-        -- api_key va CIFRADA (Fernet derivado de SECRET_KEY), nunca en claro.
-        CREATE TABLE IF NOT EXISTS user_broker_credentials (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL REFERENCES users(id),
-            broker TEXT NOT NULL,               -- 'wallbit'
-            api_key_enc TEXT NOT NULL,          -- Fernet(api_key read-only)
-            scope TEXT DEFAULT 'read',
-            created_at TEXT DEFAULT (datetime('now')),
-            last_sync_at TEXT,
-            last_sync_status TEXT,              -- 'ok' | 'error: ...'
-            UNIQUE(user_id, broker)
-        );
-    """)
-    conn.commit()
-
-    # advisor_op_batch_items — columnas de undo exacto (audit: el undo
-    # recomputaba el crédito desde la fila VIVA — editable — y no revertía
-    # el autodepósito, dejando capital fantasma)
-    _bi_cols = _table_cols(conn, 'advisor_op_batch_items')
-    if _bi_cols:
-        for _c, _t in (('cost_debited', 'REAL'), ('autodep_native', 'REAL'),
-                       ('autodep_usd', 'REAL'), ('autodep_ym', 'TEXT')):
-            if _c not in _bi_cols:
-                conn.execute(f"ALTER TABLE advisor_op_batch_items ADD COLUMN {_c} {_t}")
-        conn.commit()
-
-    # advisor_profile — logo del asesor (informes brandeados) si ya existía
-    _ap_cols = _table_cols(conn, 'advisor_profile')
-    if _ap_cols and 'logo_data' not in _ap_cols:
-        conn.execute("ALTER TABLE advisor_profile ADD COLUMN logo_data TEXT")
-        conn.commit()
-
-    # brokers — agregar columna parent_broker_id si la tabla ya existía
-    broker_cols = _table_cols(conn, 'brokers')
-    if broker_cols and 'parent_broker_id' not in broker_cols:
-        conn.execute("ALTER TABLE brokers ADD COLUMN parent_broker_id INTEGER REFERENCES brokers(id)")
-        conn.commit()
-
-    # users — agregar columnas nuevas si la tabla ya existía
-    user_cols = _table_cols(conn, 'users')
-    if user_cols and 'is_admin' not in user_cols:
-        conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
-    if user_cols and 'password_changed_at' not in user_cols:
-        conn.execute("ALTER TABLE users ADD COLUMN password_changed_at TEXT")
-    if user_cols and 'last_login_at' not in user_cols:
-        conn.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT")
-    if user_cols and 'approved' not in user_cols:
-        # Migración: usuarios pre-existentes quedan aprobados (no romper acceso)
-        conn.execute("ALTER TABLE users ADD COLUMN approved INTEGER NOT NULL DEFAULT 0")
-        conn.execute("UPDATE users SET approved=1")
-    if user_cols and 'tier' not in user_cols:
-        # Override de tier (Pro paid). NULL = sigue lógica is_admin → free/admin.
-        conn.execute("ALTER TABLE users ADD COLUMN tier TEXT")
-    if user_cols and 'email_verified' not in user_cols:
-        # Verificación de email post-register. NULL = sin migrar, 0 = no verificado,
-        # 1 = verificado. Migración: existing users → 1 (no les pedimos verificar
-        # retroactivamente para no romper su acceso).
-        conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0")
-        conn.execute("UPDATE users SET email_verified = 1")
-    if user_cols and 'investor_profile' not in user_cols:
-        # Perfil de inversor (7 respuestas guardadas como JSON). NULL = no completó
-        # el test todavía. Se inyecta en el system prompt del Coach IA cuando hay
-        # un valor, así la IA conoce horizonte/tolerancia/objetivo/estilo/etc.
-        conn.execute("ALTER TABLE users ADD COLUMN investor_profile TEXT")
-    if user_cols and 'reengagement_email_sent_at' not in user_cols:
-        # Timestamp ISO del último mail de re-engagement ("importá tu historial").
-        # NULL = nunca se le mandó. El endpoint admin /api/admin/email/re-engagement
-        # lo usa como idempotencia: no re-mailea a quien ya recibió (salvo resend=True),
-        # y los envíos que fallan no se stampean → se reintentan en la próxima corrida.
-        conn.execute("ALTER TABLE users ADD COLUMN reengagement_email_sent_at TEXT")
-    if user_cols and 'gift_plan_email_sent_at' not in user_cols:
-        # Timestamp ISO del mail de la campaña "te regalamos un mes de Plus, cargá
-        # tu historial". NULL = nunca se le mandó. Lo usa /api/admin/email/gift-plus
-        # como idempotencia (no re-mailea salvo resend=True; fallidos se reintentan).
-        conn.execute("ALTER TABLE users ADD COLUMN gift_plan_email_sent_at TEXT")
-    if user_cols and 'managed_by' not in user_cols:
-        # Plan Asesor: si NO es NULL, la cuenta es un "cliente shadow" creado y
-        # administrado por el asesor (users.id del asesor). Los shadows se
-        # EXCLUYEN de: broadcast/re-engagement de emails, borrado de cuentas
-        # sin verificar (lifecycle), y métricas de signup. No pueden loguear
-        # (approved=0 + password random) hasta que reclamen la cuenta (F4).
-        conn.execute("ALTER TABLE users ADD COLUMN managed_by INTEGER")
-
-    # ── Plan Asesor: vínculos asesor→cliente + lotes de operación grupal ────
-    # advisor_clients es LA tabla de autorización del contexto de cliente
-    # (get_effective_user). Un row activo = el asesor puede VER la cuenta del
-    # cliente; permission='read_write' (managed) = también puede escribirla.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS advisor_clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            advisor_uid INTEGER NOT NULL REFERENCES users(id),
-            client_uid INTEGER NOT NULL REFERENCES users(id),
-            link_type TEXT NOT NULL DEFAULT 'managed',      -- 'managed' | 'linked'
-            permission TEXT NOT NULL DEFAULT 'read_write',  -- 'read' | 'read_write'
-            status TEXT NOT NULL DEFAULT 'active',          -- 'active' | 'revoked'
-            label TEXT,
-            notes TEXT,                                     -- notas PRIVADAS del asesor
-            consent_ref TEXT,                               -- trazabilidad del consentimiento
-            created_at TEXT DEFAULT (datetime('now')),
-            revoked_at TEXT,
-            UNIQUE(advisor_uid, client_uid)
-        );
-        CREATE INDEX IF NOT EXISTS idx_advisor_clients_advisor
-            ON advisor_clients(advisor_uid, status);
-        CREATE INDEX IF NOT EXISTS idx_advisor_clients_client
-            ON advisor_clients(client_uid, status);
-        -- Operación grupal (block trade): un lote = una operación aplicada a N
-        -- clientes. items guarda el position_id creado por fila → el undo borra
-        -- exactamente lo que este lote creó (y re-acredita el cash).
-        CREATE TABLE IF NOT EXISTS advisor_op_batches (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            advisor_uid INTEGER NOT NULL REFERENCES users(id),
-            asset TEXT NOT NULL,
-            op_kind TEXT NOT NULL DEFAULT 'buy',
-            created_at TEXT DEFAULT (datetime('now')),
-            undone_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS advisor_op_batch_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id INTEGER NOT NULL REFERENCES advisor_op_batches(id),
-            client_uid INTEGER NOT NULL,
-            position_id INTEGER,
-            status TEXT NOT NULL DEFAULT 'ok',              -- 'ok' | 'undone' | 'error'
-            cost_debited REAL,      -- lo que el alta debitó del cash (undo exacto)
-            autodep_native REAL,    -- autodepósito que disparó el alta (si hubo)
-            autodep_usd REAL,       -- ídem en USD (para revertir el flujo mensual)
-            autodep_ym TEXT         -- 'YYYY-MM' del flujo a revertir
-        );
-    """)
-
-    # Sincronizar is_admin + approved para usuarios con email admin
-    rows = conn.execute("SELECT id, email FROM users").fetchall()
-    for r in rows:
-        if _is_admin_email(r["email"]):
-            conn.execute("UPDATE users SET is_admin=1, approved=1 WHERE id=?", (r["id"],))
-    conn.commit()
-
-    # positions
-    cols = _table_cols(conn, 'positions')
-    if not cols:
         conn.executescript("""
-            CREATE TABLE positions (
+            CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL DEFAULT 0,
-                broker TEXT NOT NULL,
-                asset TEXT NOT NULL,
-                is_cash INTEGER DEFAULT 0,
-                buy_price REAL,
-                quantity REAL,
-                invested REAL,
-                tc_compra REAL,
-                price_override REAL,
-                notes TEXT
+                email TEXT UNIQUE NOT NULL,
+                name TEXT,
+                password_hash TEXT NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                approved INTEGER NOT NULL DEFAULT 0,
+                tier TEXT,                         -- override explícito: 'pro' | 'free' | NULL
+                password_changed_at TEXT DEFAULT (datetime('now')),
+                last_login_at TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS brokers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                name TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'USDT',
+                parent_broker_id INTEGER REFERENCES brokers(id) ON DELETE CASCADE,
+                UNIQUE(user_id, name)
+            );
+            -- Credenciales read-only por-usuario de brokers con API (Wallbit). La
+            -- api_key va CIFRADA (Fernet derivado de SECRET_KEY), nunca en claro.
+            CREATE TABLE IF NOT EXISTS user_broker_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                broker TEXT NOT NULL,               -- 'wallbit'
+                api_key_enc TEXT NOT NULL,          -- Fernet(api_key read-only)
+                scope TEXT DEFAULT 'read',
+                created_at TEXT DEFAULT (datetime('now')),
+                last_sync_at TEXT,
+                last_sync_status TEXT,              -- 'ok' | 'error: ...'
+                UNIQUE(user_id, broker)
             );
         """)
-    elif 'user_id' not in cols:
+        conn.commit()
+
+        # advisor_op_batch_items — columnas de undo exacto (audit: el undo
+        # recomputaba el crédito desde la fila VIVA — editable — y no revertía
+        # el autodepósito, dejando capital fantasma)
+        _bi_cols = _table_cols(conn, 'advisor_op_batch_items')
+        if _bi_cols:
+            for _c, _t in (('cost_debited', 'REAL'), ('autodep_native', 'REAL'),
+                           ('autodep_usd', 'REAL'), ('autodep_ym', 'TEXT')):
+                if _c not in _bi_cols:
+                    conn.execute(f"ALTER TABLE advisor_op_batch_items ADD COLUMN {_c} {_t}")
+            conn.commit()
+
+        # advisor_profile — logo del asesor (informes brandeados) si ya existía
+        _ap_cols = _table_cols(conn, 'advisor_profile')
+        if _ap_cols and 'logo_data' not in _ap_cols:
+            conn.execute("ALTER TABLE advisor_profile ADD COLUMN logo_data TEXT")
+            conn.commit()
+
+        # brokers — agregar columna parent_broker_id si la tabla ya existía
+        broker_cols = _table_cols(conn, 'brokers')
+        if broker_cols and 'parent_broker_id' not in broker_cols:
+            conn.execute("ALTER TABLE brokers ADD COLUMN parent_broker_id INTEGER REFERENCES brokers(id)")
+            conn.commit()
+
+        # users — agregar columnas nuevas si la tabla ya existía
+        user_cols = _table_cols(conn, 'users')
+        if user_cols and 'is_admin' not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        if user_cols and 'password_changed_at' not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN password_changed_at TEXT")
+        if user_cols and 'last_login_at' not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT")
+        if user_cols and 'approved' not in user_cols:
+            # Migración: usuarios pre-existentes quedan aprobados (no romper acceso)
+            conn.execute("ALTER TABLE users ADD COLUMN approved INTEGER NOT NULL DEFAULT 0")
+            conn.execute("UPDATE users SET approved=1")
+        if user_cols and 'tier' not in user_cols:
+            # Override de tier (Pro paid). NULL = sigue lógica is_admin → free/admin.
+            conn.execute("ALTER TABLE users ADD COLUMN tier TEXT")
+        if user_cols and 'email_verified' not in user_cols:
+            # Verificación de email post-register. NULL = sin migrar, 0 = no verificado,
+            # 1 = verificado. Migración: existing users → 1 (no les pedimos verificar
+            # retroactivamente para no romper su acceso).
+            conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0")
+            conn.execute("UPDATE users SET email_verified = 1")
+        if user_cols and 'investor_profile' not in user_cols:
+            # Perfil de inversor (7 respuestas guardadas como JSON). NULL = no completó
+            # el test todavía. Se inyecta en el system prompt del Coach IA cuando hay
+            # un valor, así la IA conoce horizonte/tolerancia/objetivo/estilo/etc.
+            conn.execute("ALTER TABLE users ADD COLUMN investor_profile TEXT")
+        if user_cols and 'reengagement_email_sent_at' not in user_cols:
+            # Timestamp ISO del último mail de re-engagement ("importá tu historial").
+            # NULL = nunca se le mandó. El endpoint admin /api/admin/email/re-engagement
+            # lo usa como idempotencia: no re-mailea a quien ya recibió (salvo resend=True),
+            # y los envíos que fallan no se stampean → se reintentan en la próxima corrida.
+            conn.execute("ALTER TABLE users ADD COLUMN reengagement_email_sent_at TEXT")
+        if user_cols and 'gift_plan_email_sent_at' not in user_cols:
+            # Timestamp ISO del mail de la campaña "te regalamos un mes de Plus, cargá
+            # tu historial". NULL = nunca se le mandó. Lo usa /api/admin/email/gift-plus
+            # como idempotencia (no re-mailea salvo resend=True; fallidos se reintentan).
+            conn.execute("ALTER TABLE users ADD COLUMN gift_plan_email_sent_at TEXT")
+        if user_cols and 'managed_by' not in user_cols:
+            # Plan Asesor: si NO es NULL, la cuenta es un "cliente shadow" creado y
+            # administrado por el asesor (users.id del asesor). Los shadows se
+            # EXCLUYEN de: broadcast/re-engagement de emails, borrado de cuentas
+            # sin verificar (lifecycle), y métricas de signup. No pueden loguear
+            # (approved=0 + password random) hasta que reclamen la cuenta (F4).
+            conn.execute("ALTER TABLE users ADD COLUMN managed_by INTEGER")
+
+        # ── Plan Asesor: vínculos asesor→cliente + lotes de operación grupal ────
+        # advisor_clients es LA tabla de autorización del contexto de cliente
+        # (get_effective_user). Un row activo = el asesor puede VER la cuenta del
+        # cliente; permission='read_write' (managed) = también puede escribirla.
         conn.executescript("""
-            ALTER TABLE positions RENAME TO positions_old;
-            CREATE TABLE positions (
+            CREATE TABLE IF NOT EXISTS advisor_clients (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL DEFAULT 0,
-                broker TEXT NOT NULL,
-                asset TEXT NOT NULL,
-                is_cash INTEGER DEFAULT 0,
-                buy_price REAL,
-                quantity REAL,
-                invested REAL,
-                tc_compra REAL,
-                price_override REAL,
-                notes TEXT
+                advisor_uid INTEGER NOT NULL REFERENCES users(id),
+                client_uid INTEGER NOT NULL REFERENCES users(id),
+                link_type TEXT NOT NULL DEFAULT 'managed',      -- 'managed' | 'linked'
+                permission TEXT NOT NULL DEFAULT 'read_write',  -- 'read' | 'read_write'
+                status TEXT NOT NULL DEFAULT 'active',          -- 'active' | 'revoked'
+                label TEXT,
+                notes TEXT,                                     -- notas PRIVADAS del asesor
+                consent_ref TEXT,                               -- trazabilidad del consentimiento
+                created_at TEXT DEFAULT (datetime('now')),
+                revoked_at TEXT,
+                UNIQUE(advisor_uid, client_uid)
             );
-            INSERT INTO positions
-                SELECT id, 0, broker, asset, is_cash, buy_price, quantity, invested,
-                       tc_compra, price_override, notes FROM positions_old;
-            DROP TABLE positions_old;
+            CREATE INDEX IF NOT EXISTS idx_advisor_clients_advisor
+                ON advisor_clients(advisor_uid, status);
+            CREATE INDEX IF NOT EXISTS idx_advisor_clients_client
+                ON advisor_clients(client_uid, status);
+            -- Operación grupal (block trade): un lote = una operación aplicada a N
+            -- clientes. items guarda el position_id creado por fila → el undo borra
+            -- exactamente lo que este lote creó (y re-acredita el cash).
+            CREATE TABLE IF NOT EXISTS advisor_op_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                advisor_uid INTEGER NOT NULL REFERENCES users(id),
+                asset TEXT NOT NULL,
+                op_kind TEXT NOT NULL DEFAULT 'buy',
+                created_at TEXT DEFAULT (datetime('now')),
+                undone_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS advisor_op_batch_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL REFERENCES advisor_op_batches(id),
+                client_uid INTEGER NOT NULL,
+                position_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'ok',              -- 'ok' | 'undone' | 'error'
+                cost_debited REAL,      -- lo que el alta debitó del cash (undo exacto)
+                autodep_native REAL,    -- autodepósito que disparó el alta (si hubo)
+                autodep_usd REAL,       -- ídem en USD (para revertir el flujo mensual)
+                autodep_ym TEXT         -- 'YYYY-MM' del flujo a revertir
+            );
         """)
-    # Migración: columna entry_date para fecha de compra
-    cols = _table_cols(conn, 'positions')
-    if cols and 'entry_date' not in cols:
-        conn.execute("ALTER TABLE positions ADD COLUMN entry_date TEXT")
-    # Migración: columna commissions (fees al comprar — afecta el cost basis real)
-    cols = _table_cols(conn, 'positions')
-    if cols and 'commissions' not in cols:
-        conn.execute("ALTER TABLE positions ADD COLUMN commissions REAL DEFAULT 0")
-    # Migración: columna currency — moneda en que está expresado `invested`.
-    # Sin esto, el persister no podía saber si una posición fue comprada en
-    # USD (Compra Dolar Mep en Cocos) vs ARS, generando P&L cross-currency
-    # absurdo en SELLs posteriores. Default NULL = back-compat (asume ARS o
-    # USDT según el broker, igual que antes).
-    cols = _table_cols(conn, 'positions')
-    if cols and 'currency' not in cols:
-        conn.execute("ALTER TABLE positions ADD COLUMN currency TEXT")
-    # Backfill de currency NULL (lotes manuales viejos + pre-migración): la moneda
-    # nativa es USD si el asset es un token de cash USD, ARS si asset='ARS', si no
-    # ARS cuando el broker es ARS y USD en cualquier otro (sub-broker '· USD' es
-    # currency USDT). Mismo criterio que behavioral._native_ccy resuelto por broker.
-    # Sin esto los lotes NULL mezclan ARS+USD en el FIFO/agrupado por moneda.
-    # Idempotente (solo toca NULL); los lotes importados ya traen currency.
-    try:
-        conn.execute("""
-            UPDATE positions
-               SET currency = CASE
-                     WHEN UPPER(asset) IN ('USDT','USDC','USD','DAI','BUSD','TUSD') THEN 'USD'
-                     WHEN UPPER(asset) = 'ARS' THEN 'ARS'
-                     WHEN (SELECT br.currency FROM brokers br
-                            WHERE br.user_id = positions.user_id
-                              AND br.name = positions.broker) = 'ARS' THEN 'ARS'
-                     ELSE 'USD'
-                   END
-             WHERE currency IS NULL OR currency = ''
-        """)
-    except Exception:
-        pass  # no fatal en el boot
-    # Migración: columna asset_type — clasificación del activo (CEDEAR/STOCK/ETF/…).
-    # Crítica para valuar bien un CEDEAR comprado en USD (dólar-MEP): sin asset_type
-    # el frontend lo precia como la acción US (≈100× inflado) en vez del CEDEAR (.BA).
-    # El import lo detectaba pero lo tiraba al persistir; ahora se guarda. Backfill
-    # desde la auditoría (import_normalized_tx sí lo guardó) para arreglar posiciones
-    # YA cargadas sin tener que reimportar.
-    cols = _table_cols(conn, 'positions')
-    if cols and 'asset_type' not in cols:
-        conn.execute("ALTER TABLE positions ADD COLUMN asset_type TEXT")
+
+        # Sincronizar is_admin + approved para usuarios con email admin
+        rows = conn.execute("SELECT id, email FROM users").fetchall()
+        for r in rows:
+            if _is_admin_email(r["email"]):
+                conn.execute("UPDATE users SET is_admin=1, approved=1 WHERE id=?", (r["id"],))
+        conn.commit()
+
+        # positions
+        cols = _table_cols(conn, 'positions')
+        if not cols:
+            conn.executescript("""
+                CREATE TABLE positions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    broker TEXT NOT NULL,
+                    asset TEXT NOT NULL,
+                    is_cash INTEGER DEFAULT 0,
+                    buy_price REAL,
+                    quantity REAL,
+                    invested REAL,
+                    tc_compra REAL,
+                    price_override REAL,
+                    notes TEXT
+                );
+            """)
+        elif 'user_id' not in cols:
+            conn.executescript("""
+                ALTER TABLE positions RENAME TO positions_old;
+                CREATE TABLE positions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    broker TEXT NOT NULL,
+                    asset TEXT NOT NULL,
+                    is_cash INTEGER DEFAULT 0,
+                    buy_price REAL,
+                    quantity REAL,
+                    invested REAL,
+                    tc_compra REAL,
+                    price_override REAL,
+                    notes TEXT
+                );
+                INSERT INTO positions
+                    SELECT id, 0, broker, asset, is_cash, buy_price, quantity, invested,
+                           tc_compra, price_override, notes FROM positions_old;
+                DROP TABLE positions_old;
+            """)
+        # Migración: columna entry_date para fecha de compra
+        cols = _table_cols(conn, 'positions')
+        if cols and 'entry_date' not in cols:
+            conn.execute("ALTER TABLE positions ADD COLUMN entry_date TEXT")
+        # Migración: columna commissions (fees al comprar — afecta el cost basis real)
+        cols = _table_cols(conn, 'positions')
+        if cols and 'commissions' not in cols:
+            conn.execute("ALTER TABLE positions ADD COLUMN commissions REAL DEFAULT 0")
+        # Migración: columna currency — moneda en que está expresado `invested`.
+        # Sin esto, el persister no podía saber si una posición fue comprada en
+        # USD (Compra Dolar Mep en Cocos) vs ARS, generando P&L cross-currency
+        # absurdo en SELLs posteriores. Default NULL = back-compat (asume ARS o
+        # USDT según el broker, igual que antes).
+        cols = _table_cols(conn, 'positions')
+        if cols and 'currency' not in cols:
+            conn.execute("ALTER TABLE positions ADD COLUMN currency TEXT")
+        # Backfill de currency NULL (lotes manuales viejos + pre-migración): la moneda
+        # nativa es USD si el asset es un token de cash USD, ARS si asset='ARS', si no
+        # ARS cuando el broker es ARS y USD en cualquier otro (sub-broker '· USD' es
+        # currency USDT). Mismo criterio que behavioral._native_ccy resuelto por broker.
+        # Sin esto los lotes NULL mezclan ARS+USD en el FIFO/agrupado por moneda.
+        # Idempotente (solo toca NULL); los lotes importados ya traen currency.
         try:
             conn.execute("""
                 UPDATE positions
-                   SET asset_type = (
-                       SELECT n.asset_type
-                         FROM import_normalized_tx n
-                         JOIN import_batches b ON b.id = n.batch_id
-                        WHERE b.user_id = positions.user_id
-                          AND n.broker = positions.broker
-                          AND n.asset_symbol = positions.asset
-                          AND n.asset_type IS NOT NULL AND n.asset_type != ''
-                        ORDER BY (n.asset_type = 'CEDEAR') DESC
-                        LIMIT 1
-                   )
-                 WHERE is_cash = 0 AND asset_type IS NULL
-                   AND EXISTS (
-                       SELECT 1
-                         FROM import_normalized_tx n2
-                         JOIN import_batches b2 ON b2.id = n2.batch_id
-                        WHERE b2.user_id = positions.user_id
-                          AND n2.broker = positions.broker
-                          AND n2.asset_symbol = positions.asset
-                          AND n2.asset_type IS NOT NULL AND n2.asset_type != ''
-                   )
+                   SET currency = CASE
+                         WHEN UPPER(asset) IN ('USDT','USDC','USD','DAI','BUSD','TUSD') THEN 'USD'
+                         WHEN UPPER(asset) = 'ARS' THEN 'ARS'
+                         WHEN (SELECT br.currency FROM brokers br
+                                WHERE br.user_id = positions.user_id
+                                  AND br.name = positions.broker) = 'ARS' THEN 'ARS'
+                         ELSE 'USD'
+                       END
+                 WHERE currency IS NULL OR currency = ''
             """)
         except Exception:
-            pass  # la auditoría puede no existir aún en DBs nuevas; no bloquea el boot
-    # Migración: columna split_adjusted_through — watermark (YYYY-MM-DD) de la
-    # última ex-date de split/cambio de ratio YA aplicada a este lote. Es la única
-    # defensa contra doble-aplicar el ajuste (PUT re-save, re-import, backfill,
-    # manual+auto) → sin esto un 10:1 se aplicaría dos veces = 100×. Load-bearing.
-    cols = _table_cols(conn, 'positions')
-    if cols and 'split_adjusted_through' not in cols:
-        conn.execute("ALTER TABLE positions ADD COLUMN split_adjusted_through TEXT")
-    conn.commit()
-
-    # monthly_entries
-    cols = _table_cols(conn, 'monthly_entries')
-    if not cols:
-        conn.executescript("""
-            CREATE TABLE monthly_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL DEFAULT 0,
-                year INTEGER NOT NULL,
-                month INTEGER NOT NULL,
-                broker TEXT NOT NULL,
-                deposits REAL DEFAULT 0,
-                withdrawals REAL DEFAULT 0,
-                pnl_realized REAL DEFAULT 0,
-                pnl_unrealized REAL DEFAULT 0,
-                capital_inicio REAL DEFAULT 0,
-                capital_final REAL DEFAULT 0,
-                UNIQUE(user_id, year, month, broker)
-            );
-        """)
-    elif 'user_id' not in cols:
-        conn.executescript("""
-            ALTER TABLE monthly_entries RENAME TO monthly_entries_old;
-            CREATE TABLE monthly_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL DEFAULT 0,
-                year INTEGER NOT NULL,
-                month INTEGER NOT NULL,
-                broker TEXT NOT NULL,
-                deposits REAL DEFAULT 0,
-                withdrawals REAL DEFAULT 0,
-                pnl_realized REAL DEFAULT 0,
-                pnl_unrealized REAL DEFAULT 0,
-                capital_inicio REAL DEFAULT 0,
-                capital_final REAL DEFAULT 0,
-                UNIQUE(user_id, year, month, broker)
-            );
-            INSERT INTO monthly_entries
-                SELECT id, 0, year, month, broker, deposits, withdrawals,
-                       pnl_realized, pnl_unrealized, capital_inicio, capital_final
-                FROM monthly_entries_old;
-            DROP TABLE monthly_entries_old;
-        """)
-    conn.commit()
-
-    # monthly_entries: columnas manual_deposits/manual_withdrawals — rastrean SOLO
-    # los cash flows MANUALES (botón Cash + reconcile-cash), separados de los de
-    # import. Antes deposits/withdrawals mezclaba ambos y _recalc los separaba con
-    # una heurística (existing − imports_confirmados) que dejaba HUÉRFANOS cuando
-    # un import revertido no se restaba exacto (drift de redo cycles) → capital
-    # inflado y "ganancias retiradas" fantasma. Con la columna manual, _recalc es
-    # autoritativo: deposits = imports_confirmados + manual (sobrescribe huérfanos).
-    # Backfill one-time = la misma heurística vieja → sin regresión para manuales.
-    cols = _table_cols(conn, 'monthly_entries')
-    if cols and 'manual_deposits' not in cols:
-        conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_deposits REAL DEFAULT 0")
-        conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_withdrawals REAL DEFAULT 0")
-        try:
-            _backfill_manual_flows(conn)
-        except Exception as _ex:
-            logging.getLogger(__name__).warning("backfill manual_flows falló (no fatal): %s", _ex)
+            pass  # no fatal en el boot
+        # Migración: columna asset_type — clasificación del activo (CEDEAR/STOCK/ETF/…).
+        # Crítica para valuar bien un CEDEAR comprado en USD (dólar-MEP): sin asset_type
+        # el frontend lo precia como la acción US (≈100× inflado) en vez del CEDEAR (.BA).
+        # El import lo detectaba pero lo tiraba al persistir; ahora se guarda. Backfill
+        # desde la auditoría (import_normalized_tx sí lo guardó) para arreglar posiciones
+        # YA cargadas sin tener que reimportar.
+        cols = _table_cols(conn, 'positions')
+        if cols and 'asset_type' not in cols:
+            conn.execute("ALTER TABLE positions ADD COLUMN asset_type TEXT")
+            try:
+                conn.execute("""
+                    UPDATE positions
+                       SET asset_type = (
+                           SELECT n.asset_type
+                             FROM import_normalized_tx n
+                             JOIN import_batches b ON b.id = n.batch_id
+                            WHERE b.user_id = positions.user_id
+                              AND n.broker = positions.broker
+                              AND n.asset_symbol = positions.asset
+                              AND n.asset_type IS NOT NULL AND n.asset_type != ''
+                            ORDER BY (n.asset_type = 'CEDEAR') DESC
+                            LIMIT 1
+                       )
+                     WHERE is_cash = 0 AND asset_type IS NULL
+                       AND EXISTS (
+                           SELECT 1
+                             FROM import_normalized_tx n2
+                             JOIN import_batches b2 ON b2.id = n2.batch_id
+                            WHERE b2.user_id = positions.user_id
+                              AND n2.broker = positions.broker
+                              AND n2.asset_symbol = positions.asset
+                              AND n2.asset_type IS NOT NULL AND n2.asset_type != ''
+                       )
+                """)
+            except Exception:
+                pass  # la auditoría puede no existir aún en DBs nuevas; no bloquea el boot
+        # Migración: columna split_adjusted_through — watermark (YYYY-MM-DD) de la
+        # última ex-date de split/cambio de ratio YA aplicada a este lote. Es la única
+        # defensa contra doble-aplicar el ajuste (PUT re-save, re-import, backfill,
+        # manual+auto) → sin esto un 10:1 se aplicaría dos veces = 100×. Load-bearing.
+        cols = _table_cols(conn, 'positions')
+        if cols and 'split_adjusted_through' not in cols:
+            conn.execute("ALTER TABLE positions ADD COLUMN split_adjusted_through TEXT")
         conn.commit()
 
-    # manual_*_native: monto NATIVO (moneda del broker) del flujo manual, para
-    # revertir EXACTO al borrar un depósito/retiro manual en pesos (manual_* solo
-    # guarda el USD → sin esto el reverso del cash en ARS aproxima al blue de hoy).
-    # NULL/0 en filas viejas → el borrado cae al aproximado. SIN índice (a propósito:
-    # un CREATE INDEX sobre columna nueva en el schema causó una caída de boot, ver
-    # project_migration_index_order).
-    cols = _table_cols(conn, 'monthly_entries')
-    if cols and 'manual_deposits_native' not in cols:
-        conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_deposits_native REAL DEFAULT 0")
-        conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_withdrawals_native REAL DEFAULT 0")
+        # monthly_entries
+        cols = _table_cols(conn, 'monthly_entries')
+        if not cols:
+            conn.executescript("""
+                CREATE TABLE monthly_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    year INTEGER NOT NULL,
+                    month INTEGER NOT NULL,
+                    broker TEXT NOT NULL,
+                    deposits REAL DEFAULT 0,
+                    withdrawals REAL DEFAULT 0,
+                    pnl_realized REAL DEFAULT 0,
+                    pnl_unrealized REAL DEFAULT 0,
+                    capital_inicio REAL DEFAULT 0,
+                    capital_final REAL DEFAULT 0,
+                    UNIQUE(user_id, year, month, broker)
+                );
+            """)
+        elif 'user_id' not in cols:
+            conn.executescript("""
+                ALTER TABLE monthly_entries RENAME TO monthly_entries_old;
+                CREATE TABLE monthly_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    year INTEGER NOT NULL,
+                    month INTEGER NOT NULL,
+                    broker TEXT NOT NULL,
+                    deposits REAL DEFAULT 0,
+                    withdrawals REAL DEFAULT 0,
+                    pnl_realized REAL DEFAULT 0,
+                    pnl_unrealized REAL DEFAULT 0,
+                    capital_inicio REAL DEFAULT 0,
+                    capital_final REAL DEFAULT 0,
+                    UNIQUE(user_id, year, month, broker)
+                );
+                INSERT INTO monthly_entries
+                    SELECT id, 0, year, month, broker, deposits, withdrawals,
+                           pnl_realized, pnl_unrealized, capital_inicio, capital_final
+                    FROM monthly_entries_old;
+                DROP TABLE monthly_entries_old;
+            """)
         conn.commit()
 
-    # operations
-    cols = _table_cols(conn, 'operations')
-    if not cols:
+        # monthly_entries: columnas manual_deposits/manual_withdrawals — rastrean SOLO
+        # los cash flows MANUALES (botón Cash + reconcile-cash), separados de los de
+        # import. Antes deposits/withdrawals mezclaba ambos y _recalc los separaba con
+        # una heurística (existing − imports_confirmados) que dejaba HUÉRFANOS cuando
+        # un import revertido no se restaba exacto (drift de redo cycles) → capital
+        # inflado y "ganancias retiradas" fantasma. Con la columna manual, _recalc es
+        # autoritativo: deposits = imports_confirmados + manual (sobrescribe huérfanos).
+        # Backfill one-time = la misma heurística vieja → sin regresión para manuales.
+        cols = _table_cols(conn, 'monthly_entries')
+        if cols and 'manual_deposits' not in cols:
+            conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_deposits REAL DEFAULT 0")
+            conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_withdrawals REAL DEFAULT 0")
+            try:
+                _backfill_manual_flows(conn)
+            except Exception as _ex:
+                logging.getLogger(__name__).warning("backfill manual_flows falló (no fatal): %s", _ex)
+            conn.commit()
+
+        # manual_*_native: monto NATIVO (moneda del broker) del flujo manual, para
+        # revertir EXACTO al borrar un depósito/retiro manual en pesos (manual_* solo
+        # guarda el USD → sin esto el reverso del cash en ARS aproxima al blue de hoy).
+        # NULL/0 en filas viejas → el borrado cae al aproximado. SIN índice (a propósito:
+        # un CREATE INDEX sobre columna nueva en el schema causó una caída de boot, ver
+        # project_migration_index_order).
+        cols = _table_cols(conn, 'monthly_entries')
+        if cols and 'manual_deposits_native' not in cols:
+            conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_deposits_native REAL DEFAULT 0")
+            conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_withdrawals_native REAL DEFAULT 0")
+            conn.commit()
+
+        # operations
+        cols = _table_cols(conn, 'operations')
+        if not cols:
+            conn.executescript("""
+                CREATE TABLE operations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    date TEXT NOT NULL,
+                    broker TEXT NOT NULL,
+                    asset TEXT NOT NULL,
+                    op_type TEXT,
+                    entry_price REAL,
+                    exit_price REAL,
+                    quantity REAL,
+                    pnl_usd REAL DEFAULT 0,
+                    pnl_pct REAL
+                );
+            """)
+        elif 'user_id' not in cols:
+            conn.executescript("""
+                ALTER TABLE operations RENAME TO operations_old;
+                CREATE TABLE operations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    date TEXT NOT NULL,
+                    broker TEXT NOT NULL,
+                    asset TEXT NOT NULL,
+                    op_type TEXT,
+                    entry_price REAL,
+                    exit_price REAL,
+                    quantity REAL,
+                    pnl_usd REAL DEFAULT 0,
+                    pnl_pct REAL
+                );
+                INSERT INTO operations
+                    SELECT id, 0, date, broker, asset, op_type, entry_price, exit_price,
+                           quantity, pnl_usd, pnl_pct FROM operations_old;
+                DROP TABLE operations_old;
+            """)
+        cols = _table_cols(conn, 'operations')
+        if cols and 'entry_date' not in cols:
+            conn.execute("ALTER TABLE operations ADD COLUMN entry_date TEXT")
+        # Migración: columna commissions (fees al vender — reducen el net cash recibido)
+        cols = _table_cols(conn, 'operations')
+        if cols and 'commissions' not in cols:
+            conn.execute("ALTER TABLE operations ADD COLUMN commissions REAL DEFAULT 0")
+        # Migración: columna notes (texto libre — usada por cobranzas de bonos,
+        # eventualmente extensible a otras ops para capturar contexto del user)
+        cols = _table_cols(conn, 'operations')
+        if cols and 'notes' not in cols:
+            conn.execute("ALTER TABLE operations ADD COLUMN notes TEXT")
+        # ── Reversibilidad de lo CARGADO A MANO ──────────────────────────────────
+        # `undo_meta_json` guarda, en la fila misma, de qué camino salió y TODO lo que
+        # hace falta para deshacerla. Sin esto una venta hecha con el botón "Vender"
+        # (que borra lotes y acredita cash) es INDISTINGUIBLE de una tipeada en el
+        # formulario (que no toca nada): borrar la primera creyendo que es la segunda
+        # deja el saldo inflado y la tenencia comida. Por eso NO se adivina.
+        # ⚠️ VA ACÁ, después de que las tablas existen: puesto arriba (junto a las
+        # migraciones de advisor_*) el `_table_cols` daba vacío en una base NUEVA y la
+        # columna no se agregaba nunca → los INSERT reventaban. Misma familia de bug que
+        # el índice-antes-que-su-columna (project_migration_index_order). ALTER sin índice.
+        for _tbl in ('operations', 'positions'):
+            _c = _table_cols(conn, _tbl)
+            if _c and 'undo_meta_json' not in _c:
+                conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN undo_meta_json TEXT")
+        # Migración Phase 3D: tracking de moneda nativa y FX al momento del evento.
+        # Esto permite convertir operations.pnl_usd (que históricamente guardaba
+        # el monto en moneda del broker, no necesariamente USD) a un USD canónico
+        # consistente para reportes cross-broker / cross-currency.
+        #   • currency: 'ARS' | 'USD' | 'USDT' | 'EUR' (futuras). Moneda nativa del flujo.
+        #   • fx_to_usd: factor de conversión nativa→USD al momento del evento.
+        #     - ARS broker recibiendo cupón ARS de bono USD: fx_to_usd = MEP del día.
+        #     - ARS broker recibiendo cupón ARS de bono ARS (CER): fx_to_usd = blue.
+        #     - USD broker (USDT/USD): fx_to_usd = 1.0.
+        #     - NULL para ops históricas → frontend usa blue actual como fallback con warning.
+        cols = _table_cols(conn, 'operations')
+        if cols and 'currency' not in cols:
+            conn.execute("ALTER TABLE operations ADD COLUMN currency TEXT")
+        if cols and 'fx_to_usd' not in cols:
+            conn.execute("ALTER TABLE operations ADD COLUMN fx_to_usd REAL")
+        # Phase 3D sub-fix: cost basis consumido por amortizaciones (lo que costó
+        # el face devuelto). Permite distinguir "devolución de capital" de
+        # "ganancia realizada del amort":
+        #   • Cash recibido (pnl_usd) = monto neto acreditado al broker.
+        #   • Cost basis consumido = parte proporcional del invested original.
+        #   • Ganancia del amort = pnl_usd − cost_basis_consumed.
+        # NULL para cupones (no aplica) y para amorts viejas (legacy, pre Phase 3D).
+        cols = _table_cols(conn, 'operations')
+        if cols and 'cost_basis_consumed' not in cols:
+            conn.execute("ALTER TABLE operations ADD COLUMN cost_basis_consumed REAL")
+        conn.commit()
+
+        # ─── Índices secundarios — positions / operations / monthly_entries ────
+        # Históricamente solo había PK por `id`. Cada query filtra por `user_id`
+        # → full table scan. Con 1k+ rows acumulados cross-user, eso son 20-80ms
+        # perdidos por query. En endpoints como /api/insights que pegan a las 3
+        # tablas en paralelo, llegamos a 60-240ms perdidos por request.
+        #
+        # `idx_operations_user_date` es compuesto (user, date DESC) porque casi
+        # todas las queries del módulo operations ordenan por fecha desc:
+        #   /operations, reports/period, monthly aggregation, wrapped/year.
+        # Compuesto = index range scan + sort eliminado.
+        #
+        # `idx_monthly_user_period` (user, year, month) acelera /monthly,
+        # /reports/timeline (12 meses × user) y monthly_entries lookups.
         conn.executescript("""
-            CREATE TABLE operations (
+            CREATE INDEX IF NOT EXISTS idx_positions_user ON positions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_operations_user_date ON operations(user_id, date DESC);
+            CREATE INDEX IF NOT EXISTS idx_monthly_user_period ON monthly_entries(user_id, year, month);
+        """)
+        conn.commit()
+
+        # ─── bond_indices_daily ────────────────────────────────────────────────
+        # Cache de índices financieros publicados diariamente (CER, UVA, A3500).
+        # Tabla shared cross-user — los índices son datos públicos macro, no
+        # personales. Phase 3C: CER para bonos AR ajustados por inflación
+        # (TX26, TX28, TZX26/27/28).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS bond_indices_daily (
+                index_name TEXT NOT NULL,    -- 'CER' | 'UVA' | 'A3500'
+                date TEXT NOT NULL,          -- 'YYYY-MM-DD'
+                value REAL NOT NULL,         -- coeficiente del día
+                source TEXT,                 -- 'bcra' | 'argentinadatos' | 'manual'
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (index_name, date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bond_indices_date ON bond_indices_daily(date);
+        """)
+
+        # ─── news (Noticias del mercado y portfolio) ───────────────────────────
+        # Cache de noticias financieras del mercado + tagged por ticker.
+        # Compartido cross-user — las noticias son data pública. La personalización
+        # se hace en query time (filtrar a tickers del user).
+        #
+        # Source primaria: Google News RSS — sin auth, sin quota. Patrón
+        # `query → items`, donde el query es "AAPL stock" o "BCRA Argentina"
+        # según el contexto.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS news (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL DEFAULT 0,
-                date TEXT NOT NULL,
+                source TEXT NOT NULL,            -- 'google_news_rss' | 'investing_com' | ...
+                external_id TEXT NOT NULL,       -- guid del feed — para dedup
+                title TEXT NOT NULL,
+                summary TEXT,                    -- description del RSS (opcional)
+                url TEXT NOT NULL,
+                image_url TEXT,
+                published_at TEXT NOT NULL,      -- ISO datetime
+                tickers TEXT,                    -- JSON array: '["AAPL","NVDA"]'
+                category TEXT,                   -- 'market' | 'portfolio' | 'macro'
+                query_source TEXT,               -- el query que la trajo (para debug + dedup soft)
+                tags TEXT,                       -- CSV: 'earnings,m_and_a,regulatory,…'
+                sentiment TEXT,                  -- 'positive' | 'negative' | 'neutral' (heurística al ingerir, compartida cross-user)
+                fetched_at TEXT NOT NULL,
+                UNIQUE(source, external_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_news_category ON news(category);
+            -- /news/portfolio filtra con `category='portfolio' AND query_source LIKE '{ticker} %'`
+            -- contra 20 tickers a la vez (20 LIKE ORs). Sin este index es full scan.
+            -- query_source es el primer field para aprovechar el prefix match del LIKE.
+            CREATE INDEX IF NOT EXISTS idx_news_qsource_cat ON news(query_source, category);
+        """)
+        # news — migración: agregar columna `tags` si existía la tabla pero sin ella
+        news_cols = _table_cols(conn, 'news')
+        if news_cols and 'tags' not in news_cols:
+            conn.execute("ALTER TABLE news ADD COLUMN tags TEXT")
+            conn.commit()
+        # Migración 2026-07-22 (noticias en español): purgar el backlog de noticias
+        # en INGLÉS cacheadas por el código anterior — sin esto dominan el feed
+        # durante días (se ordena por published_at y el backlog EN es más denso).
+        # Identificables sin ambigüedad: los queries viejos eran "{TICKER} stock" y
+        # los feeds EN de Investing (www.investing.com). El código nuevo nunca
+        # persiste con esos query_source (el fallback EN se guarda bajo el query
+        # "{TICKER} acciones"), así que esto es idempotente y no borra nada nuevo.
+        if news_cols:
+            _purged = conn.execute(
+                "DELETE FROM news WHERE query_source LIKE '% stock' "
+                "OR query_source LIKE '%www.investing.com%'"
+            ).rowcount
+            if _purged:
+                log.info("news migración es: purgadas %d noticias EN del cache", _purged)
+            conn.commit()
+        if news_cols and 'sentiment' not in news_cols:
+            conn.execute("ALTER TABLE news ADD COLUMN sentiment TEXT")
+            conn.commit()
+
+        # ─── financial_events (Eventos financieros) ────────────────────────────
+        # Cache de eventos por ticker: earnings, ex-dividend, payment date, etc.
+        # Compartido cross-user — los eventos son data pública. El frontend filtra
+        # según el portfolio del user en query time.
+        #
+        # Para eventos de BONOS (cupones / amortizaciones / vencimientos), NO usamos
+        # esta tabla — esos se generan runtime en frontend desde bondSchedule.js
+        # (que ya tiene la data, sin duplicar en backend).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS financial_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,            -- 'AAPL', 'MSFT', 'TSLA', etc.
+                event_type TEXT NOT NULL,        -- 'earnings' | 'ex_dividend' | 'payment_date' | 'split'
+                event_date TEXT NOT NULL,        -- 'YYYY-MM-DD'
+                details TEXT,                    -- JSON: {eps_estimate, dividend_amount, ...}
+                confirmed INTEGER DEFAULT 0,     -- 1 si la fuente lo confirma, 0 estimado
+                source TEXT,                     -- 'yfinance' | 'finnhub' | 'manual'
+                fetched_at TEXT NOT NULL,
+                UNIQUE(ticker, event_type, event_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_date ON financial_events(event_date);
+            CREATE INDEX IF NOT EXISTS idx_events_ticker ON financial_events(ticker);
+        """)
+
+        # ─── bond_cashflow_skips (Phase 3E) ────────────────────────────────────
+        # El frontend detecta cobranzas teóricas pendientes comparando el cronograma
+        # del bono vs operations existentes. Si el user no recibió ese pago (default,
+        # bono ya vendido, etc.) puede marcarlo como "skipped" para que no aparezca
+        # más en el inbox. Esta tabla persiste esos skips por (user, broker, asset, date).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS bond_cashflow_skips (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 broker TEXT NOT NULL,
                 asset TEXT NOT NULL,
-                op_type TEXT,
-                entry_price REAL,
-                exit_price REAL,
-                quantity REAL,
-                pnl_usd REAL DEFAULT 0,
-                pnl_pct REAL
+                date TEXT NOT NULL,          -- fecha del pago teórico saltado
+                reason TEXT,                 -- opcional: 'default', 'sold_before', 'already_in_cocos', etc.
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, broker, asset, date)
             );
+            CREATE INDEX IF NOT EXISTS idx_bond_skips_user ON bond_cashflow_skips(user_id, broker, asset);
         """)
-    elif 'user_id' not in cols:
+        conn.commit()
+
+        # config
+        cols = _table_cols(conn, 'config')
+        if not cols:
+            conn.executescript("""
+                CREATE TABLE config (
+                    key TEXT NOT NULL,
+                    value TEXT,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (key, user_id)
+                );
+            """)
+        elif 'user_id' not in cols:
+            conn.executescript("""
+                ALTER TABLE config RENAME TO config_old;
+                CREATE TABLE config (
+                    key TEXT NOT NULL,
+                    value TEXT,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (key, user_id)
+                );
+                INSERT INTO config SELECT key, value, 0 FROM config_old;
+                DROP TABLE config_old;
+            """)
         conn.executescript("""
-            ALTER TABLE operations RENAME TO operations_old;
-            CREATE TABLE operations (
+            CREATE TABLE IF NOT EXISTS snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL DEFAULT 0,
+                user_id INTEGER NOT NULL,
                 date TEXT NOT NULL,
-                broker TEXT NOT NULL,
-                asset TEXT NOT NULL,
-                op_type TEXT,
-                entry_price REAL,
-                exit_price REAL,
-                quantity REAL,
-                pnl_usd REAL DEFAULT 0,
-                pnl_pct REAL
+                total_value REAL NOT NULL,
+                total_invested REAL NOT NULL,
+                -- Quién escribió la fila: 'cron' (cierre real a mercado),
+                -- 'browser' (foto intradía del Dashboard) o 'import' (fabricada al
+                -- costo por el backfill). Sin esto había que DEDUCIRLO por la firma
+                -- de las columnas, y el browser con caché de dólar frío deja la
+                -- misma firma que el import. Sólo 'cron' sirve de borde para medir
+                -- un período. Las filas viejas quedan en NULL: para ésas sigue
+                -- valiendo la heurística de twr.clasificar_fila.
+                source TEXT,
+                UNIQUE(user_id, date)
             );
-            INSERT INTO operations
-                SELECT id, 0, date, broker, asset, op_type, entry_price, exit_price,
-                       quantity, pnl_usd, pnl_pct FROM operations_old;
-            DROP TABLE operations_old;
+            CREATE INDEX IF NOT EXISTS idx_snapshots_user_date ON snapshots(user_id, date);
         """)
-    cols = _table_cols(conn, 'operations')
-    if cols and 'entry_date' not in cols:
-        conn.execute("ALTER TABLE operations ADD COLUMN entry_date TEXT")
-    # Migración: columna commissions (fees al vender — reducen el net cash recibido)
-    cols = _table_cols(conn, 'operations')
-    if cols and 'commissions' not in cols:
-        conn.execute("ALTER TABLE operations ADD COLUMN commissions REAL DEFAULT 0")
-    # Migración: columna notes (texto libre — usada por cobranzas de bonos,
-    # eventualmente extensible a otras ops para capturar contexto del user)
-    cols = _table_cols(conn, 'operations')
-    if cols and 'notes' not in cols:
-        conn.execute("ALTER TABLE operations ADD COLUMN notes TEXT")
-    # ── Reversibilidad de lo CARGADO A MANO ──────────────────────────────────
-    # `undo_meta_json` guarda, en la fila misma, de qué camino salió y TODO lo que
-    # hace falta para deshacerla. Sin esto una venta hecha con el botón "Vender"
-    # (que borra lotes y acredita cash) es INDISTINGUIBLE de una tipeada en el
-    # formulario (que no toca nada): borrar la primera creyendo que es la segunda
-    # deja el saldo inflado y la tenencia comida. Por eso NO se adivina.
-    # ⚠️ VA ACÁ, después de que las tablas existen: puesto arriba (junto a las
-    # migraciones de advisor_*) el `_table_cols` daba vacío en una base NUEVA y la
-    # columna no se agregaba nunca → los INSERT reventaban. Misma familia de bug que
-    # el índice-antes-que-su-columna (project_migration_index_order). ALTER sin índice.
-    for _tbl in ('operations', 'positions'):
-        _c = _table_cols(conn, _tbl)
-        if _c and 'undo_meta_json' not in _c:
-            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN undo_meta_json TEXT")
-    # Migración Phase 3D: tracking de moneda nativa y FX al momento del evento.
-    # Esto permite convertir operations.pnl_usd (que históricamente guardaba
-    # el monto en moneda del broker, no necesariamente USD) a un USD canónico
-    # consistente para reportes cross-broker / cross-currency.
-    #   • currency: 'ARS' | 'USD' | 'USDT' | 'EUR' (futuras). Moneda nativa del flujo.
-    #   • fx_to_usd: factor de conversión nativa→USD al momento del evento.
-    #     - ARS broker recibiendo cupón ARS de bono USD: fx_to_usd = MEP del día.
-    #     - ARS broker recibiendo cupón ARS de bono ARS (CER): fx_to_usd = blue.
-    #     - USD broker (USDT/USD): fx_to_usd = 1.0.
-    #     - NULL para ops históricas → frontend usa blue actual como fallback con warning.
-    cols = _table_cols(conn, 'operations')
-    if cols and 'currency' not in cols:
-        conn.execute("ALTER TABLE operations ADD COLUMN currency TEXT")
-    if cols and 'fx_to_usd' not in cols:
-        conn.execute("ALTER TABLE operations ADD COLUMN fx_to_usd REAL")
-    # Phase 3D sub-fix: cost basis consumido por amortizaciones (lo que costó
-    # el face devuelto). Permite distinguir "devolución de capital" de
-    # "ganancia realizada del amort":
-    #   • Cash recibido (pnl_usd) = monto neto acreditado al broker.
-    #   • Cost basis consumido = parte proporcional del invested original.
-    #   • Ganancia del amort = pnl_usd − cost_basis_consumed.
-    # NULL para cupones (no aplica) y para amorts viejas (legacy, pre Phase 3D).
-    cols = _table_cols(conn, 'operations')
-    if cols and 'cost_basis_consumed' not in cols:
-        conn.execute("ALTER TABLE operations ADD COLUMN cost_basis_consumed REAL")
-    conn.commit()
-
-    # ─── Índices secundarios — positions / operations / monthly_entries ────
-    # Históricamente solo había PK por `id`. Cada query filtra por `user_id`
-    # → full table scan. Con 1k+ rows acumulados cross-user, eso son 20-80ms
-    # perdidos por query. En endpoints como /api/insights que pegan a las 3
-    # tablas en paralelo, llegamos a 60-240ms perdidos por request.
-    #
-    # `idx_operations_user_date` es compuesto (user, date DESC) porque casi
-    # todas las queries del módulo operations ordenan por fecha desc:
-    #   /operations, reports/period, monthly aggregation, wrapped/year.
-    # Compuesto = index range scan + sort eliminado.
-    #
-    # `idx_monthly_user_period` (user, year, month) acelera /monthly,
-    # /reports/timeline (12 meses × user) y monthly_entries lookups.
-    conn.executescript("""
-        CREATE INDEX IF NOT EXISTS idx_positions_user ON positions(user_id);
-        CREATE INDEX IF NOT EXISTS idx_operations_user_date ON operations(user_id, date DESC);
-        CREATE INDEX IF NOT EXISTS idx_monthly_user_period ON monthly_entries(user_id, year, month);
-    """)
-    conn.commit()
-
-    # ─── bond_indices_daily ────────────────────────────────────────────────
-    # Cache de índices financieros publicados diariamente (CER, UVA, A3500).
-    # Tabla shared cross-user — los índices son datos públicos macro, no
-    # personales. Phase 3C: CER para bonos AR ajustados por inflación
-    # (TX26, TX28, TZX26/27/28).
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS bond_indices_daily (
-            index_name TEXT NOT NULL,    -- 'CER' | 'UVA' | 'A3500'
-            date TEXT NOT NULL,          -- 'YYYY-MM-DD'
-            value REAL NOT NULL,         -- coeficiente del día
-            source TEXT,                 -- 'bcra' | 'argentinadatos' | 'manual'
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (index_name, date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_bond_indices_date ON bond_indices_daily(date);
-    """)
-
-    # ─── news (Noticias del mercado y portfolio) ───────────────────────────
-    # Cache de noticias financieras del mercado + tagged por ticker.
-    # Compartido cross-user — las noticias son data pública. La personalización
-    # se hace en query time (filtrar a tickers del user).
-    #
-    # Source primaria: Google News RSS — sin auth, sin quota. Patrón
-    # `query → items`, donde el query es "AAPL stock" o "BCRA Argentina"
-    # según el contexto.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS news (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,            -- 'google_news_rss' | 'investing_com' | ...
-            external_id TEXT NOT NULL,       -- guid del feed — para dedup
-            title TEXT NOT NULL,
-            summary TEXT,                    -- description del RSS (opcional)
-            url TEXT NOT NULL,
-            image_url TEXT,
-            published_at TEXT NOT NULL,      -- ISO datetime
-            tickers TEXT,                    -- JSON array: '["AAPL","NVDA"]'
-            category TEXT,                   -- 'market' | 'portfolio' | 'macro'
-            query_source TEXT,               -- el query que la trajo (para debug + dedup soft)
-            tags TEXT,                       -- CSV: 'earnings,m_and_a,regulatory,…'
-            sentiment TEXT,                  -- 'positive' | 'negative' | 'neutral' (heurística al ingerir, compartida cross-user)
-            fetched_at TEXT NOT NULL,
-            UNIQUE(source, external_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_news_category ON news(category);
-        -- /news/portfolio filtra con `category='portfolio' AND query_source LIKE '{ticker} %'`
-        -- contra 20 tickers a la vez (20 LIKE ORs). Sin este index es full scan.
-        -- query_source es el primer field para aprovechar el prefix match del LIKE.
-        CREATE INDEX IF NOT EXISTS idx_news_qsource_cat ON news(query_source, category);
-    """)
-    # news — migración: agregar columna `tags` si existía la tabla pero sin ella
-    news_cols = _table_cols(conn, 'news')
-    if news_cols and 'tags' not in news_cols:
-        conn.execute("ALTER TABLE news ADD COLUMN tags TEXT")
-        conn.commit()
-    # Migración 2026-07-22 (noticias en español): purgar el backlog de noticias
-    # en INGLÉS cacheadas por el código anterior — sin esto dominan el feed
-    # durante días (se ordena por published_at y el backlog EN es más denso).
-    # Identificables sin ambigüedad: los queries viejos eran "{TICKER} stock" y
-    # los feeds EN de Investing (www.investing.com). El código nuevo nunca
-    # persiste con esos query_source (el fallback EN se guarda bajo el query
-    # "{TICKER} acciones"), así que esto es idempotente y no borra nada nuevo.
-    if news_cols:
-        _purged = conn.execute(
-            "DELETE FROM news WHERE query_source LIKE '% stock' "
-            "OR query_source LIKE '%www.investing.com%'"
-        ).rowcount
-        if _purged:
-            log.info("news migración es: purgadas %d noticias EN del cache", _purged)
-        conn.commit()
-    if news_cols and 'sentiment' not in news_cols:
-        conn.execute("ALTER TABLE news ADD COLUMN sentiment TEXT")
-        conn.commit()
-
-    # ─── financial_events (Eventos financieros) ────────────────────────────
-    # Cache de eventos por ticker: earnings, ex-dividend, payment date, etc.
-    # Compartido cross-user — los eventos son data pública. El frontend filtra
-    # según el portfolio del user en query time.
-    #
-    # Para eventos de BONOS (cupones / amortizaciones / vencimientos), NO usamos
-    # esta tabla — esos se generan runtime en frontend desde bondSchedule.js
-    # (que ya tiene la data, sin duplicar en backend).
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS financial_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT NOT NULL,            -- 'AAPL', 'MSFT', 'TSLA', etc.
-            event_type TEXT NOT NULL,        -- 'earnings' | 'ex_dividend' | 'payment_date' | 'split'
-            event_date TEXT NOT NULL,        -- 'YYYY-MM-DD'
-            details TEXT,                    -- JSON: {eps_estimate, dividend_amount, ...}
-            confirmed INTEGER DEFAULT 0,     -- 1 si la fuente lo confirma, 0 estimado
-            source TEXT,                     -- 'yfinance' | 'finnhub' | 'manual'
-            fetched_at TEXT NOT NULL,
-            UNIQUE(ticker, event_type, event_date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_events_date ON financial_events(event_date);
-        CREATE INDEX IF NOT EXISTS idx_events_ticker ON financial_events(ticker);
-    """)
-
-    # ─── bond_cashflow_skips (Phase 3E) ────────────────────────────────────
-    # El frontend detecta cobranzas teóricas pendientes comparando el cronograma
-    # del bono vs operations existentes. Si el user no recibió ese pago (default,
-    # bono ya vendido, etc.) puede marcarlo como "skipped" para que no aparezca
-    # más en el inbox. Esta tabla persiste esos skips por (user, broker, asset, date).
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS bond_cashflow_skips (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            broker TEXT NOT NULL,
-            asset TEXT NOT NULL,
-            date TEXT NOT NULL,          -- fecha del pago teórico saltado
-            reason TEXT,                 -- opcional: 'default', 'sold_before', 'already_in_cocos', etc.
-            created_at TEXT NOT NULL,
-            UNIQUE(user_id, broker, asset, date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_bond_skips_user ON bond_cashflow_skips(user_id, broker, asset);
-    """)
-    conn.commit()
-
-    # config
-    cols = _table_cols(conn, 'config')
-    if not cols:
-        conn.executescript("""
-            CREATE TABLE config (
-                key TEXT NOT NULL,
-                value TEXT,
-                user_id INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (key, user_id)
-            );
-        """)
-    elif 'user_id' not in cols:
-        conn.executescript("""
-            ALTER TABLE config RENAME TO config_old;
-            CREATE TABLE config (
-                key TEXT NOT NULL,
-                value TEXT,
-                user_id INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (key, user_id)
-            );
-            INSERT INTO config SELECT key, value, 0 FROM config_old;
-            DROP TABLE config_old;
-        """)
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            total_value REAL NOT NULL,
-            total_invested REAL NOT NULL,
-            -- Quién escribió la fila: 'cron' (cierre real a mercado),
-            -- 'browser' (foto intradía del Dashboard) o 'import' (fabricada al
-            -- costo por el backfill). Sin esto había que DEDUCIRLO por la firma
-            -- de las columnas, y el browser con caché de dólar frío deja la
-            -- misma firma que el import. Sólo 'cron' sirve de borde para medir
-            -- un período. Las filas viejas quedan en NULL: para ésas sigue
-            -- valiendo la heurística de twr.clasificar_fila.
-            source TEXT,
-            UNIQUE(user_id, date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_snapshots_user_date ON snapshots(user_id, date);
-    """)
-    # Phase 6 — net_deposited (Σ deposits − Σ withdrawals al cierre del día) para
-    # graficar Total Return (value − net_deposited). Compatible con snapshots viejos
-    # que tienen net_deposited=0 (legacy: el frontend hace fallback a total_invested).
-    snap_cols = _table_cols(conn, 'snapshots')
-    if 'source' not in snap_cols:
-        conn.execute("ALTER TABLE snapshots ADD COLUMN source TEXT")
+        # Phase 6 — net_deposited (Σ deposits − Σ withdrawals al cierre del día) para
+        # graficar Total Return (value − net_deposited). Compatible con snapshots viejos
+        # que tienen net_deposited=0 (legacy: el frontend hace fallback a total_invested).
         snap_cols = _table_cols(conn, 'snapshots')
-    if 'net_deposited' not in snap_cols:
-        conn.execute("ALTER TABLE snapshots ADD COLUMN net_deposited REAL NOT NULL DEFAULT 0")
-    # Phase C (2026-05-31) — fx_to_usd_blue stamping al momento del snapshot.
-    # Cuando el user mira el dashboard en ARS, queremos que la curva refleje
-    # la realidad histórica: el valor en pesos de tu portfolio HACE 6 MESES
-    # se calcula con el blue de esa fecha (no el de hoy). Frontend lee esta
-    # columna y, si está presente, prioriza sobre la conversión live.
-    # NULL en filas legacy → frontend hace fallback al tcBlue actual.
-    if 'fx_to_usd_blue' not in snap_cols:
-        conn.execute("ALTER TABLE snapshots ADD COLUMN fx_to_usd_blue REAL")
-    # Rediseño Reportes (2026-07) — foto por activo del snapshot: JSON
-    # [{asset, value_usd}]. Habilita la atribución MtM por período (mejor/peor
-    # holding, incluyendo NO realizado y bonos AR). NULL en filas legacy →
-    # los movers de un período aparecen recién cuando sus bordes tienen la foto.
-    if 'holdings_json' not in snap_cols:
-        conn.execute("ALTER TABLE snapshots ADD COLUMN holdings_json TEXT")
-    # Phase C — tabla global de FX rates diarios. NO está particionada por
-    # user (el dólar blue es público y único). Se rellena con backfill desde
-    # argentinadatos.com al startup si está vacía, y se actualiza cada día
-    # via el cron de snapshots.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS fx_rates_daily (
-            date TEXT PRIMARY KEY,         -- YYYY-MM-DD
-            blue_venta REAL NOT NULL,
-            mep_venta REAL,                -- Fase B: dólar-MEP (bolsa) histórico; NULL = sin dato → fallback blue
-            source TEXT DEFAULT 'unknown', -- 'dolarapi' | 'argentinadatos' | 'snapshot_cron' | 'manual'
-            fetched_at TEXT DEFAULT (datetime('now'))
-        );
-    """)
-    # Fase B (MEP histórico, 2026-06-27): columna mep_venta NULLABLE. Para DBs ya
-    # seedeadas (prod, sólo blue) la agregamos por ALTER; las filas viejas quedan
-    # NULL hasta el backfill desde argentinadatos /bolsa. NINGÚN consumer la lee
-    # todavía (el switch + recompute van junto con el fix de bonos) — esto es sólo
-    # acumular el dato. Mientras sea NULL, los consumers siguen al blue (sin cambio).
-    # (_table_cols tiene allowlist y fx_rates_daily no está → no sirve para el guard;
-    # usamos try/except específico: tragamos sólo "duplicate column", el resto aflora.)
-    try:
-        conn.execute("ALTER TABLE fx_rates_daily ADD COLUMN mep_venta REAL")
-    except ERR_OPERACIONAL as e:
-        if not dberrors.es_columna_duplicada(e):
-            raise  # error real (no "ya existe") → no lo escondemos
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS goals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            target_usd REAL NOT NULL,
-            target_date TEXT NOT NULL,
-            expected_return_pct REAL NOT NULL DEFAULT 10,
-            label TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_goals_user ON goals(user_id);
-    """)
+        if 'source' not in snap_cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN source TEXT")
+            snap_cols = _table_cols(conn, 'snapshots')
+        if 'net_deposited' not in snap_cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN net_deposited REAL NOT NULL DEFAULT 0")
+        # Phase C (2026-05-31) — fx_to_usd_blue stamping al momento del snapshot.
+        # Cuando el user mira el dashboard en ARS, queremos que la curva refleje
+        # la realidad histórica: el valor en pesos de tu portfolio HACE 6 MESES
+        # se calcula con el blue de esa fecha (no el de hoy). Frontend lee esta
+        # columna y, si está presente, prioriza sobre la conversión live.
+        # NULL en filas legacy → frontend hace fallback al tcBlue actual.
+        if 'fx_to_usd_blue' not in snap_cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN fx_to_usd_blue REAL")
+        # Rediseño Reportes (2026-07) — foto por activo del snapshot: JSON
+        # [{asset, value_usd}]. Habilita la atribución MtM por período (mejor/peor
+        # holding, incluyendo NO realizado y bonos AR). NULL en filas legacy →
+        # los movers de un período aparecen recién cuando sus bordes tienen la foto.
+        if 'holdings_json' not in snap_cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN holdings_json TEXT")
+        # Phase C — tabla global de FX rates diarios. NO está particionada por
+        # user (el dólar blue es público y único). Se rellena con backfill desde
+        # argentinadatos.com al startup si está vacía, y se actualiza cada día
+        # via el cron de snapshots.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS fx_rates_daily (
+                date TEXT PRIMARY KEY,         -- YYYY-MM-DD
+                blue_venta REAL NOT NULL,
+                mep_venta REAL,                -- Fase B: dólar-MEP (bolsa) histórico; NULL = sin dato → fallback blue
+                source TEXT DEFAULT 'unknown', -- 'dolarapi' | 'argentinadatos' | 'snapshot_cron' | 'manual'
+                fetched_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+        # Fase B (MEP histórico, 2026-06-27): columna mep_venta NULLABLE. Para DBs ya
+        # seedeadas (prod, sólo blue) la agregamos por ALTER; las filas viejas quedan
+        # NULL hasta el backfill desde argentinadatos /bolsa. NINGÚN consumer la lee
+        # todavía (el switch + recompute van junto con el fix de bonos) — esto es sólo
+        # acumular el dato. Mientras sea NULL, los consumers siguen al blue (sin cambio).
+        # (_table_cols tiene allowlist y fx_rates_daily no está → no sirve para el guard;
+        # usamos try/except específico: tragamos sólo "duplicate column", el resto aflora.)
+        try:
+            conn.execute("ALTER TABLE fx_rates_daily ADD COLUMN mep_venta REAL")
+        except ERR_OPERACIONAL as e:
+            if not dberrors.es_columna_duplicada(e):
+                raise  # error real (no "ya existe") → no lo escondemos
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS goals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                target_usd REAL NOT NULL,
+                target_date TEXT NOT NULL,
+                expected_return_pct REAL NOT NULL DEFAULT 10,
+                label TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_goals_user ON goals(user_id);
+        """)
 
-    # ─── Plazos fijos ────────────────────────────────────────────────────────
-    # Depósitos a plazo fijo del user. NO cotizan: el valor se computa
-    # determinísticamente (capital + interés devengado según rate_type).
-    # `tasa` es fracción anual (0.19 = 19%). `rate_type` ∈ {TNA (simple),
-    # TEA (compuesta)}. `banco` viene del listado de la API de tasas. No se atan
-    # a `brokers`: viven en su propio grupo "Plazos fijos" en Cartera.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS plazos_fijos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            banco TEXT NOT NULL,
-            capital REAL NOT NULL,
-            moneda TEXT NOT NULL DEFAULT 'ARS',
-            tasa REAL NOT NULL,
-            rate_type TEXT NOT NULL DEFAULT 'TNA',
-            fecha_inicio TEXT NOT NULL,
-            plazo_dias INTEGER NOT NULL,
-            fecha_vencimiento TEXT NOT NULL,
-            renovacion_auto INTEGER NOT NULL DEFAULT 0,
-            modalidad TEXT NOT NULL DEFAULT 'vencimiento',
-            pago_frecuencia_meses INTEGER,
-            notes TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            closed_at TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_pf_user ON plazos_fijos(user_id);
-    """)
+        # ─── Plazos fijos ────────────────────────────────────────────────────────
+        # Depósitos a plazo fijo del user. NO cotizan: el valor se computa
+        # determinísticamente (capital + interés devengado según rate_type).
+        # `tasa` es fracción anual (0.19 = 19%). `rate_type` ∈ {TNA (simple),
+        # TEA (compuesta)}. `banco` viene del listado de la API de tasas. No se atan
+        # a `brokers`: viven en su propio grupo "Plazos fijos" en Cartera.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS plazos_fijos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                banco TEXT NOT NULL,
+                capital REAL NOT NULL,
+                moneda TEXT NOT NULL DEFAULT 'ARS',
+                tasa REAL NOT NULL,
+                rate_type TEXT NOT NULL DEFAULT 'TNA',
+                fecha_inicio TEXT NOT NULL,
+                plazo_dias INTEGER NOT NULL,
+                fecha_vencimiento TEXT NOT NULL,
+                renovacion_auto INTEGER NOT NULL DEFAULT 0,
+                modalidad TEXT NOT NULL DEFAULT 'vencimiento',
+                pago_frecuencia_meses INTEGER,
+                notes TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                closed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_pf_user ON plazos_fijos(user_id);
+        """)
 
-    # ── Futuros ABIERTOS ────────────────────────────────────────────────────
-    # Tabla PROPIA, no `positions`. En `positions` hay 116 lecturas en el backend
-    # y 7 consumidores en el front, y todas asumen dos cosas que un futuro rompe:
-    # que TENÉS el activo, y que la exposición es POSITIVA. Un short vale al revés
-    # (gana cuando el precio baja), así que meterlo ahí ensuciaría en silencio
-    # cada cálculo de valor y de P&L de la app. Acá el alcance es explícito: sólo
-    # lo ve quien lo pide.
-    #
-    # El MARGEN no se descuenta del efectivo a propósito: en Binance pasar plata
-    # del spot al wallet de futuros es un movimiento INTERNO —la USDT sigue en la
-    # cuenta— y el importador ya ignora esas transferencias por la misma razón.
-    # Descontarlo acá haría que el saldo dejara de cerrar con el del broker.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS futures_positions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            broker TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            base_asset TEXT,
-            side TEXT NOT NULL DEFAULT 'long',
-            quantity REAL NOT NULL,
-            entry_price REAL NOT NULL,
-            leverage REAL,
-            margin_usd REAL,
-            liquidation_price REAL,
-            opened_at TEXT NOT NULL,
-            notes TEXT,
-            closed_at TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-    """)
-    # Los índices van DESPUÉS y en su propio executescript. Una migración que creó
-    # un índice sobre una columna que todavía no existía tiró producción ~20 min
-    # con 502 (2026-08-02): dentro de un executescript, si una sentencia falla se
-    # corta el arranque entero.
-    conn.executescript("""
-        CREATE INDEX IF NOT EXISTS idx_futpos_user ON futures_positions(user_id);
-        CREATE INDEX IF NOT EXISTS idx_futpos_abiertas
-            ON futures_positions(user_id, closed_at);
-    """)
+        # ── Futuros ABIERTOS ────────────────────────────────────────────────────
+        # Tabla PROPIA, no `positions`. En `positions` hay 116 lecturas en el backend
+        # y 7 consumidores en el front, y todas asumen dos cosas que un futuro rompe:
+        # que TENÉS el activo, y que la exposición es POSITIVA. Un short vale al revés
+        # (gana cuando el precio baja), así que meterlo ahí ensuciaría en silencio
+        # cada cálculo de valor y de P&L de la app. Acá el alcance es explícito: sólo
+        # lo ve quien lo pide.
+        #
+        # El MARGEN no se descuenta del efectivo a propósito: en Binance pasar plata
+        # del spot al wallet de futuros es un movimiento INTERNO —la USDT sigue en la
+        # cuenta— y el importador ya ignora esas transferencias por la misma razón.
+        # Descontarlo acá haría que el saldo dejara de cerrar con el del broker.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS futures_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                broker TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                base_asset TEXT,
+                side TEXT NOT NULL DEFAULT 'long',
+                quantity REAL NOT NULL,
+                entry_price REAL NOT NULL,
+                leverage REAL,
+                margin_usd REAL,
+                liquidation_price REAL,
+                opened_at TEXT NOT NULL,
+                notes TEXT,
+                closed_at TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+        # Los índices van DESPUÉS y en su propio executescript. Una migración que creó
+        # un índice sobre una columna que todavía no existía tiró producción ~20 min
+        # con 502 (2026-08-02): dentro de un executescript, si una sentencia falla se
+        # corta el arranque entero.
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_futpos_user ON futures_positions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_futpos_abiertas
+                ON futures_positions(user_id, closed_at);
+        """)
 
-    # ─── Secciones de Renta Fija archivadas (borrado reversible) ───────────────
-    # Cuando el usuario "elimina" una sección (ej. Bonos USD) que importó mal, NO
-    # hard-deleteamos: serializamos sus posiciones a JSON y las sacamos de
-    # `positions` (así desaparecen de TODAS las superficies sin filtrar query por
-    # query), guardando el blob acá para poder RESTAURAR. `section` = 'BONO|USD'.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS archived_positions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            section TEXT NOT NULL,
-            label TEXT,
-            payload TEXT NOT NULL,
-            count INTEGER NOT NULL DEFAULT 0,
-            archived_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_archpos_user ON archived_positions(user_id);
-    """)
+        # ─── Secciones de Renta Fija archivadas (borrado reversible) ───────────────
+        # Cuando el usuario "elimina" una sección (ej. Bonos USD) que importó mal, NO
+        # hard-deleteamos: serializamos sus posiciones a JSON y las sacamos de
+        # `positions` (así desaparecen de TODAS las superficies sin filtrar query por
+        # query), guardando el blob acá para poder RESTAURAR. `section` = 'BONO|USD'.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS archived_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                section TEXT NOT NULL,
+                label TEXT,
+                payload TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                archived_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_archpos_user ON archived_positions(user_id);
+        """)
 
-    # Migración: columna `modalidad` para DBs creadas antes de este campo.
-    # 'vencimiento' = interés al final (default); 'periodico' = pago de renta
-    # (fast-follow, todavía no valuado distinto).
-    _pf_cols = _table_cols(conn, 'plazos_fijos')
-    if _pf_cols and 'modalidad' not in _pf_cols:
-        conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN modalidad TEXT NOT NULL DEFAULT 'vencimiento';")
-        conn.commit()
-    if _pf_cols and 'pago_frecuencia_meses' not in _pf_cols:
-        conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN pago_frecuencia_meses INTEGER;")
-        conn.commit()
+        # Migración: columna `modalidad` para DBs creadas antes de este campo.
+        # 'vencimiento' = interés al final (default); 'periodico' = pago de renta
+        # (fast-follow, todavía no valuado distinto).
+        _pf_cols = _table_cols(conn, 'plazos_fijos')
+        if _pf_cols and 'modalidad' not in _pf_cols:
+            conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN modalidad TEXT NOT NULL DEFAULT 'vencimiento';")
+            conn.commit()
+        if _pf_cols and 'pago_frecuencia_meses' not in _pf_cols:
+            conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN pago_frecuencia_meses INTEGER;")
+            conn.commit()
 
-    # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────
-    # Tickers que el user "sigue" sin tenerlos en portfolio. Se renderiza en el
-    # Home como sección dedicada. No tiene relación con `positions` — son
-    # universos separados.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS watchlist (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            symbol TEXT NOT NULL,
-            asset_type TEXT,
-            added_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(user_id, symbol)
-        );
-        CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
-    """)
+        # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────
+        # Tickers que el user "sigue" sin tenerlos en portfolio. Se renderiza en el
+        # Home como sección dedicada. No tiene relación con `positions` — son
+        # universos separados.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                asset_type TEXT,
+                added_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(user_id, symbol)
+            );
+            CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
+        """)
 
-    # ─── Push notifications (M4) ──────────────────────────────────────────────
-    # Una sub por device. Un user puede tener varias (laptop + celular + tablet).
-    # endpoint es el URL único que devuelve el browser al subscribirse — distinto
-    # por device. Si el endpoint expira (HTTP 410 al hacer send), borramos la sub.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS push_subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            endpoint TEXT NOT NULL,
-            p256dh TEXT NOT NULL,
-            auth TEXT NOT NULL,
-            user_agent TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            last_used_at TEXT,
-            UNIQUE(user_id, endpoint)
-        );
-        CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
-    """)
+        # ─── Push notifications (M4) ──────────────────────────────────────────────
+        # Una sub por device. Un user puede tener varias (laptop + celular + tablet).
+        # endpoint es el URL único que devuelve el browser al subscribirse — distinto
+        # por device. Si el endpoint expira (HTTP 410 al hacer send), borramos la sub.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                endpoint TEXT NOT NULL,
+                p256dh TEXT NOT NULL,
+                auth TEXT NOT NULL,
+                user_agent TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                last_used_at TEXT,
+                UNIQUE(user_id, endpoint)
+            );
+            CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+        """)
 
-    # ─── Alertas personalizadas (precio objetivo + % de movimiento) ───────────
-    # Dos tipos:
-    #   • price_target: avisar cuando `symbol` cruza `threshold` en `direction`
-    #     (above/below). El símbolo se guarda en su RIEL (ej. 'MSFT.BA' → ARS,
-    #     'MSFT' → USD); `currency` desambigua para el display.
-    #   • pct_move: avisar cuando un activo se mueve `threshold`% vs `baseline`
-    #     (prev_close por ahora). `scope='holdings'` (symbol NULL) evalúa TODAS
-    #     las tenencias del user; `scope='ticker'` un símbolo puntual.
-    #
-    # `armed` = estado del edge-trigger: la alerta dispara SOLO en el cruce
-    # (armed=1 → 0), no mientras el precio sigue del lado disparado. `repeat`
-    # decide el re-armado: 'once' (queda inactiva), 'daily' (se re-arma al día
-    # siguiente), 'always' (se re-arma al cruzar de vuelta). `cooldown_min`
-    # evita re-disparos ruidosos. NUNCA se dispara con precio stale/None.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move'
-            symbol TEXT,                        -- riel-aware; NULL = todas las tenencias
-            scope TEXT NOT NULL DEFAULT 'ticker',-- 'ticker' | 'holdings'
-            direction TEXT NOT NULL DEFAULT 'either', -- price_target: 'above'|'below'
-            threshold REAL,                     -- price_target: precio objetivo
-            up_pct REAL,                        -- pct_move: dispara si sube ≥ up_pct%
-            down_pct REAL,                      -- pct_move: dispara si cae ≥ down_pct%
-            currency TEXT,                      -- 'ARS' | 'USD' (riel del umbral)
-            baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close' (día) | 'set_price' (desde ahora)
-            anchor_price REAL,                  -- pct_move set_price: precio de referencia (se re-ancla)
-            channel TEXT NOT NULL DEFAULT 'both',-- 'push' | 'email' | 'both'
-            repeat TEXT NOT NULL DEFAULT 'once',-- 'once' | 'daily' | 'always'
-            cooldown_min INTEGER NOT NULL DEFAULT 360,
-            armed INTEGER NOT NULL DEFAULT 1,   -- edge-trigger state
-            active INTEGER NOT NULL DEFAULT 1,
-            note TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            last_evaluated_at TEXT,
-            last_fired_at TEXT,
-            last_fired_price REAL
-        );
-        CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
-        CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
+        # ─── Alertas personalizadas (precio objetivo + % de movimiento) ───────────
+        # Dos tipos:
+        #   • price_target: avisar cuando `symbol` cruza `threshold` en `direction`
+        #     (above/below). El símbolo se guarda en su RIEL (ej. 'MSFT.BA' → ARS,
+        #     'MSFT' → USD); `currency` desambigua para el display.
+        #   • pct_move: avisar cuando un activo se mueve `threshold`% vs `baseline`
+        #     (prev_close por ahora). `scope='holdings'` (symbol NULL) evalúa TODAS
+        #     las tenencias del user; `scope='ticker'` un símbolo puntual.
+        #
+        # `armed` = estado del edge-trigger: la alerta dispara SOLO en el cruce
+        # (armed=1 → 0), no mientras el precio sigue del lado disparado. `repeat`
+        # decide el re-armado: 'once' (queda inactiva), 'daily' (se re-arma al día
+        # siguiente), 'always' (se re-arma al cruzar de vuelta). `cooldown_min`
+        # evita re-disparos ruidosos. NUNCA se dispara con precio stale/None.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move'
+                symbol TEXT,                        -- riel-aware; NULL = todas las tenencias
+                scope TEXT NOT NULL DEFAULT 'ticker',-- 'ticker' | 'holdings'
+                direction TEXT NOT NULL DEFAULT 'either', -- price_target: 'above'|'below'
+                threshold REAL,                     -- price_target: precio objetivo
+                up_pct REAL,                        -- pct_move: dispara si sube ≥ up_pct%
+                down_pct REAL,                      -- pct_move: dispara si cae ≥ down_pct%
+                currency TEXT,                      -- 'ARS' | 'USD' (riel del umbral)
+                baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close' (día) | 'set_price' (desde ahora)
+                anchor_price REAL,                  -- pct_move set_price: precio de referencia (se re-ancla)
+                channel TEXT NOT NULL DEFAULT 'both',-- 'push' | 'email' | 'both'
+                repeat TEXT NOT NULL DEFAULT 'once',-- 'once' | 'daily' | 'always'
+                cooldown_min INTEGER NOT NULL DEFAULT 360,
+                armed INTEGER NOT NULL DEFAULT 1,   -- edge-trigger state
+                active INTEGER NOT NULL DEFAULT 1,
+                note TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                last_evaluated_at TEXT,
+                last_fired_at TEXT,
+                last_fired_price REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
+            CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
 
-        CREATE TABLE IF NOT EXISTS alert_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            alert_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            symbol TEXT,
-            fired_at TEXT DEFAULT (datetime('now')),
-            price REAL,
-            message TEXT,
-            delivered_push INTEGER NOT NULL DEFAULT 0,
-            delivered_email INTEGER NOT NULL DEFAULT 0,
-            seen INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_alert_events_user ON alert_events(user_id, fired_at DESC);
+            CREATE TABLE IF NOT EXISTS alert_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                symbol TEXT,
+                fired_at TEXT DEFAULT (datetime('now')),
+                price REAL,
+                message TEXT,
+                delivered_push INTEGER NOT NULL DEFAULT 0,
+                delivered_email INTEGER NOT NULL DEFAULT 0,
+                seen INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_alert_events_user ON alert_events(user_id, fired_at DESC);
 
-        -- Edge-trigger POR (alerta, símbolo) para pct_move "En el día": una alerta
-        -- de toda la cartera tiene N símbolos, cada uno con su propio estado armado.
-        -- Dispara al cruzar el umbral; se re-arma cuando el % vuelve dentro de la
-        -- banda (al abrir el mercado el change_pct resetea) → el movimiento de ayer
-        -- no re-dispara hoy.
-        CREATE TABLE IF NOT EXISTS alert_symbol_state (
-            alert_id INTEGER NOT NULL,
-            symbol TEXT NOT NULL,
-            armed INTEGER NOT NULL DEFAULT 1,
-            last_fired_date TEXT,          -- fecha UTC del último disparo → máx 1 por día
-            updated_at TEXT DEFAULT (datetime('now')),
-            PRIMARY KEY (alert_id, symbol)
-        );
-    """)
+            -- Edge-trigger POR (alerta, símbolo) para pct_move "En el día": una alerta
+            -- de toda la cartera tiene N símbolos, cada uno con su propio estado armado.
+            -- Dispara al cruzar el umbral; se re-arma cuando el % vuelve dentro de la
+            -- banda (al abrir el mercado el change_pct resetea) → el movimiento de ayer
+            -- no re-dispara hoy.
+            CREATE TABLE IF NOT EXISTS alert_symbol_state (
+                alert_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                armed INTEGER NOT NULL DEFAULT 1,
+                last_fired_date TEXT,          -- fecha UTC del último disparo → máx 1 por día
+                updated_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (alert_id, symbol)
+            );
+        """)
 
-    # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
-    # recalculan solos). `rules` es JSON con las condiciones; `excluded` la
-    # lista de client_uid sacados a mano del resultado.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS advisor_groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            advisor_uid INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            rules TEXT NOT NULL DEFAULT '{}',
-            excluded TEXT NOT NULL DEFAULT '[]',
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_advisor_groups ON advisor_groups(advisor_uid);
-    """)
+        # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
+        # recalculan solos). `rules` es JSON con las condiciones; `excluded` la
+        # lista de client_uid sacados a mano del resultado.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS advisor_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                advisor_uid INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                rules TEXT NOT NULL DEFAULT '{}',
+                excluded TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_advisor_groups ON advisor_groups(advisor_uid);
+        """)
 
-    # Alertas del LIBRO (asesor): "avisame si la cartera de cualquiera de mis
-    # clientes sube/baja X% en el día". Una config por asesor; el estado del
-    # edge-trigger y el tope de 1 aviso/día son POR CLIENTE. El historial se
-    # purga solo a los N días (default 3) — es un feed, no un archivo.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS advisor_alerts (
-            advisor_uid INTEGER PRIMARY KEY,
-            up_pct REAL,                     -- dispara si la cartera sube ≥ up_pct%
-            down_pct REAL,                   -- dispara si cae ≥ down_pct%
-            channel TEXT NOT NULL DEFAULT 'both',
-            active INTEGER NOT NULL DEFAULT 1,
-            group_id INTEGER,                -- NULL = todo el libro; si no, solo ese grupo
-            updated_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS advisor_alert_state (
-            advisor_uid INTEGER NOT NULL,
-            client_uid INTEGER NOT NULL,
-            armed INTEGER NOT NULL DEFAULT 1,
-            last_fired_date TEXT,
-            PRIMARY KEY (advisor_uid, client_uid)
-        );
-        CREATE TABLE IF NOT EXISTS advisor_alert_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            advisor_uid INTEGER NOT NULL,
-            client_uid INTEGER,
-            kind TEXT,                       -- 'client_move' | 'brief'
-            message TEXT,
-            pct REAL,
-            fired_at TEXT DEFAULT (datetime('now')),
-            delivered_push INTEGER NOT NULL DEFAULT 0,
-            delivered_email INTEGER NOT NULL DEFAULT 0,
-            seen INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_adv_alert_ev
-            ON advisor_alert_events(advisor_uid, fired_at DESC);
-    """)
+        # Alertas del LIBRO (asesor): "avisame si la cartera de cualquiera de mis
+        # clientes sube/baja X% en el día". Una config por asesor; el estado del
+        # edge-trigger y el tope de 1 aviso/día son POR CLIENTE. El historial se
+        # purga solo a los N días (default 3) — es un feed, no un archivo.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS advisor_alerts (
+                advisor_uid INTEGER PRIMARY KEY,
+                up_pct REAL,                     -- dispara si la cartera sube ≥ up_pct%
+                down_pct REAL,                   -- dispara si cae ≥ down_pct%
+                channel TEXT NOT NULL DEFAULT 'both',
+                active INTEGER NOT NULL DEFAULT 1,
+                group_id INTEGER,                -- NULL = todo el libro; si no, solo ese grupo
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS advisor_alert_state (
+                advisor_uid INTEGER NOT NULL,
+                client_uid INTEGER NOT NULL,
+                armed INTEGER NOT NULL DEFAULT 1,
+                last_fired_date TEXT,
+                PRIMARY KEY (advisor_uid, client_uid)
+            );
+            CREATE TABLE IF NOT EXISTS advisor_alert_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                advisor_uid INTEGER NOT NULL,
+                client_uid INTEGER,
+                kind TEXT,                       -- 'client_move' | 'brief'
+                message TEXT,
+                pct REAL,
+                fired_at TEXT DEFAULT (datetime('now')),
+                delivered_push INTEGER NOT NULL DEFAULT 0,
+                delivered_email INTEGER NOT NULL DEFAULT 0,
+                seen INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_adv_alert_ev
+                ON advisor_alert_events(advisor_uid, fired_at DESC);
+        """)
 
-    # Brief del libro (2x/día, anclado al mercado): log de envíos para que
-    # re-correr el cron no duplique emails + preferencias por asesor.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS advisor_brief_log (
-            advisor_uid INTEGER NOT NULL,
-            kind TEXT NOT NULL,              -- 'open' (apertura) | 'close' (cierre)
-            date TEXT NOT NULL,              -- fecha ART
-            sent_at TEXT DEFAULT (datetime('now')),
-            PRIMARY KEY (advisor_uid, kind, date)
-        );
-    """)
-    # Migración: teléfono del cliente (lote 4 del audit — botón WhatsApp).
-    _ac_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_clients)").fetchall()]
-    if _ac_cols and 'phone' not in _ac_cols:
-        conn.executescript("ALTER TABLE advisor_clients ADD COLUMN phone TEXT;")
+        # Brief del libro (2x/día, anclado al mercado): log de envíos para que
+        # re-correr el cron no duplique emails + preferencias por asesor.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS advisor_brief_log (
+                advisor_uid INTEGER NOT NULL,
+                kind TEXT NOT NULL,              -- 'open' (apertura) | 'close' (cierre)
+                date TEXT NOT NULL,              -- fecha ART
+                sent_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (advisor_uid, kind, date)
+            );
+        """)
+        # Migración: teléfono del cliente (lote 4 del audit — botón WhatsApp).
+        _ac_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_clients)").fetchall()]
+        if _ac_cols and 'phone' not in _ac_cols:
+            conn.executescript("ALTER TABLE advisor_clients ADD COLUMN phone TEXT;")
 
-    # ─── Precios HISTÓRICOS por símbolo y fecha ──────────────────────────
-    # Hasta acá sólo existía `asset_last_price` (una fila por símbolo con el
-    # último precio): alcanza para valuar HOY y para nada más. Sin serie no se
-    # puede reconstruir cuánto valía una cartera el 31 de enero, y sin eso el
-    # TWR sólo mide desde que el cron empezó a sacar fotos.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS asset_price_history (
-            symbol TEXT NOT NULL,
-            date TEXT NOT NULL,              -- 'YYYY-MM-DD'
-            price REAL NOT NULL,
-            source TEXT,                     -- 'yfinance' | 'data912' | 'fci' | ...
-            fetched_at TEXT DEFAULT (datetime('now')),
-            PRIMARY KEY (symbol, date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_price_hist_symbol
-            ON asset_price_history(symbol, date DESC);
-        -- Qué rango se PIDIÓ por símbolo. Inferir la cobertura de lo que la
-        -- fuente devolvió es un bug: un ticker que empezó a cotizar en 2026
-        -- nunca va a tener datos de 2024, y sin este registro se re-pediría en
-        -- cada corrida para siempre.
-        CREATE TABLE IF NOT EXISTS price_backfill_log (
-            symbol TEXT PRIMARY KEY,
-            desde TEXT NOT NULL,
-            ok INTEGER NOT NULL DEFAULT 1,   -- 0 = la fuente no dio serie
-            fetched_at TEXT DEFAULT (datetime('now'))
-        );
-    """)
+        # ─── Precios HISTÓRICOS por símbolo y fecha ──────────────────────────
+        # Hasta acá sólo existía `asset_last_price` (una fila por símbolo con el
+        # último precio): alcanza para valuar HOY y para nada más. Sin serie no se
+        # puede reconstruir cuánto valía una cartera el 31 de enero, y sin eso el
+        # TWR sólo mide desde que el cron empezó a sacar fotos.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS asset_price_history (
+                symbol TEXT NOT NULL,
+                date TEXT NOT NULL,              -- 'YYYY-MM-DD'
+                price REAL NOT NULL,
+                source TEXT,                     -- 'yfinance' | 'data912' | 'fci' | ...
+                fetched_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (symbol, date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_price_hist_symbol
+                ON asset_price_history(symbol, date DESC);
+            -- Qué rango se PIDIÓ por símbolo. Inferir la cobertura de lo que la
+            -- fuente devolvió es un bug: un ticker que empezó a cotizar en 2026
+            -- nunca va a tener datos de 2024, y sin este registro se re-pediría en
+            -- cada corrida para siempre.
+            CREATE TABLE IF NOT EXISTS price_backfill_log (
+                symbol TEXT PRIMARY KEY,
+                desde TEXT NOT NULL,
+                ok INTEGER NOT NULL DEFAULT 1,   -- 0 = la fuente no dio serie
+                fetched_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
 
-    # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
-    # Append-only. Cada mes cerrado se calcula UNA vez y no se reescribe nunca.
-    # Sin esto el número de ayer cambia hoy: `_migrate_snapshots_netdep` corre
-    # en CADA arranque y recalcula el aportado de todas las filas históricas
-    # mientras total_value queda congelado — medido, el mismo trimestre pasa de
-    # +8,0% a −10,9% después de un deploy, sin que nadie toque una posición.
-    # Si el input cambia después, se escribe revision+1 y la UI avisa; jamás se
-    # pisa la revisión vieja. La fila sellada también SOBREVIVE al borrado de
-    # los snapshots que la originaron (revert_batch / delete_broker borran por
-    # rango y se llevan mediciones irrecuperables).
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS twr_periods (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            period_start TEXT NOT NULL,      -- fecha del borde inicial (un cierre real)
-            period_end TEXT NOT NULL,        -- fecha del borde final (un cierre real)
-            month TEXT NOT NULL,             -- 'YYYY-MM' al que pertenece el tramo
-            v0_usd REAL NOT NULL,
-            v1_usd REAL NOT NULL,
-            flow_usd REAL NOT NULL,          -- aportes netos DENTRO del tramo
-            ret REAL NOT NULL,               -- Modified Dietz del tramo
-            quality TEXT NOT NULL,           -- 'ok' | 'flujo_sospechoso' | 'plano'
-            snap_id_start INTEGER,           -- para poder auditar de dónde salió
-            snap_id_end INTEGER,
-            fx_basis TEXT,                   -- qué tasa valuó estos bordes
-            revision INTEGER NOT NULL DEFAULT 1,
-            sealed_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(user_id, month, revision)
-        );
-        CREATE INDEX IF NOT EXISTS idx_twr_periods_user
-            ON twr_periods(user_id, month);
-    """)
+        # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
+        # Append-only. Cada mes cerrado se calcula UNA vez y no se reescribe nunca.
+        # Sin esto el número de ayer cambia hoy: `_migrate_snapshots_netdep` corre
+        # en CADA arranque y recalcula el aportado de todas las filas históricas
+        # mientras total_value queda congelado — medido, el mismo trimestre pasa de
+        # +8,0% a −10,9% después de un deploy, sin que nadie toque una posición.
+        # Si el input cambia después, se escribe revision+1 y la UI avisa; jamás se
+        # pisa la revisión vieja. La fila sellada también SOBREVIVE al borrado de
+        # los snapshots que la originaron (revert_batch / delete_broker borran por
+        # rango y se llevan mediciones irrecuperables).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS twr_periods (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                period_start TEXT NOT NULL,      -- fecha del borde inicial (un cierre real)
+                period_end TEXT NOT NULL,        -- fecha del borde final (un cierre real)
+                month TEXT NOT NULL,             -- 'YYYY-MM' al que pertenece el tramo
+                v0_usd REAL NOT NULL,
+                v1_usd REAL NOT NULL,
+                flow_usd REAL NOT NULL,          -- aportes netos DENTRO del tramo
+                ret REAL NOT NULL,               -- Modified Dietz del tramo
+                quality TEXT NOT NULL,           -- 'ok' | 'flujo_sospechoso' | 'plano'
+                snap_id_start INTEGER,           -- para poder auditar de dónde salió
+                snap_id_end INTEGER,
+                fx_basis TEXT,                   -- qué tasa valuó estos bordes
+                revision INTEGER NOT NULL DEFAULT 1,
+                sealed_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(user_id, month, revision)
+            );
+            CREATE INDEX IF NOT EXISTS idx_twr_periods_user
+                ON twr_periods(user_id, month);
+        """)
 
-    # Migración: `seen` de los avisos del libro (prende el puntito del sidebar).
-    _ae_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_alert_events)").fetchall()]
-    if _ae_cols and 'seen' not in _ae_cols:
-        conn.executescript(
-            "ALTER TABLE advisor_alert_events ADD COLUMN seen INTEGER NOT NULL DEFAULT 0;")
+        # Migración: `seen` de los avisos del libro (prende el puntito del sidebar).
+        _ae_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_alert_events)").fetchall()]
+        if _ae_cols and 'seen' not in _ae_cols:
+            conn.executescript(
+                "ALTER TABLE advisor_alert_events ADD COLUMN seen INTEGER NOT NULL DEFAULT 0;")
 
-    # Migración: alerta del libro acotada a un grupo (NULL = todo el libro).
-    # Va DESPUÉS del CREATE de advisor_alerts, nunca antes.
-    _aa_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_alerts)").fetchall()]
-    if _aa_cols and 'group_id' not in _aa_cols:
-        conn.executescript("ALTER TABLE advisor_alerts ADD COLUMN group_id INTEGER;")
+        # Migración: alerta del libro acotada a un grupo (NULL = todo el libro).
+        # Va DESPUÉS del CREATE de advisor_alerts, nunca antes.
+        _aa_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_alerts)").fetchall()]
+        if _aa_cols and 'group_id' not in _aa_cols:
+            conn.executescript("ALTER TABLE advisor_alerts ADD COLUMN group_id INTEGER;")
 
-    # Migración: anchor_price para el modo "Desde ahora" (la tabla alerts ya existe
-    # en prod sin esta columna → CREATE IF NOT EXISTS no la agrega).
-    _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
-    if _alert_cols and 'anchor_price' not in _alert_cols:
-        conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
+        # Migración: anchor_price para el modo "Desde ahora" (la tabla alerts ya existe
+        # en prod sin esta columna → CREATE IF NOT EXISTS no la agrega).
+        _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
+        if _alert_cols and 'anchor_price' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
 
-    # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
-    # sin esta columna, se creó en el deploy anterior).
-    _st_cols = [r[1] for r in conn.execute("PRAGMA table_info(alert_symbol_state)").fetchall()]
-    if _st_cols and 'last_fired_date' not in _st_cols:
-        conn.executescript("ALTER TABLE alert_symbol_state ADD COLUMN last_fired_date TEXT;")
+        # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
+        # sin esta columna, se creó en el deploy anterior).
+        _st_cols = [r[1] for r in conn.execute("PRAGMA table_info(alert_symbol_state)").fetchall()]
+        if _st_cols and 'last_fired_date' not in _st_cols:
+            conn.executescript("ALTER TABLE alert_symbol_state ADD COLUMN last_fired_date TEXT;")
 
-    # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
-    # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
-    #   Mismo packet → mismo análisis durante 24h, sin nuevo call a LLM.
-    # ai_usage_daily: contadores por user por día — alimenta el badge Free
-    #   (3/5 análisis) y permite auditar costos por user.
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS ai_analyses_cache (
-            cache_key TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            screen TEXT NOT NULL,
-            result_json TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now')),
-            expires_at TEXT NOT NULL,
-            packet_hash TEXT NOT NULL,
-            model TEXT,
-            input_tokens INTEGER DEFAULT 0,
-            output_tokens INTEGER DEFAULT 0,
-            cache_read_tokens INTEGER DEFAULT 0,
-            cache_create_tokens INTEGER DEFAULT 0,
-            cost_usd_cents INTEGER DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_ai_cache_user_screen
-            ON ai_analyses_cache(user_id, screen);
-        CREATE INDEX IF NOT EXISTS idx_ai_cache_expires
-            ON ai_analyses_cache(expires_at);
+        # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
+        # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
+        #   Mismo packet → mismo análisis durante 24h, sin nuevo call a LLM.
+        # ai_usage_daily: contadores por user por día — alimenta el badge Free
+        #   (3/5 análisis) y permite auditar costos por user.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS ai_analyses_cache (
+                cache_key TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                screen TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                packet_hash TEXT NOT NULL,
+                model TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_create_tokens INTEGER DEFAULT 0,
+                cost_usd_cents INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_cache_user_screen
+                ON ai_analyses_cache(user_id, screen);
+            CREATE INDEX IF NOT EXISTS idx_ai_cache_expires
+                ON ai_analyses_cache(expires_at);
 
-        CREATE TABLE IF NOT EXISTS ai_usage_daily (
-            user_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            analyses_count INTEGER NOT NULL DEFAULT 0,
-            hub_queries_count INTEGER NOT NULL DEFAULT 0,
-            -- chat_count: consultas al /api/ai/chat (cuota separada de analyses).
-            -- Free/Plus tienen acceso solo a whitelist de 12 preguntas pre-armadas
-            -- (cap 6/sem). Pro desbloquea chat libre (cap 60/sem). Agregada en
-            -- migración post-launch de chat tiered.
-            chat_count INTEGER NOT NULL DEFAULT 0,
-            -- diag_dismiss_count: "No me interesa" del diagnóstico (cuota Free
-            -- 2/sem → upsell a Plus; plus/pro/admin ilimitado).
-            diag_dismiss_count INTEGER NOT NULL DEFAULT 0,
-            cost_usd_cents INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, date)
-        );
+            CREATE TABLE IF NOT EXISTS ai_usage_daily (
+                user_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                analyses_count INTEGER NOT NULL DEFAULT 0,
+                hub_queries_count INTEGER NOT NULL DEFAULT 0,
+                -- chat_count: consultas al /api/ai/chat (cuota separada de analyses).
+                -- Free/Plus tienen acceso solo a whitelist de 12 preguntas pre-armadas
+                -- (cap 6/sem). Pro desbloquea chat libre (cap 60/sem). Agregada en
+                -- migración post-launch de chat tiered.
+                chat_count INTEGER NOT NULL DEFAULT 0,
+                -- diag_dismiss_count: "No me interesa" del diagnóstico (cuota Free
+                -- 2/sem → upsell a Plus; plus/pro/admin ilimitado).
+                diag_dismiss_count INTEGER NOT NULL DEFAULT 0,
+                cost_usd_cents INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, date)
+            );
 
-        -- ─── ai_tool_usage: contador de uso de tools del chat IA ────────────
-        -- Cada vez que _execute_ai_tool corre exitosamente, suma 1. Permite
-        -- detectar:
-        --   • Tools no usadas (candidatas a borrar)
-        --   • Patrones de uso por tier (Pro vs Free)
-        --   • Detección de abuso (1 user con miles de calls a un tool)
-        -- Admin lee via /api/admin/ai/tool-usage. Sin esto, agregar tools
-        -- es disparar en la oscuridad.
-        CREATE TABLE IF NOT EXISTS ai_tool_usage (
-            user_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            tool_name TEXT NOT NULL,
-            count INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, date, tool_name)
-        );
-        CREATE INDEX IF NOT EXISTS idx_ai_tool_usage_date
-            ON ai_tool_usage(date DESC);
-        CREATE INDEX IF NOT EXISTS idx_ai_tool_usage_tool
-            ON ai_tool_usage(tool_name, date DESC);
+            -- ─── ai_tool_usage: contador de uso de tools del chat IA ────────────
+            -- Cada vez que _execute_ai_tool corre exitosamente, suma 1. Permite
+            -- detectar:
+            --   • Tools no usadas (candidatas a borrar)
+            --   • Patrones de uso por tier (Pro vs Free)
+            --   • Detección de abuso (1 user con miles de calls a un tool)
+            -- Admin lee via /api/admin/ai/tool-usage. Sin esto, agregar tools
+            -- es disparar en la oscuridad.
+            CREATE TABLE IF NOT EXISTS ai_tool_usage (
+                user_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, date, tool_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_tool_usage_date
+                ON ai_tool_usage(date DESC);
+            CREATE INDEX IF NOT EXISTS idx_ai_tool_usage_tool
+                ON ai_tool_usage(tool_name, date DESC);
 
-        -- ─── broadcast_send_log: idempotencia del broadcast de email admin ──
-        -- Registra (hash-del-contenido, email) por cada envío exitoso para que
-        -- un retry del broadcast (doble click, timeout de gateway que reintenta,
-        -- re-corrida manual del MISMO contenido) NO re-mailee a quien ya recibió.
-        -- El content_hash = sha256(subject + body + branded), así el mismo mail
-        -- dedupea y uno distinto arranca de cero. Se commitea por envío → el
-        -- progreso sobrevive a un corte a mitad del loop.
-        CREATE TABLE IF NOT EXISTS broadcast_send_log (
-            content_hash TEXT NOT NULL,
-            email        TEXT NOT NULL,
-            sent_at      TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (content_hash, email)
-        );
+            -- ─── broadcast_send_log: idempotencia del broadcast de email admin ──
+            -- Registra (hash-del-contenido, email) por cada envío exitoso para que
+            -- un retry del broadcast (doble click, timeout de gateway que reintenta,
+            -- re-corrida manual del MISMO contenido) NO re-mailee a quien ya recibió.
+            -- El content_hash = sha256(subject + body + branded), así el mismo mail
+            -- dedupea y uno distinto arranca de cero. Se commitea por envío → el
+            -- progreso sobrevive a un corte a mitad del loop.
+            CREATE TABLE IF NOT EXISTS broadcast_send_log (
+                content_hash TEXT NOT NULL,
+                email        TEXT NOT NULL,
+                sent_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (content_hash, email)
+            );
 
-        -- ─── yfinance_cache: cache de calls a yfinance (Pack A v2) ──────────
-        -- yfinance tarda 1-3s por call. Cuando el chat IA llama tools de
-        -- fundamentales/earnings/analysts, esta tabla cachea el payload
-        -- normalizado por 6h para que la 2da consulta sobre el mismo ticker
-        -- sea instantánea (~10ms desde DB vs 1-3s desde yfinance).
-        --
-        -- kind enum: 'fundamentals' | 'scorecard' | 'earnings' | 'analysts' | 'profile'
-        --   Cada kind tiene shape distinto, serializado a JSON en payload_json.
-        --   El consumer (_yf_fetch_cached) parsea y normaliza al leer.
-        --
-        -- fetched_at en ISO. TTL hardcoded 6h en el lector.
-        -- Cleanup: cron diario borra rows > 7 días.
-        CREATE TABLE IF NOT EXISTS yfinance_cache (
-            ticker TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            fetched_at TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            PRIMARY KEY (ticker, kind)
-        );
-        CREATE INDEX IF NOT EXISTS idx_yfinance_cache_fetched
-            ON yfinance_cache(fetched_at DESC);
+            -- ─── yfinance_cache: cache de calls a yfinance (Pack A v2) ──────────
+            -- yfinance tarda 1-3s por call. Cuando el chat IA llama tools de
+            -- fundamentales/earnings/analysts, esta tabla cachea el payload
+            -- normalizado por 6h para que la 2da consulta sobre el mismo ticker
+            -- sea instantánea (~10ms desde DB vs 1-3s desde yfinance).
+            --
+            -- kind enum: 'fundamentals' | 'scorecard' | 'earnings' | 'analysts' | 'profile'
+            --   Cada kind tiene shape distinto, serializado a JSON en payload_json.
+            --   El consumer (_yf_fetch_cached) parsea y normaliza al leer.
+            --
+            -- fetched_at en ISO. TTL hardcoded 6h en el lector.
+            -- Cleanup: cron diario borra rows > 7 días.
+            CREATE TABLE IF NOT EXISTS yfinance_cache (
+                ticker TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (ticker, kind)
+            );
+            CREATE INDEX IF NOT EXISTS idx_yfinance_cache_fetched
+                ON yfinance_cache(fetched_at DESC);
 
-        -- ─── asset_last_price: último precio conocido por símbolo ────────────
-        -- Cuando yfinance no devuelve precio para un símbolo (flaky, delisted,
-        -- rate limit), antes caíamos a cost basis → la posición "valía lo que
-        -- pagué", inventando un salto fantasma en la variación diaria. Ahora
-        -- usamos el ÚLTIMO precio real conocido: "sin precio hoy → la dejo
-        -- igual que la última vez que la vi". Lo escriben tanto /api/prices
-        -- (intradía) como el cron de snapshots (cierre). key = símbolo tal como
-        -- se valúa ('AAPL', 'GGAL.BA', 'BTC').
-        CREATE TABLE IF NOT EXISTS asset_last_price (
-            symbol TEXT PRIMARY KEY,
-            price REAL NOT NULL,
-            updated_at TEXT NOT NULL
-        );
+            -- ─── asset_last_price: último precio conocido por símbolo ────────────
+            -- Cuando yfinance no devuelve precio para un símbolo (flaky, delisted,
+            -- rate limit), antes caíamos a cost basis → la posición "valía lo que
+            -- pagué", inventando un salto fantasma en la variación diaria. Ahora
+            -- usamos el ÚLTIMO precio real conocido: "sin precio hoy → la dejo
+            -- igual que la última vez que la vi". Lo escriben tanto /api/prices
+            -- (intradía) como el cron de snapshots (cierre). key = símbolo tal como
+            -- se valúa ('AAPL', 'GGAL.BA', 'BTC').
+            CREATE TABLE IF NOT EXISTS asset_last_price (
+                symbol TEXT PRIMARY KEY,
+                price REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            );
 
-        -- ─── ai_user_facts: memoria persistente del coach IA ─────────────────
-        -- "Hechos" textuales que el user le aclara al bot ("AL30 lo compré en
-        -- broker IOL", "mi sueldo en dolares es 2500"), o que el bot infiere y
-        -- confirma. Se inyectan al system prompt del chat para que respuestas
-        -- futuras los respeten sin necesidad de re-explicar.
-        --
-        -- Diseño:
-        --   • content: texto libre (cap 280 chars — bullet point conciso)
-        --   • source: 'user_correction' (el user lo dijo) |
-        --             'ai_inferred' (bot infirió y user confirmó) |
-        --             'manual' (admin lo puso)
-        --   • created_at: ordenamos DESC para usar siempre los más recientes
-        --     si superamos el límite N inyectado al prompt
-        --   • is_active: soft-delete (toggle desde UI). Inactivos no se inyectan.
-        --
-        -- Por qué soft-delete: si el user "olvida" un hecho y luego lo quiere
-        -- de vuelta, lo reactiva sin perder created_at original (auditoría).
-        CREATE TABLE IF NOT EXISTS ai_user_facts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            source TEXT NOT NULL DEFAULT 'user_correction',
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_ai_user_facts_user_active
-            ON ai_user_facts(user_id, is_active, created_at DESC);
-        -- Evita que el LLM (o el user) persista el mismo fact 50 veces.
-        -- INDEX único parcial sobre (user_id, content) cuando is_active=1.
-        -- Soft-deleted no cuenta — el user puede borrar y re-insertar el
-        -- mismo content (re-activación implícita). Auditoría #2 H5.
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_user_facts_unique_active
-            ON ai_user_facts(user_id, content) WHERE is_active=1;
+            -- ─── ai_user_facts: memoria persistente del coach IA ─────────────────
+            -- "Hechos" textuales que el user le aclara al bot ("AL30 lo compré en
+            -- broker IOL", "mi sueldo en dolares es 2500"), o que el bot infiere y
+            -- confirma. Se inyectan al system prompt del chat para que respuestas
+            -- futuras los respeten sin necesidad de re-explicar.
+            --
+            -- Diseño:
+            --   • content: texto libre (cap 280 chars — bullet point conciso)
+            --   • source: 'user_correction' (el user lo dijo) |
+            --             'ai_inferred' (bot infirió y user confirmó) |
+            --             'manual' (admin lo puso)
+            --   • created_at: ordenamos DESC para usar siempre los más recientes
+            --     si superamos el límite N inyectado al prompt
+            --   • is_active: soft-delete (toggle desde UI). Inactivos no se inyectan.
+            --
+            -- Por qué soft-delete: si el user "olvida" un hecho y luego lo quiere
+            -- de vuelta, lo reactiva sin perder created_at original (auditoría).
+            CREATE TABLE IF NOT EXISTS ai_user_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'user_correction',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_user_facts_user_active
+                ON ai_user_facts(user_id, is_active, created_at DESC);
+            -- Evita que el LLM (o el user) persista el mismo fact 50 veces.
+            -- INDEX único parcial sobre (user_id, content) cuando is_active=1.
+            -- Soft-deleted no cuenta — el user puede borrar y re-insertar el
+            -- mismo content (re-activación implícita). Auditoría #2 H5.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_user_facts_unique_active
+                ON ai_user_facts(user_id, content) WHERE is_active=1;
 
-        -- ─── subscriptions: estado de billing por user ──────────────────────
-        -- Una fila por user con suscripción ACTIVA o cancelada (histórica).
-        -- mp_subscription_id es el preapproval_id de MP. external_reference
-        -- es el campo `rendi-{user_id}-{period}` que mandamos a MP.
-        -- status: 'pending' (esperando pago), 'authorized' (activa, pagando),
-        -- 'paused', 'cancelled', 'failed'.
-        CREATE TABLE IF NOT EXISTS subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            mp_subscription_id TEXT,             -- preapproval_id de MP (puede ser NULL hasta que MP confirma)
-            external_reference TEXT NOT NULL,    -- 'rendi-{uid}-{period}'
-            period TEXT NOT NULL,                -- 'monthly' | 'annual'
-            status TEXT NOT NULL DEFAULT 'pending',
-            amount_ars INTEGER NOT NULL,         -- monto en pesos cobrado por período
-            current_period_start TEXT,           -- ISO date inicio período pagado
-            current_period_end TEXT,             -- ISO date fin período pagado (cuando expira Pro)
-            next_charge_date TEXT,               -- próxima fecha de cobro automático
-            init_point TEXT,                     -- URL del checkout (útil para retry)
-            last_payment_id TEXT,                -- último payment_id procesado por webhook
-            cancelled_at TEXT,
-            -- Idempotencia de emails: cada flag es el timestamp del último envío.
-            -- Vacíos = nunca enviado, no-vacíos = ya enviado (no reintentar).
-            welcome_email_sent_at TEXT,
-            cancellation_email_sent_at TEXT,
-            expiration_reminder_sent_at TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_subscriptions_user
-            ON subscriptions(user_id);
-        CREATE INDEX IF NOT EXISTS idx_subscriptions_mp_id
-            ON subscriptions(mp_subscription_id);
-        CREATE INDEX IF NOT EXISTS idx_subscriptions_status
-            ON subscriptions(status);
+            -- ─── subscriptions: estado de billing por user ──────────────────────
+            -- Una fila por user con suscripción ACTIVA o cancelada (histórica).
+            -- mp_subscription_id es el preapproval_id de MP. external_reference
+            -- es el campo `rendi-{user_id}-{period}` que mandamos a MP.
+            -- status: 'pending' (esperando pago), 'authorized' (activa, pagando),
+            -- 'paused', 'cancelled', 'failed'.
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                mp_subscription_id TEXT,             -- preapproval_id de MP (puede ser NULL hasta que MP confirma)
+                external_reference TEXT NOT NULL,    -- 'rendi-{uid}-{period}'
+                period TEXT NOT NULL,                -- 'monthly' | 'annual'
+                status TEXT NOT NULL DEFAULT 'pending',
+                amount_ars INTEGER NOT NULL,         -- monto en pesos cobrado por período
+                current_period_start TEXT,           -- ISO date inicio período pagado
+                current_period_end TEXT,             -- ISO date fin período pagado (cuando expira Pro)
+                next_charge_date TEXT,               -- próxima fecha de cobro automático
+                init_point TEXT,                     -- URL del checkout (útil para retry)
+                last_payment_id TEXT,                -- último payment_id procesado por webhook
+                cancelled_at TEXT,
+                -- Idempotencia de emails: cada flag es el timestamp del último envío.
+                -- Vacíos = nunca enviado, no-vacíos = ya enviado (no reintentar).
+                welcome_email_sent_at TEXT,
+                cancellation_email_sent_at TEXT,
+                expiration_reminder_sent_at TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_user
+                ON subscriptions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_mp_id
+                ON subscriptions(mp_subscription_id);
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_status
+                ON subscriptions(status);
 
-        -- ─── billing_events: log de webhooks de MP para auditoría ────────────
-        -- Cada webhook recibido (incluso los rechazados por signature inválida)
-        -- queda registrado. Útil para debug + cumplimiento + reproducción.
-        CREATE TABLE IF NOT EXISTS billing_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mp_event_id TEXT,                    -- 'id' del payload top-level
-            mp_event_type TEXT,                  -- 'subscription_authorized_payment', 'preapproval', ...
-            mp_data_id TEXT,                     -- 'data.id' del payload (preapproval_id o payment_id)
-            user_id INTEGER,                     -- decoded desde external_reference (si match)
-            signature_valid INTEGER DEFAULT 0,
-            processed INTEGER DEFAULT 0,
-            raw_payload TEXT,                    -- JSON serializado para debug
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_billing_events_user
-            ON billing_events(user_id);
-        CREATE INDEX IF NOT EXISTS idx_billing_events_mp_data
-            ON billing_events(mp_data_id);
+            -- ─── billing_events: log de webhooks de MP para auditoría ────────────
+            -- Cada webhook recibido (incluso los rechazados por signature inválida)
+            -- queda registrado. Útil para debug + cumplimiento + reproducción.
+            CREATE TABLE IF NOT EXISTS billing_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mp_event_id TEXT,                    -- 'id' del payload top-level
+                mp_event_type TEXT,                  -- 'subscription_authorized_payment', 'preapproval', ...
+                mp_data_id TEXT,                     -- 'data.id' del payload (preapproval_id o payment_id)
+                user_id INTEGER,                     -- decoded desde external_reference (si match)
+                signature_valid INTEGER DEFAULT 0,
+                processed INTEGER DEFAULT 0,
+                raw_payload TEXT,                    -- JSON serializado para debug
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_billing_events_user
+                ON billing_events(user_id);
+            CREATE INDEX IF NOT EXISTS idx_billing_events_mp_data
+                ON billing_events(mp_data_id);
 
-        -- ─── plan_events: telemetría del paywall Free → Pro ─────────────────
-        -- Cada click en un CTA bloqueado (LockedSection, UpgradeModal, PlanHero)
-        -- inserta una fila acá. Permite medir CTR de upgrade por feature/source
-        -- y priorizar qué bloqueos convierten más.
-        CREATE TABLE IF NOT EXISTS plan_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            tier TEXT NOT NULL,                  -- 'free' | 'pro' | 'admin' al momento del evento
-            event_name TEXT NOT NULL,            -- 'feature_blocked_clicked' | 'upgrade_modal_cta_clicked' | ...
-            feature_id TEXT,                     -- 'comportamiento.full' | 'brokers.create' | ...
-            source TEXT,                         -- 'behavioral_grid' | 'config_add_broker' | ...
-            props_json TEXT,                     -- extras opcionales (JSON serializado)
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_plan_events_user
-            ON plan_events(user_id);
-        CREATE INDEX IF NOT EXISTS idx_plan_events_feature
-            ON plan_events(feature_id, event_name);
-        CREATE INDEX IF NOT EXISTS idx_plan_events_created
-            ON plan_events(created_at);
+            -- ─── plan_events: telemetría del paywall Free → Pro ─────────────────
+            -- Cada click en un CTA bloqueado (LockedSection, UpgradeModal, PlanHero)
+            -- inserta una fila acá. Permite medir CTR de upgrade por feature/source
+            -- y priorizar qué bloqueos convierten más.
+            CREATE TABLE IF NOT EXISTS plan_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                tier TEXT NOT NULL,                  -- 'free' | 'pro' | 'admin' al momento del evento
+                event_name TEXT NOT NULL,            -- 'feature_blocked_clicked' | 'upgrade_modal_cta_clicked' | ...
+                feature_id TEXT,                     -- 'comportamiento.full' | 'brokers.create' | ...
+                source TEXT,                         -- 'behavioral_grid' | 'config_add_broker' | ...
+                props_json TEXT,                     -- extras opcionales (JSON serializado)
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_plan_events_user
+                ON plan_events(user_id);
+            CREATE INDEX IF NOT EXISTS idx_plan_events_feature
+                ON plan_events(feature_id, event_name);
+            CREATE INDEX IF NOT EXISTS idx_plan_events_created
+                ON plan_events(created_at);
 
-        -- ─── email_verification_codes: códigos OTP de 6 dígitos ──────────────
-        -- Generado al registrarse o al pedir resend. Vence en 15 min.
-        -- used_at se setea al confirmar; rows usadas se mantienen para auditoría
-        -- (no se borran). Cleanup en cron de codes > 30 días.
-        CREATE TABLE IF NOT EXISTS email_verification_codes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            code TEXT NOT NULL,                  -- 6 dígitos como string ('384721')
-            expires_at TEXT NOT NULL,
-            used_at TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_email_codes_user_unused
-            ON email_verification_codes(user_id, used_at);
+            -- ─── email_verification_codes: códigos OTP de 6 dígitos ──────────────
+            -- Generado al registrarse o al pedir resend. Vence en 15 min.
+            -- used_at se setea al confirmar; rows usadas se mantienen para auditoría
+            -- (no se borran). Cleanup en cron de codes > 30 días.
+            CREATE TABLE IF NOT EXISTS email_verification_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                code TEXT NOT NULL,                  -- 6 dígitos como string ('384721')
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_email_codes_user_unused
+                ON email_verification_codes(user_id, used_at);
 
-        -- ─── password_reset_tokens: magic links para "olvidé mi contraseña" ──
-        -- Token es URL-safe random 256-bit (secrets.token_urlsafe(32)).
-        -- Vence en 30 min. used_at se setea al confirmar el reset.
-        CREATE TABLE IF NOT EXISTS password_reset_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            token TEXT NOT NULL UNIQUE,
-            expires_at TEXT NOT NULL,
-            used_at TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_pwd_reset_token ON password_reset_tokens(token);
-        CREATE INDEX IF NOT EXISTS idx_pwd_reset_user ON password_reset_tokens(user_id, used_at);
+            -- ─── password_reset_tokens: magic links para "olvidé mi contraseña" ──
+            -- Token es URL-safe random 256-bit (secrets.token_urlsafe(32)).
+            -- Vence en 30 min. used_at se setea al confirmar el reset.
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_pwd_reset_token ON password_reset_tokens(token);
+            CREATE INDEX IF NOT EXISTS idx_pwd_reset_user ON password_reset_tokens(user_id, used_at);
 
-        -- ─── advisor_claim_tokens: invitación del asesor a una cuenta shadow ──
-        -- El asesor invita a su cliente (email real) a "reclamar" la cuenta
-        -- administrada: el cliente entra con ESTE link, pone contraseña, y la
-        -- MISMA cuenta (mismo uid, misma cartera) pasa a ser autogestionada.
-        -- Mismo patrón que password_reset_tokens (token URL-safe 256-bit, TTL,
-        -- un solo token vivo por user, used_at al confirmar).
-        CREATE TABLE IF NOT EXISTS advisor_claim_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,          -- el shadow que se reclama
-            advisor_uid INTEGER NOT NULL,
-            token TEXT NOT NULL UNIQUE,
-            email TEXT NOT NULL,               -- email real al que se invitó
-            expires_at TEXT NOT NULL,
-            used_at TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_advisor_claim_token ON advisor_claim_tokens(token);
-        CREATE INDEX IF NOT EXISTS idx_advisor_claim_user ON advisor_claim_tokens(user_id, used_at);
+            -- ─── advisor_claim_tokens: invitación del asesor a una cuenta shadow ──
+            -- El asesor invita a su cliente (email real) a "reclamar" la cuenta
+            -- administrada: el cliente entra con ESTE link, pone contraseña, y la
+            -- MISMA cuenta (mismo uid, misma cartera) pasa a ser autogestionada.
+            -- Mismo patrón que password_reset_tokens (token URL-safe 256-bit, TTL,
+            -- un solo token vivo por user, used_at al confirmar).
+            CREATE TABLE IF NOT EXISTS advisor_claim_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,          -- el shadow que se reclama
+                advisor_uid INTEGER NOT NULL,
+                token TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,               -- email real al que se invitó
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_advisor_claim_token ON advisor_claim_tokens(token);
+            CREATE INDEX IF NOT EXISTS idx_advisor_claim_user ON advisor_claim_tokens(user_id, used_at);
 
-        -- Informe del período (Plan Asesor): el payload queda CONGELADO al
-        -- generarse (lo que se le mandó al cliente no cambia aunque cambien
-        -- los datos o el branding después — rendición de cuentas).
-        CREATE TABLE IF NOT EXISTS advisor_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            advisor_uid INTEGER NOT NULL,
-            client_uid INTEGER NOT NULL,
-            period_start TEXT NOT NULL,
-            period_end TEXT NOT NULL,
-            token TEXT NOT NULL UNIQUE,      -- link público /i/{token}
-            payload TEXT NOT NULL,           -- JSON congelado del informe
-            wa_text TEXT,                    -- versión texto para WhatsApp
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_advisor_reports_client
-            ON advisor_reports(advisor_uid, client_uid, created_at);
-        -- Marca del asesor en los informes (se pide una vez).
-        CREATE TABLE IF NOT EXISTS advisor_profile (
-            advisor_uid INTEGER PRIMARY KEY,
-            display_name TEXT,
-            cnv_matricula TEXT,
-            logo_data TEXT,                  -- data-URI (raster, ≤ ~300KB) del logo
-            brief_open INTEGER DEFAULT 1,    -- brief al abrir el mercado (~11:00 ART)
-            brief_close INTEGER DEFAULT 1,   -- brief al cierre (~17:15 ART)
-            updated_at TEXT DEFAULT (datetime('now'))
-        );
+            -- Informe del período (Plan Asesor): el payload queda CONGELADO al
+            -- generarse (lo que se le mandó al cliente no cambia aunque cambien
+            -- los datos o el branding después — rendición de cuentas).
+            CREATE TABLE IF NOT EXISTS advisor_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                advisor_uid INTEGER NOT NULL,
+                client_uid INTEGER NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                token TEXT NOT NULL UNIQUE,      -- link público /i/{token}
+                payload TEXT NOT NULL,           -- JSON congelado del informe
+                wa_text TEXT,                    -- versión texto para WhatsApp
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_advisor_reports_client
+                ON advisor_reports(advisor_uid, client_uid, created_at);
+            -- Marca del asesor en los informes (se pide una vez).
+            CREATE TABLE IF NOT EXISTS advisor_profile (
+                advisor_uid INTEGER PRIMARY KEY,
+                display_name TEXT,
+                cnv_matricula TEXT,
+                logo_data TEXT,                  -- data-URI (raster, ≤ ~300KB) del logo
+                brief_open INTEGER DEFAULT 1,    -- brief al abrir el mercado (~11:00 ART)
+                brief_close INTEGER DEFAULT 1,   -- brief al cierre (~17:15 ART)
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
 
-        -- ─── login_history: dispositivos vistos por user (alerta de nuevo login) ──
-        -- Si el ua_hash actual no apareció antes para este user, se envía un email
-        -- de alerta (después del primer login, que es esperado y no alerta).
-        CREATE TABLE IF NOT EXISTS login_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            ip TEXT,
-            ua_hash TEXT,
-            ua_brief TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_login_history_user ON login_history(user_id, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
-    """)
+            -- ─── login_history: dispositivos vistos por user (alerta de nuevo login) ──
+            -- Si el ua_hash actual no apareció antes para este user, se envía un email
+            -- de alerta (después del primer login, que es esperado y no alerta).
+            CREATE TABLE IF NOT EXISTS login_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                ip TEXT,
+                ua_hash TEXT,
+                ua_brief TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_login_history_user ON login_history(user_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
+        """)
 
-    # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
-    # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
-    _ap_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_profile)").fetchall()]
-    if _ap_cols and 'brief_open' not in _ap_cols:
-        conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_open INTEGER DEFAULT 1;")
-    if _ap_cols and 'brief_close' not in _ap_cols:
-        conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_close INTEGER DEFAULT 1;")
+        # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
+        # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
+        _ap_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_profile)").fetchall()]
+        if _ap_cols and 'brief_open' not in _ap_cols:
+            conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_open INTEGER DEFAULT 1;")
+        if _ap_cols and 'brief_close' not in _ap_cols:
+            conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_close INTEGER DEFAULT 1;")
 
 
-    # subscriptions: columnas de idempotencia de emails (idempotent migration
-    # para tablas pre-existentes — las new tienen estas cols ya en el CREATE).
-    sub_cols = _table_cols(conn, 'subscriptions')
-    for col in ['welcome_email_sent_at', 'cancellation_email_sent_at',
-                'expiration_reminder_sent_at']:
-        if sub_cols and col not in sub_cols:
-            conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {col} TEXT")
-    # subscriptions: amount_usd para tracking del valor real cobrado (los planes
-    # son USD desde la migración a Rebill — amount_ars queda como legacy).
-    if sub_cols and 'amount_usd' not in sub_cols:
-        conn.execute("ALTER TABLE subscriptions ADD COLUMN amount_usd REAL")
-    conn.commit()
-
-    # ─── Credit window model (Rendi-managed proration) ──────────────────────
-    # Cuando un user cambia de plan (Plus ↔ Pro) o cancela mid-período, NO
-    # le cobramos de nuevo ni le devolvemos plata. Convertimos el tiempo no
-    # consumido en una "ventana de crédito" tracked en `users`:
-    #
-    #   credit_active_until: timestamp hasta el que el user mantiene tier ≠ free
-    #   credit_anchor_*:     plan/period/amount que originó el último anchor
-    #
-    # Funcionamiento:
-    #  • Rebill cobra → grant credit (extend credit_active_until por X días al
-    #    daily_rate del plan)
-    #  • User cambia plan → convert: remaining_credit_usd al daily_rate nuevo
-    #    extiende o acorta credit_active_until
-    #  • credit_active_until vence → cron baja a free + email re-suscribirse
-    #
-    # NULL en estas cols = user nunca tuvo crédito (free o pre-migración).
-    user_cols_after = _table_cols(conn, 'users')
-    if user_cols_after and 'credit_active_until' not in user_cols_after:
-        conn.execute("ALTER TABLE users ADD COLUMN credit_active_until TEXT")
-    if user_cols_after and 'credit_anchor_plan' not in user_cols_after:
-        conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_plan TEXT")
-    if user_cols_after and 'credit_anchor_period' not in user_cols_after:
-        conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_period TEXT")
-    if user_cols_after and 'credit_anchor_amount_usd' not in user_cols_after:
-        conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_amount_usd REAL")
-    if user_cols_after and 'credit_anchor_at' not in user_cols_after:
-        conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_at TEXT")
-    # Free trial (15 días: 7 de Pro + 8 de Plus). Se apoya ENTERO en el modelo
-    # de crédito de arriba — trial_started_at solo marca cuándo arrancó (para
-    # saber cuándo bajar de Pro a Plus) y trial_used_at que ya lo usó (uno por
-    # cuenta, para siempre). NULL en ambas = nunca activó un trial.
-    if user_cols_after and 'trial_started_at' not in user_cols_after:
-        conn.execute("ALTER TABLE users ADD COLUMN trial_started_at TEXT")
-    if user_cols_after and 'trial_used_at' not in user_cols_after:
-        conn.execute("ALTER TABLE users ADD COLUMN trial_used_at TEXT")
-    # trial_ends_at identifica CUÁL crédito es el del trial: sin esto, "hizo el
-    # trial alguna vez" quedaba pegado y el cron le bajaba el Pro a quien
-    # después recibía un regalo o pagaba y cancelaba (audit).
-    if user_cols_after and 'trial_ends_at' not in user_cols_after:
-        conn.execute("ALTER TABLE users ADD COLUMN trial_ends_at TEXT")
-    conn.commit()
-
-    # Marca de "este email ya usó su trial", en su PROPIA tabla: borrar la
-    # cuenta borra la fila de users, y con ella trial_used_at — lo que
-    # habilitaba trials infinitos con el mismo mail (audit). Guardamos el hash,
-    # que alcanza para comparar y no reconstruye la casilla.
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS trial_consumed (
-            email_key   TEXT PRIMARY KEY,
-            consumed_at TEXT NOT NULL
-        )
-    """)
-    # Idempotencia PROPIA de los avisos del trial. No se apoya en la tabla
-    # subscriptions como el resto: un usuario de trial no tiene fila ahí, y por
-    # eso el aviso genérico de vencimiento le salía todos los días (audit).
-    # La PK (user_id, kind) hace imposible mandar dos veces el mismo aviso.
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS trial_email_log (
-            user_id INTEGER NOT NULL,
-            kind    TEXT NOT NULL,
-            sent_at TEXT NOT NULL,
-            PRIMARY KEY (user_id, kind)
-        )
-    """)
-    conn.commit()
-
-    # Ledger de movimientos de crédito — audit trail completo de cada
-    # grant / consume / plan_change. Permite debuggear "por qué este user
-    # tiene X días de crédito" y reconstruir el historial.
-    # NOTA migración: el `CREATE UNIQUE INDEX ... ON credit_ledger(payment_id ...)`
-    # tiene que ir DESPUÉS del ALTER TABLE que agrega payment_id, porque
-    # SQLite valida que la columna exista al crear el índice. Por eso
-    # separamos en 3 pasos: CREATE TABLE (con payment_id si es DB nueva) →
-    # ALTER TABLE (agrega payment_id si DB vieja) → CREATE INDEX (siempre
-    # corre y el IF NOT EXISTS lo hace idempotente).
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS credit_ledger (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            kind TEXT NOT NULL,                  -- 'payment' | 'plan_change' | 'manual_adjust' | 'expiration'
-            amount_usd REAL NOT NULL,            -- positivo: crédito agregado; negativo: consumido
-            days_delta REAL NOT NULL,            -- positivo: tiempo agregado; negativo: tiempo removido
-            from_plan TEXT,                      -- 'plus' | 'pro' | NULL
-            from_period TEXT,                    -- 'monthly' | 'annual' | NULL
-            to_plan TEXT,
-            to_period TEXT,
-            active_until_before TEXT,            -- ISO ts antes del cambio
-            active_until_after TEXT,             -- ISO ts después del cambio
-            source_subscription_id TEXT,         -- Rebill subscription_id si aplica
-            payment_id TEXT,                     -- Rebill payment_id (idempotency key)
-            note TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id, created_at DESC);
-    """)
-    conn.commit()
-
-    # Migración: agregar payment_id si la tabla ya existía sin esa columna.
-    # CRÍTICO: este ALTER tiene que correr ANTES del CREATE UNIQUE INDEX
-    # de abajo, sino el CREATE INDEX falla con "no such column: payment_id".
-    credit_cols = _table_cols(conn, 'credit_ledger')
-    if credit_cols and 'payment_id' not in credit_cols:
-        conn.execute("ALTER TABLE credit_ledger ADD COLUMN payment_id TEXT")
+        # subscriptions: columnas de idempotencia de emails (idempotent migration
+        # para tablas pre-existentes — las new tienen estas cols ya en el CREATE).
+        sub_cols = _table_cols(conn, 'subscriptions')
+        for col in ['welcome_email_sent_at', 'cancellation_email_sent_at',
+                    'expiration_reminder_sent_at']:
+            if sub_cols and col not in sub_cols:
+                conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {col} TEXT")
+        # subscriptions: amount_usd para tracking del valor real cobrado (los planes
+        # son USD desde la migración a Rebill — amount_ars queda como legacy).
+        if sub_cols and 'amount_usd' not in sub_cols:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN amount_usd REAL")
         conn.commit()
 
-    # Ahora SÍ podemos crear el partial unique index (la columna existe).
-    # Idempotency: prevenir crédito doble si Rebill manda el mismo
-    # payment.created 2 veces (retry por timeout, race del LB).
-    conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_payment_dedup
-            ON credit_ledger(source_subscription_id, payment_id, kind)
-            WHERE payment_id IS NOT NULL AND source_subscription_id IS NOT NULL
-    """)
-    conn.commit()
+        # ─── Credit window model (Rendi-managed proration) ──────────────────────
+        # Cuando un user cambia de plan (Plus ↔ Pro) o cancela mid-período, NO
+        # le cobramos de nuevo ni le devolvemos plata. Convertimos el tiempo no
+        # consumido en una "ventana de crédito" tracked en `users`:
+        #
+        #   credit_active_until: timestamp hasta el que el user mantiene tier ≠ free
+        #   credit_anchor_*:     plan/period/amount que originó el último anchor
+        #
+        # Funcionamiento:
+        #  • Rebill cobra → grant credit (extend credit_active_until por X días al
+        #    daily_rate del plan)
+        #  • User cambia plan → convert: remaining_credit_usd al daily_rate nuevo
+        #    extiende o acorta credit_active_until
+        #  • credit_active_until vence → cron baja a free + email re-suscribirse
+        #
+        # NULL en estas cols = user nunca tuvo crédito (free o pre-migración).
+        user_cols_after = _table_cols(conn, 'users')
+        if user_cols_after and 'credit_active_until' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN credit_active_until TEXT")
+        if user_cols_after and 'credit_anchor_plan' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_plan TEXT")
+        if user_cols_after and 'credit_anchor_period' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_period TEXT")
+        if user_cols_after and 'credit_anchor_amount_usd' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_amount_usd REAL")
+        if user_cols_after and 'credit_anchor_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_at TEXT")
+        # Free trial (15 días: 7 de Pro + 8 de Plus). Se apoya ENTERO en el modelo
+        # de crédito de arriba — trial_started_at solo marca cuándo arrancó (para
+        # saber cuándo bajar de Pro a Plus) y trial_used_at que ya lo usó (uno por
+        # cuenta, para siempre). NULL en ambas = nunca activó un trial.
+        if user_cols_after and 'trial_started_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN trial_started_at TEXT")
+        if user_cols_after and 'trial_used_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN trial_used_at TEXT")
+        # trial_ends_at identifica CUÁL crédito es el del trial: sin esto, "hizo el
+        # trial alguna vez" quedaba pegado y el cron le bajaba el Pro a quien
+        # después recibía un regalo o pagaba y cancelaba (audit).
+        if user_cols_after and 'trial_ends_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN trial_ends_at TEXT")
+        conn.commit()
 
-    # ─── Backfill de crédito para subs pre-proration ───────────────────────
-    # Users que pagaron antes del commit a09891a no tienen credit_active_until
-    # poblado — el _rebill_activate viejo no llamaba a grant_payment_credit.
-    # Inferimos la ventana desde:
-    #   • subscriptions.current_period_end si está
-    #   • sino, subscriptions.created_at + period_days
-    # Idempotente: solo aplica si credit_active_until IS NULL.
-    rows = conn.execute(
-        """SELECT u.id AS user_id, u.tier,
-                  s.id AS sub_id, s.mp_subscription_id, s.period,
-                  s.current_period_end, s.created_at AS sub_created_at,
-                  s.external_reference
-           FROM users u
-           JOIN subscriptions s ON s.user_id = u.id
-           WHERE u.tier IN ('plus', 'pro')
-             AND u.credit_active_until IS NULL
-             AND s.status = 'authorized'
-        """
-    ).fetchall()
-    if rows:
-        from datetime import datetime as _dt, timedelta as _td
-        _period_days = {'monthly': 30.0, 'annual': 365.0}
-        _prices = {('plus','monthly'): 4.0, ('plus','annual'): 40.0,
-                   ('pro','monthly'): 9.0, ('pro','annual'): 90.0}
-        seen_users = set()
-        for r in rows:
-            uid = r['user_id']
-            if uid in seen_users:
-                continue
-            seen_users.add(uid)
-            plan = r['tier']
-            period = r['period'] or 'monthly'
-            # Determinar active_until: si tenemos current_period_end usamos eso;
-            # si no, asumimos que el período arrancó en sub.created_at.
-            until_iso = None
-            if r['current_period_end']:
-                until_iso = r['current_period_end']
-            else:
-                try:
-                    started = _dt.fromisoformat(
-                        (r['sub_created_at'] or '').replace('Z','').split('.')[0]
-                    )
-                    period_days = _period_days.get(period, 30.0)
-                    until_iso = (started + _td(days=period_days)).isoformat()
-                except Exception:
-                    # Fallback: NOW + period_days (peor caso, el user igual no pierde nada)
-                    until_iso = (_dt.utcnow() + _td(days=_period_days.get(period, 30.0))).isoformat()
-            amount = _prices.get((plan, period), 0.0)
-            now_iso = _dt.utcnow().isoformat()
-            conn.execute(
-                """UPDATE users
-                   SET credit_active_until = ?,
-                       credit_anchor_plan = ?,
-                       credit_anchor_period = ?,
-                       credit_anchor_amount_usd = ?,
-                       credit_anchor_at = ?
-                   WHERE id = ?""",
-                (until_iso, plan, period, amount, now_iso, uid),
+        # Marca de "este email ya usó su trial", en su PROPIA tabla: borrar la
+        # cuenta borra la fila de users, y con ella trial_used_at — lo que
+        # habilitaba trials infinitos con el mismo mail (audit). Guardamos el hash,
+        # que alcanza para comparar y no reconstruye la casilla.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trial_consumed (
+                email_key   TEXT PRIMARY KEY,
+                consumed_at TEXT NOT NULL
             )
-            conn.execute(
-                """INSERT INTO credit_ledger
-                       (user_id, kind, amount_usd, days_delta,
-                        from_plan, from_period, to_plan, to_period,
-                        active_until_before, active_until_after,
-                        source_subscription_id, note)
-                   VALUES (?, 'manual_adjust', ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, ?)""",
-                (
-                    uid, amount, plan, period, until_iso,
-                    r['mp_subscription_id'] or None,
-                    f"Backfill pre-proration: inferido desde sub {r['mp_subscription_id']}",
-                ),
+        """)
+        # Idempotencia PROPIA de los avisos del trial. No se apoya en la tabla
+        # subscriptions como el resto: un usuario de trial no tiene fila ahí, y por
+        # eso el aviso genérico de vencimiento le salía todos los días (audit).
+        # La PK (user_id, kind) hace imposible mandar dos veces el mismo aviso.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trial_email_log (
+                user_id INTEGER NOT NULL,
+                kind    TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, kind)
             )
+        """)
         conn.commit()
 
-    # ─── CSV Importer ────────────────────────────────────────────────────────
-    # import_batches: cada upload (en estado 'preview' es la sesión; al confirm
-    # pasa a 'confirmed'; al revert pasa a 'reverted').
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS import_batches (
-            id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            broker TEXT NOT NULL,
-            parser_format TEXT NOT NULL,
-            file_name TEXT,
-            file_hash TEXT NOT NULL,
-            total_rows INTEGER NOT NULL DEFAULT 0,
-            valid_rows INTEGER NOT NULL DEFAULT 0,
-            invalid_rows INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now')),
-            confirmed_at TEXT,
-            reverted_at TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_import_batches_user
-            ON import_batches(user_id, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_import_batches_hash
-            ON import_batches(user_id, file_hash, status);
+        # Ledger de movimientos de crédito — audit trail completo de cada
+        # grant / consume / plan_change. Permite debuggear "por qué este user
+        # tiene X días de crédito" y reconstruir el historial.
+        # NOTA migración: el `CREATE UNIQUE INDEX ... ON credit_ledger(payment_id ...)`
+        # tiene que ir DESPUÉS del ALTER TABLE que agrega payment_id, porque
+        # SQLite valida que la columna exista al crear el índice. Por eso
+        # separamos en 3 pasos: CREATE TABLE (con payment_id si es DB nueva) →
+        # ALTER TABLE (agrega payment_id si DB vieja) → CREATE INDEX (siempre
+        # corre y el IF NOT EXISTS lo hace idempotente).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS credit_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,                  -- 'payment' | 'plan_change' | 'manual_adjust' | 'expiration'
+                amount_usd REAL NOT NULL,            -- positivo: crédito agregado; negativo: consumido
+                days_delta REAL NOT NULL,            -- positivo: tiempo agregado; negativo: tiempo removido
+                from_plan TEXT,                      -- 'plus' | 'pro' | NULL
+                from_period TEXT,                    -- 'monthly' | 'annual' | NULL
+                to_plan TEXT,
+                to_period TEXT,
+                active_until_before TEXT,            -- ISO ts antes del cambio
+                active_until_after TEXT,             -- ISO ts después del cambio
+                source_subscription_id TEXT,         -- Rebill subscription_id si aplica
+                payment_id TEXT,                     -- Rebill payment_id (idempotency key)
+                note TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id, created_at DESC);
+        """)
+        conn.commit()
 
-        CREATE TABLE IF NOT EXISTS import_raw_rows (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
-            row_index INTEGER NOT NULL,
-            raw_json TEXT NOT NULL,
-            status TEXT NOT NULL,
-            errors_json TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_import_raw_rows_batch ON import_raw_rows(batch_id);
+        # Migración: agregar payment_id si la tabla ya existía sin esa columna.
+        # CRÍTICO: este ALTER tiene que correr ANTES del CREATE UNIQUE INDEX
+        # de abajo, sino el CREATE INDEX falla con "no such column: payment_id".
+        credit_cols = _table_cols(conn, 'credit_ledger')
+        if credit_cols and 'payment_id' not in credit_cols:
+            conn.execute("ALTER TABLE credit_ledger ADD COLUMN payment_id TEXT")
+            conn.commit()
 
-        CREATE TABLE IF NOT EXISTS import_normalized_tx (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
-            raw_row_id INTEGER NOT NULL REFERENCES import_raw_rows(id) ON DELETE CASCADE,
-            date TEXT NOT NULL,
-            broker TEXT NOT NULL DEFAULT '',
-            operation_type TEXT NOT NULL,
-            asset_symbol TEXT,
-            asset_name TEXT,
-            asset_type TEXT,
-            quantity REAL,
-            unit_price REAL,
-            gross_amount REAL,
-            fees REAL DEFAULT 0,
-            taxes REAL DEFAULT 0,
-            currency TEXT,
-            settlement_currency TEXT,
-            notes TEXT,
-            created_position_id INTEGER,
-            created_operation_id INTEGER,
-            transfer_out INTEGER NOT NULL DEFAULT 0,
-            tc_compra REAL,
-            -- Tombstone reversible para borrar una operación importada sin destruir
-            -- el log de auditoría. El rebuild lo respeta (rebuild._full_events filtra
-            -- excluded_at IS NULL) → la fila excluida NUNCA se re-deriva ni resucita
-            -- en un re-import. NULL = viva. Ver project_delete_ops_cascade.
-            excluded_at TEXT,
-            excluded_by INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS idx_import_norm_batch
-            ON import_normalized_tx(batch_id);
+        # Ahora SÍ podemos crear el partial unique index (la columna existe).
+        # Idempotency: prevenir crédito doble si Rebill manda el mismo
+        # payment.created 2 veces (retry por timeout, race del LB).
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_payment_dedup
+                ON credit_ledger(source_subscription_id, payment_id, kind)
+                WHERE payment_id IS NOT NULL AND source_subscription_id IS NOT NULL
+        """)
+        conn.commit()
 
-        -- Journal para deshacer borrados de operaciones MANUALES (sin
-        -- import_op_links, no reproducibles por el rebuild). Guardamos el snapshot
-        -- JSON de lo borrado + los deltas de cash/tenencia para poder re-insertar
-        -- en un undo. Las importadas NO usan esto (su undo = limpiar excluded_at).
-        CREATE TABLE IF NOT EXISTS deleted_ops_journal (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            token TEXT NOT NULL,            -- agrupa un borrado (para el undo de N filas)
-            kind TEXT NOT NULL,             -- 'imported' | 'manual'
-            payload_json TEXT NOT NULL,     -- op row + deltas (broker, cash, lote restaurado…)
-            since_date TEXT,
-            broker TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            undone_at TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_deleted_ops_journal_tok
-            ON deleted_ops_journal(user_id, token);
+        # ─── Backfill de crédito para subs pre-proration ───────────────────────
+        # Users que pagaron antes del commit a09891a no tienen credit_active_until
+        # poblado — el _rebill_activate viejo no llamaba a grant_payment_credit.
+        # Inferimos la ventana desde:
+        #   • subscriptions.current_period_end si está
+        #   • sino, subscriptions.created_at + period_days
+        # Idempotente: solo aplica si credit_active_until IS NULL.
+        rows = conn.execute(
+            """SELECT u.id AS user_id, u.tier,
+                      s.id AS sub_id, s.mp_subscription_id, s.period,
+                      s.current_period_end, s.created_at AS sub_created_at,
+                      s.external_reference
+               FROM users u
+               JOIN subscriptions s ON s.user_id = u.id
+               WHERE u.tier IN ('plus', 'pro')
+                 AND u.credit_active_until IS NULL
+                 AND s.status = 'authorized'
+            """
+        ).fetchall()
+        if rows:
+            from datetime import datetime as _dt, timedelta as _td
+            _period_days = {'monthly': 30.0, 'annual': 365.0}
+            _prices = {('plus','monthly'): 4.0, ('plus','annual'): 40.0,
+                       ('pro','monthly'): 9.0, ('pro','annual'): 90.0}
+            seen_users = set()
+            for r in rows:
+                uid = r['user_id']
+                if uid in seen_users:
+                    continue
+                seen_users.add(uid)
+                plan = r['tier']
+                period = r['period'] or 'monthly'
+                # Determinar active_until: si tenemos current_period_end usamos eso;
+                # si no, asumimos que el período arrancó en sub.created_at.
+                until_iso = None
+                if r['current_period_end']:
+                    until_iso = r['current_period_end']
+                else:
+                    try:
+                        started = _dt.fromisoformat(
+                            (r['sub_created_at'] or '').replace('Z','').split('.')[0]
+                        )
+                        period_days = _period_days.get(period, 30.0)
+                        until_iso = (started + _td(days=period_days)).isoformat()
+                    except Exception:
+                        # Fallback: NOW + period_days (peor caso, el user igual no pierde nada)
+                        until_iso = (_dt.utcnow() + _td(days=_period_days.get(period, 30.0))).isoformat()
+                amount = _prices.get((plan, period), 0.0)
+                now_iso = _dt.utcnow().isoformat()
+                conn.execute(
+                    """UPDATE users
+                       SET credit_active_until = ?,
+                           credit_anchor_plan = ?,
+                           credit_anchor_period = ?,
+                           credit_anchor_amount_usd = ?,
+                           credit_anchor_at = ?
+                       WHERE id = ?""",
+                    (until_iso, plan, period, amount, now_iso, uid),
+                )
+                conn.execute(
+                    """INSERT INTO credit_ledger
+                           (user_id, kind, amount_usd, days_delta,
+                            from_plan, from_period, to_plan, to_period,
+                            active_until_before, active_until_after,
+                            source_subscription_id, note)
+                       VALUES (?, 'manual_adjust', ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, ?)""",
+                    (
+                        uid, amount, plan, period, until_iso,
+                        r['mp_subscription_id'] or None,
+                        f"Backfill pre-proration: inferido desde sub {r['mp_subscription_id']}",
+                    ),
+                )
+            conn.commit()
 
-        -- Mapping auxiliar: una fila puede crear múltiples positions/operations
-        -- (ej.: SELL FIFO genera N rows en operations). Acá guardamos todos los
-        -- IDs para poder revertir.
-        CREATE TABLE IF NOT EXISTS import_op_links (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
-            raw_row_id INTEGER REFERENCES import_raw_rows(id) ON DELETE CASCADE,
-            position_id INTEGER,
-            operation_id INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS idx_import_op_links_batch ON import_op_links(batch_id);
-        -- operation_id se joinea en el revert (persister.py), en los diagnósticos de
-        -- FX/escala y en el panel de migración. Sin este índice, cada lookup era un
-        -- full scan de la tabla — con ~150k links, el panel de migración hacía
-        -- timeout al listar candidatos.
-        CREATE INDEX IF NOT EXISTS idx_import_op_links_op ON import_op_links(operation_id);
-    """)
+        # ─── CSV Importer ────────────────────────────────────────────────────────
+        # import_batches: cada upload (en estado 'preview' es la sesión; al confirm
+        # pasa a 'confirmed'; al revert pasa a 'reverted').
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS import_batches (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                broker TEXT NOT NULL,
+                parser_format TEXT NOT NULL,
+                file_name TEXT,
+                file_hash TEXT NOT NULL,
+                total_rows INTEGER NOT NULL DEFAULT 0,
+                valid_rows INTEGER NOT NULL DEFAULT 0,
+                invalid_rows INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                confirmed_at TEXT,
+                reverted_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_import_batches_user
+                ON import_batches(user_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_import_batches_hash
+                ON import_batches(user_id, file_hash, status);
 
-    # Migración: ai_usage_daily.chat_count (agregada al introducir chat tiered).
-    # DBs prod existentes no tienen esta columna — ADD COLUMN con default 0.
-    ai_usage_cols = _table_cols(conn, 'ai_usage_daily')
-    if ai_usage_cols and 'chat_count' not in ai_usage_cols:
-        conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN chat_count INTEGER NOT NULL DEFAULT 0")
-    # Migración: ai_usage_daily.diag_dismiss_count (cuota del "No me interesa").
-    if ai_usage_cols and 'diag_dismiss_count' not in ai_usage_cols:
-        conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN diag_dismiss_count INTEGER NOT NULL DEFAULT 0")
+            CREATE TABLE IF NOT EXISTS import_raw_rows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+                row_index INTEGER NOT NULL,
+                raw_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                errors_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_import_raw_rows_batch ON import_raw_rows(batch_id);
 
-    # Migración: columna broker en import_normalized_tx (agregada después de la
-    # versión inicial de las tablas).
-    norm_cols = _table_cols(conn, 'import_normalized_tx')
-    if norm_cols and 'broker' not in norm_cols:
-        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN broker TEXT NOT NULL DEFAULT ''")
-    # Migración: fingerprint para detectar duplicados a nivel fila entre imports
-    norm_cols = _table_cols(conn, 'import_normalized_tx')
-    if norm_cols and 'fingerprint' not in norm_cols:
-        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN fingerprint TEXT")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_fingerprint ON import_normalized_tx(fingerprint)")
+            CREATE TABLE IF NOT EXISTS import_normalized_tx (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+                raw_row_id INTEGER NOT NULL REFERENCES import_raw_rows(id) ON DELETE CASCADE,
+                date TEXT NOT NULL,
+                broker TEXT NOT NULL DEFAULT '',
+                operation_type TEXT NOT NULL,
+                asset_symbol TEXT,
+                asset_name TEXT,
+                asset_type TEXT,
+                quantity REAL,
+                unit_price REAL,
+                gross_amount REAL,
+                fees REAL DEFAULT 0,
+                taxes REAL DEFAULT 0,
+                currency TEXT,
+                settlement_currency TEXT,
+                notes TEXT,
+                created_position_id INTEGER,
+                created_operation_id INTEGER,
+                transfer_out INTEGER NOT NULL DEFAULT 0,
+                tc_compra REAL,
+                -- Tombstone reversible para borrar una operación importada sin destruir
+                -- el log de auditoría. El rebuild lo respeta (rebuild._full_events filtra
+                -- excluded_at IS NULL) → la fila excluida NUNCA se re-deriva ni resucita
+                -- en un re-import. NULL = viva. Ver project_delete_ops_cascade.
+                excluded_at TEXT,
+                excluded_by INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_import_norm_batch
+                ON import_normalized_tx(batch_id);
 
-    # Fase 4 (2026-05-30): `gross_amount_usd` stamped al WRITE time.
-    # Antes monthly_entries.deposits acumulaba USD vía `gross_amount / tc_blue
-    # (current)`. Si el user cambiaba tc_blue en config y luego corría
-    # `_recalc_pnl_realized_from_ops`, el USD se re-convertía con el nuevo
-    # rate → drift histórico. Con el campo stamped, los readers usan el USD
-    # fijado al momento del import (estable contra cambios de TC config).
-    # NULL para rows legacy → readers caen a la conversión runtime.
-    norm_cols = _table_cols(conn, 'import_normalized_tx')
-    if norm_cols and 'gross_amount_usd' not in norm_cols:
-        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN gross_amount_usd REAL")
+            -- Journal para deshacer borrados de operaciones MANUALES (sin
+            -- import_op_links, no reproducibles por el rebuild). Guardamos el snapshot
+            -- JSON de lo borrado + los deltas de cash/tenencia para poder re-insertar
+            -- en un undo. Las importadas NO usan esto (su undo = limpiar excluded_at).
+            CREATE TABLE IF NOT EXISTS deleted_ops_journal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token TEXT NOT NULL,            -- agrupa un borrado (para el undo de N filas)
+                kind TEXT NOT NULL,             -- 'imported' | 'manual'
+                payload_json TEXT NOT NULL,     -- op row + deltas (broker, cash, lote restaurado…)
+                since_date TEXT,
+                broker TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                undone_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_deleted_ops_journal_tok
+                ON deleted_ops_journal(user_id, token);
 
-    # Migración (2026-07-01): `transfer_out` explícito en import_normalized_tx. El
-    # rebuild antes RE-DERIVABA el cierre-a-costo (P&L 0) sólo del heurístico
-    # is_exchange + precio/monto 0 (retiro de cripto). El ajuste de la FOTO de
-    # tenencia (override Balanz) necesita ese cierre-a-costo en brokers de acciones
-    # sin confundirlo con corporate_close (que sí bookea pérdida) → persistimos el
-    # flag por fila y el rebuild lo respeta. DEFAULT 0 → cero cambio para data vieja
-    # (crypto sigue re-derivándose por is_exchange).
-    norm_cols = _table_cols(conn, 'import_normalized_tx')
-    if norm_cols and 'transfer_out' not in norm_cols:
-        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN transfer_out INTEGER NOT NULL DEFAULT 0")
+            -- Mapping auxiliar: una fila puede crear múltiples positions/operations
+            -- (ej.: SELL FIFO genera N rows en operations). Acá guardamos todos los
+            -- IDs para poder revertir.
+            CREATE TABLE IF NOT EXISTS import_op_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+                raw_row_id INTEGER REFERENCES import_raw_rows(id) ON DELETE CASCADE,
+                position_id INTEGER,
+                operation_id INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_import_op_links_batch ON import_op_links(batch_id);
+            -- operation_id se joinea en el revert (persister.py), en los diagnósticos de
+            -- FX/escala y en el panel de migración. Sin este índice, cada lookup era un
+            -- full scan de la tabla — con ~150k links, el panel de migración hacía
+            -- timeout al listar candidatos.
+            CREATE INDEX IF NOT EXISTS idx_import_op_links_op ON import_op_links(operation_id);
+        """)
 
-    # Migración (2026-07-13): tc_compra (ARS/USD de la compra) en
-    # import_normalized_tx, para que sobreviva la rehidratación del confirm y
-    # llegue a positions.tc_compra. Alimenta la vista "costo al dólar de la
-    # compra". DEFAULT NULL → cero cambio para data vieja (cae a hoy).
-    norm_cols = _table_cols(conn, 'import_normalized_tx')
-    if norm_cols and 'tc_compra' not in norm_cols:
-        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN tc_compra REAL")
+        # Migración: ai_usage_daily.chat_count (agregada al introducir chat tiered).
+        # DBs prod existentes no tienen esta columna — ADD COLUMN con default 0.
+        ai_usage_cols = _table_cols(conn, 'ai_usage_daily')
+        if ai_usage_cols and 'chat_count' not in ai_usage_cols:
+            conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN chat_count INTEGER NOT NULL DEFAULT 0")
+        # Migración: ai_usage_daily.diag_dismiss_count (cuota del "No me interesa").
+        if ai_usage_cols and 'diag_dismiss_count' not in ai_usage_cols:
+            conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN diag_dismiss_count INTEGER NOT NULL DEFAULT 0")
 
-    # Migración (2026-08): tombstone `excluded_at`/`excluded_by` para borrar una
-    # operación importada sin destruir el log (el rebuild lo respeta en _full_events
-    # → no resucita al re-importar). Ver project_delete_ops_cascade.
-    norm_cols = _table_cols(conn, 'import_normalized_tx')
-    if norm_cols and 'excluded_at' not in norm_cols:
-        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN excluded_at TEXT")
-        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN excluded_by INTEGER")
-    # El índice va ACÁ, después del ALTER, y FUERA del if: en el bloque de esquema
-    # corría antes de que la columna existiera y tumbaba el arranque contra
-    # cualquier base ya creada ("no such column: excluded_at" → boot loop → 502).
-    # Fuera del if porque una base que ya migró en un boot anterior igual lo necesita.
-    if 'excluded_at' in (_table_cols(conn, 'import_normalized_tx') or []):
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_excluded "
-                     "ON import_normalized_tx(batch_id, excluded_at)")
+        # Migración: columna broker en import_normalized_tx (agregada después de la
+        # versión inicial de las tablas).
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'broker' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN broker TEXT NOT NULL DEFAULT ''")
+        # Migración: fingerprint para detectar duplicados a nivel fila entre imports
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'fingerprint' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN fingerprint TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_fingerprint ON import_normalized_tx(fingerprint)")
 
-    # Migración: route_by_currency en import_batches. Cuando es 1 y el broker
-    # del batch es ARS, las filas USD/USDT se ruteán al sub-broker USD al persistir.
-    batch_cols = _table_cols(conn, 'import_batches')
-    if batch_cols and 'route_by_currency' not in batch_cols:
-        conn.execute("ALTER TABLE import_batches ADD COLUMN route_by_currency INTEGER NOT NULL DEFAULT 0")
+        # Fase 4 (2026-05-30): `gross_amount_usd` stamped al WRITE time.
+        # Antes monthly_entries.deposits acumulaba USD vía `gross_amount / tc_blue
+        # (current)`. Si el user cambiaba tc_blue en config y luego corría
+        # `_recalc_pnl_realized_from_ops`, el USD se re-convertía con el nuevo
+        # rate → drift histórico. Con el campo stamped, los readers usan el USD
+        # fijado al momento del import (estable contra cambios de TC config).
+        # NULL para rows legacy → readers caen a la conversión runtime.
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'gross_amount_usd' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN gross_amount_usd REAL")
 
-    # Migración (2026-07-01): fund_price_overrides en import_batches. JSON con el
-    # precio-por-cuotaparte de la foto de tenencia para los FCI que Rendi NO cotiza
-    # en vivo (fondos propios de Balanz sin fuente pública). El confirm lo aplica a
-    # positions.price_override DESPUÉS del rebuild → la foto FIJA el valor mostrado de
-    # esos FCI (que si no quedaban a costo). Sólo lo puebla el path de Balanz.
-    batch_cols = _table_cols(conn, 'import_batches')
-    if batch_cols and 'fund_price_overrides' not in batch_cols:
-        conn.execute("ALTER TABLE import_batches ADD COLUMN fund_price_overrides TEXT")
+        # Migración (2026-07-01): `transfer_out` explícito en import_normalized_tx. El
+        # rebuild antes RE-DERIVABA el cierre-a-costo (P&L 0) sólo del heurístico
+        # is_exchange + precio/monto 0 (retiro de cripto). El ajuste de la FOTO de
+        # tenencia (override Balanz) necesita ese cierre-a-costo en brokers de acciones
+        # sin confundirlo con corporate_close (que sí bookea pérdida) → persistimos el
+        # flag por fila y el rebuild lo respeta. DEFAULT 0 → cero cambio para data vieja
+        # (crypto sigue re-derivándose por is_exchange).
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'transfer_out' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN transfer_out INTEGER NOT NULL DEFAULT 0")
 
-    # Mapping templates guardados por usuario. Sirve para reusar el mapeo
-    # de columnas entre imports recurrentes (ej.: usuario que importa export
-    # de IBKR mensualmente, mapea una vez y reusa).
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS import_mappings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            mapping_json TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(user_id, name)
-        );
-        CREATE INDEX IF NOT EXISTS idx_import_mappings_user ON import_mappings(user_id);
-    """)
+        # Migración (2026-07-13): tc_compra (ARS/USD de la compra) en
+        # import_normalized_tx, para que sobreviva la rehidratación del confirm y
+        # llegue a positions.tc_compra. Alimenta la vista "costo al dólar de la
+        # compra". DEFAULT NULL → cero cambio para data vieja (cae a hoy).
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'tc_compra' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN tc_compra REAL")
 
-    # B-7 (audit IA #2): purga del cache yfinance envenenado — fundamentals/
-    # analysts de tickers .BA cacheados ANTES del guard traen ARS bajo campos
-    # *_usd y se servirían hasta 12-24h (7 días vía stale-fallback). Post-guard,
-    # esos kinds para .BA devuelven available:false (payload mínimo) → borrar
-    # en cada boot es idempotente y de costo trivial.
-    try:
-        conn.execute(
-            "DELETE FROM yfinance_cache WHERE ticker LIKE '%.BA' "
-            "AND kind IN ('fundamentals', 'analysts')")
-    except Exception:
-        pass  # tabla puede no existir en DBs muy viejas pre-migración
+        # Migración (2026-08): tombstone `excluded_at`/`excluded_by` para borrar una
+        # operación importada sin destruir el log (el rebuild lo respeta en _full_events
+        # → no resucita al re-importar). Ver project_delete_ops_cascade.
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'excluded_at' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN excluded_at TEXT")
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN excluded_by INTEGER")
+        # El índice va ACÁ, después del ALTER, y FUERA del if: en el bloque de esquema
+        # corría antes de que la columna existiera y tumbaba el arranque contra
+        # cualquier base ya creada ("no such column: excluded_at" → boot loop → 502).
+        # Fuera del if porque una base que ya migró en un boot anterior igual lo necesita.
+        if 'excluded_at' in (_table_cols(conn, 'import_normalized_tx') or []):
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_excluded "
+                         "ON import_normalized_tx(batch_id, excluded_at)")
 
-    conn.commit()
-    conn.close()
+        # Migración: route_by_currency en import_batches. Cuando es 1 y el broker
+        # del batch es ARS, las filas USD/USDT se ruteán al sub-broker USD al persistir.
+        batch_cols = _table_cols(conn, 'import_batches')
+        if batch_cols and 'route_by_currency' not in batch_cols:
+            conn.execute("ALTER TABLE import_batches ADD COLUMN route_by_currency INTEGER NOT NULL DEFAULT 0")
+
+        # Migración (2026-07-01): fund_price_overrides en import_batches. JSON con el
+        # precio-por-cuotaparte de la foto de tenencia para los FCI que Rendi NO cotiza
+        # en vivo (fondos propios de Balanz sin fuente pública). El confirm lo aplica a
+        # positions.price_override DESPUÉS del rebuild → la foto FIJA el valor mostrado de
+        # esos FCI (que si no quedaban a costo). Sólo lo puebla el path de Balanz.
+        batch_cols = _table_cols(conn, 'import_batches')
+        if batch_cols and 'fund_price_overrides' not in batch_cols:
+            conn.execute("ALTER TABLE import_batches ADD COLUMN fund_price_overrides TEXT")
+
+        # Mapping templates guardados por usuario. Sirve para reusar el mapeo
+        # de columnas entre imports recurrentes (ej.: usuario que importa export
+        # de IBKR mensualmente, mapea una vez y reusa).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS import_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                mapping_json TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(user_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_import_mappings_user ON import_mappings(user_id);
+        """)
+
+        # B-7 (audit IA #2): purga del cache yfinance envenenado — fundamentals/
+        # analysts de tickers .BA cacheados ANTES del guard traen ARS bajo campos
+        # *_usd y se servirían hasta 12-24h (7 días vía stale-fallback). Post-guard,
+        # esos kinds para .BA devuelven available:false (payload mínimo) → borrar
+        # en cada boot es idempotente y de costo trivial.
+        try:
+            conn.execute(
+                "DELETE FROM yfinance_cache WHERE ticker LIKE '%.BA' "
+                "AND kind IN ('fundamentals', 'analysts')")
+        except Exception:
+            pass  # tabla puede no existir en DBs muy viejas pre-migración
+
+        conn.commit()
 
 
 init_db()
@@ -2323,11 +2374,10 @@ def get_current_user(
     except (JWTError, KeyError, ValueError):
         raise HTTPException(401, "Token inválido")
     # Verificar que el user existe y que el token no quedó invalidado por cambio de pass
-    conn = get_db()
-    row = conn.execute(
-        "SELECT id, password_changed_at FROM users WHERE id=?", (uid,)
-    ).fetchone()
-    conn.close()
+    with db_abierta() as conn:
+        row = conn.execute(
+            "SELECT id, password_changed_at FROM users WHERE id=?", (uid,)
+        ).fetchone()
     if not row:
         raise HTTPException(401, "Token inválido")
     pca = payload.get("pca")
@@ -2337,9 +2387,8 @@ def get_current_user(
 
 
 def get_admin_user(uid: int = Depends(get_current_user)) -> int:
-    conn = get_db()
-    row = conn.execute("SELECT is_admin FROM users WHERE id=?", (uid,)).fetchone()
-    conn.close()
+    with db_abierta() as conn:
+        row = conn.execute("SELECT is_admin FROM users WHERE id=?", (uid,)).fetchone()
     if not row or not row["is_admin"]:
         raise HTTPException(403, "Acceso restringido")
     return uid
@@ -2717,90 +2766,87 @@ def register(data: RegisterIn, request: Request, response: Response,
         raise HTTPException(403, "Registro deshabilitado")
     _check_rate_limit(request, max_calls=5, window_seconds=300, suffix="register")  # 5 / 5min por IP
 
-    conn = get_db()
-    try:
-        h = pwd_ctx.hash(data.password)
-        # Registro abierto: TODOS quedan aprobados automáticamente (sin
-        # aprobación manual del admin). El único gate que queda para users no
-        # admin es la verificación de email (OTP). El admin además se
-        # auto-verifica el email (acceso interno directo).
-        approved = 1
-        email_verified = 1 if is_admin_signup else 0
-        cur = conn.execute(
-            """INSERT INTO users (email, name, password_hash, is_admin, approved, email_verified)
-               VALUES (?,?,?,?,?,?)""",
-            (data.email, data.name, h, 1 if is_admin_signup else 0, approved, email_verified),
-        )
-        uid = cur.lastrowid
-
-        # SOLO el admin hereda los datos legacy con user_id=0 (datos iniciales del owner).
-        # Esto cierra el agujero: si la DB tiene datos huérfanos, solo el dueño los puede absorber.
-        if is_admin_signup:
-            for table in ['positions', 'monthly_entries', 'operations', 'config']:
-                conn.execute(f"UPDATE {table} SET user_id=? WHERE user_id=0", (uid,))
-            existing_brokers = [
-                r[0] for r in conn.execute(
-                    "SELECT DISTINCT broker FROM positions WHERE user_id=?", (uid,)
-                ).fetchall()
-            ]
-            for bname in existing_brokers:
-                bname_lower = bname.lower()
-                # Inferencia: ARS para brokers AR conocidos, USDT para crypto-
-                # native, USD por default para el resto (Schwab, IBKR, etc.).
-                if bname_lower in ARS_BROKER_NAMES:
-                    currency = 'ARS'
-                elif bname_lower in CRYPTO_BROKER_NAMES:
-                    currency = 'USDT'
-                else:
-                    currency = 'USD'
-                conn.execute(
-                    "INSERT OR IGNORE INTO brokers (user_id, name, currency) VALUES (?,?,?)",
-                    (uid, bname, currency),
-                )
-
-        conn.execute("INSERT OR IGNORE INTO config VALUES ('tc_mep', '1415', ?)", (uid,))
-        conn.execute("INSERT OR IGNORE INTO config VALUES ('tc_blue', '1415', ?)", (uid,))
-
-        conn.commit()
-
-        # User NO admin → mandamos código de verificación al email registrado.
-        # NO devolvemos token todavía — el frontend redirige a /verify-email.
-        # El código se genera y persiste SÍNCRONO (write local rápido, commitea
-        # solo), pero el envío del email (httpx a Resend, hasta 10s) va a un
-        # BackgroundTask para que register() responda al instante. En el momento
-        # más frágil del funnel (signup desde un ad mobile) cada segundo de
-        # "Cargando…" extra es abandono — y Railway puede estar en cold start.
-        if not is_admin_signup:
-            code = _create_verification_code(conn, uid)
-            conn.close()
-            background_tasks.add_task(
-                _send_verification_email_async, data.email, data.name, code
+    with db_abierta() as conn:
+        try:
+            h = pwd_ctx.hash(data.password)
+            # Registro abierto: TODOS quedan aprobados automáticamente (sin
+            # aprobación manual del admin). El único gate que queda para users no
+            # admin es la verificación de email (OTP). El admin además se
+            # auto-verifica el email (acceso interno directo).
+            approved = 1
+            email_verified = 1 if is_admin_signup else 0
+            cur = conn.execute(
+                """INSERT INTO users (email, name, password_hash, is_admin, approved, email_verified)
+                   VALUES (?,?,?,?,?,?)""",
+                (data.email, data.name, h, 1 if is_admin_signup else 0, approved, email_verified),
             )
-            return {
-                "needs_verification": True,
-                "email": data.email,
-                "message": "Te enviamos un código a tu email para confirmar tu cuenta.",
-            }
+            uid = cur.lastrowid
 
-        # Admin: bypass verificación + token directo (acceso interno)
-        pca_row = conn.execute("SELECT password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
-        conn.close()
-        token = create_token(uid, pca_row["password_changed_at"] if pca_row else None)
-        set_auth_cookie(response, token)
-        return {
-            "token": token,
-            "name": data.name or data.email,
-            "is_admin": True,
-        }
-    except ERR_INTEGRIDAD:
-        conn.close()
-        # Estructurado para que el frontend pueda detectar el caso y ofrecer
-        # un botón "Ir al login" en lugar del flow de error genérico.
-        raise HTTPException(409, {
-            "code": "EMAIL_ALREADY_REGISTERED",
-            "error": "Este email ya está registrado.",
-            "email": data.email,
-        })
+            # SOLO el admin hereda los datos legacy con user_id=0 (datos iniciales del owner).
+            # Esto cierra el agujero: si la DB tiene datos huérfanos, solo el dueño los puede absorber.
+            if is_admin_signup:
+                for table in ['positions', 'monthly_entries', 'operations', 'config']:
+                    conn.execute(f"UPDATE {table} SET user_id=? WHERE user_id=0", (uid,))
+                existing_brokers = [
+                    r[0] for r in conn.execute(
+                        "SELECT DISTINCT broker FROM positions WHERE user_id=?", (uid,)
+                    ).fetchall()
+                ]
+                for bname in existing_brokers:
+                    bname_lower = bname.lower()
+                    # Inferencia: ARS para brokers AR conocidos, USDT para crypto-
+                    # native, USD por default para el resto (Schwab, IBKR, etc.).
+                    if bname_lower in ARS_BROKER_NAMES:
+                        currency = 'ARS'
+                    elif bname_lower in CRYPTO_BROKER_NAMES:
+                        currency = 'USDT'
+                    else:
+                        currency = 'USD'
+                    conn.execute(
+                        "INSERT OR IGNORE INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                        (uid, bname, currency),
+                    )
+
+            conn.execute("INSERT OR IGNORE INTO config VALUES ('tc_mep', '1415', ?)", (uid,))
+            conn.execute("INSERT OR IGNORE INTO config VALUES ('tc_blue', '1415', ?)", (uid,))
+
+            conn.commit()
+
+            # User NO admin → mandamos código de verificación al email registrado.
+            # NO devolvemos token todavía — el frontend redirige a /verify-email.
+            # El código se genera y persiste SÍNCRONO (write local rápido, commitea
+            # solo), pero el envío del email (httpx a Resend, hasta 10s) va a un
+            # BackgroundTask para que register() responda al instante. En el momento
+            # más frágil del funnel (signup desde un ad mobile) cada segundo de
+            # "Cargando…" extra es abandono — y Railway puede estar en cold start.
+            if not is_admin_signup:
+                code = _create_verification_code(conn, uid)
+                background_tasks.add_task(
+                    _send_verification_email_async, data.email, data.name, code
+                )
+                return {
+                    "needs_verification": True,
+                    "email": data.email,
+                    "message": "Te enviamos un código a tu email para confirmar tu cuenta.",
+                }
+
+            # Admin: bypass verificación + token directo (acceso interno)
+            pca_row = conn.execute("SELECT password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
+            token = create_token(uid, pca_row["password_changed_at"] if pca_row else None)
+            set_auth_cookie(response, token)
+            return {
+                "token": token,
+                "name": data.name or data.email,
+                "is_admin": True,
+            }
+        except ERR_INTEGRIDAD:
+            # Estructurado para que el frontend pueda detectar el caso y ofrecer
+            # un botón "Ir al login" en lugar del flow de error genérico.
+            raise HTTPException(409, {
+                "code": "EMAIL_ALREADY_REGISTERED",
+                "error": "Este email ya está registrado.",
+                "email": data.email,
+            })
 
 
 @app.post("/api/auth/login")
@@ -2809,37 +2855,33 @@ def login(data: LoginIn, request: Request, response: Response):
     # Rate limit por IP y por email (mitiga brute-force distribuido sobre una cuenta puntual)
     _check_rate_limit(request, max_calls=10, window_seconds=60, suffix="login_ip")
     _check_rate_limit(request, max_calls=10, window_seconds=60, suffix=f"login_email:{email_norm}")
-    conn = get_db()
-    row = conn.execute("SELECT * FROM users WHERE email=?", (email_norm,)).fetchone()
-    if not row:
-        conn.close()
-        pwd_ctx.dummy_verify()
-        raise HTTPException(401, "Credenciales inválidas")
-    if not pwd_ctx.verify(data.password, row["password_hash"]):
-        conn.close()
-        raise HTTPException(401, "Credenciales inválidas")
-    # Email verification PRIMERO — el user debe probar que el email es suyo
-    # antes que cualquier otro gate (incluso approval del admin).
-    if row["email_verified"] == 0:
-        conn.close()
-        raise HTTPException(403, {
-            "code": "EMAIL_NOT_VERIFIED",
-            "error": "Confirmá tu email antes de ingresar.",
-            "email": email_norm,
-        })
-    # Nota: el gate de aprobación manual del admin fue removido — el registro
-    # es abierto. La columna `approved` se mantiene (todos en 1) por compat de
-    # esquema, pero ya no bloquea el login.
-    # Update last_login
-    try:
-        conn.execute("UPDATE users SET last_login_at=datetime('now') WHERE id=?", (row["id"],))
-        conn.commit()
-    except Exception:
-        pass
-    # Registrar el login en login_history; si el dispositivo es nuevo (ua_hash
-    # no visto antes), dispara email de alerta. Nunca tira.
-    _record_login_and_maybe_alert(conn, row["id"], row["email"], row["name"], request)
-    conn.close()
+    with db_abierta() as conn:
+        row = conn.execute("SELECT * FROM users WHERE email=?", (email_norm,)).fetchone()
+        if not row:
+            pwd_ctx.dummy_verify()
+            raise HTTPException(401, "Credenciales inválidas")
+        if not pwd_ctx.verify(data.password, row["password_hash"]):
+            raise HTTPException(401, "Credenciales inválidas")
+        # Email verification PRIMERO — el user debe probar que el email es suyo
+        # antes que cualquier otro gate (incluso approval del admin).
+        if row["email_verified"] == 0:
+            raise HTTPException(403, {
+                "code": "EMAIL_NOT_VERIFIED",
+                "error": "Confirmá tu email antes de ingresar.",
+                "email": email_norm,
+            })
+        # Nota: el gate de aprobación manual del admin fue removido — el registro
+        # es abierto. La columna `approved` se mantiene (todos en 1) por compat de
+        # esquema, pero ya no bloquea el login.
+        # Update last_login
+        try:
+            conn.execute("UPDATE users SET last_login_at=datetime('now') WHERE id=?", (row["id"],))
+            conn.commit()
+        except Exception:
+            pass
+        # Registrar el login en login_history; si el dispositivo es nuevo (ua_hash
+        # no visto antes), dispara email de alerta. Nunca tira.
+        _record_login_and_maybe_alert(conn, row["id"], row["email"], row["name"], request)
     token = create_token(row["id"], row["password_changed_at"])
     set_auth_cookie(response, token)
     # Mantenemos `token` en el body por back-compat (clientes legacy / mobile).
@@ -2871,89 +2913,87 @@ def verify_email(data: VerifyEmailIn, request: Request, response: Response):
     bloquee la verificación de todos los users iterando 15 attempts/min."""
     email_norm = data.email.strip().lower()
     _check_rate_limit(request, max_calls=5, window_seconds=60, suffix=f"verify_email:{email_norm}")
-    conn = get_db()
-    try:
-        user = conn.execute(
-            "SELECT id, name, email_verified, password_changed_at FROM users WHERE email=?",
-            (email_norm,),
-        ).fetchone()
-        if not user:
-            # Mensaje genérico para no leakear si el email existe
-            raise HTTPException(400, "Código inválido o expirado")
-        if user["email_verified"]:
-            raise HTTPException(400, "Tu cuenta ya está verificada. Iniciá sesión.")
-
-        # Buscar el código más reciente no usado y no vencido para este user
-        row = conn.execute(
-            """SELECT id, code, expires_at FROM email_verification_codes
-               WHERE user_id = ? AND used_at IS NULL
-               ORDER BY created_at DESC LIMIT 1""",
-            (user["id"],),
-        ).fetchone()
-        if not row:
-            raise HTTPException(400, "Código inválido o expirado")
-        # Constant-time compare para evitar side-channel timing.
-        if not hmac.compare_digest(str(row["code"]), str(data.code)):
-            raise HTTPException(400, "Código inválido o expirado")
-        # Vence?
-        from datetime import datetime
+    with db_abierta() as conn:
         try:
-            expires = datetime.fromisoformat(row["expires_at"])
-            if expires < datetime.utcnow():
+            user = conn.execute(
+                "SELECT id, name, email_verified, password_changed_at FROM users WHERE email=?",
+                (email_norm,),
+            ).fetchone()
+            if not user:
+                # Mensaje genérico para no leakear si el email existe
                 raise HTTPException(400, "Código inválido o expirado")
-        except (ValueError, TypeError):
-            raise HTTPException(400, "Código inválido o expirado")
+            if user["email_verified"]:
+                raise HTTPException(400, "Tu cuenta ya está verificada. Iniciá sesión.")
 
-        with conn:
-            conn.execute(
-                "UPDATE email_verification_codes SET used_at = datetime('now') WHERE id = ?",
-                (row["id"],),
-            )
-            conn.execute(
-                "UPDATE users SET email_verified = 1 WHERE id = ?",
+            # Buscar el código más reciente no usado y no vencido para este user
+            row = conn.execute(
+                """SELECT id, code, expires_at FROM email_verification_codes
+                   WHERE user_id = ? AND used_at IS NULL
+                   ORDER BY created_at DESC LIMIT 1""",
                 (user["id"],),
-            )
-        # Verificar email = login implícito. Registramos en login_history
-        # también (igual no manda alerta porque es el primer login post-signup).
-        _record_login_and_maybe_alert(conn, user["id"], email_norm, user["name"], request)
-        # Registro completado → mail de bienvenida (best-effort, no bloquea el
-        # login). Se manda una sola vez: este branch solo corre en la transición
-        # no-verificado → verificado (si ya estaba verificado, cortamos arriba).
-        try:
-            from billing import emails
-            emails.send_welcome_free(
-                to=email_norm,
-                user_name=user["name"] or email_norm.split("@")[0],
-            )
-        except Exception as ex:
-            log.error("Welcome (free) email failed for uid=%s: %s", user["id"], ex)
-        # Alerta interna al equipo por cada signup real (primeros N usuarios),
-        # para reachout temprano. Best-effort + gated por count — nunca bloquea.
-        try:
-            signup_count = conn.execute(
-                "SELECT COUNT(*) FROM users WHERE email_verified = 1 AND is_admin = 0"
-            ).fetchone()[0]
-            if signup_count <= ADMIN_SIGNUP_ALERT_LIMIT and ADMIN_NOTIFY_EMAIL:
-                from billing import emails
-                emails.send_new_signup_admin(
-                    to=ADMIN_NOTIFY_EMAIL,
-                    new_user_email=email_norm,
-                    new_user_name=user["name"],
-                    count=signup_count,
+            ).fetchone()
+            if not row:
+                raise HTTPException(400, "Código inválido o expirado")
+            # Constant-time compare para evitar side-channel timing.
+            if not hmac.compare_digest(str(row["code"]), str(data.code)):
+                raise HTTPException(400, "Código inválido o expirado")
+            # Vence?
+            from datetime import datetime
+            try:
+                expires = datetime.fromisoformat(row["expires_at"])
+                if expires < datetime.utcnow():
+                    raise HTTPException(400, "Código inválido o expirado")
+            except (ValueError, TypeError):
+                raise HTTPException(400, "Código inválido o expirado")
+
+            with conn:
+                conn.execute(
+                    "UPDATE email_verification_codes SET used_at = datetime('now') WHERE id = ?",
+                    (row["id"],),
                 )
-        except Exception as ex:
-            log.error("Admin signup alert failed for uid=%s: %s", user["id"], ex)
-        conn.close()
-        token = create_token(user["id"], user["password_changed_at"])
-        set_auth_cookie(response, token)
-        return {
-            "token": token,
-            "name": user["name"] or email_norm,
-            "verified": True,
-        }
-    except HTTPException:
-        conn.close()
-        raise
+                conn.execute(
+                    "UPDATE users SET email_verified = 1 WHERE id = ?",
+                    (user["id"],),
+                )
+            # Verificar email = login implícito. Registramos en login_history
+            # también (igual no manda alerta porque es el primer login post-signup).
+            _record_login_and_maybe_alert(conn, user["id"], email_norm, user["name"], request)
+            # Registro completado → mail de bienvenida (best-effort, no bloquea el
+            # login). Se manda una sola vez: este branch solo corre en la transición
+            # no-verificado → verificado (si ya estaba verificado, cortamos arriba).
+            try:
+                from billing import emails
+                emails.send_welcome_free(
+                    to=email_norm,
+                    user_name=user["name"] or email_norm.split("@")[0],
+                )
+            except Exception as ex:
+                log.error("Welcome (free) email failed for uid=%s: %s", user["id"], ex)
+            # Alerta interna al equipo por cada signup real (primeros N usuarios),
+            # para reachout temprano. Best-effort + gated por count — nunca bloquea.
+            try:
+                signup_count = conn.execute(
+                    "SELECT COUNT(*) FROM users WHERE email_verified = 1 AND is_admin = 0"
+                ).fetchone()[0]
+                if signup_count <= ADMIN_SIGNUP_ALERT_LIMIT and ADMIN_NOTIFY_EMAIL:
+                    from billing import emails
+                    emails.send_new_signup_admin(
+                        to=ADMIN_NOTIFY_EMAIL,
+                        new_user_email=email_norm,
+                        new_user_name=user["name"],
+                        count=signup_count,
+                    )
+            except Exception as ex:
+                log.error("Admin signup alert failed for uid=%s: %s", user["id"], ex)
+            token = create_token(user["id"], user["password_changed_at"])
+            set_auth_cookie(response, token)
+            return {
+                "token": token,
+                "name": user["name"] or email_norm,
+                "verified": True,
+            }
+        except HTTPException:
+            raise
 
 
 @app.post("/api/auth/resend-verification")
@@ -3094,102 +3134,100 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
 @app.get("/api/auth/me")
 def me(uid: int = Depends(get_effective_user)):
     from ai import quota
-    conn = get_db()
-    row = conn.execute(
-        "SELECT id, email, name, is_admin, created_at, last_login_at FROM users WHERE id=?", (uid,)
-    ).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404)
-    d = dict(row)
-    d["is_admin"] = bool(d["is_admin"])
-    d["tier"] = quota.get_tier(conn, uid)
+    with db_abierta() as conn:
+        row = conn.execute(
+            "SELECT id, email, name, is_admin, created_at, last_login_at FROM users WHERE id=?", (uid,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404)
+        d = dict(row)
+        d["is_admin"] = bool(d["is_admin"])
+        d["tier"] = quota.get_tier(conn, uid)
 
-    # Estado de la suscripción "relevante". Priorizamos authorized > cancelled
-    # > superseded > otros porque cycles previos pueden dejar varias rows
-    # pending (intentos abandonados) que un simple ORDER BY created_at DESC
-    # devolvería antes que la authorized real.
-    #   • status='authorized' → user con sub Rebill activa, autorrenovable
-    #   • status='cancelled'  → user canceló manualmente, en grace period
-    #   • status='superseded' → user cambió de plan; vive en modo crédito
-    sub = conn.execute(
-        """SELECT status, current_period_end, cancelled_at, period FROM subscriptions
-           WHERE user_id = ? AND status IN ('authorized', 'cancelled', 'superseded', 'paused', 'retrying')
-           ORDER BY
-               CASE status
-                   WHEN 'authorized' THEN 0
-                   WHEN 'retrying' THEN 1
-                   WHEN 'paused' THEN 2
-                   -- IMPORTANTE: 'superseded' va ANTES que 'cancelled' porque
-                   -- semánticamente representa el estado actual (cambio de
-                   -- plan reciente) mientras que 'cancelled' suele ser una
-                   -- row histórica anterior al cambio. Si el user hizo
-                   -- cancel → reactivó → change-plan, hay rows en ambos
-                   -- estados. La que importa es la del cambio (superseded).
-                   WHEN 'superseded' THEN 3
-                   WHEN 'cancelled' THEN 4
-                   ELSE 9
-               END,
-               created_at DESC
-           LIMIT 1""",
-        (uid,),
-    ).fetchone()
-    d["subscription_status"] = sub["status"] if sub else None
-    d["subscription_period_end"] = sub["current_period_end"] if sub else None
-    d["subscription_cancelled_at"] = sub["cancelled_at"] if sub else None
-    d["subscription_period"] = sub["period"] if sub else None
+        # Estado de la suscripción "relevante". Priorizamos authorized > cancelled
+        # > superseded > otros porque cycles previos pueden dejar varias rows
+        # pending (intentos abandonados) que un simple ORDER BY created_at DESC
+        # devolvería antes que la authorized real.
+        #   • status='authorized' → user con sub Rebill activa, autorrenovable
+        #   • status='cancelled'  → user canceló manualmente, en grace period
+        #   • status='superseded' → user cambió de plan; vive en modo crédito
+        sub = conn.execute(
+            """SELECT status, current_period_end, cancelled_at, period FROM subscriptions
+               WHERE user_id = ? AND status IN ('authorized', 'cancelled', 'superseded', 'paused', 'retrying')
+               ORDER BY
+                   CASE status
+                       WHEN 'authorized' THEN 0
+                       WHEN 'retrying' THEN 1
+                       WHEN 'paused' THEN 2
+                       -- IMPORTANTE: 'superseded' va ANTES que 'cancelled' porque
+                       -- semánticamente representa el estado actual (cambio de
+                       -- plan reciente) mientras que 'cancelled' suele ser una
+                       -- row histórica anterior al cambio. Si el user hizo
+                       -- cancel → reactivó → change-plan, hay rows en ambos
+                       -- estados. La que importa es la del cambio (superseded).
+                       WHEN 'superseded' THEN 3
+                       WHEN 'cancelled' THEN 4
+                       ELSE 9
+                   END,
+                   created_at DESC
+               LIMIT 1""",
+            (uid,),
+        ).fetchone()
+        d["subscription_status"] = sub["status"] if sub else None
+        d["subscription_period_end"] = sub["current_period_end"] if sub else None
+        d["subscription_cancelled_at"] = sub["cancelled_at"] if sub else None
+        d["subscription_period"] = sub["period"] if sub else None
 
-    # Estado del crédito (modelo Rendi-managed proration). Source of truth
-    # para acceso al tier — si credit_active_until vence y no hay sub
-    # authorized, el cron baja a free. El frontend usa esto para mostrar
-    # "Tu plan vence en X días" y la UI de cambio de plan con preview.
-    try:
-        from billing import credits as billing_credits
-        cstate = billing_credits.get_credit_state(conn, uid)
-        d["credit_active_until"]   = cstate["active_until"]
-        d["credit_days_remaining"] = cstate["days_remaining"]
-        d["credit_remaining_usd"]  = cstate["remaining_usd"]
-        d["credit_anchor_plan"]    = cstate["anchor_plan"]
-        d["credit_anchor_period"]  = cstate["anchor_period"]
-    except Exception as ex:
-        log.warning("credits.get_credit_state failed for user %s: %s", uid, ex)
-        d["credit_active_until"]   = None
-        d["credit_days_remaining"] = 0
-        d["credit_remaining_usd"]  = 0
-        d["credit_anchor_plan"]    = None
-        d["credit_anchor_period"]  = None
+        # Estado del crédito (modelo Rendi-managed proration). Source of truth
+        # para acceso al tier — si credit_active_until vence y no hay sub
+        # authorized, el cron baja a free. El frontend usa esto para mostrar
+        # "Tu plan vence en X días" y la UI de cambio de plan con preview.
+        try:
+            from billing import credits as billing_credits
+            cstate = billing_credits.get_credit_state(conn, uid)
+            d["credit_active_until"]   = cstate["active_until"]
+            d["credit_days_remaining"] = cstate["days_remaining"]
+            d["credit_remaining_usd"]  = cstate["remaining_usd"]
+            d["credit_anchor_plan"]    = cstate["anchor_plan"]
+            d["credit_anchor_period"]  = cstate["anchor_period"]
+        except Exception as ex:
+            log.warning("credits.get_credit_state failed for user %s: %s", uid, ex)
+            d["credit_active_until"]   = None
+            d["credit_days_remaining"] = 0
+            d["credit_remaining_usd"]  = 0
+            d["credit_anchor_plan"]    = None
+            d["credit_anchor_period"]  = None
 
-    # access_mode: estado canónico del acceso del user al tier. Single source
-    # of truth para el frontend — evita lógica condicional duplicada en cada
-    # página. Valores posibles:
-    #   • 'authorized'  → user con sub Rebill activa que se va a renovar sola
-    #   • 'credit_only' → user accedió a tier vía change-plan / cancel; sin
-    #                     sub Rebill que renueve, vive del crédito hasta que
-    #                     se acabe (entonces va a 'free' o tiene que re-sub)
-    #   • 'cancelled'   → user canceló manualmente, sigue en grace period
-    #                     hasta credit_active_until
-    #   • 'free'        → tier = free (o anulado)
-    sub_status = d.get("subscription_status")
-    cred_active = bool(d.get("credit_days_remaining", 0) > 0)
-    tier = d.get("tier")
-    if tier in (None, "free"):
-        d["access_mode"] = "free"
-    elif sub_status == "authorized":
-        d["access_mode"] = "authorized"
-    elif sub_status == "cancelled" and cred_active:
-        d["access_mode"] = "cancelled"
-    elif sub_status == "superseded" and cred_active:
-        d["access_mode"] = "credit_only"
-    elif cred_active:
-        # Edge case: tiene crédito pero no hay sub trackeable (legacy?)
-        d["access_mode"] = "credit_only"
-    else:
-        # Sin crédito + sin sub authorized → en transición; cron va a bajar
-        # a free en próximo run. Trato como cancelled visualmente para que
-        # el user vea "expirado" sin sorpresas.
-        d["access_mode"] = "cancelled"
+        # access_mode: estado canónico del acceso del user al tier. Single source
+        # of truth para el frontend — evita lógica condicional duplicada en cada
+        # página. Valores posibles:
+        #   • 'authorized'  → user con sub Rebill activa que se va a renovar sola
+        #   • 'credit_only' → user accedió a tier vía change-plan / cancel; sin
+        #                     sub Rebill que renueve, vive del crédito hasta que
+        #                     se acabe (entonces va a 'free' o tiene que re-sub)
+        #   • 'cancelled'   → user canceló manualmente, sigue en grace period
+        #                     hasta credit_active_until
+        #   • 'free'        → tier = free (o anulado)
+        sub_status = d.get("subscription_status")
+        cred_active = bool(d.get("credit_days_remaining", 0) > 0)
+        tier = d.get("tier")
+        if tier in (None, "free"):
+            d["access_mode"] = "free"
+        elif sub_status == "authorized":
+            d["access_mode"] = "authorized"
+        elif sub_status == "cancelled" and cred_active:
+            d["access_mode"] = "cancelled"
+        elif sub_status == "superseded" and cred_active:
+            d["access_mode"] = "credit_only"
+        elif cred_active:
+            # Edge case: tiene crédito pero no hay sub trackeable (legacy?)
+            d["access_mode"] = "credit_only"
+        else:
+            # Sin crédito + sin sub authorized → en transición; cron va a bajar
+            # a free en próximo run. Trato como cancelled visualmente para que
+            # el user vea "expirado" sin sorpresas.
+            d["access_mode"] = "cancelled"
 
-    conn.close()
     return d
 
 
@@ -3632,9 +3670,8 @@ class BrokerIn(BaseModel):
 
 @app.get("/api/brokers")
 def get_brokers(uid: int = Depends(get_effective_user)):
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM brokers WHERE user_id=? ORDER BY name", (uid,)).fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute("SELECT * FROM brokers WHERE user_id=? ORDER BY name", (uid,)).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -3647,66 +3684,62 @@ def get_brokers(uid: int = Depends(get_effective_user)):
 @app.post("/api/brokers")
 def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
     from ai import plan
-    conn = get_db()
-    # Feature gate: Free permite 1 broker máximo. Grandfather: usuarios
-    # preexistentes con N > 1 conservan sus brokers pero no agregan más
-    # hasta upgrade. Admin/Pro: sin tope.
-    allowed, quota_info = plan.check_broker_quota(conn, uid)
-    if not allowed:
-        conn.close()
-        raise HTTPException(403, {
-            "error": (
-                f"El plan Free permite 1 broker. Pasate a Rendi Pro para "
-                f"conectar todos tus brokers."
-            ),
-            "quota": quota_info,
-            "upgrade": {
-                "available": quota_info["tier"] == "free",
-                "current_tier": quota_info["tier"],
-                "target_tier": "pro",
-                "feature": "brokers.create",
-                "benefits": [
-                    "Brokers ilimitados",
-                    "10× más análisis IA (60/sem vs 6/sem)",
-                    "Comportamiento completo (todas las tags)",
-                    "Reportes históricos + Distribución por activo",
-                ],
-            },
-        })
-    # Validar parent_broker_id (si se pasa, debe pertenecer al user)
-    if data.parent_broker_id is not None:
-        parent = conn.execute(
-            "SELECT id FROM brokers WHERE id=? AND user_id=?",
-            (data.parent_broker_id, uid),
-        ).fetchone()
-        if not parent:
-            conn.close()
-            raise HTTPException(400, "Broker padre inválido")
-    try:
-        cur = conn.execute(
-            "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
-            (uid, data.name, data.currency, data.parent_broker_id),
-        )
-        # Auto-crear posición cash con saldo 0. Esto evita el gap donde el
-        # usuario crea un broker nuevo y no tiene cómo hacer su primer
-        # depósito (el botón 'Depositar' vive dentro del menú de cada
-        # posición). Con la cash position pre-creada, el menú aparece
-        # inmediatamente con saldo $0.
-        cash_asset = 'ARS' if data.currency == 'ARS' else ('USD' if data.currency == 'USD' else 'USDT')
-        conn.execute(
-            """INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
-               VALUES (?, ?, ?, 1, 0, 0)""",
-            (uid, data.name, cash_asset),
-        )
-        conn.commit()
-        # Safe: lastrowid always belongs to this user (just inserted)
-        row = conn.execute("SELECT * FROM brokers WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
-        conn.close()
-        _ai_cache_invalidate(uid)
-        return dict(row)
-    except ERR_INTEGRIDAD:
-        conn.close()
-        raise HTTPException(400, "Ya existe un broker con ese nombre")
+    with db_abierta() as conn:
+        # Feature gate: Free permite 1 broker máximo. Grandfather: usuarios
+        # preexistentes con N > 1 conservan sus brokers pero no agregan más
+        # hasta upgrade. Admin/Pro: sin tope.
+        allowed, quota_info = plan.check_broker_quota(conn, uid)
+        if not allowed:
+            raise HTTPException(403, {
+                "error": (
+                    f"El plan Free permite 1 broker. Pasate a Rendi Pro para "
+                    f"conectar todos tus brokers."
+                ),
+                "quota": quota_info,
+                "upgrade": {
+                    "available": quota_info["tier"] == "free",
+                    "current_tier": quota_info["tier"],
+                    "target_tier": "pro",
+                    "feature": "brokers.create",
+                    "benefits": [
+                        "Brokers ilimitados",
+                        "10× más análisis IA (60/sem vs 6/sem)",
+                        "Comportamiento completo (todas las tags)",
+                        "Reportes históricos + Distribución por activo",
+                    ],
+                },
+            })
+        # Validar parent_broker_id (si se pasa, debe pertenecer al user)
+        if data.parent_broker_id is not None:
+            parent = conn.execute(
+                "SELECT id FROM brokers WHERE id=? AND user_id=?",
+                (data.parent_broker_id, uid),
+            ).fetchone()
+            if not parent:
+                raise HTTPException(400, "Broker padre inválido")
+        try:
+            cur = conn.execute(
+                "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
+                (uid, data.name, data.currency, data.parent_broker_id),
+            )
+            # Auto-crear posición cash con saldo 0. Esto evita el gap donde el
+            # usuario crea un broker nuevo y no tiene cómo hacer su primer
+            # depósito (el botón 'Depositar' vive dentro del menú de cada
+            # posición). Con la cash position pre-creada, el menú aparece
+            # inmediatamente con saldo $0.
+            cash_asset = 'ARS' if data.currency == 'ARS' else ('USD' if data.currency == 'USD' else 'USDT')
+            conn.execute(
+                """INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
+                   VALUES (?, ?, ?, 1, 0, 0)""",
+                (uid, data.name, cash_asset),
+            )
+            conn.commit()
+            # Safe: lastrowid always belongs to this user (just inserted)
+            row = conn.execute("SELECT * FROM brokers WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
+            _ai_cache_invalidate(uid)
+            return dict(row)
+        except ERR_INTEGRIDAD:
+            raise HTTPException(400, "Ya existe un broker con ese nombre")
 
 
 # ── Tablas cuyo vínculo con el broker es por NOMBRE (string), NO por broker_id.
@@ -4113,9 +4146,8 @@ class ConfigUpdate(BaseModel):
 
 @app.get("/api/config")
 def get_config(uid: int = Depends(get_effective_user)):
-    conn = get_db()
-    rows = conn.execute("SELECT key, value FROM config WHERE user_id=?", (uid,)).fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute("SELECT key, value FROM config WHERE user_id=?", (uid,)).fetchall()
     # La coerción a float va POR CLAVE, no sobre el dict entero. Con el
     # try/except envolviendo la comprehension, UNA sola fila no numérica tiraba
     # TODA la config del usuario y los setdefault reponían 1415 — y desde que
@@ -4640,13 +4672,12 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
     # Phase C — devolvemos fx_to_usd_blue para que el frontend pueda convertir
     # snapshots viejos a ARS con el TC HISTÓRICO de cada fecha, no el de hoy.
     days = max(1, min(days, 3650))
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json "
-        "FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT ?",
-        (uid, days),
-    ).fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute(
+            "SELECT date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json "
+            "FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT ?",
+            (uid, days),
+        ).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -4682,13 +4713,12 @@ def get_fx_rates(
         [{ "date": "2025-12-31", "blue": 1450.0 }, ...]  (ordenado asc)
     """
     days = max(1, min(int(days or 3650), 3650))
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT date, blue_venta, mep_venta FROM fx_rates_daily "
-        "ORDER BY date DESC LIMIT ?",
-        (days,),
-    ).fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute(
+            "SELECT date, blue_venta, mep_venta FROM fx_rates_daily "
+            "ORDER BY date DESC LIMIT ?",
+            (days,),
+        ).fetchall()
     # Reverse to ascending order — el frontend espera de viejo → nuevo.
     # `mep` se agrega ADITIVAMENTE: los consumidores existentes siguen leyendo `blue`
     # y no cambian. Lo usa la vista previa del depósito con fecha, que tiene que mostrar
@@ -7566,14 +7596,13 @@ class PositionIn(BaseModel):
 
 @app.get("/api/positions")
 def get_positions(uid: int = Depends(get_effective_user)):
-    conn = get_db()
-    rows = conn.execute(
-        """SELECT * FROM positions WHERE user_id=?
-           ORDER BY broker ASC, asset ASC,
-                    COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
-        (uid,)
-    ).fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute(
+            """SELECT * FROM positions WHERE user_id=?
+               ORDER BY broker ASC, asset ASC,
+                        COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
+            (uid,)
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -7661,19 +7690,16 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
 
 @app.post("/api/positions")
 def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
-    conn = get_db()
-    try:
-        with conn:  # transacción atómica: insert + cash debit
-            row = _insert_manual_position(conn, uid, p)
-        conn.close()
-        _ai_cache_invalidate(uid)
-        return dict(row)
-    except HTTPException:
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.close()
-        raise HTTPException(500, f"Error al crear posición: {ex}")
+    with db_abierta() as conn:
+        try:
+            with conn:  # transacción atómica: insert + cash debit
+                row = _insert_manual_position(conn, uid, p)
+            _ai_cache_invalidate(uid)
+            return dict(row)
+        except HTTPException:
+            raise
+        except Exception as ex:
+            raise HTTPException(500, f"Error al crear posición: {ex}")
 
 
 @app.put("/api/positions/{pid}")
@@ -7736,47 +7762,42 @@ def delete_position(pid: int, uid: int = Depends(get_effective_user)):
     Las MANUALES (sin link) siguen con el borrado directo: no hay eventos importados que
     re-derivar. Su cash tampoco se reversa — comportamiento previo, no lo cambiamos acá.
     """
-    conn = get_db()
-    try:
-        link = conn.execute(
-            "SELECT 1 FROM import_op_links WHERE position_id=? LIMIT 1", (pid,),
-        ).fetchone()
-        if link:
-            # Cascada completa (reversa cash + tombstone + re-derive + snapshots). Puede
-            # bloquear con mensaje claro (bono, compra ya vendida en parte, lote semilla
-            # de foto): mejor frenar que corromper, igual que en Operaciones.
-            result = _delete_position_cascade(conn, uid, pid)
-            conn.commit()
-            conn.close()
-            _ai_cache_invalidate(uid)
-            return result
-        # Cargada a mano: si tiene su foto de reverso, cascada completa (devuelve el
-        # cash y revierte el autodepósito). Si es vieja y no la tiene, se borra
-        # directo como siempre — comportamiento previo, no lo empeoramos.
-        _has_meta = conn.execute(
-            "SELECT undo_meta_json FROM positions WHERE id=? AND user_id=?",
-            (pid, uid)).fetchone()
-        if _has_meta and _has_meta["undo_meta_json"]:
-            result = _delete_manual_position_cascade(conn, uid, pid)
-            conn.commit()
-            conn.close()
-            _ai_cache_invalidate(uid)
-            return result
-        # Sin link de import Y sin foto de reverso: es una fila VIEJA (o un lote semilla
-        # que fabricó el rebuild). El DELETE crudo la sacaba de la vista dejando el cash
-        # y el capital aportado como estaban → plata que no respalda nada. Bloqueamos,
-        # igual que el borrado manual de filas legacy: su reverso no es derivable.
-        raise HTTPException(400, _MANUAL_LEGACY_MSG)
-    except HTTPException:
-        conn.rollback()
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.rollback()
-        conn.close()
-        log.error("delete_position falló uid=%s pid=%s: %s", uid, pid, ex)
-        raise HTTPException(500, "No se pudo borrar la posición")
-    conn.close()
+    with db_abierta() as conn:
+        try:
+            link = conn.execute(
+                "SELECT 1 FROM import_op_links WHERE position_id=? LIMIT 1", (pid,),
+            ).fetchone()
+            if link:
+                # Cascada completa (reversa cash + tombstone + re-derive + snapshots). Puede
+                # bloquear con mensaje claro (bono, compra ya vendida en parte, lote semilla
+                # de foto): mejor frenar que corromper, igual que en Operaciones.
+                result = _delete_position_cascade(conn, uid, pid)
+                conn.commit()
+                _ai_cache_invalidate(uid)
+                return result
+            # Cargada a mano: si tiene su foto de reverso, cascada completa (devuelve el
+            # cash y revierte el autodepósito). Si es vieja y no la tiene, se borra
+            # directo como siempre — comportamiento previo, no lo empeoramos.
+            _has_meta = conn.execute(
+                "SELECT undo_meta_json FROM positions WHERE id=? AND user_id=?",
+                (pid, uid)).fetchone()
+            if _has_meta and _has_meta["undo_meta_json"]:
+                result = _delete_manual_position_cascade(conn, uid, pid)
+                conn.commit()
+                _ai_cache_invalidate(uid)
+                return result
+            # Sin link de import Y sin foto de reverso: es una fila VIEJA (o un lote semilla
+            # que fabricó el rebuild). El DELETE crudo la sacaba de la vista dejando el cash
+            # y el capital aportado como estaban → plata que no respalda nada. Bloqueamos,
+            # igual que el borrado manual de filas legacy: su reverso no es derivable.
+            raise HTTPException(400, _MANUAL_LEGACY_MSG)
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception as ex:
+            conn.rollback()
+            log.error("delete_position falló uid=%s pid=%s: %s", uid, pid, ex)
+            raise HTTPException(500, "No se pudo borrar la posición")
     _ai_cache_invalidate(uid)
     return {"ok": True}
 
@@ -8235,13 +8256,12 @@ def _pf_vencimiento(fecha_inicio: str, plazo_dias: int) -> str:
 
 @app.get("/api/plazos-fijos")
 def list_plazos_fijos(uid: int = Depends(get_effective_user)):
-    conn = get_db()
-    rows = conn.execute(
-        """SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL
-           ORDER BY fecha_vencimiento ASC, id ASC""",
-        (uid,),
-    ).fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute(
+            """SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL
+               ORDER BY fecha_vencimiento ASC, id ASC""",
+            (uid,),
+        ).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -9245,93 +9265,90 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
 def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
     """Depósito o retiro de cash en un broker.
     Actualiza la posición cash del broker y las entradas mensuales (broker + global)."""
-    conn = get_db()
-    try:
-        with conn:
-            # 1. Validar broker
-            broker_row = conn.execute(
-                "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, data.broker_name)
-            ).fetchone()
-            if not broker_row:
-                raise HTTPException(404, f"Broker '{data.broker_name}' no encontrado")
+    with db_abierta() as conn:
+        try:
+            with conn:
+                # 1. Validar broker
+                broker_row = conn.execute(
+                    "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, data.broker_name)
+                ).fetchone()
+                if not broker_row:
+                    raise HTTPException(404, f"Broker '{data.broker_name}' no encontrado")
 
-            currency = broker_row['currency']   # 'USDT' or 'ARS'
-            sign = 1 if data.direction == 'deposit' else -1
+                currency = broker_row['currency']   # 'USDT' or 'ARS'
+                sign = 1 if data.direction == 'deposit' else -1
 
-            # 2. Actualizar posición cash
-            cash_pos = conn.execute(
-                "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                (uid, data.broker_name),
-            ).fetchone()
+                # 2. Actualizar posición cash
+                cash_pos = conn.execute(
+                    "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+                    (uid, data.broker_name),
+                ).fetchone()
 
-            if cash_pos:
-                new_invested = (cash_pos['invested'] or 0) + sign * data.amount
-                # Solo bloqueamos cuando es un WITHDRAW que dejaría negativo.
-                # Para DEPOSIT permitimos siempre (incluso si el resultado sigue
-                # negativo porque la deuda era mayor al depósito — la idea es
-                # ir reduciendo el overdraft progresivamente).
-                if data.direction == 'withdraw' and new_invested < 0:
-                    raise HTTPException(
-                        400,
-                        f"Saldo insuficiente. Disponible: {cash_pos['invested'] or 0:.2f} {currency}"
+                if cash_pos:
+                    new_invested = (cash_pos['invested'] or 0) + sign * data.amount
+                    # Solo bloqueamos cuando es un WITHDRAW que dejaría negativo.
+                    # Para DEPOSIT permitimos siempre (incluso si el resultado sigue
+                    # negativo porque la deuda era mayor al depósito — la idea es
+                    # ir reduciendo el overdraft progresivamente).
+                    if data.direction == 'withdraw' and new_invested < 0:
+                        raise HTTPException(
+                            400,
+                            f"Saldo insuficiente. Disponible: {cash_pos['invested'] or 0:.2f} {currency}"
+                        )
+                    conn.execute(
+                        "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
+                        (new_invested, cash_pos['id'], uid),
                     )
-                conn.execute(
-                    "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-                    (new_invested, cash_pos['id'], uid),
-                )
-            else:
-                if data.direction == 'withdraw':
-                    raise HTTPException(400, "No hay posición cash para este broker.")
-                # Crear posición cash si no existe (solo en depósito)
-                asset_name = 'ARS' if currency == 'ARS' else ('USD' if currency == 'USD' else 'USDT')
-                conn.execute(
-                    """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
-                       VALUES (?,?,?,1,?)""",
-                    (uid, data.broker_name, asset_name, data.amount),
-                )
+                else:
+                    if data.direction == 'withdraw':
+                        raise HTTPException(400, "No hay posición cash para este broker.")
+                    # Crear posición cash si no existe (solo en depósito)
+                    asset_name = 'ARS' if currency == 'ARS' else ('USD' if currency == 'USD' else 'USDT')
+                    conn.execute(
+                        """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
+                           VALUES (?,?,?,1,?)""",
+                        (uid, data.broker_name, asset_name, data.amount),
+                    )
 
-            # 3 & 4. Ambas entradas (broker + global) se guardan en USD.
-            # Toda la tabla monthly_entries usa USD como unidad. La conversión ARS→USD
-            # la hace Monthly.jsx al mostrar (multiplica × TC para tabs ARS).
-            # El mes/año sale de data.date si vino (movimiento retroactivo del
-            # chat); sin fecha → hoy (comportamiento histórico de la UI).
-            now = datetime.utcnow()
-            _fy, _fm = now.year, now.month
-            if data.date:
-                try:
-                    _fd = datetime.strptime(data.date, "%Y-%m-%d")
-                    _fy, _fm = _fd.year, _fd.month
-                except ValueError:
-                    pass
-            # Dólar de la FECHA del movimiento, resuelto en el SERVIDOR. Antes se usaba
-            # el `tc_blue` que mandaba el navegador, que es el de HOY: con el calendario
-            # nuevo, cargar un depósito de 2024 lo habría dolarizado al dólar de hoy y
-            # deformado el capital aportado — la misma pata que ya se arregló en el
-            # import (13 años de flujos sellados con un solo dólar). `fx_for_date`
-            # prefiere el MEP de ese día y cae al blue histórico solo si no hay MEP;
-            # el rate del cliente queda de último recurso.
-            if currency == 'ARS':
-                _rate = _fx.fx_for_date(conn, data.date, fallback=data.tc_blue) or data.tc_blue
-                amount_usd = data.amount / _rate if _rate else data.amount
-            else:
-                amount_usd = data.amount
-            _update_monthly_flow(conn, uid, data.broker_name, _fy, _fm,
-                                 data.direction, amount_usd, is_manual=True,
-                                 native_amount=data.amount)
-            _update_monthly_flow(conn, uid, 'global', _fy, _fm,
-                                 data.direction, amount_usd, is_manual=True)
-            # Phase 8 — repair chain for both touched brokers.
-            _repair_monthly_chain(conn, uid, data.broker_name)
-            _repair_monthly_chain(conn, uid, 'global')
+                # 3 & 4. Ambas entradas (broker + global) se guardan en USD.
+                # Toda la tabla monthly_entries usa USD como unidad. La conversión ARS→USD
+                # la hace Monthly.jsx al mostrar (multiplica × TC para tabs ARS).
+                # El mes/año sale de data.date si vino (movimiento retroactivo del
+                # chat); sin fecha → hoy (comportamiento histórico de la UI).
+                now = datetime.utcnow()
+                _fy, _fm = now.year, now.month
+                if data.date:
+                    try:
+                        _fd = datetime.strptime(data.date, "%Y-%m-%d")
+                        _fy, _fm = _fd.year, _fd.month
+                    except ValueError:
+                        pass
+                # Dólar de la FECHA del movimiento, resuelto en el SERVIDOR. Antes se usaba
+                # el `tc_blue` que mandaba el navegador, que es el de HOY: con el calendario
+                # nuevo, cargar un depósito de 2024 lo habría dolarizado al dólar de hoy y
+                # deformado el capital aportado — la misma pata que ya se arregló en el
+                # import (13 años de flujos sellados con un solo dólar). `fx_for_date`
+                # prefiere el MEP de ese día y cae al blue histórico solo si no hay MEP;
+                # el rate del cliente queda de último recurso.
+                if currency == 'ARS':
+                    _rate = _fx.fx_for_date(conn, data.date, fallback=data.tc_blue) or data.tc_blue
+                    amount_usd = data.amount / _rate if _rate else data.amount
+                else:
+                    amount_usd = data.amount
+                _update_monthly_flow(conn, uid, data.broker_name, _fy, _fm,
+                                     data.direction, amount_usd, is_manual=True,
+                                     native_amount=data.amount)
+                _update_monthly_flow(conn, uid, 'global', _fy, _fm,
+                                     data.direction, amount_usd, is_manual=True)
+                # Phase 8 — repair chain for both touched brokers.
+                _repair_monthly_chain(conn, uid, data.broker_name)
+                _repair_monthly_chain(conn, uid, 'global')
 
-        conn.close()
-        return {"ok": True, "direction": data.direction, "amount": data.amount, "currency": currency}
-    except HTTPException:
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.close()
-        raise HTTPException(500, f"Error al registrar flujo de caja: {ex}")
+            return {"ok": True, "direction": data.direction, "amount": data.amount, "currency": currency}
+        except HTTPException:
+            raise
+        except Exception as ex:
+            raise HTTPException(500, f"Error al registrar flujo de caja: {ex}")
 
 
 def _revert_cash_flow(uid: int, broker_name: str, direction: str,
@@ -9970,120 +9987,117 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
     como `usd_amount * tc_compra_promedio`, y el P&L se compara contra los ARS
     efectivamente recibidos.
     """
-    conn = get_db()
-    try:
-        with conn:
-            pnl_usd_realized = 0.0  # solo aplica a usd_to_ars
+    with db_abierta() as conn:
+        try:
+            with conn:
+                pnl_usd_realized = 0.0  # solo aplica a usd_to_ars
 
-            # 1. Resolver broker(s) según dirección
-            if data.direction == 'ars_to_usd':
-                # from_broker debe ser ARS
-                ars_broker = conn.execute(
-                    "SELECT * FROM brokers WHERE user_id=? AND name=?",
-                    (uid, data.from_broker),
-                ).fetchone()
-                if not ars_broker:
-                    raise HTTPException(404, f"Broker '{data.from_broker}' no encontrado")
-                if ars_broker['currency'] != 'ARS':
-                    raise HTTPException(400, "La compra de USD solo aplica a brokers ARS.")
-                usd_broker = _ensure_usd_sibling(conn, uid, ars_broker)
-                # Debitar ARS, acreditar USD (con cost basis = TC de la conversión)
-                _adjust_cash(conn, uid, ars_broker['name'], 'ARS', -data.ars_amount)
-                _adjust_cash(conn, uid, usd_broker['name'], 'USDT', data.usd_amount,
-                             tc_for_basis=data.tc)
-                from_b, to_b = ars_broker['name'], usd_broker['name']
-                from_curr, to_curr = 'ARS', 'USDT'
-            else:  # usd_to_ars
-                usd_broker = conn.execute(
-                    "SELECT * FROM brokers WHERE user_id=? AND name=?",
-                    (uid, data.from_broker),
-                ).fetchone()
-                if not usd_broker:
-                    raise HTTPException(404, f"Broker '{data.from_broker}' no encontrado")
-                if usd_broker['currency'] != 'USDT':
-                    raise HTTPException(400, "La venta de USD solo aplica a brokers USDT.")
-                if not usd_broker['parent_broker_id']:
-                    raise HTTPException(400, "Este broker USD no tiene un padre ARS asociado.")
-                ars_broker = conn.execute(
-                    "SELECT * FROM brokers WHERE id=? AND user_id=?",
-                    (usd_broker['parent_broker_id'], uid),
-                ).fetchone()
-                if not ars_broker:
-                    raise HTTPException(400, "Broker padre ARS no encontrado.")
+                # 1. Resolver broker(s) según dirección
+                if data.direction == 'ars_to_usd':
+                    # from_broker debe ser ARS
+                    ars_broker = conn.execute(
+                        "SELECT * FROM brokers WHERE user_id=? AND name=?",
+                        (uid, data.from_broker),
+                    ).fetchone()
+                    if not ars_broker:
+                        raise HTTPException(404, f"Broker '{data.from_broker}' no encontrado")
+                    if ars_broker['currency'] != 'ARS':
+                        raise HTTPException(400, "La compra de USD solo aplica a brokers ARS.")
+                    usd_broker = _ensure_usd_sibling(conn, uid, ars_broker)
+                    # Debitar ARS, acreditar USD (con cost basis = TC de la conversión)
+                    _adjust_cash(conn, uid, ars_broker['name'], 'ARS', -data.ars_amount)
+                    _adjust_cash(conn, uid, usd_broker['name'], 'USDT', data.usd_amount,
+                                 tc_for_basis=data.tc)
+                    from_b, to_b = ars_broker['name'], usd_broker['name']
+                    from_curr, to_curr = 'ARS', 'USDT'
+                else:  # usd_to_ars
+                    usd_broker = conn.execute(
+                        "SELECT * FROM brokers WHERE user_id=? AND name=?",
+                        (uid, data.from_broker),
+                    ).fetchone()
+                    if not usd_broker:
+                        raise HTTPException(404, f"Broker '{data.from_broker}' no encontrado")
+                    if usd_broker['currency'] != 'USDT':
+                        raise HTTPException(400, "La venta de USD solo aplica a brokers USDT.")
+                    if not usd_broker['parent_broker_id']:
+                        raise HTTPException(400, "Este broker USD no tiene un padre ARS asociado.")
+                    ars_broker = conn.execute(
+                        "SELECT * FROM brokers WHERE id=? AND user_id=?",
+                        (usd_broker['parent_broker_id'], uid),
+                    ).fetchone()
+                    if not ars_broker:
+                        raise HTTPException(400, "Broker padre ARS no encontrado.")
 
-                # Computar P&L cambiario ANTES de modificar el cash:
-                # cost_basis_ars = usd_amount * tc_compra_promedio_actual
-                cash_usd = conn.execute(
-                    "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                    (uid, usd_broker['name']),
-                ).fetchone()
-                tc_avg = (cash_usd['tc_compra'] if cash_usd else None) or data.tc
-                cost_basis_ars = data.usd_amount * tc_avg
-                pnl_ars_realized = data.ars_amount - cost_basis_ars
-                # P&L USD se mide al TC de la venta (mismo patrón que valuation.js)
-                pnl_usd_realized = pnl_ars_realized / data.tc if data.tc > 0 else 0.0
+                    # Computar P&L cambiario ANTES de modificar el cash:
+                    # cost_basis_ars = usd_amount * tc_compra_promedio_actual
+                    cash_usd = conn.execute(
+                        "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+                        (uid, usd_broker['name']),
+                    ).fetchone()
+                    tc_avg = (cash_usd['tc_compra'] if cash_usd else None) or data.tc
+                    cost_basis_ars = data.usd_amount * tc_avg
+                    pnl_ars_realized = data.ars_amount - cost_basis_ars
+                    # P&L USD se mide al TC de la venta (mismo patrón que valuation.js)
+                    pnl_usd_realized = pnl_ars_realized / data.tc if data.tc > 0 else 0.0
 
-                # Debitar USD, acreditar ARS
-                _adjust_cash(conn, uid, usd_broker['name'], 'USDT', -data.usd_amount)
-                _adjust_cash(conn, uid, ars_broker['name'], 'ARS', data.ars_amount)
-                from_b, to_b = usd_broker['name'], ars_broker['name']
-                from_curr, to_curr = 'USDT', 'ARS'
+                    # Debitar USD, acreditar ARS
+                    _adjust_cash(conn, uid, usd_broker['name'], 'USDT', -data.usd_amount)
+                    _adjust_cash(conn, uid, ars_broker['name'], 'ARS', data.ars_amount)
+                    from_b, to_b = usd_broker['name'], ars_broker['name']
+                    from_curr, to_curr = 'USDT', 'ARS'
 
-            # 2. Registrar operación tipo CONVERSION en el log de operations
-            op_date = data.date or datetime.utcnow().strftime('%Y-%m-%d')
-            op_type = f"CONVERSION {data.kind} {from_curr}→{to_curr}"
-            pnl_pct = None
-            if data.direction == 'usd_to_ars' and data.usd_amount > 0:
-                # P&L % sobre el USD vendido (cost basis USD = usd_amount, no varía)
-                pnl_pct = (pnl_usd_realized / data.usd_amount) * 100
-            conn.execute(
-                """INSERT INTO operations
-                   (user_id, date, broker, asset, op_type, entry_price, exit_price,
-                    quantity, pnl_usd, pnl_pct, commissions)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,0)""",
-                (uid, op_date, from_b,
-                 f"{from_curr}→{to_curr}", op_type,
-                 tc_avg if data.direction == 'usd_to_ars' else data.tc,
-                 data.tc if data.direction == 'usd_to_ars' else None,
-                 data.ars_amount if data.direction == 'ars_to_usd' else data.usd_amount,
-                 round(pnl_usd_realized, 2),
-                 round(pnl_pct, 4) if pnl_pct is not None else None),
-            )
+                # 2. Registrar operación tipo CONVERSION en el log de operations
+                op_date = data.date or datetime.utcnow().strftime('%Y-%m-%d')
+                op_type = f"CONVERSION {data.kind} {from_curr}→{to_curr}"
+                pnl_pct = None
+                if data.direction == 'usd_to_ars' and data.usd_amount > 0:
+                    # P&L % sobre el USD vendido (cost basis USD = usd_amount, no varía)
+                    pnl_pct = (pnl_usd_realized / data.usd_amount) * 100
+                conn.execute(
+                    """INSERT INTO operations
+                       (user_id, date, broker, asset, op_type, entry_price, exit_price,
+                        quantity, pnl_usd, pnl_pct, commissions)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,0)""",
+                    (uid, op_date, from_b,
+                     f"{from_curr}→{to_curr}", op_type,
+                     tc_avg if data.direction == 'usd_to_ars' else data.tc,
+                     data.tc if data.direction == 'usd_to_ars' else None,
+                     data.ars_amount if data.direction == 'ars_to_usd' else data.usd_amount,
+                     round(pnl_usd_realized, 2),
+                     round(pnl_pct, 4) if pnl_pct is not None else None),
+                )
 
-            # 3. Si fue venta de USD con P&L, sumarlo al pnl_realized del mes
-            #    (broker padre ARS + global). Esto hace que aparezca en Resumen
-            #    Mensual y en la atribución de Insights.
-            if data.direction == 'usd_to_ars' and abs(pnl_usd_realized) > 1e-6:
-                op_year, op_month = int(op_date[:4]), int(op_date[5:7])
-                _update_monthly_pnl_realized(conn, uid, ars_broker['name'],
-                                             op_year, op_month, pnl_usd_realized)
-                _update_monthly_pnl_realized(conn, uid, 'global',
-                                             op_year, op_month, pnl_usd_realized)
-                # AUDIT B3: reparar la cadena mensual (igual que sell()). Sin esto,
-                # si el mes afectado está cerrado con pnl_unrealized viejo, ese
-                # unrealized stale queda sin zerar y contamina capital_final y el
-                # P&L del mes/año hasta que otra cosa dispare el repair.
-                _repair_monthly_chain(conn, uid, ars_broker['name'])
-                _repair_monthly_chain(conn, uid, 'global')
-                conn.commit()
+                # 3. Si fue venta de USD con P&L, sumarlo al pnl_realized del mes
+                #    (broker padre ARS + global). Esto hace que aparezca en Resumen
+                #    Mensual y en la atribución de Insights.
+                if data.direction == 'usd_to_ars' and abs(pnl_usd_realized) > 1e-6:
+                    op_year, op_month = int(op_date[:4]), int(op_date[5:7])
+                    _update_monthly_pnl_realized(conn, uid, ars_broker['name'],
+                                                 op_year, op_month, pnl_usd_realized)
+                    _update_monthly_pnl_realized(conn, uid, 'global',
+                                                 op_year, op_month, pnl_usd_realized)
+                    # AUDIT B3: reparar la cadena mensual (igual que sell()). Sin esto,
+                    # si el mes afectado está cerrado con pnl_unrealized viejo, ese
+                    # unrealized stale queda sin zerar y contamina capital_final y el
+                    # P&L del mes/año hasta que otra cosa dispare el repair.
+                    _repair_monthly_chain(conn, uid, ars_broker['name'])
+                    _repair_monthly_chain(conn, uid, 'global')
+                    conn.commit()
 
-        conn.close()
-        return {
-            "ok": True,
-            "from_broker": from_b,
-            "to_broker": to_b,
-            "ars_amount": data.ars_amount,
-            "usd_amount": data.usd_amount,
-            "tc": data.tc,
-            "kind": data.kind,
-            "pnl_usd_realized": round(pnl_usd_realized, 2) if data.direction == 'usd_to_ars' else None,
-        }
-    except HTTPException:
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.close()
-        raise HTTPException(500, f"Error en la conversión: {ex}")
+            return {
+                "ok": True,
+                "from_broker": from_b,
+                "to_broker": to_b,
+                "ars_amount": data.ars_amount,
+                "usd_amount": data.usd_amount,
+                "tc": data.tc,
+                "kind": data.kind,
+                "pnl_usd_realized": round(pnl_usd_realized, 2) if data.direction == 'usd_to_ars' else None,
+            }
+        except HTTPException:
+            raise
+        except Exception as ex:
+            raise HTTPException(500, f"Error en la conversión: {ex}")
 
 
 # ─── Sub-broker USD manual (para CEDEARs y similares pagados con USD) ────────
@@ -10133,48 +10147,46 @@ def sync_unrealized(data: SyncUnrealizedIn, uid: int = Depends(get_effective_use
     lo que stuffeaba P&L vivo en meses cerrados si había gaps en el calendario, o en
     meses futuros si el usuario los abría manualmente.
     """
-    conn = get_db()
-    try:
-        now = datetime.utcnow()
-        current = conn.execute(
-            """SELECT id, capital_inicio, deposits, withdrawals, pnl_realized
-               FROM monthly_entries
-               WHERE user_id=? AND broker=? AND year=? AND month=?""",
-            (uid, data.broker, now.year, now.month),
-        ).fetchone()
-        if current:
-            # Zero pnl_unrealized en TODAS las demás entradas — incluye meses cerrados
-            # (snapshot histórico) y futuros pre-abiertos (no deben tener P&L vivo).
-            # NO tocar su capital_final.
-            conn.execute(
-                "UPDATE monthly_entries SET pnl_unrealized=0 WHERE user_id=? AND broker=? AND id != ?",
-                (uid, data.broker, current['id']),
-            )
-            # En el mes en curso: actualizar pnl_unrealized Y recalcular capital_final
-            # con la fórmula canónica para mantener coherencia:
-            # capital_final = capital_inicio + deposits − withdrawals + pnl_realized + pnl_unrealized
-            pnl = round(data.pnl_unrealized_usd, 4)
-            new_cap_final = round(
-                (current['capital_inicio'] or 0)
-                + (current['deposits'] or 0)
-                - (current['withdrawals'] or 0)
-                + (current['pnl_realized'] or 0)
-                + pnl,
-                4,
-            )
-            conn.execute(
-                "UPDATE monthly_entries SET pnl_unrealized=?, capital_final=? WHERE id=?",
-                (pnl, new_cap_final, current['id']),
-            )
-            # Phase 8 — repair chain after sync (catches drift in closed months).
-            _repair_monthly_chain(conn, uid, data.broker)
-            conn.commit()
-        # Si no existe entrada del mes calendario → no-op (el frontend la creará).
-        conn.close()
-        return {"ok": True}
-    except Exception as ex:
-        conn.close()
-        raise HTTPException(500, f"Error al sincronizar pnl_unrealized: {ex}")
+    with db_abierta() as conn:
+        try:
+            now = datetime.utcnow()
+            current = conn.execute(
+                """SELECT id, capital_inicio, deposits, withdrawals, pnl_realized
+                   FROM monthly_entries
+                   WHERE user_id=? AND broker=? AND year=? AND month=?""",
+                (uid, data.broker, now.year, now.month),
+            ).fetchone()
+            if current:
+                # Zero pnl_unrealized en TODAS las demás entradas — incluye meses cerrados
+                # (snapshot histórico) y futuros pre-abiertos (no deben tener P&L vivo).
+                # NO tocar su capital_final.
+                conn.execute(
+                    "UPDATE monthly_entries SET pnl_unrealized=0 WHERE user_id=? AND broker=? AND id != ?",
+                    (uid, data.broker, current['id']),
+                )
+                # En el mes en curso: actualizar pnl_unrealized Y recalcular capital_final
+                # con la fórmula canónica para mantener coherencia:
+                # capital_final = capital_inicio + deposits − withdrawals + pnl_realized + pnl_unrealized
+                pnl = round(data.pnl_unrealized_usd, 4)
+                new_cap_final = round(
+                    (current['capital_inicio'] or 0)
+                    + (current['deposits'] or 0)
+                    - (current['withdrawals'] or 0)
+                    + (current['pnl_realized'] or 0)
+                    + pnl,
+                    4,
+                )
+                conn.execute(
+                    "UPDATE monthly_entries SET pnl_unrealized=?, capital_final=? WHERE id=?",
+                    (pnl, new_cap_final, current['id']),
+                )
+                # Phase 8 — repair chain after sync (catches drift in closed months).
+                _repair_monthly_chain(conn, uid, data.broker)
+                conn.commit()
+            # Si no existe entrada del mes calendario → no-op (el frontend la creará).
+            return {"ok": True}
+        except Exception as ex:
+            raise HTTPException(500, f"Error al sincronizar pnl_unrealized: {ex}")
 
 
 # ─── Sell position (atomic) ──────────────────────────────────────────────────
@@ -10235,266 +10247,263 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
     """Cierre FIFO: descuenta `quantity` empezando por la posición más vieja (entry_date asc).
     Crea una operación por cada posición tocada (cantidad parcial o total).
     Si la cantidad excede el total disponible, falla atómicamente sin tocar nada."""
-    conn = get_db()
-    try:
-        with conn:  # transacción
-            # Obtener moneda del broker
-            br = conn.execute(
-                "SELECT currency FROM brokers WHERE name=? AND user_id=?", (data.broker, uid)
-            ).fetchone()
-            currency = br["currency"] if br else "USDT"
-            # Moneda de venta normalizada (USDT→USD) + blue actual como fallback
-            # para la conversión de cost basis cross-currency.
-            # Moneda de la venta: la que elige el user (data.currency) o la del
-            # broker (back-compat). Define qué LOTES consume el FIFO.
-            if data.currency:
-                sell_ccy = "ARS" if data.currency.strip().upper() == "ARS" else "USD"
-            else:
-                sell_ccy = "ARS" if currency == "ARS" else "USD"
-            cur_blue = _user_tc_blue(conn, uid)
+    with db_abierta() as conn:
+        try:
+            with conn:  # transacción
+                # Obtener moneda del broker
+                br = conn.execute(
+                    "SELECT currency FROM brokers WHERE name=? AND user_id=?", (data.broker, uid)
+                ).fetchone()
+                currency = br["currency"] if br else "USDT"
+                # Moneda de venta normalizada (USDT→USD) + blue actual como fallback
+                # para la conversión de cost basis cross-currency.
+                # Moneda de la venta: la que elige el user (data.currency) o la del
+                # broker (back-compat). Define qué LOTES consume el FIFO.
+                if data.currency:
+                    sell_ccy = "ARS" if data.currency.strip().upper() == "ARS" else "USD"
+                else:
+                    sell_ccy = "ARS" if currency == "ARS" else "USD"
+                cur_blue = _user_tc_blue(conn, uid)
 
-            # NETEO CROSS-BROKER del par padre↔'· USD': el mismo activo comprado vía
-            # dólar-MEP (pata USD en el sibling) y vendido en pesos (pata ARS en el
-            # padre) debe NETEAR. Buscamos lotes del activo en AMBOS brokers del par.
-            # En la práctica es casi no-op para ventas manuales (el user vende desde
-            # la fila donde vive el lote), pero deja el modelo FIFO idéntico al del
-            # import/rebuild. El cash sigue per-broker (entra al broker de la venta).
-            from importing.persister import broker_pair
-            _pair = broker_pair(conn, uid, data.broker)
-            _ph = ",".join("?" * len(_pair))
-            # Posiciones del par, FIFO por entry_date (NULLs al final), tie-break por id.
-            all_positions = conn.execute(
-                f"""SELECT * FROM positions
-                   WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity > 0
-                   ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
-                (uid, *_pair, data.asset)
-            ).fetchall()
-            # FIFO POR MONEDA: una venta en X consume SOLO lotes en X (el mismo
-            # ticker se puede tener en ARS y USD). La moneda nativa de cada lote la
-            # resuelve behavioral._native_ccy (cubre currency NULL legacy). Si NO hay
-            # lotes de la moneda de la venta (data vieja / dólar-MEP legacy), cae a
-            # TODOS con conversión cross-currency (red de seguridad: no rompe P&L
-            # existente ni genera seeds fantasma).
-            from behavioral import _native_ccy
-            # Venta MANUAL: respeta la moneda explícita del user. Con lotes
-            # currency-aware (mismo ticker en ARS y USD en el mismo broker) una venta
-            # en USD consume SOLO lotes USD y se RECHAZA si no alcanzan — NO hace spill
-            # a los lotes ARS (eso sería romper la separación de monedas que el user
-            # eligió). El spill cross-currency (dólar-MEP) es exclusivo de la RECONSTRUCCIÓN
-            # de IMPORT (rebuild/persister), donde no hay intención de moneda por fila.
-            # Fallback a todos solo si NO hay lotes de esa moneda (data legacy NULL).
-            _same_ccy = [p for p in all_positions if _native_ccy(dict(p)) == sell_ccy]
-            positions = _same_ccy if _same_ccy else all_positions
+                # NETEO CROSS-BROKER del par padre↔'· USD': el mismo activo comprado vía
+                # dólar-MEP (pata USD en el sibling) y vendido en pesos (pata ARS en el
+                # padre) debe NETEAR. Buscamos lotes del activo en AMBOS brokers del par.
+                # En la práctica es casi no-op para ventas manuales (el user vende desde
+                # la fila donde vive el lote), pero deja el modelo FIFO idéntico al del
+                # import/rebuild. El cash sigue per-broker (entra al broker de la venta).
+                from importing.persister import broker_pair
+                _pair = broker_pair(conn, uid, data.broker)
+                _ph = ",".join("?" * len(_pair))
+                # Posiciones del par, FIFO por entry_date (NULLs al final), tie-break por id.
+                all_positions = conn.execute(
+                    f"""SELECT * FROM positions
+                       WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity > 0
+                       ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
+                    (uid, *_pair, data.asset)
+                ).fetchall()
+                # FIFO POR MONEDA: una venta en X consume SOLO lotes en X (el mismo
+                # ticker se puede tener en ARS y USD). La moneda nativa de cada lote la
+                # resuelve behavioral._native_ccy (cubre currency NULL legacy). Si NO hay
+                # lotes de la moneda de la venta (data vieja / dólar-MEP legacy), cae a
+                # TODOS con conversión cross-currency (red de seguridad: no rompe P&L
+                # existente ni genera seeds fantasma).
+                from behavioral import _native_ccy
+                # Venta MANUAL: respeta la moneda explícita del user. Con lotes
+                # currency-aware (mismo ticker en ARS y USD en el mismo broker) una venta
+                # en USD consume SOLO lotes USD y se RECHAZA si no alcanzan — NO hace spill
+                # a los lotes ARS (eso sería romper la separación de monedas que el user
+                # eligió). El spill cross-currency (dólar-MEP) es exclusivo de la RECONSTRUCCIÓN
+                # de IMPORT (rebuild/persister), donde no hay intención de moneda por fila.
+                # Fallback a todos solo si NO hay lotes de esa moneda (data legacy NULL).
+                _same_ccy = [p for p in all_positions if _native_ccy(dict(p)) == sell_ccy]
+                positions = _same_ccy if _same_ccy else all_positions
 
-            total = sum((p["quantity"] or 0) for p in positions)
-            if data.quantity > total + 1e-9:
-                raise HTTPException(400, f"Cantidad solicitada ({data.quantity}) excede el total disponible ({total})")
+                total = sum((p["quantity"] or 0) for p in positions)
+                if data.quantity > total + 1e-9:
+                    raise HTTPException(400, f"Cantidad solicitada ({data.quantity}) excede el total disponible ({total})")
 
-            op_date = data.date or datetime.utcnow().strftime("%Y-%m-%d")
-            remaining = data.quantity
-            ops_created = []
-            total_pnl_usd = 0.0          # "true USD" P&L → goes to monthly_entries global
-            total_pnl_ars_native = 0.0   # native ARS P&L → used for monthly_entries broker (ARS only)
-            total_proceeds_native = 0.0  # Phase 2 — ingreso en cash (moneda nativa del broker)
+                op_date = data.date or datetime.utcnow().strftime("%Y-%m-%d")
+                remaining = data.quantity
+                ops_created = []
+                total_pnl_usd = 0.0          # "true USD" P&L → goes to monthly_entries global
+                total_pnl_ars_native = 0.0   # native ARS P&L → used for monthly_entries broker (ARS only)
+                total_proceeds_native = 0.0  # Phase 2 — ingreso en cash (moneda nativa del broker)
 
-            # Comisión de venta — se prorratea entre los chunks FIFO según la cantidad
-            # vendida de cada lote, y reduce el P&L y el proceeds del cash.
-            total_commission_native = float(data.commissions or 0)
+                # Comisión de venta — se prorratea entre los chunks FIFO según la cantidad
+                # vendida de cada lote, y reduce el P&L y el proceeds del cash.
+                total_commission_native = float(data.commissions or 0)
 
-            for p in positions:
-                if remaining <= 1e-9:
-                    break
-                pos_qty = p["quantity"] or 0
-                take = min(remaining, pos_qty)
-                if take <= 0:
-                    continue
+                for p in positions:
+                    if remaining <= 1e-9:
+                        break
+                    pos_qty = p["quantity"] or 0
+                    take = min(remaining, pos_qty)
+                    if take <= 0:
+                        continue
 
-                ratio = take / pos_qty if pos_qty > 0 else 0
-                buy_price = p["buy_price"]
-                # Cost basis incluye comisiones de COMPRA (prorrateadas).
-                # Las comisiones de compra reducen el P&L de la venta — son
-                # parte del costo real de adquirir el lote.
-                pos_buy_commissions = p["commissions"] if "commissions" in p.keys() else 0
-                pos_buy_commissions = pos_buy_commissions or 0
-                # `entry_invested` ahora incluye buy commissions prorrateadas.
-                base_invested = ((p["invested"] or 0) + pos_buy_commissions)
+                    ratio = take / pos_qty if pos_qty > 0 else 0
+                    buy_price = p["buy_price"]
+                    # Cost basis incluye comisiones de COMPRA (prorrateadas).
+                    # Las comisiones de compra reducen el P&L de la venta — son
+                    # parte del costo real de adquirir el lote.
+                    pos_buy_commissions = p["commissions"] if "commissions" in p.keys() else 0
+                    pos_buy_commissions = pos_buy_commissions or 0
+                    # `entry_invested` ahora incluye buy commissions prorrateadas.
+                    base_invested = ((p["invested"] or 0) + pos_buy_commissions)
 
-                # CROSS-CURRENCY: si el lote se compró en otra moneda que la de la
-                # venta, convertimos el cost basis a la moneda de la venta (igual
-                # que el importer). Lote ARS vendido en USD usa el blue de la FECHA
-                # DE COMPRA (el FX se realizó al convertir pesos→dólares); lote USD
-                # vendido en ARS usa el TC de venta (se cancela, preserva el costo
-                # USD). Sin esto, un lote en otra moneda daba P&L absurdo.
-                lot_currency = (p["currency"] if "currency" in p.keys() else None) or sell_ccy
-                if lot_currency != sell_ccy:
-                    if lot_currency == "USD" and sell_ccy == "ARS":
-                        base_invested = base_invested * (data.tc_venta or cur_blue)
-                    elif lot_currency == "ARS" and sell_ccy == "USD":
-                        entry_dt = p["entry_date"] if "entry_date" in p.keys() else None
-                        purchase_blue = _import_persister.blue_for_date(conn, entry_dt, cur_blue)
-                        base_invested = base_invested / (purchase_blue or cur_blue)
+                    # CROSS-CURRENCY: si el lote se compró en otra moneda que la de la
+                    # venta, convertimos el cost basis a la moneda de la venta (igual
+                    # que el importer). Lote ARS vendido en USD usa el blue de la FECHA
+                    # DE COMPRA (el FX se realizó al convertir pesos→dólares); lote USD
+                    # vendido en ARS usa el TC de venta (se cancela, preserva el costo
+                    # USD). Sin esto, un lote en otra moneda daba P&L absurdo.
+                    lot_currency = (p["currency"] if "currency" in p.keys() else None) or sell_ccy
+                    if lot_currency != sell_ccy:
+                        if lot_currency == "USD" and sell_ccy == "ARS":
+                            base_invested = base_invested * (data.tc_venta or cur_blue)
+                        elif lot_currency == "ARS" and sell_ccy == "USD":
+                            entry_dt = p["entry_date"] if "entry_date" in p.keys() else None
+                            purchase_blue = _import_persister.blue_for_date(conn, entry_dt, cur_blue)
+                            base_invested = base_invested / (purchase_blue or cur_blue)
 
-                entry_invested = base_invested * ratio if base_invested else None
+                    entry_invested = base_invested * ratio if base_invested else None
 
-                # Comisión de VENTA prorrateada para este chunk (sobre el total vendido)
-                chunk_commission_native = total_commission_native * (take / data.quantity) if data.quantity else 0
+                    # Comisión de VENTA prorrateada para este chunk (sobre el total vendido)
+                    chunk_commission_native = total_commission_native * (take / data.quantity) if data.quantity else 0
 
-                # P&L por chunk = sale − cost_basis_with_buy_comm − sell_commission
-                #
-                # ⚠️ La compuerta es `sell_ccy` (la moneda de la VENTA), NO `currency`
-                # (la del BROKER). Son distintas cuando un lote USD vive en un broker
-                # ARS —estado soportado y testeado, ver tests/test_currency_lots.py— y
-                # la selección de lotes y la conversión cross-currency de arriba ya
-                # usaban `sell_ccy`. Con `currency` una venta USD sobre broker ARS
-                # entraba a la rama de pesos y dividía por el TC un P&L que YA estaba
-                # en dólares. Antes quedaba tapado porque el front solo manda
-                # `tc_venta` en ventas ARS (Positions.jsx:665) y el `or 1` hacía que
-                # se dividiera por 1: correcto por accidente. Con el TC de la fecha el
-                # accidente se convierte en un error de ~1440× que además se ve
-                # plausible. El persister y el rebuild no pueden tener este bug porque
-                # ahí `currency = sell_currency` es un alias (persister.py:531).
-                if sell_ccy == "ARS":
-                    # FX-phantom fix: cost basis y venta se valúan al MISMO TC
-                    # (el de venta). Eso hace que pnl_usd sea exactamente
-                    # pnl_ars / tc_venta y no aparezca P&L sintético por
-                    # variaciones del blue entre compra y venta. tc_compra
-                    # queda como dato informativo pero no afecta el P&L.
-                    # Si el usuario dejó el campo TC vacío, el `or 1` de antes
-                    # guardaba el nominal EN PESOS dentro de `pnl_usd` — el bucket
-                    # B5 del diagnóstico, imposible de distinguir después de una
-                    # venta USD genuina (las dos quedan byte-idénticas). Ahora cae al
-                    # TC de la fecha, que es lo que el usuario habría puesto.
-                    if _fx.fx_version(conn, uid) == _fx.FX_V2:
-                        tc_venta = data.tc_venta or _fx.fx_for_date(
-                            conn, op_date, fallback=_user_tc_blue(conn, uid)) or 1
+                    # P&L por chunk = sale − cost_basis_with_buy_comm − sell_commission
+                    #
+                    # ⚠️ La compuerta es `sell_ccy` (la moneda de la VENTA), NO `currency`
+                    # (la del BROKER). Son distintas cuando un lote USD vive en un broker
+                    # ARS —estado soportado y testeado, ver tests/test_currency_lots.py— y
+                    # la selección de lotes y la conversión cross-currency de arriba ya
+                    # usaban `sell_ccy`. Con `currency` una venta USD sobre broker ARS
+                    # entraba a la rama de pesos y dividía por el TC un P&L que YA estaba
+                    # en dólares. Antes quedaba tapado porque el front solo manda
+                    # `tc_venta` en ventas ARS (Positions.jsx:665) y el `or 1` hacía que
+                    # se dividiera por 1: correcto por accidente. Con el TC de la fecha el
+                    # accidente se convierte en un error de ~1440× que además se ve
+                    # plausible. El persister y el rebuild no pueden tener este bug porque
+                    # ahí `currency = sell_currency` es un alias (persister.py:531).
+                    if sell_ccy == "ARS":
+                        # FX-phantom fix: cost basis y venta se valúan al MISMO TC
+                        # (el de venta). Eso hace que pnl_usd sea exactamente
+                        # pnl_ars / tc_venta y no aparezca P&L sintético por
+                        # variaciones del blue entre compra y venta. tc_compra
+                        # queda como dato informativo pero no afecta el P&L.
+                        # Si el usuario dejó el campo TC vacío, el `or 1` de antes
+                        # guardaba el nominal EN PESOS dentro de `pnl_usd` — el bucket
+                        # B5 del diagnóstico, imposible de distinguir después de una
+                        # venta USD genuina (las dos quedan byte-idénticas). Ahora cae al
+                        # TC de la fecha, que es lo que el usuario habría puesto.
+                        if _fx.fx_version(conn, uid) == _fx.FX_V2:
+                            tc_venta = data.tc_venta or _fx.fx_for_date(
+                                conn, op_date, fallback=_user_tc_blue(conn, uid)) or 1
+                        else:
+                            tc_venta = data.tc_venta or 1
+                        pnl_ars_chunk = data.exit_price * take - (entry_invested or 0) - chunk_commission_native
+                        pnl_usd = pnl_ars_chunk / tc_venta
+                        invested_usd = (entry_invested or 0) / tc_venta if entry_invested else 0
+                        total_pnl_ars_native += pnl_ars_chunk
                     else:
-                        tc_venta = data.tc_venta or 1
-                    pnl_ars_chunk = data.exit_price * take - (entry_invested or 0) - chunk_commission_native
-                    pnl_usd = pnl_ars_chunk / tc_venta
-                    invested_usd = (entry_invested or 0) / tc_venta if entry_invested else 0
-                    total_pnl_ars_native += pnl_ars_chunk
-                else:
-                    # Para USD broker: si hay invested registrado, usar el cost basis prorrateado
-                    # (incluye buy commissions). Caso contrario fallback a buy_price × qty.
-                    cost = entry_invested if entry_invested is not None else ((buy_price or 0) * take)
-                    pnl_usd = (data.exit_price * take) - cost - chunk_commission_native
-                    invested_usd = cost
+                        # Para USD broker: si hay invested registrado, usar el cost basis prorrateado
+                        # (incluye buy commissions). Caso contrario fallback a buy_price × qty.
+                        cost = entry_invested if entry_invested is not None else ((buy_price or 0) * take)
+                        pnl_usd = (data.exit_price * take) - cost - chunk_commission_native
+                        invested_usd = cost
 
-                total_pnl_usd += pnl_usd
-                # Proceeds en cash = sale_amount − commission (lo que efectivamente entra al cash)
-                total_proceeds_native += data.exit_price * take - chunk_commission_native
-                pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
+                    total_pnl_usd += pnl_usd
+                    # Proceeds en cash = sale_amount − commission (lo que efectivamente entra al cash)
+                    total_proceeds_native += data.exit_price * take - chunk_commission_native
+                    pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
 
-                # Moneda + TC con el que se llevó a USD (ver persister.py): deja el
-                # P&L auditable y le permite al frontend mostrar el nominal real en
-                # pesos en vez de re-convertir con el blue de otra fecha.
-                # Usamos `sell_ccy` (normalizada 'ARS'|'USD'), NO `currency` (que es
-                # la del BROKER y puede ser 'USDT') → mismo vocabulario que los otros
-                # dos INSERT. Y NULL en ventas USD: estampar 1.0 haría que el front,
-                # que lee el campo como "ARS por USD", colapse el P&L en pesos 1:1.
-                fx_stamp = (data.tc_venta or 1) if sell_ccy == "ARS" else None
-                cur = conn.execute(
-                    """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
-                       exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions,
-                       currency, fx_to_usd)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (uid, op_date, p["broker"], p["asset"], 'Venta',
-                     buy_price, data.exit_price, take,
-                     round(pnl_usd, 2),
-                     round(pnl_pct, 4) if pnl_pct is not None else None,
-                     p["entry_date"] if "entry_date" in p.keys() else None,
-                     round(chunk_commission_native, 4),
-                     sell_ccy, fx_stamp),
-                )
-                ops_created.append(cur.lastrowid)
-
-                # Reversibilidad: la venta CONSUME el lote (lo borra o lo achica), y esa
-                # información no vive en ningún otro lado — sin esta foto, borrar la venta
-                # después es IMPOSIBLE (no hay con qué restaurar la tenencia). Guardamos,
-                # en la operación misma, el estado del lote ANTES de tocarlo + lo que esta
-                # pata acreditó de cash. Una venta que barre 3 lotes deja 3 operaciones,
-                # cada una con su lote → borrarlas restaura exactamente lo que había.
-                import json as _json_sell
-                conn.execute(
-                    "UPDATE operations SET undo_meta_json=? WHERE id=? AND user_id=?",
-                    (_json_sell.dumps({
-                        "src": "fifo_sell",
-                        "cash": round(data.exit_price * take - chunk_commission_native, 6),
-                        # OJO: el cash se acredita a `data.broker`, pero la operación se
-                        # estampa con el broker del LOTE — en un par padre↔'· USD' pueden
-                        # ser distintos. Sin esto, el borrado reversaba el cash del broker
-                        # EQUIVOCADO y dejaba los dos saldos corridos.
-                        "cash_broker": data.broker,
-                        "pnl_usd": round(pnl_usd, 2),
-                        "lot": {
-                            "id": p["id"], "broker": p["broker"], "asset": p["asset"],
-                            "quantity": pos_qty, "invested": p["invested"],
-                            "buy_price": p["buy_price"], "commissions": pos_buy_commissions,
-                            "entry_date": (p["entry_date"] if "entry_date" in p.keys() else None),
-                            "currency": (p["currency"] if "currency" in p.keys() else None),
-                            "tc_compra": (p["tc_compra"] if "tc_compra" in p.keys() else None),
-                            "asset_type": (p["asset_type"] if "asset_type" in p.keys() else None),
-                            "consumed": take,
-                            # La PROPIA foto de reverso del lote (con su autodepósito).
-                            # Sin esto, el lote que el borrado de esta venta re-crea nacía
-                            # con autodep=None y borrarlo después FABRICABA cash y capital
-                            # aportado (medido: 200 y 200 salidos de la nada).
-                            "undo_meta": (p["undo_meta_json"] if "undo_meta_json" in p.keys() else None),
-                        },
-                    }), cur.lastrowid, uid))
-
-                # Actualizar / eliminar la posición
-                if take >= pos_qty - 1e-9:
-                    conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (p["id"], uid))
-                else:
-                    # Partial sell — el lote remanente conserva su porción
-                    # proporcional de invested y commissions (1 - ratio).
-                    new_qty = pos_qty - take
-                    remaining_ratio = 1 - ratio
-                    new_invested = round((p["invested"] or 0) * remaining_ratio, 6) if p["invested"] is not None else None
-                    new_commissions = round(pos_buy_commissions * remaining_ratio, 6)
-                    conn.execute(
-                        "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
-                        (new_qty, new_invested, new_commissions, p["id"], uid)
+                    # Moneda + TC con el que se llevó a USD (ver persister.py): deja el
+                    # P&L auditable y le permite al frontend mostrar el nominal real en
+                    # pesos en vez de re-convertir con el blue de otra fecha.
+                    # Usamos `sell_ccy` (normalizada 'ARS'|'USD'), NO `currency` (que es
+                    # la del BROKER y puede ser 'USDT') → mismo vocabulario que los otros
+                    # dos INSERT. Y NULL en ventas USD: estampar 1.0 haría que el front,
+                    # que lee el campo como "ARS por USD", colapse el P&L en pesos 1:1.
+                    fx_stamp = (data.tc_venta or 1) if sell_ccy == "ARS" else None
+                    cur = conn.execute(
+                        """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
+                           exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions,
+                           currency, fx_to_usd)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (uid, op_date, p["broker"], p["asset"], 'Venta',
+                         buy_price, data.exit_price, take,
+                         round(pnl_usd, 2),
+                         round(pnl_pct, 4) if pnl_pct is not None else None,
+                         p["entry_date"] if "entry_date" in p.keys() else None,
+                         round(chunk_commission_native, 4),
+                         sell_ccy, fx_stamp),
                     )
-                remaining -= take
+                    ops_created.append(cur.lastrowid)
 
-            # ── Phase 2 — acreditar proceeds al cash del broker (moneda nativa) ──
-            if total_proceeds_native > 0:
-                _adjust_broker_cash(conn, uid, data.broker, total_proceeds_native)
+                    # Reversibilidad: la venta CONSUME el lote (lo borra o lo achica), y esa
+                    # información no vive en ningún otro lado — sin esta foto, borrar la venta
+                    # después es IMPOSIBLE (no hay con qué restaurar la tenencia). Guardamos,
+                    # en la operación misma, el estado del lote ANTES de tocarlo + lo que esta
+                    # pata acreditó de cash. Una venta que barre 3 lotes deja 3 operaciones,
+                    # cada una con su lote → borrarlas restaura exactamente lo que había.
+                    import json as _json_sell
+                    conn.execute(
+                        "UPDATE operations SET undo_meta_json=? WHERE id=? AND user_id=?",
+                        (_json_sell.dumps({
+                            "src": "fifo_sell",
+                            "cash": round(data.exit_price * take - chunk_commission_native, 6),
+                            # OJO: el cash se acredita a `data.broker`, pero la operación se
+                            # estampa con el broker del LOTE — en un par padre↔'· USD' pueden
+                            # ser distintos. Sin esto, el borrado reversaba el cash del broker
+                            # EQUIVOCADO y dejaba los dos saldos corridos.
+                            "cash_broker": data.broker,
+                            "pnl_usd": round(pnl_usd, 2),
+                            "lot": {
+                                "id": p["id"], "broker": p["broker"], "asset": p["asset"],
+                                "quantity": pos_qty, "invested": p["invested"],
+                                "buy_price": p["buy_price"], "commissions": pos_buy_commissions,
+                                "entry_date": (p["entry_date"] if "entry_date" in p.keys() else None),
+                                "currency": (p["currency"] if "currency" in p.keys() else None),
+                                "tc_compra": (p["tc_compra"] if "tc_compra" in p.keys() else None),
+                                "asset_type": (p["asset_type"] if "asset_type" in p.keys() else None),
+                                "consumed": take,
+                                # La PROPIA foto de reverso del lote (con su autodepósito).
+                                # Sin esto, el lote que el borrado de esta venta re-crea nacía
+                                # con autodep=None y borrarlo después FABRICABA cash y capital
+                                # aportado (medido: 200 y 200 salidos de la nada).
+                                "undo_meta": (p["undo_meta_json"] if "undo_meta_json" in p.keys() else None),
+                            },
+                        }), cur.lastrowid, uid))
 
-            # ── Registrar P&L realizado en monthly_entries ────────────────────────
-            # Usar el año/mes de la operación (no necessarily el mes actual).
-            op_year = int(op_date[:4])
-            op_month = int(op_date[5:7])
+                    # Actualizar / eliminar la posición
+                    if take >= pos_qty - 1e-9:
+                        conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (p["id"], uid))
+                    else:
+                        # Partial sell — el lote remanente conserva su porción
+                        # proporcional de invested y commissions (1 - ratio).
+                        new_qty = pos_qty - take
+                        remaining_ratio = 1 - ratio
+                        new_invested = round((p["invested"] or 0) * remaining_ratio, 6) if p["invested"] is not None else None
+                        new_commissions = round(pos_buy_commissions * remaining_ratio, 6)
+                        conn.execute(
+                            "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
+                            (new_qty, new_invested, new_commissions, p["id"], uid)
+                        )
+                    remaining -= take
 
-            if currency == "ARS":
-                # Broker entry: store in USD-equivalent (same convention as sync_unrealized).
-                # Display in ARS tab = stored_value * tcBlue (current rate, approx).
-                tc_v = data.tc_venta or 1
-                pnl_for_broker = total_pnl_ars_native / tc_v
-            else:
-                pnl_for_broker = total_pnl_usd
+                # ── Phase 2 — acreditar proceeds al cash del broker (moneda nativa) ──
+                if total_proceeds_native > 0:
+                    _adjust_broker_cash(conn, uid, data.broker, total_proceeds_native)
 
-            _update_monthly_pnl_realized(conn, uid, data.broker, op_year, op_month, pnl_for_broker)
-            _update_monthly_pnl_realized(conn, uid, 'global',    op_year, op_month, total_pnl_usd)
+                # ── Registrar P&L realizado en monthly_entries ────────────────────────
+                # Usar el año/mes de la operación (no necessarily el mes actual).
+                op_year = int(op_date[:4])
+                op_month = int(op_date[5:7])
 
-            # Phase 8 — repair chain for both touched brokers (still in tx).
-            _repair_monthly_chain(conn, uid, data.broker)
-            _repair_monthly_chain(conn, uid, 'global')
+                if currency == "ARS":
+                    # Broker entry: store in USD-equivalent (same convention as sync_unrealized).
+                    # Display in ARS tab = stored_value * tcBlue (current rate, approx).
+                    tc_v = data.tc_venta or 1
+                    pnl_for_broker = total_pnl_ars_native / tc_v
+                else:
+                    pnl_for_broker = total_pnl_usd
 
-            ops = [dict(conn.execute(
-                "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)
-            ).fetchone()) for oid in ops_created]
-        conn.close()
-        _ai_cache_invalidate(uid)
-        return {"ok": True, "operations": ops, "closed_count": len(ops)}
-    except HTTPException:
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.close()
-        raise HTTPException(500, f"Error al vender: {ex}")
+                _update_monthly_pnl_realized(conn, uid, data.broker, op_year, op_month, pnl_for_broker)
+                _update_monthly_pnl_realized(conn, uid, 'global',    op_year, op_month, total_pnl_usd)
+
+                # Phase 8 — repair chain for both touched brokers (still in tx).
+                _repair_monthly_chain(conn, uid, data.broker)
+                _repair_monthly_chain(conn, uid, 'global')
+
+                ops = [dict(conn.execute(
+                    "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)
+                ).fetchone()) for oid in ops_created]
+            _ai_cache_invalidate(uid)
+            return {"ok": True, "operations": ops, "closed_count": len(ops)}
+        except HTTPException:
+            raise
+        except Exception as ex:
+            raise HTTPException(500, f"Error al vender: {ex}")
 
 
 # ─── Monthly ─────────────────────────────────────────────────────────────────
@@ -11016,36 +11025,33 @@ def get_monthly(uid: int = Depends(get_effective_user)):
 
 @app.post("/api/monthly")
 def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
-    conn = get_db()
-    # Validar que el broker exista (excepto el especial 'global' que se usa para totales)
-    if e.broker != 'global':
-        exists = conn.execute(
-            "SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, e.broker)
-        ).fetchone()
-        if not exists:
-            conn.close()
-            raise HTTPException(400, f"Broker '{e.broker}' no existe. Agregalo en Config primero.")
-    try:
-        with conn:  # tx: insert + repair atómico
-            man_dep, man_wit = _derive_manual_flows(
-                conn, uid, e.broker, e.year, e.month, e.deposits, e.withdrawals)
-            cur = conn.execute(
-                """INSERT INTO monthly_entries (user_id, year, month, broker, deposits, withdrawals,
-                   manual_deposits, manual_withdrawals,
-                   pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (uid, e.year, e.month, e.broker, e.deposits, e.withdrawals,
-                 man_dep, man_wit, e.pnl_realized, e.pnl_unrealized, e.capital_inicio, e.capital_final),
-            )
-            new_id = cur.lastrowid
-            _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
-        row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (new_id, uid)).fetchone()
-        conn.close()
-        _ai_cache_invalidate(uid)
-        return dict(row)
-    except ERR_INTEGRIDAD:
-        conn.close()
-        raise HTTPException(400, "Ya existe una entrada para ese mes/broker")
+    with db_abierta() as conn:
+        # Validar que el broker exista (excepto el especial 'global' que se usa para totales)
+        if e.broker != 'global':
+            exists = conn.execute(
+                "SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, e.broker)
+            ).fetchone()
+            if not exists:
+                raise HTTPException(400, f"Broker '{e.broker}' no existe. Agregalo en Config primero.")
+        try:
+            with conn:  # tx: insert + repair atómico
+                man_dep, man_wit = _derive_manual_flows(
+                    conn, uid, e.broker, e.year, e.month, e.deposits, e.withdrawals)
+                cur = conn.execute(
+                    """INSERT INTO monthly_entries (user_id, year, month, broker, deposits, withdrawals,
+                       manual_deposits, manual_withdrawals,
+                       pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (uid, e.year, e.month, e.broker, e.deposits, e.withdrawals,
+                     man_dep, man_wit, e.pnl_realized, e.pnl_unrealized, e.capital_inicio, e.capital_final),
+                )
+                new_id = cur.lastrowid
+                _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
+            row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (new_id, uid)).fetchone()
+            _ai_cache_invalidate(uid)
+            return dict(row)
+        except ERR_INTEGRIDAD:
+            raise HTTPException(400, "Ya existe una entrada para ese mes/broker")
 
 
 @app.put("/api/monthly/{eid}")
@@ -11417,11 +11423,10 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
 
 @app.get("/api/operations")
 def get_operations(uid: int = Depends(get_effective_user)):
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM operations WHERE user_id=? ORDER BY date DESC", (uid,)
-    ).fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute(
+            "SELECT * FROM operations WHERE user_id=? ORDER BY date DESC", (uid,)
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -13642,20 +13647,17 @@ def delete_operation(oid: int, uid: int = Depends(get_effective_user)):
     snapshots) y sin resucitar en un re-import. Reversible vía POST .../undo.
     Ver project_delete_ops_cascade. Fase 1: ventas importadas no-bono; el resto
     se bloquea con mensaje claro."""
-    conn = get_db()
-    try:
-        result = _delete_operation_cascade(conn, uid, oid)
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.rollback()
-        conn.close()
-        log.error("delete_operation cascade falló uid=%s oid=%s: %s", uid, oid, ex)
-        raise HTTPException(500, "No se pudo borrar la operación")
-    conn.close()
+    with db_abierta() as conn:
+        try:
+            result = _delete_operation_cascade(conn, uid, oid)
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception as ex:
+            conn.rollback()
+            log.error("delete_operation cascade falló uid=%s oid=%s: %s", uid, oid, ex)
+            raise HTTPException(500, "No se pudo borrar la operación")
     _ai_cache_invalidate(uid)
     return result
 
@@ -13664,78 +13666,74 @@ def delete_operation(oid: int, uid: int = Depends(get_effective_user)):
 def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
     """Deshace un borrado de operación (toast 'Deshacer'). Importada: limpia el
     tombstone + devuelve el cash + re-deriva + cascada (la venta reaparece)."""
-    conn = get_db()
-    try:
-        j = conn.execute(
-            "SELECT * FROM deleted_ops_journal "
-            "WHERE user_id=? AND token=? AND undone_at IS NULL",
-            (uid, token),
-        ).fetchone()
-        # No cerramos acá: el `except HTTPException` es el único punto de cierre
-        # (cerrar antes del raise dejaba la conn cerrada y el rollback tiraba 500).
-        if not j:
-            raise HTTPException(404, "Nada para deshacer")
-        import json as _json
-        if j["kind"] in ("manual_op", "manual_position"):
-            # Lo cargado a mano NO se re-deriva (el rebuild es solo para lo importado):
-            # el undo re-inserta la fila y RE-INVIERTE exactamente las acciones que el
-            # borrado aplicó (cash, lote, autodepósito), que quedaron anotadas.
-            _undo_manual_delete(conn, uid, j)
+    with db_abierta() as conn:
+        try:
+            j = conn.execute(
+                "SELECT * FROM deleted_ops_journal "
+                "WHERE user_id=? AND token=? AND undone_at IS NULL",
+                (uid, token),
+            ).fetchone()
+            # No cerramos acá: el `except HTTPException` es el único punto de cierre
+            # (cerrar antes del raise dejaba la conn cerrada y el rollback tiraba 500).
+            if not j:
+                raise HTTPException(404, "Nada para deshacer")
+            import json as _json
+            if j["kind"] in ("manual_op", "manual_position"):
+                # Lo cargado a mano NO se re-deriva (el rebuild es solo para lo importado):
+                # el undo re-inserta la fila y RE-INVIERTE exactamente las acciones que el
+                # borrado aplicó (cash, lote, autodepósito), que quedaron anotadas.
+                _undo_manual_delete(conn, uid, j)
+                conn.commit()
+                _ai_cache_invalidate(uid)
+                return {"ok": True}
+            if j["kind"] != "imported":
+                raise HTTPException(400, "Este borrado no se puede deshacer automáticamente")
+            p = _json.loads(j["payload_json"])
+            # Guard (mismo que el delete): rebuild_pair_asset limpia TODO el activo y
+            # re-deriva solo lo importado. Si desde el borrado el activo ganó data manual,
+            # deshacer la BORRARÍA en silencio → bloqueamos.
+            # El broker tiene que seguir vivo. `_is_safe_to_rebuild` pasa TRIVIALMENTE cuando
+            # el activo no tiene ninguna fila (any() sobre listas vacías), así que si en el
+            # medio se borró el broker (o se usó "Limpiar broker") el undo seguía adelante y
+            # `_adjust_broker_cash` CREABA la posición cash → plata inventada bajo un broker
+            # inexistente, invisible e imborrable desde la UI. El undo manual ya exigía esto.
+            if not conn.execute(
+                "SELECT 1 FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+                (uid, p["broker"])).fetchone():
+                raise HTTPException(409,
+                    "No se puede deshacer: el broker de esa operación ya no existe.")
+            pair = _import_persister.broker_pair(conn, uid, p["broker"])
+            if not _import_rebuild._is_safe_to_rebuild(conn, uid, pair, p["asset"]):
+                raise HTTPException(409,
+                    "No se puede deshacer: desde que borraste, el activo tiene "
+                    "operaciones cargadas a mano que se perderían al restaurar.")
+            # CLAIM ATÓMICO: marcar undone_at ES el lock — un doble-click/retry no puede
+            # re-acreditar el cash 2× (la 2da matchea 0 filas → 409). El rollback lo
+            # revierte si algo falla después (todo en la misma tx).
+            claimed = conn.execute(
+                "UPDATE deleted_ops_journal SET undone_at=datetime('now') "
+                "WHERE id=? AND undone_at IS NULL", (j["id"],)).rowcount
+            if claimed != 1:
+                raise HTTPException(409, "Ese borrado ya se deshizo.")
+            conn.execute(
+                "UPDATE import_normalized_tx SET excluded_at=NULL, excluded_by=NULL "
+                "WHERE id=? AND batch_id=?",
+                (p["tx_id"], p["batch_id"]),
+            )
+            cash = float(p.get("cash_reversed") or 0)
+            if cash:
+                _adjust_broker_cash(conn, uid, p["broker"], cash)
+            tc_blue = _config_tc_blue(conn, uid)
+            _import_rebuild.rebuild_pair_asset(conn, uid, p["broker"], p["asset"], tc_blue=tc_blue)
+            _cascade_after_movement_delete(conn, uid, j["since_date"], {p["broker"]})
             conn.commit()
-            conn.close()
-            _ai_cache_invalidate(uid)
-            return {"ok": True}
-        if j["kind"] != "imported":
-            raise HTTPException(400, "Este borrado no se puede deshacer automáticamente")
-        p = _json.loads(j["payload_json"])
-        # Guard (mismo que el delete): rebuild_pair_asset limpia TODO el activo y
-        # re-deriva solo lo importado. Si desde el borrado el activo ganó data manual,
-        # deshacer la BORRARÍA en silencio → bloqueamos.
-        # El broker tiene que seguir vivo. `_is_safe_to_rebuild` pasa TRIVIALMENTE cuando
-        # el activo no tiene ninguna fila (any() sobre listas vacías), así que si en el
-        # medio se borró el broker (o se usó "Limpiar broker") el undo seguía adelante y
-        # `_adjust_broker_cash` CREABA la posición cash → plata inventada bajo un broker
-        # inexistente, invisible e imborrable desde la UI. El undo manual ya exigía esto.
-        if not conn.execute(
-            "SELECT 1 FROM brokers WHERE user_id=? AND name=? LIMIT 1",
-            (uid, p["broker"])).fetchone():
-            raise HTTPException(409,
-                "No se puede deshacer: el broker de esa operación ya no existe.")
-        pair = _import_persister.broker_pair(conn, uid, p["broker"])
-        if not _import_rebuild._is_safe_to_rebuild(conn, uid, pair, p["asset"]):
-            raise HTTPException(409,
-                "No se puede deshacer: desde que borraste, el activo tiene "
-                "operaciones cargadas a mano que se perderían al restaurar.")
-        # CLAIM ATÓMICO: marcar undone_at ES el lock — un doble-click/retry no puede
-        # re-acreditar el cash 2× (la 2da matchea 0 filas → 409). El rollback lo
-        # revierte si algo falla después (todo en la misma tx).
-        claimed = conn.execute(
-            "UPDATE deleted_ops_journal SET undone_at=datetime('now') "
-            "WHERE id=? AND undone_at IS NULL", (j["id"],)).rowcount
-        if claimed != 1:
-            raise HTTPException(409, "Ese borrado ya se deshizo.")
-        conn.execute(
-            "UPDATE import_normalized_tx SET excluded_at=NULL, excluded_by=NULL "
-            "WHERE id=? AND batch_id=?",
-            (p["tx_id"], p["batch_id"]),
-        )
-        cash = float(p.get("cash_reversed") or 0)
-        if cash:
-            _adjust_broker_cash(conn, uid, p["broker"], cash)
-        tc_blue = _config_tc_blue(conn, uid)
-        _import_rebuild.rebuild_pair_asset(conn, uid, p["broker"], p["asset"], tc_blue=tc_blue)
-        _cascade_after_movement_delete(conn, uid, j["since_date"], {p["broker"]})
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.rollback()
-        conn.close()
-        log.error("undo_delete_operation falló uid=%s token=%s: %s", uid, token, ex)
-        raise HTTPException(500, "No se pudo deshacer")
-    conn.close()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception as ex:
+            conn.rollback()
+            log.error("undo_delete_operation falló uid=%s token=%s: %s", uid, token, ex)
+            raise HTTPException(500, "No se pudo deshacer")
     _ai_cache_invalidate(uid)
     return {"ok": True}
 
@@ -13944,20 +13942,17 @@ def delete_asset_history(asset: str, uid: int = Depends(get_effective_user)):
     amortizaciones y dividendos, todos los brokers) con cascada TOTAL. Reversible vía
     POST /api/assets/undo/{token}. Soporta bonos y renta fija; bloquea foto de tenencia
     y data manual de trades mezclada."""
-    conn = get_db()
-    try:
-        result = _delete_asset_history_cascade(conn, uid, asset)
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.rollback()
-        conn.close()
-        log.error("delete_asset_history falló uid=%s asset=%s: %s", uid, asset, ex)
-        raise HTTPException(500, "No se pudo borrar el activo")
-    conn.close()
+    with db_abierta() as conn:
+        try:
+            result = _delete_asset_history_cascade(conn, uid, asset)
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception as ex:
+            conn.rollback()
+            log.error("delete_asset_history falló uid=%s asset=%s: %s", uid, asset, ex)
+            raise HTTPException(500, "No se pudo borrar el activo")
     _ai_cache_invalidate(uid)
     return result
 
@@ -13966,107 +13961,104 @@ def delete_asset_history(asset: str, uid: int = Depends(get_effective_user)):
 def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)):
     """Deshace el borrado del historial de un activo: restaura las filas, devuelve el
     cash y re-deriva cada par (el activo reaparece completo)."""
-    conn = get_db()
-    try:
-        j = conn.execute(
-            "SELECT * FROM deleted_ops_journal WHERE user_id=? AND token=? "
-            "AND undone_at IS NULL AND kind='imported_asset'", (uid, token),
-        ).fetchone()
-        if not j:
-            raise HTTPException(404, "Nada para deshacer")
-        import json as _json
-        p = _json.loads(j["payload_json"])
-        asset, pairs = p["asset"], p["pairs"]
-        _idset = set(p["tx_ids"])
-        # Mismo guard que el undo por-operación: si el broker ya no existe, el cash que
-        # devolvemos crearía una posición fantasma bajo un broker inexistente.
-        for _b in (p.get("brokers") or []):
-            if _b and not conn.execute(
-                "SELECT 1 FROM brokers WHERE user_id=? AND name=? LIMIT 1",
-                (uid, _b)).fetchone():
-                raise HTTPException(409,
-                    "No se puede deshacer: uno de los brokers de ese activo ya no existe.")
-        for pr in pairs:
-            # Guard: si desde el borrado algún par ganó data manual, deshacer la borraría.
-            if not _import_rebuild._is_safe_to_rebuild(conn, uid, pr, asset):
-                raise HTTPException(409,
-                    "No se puede deshacer: el activo tiene ahora operaciones cargadas "
-                    "a mano que se perderían al restaurar.")
-            # Guard re-import: si aparecieron filas nuevas (no excluidas) del activo
-            # fuera del set borrado, deshacer FUSIONARÍA viejo+nuevo → duplicaría.
-            _phg = ",".join("?" * len(pr))
-            fresh = conn.execute(
-                f"""SELECT n.id FROM import_normalized_tx n
-                      JOIN import_batches b ON b.id = n.batch_id
-                     WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
-                       AND n.broker IN ({_phg}) AND n.asset_symbol=?
-                       AND n.operation_type IN ('BUY','SELL','DIVIDEND','INTEREST')""",
-                (uid, *pr, asset),
-            ).fetchall()
-            if any(row["id"] not in _idset for row in fresh):
-                raise HTTPException(409,
-                    "No se puede deshacer: volviste a importar este activo desde que "
-                    "lo borraste.")
-        # CLAIM ATÓMICO (evita doble-undo → doble-crédito de cash).
-        if conn.execute(
-            "UPDATE deleted_ops_journal SET undone_at=datetime('now') "
-            "WHERE id=? AND undone_at IS NULL", (j["id"],)).rowcount != 1:
-            raise HTTPException(409, "Ese borrado ya se deshizo.")
-        for tid in p["tx_ids"]:
-            conn.execute(
-                "UPDATE import_normalized_tx SET excluded_at=NULL, excluded_by=NULL WHERE id=?", (tid,))
-        for b, delta in (p.get("cash_by_broker") or {}).items():
-            if delta:
-                _adjust_broker_cash(conn, uid, b, -float(delta))   # reversar lo que aplicó el delete
-        tc_blue = _config_tc_blue(conn, uid)
-        for pr in pairs:
-            _import_rebuild.rebuild_pair_asset(conn, uid, pr[0], asset, tc_blue=tc_blue)
-        # El rebuild restaura el nominal ORIGINAL del bono; si estaba amortizado, hay
-        # que volver a bajar la cantidad por el calendario de amortización (mismo sweep
-        # que corre en cada import). Sin esto, deshacer el borrado de un bono ya
-        # amortizado lo mostraría al 100% del face + el cash del cupón → sobre-valuado.
-        _import_maturity.sweep_bond_amortizations(conn, uid)
-        # Recrear las operations de renta fija que el delete borró (rebuild solo trae
-        # BUY/SELL). El cash ya se re-acreditó arriba vía cash_by_broker. Re-linkeamos
-        # las importadas a su raw row para que el revert las siga tratando como tales.
-        for snap in (p.get("rf_ops") or []):
-            cur = conn.execute(
-                """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd,
-                     quantity, commissions, notes, currency, fx_to_usd, cost_basis_consumed)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (uid, snap.get("date"), snap.get("broker"), snap.get("asset"),
-                 snap.get("op_type"), snap.get("pnl_usd"), snap.get("quantity"),
-                 snap.get("commissions"), snap.get("notes"), snap.get("currency"),
-                 snap.get("fx_to_usd"), snap.get("cost_basis_consumed")),
-            )
-            if snap.get("l_batch") is not None:
-                new_oid = cur.lastrowid
+    with db_abierta() as conn:
+        try:
+            j = conn.execute(
+                "SELECT * FROM deleted_ops_journal WHERE user_id=? AND token=? "
+                "AND undone_at IS NULL AND kind='imported_asset'", (uid, token),
+            ).fetchone()
+            if not j:
+                raise HTTPException(404, "Nada para deshacer")
+            import json as _json
+            p = _json.loads(j["payload_json"])
+            asset, pairs = p["asset"], p["pairs"]
+            _idset = set(p["tx_ids"])
+            # Mismo guard que el undo por-operación: si el broker ya no existe, el cash que
+            # devolvemos crearía una posición fantasma bajo un broker inexistente.
+            for _b in (p.get("brokers") or []):
+                if _b and not conn.execute(
+                    "SELECT 1 FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+                    (uid, _b)).fetchone():
+                    raise HTTPException(409,
+                        "No se puede deshacer: uno de los brokers de ese activo ya no existe.")
+            for pr in pairs:
+                # Guard: si desde el borrado algún par ganó data manual, deshacer la borraría.
+                if not _import_rebuild._is_safe_to_rebuild(conn, uid, pr, asset):
+                    raise HTTPException(409,
+                        "No se puede deshacer: el activo tiene ahora operaciones cargadas "
+                        "a mano que se perderían al restaurar.")
+                # Guard re-import: si aparecieron filas nuevas (no excluidas) del activo
+                # fuera del set borrado, deshacer FUSIONARÍA viejo+nuevo → duplicaría.
+                _phg = ",".join("?" * len(pr))
+                fresh = conn.execute(
+                    f"""SELECT n.id FROM import_normalized_tx n
+                          JOIN import_batches b ON b.id = n.batch_id
+                         WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                           AND n.broker IN ({_phg}) AND n.asset_symbol=?
+                           AND n.operation_type IN ('BUY','SELL','DIVIDEND','INTEREST')""",
+                    (uid, *pr, asset),
+                ).fetchall()
+                if any(row["id"] not in _idset for row in fresh):
+                    raise HTTPException(409,
+                        "No se puede deshacer: volviste a importar este activo desde que "
+                        "lo borraste.")
+            # CLAIM ATÓMICO (evita doble-undo → doble-crédito de cash).
+            if conn.execute(
+                "UPDATE deleted_ops_journal SET undone_at=datetime('now') "
+                "WHERE id=? AND undone_at IS NULL", (j["id"],)).rowcount != 1:
+                raise HTTPException(409, "Ese borrado ya se deshizo.")
+            for tid in p["tx_ids"]:
                 conn.execute(
-                    "INSERT INTO import_op_links (batch_id, raw_row_id, operation_id) VALUES (?,?,?)",
-                    (snap["l_batch"], snap["l_raw"], new_oid))
-                conn.execute(
-                    "UPDATE import_normalized_tx SET created_operation_id=? WHERE batch_id=? AND raw_row_id=?",
-                    (new_oid, snap["l_batch"], snap["l_raw"]))
-            # Asegurar que exista la fila del mes para que _recalc (abajo) aterrice el
-            # P&L del cupón/dividendo: _recalc solo recompone meses YA presentes en
-            # monthly_entries, y el rebuild solo crea los de BUY/SELL. Espeja al persister.
-            _pnl = float(snap.get("pnl_usd") or 0)
-            if _pnl and snap.get("date"):
-                _y, _m = int(snap["date"][:4]), int(snap["date"][5:7])
-                _update_monthly_pnl_realized(conn, uid, snap["broker"], _y, _m, _pnl)
-                _update_monthly_pnl_realized(conn, uid, "global", _y, _m, _pnl)
-        _cascade_after_movement_delete(conn, uid, j["since_date"], set(p.get("brokers") or []))
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.rollback()
-        conn.close()
-        log.error("undo_delete_asset_history falló uid=%s token=%s: %s", uid, token, ex)
-        raise HTTPException(500, "No se pudo deshacer")
-    conn.close()
+                    "UPDATE import_normalized_tx SET excluded_at=NULL, excluded_by=NULL WHERE id=?", (tid,))
+            for b, delta in (p.get("cash_by_broker") or {}).items():
+                if delta:
+                    _adjust_broker_cash(conn, uid, b, -float(delta))   # reversar lo que aplicó el delete
+            tc_blue = _config_tc_blue(conn, uid)
+            for pr in pairs:
+                _import_rebuild.rebuild_pair_asset(conn, uid, pr[0], asset, tc_blue=tc_blue)
+            # El rebuild restaura el nominal ORIGINAL del bono; si estaba amortizado, hay
+            # que volver a bajar la cantidad por el calendario de amortización (mismo sweep
+            # que corre en cada import). Sin esto, deshacer el borrado de un bono ya
+            # amortizado lo mostraría al 100% del face + el cash del cupón → sobre-valuado.
+            _import_maturity.sweep_bond_amortizations(conn, uid)
+            # Recrear las operations de renta fija que el delete borró (rebuild solo trae
+            # BUY/SELL). El cash ya se re-acreditó arriba vía cash_by_broker. Re-linkeamos
+            # las importadas a su raw row para que el revert las siga tratando como tales.
+            for snap in (p.get("rf_ops") or []):
+                cur = conn.execute(
+                    """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd,
+                         quantity, commissions, notes, currency, fx_to_usd, cost_basis_consumed)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (uid, snap.get("date"), snap.get("broker"), snap.get("asset"),
+                     snap.get("op_type"), snap.get("pnl_usd"), snap.get("quantity"),
+                     snap.get("commissions"), snap.get("notes"), snap.get("currency"),
+                     snap.get("fx_to_usd"), snap.get("cost_basis_consumed")),
+                )
+                if snap.get("l_batch") is not None:
+                    new_oid = cur.lastrowid
+                    conn.execute(
+                        "INSERT INTO import_op_links (batch_id, raw_row_id, operation_id) VALUES (?,?,?)",
+                        (snap["l_batch"], snap["l_raw"], new_oid))
+                    conn.execute(
+                        "UPDATE import_normalized_tx SET created_operation_id=? WHERE batch_id=? AND raw_row_id=?",
+                        (new_oid, snap["l_batch"], snap["l_raw"]))
+                # Asegurar que exista la fila del mes para que _recalc (abajo) aterrice el
+                # P&L del cupón/dividendo: _recalc solo recompone meses YA presentes en
+                # monthly_entries, y el rebuild solo crea los de BUY/SELL. Espeja al persister.
+                _pnl = float(snap.get("pnl_usd") or 0)
+                if _pnl and snap.get("date"):
+                    _y, _m = int(snap["date"][:4]), int(snap["date"][5:7])
+                    _update_monthly_pnl_realized(conn, uid, snap["broker"], _y, _m, _pnl)
+                    _update_monthly_pnl_realized(conn, uid, "global", _y, _m, _pnl)
+            _cascade_after_movement_delete(conn, uid, j["since_date"], set(p.get("brokers") or []))
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception as ex:
+            conn.rollback()
+            log.error("undo_delete_asset_history falló uid=%s token=%s: %s", uid, token, ex)
+            raise HTTPException(500, "No se pudo deshacer")
     _ai_cache_invalidate(uid)
     return {"ok": True}
 
@@ -14089,11 +14081,10 @@ class GoalIn(BaseModel):
 
 @app.get("/api/goals")
 def list_goals(uid: int = Depends(get_effective_user)):
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM goals WHERE user_id=? ORDER BY target_date ASC", (uid,)
-    ).fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute(
+            "SELECT * FROM goals WHERE user_id=? ORDER BY target_date ASC", (uid,)
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -14614,6 +14605,7 @@ def _repair_snapshots_summary(real_conn, users, apply: bool) -> dict:
         return out
     if apply:
         return _loop(real_conn)
+    dberrors.exigir_clon_soportado(real_conn, "Reparar snapshots (ensayo)")
     import tempfile as _tf, sqlite3 as _sq, os as _os
     tmp = _tf.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
     clone = _sq.connect(tmp.name); clone.row_factory = _sq.Row
@@ -14742,6 +14734,12 @@ def admin_backfill_recompute(apply: bool = False, safe_only: bool = True, cost_o
                  summary.get("cash_warnings", 0), len(summary["errors"]))
         return summary
     except HTTPException:
+        raise
+    except dberrors.EnsayoPorClonNoDisponible:
+        # Sólo-SQLite, no es una falla: que suba al handler que contesta 501 con
+        # el mensaje explicativo. Sin esta línea, el `except Exception` de abajo
+        # lo convertiría en "backfill falló: EnsayoPorClonNoDisponible: …", que es
+        # exactamente el error críptico que se quiso evitar.
         raise
     except Exception as e:
         # Un admin endpoint de diagnóstico NUNCA debe tragarse su error como un
@@ -15768,6 +15766,7 @@ def admin_fx_migrate_user(user_id: int, apply: bool = False, force: bool = False
         try:
             src = get_db()
             try:
+                dberrors.exigir_clon_soportado(src, "Migrar TC histórico (ensayo)")
                 # backup() copia consistente aunque haya un writer activo (WAL)
                 dst = sqlite3.connect(tmp.name)
                 src.backup(dst)
@@ -16088,6 +16087,7 @@ def admin_fx_migrate_batch(body: FxMigrateBatchIn, uid: int = Depends(get_admin_
     try:
         src_conn = get_db()
         try:
+            dberrors.exigir_clon_soportado(src_conn, "Migrar TC histórico en lote (ensayo)")
             dst = sqlite3.connect(tmp.name)
             src_conn.backup(dst)                  # copia consistente aun con writers
             dst.close()
@@ -16468,54 +16468,53 @@ def admin_backup_trigger(uid: int = Depends(get_admin_user)):
 
 @app.get("/api/admin/stats")
 def admin_stats(uid: int = Depends(get_admin_user)):
-    conn = get_db()
-    # Excluir cuentas de test/sintéticas de los top-line (los tests creaban
-    # usuarios @rendi.test que inflaban estos counts). NOTEST conserva a los
-    # admins reales (a diferencia de REAL más abajo, que también los excluye).
-    NOTEST = ("email NOT LIKE '%@rendi.test' "
-              "AND email NOT LIKE 'test@%' "
-              "AND email NOT LIKE '%+test%'")
-    NOTEST_IDS = f"SELECT id FROM users WHERE {NOTEST}"
-    users_total = conn.execute(f"SELECT COUNT(*) FROM users WHERE {NOTEST}").fetchone()[0]
-    users_admin = conn.execute(f"SELECT COUNT(*) FROM users WHERE is_admin=1 AND {NOTEST}").fetchone()[0]
-    users_last_7d = conn.execute(
-        f"SELECT COUNT(*) FROM users WHERE created_at >= datetime('now','-7 days') AND {NOTEST}"
-    ).fetchone()[0]
-    active_last_7d = conn.execute(
-        f"SELECT COUNT(*) FROM users WHERE last_login_at >= datetime('now','-7 days') AND {NOTEST}"
-    ).fetchone()[0]
-    positions_total = conn.execute(f"SELECT COUNT(*) FROM positions WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
-    operations_total = conn.execute(f"SELECT COUNT(*) FROM operations WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
-    monthly_total = conn.execute(f"SELECT COUNT(*) FROM monthly_entries WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
-    snapshots_total = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
-    brokers_total = conn.execute(f"SELECT COUNT(*) FROM brokers WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
-    users_pending = conn.execute(f"SELECT COUNT(*) FROM users WHERE approved=0 AND {NOTEST}").fetchone()[0]
+    with db_abierta() as conn:
+        # Excluir cuentas de test/sintéticas de los top-line (los tests creaban
+        # usuarios @rendi.test que inflaban estos counts). NOTEST conserva a los
+        # admins reales (a diferencia de REAL más abajo, que también los excluye).
+        NOTEST = ("email NOT LIKE '%@rendi.test' "
+                  "AND email NOT LIKE 'test@%' "
+                  "AND email NOT LIKE '%+test%'")
+        NOTEST_IDS = f"SELECT id FROM users WHERE {NOTEST}"
+        users_total = conn.execute(f"SELECT COUNT(*) FROM users WHERE {NOTEST}").fetchone()[0]
+        users_admin = conn.execute(f"SELECT COUNT(*) FROM users WHERE is_admin=1 AND {NOTEST}").fetchone()[0]
+        users_last_7d = conn.execute(
+            f"SELECT COUNT(*) FROM users WHERE created_at >= datetime('now','-7 days') AND {NOTEST}"
+        ).fetchone()[0]
+        active_last_7d = conn.execute(
+            f"SELECT COUNT(*) FROM users WHERE last_login_at >= datetime('now','-7 days') AND {NOTEST}"
+        ).fetchone()[0]
+        positions_total = conn.execute(f"SELECT COUNT(*) FROM positions WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
+        operations_total = conn.execute(f"SELECT COUNT(*) FROM operations WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
+        monthly_total = conn.execute(f"SELECT COUNT(*) FROM monthly_entries WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
+        snapshots_total = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+        brokers_total = conn.execute(f"SELECT COUNT(*) FROM brokers WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
+        users_pending = conn.execute(f"SELECT COUNT(*) FROM users WHERE approved=0 AND {NOTEST}").fetchone()[0]
 
-    # ── Embudo de activación ──────────────────────────────────────────────────
-    # Cohorte = usuarios REALES (verificados, no-admin, sin cuentas de test/internas
-    # — mismo filtro que /api/stats/public para que los números cierren). Mide
-    # cuántos avanzan: verificó → creó broker → cargó posición → ≥1 operación →
-    # ≥2 operaciones. Sirve para ver EN QUÉ ESCALÓN se cae la gente.
-    REAL = ("email_verified=1 AND is_admin=0 "
-            "AND email NOT LIKE '%@rendi.test' "
-            "AND email NOT LIKE '%@rendi.finance' "
-            "AND email NOT LIKE 'test@%' "
-            "AND email NOT LIKE '%+test%'")
-    act_verified = conn.execute(f"SELECT COUNT(*) FROM users WHERE {REAL}").fetchone()[0]
-    act_broker = conn.execute(
-        f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM brokers b WHERE b.user_id=u.id)"
-    ).fetchone()[0]
-    act_position = conn.execute(
-        f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM positions p WHERE p.user_id=u.id)"
-    ).fetchone()[0]
-    act_op1 = conn.execute(
-        f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM operations o WHERE o.user_id=u.id)"
-    ).fetchone()[0]
-    act_op2 = conn.execute(
-        f"SELECT COUNT(*) FROM users u WHERE {REAL} AND (SELECT COUNT(*) FROM operations o WHERE o.user_id=u.id) >= 2"
-    ).fetchone()[0]
+        # ── Embudo de activación ──────────────────────────────────────────────────
+        # Cohorte = usuarios REALES (verificados, no-admin, sin cuentas de test/internas
+        # — mismo filtro que /api/stats/public para que los números cierren). Mide
+        # cuántos avanzan: verificó → creó broker → cargó posición → ≥1 operación →
+        # ≥2 operaciones. Sirve para ver EN QUÉ ESCALÓN se cae la gente.
+        REAL = ("email_verified=1 AND is_admin=0 "
+                "AND email NOT LIKE '%@rendi.test' "
+                "AND email NOT LIKE '%@rendi.finance' "
+                "AND email NOT LIKE 'test@%' "
+                "AND email NOT LIKE '%+test%'")
+        act_verified = conn.execute(f"SELECT COUNT(*) FROM users WHERE {REAL}").fetchone()[0]
+        act_broker = conn.execute(
+            f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM brokers b WHERE b.user_id=u.id)"
+        ).fetchone()[0]
+        act_position = conn.execute(
+            f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM positions p WHERE p.user_id=u.id)"
+        ).fetchone()[0]
+        act_op1 = conn.execute(
+            f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM operations o WHERE o.user_id=u.id)"
+        ).fetchone()[0]
+        act_op2 = conn.execute(
+            f"SELECT COUNT(*) FROM users u WHERE {REAL} AND (SELECT COUNT(*) FROM operations o WHERE o.user_id=u.id) >= 2"
+        ).fetchone()[0]
 
-    conn.close()
     return {
         "users_total": users_total,
         "users_admin": users_admin,
@@ -16747,9 +16746,8 @@ def admin_users(uid: int = Depends(get_admin_user)):
         cron. El panel los resalta con un botón "Restaurar" que pega a
         /api/admin/billing/restore-tier (no recobra, solo realinea tier)."""
     from datetime import datetime as _dt
-    conn = get_db()
-    rows = conn.execute(_ADMIN_USERS_SELECT + " ORDER BY u.created_at DESC").fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute(_ADMIN_USERS_SELECT + " ORDER BY u.created_at DESC").fetchall()
     now_iso = _dt.utcnow().isoformat()
     return [_shape_admin_user_row(r, now_iso) for r in rows]
 
@@ -16787,14 +16785,13 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
         params += [like, like]
     if not conds:                          # 1 char no-numérico → nada (evita traer todo)
         return []
-    conn = get_db()
-    rows = conn.execute(
-        _ADMIN_USERS_SELECT +
-        " WHERE " + " OR ".join(conds) +
-        " ORDER BY (u.id = ?) DESC, u.created_at DESC LIMIT ?",
-        (*params, as_id, limit),
-    ).fetchall()
-    conn.close()
+    with db_abierta() as conn:
+        rows = conn.execute(
+            _ADMIN_USERS_SELECT +
+            " WHERE " + " OR ".join(conds) +
+            " ORDER BY (u.id = ?) DESC, u.created_at DESC LIMIT ?",
+            (*params, as_id, limit),
+        ).fetchall()
     now_iso = _dt.utcnow().isoformat()
     return [_shape_admin_user_row(r, now_iso) for r in rows]
 
@@ -17906,63 +17903,59 @@ def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
     """Borra un usuario y todos sus datos. No permite borrarse a sí mismo ni a otros admins."""
     if user_id == uid:
         raise HTTPException(400, "No podés borrar tu propio usuario admin")
-    conn = get_db()
-    target = conn.execute("SELECT is_admin FROM users WHERE id=?", (user_id,)).fetchone()
-    if not target:
-        conn.close()
-        raise HTTPException(404, "Usuario no existe")
-    if target["is_admin"]:
-        conn.close()
-        raise HTTPException(403, "No se puede borrar otro admin desde la API")
-    try:
-        # Cascada COMPLETA (audit: la lista hardcodeada de 6 tablas fallaba por
-        # FOREIGN KEY con cualquier usuario del plan asesor — advisor_clients /
-        # batches referencian users — y no había camino de soporte para purgar
-        # un shadow revocado). Mismo barrido dinámico que delete_my_account.
-        def _wipe(_uid):
-            batch_ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM import_batches WHERE user_id=?", (_uid,)).fetchall()]
-            if batch_ids:
-                _ph = ",".join("?" * len(batch_ids))
-                for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                    conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
-            for t in [r["name"] for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]:
-                cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
-                if "user_id" in cols:
-                    conn.execute(f"DELETE FROM {t} WHERE user_id=?", (_uid,))
-            conn.execute("DELETE FROM users WHERE id=?", (_uid,))
-        with conn:
-            shadow_ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM users WHERE managed_by=?", (user_id,)).fetchall()]
-            conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=? OR client_uid=?",
-                         (user_id, user_id))
-            for _sid in [user_id] + shadow_ids:
-                conn.execute("DELETE FROM advisor_reports WHERE advisor_uid=? OR client_uid=?",
-                             (_sid, _sid))
-                conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
-            conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (user_id,))
-            for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
-                       "advisor_alert_events", "advisor_brief_log"):
-                conn.execute(f"DELETE FROM {_t} WHERE advisor_uid=?", (user_id,))
-            adv_batches = [r["id"] for r in conn.execute(
-                "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (user_id,)).fetchall()]
-            if adv_batches:
-                _ph = ",".join("?" * len(adv_batches))
-                conn.execute(f"DELETE FROM advisor_op_batch_items WHERE batch_id IN ({_ph})",
-                             tuple(adv_batches))
-                conn.execute(f"DELETE FROM advisor_op_batches WHERE id IN ({_ph})",
-                             tuple(adv_batches))
-            for _sid in shadow_ids:
-                conn.execute("DELETE FROM advisor_clients WHERE client_uid=? OR advisor_uid=?",
-                             (_sid, _sid))
-                _wipe(_sid)
-            _wipe(user_id)
-        conn.close()
-        return {"ok": True}
-    except Exception as ex:
-        conn.close()
-        raise HTTPException(500, f"Error al borrar: {ex}")
+    with db_abierta() as conn:
+        target = conn.execute("SELECT is_admin FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            raise HTTPException(404, "Usuario no existe")
+        if target["is_admin"]:
+            raise HTTPException(403, "No se puede borrar otro admin desde la API")
+        try:
+            # Cascada COMPLETA (audit: la lista hardcodeada de 6 tablas fallaba por
+            # FOREIGN KEY con cualquier usuario del plan asesor — advisor_clients /
+            # batches referencian users — y no había camino de soporte para purgar
+            # un shadow revocado). Mismo barrido dinámico que delete_my_account.
+            def _wipe(_uid):
+                batch_ids = [r["id"] for r in conn.execute(
+                    "SELECT id FROM import_batches WHERE user_id=?", (_uid,)).fetchall()]
+                if batch_ids:
+                    _ph = ",".join("?" * len(batch_ids))
+                    for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+                        conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
+                for t in [r["name"] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]:
+                    cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
+                    if "user_id" in cols:
+                        conn.execute(f"DELETE FROM {t} WHERE user_id=?", (_uid,))
+                conn.execute("DELETE FROM users WHERE id=?", (_uid,))
+            with conn:
+                shadow_ids = [r["id"] for r in conn.execute(
+                    "SELECT id FROM users WHERE managed_by=?", (user_id,)).fetchall()]
+                conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=? OR client_uid=?",
+                             (user_id, user_id))
+                for _sid in [user_id] + shadow_ids:
+                    conn.execute("DELETE FROM advisor_reports WHERE advisor_uid=? OR client_uid=?",
+                                 (_sid, _sid))
+                    conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
+                conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (user_id,))
+                for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
+                           "advisor_alert_events", "advisor_brief_log"):
+                    conn.execute(f"DELETE FROM {_t} WHERE advisor_uid=?", (user_id,))
+                adv_batches = [r["id"] for r in conn.execute(
+                    "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (user_id,)).fetchall()]
+                if adv_batches:
+                    _ph = ",".join("?" * len(adv_batches))
+                    conn.execute(f"DELETE FROM advisor_op_batch_items WHERE batch_id IN ({_ph})",
+                                 tuple(adv_batches))
+                    conn.execute(f"DELETE FROM advisor_op_batches WHERE id IN ({_ph})",
+                                 tuple(adv_batches))
+                for _sid in shadow_ids:
+                    conn.execute("DELETE FROM advisor_clients WHERE client_uid=? OR advisor_uid=?",
+                                 (_sid, _sid))
+                    _wipe(_sid)
+                _wipe(user_id)
+            return {"ok": True}
+        except Exception as ex:
+            raise HTTPException(500, f"Error al borrar: {ex}")
 
 
 # ─── AI (Claude) ────────────────────────────────────────────────────────────
@@ -22950,14 +22943,13 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         if not _SYMBOL_RE.match(asset):
             log.info("AI tool get_asset_operations rejected — invalid asset format: %r", raw_asset)
             return {"error": f"asset '{asset}' no tiene formato válido (alphanumeric A-Z0-9, max 10 chars, opcional .BA)"}
-        conn = get_db()
-        rows = conn.execute(
-            """SELECT date, op_type, entry_price, exit_price, quantity,
-                      pnl_usd, pnl_pct, entry_date
-               FROM operations WHERE user_id=? AND asset=? ORDER BY date DESC""",
-            (uid, asset),
-        ).fetchall()
-        conn.close()
+        with db_abierta() as conn:
+            rows = conn.execute(
+                """SELECT date, op_type, entry_price, exit_price, quantity,
+                          pnl_usd, pnl_pct, entry_date
+                   FROM operations WHERE user_id=? AND asset=? ORDER BY date DESC""",
+                (uid, asset),
+            ).fetchall()
         return {"asset": asset, "operations": [dict(r) for r in rows], "count": len(rows)}
 
     elif name == "get_monthly_detail":
@@ -22979,16 +22971,15 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             _cut_m -= 1
             if _cut_m == 0:
                 _cut_y, _cut_m = _cut_y - 1, 12
-        conn = get_db()
-        rows = conn.execute(
-            """SELECT year, month, broker, deposits, withdrawals,
-                      pnl_realized, pnl_unrealized, capital_inicio, capital_final
-               FROM monthly_entries
-              WHERE user_id=? AND (year > ? OR (year = ? AND month >= ?))
-              ORDER BY year DESC, month DESC""",
-            (uid, _cut_y, _cut_y, _cut_m),
-        ).fetchall()
-        conn.close()
+        with db_abierta() as conn:
+            rows = conn.execute(
+                """SELECT year, month, broker, deposits, withdrawals,
+                          pnl_realized, pnl_unrealized, capital_inicio, capital_final
+                   FROM monthly_entries
+                  WHERE user_id=? AND (year > ? OR (year = ? AND month >= ?))
+                  ORDER BY year DESC, month DESC""",
+                (uid, _cut_y, _cut_y, _cut_m),
+            ).fetchall()
         return {
             "entries": [dict(r) for r in rows],
             "_note": (

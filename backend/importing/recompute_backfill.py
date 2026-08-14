@@ -78,7 +78,12 @@ def _clone_db(real_conn):
     Railway tiene TBs, el volumen /data es chico y no entra el clon) y backup() se
     reintenta ante un lock transitorio. Limpia el .db + sidecars -wal/-shm en el
     finally, SIEMPRE. Reemplaza el patrón tempfile+backup+try/finally duplicado en
-    cada call-site del dry-run."""
+    cada call-site del dry-run.
+
+    Sólo SQLite: el clon es `sqlite3.Connection.backup()` y en Postgres no existe.
+    Corta acá arriba con un mensaje claro en vez de reventar adentro del backup
+    con un AttributeError de psycopg (ver dberrors.exigir_clon_soportado)."""
+    dberrors.exigir_clon_soportado(real_conn, "Recomputar posiciones (backfill)")
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=_clone_target_dir(real_conn))
     tmp.close()
     clone = sqlite3.connect(tmp.name)
@@ -494,9 +499,39 @@ def _classify_safe(real_conn, uid: int, before: Dict[tuple, float],
     return safe
 
 
-def _apply_safe(real_conn, uid: int, safe: List[Dict[str, Any]], linked: set) -> None:
-    """Aplica los cambios seguros a la DB REAL: escala los lotes import-linked del
-    par a su nominal objetivo (borra si es 0). Respeta lotes manuales."""
+# ── EL TOPE DE CORDURA ───────────────────────────────────────────────────────
+# Este archivo BORRA posiciones (`DELETE FROM positions`, en _ejecutar_plan) y
+# hasta la sesión 6 no tenía ningún piso. El accidente que frena es concreto: si
+# la copia sale vacía o incompleta, `_classify_safe` lee "esto tenía cantidad y
+# ahora es cero", lo marca como fantasma, y se borran tenencias REALES. Lo que ve
+# el usuario es que abre la app y no están sus acciones. Sólo se recupera de backup.
+#
+# Son dos topes con trabajos distintos:
+#
+#   POR USUARIO  protege a cada persona de que le vacíen la cuenta.
+#   POR TANDA    detecta que el problema es del PROCESO y no de un usuario raro
+#                (si la copia salió mal, TODOS dan "borrá todo" a la vez).
+#
+# Los pisos absolutos no son decoración: sin ellos el porcentaje frena cuentas
+# chicas legítimas. Alguien con 2 letras vencidas pierde el 100% de sus posiciones
+# y está perfecto — el porcentaje solo no sabe distinguir eso de un desastre.
+TOPE_USUARIO_PCT = 0.50     # borrar más de la mitad de las posiciones de alguien…
+TOPE_USUARIO_PISO = 5       # …y que eso sean 5 filas o más → frenar a ese usuario
+TOPE_TANDA_PCT = 0.25       # más de 1 de cada 4 usuarios frenados…
+TOPE_TANDA_PISO = 3         # …y que sean 3 o más → abortar la tanda entera
+
+
+def _plan_safe(real_conn, uid: int, safe: List[Dict[str, Any]], linked: set):
+    """Calcula QUÉ filas se tocarían, SIN tocar nada.
+
+    Partir el cálculo de la escritura es lo que hace posible el tope: para saber
+    si el daño es razonable hay que conocerlo ANTES de hacerlo. Antes esto vivía
+    mezclado adentro de `_apply_safe` y no había dónde mirar.
+
+    Devuelve (borrar, actualizar): ids a borrar, y tuplas listas para el UPDATE.
+    """
+    borrar: List[int] = []
+    actualizar: List[tuple] = []
     for ch in safe:
         pair, a, target = ch["pair"], ch["asset"], ch["after"]
         _ph = ",".join("?" * len(pair))
@@ -513,12 +548,48 @@ def _apply_safe(real_conn, uid: int, safe: List[Dict[str, Any]], linked: set) ->
         for l in linked_lots:
             nq = (l["quantity"] or 0) * factor
             if nq <= 1e-9:
-                real_conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (l["id"], uid))
+                borrar.append(l["id"])
             else:
-                real_conn.execute(
-                    "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
-                    (round(nq, 6), round((l["invested"] or 0) * factor, 6),
-                     round((l["commissions"] or 0) * factor, 6), l["id"], uid))
+                actualizar.append((round(nq, 6), round((l["invested"] or 0) * factor, 6),
+                                   round((l["commissions"] or 0) * factor, 6), l["id"]))
+    return borrar, actualizar
+
+
+def _excede_tope_usuario(real_conn, uid: int, n_borrar: int):
+    """¿Este plan le borraría a este usuario más de lo razonable?
+
+    Devuelve None si está bien, o un dict con los números para reportar. El
+    denominador son las posiciones NO-cash con cantidad que el usuario tiene HOY:
+    es la pregunta que importa, "¿qué proporción de su cartera desaparece?".
+    """
+    if n_borrar < TOPE_USUARIO_PISO:
+        return None
+    r = real_conn.execute(
+        "SELECT COUNT(*) c FROM positions WHERE user_id=? AND is_cash=0 AND quantity>0",
+        (uid,)).fetchone()
+    total = int((r["c"] if r else 0) or 0)
+    if total <= 0:
+        return None
+    pct = n_borrar / total
+    if pct <= TOPE_USUARIO_PCT:
+        return None
+    return {"uid": uid, "borraria": n_borrar, "tiene": total, "pct": round(pct * 100, 1)}
+
+
+def _ejecutar_plan(real_conn, uid: int, borrar: List[int], actualizar: List[tuple]) -> None:
+    """Escribe el plan ya revisado contra el tope. La única función que borra."""
+    for pid in borrar:
+        real_conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
+    for (nq, inv, com, pid) in actualizar:
+        real_conn.execute(
+            "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
+            (nq, inv, com, pid, uid))
+
+
+# NOTA: acá vivía `_apply_safe`, que planificaba y escribía en la misma función.
+# Se borró en vez de dejarla "por compatibilidad": no la llamaba nadie de afuera
+# (verificado con grep en todo el backend) y un segundo camino que borra posiciones
+# SIN pasar por el tope es exactamente el agujero que este cambio viene a tapar.
 
 
 def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
@@ -526,11 +597,23 @@ def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
     """Backfill SOLO de cambios seguros (ver _classify_safe). El estado 'ideal' se
     computa sobre UNA copia (no por usuario — clonar el DB por cada usuario hacía
     timeout-ear el endpoint); solo los cambios inequívocos se aplican a la real.
-    Pensado para correr por TANDAS (el caller pasa un chunk de `users`)."""
+    Pensado para correr por TANDAS (el caller pasa un chunk de `users`).
+
+    Corre en DOS PASADAS y el orden es el arreglo: primero planifica a TODOS los
+    usuarios sin escribir, después revisa los topes, y recién ahí escribe. Si
+    escribiera a medida que avanza, el tope de tanda no serviría para nada — para
+    cuando detectara que la copia salió mal, los primeros usuarios ya estarían
+    borrados.
+
+    El ensayo (`apply=False`) calcula los mismos planes y reporta los mismos
+    frenos: así el botón "Simular" te avisa ANTES de que aprietes "Aplicar".
+    """
     from .maturity import _import_linked_position_ids
     summary: Dict[str, Any] = {
         "mode": "safe", "total_users": len(users), "users_changed": 0,
         "positions_changed": 0, "changes": [], "errors": [], "truncated": False,
+        # Red de seguridad (ver TOPE_* arriba).
+        "frenados": [], "tanda_abortada": False, "posiciones_a_borrar": 0,
     }
     # Saltear usuarios sin posiciones (vacíos): no hay nada que recomputar.
     with_pos = [u for u in users if real_conn.execute(
@@ -553,6 +636,8 @@ def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
                 clone.rollback()
                 summary["errors"].append({"uid": uid, "error": str(ex)})
 
+    # ── PASADA 1: clasificar y planificar. NO se escribe nada acá. ───────────
+    planes: List[tuple] = []          # [(uid, safe, borrar, actualizar), …]
     for uid in with_pos:
         after = after_by_user.get(uid)
         if after is None:
@@ -565,9 +650,50 @@ def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
             continue
         if not safe:
             continue
+        try:
+            borrar, actualizar = _plan_safe(real_conn, uid, safe,
+                                            _import_linked_position_ids(real_conn, uid))
+        except Exception as ex:
+            summary["errors"].append({"uid": uid, "error": "plan: " + str(ex)})
+            continue
+        planes.append((uid, safe, borrar, actualizar))
+        summary["posiciones_a_borrar"] += len(borrar)
+
+    # ── LOS TOPES: sobre los planes completos, antes de escribir ─────────────
+    for (uid, _safe, borrar, _act) in planes:
+        excedido = _excede_tope_usuario(real_conn, uid, len(borrar))
+        if excedido:
+            summary["frenados"].append(excedido)
+
+    frenados_uids = {f["uid"] for f in summary["frenados"]}
+    if (len(frenados_uids) >= TOPE_TANDA_PISO
+            and planes and len(frenados_uids) > TOPE_TANDA_PCT * len(planes)):
+        # Varios usuarios a la vez pidiendo "borrá casi todo" no es coincidencia:
+        # es la firma de que la COPIA salió mal. No se escribe nada de la tanda.
+        summary["tanda_abortada"] = True
+        summary["errors"].append({
+            "uid": None,
+            "error": (f"TANDA ABORTADA: {len(frenados_uids)} de {len(planes)} usuarios "
+                      f"con cambios superaron el tope de borrado. No se escribió nada. "
+                      f"Eso no pasa por casualidad — revisá que la copia se haya hecho "
+                      f"bien antes de reintentar."),
+        })
+        return summary
+
+    # ── PASADA 2: escribir lo que pasó los topes ─────────────────────────────
+    for (uid, safe, borrar, actualizar) in planes:
+        if uid in frenados_uids:
+            f = next(x for x in summary["frenados"] if x["uid"] == uid)
+            summary["errors"].append({
+                "uid": uid,
+                "error": (f"FRENADO POR EL TOPE: borraría {f['borraria']} de "
+                          f"{f['tiene']} posiciones ({f['pct']}%). No se tocó esta "
+                          f"cuenta. Revisala a mano antes de forzar nada."),
+            })
+            continue
         if apply:
             try:
-                _apply_safe(real_conn, uid, safe, _import_linked_position_ids(real_conn, uid))
+                _ejecutar_plan(real_conn, uid, borrar, actualizar)
                 real_conn.commit()
             except Exception as ex:
                 real_conn.rollback()

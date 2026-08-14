@@ -166,6 +166,10 @@ class RepairUserHistoryTest(unittest.TestCase):
             removed = main._remove_trajectory_outlier_snapshots(self.conn, self.uid)
         self.assertEqual(len(removed), 1)
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "el ensayo por clon es sólo-SQLite: clona la base con "
+                     "sqlite3.Connection.backup() y en Postgres no existe "
+                     "(ver dberrors.exigir_clon_soportado)")
     def test_mass_dry_run_no_toca_la_base_real(self):
         # _repair_snapshots_summary(apply=False) corre sobre una COPIA → la real
         # queda intacta (el snapshot contaminado SIGUE hasta que se aplique de verdad).

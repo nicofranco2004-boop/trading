@@ -183,6 +183,10 @@ class FxMigrateTest(unittest.TestCase):
         self.assertEqual(self._estado(), e1)   # y nada se movió
 
     # ── 3. El dry-run del endpoint no toca la base real ───────────────────
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "el ensayo por clon es sólo-SQLite: clona la base con "
+                     "sqlite3.Connection.backup() y en Postgres no existe "
+                     "(ver dberrors.exigir_clon_soportado)")
     def test_dry_run_no_toca_la_base(self):
         self._importar_historia_v1()
         antes = self._estado()
@@ -350,6 +354,10 @@ class BatchDryRunTest(FxMigrateTest):
     """Simular en lote: UNA copia de la base para N cuentas, cada una en su
     savepoint. La base real no se toca y una cuenta que falla no arrastra al resto."""
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "el ensayo por clon es sólo-SQLite: clona la base con "
+                     "sqlite3.Connection.backup() y en Postgres no existe "
+                     "(ver dberrors.exigir_clon_soportado)")
     def test_batch_simula_varias_sin_tocar_la_base(self):
         self._importar_historia_v1()
         u2 = self.conn.execute(
@@ -377,6 +385,10 @@ class BatchDryRunTest(FxMigrateTest):
         self.assertEqual(self._estado(), antes)
         self.assertEqual(fxmod.fx_version(self.conn, self.uid), fxmod.FX_V1)
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "el ensayo por clon es sólo-SQLite: clona la base con "
+                     "sqlite3.Connection.backup() y en Postgres no existe "
+                     "(ver dberrors.exigir_clon_soportado)")
     def test_batch_dedup_de_ids_repetidos(self):
         self._importar_historia_v1()
         r = main.admin_fx_migrate_batch(
