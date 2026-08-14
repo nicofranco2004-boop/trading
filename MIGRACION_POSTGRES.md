@@ -43,12 +43,15 @@ commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
 - **Audit de datos sobre PRODUCCIÓN** (`GET /api/admin/pg-type-audit`, ya deployado):
   425 columnas, 60 tablas → **LIMPIO**. No hay texto en columnas numéricas ni nulls
   donde no van. El riesgo grande de la migración está descartado con datos reales.
-- **Medición**: **98,4%** (2.850 de 2.896) y **0 fallas propias de la migración**
-  (las 46 que quedan fallan igual en SQLite). Suite COMPLETA en
-  **1 minuto**, **y el número significa algo**: cero timeouts y cero errores de
-  infraestructura (ver la sección del aislamiento). Antes de arreglar eso el
-  porcentaje no era ni reproducible — la misma suite en el mismo commit daba
-  77,4% en una corrida y 71,9% en otra, según qué se trababa con qué.
+- **Medición**: **98,4%** (2.854 de 2.900 en Postgres; 2.846 de 2.892 en SQLite) y
+  **0 fallas propias de la migración** — las 46 que quedan **son EXACTAMENTE EL
+  MISMO SET en los dos motores**, test por test. Suite COMPLETA en **1 minuto**,
+  **y el número significa algo**: cero timeouts y cero errores de infraestructura
+  (ver la sección del aislamiento). Antes de arreglar eso el porcentaje no era ni
+  reproducible — la misma suite en el mismo commit daba 77,4% en una corrida y
+  71,9% en otra, según qué se trababa con qué.
+  Verificado por afuera con 3 corridas de Postgres y 2 de SQLite: el mismo set las
+  cinco veces.
 
 ## Sesión 13/08 (tarde) — hecho y medido
 
@@ -106,18 +109,28 @@ suite COMPLETA en los dos motores y comparado test por test.
 
 | | antes (`bf5226a`) | ahora |
 |---|---|---|
-| Postgres | 57 fallas (2.790 pasan) | **45-46 fallas (2.854 pasan)** |
-| SQLite | 46 fallas (2.795 pasan) | **45-46 fallas (2.847 pasan)** |
-| **fallas estables, sin el flaky** | — | **45 en los DOS motores, idénticas** |
+| Postgres | 57 fallas (2.790 pasan) | **46 fallas (2.854 pasan)** |
+| SQLite | 46 fallas (2.795 pasan) | **46 fallas (2.846 pasan)** |
+| **¿el mismo SET de fallas en los dos motores?** | — | **SÍ, exactamente iguales** |
 | fallas SÓLO de Postgres | 11 | **0** (salteadas, no arregladas) |
 | regresiones | — | **0 en los dos motores** |
 
-⚠️ **El "45-46" es UN test preexistente que flipea, y flipea en los DOS motores:**
-`test_cedear_usd_price::SnapshotsJobCedearTest::test_snapshot_converts_bac`.
-Sacándolo de la cuenta, los dos motores dan **exactamente las mismas 45 fallas**, y
-"propias de Postgres" da 0 sin ninguna aclaración. Si una corrida lo muestra como
-"propia de Postgres" es porque SQLite lo acertó esa vez, no porque haya una
-diferencia de motor.
+**El número a usar es 46**, y lo más fuerte que se puede decir no es el total: es que
+**el SET de fallas de Postgres y el de SQLite son EXACTAMENTE el mismo**. Los dos
+motores fallan en los mismos tests, uno por uno. Verificado con 3 corridas de
+Postgres y 2 de SQLite, comparando conjuntos y no totales.
+
+⚠️ **NO restes el test inestable de la cuenta.** Una versión anterior de esta tabla
+decía "45-46" y proponía usar 45 "sin el flaky"
+(`test_cedear_usd_price::SnapshotsJobCedearTest::test_snapshot_converts_bac`).
+Medido de nuevo: en 3 corridas seguidas **falló las 3 veces, en los DOS motores** —
+nunca flipeó. Es inestable **entre entornos**, no entre corridas: depende de la
+máquina, no del azar.
+
+Restarlo hacía que el número dependiera de dónde corrés la suite, que es
+exactamente cómo este proyecto ya se comió cinco conteos mal hechos. **Contalo
+adentro de los 46 y anotalo como preexistente inestable.** Si en tu entorno da 45,
+no restes: fijate si ESE test pasó, y decilo.
 
 **Cobertura tapada: ninguna, y la cuenta cierra exacta.** En Postgres los +41 que
 pasan son los cuatro archivos nuevos; los +7 skips son los tests de
@@ -793,7 +806,7 @@ el mismo traceback. Recién si no hay ninguno de los dos es una diferencia real.
    depende de la migración.
 5. **Copiador de datos** SQLite→Postgres. La verificación ✅ está **escrita y
    probada** (`backend/scripts/verificar_copia.py` + `tests/test_verificar_copia.py`,
-   28 casos). Falta el copiador.
+   30 casos). Falta el copiador.
 6. ~~Los `get_db()` expuestos~~ ✅ sesión 6 — `main.db_abierta()` + barrido AST.
 7. **Probar contra Supabase de verdad.** Todo lo medido hasta acá es Postgres local,
    sin red de por medio. Ahí se nota lo que hace demasiadas idas y vueltas — como el
@@ -803,7 +816,7 @@ el mismo traceback. Recién si no hay ninguno de los dos es una diferencia real.
 
 ## El copiador: LA VERIFICACIÓN ✅ ESCRITA Y PROBADA (sesión 6)
 
-`backend/scripts/verificar_copia.py` + `tests/test_verificar_copia.py` (28 casos).
+`backend/scripts/verificar_copia.py` + `tests/test_verificar_copia.py` (30 casos).
 Los cuatro niveles del diseño de abajo están implementados y **probados rompiendo
 una copia a propósito, de a UNA cosa por vez**. Las cinco roturas saltan:
 
@@ -846,18 +859,26 @@ tres. Quedó como test: el día que alguien agregue una columna `numeric` o
 necesitan Postgres se saltean solos si no está `PG_DSN_VERIF` — una variable
 **aparte** de `DATABASE_URL` a propósito, porque apuntan a otra base y así no se
 pisan con la suite. El costo es que el nivel de las secuencias (el que evita que el
-primer alta después de migrar choque contra un id existente) **queda salteado en las
-dos corridas medidas**: los 21 tests locales corren con `revisar_secuencias=False`
-porque SQLite no tiene secuencias.
+primer alta después de migrar choque contra un id existente) **no se ejercita en la
+corrida normal**.
 
-Está verificado, pero hay que correrlo a mano y **antes de migrar de verdad hay que
-correrlo sí o sí**:
+✅ **PERO EL SCRIPT LO TRAE PRENDIDO.** `verificar_copia.py` declara
+`revisar_secuencias: bool = True` por defecto, así que **el que corra la
+verificación de verdad revisa las secuencias sin tener que acordarse de nada**. El
+`revisar_secuencias=False` es sólo de los 21 tests locales, porque corren contra
+SQLite y ahí no hay secuencias. (Una versión anterior de esta sección se leía como
+si el nivel 3 estuviera apagado en general: no lo está. Lo que falta es cobertura
+del nivel en la suite, no el nivel en el script.)
+
+Igual hay que correrlo a mano, y **antes de migrar de verdad hay que correrlo sí o
+sí**:
 
 ```bash
 PG_DSN_VERIF="postgresql://…/otra_base" python3 -m pytest tests/test_verificar_copia.py -q
 ```
 
-Con la variable puesta: **28 pasan, 0 se saltean**.
+Con la variable puesta: **30 pasan, 0 se saltean** (verificado). Sin ella: 23 pasan
+y 7 se saltean.
 
 ## El diseño de la verificación (referencia)
 
