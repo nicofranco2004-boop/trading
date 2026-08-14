@@ -800,19 +800,368 @@ el mismo traceback. Recién si no hay ninguno de los dos es una diferencia real.
 1. ~~Arreglar el aislamiento de tests~~ ✅ `49f6e90`.
 2. ~~`INSERT OR REPLACE` → `ON CONFLICT`~~ ✅ `e7c3f1e`.
 3. ~~Referencias ambiguas, `rowid`, `printf`, `round`~~ ✅ `f5c0f8e`.
-4. **Elegir el camino del ensayo sin clon** (`Connection.backup`) — son las 11
-   fallas propias que quedan, y está diseñado y atacado, sólo falta decidir.
-   **Antes de eso, el piso de cordura de `_apply_safe`**, que es más urgente y no
-   depende de la migración.
-5. **Copiador de datos** SQLite→Postgres. La verificación ✅ está **escrita y
+4. ~~El ensayo sin clon + el piso de cordura de `_apply_safe`~~ ✅ sesión 6. El
+   ensayo por clon quedó **sólo-SQLite por decisión** (avisa con un 501, no se
+   migró) y el tope de `_apply_safe` **está puesto y probado** (50% + piso de 5 por
+   usuario; 25% + piso de 3 por tanda).
+5. **PLAN DE PASAJE** ✅ escrito (abajo) — cómo movemos a los 1.084 sin romper
+   nada. Va **antes** del copiador, por el mismo motivo por el que la verificación
+   fue antes: escrito después, uno acepta lo que salió porque no tiene contra qué
+   compararlo.
+6. **Copiador de datos** SQLite→Postgres. La verificación ✅ está **escrita y
    probada** (`backend/scripts/verificar_copia.py` + `tests/test_verificar_copia.py`,
    30 casos). Falta el copiador.
-6. ~~Los `get_db()` expuestos~~ ✅ sesión 6 — `main.db_abierta()` + barrido AST.
-7. **Probar contra Supabase de verdad.** Todo lo medido hasta acá es Postgres local,
+7. ~~Los `get_db()` expuestos~~ ✅ sesión 6 — `main.db_abierta()` + barrido AST.
+8. **Probar contra Supabase de verdad.** Todo lo medido hasta acá es Postgres local,
    sin red de por medio. Ahí se nota lo que hace demasiadas idas y vueltas — como el
    `_table_cols()` que hubo que cachear.
-8. **`.env`** con los nombres de variable y `.gitignore`. Los valores los pone el
+9. **`.env`** con los nombres de variable y `.gitignore`. Los valores los pone el
    dueño: no manejes contraseñas en texto plano.
+
+## EL PLAN DE PASAJE — diseño, sesión 7
+
+Todo lo anterior de este doc contesta **"¿el código anda contra Postgres?"**, y esa
+pregunta ya está contestada: 46 fallas, las mismas en los dos motores, 0 propias de
+la migración. Lo que sigue contesta otra pregunta, que es la que tiene el riesgo de
+verdad: **"¿cómo movemos a los 1.084 usuarios sin romper nada?"**
+
+⚠️ **NADA DE ESTO ESTÁ MEDIDO TODAVÍA**, y los huecos van marcados como
+**`[A MEDIR]`** en vez de estimados. Este proyecto ya se comió cinco conteos mal
+hechos, todos del mismo tipo: medir una cosa y nombrarla como otra. Un número
+inventado acá sale caro: es el que decide cuánto tiempo la app está caída.
+
+---
+
+### 0. Tres cosas que el plan necesita y hoy no están (una es más chica de lo que parecía)
+
+Antes que las cinco preguntas, porque cambian las respuestas. Las tres son de
+diseño, no están implementadas, y **ninguna es grande**.
+
+**a) No hay modo mantenimiento en el backend — pero el frontend ya se banca la
+caída mejor de lo que yo esperaba, así que esto es más barato de lo que parecía.**
+
+En el backend no hay ningún `MAINTENANCE`, read-only ni equivalente: las únicas
+palancas de entorno que apagan algo son `RENDI_RESET_DATA_ENABLED`,
+`ALERTS_CRON_TOKEN` y `SNAPSHOT_CRON_TOKEN`. Hoy "bajar la app" es apagar el backend
+en Railway.
+
+⚠️ **Corrijo lo que había escrito acá primero** ("el usuario ve errores crudos"):
+fui a mirar y es falso. `frontend/src/utils/api.js` ya tiene, desde el incidente del
+2026-08-08:
+
+- **reintentos con backoff** ante 502/503/504 (~8 s en total, `:193-195`), que
+  cubren un reinicio corto sin que el usuario se entere;
+- y pasados esos 8 s, un **mensaje humano** que además **distingue leer de
+  escribir** (`:208-214`). El de lectura dice *"No pudimos conectarnos con el
+  servidor. Suele ser una actualización en curso: esperá un momento y recargá"* —
+  que para una ventana de mantenimiento **ya es el mensaje correcto**.
+
+O sea: **apagar el backend produce, hoy, una experiencia razonable.** Un modo
+mantenimiento de verdad sólo agregaría poder decir *"estamos mudando la base,
+volvemos a las 11"* en vez del mensaje genérico. **Es un "estaría bueno", no un
+requisito** — y eso saca un bloqueante del camino.
+
+Lo que sí conviene mirar es el mensaje de ESCRITURA, que dice *"no sabemos si la
+operación llegó a completarse"*: es exactamente lo que hay que decirle a alguien que
+apretó "vender" justo cuando bajaste la app. Está bien como está; sólo hay que saber
+que existe y que algún usuario lo va a ver.
+
+**b) Los seis escritores del arranque no se pueden apagar.** Cada boot dispara, en
+threads de fondo y sin que nadie se lo pida:
+
+    _backfill_fx_rates_on_boot      main.py:28877   escribe fx_rates_daily si está vacía
+    _migrate_snapshots_netdep       main.py:28946   backfill de snapshots.net_deposited
+    _migrate_fci_ticker_remap       main.py:29118   remapea tickers de FCI
+    _migrate_fx_gross_usd           main.py:29166   migración del fix de FX
+    _prewarm_news_cache             main.py:28925   pre-fetch de noticias
+    _fci_bootstrap_async            main.py:29265   bootstrap del catálogo FCI
+
+O sea: **en el instante en que se prende `DATABASE_URL` y arranca, seis procesos
+empiezan a escribir en la base nueva antes de que nadie haya verificado nada.** Y
+`_backfill_fx_rates_on_boot` es el peor de los seis, porque su condición de disparo
+es *"si `fx_rates_daily` está vacía"* — exactamente lo que pasaría si el copiador se
+salteó esa tabla. En vez de que la falta de datos se vea, la tapa sola.
+Hace falta una palanca para que el **primer** arranque contra Postgres sea callado.
+
+**c) El backup nocturno es SÓLO-SQLITE, y no falla: MIENTE.** `_run_backup_db_job`
+(03:45 UTC) llama a `scripts/backup_db.py`, que abre `sqlite3.connect(DB_PATH)`
+directo — **no pasa por `get_db()` ni mira `DATABASE_URL`** (`backup_db.py:287`).
+Después del pasaje seguiría copiando el archivo SQLite congelado, todas las noches,
+**reportando éxito**. Backups sanos de una base que ya no usa nadie. Es peor que si
+se rompiera, porque un job roto se ve y éste no.
+Antes de cortar hay que decidir de dónde salen los backups de Postgres (los de
+Supabase sirven, pero hay que **confirmar cuáles trae el plan contratado** —
+`[A MEDIR]`— y apagar o adaptar el job para que no dé una señal falsa).
+
+---
+
+### 1. Cómo es el día
+
+**La recomendación es la ventana de mantenimiento, no la copia en caliente.** Y el
+motivo es concreto, no una preferencia de estilo:
+
+> La copia en caliente exige un segundo pase que traiga "lo que cambió mientras
+> copiaba". Para saber qué cambió hace falta o una columna de fecha de modificación
+> en cada tabla —que **no existe**— o replicación lógica, que SQLite no tiene. Sin
+> ninguna de las dos, el "segundo pase" es volver a comparar todo, o sea la copia
+> entera otra vez. No es un atajo: es el mismo trabajo dos veces, con la app
+> abierta escribiendo en el medio.
+
+**La secuencia:**
+
+    1.  Apagar los tres crons EXTERNOS (ver punto 4). Los primeros.
+    2.  Prender el modo mantenimiento → la app deja de aceptar escrituras.
+    3.  Backup de la SQLite, a mano, ahí mismo. No el del cron: uno propio, con
+        fecha, guardado FUERA del volumen de Railway.
+    4.  Vaciar `raw_json` de los imports viejos, con UPDATE y NUNCA con DELETE
+        (borrar la fila cascadea y se lleva su movimiento del ledger). Es el 92%
+        de las filas.
+    5.  Correr el copiador.
+    6.  `setval()` en cada secuencia.
+    7.  Correr la VERIFICACIÓN COMPLETA, los cuatro niveles, con `PG_DSN_VERIF`
+        puesta. Si hay UN hallazgo: no se sigue.
+    8.  Prender `DATABASE_URL` y reiniciar, con los escritores del arranque
+        apagados (punto 0b).
+    9.  Los chequeos de los primeros 10 minutos (punto 3), con la app TODAVÍA en
+        mantenimiento.
+    10. Recién ahí, abrir. Y después prender los crons externos.
+
+**Sobre el paso 4, la duda que va a aparecer y ya está contestada:** *¿vaciar
+`raw_json` no le rompe el import a alguien que lo dejó a medio confirmar?* **No.**
+Verificado en el código: `load_session_for_confirm` reconstruye las filas desde
+`import_normalized_tx` haciendo JOIN con `import_raw_rows`, pero de esa tabla usa
+**sólo `row_index`** — nunca `raw_json` (`importing/pipeline.py:1036-1043`). Lo que
+sí rompería el import pendiente es borrar la FILA, que es exactamente la regla que
+ya estaba escrita.
+
+**El paso 4 es el que puede sorprender por otro lado.** La base son 933 MB y el 92%
+de las filas es andamio de import. Vaciar `raw_json` achica muchísimo lo que copiar —
+pero **el archivo SQLite no se achica solo**: sigue ocupando 933 MB hasta que se le
+corra un `VACUUM`, que es una operación larga y que reescribe el archivo entero. Hay
+que decidir si se corre (y cuánto tarda: `[A MEDIR]`) o si se acepta que el archivo
+quede grande, que para el pasaje da igual.
+
+**La condición explícita, que es lo que pediste:**
+
+> La ventana de mantenimiento alcanza **si los pasos 4 a 7 tardan menos de X**,
+> donde X es cuánta caída estás dispuesto a bancar. **X lo elegís vos; el tiempo
+> real es `[A MEDIR]` y no lo sabe nadie todavía, porque el copiador no existe.**
+
+Y la forma de medirlo **sin arriesgar nada**: correr el copiador entero contra una
+**copia restaurada de producción**, cronometrando cada paso. Eso da el número real
+antes de comprometer una fecha. Si diera un tiempo que no se banca, ahí —y sólo
+ahí— tiene sentido discutir la copia en caliente.
+
+**Cuándo.** Un domingo temprano ART: los mercados están cerrados, no hay precios que
+actualizar, y el cron del brief del asesor no corre (es de días hábiles).
+
+---
+
+### 2. Cómo se vuelve atrás, y dónde está el punto de no retorno
+
+**Volver atrás es barato y es una sola cosa:** sacar `DATABASE_URL` y reiniciar. La
+SQLite queda intacta — el copiador la LEE, no la toca (salvo el vaciado de
+`raw_json` del paso 4, que es irreversible pero no cambia ningún saldo).
+
+**El punto de no retorno NO es un reloj: es el primer usuario que escribe.** Y por
+eso la secuencia de arriba deja los chequeos ANTES de abrir: mientras la app está en
+mantenimiento, volver atrás es gratis. En cuanto se abre, cada compra, cada venta,
+cada import cargado queda en Postgres y **no está en la SQLite**. Volver atrás
+después es perder eso, sin herramienta que lo traiga de vuelta.
+
+    mantenimiento, antes de abrir  →  volver atrás es GRATIS
+    abierto, N escrituras después  →  volver atrás CUESTA esas N, y no hay
+                                      forma automática de recuperarlas
+
+**Y hay tres cosas que son irreversibles apenas pasan, aunque vuelvas atrás la base:**
+
+- **Los mails del brief del asesor.** Dos por día hábil, a los asesores, con los
+  números de sus clientes. Si el cron corre contra una base a medio copiar, **manda
+  mails con números equivocados y no hay forma de desmandarlos.** Es la razón número
+  uno para apagar los crons externos primero.
+- **Los mails de billing** (trial por vencer, suscripción caída) que dispara
+  `subscription_lifecycle`.
+- **Cualquier ida a Rebill** (cobros, cancelaciones): eso toca un sistema de
+  terceros y no vuelve con un rollback de la base.
+
+**La regla que sale de eso, y conviene escribirla como regla:** volver atrás sólo
+antes de abrir. Después de abrir, se arregla para adelante. Un rollback con usuarios
+adentro no es "volver al día anterior": es perder trabajo de gente que no se enteró
+de nada.
+
+---
+
+### 3. Qué se mira en los primeros 10 minutos
+
+Con la app **todavía en mantenimiento** y `DATABASE_URL` puesta. Lista corta, en
+orden, y cada una tiene un criterio de "pasa / no pasa":
+
+| # | qué | pasa si |
+|---|---|---|
+| 1 | `/api/health` | contesta 200 |
+| 2 | Los logs del arranque | cero `NotNullViolation`, cero `relation does not exist`, cero `EnsayoPorClonNoDisponible` inesperado |
+| 3 | Entrar con la cuenta de prueba | login OK y la Cartera carga |
+| 3b | **Que NO se haya deslogueado todo el mundo** | ver la nota de abajo |
+| 4 | **El total de 3 cuentas elegidas a mano** | coincide con el snapshot de anoche, al centavo |
+| 5 | Un import de punta a punta | con un export real de los que ya están guardados; queda igual que en SQLite |
+| 6 | Las pantallas pesadas (Dashboard, Cartera, Análisis) | cargan, y sin timeouts |
+| 7 | **Conexiones abiertas contra Supabase** | bien por debajo del límite del plan (`[A MEDIR]`) |
+| 8 | Los seis escritores del arranque | prendidos DESPUÉS del resto, uno por uno, mirando los logs |
+
+**El 4 es el que de verdad importa** y es distinto de la verificación del copiador:
+aquélla compara las dos bases entre sí; ésta compara **lo que ve el usuario en
+pantalla** contra lo que veía ayer. Un copiador puede estar perfecto y la app
+mostrar otra cosa, porque en el medio hay valuación, FX y caché.
+
+**El 7 es el riesgo nuevo que Supabase trae y el Postgres local no tenía.** Los 33
+`get_db()` expuestos ya están arreglados (`db_abierta()`), pero eso se midió contra
+un Postgres local con 100 conexiones de margen. **Cuántas da el plan contratado es
+`[A MEDIR]`, y hay que saberlo ANTES, no ese día.**
+
+⚠️ **Sobre el 3b — hay que confirmar `SECRET_KEY` ANTES, y es de un minuto.** El
+pasaje incluye un reinicio, y si `SECRET_KEY` no está puesta en Railway, el arranque
+**genera una al azar** (`main.py:111`) y con eso **se invalidan todos los tokens: se
+desloguean los 1.084**. No se pierde plata, pero convierte un pasaje invisible en
+"a todo el mundo se le cerró la sesión el mismo día que tocamos la base", que es
+justo la clase de ruido que no querés mientras verificás otra cosa. Se confirma
+mirando las variables de Railway; si está puesta, los tokens sobreviven el reinicio.
+
+Dato lateral que juega a favor: los tokens llevan adentro el `password_changed_at`
+del usuario y se validan contra la base. Si el copiador hubiera perdido esa columna,
+**se desloguearía todo el mundo** — o sea que el 3b también funciona como chequeo
+gratis de que esa columna viajó bien.
+
+---
+
+### 4. Los crons
+
+Son **siete**, de tres clases distintas, y sólo una de las tres se apaga sola.
+
+**Clase A — disparados desde AFUERA (un scheduler externo pega la URL).** Son los
+peligrosos: siguen disparando aunque la app esté en mantenimiento, y si pasan el
+gate de mantenimiento escriben.
+
+    /api/alerts/evaluate          alertas de precio        ALERTS_CRON_TOKEN
+    /api/snapshots/run-cron       foto diaria              SNAPSHOT_CRON_TOKEN
+    /api/advisor/brief/run-cron   el brief del asesor      manda MAILS
+
+**Se apagan en el scheduler externo** (donde estén configurados) **y son lo primero
+del día.** No alcanza con el modo mantenimiento: si el gate los deja pasar por ser
+crons, escriben; si no los deja pasar, el scheduler externo va a registrar fallas
+—lo cual está bien, pero hay que saberlo de antemano para no asustarse. Y hay una
+palanca de respaldo: **borrar el token de entorno los desarma solos** (sin
+`ALERTS_CRON_TOKEN` el endpoint contesta 503). Es la red por si el scheduler externo
+no se apagó.
+
+**Clase B — APScheduler adentro del proceso.** Arrancan con la app y mueren con
+ella, así que apagar el backend los apaga. Pero **vuelven solos en el reinicio**:
+
+    02:59 UTC   daily_snapshot            escribe snapshots
+    03:30 UTC   subscription_lifecycle    baja planes, manda MAILS
+    03:45 UTC   backup_db                 ⚠️ SÓLO-SQLITE (ver punto 0c)
+    12:10 UTC   fci_refresh               precios de FCI
+
+**La ventana conviene lejos de esos horarios.** Un domingo a la mañana ART (≈13-14
+UTC) está después de los tres de la madrugada y después del de las 12:10.
+
+**Clase C — los seis escritores del arranque** (punto 0b). No son crons pero se
+comportan igual y son peores, porque disparan **exactamente cuando prendés
+`DATABASE_URL`**.
+
+**Quién los vuelve a prender:** los de la clase B vuelven solos con el reinicio, sin
+que nadie haga nada — eso es un riesgo, no una comodidad: si el pasaje se hace de
+noche, el `daily_snapshot` puede dispararse sobre una base a medio verificar. Los de
+la clase A hay que prenderlos **a mano y al final**, después de los chequeos, y hay
+que dejar anotado dónde están configurados: **`[A MEDIR]` — el doc no dice en qué
+servicio corren.**
+
+---
+
+### 4-bis. Dos cosas que NO se van a ver hasta Supabase, y las dos están medidas acá
+
+Aparecieron revisando el plan, y comparten una propiedad incómoda: **el Postgres
+local no las puede mostrar**, así que todo lo verde que dice este doc no dice nada
+sobre ellas. Van acá porque las dos se prueban el día que se conecta a Supabase, no
+el día del pasaje.
+
+**a) `psycopg` prepara sentencias solo, y el pooler de Supabase las rompe.**
+Medido en este mismo Postgres local: `prepare_threshold` viene en **5**, y después
+de 7 ejecuciones de la misma consulta hay **1 sentencia preparada en el servidor**.
+Eso está perfecto contra una conexión directa. Pero Supabase ofrece **dos puertos**:
+la conexión directa (5432) y el **pooler transaccional** (6543), que multiplexa
+conexiones — y con multiplexado la sentencia preparada queda en un backend y la
+consulta siguiente cae en otro. El síntoma es intermitente y tiene nombre:
+`prepared statement "_pg3_0" does not exist`.
+
+> **Es la peor forma de fallar para este proyecto**: no aparece en ningún test, no
+> aparece con la conexión directa, aparece sólo bajo carga y de a ratos. Las dos
+> salidas son elegir el puerto de sesión, o pasar `prepare_threshold=None` al
+> conectar. **Hay que decidirlo antes de conectar, no después de ver el error.**
+
+**b) No hay pool de conexiones: cada `get_db()` abre una conexión nueva.**
+Verificado: `pgshim.connect()` llama a `psycopg.connect()` directo, sin pool, y hay
+**267 `get_db()`** en el código. Medido acá, sobre socket unix y sin TLS:
+
+    abrir una conexión:   Postgres 1,03 ms   SQLite 0,032 ms   (32×)
+
+Contra Supabase hay que sumarle ida y vuelta de red **más handshake TLS, por cada
+conexión** — `[A MEDIR]`. Es el mismo tipo de problema que el `_table_cols()` que
+hubo que cachear en la sesión 13/08 (20 viajes por pantalla), pero más grande,
+porque no es una consulta de más: es una conexión de más. Y pega dos veces: en la
+latencia de cada pantalla y en el conteo de conexiones contra el límite del plan.
+
+**Las dos se miden en el paso 8 del "Orden sugerido" (probar contra Supabase), y
+ese paso pasa a ser BLOQUEANTE del pasaje, no un "estaría bueno".**
+
+### 5. Probar que el techo se fue
+
+Que el `database is locked` no vuelva está **argumentado** (Postgres no tiene un
+escritor único para toda la base) pero **no medido**. Y la diferencia importa: los
+tres culpables del 12 y 13/08 ya están arreglados en `main`, así que la SQLite de
+hoy aguanta más que la de aquel día. Comparar contra el recuerdo del incidente
+mediría lo que ya se arregló, no el techo.
+
+**La prueba, simple y suficiente:**
+
+- **Contra las dos bases, el mismo guion.** Es lo mismo que hace el resto del
+  proyecto: correr la misma cosa en los dos motores y comparar.
+- **Con ESCRITURAS, que es donde estaba el techo.** El lock era de escritura, y en
+  esta app **cada carga de página escribe** (últimos precios, noticias). O sea que
+  el guion no necesita inventar nada raro: alcanza con N usuarios cargando el
+  Dashboard y la Cartera a la vez.
+- **Subiendo la concurrencia hasta que rompa**, y anotando en qué número rompe cada
+  uno. El resultado que buscamos no es "Postgres anda": es **"SQLite empieza a
+  fallar en N y Postgres en M, con M mucho mayor"**. Si M no es mucho mayor, la
+  migración no compró lo que creíamos y hay que saberlo antes.
+- **Qué se anota:** errores por minuto, p95 de respuesta, y conexiones abiertas.
+- **Contra Supabase, no contra el Postgres local.** El local no tiene red en el
+  medio ni límite de conexiones apretado, que son justo las dos cosas nuevas.
+
+**Y el número de usuarios de la prueba no se inventa:** sale de mirar cuántos
+concurrentes hubo el 12 y el 13/08, que es el único momento en que se sabe que el
+techo se tocó. **`[A MEDIR]`: ese dato está en los logs de Railway de esos días.**
+
+---
+
+### Los huecos, juntos, para que no se pierdan
+
+| # | qué falta medir | por qué importa |
+|---|---|---|
+| 1 | cuánto tarda copiar + verificar, sobre una copia restaurada de prod | decide si la ventana alcanza, y decide la fecha |
+| 2 | cuánto tarda el `VACUUM` post-vaciado de `raw_json`, si se hace | puede ser el paso más largo del día |
+| 3 | cuántas conexiones da el plan de Supabase contratado | es el límite nuevo. Son **267 `get_db()`** y cada uno abre una conexión (no hay pool); los **33** que se arreglaron eran los que además no la cerraban, y eso se midió contra un local con 100 de margen |
+| 4 | qué backups trae ese plan | hoy el backup propio quedaría mintiendo (punto 0c) |
+| 5 | dónde están configurados los tres crons externos | hay que apagarlos y volver a prenderlos |
+| 6 | cuántos usuarios concurrentes hubo el 12 y 13/08 | es el piso de la prueba de carga |
+| 7 | **latencia de abrir UNA conexión contra Supabase** (con red y TLS) | local da 1,03 ms y no hay pool: son 267 `get_db()`. Ver 4-bis(b) |
+| 8 | **por qué puerto se conecta**: directo (5432) o pooler (6543) | con el pooler, las sentencias preparadas de `psycopg` fallan de a ratos. Ver 4-bis(a) |
+| 9 | está puesta `SECRET_KEY` en Railway | si no, el reinicio del pasaje desloguea a los 1.084 |
+
+**Ninguno de los nueve se estima. Los nueve se miden antes de comprometer una fecha.**
+
+Y hay un orden entre ellos: **el 7 y el 8 se miden ANTES que todo lo demás**, porque
+si el 8 sale mal el pasaje no arranca, y si el 7 sale mal puede haber que meter un
+pool antes de mover a nadie.
 
 ## El copiador: LA VERIFICACIÓN ✅ ESCRITA Y PROBADA (sesión 6)
 
