@@ -1,6 +1,6 @@
 # Migración SQLite → Postgres (Supabase) — estado y prompt de continuación
 
-Última sesión: 2026-08-13 (noche). Pegá el bloque de abajo en una sesión nueva.
+Última sesión: 2026-08-14 (madrugada). Pegá el bloque de abajo en una sesión nueva.
 
 ---
 
@@ -21,7 +21,7 @@ techo es estructural: con más usuarios vuelve. Postgres lo resuelve de raíz.
 
     /private/tmp/claude-501/-Users-nicolaspussetto-Documents-trading/adc4a925-dbdb-4165-a5e3-826b55c1200c/scratchpad/mainwt
 
-Rama **`spike/postgres`**, commit `f5c0f8e`. **NO se deploya** — es un spike.
+Rama **`spike/postgres`**, commit `18fa17f`. **NO se deploya** — es un spike.
 Producción va por `main` y está estable (`8f4edfe`).
 
 ⚠️ macOS purga `/private/tmp` en sesiones largas. Si el worktree no está, los
@@ -43,7 +43,7 @@ commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
 - **Audit de datos sobre PRODUCCIÓN** (`GET /api/admin/pg-type-audit`, ya deployado):
   425 columnas, 60 tablas → **LIMPIO**. No hay texto en columnas numéricas ni nulls
   donde no van. El riesgo grande de la migración está descartado con datos reales.
-- **Medición**: **97,4%** (2.774 de 2.847), commit `f5c0f8e`. Suite COMPLETA en
+- **Medición**: **98,0%** (2.790 de 2.847), commit `18fa17f`. Suite COMPLETA en
   **1 minuto**, **y el número significa algo**: cero timeouts y cero errores de
   infraestructura (ver la sección del aislamiento). Antes de arreglar eso el
   porcentaje no era ni reproducible — la misma suite en el mismo commit daba
@@ -99,32 +99,77 @@ un error.**
 
 ## Lo que falta
 
-**Quedan 73 fallas — pero 46 de ellas fallan IGUAL en SQLite.** Son las
-preexistentes de siempre, no son de la migración. Lo propio de Postgres son **27**:
-
-| Qué | Fallas | |
-|---|---|---|
-| Placeholders con nombre `:user_id` | 12 | mecánico |
-| **`Connection.backup` — el dry-run por clon** | **11** | **ítem de DISEÑO, ver abajo** |
-| Violaciones de constraint (`monthly_entries` duplicado) | 2 | a mirar |
-| Una tabla de test que no existe (`x_leak`) | 1 | artefacto de test |
-| 1 `AssertionError` sin causa Postgres visible | 1 | ver abajo |
+**Quedan 57 fallas — pero 46 de ellas fallan IGUAL en SQLite.** Son las
+preexistentes de siempre, no son de la migración. **Lo propio de Postgres son 11**,
+y son TODAS el mismo ítem: **`Connection.backup`**, el ensayo por clon. Está
+diseñado (ver abajo) y esperando que el dueño elija camino.
 
 ⚠️ **Comparar SIEMPRE contra la baseline de SQLite antes de llamar "nueva" a una
 falla.** El total de Postgres arrastra las 46 preexistentes y da una sensación de
-deuda que no existe: 73 suena mucho, 27 es lo que hay.
+deuda que no existe: 57 suena mucho, 11 es lo que hay.
 
-### `Connection.backup`: no es un bug, es una decisión de diseño pendiente
+### `Connection.backup`: DISEÑADO, sin implementar — falta que el dueño elija
 
-El dry-run del backfill clona la base ENTERA a un archivo temporal con
-`sqlite3.Connection.backup()` y corre contra el clon, para reportar qué cambiaría
-sin tocar nada. En Postgres eso no existe.
+El ensayo (dry-run) del backfill **no calcula qué pasaría: lo hace y lo mira.**
+Clona la base entera a un archivo con `sqlite3.Connection.backup()`, corre el
+backfill DE VERDAD sobre la copia, y resta la foto de antes contra la de después.
+En Postgres esa fotocopia no existe. Son 9 call-sites (1 helper + 3 copias pegadas
+a mano en `main.py` + los scripts).
 
-El equivalente natural es mejor que el clon: **correr adentro de una transacción y
-hacer `ROLLBACK`** — sin copia, sin el problema de espacio en disco que motivó
-`_clone_target_dir`. Pero cambia cómo funciona el dry-run, y **un dry-run que por
-error escriba en producción es exactamente lo que no conviene decidir de apuro**.
-Queda anotado, sin implementar.
+**Tres hechos verificados que condicionan cualquier reemplazo:**
+
+1. **El ensayo ESCRIBE**, y mucho: borra posiciones, borra operaciones de venta,
+   reinserta, corrige unidades de bonos y comisiones, recalcula P&L. No existe
+   ninguna versión "sólo lectura" de esto.
+2. **`run_backfill` commitea SIEMPRE** (`recompute_backfill.py:413`), sea ensayo o
+   no. El propio docstring dice: *"Para dry-run, pasar una conn a una COPIA — ahí
+   el commit es inocuo"*. Todo el diseño se apoya en eso. Es lo que mata la idea
+   obvia de "corré todo y hacé ROLLBACK al final".
+3. ⚠️ **El botón por defecto ("Simular", `safe_only=true`) usa el clon como
+   PIZARRÓN, no como garantía**: `safe_backfill` calcula el estado ideal en la
+   copia y después **escribe en la base real en la misma llamada**
+   (`_apply_safe` → `real_conn.commit()`, `:571`). El clon está adentro del camino
+   de APLICAR. Es el modo que ya corrió en producción sobre 830 cuentas.
+
+**Las tres opciones evaluadas** (cada una atacada por un escéptico buscando la
+secuencia exacta en que escribe de verdad):
+
+| | garantía | en el peor momento | ¿sirve en los 2 motores? |
+|---|---|---|---|
+| **A.** Transacción + `ROLLBACK` | condicional | **escribe de verdad** | no en producción |
+| **B.** Usuario sin permiso de escribir + tablas sombra | **estructural** (el motor rechaza cada sentencia) | el ensayo se cae a los gritos | **sí, sin bifurcar** |
+| **C.** Esquema paralelo + usuario aparte | estructural, mal ubicada | puede dejar un clon vacío | no, bifurca |
+
+- **A se cae.** El `rollback()` por usuario (`:361`) que el motor hace para seguir
+  con el siguiente **desarma la propia red de seguridad**, porque la red también
+  es una escritura que queda adentro de la transacción. Y la red es de un solo
+  uso. El síntoma sería una línea más en "errores" del panel: el error sale como
+  número equivocado, no como error.
+- **C** pone la pared en el peor lugar: protege al backfill (código viejo y
+  probado) y no a las ~80 líneas nuevas que arman el clon. Además el caché de
+  `pgshim` es global al proceso e indexado sin esquema: es un túnel entre el
+  ensayo y producción que ningún permiso puede tapar.
+- **B** es la única que no pelea contra el código actual (los commits de adentro
+  caen en la copia y son inocuos) y la única que se estrena en los tests contra
+  los DOS motores, en vez de estrenarse en producción el día que se prenda
+  `DATABASE_URL`. Necesita tres reglas no negociables: commitear las sombras
+  apenas se crean (si no, el `rollback` del primer usuario que falla las borra y
+  el resto de la tanda le pega a la tabla REAL), el canario ANTES de crearlas, y
+  las sombras sin `ON COMMIT`.
+
+### ⚠️ Lo que hay que arreglar ANTES, y no es ninguna de las tres
+
+Verificado en el código: **`_apply_safe` borra posiciones** (`DELETE FROM positions`,
+`:512`) y **no hay ningún tope de cordura en todo el archivo**. Si la copia queda
+vacía o incompleta, `_classify_safe` lee "esto tenía cantidad y ahora es cero", lo
+marca como fantasma y `_apply_safe` **borra la fila real**. Lo que ve el usuario:
+abre la app y no están sus acciones. Recuperable sólo desde backup.
+
+Eso, más que el botón por defecto simule y escriba en la misma llamada, **es el
+riesgo más grande y el más barato de arreglar**: partir `safe_backfill` en dos
+caminos (uno que sólo lee y reporta, otro que aplica) y poner un piso del tipo "no
+borres más del X% de las posiciones de la tanda". **Vale más que cualquiera de las
+tres opciones y no depende de la migración.**
 
 ### La única `AssertionError` que queda sin causa visible
 
@@ -332,9 +377,10 @@ el mismo traceback. Recién si no hay ninguno de los dos es una diferencia real.
 1. ~~Arreglar el aislamiento de tests~~ ✅ `49f6e90`.
 2. ~~`INSERT OR REPLACE` → `ON CONFLICT`~~ ✅ `e7c3f1e`.
 3. ~~Referencias ambiguas, `rowid`, `printf`, `round`~~ ✅ `f5c0f8e`.
-4. Lo que queda: **27 fallas propias** (las otras 46 son preexistentes). Los
-   placeholders con nombre son mecánicos; `Connection.backup` es una decisión de
-   diseño.
+4. **Elegir el camino del ensayo sin clon** (`Connection.backup`) — son las 11
+   fallas propias que quedan, y está diseñado y atacado, sólo falta decidir.
+   **Antes de eso, el piso de cordura de `_apply_safe`**, que es más urgente y no
+   depende de la migración.
 5. **Copiador de datos** SQLite→Postgres. Verificación obligatoria: filas por tabla
    **y** totales de plata por usuario (invertido, P&L, efectivo). Contar filas no
    detecta un número mal convertido.
