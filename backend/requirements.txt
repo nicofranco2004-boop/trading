@@ -8,9 +8,32 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-jose[cryptography]==3.3.0
 anthropic>=0.97.0
+
+# 🔴 SE IMPORTA EN PRODUCCIÓN Y NO ESTABA DECLARADO. `billing/emails.py`,
+# `billing/mercadopago.py` y `billing/rebill.py` hacen `import httpx` directo, y
+# hasta hoy funcionaba **de casualidad**: lo arrastraba `anthropic` como
+# dependencia suya. El día que anthropic cambie de cliente HTTP, los mails de
+# billing y los webhooks de pago dejan de andar — sin que nadie haya tocado eso.
+# Es la misma categoría que `psycopg`: código de producción apoyado en un paquete
+# que nadie declaró.
+# Va con piso y no pinneado a propósito: pinnearlo con `==` puede chocar con la
+# versión que pida `anthropic`, que sí está sin pinnear. Lo que hace falta es
+# DECLARAR la dependencia, no congelarla.
+httpx>=0.27,<1.0
 python-dotenv>=1.0.0
 pywebpush>=2.0.0
 apscheduler==3.10.4
+
+# El driver de Postgres. Va PINNEADO como el resto de lo que está en el camino
+# crítico: es lo único que separa "prender DATABASE_URL" de un crash-loop.
+# `[binary]` y no `psycopg` a secas: la variante binaria trae libpq adentro del
+# wheel, así que no depende de que el sistema tenga libpq instalado — que en
+# Railway (nixpacks) no está garantizado.
+# ⚠️ Se agrega ANTES y POR SEPARADO del pasaje, y sin `DATABASE_URL`: así el
+# deploy sale verde sin cambiar nada para el usuario. `get_db()` importa pgshim
+# de forma perezosa y sólo si `USANDO_PG` (main.py:344-347), o sea que mergear
+# esto sin la variable no toca ningún camino de producción.
+psycopg[binary]==3.2.13
 defusedxml==0.7.1
 boto3>=1.34.0
 openpyxl>=3.1.0

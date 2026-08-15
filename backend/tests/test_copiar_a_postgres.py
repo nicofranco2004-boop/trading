@@ -291,6 +291,34 @@ class ContraPostgresTest(unittest.TestCase):
         self.assertEqual(cp.cmd_preparar_destino(Args()), 0)
         self.assertEqual(self._copiar(), 0)
 
+    # ── qué queda si se corta a mitad ────────────────────────────────────────
+    def test_si_se_corta_a_mitad_el_destino_queda_LIMPIO(self):
+        """El escenario del domingo: se corta la copia con 1 GB a medio subir.
+
+        Todo el copiado va en UNA transacción, así que el servidor rollbackea solo
+        cuando la conexión muere. Medido a escala real matando el proceso a los 12
+        segundos (a mitad de `import_raw_rows`): quedaron **0 filas** y **0
+        conexiones colgadas**, y el reintento anduvo DIRECTO.
+
+        ⚠️ **Eso corrige el plan**, que decía "`preparar-destino` + reintentar".
+        Después de un corte NO hace falta: el destino ya está vacío.
+        `preparar-destino` sirve para rehacer una copia que TERMINÓ bien.
+
+        Acá se fuerza el corte de forma determinística —haciendo fallar el paso
+        siguiente al COPY— en vez de matar un proceso, que sería lento y flaky.
+        """
+        import unittest.mock
+        with unittest.mock.patch.object(cp, "correr_setval",
+                                        side_effect=RuntimeError("se cortó la red")):
+            with self.assertRaises(RuntimeError):
+                self._copiar()
+        with self.psycopg.connect(self.dsn, autocommit=True) as c:
+            c.execute("SET search_path = cop")
+            for t in ("users", "brokers", "positions", "operations"):
+                self.assertEqual(c.execute(f"SELECT count(*) FROM {t}").fetchone()[0], 0,
+                                 f"{t} quedó con filas a medias después del corte")
+        self.assertEqual(self._copiar(), 0, "el reintento tiene que andar directo")
+
     # ── el preflight, cada chequeo con su dato plantado ──────────────────────
     def _preflight(self):
         o = cp.abrir_origen(self.ruta)

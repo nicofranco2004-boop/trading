@@ -1598,6 +1598,160 @@ leído 58.
   divergente (`users.password_changed_at`: el CREATE tiene `datetime('now')`, el
   ALTER que aplicó a producción no).
 
+## Sesión 10 — las dependencias, el corte a mitad, y qué falta de verdad
+
+### ✅ `psycopg` en `requirements.txt` — y apareció un SEGUNDO caso
+
+`psycopg[binary]==3.2.13`, pinneado porque está en el camino crítico, y `[binary]`
+porque esa variante trae libpq adentro del wheel (en Railway no está garantizado que
+el sistema lo tenga). **Verificado de verdad, no por inspección**: venv limpio,
+`pip install -r requirements.txt`, y `psycopg.connect()` contra Postgres 16.2.
+
+**Buscando la CATEGORÍA en vez del paquete apareció `httpx`.** Lo importan
+`billing/emails.py`, `billing/mercadopago.py` y `billing/rebill.py` —producción,
+plata de verdad— y **no estaba declarado**: andaba porque lo arrastra `anthropic`
+como dependencia suya. El día que anthropic cambie de cliente HTTP, los mails de
+billing y los webhooks de pago dejan de andar sin que nadie toque ese código.
+Declarado con piso (`httpx>=0.27,<1.0`) y no pinneado a propósito: pinnearlo puede
+chocar con lo que pida anthropic, que está sin pinnear. Lo que hacía falta era
+DECLARARLO, no congelarlo.
+
+**Detector**: `tests/test_dependencias_declaradas.py`. Barre todos los imports de
+producción y falla si alguno no está en `requirements.txt`. Mutado: sacar `psycopg`
+(el estado de ayer) lo hace fallar, sacar `httpx` también, y desanclar o sacarle el
+`[binary]` a psycopg tira su propio test.
+
+⚠️ **El detector nació mal y vale anotarlo:** el primer barrido dio **48 falsos
+positivos** porque usaba `sys.stdlib_module_names`, que **no existe en Python 3.9 y
+devuelve vacío en silencio** — así `json`, `sqlite3` y `datetime` pasaban por
+dependencias sin declarar. Ahora resuelve cada módulo a su ruta real. Un detector
+que denuncia todo es ruido que se aprende a ignorar.
+
+`starlette` queda en `PERMITIDOS` con el motivo escrito: FastAPI está construido
+sobre él y `fastapi==0.115.0` pinnea el rango que acepta, así que declararlo con
+otra versión rompería la resolución. Es el caso donde declarar es PEOR.
+`pytest`/`numpy`/`pandas` son sólo de tests y no se deployan — pero **que no exista
+`requirements-dev.txt` es un hueco real**: quien clone el repo no sabe qué instalar
+para correr la suite.
+
+### ✅ Qué pasa si se corta a mitad — y CORRIGE el plan
+
+Medido matando el copiador con SIGKILL a los 12 segundos, en mitad de
+`import_raw_rows`, sobre la base de 1 GB:
+
+    filas en el destino después del corte:  0
+    conexiones colgadas idle in transaction: 0
+    reintento:                               anduvo DIRECTO, 55s, 0 hallazgos
+
+Todo el copiado va en UNA transacción, así que el servidor rollbackea solo cuando la
+conexión muere. **Eso corrige lo que decía el plan** (*"`preparar-destino` +
+reintentar"*): después de un corte **no hace falta** `preparar-destino`, el destino
+ya quedó vacío. Ese subcomando sirve para rehacer una copia que TERMINÓ bien.
+
+Queda como test determinístico (se fuerza el fallo en el paso siguiente al COPY en
+vez de matar un proceso, que sería lento y flaky), y el mutante que cambia el
+`rollback()` por un `commit()` lo hace caer.
+
+### ✅ El término que faltaba del cronómetro, medido y no estimado
+
+No se puede medir Supabase sin Supabase, pero sí se puede medir **cuántos bytes
+viajan**, que es lo único que faltaba para poder dividir:
+
+| | |
+|---|---|
+| payload del COPY (formato texto) | **0,95 GB** |
+| de los cuales `import_raw_rows` | **0,93 GB (97,8%)** |
+
+    20 Mbps → 6,3 min     50 Mbps → 2,5 min     100 Mbps → 1,3 min     300 Mbps → 25 s
+
+Sumado al piso de CPU y disco (32-34 s), **la ventana queda dimensionada por la
+subida y nada más**. Y deja clarísimo dónde está la palanca si no alcanza: el 97,8%
+es una sola tabla, y es la que el vaciado de `raw_json` habría achicado. La decisión
+de no vaciar tiene ahora su precio exacto en bytes.
+
+⚠️ Calculado sobre la base sintética, cuyo `raw_json` pesa 273 bytes por fila. El
+promedio real de producción no se conoce, y el archivo real es ~13% más chico que la
+fixture, así que **el número real probablemente sea algo menor**. Es un techo, no un
+piso. Y no cuenta el overhead de TLS ni del protocolo.
+
+### 🔴 Lo que NO se pudo hacer, y qué hace falta para hacerlo
+
+Son las dos cosas que sólo se contestan corriendo, y las dos necesitan material que
+no está en esta máquina:
+
+| | qué falta |
+|---|---|
+| **Medir contra Supabase** | credenciales del proyecto real (DSN). Sin eso no se puede decidir puerto de sesión (5432) vs pooler (6543), ni medir la subida, ni probar el corte a mitad contra la red de verdad. |
+| **Preflight sobre datos REALES** | una copia restaurada del backup de producción. La `trading.db` local está **vacía (0 bytes)**, y la sintética es gemela del generador del esquema: **no puede** devolver un hallazgo de esquema. El preflight todavía no vio nunca un dato que lo sorprenda. |
+
+Las dos son de un comando cuando el material esté:
+
+```bash
+python3 scripts/copiar_a_postgres.py --origen /ruta/restaurada.db --destino "$DSN" preflight
+```
+
+### 📐 MODO MANTENIMIENTO — diseño propuesto, NO implementado
+
+El agujero: hoy "chequear" y "abrir" son el mismo momento. Apenas deployás con
+`DATABASE_URL`, los 1.084 ya están adentro — y los chequeos de los primeros 10
+minutos incluyen un import de punta a punta, o sea escrituras. **Se cruza el punto
+de no retorno mientras estás decidiendo si la copia sirve.**
+
+**Qué tiene que garantizar, en una línea:** que ninguna escritura de usuario llegue
+a Postgres antes de que vos digas que sí.
+
+**La forma: un middleware, el PRIMERO de la cadena, que no toca la base.**
+
+    si mantenimiento_prendido():
+        si el request trae el header de bypass válido  -> pasa
+        si es /api/health o el chequeo de motor        -> pasa
+        si no                                          -> 503 + JSON "estamos mudando la base"
+
+Cuatro decisiones y el motivo de cada una:
+
+1. **Va primero y NO consulta la base.** Si el gate dependiera de leer una tabla, un
+   problema de base —justo lo que puede pasar ese día— se llevaría puesto también al
+   mecanismo que te protege.
+2. **El bypass va por header, no por query param.** Un token en la URL queda en los
+   logs del proxy, en el historial y en el `Referer`. Comparado con
+   `hmac.compare_digest`.
+3. **503 y no 500.** `frontend/src/utils/api.js` ya reintenta con backoff ante
+   503 y, pasados ~8s, muestra *"No pudimos conectarnos con el servidor. Suele ser
+   una actualización en curso"*. O sea que **el mensaje correcto ya existe** y sale
+   gratis. Con 500 el usuario vería un error crudo.
+4. 🔴 **El default tiene que ser CERRADO, y es la parte que más importa.** Si el modo
+   mantenimiento es un flag que hay que acordarse de prender, **es una red opt-in — y
+   una red opt-in no es una red**, que es la lección que este proyecto ya pagó dos
+   veces esta semana. La forma correcta es que **arrancar contra un motor nuevo
+   implique mantenimiento**: si hay `DATABASE_URL` y no está la marca explícita de
+   "el pasaje terminó", la app levanta cerrada. Olvidarse el flag te deja afuera a
+   vos (visible, se arregla en 30 segundos); olvidarse al revés deja entrar a 1.084
+   personas a una base que todavía no verificaste.
+
+**Qué pasa si falla, en las dos direcciones:**
+
+| falla | consecuencia | qué tan grave |
+|---|---|---|
+| queda trabado en mantenimiento | nadie entra, todos ven el mensaje de "actualización en curso" | molesto y **visible**; se sale sacando una variable y reiniciando |
+| deja pasar a todos | usuarios operando mientras verificás; el chequeo de totales contra el snapshot de anoche deja de ser confiable, y el punto de no retorno se cruza solo | **el peor**, y es silencioso |
+
+Por eso el default cerrado: las dos fallas no cuestan lo mismo, así que el mecanismo
+tiene que estar sesgado hacia la barata.
+
+**Lo que NO garantiza, y hay que saberlo:** no frena los crons externos (eso lo hace
+el paso 1 del día, borrando los tres tokens), ni los requests que ya estaban en
+vuelo cuando se prendió, ni los seis escritores del arranque (punto 0b, que es un
+problema aparte y sigue abierto).
+
+**Sin código, la alternativa es sacarle el dominio público al servicio en Railway y
+pegarle por la URL interna.** Garantiza más (no hay app pública que valga) y no tiene
+riesgo de bug, pero el usuario ve un fallo de DNS en vez del mensaje lindo, y **hay
+que ensayarlo antes, no ese domingo**. Sirve como plan B del plan A.
+
+**Costo estimado:** ~40 líneas de middleware más sus tests (503 para uno normal, 200
+con el token, health exento, y el que fija que el default es cerrado). Se prueba
+entero sin base.
+
 ## ✅ EL COPIADOR: ESCRITO, PROBADO Y CRONOMETRADO (sesión 9)
 
 `backend/scripts/copiar_a_postgres.py` + `tests/test_copiar_a_postgres.py`
