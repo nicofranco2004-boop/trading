@@ -190,6 +190,24 @@ segundo pytest contra la misma base mientras corre la suite completa:
 
 Test: `tests/test_aislamiento_entre_corridas.py`.
 
+#### ⚠️ LA REGLA ES MÁS ANCHA QUE "no corras dos pytest" (ampliada en sesión 8)
+
+Una corrida del dueño dio **47 fallas + 8 errores** y el culpable no fue pytest: fue
+**un script ad-hoc** que llamaba a `pg_terminate_backend` **sin filtro** mientras la
+suite corría. El arreglo del conftest está bien y siguió estando bien —filtra por
+`application_name` y sólo mata las suyas—, pero **un script suelto no hereda ese
+filtro**. La regla enunciada como "no corras dos pytest a la vez" dejaba pasar
+exactamente ese caso, porque el segundo proceso no era pytest.
+
+> 🔴 **La regla es: NADA que llame a `pg_terminate_backend` sin filtro mientras algo
+> más esté usando ese Postgres.** Ni pytest, ni un script suelto, ni un snippet de
+> diagnóstico pegado en una terminal. Si tenés que matar conexiones, filtrá por
+> `application_name` como hace el conftest, o hacelo cuando no corre nada más.
+
+Y es la misma forma de siempre: se arregló **el sitio** (el conftest) y se enunció la
+regla por **el síntoma** (dos pytest) en vez de por la **categoría** (quién más mata
+conexiones). El segundo caso apareció solo, como siempre.
+
 **Por qué importa más que tres fallas:** este proyecto se pasó tres sesiones
 logrando que el número de la suite SIGNIFIQUE algo (antes daba 77,4% y 71,9% en el
 mismo commit según qué se trabara con qué). Un número que cambia según lo que corra
@@ -969,16 +987,16 @@ motivo es concreto, no una preferencia de estilo:
     2.  Prender el modo mantenimiento → la app deja de aceptar escrituras.
     3.  Backup de la SQLite, a mano, ahí mismo. No el del cron: uno propio, con
         fecha, guardado FUERA del volumen de Railway.
-    4.  📸 **FOTO "ANTES" del nivel 0** (`foto_para_vaciado`). Va ACÁ, antes de
-        tocar nada. Ver la nota de abajo.
-    5.  Vaciar `raw_json`, con UPDATE, NUNCA con DELETE, y SÓLO de los batches en
-        estado 'confirmed' (ver el bloque rojo de más abajo). Es el 92% de las filas.
-    6.  📸 **FOTO "DESPUÉS"** y correr el NIVEL 0. Si tocó algo que no era
-        `raw_json`: no se sigue.
+    4.  ~~FOTO "ANTES" del nivel 0~~ ⬅️ **YA NO VA (decisión sesión 9).**
+    5.  ~~Vaciar `raw_json`~~ ⬅️ **YA NO VA: se migra todo.** Vaciar apagaba
+        CUATRO lectores, no uno. Ver la sección de la sesión 9.
+    6.  ~~FOTO "DESPUÉS" + NIVEL 0~~ ⬅️ **YA NO VA: sin vaciado no hay nada que
+        vigilar, y el día se queda SIN paso irreversible antes de los chequeos.**
     7.  Correr el copiador.
     8.  `setval()` en cada secuencia.
     9.  Correr la VERIFICACIÓN COMPLETA (niveles 1, 2 y 3) con `PG_DSN_VERIF`
-        puesta y pasándole `tablas_origen`. Si hay UN hallazgo: no se sigue.
+        puesta. **Ya no hay que pasarle `tablas_origen`: la lee sola del origen**
+        (sesión 8). Si hay UN hallazgo: no se sigue.
     10. Prender `DATABASE_URL` y reiniciar, con los escritores del arranque
         apagados (punto 0b).
     11. Los chequeos de los primeros 10 minutos (punto 3), con la app TODAVÍA en
@@ -1390,6 +1408,143 @@ libre antes es gratis y evita el peor momento posible para descubrirlo.**
 Y hay un orden entre ellos: **el 7 y el 8 se miden ANTES que todo lo demás**, porque
 si el 8 sale mal el pasaje no arranca, y si el 7 sale mal puede haber que meter un
 pool antes de mover a nadie.
+
+## Sesión 9 — el diseño del copiador, atacado antes de escribirlo
+
+66 hallazgos en 5 barridos, 40 ataques desde 4 lentes, **5 bloqueantes**. Lo que
+sigue son las decisiones tomadas y los dos bloqueantes que ya están arreglados. El
+análisis completo quedó en `DISENO_COPIADOR.md` (fuera del repo, es material de
+trabajo).
+
+### DECISIÓN 1: `raw_json` NO se vacía. Se migra todo.
+
+**Y la consecuencia es la más grande de la sesión: el día deja de tener un paso
+irreversible antes de los chequeos.** El vaciado era el único, y todo el diseño de
+la ventana giraba alrededor de protegerlo (la foto ANTES, el nivel 0, el orden de
+los pasos 4-5-6). Sin vaciado, eso se cae solo: si algo sale mal, se saca
+`DATABASE_URL` y no hay nada que deshacer sobre el origen.
+
+El motivo de la decisión fue otro y apareció atacando: **vaciar `raw_json` apagaba
+CUATRO lectores, no uno.** El doc tenía decidido perder "Editar y rehacer"; los
+otros tres no estaban en la cuenta:
+
+| lector | qué dejaba de andar |
+|---|---|
+| `reconstruct_csv_from_batch` | "Editar y rehacer" (el único que estaba contado) |
+| `flujos.py:candidatos()` | decide si un traspaso de títulos es entrante o saliente. Lee filas con `status != 'ok'` **dentro de batches confirmados** — justo la población que el vaciado tocaba. Con la columna vacía, todo flujo ambiguo quedaba **indecidible para siempre, sin error** |
+| `main.py:16039` `fila_original` | el diagnóstico de montos inflados: es lo que distingue "lo rompió el parser" de "vino mal del broker" |
+| `main.py:28427` | la pantalla donde el usuario ve sus filas crudas |
+
+Dos de los cuatro son herramientas de diagnóstico del propio equipo — las que se
+usan justo cuando un import sale mal.
+
+**Lo que cuesta:** viajan las 3,4M de filas con el andamio adentro, así que la
+ventana es más larga. **Cuánto más largo es exactamente lo que el cronómetro tiene
+que medir** — y ese número ahora es más importante que antes, porque es el único
+costo de esta decisión.
+
+### DECISIÓN 2: `fci_catalog` y `fci_prices` van en `schema_pg.sql`, arreglando el GENERADOR
+
+No es ninguna de las tres opciones de la lista: es la (a) hecha un nivel más arriba.
+
+**La raíz:** `mkschema.py` importa `main` (o sea corre `init_db()`) y lee
+`sqlite_master`, pero **nunca llamaba a `ensure_tables()`**. El esquema tenía 58
+porque le preguntó a `init_db()` cómo es producción, y producción es `init_db()`
+**+** lo que `pricing/fci.py` crea en caliente. **Es la misma categoría que los
+otros cuatro errores del proyecto: el artefacto se generó contra la fuente
+equivocada.** Parchear la salida habría dejado la causa intacta.
+
+Verificado en este orden, y el orden importa:
+
+| chequeo | resultado |
+|---|---|
+| regenerar con `ensure_tables()` | **60 tablas**, 62 índices, 12 FKs |
+| **control**: ¿la diferencia era mía? | corrí el generador SIN el parche: las diferencias de indentación **ya estaban**; `diff -w` da limpio |
+| el diff clasificado línea por línea | 22 de las FCI + 12 renombres de FK + 41 de espacios preexistentes + **0 sin explicar** |
+| aplicar el esquema de 60 en Postgres | **134/134 sentencias OK, 60 tablas** |
+| ¿aparece un tipo que `canon` no conozca? | no: sigue siendo `{bigint, double precision, text}` |
+
+**Con esto `saltear` queda VACÍO**: las dos tablas viajan como cualquier otra.
+
+⚠️ **Y `mkschema.py` ahora vive en el repo** (`backend/scripts/mkschema.py`). Antes
+estaba en `/private/tmp`, que macOS purga: arreglar la raíz en un archivo que se
+puede evaporar no es arreglarla. De paso se le sacaron las dos rutas absolutas.
+
+### 🔴 BLOQUEANTE 1 (arreglado): cada arranque DUPLICABA las 12 claves foráneas
+
+`_init_db_postgres()` (`main.py:552`) re-aplica `schema_pg.sql` **entero en cada
+arranque**. Su docstring decía *"idempotente: todo va con IF NOT EXISTS"* y era
+falso para 12 de las 132 sentencias: las 12 `ALTER TABLE … ADD FOREIGN KEY`, que
+iban **sin nombre**.
+
+Y una FK sin nombre **no falla al repetirse**: Postgres le autogenera un nombre
+libre y crea una segunda constraint idéntica. Medido, no razonado:
+
+    arranque 1: NO dio error   arranque 2: NO dio error   arranque 3: NO dio error
+    >>> FKs sobre brokers después de 3 arranques: 3
+    >>> nombres: brokers_user_id_fkey, brokers_user_id_fkey1, brokers_user_id_fkey2
+
+Lo que costaba: cada `ADD FOREIGN KEY` **valida la tabla hija entera** tomando
+ACCESS EXCLUSIVE, y 5 de las 12 caen sobre tablas de ~1M de filas. Como `init_db()`
+corre al IMPORTAR el módulo, uvicorn no llega a abrir el puerto → healthcheck rojo
+→ Railway reinicia → otras 12. **Es la forma exacta del 502 del 2026-08-02.**
+
+⚠️ **Y lo peor era la defensa que no defendía.** `main.py:561` tiene un
+`except psycopg.errors.DuplicateObject: pass` con el comentario *"la FK ya existía
+(ADD FOREIGN KEY no tiene IF NOT EXISTS)"*. Alguien vio el problema, lo escribió, y
+puso la red para el error equivocado: sin nombre ese error **nunca se levanta**.
+
+**Arreglado en la raíz**: las FKs salen con nombre desde `mkschema.py`. Con nombre,
+repetir sí levanta `DuplicateObject` y el `except` recién hace lo que dice hacer.
+Test: `tests/test_esquema_pg_reaplicable.py`, que revisa **todas** las sentencias
+del archivo (la categoría, no las 12 FK) y además lo prueba aplicando el esquema dos
+veces contra Postgres. Con el esquema viejo: **12 → 24 FKs**.
+
+### 🔴 BLOQUEANTE 2 (arreglado): el NIVEL 0 era FAIL-OPEN — y es un error MÍO de esta misma sesión
+
+`foto_para_vaciado` guardaba la tabla que no podía leer como `("ERROR", mensaje)`
+**adentro del `try`**, y `comparar_vaciado` sólo denuncia cuando los valores
+DIFIEREN. Dos ERROR idénticos comparan iguales. Medido:
+
+    las 2 tablas fueron ILEGIBLES → hallazgos del NIVEL 0: []  →  "sin hallazgos"
+
+El único nivel que vigilaba el único paso irreversible del día podía no leer nada e
+imprimir que estaba todo bien. Y tenía **el mismo segundo agujero** que `comparar()`:
+la lista de tablas salía del `esquema` del **DESTINO**, aunque las dos fotos son del
+ORIGEN.
+
+⚠️ **Esto estaba en el mismo archivo que se arregló a la mañana y no se barrió.**
+El detector nuevo busca *parámetros opt-in*; esto es la otra forma de la misma
+familia — *la red que devuelve verde cuando no pudo mirar* — y ahí no había ningún
+parámetro: había un `except` que convertía el error en un dato comparable. **Se
+eligió mal el borde de la categoría.** Es, otra vez, el error de barrer el patrón y
+no la categoría.
+
+**Arreglado, y barriendo los tres miembros que tenía el archivo:**
+
+| sitio | era | ahora |
+|---|---|---|
+| `foto_para_vaciado`, tabla ilegible | la guardaba como valor | **levanta `FotoIlegible`** |
+| `foto_para_vaciado`, lista de tablas | del DESTINO, por parámetro | de `catalogo_origen()`, **sin parámetro** |
+| `secuencias_atrasadas`, identity sin secuencia | `continue` en silencio | **la denuncia** |
+| `comparar()`, `tablas_comparadas` | contaba intenciones | **cuenta las que de verdad leyó**, más `tablas_en_el_origen` |
+
+Cada uno con su test y **mutado por separado**: los tres caen cada uno con SU
+mutante y sólo con el suyo.
+
+### Lo que queda anotado y NO arreglado
+
+- **`psycopg` no está en `backend/requirements.txt`** (verificado). Prender
+  `DATABASE_URL` hoy hace crash-loop. Ya estaba anotado; sigue siendo prerrequisito.
+- **No hay modo mantenimiento**, así que los pasos "chequear" y "abrir" son el mismo
+  momento. El ataque lo confirma y lo asciende a requisito.
+- **`advisor_alerts.advisor_uid` y `advisor_profile.advisor_uid`** salen como
+  `GENERATED BY DEFAULT AS IDENTITY` y **no son ids generados**: son el uid del
+  asesor. `mkschema.py` no distingue rowid-alias de AUTOINCREMENT. `[A REVISAR]`
+  antes del pasaje.
+- **Nadie compara los DEFAULT declarados** entre origen y destino, y ya hay uno
+  divergente (`users.password_changed_at`: el CREATE tiene `datetime('now')`, el
+  ALTER que aplicó a producción no).
 
 ## El copiador: LA VERIFICACIÓN ✅ ESCRITA Y PROBADA (sesión 6)
 

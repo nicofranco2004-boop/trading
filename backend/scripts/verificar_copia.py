@@ -61,6 +61,16 @@ class ValorRaro(Exception):
     """
 
 
+class FotoIlegible(Exception):
+    """El NIVEL 0 no pudo fotografiar una tabla.
+
+    Levanta en vez de anotar el error como si fuera un valor. Guardarlo como dato
+    lo vuelve comparable, y dos errores iguales comparan iguales: así el único
+    nivel que vigila el paso irreversible del día devolvía "sin hallazgos" sin
+    haber leído nada.
+    """
+
+
 class OrigenIlegible(Exception):
     """No se pudo leer del ORIGEN la lista de qué hay que comparar.
 
@@ -304,6 +314,13 @@ def secuencias_atrasadas(cur) -> List[Dict[str, Any]]:
     """).fetchall()
     for tabla, col, sec in filas:
         if not sec:
+            # Misma familia que el fail-open del NIVEL 0: saltear en silencio una
+            # columna identity SIN secuencia es decir "todo bien" sobre algo que
+            # ni se miró. Si esto aparece, el próximo alta de esa tabla no tiene
+            # de dónde sacar el id.
+            malas.append({"tabla": tabla, "columna": col, "secuencia": None,
+                          "proximo_id": None, "max_id": None,
+                          "sin_secuencia": True})
             continue
         maximo = cur.execute(f'SELECT MAX("{col}") FROM "{tabla}"').fetchone()[0]
         if maximo is None:
@@ -437,6 +454,7 @@ def comparar(cur_origen, cur_destino, esquema: Dict[str, List[Tuple[str, str]]],
                        f"{sobran_c}"})
 
     # NIVEL 1
+    comparadas = 0
     for tabla, cols in sorted(esquema.items()):
         if tabla in saltear:
             continue
@@ -452,6 +470,7 @@ def comparar(cur_origen, cur_destino, esquema: Dict[str, List[Tuple[str, str]]],
             hallazgos.append({"nivel": 1, "tabla": tabla,
                               "que": f"no se pudo leer el DESTINO: {type(ex).__name__}: {ex}"})
             continue
+        comparadas += 1              # recién acá: las dos lecturas salieron bien
         if n_o != n_d:
             hallazgos.append({"nivel": 1, "tabla": tabla, "que": "cantidad de filas",
                               "origen": n_o, "destino": n_d})
@@ -488,26 +507,57 @@ def comparar(cur_origen, cur_destino, esquema: Dict[str, List[Tuple[str, str]]],
                           "que": "la secuencia daría un id que ya existe "
                                  "(¿falta el setval?)",
                           "proximo_id": s["proximo_id"], "max_id": s["max_id"]})
+    # `tablas_comparadas` cuenta las que de verdad se digestearon, no las que se
+    # pensaba mirar. Misma familia que el fail-open: un número que dice "60" cuando
+    # se leyeron 58 es la forma en que un informe verde tapa una tabla sin revisar.
     return {"hallazgos": hallazgos, "ok": not hallazgos,
-            "tablas_comparadas": len(esquema) - len(saltear)}
+            "tablas_comparadas": comparadas,
+            "tablas_en_el_origen": len(tablas_origen)}
 
 
 # ── NIVEL 0: el vaciado de raw_json ──────────────────────────────────────────
 
-def foto_para_vaciado(cur, esquema: Dict[str, List[Tuple[str, str]]]) -> Dict[str, Any]:
+def foto_para_vaciado(cur) -> Dict[str, Any]:
     """Foto de la base ANTES/DESPUÉS de vaciar `raw_json`.
 
     Todo tiene que quedar idéntico salvo el contenido de esa única columna. Por eso
     `import_raw_rows` se digestea SIN ella: si el digest cambia, se tocó algo más.
+
+    🔴 **ACÁ HABÍA DOS AGUJEROS Y LOS DOS ERAN LA MISMA FAMILIA QUE EL DE
+    `comparar()` — un piso más abajo, en el nivel que vigila el ÚNICO paso
+    irreversible del día.**
+
+    1. **Era FAIL-OPEN.** Una tabla que no se podía leer se guardaba como
+       `("ERROR", mensaje)` *adentro* del `try`, y `comparar_vaciado` sólo denuncia
+       cuando los valores DIFIEREN. Dos ERROR idénticos comparan iguales, así que
+       podía mirar 58 de 60 tablas —o ninguna— e imprimir "sin hallazgos". Medido:
+       con las dos tablas ilegibles devolvía `[]`. Ahora **levanta**.
+    2. **La lista de tablas salía del DESTINO** (el `esquema` que recibía por
+       parámetro), igual que el bug de `comparar()`. Pero las dos fotos son del
+       ORIGEN: preguntarle al destino qué fotografiar del origen es, otra vez,
+       preguntarle al sospechoso. Ahora la lista sale de `catalogo_origen()` y el
+       parámetro **no existe**, así que no se puede pasar la lista equivocada.
+
+    **Y los tipos van todos como `text` a propósito.** Este nivel compara SQLite
+    contra SQLite: no necesita que el tipo sea *correcto*, necesita que sea *el
+    mismo en las dos fotos*. Con `text` eso está garantizado y desaparece la única
+    forma en que este nivel podría levantar por un dato legítimo. Un cambio real
+    igual se ve: `str()` distingue `1500` de `1500.0`.
     """
-    foto = {}
-    for tabla, cols in sorted(esquema.items()):
+    tablas, cols_origen = catalogo_origen(cur)
+    foto: Dict[str, Any] = {}
+    for tabla in sorted(tablas):
+        cols = [(c, "text") for c in cols_origen[tabla]]
         excluir = {"raw_json"} if tabla == "import_raw_rows" else None
         try:
             n, h, _ = digest_tabla(cur, tabla, cols, excluir=excluir)
-            foto[tabla] = (n, h)
         except Exception as ex:
-            foto[tabla] = ("ERROR", f"{type(ex).__name__}: {ex}")
+            raise FotoIlegible(
+                f"no se pudo fotografiar la tabla {tabla!r} "
+                f"({type(ex).__name__}: {ex}). Este nivel vigila el paso "
+                f"irreversible del pasaje: una tabla que no se puede leer NO puede "
+                f"quedar como 'sin hallazgos'.") from ex
+        foto[tabla] = (n, h)
     return foto
 
 

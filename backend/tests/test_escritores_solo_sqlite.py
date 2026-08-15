@@ -55,6 +55,16 @@ PERMITIDOS = {
         "admin). Mismo problema y mismo lugar en el plan.",
     ("seed.py", "seed"):
         "Script de desarrollo, no corre en producción.",
+    ("scripts/mkschema.py", "<module>"):
+        "GENERA `schema_pg.sql` leyendo el schema final de SQLite. Es sólo-SQLite "
+        "por definición: su trabajo es traducir DE SQLite. Corre a mano, nunca en "
+        "producción, y sobre un tempfile — no toca `/data/trading.db`.",
+    ("scripts/base_sintetica.py", "_crear_esquema"):
+        "Fabrica la base de PRUEBA con la forma de producción para cronometrar el "
+        "copiador. Es sólo-SQLite por definición: el origen de la migración ES "
+        "SQLite. No corre en producción y no toca `/data/trading.db`.",
+    ("scripts/base_sintetica.py", "poblar"):
+        "Ídem: la llena. Misma base desechable, mismo motivo.",
 }
 
 

@@ -320,6 +320,89 @@ class UnaCOLUMNAQueNoViajoTest(unittest.TestCase):
         self.assertEqual(r["hallazgos"], [], r["hallazgos"])
 
 
+class ElNivel0NoPuedeDarVerdeSinMirarTest(unittest.TestCase):
+    """🔴 El NIVEL 0 era FAIL-OPEN, y es el nivel que vigila el ÚNICO paso
+    irreversible del día.
+
+    `foto_para_vaciado` guardaba la tabla ilegible como `("ERROR", mensaje)`
+    ADENTRO del `try`, y `comparar_vaciado` sólo denuncia cuando los valores
+    DIFIEREN. Dos ERROR idénticos comparan iguales: podía no leer una sola tabla
+    e imprimir "sin hallazgos".
+
+    Es la MISMA familia que el agujero de `comparar()` —la red que devuelve verde
+    sin haber mirado— un piso más abajo y en el mismo archivo. El detector de
+    parámetros opt-in no lo veía porque acá no había ningún parámetro: había un
+    `except` que convertía el error en un dato comparable.
+    """
+
+    def setUp(self):
+        self.o = _base()
+
+    def test_una_tabla_ILEGIBLE_levanta_en_vez_de_decir_que_esta_todo_bien(self):
+        class CursorQueNoPuedeLeerUnaTabla:
+            def __init__(self, conn):
+                self._c = conn
+
+            def execute(self, sql, params=()):
+                if 'FROM "positions"' in sql:
+                    raise RuntimeError("disco ilegible")
+                return self._c.execute(sql, params)
+
+        with self.assertRaises(vc.FotoIlegible):
+            vc.foto_para_vaciado(CursorQueNoPuedeLeerUnaTabla(self.o))
+
+    def test_con_el_comportamiento_viejo_esto_daba_SIN_HALLAZGOS(self):
+        """La contraprueba, escrita como estaba el bug.
+
+        Si alguien vuelve a guardar el error como valor, `comparar_vaciado` los
+        compara iguales y este test deja constancia de qué salía: nada.
+        """
+        rota = {"positions": ("ERROR", "RuntimeError: disco ilegible"),
+                "users": (2, 123)}
+        self.assertEqual(vc.comparar_vaciado(rota, dict(rota)), [],
+                         "dos ERROR iguales comparan iguales: por eso el error no "
+                         "puede guardarse como un valor, tiene que levantar")
+
+    def test_la_lista_de_tablas_sale_del_ORIGEN_no_de_un_parametro(self):
+        """El otro agujero, el de la fuente equivocada.
+
+        La lista salía del `esquema` del DESTINO aunque las dos fotos son del
+        ORIGEN. Ahora no hay parámetro que pasar: si alguien lo reintroduce, esta
+        llamada empieza a aceptar una lista ajena otra vez.
+        """
+        self.o.executescript("CREATE TABLE fci_prices (symbol TEXT PRIMARY KEY, "
+                             "price REAL);")
+        self.o.commit()
+        foto = vc.foto_para_vaciado(_cur(self.o))
+        self.assertIn("fci_prices", foto,
+                      "una tabla del origen que el esquema del destino no tiene "
+                      "quedaba fuera de la foto, y el vaciado corría sin vigilancia")
+        with self.assertRaises(TypeError):
+            vc.foto_para_vaciado(_cur(self.o), ESQUEMA)     # la firma vieja
+
+    def test_el_informe_dice_cuantas_tablas_MIRO_de_verdad(self):
+        """Un contador que cuenta intenciones tapa una tabla sin leer."""
+        r = vc.comparar(_cur(self.o), _cur(_base()), dict(ESQUEMA),
+                        revisar_secuencias=False)
+        self.assertEqual(r["tablas_comparadas"], 4)
+        self.assertEqual(r["tablas_en_el_origen"], 4)
+
+    def test_una_tabla_que_no_se_pudo_leer_NO_se_cuenta_como_comparada(self):
+        class CursorQueFallaEnUna:
+            def __init__(self, conn):
+                self._c = conn
+
+            def execute(self, sql, params=()):
+                if 'FROM "operations"' in sql:
+                    raise RuntimeError("ilegible")
+                return self._c.execute(sql, params)
+
+        r = vc.comparar(CursorQueFallaEnUna(self.o), _cur(_base()), dict(ESQUEMA),
+                        revisar_secuencias=False)
+        self.assertEqual(r["tablas_comparadas"], 3, "contó una que no pudo leer")
+        self.assertFalse(r["ok"])
+
+
 class CopiaSanaTest(unittest.TestCase):
     """Antes de las roturas: dos copias idénticas no pueden dar hallazgos."""
 
@@ -410,10 +493,10 @@ class LasCincoRoturasTest(unittest.TestCase):
     def test_5_raw_json_vaciado_con_DELETE_en_vez_de_UPDATE(self):
         """Borrar la fila cascadea y se lleva su movimiento del ledger. El NIVEL 0
         lo ve porque cambia la CANTIDAD de filas."""
-        antes = vc.foto_para_vaciado(_cur(self.o), ESQUEMA)
+        antes = vc.foto_para_vaciado(_cur(self.o))
         self.o.execute("DELETE FROM import_raw_rows WHERE batch_id='b1'")
         self.o.commit()
-        despues = vc.foto_para_vaciado(_cur(self.o), ESQUEMA)
+        despues = vc.foto_para_vaciado(_cur(self.o))
         h = vc.comparar_vaciado(antes, despues)
         self.assertEqual(len(h), 1, h)
         self.assertEqual(h[0]["tabla"], "import_raw_rows")
@@ -422,19 +505,19 @@ class LasCincoRoturasTest(unittest.TestCase):
 
     # ── 7: lo que NO tiene que saltar ────────────────────────────────────────
     def test_7_raw_json_vaciado_BIEN_con_UPDATE_no_da_hallazgos(self):
-        antes = vc.foto_para_vaciado(_cur(self.o), ESQUEMA)
+        antes = vc.foto_para_vaciado(_cur(self.o))
         self.o.execute("UPDATE import_raw_rows SET raw_json=''")
         self.o.commit()
-        despues = vc.foto_para_vaciado(_cur(self.o), ESQUEMA)
+        despues = vc.foto_para_vaciado(_cur(self.o))
         self.assertEqual(vc.comparar_vaciado(antes, despues), [])
 
     def test_7b_pero_tocar_OTRA_columna_del_mismo_UPDATE_si_salta(self):
         """El nivel 0 no mira sólo la cantidad de filas: `import_raw_rows` se
         digestea SIN `raw_json` justamente para ver si se tocó algo más."""
-        antes = vc.foto_para_vaciado(_cur(self.o), ESQUEMA)
+        antes = vc.foto_para_vaciado(_cur(self.o))
         self.o.execute("UPDATE import_raw_rows SET raw_json='', batch_id='ROTO'")
         self.o.commit()
-        despues = vc.foto_para_vaciado(_cur(self.o), ESQUEMA)
+        despues = vc.foto_para_vaciado(_cur(self.o))
         h = vc.comparar_vaciado(antes, despues)
         self.assertEqual(len(h), 1, h)
         self.assertIn("no eran raw_json", h[0]["que"])
@@ -569,8 +652,16 @@ class ContraPostgresDeVerdadTest(unittest.TestCase):
             "INSERT INTO users (email) VALUES ('nuevo@x.test') RETURNING id").fetchone()[0]
         self.assertGreater(nuevo, 2)
 
-    def test_el_esquema_REAL_de_58_tablas_no_tiene_ningun_tipo_desconocido(self):
+    def test_el_esquema_REAL_de_60_tablas_no_tiene_ningun_tipo_desconocido(self):
         """La guarda contra el futuro.
+
+        ⚠️ **Eran 58 y ahora son 60, y el cambio es a propósito.** `mkschema.py`
+        generaba el esquema corriendo sólo `init_db()`, pero producción es
+        `init_db()` **+** `pricing/fci.py:ensure_tables()`, que crea `fci_catalog`
+        y `fci_prices` EN CALIENTE. O sea que el esquema se generó preguntándole a
+        la fuente equivocada, y el copiador habría dejado afuera los precios de los
+        FCI. Arreglado en el generador, no acá. Que este test haya fallado al
+        cambiar el esquema es exactamente para lo que está.
 
         Hoy `schema_pg.sql` usa exactamente TRES tipos —text, bigint y double
         precision— y la normalización los conoce a los tres. El día que alguien
@@ -591,7 +682,7 @@ class ContraPostgresDeVerdadTest(unittest.TestCase):
             tipos = collections.Counter(t for cols in esq.values() for _, t in cols)
             c.execute("DROP SCHEMA IF EXISTS vreal CASCADE")
 
-        self.assertEqual(len(esq), 58, f"cambió la cantidad de tablas: {len(esq)}")
+        self.assertEqual(len(esq), 60, f"cambió la cantidad de tablas: {len(esq)}")
         self.assertEqual(set(tipos), {"text", "bigint", "double precision"},
                          f"apareció un tipo nuevo en el esquema: {dict(tipos)}. "
                          f"Revisá que `canon` lo normalice bien ANTES de copiar.")
