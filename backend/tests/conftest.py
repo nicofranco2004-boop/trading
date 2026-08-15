@@ -96,19 +96,104 @@ import pytest
 # Los dos relojes van por el DSN (`options`), así los toma TODA conexión que
 # abra `get_db()` sin tocar una línea del código de la app.
 
-# EL ORDEN DE ESTOS DOS NÚMEROS ES EL ARREGLO, no un detalle de configuración:
+# EL ORDEN DE ESTOS NÚMEROS ES EL ARREGLO, no un detalle de configuración:
 #
-#     idle_in_transaction (3s)  <  lock_timeout (7s)  <  --timeout de pytest (10s)
+#     idle_in_transaction  <  lock_timeout  <  --timeout de pytest
 #
 # · Si `lock_timeout` fuera el más chico, el test que espera se rendiría ANTES de
 #   que Postgres mate a la conexión fugada: seguiría fallando pudiendo pasar.
-#   Con este orden, a los 3s la conexión fugada muere, suelta los locks, y el
+#   Con este orden, la conexión fugada muere primero, suelta los locks, y el
 #   test que esperaba SIGUE Y PASA.
 # · `lock_timeout` es la red de abajo: si algo se bloquea por otro motivo, corta
 #   con un error que dice "me bloqueé" en vez del `Failed: Timeout` de pytest,
 #   que no dice nada.
-_IDLE_TX_TIMEOUT = "3s"
-_LOCK_TIMEOUT = "7s"
+#
+# ⚠️ **LOS VALORES SUBIERON (3/7/10 → 6/12/20) Y EL MOTIVO ESTÁ MEDIDO.** Con 3
+# segundos, la MISMA suite en el mismo commit daba:
+#
+#     #1  46 fallas  · 68s        #2  49 fallas · 133s        #3  46 fallas · 71s
+#                                     ↑ las 3 extra: IdleInTransactionSessionTimeout
+#
+# Nada corría en paralelo: era la máquina. Cuando se pone lenta y la corrida tarda
+# el doble, un test LEGÍTIMO pasa más de 3s con la transacción abierta y Postgres
+# lo mata. O sea que el número de la suite volvía a depender de la carga de la
+# máquina — el mismo problema que este proyecto ya se pasó tres sesiones
+# arreglando, con otra cara.
+#
+# 🔴 **Y no se sube sólo el de 3s.** Si el idle cruza al `lock_timeout` se rompe la
+# propiedad de arriba y los tests bloqueados vuelven a fallar pudiendo pasar. Se
+# suben LOS TRES manteniendo el orden. Por eso el orden dejó de ser un comentario
+# y ahora lo valida `pytest_configure` abajo: la suite no arranca mal configurada.
+#
+# Se pueden apretar en CI (máquina dedicada) o aflojar en una máquina cargada:
+#     RENDI_TEST_IDLE_TX_S=3 RENDI_TEST_LOCK_S=7 pytest tests --timeout=10
+_IDLE_TX_S_DEFAULT = 6
+_LOCK_S_DEFAULT = 12
+_PYTEST_TIMEOUT_SUGERIDO = 20        # el que va en `--timeout=`; ver el README de arriba
+
+
+def _segundos(var: str, default: int) -> int:
+    """Lee un reloj del entorno. Un valor inválido LEVANTA, no cae al default.
+
+    Caer al default en silencio sería lo peor de los dos mundos: el que quiso
+    apretar los relojes en CI creería que los apretó, y estaría midiendo con otros.
+    """
+    crudo = os.environ.get(var)
+    if crudo is None or crudo.strip() == "":
+        return default
+    try:
+        v = int(str(crudo).strip().rstrip("s"))
+    except ValueError:
+        raise RuntimeError(f"{var}={crudo!r} no es un número de segundos") from None
+    if v <= 0:
+        raise RuntimeError(f"{var}={crudo!r}: tiene que ser mayor que cero")
+    return v
+
+
+_IDLE_TX_S = _segundos("RENDI_TEST_IDLE_TX_S", _IDLE_TX_S_DEFAULT)
+_LOCK_S = _segundos("RENDI_TEST_LOCK_S", _LOCK_S_DEFAULT)
+_IDLE_TX_TIMEOUT = f"{_IDLE_TX_S}s"
+_LOCK_TIMEOUT = f"{_LOCK_S}s"
+
+
+def revisar_orden_de_relojes(idle_s, lock_s, pytest_timeout_s=None):
+    """El orden, como función: `idle < lock < --timeout`. Devuelve el motivo o None.
+
+    Es una función y no un `assert` suelto para que la pueda llamar el arranque de
+    la suite **y** su test. Si viviera sólo adentro del hook, el test tendría que
+    simular pytest para probarlo, y un test que simula demasiado deja de probar.
+
+    `pytest_timeout_s=None` = no se pasó `--timeout`: ahí no hay tercer reloj y
+    sólo se exige `idle < lock`. Ojo que eso NO es "está todo bien": es que el
+    tercero no existe en esa corrida.
+    """
+    if idle_s >= lock_s:
+        return (f"idle_in_transaction ({idle_s}s) tiene que ser MENOR que "
+                f"lock_timeout ({lock_s}s). Al revés, el test que espera se rinde "
+                f"antes de que muera la conexión fugada: falla pudiendo pasar.")
+    if pytest_timeout_s is not None and lock_s >= pytest_timeout_s:
+        return (f"lock_timeout ({lock_s}s) tiene que ser MENOR que el --timeout de "
+                f"pytest ({pytest_timeout_s}s). Al revés, pytest corta primero y en "
+                f"vez de un error que dice 'me bloqueé' queda un 'Failed: Timeout' "
+                f"que no dice nada.")
+    return None
+
+
+def pytest_configure(config):
+    """La suite NO arranca con los relojes en un orden que rompe la propiedad.
+
+    Antes el orden era un comentario de 12 líneas. Un comentario no impide que
+    alguien suba sólo uno de los tres — que es exactamente el error que este
+    cambio viene a evitar.
+    """
+    try:
+        t = config.getoption("timeout", None)
+    except Exception:
+        t = None
+    motivo = revisar_orden_de_relojes(_IDLE_TX_S, _LOCK_S,
+                                      int(t) if t else None)
+    if motivo:
+        raise pytest.UsageError(f"relojes mal configurados: {motivo}")
 
 _PG_DSN_BASE = None          # el DSN como vino del entorno, sin opciones
 _PG_ESQUEMA_PREVIO = None    # se borra recién cuando ya nadie lo está usando
