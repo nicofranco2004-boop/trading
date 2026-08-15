@@ -37,6 +37,8 @@ export default function BondCashflowModal({
   brokerCurrency, // 'USDT' | 'USD' | 'ARS'
   asset,        // string — ticker del bono
   position,     // Optional: la posición completa (con quantity) para pre-fill
+  prefill,      // Optional: { date, amount, faceAmortized } — pago CONCRETO a
+                // registrar (viene del inbox de cobranzas pendientes).
   onClose,
   onSuccess,
 }) {
@@ -49,6 +51,20 @@ export default function BondCashflowModal({
   // está en USD (moneda del bono); el user igualmente puede sobrescribirlo
   // con el monto ARS que efectivamente recibió.
   const estimate = useMemo(() => {
+    // El inbox de cobranzas pendientes manda el pago concreto que el user está
+    // confirmando — una fecha PASADA. Tiene prioridad absoluta sobre el
+    // cronograma, que sólo devuelve pagos FUTUROS (getRemainingPayments filtra
+    // `date > hoy`). Si dejáramos que gane el cronograma, la operation se
+    // registraría con la fecha del pago SIGUIENTE y el pendiente nunca se
+    // daría por saldado.
+    if (prefill?.date && prefill.amount > 0) {
+      return {
+        date: prefill.date,
+        amount: prefill.amount,
+        faceAmortized: prefill.faceAmortized,
+        kind: 'pending',
+      }
+    }
     if (!position?.quantity) return null
     const next = nextPaymentForPosition(asset, position.quantity, today())
     if (!next) return null
@@ -62,7 +78,7 @@ export default function BondCashflowModal({
     // Caso edge: el próximo pago es del tipo opuesto (ej: user abrió "cupón"
     // pero el próximo flujo es sólo amort). Devolvemos null para no confundir.
     return null
-  }, [asset, flowType, position?.quantity])
+  }, [asset, flowType, position?.quantity, prefill])
 
   const [date, setDate] = useState(estimate?.date || today())
   const [amount, setAmount] = useState(estimate?.amount?.toFixed(2) || '')
@@ -112,8 +128,13 @@ export default function BondCashflowModal({
       // cross-currency, amount está en pesos pero la qty está en VN; sin
       // face_amortized, el backend trata pesos como face y borra la posición.
       const willDecrement = decrementApplies && decrementQty
-      const faceAmortized = willDecrement && estimate?.amount && position?.quantity
-        ? (estimate.amount * position.quantity / 100)  // pmt.amort (per 100) × qty / 100 = VN
+      // `estimate.amount` YA está escalado a la posición: nextPaymentForPosition
+      // hace `pmt.amort × qty / 100`, y el prefill del inbox viene con la misma
+      // convención. Como el capital se devuelve a la par, ese monto ES el
+      // nominal amortizado — volver a multiplicar por qty/100 lo escalaba dos
+      // veces y decrementaba de más el VN del lote.
+      const faceAmortized = willDecrement
+        ? (estimate?.faceAmortized ?? estimate?.amount ?? undefined)
         : undefined
       const payload = {
         broker,
@@ -197,7 +218,10 @@ export default function BondCashflowModal({
         {estimate && (
           <div className="mx-5 mt-4 px-3 py-2 rounded-sm bg-rendi-accent/[0.08] border border-rendi-accent/30 text-[11px] text-ink-1 leading-snug">
             <p className="font-mono">
-              💡 Pre-llenado según cronograma: <strong>{estimate.date}</strong> · estimado{' '}
+              💡 {estimate.kind === 'pending'
+                ? 'Cobranza pendiente que estás confirmando:'
+                : 'Pre-llenado según cronograma:'}{' '}
+              <strong>{estimate.date}</strong> · estimado{' '}
               <strong>
                 {bondMeta?.currency} {estimate.amount.toFixed(2)} por {position?.quantity || '?'} VN
               </strong>

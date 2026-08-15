@@ -255,7 +255,7 @@ function PositionsDesktop() {
     if (meta?.type === 'cer') ensureCerSeries()
   }
 
-  function openBondCashflow(p, flowType) {
+  function openBondCashflow(p, flowType, prefill = null) {
     const broker = brokers.find(b => b.name === p.broker)
     setBondCashflow({
       flowType,
@@ -265,6 +265,9 @@ function PositionsDesktop() {
       // Phase 3D: pasamos la posición para que el modal pueda pre-llenar la
       // fecha + monto estimado del próximo pago según el cronograma.
       position: p,
+      // Pago CONCRETO a registrar (viene del inbox de pendientes). Si está,
+      // manda sobre el cálculo del cronograma — ver confirmPendingCashflow.
+      prefill,
     })
   }
 
@@ -315,12 +318,31 @@ function PositionsDesktop() {
     }
   }
 
-  // Click "Confirmar" en un item del inbox → abre BondCashflowModal con la
-  // posición correspondiente. El modal usa nextPaymentForPosition para
-  // pre-llenar fecha + monto (ya implementado en Phase 3D — Nivel 1).
+  // Click "Revisar y confirmar" / "Ajustar" en un item del inbox → abre
+  // BondCashflowModal con la posición Y el pago concreto que se está confirmando.
+  //
+  // El prefill NO es opcional acá: sin él, el modal cae a nextPaymentForPosition,
+  // que por definición devuelve el próximo pago FUTURO (getRemainingPayments
+  // filtra `date > hoy`). Eso registraba la operation con la fecha del pago
+  // SIGUIENTE — el pendiente (fecha pasada) nunca matcheaba dentro de los ±14
+  // días de tolerancia y seguía apareciendo para siempre, mientras el pago
+  // futuro quedaba marcado como cobrado antes de ocurrir.
+  //
+  // Pega en todo lo que NO toma el atajo de confirmPendingDirect: amortizaciones,
+  // pagos mixtos y — el caso argentino típico — bonos en dólares cuyo broker
+  // acredita en pesos.
   function confirmPendingCashflow(item) {
     const flowType = item.kind === 'amortizacion' ? 'amortization' : 'coupon'
-    openBondCashflow(item.position, flowType)
+    openBondCashflow(item.position, flowType, {
+      date: item.date,
+      // Los montos del item ya vienen escalados a la qty del lote.
+      // 'mixto' se registra como Cupón (comportamiento existente) → el monto
+      // es el crédito completo que recibió el user (cupón + amortización).
+      amount: flowType === 'amortization' ? item.amort : item.total,
+      // Face en VN a decrementar. Devolver capital es a la par, así que el
+      // monto amortizado ES el nominal amortizado.
+      faceAmortized: item.amort > 0 ? item.amort : undefined,
+    })
   }
 
   // Click "Saltar" en un item → POST /bonds/cashflow/skip + actualiza state.
@@ -2600,6 +2622,7 @@ function PositionsDesktop() {
           brokerCurrency={bondCashflow.brokerCurrency}
           asset={bondCashflow.asset}
           position={bondCashflow.position}
+          prefill={bondCashflow.prefill}
           onClose={() => setBondCashflow(null)}
           onSuccess={onBondCashflowSuccess}
         />

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { detectPendingCashflows, groupPendingByBond } from './pendingCashflows.js'
+import { nextPaymentForPosition } from './bondSchedule.js'
 
 // ════════════════════════════════════════════════════════════════════════════
 // Tests del detector de cobranzas pendientes (Phase 3E).
@@ -331,6 +332,34 @@ describe('detectPendingCashflows — filtro por entry_date (Phase 3F)', () => {
     // Iterando ambas se generan duplicados (key colision en pendiente) —
     // testeamos que al menos hay tantos como pendVieja, no menos.
     expect(pendAmbas.length).toBeGreaterThanOrEqual(pendVieja.length)
+  })
+})
+
+// ── Regresión: confirmar un pendiente lo tiene que SALDAR ────────────────────
+// Positions.confirmPendingCashflow abre BondCashflowModal y el modal registra
+// la operation. Si el modal usa el cronograma (nextPaymentForPosition) en vez
+// de la fecha del item, la op queda con la fecha del pago SIGUIENTE (futuro) y
+// el pendiente sobrevive — el user aprieta "Confirmar" y le sigue apareciendo.
+describe('detectPendingCashflows — cerrar un pendiente confirmado', () => {
+  const TODAY = '2026-08-15'
+  const pos = { ...POS_AL30, entry_date: '2026-06-01' }
+
+  it('la op registrada con la fecha del item cierra el pendiente', () => {
+    const [item] = detectPendingCashflows([pos], [], [], { today: TODAY })
+    expect(item).toBeTruthy()
+    const op = { broker: item.broker, asset: item.asset, date: item.date, op_type: 'Cupón' }
+    const after = detectPendingCashflows([pos], [op], [], { today: TODAY })
+    expect(after.some(p => p.date === item.date)).toBe(false)
+  })
+
+  it('la op registrada con la fecha del PRÓXIMO pago NO lo cierra', () => {
+    const [item] = detectPendingCashflows([pos], [], [], { today: TODAY })
+    const next = nextPaymentForPosition(pos.asset, pos.quantity, TODAY)
+    // El próximo pago del cronograma está muy lejos de la tolerancia de ±14 días.
+    expect(next.date).not.toBe(item.date)
+    const op = { broker: item.broker, asset: item.asset, date: next.date, op_type: 'Cupón' }
+    const after = detectPendingCashflows([pos], [op], [], { today: TODAY })
+    expect(after.some(p => p.date === item.date)).toBe(true)
   })
 })
 
