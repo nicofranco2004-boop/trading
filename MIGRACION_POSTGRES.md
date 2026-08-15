@@ -114,6 +114,9 @@ un error.**
 
 ## Lo que falta
 
+⚠️ **FALTA EL COPIADOR** ✅ **YA NO: escrito, probado y cronometrado (sesión 9).**
+Ver la sección del copiador. Lo que falta ahora es medir contra el Supabase real.
+
 **CERO fallas propias de la migración** (sesión 6). Postgres queda en **46 fallas y
 las 46 fallan IGUAL en SQLite** — son las preexistentes de siempre. Medido con la
 suite COMPLETA en los dos motores y comparado test por test.
@@ -1594,6 +1597,78 @@ leído 58.
 - **Nadie compara los DEFAULT declarados** entre origen y destino, y ya hay uno
   divergente (`users.password_changed_at`: el CREATE tiene `datetime('now')`, el
   ALTER que aplicó a producción no).
+
+## ✅ EL COPIADOR: ESCRITO, PROBADO Y CRONOMETRADO (sesión 9)
+
+`backend/scripts/copiar_a_postgres.py` + `tests/test_copiar_a_postgres.py`
+(21 casos). Cuatro subcomandos, separados porque son distintos de reversibles:
+
+    aplicar-esquema   crea las 60 tablas (idempotente)
+    preflight         SÓLO LEE. Precondición dura de `copiar`.
+    preparar-destino  ESCRIBE: vacía el destino, para reintentar
+    copiar            ESCRIBE: copia + setval + verificación final
+
+### El número que faltaba: **la copia tarda 34 segundos**
+
+Medido sobre la base de forma real (1.071 MB, 3.368.336 filas, 92% andamio),
+Postgres local por socket unix:
+
+| paso | tiempo |
+|---|---|
+| `preflight` (lee las 3,4M filas buscando lo que rompe) | **5,9 s** |
+| la copia en sí | **33,8 s** — de los cuales 28,4 s son `import_raw_rows` (3,1M) |
+| `copiar` completo, con preflight + setval + los 4 niveles | **61,4 s** |
+
+Resultado: **60/60 tablas comparadas, 0 hallazgos en los cuatro niveles.**
+Verificado además desde afuera, con una conexión nueva: 3.368.336 filas, 1165 MB en
+Postgres, 2.168 auto-referencias resueltas, **12 claves foráneas sin duplicar**.
+
+⚠️ **QUÉ MIDE ESTE NÚMERO Y QUÉ NO, porque es la parte que engaña.** Mide el
+trabajo de CPU y de disco: leer SQLite, armar el COPY, escribir en Postgres. **No
+mide la red**, y contra Supabase la red es el término dominante: son ~1 GB que hay
+que subir. A 50 Mbps de subida son ~3 minutos; a 100 Mbps, ~1,5. **El piso es 34 s
+y el techo lo pone tu conexión, no el copiador.** Sigue `[A MEDIR]` contra el
+Supabase real, y ahora se sabe qué medir: el ancho de banda de subida.
+
+**Y esto abarata la decisión de no vaciar `raw_json`.** Las 3,1M filas de andamio
+cuestan 28 de los 34 segundos en CPU, pero **el vaciado nunca iba a sacar filas,
+sólo bytes** (las filas viajan igual). O sea que su ahorro era de red, no de
+tiempo de proceso — y a cambio apagaba cuatro lectores. La decisión se sostiene
+mejor con el número a la vista que sin él.
+
+### Los cinco bloqueantes del ataque, resueltos en el código
+
+| bloqueante | cómo quedó |
+|---|---|
+| `with destino.transaction()` **no commitea** si algo ya abrió transacción (el preflight): reportaría éxito sobre una base vacía | `destino.commit()` **explícito**, y la verificación final corre en una **conexión NUEVA abierta después del commit** |
+| el `.db` sin su `-wal` se lee incompleto y en silencio | `abrir_origen` **aborta** si hay WAL con datos, y el mensaje dice qué hacer (`wal_checkpoint(TRUNCATE)`) y qué NO hacer (sacarle el `mode=ro`) |
+| el NIVEL 0 fail-open | arreglado en `verificar_copia.py` (ver arriba) |
+| P3 se salteaba las 57 columnas `NOT NULL DEFAULT`, que son las de la plata | mide **las 230**: el default no salva, porque el COPY manda todas las columnas y una columna presente con NULL inserta NULL |
+| las FKs duplicadas por arranque | arreglado en `mkschema.py`, y **P7 ya no compara contra un `12` hardcodeado: busca el duplicado**, que es el modo de falla real y no necesita saber cuántas tiene que haber |
+
+**Medido, no razonado**, que `with conn.transaction()` pierde todo: con una consulta
+previa en la conexión, adentro del bloque se ven 3 filas y en la base quedan **0**.
+Queda como test para que nadie lo "simplifique" de vuelta.
+
+### Lo que aprendió el copiador corriéndose
+
+- **P8 daba 8 falsos positivos** porque comparaba nombres de tabla contra tuplas
+  `(tabla, columna)`: la resta daba todo. Un chequeo que denuncia siempre es ruido
+  que se aprende a ignorar, que es peor que no tenerlo.
+- **P7 tenía un `12` hardcodeado** y estaba midiendo lo equivocado. Ver la tabla.
+- Las dos aparecieron **corriendo el copiador**, no leyéndolo.
+
+### Lo que sigue `[A MEDIR]`
+
+1. **El ancho de banda de subida contra el Supabase real.** Es el término
+   dominante y el único que falta.
+2. **El preflight sobre la copia RESTAURADA de producción**, no sobre la
+   sintética: la sintética se construye con `init_db()`, la misma fuente que
+   `schema_pg.sql`, así que **no puede** devolver un hallazgo de esquema. Por eso
+   el copiador imprime la huella del origen (md5 del esquema + tamaño + mtime): si
+   no es la de producción, el preflight midió otra cosa.
+3. **Puerto de sesión (5432) vs pooler (6543)**, y si `prepare_threshold=None`
+   alcanza. Se decide antes de conectar.
 
 ## El copiador: LA VERIFICACIÓN ✅ ESCRITA Y PROBADA (sesión 6)
 

@@ -55,6 +55,11 @@ PERMITIDOS = {
         "admin). Mismo problema y mismo lugar en el plan.",
     ("seed.py", "seed"):
         "Script de desarrollo, no corre en producción.",
+    ("scripts/copiar_a_postgres.py", "abrir_origen"):
+        "ES el copiador: su trabajo es leer la SQLite para migrarla a Postgres, "
+        "así que abrirla directo no es saltearse el interruptor, es el punto. Y la "
+        "abre **sólo lectura** (`mode=ro`): es la base de la que dependen 1.084 "
+        "personas y si el copiador tuviera un bug, que no pueda escribir.",
     ("scripts/mkschema.py", "<module>"):
         "GENERA `schema_pg.sql` leyendo el schema final de SQLite. Es sólo-SQLite "
         "por definición: su trabajo es traducir DE SQLite. Corre a mano, nunca en "
