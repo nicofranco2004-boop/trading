@@ -37,6 +37,18 @@ describe('suggestBrokerAmount — el caso argentino (bono USD, broker ARS)', () 
     expect(r.amount).not.toBe(round2(100 * MEP_HOY))
     expect(r.tc).toBe(MEP_PAGO)
     expect(r.stale).toBe(false)
+    expect(r.operacion).toBe('multiplicar')
+  })
+
+  it('el fx a sellar ES el TC: la fila queda en pesos', () => {
+    const r = suggestBrokerAmount({
+      theoreticalAmount: 100,
+      bondCurrency: 'USD', brokerCurrency: 'ARS',
+      paymentDate: FECHA_PAGO, fx: fxDe(MEP_PAGO),
+    })
+    expect(r.fxToUsdForRow).toBe(MEP_PAGO)
+    // round-trip: el monto en pesos dividido por el sello da el teórico en USD
+    expect(round2(r.amount / r.fxToUsdForRow)).toBe(100)
   })
 
   it('marca stale y expone la fecha real cuando el TC es de un día anterior', () => {
@@ -76,6 +88,19 @@ describe('suggestBrokerAmount — la dirección inversa (bono ARS, broker USD)',
     })
     expect(r.applies).toBe(true)
     expect(r.amount).toBe(100)
+    expect(r.operacion).toBe('dividir')
+  })
+
+  it('el fx a sellar es 1, NO el TC: la fila queda en dólares', () => {
+    // El bug: sellar el TC (1254) sobre una fila cuya moneda es USD hace que todo
+    // lector que divida muestre US$100 como US$0,08.
+    const r = suggestBrokerAmount({
+      theoreticalAmount: 125437.56,
+      bondCurrency: 'ARS', brokerCurrency: 'USD',
+      paymentDate: FECHA_PAGO, fx: fxDe(MEP_PAGO),
+    })
+    expect(r.fxToUsdForRow).toBe(1)
+    expect(r.amount / r.fxToUsdForRow).toBe(100)   // round-trip: da el monto en USD
   })
 
   it('también con broker USDT', () => {
@@ -111,13 +136,27 @@ describe('suggestBrokerAmount — cuando NO hay que sugerir', () => {
     expect(r.amount).toBe(null)
   })
 
-  it('sin TC: aplica pero NO inventa un monto', () => {
+  it('sin TC: aplica pero NO inventa un monto, y lo declara', () => {
     const r = suggestBrokerAmount({
       theoreticalAmount: 100, bondCurrency: 'USD', brokerCurrency: 'ARS',
       paymentDate: FECHA_PAGO, fx: { tc: null, asOf: null, source: null },
     })
     expect(r.applies).toBe(true)   // el modal sabe que hay conversión pendiente
     expect(r.amount).toBe(null)    // pero no sugiere nada
+    expect(r.faltaTc).toBe(true)   // y la UI puede decir POR QUÉ
+  })
+
+  it('sin monto teórico NO es culpa del dólar', () => {
+    // El modal decía "no tenemos el dólar del X" cuando en realidad el dólar estaba
+    // y lo que faltaba era el cronograma. Mentirle al usuario sobre la causa lo
+    // manda a buscar el problema donde no está.
+    const r = suggestBrokerAmount({
+      theoreticalAmount: null, bondCurrency: 'USD', brokerCurrency: 'ARS',
+      paymentDate: FECHA_PAGO, fx: fxDe(MEP_PAGO),
+    })
+    expect(r.applies).toBe(true)
+    expect(r.amount).toBe(null)
+    expect(r.faltaTc).toBe(false)
   })
 
   it('serie sin cargar (fx undefined): no sugiere', () => {

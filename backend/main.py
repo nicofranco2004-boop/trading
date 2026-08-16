@@ -9684,12 +9684,16 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
         broker_currency = broker_row['currency']
         currency = data.currency or broker_currency
         fx_source = None
-        if data.fx_to_usd is not None:
+        if currency in ('USD', 'USDT'):
+            # La fila YA está en dólares: su factor a USD es 1, y no hay cliente que
+            # pueda decir lo contrario. Sin esta guarda, un cliente que mande el TC
+            # de la conversión (1250) deja la fila diciendo que esos 100 dólares son
+            # 100/1250 = US$0,08 para todo lector que divida.
+            fx_to_usd = 1.0
+            fx_source = 'par'
+        elif data.fx_to_usd is not None:
             fx_to_usd = data.fx_to_usd
             fx_source = 'client'
-        elif broker_currency in ('USD', 'USDT'):
-            fx_to_usd = 1.0  # ya es USD-equivalente
-            fx_source = 'par'
         else:
             fx_to_usd, fx_source = _fx.fx_for_date_detail(conn, data.date)
 

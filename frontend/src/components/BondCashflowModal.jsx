@@ -113,6 +113,7 @@ export default function BondCashflowModal({
   // sellarlo; si el usuario lo editó, no mandamos nada y sella el backend.
   const [appliedAmountStr, setAppliedAmountStr] = useState(null)
   const [appliedTc, setAppliedTc] = useState(null)
+  const [appliedDate, setAppliedDate] = useState(null)
   const [commissions, setCommissions] = useState('')
   const [notes, setNotes] = useState(
     estimate ? 'Estimado por cronograma — ajustá monto si difiere por retenciones/comisiones' : ''
@@ -149,10 +150,18 @@ export default function BondCashflowModal({
     const s = sug.amount.toFixed(2)
     setAmount(s)
     setAppliedAmountStr(s)
-    setAppliedTc(sug.tc)
+    // Lo que se sella NO es el TC de la conversión sino el que le corresponde a la
+    // FILA: en un broker en dólares el monto queda en dólares y su fx_to_usd es 1.
+    setAppliedTc(sug.fxToUsdForRow)
+    setAppliedDate(date)
   }
-  // ¿El monto que se va a guardar es exactamente el que pusimos nosotros?
-  const usaNuestroTc = appliedAmountStr != null && amount === appliedAmountStr && appliedTc > 0
+  // ¿El monto que se va a guardar es exactamente el que pusimos nosotros, para la
+  // misma fecha? Si el usuario editó el monto O movió la fecha después de aplicar,
+  // el TC guardado ya no le corresponde: no lo mandamos y sella el backend.
+  const usaNuestroTc = appliedAmountStr != null
+    && amount === appliedAmountStr
+    && appliedDate === date
+    && appliedTc > 0
 
   const title = isCoupon ? 'Registrar cupón cobrado' : 'Registrar amortización'
   const Icon = isCoupon ? ArrowDownCircle : LayersIcon
@@ -300,7 +309,9 @@ export default function BondCashflowModal({
                   Usar {moneyLabel} {sug.amount.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </button>
                 <p className="text-ink-2 font-mono mt-1.5">
-                  {bondMeta?.currency} {estimate.amount.toFixed(2)} × {sug.tc.toLocaleString('es-AR', { maximumFractionDigits: 4 })}
+                  {bondMeta?.currency} {estimate.amount.toFixed(2)}{' '}
+                  {sug.operacion === 'dividir' ? '÷' : '×'}{' '}
+                  {sug.tc.toLocaleString('es-AR', { maximumFractionDigits: 4 })}
                   {' '}({sug.source === 'blue' ? 'blue' : 'MEP'} del {sug.asOf})
                 </p>
                 {sug.stale && (
@@ -314,8 +325,10 @@ export default function BondCashflowModal({
               </>
             ) : (
               <p className="text-ink-2">
-                No tenemos el dólar del {date} para sugerirte el equivalente.
-                {' '}Cargá el monto en {moneyLabel} que te acreditó el broker.
+                {sug.faltaTc
+                  ? `No tenemos el dólar del ${date} para sugerirte el equivalente. `
+                  : `El bono paga en ${bondMeta?.currency} y esta cuenta acredita en ${moneyLabel}. `}
+                Cargá el monto en {moneyLabel} que te acreditó el broker.
               </p>
             )}
           </div>

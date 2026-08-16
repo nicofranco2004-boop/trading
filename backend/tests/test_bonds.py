@@ -531,6 +531,24 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         conn.close()
         self.assertAlmostEqual(row["pnl_realized"], 125000.0, places=2)
 
+    def test_broker_usd_ignora_un_fx_del_cliente_que_no_sea_uno(self):
+        """Guarda: en una fila en dólares el factor a USD es 1, diga lo que diga el cliente.
+
+        El modal, sugiriendo para un bono en pesos dentro de una cuenta en dólares,
+        podía mandar el TC de la conversión (1250) sobre una fila cuya moneda es USD.
+        Todo lector que divida mostraría esos US$100 como US$0,08.
+        """
+        res = self._post({
+            "broker": "IBKR", "asset": "TZX26",
+            "flow_type": "coupon", "amount": 100, "date": "2026-05-10",
+            "fx_to_usd": 1250.0,   # lo que mandaría un cliente confundido
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["currency"], "USD")
+        self.assertEqual(body["fx_to_usd"], 1.0)     # la guarda gana
+        self.assertEqual(body["fx_source"], "par")
+
     def test_usd_broker_sigue_en_uno_sin_tocar_la_serie(self):
         """Regresión: un broker USD no convierte nada aunque haya serie sembrada."""
         res = self._post({
