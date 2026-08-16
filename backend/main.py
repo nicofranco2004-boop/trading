@@ -8802,8 +8802,24 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         broker_filter_args = () if broker == "global" else (broker,)
 
         # 1) pnl_realized desde operations — ÚNICA fuente autoritativa
+        #
+        # El campo se llama `pnl_usd` pero en las cobranzas de bonos guarda el monto
+        # en la MONEDA DEL BROKER (`bond_cashflow` inserta `net_amount` tal cual), así
+        # que un cupón de un broker ARS entraba a `pnl_realized` como si esos pesos
+        # fueran dólares — un cupón de $95.000 sumaba US$95.000 al mes.
+        #
+        # Se divide SÓLO en Cupón/Amortización con `fx_to_usd` sellado y currency ARS:
+        # en `Venta` el `pnl_usd` YA es USD y `fx_to_usd` guarda el tc_venta, así que
+        # dividir ahí rompería todo. Las filas viejas (fx NULL) caen al ELSE y quedan
+        # como estaban — no empeoran, y el sello recién ahora las hace reparables.
         pnl_row = conn.execute(
-            f"""SELECT COALESCE(SUM(o.pnl_usd), 0) AS s FROM operations o
+            f"""SELECT COALESCE(SUM(
+                    CASE WHEN o.op_type IN ('Cupón', 'Amortización')
+                              AND o.currency = 'ARS'
+                              AND o.fx_to_usd > 0
+                         THEN o.pnl_usd / o.fx_to_usd
+                         ELSE o.pnl_usd END
+                ), 0) AS s FROM operations o
                 WHERE o.user_id=?
                   AND strftime('%Y', o.date)=?
                   AND strftime('%m', o.date)=?
@@ -9650,14 +9666,32 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
             raise HTTPException(400, "El monto neto (descontando comisiones) debe ser > 0")
 
         # Resolver currency + fx_to_usd con defaults sensatos.
+        #
+        # `fx_to_usd` va en NATIVA POR USD (ej: 1250 ARS/USD), la convención del
+        # resto del sistema (persister, ventas, autodepósito).
+        #
+        # Si el frontend manda uno explícito, GANA: es el mismo TC con el que le
+        # sugirió el monto al usuario. Sellar otro acá haría que la fila no
+        # round-tripee (`amount / fx_to_usd` dejaría de dar el teórico en USD)
+        # porque el MEP del navegador y el del backend pueden diferir — el cron
+        # diario no escribe MEP y el backfill lo repara recién al próximo restart.
+        #
+        # Sin FX explícito y con broker ARS, antes quedaba NULL y cada lector
+        # inventaba su propio fallback (el blue de HOY, aunque el cupón fuera de
+        # hace dos años). Ahora se sella el MEP de la FECHA DEL PAGO. Sin
+        # `fallback`: una fecha anterior a la serie queda NULL, no un número
+        # inventado — mismo criterio que el resto de fx.py.
         broker_currency = broker_row['currency']
         currency = data.currency or broker_currency
+        fx_source = None
         if data.fx_to_usd is not None:
             fx_to_usd = data.fx_to_usd
+            fx_source = 'client'
         elif broker_currency in ('USD', 'USDT'):
             fx_to_usd = 1.0  # ya es USD-equivalente
+            fx_source = 'par'
         else:
-            fx_to_usd = None  # ARS sin FX explícito — frontend usa fallback
+            fx_to_usd, fx_source = _fx.fx_for_date_detail(conn, data.date)
 
         with conn:  # tx atómica
             # Pre-cálculo del cost basis consumido para amortizaciones.
@@ -9731,6 +9765,12 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
                                    # se le devolvía todo al lote más viejo y el costo
                                    # unitario de los demás quedaba distorsionado.
                                    "amort_lots": amort_detail or None,
+                                   # De dónde salió el TC sellado ('client' = el que
+                                   # el frontend usó para sugerir el monto, 'mep',
+                                   # 'blue', 'par', None). Sin esto no se puede
+                                   # distinguir después un MEP del día del pago de un
+                                   # blue de red histórica, y la degradación es muda.
+                                   "fx_source": fx_source,
                                    "cross_currency_skipped": cross_currency_skipped})),
             )
             # 2. Acreditar cash del broker
@@ -9750,6 +9790,7 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
             'asset': data.asset.upper(),
             'currency': currency,
             'fx_to_usd': fx_to_usd,
+            'fx_source': fx_source,
             'qty_decremented': qty_decremented,
             'invested_decremented': invested_decremented,
             'cost_basis_consumed': cost_basis_consumed,

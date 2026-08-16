@@ -460,6 +460,7 @@ function PositionsDesktop() {
         couponsUsd: 0, amortizationsUsd: 0, totalUsd: 0,
         pnlContribution: 0,                         // aporte al P&L
         pnlContributionUsd: 0,
+        usdByOpId: new Map(),                       // op.id → su monto en USD
         hasLegacyOps: false,
         currency: op.currency || null,
       })
@@ -469,17 +470,28 @@ function PositionsDesktop() {
       entry.total += amt
 
       // Conversión a USD: fx_to_usd stampado en op (Phase 3D), o fallback.
+      //
+      // `fx` está en NATIVA POR USD (ej: 1250 ARS/USD) — la misma convención que
+      // usa el resto del sistema para `fx_to_usd` (persister, ventas, autodepósito)
+      // y la que espera resolveHistoricalFx. Por eso se DIVIDE para llegar a USD.
+      // Antes acá se guardaba el recíproco y se multiplicaba: mientras el campo
+      // llegaba siempre NULL o 1.0 daba igual, pero en cuanto el backend empiece a
+      // sellar el MEP del día, multiplicar por 1250 convierte un cupón de $95.000
+      // en US$118 millones.
       let fx = op.fx_to_usd
       if (fx == null || fx <= 0) {
         entry.hasLegacyOps = true
         if (op.currency === 'ARS' || (op.currency == null && amt > 1000)) {
-          fx = 1 / (tcBlue || 1)
+          fx = tcBlue || 1
         } else {
           fx = 1.0
         }
       }
-      const amtUsd = amt * fx
+      const amtUsd = amt / fx
       entry.totalUsd += amtUsd
+      // Pata USD de ESTA op: las filas del historial tienen que mostrar el mismo
+      // dólar con el que se sumó el total, no re-dividir por el blue de hoy.
+      entry.usdByOpId.set(op.id, amtUsd)
 
       // Aporte al P&L: cupones = 100%; amorts = sólo la ganancia realizada.
       let pnlContrib = amt
@@ -496,7 +508,7 @@ function PositionsDesktop() {
         }
       }
       entry.pnlContribution += pnlContrib
-      entry.pnlContributionUsd += pnlContrib * fx
+      entry.pnlContributionUsd += pnlContrib / fx
 
       if (op.op_type === 'Cupón') {
         entry.coupons += amt

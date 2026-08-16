@@ -57,6 +57,11 @@ export function BondDetailBody({
   const pnlContribution = summary?.pnlContribution || 0
   const hasLegacyOps = summary?.hasLegacyOps || false
   const ops = summary?.ops || []
+  // Pata USD por op: sin esto cada fila del historial se re-divide por el blue de
+  // HOY (toDisp con un solo argumento) mientras el total de arriba usa el dólar
+  // sellado en la op. Hoy coinciden porque los dos son el blue; en cuanto el
+  // backend selle el MEP del día, el total y la suma de sus filas se separan.
+  const usdByOpId = summary?.usdByOpId
   const recoveryPct = invested > 0 ? (total / invested) : 0
   const amortRealizedGain = pnlContribution - coupons
   // Versiones en el riel de display (las nativas quedan para gates de signo).
@@ -359,7 +364,7 @@ export function BondDetailBody({
                     <span className={`text-[10px] font-bold rounded-full px-2 py-0.5 shrink-0 ${o.op_type === 'Cupón' ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-data-violet/10 text-data-violet'}`}>{o.op_type}</span>
                     {o.notes && <span className="text-ink-3 truncate">{o.notes}</span>}
                   </div>
-                  <span className="font-semibold text-rendi-pos tabular shrink-0">+{moneyLabel} {fmt(toDisp(+o.pnl_usd || 0))}</span>
+                  <span className="font-semibold text-rendi-pos tabular shrink-0">+{moneyLabel} {fmt(toDisp(+o.pnl_usd || 0, usdByOpId?.get(o.id)))}</span>
                 </div>
               ))}
             </div>

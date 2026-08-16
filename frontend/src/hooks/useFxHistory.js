@@ -166,18 +166,21 @@ export function useFxHistory(fallbackTcBlue = 1415) {
     return r != null && r > 0 ? r : fallbackRef.current
   }
 
-  // MEP del día (mismo criterio de "día anterior más cercano"), con caída al blue de
-  // esa fecha y después al fallback. Espeja `fx_for_date` del backend, que prefiere el
-  // MEP: lo usa la vista previa del depósito para no mostrar un dólar distinto del que
-  // se va a guardar. Los consumidores viejos siguen con getRateOrFallback (blue).
-  function getMepOrFallback(dateIso) {
-    if (!dateIso) return fallbackRef.current
-    const { dates, mepByDate } = fxIndex
-    // Guarda: si el índice viene de una respuesta vieja sin `mep`, caemos al blue en
-    // vez de romper. Es la vista previa de un monto: nunca debe tirar la pantalla.
-    if (!mepByDate || !dates || dates.length === 0) return getRateOrFallback(dateIso)
+  // MEP del día con TRAZA: además del TC, de dónde salió y de QUÉ FECHA.
+  //
+  // La fecha importa: `mep_venta` es nullable y el cron nocturno no lo escribe, así
+  // que el MEP "del 15/08" puede ser en realidad el del 13/08. Quien le muestra el
+  // número a un usuario tiene que poder decirle qué día está usando — si no, la
+  // degradación es muda y el usuario cree que le estamos dando el dólar de su
+  // liquidación. Devuelve `{tc: null}` en vez de caer al fallback: sugerir un monto
+  // con el dólar de HOY para un cupón de hace dos años es peor que no sugerir nada.
+  function getMepDetail(dateIso) {
+    const NADA = { tc: null, source: null, asOf: null }
+    if (!dateIso) return NADA
+    const { dates, mepByDate, byDate } = fxIndex
+    if (!mepByDate || !dates || dates.length === 0) return NADA
     const exact = mepByDate.get(dateIso)
-    if (exact != null && exact > 0) return exact
+    if (exact != null && exact > 0) return { tc: exact, source: 'mep', asOf: dateIso }
     let lo = 0, hi = dates.length - 1, best = -1
     while (lo <= hi) {
       const mid = (lo + hi) >> 1
@@ -185,9 +188,23 @@ export function useFxHistory(fallbackTcBlue = 1415) {
     }
     for (let i = best; i >= 0; i--) {
       const v = mepByDate.get(dates[i])
-      if (v != null && v > 0) return v
+      if (v != null && v > 0) return { tc: v, source: 'mep', asOf: dates[i] }
     }
-    return getRateOrFallback(dateIso)
+    // Sin ningún MEP ≤ la fecha (pre-2018): red histórica al blue, declarada.
+    if (best >= 0) {
+      const b = byDate.get(dates[best])
+      if (b != null && b > 0) return { tc: b, source: 'blue', asOf: dates[best] }
+    }
+    return NADA
+  }
+
+  // Espeja `fx_for_date` del backend, que prefiere el MEP: lo usa la vista previa del
+  // depósito para no mostrar un dólar distinto del que se va a guardar. Los
+  // consumidores viejos siguen con getRateOrFallback (blue).
+  function getMepOrFallback(dateIso) {
+    if (!dateIso) return fallbackRef.current
+    const { tc } = getMepDetail(dateIso)
+    return tc != null && tc > 0 ? tc : getRateOrFallback(dateIso)
   }
 
   return {
@@ -195,6 +212,7 @@ export function useFxHistory(fallbackTcBlue = 1415) {
     getRateForDate,
     getRateOrFallback,
     getMepOrFallback,
+    getMepDetail,
     // Clave estable para memoizar cálculos que dependen de la serie: cambia
     // cuando la serie termina de cargar (o se recarga), no en cada render.
     fxKey: fxIndex.dates.length,

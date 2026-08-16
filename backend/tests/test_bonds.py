@@ -317,6 +317,12 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
     def setUpClass(cls):
         cls.client = TestClient(main.app)
 
+    # Serie de FX sembrada. SIN esto la tabla queda vacía, `fx_for_date_detail`
+    # devuelve (None, None) y los asserts de sellado pasan por la razón
+    # equivocada — verde sin haber ejercitado nada.
+    MEP_MAYO = 1250.0
+    BLUE_MAYO = 1300.0
+
     def setUp(self):
         conn = main.get_db()
         self.uid = _new_user(conn, f"phase3d-{self.id()}@rendi.test")
@@ -329,6 +335,13 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
                VALUES (?, 'IBKR', 'AL30', 0, 700, 1000, 0.70, 0, '2024-06-01')""",
             (self.uid,),
         )
+        # 2026-05-10 es la fecha que usan casi todos los tests de esta clase.
+        # 2026-05-08 tiene blue pero NO mep: sirve para el walk-back.
+        for d, blue, mep in [("2026-05-08", self.BLUE_MAYO, None),
+                             ("2026-05-10", self.BLUE_MAYO, self.MEP_MAYO)]:
+            conn.execute(
+                "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+                "VALUES (?,?,?,?)", (d, blue, mep, "test"))
         conn.commit()
         conn.close()
         self.token = main.create_token(self.uid)
@@ -359,8 +372,10 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         ).fetchone()
         conn.close()
         self.assertEqual(op["currency"], "ARS")
-        # ARS broker sin fx explícito → fx_to_usd queda NULL
-        self.assertIsNone(op["fx_to_usd"])
+        # ARS broker sin fx explícito → se sella el MEP de la FECHA DEL PAGO
+        # (antes quedaba NULL y cada lector inventaba su propio fallback).
+        self.assertEqual(op["fx_to_usd"], self.MEP_MAYO)
+        self.assertEqual(body["fx_source"], "mep")
 
     def test_fx_to_usd_default_one_for_usd_broker(self):
         """Broker USD/USDT: fx_to_usd default = 1.0."""
@@ -380,11 +395,13 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
             "flow_type": "coupon", "amount": 32480,
             "date": "2026-05-10",
             "currency": "ARS",
-            "fx_to_usd": 0.0008,  # ≈ 1/1250 ARS por USD (MEP)
+            "fx_to_usd": 1250.0,  # ARS por USD (MEP) — nativa/USD, como el resto del sistema
         })
         self.assertEqual(res.status_code, 200, res.text)
         body = res.json()
-        self.assertEqual(body["fx_to_usd"], 0.0008)
+        self.assertEqual(body["fx_to_usd"], 1250.0)
+        # El explícito del cliente GANA sobre el de la serie y queda marcado como tal.
+        self.assertEqual(body["fx_source"], "client")
 
         conn = main.get_db()
         op = conn.execute(
@@ -393,7 +410,136 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         ).fetchone()
         conn.close()
         self.assertEqual(op["currency"], "ARS")
-        self.assertAlmostEqual(op["fx_to_usd"], 0.0008, places=6)
+        self.assertAlmostEqual(op["fx_to_usd"], 1250.0, places=6)
+
+    # ─── Sellado del TC por fecha (broker ARS sin fx explícito) ──────────────
+
+    def test_fx_stamped_uses_mep_of_payment_date_not_today(self):
+        """El TC sellado es el de la FECHA DEL PAGO, no el más reciente de la serie.
+
+        Es el corazón de la feature: un cupón viejo confirmado hoy tiene que quedar
+        con el dólar de cuando se cobró. Sembramos un MEP MUY distinto en una fecha
+        posterior — si el endpoint tomara "el último", el assert falla.
+        """
+        conn = main.get_db()
+        conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES ('2026-08-01', 9000.0, 9999.0, 'test')")
+        conn.commit()
+        conn.close()
+
+        res = self._post({
+            "broker": "Cocos", "asset": "AL30",
+            "flow_type": "coupon", "amount": 5000, "date": "2026-05-10",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["fx_to_usd"], self.MEP_MAYO)
+        self.assertNotEqual(res.json()["fx_to_usd"], 9999.0)
+
+    def test_fx_stamped_walks_back_when_date_has_no_mep(self):
+        """Fin de semana / feriado: cae al último día CON mep, no al blue del día.
+
+        `_lookup` filtra IS NOT NULL en el WHERE, así que un día sin mep no degrada
+        a blue — usa el mep anterior. 2026-05-08 tiene blue pero no mep.
+        """
+        res = self._post({
+            "broker": "Cocos", "asset": "AL30",
+            "flow_type": "coupon", "amount": 5000, "date": "2026-05-09",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        # 2026-05-09 no existe en la serie; el último con mep ≤ esa fecha no hay
+        # (2026-05-08 tiene mep NULL) → cae al blue de 2026-05-08.
+        self.assertEqual(body["fx_to_usd"], self.BLUE_MAYO)
+        self.assertEqual(body["fx_source"], "blue")
+
+    def test_fx_not_invented_when_date_predates_series(self):
+        """Fecha anterior a toda la serie: NULL, no un número inventado."""
+        res = self._post({
+            "broker": "Cocos", "asset": "AL30",
+            "flow_type": "coupon", "amount": 5000, "date": "2010-01-04",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertIsNone(body["fx_to_usd"])
+        self.assertIsNone(body["fx_source"])
+
+    def test_fx_source_queda_en_undo_meta(self):
+        """El rastro del riel queda en la fila, no sólo en el response."""
+        self._post({
+            "broker": "Cocos", "asset": "AL30",
+            "flow_type": "coupon", "amount": 5000, "date": "2026-05-10",
+        })
+        conn = main.get_db()
+        row = conn.execute(
+            "SELECT undo_meta_json FROM operations WHERE user_id=? AND asset='AL30'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        import json as _j
+        self.assertEqual(_j.loads(row["undo_meta_json"])["fx_source"], "mep")
+
+    def test_pnl_realized_no_suma_pesos_del_cupon_como_dolares(self):
+        """`pnl_usd` de un cupón ARS son PESOS; el mensual los sumaba como dólares.
+
+        Un cupón de $125.000 sumaba US$125.000 al P&L realizado del mes. Ahora se
+        divide por el TC sellado — pero SÓLO en cobranzas: en una Venta el `pnl_usd`
+        ya viene en USD y `fx_to_usd` guarda el tc_venta, así que dividir ahí
+        rompería el número que hoy está bien.
+        """
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type,
+                 pnl_usd, commissions, currency, fx_to_usd)
+               VALUES (?, '2026-05-10', 'Cocos', 'AL30', 'Cupón', 125000, 0, 'ARS', 1250.0)""",
+            (self.uid,))
+        conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type,
+                 pnl_usd, commissions, currency, fx_to_usd)
+               VALUES (?, '2026-05-20', 'Cocos', 'GGAL', 'Venta', 50, 0, 'ARS', 1250.0)""",
+            (self.uid,))
+        conn.commit()
+
+        main._recalc_pnl_realized_from_ops(conn, self.uid)
+        conn.commit()
+        row = conn.execute(
+            """SELECT pnl_realized FROM monthly_entries
+                WHERE user_id=? AND broker='Cocos' AND year=2026 AND month=5""",
+            (self.uid,)).fetchone()
+        conn.close()
+
+        # 125000/1250 = 100 (cupón, convertido) + 50 (venta, intacta) = 150
+        self.assertAlmostEqual(row["pnl_realized"], 150.0, places=2)
+        # El bug viejo daba 125.050
+        self.assertNotAlmostEqual(row["pnl_realized"], 125050.0, places=2)
+
+    def test_pnl_realized_deja_las_filas_legacy_como_estaban(self):
+        """Cupón sin TC sellado (los ya cargados): cae al ELSE, no empeora."""
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type,
+                 pnl_usd, commissions, currency, fx_to_usd)
+               VALUES (?, '2026-05-10', 'Cocos', 'AL30', 'Cupón', 125000, 0, 'ARS', NULL)""",
+            (self.uid,))
+        conn.commit()
+        main._recalc_pnl_realized_from_ops(conn, self.uid)
+        conn.commit()
+        row = conn.execute(
+            """SELECT pnl_realized FROM monthly_entries
+                WHERE user_id=? AND broker='Cocos' AND year=2026 AND month=5""",
+            (self.uid,)).fetchone()
+        conn.close()
+        self.assertAlmostEqual(row["pnl_realized"], 125000.0, places=2)
+
+    def test_usd_broker_sigue_en_uno_sin_tocar_la_serie(self):
+        """Regresión: un broker USD no convierte nada aunque haya serie sembrada."""
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "coupon", "amount": 25, "date": "2026-05-10",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["fx_to_usd"], 1.0)
+        self.assertEqual(res.json()["fx_source"], "par")
 
     # ─── Amortization decrement ──────────────────────────────────────────────
 
