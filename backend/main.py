@@ -554,7 +554,8 @@ def _init_db_postgres():
     import psycopg
     ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema_pg.sql")
     ddl = open(ruta).read()
-    with psycopg.connect(DATABASE_URL, autocommit=True) as c:
+    import pgsesion
+    with pgsesion.conectar(DATABASE_URL, autocommit=True) as c:
         for s in [x.strip() for x in ddl.split(";\n") if x.strip()]:
             try:
                 c.execute(s)

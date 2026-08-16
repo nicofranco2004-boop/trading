@@ -106,8 +106,13 @@ def abrir_origen(ruta: str) -> sqlite3.Connection:
 def abrir_destino(dsn: str, autocommit: bool = False):
     """El Postgres. `prepare_threshold=None` porque el pooler transaccional de
     Supabase (puerto 6543) rompe las sentencias preparadas."""
-    import psycopg
-    return psycopg.connect(dsn, autocommit=autocommit, prepare_threshold=None)
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pgsesion
+    # Por `pgsesion` aunque este script NO use el shim: lo que se importa es el
+    # ajuste de sesión, no la traducción de SQL. Sin `extra_float_digits=3` la
+    # verificación denuncia diferencias que no existen en los datos — medido: 73
+    # de 350 filas leídas distinto, con los bits en disco IDÉNTICOS.
+    return pgsesion.conectar(dsn, autocommit=autocommit, prepare_threshold=None)
 
 
 def huella_origen(conn: sqlite3.Connection, ruta: str) -> Dict[str, Any]:
@@ -597,7 +602,17 @@ def cmd_copiar(args) -> int:
         print(f"   setval en {len(hechos)} secuencias")
         destino.commit()                      # ⬅️ EXPLÍCITO. Ver el punto 2 de arriba.
     except Exception:
-        destino.rollback()
+        # 🔴 El rollback va en su propio `try`, y el motivo apareció corriendo esto
+        # contra Supabase: si la copia se corta en medio de un COPY, el `ROLLBACK`
+        # falla con "another command is already in progress" **y esa excepción pisa
+        # a la original**. O sea que el operador ve el error de la limpieza y no la
+        # CAUSA — que es exactamente el modo de falla que este proyecto persigue.
+        # Cerrar la conexión ya hace que el servidor rollbackee todo igual.
+        try:
+            destino.rollback()
+        except Exception as limpieza:
+            print(f"   (y el rollback tampoco pudo: {type(limpieza).__name__}: "
+                  f"{limpieza}. El servidor rollbackea igual al cerrar.)")
         raise
     finally:
         destino.close()

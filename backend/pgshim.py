@@ -852,7 +852,11 @@ class Connection:
         # sqlite3 con isolation_level=''.
         # Sin row_factory: el default de psycopg ya devuelve tuplas, y las
         # envolvemos nosotros en `Row` para poder leer por nombre Y por posición.
-        self._c = psycopg.connect(dsn, autocommit=False)
+        # Por `pgsesion.conectar` y no por `psycopg.connect`: sin
+        # `extra_float_digits=3` esta conexión lee los floats redondeados a 15
+        # dígitos, y el rebuild los REESCRIBE así. Ver pgsesion.py.
+        import pgsesion
+        self._c = pgsesion.conectar(dsn, autocommit=False)
         self._dsn = dsn              # para leer el catálogo aparte (ver _pk_de)
         self.row_factory = None      # el código lo setea; acá siempre devolvemos Row
 
@@ -938,7 +942,8 @@ class Connection:
         corridas.
         """
         encontradas = 0
-        with psycopg.connect(self._dsn, autocommit=True) as cat:
+        import pgsesion
+        with pgsesion.conectar(self._dsn, autocommit=True) as cat:
             for t, col in cat.execute("""
                 SELECT DISTINCT ON (c.relname) c.relname, a.attname
                   FROM pg_index i
