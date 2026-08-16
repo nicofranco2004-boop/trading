@@ -124,6 +124,45 @@ class LasGuardasTest(unittest.TestCase):
             cp.abrir_origen(base)
         self.assertIn("wal_checkpoint", str(ctx.exception))
 
+    def test_una_base_en_WAL_SIN_su_archivo_wal_ABORTA(self):
+        """🔴 El caso que le faltaba a la guarda, y tiene DOS caras malas.
+
+        Si se copia el `.db` sin su `-wal`:
+          · con el directorio escribible, **abre en silencio** y lee sólo lo
+            checkpointeado — se pierden las últimas transacciones de todos, sin
+            error. Medido: `abrir_origen` devolvía una conexión sin chistar.
+          · con el directorio de sólo lectura, da `unable to open database file`,
+            que no dice nada y empuja al operador a sacarle el `mode=ro` — con lo
+            cual cae en la primera cara.
+
+        Se detecta sin abrir la base: byte 18 del header = 2 significa WAL.
+        """
+        import tempfile
+        base = os.path.join(tempfile.mkdtemp(), "t.db")
+        c = sqlite3.connect(base)
+        c.execute("PRAGMA journal_mode=wal")
+        c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        c.commit()
+        c.close()
+        if os.path.exists(base + "-wal"):
+            os.remove(base + "-wal")          # el archivo copiado a medias
+        with self.assertRaises(cp.NoSePuedeCopiar) as ctx:
+            cp.abrir_origen(base)
+        self.assertIn("modo WAL", str(ctx.exception))
+
+    def test_una_base_que_NUNCA_estuvo_en_WAL_abre_sin_chistar(self):
+        """La contracara, y sin ella la guarda sería ruido: una base con journal
+        normal no tiene `-wal` y eso está perfecto. Byte 18 = 1."""
+        import tempfile
+        base = os.path.join(tempfile.mkdtemp(), "t.db")
+        c = sqlite3.connect(base)
+        c.execute("PRAGMA journal_mode=delete")
+        c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        c.commit()
+        c.close()
+        self.assertFalse(os.path.exists(base + "-wal"))
+        cp.abrir_origen(base).close()
+
     def test_el_origen_con_WAL_VACIO_abre_normal(self):
         """La contracara: un `-wal` de 0 bytes es lo normal después del
         checkpoint. Si esto abortara, la guarda sería ruido que se aprende a

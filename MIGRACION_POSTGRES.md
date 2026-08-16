@@ -123,8 +123,8 @@ suite COMPLETA en los dos motores y comparado test por test.
 
 | | antes (`bf5226a`) | ahora |
 |---|---|---|
-| Postgres | 57 fallas (2.790 pasan) | **46 fallas (2.854 pasan)** |
-| SQLite | 46 fallas (2.795 pasan) | **46 fallas (2.846 pasan)** |
+| Postgres | 57 fallas (2.790 pasan) | **46 fallas** (+2 dependientes de fecha = 48) |
+| SQLite | 46 fallas (2.795 pasan) | **46 fallas** (+2 dependientes de fecha = 48) |
 | **¿el mismo SET de fallas en los dos motores?** | — | **SÍ, exactamente iguales** |
 | fallas SÓLO de Postgres | 11 | **0** (salteadas, no arregladas) |
 | regresiones | — | **0 en los dos motores** |
@@ -133,6 +133,27 @@ suite COMPLETA en los dos motores y comparado test por test.
 **el SET de fallas de Postgres y el de SQLite son EXACTAMENTE el mismo**. Los dos
 motores fallan en los mismos tests, uno por uno. Verificado con 3 corridas de
 Postgres y 2 de SQLite, comparando conjuntos y no totales.
+
+### 🔴 LA BASELINE AHORA ES 48, no 46 — y los 2 nuevos dependen del DÍA
+
+`tests/test_reports_variaciones_f4.py`, dos casos:
+`test_b1_migracion_startup_no_rompe_delta_chips` y
+`test_h7_delta_chips_netdep_con_baseline`.
+
+**No son de la migración.** El archivo es del 09/07 y ningún commit del spike lo
+tocó — verificado sacando todos los cambios y corriendo en el commit anterior:
+fallan igual. Lo que pasa es que usan `datetime.utcnow()` y
+`today - today.weekday()`, mientras que la app usa **el día ART** a propósito
+(`_iso_today()`, para que "hoy" sea el del usuario argentino). **Los dos relojes
+discrepan según el día de la semana y la hora**: aparecieron un sábado a las 21:29
+ART, cuando en UTC ya era domingo.
+
+Misma familia que `test_cedear_usd_price::test_snapshot_converts_bac`, que es
+inestable **entre entornos**. Éstos son inestables **entre fechas**.
+
+**La baseline pasa a 48.** Si en tu corrida da 46, **no restes**: fijate si esos dos
+pasaron y decilo. Anotarlos acá es lo que impide que la próxima sesión los lea como
+una regresión del spike — que es exactamente el error que este proyecto persigue.
 
 ⚠️ **NO restes el test inestable de la cuenta.** Una versión anterior de esta tabla
 decía "45-46" y proponía usar 45 "sin el flaky"

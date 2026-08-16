@@ -90,6 +90,42 @@ def abrir_origen(ruta: str) -> sqlite3.Connection:
     if not os.path.exists(ruta):
         raise NoSePuedeCopiar(f"no existe el origen: {ruta}")
     wal = ruta + "-wal"
+
+    # 🔴 EL CASO QUE FALTABA: la base ESTÁ en WAL y su `-wal` NO ESTÁ.
+    #
+    # La guarda de abajo cubría "el -wal está y tiene datos". Le faltaba el caso
+    # peor —que el archivo se copiara SIN su compañero— y ese tiene DOS caras,
+    # las dos malas y medidas:
+    #   · directorio escribible → **abre en silencio** y lee sólo lo que estaba
+    #     checkpointeado. Se pierden las últimas transacciones de todos, sin error.
+    #   · directorio de sólo lectura → `unable to open database file`, que no dice
+    #     nada, y es JUSTO el error que empuja al operador a sacarle el `mode=ro`
+    #     "para ver si es eso" — con lo cual cae en la primera cara.
+    #
+    # Se detecta sin abrir la base: **el byte 18 del header vale 2 si está en WAL**
+    # (1 si usa journal normal). Verificado con las dos formas.
+    #
+    # ⚠️ Y no es un falso positivo del camino bueno, que era la duda: medido, un
+    # `wal_checkpoint(TRUNCATE)` seguido de cerrar limpio **deja el `-wal` presente
+    # y en 0 bytes**, no lo borra. O sea que "en WAL y sin -wal" no es el estado
+    # normal de nada: es un archivo copiado a medias.
+    # Por eso el mensaje pide copiar **los dos archivos**: así el camino correcto
+    # siempre satisface la guarda y ésta puede abortar sin dudar.
+    with open(ruta, "rb") as f:
+        cabecera = f.read(20)
+    en_wal = len(cabecera) >= 19 and cabecera[18] == 2
+    if en_wal and not os.path.exists(wal):
+        raise NoSePuedeCopiar(
+            f"la base está en modo WAL (byte 18 del header = 2) y NO está su "
+            f"archivo {os.path.basename(wal)}.\n"
+            f"Eso pasa cuando se copia el `.db` sin su compañero, y es peligroso "
+            f"en las dos direcciones: si el directorio es escribible ABRE EN "
+            f"SILENCIO y lee de menos; si no, da un error que no dice nada.\n"
+            f"Un checkpoint limpio NO borra el `-wal`: lo deja en 0 bytes. Así que "
+            f"si falta, el archivo se copió a medias.\n"
+            f"Copiá SIEMPRE los dos: `{os.path.basename(ruta)}` y "
+            f"`{os.path.basename(wal)}`.")
+
     if os.path.exists(wal) and os.path.getsize(wal) > 0:
         raise NoSePuedeCopiar(
             f"el origen tiene un WAL con datos sin checkpointear ({wal}, "

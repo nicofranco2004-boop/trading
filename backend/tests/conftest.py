@@ -127,6 +127,23 @@ import pytest
 #
 # Se pueden apretar en CI (máquina dedicada) o aflojar en una máquina cargada:
 #     RENDI_TEST_IDLE_TX_S=3 RENDI_TEST_LOCK_S=7 pytest tests --timeout=10
+# ── La suite NO es un deploy ─────────────────────────────────────────────────
+# `mantenimiento.py` arranca CERRADO cuando hay `DATABASE_URL` y no está la marca
+# de que el pasaje terminó. Es a propósito y protege producción: el día que se
+# prenda Postgres, la app levanta cerrada aunque nadie se acuerde de nada.
+#
+# Pero la suite corre con `DATABASE_URL` puesta para elegir el motor, así que
+# heredaría ese default y **todos los tests de endpoints darían 503**. Medido: 460
+# fallas.
+#
+# Se apaga ACÁ y no allá, y la distinción importa: el que sabe que esto es un test
+# es el arnés, no el código de producción. Aflojar el default del lado de la app
+# para que la suite pase sería debilitar la red que protege a los 1.084.
+#
+# ⚠️ Y si alguien borra esta línea, no falla en silencio: explotan ~460 tests de
+# una. Es la clase de señal que uno quiere.
+os.environ.setdefault("RENDI_MANTENIMIENTO", "0")
+
 _IDLE_TX_S_DEFAULT = 6
 _LOCK_S_DEFAULT = 12
 _PYTEST_TIMEOUT_SUGERIDO = 20        # el que va en `--timeout=`; ver el README de arriba

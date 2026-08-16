@@ -286,6 +286,22 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
+# ─── Modo mantenimiento ───────────────────────────────────────────────────────
+# Va ACÁ, después de todos los otros middlewares, **y el orden es el punto**: en
+# FastAPI el último registrado es el más EXTERNO, o sea el primero que ve el
+# request. Así corta antes de que nada más lo toque.
+#
+# Dos cosas del diseño que viven en `mantenimiento.py` y conviene no olvidar acá:
+#   · NO toca la base, ni para leer un flag — un mantenimiento que consulta una
+#     tabla se cae junto con la base de la que te protege;
+#   · el default es CERRADO, porque las dos fallas no cuestan lo mismo: trabado en
+#     mantenimiento es visible y se sale en 30 segundos, abierto de más es
+#     silencioso y cruza el punto de no retorno solo.
+import mantenimiento  # noqa: E402
+
+mantenimiento.instalar(app)
+
+
 # ─── Rate limiting (in-memory, per key) ──────────────────────────────────────
 # Per-process. Para multi-worker o multi-host conviene migrar a Redis.
 
