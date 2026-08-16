@@ -38,10 +38,19 @@ marca explícita de "el pasaje terminó", la app levanta cerrada.
 Un mecanismo que puede fallar de dos formas tiene que estar sesgado hacia la barata.
 
 **3. DEVUELVE 503, no 500, y el bypass va por HEADER.**
-`frontend/src/utils/api.js` ya reintenta con backoff ante 503 y, pasados ~8s,
-muestra *"No pudimos conectarnos con el servidor. Suele ser una actualización en
-curso: esperá un momento y recargá"*. **El mensaje correcto ya existe y sale
-gratis.** Con 500 el usuario vería un error crudo.
+Con 500 el usuario vería un error crudo. Con 503, `frontend/src/utils/api.js`
+reintenta con backoff (~8,3 s en total, `:193-194`) y recién después muestra el
+mensaje — o sea que **una ventana de mantenimiento corta ni se ve**.
+
+⚠️ **Y acá había un error MÍO, que corrijo porque es la forma de siempre.** Escribí
+que "el frontend ya sabe mostrar este mensaje lindo", mirando el código de
+reintentos. Miré la fuente equivocada: `buildHttpError` (`:141-152`) arma el mensaje
+del 503 con el genérico de gateway y **sólo lo pisa si el cuerpo trae `detail`** —
+y el cuerpo de acá traía `error`, que nunca se lee. El usuario iba a ver el mensaje
+genérico, no el nuestro.
+Por eso el cuerpo ahora va bajo `detail`, que es lo que ese código lee (y además es
+la convención de FastAPI). Verificado contra `buildHttpError`, no contra el
+mecanismo de reintentos.
 El bypass va por header y no por query param porque un token en la URL queda en los
 logs del proxy, en el historial del navegador y en el `Referer`. Se compara con
 `hmac.compare_digest`, que no filtra información por el tiempo que tarda.
@@ -112,9 +121,13 @@ def deja_pasar(ruta: str, cabecera_bypass: Optional[str]) -> bool:
     return bypass_valido(cabecera_bypass)
 
 
+# La forma la dicta `buildHttpError` del frontend: lee `payload.detail`, y si es un
+# objeto toma `.error`. Cualquier otra forma cae en el mensaje genérico de gateway.
 CUERPO_503 = {
-    "error": "Estamos mudando la base de datos. Volvemos en unos minutos.",
-    "mantenimiento": True,
+    "detail": {
+        "error": "Estamos mudando la base de datos. Volvemos en unos minutos.",
+        "mantenimiento": True,
+    }
 }
 
 

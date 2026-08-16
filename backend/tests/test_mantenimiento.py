@@ -148,8 +148,15 @@ class ElMiddlewareDeVerdadTest(_ConEntorno):
         r = self._cliente().get("/api/positions")
         self.assertEqual(r.status_code, 503,
                          "503 y no 500: el frontend ya sabe mostrar el 503 lindo")
-        self.assertTrue(r.json()["mantenimiento"])
-        self.assertIn("mudando", r.json()["error"])
+        # La FORMA importa tanto como el status: `buildHttpError` del frontend
+        # (`api.js:141-152`) arma el mensaje del 503 con el genérico de gateway y
+        # sólo lo pisa si el cuerpo trae `detail`. Un cuerpo con `error` suelto
+        # —que es lo que había— nunca se lee, y el usuario ve el mensaje genérico.
+        # Este assert ata el backend a ese contrato.
+        cuerpo = r.json()
+        self.assertIn("detail", cuerpo, "sin `detail` el frontend no lo muestra")
+        self.assertTrue(cuerpo["detail"]["mantenimiento"])
+        self.assertIn("mudando", cuerpo["detail"]["error"])
 
     def test_cerrado_pero_health_contesta_200(self):
         os.environ["RENDI_MANTENIMIENTO"] = "1"
