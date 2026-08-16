@@ -1598,6 +1598,53 @@ leído 58.
   divergente (`users.password_changed_at`: el CREATE tiene `datetime('now')`, el
   ALTER que aplicó a producción no).
 
+## 🔴 Sesión 11 — EL WAL: el término que faltaba, y que tumbó el destino
+
+**Copiando 1 GB a un Supabase Free, la instancia se cayó con el disco al 100%.** El
+panel mostró el desglose, y ahí está el hallazgo entero:
+
+    DATABASE 553 MB   ·   WAL 660 MB   ·   SYSTEM 759 MB
+
+**El cuaderno de borrador pesaba MÁS que los datos.** Es consecuencia directa de una
+decisión del copiador: todo va en UNA transacción, para que un corte no deje nada a
+medias. El precio es que el WAL no se puede reciclar hasta el commit, así que crece
+monótonamente. Los 62 índices lo multiplican: cada índice también escribe WAL.
+
+⚠️ **Todo el dimensionamiento decía "1 GB de datos". El requisito real es datos +
+WAL + sistema**, y nadie había contado el segundo.
+
+### El número, medido (`scripts/vigilar_espacio.py`)
+
+Se puede medir **sin el destino real**: cuánto WAL genera la copia depende de la
+copia, no de dónde se copie.
+
+| | |
+|---|---|
+| datos al final | **1.211 MB** |
+| **WAL generado** | **1.606 MB** — 1,33× los datos |
+| **pico total simultáneo** | **2.817 MB ≈ 2,8 GB** |
+| en veces el `.db` de origen | **2,63×** |
+
+    plan Free  500 MB  →  🔴 NO entra, ni cerca
+    plan Pro     8 GB  →  ✅ entra, con ~5 GB de margen
+
+⚠️ **Medido con `wal_compression=off` y `full_page_writes=on`.** Si el destino
+tuviera `wal_compression=on`, el WAL sería bastante menor. O sea que 2,8 GB es un
+**techo**, no un piso. Y la fixture es ~13% más grande que producción, así que el
+número real debería ser algo menor.
+
+**La regla para el futuro, que es lo reusable:** el disco del destino tiene que
+aguantar **~2,6 veces el tamaño del archivo SQLite**, a la vez, aunque al final
+ocupe la mitad.
+
+### Si algún día no entrara
+
+La palanca es **commitear por tabla** en vez de una sola transacción: el WAL se
+recicla en el camino y el pico baja al de la tabla más grande. Se paga perdiendo el
+todo-o-nada — que hoy es justo lo que hace inofensivo un corte (medido: matando el
+copiador a los 12s quedaron 0 filas y el reintento anduvo directo). **Con 8 GB no
+hace falta**, y por eso no se toca.
+
 ## Sesión 10 — las dependencias, el corte a mitad, y qué falta de verdad
 
 ### ✅ `psycopg` en `requirements.txt` — y apareció un SEGUNDO caso
