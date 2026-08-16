@@ -115,6 +115,46 @@ def abrir_destino(dsn: str, autocommit: bool = False):
     return pgsesion.conectar(dsn, autocommit=autocommit, prepare_threshold=None)
 
 
+# Cuánto disco necesita el destino, por cada byte del archivo de origen.
+#
+# 🔴 **Este número existe porque no contarlo tumbó un destino.** Copiando 1 GB a un
+# Supabase Free, la instancia se cayó con el disco al 100%, y el desglose del panel
+# fue el hallazgo: `DATABASE 553 MB · WAL 660 MB · SYSTEM 759 MB`. El cuaderno de
+# borrador pesaba MÁS que los datos.
+#
+# Es consecuencia directa de que la copia va en UNA transacción (para que un corte
+# no deje nada a medias): el WAL no se recicla hasta el commit, y los 62 índices lo
+# multiplican porque cada índice también escribe WAL.
+#
+# Medido con `scripts/vigilar_espacio.py` sobre la base de forma real:
+#     datos 1.211 MB + WAL 1.606 MB = pico simultáneo 2.817 MB, sobre un .db de
+#     1.071 MB → **2,63×**
+# ⚠️ Con `wal_compression=off`. Si el destino lo tuviera prendido, sería menos: el
+# 2,63 es un TECHO, no un piso.
+_DISCO_POR_BYTE_DE_ORIGEN = 2.63
+
+
+def espacio_que_va_a_necesitar(ruta_origen: str) -> Dict[str, float]:
+    """Cuánto disco tiene que tener libre el destino, A LA VEZ.
+
+    No es cuánto va a ocupar al final: es el pico, que es casi el doble. Se
+    imprime SIEMPRE, antes de copiar, porque es exactamente el dato que no se miró
+    la vez que se cayó el destino — y era mirable.
+    """
+    gb = os.path.getsize(ruta_origen) / 1e9
+    return {"origen_gb": round(gb, 2),
+            "pico_gb": round(gb * _DISCO_POR_BYTE_DE_ORIGEN, 2),
+            "factor": _DISCO_POR_BYTE_DE_ORIGEN}
+
+
+def _avisar_espacio(ruta_origen: str) -> None:
+    e = espacio_que_va_a_necesitar(ruta_origen)
+    print(f"espacio que el destino tiene que tener LIBRE: ~{e['pico_gb']:.1f} GB "
+          f"({e['factor']}× el origen, que son {e['origen_gb']:.1f} GB)")
+    print(f"   es el PICO simultáneo —datos + WAL—, no lo que queda al final.")
+    print(f"   ⚠️ si el destino no lo tiene, se cae a mitad de la copia: ya pasó.")
+
+
 def huella_origen(conn: sqlite3.Connection, ruta: str) -> Dict[str, Any]:
     """Con qué base se está trabajando, para que quede en la bitácora.
 
@@ -515,6 +555,7 @@ def cmd_preflight(args) -> int:
         print(f"origen: {args.origen}")
         for k, v in huella_origen(origen, args.origen).items():
             print(f"   {k}: {v}")
+        _avisar_espacio(args.origen)
         with abrir_destino(args.destino, autocommit=True) as d:
             hallazgos = preflight(origen, vc.CursorPg(d))
     finally:
@@ -553,6 +594,7 @@ def cmd_copiar(args) -> int:
     print(f"origen: {args.origen}")
     for k, v in huella_origen(origen, args.origen).items():
         print(f"   {k}: {v}")
+    _avisar_espacio(args.origen)
 
     # 1. El preflight es PRECONDICIÓN y se re-corre acá, sobre esta base y en esta
     #    corrida. No se acepta la prueba de un preflight anterior: un papel se

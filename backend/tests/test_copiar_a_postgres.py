@@ -71,6 +71,42 @@ class ElOrdenDeCopiaTest(unittest.TestCase):
         self.assertEqual(orden, ["a"])
 
 
+class ElEspacioQueVaANecesitarTest(unittest.TestCase):
+    """🔴 Este cálculo existe porque no hacerlo tumbó un destino.
+
+    Copiando 1 GB a un Supabase Free, la instancia se cayó con el disco al 100%.
+    El desglose del panel fue el hallazgo: `DATABASE 553 MB · WAL 660 MB · SYSTEM
+    759 MB` — **el cuaderno de borrador pesaba MÁS que los datos**, porque la copia
+    va en UNA transacción y el WAL no se recicla hasta el commit.
+
+    El dato era mirable ANTES y nadie lo miró. Ahora se imprime siempre.
+    """
+
+    def test_el_pico_es_MAS_del_doble_del_archivo(self):
+        """Lo que hace falta no es el tamaño del archivo: es casi el triple."""
+        import tempfile
+        ruta = os.path.join(tempfile.mkdtemp(), "x.db")
+        with open(ruta, "wb") as f:
+            f.write(b"0" * 1_000_000_000)          # 1 GB
+        e = cp.espacio_que_va_a_necesitar(ruta)
+        self.assertEqual(e["origen_gb"], 1.0)
+        self.assertGreater(e["pico_gb"], 2.0,
+                           "si esto baja de 2, alguien tocó el factor sin medir")
+        self.assertAlmostEqual(e["pico_gb"], 2.63, places=2)
+        os.unlink(ruta)
+
+    def test_escala_con_el_tamano_del_origen(self):
+        """No es una constante: depende del archivo. Un origen chico no necesita
+        3 GB, y decir que sí haría que el aviso se ignore."""
+        import tempfile
+        d = tempfile.mkdtemp()
+        chico, grande = os.path.join(d, "a.db"), os.path.join(d, "b.db")
+        open(chico, "wb").write(b"0" * 10_000_000)
+        open(grande, "wb").write(b"0" * 100_000_000)
+        self.assertLess(cp.espacio_que_va_a_necesitar(chico)["pico_gb"],
+                        cp.espacio_que_va_a_necesitar(grande)["pico_gb"])
+
+
 class LasGuardasTest(unittest.TestCase):
 
     def test_el_origen_con_WAL_sin_checkpoint_ABORTA(self):

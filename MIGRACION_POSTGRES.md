@@ -1598,6 +1598,59 @@ leído 58.
   divergente (`users.password_changed_at`: el CREATE tiene `datetime('now')`, el
   ALTER que aplicó a producción no).
 
+## ✅ Sesión 11 — LA COPIA COMPLETA CONTRA SUPABASE REAL: ANDA
+
+**3.368.336 filas, 60/60 tablas, CERO hallazgos en los cuatro niveles**, contra el
+Supabase de verdad (São Paulo, PostgreSQL 17.6, plan Pro).
+
+| | |
+|---|---|
+| la copia en sí | **122,6 s** — de los cuales `import_raw_rows` (3,1M) son 96,1 s |
+| `copiar` completo (preflight + copia + setval + los 4 niveles) | **3 min 35 s** |
+| local, para comparar | 34 s la copia / 61 s el comando |
+
+O sea: **la red cuesta 3,6× el trabajo de CPU**, y la ventana de mantenimiento para
+este paso es de **unos 4 minutos**, no de una hora. El hueco `[A MEDIR]` más
+importante del plan queda cerrado con un número medido.
+
+**Verificado desde afuera, con conexión nueva:** 3.368.336 filas exactas, 1168 MB,
+**12 FKs sin duplicar**, 2.168 auto-referencias resueltas, y un alta nueva devuelve
+id **1085** (el `setval` anduvo: no choca contra un id existente).
+
+### Lo que pasó antes, y por qué el número de arriba existe
+
+**El primer intento tumbó el proyecto.** Estaba en plan Free (500 MB de disco) y la
+copia lo llenó: `DATABASE 553 MB · WAL 660 MB · SYSTEM 759 MB`. El disco al 100%, la
+instancia en recuperación, y **no se levantó sola: hubo que reiniciarla a mano desde
+el panel** — el upgrade a Pro por sí solo no la revive.
+
+⚠️ Y una cosa que aparece después de un rollback y no es obvia: **la base quedó
+pesando 800 MB con CERO filas.** El rollback borra las filas pero no achica los
+archivos. `preparar-destino` (que hace `TRUNCATE`) los recrea vacíos y la dejó en 13
+MB. Si no se limpia, la copia siguiente arranca con 800 MB de lastre.
+
+### El dato que corrige el techo: Supabase comprime el WAL
+
+    local:     wal_compression = off     → WAL medido 1.606 MB (1,33× los datos)
+    Supabase:  wal_compression = zstd
+
+Así que el **2,63× que mide `vigilar_espacio.py` es un TECHO** y contra Supabase el
+pico real es menor. La copia entera entró sin problemas en el plan Pro (8 GB).
+
+### El transaction pooler (6543), candidato para la app
+
+Conecta, ve los datos, y `extra_float_digits=3` llega bien (o sea que el arreglo de
+`pgsesion` funciona también por ahí). Latencia: **46,8 ms** por ida y vuelta.
+
+⚠️ **Las sentencias preparadas NO rompieron — y eso NO es una garantía.** Se
+probaron 12 consultas seguidas, incluso con el `prepare_threshold=5` que trae
+psycopg por defecto, y ninguna falló. Pero el modo de falla conocido
+(`prepared statement "_pg3_0" does not exist`) es **intermitente y aparece bajo
+carga**, cuando el pooler te cambia de conexión de servidor entre transacciones —
+que es justo lo que 12 consultas seguidas en una sola conexión no ejercitan.
+**No convertir una no-reproducción en una garantía.** `prepare_threshold=None` no
+cuesta nada y saca la pregunta del medio: se deja puesto.
+
 ## 🔴 Sesión 11 — EL WAL: el término que faltaba, y que tumbó el destino
 
 **Copiando 1 GB a un Supabase Free, la instancia se cayó con el disco al 100%.** El
