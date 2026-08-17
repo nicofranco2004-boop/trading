@@ -48,14 +48,18 @@ Shape (~1100 bytes):
 from __future__ import annotations
 from typing import Dict, Any, List
 
+import realized_pnl
+
 
 _AR_BROKERS = {"cocos", "iol", "bull", "balanz", "naranja", "pppi", "invertironline", "lemon"}
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # ── Realized: agregamos P&L de operations cerradas por ticker ────────────
+    # currency/fx_to_usd son necesarias: en Cupón/Amortización `pnl_usd` guarda
+    # el monto en moneda del broker, no en USD (ver realized_pnl).
     ops = conn.execute(
-        """SELECT asset, op_type, pnl_usd
+        """SELECT asset, op_type, pnl_usd, currency, fx_to_usd
              FROM operations
             WHERE user_id=? AND pnl_usd IS NOT NULL""",
         (user_id,),
@@ -63,15 +67,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     realized_by_ticker: Dict[str, float] = {}
     for o in ops:
-        op_type = (o["op_type"] or "").strip()
-        if op_type in ("Compra", "Dividendo", "Interés", ""):
-            continue
-        if op_type.startswith(("CONVERSION", "Conversión")):
+        if not realized_pnl.is_closed_op(o["op_type"]):
             continue
         ticker = (o["asset"] or "").upper()
         if not ticker:
             continue
-        realized_by_ticker[ticker] = realized_by_ticker.get(ticker, 0) + float(o["pnl_usd"] or 0)
+        realized_by_ticker[ticker] = (
+            realized_by_ticker.get(ticker, 0) + realized_pnl.realized_usd(o)
+        )
 
     # ── Unrealized: precio actual * qty - invested por posición abierta ──────
     positions = [dict(r) for r in conn.execute(

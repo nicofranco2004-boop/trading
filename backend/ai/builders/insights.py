@@ -94,6 +94,7 @@ from typing import Dict, Any, List, Optional
 from datetime import date, datetime
 
 from behavioral import _native_ccy, _trust_mkt_value_usd
+import realized_pnl as _realized_pnl
 
 
 _CRYPTO_HINT = {"BTC", "ETH", "USDT", "USDC", "AAVE", "SOL", "AVAX", "DOT", "DOGE", "ADA", "XRP", "LINK", "BNB"}
@@ -246,17 +247,22 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     drawdown = _compute_drawdown(values)
 
     # ── 2. Operations: trades cerrados, win rate, best/worst, attribution ────
+    # currency/fx_to_usd hacen falta para normalizar: en Cupón/Amortización
+    # `pnl_usd` guarda el monto en moneda del broker (ver realized_pnl).
     ops = [dict(r) for r in conn.execute(
-        "SELECT date, asset, op_type, entry_price, exit_price, quantity, pnl_usd, pnl_pct, broker "
+        "SELECT date, asset, op_type, entry_price, exit_price, quantity, pnl_usd, pnl_pct, "
+        "broker, currency, fx_to_usd "
         "FROM operations WHERE user_id=? ORDER BY date ASC",
         (user_id,),
     ).fetchall()]
 
+    # `pnl_usd` se normaliza a USD real UNA vez, acá. Todo lo que se calcula más
+    # abajo (winners/losers, pnl_by_ticker, realized_pnl_usd) lee de `closed`, así
+    # que con esto queda correcto sin tener que acordarse en cada suma.
     closed = [
-        o for o in ops
-        if o.get("pnl_usd") is not None
-        and (o.get("op_type") or "") not in ("Compra", "Dividendo", "Interés", "")
-        and not (o.get("op_type") or "").startswith(("CONVERSION", "Conversión"))
+        {**o, "pnl_usd": _realized_pnl.realized_usd(o)}
+        for o in ops
+        if o.get("pnl_usd") is not None and _realized_pnl.is_closed_op(o.get("op_type"))
     ]
     winners = [o for o in closed if (o.get("pnl_usd") or 0) > 0]
     losers = [o for o in closed if (o.get("pnl_usd") or 0) < 0]
