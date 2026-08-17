@@ -70,6 +70,7 @@ def _setup_yfinance_cache():
 
 _setup_yfinance_cache()
 import fx as _fx
+import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from snapshots_job import (
@@ -507,22 +508,9 @@ def init_db():
     """)
     conn.commit()
 
-    # advisor_op_batch_items — columnas de undo exacto (audit: el undo
-    # recomputaba el crédito desde la fila VIVA — editable — y no revertía
-    # el autodepósito, dejando capital fantasma)
-    _bi_cols = _table_cols(conn, 'advisor_op_batch_items')
-    if _bi_cols:
-        for _c, _t in (('cost_debited', 'REAL'), ('autodep_native', 'REAL'),
-                       ('autodep_usd', 'REAL'), ('autodep_ym', 'TEXT')):
-            if _c not in _bi_cols:
-                conn.execute(f"ALTER TABLE advisor_op_batch_items ADD COLUMN {_c} {_t}")
-        conn.commit()
-
-    # advisor_profile — logo del asesor (informes brandeados) si ya existía
-    _ap_cols = _table_cols(conn, 'advisor_profile')
-    if _ap_cols and 'logo_data' not in _ap_cols:
-        conn.execute("ALTER TABLE advisor_profile ADD COLUMN logo_data TEXT")
-        conn.commit()
+    # (las migraciones de advisor_op_batch_items / advisor_profile NO van acá:
+    #  sus CREATE TABLE están más abajo. Ver el bloque después del CREATE de
+    #  advisor_op_batch_items y el de las prefs del brief.)
 
     # brokers — agregar columna parent_broker_id si la tabla ya existía
     broker_cols = _table_cols(conn, 'brokers')
@@ -621,6 +609,28 @@ def init_db():
             autodep_ym TEXT         -- 'YYYY-MM' del flujo a revertir
         );
     """)
+
+    # advisor_op_batch_items — columnas de undo exacto (audit: el undo
+    # recomputaba el crédito desde la fila VIVA — editable — y no revertía
+    # el autodepósito, dejando capital fantasma).
+    #
+    # ⚠️ VA ACÁ, DESPUÉS del CREATE (misma lección que `undo_meta_json` y que
+    # project_migration_index_order). Antes vivía ~100 líneas más arriba y usaba
+    # `_table_cols`, que tiene allowlist y NO incluye esta tabla → devolvía set()
+    # → el `if` era falso → el ALTER no corrió NUNCA en producción. Como el CREATE
+    # de acá arriba sí trae las 4 columnas, en base NUEVA (y en los tests) la tabla
+    # nacía completa y el bug era invisible: sólo rompía donde la tabla ya existía
+    # con 5 columnas, o sea prod, donde el alta grupal fallaba SIEMPRE con
+    # "table advisor_op_batch_items has no column named cost_debited".
+    # PRAGMA directo, no `_table_cols`: esto tiene que funcionar aunque nadie se
+    # acuerde de tocar la allowlist. ALTER nullable y sin índice.
+    _bi_cols = {r[1] for r in conn.execute("PRAGMA table_info(advisor_op_batch_items)")}
+    if _bi_cols:
+        for _c, _t in (('cost_debited', 'REAL'), ('autodep_native', 'REAL'),
+                       ('autodep_usd', 'REAL'), ('autodep_ym', 'TEXT')):
+            if _c not in _bi_cols:
+                conn.execute(f"ALTER TABLE advisor_op_batch_items ADD COLUMN {_c} {_t}")
+        conn.commit()
 
     # Sincronizar is_admin + approved para usuarios con email admin
     rows = conn.execute("SELECT id, email FROM users").fetchall()
@@ -1830,6 +1840,12 @@ def init_db():
     # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
     # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
     _ap_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_profile)").fetchall()]
+    # logo_data: venía de un bloque con `_table_cols` (allowlist sin esta tabla →
+    # set() → no corría nunca). En prod la columna existe porque llegó por otro
+    # camino, así que esto es no-op ahí; se consolida acá para que una base que
+    # NO la tenga se migre de verdad. Mismo bug que advisor_op_batch_items.
+    if _ap_cols and 'logo_data' not in _ap_cols:
+        conn.executescript("ALTER TABLE advisor_profile ADD COLUMN logo_data TEXT;")
     if _ap_cols and 'brief_open' not in _ap_cols:
         conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_open INTEGER DEFAULT 1;")
     if _ap_cols and 'brief_close' not in _ap_cols:
@@ -8812,13 +8828,13 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         # en `Venta` el `pnl_usd` YA es USD y `fx_to_usd` guarda el tc_venta, así que
         # dividir ahí rompería todo. Las filas viejas (fx NULL) caen al ELSE y quedan
         # como estaban — no empeoran, y el sello recién ahora las hace reparables.
+        #
+        # La expresión vive en `realized_pnl` porque estaba copiada a mano en 4
+        # lectores y sólo se arregló acá: los otros 3 (los que alimentan a la IA)
+        # siguieron sumando la columna cruda durante todo ese tiempo.
         pnl_row = conn.execute(
             f"""SELECT COALESCE(SUM(
-                    CASE WHEN o.op_type IN ('Cupón', 'Amortización')
-                              AND o.currency = 'ARS'
-                              AND o.fx_to_usd > 0
-                         THEN o.pnl_usd / o.fx_to_usd
-                         ELSE o.pnl_usd END
+                    {realized_pnl.realized_usd_sql('o')}
                 ), 0) AS s FROM operations o
                 WHERE o.user_id=?
                   AND strftime('%Y', o.date)=?
@@ -23522,21 +23538,21 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             # (Compra/Dividendo/Interés/CONVERSION% no son trades). Sin este
             # filtro el realized incluiría dividendos + conversiones y el
             # número diverge del que muestra Insights. Bug #2 del deep audit.
-            CLOSED_FILTER = (
-                "pnl_usd IS NOT NULL "
-                "AND op_type NOT IN ('Compra','Dividendo','Interés','') "
-                "AND op_type NOT LIKE 'CONVERSION%' "
-                "AND op_type NOT LIKE 'Conversión%'"
-            )
+            # `pnl_usd` NO siempre es USD: en Cupón/Amortización guarda el monto
+            # en moneda del broker. Sumar la columna cruda hacía que la IA le
+            # dijera al usuario US$125.000 por un cupón que el dashboard mostraba
+            # como US$100 — en el mismo request. Criterio único en realized_pnl.
+            CLOSED_FILTER = realized_pnl.closed_filter_sql()
+            REALIZED = realized_pnl.realized_usd_sql()
             if asset_filter:
                 row = conn.execute(
-                    f"SELECT COALESCE(SUM(pnl_usd),0) AS realized, COUNT(*) AS n "
+                    f"SELECT COALESCE(SUM({REALIZED}),0) AS realized, COUNT(*) AS n "
                     f"FROM operations WHERE user_id=? AND asset=? AND {CLOSED_FILTER}",
                     (uid, asset_filter),
                 ).fetchone()
             else:
                 row = conn.execute(
-                    f"SELECT COALESCE(SUM(pnl_usd),0) AS realized, COUNT(*) AS n "
+                    f"SELECT COALESCE(SUM({REALIZED}),0) AS realized, COUNT(*) AS n "
                     f"FROM operations WHERE user_id=? AND {CLOSED_FILTER}",
                     (uid,),
                 ).fetchone()
