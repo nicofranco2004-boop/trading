@@ -39,6 +39,42 @@ app se conecta; si no se acepta, `psycopg` falla con
 ⚠️ `extra_float_digits` = **1** en local y **0** en los poolers de Supabase (el
 shim lo fuerza a 3). Un local en verde NO garantiza Supabase en verde.
 
+## 🔴 BLOQUEANTE DEL DÍA DEL PASAJE: el backup real NO pasa el guardián del `-wal`
+
+**Medido el 18/08, reproduciendo el pipeline exacto.** El guardián de
+`abrir_origen()` (`copiar_a_postgres.py:75`) rechaza toda base "en WAL y sin
+`-wal`" con el mensaje «el archivo se copió a medias». Su premisa está escrita
+así: *"un `wal_checkpoint(TRUNCATE)` seguido de cerrar limpio deja el `-wal`
+presente y en 0 bytes… o sea que 'en WAL y sin -wal' no es el estado normal de
+nada"*.
+
+**Esa premisa es falsa para el camino que importa.** `scripts/backup_db.py` hace
+`src.backup(dst)` (la API oficial de backup en caliente, consistente aun con
+writers), cierra, y comprime **sólo el `.db`**. Reproducido:
+
+    tras .backup() + close():
+      byte 18 del header: 2   (modo WAL)
+      ¿existe el -wal?:   False
+      abrir con mode=ro:  OperationalError: unable to open database file
+    ¿la copia está COMPLETA? SÍ  (users/operations/positions/snapshots idénticos)
+    ¿el guardián la aceptaría? NO
+
+O sea: **un backup perfecto y completo cae exactamente en el estado que el
+guardián llama "copiado a medias"**, y encima da el error críptico que el propio
+docstring identifica como el que empuja al operador a sacarle el `mode=ro`.
+El día del pasaje, con la app abajo, el remedio que sugiere el mensaje —"copiá
+los dos archivos"— **es imposible: el `-wal` nunca existió**.
+
+**ARREGLO PROPUESTO (verificado, 1 línea, NO aplicado todavía).** Arreglar el
+PRODUCTOR, no el guardián — tocar el guardián lo dejaría ciego ante la copia
+truncada de verdad, que tiene la misma firma. En `dump_sqlite_consistent()`,
+antes de cerrar el destino:
+
+    dst.execute("PRAGMA journal_mode=DELETE")
+
+Medido: byte 18 pasa a 1, abre con `mode=ro`, los datos quedan completos y el
+guardián acepta. El archivo de archivo no necesita WAL.
+
 ## Estado 18/08 — la rama al día con main (`0c47aff0`)
 
 Mergeados los 22 commits que `main` había avanzado. **Los dos motores fallan en el
