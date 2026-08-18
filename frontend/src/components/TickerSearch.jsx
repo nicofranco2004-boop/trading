@@ -10,6 +10,7 @@ import {
   ARG_GENERAL,
   CATEGORY_TO_TYPE,
 } from '../utils/tickers'
+import { api } from '../utils/api'
 import AssetLogo from './AssetLogo'
 import AssetTypeBadge from './AssetTypeBadge'
 
@@ -23,7 +24,29 @@ const CATEGORIES = [
   { id: 'indices', label: 'Índices',     icon: Activity,   list: INDICES,       cat: 'ÍNDICE',  color: 'rose' },
   { id: 'ar_lider',label: 'Panel Líder', icon: Building2,  list: ARG_LIDER,     cat: 'AR LÍDER',color: 'emerald' },
   { id: 'ar_gen',  label: 'Panel Gral',  icon: Building2,  list: ARG_GENERAL,   cat: 'AR GRAL', color: 'teal' },
+  // Fondos comunes: `list` va vacía a propósito — se llena en runtime desde el
+  // catálogo del backend (fetchFciOnce), no es una lista hardcodeada.
+  { id: 'fci',     label: 'Fondos',      icon: Coins,      list: [],            cat: 'FCI',     color: 'amber' },
 ]
+
+// FCIs: no son una lista estática como el resto — el catálogo vive en el backend
+// (se siembra desde ArgentinaDatos). Sin esto, un fondo NO se podía elegir acá y el
+// usuario terminaba tipeando su nombre comercial ("FIMA-ACCIONES"), que no cotiza:
+// la posición quedaba al costo para siempre. Se pide UNA vez por sesión y se cachea
+// a nivel módulo; si falla, el buscador sigue andando sin la categoría.
+let _fciPromise = null
+function fetchFciOnce() {
+  if (!_fciPromise) {
+    _fciPromise = api.get('/fci/catalog')
+      .then(rows => (rows || []).map(r => ({
+        s: r.symbol,
+        n: [r.display_name, r.emisor].filter(Boolean).join(' · '),
+        _cat: 'fci',
+      })))
+      .catch(() => [])
+  }
+  return _fciPromise
+}
 
 // Lista combinada para "Todos" — preserva categoría para badge.
 function buildAll() {
@@ -46,11 +69,16 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
   const [query, setQuery] = useState(value || '')
   const [activeCat, setActiveCat] = useState('all')
   const [highlightIdx, setHighlightIdx] = useState(0)
+  const [fciList, setFciList] = useState([])
   const wrapRef = useRef(null)
   const inputRef = useRef(null)
   const listRef = useRef(null)
 
   useEffect(() => { setQuery(value || '') }, [value])
+
+  // Se pide al abrir (no al montar): el buscador vive en 6 pantallas y no todas
+  // necesitan el catálogo de fondos.
+  useEffect(() => { if (open) fetchFciOnce().then(setFciList) }, [open])
 
   useEffect(() => {
     function handleClick(e) {
@@ -62,8 +90,10 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
 
   const filtered = useMemo(() => {
     const baseList = activeCat === 'all'
-      ? ALL_LIST
-      : (CATEGORIES.find(c => c.id === activeCat)?.list || []).map(x => ({ ...x, _cat: activeCat }))
+      ? [...ALL_LIST, ...fciList]
+      : activeCat === 'fci'
+        ? fciList
+        : (CATEGORIES.find(c => c.id === activeCat)?.list || []).map(x => ({ ...x, _cat: activeCat }))
     const q = query.trim().toUpperCase()
     if (!q) return baseList.slice(0, 300)
     // matching: ticker startsWith primero, luego ticker includes, luego name includes
@@ -76,7 +106,7 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
       else if (item.n && item.n.toUpperCase().includes(q)) nameIncludes.push(item)
     }
     return [...startsWith, ...ticIncludes, ...nameIncludes].slice(0, 300)
-  }, [query, activeCat])
+  }, [query, activeCat, fciList])
 
   const showManual = query.trim().length > 0 &&
     !filtered.some(f => f.s === query.trim().toUpperCase())
@@ -160,7 +190,11 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
               const Icon = cat.icon
               const active = activeCat === cat.id
               const isSuggested = suggested.includes(cat.id)
-              const count = cat.id === 'all' ? ALL_LIST.length : cat.list.length
+              // Fondos: la lista llega del backend, no está hardcodeada → el contador
+              // sale de ahí (con `cat.list` mostraba 0 mientras listaba resultados).
+              const count = cat.id === 'all' ? ALL_LIST.length + fciList.length
+                : cat.id === 'fci' ? fciList.length
+                : cat.list.length
               return (
                 <button
                   key={cat.id}

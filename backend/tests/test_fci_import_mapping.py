@@ -90,6 +90,46 @@ class CatalogInvariantTest(unittest.TestCase):
         self.assertEqual(fci._parse_moneda(BROKER_FCI_AD_NAME["ESTRA1A"]), "USD")
 
 
+class SeedFreshnessTest(unittest.TestCase):
+    """El corte de frescura es POR CATEGORÍA. Sin esto, una sola categoría al día
+    dejaba fuera del catálogo a todas las demás (medido 2026-08-13: 'otros' venía
+    de hoy y las otras cuatro de 3 semanas atrás → el seed daba CERO fondos)."""
+
+    def _conn(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        fci.ensure_tables(conn)
+        return conn
+
+    def test_categoria_atrasada_igual_entra_al_catalogo(self):
+        funds = [
+            {"fondo": "Fima Premium - Clase A", "fecha": "2026-08-13", "_cat": "mercadoDinero"},
+            {"fondo": "Fima Acciones - Clase A", "fecha": "2026-07-21", "_cat": "rentaVariable"},
+        ]
+        conn = self._conn()
+        fci.seed_catalog(conn, funds)
+        syms = {r["symbol"] for r in conn.execute("SELECT symbol FROM fci_catalog")}
+        self.assertIn("FCI:FIMA-PREMIUM-A", syms)
+        self.assertIn("FCI:FIMA-ACCIONES-A", syms,   # la que el corte global tiraba
+                      "una categoría fresca no puede dejar fuera a otra que va atrasada")
+        conn.close()
+
+    def test_fondo_stale_dentro_de_su_categoria_sigue_afuera(self):
+        # La guarda original no se pierde: dentro de rentaVariable, una clase que
+        # dejó de reportar hace meses sigue descartándose.
+        funds = [
+            {"fondo": "Fima Acciones - Clase A", "fecha": "2026-07-21", "_cat": "rentaVariable"},
+            {"fondo": "Fima Acciones - Clase B", "fecha": "2026-05-01", "_cat": "rentaVariable"},
+        ]
+        conn = self._conn()
+        fci.seed_catalog(conn, funds)
+        syms = {r["symbol"] for r in conn.execute("SELECT symbol FROM fci_catalog")}
+        self.assertIn("FCI:FIMA-ACCIONES-A", syms)
+        self.assertNotIn("FCI:FIMA-ACCIONES-B", syms)
+        conn.close()
+
+
 class NormalizerTest(unittest.TestCase):
     def test_mapped_fund_rewrites_symbol(self):
         norm, errs = normalize_rows([RawRow(1, {

@@ -1,11 +1,12 @@
 // /guia/coach-ia — sección 4 del manual
 
 import GuidePage from '../../components/guide/GuidePage'
+import AdvisorNote from '../../components/guide/AdvisorNote'
 
 export default function CoachIA() {
   return (
     <GuidePage
-      section="4 de 6"
+      n={4}
       title="Rendi AI"
       intro="Cómo funciona el asistente IA: 12 preguntas guiadas, chat libre (Pro), registro de operaciones por chat, memoria persistente y cuotas semanales."
       prev={{ to: '/guia/insights-y-reportes', label: 'Insights y reportes' }}
@@ -14,6 +15,41 @@ export default function CoachIA() {
       metaDescription="Cómo usar Rendi AI: preguntas guiadas, chat libre Pro, registro de operaciones por chat, memoria persistente y cuotas semanales."
       canonicalPath="/guia/coach-ia"
     >
+      <AdvisorNote>
+        <p>
+          Tenés <strong>dos Rendi AI</strong>, y cuál te contesta depende de dónde estés
+          parado cuando abrís el asistente:
+        </p>
+        <ul>
+          <li>
+            <strong>A tu nivel</strong> (sin entrar a ningún cliente) responde mirando{' '}
+            <strong>todo tu libro</strong>: cuánto administrás, qué clientes rinden mejor y
+            peor, en qué activos estás concentrado y —lo más útil— <strong>a quiénes les
+            pega una noticia</strong>. Preguntale “¿quiénes tienen AL30 y cuánto pesa en
+            cada cartera?” y te lo arma cruzando a todos tus clientes.
+          </li>
+          <li>
+            <strong>Adentro de un cliente</strong> responde con los datos de{' '}
+            <em>ese</em> cliente, y lo hace con la <strong>lente Pro</strong> aunque él
+            tenga plan Free. Ahí sí aplica todo lo de esta sección tal cual está escrito.
+          </li>
+        </ul>
+        <p>
+          El <strong>chat libre</strong> ya viene en tu plan: no tenés que pasar a Pro ni
+          acá ni adentro de tus clientes, y para el libro usamos un modelo más grande
+          (Sonnet) porque cruzar carteras es más pesado que mirar una sola.
+        </p>
+        <p>
+          Lo que <strong>no</strong> hace la IA a tu nivel es registrar operaciones en una
+          cartera tuya, porque no tenés cartera propia. En su lugar podés dictarle una{' '}
+          <strong>compra grupal</strong>: “registrale a Juan 300.000 pesos y a Ana 400.000
+          del CEDEAR de Tesla a 58.900”. Te la deja armada para confirmar, igual que la
+          operación grupal de la pantalla Clientes. Ventas no: esas van cliente por
+          cliente desde la app. Y para anotarle una operación suelta a un cliente, entrá a
+          su cuenta y pedísela ahí.
+        </p>
+      </AdvisorNote>
+
       <h2>Qué es Rendi AI</h2>
       <p>
         Asistente conversacional con contexto completo de tu cartera. Usa{' '}

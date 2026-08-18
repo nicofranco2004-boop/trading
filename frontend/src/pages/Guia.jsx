@@ -8,10 +8,22 @@
 import { Link } from 'react-router-dom'
 import {
   Rocket, Briefcase, Compass, Sparkles as SparkIcon, Bell, UserCog,
-  ArrowRight, BookOpen,
+  ArrowRight, BookOpen, Users,
 } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
+
+// Sección EXTRA para cuentas de asesor. No va en SECTIONS porque no se le muestra a
+// un usuario común: el índice la antepone solo si el tier es 'advisor'. Lo operativo
+// (cargar posiciones, vender, marcar depósitos) NO se duplica — el asesor hace todo eso
+// adentro de cada cliente, así que le sirven las MISMAS secciones de abajo.
+const SECCION_ASESORES = {
+  to: '/guia/asesores',
+  icon: Users,
+  title: 'Para asesores',
+  desc: 'Tu libro, clientes, grupos dinámicos, operar sobre un grupo entero, alertas e informes con tu marca.',
+}
 
 // Mantener esta lista alineada con las sub-páginas de pages/guia/ y con
 // los links prev/next dentro de cada sub-página.
@@ -22,6 +34,7 @@ const SECTIONS = [
     icon: Rocket,
     title: 'Empezar',
     desc: 'Crear cuenta, agregar broker, importar CSV o cargar tu primera operación manual.',
+    descAsesor: 'Agregar el broker, importar el CSV y cargar la primera operación — adentro de la cuenta de cada cliente.',
   },
   {
     n: 2,
@@ -29,6 +42,7 @@ const SECTIONS = [
     icon: Briefcase,
     title: 'Cartera y operaciones',
     desc: 'Posiciones, compra/venta con FIFO, bonos AR, CEDEARs, crypto y resumen mensual.',
+    descAsesor: 'La cartera de cada cliente: comprar y vender con FIFO, bonos AR, CEDEARs y marcarle los depósitos.',
   },
   {
     n: 3,
@@ -36,6 +50,7 @@ const SECTIONS = [
     icon: Compass,
     title: 'Insights y reportes',
     desc: 'Las 5 cards de análisis, timeline histórico, detectores de comportamiento y export CSV.',
+    descAsesor: 'El análisis de cada cliente con lente Pro: qué mirar antes de llamarlo y qué mandarle en el informe.',
   },
   {
     n: 4,
@@ -43,6 +58,7 @@ const SECTIONS = [
     icon: SparkIcon,
     title: 'Rendi AI',
     desc: '12 preguntas guiadas, chat libre (Pro), registrar operaciones por chat, memoria persistente y cuotas semanales.',
+    descAsesor: 'A tu nivel responde sobre TODO tu libro ("¿a quiénes les pega esta noticia?"); adentro de un cliente, sobre su cartera.',
   },
   {
     n: 5,
@@ -50,6 +66,7 @@ const SECTIONS = [
     icon: Bell,
     title: 'Novedades y alertas',
     desc: 'Eventos del mercado, noticias filtradas por tus tickers, noticias macro generales y alertas de precio objetivo o variación %.',
+    descAsesor: 'Novedades de los activos de todos tus clientes juntos. Tu única alerta hoy: cuando la cartera de un cliente sube o baja X%.',
   },
   {
     n: 6,
@@ -57,10 +74,17 @@ const SECTIONS = [
     icon: UserCog,
     title: 'Cuenta y planes',
     desc: 'Configuración, planes Free/Plus/Pro, cambio de plan, cancelación y push notifications.',
+    descAsesor: 'Tus datos, seguridad, moneda de valuación y notificaciones. Los planes Free/Plus/Pro no son los tuyos.',
   },
 ]
 
 export default function Guia() {
+  // Misma entrada "Guía" en el sidebar para todos; lo que cambia es QUÉ ve cada uno.
+  // El asesor arranca por su sección propia y sigue con las mismas de siempre, porque
+  // adentro de un cliente opera igual que un usuario.
+  const { user } = useAuth()
+  const esAsesor = user?.tier === 'advisor'
+  const secciones = esAsesor ? [SECCION_ASESORES, ...SECTIONS] : SECTIONS
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
@@ -93,23 +117,23 @@ export default function Guia() {
             </span>
           </div>
           <h1 className="text-3xl md:text-5xl font-semibold tracking-tight mb-4 text-ink-0">
-            Cómo usar Rendi
+            {esAsesor ? 'Cómo usar Rendi como asesor' : 'Cómo usar Rendi'}
           </h1>
           <p className="text-base md:text-lg text-ink-2 max-w-2xl mx-auto leading-relaxed">
-            Todo lo que necesitás saber para sacarle el jugo a Rendi. Desde cargar tu
-            primera operación hasta usar Rendi AI con memoria. 6 secciones, lectura
-            de 5-10 min cada una.
+            {esAsesor
+              ? `Empezá por la sección de asesores: tu libro, tus clientes y los grupos. El resto es igual que para cualquier usuario — cargar posiciones, vender, marcar depósitos — solo que lo hacés adentro de cada cliente. ${secciones.length} secciones, lectura de 5-10 min cada una.`
+              : `Todo lo que necesitás saber para sacarle el jugo a Rendi. Desde cargar tu primera operación hasta usar Rendi AI con memoria. ${SECTIONS.length} secciones, lectura de 5-10 min cada una.`}
           </p>
         </section>
 
         {/* Grid de secciones */}
         <section>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {SECTIONS.map((s) => {
+            {secciones.map((s, i) => {
               const Icon = s.icon
               return (
                 <Link
-                  key={s.n}
+                  key={s.to}
                   to={s.to}
                   className="block border border-line/60 hover:border-data-violet/40 hover:bg-data-violet/[0.03] rounded-lg p-6 transition-colors group"
                 >
@@ -120,14 +144,18 @@ export default function Guia() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-[12.5px] text-ink-2 font-medium">
-                          {s.n} de {SECTIONS.length}
+                          {esAsesor ? `${i + 1} de ${secciones.length}` : `${s.n} de ${SECTIONS.length}`}
                         </span>
                       </div>
                       <h2 className="text-lg font-semibold text-ink-0 mb-1.5 group-hover:text-data-violet transition-colors">
                         {s.title}
                       </h2>
                       <p className="text-sm text-ink-2 leading-relaxed mb-3">
-                        {s.desc}
+                        {/* Las secciones compartidas tienen DOS bajadas: el asesor
+                            hace lo mismo pero adentro de un cliente, y en tres casos
+                            (IA, alertas, planes) lo del usuario directamente no
+                            aplica a su cuenta. Ver AdvisorNote. */}
+                        {(esAsesor && s.descAsesor) || s.desc}
                       </p>
                       <div className="inline-flex items-center gap-1.5 text-xs text-data-violet font-medium">
                         Leer sección
@@ -165,8 +193,14 @@ export default function Guia() {
               to="/planes"
               className="block border border-line/60 hover:border-line-3 rounded-sm px-4 py-3 transition-colors"
             >
-              <div className="text-sm font-medium text-ink-1 mb-0.5">Planes y precios</div>
-              <div className="text-xs text-ink-3">Free, Plus y Pro.</div>
+              <div className="text-sm font-medium text-ink-1 mb-0.5">
+                {esAsesor ? 'Tu Plan Asesor' : 'Planes y precios'}
+              </div>
+              {/* Free/Plus/Pro son los planes INDIVIDUALES: al asesor no le aplican
+                  (la pantalla /planes ya se lo dice, ver Planes.jsx). */}
+              <div className="text-xs text-ink-3">
+                {esAsesor ? 'Free, Plus y Pro no son el tuyo.' : 'Free, Plus y Pro.'}
+              </div>
             </Link>
           </div>
         </section>

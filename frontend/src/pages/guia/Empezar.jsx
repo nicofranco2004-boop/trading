@@ -1,11 +1,12 @@
 // /guia/empezar — sección 1 del manual
 
 import GuidePage from '../../components/guide/GuidePage'
+import AdvisorNote from '../../components/guide/AdvisorNote'
 
 export default function Empezar() {
   return (
     <GuidePage
-      section="1 de 6"
+      n={1}
       title="Empezar con Rendi"
       intro="Crear tu cuenta, agregar tu primer broker y cargar tu primera operación. En 10 minutos tenés tu cartera lista."
       next={{ to: '/guia/cartera-y-operaciones', label: 'Cartera y operaciones' }}
@@ -13,6 +14,39 @@ export default function Empezar() {
       metaDescription="Cómo crear cuenta en Rendi, agregar tu primer broker (Cocos, IOL, Schwab, Binance) y cargar tu primera operación. Setup en 10 minutos."
       canonicalPath="/guia/empezar"
     >
+      <AdvisorNote>
+        <p>
+          Vos ya tenés tu cuenta, y no vas a armar una cartera propia:{' '}
+          <strong>cada cartera vive en la cuenta de un cliente</strong>. Así que el orden
+          para vos es otro:
+        </p>
+        <ul>
+          <li>
+            Primero <strong>agregás al cliente</strong> desde Clientes, con su email real.
+            No hace falta que él entre todavía ni que tenga contraseña.
+          </li>
+          <li>
+            Después <strong>entrás a su cuenta</strong> y recién ahí seguís esta sección
+            tal cual: agregar el broker, importar el CSV o cargar la posición a mano.
+          </li>
+          <li>
+            Cuando quieras que tome el control, lo <strong>invitás</strong>: le llega un
+            mail para reclamar la cuenta, con la cartera que vos ya le armaste adentro.
+          </li>
+        </ul>
+        <p>
+          Mientras estés adentro de un cliente, arriba te queda una barra que te recuerda
+          en qué cuenta estás parado. Todo lo que cargues ahí queda en la cuenta de él.
+        </p>
+        <p>
+          Un dato importante: los <strong>límites de plan</strong> que menciona esta
+          sección (cuántos brokers entran en Free, en Plus, en Pro) <strong>no te
+          frenan</strong>. Adentro de un cliente operás con <strong>lente Pro</strong>,
+          aunque el cliente esté en Free — así que le podés cargar todos los brokers que
+          necesite.
+        </p>
+      </AdvisorNote>
+
       <h2>1. Crear tu cuenta</h2>
       <p>
         Andá a <a href="/login?mode=register">Crear cuenta gratis</a>. Te pedimos

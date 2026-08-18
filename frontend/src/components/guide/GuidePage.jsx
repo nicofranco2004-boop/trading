@@ -14,10 +14,11 @@ import { Link } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Sparkles } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
 import PageMeta from '../PageMeta'
+import { useAuth } from '../../contexts/AuthContext'
 
 export default function GuidePage({
   title,            // "Cartera y operaciones"
-  section,          // "2 de 6"
+  n,                // 1..6 = su lugar en el manual; 0 = la sección del asesor
   intro,            // descripción corta del tema
   children,         // contenido del manual (h2/p/ul/etc)
   prev,             // { to, label } — página anterior (opcional)
@@ -26,6 +27,16 @@ export default function GuidePage({
   metaDescription,
   canonicalPath,
 }) {
+  // El manual tiene SEIS secciones para un usuario y SIETE para un asesor (la
+  // suya va primera). El número se calcula acá para que el encabezado de la
+  // página no contradiga al índice — antes estaba escrito a mano "5 de 6" y el
+  // índice del asesor mostraba "6 de 7" en la misma card.
+  const { user } = useAuth()
+  const esAsesor = user?.tier === 'advisor'
+  const section = esAsesor
+    ? `${(n || 0) + 1} de 7`
+    : (n ? `${n} de 6` : 'Para asesores')  // n=0 → la sección del asesor, vista por otro
+
   // BreadcrumbList JSON-LD para SERP de Google.
   // Muestra "Inicio › Guía › <title>" mejorando el CTR de los resultados.
   const breadcrumbSchema = canonicalPath ? {

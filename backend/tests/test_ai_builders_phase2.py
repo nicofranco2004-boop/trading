@@ -49,7 +49,11 @@ def _base_db():
             user_id INTEGER, date TEXT, broker TEXT, asset TEXT,
             op_type TEXT, entry_price REAL, exit_price REAL,
             quantity REAL, pnl_usd REAL, pnl_pct REAL, commissions REAL,
-            entry_date TEXT
+            entry_date TEXT,
+            -- currency/fx_to_usd existen en el schema real (init_db las migra) y
+            -- los builders las necesitan para convertir Cupón/Amortización, que
+            -- guardan el monto en moneda del broker. Ver backend/realized_pnl.py.
+            currency TEXT, fx_to_usd REAL
         );
         CREATE TABLE snapshots (
             user_id INTEGER, date TEXT,

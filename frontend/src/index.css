@@ -121,6 +121,24 @@ body {
   .blog-prose hr {
     @apply border-line/40 my-8;
   }
+  /* Bloque "Si sos asesor" dentro de una sección compartida del manual. Va
+     en .not-prose (para no heredar los márgenes grandes del artículo), así
+     que necesita sus propias reglas de lista/negrita/link. */
+  .advisor-note p {
+    @apply text-[14.5px] text-ink-1 leading-relaxed;
+  }
+  .advisor-note ul {
+    @apply list-disc pl-5 space-y-1.5 text-ink-1;
+  }
+  .advisor-note ul li::marker {
+    color: rgb(157 140 255);  /* data-violet */
+  }
+  .advisor-note strong {
+    @apply text-ink-0 font-medium;
+  }
+  .advisor-note a {
+    @apply text-data-violet underline decoration-dotted underline-offset-2 hover:text-data-violet/80;
+  }
   .blog-prose table {
     @apply w-full text-sm my-6;
   }

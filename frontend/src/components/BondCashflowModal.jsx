@@ -28,6 +28,8 @@ import { useToast } from './Toast'
 import AssetLogo from './AssetLogo'
 import { getBondMeta, formatBondType } from '../utils/bondMeta'
 import { nextPaymentForPosition } from '../utils/bondSchedule'
+import { useFxHistory } from '../hooks/useFxHistory'
+import { suggestBrokerAmount } from '../utils/bondCashflowFx'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -37,6 +39,8 @@ export default function BondCashflowModal({
   brokerCurrency, // 'USDT' | 'USD' | 'ARS'
   asset,        // string — ticker del bono
   position,     // Optional: la posición completa (con quantity) para pre-fill
+  prefill,      // Optional: { date, amount, faceAmortized } — pago CONCRETO a
+                // registrar (viene del inbox de cobranzas pendientes).
   onClose,
   onSuccess,
 }) {
@@ -49,6 +53,20 @@ export default function BondCashflowModal({
   // está en USD (moneda del bono); el user igualmente puede sobrescribirlo
   // con el monto ARS que efectivamente recibió.
   const estimate = useMemo(() => {
+    // El inbox de cobranzas pendientes manda el pago concreto que el user está
+    // confirmando — una fecha PASADA. Tiene prioridad absoluta sobre el
+    // cronograma, que sólo devuelve pagos FUTUROS (getRemainingPayments filtra
+    // `date > hoy`). Si dejáramos que gane el cronograma, la operation se
+    // registraría con la fecha del pago SIGUIENTE y el pendiente nunca se
+    // daría por saldado.
+    if (prefill?.date && prefill.amount > 0) {
+      return {
+        date: prefill.date,
+        amount: prefill.amount,
+        faceAmortized: prefill.faceAmortized,
+        kind: 'pending',
+      }
+    }
     if (!position?.quantity) return null
     const next = nextPaymentForPosition(asset, position.quantity, today())
     if (!next) return null
@@ -62,10 +80,40 @@ export default function BondCashflowModal({
     // Caso edge: el próximo pago es del tipo opuesto (ej: user abrió "cupón"
     // pero el próximo flujo es sólo amort). Devolvemos null para no confundir.
     return null
-  }, [asset, flowType, position?.quantity])
+  }, [asset, flowType, position?.quantity, prefill])
 
+  // ── Sugerencia del monto en la moneda del broker ─────────────────────────
+  // El teórico viene en la moneda del BONO; el campo pide la del BROKER. Cuando
+  // no coinciden, convertimos con el dólar de la FECHA DEL PAGO y lo ofrecemos
+  // como chip. La serie está cacheada a nivel módulo: si Cartera ya la trajo,
+  // esto no dispara otro fetch.
+  const fxHist = useFxHistory()
   const [date, setDate] = useState(estimate?.date || today())
-  const [amount, setAmount] = useState(estimate?.amount?.toFixed(2) || '')
+  // La sugerencia sigue a la fecha DEL FORMULARIO, no a la del cronograma: si el
+  // usuario corrige la fecha porque el broker le acreditó dos días después, el
+  // dólar tiene que ser el de ESE día.
+  const sug = useMemo(() => suggestBrokerAmount({
+    theoreticalAmount: estimate?.amount,
+    bondCurrency: bondMeta?.currency,
+    brokerCurrency,
+    paymentDate: date,
+    fx: fxHist.getMepDetail(date),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [estimate?.amount, bondMeta?.currency, brokerCurrency, date, fxHist.fxKey, fxHist.loaded])
+
+  // Con conversión pendiente el campo arranca VACÍO. Antes se sembraba el número
+  // en USD bajo una etiqueta que dice ARS: el preview del neto y el toast
+  // repetían ese número como si fueran pesos, así que confirmar sin tocar nada
+  // registraba 79 pesos donde el usuario había cobrado 79 dólares.
+  const [amount, setAmount] = useState(
+    sug.applies ? '' : (estimate?.amount?.toFixed(2) || '')
+  )
+  // Monto exacto que puso el chip. Si el input sigue siendo ese string, sabemos
+  // que el número que se va a guardar salió de NUESTRO tipo de cambio y podemos
+  // sellarlo; si el usuario lo editó, no mandamos nada y sella el backend.
+  const [appliedAmountStr, setAppliedAmountStr] = useState(null)
+  const [appliedTc, setAppliedTc] = useState(null)
+  const [appliedDate, setAppliedDate] = useState(null)
   const [commissions, setCommissions] = useState('')
   const [notes, setNotes] = useState(
     estimate ? 'Estimado por cronograma — ajustá monto si difiere por retenciones/comisiones' : ''
@@ -86,13 +134,34 @@ export default function BondCashflowModal({
   const toast = useToast()
 
   // Si cambia la estimación (caso re-render por props), re-aplicar valores.
+  // Con conversión pendiente NO se siembra el monto: sería el número en la moneda
+  // del bono en un campo rotulado con la del broker (para eso está el chip).
   useEffect(() => {
     if (estimate && !amount) {
       setDate(estimate.date)
-      setAmount(estimate.amount.toFixed(2))
+      if (!sug.applies) setAmount(estimate.amount.toFixed(2))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estimate])
+
+  // Aplicar la sugerencia al campo (click del chip).
+  function aplicarSugerido() {
+    if (!(sug.amount > 0)) return
+    const s = sug.amount.toFixed(2)
+    setAmount(s)
+    setAppliedAmountStr(s)
+    // Lo que se sella NO es el TC de la conversión sino el que le corresponde a la
+    // FILA: en un broker en dólares el monto queda en dólares y su fx_to_usd es 1.
+    setAppliedTc(sug.fxToUsdForRow)
+    setAppliedDate(date)
+  }
+  // ¿El monto que se va a guardar es exactamente el que pusimos nosotros, para la
+  // misma fecha? Si el usuario editó el monto O movió la fecha después de aplicar,
+  // el TC guardado ya no le corresponde: no lo mandamos y sella el backend.
+  const usaNuestroTc = appliedAmountStr != null
+    && amount === appliedAmountStr
+    && appliedDate === date
+    && appliedTc > 0
 
   const title = isCoupon ? 'Registrar cupón cobrado' : 'Registrar amortización'
   const Icon = isCoupon ? ArrowDownCircle : LayersIcon
@@ -112,8 +181,13 @@ export default function BondCashflowModal({
       // cross-currency, amount está en pesos pero la qty está en VN; sin
       // face_amortized, el backend trata pesos como face y borra la posición.
       const willDecrement = decrementApplies && decrementQty
-      const faceAmortized = willDecrement && estimate?.amount && position?.quantity
-        ? (estimate.amount * position.quantity / 100)  // pmt.amort (per 100) × qty / 100 = VN
+      // `estimate.amount` YA está escalado a la posición: nextPaymentForPosition
+      // hace `pmt.amort × qty / 100`, y el prefill del inbox viene con la misma
+      // convención. Como el capital se devuelve a la par, ese monto ES el
+      // nominal amortizado — volver a multiplicar por qty/100 lo escalaba dos
+      // veces y decrementaba de más el VN del lote.
+      const faceAmortized = willDecrement
+        ? (estimate?.faceAmortized ?? estimate?.amount ?? undefined)
         : undefined
       const payload = {
         broker,
@@ -125,6 +199,12 @@ export default function BondCashflowModal({
         notes: notes.trim() || null,
         decrement_quantity: willDecrement,
         ...(faceAmortized != null ? { face_amortized: faceAmortized } : {}),
+        // Si el monto salió de nuestro chip y el usuario no lo tocó, sellamos EL
+        // MISMO tipo de cambio con el que lo calculamos. Si lo editó, no mandamos
+        // nada: el backend sella el de la fecha. La invariante que importa es que
+        // `amount` y `fx_to_usd` salgan del mismo número — si no, la fila no
+        // round-tripea y el USD que se muestra después no lo puede reconciliar nadie.
+        ...(usaNuestroTc ? { fx_to_usd: appliedTc } : {}),
       }
       const res = await api.post('/bonds/cashflow', payload)
       let msg = `${isCoupon ? 'Cupón' : 'Amortización'} de ${asset} registrado · ${moneyLabel} ${amt}`
@@ -197,16 +277,60 @@ export default function BondCashflowModal({
         {estimate && (
           <div className="mx-5 mt-4 px-3 py-2 rounded-sm bg-rendi-accent/[0.08] border border-rendi-accent/30 text-[11px] text-ink-1 leading-snug">
             <p className="font-mono">
-              💡 Pre-llenado según cronograma: <strong>{estimate.date}</strong> · estimado{' '}
+              💡 {estimate.kind === 'pending'
+                ? 'Cobranza pendiente que estás confirmando:'
+                : 'Pre-llenado según cronograma:'}{' '}
+              <strong>{estimate.date}</strong> · estimado{' '}
               <strong>
                 {bondMeta?.currency} {estimate.amount.toFixed(2)} por {position?.quantity || '?'} VN
               </strong>
-              {crossCurrency && (
+              {sug.applies && (
                 <span className="block text-rendi-warn mt-0.5">
-                  ⚠ Monto en {bondMeta.currency} — convertí al equivalente {moneyLabel} que recibiste de tu broker
+                  ⚠ El bono paga en {bondMeta?.currency} y tu cuenta {broker} acredita en {moneyLabel}
                 </span>
               )}
             </p>
+          </div>
+        )}
+
+        {/* Conversión sugerida. Es un CHIP, no un auto-relleno: el número es el
+            bruto teórico a un dólar de referencia, y el broker liquida al suyo y
+            retiene. Pre-cargarlo lo volvería un default que se confirma sin
+            mirar; así el usuario tiene que elegirlo, con la cuenta a la vista. */}
+        {sug.applies && (
+          <div className="mx-5 mt-3 px-3 py-2.5 rounded-sm bg-bg-3 border border-line text-[11px] leading-snug">
+            {sug.amount > 0 ? (
+              <>
+                <button
+                  type="button"
+                  onClick={aplicarSugerido}
+                  className="w-full text-left rounded-sm bg-rendi-accent/15 hover:bg-rendi-accent/25 border border-rendi-accent/40 text-rendi-accent px-2.5 py-1.5 font-semibold transition"
+                >
+                  Usar {moneyLabel} {sug.amount.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </button>
+                <p className="text-ink-2 font-mono mt-1.5">
+                  {bondMeta?.currency} {estimate.amount.toFixed(2)}{' '}
+                  {sug.operacion === 'dividir' ? '÷' : '×'}{' '}
+                  {sug.tc.toLocaleString('es-AR', { maximumFractionDigits: 4 })}
+                  {' '}({sug.source === 'blue' ? 'blue' : 'MEP'} del {sug.asOf})
+                </p>
+                {sug.stale && (
+                  <p className="text-ink-3 mt-0.5">
+                    No tenemos el dólar del {date} todavía — este es el del {sug.asOf}.
+                  </p>
+                )}
+                <p className="text-ink-3 mt-0.5">
+                  Si tu broker liquidó a otro tipo de cambio o te retuvo algo, editá el monto.
+                </p>
+              </>
+            ) : (
+              <p className="text-ink-2">
+                {sug.faltaTc
+                  ? `No tenemos el dólar del ${date} para sugerirte el equivalente. `
+                  : `El bono paga en ${bondMeta?.currency} y esta cuenta acredita en ${moneyLabel}. `}
+                Cargá el monto en {moneyLabel} que te acreditó el broker.
+              </p>
+            )}
           </div>
         )}
 

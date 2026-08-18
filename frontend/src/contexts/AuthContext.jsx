@@ -123,7 +123,7 @@ export function AuthProvider({ children }) {
   // El primer arg (`_legacyToken`) se ignora — la cookie ya fue seteada por
   // el backend en la respuesta de login/register/verify/reset. Lo dejamos
   // en la firma para no tener que tocar todos los call-sites.
-  function login(_legacyToken, name, extra = {}) {
+  async function login(_legacyToken, name, extra = {}) {
     // Plan Asesor: si quedó un contexto de cliente colgado (logout sin
     // "Volver" en la misma pestaña SPA), el header stale rompería TODOS los
     // requests del user nuevo con 403. Identity change = contexto afuera.
@@ -144,6 +144,33 @@ export function AuthProvider({ children }) {
       trackEvent('login', { method: 'email' })
     }
     if (extra?.id) setUserId(extra.id)
+
+    // El `user` que arma este método es OPTIMISTA: sale del payload del
+    // endpoint de login/registro/claim/reset, que solo trae name + email
+    // (+ is_admin). NO trae `tier` ni ningún otro campo de mapMeToUser.
+    //
+    // Y la rehidratación de /auth/me corre en un useEffect con deps [] — o
+    // sea, SOLO al montar el AuthProvider. Loguearse no lo re-monta (es
+    // navegación SPA), así que el user se quedaba con `tier` undefined hasta
+    // el próximo refresh de la página.
+    //
+    // Para casi todo daba igual (el gating de planes va por usePlanFeatures,
+    // que sí se refetchea acá arriba), pero lo que lee `user.tier` derecho se
+    // rompía: Sidebar, Dashboard, RendiAI y Guia conmutan el modo asesor con
+    // `user?.tier === 'advisor'`. Resultado: un ASESOR entraba y veía la app
+    // de usuario común — su libro, sus clientes y su IA del libro aparecían
+    // recién si recargaba a mano (reportado por Nico).
+    //
+    // refreshUser() es el mismo camino canónico que usa BillingReturn: pide
+    // /auth/me y pisa el user con mapMeToUser. Devolvemos la promesa para que
+    // el call-site pueda esperarla ANTES de navegar y no haya ni un parpadeo
+    // de la vista equivocada. Si falla (sin red), queda el optimista: mismo
+    // comportamiento que antes, nunca peor.
+    try {
+      return await refreshUser()
+    } catch {
+      return u
+    }
   }
 
   function updateUser(patch) {

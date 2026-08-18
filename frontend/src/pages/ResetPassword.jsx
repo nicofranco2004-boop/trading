@@ -62,7 +62,8 @@ export default function ResetPassword() {
       // Backend nos devuelve un token nuevo → auto-login. Pasamos email (si el
       // backend lo incluye) para que user.email esté disponible ya en esta
       // sesión — sin él, el estado por-usuario de la app cae a la clave 'anon'.
-      login(data.token, data.name, { email: data.email })
+      // await: que el user llegue completo (tier) antes de navegar. Ver login().
+      await login(data.token, data.name, { email: data.email })
       navigate('/')
     } catch (ex) {
       setError(ex.message)

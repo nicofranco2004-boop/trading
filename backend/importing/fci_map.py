@@ -76,6 +76,17 @@ BROKER_FCI_AD_NAME = {
     # (rentaFija USD), VCP 1780,226 (÷1000 = 1,78 escala USD). El user linkeó el fondo 4815
     # de Cohen con ese nombre EXACTO. Clases B/C dan 1830/1801 (misma magnitud, sin riesgo 100x).
     "IAMRDOA":   "IAM Renta Dólares - Clase A",        # rentaFija USD (Cohen/IAM)
+    # Galicia/FIMA — NO es un ticker de broker: es el nombre COMERCIAL que el usuario
+    # escribe al cargar el fondo a mano ("FIMA-ACCIONES"), y que queda crudo → al costo.
+    # Entra acá igual porque el remap (main._remap_fci_broker_tickers) es el único
+    # camino que arregla las posiciones YA cargadas sin editar lote por lote.
+    # Confirmado 2026-08-13 vs ArgentinaDatos: "Fima Acciones - Clase A" (rentaVariable
+    # ARS), VCP 277.297,694 (÷1000 = 277,30 $/cp) contra un costo del usuario de ~210 $/cp
+    # → misma magnitud. Los dos vecinos peligrosos quedan descartados por magnitud:
+    # "Fima PB Acciones - Clase A" da 3.253 $/cp (12× arriba) y "Fima Acciones
+    # Latinoamerica - Clase A" 1,60 $/cp. Clase B (314.394) es la misma escala que A,
+    # así que el peor caso de errarle a la clase acá es ~13%, no 100×.
+    "FIMA-ACCIONES": "Fima Acciones - Clase A",        # rentaVariable ARS (Galicia/FIMA)
 }
 
 

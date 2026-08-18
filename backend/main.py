@@ -73,6 +73,7 @@ def _setup_yfinance_cache():
 
 _setup_yfinance_cache()
 import fx as _fx
+import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from snapshots_job import (
@@ -628,22 +629,9 @@ def init_db():
         """)
         conn.commit()
 
-        # advisor_op_batch_items — columnas de undo exacto (audit: el undo
-        # recomputaba el crédito desde la fila VIVA — editable — y no revertía
-        # el autodepósito, dejando capital fantasma)
-        _bi_cols = _table_cols(conn, 'advisor_op_batch_items')
-        if _bi_cols:
-            for _c, _t in (('cost_debited', 'REAL'), ('autodep_native', 'REAL'),
-                           ('autodep_usd', 'REAL'), ('autodep_ym', 'TEXT')):
-                if _c not in _bi_cols:
-                    conn.execute(f"ALTER TABLE advisor_op_batch_items ADD COLUMN {_c} {_t}")
-            conn.commit()
-
-        # advisor_profile — logo del asesor (informes brandeados) si ya existía
-        _ap_cols = _table_cols(conn, 'advisor_profile')
-        if _ap_cols and 'logo_data' not in _ap_cols:
-            conn.execute("ALTER TABLE advisor_profile ADD COLUMN logo_data TEXT")
-            conn.commit()
+        # (las migraciones de advisor_op_batch_items / advisor_profile NO van acá:
+        #  sus CREATE TABLE están más abajo. Ver el bloque después del CREATE de
+        #  advisor_op_batch_items y el de las prefs del brief.)
 
         # brokers — agregar columna parent_broker_id si la tabla ya existía
         broker_cols = _table_cols(conn, 'brokers')
@@ -742,6 +730,31 @@ def init_db():
                 autodep_ym TEXT         -- 'YYYY-MM' del flujo a revertir
             );
         """)
+
+        # advisor_op_batch_items — columnas de undo exacto (audit: el undo
+        # recomputaba el crédito desde la fila VIVA — editable — y no revertía
+        # el autodepósito, dejando capital fantasma).
+        #
+        # ⚠️ VA ACÁ, DESPUÉS del CREATE (misma lección que `undo_meta_json` y que
+        # project_migration_index_order). Antes vivía ~100 líneas más arriba y usaba
+        # `_table_cols`, que tiene allowlist y NO incluye esta tabla → devolvía set()
+        # → el `if` era falso → el ALTER no corrió NUNCA en producción. Como el CREATE
+        # de acá arriba sí trae las 4 columnas, en base NUEVA (y en los tests) la tabla
+        # nacía completa y el bug era invisible: sólo rompía donde la tabla ya existía
+        # con 5 columnas, o sea prod, donde el alta grupal fallaba SIEMPRE con
+        # "table advisor_op_batch_items has no column named cost_debited".
+        # PRAGMA directo, no `_table_cols`: esto tiene que funcionar aunque nadie se
+        # acuerde de tocar la allowlist. ALTER nullable y sin índice.
+        #
+        # (Postgres no pasa por acá: init_db() sale antes por _init_db_postgres(),
+        #  y schema_pg.sql ya trae las 4 columnas. Por eso el PRAGMA es seguro.)
+        _bi_cols = {r[1] for r in conn.execute("PRAGMA table_info(advisor_op_batch_items)")}
+        if _bi_cols:
+            for _c, _t in (('cost_debited', 'REAL'), ('autodep_native', 'REAL'),
+                           ('autodep_usd', 'REAL'), ('autodep_ym', 'TEXT')):
+                if _c not in _bi_cols:
+                    conn.execute(f"ALTER TABLE advisor_op_batch_items ADD COLUMN {_c} {_t}")
+            conn.commit()
 
         # Sincronizar is_admin + approved para usuarios con email admin
         rows = conn.execute("SELECT id, email FROM users").fetchall()
@@ -1951,6 +1964,12 @@ def init_db():
         # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
         # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
         _ap_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_profile)").fetchall()]
+        # logo_data: venía de un bloque con `_table_cols` (allowlist sin esta tabla →
+        # set() → no corría nunca). En prod la columna existe porque llegó por otro
+        # camino, así que esto es no-op ahí; se consolida acá para que una base que
+        # NO la tenga se migre de verdad. Mismo bug que advisor_op_batch_items.
+        if _ap_cols and 'logo_data' not in _ap_cols:
+            conn.executescript("ALTER TABLE advisor_profile ADD COLUMN logo_data TEXT;")
         if _ap_cols and 'brief_open' not in _ap_cols:
             conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_open INTEGER DEFAULT 1;")
         if _ap_cols and 'brief_close' not in _ap_cols:
@@ -7064,12 +7083,20 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     # resolvemos aparte desde la tabla fci_prices (refrescada 1x/día por cron).
     # El precio guardado ya es por cuotaparte (vcp/1000). Se mergea en cada return.
     fci_prices = {}
+    # Procedencia del precio de fondos: {símbolo: {'src':'fci','as_of':fecha}}. Viaja
+    # en `__meta` (mismo canal que la procedencia de acciones) para que la pantalla
+    # pueda decir A QUÉ FECHA está valuado. Sin esto un VCP de hace 3 semanas se ve
+    # igual que uno de hoy — que es exactamente lo que pasó con el corte de la fuente.
+    fci_meta = {}
     fci_syms = [s for s in raw if s.startswith("FCI:")]
     if fci_syms:
         _fci_conn = get_db()
         try:
             from pricing import fci as _fci_mod
-            fci_prices = _fci_mod.get_prices_for(_fci_conn, fci_syms)
+            _fci_detail = _fci_mod.get_prices_detail_for(_fci_conn, fci_syms)
+            fci_prices = {k: v["price"] for k, v in _fci_detail.items()}
+            fci_meta = {k: {"src": "fci", "as_of": v["as_of"]}
+                        for k, v in _fci_detail.items() if v.get("as_of")}
         except Exception as _fci_ex:
             log.warning("FCI price resolve falló: %s", _fci_ex)
         finally:
@@ -7082,7 +7109,11 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     sym_list = sym_list[:MAX_SYMBOLS]
 
     if not sym_list:
-        return dict(fci_prices)
+        # Todos los símbolos pedidos son FCI (no matchean `_SYMBOL_RE`, que es para
+        # tickers de mercado). Este return también lleva `__meta`: si no, la pantalla
+        # que sólo tiene fondos —la sección FCI de Cartera— era justo la única que se
+        # quedaba sin la fecha del precio.
+        return {**fci_prices, '__meta': dict(fci_meta)}
 
     # ─── Layer 1: cache hit fast path ───────────────────────────────────────
     # Si TODOS los símbolos están cacheados frescos (< 60s), devolvemos sin
@@ -7090,7 +7121,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     # en < 5ms.
     cached_results, uncached_symbols = _prices_cache_get(sym_list)
     if not uncached_symbols:
-        return {**cached_results, **fci_prices, '__meta': _prices_meta_get(sym_list)}
+        return {**cached_results, **fci_prices, '__meta': {**_prices_meta_get(sym_list), **fci_meta}}
 
     # Hay misses — procesamos solo los uncached. Resultado base incluye lo
     # que ya teníamos cacheado para no perderlo en el merge final.
@@ -7134,7 +7165,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
         # Solo había símbolos resolved por data912 — persistir y salir.
         _fill_last_known_prices(result)
         _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
-        return {**result, **fci_prices, '__meta': _prices_meta_get(sym_list)}
+        return {**result, **fci_prices, '__meta': {**_prices_meta_get(sym_list), **fci_meta}}
 
     # Cripto en broker ARS: el frontend pide '<CRIPTO>.BA' (sufijo ARS, igual que
     # un CEDEAR) pero la cripto NO cotiza en BYMA — cotiza en USD globalmente. La
@@ -7301,7 +7332,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
     # `__meta` no puede colisionar con un ticker y ningún caller itera el objeto
     # (todos hacen prices[sym]) — verificado antes de agregarlo.
-    return {**result, **fci_prices, '__meta': _prices_meta_get(sym_list)}
+    return {**result, **fci_prices, '__meta': {**_prices_meta_get(sym_list), **fci_meta}}
 
 
 @app.get("/api/prices/prev-close")
@@ -7730,6 +7761,265 @@ def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
             raise
         except Exception as ex:
             raise HTTPException(500, f"Error al crear posición: {ex}")
+
+
+class PositionGroupEditIn(BaseModel):
+    """Edición a nivel GRUPO (todos los lotes de un mismo broker+activo+moneda)."""
+    broker: str
+    asset: str                                   # el activo ACTUAL (identifica al grupo)
+    currency: Optional[str] = None               # el grupo se arma por moneda (la fila agregada también)
+    new_asset: Optional[str] = None              # renombrar el ticker
+    avg_price: Optional[float] = Field(None, gt=0)   # nuevo precio PROMEDIO ponderado
+    tc_mode: Optional[str] = None                # 'historical' | 'fixed'
+    tc_value: Optional[float] = Field(None, gt=0)
+
+
+def _group_lots(conn, uid: int, broker: str, asset: str, currency: Optional[str]):
+    """Los lotes abiertos del grupo, en el MISMO criterio que la fila agregada del
+    frontend (broker + activo + moneda). Sin la moneda, un CEDEAR con patas ARS y USD
+    se editaría junto y el promedio mezclaría monedas."""
+    sql = ("SELECT * FROM positions WHERE user_id=? AND broker=? AND asset=? AND is_cash=0")
+    args = [uid, broker, asset]
+    if currency:
+        sql += " AND UPPER(COALESCE(currency,''))=?"
+        args.append(currency.upper())
+    return conn.execute(sql + " ORDER BY entry_date, id", args).fetchall()
+
+
+def _src_tx_for_position(conn, uid: int, pid: int):
+    """La fila del import que creó ese lote, o None si se cargó a mano. Editar SOLO
+    `positions` no alcanza: el próximo import re-deriva el lote desde acá y la
+    corrección se deshace sola (el usuario ve que "no le quedó guardado")."""
+    link = conn.execute(
+        "SELECT batch_id, raw_row_id FROM import_op_links WHERE position_id=? LIMIT 1", (pid,),
+    ).fetchone()
+    if not link:
+        return None
+    return conn.execute(
+        """SELECT n.* FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=? AND n.excluded_at IS NULL""",
+        (link["batch_id"], link["raw_row_id"], uid),
+    ).fetchone()
+
+
+def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
+    """Edita TODOS los lotes de un activo de una sola vez. Reversible.
+
+    La fila agregada de Cartera es una VISTA (se calcula al vuelo), no un registro:
+    editarla = aplicar una regla a cada lote. Hay dos reglas y cada campo usa la que
+    corresponde — mezclarlas es lo que rompía el costo FIFO:
+
+      • `new_asset` → IGUALAR: el mismo ticker en todos. No hay nada que ponderar.
+      • `avg_price` → ESCALAR: cada lote se multiplica por k = nuevo/actual. El
+        promedio resultante da EXACTO el pedido (Σ(inv·k)/Σq = k·prom) y se preserva
+        la FORMA: el lote barato sigue siendo el barato. Igualar todos al promedio
+        daría bien el total pero mal cada lote, y el FIFO consume de a uno.
+      • `tc_mode` → 'historical': el TC de la FECHA de cada lote (lo mismo que hace el
+        alta manual); 'fixed': un único TC para todos. Un TC no se prorratea — no es
+        una magnitud repartible como la plata.
+
+    La cantidad NO se edita acá: repartirla exige decidir de qué lote sacar, y eso
+    cambia el FIFO y las fechas de compra. Eso sigue siendo por lote.
+    """
+    import json as _json
+    import secrets as _secrets
+
+    broker = (p.broker or "").strip()
+    asset = (p.asset or "").strip()
+    new_asset = (p.new_asset or "").strip()
+    if not broker or not asset:
+        raise HTTPException(400, "Falta el broker o el activo")
+    if p.tc_mode and p.tc_mode not in ("historical", "fixed"):
+        raise HTTPException(400, "tc_mode inválido")
+    if p.tc_mode == "fixed" and not p.tc_value:
+        raise HTTPException(400, "Falta el tipo de cambio")
+    if not new_asset and p.avg_price is None and not p.tc_mode:
+        raise HTTPException(400, "No mandaste ningún cambio")
+
+    lots = _group_lots(conn, uid, broker, asset, p.currency)
+    if not lots:
+        raise HTTPException(404, "No encontramos esa posición")
+
+    total_qty = sum(float(l["quantity"] or 0) for l in lots)
+    total_inv = sum(float(l["invested"] or 0) for l in lots)
+
+    # Snapshot ANTES de tocar nada (undo). Guardamos por id, así el undo no
+    # depende de que el grupo siga existiendo con la misma clave.
+    snap_lots, snap_src = [], []
+    for l in lots:
+        snap_lots.append({"id": l["id"], "asset": l["asset"], "buy_price": l["buy_price"],
+                          "invested": l["invested"], "tc_compra": l["tc_compra"]})
+        src = _src_tx_for_position(conn, uid, l["id"])
+        if src:
+            snap_src.append({"id": src["id"], "asset_symbol": src["asset_symbol"],
+                             "unit_price": src["unit_price"], "gross_amount": src["gross_amount"],
+                             "tc_compra": src["tc_compra"] if "tc_compra" in src.keys() else None})
+
+    # ── Precio promedio: escalado proporcional ────────────────────────
+    if p.avg_price is not None:
+        if total_qty <= 0:
+            raise HTTPException(400, "La posición no tiene cantidad para promediar")
+        if total_inv > 0:
+            k = (float(p.avg_price) * total_qty) / total_inv
+            for l in lots:
+                new_inv = float(l["invested"] or 0) * k
+                new_price = (float(l["buy_price"]) * k) if l["buy_price"] is not None else None
+                conn.execute(
+                    "UPDATE positions SET invested=?, buy_price=COALESCE(?, buy_price) "
+                    "WHERE id=? AND user_id=?", (new_inv, new_price, l["id"], uid))
+                src = _src_tx_for_position(conn, uid, l["id"])
+                if src:
+                    conn.execute(
+                        "UPDATE import_normalized_tx SET unit_price=?, gross_amount=? WHERE id=?",
+                        (float(src["unit_price"] or 0) * k if src["unit_price"] is not None else None,
+                         float(src["gross_amount"] or 0) * k if src["gross_amount"] is not None else None,
+                         src["id"]))
+        else:
+            # Todo el grupo a costo 0 (lotes semilla / transferencias): no hay
+            # proporción que preservar → el precio pedido va igual en todos.
+            for l in lots:
+                q = float(l["quantity"] or 0)
+                conn.execute(
+                    "UPDATE positions SET invested=?, buy_price=? WHERE id=? AND user_id=?",
+                    (float(p.avg_price) * q, float(p.avg_price), l["id"], uid))
+
+    # ── Tipo de cambio ────────────────────────────────────────────────
+    if p.tc_mode:
+        for l in lots:
+            if p.tc_mode == "fixed":
+                tc = float(p.tc_value)
+            else:
+                tc = _fx.fx_for_date(conn, l["entry_date"]) if l["entry_date"] else None
+                if not tc:
+                    continue     # fecha pre-serie: mejor dejar el que había que romperlo
+            conn.execute("UPDATE positions SET tc_compra=? WHERE id=? AND user_id=?",
+                         (tc, l["id"], uid))
+            src = _src_tx_for_position(conn, uid, l["id"])
+            if src:
+                conn.execute("UPDATE import_normalized_tx SET tc_compra=? WHERE id=?",
+                             (tc, src["id"]))
+
+    # ── Renombrar el activo ───────────────────────────────────────────
+    if new_asset and new_asset != asset:
+        for l in lots:
+            conn.execute("UPDATE positions SET asset=? WHERE id=? AND user_id=?",
+                         (new_asset, l["id"], uid))
+            src = _src_tx_for_position(conn, uid, l["id"])
+            if src:
+                conn.execute("UPDATE import_normalized_tx SET asset_symbol=? WHERE id=?",
+                             (new_asset, src["id"]))
+        # Las operaciones (ventas, cupones) del MISMO par van con el ticker:
+        # si no, quedan colgadas de un activo que ya no existe.
+        pair = _import_persister.broker_pair(conn, uid, broker)
+        _ph = ",".join("?" * len(pair))
+        conn.execute(
+            f"UPDATE operations SET asset=? WHERE user_id=? AND broker IN ({_ph}) AND asset=?",
+            (new_asset, uid, *pair, asset))
+
+    token = _secrets.token_hex(8)
+    conn.execute(
+        """INSERT INTO deleted_ops_journal (user_id, token, kind, payload_json, since_date, broker)
+           VALUES (?,?,?,?,?,?)""",
+        (uid, token, "position_group_edit",
+         _json.dumps({"lots": snap_lots, "src": snap_src, "asset": asset,
+                      "new_asset": new_asset or None, "broker": broker,
+                      "pair": list(_import_persister.broker_pair(conn, uid, broker))}),
+         None, broker))
+    return {"ok": True, "lots": len(lots), "undo_token": token, "asset": new_asset or asset}
+
+
+@app.patch("/api/positions/group")
+def edit_position_group(p: PositionGroupEditIn, uid: int = Depends(get_effective_user)):
+    """Editar la posición ENTERA (todos sus lotes) desde Cartera. Ver _edit_position_group."""
+    conn = get_db()
+    try:
+        with conn:      # tx atómica: o quedan todos los lotes editados, o ninguno
+            out = _edit_position_group(conn, uid, p)
+    except HTTPException:
+        conn.close()
+        raise
+    except Exception as ex:
+        conn.close()
+        log.error("edit_position_group falló uid=%s %s: %s", uid, p.asset, ex)
+        raise HTTPException(500, "No se pudo editar la posición")
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return out
+
+
+def _undo_edit_position_group(conn, uid: int, token: str) -> dict:
+    """Deshace una edición de grupo: restaura cada lote (y su fila de import) a los
+    valores que tenía, por id."""
+    import json as _json
+
+    j = conn.execute(
+        "SELECT * FROM deleted_ops_journal WHERE user_id=? AND token=? AND kind='position_group_edit'",
+        (uid, token)).fetchone()
+    if not j:
+        raise HTTPException(404, "No encontramos esa edición")
+    # CLAIM ATÓMICO: marcar undone_at ES el lock (un doble-click no restaura 2×).
+    if conn.execute(
+        "UPDATE deleted_ops_journal SET undone_at=datetime('now') "
+        "WHERE id=? AND undone_at IS NULL", (j["id"],)).rowcount != 1:
+        raise HTTPException(409, "Esa edición ya se deshizo.")
+    pl = _json.loads(j["payload_json"])
+    for l in pl.get("lots", []):
+        conn.execute(
+            "UPDATE positions SET asset=?, buy_price=?, invested=?, tc_compra=? "
+            "WHERE id=? AND user_id=?",
+            (l["asset"], l["buy_price"], l["invested"], l["tc_compra"], l["id"], uid))
+    for s in pl.get("src", []):
+        conn.execute(
+            "UPDATE import_normalized_tx SET asset_symbol=?, unit_price=?, gross_amount=?, "
+            "tc_compra=? WHERE id=?",
+            (s["asset_symbol"], s["unit_price"], s["gross_amount"], s["tc_compra"], s["id"]))
+    if pl.get("new_asset"):
+        pair = pl.get("pair") or [pl.get("broker")]
+        _ph = ",".join("?" * len(pair))
+        conn.execute(
+            f"UPDATE operations SET asset=? WHERE user_id=? AND broker IN ({_ph}) AND asset=?",
+            (pl["asset"], uid, *pair, pl["new_asset"]))
+    return {"ok": True}
+
+
+@app.post("/api/positions/group/undo/{token}")
+def undo_edit_position_group(token: str, uid: int = Depends(get_effective_user)):
+    """Deshacer del toast tras editar la posición entera."""
+    conn = get_db()
+    try:
+        with conn:
+            out = _undo_edit_position_group(conn, uid, token)
+    except HTTPException:
+        conn.close()
+        raise
+    except Exception as ex:
+        conn.close()
+        log.error("undo_edit_position_group falló uid=%s token=%s: %s", uid, token, ex)
+        raise HTTPException(500, "No se pudo deshacer")
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return out
+
+
+@app.get("/api/positions/group/context")
+def position_group_context(broker: str, asset: str, currency: Optional[str] = None,
+                           uid: int = Depends(get_effective_user)):
+    """Contexto para el modal de edición de grupo: cuántas VENTAS ya registradas tiene
+    el activo (esas conservan el resultado calculado con el costo anterior — el usuario
+    tiene que saberlo antes de tocar el promedio) y cuántos lotes vienen de un import."""
+    conn = get_db()
+    try:
+        lots = _group_lots(conn, uid, (broker or "").strip(), (asset or "").strip(), currency)
+        pair = _import_persister.broker_pair(conn, uid, (broker or "").strip())
+        _ph = ",".join("?" * len(pair))
+        sales = conn.execute(
+            f"""SELECT COUNT(*) c FROM operations WHERE user_id=? AND broker IN ({_ph})
+                 AND asset=? AND op_type='Venta'""",
+            (uid, *pair, (asset or "").strip())).fetchone()["c"]
+        imported = sum(1 for l in lots if _src_tx_for_position(conn, uid, l["id"]))
+        return {"lots": len(lots), "sales": int(sales or 0), "imported_lots": imported}
+    finally:
+        conn.close()
 
 
 @app.put("/api/positions/{pid}")
@@ -8699,8 +8989,24 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         broker_filter_args = () if broker == "global" else (broker,)
 
         # 1) pnl_realized desde operations — ÚNICA fuente autoritativa
+        #
+        # El campo se llama `pnl_usd` pero en las cobranzas de bonos guarda el monto
+        # en la MONEDA DEL BROKER (`bond_cashflow` inserta `net_amount` tal cual), así
+        # que un cupón de un broker ARS entraba a `pnl_realized` como si esos pesos
+        # fueran dólares — un cupón de $95.000 sumaba US$95.000 al mes.
+        #
+        # Se divide SÓLO en Cupón/Amortización con `fx_to_usd` sellado y currency ARS:
+        # en `Venta` el `pnl_usd` YA es USD y `fx_to_usd` guarda el tc_venta, así que
+        # dividir ahí rompería todo. Las filas viejas (fx NULL) caen al ELSE y quedan
+        # como estaban — no empeoran, y el sello recién ahora las hace reparables.
+        #
+        # La expresión vive en `realized_pnl` porque estaba copiada a mano en 4
+        # lectores y sólo se arregló acá: los otros 3 (los que alimentan a la IA)
+        # siguieron sumando la columna cruda durante todo ese tiempo.
         pnl_row = conn.execute(
-            f"""SELECT COALESCE(SUM(o.pnl_usd), 0) AS s FROM operations o
+            f"""SELECT COALESCE(SUM(
+                    {realized_pnl.realized_usd_sql('o')}
+                ), 0) AS s FROM operations o
                 WHERE o.user_id=?
                   AND strftime('%Y', o.date)=?
                   AND strftime('%m', o.date)=?
@@ -9544,14 +9850,36 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
             raise HTTPException(400, "El monto neto (descontando comisiones) debe ser > 0")
 
         # Resolver currency + fx_to_usd con defaults sensatos.
+        #
+        # `fx_to_usd` va en NATIVA POR USD (ej: 1250 ARS/USD), la convención del
+        # resto del sistema (persister, ventas, autodepósito).
+        #
+        # Si el frontend manda uno explícito, GANA: es el mismo TC con el que le
+        # sugirió el monto al usuario. Sellar otro acá haría que la fila no
+        # round-tripee (`amount / fx_to_usd` dejaría de dar el teórico en USD)
+        # porque el MEP del navegador y el del backend pueden diferir — el cron
+        # diario no escribe MEP y el backfill lo repara recién al próximo restart.
+        #
+        # Sin FX explícito y con broker ARS, antes quedaba NULL y cada lector
+        # inventaba su propio fallback (el blue de HOY, aunque el cupón fuera de
+        # hace dos años). Ahora se sella el MEP de la FECHA DEL PAGO. Sin
+        # `fallback`: una fecha anterior a la serie queda NULL, no un número
+        # inventado — mismo criterio que el resto de fx.py.
         broker_currency = broker_row['currency']
         currency = data.currency or broker_currency
-        if data.fx_to_usd is not None:
+        fx_source = None
+        if currency in ('USD', 'USDT'):
+            # La fila YA está en dólares: su factor a USD es 1, y no hay cliente que
+            # pueda decir lo contrario. Sin esta guarda, un cliente que mande el TC
+            # de la conversión (1250) deja la fila diciendo que esos 100 dólares son
+            # 100/1250 = US$0,08 para todo lector que divida.
+            fx_to_usd = 1.0
+            fx_source = 'par'
+        elif data.fx_to_usd is not None:
             fx_to_usd = data.fx_to_usd
-        elif broker_currency in ('USD', 'USDT'):
-            fx_to_usd = 1.0  # ya es USD-equivalente
+            fx_source = 'client'
         else:
-            fx_to_usd = None  # ARS sin FX explícito — frontend usa fallback
+            fx_to_usd, fx_source = _fx.fx_for_date_detail(conn, data.date)
 
         with conn:  # tx atómica
             # Pre-cálculo del cost basis consumido para amortizaciones.
@@ -9625,6 +9953,12 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
                                    # se le devolvía todo al lote más viejo y el costo
                                    # unitario de los demás quedaba distorsionado.
                                    "amort_lots": amort_detail or None,
+                                   # De dónde salió el TC sellado ('client' = el que
+                                   # el frontend usó para sugerir el monto, 'mep',
+                                   # 'blue', 'par', None). Sin esto no se puede
+                                   # distinguir después un MEP del día del pago de un
+                                   # blue de red histórica, y la degradación es muda.
+                                   "fx_source": fx_source,
                                    "cross_currency_skipped": cross_currency_skipped})),
             )
             # 2. Acreditar cash del broker
@@ -9644,6 +9978,7 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
             'asset': data.asset.upper(),
             'currency': currency,
             'fx_to_usd': fx_to_usd,
+            'fx_source': fx_source,
             'qty_decremented': qty_decremented,
             'invested_decremented': invested_decremented,
             'cost_basis_consumed': cost_basis_consumed,
@@ -11520,7 +11855,17 @@ def get_movements(uid: int = Depends(get_effective_user)):
             qty = _safe_float_or_none(d.get("quantity"))
             entry_p = _safe_float_or_none(d.get("entry_price"))
             exit_p = _safe_float_or_none(d.get("exit_price"))
-            pnl = _safe_float_or_none(d.get("pnl_usd")) or 0
+            # `pnl_usd` en moneda del broker si es Cupón/Amortización. Acá el
+            # SELECT es `o.*`, así que currency/fx_to_usd ya vienen en la fila.
+            # Importa doble: `pnl` es también el fallback de `amount_sell` para
+            # las filas sin exit_price/quantity — que es la forma exacta de un
+            # cupón cargado con el botón. El frontend trata `amount_usd` como USD
+            # canónico y sólo MULTIPLICA por fx para mostrarlo en pesos
+            # (useHistoricalMoney.js:61), nunca divide: sin convertir acá, el
+            # mismo cupón se veía como US$125.000 con el toggle en dólares y como
+            # ~$156.000.000 con el toggle en pesos.
+            pnl = (realized_pnl.realized_usd(d)
+                   if d.get("pnl_usd") is not None else 0)
             fees = _safe_float_or_none(d.get("commissions")) or 0
 
             # Un trade cerrado son 2 eventos contables (BUY + SELL). Para que
@@ -11572,7 +11917,7 @@ def get_movements(uid: int = Depends(get_effective_user)):
         tx_rows = conn.execute(
             """SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes, t.gross_amount_usd
+                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out
                 FROM import_normalized_tx t
                 JOIN import_batches b ON t.batch_id = b.id
                 WHERE b.user_id = ? AND b.status = 'confirmed'
@@ -11617,6 +11962,11 @@ def get_movements(uid: int = Depends(get_effective_user)):
                 "notes": d.get("notes") or "",
                 "source": "import",
                 "ref_id": d["id"],
+                # No es una venta real: cerró el lote A COSTO (P&L 0, sin cash). La
+                # emite una FOTO de tenencia (activo que la foto no listaba) o un
+                # "Retiro de Títulos". El front lo muestra como "Reabrir posición" en
+                # vez de un borrar genérico, porque eso es literalmente lo que hace.
+                "transfer_out": bool(d.get("transfer_out")) and op_type == "SELL",
             })
 
         # ── 3) Monthly entries (no-global) — solo el RESIDUAL manual ────────
@@ -12321,10 +12671,22 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
     _gate_export(uid, request)
     conn = get_db()
     try:
+        # ⚠️ La columna del CSV se rotula "P&L USD" y este archivo se lo manda
+        # el usuario al contador. `pnl_usd` guarda el monto en moneda del broker
+        # en Cupón/Amortización, así que un cupón de $125.000 salía declarado
+        # como US$125.000 bajo un encabezado que dice dólares. Es el único lector
+        # cuyo número sale de la app hacia un tercero: una vez que alguien lo usó
+        # para una declaración, Rendi ya no lo puede corregir.
+        #
+        # Acá SÍ corresponde convertir (a diferencia de transactions.csv, que
+        # exporta el monto apareado con su columna `moneda` y ahí el par
+        # 125.000+ARS es consistente): este CSV no tiene columna de moneda, así
+        # que el único valor correcto bajo ese encabezado es el USD real.
         rows = [dict(r) for r in conn.execute(
-            """SELECT date AS fecha_cierre, entry_date, asset, broker,
+            f"""SELECT date AS fecha_cierre, entry_date, asset, broker,
                       op_type AS tipo, quantity, entry_price, exit_price,
-                      pnl_usd, pnl_pct, commissions
+                      {realized_pnl.realized_usd_sql()} AS pnl_usd,
+                      pnl_pct, commissions
                FROM operations
                WHERE user_id = ?
                ORDER BY date DESC""",
@@ -13462,13 +13824,19 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
             "Los bonos no se borran de a una operación (tienen amortizaciones y "
             "cupones enlazados). Se borran enteros: en Operaciones, agrupá por activo "
             "y usá el tacho del activo (por ahora, desde la computadora).")
-    # Venta SINTÉTICA de reconciliación de foto (transfer_out=1, cierre a costo):
-    # borrarla RESTAURARÍA una tenencia que la foto declaró cerrada, divergiendo de
-    # lo importado. Bloqueamos (además su gross=0 haría no-op la reversa de cash).
-    if src["transfer_out"]:
-        raise HTTPException(400,
-            "Esta venta viene de una foto de tenencia (cierre a costo), no de una "
-            "operación real, así que no se puede borrar por separado.")
+    # Venta SINTÉTICA de cierre a costo (transfer_out=1): la emitió una FOTO de
+    # tenencia para cerrar un activo que la foto no listaba, o un "Retiro de Títulos".
+    # Se PUEDE borrar, y es el borrado más seguro que tenemos: el persister NO acreditó
+    # cash (fuerza proceeds 0, persister:769) ni P&L (0), así que la única cascada real
+    # es el rebuild, que re-abre el lote desde las compras que sobreviven.
+    #
+    # Antes esto se bloqueaba "para no divergir de lo importado" y era un CALLEJÓN SIN
+    # SALIDA cuando la foto se equivocaba (no cubría esa cuenta, el parser leyó parcial,
+    # el ticker vino distinto): el usuario veía una posición VIVA cerrada, el tacho del
+    # activo entero también lo bloqueaba, y revertir el batch tampoco la recreaba
+    # (revert_batch nuclear no recrea lotes consumidos por una venta). Borrar el cierre
+    # ES la reparación — por eso el frontend lo ofrece como "Reabrir posición".
+    is_transfer_out = bool(src["transfer_out"])
 
     broker = src["broker"] or op["broker"] or ""
     asset = src["asset_symbol"] or op["asset"] or ""
@@ -13514,10 +13882,18 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     #    redondeo del precio y por comisión embebida en el monto (Balanz). Espejamos
     #    la MISMA fórmula → byte-simétrico. El rebuild NO toca el cash: esto es lo
     #    único que lo corrige.
-    _ueff = _import_persister.reconciled_unit_price(
-        src["unit_price"], src["quantity"], src["gross_amount"], src["asset_type"])
-    proceeds_native = float(_ueff or 0) * float(src["quantity"] or 0) - float(src["fees"] or 0)
-    reversed_cash = proceeds_native if proceeds_native > 0 else 0.0
+    #    EXCEPCIÓN transfer_out: el persister fuerza proceeds 0 (no entró plata), así
+    #    que la reversa también es 0 — derivarla de precio×cantidad inventaría un
+    #    débito. Hoy esas filas vienen con precio y monto 0 (el flag solo se aplica en
+    #    ese caso), pero lo hacemos EXPLÍCITO para que siga siendo simétrico si alguna
+    #    vez un parser marca transfer_out en una fila con precio.
+    if is_transfer_out:
+        reversed_cash = 0.0
+    else:
+        _ueff = _import_persister.reconciled_unit_price(
+            src["unit_price"], src["quantity"], src["gross_amount"], src["asset_type"])
+        proceeds_native = float(_ueff or 0) * float(src["quantity"] or 0) - float(src["fees"] or 0)
+        reversed_cash = proceeds_native if proceeds_native > 0 else 0.0
     if reversed_cash:
         _adjust_broker_cash(conn, uid, broker, -reversed_cash)
 
@@ -13807,8 +14183,10 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     # Validaciones all-or-nothing (mejor bloquear que corromper).
     if any(r["transfer_out"] for r in rows):
         raise HTTPException(400,
-            "Este activo tiene cierres de foto de tenencia; todavía no se puede "
-            "borrar entero. (Próxima versión.)")
+            "Este activo tiene un cierre que generó una foto de tenencia, no una venta "
+            "real. Sacalo primero de a uno: en Movimientos, abrí el grupo del activo y "
+            "borrá esa fila (dice «cierre de … a costo») — eso REABRE la posición. "
+            "Después vas a poder borrar el historial entero si querés.")
     # Activos abiertos desde una FOTO de tenencia / estado inicial: su lote seed lo
     # fondea un DEPÓSITO sintético COMPARTIDO (no por activo) que este borrado no
     # sabe reversar proporcionalmente → dejaría el cash inflado. Bloqueamos.
@@ -16350,6 +16728,262 @@ def admin_pg_type_audit(incluir_ok: bool = False, uid: int = Depends(get_admin_u
         conn.close()
 
 
+# Piso absoluto de la limpieza de comisiones, por moneda. Además del 5%, la
+# comisión tiene que superar ESTO para que se borre.
+#
+# El USD está calibrado sobre el fee FIJO de Balanz (~USD 14): por debajo de 25 no
+# tocamos nada, así que ese fee legítimo queda protegido aunque sobre una compra
+# chica represente el 115%.
+# El ARS es el equivalente aproximado, para que la regla sea la misma en las dos
+# monedas y no dependa del MEP del día.
+_PISO_COMISION_USD = 25.0
+_PISO_COMISION_ARS = 35_000.0
+
+
+@app.post("/api/admin/repair-comisiones")
+def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
+                            uid: int = Depends(get_admin_user)):
+    """Pone en CERO las comisiones implausibles ya escritas en `positions`.
+
+    El guard del normalizer impide que entren nuevas; esto limpia las 469 que ya
+    están. Sin esto, 78 usuarios siguen viendo pérdidas que no existen: el P&L de
+    Cartera calcula `invested + commissions`, así que una comisión inventada se
+    come la ganancia (un NFLX mostraba -48,1% cuando ganaba +3,5%).
+
+    MISMO CRITERIO que el import (5% de buy_price × quantity), a propósito: si el
+    umbral de limpieza fuera distinto del de entrada, quedarían filas que el
+    guard dejaría pasar pero la limpieza borra, o al revés.
+
+    DRY-RUN POR DEFECTO. Con `apply=false` (el default) NO escribe nada: devuelve
+    exactamente lo que haría. Hay que pedir `apply=true` explícitamente. Es plata
+    de gente y el error de "corrí el script sin mirar" no se puede deshacer con
+    un ctrl-Z.
+
+    REVERSIBLE: el valor viejo queda guardado en `undo_meta_json` bajo la clave
+    `comision_reparada`. Se MERGEA con lo que ya hubiera —esa columna guarda el
+    CAMINO de creación (`src`) y la cascada de borrado lo lee—: pisarla rompería
+    el borrado de esas posiciones.
+
+    NO toca: las que no tienen buy_price (no hay contra qué comparar), el cash,
+    ni las comisiones legítimas — los USD 10 de Balanz son un fee real.
+    """
+    conn = get_db()
+    try:
+        filas = conn.execute(
+            """SELECT p.id, p.user_id, u.email, p.broker, p.asset, p.currency,
+                      p.quantity, p.buy_price, p.invested, p.commissions, p.undo_meta_json
+                 FROM positions p
+                 LEFT JOIN users u ON u.id = p.user_id
+                WHERE p.is_cash = 0
+                  AND p.commissions IS NOT NULL AND p.commissions > 0
+                  AND p.quantity  IS NOT NULL AND p.quantity  > 0
+                  AND p.buy_price IS NOT NULL AND p.buy_price > 0"""
+        ).fetchall()
+
+        objetivo, bajo_el_piso = [], []
+        for r in filas:
+            base = float(r["buy_price"]) * float(r["quantity"])
+            comm = float(r["commissions"])
+            if base <= 0 or comm / base <= 0.05:
+                continue
+            # PISO ABSOLUTO, además del porcentaje. Un fee FIJO sobre una posición
+            # chica es un porcentaje enorme y ES legítimo: Balanz cobra ~USD 14 y
+            # vimos una compra de USD 12,22 con ese fee — 115%, y está bien.
+            # Sin el piso, la limpieza ensuciaría datos que estaban sanos.
+            #
+            # No hay un número que separe todo: las comisiones falsas de Cocos son
+            # de ~ARS 13.000 (≈USD 9), o sea POR DEBAJO del piso que hace falta
+            # para proteger el fee de Balanz. Por eso las que quedan afuera NO se
+            # descartan en silencio: van en `no_tocadas_por_el_piso` para que
+            # alguien las mire. Ignorar callado es lo único inaceptable.
+            _ccy = (r["currency"] or "").upper()
+            piso = _PISO_COMISION_ARS if _ccy == "ARS" else _PISO_COMISION_USD
+            fila = {
+                "position_id": r["id"], "user_id": r["user_id"], "email": r["email"],
+                "broker": r["broker"], "asset": r["asset"], "currency": r["currency"],
+                "costo_operacion": round(base, 2),
+                "comision_actual": round(comm, 2),
+                "comision_pct": round(100.0 * comm / base, 1),
+                "_undo": r["undo_meta_json"],
+            }
+            (objetivo if comm > piso else bajo_el_piso).append(fila)
+        objetivo.sort(key=lambda x: -x["comision_actual"])
+        bajo_el_piso.sort(key=lambda x: -x["comision_actual"])
+        objetivo = objetivo[:limite]
+
+        total = round(sum(o["comision_actual"] for o in objetivo), 2)
+        usuarios = sorted({o["user_id"] for o in objetivo})
+
+        if apply:
+            # Por TANDAS, soltando el lock entre medio. Una transacción sobre
+            # cientos de filas tiene el lock de escritura tomado todo ese rato y
+            # deja al resto de la app sin poder guardar (lección del 13/08).
+            hechas = 0
+            for i in range(0, len(objetivo), 200):
+                with conn:
+                    for o in objetivo[i:i + 200]:
+                        try:
+                            meta = json.loads(o["_undo"]) if o["_undo"] else {}
+                            if not isinstance(meta, dict):
+                                meta = {}
+                        except (ValueError, TypeError):
+                            meta = {}
+                        meta["comision_reparada"] = {
+                            "antes": o["comision_actual"],
+                            "pct": o["comision_pct"],
+                            "fecha": datetime.utcnow().strftime("%Y-%m-%d"),
+                        }
+                        conn.execute(
+                            "UPDATE positions SET commissions=0, undo_meta_json=? "
+                            "WHERE id=? AND user_id=?",
+                            (json.dumps(meta), o["position_id"], o["user_id"]))
+                        hechas += 1
+            log.warning("repair-comisiones APLICADO: %d posiciones, %d usuarios, "
+                        "%.2f de comisiones falsas borradas", hechas, len(usuarios), total)
+
+        for o in objetivo:
+            o.pop("_undo", None)
+        return {
+            "aplicado": apply,
+            "veredicto": (f"{'Corregidas' if apply else 'Se corregirían'} "
+                          f"{len(objetivo)} posiciones de {len(usuarios)} usuarios"),
+            "posiciones": len(objetivo),
+            "usuarios": len(usuarios),
+            "comisiones_falsas_total": total,
+            "detalle": objetivo[:200],
+            "no_tocadas_por_el_piso": {
+                "cuantas": len(bajo_el_piso),
+                "por_que": (f"La comisión supera el 5% pero no el piso absoluto "
+                            f"(ARS {_PISO_COMISION_ARS:,.0f} / USD {_PISO_COMISION_USD:,.0f}). "
+                            "Ahí no se puede distinguir una comisión falsa chica de "
+                            "un fee FIJO legítimo sobre una posición chica — Balanz "
+                            "cobra ~USD 14 y eso sobre una compra de USD 12 es 115%, "
+                            "y está bien. Estas hay que mirarlas a mano."),
+                "detalle": [{k: v for k, v in x.items() if k != "_undo"}
+                            for x in bajo_el_piso[:100]],
+            },
+            "siguiente_paso": (
+                "Falta re-correr el backfill de snapshots: el snapshot diario guarda "
+                "`invested + commissions` (snapshots_job.py:701 y :850), así que la "
+                "curva de evolución sigue con el número viejo hasta que se recompute."
+                if apply else
+                "Esto fue un SIMULACRO — no se escribió nada. Para aplicarlo de "
+                "verdad: POST con ?apply=true"),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/admin/diagnose-costo-inconsistente")
+def admin_diagnose_costo_inconsistente(tol: float = 0.02, limite: int = 200,
+                                       uid: int = Depends(get_admin_user)):
+    """Diagnóstico READ-ONLY: posiciones donde `buy_price × quantity ≠ invested`.
+
+    POR QUÉ IMPORTA. La grilla de Cartera muestra el precio de compra desde
+    `buy_price`, pero el P&L lo calcula con `invested` (Positions.jsx: la columna
+    hace `p.buy_price ?? invested/quantity`, y `calcARS`/`calcUSDT` hacen
+    `valor − invested`). Mientras los dos coincidan da igual cuál se use. Cuando
+    NO coinciden, la fila se contradice sola: muestra un precio de compra por
+    debajo del precio actual y al lado un P&L negativo enorme.
+
+    Caso que lo destapó: un NFLX con quantity=1234, buy_price=2473 (o sea un costo
+    de 3.051.682) pero un `invested` que el P&L usa como 6.089.947 — casi exacto el
+    doble. La fila decía "compré a 2.473, hoy vale 2.560" y al lado "-48,1%".
+
+    EL RATIO ES EL DIAGNÓSTICO, por eso se devuelve:
+      ≈ 2,0        → duplicación (re-import solapado, o una foto de tenencia que
+                     corrigió la CANTIDAD y dejó el `invested` acumulado)
+      ≈ 1000-1600  → una pata en pesos contada como dólares (o al revés)
+      ≈ 100        → bono per-100 contra per-1
+      disperso     → carga a mano / comisiones mal sumadas
+
+    No dice cuál de los dos valores es el correcto: dice DÓNDE se contradicen y
+    con qué forma. Con eso se decide si el fix es de datos o de código.
+
+    Sólo mira posiciones abiertas y no-cash, y con los dos campos cargados: una
+    posición importada sin `buy_price` NO es una inconsistencia (la grilla ya cae
+    a `invested/quantity` y todo cierra).
+    """
+    conn = get_db()
+    try:
+        filas = conn.execute(
+            """SELECT p.id, p.user_id, u.email, p.broker, p.asset, p.currency,
+                      p.quantity, p.buy_price, p.invested, p.commissions,
+                      p.asset_type, p.entry_date
+                 FROM positions p
+                 LEFT JOIN users u ON u.id = p.user_id
+                WHERE p.is_cash = 0
+                  AND p.quantity  IS NOT NULL AND p.quantity  > 0
+                  AND p.buy_price IS NOT NULL AND p.buy_price > 0
+                  AND p.invested  IS NOT NULL AND p.invested  > 0"""
+        ).fetchall()
+
+        malas, ratios = [], {}
+        for r in filas:
+            esperado = float(r["buy_price"]) * float(r["quantity"])
+            # EL COSTO QUE USA EL P&L incluye las comisiones: calcARS/calcUSDT hacen
+            # `realCost = invested + commissions`. La primera versión de este
+            # diagnóstico comparaba sólo contra `invested` y por eso se le escapó
+            # justo el caso que lo originó: un NFLX con `invested` correcto y una
+            # "comisión" de 3.038.265 sobre una compra de 3.051.682 — el 99,6%.
+            # Comparar contra el campo equivocado es no medir nada.
+            real = float(r["invested"]) + float(r["commissions"] or 0)
+            if esperado <= 0:
+                continue
+            ratio = real / esperado
+            # `tol` como fracción: 0.02 = ignorar hasta 2% de diferencia. Ese
+            # colchón es para el redondeo y para las comisiones prorrateadas, que
+            # sí pueden meter unas décimas sin que haya nada roto.
+            if abs(ratio - 1.0) <= tol:
+                continue
+            malas.append({
+                "position_id": r["id"], "user_id": r["user_id"], "email": r["email"],
+                "broker": r["broker"], "asset": r["asset"], "currency": r["currency"],
+                "asset_type": r["asset_type"], "entry_date": r["entry_date"],
+                "quantity": r["quantity"], "buy_price": r["buy_price"],
+                "costo_segun_buy_price": round(esperado, 2),
+                "costo_que_usa_el_pnl": round(real, 2),
+                "invested": round(float(r["invested"]), 2),
+                "commissions": r["commissions"],
+                # Una comisión que es una fracción enorme de la compra no es una
+                # comisión: es otro monto que entró en la columna equivocada.
+                "comision_pct_de_invested": (
+                    round(100.0 * float(r["commissions"] or 0) / float(r["invested"]), 2)
+                    if float(r["invested"]) > 0 else None),
+                "ratio": round(ratio, 4),
+                # Lo que ve el usuario: la grilla muestra buy_price y el P&L usa
+                # invested, así que este es el error que aparece en pantalla.
+                "diferencia": round(real - esperado, 2),
+            })
+            comm = float(r["commissions"] or 0)
+            inv = float(r["invested"])
+            k = ("comisión absurda (>50% de la compra)" if inv > 0 and comm / inv > 0.5 else
+                 "~2x" if 1.9 <= ratio <= 2.1 else
+                 "~0.5x" if 0.45 <= ratio <= 0.55 else
+                 "~100x" if 90 <= ratio <= 110 else
+                 "~1/100" if 0.009 <= ratio <= 0.011 else
+                 "~FX (1000-1600x)" if 1000 <= ratio <= 1600 else
+                 "~1/FX" if 0.0006 <= ratio <= 0.001 else
+                 "otro")
+            ratios[k] = ratios.get(k, 0) + 1
+
+        malas.sort(key=lambda x: -abs(x["diferencia"]))
+        return {
+            "veredicto": (f"{len(malas)} posiciones con el costo contradictorio"
+                          if malas else "Ninguna: buy_price × quantity cierra con invested en todas"),
+            "posiciones_revisadas": len(filas),
+            "tolerancia_usada": tol,
+            "por_forma_del_ratio": ratios,
+            "usuarios_afectados": len({m["user_id"] for m in malas}),
+            "posiciones": malas[:limite],
+            "nota": ("La grilla muestra `buy_price` y el P&L usa `invested`. Cuando "
+                     "no coinciden, la fila se contradice: precio de compra abajo "
+                     "del actual y P&L negativo. El RATIO dice la causa probable."),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/disk-usage")
 def admin_disk_usage(uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY: uso de disco de los filesystems relevantes + los
@@ -16753,7 +17387,11 @@ def _shape_admin_user_row(r, now_iso: str) -> dict:
     anchor = (d.get("credit_anchor_plan") or "").strip().lower()
     if d["is_admin"]:
         d["plan"] = "admin"
-    elif raw_tier in ("plus", "pro"):
+    elif raw_tier in ("plus", "pro", "advisor"):
+        # ⚠️ 'advisor' faltaba en esta lista: una cuenta de asesor caía en el
+        # else y el panel la mostraba en **free**. Nico regalaba el Plan Asesor,
+        # el grant lo escribía bien (users.tier='advisor') y la fila seguía
+        # diciendo free — parecía que no se había aplicado nada.
         d["plan"] = raw_tier
     else:
         d["plan"] = "free"
@@ -17175,7 +17813,12 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
             # reescriba la columna. Leer users.tier crudo mal-targetearía esa ventana.
             # Los admins ya están excluidos en el SQL → get_tier acá es plus/pro/free.
             eff = quota.get_tier(conn, d["id"])
-            eff = eff if eff in ("plus", "pro") else "free"
+            # 'advisor' va en la lista aunque no sea un segmento elegible: si no
+            # está, un ASESOR colapsa a "free" y entra en los envíos apuntados a
+            # free — que son los de upsell. Le llegaría un "pasate a Plus" a
+            # alguien que paga 4-8× un Pro. Así queda fuera de los tres
+            # segmentos, que es lo correcto: no es ninguno de ellos.
+            eff = eff if eff in ("plus", "pro", "advisor") else "free"
             if plan and eff != plan:
                 continue
             d["plan"] = eff
@@ -17485,6 +18128,40 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+def _grant_base(state: dict, plan: str, now):
+    """Desde cuándo se cuentan los `days` de un grant-comp.
+
+    Dos reglas, según si el grant EXTIENDE o CAMBIA el plan:
+
+    • MISMO plan → desde el vencimiento vigente. "Dale 30 días más" tiene que
+      sumar 30 días, no reiniciarlos: arrancar de hoy le ACORTARÍA el acceso a
+      alguien que tiene 60 por delante.
+
+    • OTRO plan (o ninguno) → desde HOY. El plan viejo se va, así que los 30
+      días son 30 días del plan nuevo, exactos — pedido de Nico al regalar el
+      Plan Asesor a un piloto que tenía tiempo suelto: antes se apilaban y "30
+      días de Asesor" terminaban siendo casi 60.
+      Ojo: `anchor_plan` NULL (prueba gratis) cae acá, que es lo correcto —
+      no hay plan que extender.
+
+    ⚠️ Si el que tenía era un plan PAGO con más de `days` por delante, esto le
+    acorta el vencimiento. Es deliberado (el plan cambió), pero por eso el
+    endpoint devuelve `would_be_active_until` y el panel avisa cuando la fecha
+    nueva es ANTERIOR a la vigente: la decisión la toma el admin viéndola.
+    """
+    base = now
+    mismo_plan = (state.get("anchor_plan") or "").strip().lower() == plan
+    if mismo_plan and state.get("is_active") and state.get("active_until"):
+        try:
+            from datetime import datetime as __dt
+            cur = __dt.fromisoformat(str(state["active_until"]).replace("Z", ""))
+            if cur > base:
+                base = cur
+        except (ValueError, TypeError):
+            pass
+    return base
+
+
 @app.post("/api/admin/billing/grant-comp")
 def admin_billing_grant_comp(
     email: str,
@@ -17510,8 +18187,11 @@ def admin_billing_grant_comp(
     Salvaguardas:
       • plan ∈ {'plus','pro'}; days ∈ [1, 366].
       • Si el user YA tiene crédito activo, NO apila por accidente: devuelve
-        ok:false salvo force=true. Con force, extiende DESDE el vencimiento
-        actual (suma `days`), nunca acorta.
+        ok:false salvo force=true.
+      • Con force, la fecha la decide `_grant_base`: mismo plan → extiende
+        desde el vencimiento actual (nunca acorta); plan distinto → arranca
+        HOY, así "30 días de X" son 30 exactos y no se apilan sobre el plan
+        que se está reemplazando.
     """
     from datetime import datetime as _dt, timedelta as _td
 
@@ -17539,17 +18219,10 @@ def admin_billing_grant_comp(
 
         if state["is_active"] and not force:
             # Preview de lo que haría el force: el frontend lo usa para mostrar la
-            # fecha exacta en el confirm (base = vencimiento actual si sigue
-            # vigente, mismo cálculo que abajo).
-            _base = now
-            if state["active_until"]:
-                try:
-                    _cur = _dt.fromisoformat(str(state["active_until"]).replace("Z", ""))
-                    if _cur > _base:
-                        _base = _cur
-                except (ValueError, TypeError):
-                    pass
-            _would = (_base + _td(days=days)).isoformat()
+            # fecha exacta en el confirm (mismo cálculo que abajo — si cambian
+            # las reglas de la base, cambiarlas en LOS DOS lados o el cartel
+            # promete una fecha y el grant escribe otra).
+            _would = (_grant_base(state, plan, now) + _td(days=days)).isoformat()
             return {
                 "ok": False,
                 "changed": False,
@@ -17566,16 +18239,7 @@ def admin_billing_grant_comp(
                 "would_be_active_until": _would,           # vencimiento tras el force
             }
 
-        # Base = el vencimiento actual si sigue vigente (extiende), sino NOW.
-        base = now
-        if state["is_active"] and state["active_until"]:
-            try:
-                cur = _dt.fromisoformat(str(state["active_until"]).replace("Z", ""))
-                if cur > base:
-                    base = cur
-            except (ValueError, TypeError):
-                pass
-        new_active_until = base + _td(days=days)
+        new_active_until = _grant_base(state, plan, now) + _td(days=days)
         after_iso = new_active_until.isoformat()
         before_iso = state["active_until"]
 
@@ -23058,21 +23722,21 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             # (Compra/Dividendo/Interés/CONVERSION% no son trades). Sin este
             # filtro el realized incluiría dividendos + conversiones y el
             # número diverge del que muestra Insights. Bug #2 del deep audit.
-            CLOSED_FILTER = (
-                "pnl_usd IS NOT NULL "
-                "AND op_type NOT IN ('Compra','Dividendo','Interés','') "
-                "AND op_type NOT LIKE 'CONVERSION%' "
-                "AND op_type NOT LIKE 'Conversión%'"
-            )
+            # `pnl_usd` NO siempre es USD: en Cupón/Amortización guarda el monto
+            # en moneda del broker. Sumar la columna cruda hacía que la IA le
+            # dijera al usuario US$125.000 por un cupón que el dashboard mostraba
+            # como US$100 — en el mismo request. Criterio único en realized_pnl.
+            CLOSED_FILTER = realized_pnl.closed_filter_sql()
+            REALIZED = realized_pnl.realized_usd_sql()
             if asset_filter:
                 row = conn.execute(
-                    f"SELECT COALESCE(SUM(pnl_usd),0) AS realized, COUNT(*) AS n "
+                    f"SELECT COALESCE(SUM({REALIZED}),0) AS realized, COUNT(*) AS n "
                     f"FROM operations WHERE user_id=? AND asset=? AND {CLOSED_FILTER}",
                     (uid, asset_filter),
                 ).fetchone()
             else:
                 row = conn.execute(
-                    f"SELECT COALESCE(SUM(pnl_usd),0) AS realized, COUNT(*) AS n "
+                    f"SELECT COALESCE(SUM({REALIZED}),0) AS realized, COUNT(*) AS n "
                     f"FROM operations WHERE user_id=? AND {CLOSED_FILTER}",
                     (uid,),
                 ).fetchone()
@@ -29408,8 +30072,11 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     ytd = _ytd_delta(conn, uid, latest_value, latest_date, broker_filter)
 
     # Última operación cerrada (fecha, asset, broker, pnl).
+    # Convertido: si el último evento del usuario fue un cupón en pesos, la
+    # tarjeta de Reportes decía "US$125.000" (ver backend/realized_pnl.py).
     last_op_row = conn.execute(
-        f"""SELECT date, broker, asset, op_type, pnl_usd
+        f"""SELECT date, broker, asset, op_type,
+                   {realized_pnl.realized_usd_sql()} AS pnl_usd
               FROM operations
              WHERE user_id = ? AND pnl_usd IS NOT NULL{br_clause}
              ORDER BY date DESC, id DESC LIMIT 1""",

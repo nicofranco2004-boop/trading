@@ -131,7 +131,8 @@ export default function VerifyEmail() {
       // Si el user es fresh signup (recién verificó email por primera vez)
       // y no clickeó "saltar onboarding" en algún intento previo,
       // lo mandamos al wizard de onboarding. Sino al home.
-      login(data.token, data.name, {
+      // await: que el user llegue completo (tier) antes de navegar. Ver login().
+      await login(data.token, data.name, {
         is_admin: !!data.is_admin,
         id: data.user_id || data.id,
         email: data.email || email,

@@ -233,12 +233,33 @@ def _wrap_html(body: str) -> str:
 # ─── Plan helpers (Plus / Pro) ─────────────────────────────────────────────
 
 def _plan_label(plan: str) -> str:
-    """'plus' → 'Plus', anything else → 'Pro'."""
-    return "Plus" if plan == "plus" else "Pro"
+    """'plus' → 'Plus', 'advisor' → 'Asesor', cualquier otra cosa → 'Pro'.
+
+    ⚠️ El Plan Asesor se sumó a grant-comp (F4 pendiente) pero NO acá: caía en
+    el `else` y el mail que recibía el asesor decía "Te activamos Rendi Pro" con
+    la lista de features de Pro. Se le regala un plan y se le nombra otro.
+    """
+    if plan == "plus":
+        return "Plus"
+    if plan == "advisor":
+        return "Asesor"
+    return "Pro"
 
 
 def _plan_features_html(plan: str) -> str:
     """Bulleted list HTML de features incluidas en cada plan."""
+    if plan == "advisor":
+        # El Plan Asesor no es "un Pro más grande": es otra app (el libro, los
+        # clientes, la operación grupal). Sin esta rama el mail le prometía las
+        # features de Pro, que no son las que va a ver al entrar.
+        return """
+        <li><b>Tus clientes</b>, cada uno con su cartera, y el total que administrás</li>
+        <li>Entrás a la cuenta de cada cliente <b>con visión Pro</b> (aunque él esté en Free)</li>
+        <li><b>Grupos</b> que se arman solos (por activo o por tamaño de cartera)</li>
+        <li><b>Operación grupal</b>: una compra para todo un grupo, con deshacer</li>
+        <li><b>Informes del período con tu marca</b> + brief diario de tu libro</li>
+        <li><b>Rendi AI sobre todo tu libro</b>: "¿a quiénes les pega esta noticia?"</li>
+        """
     if plan == "plus":
         return """
         <li>Hasta <b>3 brokers</b></li>
@@ -260,6 +281,10 @@ def _plan_features_html(plan: str) -> str:
 
 def _plan_features_text(plan: str) -> str:
     """Versión text plano de las features (para el cuerpo plain-text del email)."""
+    if plan == "advisor":
+        return ("tus clientes con visión Pro en cada cuenta, grupos dinámicos, "
+                "operación grupal con deshacer, informes con tu marca, brief "
+                "diario y Rendi AI sobre todo tu libro")
     if plan == "plus":
         return ("hasta 3 brokers, insights completo, 4 análisis de comportamiento, "
                 "distribución por activo, reportes históricos y export CSV")

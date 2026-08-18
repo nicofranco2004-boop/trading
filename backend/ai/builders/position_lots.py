@@ -7,6 +7,8 @@ Params: asset, broker (opcional)
 from __future__ import annotations
 from typing import Dict, Any
 
+from realized_pnl import realized_usd_sql
+
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     asset = (kwargs.get("asset") or "").strip()
@@ -14,9 +16,16 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         raise ValueError("Falta param 'asset'.")
     broker = (kwargs.get("broker") or "").strip()
 
+    # `pnl_usd` convertido en el SELECT. Estas queries no filtran por op_type
+    # (a propósito: arman el historial completo del activo), así que en un bono
+    # los Cupón/Amortización aparecen como "lotes". Sin convertir, el LLM veía
+    # una lista que mezclaba precios de compra en dólares con cupones de 125.000
+    # rotulados `pnl_usd`. Es el builder con más chance de morder, porque
+    # position.lots se pide justamente sobre renta fija.
     if broker:
         rows = conn.execute(
-            """SELECT date, op_type, entry_price, exit_price, quantity, pnl_usd
+            f"""SELECT date, op_type, entry_price, exit_price, quantity,
+                      {realized_usd_sql()} AS pnl_usd
                  FROM operations
                 WHERE user_id=? AND asset=? AND broker=?
                 ORDER BY date ASC""",
@@ -24,7 +33,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         ).fetchall()
     else:
         rows = conn.execute(
-            """SELECT date, op_type, entry_price, exit_price, quantity, pnl_usd, broker
+            f"""SELECT date, op_type, entry_price, exit_price, quantity,
+                      {realized_usd_sql()} AS pnl_usd, broker
                  FROM operations
                 WHERE user_id=? AND asset=?
                 ORDER BY date ASC""",

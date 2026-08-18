@@ -29,13 +29,12 @@ from typing import Dict, Any
 from datetime import datetime
 
 
+from realized_pnl import is_closed_op, realized_usd_sql, closed_filter_sql
+
+
 def _is_trade(op: Dict[str, Any]) -> bool:
-    op_type = (op.get("op_type") or "").strip()
-    if op_type in ("Compra", "Dividendo", "Interés", ""):
-        return False
-    if op_type.startswith(("CONVERSION", "Conversión")):
-        return False
-    return op.get("pnl_usd") is not None
+    # Criterio único en realized_pnl (era otra copia a mano).
+    return is_closed_op(op.get("op_type")) and op.get("pnl_usd") is not None
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -47,9 +46,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     except (TypeError, ValueError):
         raise ValueError("operation_id debe ser entero.")
 
+    # `pnl_usd` convertido en el SELECT (moneda del broker en Cupón/Amortización).
+    # Tiene que salir de la MISMA expresión que la lista del año de más abajo:
+    # el rank se calcula con `year_pnls.index(pnl)`, o sea igualdad exacta de
+    # floats — si un lado se convierte en SQL y el otro en Python, el rank queda
+    # en None sin que nadie se entere. Ver backend/realized_pnl.py.
     row = conn.execute(
-        """SELECT id, date, asset, broker, op_type, entry_price, exit_price,
-                  quantity, pnl_usd, pnl_pct, entry_date
+        f"""SELECT id, date, asset, broker, op_type, entry_price, exit_price,
+                  quantity, {realized_usd_sql()} AS pnl_usd, pnl_pct, entry_date
              FROM operations
             WHERE id = ? AND user_id = ?""",
         (op_id, user_id),
@@ -100,13 +104,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     try:
         year_str = str(op.get("date") or "")[:4]
         if year_str.isdigit():
+            # Misma expresión que el SELECT de la operación de arriba, para que
+            # el `index(pnl)` de abajo compare valores producidos igual.
             year_rows = conn.execute(
-                """SELECT pnl_usd FROM operations
+                f"""SELECT {realized_usd_sql()} AS pnl_usd FROM operations
                     WHERE user_id = ? AND pnl_usd IS NOT NULL
                       AND substr(date, 1, 4) = ?
-                      AND op_type NOT IN ('Compra', 'Dividendo', 'Interés', '')
-                      AND op_type NOT LIKE 'CONVERSION%'
-                      AND op_type NOT LIKE 'Conversión%'""",
+                      AND {closed_filter_sql()}""",
                 (user_id, year_str),
             ).fetchall()
             year_pnls = sorted(

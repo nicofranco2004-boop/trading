@@ -3,7 +3,7 @@
 // Header operativo + KPI strip denso + filtros mono caps + tabla compacta.
 
 import { useEffect, useMemo, useState, Fragment } from 'react'
-import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X, SlidersHorizontal, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowDownToLine, ArrowUpFromLine, Coins, Receipt, Repeat } from 'lucide-react'
+import { Plus, Pencil, Trash2, RotateCcw, ArrowUpRight, ArrowDownRight, Search, X, SlidersHorizontal, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowDownToLine, ArrowUpFromLine, Coins, Receipt, Repeat } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
@@ -1157,10 +1157,26 @@ function MovementsView({ onChanged }) {
     const isTrade = m.type === 'BUY' || m.type === 'SELL'
     const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
     const monto = m.amount_usd ? ` (${fmtUsd(m.amount_usd)})` : ''
-    const efecto = isTrade
-      ? 'Se recalcula todo: cartera, P&L, rendimiento, capital aportado y la evolución. Deja de contar en todos los cálculos.'
-      : 'Se recalculan tu cartera, el capital aportado y la evolución. La operación deja de contar en todos los cálculos.'
-    if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
+    // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
+    // posición con su costo original. Si le decimos "borrar" el usuario cree que
+    // pierde el activo — es exactamente al revés.
+    if (m.transfer_out) {
+      if (!window.confirm(
+        `¿Reabrir ${m.asset || 'la posición'}?\n\n` +
+        `Esta fila no es una venta tuya: la generó una foto de tenencia para cerrar ` +
+        `${m.asset || 'el activo'} porque la foto no lo listaba. Al sacarla, la posición ` +
+        `vuelve a tu cartera con su costo original.\n\n` +
+        `No se toca el efectivo (ese cierre no movió plata). Vas a poder deshacerlo.`
+      )) return
+    } else {
+      const efecto = isTrade
+        ? 'Se recalcula todo: cartera, P&L, rendimiento, capital aportado y la evolución. Deja de contar en todos los cálculos.'
+        : 'Se recalculan tu cartera, el capital aportado y la evolución. La operación deja de contar en todos los cálculos.'
+      if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
+    }
+    const okMsg = m.transfer_out
+      ? `${m.asset || 'La posición'} volvió a tu cartera.`
+      : `Se borró la ${label}${asset}.`
     setDeletingId(m.id)
     try {
       const res = await api.delete(`/movements/${encodeURIComponent(m.id)}`)
@@ -1172,14 +1188,15 @@ function MovementsView({ onChanged }) {
       if (token) {
         const base = m.type === 'BUY' || m.type === 'SELL' ? '/operations/undo' : null
         if (base) {
-          toast.push(`Se borró la ${label}${asset}.`, {
+          toast.push(okMsg, {
             type: 'success', duration: 12000, actionLabel: 'Deshacer',
             onAction: async () => {
               try {
                 await api.post(`${base}/${token}`)
                 await load()
                 onChanged?.()
-                toast.push('Listo, lo restauramos.', { type: 'success' })
+                toast.push(m.transfer_out ? 'Listo, volvimos atrás: el cierre está de nuevo.'
+                                          : 'Listo, lo restauramos.', { type: 'success' })
               } catch (ex) {
                 toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
               }
@@ -1188,7 +1205,7 @@ function MovementsView({ onChanged }) {
           return
         }
       }
-      toast.push(`Se borró la ${label}${asset}.`, { type: 'success' })
+      toast.push(okMsg, { type: 'success' })
     } catch (ex) {
       toast.push(ex?.message || 'No se pudo borrar el movimiento.', { type: 'error', duration: 8000 })
     } finally {
@@ -1536,11 +1553,17 @@ function MovementRow({ m, indent = false, onDelete, deleting = false }) {
             type="button"
             onClick={() => onDelete(m)}
             disabled={deleting}
-            title="Borrar movimiento"
-            aria-label="Borrar movimiento"
-            className="p-1 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-rendi-neg/10 disabled:opacity-40 disabled:cursor-wait"
+            title={m.transfer_out ? `Reabrir ${m.asset || 'la posición'}` : 'Borrar movimiento'}
+            aria-label={m.transfer_out ? `Reabrir ${m.asset || 'la posición'}` : 'Borrar movimiento'}
+            className={`p-1 rounded-sm text-ink-3 disabled:opacity-40 disabled:cursor-wait ${
+              m.transfer_out ? 'hover:text-rendi-pos hover:bg-rendi-pos/10'
+                             : 'hover:text-rendi-neg hover:bg-rendi-neg/10'}`}
           >
-            <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
+            {/* Un cierre a costo NO se "borra": se DESHACE y la posición vuelve. El
+                ícono de deshacer evita que el tacho asuste (borrar ≠ recuperar). */}
+            {m.transfer_out
+              ? <RotateCcw size={13} strokeWidth={1.75} aria-hidden="true" />
+              : <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />}
           </button>
         )}
       </td>

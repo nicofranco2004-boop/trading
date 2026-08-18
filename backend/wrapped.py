@@ -27,6 +27,8 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 from collections import Counter
 
+from realized_pnl import realized_usd
+
 
 # ── Helpers de cálculo ───────────────────────────────────────────────────────
 
@@ -68,12 +70,21 @@ def _twr_for_period(rows: List[dict]) -> Optional[float]:
 
 
 def _operations_for_year(operations: List[dict], year: int) -> List[dict]:
-    """Operaciones cerradas del año."""
+    """Operaciones cerradas del año, con `pnl_usd` normalizado a USD real.
+
+    La normalización va ACÁ, en el único punto por el que pasan todas las ops
+    antes de llegar a los slides: `pnl_usd` guarda el monto en moneda del broker
+    en Cupón/Amortización, y `_slide_best_trade` ORDENA por ese valor. Un cupón
+    de $125.000 en pesos le ganaba a cualquier operación real y salía como "tu
+    mejor trade del año" — el número es enorme y convincente, y el usuario no
+    tiene forma de dudarlo. Ver backend/realized_pnl.py.
+    """
     out = []
     for op in operations:
         date = str(op.get('date') or '')
         if len(date) >= 4 and date[:4].isdigit() and int(date[:4]) == year:
-            out.append(op)
+            out.append({**op, 'pnl_usd': realized_usd(op)}
+                       if op.get('pnl_usd') is not None else op)
     return out
 
 

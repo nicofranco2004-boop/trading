@@ -58,6 +58,32 @@ class FciTickerRemapTest(unittest.TestCase):
         # idempotente: 2da corrida no toca nada (guard: ya no hay ticker crudo)
         self.assertEqual(main._remap_fci_broker_tickers(self.conn), 0)
 
+    def test_remapea_fima_acciones_cargado_a_mano(self):
+        # Caso reportado 2026-08-13: el fondo lo cargó el USUARIO a mano con su nombre
+        # comercial ("FIMA-ACCIONES") en vez del símbolo del catálogo, así que traía
+        # cantidad/costo/lotes pero nunca precio. El remap tiene que alcanzarlo igual
+        # que a un ticker de broker — es lo que evita editar 17 lotes a mano.
+        from importing.fci_map import resolve_fci_symbol
+        self.assertEqual(resolve_fci_symbol("FIMA-ACCIONES"), "FCI:FIMA-ACCIONES-A")
+        self.assertEqual(resolve_fci_symbol("fima-acciones"), "FCI:FIMA-ACCIONES-A")
+        # Un fondo VECINO no se ve afectado (el mapa es 1:1, no por prefijo): PB Acciones
+        # cotiza 12× más caro y mapearlo acá sería el error catastrófico que el módulo evita.
+        self.assertIsNone(resolve_fci_symbol("FIMA-PB-ACCIONES"))
+
+        for i in range(3):   # varios lotes, como la posición real (17)
+            self.conn.execute(
+                "INSERT INTO positions (user_id,broker,asset,quantity,is_cash) VALUES (?,?,?,?,0)",
+                (self.uid, "Galicia", "FIMA-ACCIONES", 1000 + i))
+        self.conn.commit()
+        main._remap_fci_broker_tickers(self.conn)
+        self.conn.commit()
+        n_ok = self.conn.execute(
+            "SELECT COUNT(*) c FROM positions WHERE user_id=? AND asset='FCI:FIMA-ACCIONES-A'",
+            (self.uid,)).fetchone()["c"]
+        self.assertEqual(n_ok, 3, "los 3 lotes tienen que quedar en el símbolo del catálogo")
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM positions WHERE asset='FIMA-ACCIONES'").fetchone())
+
 
 if __name__ == "__main__":
     unittest.main()

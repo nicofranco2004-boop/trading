@@ -58,10 +58,11 @@ const shortDate = (iso) => {
 
 export default function RentaFijaSections({
   positions = [], valuePos, brokers = [], displayCurrency = 'USD', tcBlue = 1,
-  onChanged, onEdit, onDelete,
+  onChanged, onEdit, onDelete, onEditGroup,
   // v2 — plumbing del detalle (opcionales: sin ellos la card degrada con gracia)
   bondCashflowsByKey = null, pendingDatesByKey = null, openBondCashflow = null,
   tcMep = null, cerSeries = null, cerStale = false, isArsFor = null, priceFor = null,
+  priceMeta = null,
 }) {
   const toast = useToast()
   const [archived, setArchived] = useState([])
@@ -241,10 +242,11 @@ export default function RentaFijaSections({
                 isArsDisp={displayCurrency === 'ARS'}
                 tcBlue={tcBlue}
                 price={priceFor ? priceFor(p) : null}
+                pmeta={priceMeta ? priceMeta[p.asset] : null}
                 tcMep={tcMep} cerSeries={cerSeries} cerStale={cerStale}
                 expanded={!!expanded[p.id]}
                 onToggle={() => setExpanded(e => ({ ...e, [p.id]: !e[p.id] }))}
-                onEdit={onEdit} onDelete={onDelete}
+                onEdit={onEdit} onDelete={onDelete} onEditGroup={onEditGroup}
                 openBondCashflow={openBondCashflow}
               />
             ))}
@@ -277,8 +279,8 @@ export default function RentaFijaSections({
 // barra de capital recuperado + expansión al detalle completo.
 function BondCardRow({
   p, v, lots = null, isAgg = false,
-  fmtMoney, summary, pendingDates, isArs, isArsDisp, tcBlue, price, tcMep, cerSeries, cerStale,
-  expanded, onToggle, onEdit, onDelete, openBondCashflow,
+  fmtMoney, summary, pendingDates, isArs, isArsDisp, tcBlue, price, pmeta, tcMep, cerSeries, cerStale,
+  expanded, onToggle, onEdit, onDelete, onEditGroup, openBondCashflow,
 }) {
   const meta = getBondMeta(p.asset)
   const moneyLabel = isArs ? 'ARS' : 'USD'
@@ -318,6 +320,28 @@ function BondCardRow({
   if (meta?.currency) tags.push({ t: meta.currency, cls: meta.currency === 'ARS' ? 'bg-rendi-warn/10 text-rendi-warn' : 'bg-rendi-pos/10 text-rendi-pos' })
   if (meta?.type === 'cer') tags.push({ t: 'CER', cls: 'bg-data-cyan/10 text-data-cyan' })
   if (meta?.governingLaw) tags.push({ t: meta.governingLaw === 'Argentina' ? 'Ley AR' : 'Ley NY', cls: 'bg-bg-2 text-ink-2 border border-line/60' })
+  // Fondos: A QUÉ FECHA está el precio. La fuente (CAFCI vía ArgentinaDatos) puede
+  // dejar de publicar por semanas y el VCP viejo se seguía mostrando como si fuera
+  // de hoy — el número no era falso, pero sin fecha el usuario no tenía forma de
+  // saberlo. Si tiene más de 4 días corridos (cubre un finde largo) va en ámbar.
+  // Con `price_override` (precio cargado a mano, o el que estampa una foto de
+  // tenencia) la posición NO se valúa con el precio del catálogo — `valuation.js`
+  // hace `p.price_override ?? prices[...]`. Mostrar igual la fecha del catálogo
+  // sería peor que no mostrar nada: diría "al 21/07" sobre un valor que no salió
+  // de ahí.
+  if (pmeta?.as_of && p.price_override == null) {
+    const days = Math.floor((Date.now() - new Date(pmeta.as_of + 'T00:00:00').getTime()) / 86400000)
+    const [, mm, dd] = pmeta.as_of.split('-')
+    tags.push({
+      t: `al ${dd}/${mm}`,
+      cls: days > 4
+        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30'
+        : 'bg-bg-2 text-ink-3 border border-line/60',
+      title: days > 4
+        ? `El último valor de cuotaparte publicado es del ${dd}/${mm} (hace ${days} días). No es un error de Rendi: la fuente oficial no publicó desde entonces.`
+        : `Valor de cuotaparte del ${dd}/${mm}`,
+    })
+  }
 
   return (
     <div className="bg-bg-1 border border-line rounded-xl px-4 py-3.5 mb-2.5">
@@ -327,7 +351,8 @@ function BondCardRow({
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[14px] font-bold text-ink-0 tabular">{p.asset}</span>
             {tags.map((tg, i) => (
-              <span key={i} className={`text-[10px] font-bold rounded-full px-2 py-0.5 ${tg.cls}`}>{tg.t}</span>
+              <span key={i} title={tg.title || undefined}
+                className={`text-[10px] font-bold rounded-full px-2 py-0.5 ${tg.cls}`}>{tg.t}</span>
             ))}
           </div>
           <div className="text-[11px] text-ink-3 flex items-center gap-1.5 flex-wrap">
@@ -386,6 +411,16 @@ function BondCardRow({
                 lote adentro de la expansión. */}
             {!isAgg && onEdit && (
               <button onClick={() => onEdit(p)} title="Editar posición"
+                className="p-1.5 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition">
+                <Pencil size={13} />
+              </button>
+            )}
+            {/* Agregado: editar la posición ENTERA (activo, precio promedio, TC) en
+                un solo gesto. Antes acá NO había lápiz y corregir un fondo de 17
+                lotes pedía 17 ediciones — que es como llegó el caso que motivó esto. */}
+            {isAgg && onEditGroup && (
+              <button onClick={() => onEditGroup({ ...p, _lots: lots || [] })}
+                title={`Editar la posición entera (${lotCount} lotes)`}
                 className="p-1.5 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition">
                 <Pencil size={13} />
               </button>

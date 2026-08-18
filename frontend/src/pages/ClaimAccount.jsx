@@ -97,7 +97,8 @@ export default function ClaimAccount() {
           : (data.detail?.error || 'No pudimos activar tu cuenta.')
         throw new Error(msg)
       }
-      login(data.token, data.name, { email: data.email })
+      // await: que el user llegue completo (tier) antes de navegar. Ver login().
+      await login(data.token, data.name, { email: data.email })
       navigate('/')
     } catch (ex) {
       setError(ex.message)
