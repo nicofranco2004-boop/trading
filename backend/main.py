@@ -11699,7 +11699,17 @@ def get_movements(uid: int = Depends(get_effective_user)):
             qty = _safe_float_or_none(d.get("quantity"))
             entry_p = _safe_float_or_none(d.get("entry_price"))
             exit_p = _safe_float_or_none(d.get("exit_price"))
-            pnl = _safe_float_or_none(d.get("pnl_usd")) or 0
+            # `pnl_usd` en moneda del broker si es Cupón/Amortización. Acá el
+            # SELECT es `o.*`, así que currency/fx_to_usd ya vienen en la fila.
+            # Importa doble: `pnl` es también el fallback de `amount_sell` para
+            # las filas sin exit_price/quantity — que es la forma exacta de un
+            # cupón cargado con el botón. El frontend trata `amount_usd` como USD
+            # canónico y sólo MULTIPLICA por fx para mostrarlo en pesos
+            # (useHistoricalMoney.js:61), nunca divide: sin convertir acá, el
+            # mismo cupón se veía como US$125.000 con el toggle en dólares y como
+            # ~$156.000.000 con el toggle en pesos.
+            pnl = (realized_pnl.realized_usd(d)
+                   if d.get("pnl_usd") is not None else 0)
             fees = _safe_float_or_none(d.get("commissions")) or 0
 
             # Un trade cerrado son 2 eventos contables (BUY + SELL). Para que
@@ -12501,10 +12511,22 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
     _gate_export(uid, request)
     conn = get_db()
     try:
+        # ⚠️ La columna del CSV se rotula "P&L USD" y este archivo se lo manda
+        # el usuario al contador. `pnl_usd` guarda el monto en moneda del broker
+        # en Cupón/Amortización, así que un cupón de $125.000 salía declarado
+        # como US$125.000 bajo un encabezado que dice dólares. Es el único lector
+        # cuyo número sale de la app hacia un tercero: una vez que alguien lo usó
+        # para una declaración, Rendi ya no lo puede corregir.
+        #
+        # Acá SÍ corresponde convertir (a diferencia de transactions.csv, que
+        # exporta el monto apareado con su columna `moneda` y ahí el par
+        # 125.000+ARS es consistente): este CSV no tiene columna de moneda, así
+        # que el único valor correcto bajo ese encabezado es el USD real.
         rows = [dict(r) for r in conn.execute(
-            """SELECT date AS fecha_cierre, entry_date, asset, broker,
+            f"""SELECT date AS fecha_cierre, entry_date, asset, broker,
                       op_type AS tipo, quantity, entry_price, exit_price,
-                      pnl_usd, pnl_pct, commissions
+                      {realized_pnl.realized_usd_sql()} AS pnl_usd,
+                      pnl_pct, commissions
                FROM operations
                WHERE user_id = ?
                ORDER BY date DESC""",
@@ -29876,8 +29898,11 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     ytd = _ytd_delta(conn, uid, latest_value, latest_date, broker_filter)
 
     # Última operación cerrada (fecha, asset, broker, pnl).
+    # Convertido: si el último evento del usuario fue un cupón en pesos, la
+    # tarjeta de Reportes decía "US$125.000" (ver backend/realized_pnl.py).
     last_op_row = conn.execute(
-        f"""SELECT date, broker, asset, op_type, pnl_usd
+        f"""SELECT date, broker, asset, op_type,
+                   {realized_pnl.realized_usd_sql()} AS pnl_usd
               FROM operations
              WHERE user_id = ? AND pnl_usd IS NOT NULL{br_clause}
              ORDER BY date DESC, id DESC LIMIT 1""",

@@ -31,7 +31,34 @@ Se divide SÓLO en Cupón/Amortización con `currency='ARS'` y `fx_to_usd > 0`:
     un bug peor que el que arregla. Quedan como están, en TODOS los lectores
     (incluido el dashboard), hasta que exista una clasificación aparte.
 
-── Pendiente conocido ────────────────────────────────────────────────────────
+── Pendiente #1: el win rate cuenta los cupones como "operaciones ganadas" ───
+Distinto del bug de moneda, y NO se arregla convirtiendo. Medido: un cupón entra
+al conteo y el win rate va de 50% a 50% al convertir (125.000 y 100 son ambos
+positivos), y sólo baja a 33% si se lo EXCLUYE.
+
+El problema es que un cupón nunca es negativo: no existe "cobrar mal un cupón".
+Así que cada uno suma una ganada al numerador y al denominador, e infla un
+número que el usuario lee como "cuántas de mis decisiones salieron bien" —
+decisiones que no tomó. Afecta a:
+
+  • reporting/timeline.py:61   _compute_user_historical_win_rate (win rate lifetime)
+  • behavioral.py             detect_winrate_payoff → evidence.win_rate_pct
+                              (avg_win y expectancy del mismo card YA están bien:
+                               ésos sí eran de moneda y se arreglaron)
+  • reporting/builder.py:255  wins/losses del período
+  • ai/builders/reports.py    trades_year (sólo cuenta)
+
+Arreglarlo es EXCLUIR Cupón/Amortización del universo de "trades", o sea
+cambiarle el significado a la métrica — decisión de producto, no una conversión.
+Sin decidir a propósito (2026-08-18).
+
+── Pendiente #2: las 398 filas viejas ────────────────────────────────────────
+No se tocan, y por eso siguen infladas también en el dashboard. Sin
+`fx_to_usd` sellado no hay forma de convertirlas sin romper las ~125 que ya
+vienen en dólares (ver arriba). Necesita su propio trabajo: un criterio
+verificable para distinguirlas, o conseguir el TC de la fecha de cada una.
+
+── Pendiente #3 ──────────────────────────────────────────────────────────────
 `Interés PF` (interés de plazo fijo, main.py) guarda el monto en moneda nativa
 igual que un cupón y NO está excluido de `closed_filter_sql`, pero tampoco se
 convierte acá — porque el lector del dashboard tampoco lo convierte, y el

@@ -33,20 +33,24 @@ from __future__ import annotations
 from typing import Dict, Any
 from collections import Counter
 
+from realized_pnl import is_closed_op, realized_usd_sql
+
 
 def _is_trade(op: Dict[str, Any]) -> bool:
-    op_type = (op.get("op_type") or "").strip()
-    if op_type in ("Compra", "Dividendo", "Interés", ""):
-        return False
-    if op_type.startswith(("CONVERSION", "Conversión")):
-        return False
-    return op.get("pnl_usd") is not None
+    # El criterio vive en realized_pnl: esta función era una de las copias a
+    # mano que hicieron que el bug se arreglara en un lector y no en los otros.
+    return is_closed_op(op.get("op_type")) and op.get("pnl_usd") is not None
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
+    # `pnl_usd` convertido a USD real en el SELECT: en Cupón/Amortización guarda
+    # el monto en moneda del broker, y de esta query salen el P&L total, el
+    # avg_win/avg_loss, el payoff, la expectancy, el mejor/peor trade y el neto
+    # por ticker — todos leen la magnitud. Convertir en el origen los arregla a
+    # todos sin repetir la condición. Ver backend/realized_pnl.py.
     rows = conn.execute(
-        """SELECT date, asset, broker, op_type, entry_price, exit_price,
-                  quantity, pnl_usd, pnl_pct
+        f"""SELECT date, asset, broker, op_type, entry_price, exit_price,
+                  quantity, {realized_usd_sql()} AS pnl_usd, pnl_pct
              FROM operations
             WHERE user_id = ? AND pnl_usd IS NOT NULL
             ORDER BY date DESC""",
