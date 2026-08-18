@@ -32,6 +32,8 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from realized_pnl import realized_usd as _realized_usd
+
 
 # ─── Helpers compartidos ─────────────────────────────────────────────────────
 
@@ -1826,7 +1828,20 @@ def build_behavioral_insights(
             generated_at: ISO timestamp,
         }
     """
-    ops = operations or []
+    # `pnl_usd` normalizado a USD real UNA vez, acá: es el único punto por el
+    # que pasan las ops antes de los 12 detectores. En Cupón/Amortización la
+    # columna guarda el monto en moneda del broker, y varios detectores usan la
+    # MAGNITUD (winrate_payoff promedia avg_win/avg_loss, holding_period pondera
+    # por pnl): un cupón en pesos les metía un "ganador" de 125.000 dólares.
+    # Ver backend/realized_pnl.py.
+    #
+    # detect_counterfactual no se ve afectado: descarta las filas con quantity=0
+    # y exige currency=='USD', así que los cupones ya salían de ahí — y en las
+    # ventas el helper no toca el valor (caen al ELSE).
+    ops = [
+        {**o, "pnl_usd": _realized_usd(o)} if o.get("pnl_usd") is not None else o
+        for o in (operations or [])
+    ]
     pos = positions or []
     cards = [
         # Sprint 3 — los 4 originales

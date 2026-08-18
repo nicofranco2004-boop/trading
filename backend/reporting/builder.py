@@ -15,6 +15,8 @@ import math
 from datetime import date as date_cls, datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
+from realized_pnl import realized_usd_sql
+
 from .schema import (
     PeriodReport, PeriodMetrics, Insight, Highlight, AssetContribution,
     HoldingMover,
@@ -109,9 +111,14 @@ def fetch_operations_in_range(conn, uid: int, start: str, end: str,
                               broker_filter: str = "global") -> List[Dict[str, Any]]:
     """Operations cerradas (Venta, Dividendo, Interés, Futuros) en el rango."""
     br_sql, br_args = _operations_clause(broker_filter)
+    # `pnl_usd` se convierte a USD real acá, en el SELECT: en Cupón/Amortización
+    # la columna guarda el monto en moneda del broker. Como TODO el módulo lee
+    # las ops por esta función, con normalizarlo en el origen quedan bien el
+    # realized del período, el win/loss y el mejor/peor del reporte, sin repetir
+    # la condición en cada uno. Ver backend/realized_pnl.py.
     rows = conn.execute(
         f"""SELECT id, date, broker, asset, op_type, quantity, entry_price,
-                   exit_price, pnl_usd, pnl_pct
+                   exit_price, {realized_usd_sql()} AS pnl_usd, pnl_pct
               FROM operations
              WHERE user_id = ? AND date >= ? AND date <= ?{br_sql}
              ORDER BY date ASC, id ASC""",
