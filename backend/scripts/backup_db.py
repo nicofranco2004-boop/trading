@@ -80,6 +80,30 @@ def dump_sqlite_consistent(db_path: str, dest_path: str) -> None:
     para hacer backups en caliente — soporta writers concurrentes sin
     corromper el output.
 
+    ⚠️ **La copia sale en modo WAL, y por eso hay que sacarla de ahí antes de
+    archivarla.** `backup()` se lleva el journal_mode del origen, y producción
+    corre en WAL (`main.py:351`). El archivo resultante queda entonces "en WAL y
+    sin `-wal`" — porque el `-wal` de la copia recién hecha se cierra vacío y el
+    gzip de arriba comprime SÓLO el `.db`. Ese estado tiene dos consecuencias
+    caras, las dos medidas:
+
+      · `sqlite3.connect("file:copia.db?mode=ro", uri=True)` falla con
+        `unable to open database file` — un mensaje que no dice nada, y que es
+        justo el que empuja al operador a sacarle el `mode=ro` "para ver si es
+        eso". Ahí abre y lee de menos, en silencio.
+      · El guardián de `scripts/copiar_a_postgres.py:75` **rechaza el archivo**
+        diciendo que "se copió a medias". Es un falso positivo: la copia está
+        COMPLETA. Y el remedio que sugiere el mensaje —"copiá los dos
+        archivos"— es imposible, porque ese `-wal` nunca existió.
+
+    Sin este PRAGMA, el día del pasaje a Postgres el copiador se niega a leer el
+    backup de producción y el mensaje culpa al archivo equivocado.
+
+    Se arregla acá, en el PRODUCTOR, y no en el guardián: la firma "WAL sin
+    `-wal`" es idéntica a la de una copia truncada de verdad, así que aflojar el
+    guardián lo dejaría ciego justo ante el error que existe para atajar. Un
+    archivo de backup no necesita WAL.
+
     Args:
         db_path: path al archivo source (.db)
         dest_path: path donde escribir el dump (debe NO existir)
@@ -91,6 +115,9 @@ def dump_sqlite_consistent(db_path: str, dest_path: str) -> None:
             # backup() copia páginas en chunks de 100 con un callback opcional;
             # acá usamos el modo simple (todo de una).
             src.backup(dst)
+            # Ver el ⚠️ del docstring: deja el archivo legible con mode=ro y
+            # aceptable para el copiador. No toca la base de producción.
+            dst.execute("PRAGMA journal_mode=DELETE")
         finally:
             dst.close()
     finally:

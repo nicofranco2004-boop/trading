@@ -246,5 +246,64 @@ class TestRunBackupPipeline(unittest.TestCase):
         self.assertIn('no existe', stats['errors'][0])
 
 
+class BackupSaleDelModoWALTest(unittest.TestCase):
+    """El backup de una base EN WAL no puede quedar en WAL.
+
+    Por qué existe: `backup()` se lleva el journal_mode del origen, y producción
+    corre en WAL. Como el gzip archiva SÓLO el `.db`, la copia queda "en WAL y
+    sin `-wal`", que es indistinguible de un archivo truncado. Consecuencias
+    medidas: no abre con `mode=ro`, y el guardián de `copiar_a_postgres.py` la
+    rechaza diciendo que "se copió a medias" — siendo que está completa.
+
+    Sin el `PRAGMA journal_mode=DELETE` los tres asserts de acá abajo fallan.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.origen = os.path.join(self.dir, 'origen.db')
+        c = sqlite3.connect(self.origen)
+        c.execute("PRAGMA journal_mode=WAL")        # como producción
+        c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+        c.executemany("INSERT INTO t (v) VALUES (?)", [(f"fila{i}",) for i in range(50)])
+        c.commit(); c.close()
+        self.assertEqual(self._byte18(self.origen), 2, "el origen tiene que estar en WAL")
+
+    @staticmethod
+    def _byte18(path):
+        """1 = journal normal, 2 = WAL. Se lee sin abrir la base."""
+        with open(path, 'rb') as f:
+            return f.read(20)[18]
+
+    def test_la_copia_no_queda_en_modo_wal(self):
+        dest = os.path.join(self.dir, 'copia.db')
+        dump_sqlite_consistent(self.origen, dest)
+        self.assertEqual(self._byte18(dest), 1,
+                         "la copia quedó en WAL: sin su `-wal` es indistinguible "
+                         "de un archivo truncado y el copiador la rechaza")
+
+    def test_la_copia_abre_en_solo_lectura(self):
+        """`mode=ro` sobre una copia en WAL sin `-wal` da 'unable to open
+        database file' — el error críptico que empuja a sacarle el mode=ro."""
+        dest = os.path.join(self.dir, 'copia.db')
+        dump_sqlite_consistent(self.origen, dest)
+        c = sqlite3.connect(f"file:{dest}?mode=ro", uri=True)
+        try:
+            self.assertEqual(c.execute("SELECT count(*) FROM t").fetchone()[0], 50)
+        finally:
+            c.close()
+
+    def test_el_pragma_no_pierde_datos(self):
+        """Sacarla de WAL no puede costar ni una fila (es el riesgo obvio)."""
+        dest = os.path.join(self.dir, 'copia.db')
+        dump_sqlite_consistent(self.origen, dest)
+        o = sqlite3.connect(self.origen)
+        d = sqlite3.connect(dest)
+        try:
+            self.assertEqual(o.execute("SELECT count(*), sum(id) FROM t").fetchone(),
+                             d.execute("SELECT count(*), sum(id) FROM t").fetchone())
+        finally:
+            o.close(); d.close()
+
+
 if __name__ == '__main__':
     unittest.main()
