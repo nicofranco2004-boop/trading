@@ -29,6 +29,27 @@ if BACKEND not in sys.path:
 import main
 
 
+# ─── Por qué esta suite es SÓLO-SQLITE, y no es una migración pendiente ──────
+# Estos tests FABRICAN la tabla vieja y después esperan que `init_db()` le
+# agregue columnas con ALTER. Ese mecanismo NO EXISTE en Postgres: `init_db()`
+# sale en la primera línea (`if USANDO_PG: _init_db_postgres(); return`) y aplica
+# `schema_pg.sql` entero — que no puede agregarle una columna a una tabla que ya
+# existe. No es que la migración falle allá: es que allá no hay migraciones
+# incrementales, a propósito (son la HISTORIA del schema de SQLite, y Postgres
+# arranca del RESULTADO).
+#
+# ⚠️ NO "portar" estos tests a Postgres. Lo que probarían es otra cosa, y lo que
+# de verdad importa allá ya está garantizado por otro lado: `schema_pg.sql` trae
+# las 4 columnas de undo y las 3 de advisor_profile en el CREATE.
+#
+# Dos motivos por los que además ni siquiera arrancan: el setUp usa
+# `AUTOINCREMENT` (sintaxis exclusiva de SQLite) y `PRAGMA table_info`.
+_POR_QUE_SOLO_SQLITE = (
+    "Sólo SQLite: prueba las migraciones incrementales de init_db(), que en "
+    "Postgres no existen (se aplica schema_pg.sql, que ya trae las columnas)."
+)
+
+
 # Esquema EXACTO que tiene producción hoy (verificado contra el backup del
 # 2026-08-16): 5 columnas, sin las 4 de undo.
 _PROD_SCHEMA_5_COLS = """
@@ -58,6 +79,7 @@ def _new_user(conn):
     return cur.lastrowid
 
 
+@unittest.skipIf(getattr(main, "USANDO_PG", False), _POR_QUE_SOLO_SQLITE)
 class TestBatchItemsMigration(unittest.TestCase):
     """advisor_op_batch_items: la tabla de 5 columnas de prod tiene que migrar."""
 
@@ -171,6 +193,7 @@ class TestBatchItemsMigration(unittest.TestCase):
             conn.close()
 
 
+@unittest.skipIf(getattr(main, "USANDO_PG", False), _POR_QUE_SOLO_SQLITE)
 class TestAdvisorProfileMigration(unittest.TestCase):
     """advisor_profile: mismo bug latente (en prod no muerde porque la columna
     llegó por otro camino, pero la migración estaba igual de muerta)."""

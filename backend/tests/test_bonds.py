@@ -340,8 +340,17 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         for d, blue, mep in [("2026-05-08", self.BLUE_MAYO, None),
                              ("2026-05-10", self.BLUE_MAYO, self.MEP_MAYO)]:
             conn.execute(
-                "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-                "VALUES (?,?,?,?)", (d, blue, mep, "test"))
+                # DO UPDATE y no DO NOTHING: el setUp corre antes de CADA test de
+                # la clase sobre la misma base de módulo, y 2026-05-08 tiene que
+                # quedar con mep_venta NULL sí o sí — es lo que hace que
+                # test_fx_stamped_walks_back_when_date_has_no_mep pase por el
+                # camino del blue. Con DO NOTHING, un mep que dejó otra escritura
+                # sobrevive y el test pasa en verde por el camino equivocado.
+                # `fetched_at` no se nombra: ningún SELECT de la app la lee.
+                "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+                "VALUES (?,?,?,?) ON CONFLICT (date) DO UPDATE SET "
+                "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+                "source=EXCLUDED.source", (d, blue, mep, "test"))
         conn.commit()
         conn.close()
         self.token = main.create_token(self.uid)
@@ -423,8 +432,11 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         """
         conn = main.get_db()
         conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-            "VALUES ('2026-08-01', 9000.0, 9999.0, 'test')")
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES ('2026-08-01', 9000.0, 9999.0, 'test') "
+            "ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "source=EXCLUDED.source")
         conn.commit()
         conn.close()
 

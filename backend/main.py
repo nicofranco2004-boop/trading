@@ -7931,18 +7931,15 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
 @app.patch("/api/positions/group")
 def edit_position_group(p: PositionGroupEditIn, uid: int = Depends(get_effective_user)):
     """Editar la posición ENTERA (todos sus lotes) desde Cartera. Ver _edit_position_group."""
-    conn = get_db()
-    try:
-        with conn:      # tx atómica: o quedan todos los lotes editados, o ninguno
-            out = _edit_position_group(conn, uid, p)
-    except HTTPException:
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.close()
-        log.error("edit_position_group falló uid=%s %s: %s", uid, p.asset, ex)
-        raise HTTPException(500, "No se pudo editar la posición")
-    conn.close()
+    with db_abierta() as conn:      # cierra pase lo que pase (ver db_abierta)
+        try:
+            with conn:  # tx atómica: o quedan todos los lotes editados, o ninguno
+                out = _edit_position_group(conn, uid, p)
+        except HTTPException:
+            raise
+        except Exception as ex:
+            log.error("edit_position_group falló uid=%s %s: %s", uid, p.asset, ex)
+            raise HTTPException(500, "No se pudo editar la posición")
     _ai_cache_invalidate(uid)
     return out
 
@@ -7985,18 +7982,15 @@ def _undo_edit_position_group(conn, uid: int, token: str) -> dict:
 @app.post("/api/positions/group/undo/{token}")
 def undo_edit_position_group(token: str, uid: int = Depends(get_effective_user)):
     """Deshacer del toast tras editar la posición entera."""
-    conn = get_db()
-    try:
-        with conn:
-            out = _undo_edit_position_group(conn, uid, token)
-    except HTTPException:
-        conn.close()
-        raise
-    except Exception as ex:
-        conn.close()
-        log.error("undo_edit_position_group falló uid=%s token=%s: %s", uid, token, ex)
-        raise HTTPException(500, "No se pudo deshacer")
-    conn.close()
+    with db_abierta() as conn:      # cierra pase lo que pase (ver db_abierta)
+        try:
+            with conn:
+                out = _undo_edit_position_group(conn, uid, token)
+        except HTTPException:
+            raise
+        except Exception as ex:
+            log.error("undo_edit_position_group falló uid=%s token=%s: %s", uid, token, ex)
+            raise HTTPException(500, "No se pudo deshacer")
     _ai_cache_invalidate(uid)
     return out
 
