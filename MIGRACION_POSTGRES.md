@@ -19,13 +19,61 @@ techo es estructural: con más usuarios vuelve. Postgres lo resuelve de raíz.
 
 ## Dónde está el trabajo
 
-    /private/tmp/claude-501/-Users-nicolaspussetto-Documents-trading/adc4a925-dbdb-4165-a5e3-826b55c1200c/scratchpad/mainwt
+    ~/rendi-worktrees/migracion          ← worktree (durable, NO /tmp)
+    ~/rendi-worktrees/pg_uri.txt         ← DSN del Postgres local
 
 Rama **`spike/postgres`**. **NO se deploya** — es un spike.
-Producción va por `main` y está estable (`8f4edfe`).
+Producción va por `main` y está estable (`7949209a`).
 
-⚠️ macOS purga `/private/tmp` en sesiones largas. Si el worktree no está, los
-commits sobreviven en el repo: `git worktree add <ruta> spike/postgres`.
+⚠️ macOS purga `/private/tmp` en sesiones largas — **ya pasó el 18/08**: se perdió
+el worktree viejo y con él el Postgres local. Los commits sobreviven en el repo:
+`git worktree add <ruta> spike/postgres`. Por eso el worktree ahora vive en
+`~/rendi-worktrees/`, que sí sobrevivió.
+
+**Postgres local (reinstalado 18/08):** Postgres.app, **PostgreSQL 18.6**, base
+`rendi_test`, `max_connections=100`. ⚠️ La migración se había validado contra
+**16.2**; si aparece una falla rara, la versión es sospechosa.
+⚠️ Postgres.app 18 pide **confirmar un cartel de permisos** la primera vez que una
+app se conecta; si no se acepta, `psycopg` falla con
+`failed to verify "trust" authentication`, que no parece un problema de permisos.
+⚠️ `extra_float_digits` = **1** en local y **0** en los poolers de Supabase (el
+shim lo fuerza a 3). Un local en verde NO garantiza Supabase en verde.
+
+## Estado 18/08 — la rama al día con main (`0c47aff0`)
+
+Mergeados los 22 commits que `main` había avanzado. **Los dos motores fallan en el
+MISMO set, test por test: 46 y 46** (SQLite 3033 pasan, Postgres 3034).
+
+⚠️ **NUNCA mergear `main` con `-X ignore-all-space`.** `init_db()` está envuelto en
+`with db_abierta() as conn:`, o sea 1.792 líneas corridas 4 espacios: git ve como
+distinto todo lo que `main` toca ahí (de 3.228 cambios de la rama sobre `main.py`,
+~2.900 son sólo sangría). Esa opción acierta el CONTENIDO y **miente con la
+sangría**: dejó `brief_open`/`brief_close` anidados adentro del `if` de
+`logo_data` — hermanos vueltos hijos, **compila igual** — reintroduciendo en
+silencio el bug de "la migración no corre nunca" que arreglaba `87ab966c`.
+Se resuelve a mano: tomar el lado de la rama en los bloques en conflicto y
+re-aplicar las ediciones reales de `main` (fueron 4, todas en `init_db`).
+Detector: líneas dentro de `init_db` con sangría 4 en vez de 8.
+
+Lo que trajo esta tanda de `main`, como muestra de la deuda que se acumula sola:
+· 2 `INSERT OR REPLACE` nuevos en `test_bonds` → `ON CONFLICT (date) DO UPDATE`.
+  **`DO NOTHING` NO sirve**: 2026-05-08 tiene que quedar con `mep_venta` NULL o
+  `test_fx_stamped_walks_back_when_date_has_no_mep` pasa en verde por el camino
+  equivocado.
+· 2 endpoints sin `db_abierta()` (`edit_position_group` y su undo) que cazó el
+  guardián de conexiones — en Postgres quedaban `idle in transaction`.
+· `test_advisor_schema_migration.py` quedó **sólo-SQLite**: prueba las migraciones
+  incrementales de `init_db()`, que en Postgres no existen a propósito.
+  **NO portarlo.**
+
+`schema_pg.sql` NO hay que regenerarlo: los 22 commits no agregaron tablas ni
+columnas nuevas, y las 4 de `advisor_op_batch_items` + las 3 de `advisor_profile`
+ya estaban (el `CREATE TABLE` siempre las tuvo; el bug era que el ALTER no corría
+sobre tablas ya existentes).
+
+⚠️ El test inestable sigue: `test_ai_register_trade.py::TestE2EQuestion...::
+test_explicit_undo_message_is_deterministic` dio ERROR en 1 de 3 corridas de la
+suite completa en Postgres, y pasa 5/5 aislado. **No se descuenta del 46.**
 
 ## Qué ya está hecho y medido
 
