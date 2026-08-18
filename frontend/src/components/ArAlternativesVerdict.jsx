@@ -58,7 +58,7 @@ export default function ArAlternativesVerdict({ items }) {
         El plazo fijo UVA se simula <b>en pesos</b> (capitaliza con el coeficiente UVA) y
         recién después se pasa a <b>dólares</b> al tipo de cambio de cada mes, así los dos
         lados se miden en la misma moneda y la comparación es válida.
-        <b> Inflación</b> es otra cosa: el retorno real de tu pata en pesos, ya descontado
+        <b> Inflación</b> es otra cosa: el retorno real de tu plata en pesos, ya descontado
         el IPC. <b>Los tres porcentajes no se restan entre sí</b> — cada uno responde una
         pregunta distinta.
       </p>
