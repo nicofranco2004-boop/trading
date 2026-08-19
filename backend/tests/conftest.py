@@ -286,8 +286,109 @@ def _aislar_postgres(main, nombre_modulo: str):
 
     _PG_ESQUEMA_PREVIO = esquema
     main.DATABASE_URL = _pg_dsn(esquema)
+    _forzar_ajustes_por_set(esquema)
     pgshim.limpiar_caches()
     main.init_db()
+    _exigir_que_los_ajustes_hayan_entrado(esquema)
+
+
+# Los ajustes originales de pgsesion, antes de que les agreguemos los de la suite.
+# Se guarda una sola vez: si se releyera en cada módulo, el segundo módulo tomaría
+# como "base" la tupla ya extendida del primero y los SET se irían apilando.
+_AJUSTES_BASE = None
+
+
+def _forzar_ajustes_por_set(esquema: str):
+    """Repite por `SET` los ajustes que el DSN manda en `options=`.
+
+    🔴 POR QUÉ, y no es teórico — medido contra el Supabase real el 19/08/2026.
+    Los poolers de Supabase (Supavisor) **se comen casi todo el `options=`**:
+
+        opción del DSN                        Postgres normal   Supabase (los 2 poolers)
+        ------------------------------------  ---------------   ------------------------
+        search_path                           ✅                ✅  llega
+        lock_timeout                          ✅                🔴  queda en 0
+        idle_in_transaction_session_timeout   ✅                🔴  queda en 0
+        application_name                      ✅                🔴  queda 'Supavisor'
+
+    Las tres que se pierden son **exactamente** las tres que sostienen el
+    aislamiento, y las tres fallan hacia el lado peligroso:
+      · `lock_timeout=0` → una consulta trabada espera PARA SIEMPRE en vez de
+        cortar. Es la cuelgue que el arreglo del aislamiento vino a matar.
+      · `idle_in_transaction_session_timeout=0` → una conexión filtrada retiene
+        sus locks para siempre.
+      · `application_name='Supavisor'` → el `pg_terminate_backend` de arriba
+        filtra por ese nombre y **no matchea nada**: las huérfanas no se matan.
+        (Y aflojar ese filtro NO es opción: en esa base viven las conexiones de
+        Supabase mismo —PostgREST, su exportador de métricas, el pooler—, así que
+        un terminate sin filtro se lleva puesto el proyecto entero.)
+
+    Un módulo suelto pasa igual porque no hay contención; la suite completa se
+    cuelga. O sea: el modo de falla es silencioso hasta que es caro.
+
+    `SET` sí atraviesa los dos poolers (verificado), y en un Postgres normal es
+    redundante e inofensivo. Se hace por `pgsesion.AJUSTES_DE_SESION`, que es la
+    única puerta por donde pasan TODAS las conexiones de Rendi.
+    """
+    global _AJUSTES_BASE
+    import pgsesion
+    if _AJUSTES_BASE is None:
+        _AJUSTES_BASE = tuple(pgsesion.AJUSTES_DE_SESION)
+    # ⚠️ `search_path` NO va acá, y la primera versión lo puso "por las dudas".
+    # Es el ÚNICO que sí atraviesa los dos poolers, así que no hay nada que
+    # arreglar — y forzarlo rompe: `test_pgshim_pk_cache` abre a propósito una
+    # conexión con `options=-c search_path=zz_vacio` para probar que un esquema
+    # vacío levanta, y el SET se la pisaba mandándola al esquema del módulo. Los
+    # dos tests de ese archivo fallaban, y de yapa la tabla sin PK del primero
+    # quedaba contaminando el esquema y hacía fallar al segundo.
+    # Regla: repetir por SET SÓLO lo que se pierde de verdad.
+    pgsesion.AJUSTES_DE_SESION = _AJUSTES_BASE + (
+        f"SET lock_timeout = '{_LOCK_TIMEOUT}'",
+        f"SET idle_in_transaction_session_timeout = '{_IDLE_TX_TIMEOUT}'",
+        f"SET application_name = '{_APP_NAME}'",
+    )
+
+
+def _exigir_que_los_ajustes_hayan_entrado(esquema: str):
+    """Aborta la corrida si los ajustes NO quedaron puestos.
+
+    Sin esto el arreglo de arriba sería una red opt-in: si mañana un pooler nuevo
+    también se comiera los `SET`, o alguien cambiara la puerta por la que se
+    conecta, la suite volvería a colgarse y el motivo estaría a diez capas de
+    distancia. Preguntarle a la base **qué quedó puesto de verdad** cuesta cuatro
+    consultas por módulo y convierte un cuelgue mudo en un error que se lee.
+
+    Se pregunta por una conexión abierta como las que usan los tests —no una
+    aparte—, porque lo que hay que verificar es justamente ESA.
+    """
+    import main as _main
+    conn = _main.get_db()
+    try:
+        real = {k: conn.execute(f"SHOW {k}").fetchone()[0] for k in
+                ("search_path", "lock_timeout",
+                 "idle_in_transaction_session_timeout", "application_name")}
+    finally:
+        conn.close()
+    mal = []
+    if esquema not in real["search_path"]:
+        mal.append(f"search_path={real['search_path']!r} (esperaba {esquema!r})")
+    if real["lock_timeout"] in ("0", "0ms"):
+        mal.append("lock_timeout=0 (sin límite: una consulta trabada espera para siempre)")
+    if real["idle_in_transaction_session_timeout"] in ("0", "0ms"):
+        mal.append("idle_in_transaction_session_timeout=0 (una conexión filtrada "
+                   "retiene locks para siempre)")
+    if real["application_name"] != _APP_NAME:
+        mal.append(f"application_name={real['application_name']!r} (esperaba "
+                   f"{_APP_NAME!r}: sin esto el limpiador de huérfanas no matchea "
+                   f"NADA, y aflojar su filtro mataría las conexiones de Supabase)")
+    if mal:
+        raise RuntimeError(
+            "Los ajustes de sesión de la suite NO quedaron puestos, así que el "
+            "aislamiento entre módulos no está garantizado y la corrida se va a "
+            "colgar más adelante sin decir por qué:\n  · "
+            + "\n  · ".join(mal)
+            + "\nVer `_forzar_ajustes_por_set` en este archivo."
+        )
 
 
 def _barrer_esquemas_huerfanos(dsn):
