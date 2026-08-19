@@ -29,6 +29,7 @@ import PageHeader from '../components/PageHeader'
 import CurrencyRail from '../components/CurrencyRail'
 import { useCurrency } from '../contexts/CurrencyContext'
 import Panel from '../components/Panel'
+import { trialProStageLabel } from '../components/plan/TrialCta'
 import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
@@ -1082,7 +1083,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
         : 'Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más. Se renueva automáticamente.')
     : isTrial
       ? (trial?.stage === 'pro'
-          ? `Prueba gratis: tenés Pro${trial?.days_to_switch != null ? ` por ${trial.days_to_switch} día${trial.days_to_switch === 1 ? '' : 's'} más` : ''} y después seguís con Plus hasta completar los ${trial?.total_days ?? 15} días. No hace falta que hagas nada: no cargamos ninguna tarjeta.`
+          ? `Prueba gratis: tenés Pro${trialProStageLabel(trial?.days_to_switch)} y después seguís con Plus hasta completar los ${trial?.total_days ?? 15} días. No hace falta que hagas nada: no cargamos ninguna tarjeta.`
           : `Prueba gratis: estás en Plus${trial?.days_left != null ? ` por ${trial.days_left} día${trial.days_left === 1 ? '' : 's'} más` : ''}. Cuando termine tu cuenta vuelve a Free — si querés seguir, elegí un plan.`)
     : isCreditOnly
       ? (periodEndLabel

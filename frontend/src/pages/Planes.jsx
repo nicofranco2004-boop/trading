@@ -155,6 +155,17 @@ export default function Planes() {
   const creditUsd = Number(user?.credit_remaining_usd || 0)
   const creditUntil = user?.credit_active_until || null
 
+  // Cuándo sale el próximo COBRO. No es el fin del crédito: quien paga durante
+  // la prueba tiene crédito por los días de prueba MÁS el mes comprado, así que
+  // usar creditDays anunciaba la renovación 15 días tarde. El período de la
+  // suscripción es el que manda la tarjeta.
+  const renewalDays = (() => {
+    const fin = user?.subscription_period_end
+    if (!fin) return Math.round(creditDays)
+    const dias = Math.ceil((new Date(fin) - Date.now()) / 86400000)
+    return Number.isFinite(dias) && dias >= 0 ? dias : Math.round(creditDays)
+  })()
+
   // Un user puede cambiar de plan si tiene crédito activo (la conversión
   // re-acomoda el remaining al daily_rate nuevo). Si es free puro o nunca
   // pagó, el cambio se hace como subscribe nuevo.
@@ -381,7 +392,16 @@ export default function Planes() {
           <div className="flex-1 min-w-0 text-sm text-ink-1 leading-snug">
             Tu <span className="font-medium capitalize">{anchorPlan}</span>
             {' '}({anchorPeriod === 'annual' ? 'anual' : 'mensual'}) se renueva en{' '}
-            <span className="font-mono tabular text-ink-0">{Math.round(creditDays)} días</span>.
+            <span className="font-mono tabular text-ink-0">{renewalDays} días</span>.
+            {/* El COBRO sale al final del período de la suscripción, que no es lo
+                mismo que el final del crédito: quien paga durante la prueba tiene
+                crédito por los días de prueba MÁS el mes comprado, así que acá
+                decía "se renueva en 45 días" y la tarjeta le llegaba a los 30. */}
+            {creditDays > renewalDays + 1 && (
+              <> Tenés acceso pagado hasta{' '}
+                <span className="font-mono tabular text-ink-0">{Math.round(creditDays)} días</span>
+                {' '}(los de la prueba se te respetan).</>
+            )}
             {' '}Si cambiás de plan, el crédito se reconvierte sin cobrarte de nuevo.
           </div>
         </div>

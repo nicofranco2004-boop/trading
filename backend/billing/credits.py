@@ -338,9 +338,34 @@ def convert_plan(
 
     now = datetime.utcnow()
     before_iso = state["active_until"]
-    remaining_usd = state["remaining_usd"]
     new_rate = daily_rate(new_plan, new_period)
-    new_days = remaining_usd / new_rate if new_rate > 0 else 0.0
+
+    # Los días de PRUEBA que todavía quedan adentro de la ventana NO se valúan:
+    # se arrastran como días. Es el mismo invariante que hizo que el trial naciera
+    # sin credit_anchor_* —el tiempo regalado no vale plata— pero volvía a entrar
+    # por la puerta del pago: quien paga durante la prueba SÍ queda con anchor
+    # (pagó), y a partir de ahí la ventana entera —los 30 días comprados MÁS los
+    # 15 regalados— se valuaba al rate del plan pagado. Medido: pagar Pro el día 1
+    # y cambiar a Plus daba 101,25 días donde el mismo pago sin prueba da 67,5;
+    # 33,75 días fabricados, USD 4,50 de lista, por usuario.
+    #
+    # Convertir sí, pero solo la parte que alguien pagó.
+    dias_de_prueba = 0.0
+    try:
+        row = conn.execute(
+            "SELECT trial_ends_at FROM users WHERE id=?", (user_id,)).fetchone()
+        fin_prueba = row["trial_ends_at"] if row else None
+        if fin_prueba:
+            faltan = (_parse_iso(fin_prueba) - now).total_seconds() / 86400.0
+            dias_de_prueba = min(max(0.0, faltan), state["days_remaining"])
+    except Exception as ex:
+        # Sin el dato, se convierte todo como antes: preferimos regalar de más
+        # antes que acortarle la ventana a alguien que pagó.
+        log.warning("convert_plan: no pudimos leer trial_ends_at uid=%s: %s", user_id, ex)
+
+    dias_pagos = max(0.0, state["days_remaining"] - dias_de_prueba)
+    remaining_usd = dias_pagos * daily_rate(state["anchor_plan"], state["anchor_period"])
+    new_days = (remaining_usd / new_rate if new_rate > 0 else 0.0) + dias_de_prueba
     new_active_until = now + timedelta(days=new_days)
     after_iso = new_active_until.isoformat()
     days_delta = new_days - state["days_remaining"]
@@ -349,6 +374,7 @@ def convert_plan(
         conn.execute(
             """UPDATE users
                SET tier = ?,
+                   quota_window_from = date('now'),
                    credit_active_until = ?,
                    credit_anchor_plan = ?,
                    credit_anchor_period = ?,

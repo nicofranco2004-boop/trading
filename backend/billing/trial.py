@@ -60,14 +60,24 @@ def monthly_cap() -> int:
 
 
 def _activations_this_month(conn) -> int:
-    """Cuántos trials se activaron en el mes calendario en curso (UTC)."""
-    month_start = datetime.utcnow().replace(
-        day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    """Cuántos trials se activaron en el mes calendario en curso (UTC).
+
+    ⚠️ El piso se compara por DÍA, no con un timestamp ISO. `created_at` lo
+    escribe SQLite con datetime('now') → 'YYYY-MM-DD HH:MM:SS' (con ESPACIO),
+    mientras que datetime.utcnow().isoformat() pone una 'T'. La comparación es
+    de texto y el espacio (0x20) ordena ANTES que la 'T' (0x54), así que
+    '2026-09-01 14:00:00' < '2026-09-01T00:00:00': toda fila del día 1 caía
+    debajo del piso y no se contaba NUNCA. Medido: con tope 3 entraron 8 trials
+    el día 1 y el mes cerró con 11. Es la misma trampa que ya había arreglado
+    13acf975 en el embudo; con substr(...,1,10) no hay forma de que vuelva.
+    """
+    month_start = datetime.utcnow().strftime("%Y-%m-01")
     # Se cuenta sobre el LEDGER, no sobre users: borrar la cuenta no puede
     # devolver un cupo (audit). El ledger es append-only.
     try:
         row = conn.execute(
-            "SELECT COUNT(*) c FROM credit_ledger WHERE kind='trial' AND created_at >= ?",
+            "SELECT COUNT(*) c FROM credit_ledger WHERE kind='trial' "
+            "AND substr(replace(created_at,'T',' '),1,10) >= ?",
             (month_start,),
         ).fetchone()
         return int(row["c"] if hasattr(row, "keys") else row[0]) if row else 0
@@ -112,6 +122,27 @@ def stage_by_calendar(started_at, now=None):
     return "pro" if ((now or datetime.utcnow()) - ini) < timedelta(days=TRIAL_PRO_DAYS) else "plus"
 
 
+def dias_restantes(hasta, ahora=None) -> int:
+    """Cuántos días le quedan, redondeando HACIA ARRIBA la fracción de día.
+
+    Una sola definición para toda la prueba. Había dos —la app redondeaba para
+    arriba y el mail del día 14 truncaba— así que el mismo día la barra decía
+    "te quedan 2 días" y el mail que llegaba esa mañana decía "te queda 1".
+    Hacia arriba porque es lo que el usuario entiende: mientras le quede algo de
+    hoy, hoy cuenta."""
+    if not hasta:
+        return 0
+    try:
+        fin = hasta if isinstance(hasta, datetime) else datetime.fromisoformat(
+            str(hasta).replace("Z", ""))
+    except (TypeError, ValueError):
+        return 0
+    d = fin - (ahora or datetime.utcnow())
+    if d.total_seconds() <= 0:
+        return 0
+    return max(1, d.days + (1 if d.seconds or d.microseconds else 0))
+
+
 def repair_stage(conn, user_id: int):
     """El tier que le corresponde HOY a alguien cuyo crédito vigente es el del
     trial ('pro'|'plus'), o None si su crédito NO es el del trial.
@@ -148,11 +179,34 @@ def _email_of(conn, user_id: int):
         return None
 
 
+def normalizar_email(email) -> str:
+    """El email reducido a LA BANDEJA que lo recibe.
+
+    Sin esto, una sola casilla de Gmail saca trials infinitos: 'juan.perez@',
+    'juanperez@', 'j.u.a.n.perez@', 'juan.perez+loquesea@' y el mismo usuario en
+    'googlemail.com' son la MISMA bandeja y daban cinco claves distintas. El
+    +alias se corta en todos los proveedores (es estándar y no cambia el
+    destino); los puntos SOLO en Gmail, donde son decorativos — en otros
+    dominios 'a.b@x.com' y 'ab@x.com' pueden ser dos personas distintas.
+
+    No pretende frenar a un decidido con dos casillas de verdad: corta el abuso
+    trivial, que es el que escala."""
+    e = (email or "").strip().lower()
+    if "@" not in e:
+        return e
+    usuario, dominio = e.rsplit("@", 1)
+    usuario = usuario.split("+", 1)[0]           # +alias → misma bandeja, siempre
+    if dominio in ("gmail.com", "googlemail.com"):
+        usuario = usuario.replace(".", "")       # los puntos son decorativos
+        dominio = "gmail.com"                    # googlemail es un alias de gmail
+    return f"{usuario}@{dominio}"
+
+
 def _email_key(email) -> str:
     """Clave estable del email para recordar quién ya usó su trial. Se guarda
     HASHEADA: sirve para comparar, no para reconstruir la casilla."""
     import hashlib
-    return hashlib.sha256((email or "").strip().lower().encode()).hexdigest()
+    return hashlib.sha256(normalizar_email(email).encode()).hexdigest()
 
 
 def _email_consumed(conn, email) -> bool:
@@ -240,6 +294,11 @@ def eligibility(conn, user_id: int) -> dict:
     return {"can_start": True, "reason": None}
 
 
+class _TopeDelMes(Exception):
+    """Interna: el tope del mes se llenó DENTRO de la transacción del alta, así
+    que hay que deshacerla entera."""
+
+
 def start(conn, user_id: int) -> dict:
     """Activa el trial. Idempotente por `trial_used_at`: un segundo intento
     devuelve can_start=False/already_used sin tocar nada.
@@ -253,6 +312,15 @@ def start(conn, user_id: int) -> dict:
     now = datetime.utcnow()
     until = (now + timedelta(days=TRIAL_TOTAL_DAYS)).isoformat()
     now_iso = now.isoformat()
+    cap = monthly_cap()
+    try:
+        return _start_tx(conn, user_id, until, now_iso, cap)
+    except _TopeDelMes:
+        # El `with conn` de _start_tx ya deshizo el alta al propagarse.
+        return {"ok": False, "can_start": False, "reason": "monthly_cap_reached"}
+
+
+def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int) -> dict:
     with conn:
         # trial_ends_at fija CUÁL crédito es el del trial. Sin esto, "usó el
         # trial alguna vez" quedaba pegado para siempre y el cron le bajaba el
@@ -267,6 +335,11 @@ def start(conn, user_id: int) -> dict:
         cur = conn.execute(
             """UPDATE users
                   SET tier='pro', credit_active_until=?,
+                      -- La prueba arranca con la cuota LIMPIA: si esta semana ya
+                      -- gastó su análisis de Free, el primer día de Pro no puede
+                      -- salirle 1/60 (el día 1 es el que decide si la prueba se
+                      -- usa o se quema).
+                      quota_window_from=date('now'),
                       trial_started_at=?, trial_used_at=?, trial_ends_at=?,
                       credit_anchor_plan=NULL, credit_anchor_period=NULL,
                       credit_anchor_amount_usd=NULL, credit_anchor_at=NULL
@@ -277,18 +350,43 @@ def start(conn, user_id: int) -> dict:
         if cur.rowcount == 0:
             return {"ok": False, "can_start": False, "reason": "already_used"}
         _mark_email_consumed(conn, _email_of(conn, user_id))
-        try:
-            conn.execute(
+        _nota = f"Free trial: {TRIAL_PRO_DAYS}d Pro + {TRIAL_PLUS_DAYS}d Plus"
+        if cap:
+            # CON TOPE, el ledger deja de ser solo auditoría: es el que lo hace
+            # cumplir. El chequeo de eligibility() es check-then-act —lee el
+            # conteo, después escribe— y entre las dos cosas entran todas las
+            # activaciones que quieran: medido, con tope 5 y 20 pedidos
+            # simultáneos entraron los 20. Acá el conteo y la escritura son UN
+            # solo statement, así que el tope se respeta bajo carga (mismo patrón
+            # que reserve_chat). Si no entra, se levanta para que el `with conn`
+            # DESHAGA el alta: sin eso el usuario quedaría con la prueba puesta y
+            # sin fila en el ledger, o sea invisible para el tope del mes que viene.
+            led = conn.execute(
                 """INSERT INTO credit_ledger
                        (user_id, kind, amount_usd, days_delta,
                         from_plan, from_period, to_plan, to_period,
                         active_until_before, active_until_after, note)
-                   VALUES (?, 'trial', 0, ?, NULL, NULL, 'pro', NULL, NULL, ?, ?)""",
-                (user_id, TRIAL_TOTAL_DAYS, until,
-                 f"Free trial: {TRIAL_PRO_DAYS}d Pro + {TRIAL_PLUS_DAYS}d Plus"),
+                   SELECT ?, 'trial', 0, ?, NULL, NULL, 'pro', NULL, NULL, ?, ?
+                    WHERE (SELECT COUNT(*) FROM credit_ledger
+                            WHERE kind='trial'
+                              AND substr(replace(created_at,'T',' '),1,10) >= ?) < ?""",
+                (user_id, TRIAL_TOTAL_DAYS, until, _nota,
+                 datetime.utcnow().strftime("%Y-%m-01"), cap),
             )
-        except Exception as ex:   # el ledger es auditoría, no puede voltear el alta
-            log.warning("trial ledger insert falló uid=%s: %s", user_id, ex)
+            if led.rowcount == 0:
+                raise _TopeDelMes()
+        else:
+            try:
+                conn.execute(
+                    """INSERT INTO credit_ledger
+                           (user_id, kind, amount_usd, days_delta,
+                            from_plan, from_period, to_plan, to_period,
+                            active_until_before, active_until_after, note)
+                       VALUES (?, 'trial', 0, ?, NULL, NULL, 'pro', NULL, NULL, ?, ?)""",
+                    (user_id, TRIAL_TOTAL_DAYS, until, _nota),
+                )
+            except Exception as ex:   # sin tope el ledger es auditoría: no voltea el alta
+                log.warning("trial ledger insert falló uid=%s: %s", user_id, ex)
     log.info("trial started uid=%s until=%s", user_id, until)
     # Mail de bienvenida en el momento: el primer día es el que decide si el
     # trial se usa o se quema. No puede esperar al cron de mañana.
@@ -338,7 +436,20 @@ def status(conn, user_id: int) -> dict:
         until_dt = datetime.fromisoformat(str(cau).replace("Z", "")) if cau else None
     except (TypeError, ValueError):
         return out
-    if until_dt and now < until_dt and not _has_paid_sub(conn, user_id):
+    # El crédito vigente tiene que ser EL DEL TRIAL, no cualquiera. Este era el
+    # cuarto lector de credit_active_until y el único que nunca preguntó de quién
+    # era ese crédito — y justo el que alimenta la UI. Como trial_started_at
+    # queda para siempre, cualquier crédito POSTERIOR heredaba la etiqueta:
+    #   · el que pagó Plus anual veía "Estás probando Rendi Plus, te quedan 365
+    #     días" después de poner USD 54;
+    #   · el que pagó Pro y canceló veía "En prueba · no cargamos ninguna
+    #     tarjeta" al lado de "Reactivar suscripción" — le cobraron y la pantalla
+    #     se lo negaba;
+    #   · al que le regalaron Pro le repetía "Mañana pasás a Plus" todos los días.
+    # _has_paid_sub solo tapaba el caso de una sub 'authorized': 'cancelled' y
+    # 'superseded' pasaban derecho.
+    es_del_trial = credit_is_trial(cau, row["trial_ends_at"] if "trial_ends_at" in keys else None)
+    if until_dt and now < until_dt and es_del_trial and not _has_paid_sub(conn, user_id):
         out["active"] = True
         # La etapa es el tier EFECTIVO, no el que dice el calendario: si el cron
         # todavía no corrió, el usuario sigue teniendo Pro de verdad y la UI no
@@ -350,7 +461,7 @@ def status(conn, user_id: int) -> dict:
         except Exception:
             out["stage"] = stage_by_calendar(started_dt, now)
         # Días completos que faltan para que se termine TODO el trial.
-        out["days_left"] = max(0, (until_dt - now).days + (1 if (until_dt - now).seconds else 0))
+        out["days_left"] = dias_restantes(until_dt, now)
         # Días que faltan para el cambio de Pro a Plus (None si ya pasó).
         if out["stage"] == "pro":
             switch_at = started_dt + timedelta(days=TRIAL_PRO_DAYS)
@@ -366,13 +477,27 @@ def step_down_due_trials(conn) -> int:
 
     Idempotente: solo matchea tier='pro', así que correrlo dos veces no hace
     nada la segunda. Devuelve cuántos bajó."""
-    cutoff = (datetime.utcnow() - timedelta(days=TRIAL_PRO_DAYS)).isoformat()
+    # El corte va por DÍA, no por instante — mismo umbral, otra unidad.
+    #
+    # Con el instante, el corte caía un día tarde: el trial arranca a la hora que
+    # el usuario aprieta el botón (digamos 14:00) y el cron corre de madrugada,
+    # así que en la corrida del día 8 a las 03:00 todavía no habían pasado los 7
+    # días exactos y el step-down esperaba a la del día 9. Resultado: la etapa
+    # Pro duraba 8 días calendario y se comía DOS ventanas de cuota —el día 8 la
+    # ventana ya había soltado el día 1 y le devolvía los 60 análisis— o sea 120
+    # análisis y 80 chats, el doble del modelo de costo con el que se eligió el
+    # plazo de 7 días. Por fecha, el corte cae siempre el día 8 y la etapa Pro
+    # ocupa exactamente una ventana, que es el diseño.
+    #
+    # El replace('T',' ') es porque trial_started_at lo escribe Python con 'T' y
+    # date() de SQLite necesita el formato con espacio.
+    cutoff = (datetime.utcnow().date() - timedelta(days=TRIAL_PRO_DAYS)).isoformat()
     try:
         rows = conn.execute(
             """SELECT id, email, trial_started_at FROM users
                 WHERE tier='pro'
                   AND trial_started_at IS NOT NULL
-                  AND trial_started_at <= ?
+                  AND date(replace(trial_started_at,'T',' ')) <= ?
                   AND credit_active_until > ?
                   -- CLAVE: solo si el crédito vigente ES el del trial. Sin esto
                   -- bajaba a Plus a cualquiera que hubiera hecho el trial y
@@ -392,7 +517,20 @@ def step_down_due_trials(conn) -> int:
     n = 0
     with conn:
         for r in rows:
-            conn.execute("UPDATE users SET tier='plus' WHERE id=? AND tier='pro'", (r["id"],))
+            # quota_window_from va en el MISMO UPDATE (no por note_tier_change):
+            # estamos dentro de un `with conn` y abrir otra transacción adentro
+            # commitearía la de afuera a la mitad.
+            #
+            # La cuota del tramo Plus arranca HOY. Sin esto, los 60 análisis que
+            # el propio trial le regaló en la semana de Pro se le descontaban del
+            # techo de 6 de Plus —la ventana de cuota mide 7 días y la etapa Pro
+            # dura 7 días exactos— y entraba a Plus con el badge en 60/6 y un 429
+            # invitándolo a pasarse a Pro. Justo al revés de lo que la etapa Plus
+            # tiene que provocar: cuanto mejor le había ido en la prueba, peor le
+            # iba después.
+            conn.execute(
+                "UPDATE users SET tier='plus', quota_window_from=? WHERE id=? AND tier='pro'",
+                (datetime.utcnow().date().isoformat(), r["id"]))
             try:
                 conn.execute(
                     """INSERT INTO credit_ledger
@@ -477,8 +615,19 @@ def _trial_stats(conn, user_id: int) -> dict:
     # para "brokers conectados" es lo que el usuario entiende igual.
     for key, sql, params in (
         ("brokers", "SELECT COUNT(*) c FROM brokers WHERE user_id=?", (user_id,)),
+        # Cuántas operaciones CARGÓ en la prueba, no cuántas OCURRIERON en esos
+        # días. operations.date es la fecha de la operación (cuándo compró), así
+        # que a quien importó sus 343 movimientos de los últimos tres años el
+        # mail le decía "3 operaciones importadas" — contaba solo las que además
+        # habían pasado en los últimos 15 días. Justo el mail que empuja a pagar,
+        # y justo el usuario que SÍ usó la prueba. La fecha de CARGA vive en
+        # import_batches.created_at; se suma valid_rows de los batches confirmados
+        # en la ventana. Lo cargado a mano no entra (no tiene fecha de carga),
+        # pero el que carga a mano carga de a una y no es el caso que importa.
         ("operations",
-         "SELECT COUNT(*) c FROM operations WHERE user_id=? AND date >= ?", (user_id, dia)),
+         "SELECT COALESCE(SUM(valid_rows),0) c FROM import_batches "
+         "WHERE user_id=? AND status='confirmed' "
+         "AND substr(replace(created_at,'T',' '),1,10) >= ?", (user_id, dia)),
         ("analyses",
          "SELECT COALESCE(SUM(analyses_count),0) c FROM ai_usage_daily "
          "WHERE user_id=? AND date >= ?", (user_id, dia)),
@@ -554,9 +703,11 @@ def send_due_trial_emails(conn) -> int:
             if not _mark_sent(conn, r["id"], MAIL_ENDING_SOON):
                 continue
         try:
-            d = datetime.fromisoformat(str(r["trial_ends_at"]).replace("Z", ""))
+            # Mismo helper que la app: si acá truncábamos y allá redondeábamos
+            # para arriba, el mismo día el mail decía "te queda 1" y la barra
+            # "te quedan 2".
             emails.send_trial_ending_soon(to=r["email"], user_name=_name(r),
-                                          days_left=max(1, (d - now).days))
+                                          days_left=dias_restantes(r["trial_ends_at"], now))
             sent += 1
         except Exception as ex:
             log.warning("mail trial ending_soon falló uid=%s: %s", r["id"], ex)

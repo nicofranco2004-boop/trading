@@ -52,6 +52,17 @@ export function trialNotice(trial) {
   return null
 }
 
+/** Cuánto le queda de la etapa Pro, como frase. '' si no hay dato.
+ *  Vive acá, al lado de trialNotice, para que /config y la barra no puedan
+ *  contradecirse: el día que el cron todavía no corrió, days_to_switch llega en
+ *  0 y /config decía "tenés Pro por 0 días más" mientras la barra —dos
+ *  centímetros más arriba— decía "Mañana pasás a Plus". */
+export function trialProStageLabel(toSwitch) {
+  if (toSwitch == null) return ''
+  if (toSwitch <= 1) return ' hasta mañana'
+  return ` por ${toSwitch} días más`
+}
+
 /** Cuántos días le quedan, como frase entera para la barra. null si no hay dato.
  *  El día 0 no es "0 días": el trial sigue activo, le queda menos de uno. */
 export function trialDaysLabel(days) {

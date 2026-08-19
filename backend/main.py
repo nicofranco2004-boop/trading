@@ -2105,6 +2105,14 @@ def init_db():
         # después recibía un regalo o pagaba y cancelaba (audit).
         if user_cols_after and 'trial_ends_at' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN trial_ends_at TEXT")
+        # Desde qué día cuenta la cuota del plan ACTUAL. La ventana de cuota es
+        # móvil de 7 días y la etapa Pro del trial dura 7 días exactos, así que al
+        # pasar a Plus el día 8 todo lo consumido con el techo de Pro se le
+        # descontaba del techo de Plus: badge 60/6 y 429 sin haber usado nada del
+        # plan nuevo. NULL = sin corte (comportamiento de siempre); la escribe
+        # quota.note_tier_change donde se cambia el tier. Sin índice encima.
+        if user_cols_after and 'quota_window_from' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN quota_window_from TEXT")
         conn.commit()
 
         # Marca de "este email ya usó su trial", en su PROPIA tabla: borrar la
@@ -3622,6 +3630,11 @@ def delete_my_account(response: Response, uid: int = Depends(get_effective_user)
         # ASESOR, también sus clientes shadow (managed_by=uid): sin dueño no
         # tienen login, ni email real, ni camino de borrado — quedarían como
         # PII financiera huérfana e imposible de recolectar (derecho al olvido).
+        # Tablas que NO se borran con la cuenta: se les saca el user_id. Son las
+        # append-only sobre las que se apoya un límite o una métrica — si se
+        # borran, borrar la cuenta se vuelve la forma de resetear el límite.
+        _NO_BORRAR_ANONIMIZAR = ("credit_ledger",)
+
         def _wipe_user_rows(_uid):
             wiped = {}
             batch_ids = [r["id"] for r in conn.execute(
@@ -3633,11 +3646,33 @@ def delete_my_account(response: Response, uid: int = Depends(get_effective_user)
             tables = [r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
             for t in tables:
+                if t in _NO_BORRAR_ANONIMIZAR:
+                    continue                     # se anonimizan abajo, no se borran
                 cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
                 if "user_id" in cols:
                     n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (_uid,)).rowcount
                     if n:
                         wiped[t] = wiped.get(t, 0) + n
+            # credit_ledger es APPEND-ONLY y se cuenta para el tope mensual de
+            # trials. El barrido dinámico de arriba se lo llevaba por tener una
+            # columna user_id, así que borrar la cuenta DEVOLVÍA un cupo: crear,
+            # activar la prueba, borrar y repetir salteaba el único freno de
+            # gasto que hay — y de paso inflaba la conversión del panel. Se
+            # desvincula del usuario en vez de borrarse: la fila sigue contando y
+            # deja de apuntar a una persona.
+            #
+            # user_id=0 y no NULL porque la columna es NOT NULL y cambiarlo en
+            # SQLite obliga a reconstruir la tabla — no vale el riesgo sobre una
+            # tabla de auditoría de billing. Ningún usuario tiene id 0 (el
+            # AUTOINCREMENT arranca en 1), así que 0 significa "sin dueño".
+            for t in _NO_BORRAR_ANONIMIZAR:
+                try:
+                    n = conn.execute(
+                        f"UPDATE {t} SET user_id=0 WHERE user_id=?", (_uid,)).rowcount
+                    if n:
+                        wiped[f"{t} (anonimizadas)"] = n
+                except Exception as ex:
+                    log.warning("no pudimos anonimizar %s uid=%s: %s", t, _uid, ex)
             wiped["users"] = conn.execute("DELETE FROM users WHERE id=?", (_uid,)).rowcount
             return wiped
 
@@ -18254,7 +18289,7 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
             detalle += " [prueba gratis: etapa por calendario, sin anchor]"
         with conn:
             conn.execute(
-                "UPDATE users SET tier = ? WHERE id = ?",
+                "UPDATE users SET tier = ?, quota_window_from = date('now') WHERE id = ?",
                 (target_plan, target_uid),
             )
             conn.execute(
@@ -18404,6 +18439,7 @@ def admin_billing_grant_comp(
             conn.execute(
                 """UPDATE users
                    SET tier = ?,
+                       quota_window_from = date('now'),
                        credit_active_until = ?,
                        credit_anchor_plan = ?,
                        credit_anchor_period = 'monthly',
@@ -25462,7 +25498,8 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
     before_tier = before_row["tier"] if before_row else None
 
     with conn:
-        conn.execute("UPDATE users SET tier = ? WHERE id = ?", (target_tier, uid))
+        conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now') "
+                     "WHERE id = ?", (target_tier, uid))
 
         # Buscar la pending subscription que creó /api/billing/subscribe.
         # Si existe, la actualizamos con el subscription_id real. Si no,
@@ -25516,7 +25553,6 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
         try:
             from datetime import datetime as _dt, timedelta as _td
             from billing import credits as _cr
-            _fb_dt = _dt.utcnow() + _td(days=365 if period == "annual" else 30)
             # Solo EXTIENDE, nunca acorta. El `IS NULL` que había acá no
             # alcanzaba: un user EN FREE TRIAL ya tiene credit_active_until
             # (los 15 días del trial), así que el fallback no disparaba nunca
@@ -25534,6 +25570,14 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
                     _cur_dt = _cr._parse_iso(_cur_raw)
                 except Exception:
                     _cur_dt = None
+            # El período pagado ARRANCA cuando termina lo que ya tenía, igual que
+            # grant_payment_credit (que es el camino normal): el fallback tiene
+            # que dar lo MISMO, si no el resultado depende de si el ledger falló.
+            # Contando desde hoy, el que pagaba el día 1 de su prueba se quedaba
+            # con 30 días en vez de 45 — perdía los 15 que /planes le acababa de
+            # prometer en pantalla, que es justo la regla de producto decidida.
+            _base = max(_cur_dt, _dt.utcnow()) if _cur_dt else _dt.utcnow()
+            _fb_dt = _base + _td(days=365 if period == "annual" else 30)
             if _cur_dt is None or _cur_dt < _fb_dt:
                 # El anchor va junto con la fecha: sin él el user queda con
                 # acceso pero "sin plan pago detrás" — no puede cambiar de
@@ -26074,7 +26118,8 @@ def _process_preapproval_event(conn, preapproval_id: str):
             before_row = conn.execute("SELECT tier FROM users WHERE id = ?", (user_id,)).fetchone()
             before_tier = before_row["tier"] if before_row else None
             with conn:
-                conn.execute("UPDATE users SET tier = ? WHERE id = ?", (target_tier, user_id))
+                conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now') "
+                             "WHERE id = ?", (target_tier, user_id))
                 conn.execute(
                     "UPDATE billing_events SET user_id = ? WHERE mp_data_id = ?",
                     (user_id, preapproval_id),

@@ -47,8 +47,11 @@ Tracking:
 """
 
 from __future__ import annotations
+import logging
 from typing import Literal
 from datetime import date, datetime, timedelta
+
+log = logging.getLogger("ai.quota")
 
 Tier = Literal["free", "plus", "pro", "advisor", "admin"]
 
@@ -203,13 +206,87 @@ def get_tier(conn, user_id: int) -> Tier:
     return "free"
 
 
-def _window_start(today: date) -> date:
-    """Inicio de la ventana móvil de 7 días: hoy − 6 días.
+def _window_start(today: date, floor: date = None) -> date:
+    """Inicio de la ventana móvil de 7 días: hoy − 6 días, nunca antes de `floor`.
 
     Resultado: el sum WHERE date >= window_start captura HOY + 6 días previos
     = 7 días totales. Si Pablo usó IA ayer (domingo) y hoy es lunes, ese análisis
-    sigue contando — evita el surprise reset de los lunes."""
-    return today - timedelta(days=6)
+    sigue contando — evita el surprise reset de los lunes.
+
+    `floor` es el día en que arrancó el plan ACTUAL (ver _window_floor). Sin él,
+    la ventana se lleva puesto el consumo del plan ANTERIOR y lo mide contra el
+    techo del nuevo: el que bajó de plan aparece pasado de cuota sin haber usado
+    nada del plan que tiene."""
+    inicio = today - timedelta(days=6)
+    return max(inicio, floor) if floor else inicio
+
+
+def _window_floor(conn, user_id: int):
+    """Desde qué día cuenta la cuota del plan que el usuario tiene HOY (o None).
+
+    El bug que cierra —medido con el trial, pero NO es del trial— es que la
+    ventana de cuota dura 7 días y la etapa Pro del trial dura exactamente 7
+    días, así que al pasar a Plus el día 8 TODO lo consumido con el techo de Pro
+    (60 análisis) se le descontaba del techo de Plus (6): el badge decía 60/6 y
+    cualquier análisis daba 429 diciéndole que se pase a Pro… cuando en Plus no
+    había hecho ninguno. Y cuanto mejor le había ido en la prueba, peor le iba
+    después — justo al revés de lo que la etapa Plus tiene que provocar.
+
+    Le pasa a CUALQUIER bajada de plan (un Pro pago que cancela y cae a Free
+    hereda su propio consumo de Pro); el trial solo lo volvió universal.
+
+    Dos fuentes, se toma la más nueva:
+
+      · users.quota_window_from — lo estampa note_tier_change() donde el tier se
+        ESCRIBE (el step-down del trial, un cambio de plan, un regalo).
+
+      · credit_active_until ya vencido — el día 16 del trial, y cualquier crédito
+        que se apaga solo, NO pasan por ninguna escritura: el tier lo resuelve
+        get_tier en tiempo real. No hay dónde estampar nada, así que el piso se
+        DERIVA de la fecha en que el acceso se terminó.
+
+    Límite conocido: ai_usage_daily agrega POR DÍA (no guarda hora), así que el
+    piso solo puede ser un día y lo consumido HOY antes del cambio sigue
+    contando contra el techo nuevo. Es el resto chico del mismo problema —1 día
+    en vez de 7— y cerrarlo pide pasar el esquema a timestamps. En la práctica
+    no se cruza: el cron que baja de etapa corre de madrugada.
+    """
+    try:
+        row = conn.execute(
+            "SELECT quota_window_from, credit_active_until FROM users WHERE id=?",
+            (user_id,)).fetchone()
+    except Exception:
+        return None            # esquema viejo sin la columna → sin piso (como antes)
+    if not row:
+        return None
+
+    def _d(v):
+        try:
+            return date.fromisoformat(str(v).replace("T", " ").split(" ")[0]) if v else None
+        except (ValueError, TypeError):
+            return None
+
+    piso = _d(row["quota_window_from"])
+    cau = row["credit_active_until"]
+    if cau and _paid_override_expired(conn, user_id, cau):
+        vencio = _d(cau)
+        if vencio and (piso is None or vencio > piso):
+            piso = vencio
+    return piso
+
+
+def note_tier_change(conn, user_id: int) -> None:
+    """Marca que desde HOY corre la cuota del plan nuevo.
+
+    Se llama donde se ESCRIBE users.tier. Best-effort: que falle no puede
+    voltear el cambio de plan (peor sería no cambiarle el plan que contarle mal
+    la cuota)."""
+    try:
+        with conn:
+            conn.execute("UPDATE users SET quota_window_from=? WHERE id=?",
+                         (date.today().isoformat(), user_id))
+    except Exception as ex:
+        log.warning("no pudimos marcar el corte de cuota uid=%s: %s", user_id, ex)
 
 
 # Back-compat: callers viejos que importan _week_start siguen funcionando
@@ -234,7 +311,7 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
       window_starts_on (ISO date — hoy menos 6 días).
     """
     today = date.today()
-    window_start = _window_start(today)
+    window_start = _window_start(today, _window_floor(conn, user_id))
 
     # SQL hace el cálculo de resets_on directamente con date(MIN(date), '+7 days')
     # para evitar dependencias del módulo `date` de Python (más limpio + testeable).
@@ -372,7 +449,7 @@ def reserve_chat(conn, user_id: int, tier_override: str = None) -> tuple[bool, d
     tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
     limit = LIMITS[tier]["chat_per_week"]
     today = date.today()
-    window_start = _window_start(today).isoformat()
+    window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
     with conn:
         cur = conn.execute(
             """INSERT INTO ai_usage_daily (user_id, date, chat_count, cost_usd_cents)
@@ -445,7 +522,7 @@ def reserve_diag_dismiss(conn, user_id: int) -> tuple[bool, dict]:
     if limit is None:  # ilimitado
         return True, get_current_usage(conn, user_id)
     today = date.today()
-    window_start = _window_start(today).isoformat()
+    window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
     with conn:
         cur = conn.execute(
             """INSERT INTO ai_usage_daily (user_id, date, diag_dismiss_count, cost_usd_cents)

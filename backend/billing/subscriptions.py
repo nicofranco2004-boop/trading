@@ -119,6 +119,29 @@ def _notify_admin_downgrades(downgraded, source: str) -> None:
             log.warning("plan-change admin notify (downgrade) falló para %s: %s", email, ex)
 
 
+def _marcar_corte_de_cuota(conn, user_ids) -> None:
+    """Marca que desde hoy corre la cuota del plan nuevo, DESPUÉS de commitear
+    la baja y por separado.
+
+    Va aparte del UPDATE que baja el tier a propósito: esa consulta es la que
+    hace cumplir el vencimiento del acceso pago y no puede fallar por una
+    columna que solo decide cómo se cuenta la cuota. Metida en el mismo
+    statement, un esquema sin quota_window_from tiraba el job entero y NADIE
+    bajaba a Free — cambiar de plan no puede volverse la forma de no perderlo.
+
+    Sin la marca, el consumo que hizo con el techo del plan que se le venció se
+    le descuenta del techo nuevo y queda pasado de cuota sin haber usado nada
+    (la ventana de cuota es móvil de 7 días)."""
+    if not user_ids:
+        return
+    try:
+        from ai import quota
+        for uid in user_ids:
+            quota.note_tier_change(conn, uid)
+    except Exception as ex:
+        log.warning("no pudimos marcar el corte de cuota de %d bajas: %s", len(user_ids), ex)
+
+
 def _notify_admin_trials_ended(emails_list) -> None:
     """Best-effort: UN mail al admin con todas las pruebas gratis que se
     terminaron en esta corrida, en vez de uno por usuario.
@@ -210,6 +233,7 @@ def _downgrade_expired_credit(conn) -> int:
                 "Credit expired for user %s (was %s, active_until=%s) — downgraded to free",
                 r["id"], r["tier"], r["credit_active_until"],
             )
+    _marcar_corte_de_cuota(conn, [r["id"] for r in rows])
     _notify_admin_downgrades(downgraded, "credit_expired")
     _notify_admin_trials_ended(trials_vencidos)
     return count
@@ -319,10 +343,16 @@ def _delete_unverified_accounts(conn, stale_days: int = 7) -> int:
     SAFE: solo borra users sin posiciones/operaciones/monthly (un user que
     nunca verificó no debería tener nada cargado, pero por las dudas chequeamos)."""
     from datetime import datetime, timedelta
-    cutoff = (datetime.utcnow() - timedelta(days=stale_days)).isoformat()
+    # ⚠️ La fecha se normaliza en las DOS puntas: created_at lo escribe SQLite
+    # con datetime('now') → 'YYYY-MM-DD HH:MM:SS' (espacio) y el cutoff sale de
+    # Python con 'T'. Como la comparación es de texto y ' ' < 'T', una fila del
+    # mismo día quedaba SIEMPRE por debajo del corte y entraba en el barrido
+    # hasta un día antes de lo que dice la política.
+    cutoff = (datetime.utcnow() - timedelta(days=stale_days)).strftime("%Y-%m-%d %H:%M:%S")
     rows = conn.execute(
         """SELECT id, email FROM users
-           WHERE email_verified = 0 AND created_at < ?
+           WHERE email_verified = 0
+             AND substr(replace(created_at,'T',' '),1,19) < ?
              AND managed_by IS NULL  -- shadows del Plan Asesor: NUNCA borrarlos acá
         """,
         (cutoff,),
@@ -485,6 +515,7 @@ def _downgrade_expired_cancellations(conn) -> int:
                 r["user_id"], r["mp_subscription_id"], r["current_period_end"],
                 r["credit_active_until"],
             )
+    _marcar_corte_de_cuota(conn, [r["user_id"] for r in rows])
     _notify_admin_downgrades(downgraded, "cancellation_expired")
     return count
 
@@ -494,12 +525,17 @@ def _cancel_stale_pending(conn, stale_days: int = 7) -> int:
     Esto libera el slot para que el user pueda crear una sub nueva sin que
     el endpoint /billing/subscribe le devuelva el init_point viejo (que
     probablemente ya expiró en MP)."""
-    cutoff = (datetime.utcnow() - timedelta(days=stale_days)).isoformat()
+    # ⚠️ La fecha se normaliza en las DOS puntas: created_at lo escribe SQLite
+    # con datetime('now') → 'YYYY-MM-DD HH:MM:SS' (espacio) y el cutoff sale de
+    # Python con 'T'. Como la comparación es de texto y ' ' < 'T', una fila del
+    # mismo día quedaba SIEMPRE por debajo del corte y entraba en el barrido
+    # hasta un día antes de lo que dice la política.
+    cutoff = (datetime.utcnow() - timedelta(days=stale_days)).strftime("%Y-%m-%d %H:%M:%S")
     rows = conn.execute(
         """SELECT id, user_id, mp_subscription_id, created_at
            FROM subscriptions
            WHERE status = 'pending'
-             AND created_at < ?""",
+             AND substr(replace(created_at,'T',' '),1,19) < ?""",
         (cutoff,),
     ).fetchall()
     if not rows:
