@@ -282,10 +282,6 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
             <TrendingUp size={11} className="inline -mt-0.5 ml-2" /> {goal.expected_return_pct}% anual
           </p>
         </div>
-        <div className="flex gap-1">
-          <button onClick={onEdit} className="text-ink-3 hover:text-ink-1 dark:hover:text-ink-0 p-1" title="Editar objetivo" aria-label={`Editar objetivo ${goal.name || ''}`}><Pencil size={14} aria-hidden="true" /></button>
-          <button onClick={onDelete} className="text-ink-3 hover:text-rendi-neg p-1" title="Eliminar objetivo" aria-label={`Eliminar objetivo ${goal.name || ''}`}><Trash2 size={14} aria-hidden="true" /></button>
-        </div>
       </div>
 
       {/* Progress bar */}
@@ -373,6 +369,33 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
 
       {/* Sprint 7: Goal diagnostic + sugerencia accionable basada en behavioral */}
       <GoalDiagnostic goalId={goal.id} reached={reached} />
+
+      {/* Editar / Eliminar AL PIE, no arriba a la derecha: esa esquina es de
+          `AskAIAbout`, que planta su botón flotante en `top-2 right-2`. En desktop
+          se podía llegar al tacho igual, pero en mobile el botón es un pill con la
+          palabra "Analizar" y los tapaba por completo: no había forma de borrar un
+          objetivo desde el celular. Acá, además, van con etiqueta — un tacho suelto
+          y sin texto es lo último que querés que sea ambiguo. */}
+      <div className="mt-4 pt-3 border-t border-line/50 flex justify-end gap-1">
+        <button
+          type="button"
+          onClick={onEdit}
+          title="Editar objetivo"
+          aria-label={`Editar objetivo ${goal.name || ''}`}
+          className="inline-flex items-center gap-1.5 text-xs text-ink-3 hover:text-ink-0 hover:bg-bg-2 rounded-md px-2.5 py-1.5 transition-colors"
+        >
+          <Pencil size={13} aria-hidden="true" /> Editar
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          title="Eliminar objetivo"
+          aria-label={`Eliminar objetivo ${goal.name || ''}`}
+          className="inline-flex items-center gap-1.5 text-xs text-ink-3 hover:text-rendi-neg hover:bg-rendi-neg/10 rounded-md px-2.5 py-1.5 transition-colors"
+        >
+          <Trash2 size={13} aria-hidden="true" /> Eliminar
+        </button>
+      </div>
     </div>
     </AskAIAbout>
   )
