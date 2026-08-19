@@ -17626,11 +17626,14 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
         resend=True). Los fallidos no se stampean → se reintentan solos.
       • only_gifted=True → solo a quienes tienen un comp Plus/Pro activo (evita
         prometer un regalo a alguien que no lo recibió).
+      • Los que están en su prueba gratis quedan SIEMPRE afuera (se cuentan en
+        excluded_in_trial): el mail les ofrecería de regalo lo que ya tienen.
       • limit>0 → cap para mandar en tandas.
 
     En local sin RESEND_API_KEY el envío loguea y devuelve False (no manda nada
     de verdad); el envío real ocurre en prod."""
     from billing import emails
+    from billing import trial as billing_trial
     from datetime import datetime as _dt
 
     threshold = max(0, int(data.threshold))
@@ -17640,6 +17643,7 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
         rows = conn.execute("""
             SELECT u.id, u.email, u.name, u.created_at, u.email_verified, u.tier,
                    u.credit_active_until, u.credit_anchor_amount_usd,
+                   u.credit_anchor_plan, u.trial_ends_at,
                    u.gift_plan_email_sent_at,
                    (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
                    (SELECT COUNT(*) FROM positions p
@@ -17650,21 +17654,41 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
             ORDER BY u.created_at ASC
         """).fetchall()
 
-        def _has_gift(d):
-            if (d.get("tier") or "free") not in ("plus", "pro"):
-                return False
+        def _credito_vigente(d) -> bool:
             cau = d.get("credit_active_until")
             if not cau:
                 return False
             try:
-                if _dt.fromisoformat(str(cau).replace("Z", "")) <= now:
-                    return False
+                return _dt.fromisoformat(str(cau).replace("Z", "")) > now
             except (ValueError, TypeError):
+                return False
+
+        def _en_trial(d):
+            """¿Está en la mitad de su prueba gratis de 15 días?"""
+            return _credito_vigente(d) and billing_trial.credit_is_trial(
+                d.get("credit_active_until"), d.get("trial_ends_at"))
+
+        def _has_gift(d):
+            if (d.get("tier") or "free") not in ("plus", "pro"):
+                return False
+            if not _credito_vigente(d):
+                return False
+            # El trial NO es un regalo. Su anchor queda en NULL a propósito
+            # (ponerle precio a los 15 días gratis los convertía en plata real),
+            # y NULL pasaba el test de "comp" por la ventana de atrás:
+            # float(None or 0) == 0 daba True. Resultado: al que estaba en la
+            # mitad de su prueba le entraba un mail ofreciéndole de REGALO
+            # exactamente lo que ya estaba usando gratis.
+            #
+            # Sin anchor no hay plan pago detrás que regalar: todo lo que otorga
+            # crédito de verdad (pago, comp, cambio de plan) lo deja escrito.
+            if d.get("credit_anchor_plan") is None:
                 return False
             # comp = sin costo (amount 0); evita marcar a quien paga su plan
             return float(d.get("credit_anchor_amount_usd") or 0) == 0
 
         targets = []
+        en_trial = 0
         for r in rows:
             d = dict(r)
             if data.only_verified and not d.get("email_verified"):
@@ -17673,6 +17697,14 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
                 continue
             activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
             if activity > threshold:
+                continue
+            # Fuera de la campaña MIENTRAS dure la prueba, mande o no mande el
+            # filtro only_gifted: el mail promete un regalo que se pisa con lo
+            # que ya tiene, y el trial trae su propia secuencia de 4 avisos
+            # haciendo este mismo trabajo. Cuando la prueba termine vuelve a ser
+            # candidato — ahí el regalo sí es un regalo.
+            if _en_trial(d):
+                en_trial += 1
                 continue
             d["activity"] = activity
             d["has_gift"] = _has_gift(d)
@@ -17695,6 +17727,9 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
                 "plan_label": data.plan_label,
                 "total_candidates": len(targets),
                 "with_gift": sum(1 for t in targets if t.get("has_gift")),
+                # Se informa para que el número no desaparezca en silencio: son
+                # los que quedaron afuera por estar en su prueba gratis.
+                "excluded_in_trial": en_trial,
                 "already_sent": sum(1 for t in targets if t.get("gift_plan_email_sent_at")),
                 "recipients": [
                     {"id": t["id"], "email": t["email"], "name": t.get("name"),
@@ -17739,6 +17774,7 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
             "sent_count": len(sent),
             "failed_count": len(failed),
             "skipped_count": len(skipped),
+            "excluded_in_trial": en_trial,
             "sent": sent,
             "failed": failed,
             "skipped": skipped,
@@ -18042,11 +18078,20 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
 
     Salvaguardas (no toca nada si no se cumplen):
       • Solo escribe si hay crédito activo (credit_active_until > now).
-      • Solo si credit_anchor_plan es 'plus' o 'pro'.
+      • Solo si credit_anchor_plan es 'plus' o 'pro' — o si el crédito vigente
+        es el de la prueba gratis, que NO tiene anchor (ver abajo).
       • Idempotente: si el tier ya coincide, no escribe.
     Deja un audit row 'manual_adjust' en credit_ledger.
+
+    La prueba gratis deja los anchors en NULL a propósito (ponerle precio a los
+    15 días regalados los convertía en plata real y "cambiar de plan" los volvía
+    41 días de Plus — audit). Con eso, un usuario en prueba al que se le
+    desincronizaba el tier no se podía reparar desde el panel: cortaba en
+    no_valid_anchor. Para él, el plan objetivo lo dice el CALENDARIO del trial
+    (billing.trial), no el anchor.
     """
     from datetime import datetime as _dt
+    from billing import trial as billing_trial
 
     conn = get_db()
     try:
@@ -18072,26 +18117,40 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
                 "detail": "El crédito venció o no existe. No restauro tier sin crédito vigente.",
                 "credit_active_until": cau,
             }
-        if anchor_plan not in ("plus", "pro"):
+        # De dónde sale el plan objetivo: el anchor pago si existe, y si no la
+        # etapa que le toca hoy a la prueba (repair_stage la saca del calendario
+        # y no de users.tier, que es la columna rota que venimos a arreglar).
+        target_plan = anchor_plan if anchor_plan in ("plus", "pro") else None
+        fuente = "credito"
+        if target_plan is None:
+            target_plan = billing_trial.repair_stage(conn, target_uid)
+            fuente = "trial"
+        if target_plan is None:
             return {
                 "ok": False,
                 "changed": False,
                 "reason": "no_valid_anchor",
-                "detail": f"credit_anchor_plan inválido: {anchor_plan!r}",
+                "detail": f"credit_anchor_plan inválido: {anchor_plan!r} "
+                          "(y el crédito vigente tampoco es el de una prueba gratis).",
             }
-        if (before_tier or "").strip().lower() == anchor_plan:
+        if (before_tier or "").strip().lower() == target_plan:
             return {
                 "ok": True,
                 "changed": False,
-                "detail": f"tier ya está en {anchor_plan}; nada que cambiar.",
+                "detail": f"tier ya está en {target_plan}; nada que cambiar.",
                 "tier": before_tier,
                 "credit_active_until": cau,
+                "source": fuente,
             }
 
+        detalle = (f"Admin restore-tier: {before_tier!r} -> {target_plan} "
+                   f"(credito activo hasta {cau})")
+        if fuente == "trial":
+            detalle += " [prueba gratis: etapa por calendario, sin anchor]"
         with conn:
             conn.execute(
                 "UPDATE users SET tier = ? WHERE id = ?",
-                (anchor_plan, target_uid),
+                (target_plan, target_uid),
             )
             conn.execute(
                 """INSERT INTO credit_ledger
@@ -18100,23 +18159,22 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
                         active_until_before, active_until_after, note)
                    VALUES (?, 'manual_adjust', 0, 0, ?, NULL, ?, NULL, ?, ?, ?)""",
                 (
-                    target_uid, before_tier, anchor_plan, cau, cau,
-                    f"Admin restore-tier: {before_tier!r} -> {anchor_plan} "
-                    f"(credito activo hasta {cau})",
+                    target_uid, before_tier, target_plan, cau, cau, detalle,
                 ),
             )
         log.info(
-            "Admin %s restored tier for user %s: %r -> %s (credit_until=%s)",
-            uid, target_uid, before_tier, anchor_plan, cau,
+            "Admin %s restored tier for user %s: %r -> %s (credit_until=%s, fuente=%s)",
+            uid, target_uid, before_tier, target_plan, cau, fuente,
         )
-        _notify_plan_change(conn, target_uid, before_tier, anchor_plan, "admin_restore")
+        _notify_plan_change(conn, target_uid, before_tier, target_plan, "admin_restore")
         return {
             "ok": True,
             "changed": True,
             "before_tier": before_tier,
-            "after_tier": anchor_plan,
+            "after_tier": target_plan,
             "credit_active_until": cau,
-            "detail": f"tier restaurado a {anchor_plan} para {email.strip()}.",
+            "source": fuente,
+            "detail": f"tier restaurado a {target_plan} para {email.strip()}.",
         }
     finally:
         conn.close()

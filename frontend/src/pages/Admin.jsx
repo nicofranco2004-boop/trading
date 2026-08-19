@@ -859,6 +859,9 @@ function BackupPanel({ toast }) {
 // gift_plan_email_sent_at y saltea a quien ya recibió. Idempotente.
 //   • only_gifted: solo a quienes tienen un comp Pro/Plus activo (no promete un
 //     regalo a quien no lo recibió). Default ON por seguridad.
+//   • El backend excluye SIEMPRE a los que están en su prueba gratis y los
+//     reporta en excluded_in_trial: su crédito no tiene anchor, así que pasaban
+//     por "comp activo" y recibían el mail en la mitad de la prueba.
 function GiftPlanPanel({ toast }) {
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -922,6 +925,8 @@ function GiftPlanPanel({ toast }) {
         Usuarios con ≤1 operación a los que les regalaste un mes de Pro. El mail les avisa del regalo y los empuja a
         importar su historial para aprovecharlo. Con <b>“solo con regalo activo”</b> se manda únicamente a quienes
         tienen un comp Pro/Plus vigente (no promete un regalo a quien no lo tiene). Los que ya lo recibieron se saltean.
+        Los que están en su <b>prueba gratis</b> quedan siempre afuera: el mail les ofrecería de regalo lo que ya tienen,
+        y la prueba trae su propia secuencia de avisos.
       </p>
 
       <label className="flex items-center gap-1.5 text-[11px] text-ink-3 cursor-pointer select-none">
@@ -931,9 +936,12 @@ function GiftPlanPanel({ toast }) {
 
       {preview && (
         <>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <ConvCell label="Candidatos" value={preview.total_candidates} hint="≤1 operación" />
             <ConvCell label="Con regalo activo" value={preview.with_gift} hint="comp Pro/Plus vigente" />
+            {/* Se muestra para que el número no se caiga en silencio: son los que
+                quedaron afuera por estar en su prueba gratis. */}
+            <ConvCell label="En prueba gratis" value={preview.excluded_in_trial ?? 0} hint="excluidos: ya lo tienen" />
             <ConvCell label="A enviar ahora" value={pending.length} hint="nunca recibieron" />
           </div>
 

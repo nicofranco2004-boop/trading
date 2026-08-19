@@ -78,6 +78,68 @@ def _activations_this_month(conn) -> int:
         return 10 ** 9
 
 
+def credit_is_trial(credit_active_until, trial_ends_at) -> bool:
+    """¿El crédito de esta fila ES el del trial (y no un regalo o un pago)?
+
+    El trial deja los anchors en NULL A PROPÓSITO: ponerle precio a los 15 días
+    gratis los convertía en plata real y "cambiar de plan" los transformaba en
+    41 días de Plus (audit). El efecto secundario es que "tier pago + anchor
+    NULL" dejó de ser un estado raro y pasó a ser el estado NORMAL de toda la
+    población en prueba — y cada camino de billing que asumía "tier pago ⇒ hay
+    un plan pago detrás" se empezó a romper.
+
+    La marca que sí distingue al trial es la VENTANA: credit_active_until quedó
+    grabada exactamente igual que trial_ends_at. Se compara acá, en un solo
+    lugar, para que los tres lectores (campaña de regalos, restore-tier, aviso
+    de baja al admin) no lo decidan cada uno con su propio criterio."""
+    return bool(credit_active_until and trial_ends_at
+                and str(credit_active_until) == str(trial_ends_at))
+
+
+def stage_by_calendar(started_at, now=None):
+    """Qué etapa le TOCA por calendario: 'pro' la primera semana, 'plus' después.
+    None si no hay fecha de arranque legible.
+
+    Es la regla de los TRIAL_PRO_DAYS días, y vive acá para que exista una sola
+    vez: si mañana el trial pasa a 5+10, cambiar la constante tiene que alcanzar
+    — un panel de admin con su propia copia del 7 seguiría reparando mal."""
+    if not started_at:
+        return None
+    try:
+        ini = datetime.fromisoformat(str(started_at).replace("Z", ""))
+    except (TypeError, ValueError):
+        return None
+    return "pro" if ((now or datetime.utcnow()) - ini) < timedelta(days=TRIAL_PRO_DAYS) else "plus"
+
+
+def repair_stage(conn, user_id: int):
+    """El tier que le corresponde HOY a alguien cuyo crédito vigente es el del
+    trial ('pro'|'plus'), o None si su crédito NO es el del trial.
+
+    Existe para reparar users.tier desde el panel de admin. No se saca de
+    status()['stage'] a propósito: esa etapa es el tier EFECTIVO (sale de
+    quota.get_tier, que lee users.tier) — justo la columna que está rota cuando
+    hace falta repararla. Preguntarle a ella devolvería 'free' y no repararía
+    nada. El calendario, en cambio, no se desincroniza."""
+    try:
+        row = conn.execute(
+            """SELECT trial_started_at, trial_ends_at, credit_active_until
+                 FROM users WHERE id=?""", (user_id,)).fetchone()
+    except Exception as ex:
+        log.warning("repair_stage falló uid=%s: %s", user_id, ex)
+        return None
+    if not row:
+        return None
+    cau = row["credit_active_until"]
+    if not credit_is_trial(cau, row["trial_ends_at"]):
+        return None
+    # Un trial ya vencido no se repara: el usuario es Free y corresponde que lo
+    # sea. Restaurarle el tier le devolvería acceso que ya se terminó.
+    if str(cau) <= datetime.utcnow().isoformat():
+        return None
+    return stage_by_calendar(row["trial_started_at"])
+
+
 def _email_of(conn, user_id: int):
     try:
         r = conn.execute("SELECT email FROM users WHERE id=?", (user_id,)).fetchone()
@@ -286,8 +348,7 @@ def status(conn, user_id: int) -> dict:
             real = _q.get_tier(conn, user_id)
             out["stage"] = real if real in ("pro", "plus") else None
         except Exception:
-            elapsed = (now - started_dt).days
-            out["stage"] = "pro" if elapsed < TRIAL_PRO_DAYS else "plus"
+            out["stage"] = stage_by_calendar(started_dt, now)
         # Días completos que faltan para que se termine TODO el trial.
         out["days_left"] = max(0, (until_dt - now).days + (1 if (until_dt - now).seconds else 0))
         # Días que faltan para el cambio de Pro a Plus (None si ya pasó).

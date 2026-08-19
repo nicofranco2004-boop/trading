@@ -119,6 +119,22 @@ def _notify_admin_downgrades(downgraded, source: str) -> None:
             log.warning("plan-change admin notify (downgrade) falló para %s: %s", email, ex)
 
 
+def _notify_admin_trials_ended(emails_list) -> None:
+    """Best-effort: UN mail al admin con todas las pruebas gratis que se
+    terminaron en esta corrida, en vez de uno por usuario.
+
+    Se llama DESPUÉS de commitear, igual que _notify_admin_downgrades, para no
+    tener la transacción tomada durante la llamada de red. Nunca levanta."""
+    if not emails_list:
+        return
+    try:
+        from billing import emails
+        emails.send_trials_ended_admin(emails_list=list(emails_list))
+    except Exception as ex:
+        log.warning("aviso agregado de trials terminados falló (%d): %s",
+                    len(emails_list), ex)
+
+
 def _downgrade_expired_credit(conn) -> int:
     """Baja a Free a users cuya credit_active_until ya pasó.
 
@@ -126,10 +142,15 @@ def _downgrade_expired_credit(conn) -> int:
     Si tienen authorized → el próximo cobro de Rebill va a refillar el
     crédito, así que dejamos pasar.
 
+    Acá caen también las pruebas gratis que se terminan (día 16), y son la
+    mayoría del volumen. Se las separa para el aviso al admin: una prueba que se
+    apaga sola NO es un cliente que se fue, y avisarla igual que una baja real
+    tapaba la señal de churn. Ver _notify_admin_trials_ended.
+
     Devuelve count de users degradados."""
+    from billing import trial as _trial
     now = datetime.utcnow().isoformat()
-    rows = conn.execute(
-        """SELECT u.id, u.email, u.tier, u.credit_active_until
+    _sql = """SELECT u.id, u.email, u.tier, u.credit_active_until{extra}
            FROM users u
            WHERE u.tier IN ('pro', 'plus', 'advisor')
              AND u.credit_active_until IS NOT NULL
@@ -137,13 +158,29 @@ def _downgrade_expired_credit(conn) -> int:
              AND NOT EXISTS (
                 SELECT 1 FROM subscriptions s
                 WHERE s.user_id = u.id AND s.status = 'authorized'
-             )""",
-        (now,),
-    ).fetchall()
+             )"""
+    # trial_ends_at solo decide A QUIÉN se le avisa, pero esta consulta es la que
+    # hace cumplir el vencimiento del acceso pago: si un esquema no tuviera la
+    # columna, el job entero dejaría de correr y NADIE bajaría a Free. Se
+    # degrada en vez de fallar — sin el dato, todas las bajas se avisan una por
+    # una, como antes de que existiera el trial.
+    con_trial = True
+    try:
+        rows = conn.execute(_sql.format(extra=", u.trial_ends_at"), (now,)).fetchall()
+    except Exception as ex:
+        log.warning("sin columna trial_ends_at (%s): las bajas se avisan sin "
+                    "distinguir pruebas gratis", ex)
+        con_trial = False
+        try:
+            conn.rollback()   # la consulta fallida deja la transacción abortada
+        except Exception:
+            pass
+        rows = conn.execute(_sql.format(extra=""), (now,)).fetchall()
     if not rows:
         return 0
     count = 0
-    downgraded = []  # (email, tier_anterior) para avisar al admin tras commitear
+    downgraded = []       # (email, tier_anterior) → un mail al admin por cada uno
+    trials_vencidos = []  # emails de pruebas que se terminaron → un solo mail
     with conn:
         for r in rows:
             conn.execute(
@@ -164,12 +201,17 @@ def _downgrade_expired_credit(conn) -> int:
                 ),
             )
             count += 1
-            downgraded.append((r["email"], r["tier"]))
+            if con_trial and _trial.credit_is_trial(
+                    r["credit_active_until"], r["trial_ends_at"]):
+                trials_vencidos.append(r["email"])
+            else:
+                downgraded.append((r["email"], r["tier"]))
             log.info(
                 "Credit expired for user %s (was %s, active_until=%s) — downgraded to free",
                 r["id"], r["tier"], r["credit_active_until"],
             )
     _notify_admin_downgrades(downgraded, "credit_expired")
+    _notify_admin_trials_ended(trials_vencidos)
     return count
 
 

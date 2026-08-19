@@ -902,6 +902,43 @@ def send_plan_change_admin(*, user_email: str, old_plan: Optional[str],
                  from_addr=_from_noreply())
 
 
+def send_trials_ended_admin(*, emails_list: list) -> bool:
+    """Aviso INTERNO: "N pruebas gratis terminaron hoy", UNO por corrida del cron.
+
+    Antes cada prueba que se apagaba sola salía por send_plan_change_admin, es
+    decir un mail por usuario y con la misma cara que una baja real. Con
+    volumen, la señal que importa —alguien que PAGABA y se fue— quedaba
+    enterrada entre pruebas venciendo. Agregado se sigue viendo el volumen del
+    trial sin que compita con el churn de verdad.
+
+    SECURITY: los emails son user-controlled → html.escape antes del HTML."""
+    limpios = [e for e in (emails_list or []) if e and not _is_test_address(e)]
+    if not limpios:
+        return False
+    to = (os.environ.get("ADMIN_NOTIFY_EMAIL") or "soporte@rendi.finance").strip()
+    if not to:
+        return False
+    n = len(limpios)
+    plural = "prueba gratis terminó" if n == 1 else "pruebas gratis terminaron"
+    subject = f"Rendi · {n} {plural}"
+    filas = "".join(
+        f'<tr><td style="padding:4px 0;font-size:14px;color:#374151;">{html.escape(e)}</td></tr>'
+        for e in limpios
+    )
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{n} {plural}</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Se les venció la prueba de 15 días y pasaron a Free. No son bajas: nunca
+        pagaron. El mail de cierre les llega por su propia secuencia.
+      </p>
+      <table cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:0 0 20px;">{filas}</table>
+    """
+    text = (f"{n} {plural} en Rendi (pasaron a Free)\n\n"
+            + "\n".join(limpios) + "\n")
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
+
+
 # ─── Email al usuario: le regalaron Plus/Pro (grant-comp del admin) ──────────
 
 def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
