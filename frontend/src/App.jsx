@@ -333,6 +333,13 @@ function Layout() {
         <main className="min-h-screen">
           <ClientContextBar />
           <DemoBanner />
+          {/* La barra del trial va en los DOS shells. Cuando se montó quedó
+              solo en el de desktop (el reemplazo matcheó una sola indentación)
+              y se verificó en viewport de escritorio, o sea justo la mitad que
+              andaba: la mayoría de los usuarios de Rendi entra desde el celular
+              y no veía ni el contador ni el aviso del día 8 — que es la mitad
+              del mecanismo del trial encadenado. */}
+          <TrialBanner />
           <Suspense fallback={<PageFallback />}>
             <AppRoutes />
           </Suspense>
