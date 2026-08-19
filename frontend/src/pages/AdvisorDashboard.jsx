@@ -761,6 +761,23 @@ function ReportModal({ onClose }) {
     api.get('/advisor/profile').then(p => setBrand({ name: p.name || '', matricula: p.matricula || '', logo: p.logo || null })).catch(() => setProfileError(true))
   }, [])
 
+  // Cortar el link público de un informe ya enviado: es la única salida si el
+  // link se filtró (viaja por WhatsApp y adentro va la cartera del cliente).
+  // Reversible a propósito — cortarlo por error no puede ser definitivo.
+  async function toggleRevoke(r) {
+    const cortar = (r.estado || 'activo') === 'activo'
+    if (cortar && !confirm(
+      `¿Cortar el link del informe de ${r.client}?\n\n` +
+      'Quien lo tenga deja de poder abrirlo. Podés reactivarlo después.')) return
+    try {
+      await api.post(`/advisor/reports/${r.id}/revoke?revoke=${cortar}`)
+      const d = await api.get('/advisor/reports')
+      setHistory(d.reports || [])
+    } catch (e) {
+      alert('No pudimos cambiar el link: ' + (e?.message || ''))
+    }
+  }
+
   // Grupos guardados: generar el informe para "Los de Amazon" sin tildar de a uno.
   const [groups, setGroups] = useState([])
   useEffect(() => {
@@ -914,30 +931,50 @@ function ReportModal({ onClose }) {
           <p className="text-xs text-ink-3 py-6 text-center">Todavía no generaste informes.</p>
         ) : (
           <div className="border border-line/60 rounded-lg divide-y divide-line/40 max-h-96 overflow-y-auto">
-            {history.map(r => (
-              <div key={r.id} className="flex items-center gap-2 px-3 py-2.5 flex-wrap">
+            {history.map(r => {
+              // Un link ya cortado no ofrece copiar ni mandar: sería mandarle al
+              // cliente algo que le va a dar "no encontrado".
+              const activo = (r.estado || 'activo') === 'activo'
+              return (
+              <div key={r.id} className={`flex items-center gap-2 px-3 py-2.5 flex-wrap ${activo ? '' : 'opacity-60'}`}>
                 <div className="min-w-[150px]">
                   <span className="text-sm font-medium text-ink-0">{r.client}</span>
+                  {r.estado === 'revocado' && (
+                    <span className="ml-1.5 text-[10px] font-semibold text-ink-3 border border-line rounded px-1 py-0.5">link cortado</span>
+                  )}
+                  {r.estado === 'vencido' && (
+                    <span className="ml-1.5 text-[10px] font-semibold text-ink-3 border border-line rounded px-1 py-0.5">vencido</span>
+                  )}
                   <span className="block text-[10px] text-ink-3">{r.period_start} → {r.period_end} · generado {String(r.created_at || '').slice(0, 10)}</span>
                 </div>
                 <div className="ml-auto flex items-center gap-1.5">
-                  <button type="button" onClick={() => copy(r.url, 'Link copiado')}
-                    className="text-[11px] font-semibold text-data-violet border border-data-violet/30 hover:bg-data-violet/10 rounded-md px-2.5 py-1.5 transition-colors">
-                    Copiar link
-                  </button>
-                  {r.phone && r.wa_text && (
+                  {activo && (
+                    <button type="button" onClick={() => copy(r.url, 'Link copiado')}
+                      className="text-[11px] font-semibold text-data-violet border border-data-violet/30 hover:bg-data-violet/10 rounded-md px-2.5 py-1.5 transition-colors">
+                      Copiar link
+                    </button>
+                  )}
+                  {activo && r.phone && r.wa_text && (
                     <a href={whatsappUrl(r.wa_text, r.phone)} target="_blank" rel="noreferrer noopener"
                       className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
                       <WhatsAppIcon size={11} /> WhatsApp
                     </a>
                   )}
-                  <a href={r.url} target="_blank" rel="noopener noreferrer"
-                    className="text-[11px] font-medium text-ink-2 hover:text-ink-0 border border-line rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
-                    Abrir <ExternalLink size={10} strokeWidth={2} />
-                  </a>
+                  {r.estado !== 'vencido' && (
+                    <button type="button" onClick={() => toggleRevoke(r)}
+                      className="text-[11px] font-medium text-ink-2 hover:text-ink-0 border border-line rounded-md px-2.5 py-1.5 transition-colors">
+                      {activo ? 'Cortar link' : 'Reactivar'}
+                    </button>
+                  )}
+                  {activo && (
+                    <a href={r.url} target="_blank" rel="noopener noreferrer"
+                      className="text-[11px] font-medium text-ink-2 hover:text-ink-0 border border-line rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
+                      Abrir <ExternalLink size={10} strokeWidth={2} />
+                    </a>
+                  )}
                 </div>
               </div>
-            ))}
+            )})}
           </div>
         )}
         <div className="flex justify-end pt-3">

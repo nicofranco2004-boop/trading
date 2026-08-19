@@ -1997,6 +1997,7 @@ def init_db():
                 token TEXT NOT NULL UNIQUE,      -- link público /i/{token}
                 payload TEXT NOT NULL,           -- JSON congelado del informe
                 wa_text TEXT,                    -- versión texto para WhatsApp
+                revoked_at TEXT,                 -- cortar el link si se filtró
                 created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_advisor_reports_client
@@ -2040,6 +2041,15 @@ def init_db():
             conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_open INTEGER DEFAULT 1;")
         if _ap_cols and 'brief_close' not in _ap_cols:
             conn.executescript("ALTER TABLE advisor_profile ADD COLUMN brief_close INTEGER DEFAULT 1;")
+
+        # revoked_at — DESPUÉS del CREATE de advisor_reports, y sin índice encima
+        # (un CREATE INDEX sobre una columna que todavía no existe tiró prod 20
+        # minutos el 2026-08-02). El link público de un informe no se podía cortar:
+        # una vez que salió por WhatsApp, quien lo tuviera veía la cartera y el
+        # rendimiento del cliente para siempre.
+        _ar_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_reports)").fetchall()]
+        if _ar_cols and 'revoked_at' not in _ar_cols:
+            conn.executescript("ALTER TABLE advisor_reports ADD COLUMN revoked_at TEXT;")
 
 
         # subscriptions: columnas de idempotencia de emails (idempotent migration
@@ -31796,7 +31806,7 @@ def advisor_list_reports(uid: int = Depends(get_current_user)):
         _require_advisor(conn, uid)
         rows = conn.execute(
             """SELECT r.id, r.client_uid, r.period_start, r.period_end, r.token,
-                      r.wa_text, r.created_at, ac.label, ac.phone, u.name
+                      r.wa_text, r.created_at, r.revoked_at, ac.label, ac.phone, u.name
                FROM advisor_reports r
                LEFT JOIN advisor_clients ac
                  ON ac.advisor_uid = r.advisor_uid AND ac.client_uid = r.client_uid
@@ -31806,6 +31816,19 @@ def advisor_list_reports(uid: int = Depends(get_current_user)):
             (uid,),
         ).fetchall()
         base = _frontend_url()
+        _ttl = _report_ttl_days()
+        _corte = ((datetime.utcnow() - timedelta(days=_ttl)).isoformat(sep=" ")
+                  if _ttl else None)
+
+        def _estado(r):
+            """Por qué un link ya no abre. Al asesor SÍ se lo distinguimos (al
+            público no: ver report_public)."""
+            if r["revoked_at"]:
+                return "revocado"
+            if _corte and r["created_at"] and str(r["created_at"]) < _corte:
+                return "vencido"
+            return "activo"
+
         return {"reports": [{
             "id": r["id"], "client_uid": r["client_uid"],
             "client": (r["name"] or r["label"] or f"Cliente {r['client_uid']}"),
@@ -31813,7 +31836,8 @@ def advisor_list_reports(uid: int = Depends(get_current_user)):
             "period_start": r["period_start"], "period_end": r["period_end"],
             "url": f"{base}/i/{r['token']}", "created_at": r["created_at"],
             "wa_text": r["wa_text"],
-        } for r in rows]}
+            "estado": _estado(r), "revoked_at": r["revoked_at"],
+        } for r in rows], "ttl_days": _ttl}
     finally:
         conn.close()
 
@@ -32940,25 +32964,77 @@ def advisor_reports_generate(data: AdvisorReportIn, request: Request,
         conn.close()
 
 
+def _report_ttl_days() -> int:
+    """Cuántos días vive un link público de informe. 0 = para siempre.
+
+    Un informe es una rendición de cuentas de un período cerrado: se lee cuando
+    llega y después no se vuelve a abrir. El link, en cambio, viaja por WhatsApp
+    —se reenvía, queda en un chat grupal, en una captura— y sin vencimiento la
+    cartera y el rendimiento del cliente quedan legibles para siempre por quien
+    tenga la URL. El default corta a los 180 días; REPORTS_TTL_DAYS lo cambia (o
+    lo apaga con 0) sin deployar."""
+    try:
+        return max(0, int(os.environ.get("REPORTS_TTL_DAYS", "180") or 0))
+    except (TypeError, ValueError):
+        return 180
+
+
 @app.get("/api/reports/public/{token}")
 def report_public(token: str, request: Request):
     """El informe que abre el CLIENTE — público, sin cuenta (viaja por
-    WhatsApp/email). Devuelve el payload CONGELADO al momento de generar."""
+    WhatsApp/email). Devuelve el payload CONGELADO al momento de generar.
+
+    404 —y no 410— para un informe revocado o vencido: distinguirlos le
+    confirmaría a quien tenga un link filtrado que el informe EXISTE y de cuándo
+    es. Para el asesor la diferencia sí se ve, en su historial."""
     _check_rate_limit(request, max_calls=30, window_seconds=300, suffix="report_pub_ip")
     if not token or len(token) < 10 or len(token) > 40:
         raise HTTPException(404, "Informe no encontrado")
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT payload, created_at FROM advisor_reports WHERE token=?",
+            "SELECT payload, created_at, revoked_at FROM advisor_reports WHERE token=?",
             (token,)).fetchone()
         if not row:
             raise HTTPException(404, "Informe no encontrado")
+        if row["revoked_at"]:
+            raise HTTPException(404, "Informe no encontrado")
+        _ttl = _report_ttl_days()
+        if _ttl and row["created_at"]:
+            corte = (datetime.utcnow() - timedelta(days=_ttl)).isoformat(sep=" ")
+            if str(row["created_at"]) < corte:
+                raise HTTPException(404, "Informe no encontrado")
         try:
             payload = json.loads(row["payload"])
         except Exception:
             raise HTTPException(500, "Informe corrupto")
         return {"report": payload, "created_at": row["created_at"]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/reports/{report_id}/revoke")
+def advisor_report_revoke(report_id: int, revoke: bool = True,
+                          uid: int = Depends(get_current_user)):
+    """Corta (o reactiva) el link público de un informe ya enviado.
+
+    Es la única salida cuando un link se filtra: el token viaja por WhatsApp y
+    hasta ahora no había forma de darlo de baja. Sólo el asesor que lo generó —
+    el WHERE lleva advisor_uid, si no cualquier asesor podría apagar los
+    informes de otro."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        with conn:
+            cur = conn.execute(
+                "UPDATE advisor_reports SET revoked_at=? WHERE id=? AND advisor_uid=?",
+                (datetime.utcnow().isoformat(sep=" ", timespec="seconds") if revoke else None,
+                 report_id, uid))
+        if not cur.rowcount:
+            raise HTTPException(404, "Informe no encontrado")
+        log.info("advisor %s %s el informe %s", uid,
+                 "revocó" if revoke else "reactivó", report_id)
+        return {"ok": True, "id": report_id, "revoked": bool(revoke)}
     finally:
         conn.close()
 
