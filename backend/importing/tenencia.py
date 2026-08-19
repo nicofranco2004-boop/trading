@@ -862,8 +862,15 @@ def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
             ticker = _synth_letra_ticker(instr)
         if not ticker:
             # 'Dólar estadounidense ()' (paréntesis vacío) = polvo en USD → al cash.
+            # También cuenta como "el archivo lista el efectivo": es la MISMA fila
+            # de saldo, sólo que Cocos a veces la escribe con el nombre largo en
+            # vez del código 'USD'. Sin marcarla, un export COMPLETO cuyo único
+            # saldo viene en esa forma se leía como parcial: se avisaba "puede ser
+            # un recorte", el override quedaba en gap-fill y una posición ya
+            # vendida se quedaba para siempre en la cartera.
             if "dolar" in _deaccent(instr).lower():
                 cash_usd += num(qty_s)
+                saw_cash_row = True
             continue
         qty = num(qty_s)
         value = num(total_s)

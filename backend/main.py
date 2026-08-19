@@ -309,21 +309,87 @@ mantenimiento.instalar(app)
 _rate_store: dict = defaultdict(list)  # key → [timestamps]
 _RATE_STORE_MAX_KEYS = 10_000  # cap para evitar memory bloat por IPs random
 
-def _rate_limit_ip(request: Request) -> str:
-    """Extrae la IP del cliente respetando X-Forwarded-For (Railway/Vercel
-    proxean — `request.client.host` sería siempre la IP del LB, generando
-    un solo cubo global para todos los users → cualquier atacante puede
-    DoS-ear el rate limit de TODOS al mismo tiempo).
+def _xff_parts(request: Request) -> list:
+    """Las entradas de X-Forwarded-For, normalizadas (sin puertos ni corchetes)."""
+    out = []
+    for raw in (request.headers.get("x-forwarded-for", "") or "").split(","):
+        p = raw.strip()
+        if not p:
+            continue
+        if p.startswith("["):                       # [2001:db8::1]:443 → 2001:db8::1
+            p = p[1:].split("]")[0]
+        elif p.count(":") == 1 and "." in p:        # 1.2.3.4:5678 → 1.2.3.4
+            p = p.split(":")[0]
+        out.append(p)
+    return out
 
-    SECURITY: solo confiamos en X-Forwarded-For si vamos detrás de un
-    proxy de confianza (RENDI_ENV=prod). En dev/local, fallback a
-    request.client.host para evitar spoofing trivial.
+
+def _es_ip_publica(s: str) -> bool:
+    try:
+        import ipaddress
+        return ipaddress.ip_address(s).is_global
+    except (ValueError, TypeError):
+        return False
+
+
+def _ip_del_cliente(request: Request) -> str:
+    """La IP real del cliente, leyendo X-Forwarded-For por la DERECHA.
+
+    X-Forwarded-For se arma de izquierda a derecha y cada proxy agrega al FINAL.
+    La primera entrada es la que mandó el cliente: la controla quien llama. Leer
+    esa (lo que hacíamos) es leer un valor que el atacante elige — mandando uno
+    distinto en cada request, cada una parecía venir de una IP nueva y los 27
+    rate limiters de la app dejaban de existir, incluidos el de login y el de
+    reseteo de contraseña (flooding de mails a una casilla ajena). En el aviso
+    de "nuevo inicio de sesión" el efecto era mostrarle al usuario una IP
+    inventada por el atacante.
+
+    Se lee por la derecha, que es la parte que escribieron los proxies y nadie
+    de afuera puede empujar. Cuántos saltos hay adelante no lo sabemos con
+    certeza (depende de Railway), así que el default NO lo asume: se toma la
+    entrada más a la derecha que sea una IP PÚBLICA. Los saltos internos agregan
+    direcciones privadas (10.x, 172.16-31.x, 192.168.x, fd00::/8), así que se
+    saltean solas, y lo que el atacante inyecta queda siempre a la IZQUIERDA de
+    lo que agregó el borde. Si algún día un salto interno apareciera con IP
+    pública, RENDI_TRUSTED_PROXY_HOPS=N fija la posición sin deployar.
+
+    Con hops mal puesto todos los usuarios caerían en el mismo balde y se
+    rate-limitearían entre ellos —peor que el agujero—, por eso el default es el
+    modo automático y no un número fijo. Para verificar contra prod:
+    GET /api/admin/diag/client-ip devuelve la cadena cruda tal como llega.
+
+    Límite conocido del modo automático: si TODAS las entradas escritas por los
+    proxies fueran privadas (request entrada desde adentro de la red), la última
+    pública de la cadena es la que inyectó el cliente y se elegiría esa. No se
+    puede distinguir sin saber los saltos — es el dato que falta. Para tráfico
+    real de internet no ocurre: el borde escribe la IP pública del cliente.
+
+    SECURITY: solo se confía en el header detrás de un proxy de confianza
+    (RENDI_ENV=prod). En dev/local vale request.client.host, que no se falsea.
     """
-    if os.environ.get("RENDI_ENV") == "prod":
-        fwd = request.headers.get("x-forwarded-for", "")
-        if fwd:
-            return fwd.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    socket_ip = request.client.host if request.client else ""
+    if os.environ.get("RENDI_ENV") != "prod":
+        return socket_ip or "unknown"
+    parts = _xff_parts(request)
+    if not parts:
+        return socket_ip or "unknown"
+    try:
+        hops = max(0, int(os.environ.get("RENDI_TRUSTED_PROXY_HOPS", "0") or 0))
+    except (TypeError, ValueError):
+        hops = 0
+    if hops:
+        # Posición fija contada desde la derecha: hops=1 → la última.
+        return parts[-hops] if len(parts) >= hops else parts[0]
+    for p in reversed(parts):
+        if _es_ip_publica(p):
+            return p
+    # Cadena entera privada (red interna, health checks): la última es la que
+    # escribió el proxy más cercano — sigue siendo mejor que la del atacante.
+    return parts[-1]
+
+
+def _rate_limit_ip(request: Request) -> str:
+    return _ip_del_cliente(request) or "unknown"
 
 
 def _check_rate_limit(request: Request, max_calls: int, window_seconds: int, suffix: str = ""):
@@ -2689,11 +2755,13 @@ def _ua_hash(ua: Optional[str]) -> str:
 
 
 def _client_ip(request: Request) -> str:
-    """Extrae la IP real respetando X-Forwarded-For (Vercel/Railway proxy)."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    """La IP que se le muestra al usuario en el aviso de nuevo inicio de sesión.
+
+    Mismo criterio que el rate limiting — una sola regla para leer el header, en
+    _ip_del_cliente. Acá leer la PRIMERA entrada significaba que el atacante
+    elegía qué IP veía la víctima en su mail de seguridad."""
+    ip = _ip_del_cliente(request)
+    return "" if ip == "unknown" else ip
 
 
 def _record_login_and_maybe_alert(
@@ -15244,6 +15312,33 @@ def admin_backfill_currency(apply: bool = False, offset: int = 0, limit: int = 0
         raise HTTPException(status_code=500, detail=f"backfill-currency falló: {type(e).__name__}: {e}")
     finally:
         conn.close()
+
+
+@app.get("/api/admin/diag/client-ip")
+def admin_diag_client_ip(request: Request, uid: int = Depends(get_admin_user)):
+    """READ-ONLY: cómo llega X-Forwarded-For en este entorno y qué IP deducimos.
+
+    Existe para poder CONFIRMAR contra prod cuántos saltos mete Railway antes de
+    la app. De eso depende el rate limiting: si se cuenta mal, o el atacante
+    sigue eligiendo su balde (leyendo por la izquierda) o todos los usuarios
+    caen en el mismo (leyendo demasiado a la derecha) y se rate-limitean entre
+    ellos. Abrilo logueado como admin y mirá `cadena`: la última entrada tiene
+    que ser TU IP pública. Si no lo es, contá desde la derecha hasta encontrarla
+    y poné ese número en RENDI_TRUSTED_PROXY_HOPS."""
+    partes = _xff_parts(request)
+    return {
+        "header_crudo": request.headers.get("x-forwarded-for", "") or None,
+        "cadena": [{"pos_desde_la_derecha": len(partes) - i, "ip": p,
+                    "publica": _es_ip_publica(p)} for i, p in enumerate(partes)],
+        "socket_peer": request.client.host if request.client else None,
+        "ip_elegida": _ip_del_cliente(request),
+        "modo": ("hops_fijos" if os.environ.get("RENDI_TRUSTED_PROXY_HOPS")
+                 else "automatico (la última pública)"),
+        "RENDI_TRUSTED_PROXY_HOPS": os.environ.get("RENDI_TRUSTED_PROXY_HOPS") or None,
+        "RENDI_ENV": os.environ.get("RENDI_ENV") or None,
+        "nota": ("Si RENDI_ENV no es 'prod' el header se ignora entero y se usa "
+                 "socket_peer — en local es lo correcto."),
+    }
 
 
 @app.get("/api/admin/diagnose-negative-capital")
@@ -27919,7 +28014,18 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
     cut_inv = sum(abs(invested_by_asset.get(tk, 0.0)) for tk, _ in _nis_cut)
     cut_inv += sum(abs(invested_by_asset.get(tk, 0.0)) * ((rq - sq) / rq if rq else 0)
                    for tk, rq, sq in safe_over)
-    n_current = len(current)
+    # El denominador de la mitad por CANTIDAD tiene que ser el mismo universo que
+    # el de la mitad por valor: lo que este broker PODRÍA cortar. `current` viene
+    # sumado sobre TODO el par, así que incluía los activos del sibling en la otra
+    # moneda —que nunca son cortables (_reducible los saca vía sibling_assets)— y
+    # los contaba en el denominador igual. Tener una cuenta en dólares desarmaba
+    # la guarda del lado en pesos: mismo usuario, misma foto, 10 activos en pesos
+    # de los que se cortan 9 → con cuenta USD (12 tickers más) 9 > 0.5*22 es
+    # falso y la foto se llevaba 9 posiciones; sin cuenta USD, 9 > 0.5*10 corta
+    # y no se lleva ninguna. La segunda cuenta sólo AGREGA cosas que no se pueden
+    # tocar: no puede volver más permisiva una guarda que existe para no vaciar
+    # una cartera (el wizard aplica sin checkpoint).
+    n_current = sum(1 for tk in current if tk not in sibling_assets)
     n_cut = len(safe_over) + len(_nis_cut)
     capped = (total_inv > 0 and cut_inv > 0.5 * total_inv) or (n_current > 0 and n_cut > 0.5 * n_current)
     if capped:
@@ -28292,20 +28398,31 @@ def import_tenencia_preview(
                 (uid, bname)).fetchone()
             return float(row["invested"] or 0) if row else 0.0
         _sib = next((b for b in _import_persister.broker_pair(conn, uid, broker) if b != broker), None)
-        # Cualquier foto que PISA: si trae USD MATERIAL (≥ 1) y no hay sibling '· USD'
-        # (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el saldo en
-        # dólares exacto (antes sólo Balanz/IEB/IOL → Cocos/PPI/BMB con cash USD pero
-        # SIN holdings USD lo descartaban en silencio). Para polvo (< 1 USD) no
-        # ensuciamos con un sub-broker.
-        if snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
-            parent_row = conn.execute(
-                "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
-            _sib = _ensure_usd_sibling(conn, uid, parent_row)["name"]
         _adj = []
-        if snap.cash_ars is not None:
-            _adj.append((broker, "ARS", _cur_cash(broker), snap.cash_ars, 1.0))
-        if snap.cash_usd is not None and _sib:
-            _adj.append((_sib, "USD", _cur_cash(_sib), snap.cash_usd, 0.01))
+        # El true-up del efectivo sólo corre si la foto se leyó ENTERA. Los
+        # parsers dejan cash_ars/cash_usd en 0.0 —no None— cuando el archivo no
+        # trae filas de saldo, así que sobre una lectura PARCIAL el ajuste
+        # llevaba el efectivo del usuario a CERO, y en silencio: el true-up no se
+        # le muestra. Es la misma regla que ya gatea el borrado de
+        # not_in_snapshot — sin señal de que leímos todo, que un dato no aparezca
+        # no prueba que no exista. (Balanz siempre es completa: no cambia nada.)
+        if not _complete:
+            log.info("tenencia cash true-up SALTEADO uid=%s broker=%s: foto parcial "
+                     "(cash_ars=%s cash_usd=%s)", uid, broker, snap.cash_ars, snap.cash_usd)
+        else:
+            # Cualquier foto que PISA: si trae USD MATERIAL (≥ 1) y no hay sibling '· USD'
+            # (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el saldo en
+            # dólares exacto (antes sólo Balanz/IEB/IOL → Cocos/PPI/BMB con cash USD pero
+            # SIN holdings USD lo descartaban en silencio). Para polvo (< 1 USD) no
+            # ensuciamos con un sub-broker.
+            if snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
+                parent_row = conn.execute(
+                    "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
+                _sib = _ensure_usd_sibling(conn, uid, parent_row)["name"]
+            if snap.cash_ars is not None:
+                _adj.append((broker, "ARS", _cur_cash(broker), snap.cash_ars, 1.0))
+            if snap.cash_usd is not None and _sib:
+                _adj.append((_sib, "USD", _cur_cash(_sib), snap.cash_usd, 0.01))
         _cash_txs, _cash_applied = _import_tenencia.build_cash_trueup_txs(_adj, seed_date)
         for _b, _ccy, _cur, _tgt, _diff in _cash_applied:
             log.info("tenencia cash true-up uid=%s broker=%s %s rendi=%.2f foto=%.2f diff=%.2f",

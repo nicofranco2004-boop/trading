@@ -245,8 +245,14 @@ class IebOverrideE2E(unittest.TestCase):
         pv = self._preview(wb); self.assertEqual(pv.status_code, 200, pv.text)
         body = pv.json()
         self.assertFalse(body["foto_completa"])
-        self.assertEqual(body["override"]["removed"], [])   # no borra por foto parcial
-        self._confirm(body["session_id"])
+        # Con la foto parcial y las cantidades ya coincidiendo no queda NADA que
+        # aplicar. Antes siempre había batch porque el true-up del efectivo corría
+        # igual sobre una lectura parcial —y con eso le ponía el cash en la foto,
+        # que en un recorte es 0—; ahora también se saltea. La garantía de fondo no
+        # cambió y es la de abajo: el activo ausente sigue tenido.
+        if body.get("session_id"):
+            self.assertEqual(body["override"]["removed"], [])   # no borra por foto parcial
+            self._confirm(body["session_id"])
         self.assertAlmostEqual(self._held("GGAL"), 100, places=4)   # sigue tenido
 
 

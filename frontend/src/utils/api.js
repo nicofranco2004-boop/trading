@@ -112,7 +112,9 @@ async function req(method, path, body, opts) {
   })
   // GET es idempotente → se reintenta solo. El resto (POST/PATCH/DELETE) no:
   // repetirlo podría duplicar un alta.
-  const res = method === 'GET' ? await withGatewayRetry(doFetch) : await doFetch()
+  const res = method === 'GET'
+    ? await withGatewayRetry(doFetch, { signal: opts?.signal })
+    : await doFetch()
 
   if (res.status === 401) {
     // Si hay un usuario "conocido" en localStorage y nos rebotan, expiró la
@@ -186,12 +188,9 @@ export function errorMessage(e) {
   return e?.message || ''
 }
 
-// Errores de INFRAESTRUCTURA (no del backend): el gateway no pudo hablar con
-// el servidor. Pasa de verdad cada vez que deployamos —el backend reinicia unos
-// segundos— y también cuando estaba dormido. Al usuario le llegaba un críptico
-// "HTTP 502" en medio de una importación (reporte real, 2026-08-08).
-const GATEWAY_ERRORS = [502, 503, 504]
-const RETRY_DELAYS_MS = [800, 2500, 5000]   // ~8s en total, cubre un reinicio
+// La política de reintento (502/503/504, delays con jitter, no reintentar lo
+// cancelado) vive en ./gatewayRetry.js — ahí la puede importar el test.
+import { GATEWAY_ERRORS, withGatewayRetry } from './gatewayRetry'
 
 // El mensaje de gateway decía "se está reiniciando — suele tardar menos de un
 // minuto. Probá de nuevo." Las dos mitades pueden ser falsas y lo fueron:
@@ -211,27 +210,6 @@ export function gatewayMessage({ write } = {}) {
       'Revisá el estado antes de repetirla — si no cambió nada, volvé a intentar en un rato.'
     : 'No pudimos conectarnos con el servidor. Suele ser una actualización en curso: ' +
       'esperá un momento y recargá. Si sigue igual, escribinos a soporte.'
-}
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-
-// Reintenta `doFetch` mientras el gateway falle. SOLO para pedidos que se
-// pueden repetir sin efectos: si el servidor llegó a procesar, repetir un
-// alta duplicaría datos. Por eso confirm/borrar NO pasan por acá.
-async function withGatewayRetry(doFetch) {
-  for (let i = 0; ; i++) {
-    let res
-    try {
-      res = await doFetch()
-    } catch (netErr) {
-      // Falla de red (servidor no alcanzable): mismo tratamiento.
-      if (i >= RETRY_DELAYS_MS.length) throw netErr
-      await sleep(RETRY_DELAYS_MS[i])
-      continue
-    }
-    if (!GATEWAY_ERRORS.includes(res.status) || i >= RETRY_DELAYS_MS.length) return res
-    await sleep(RETRY_DELAYS_MS[i])
-  }
 }
 
 async function upload(path, formData) {

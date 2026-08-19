@@ -407,6 +407,15 @@ def persist_batch(
 
                 conn.execute(f"RELEASE {sp_name}")
                 brokers_touched.add(broker)
+                # La PLATA puede haber salido de OTRA cuenta que la de la tenencia:
+                # el CEDEAR pagado con dólares consolida el activo en el broker
+                # padre pero debita el sibling '· USD' (ver cash_broker_for). Sin
+                # esto el sibling nunca entraba al set, así que ni se le reparaba
+                # la cadena mensual ni aparecía en cash_health — si esa compra lo
+                # dejaba en descubierto, el aviso de "te quedó el saldo en
+                # negativo" no salía justo en la cuenta que quedó en rojo.
+                if getattr(tx, "cash_broker", None):
+                    brokers_touched.add(tx.cash_broker)
 
             except Exception as inner_ex:
                 # Rollback de esta fila — el resto del batch continúa
