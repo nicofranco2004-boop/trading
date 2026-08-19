@@ -38,7 +38,7 @@ sys.path.insert(0, HERE)
 
 from conftest import (revisar_orden_de_relojes, _segundos,   # noqa: E402
                       _IDLE_TX_S, _LOCK_S, _IDLE_TX_S_DEFAULT, _LOCK_S_DEFAULT,
-                      _PYTEST_TIMEOUT_SUGERIDO)
+                      _PYTEST_TIMEOUT_SUGERIDO, _PYTEST_TIMEOUT_REAL)
 
 
 class ElOrdenSeCumpleTest(unittest.TestCase):
@@ -46,9 +46,17 @@ class ElOrdenSeCumpleTest(unittest.TestCase):
     invariantes distintas y un solo test las taparía entre sí."""
 
     def test_los_valores_QUE_ESTAN_CORRIENDO_cumplen_el_orden(self):
-        """No los defaults: los de esta corrida, que pueden venir del entorno."""
+        """No los defaults: los de esta corrida, que pueden venir del entorno.
+
+        ⚠️ Los TRES tienen que ser los reales. Antes este test leía el idle y el
+        lock del entorno pero el tercero de `_PYTEST_TIMEOUT_SUGERIDO`, una
+        constante de 20 escrita a mano — o sea, prometía en el nombre medir lo que
+        corre y medía otra cosa. Se vio corriendo la suite contra Supabase, donde
+        hay que escalar los relojes a 45 < 90 < 240: falló diciendo que 90 tenía
+        que ser menor que 20, con el `--timeout` real en 240.
+        """
         self.assertIsNone(revisar_orden_de_relojes(_IDLE_TX_S, _LOCK_S,
-                                                   _PYTEST_TIMEOUT_SUGERIDO))
+                                                   _PYTEST_TIMEOUT_REAL))
 
     def test_los_DEFAULTS_cumplen_el_orden(self):
         """Por si alguien corre con el entorno limpio, que es el caso normal."""

@@ -173,6 +173,53 @@ _IDLE_TX_TIMEOUT = f"{_IDLE_TX_S}s"
 _LOCK_TIMEOUT = f"{_LOCK_S}s"
 
 
+def _timeout_de_pytest_real() -> int:
+    """El `--timeout=` que ESTÁ CORRIENDO, no el sugerido.
+
+    🔴 POR QUÉ EXISTE. `test_relojes_del_conftest` se llama
+    `test_los_valores_QUE_ESTAN_CORRIENDO_cumplen_el_orden` y dice en su docstring
+    "no los defaults: los de esta corrida". Pero de los tres relojes leía dos del
+    entorno y **el tercero de una constante de 20 escrita a mano**. O sea:
+    prometía medir lo que corre y medía otra cosa — el error exacto que este
+    proyecto ya pagó varias veces.
+
+    Se descubrió corriendo la suite contra Supabase (19/08/2026). Ahí todo tarda
+    ~35× más, así que hubo que escalar los relojes a 45 < 90 < 240; el test falló
+    diciendo "lock (90s) tiene que ser MENOR que el --timeout de pytest (20s)"
+    cuando el `--timeout` real era 240. El test tenía razón sobre la constante y
+    estaba equivocado sobre la realidad.
+
+    Se lee de la config de pytest, que es donde vive el valor de verdad. Si no se
+    puede (pytest-timeout ausente, o import fuera de una corrida), se cae al
+    sugerido: es el mismo comportamiento que había, no uno nuevo.
+    """
+    try:
+        import _pytest.config
+        cfg = _pytest.config.get_config()
+        v = cfg.getoption("timeout", None) if cfg else None
+        if v:
+            return int(float(v))
+    except Exception:
+        pass
+    # Plan B: leerlo de la línea de comandos. pytest-timeout acepta las dos formas.
+    import sys
+    for i, a in enumerate(sys.argv):
+        if a.startswith("--timeout="):
+            try:
+                return int(float(a.split("=", 1)[1]))
+            except ValueError:
+                pass
+        if a == "--timeout" and i + 1 < len(sys.argv):
+            try:
+                return int(float(sys.argv[i + 1]))
+            except ValueError:
+                pass
+    return _PYTEST_TIMEOUT_SUGERIDO
+
+
+_PYTEST_TIMEOUT_REAL = _timeout_de_pytest_real()
+
+
 def revisar_orden_de_relojes(idle_s, lock_s, pytest_timeout_s=None):
     """El orden, como función: `idle < lock < --timeout`. Devuelve el motivo o None.
 
