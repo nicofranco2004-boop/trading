@@ -310,12 +310,12 @@ function FuturoFlow({ brokers, onClose, onSaved }) {
             { id: 'long', label: 'LONG', icono: TrendingUp,
               icono_cls: 'text-rendi-pos', label_cls: 'text-rendi-pos',
               sel_cls: 'border-rendi-pos/50 ring-1 ring-rendi-pos/30',
-              titulo: 'Aposté a que sube',
+              titulo: 'Invertí al alza',
               detalle: 'Ganás si el precio sube por encima de tu entrada. Perdés si baja.' },
             { id: 'short', label: 'SHORT', icono: TrendingDown,
               icono_cls: 'text-rendi-neg', label_cls: 'text-rendi-neg',
               sel_cls: 'border-rendi-neg/50 ring-1 ring-rendi-neg/30',
-              titulo: 'Aposté a que baja',
+              titulo: 'Invertí a la baja',
               detalle: 'Ganás si el precio baja por debajo de tu entrada. Perdés si sube.' },
           ].map(o => (
             <button key={o.id}
@@ -328,10 +328,12 @@ function FuturoFlow({ brokers, onClose, onSaved }) {
                   <o.icono size={18} strokeWidth={1.75} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-ink-0 text-sm leading-tight">{o.titulo}</h3>
-                    <span className={`text-[10px] font-bold tracking-wide ${o.label_cls}`}>{o.label}</span>
-                  </div>
+                  {/* LONG/SHORT manda: es el nombre que el usuario ve en su
+                      broker. La frase en castellano va debajo, como traducción. */}
+                  <h3 className={`font-bold text-sm leading-tight tracking-wide ${o.label_cls}`}>
+                    {o.label}
+                  </h3>
+                  <p className="text-[12.5px] text-ink-0 font-medium mt-0.5 leading-tight">{o.titulo}</p>
                   <p className="text-[12px] text-ink-2 mt-1 leading-snug">{o.detalle}</p>
                 </div>
               </div>
