@@ -223,5 +223,99 @@ class TestAdvisorProfileMigration(unittest.TestCase):
             conn.close()
 
 
+@unittest.skipIf(getattr(main, "USANDO_PG", False), _POR_QUE_SOLO_SQLITE)
+class TestTwrPeriodsMigration(unittest.TestCase):
+    """twr_periods: retracción y procedencia (Fase 4 del agente reconstructor).
+
+    Volvió a pasar EXACTAMENTE lo que documenta el encabezado de este archivo:
+    la migración se escribió detrás de `_table_cols()` y `twr_periods` no estaba
+    en la allowlist → devolvía set() → el `if` era falso → el ALTER no corrió
+    nunca, y el sellado moría con "table twr_periods has no column named estado".
+    Segunda vez que el mismo gate silencioso rompe una migración.
+    """
+
+    def setUp(self):
+        # La tabla como está en producción HOY: sin las columnas de retracción.
+        conn = main.get_db()
+        conn.execute("DROP TRIGGER IF EXISTS trg_twr_periods_append_only")
+        conn.execute("DROP TABLE IF EXISTS twr_periods")
+        conn.executescript("""
+            CREATE TABLE twr_periods (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                month TEXT NOT NULL,
+                v0_usd REAL NOT NULL,
+                v1_usd REAL NOT NULL,
+                flow_usd REAL NOT NULL,
+                ret REAL NOT NULL,
+                quality TEXT NOT NULL,
+                snap_id_start INTEGER,
+                snap_id_end INTEGER,
+                fx_basis TEXT,
+                revision INTEGER NOT NULL DEFAULT 1,
+                sealed_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(user_id, month, revision)
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+    def test_base_vieja_arranca_sin_las_columnas_de_retraccion(self):
+        conn = main.get_db()
+        try:
+            self.assertNotIn('estado', _cols(conn, 'twr_periods'))
+        finally:
+            conn.close()
+
+    def test_init_db_agrega_retraccion_y_procedencia(self):
+        main.init_db()
+        conn = main.get_db()
+        try:
+            cols = _cols(conn, 'twr_periods')
+            for c in ('estado', 'retract_reason', 'retract_ref', 'retracted_at',
+                      'metodo', 'flow_source', 'confianza',
+                      'fx_basis_v0', 'fx_basis_v1', 'guardas_json'):
+                self.assertIn(c, cols, f"init_db() no migró twr_periods: falta {c}")
+        finally:
+            conn.close()
+
+    def test_init_db_deja_el_trigger_append_only(self):
+        main.init_db()
+        conn = main.get_db()
+        try:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+                "AND name='trg_twr_periods_append_only'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n, 1)
+
+
+class TestAllowlistCubreATodosLosCallers(unittest.TestCase):
+    """EL GUARD ESTRUCTURAL. Dos veces ya (advisor_op_batch_items y
+    twr_periods) una migración no corrió nunca porque su tabla no estaba en la
+    allowlist de `_table_cols`. El gate es SILENCIOSO —devuelve set(), que es
+    falsy— así que no hay error, ni log, ni forma de enterarse hasta que
+    producción rompe. Este test cruza los callers contra la lista.
+    """
+
+    def test_toda_tabla_usada_con_table_cols_esta_en_la_allowlist(self):
+        import re
+        src = open(os.path.join(BACKEND, 'main.py'), encoding='utf-8').read()
+        m = re.search(r"def _table_cols.*?allowed = \{(.*?)\}", src, re.S)
+        self.assertIsNotNone(m, "no encontré la allowlist de _table_cols")
+        allowed = set(re.findall(r"'([a-z_]+)'", m.group(1)))
+        usadas = set(re.findall(r"_table_cols\(conn,\s*'([a-z_]+)'\)", src))
+        self.assertTrue(usadas, "no encontré callers de _table_cols")
+        faltantes = sorted(usadas - allowed)
+        self.assertEqual(
+            faltantes, [],
+            "Estas tablas se usan con _table_cols pero NO están en la allowlist, "
+            "así que su migración NUNCA corre (falla silenciosa): "
+            + ", ".join(faltantes))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -526,11 +526,18 @@ def _run_with_lock_retry(fn, *, attempts: int = 4, base_delay: float = 0.3):
 
 def _table_cols(conn, table: str) -> set:
     # Table name is always hardcoded in callers — never user-supplied
+    # ⚠️ Esta allowlist es un gate SILENCIOSO: una tabla que no esté acá devuelve
+    # set(), que es falsy, así que su `if cols and 'x' not in cols` NUNCA entra y
+    # la migración no corre — sin error, sin log, sin nada. Ya rompió una vez en
+    # producción (87ab966c: el alta grupal del asesor fallaba SIEMPRE porque su
+    # migración estaba detrás de este mismo gate). Hay un test estructural que
+    # cruza los callers contra esta lista: si agregás un _table_cols con una
+    # tabla nueva, tenés que sumarla acá.
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
                'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts',
                'ai_tool_usage', 'yfinance_cache', 'credit_ledger', 'plazos_fijos',
-               'user_broker_credentials'}
+               'user_broker_credentials', 'twr_periods'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -2446,6 +2453,46 @@ def init_db():
         if 'excluded_at' in (_table_cols(conn, 'import_normalized_tx') or []):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_excluded "
                          "ON import_normalized_tx(batch_id, excluded_at)")
+
+        # Migración (2026-08): RETRACCIÓN y PROCEDENCIA en twr_periods — Fase 4 del
+        # agente reconstructor. La tabla es append-only (revision+1, nunca UPDATE),
+        # así que un mes sellado MAL no se podía deshacer: quedaba dentro del número
+        # que justifica el fee, para siempre. `estado` + `retract_*` lo hacen
+        # reversible sin pisar una fila. Y `metodo`/`flow_source`/`confianza` son la
+        # procedencia: el día que un flujo lo deduzca el agente en vez de salir del
+        # ledger, eso tiene que quedar estampado en la fila, no inferirse después.
+        # `guardas_json` guarda qué verificó el sellado (y qué habría rechazado
+        # cuando corre en modo sombra con TWR_GUARDAS=0).
+        _twr_cols = _table_cols(conn, 'twr_periods')
+        if _twr_cols and 'estado' not in _twr_cols:
+            for _col, _tipo in (
+                ("estado", "TEXT NOT NULL DEFAULT 'vigente'"),  # 'vigente' | 'retractado'
+                ("retract_reason", "TEXT"),
+                ("retract_ref", "TEXT"),      # id de la corrida que lo retractó
+                ("retracted_at", "TEXT"),
+                ("metodo", "TEXT NOT NULL DEFAULT 'medido'"),   # 'medido' | 'reconstruido'
+                ("flow_source", "TEXT"),      # 'ledger' | 'agente' | 'humano'
+                ("confianza", "REAL"),
+                ("fx_basis_v0", "TEXT"),
+                ("fx_basis_v1", "TEXT"),
+                ("guardas_json", "TEXT"),
+            ):
+                conn.execute(f"ALTER TABLE twr_periods ADD COLUMN {_col} {_tipo}")
+        # Índice DESPUÉS del ALTER y FUERA del if — misma lección que `excluded_at`:
+        # dentro del bloque de esquema corría antes de que la columna existiera y
+        # tumbaba el arranque contra cualquier base ya creada (boot loop → 502).
+        if 'estado' in (_table_cols(conn, 'twr_periods') or []):
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_twr_periods_vigente "
+                         "ON twr_periods(user_id, month, estado)")
+            # Append-only por CONTRATO, no por convención: hoy lo sostiene una sola
+            # función. Sólo sobre UPDATE — `twr_periods` está en
+            # _RESET_PORTFOLIO_TABLES y "empezar de cero" hace DELETE.
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_twr_periods_append_only
+                BEFORE UPDATE ON twr_periods
+                BEGIN
+                    SELECT RAISE(ABORT, 'twr_periods es append-only: usá revision+1 o retractar()');
+                END""")
 
         # Migración: route_by_currency en import_batches. Cuando es 1 y el broker
         # del batch es ARS, las filas USD/USDT se ruteán al sub-broker USD al persistir.

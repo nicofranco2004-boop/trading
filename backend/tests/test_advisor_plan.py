@@ -3140,7 +3140,12 @@ class TwrInvariantesTest(AdvisorBase):
                              (uid,)).fetchone()["c"]
         finally:
             conn.close()
-        self.assertEqual(r2, {"sellados": 0, "revisados": 0})
+        # Idempotencia: no sella nada nuevo ni revisa nada. (El dict trae además
+        # el reporte de las guardas —rechazados/motivos/guardas_activas— así que
+        # se afirma lo que importa, no la forma entera del diccionario.)
+        self.assertEqual(r2["sellados"], 0)
+        self.assertEqual(r2["revisados"], 0)
+        self.assertEqual(r2["rechazados"], 0)
         self.assertEqual(n, 1)
         self.assertAlmostEqual(primero["twr"], self._twr(uid)["twr"], places=9)
 
@@ -3226,6 +3231,185 @@ class TwrInvariantesTest(AdvisorBase):
         self.assertAlmostEqual(twr.dietz(100.0, 180.0, 0.0), 0.80, places=9)
         self.assertIsNone(twr.dietz(0.0, 50.0, 0.0))          # sin capital no hay retorno
         self.assertAlmostEqual(twr.dietz(100.0, 0.0, 0.0), -1.0, places=9)
+
+
+class TwrGuardasTest(TwrInvariantesTest):
+    """FASE 4 — la red de RUNTIME. Las invariantes de arriba prueban que el
+    motor es correcto sobre datos sintéticos; estas guardas prueban que ESTA
+    fila se puede publicar. Es la diferencia entre "el motor está bien" y "este
+    mes se puede mostrar", y es lo que habilita que el agente CORRIJA en vez de
+    sólo avisar: sin esto, corregir es escribir números sin que nada los mire.
+    """
+
+    def _sellar(self, uid, hasta="2027-01"):
+        import twr
+        conn = main.get_db()
+        try:
+            r = twr.sellar(conn, uid, hasta_mes=hasta)
+            conn.commit()
+            return r
+        finally:
+            conn.close()
+
+    # ── Nunca saltear un mes en silencio ────────────────────────────────────
+    def test_un_mes_no_medible_no_desaparece(self):
+        # Antes, un mes sin denominador se esfumaba con un `continue` pelado y
+        # la cadena se cerraba SOBRE el agujero: `meses` contaba 3 sobre un span
+        # de 4 y el número se publicaba igual, cruzando el mínimo.
+        import twr
+        uid = self._cliente("nomed@x.com")
+        # Un retiro que se lleva más del doble del capital inicial deja el
+        # denominador del Dietz en 0 (100 + 0,5·(−200) = 0) → no hay retorno que
+        # medir. Ojo: NO sirve poner v0=0, porque `bordes_medibles` exige
+        # total_value > 0 y ese borde ni siquiera existiría.
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 50.0),
+                          ("2026-03-31", 60.0)], flujos={"2026-02": -200.0})
+        conn = main.get_db()
+        try:
+            ts = twr.tramos(conn, uid, hasta_mes="2027-01")
+        finally:
+            conn.close()
+        meses = {t["month"]: t["quality"] for t in ts}
+        self.assertIn("2026-02", meses)
+        self.assertEqual(meses["2026-02"], "no_medible")
+
+    def test_un_mes_no_medible_no_entra_al_producto(self):
+        # Su `ret` es un 0.0 que ponemos nosotros para no perder el mes.
+        # Multiplicarlo sería inventar un tramo.
+        uid = self._cliente("nomed2@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 50.0),
+                          ("2026-03-31", 60.0)], flujos={"2026-02": -200.0})
+        self._sellar(uid)
+        r = self._twr(uid)
+        self.assertIn("2026-02", r["meses_excluidos"])
+
+    # ── Un aporte grande NO puede quedarse sin número ───────────────────────
+    def test_duplicar_el_aporte_sigue_publicando(self):
+        # Un flujo > 50% de v0 se marca `flujo_sospechoso`. Sacarlo del producto
+        # le blanquearía el TWR al caso legítimo más común de todos — y es el
+        # que el Dietz resuelve bien. Sale con su marca, no sin número.
+        uid = self._cliente("granaporte@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        r = self._twr(uid)
+        self.assertIsNotNone(r["twr"])
+        self.assertAlmostEqual(r["twr"], 0.0, places=6)
+        self.assertIn("2026-02", r["meses_degradados"])
+
+    # ── G6: la puerta del agente, ahora en runtime ──────────────────────────
+    def test_no_se_sella_un_borde_que_no_es_medicion(self):
+        # La contraparte de runtime del fail-closed de clasificar_fila: aunque
+        # alguien fabrique un tramo, el sellado RE-LEE los dos bordes y exige
+        # que sigan siendo mediciones.
+        import twr
+        uid = self._cliente("borde@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        conn = main.get_db()
+        try:
+            ts = twr.tramos(conn, uid, hasta_mes="2027-01")
+            self.assertTrue(ts)
+            # Degradamos el borde final a un emisor desconocido.
+            conn.execute("UPDATE snapshots SET source='reconstruido' WHERE id=?",
+                         (ts[0]["snap_id_end"],))
+            conn.commit()
+            v = twr.verificar_tramo(conn, uid, ts[0])
+        finally:
+            conn.close()
+        self.assertFalse(v["ok"])
+        self.assertIn("G6_borde_v1_no_es_medicion", v["fallas"])
+
+    # ── Las guardas arrancan en SOMBRA ──────────────────────────────────────
+    #
+    # Nota de diseño que salió escribiendo estos tests: G6 (los dos bordes son
+    # MEDICION) es HOY redundante en el camino de `sellar()`, porque
+    # `bordes_medibles` ya filtra por MEDICION — degradar el snapshot no hace
+    # fallar la guarda, hace desaparecer el tramo antes. G6 existe para cuando
+    # los tramos vengan de otro lado (el agente), y se prueba llamando a
+    # `verificar_tramo` directo. Para el camino del sellado se usa G4, que sí
+    # dispara: sellar con un `hasta_mes` futuro congela meses que no cerraron.
+    def test_apagadas_registran_pero_no_bloquean(self):
+        # Prender una guarda a ciegas sobre 40.000 snapshots es cómo se rompe
+        # una pantalla que hoy anda. Primero se mide qué rechazaría.
+        import os
+        uid = self._cliente("sombra@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-12-31", 110.0)])
+        self.assertFalse(os.environ.get("TWR_GUARDAS"))   # default = apagadas
+        r = self._sellar(uid, hasta="2027-06")            # sella un mes NO cerrado
+        self.assertEqual(r["rechazados"], 0)              # no bloqueó
+        self.assertFalse(r["guardas_activas"])
+        self.assertIn("G4_mes_en_curso", r["motivos"])    # pero lo registró
+        conn = main.get_db()
+        try:
+            g = conn.execute("SELECT guardas_json FROM twr_periods WHERE user_id=?",
+                             (uid,)).fetchone()["guardas_json"]
+        finally:
+            conn.close()
+        self.assertIn("G4_mes_en_curso", g)
+
+    def test_prendidas_rechazan(self):
+        import os
+        uid = self._cliente("prendida@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-12-31", 110.0)])
+        os.environ["TWR_GUARDAS"] = "1"
+        try:
+            r = self._sellar(uid, hasta="2027-06")
+        finally:
+            os.environ.pop("TWR_GUARDAS", None)
+        self.assertEqual(r["rechazados"], 1)
+        self.assertEqual(r["sellados"], 0)
+
+    # ── Retracción: se puede deshacer sin pisar lo publicado ────────────────
+    def test_retractar_no_pisa_la_revision_vieja(self):
+        # Alguien VIO ese número y decidió con él: la fila tiene que seguir
+        # siendo legible. Retractar es un INSERT, nunca un UPDATE.
+        import twr
+        uid = self._cliente("retract@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        self._sellar(uid)
+        conn = main.get_db()
+        try:
+            self.assertTrue(twr.retractar(conn, uid, "2026-02", "prueba", ref="run-1"))
+            conn.commit()
+            filas = conn.execute(
+                "SELECT revision, estado, retract_ref FROM twr_periods "
+                "WHERE user_id=? AND month='2026-02' ORDER BY revision", (uid,)).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([f["revision"] for f in filas], [1, 2])
+        self.assertEqual([f["estado"] for f in filas], ["vigente", "retractado"])
+        self.assertEqual(filas[1]["retract_ref"], "run-1")
+        # Y el mes sale de la cadena publicada.
+        self.assertIn("2026-02", self._twr(uid)["meses_excluidos"])
+
+    def test_no_se_puede_UPDATE_twr_periods(self):
+        # Append-only por CONTRATO, no por convención: hoy lo sostiene una sola
+        # función y alcanza un UPDATE de cualquier lado para romperlo.
+        import sqlite3
+        uid = self._cliente("append@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        self._sellar(uid)
+        conn = main.get_db()
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("UPDATE twr_periods SET ret=9.0 WHERE user_id=?", (uid,))
+        finally:
+            conn.close()
+
+    def test_empezar_de_cero_sigue_pudiendo_borrar(self):
+        # El trigger es SOLO sobre UPDATE: twr_periods está en
+        # _RESET_PORTFOLIO_TABLES y el reset hace DELETE.
+        uid = self._cliente("reset@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 110.0)])
+        self._sellar(uid)
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM twr_periods WHERE user_id=?", (uid,))
+            conn.commit()
+            n = conn.execute("SELECT COUNT(*) c FROM twr_periods WHERE user_id=?",
+                             (uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0)
 
 
 class TwrEndpointTest(TwrInvariantesTest):

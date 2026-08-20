@@ -242,6 +242,18 @@ def dietz(v0: float, v1: float, flow: float):
     return max((v1 - v0 - flow) / denom, -1.0)
 
 
+def _dietz_con_peso(v0: float, v1: float, flow: float, peso: float):
+    """El mismo primitivo con el peso del flujo como parámetro. Existe SOLO para
+    la guarda de sensibilidad (G8): si mover el peso entre 0,25 y 0,75 cambia el
+    retorno más que un pelo, el número depende de CUÁNDO entró la plata — y eso
+    es justo lo que el agente va a estar deduciendo. Nadie más debe usar esto:
+    el retorno publicado sale siempre de `dietz`."""
+    denom = v0 + peso * flow
+    if denom <= 0:
+        return None
+    return max((v1 - v0 - flow) / denom, -1.0)
+
+
 def _fin_de_mes(mes: str) -> str:
     from datetime import date, timedelta
     y, m = (int(x) for x in mes.split("-"))
@@ -304,6 +316,19 @@ def tramos(conn, uid: int, hasta_mes: str = None) -> list:
         flow = _flujo(conn, uid, b0["date"], b1["date"])
         r = dietz(v0, v1, flow)
         if r is None:
+            # NO desaparecer en silencio. Antes acá había un `continue` pelado:
+            # el mes se esfumaba del historial sin dejar rastro y la cadena se
+            # cerraba SOBRE el agujero, o sea que `meses` contaba 3 sobre un
+            # span de 4 y el número se publicaba igual. "Nunca saltear un mes en
+            # silencio" es regla del diseño; el tramo sale marcado y `twr_de`
+            # decide qué hacer con él.
+            out.append({
+                "month": mes, "period_start": b0["date"], "period_end": b1["date"],
+                "v0_usd": v0, "v1_usd": v1, "flow_usd": flow, "ret": 0.0,
+                "quality": "no_medible",
+                "snap_id_start": b0["id"], "snap_id_end": b1["id"],
+                "fx_basis": "mep_medio",
+            })
             continue
         calidad = "ok"
         if v0 > 0 and abs(flow) > v0 * FLUJO_SOSPECHOSO:
@@ -320,7 +345,115 @@ def tramos(conn, uid: int, hasta_mes: str = None) -> list:
     return out
 
 
-_CAMPOS_SELLO = ("period_start", "period_end", "v0_usd", "v1_usd", "flow_usd")
+# Los campos cuyo cambio obliga a una revisión nueva. `ret` HAY que incluirlo
+# aunque hoy sea función pura de v0/v1/flow: deja de serlo el día que el método
+# cambie con los mismos inputs (un flujo deducido por el agente), y ese cambio
+# no generaría revisión — el asesor vería un número distinto sin que la fila
+# diga que cambió.
+_CAMPOS_SELLO = ("period_start", "period_end", "v0_usd", "v1_usd", "flow_usd",
+                 "ret", "quality", "metodo", "flow_source")
+
+# Cuánto puede moverse el retorno al correr el Dietz con el flujo pesado 0,25 /
+# 0,5 / 0,75 antes de considerar que el número depende de CUÁNDO entró la plata.
+# 2 puntos porcentuales de spread: por encima de eso, deducir mal la fecha (o la
+# naturaleza) de un flujo mueve el resultado de forma visible.
+SENSIBILIDAD_MAX = 0.02
+
+# Interruptor. Arranca APAGADO a propósito: las guardas registran en
+# `guardas_json` qué habrían rechazado, sin bloquear nada, y recién cuando se
+# midió cuántos meses reales tumbarían se prenden. Prender una guarda a ciegas
+# sobre 40.000 snapshots es cómo se rompe una pantalla que hoy anda.
+def _guardas_activas() -> bool:
+    import os
+    return (os.environ.get("TWR_GUARDAS", "0") or "0").strip() not in ("", "0", "false", "no")
+
+
+def verificar_tramo(conn, uid: int, t: dict, prev_mes: dict = None) -> dict:
+    """Las ocho guardas de runtime, corridas ANTES de sellar.
+
+    Las 12 invariantes de la suite son tests unitarios sobre datos sintéticos:
+    prueban que el motor es correcto, no que ESTA fila lo sea. Estas guardas son
+    su sombra sobre datos reales — es la diferencia entre "el motor está bien" y
+    "este mes se puede publicar".
+
+    Devuelve {ok: bool, fallas: [codigo], detalle: {...}}. No lanza.
+    """
+    f, det = [], {}
+    v0, v1, flow, ret = (float(t["v0_usd"]), float(t["v1_usd"]),
+                         float(t["flow_usd"]), float(t["ret"]))
+
+    # G1 — IDENTIDAD. Sin flujo relevante, el Dietz TIENE que dar v1/v0 − 1.
+    # Es la invariante más dura que existe y la más barata de chequear.
+    if abs(flow) < 0.005 * abs(v0 or 1):
+        esperado = (v1 / v0 - 1.0) if v0 else None
+        if esperado is not None and abs(ret - esperado) > 1e-9:
+            f.append("G1_identidad")
+            det["G1"] = {"ret": ret, "esperado": esperado}
+
+    # G2 — RE-DERIVAR. El `ret` guardado tiene que salir del primitivo, no de
+    # otro lado. Atrapa que alguien haya escrito la fila a mano.
+    re_ret = dietz(v0, v1, flow)
+    if re_ret is None or abs(ret - re_ret) > 1e-9:
+        if t.get("quality") != "no_medible":
+            f.append("G2_no_rederivable")
+            det["G2"] = {"ret": ret, "rederivado": re_ret}
+
+    # G3 — DOMINIO. Piso de −100% y denominador positivo.
+    if ret < -1.0 or (v0 + 0.5 * flow) <= 0:
+        f.append("G3_dominio")
+        det["G3"] = {"ret": ret, "denom": v0 + 0.5 * flow}
+
+    # G4 — MES CERRADO. `tramos()` ya filtra, pero sellar confiaba ciegamente en
+    # ese filtro: si alguien llama sellar() con otro hasta_mes, sella el mes en
+    # curso y lo congela a media rueda.
+    if t["month"] >= _hoy_art()[:7]:
+        f.append("G4_mes_en_curso")
+        det["G4"] = {"month": t["month"], "hoy": _hoy_art()}
+
+    # G5 — CONTIGÜIDAD. El borde inicial de este mes tiene que ser el borde
+    # final del mes sellado anterior. Si no, la cadena salta un hueco y el
+    # producto multiplica tramos que no se tocan.
+    if prev_mes is not None and prev_mes["period_end"] != t["period_start"]:
+        f.append("G5_no_contiguo")
+        det["G5"] = {"anterior_termina": prev_mes["period_end"],
+                     "este_empieza": t["period_start"]}
+
+    # G6 — LOS DOS BORDES SON MEDICIÓN. La fila se re-lee de `snapshots` por su
+    # id: es la guarda que impide que un borde RECONSTRUIDO entre a la cadena
+    # publicada. Es la contraparte de runtime del fail-closed de clasificar_fila.
+    con_pos = uid in _usuarios_con_posiciones(conn, [uid])
+    for lado, sid in (("v0", t.get("snap_id_start")), ("v1", t.get("snap_id_end"))):
+        if not sid:
+            continue
+        row = conn.execute(
+            "SELECT date, total_value, fx_to_usd_blue, holdings_json, source "
+            "FROM snapshots WHERE id=?", (sid,)).fetchone()
+        if row is None or clasificar_fila(row, con_pos) != MEDICION:
+            f.append(f"G6_borde_{lado}_no_es_medicion")
+            det[f"G6_{lado}"] = {"snap_id": sid,
+                                 "clase": clasificar_fila(row, con_pos) if row else "no_existe"}
+
+    # G7 — MISMA BASE DE FX EN LOS DOS BORDES. Encadenar un borde valuado al MEP
+    # medio con otro a la punta de venta fabrica el spread (~0,7%) como retorno,
+    # y no se cancela: queda como nivel permanente.
+    b0, b1 = t.get("fx_basis_v0"), t.get("fx_basis_v1")
+    if b0 and b1 and b0 != b1 and t.get("quality") == "ok":
+        f.append("G7_fx_mixto")
+        det["G7"] = {"v0": b0, "v1": b1}
+
+    # G8 — SENSIBILIDAD AL FLUJO. No es una falla: es una ETIQUETA. Si mover el
+    # peso del flujo cambia mucho el retorno, este mes depende de cuándo entró
+    # la plata — o sea que es donde una deducción equivocada del agente más
+    # duele. Después sirve para priorizar dónde gastar el modelo.
+    rs = [x for x in (_dietz_con_peso(v0, v1, flow, p) for p in (0.25, 0.5, 0.75))
+          if x is not None]
+    if len(rs) == 3:
+        spread = max(rs) - min(rs)
+        det["G8"] = {"spread": spread}
+        if spread > SENSIBILIDAD_MAX:
+            det["G8"]["sensible"] = True
+
+    return {"ok": not f, "fallas": f, "detalle": det}
 
 
 def sellar(conn, uid: int, hasta_mes: str = None) -> dict:
@@ -329,16 +462,41 @@ def sellar(conn, uid: int, hasta_mes: str = None) -> dict:
     corrió el hook que recalcula el aportado hacia atrás), se escribe
     revision+1 — nunca se pisa la revisión vieja. Que la historia haya cambiado
     es justamente lo que el asesor tiene que poder ver."""
-    nuevos = revisados = 0
+    import json as _json
+    nuevos = revisados = rechazados = 0
+    motivos = {}
+    activas = _guardas_activas()
+    prev_mes = None
     for t in tramos(conn, uid, hasta_mes):
+        t.setdefault("metodo", "medido")
+        t.setdefault("flow_source", "ledger")
+
+        # Las guardas corren SIEMPRE. Con TWR_GUARDAS=0 sólo registran qué
+        # habrían rechazado (modo sombra): así se mide el costo real antes de
+        # prenderlas, en vez de descubrirlo tumbando una pantalla que anda.
+        v = verificar_tramo(conn, uid, t, prev_mes)
+        for cod in v["fallas"]:
+            motivos[cod] = motivos.get(cod, 0) + 1
+        if not v["ok"] and activas:
+            rechazados += 1
+            log.warning("[twr] uid=%s mes=%s RECHAZADO por %s", uid, t["month"], v["fallas"])
+            continue
+        prev_mes = t
+
         prev = conn.execute(
             "SELECT * FROM twr_periods WHERE user_id=? AND month=? "
             "ORDER BY revision DESC LIMIT 1", (uid, t["month"])).fetchone()
         if prev is not None:
+            claves = prev.keys()
             igual = all(
-                (abs(float(prev[c]) - float(t[c])) < 0.005) if isinstance(t[c], float)
-                else prev[c] == t[c]
+                c in claves and (
+                    (abs(float(prev[c] or 0) - float(t[c] or 0)) < 0.005)
+                    if isinstance(t.get(c), float) else prev[c] == t.get(c))
                 for c in _CAMPOS_SELLO)
+            # Si el input no cambió, no se toca NADA — y eso incluye a un mes
+            # RETRACTADO: revivirlo en el próximo sellado haría que retractar no
+            # sirviera para nada. Vuelve a publicarse sólo si los datos de
+            # abajo cambiaron de verdad (ahí sí entra una revisión vigente).
             if igual:
                 continue
             rev = int(prev["revision"]) + 1
@@ -349,12 +507,47 @@ def sellar(conn, uid: int, hasta_mes: str = None) -> dict:
         conn.execute(
             """INSERT INTO twr_periods
                (user_id, period_start, period_end, month, v0_usd, v1_usd,
-                flow_usd, ret, quality, snap_id_start, snap_id_end, fx_basis, revision)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                flow_usd, ret, quality, snap_id_start, snap_id_end, fx_basis,
+                revision, estado, metodo, flow_source, fx_basis_v0, fx_basis_v1,
+                guardas_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'vigente', ?,?,?,?,?)""",
             (uid, t["period_start"], t["period_end"], t["month"], t["v0_usd"],
              t["v1_usd"], t["flow_usd"], t["ret"], t["quality"],
-             t["snap_id_start"], t["snap_id_end"], t["fx_basis"], rev))
-    return {"sellados": nuevos, "revisados": revisados}
+             t["snap_id_start"], t["snap_id_end"], t["fx_basis"], rev,
+             t["metodo"], t["flow_source"],
+             t.get("fx_basis_v0"), t.get("fx_basis_v1"),
+             _json.dumps(v, ensure_ascii=False)))
+    return {"sellados": nuevos, "revisados": revisados,
+            "rechazados": rechazados, "guardas_activas": activas,
+            "motivos": motivos}
+
+
+def retractar(conn, uid: int, mes: str, motivo: str, ref: str = None) -> bool:
+    """Saca un mes de la cadena SIN pisar la fila que ya se publicó.
+
+    Es un INSERT de `revision+1` con estado='retractado', nunca un UPDATE — la
+    revisión vieja tiene que seguir siendo legible, porque alguien la vio y
+    tomó una decisión con ella. Con `retract_ref` estampado, deshacer una
+    corrida entera del agente es un loop de INSERTs.
+    """
+    prev = conn.execute(
+        "SELECT * FROM twr_periods WHERE user_id=? AND month=? "
+        "ORDER BY revision DESC LIMIT 1", (uid, mes)).fetchone()
+    if prev is None:
+        return False
+    conn.execute(
+        """INSERT INTO twr_periods
+           (user_id, period_start, period_end, month, v0_usd, v1_usd, flow_usd,
+            ret, quality, snap_id_start, snap_id_end, fx_basis, revision,
+            estado, retract_reason, retract_ref, retracted_at, metodo, flow_source)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'retractado', ?,?, datetime('now'), ?,?)""",
+        (uid, prev["period_start"], prev["period_end"], prev["month"],
+         prev["v0_usd"], prev["v1_usd"], prev["flow_usd"], prev["ret"],
+         prev["quality"], prev["snap_id_start"], prev["snap_id_end"],
+         prev["fx_basis"], int(prev["revision"]) + 1, motivo, ref,
+         (prev["metodo"] if "metodo" in prev.keys() else "medido"),
+         (prev["flow_source"] if "flow_source" in prev.keys() else None)))
+    return True
 
 
 def sellados(conn, uid: int, desde_mes: str = None, hasta_mes: str = None) -> list:
@@ -385,18 +578,67 @@ def twr_de(conn, uid: int, desde_mes: str = None, hasta_mes: str = None) -> dict
     if not filas:
         return {"twr": None, "meses": 0, "motivo": "sin_periodos_sellados"}
 
+    def _campo(f, c, default=None):
+        return f[c] if c in f.keys() else default
+
+    # Al producto no entra lo que NO ES UNA MEDICIÓN.
+    #
+    # ⚠️ Acá me aparté del plan escrito, que decía "sólo quality='ok'". Con esa
+    # regla, un cliente que DUPLICA su aporte (flujo > 50% de v0 → la marca
+    # `flujo_sospechoso`) se quedaba sin número: el caso legítimo más común de
+    # todos, y justo el que el Dietz resuelve bien. Blanquear el TWR ahí es peor
+    # que publicarlo con su etiqueta — y lo cazó la invariante del depósito.
+    #
+    # La línea correcta no es "ok vs. no ok", es "¿esto es un retorno medido?":
+    #   flujo_sospechoso → SÍ. El retorno es correcto; la marca dice "verificá
+    #     que ese flujo sea plata de verdad y no un import que reescribió".
+    #   plano            → SÍ, con su marca. Un mes quieto puede ser real.
+    #   no_medible       → NO. No hubo denominador: su `ret` es un 0.0 que
+    #     pusimos nosotros para no perder el mes. Multiplicarlo es inventar.
+    aptos = [f for f in filas
+             if _campo(f, "estado", "vigente") == "vigente"
+             and f["quality"] != "no_medible"]
+    # Por id: comparar filas de sqlite3.Row con `in` no hace lo que parece.
+    ids_aptos = {f["id"] for f in aptos}
+    excluidos = [f["month"] for f in filas if f["id"] not in ids_aptos]
+
+    # Y tienen que ser CONTIGUOS: multiplicar salteando un agujero y presentarlo
+    # como si cubriera todo el rango es la forma más silenciosa de mentir. Se
+    # devuelve la racha contigua más larga, diciendo qué quedó afuera.
+    mejor, actual = [], []
+    for f in aptos:
+        if actual and _campo(actual[-1], "period_end") != _campo(f, "period_start"):
+            if len(actual) > len(mejor):
+                mejor = actual
+            actual = []
+        actual.append(f)
+    if len(actual) > len(mejor):
+        mejor = actual
+
+    if not mejor:
+        return {"twr": None, "meses": 0, "motivo": "sin_meses_publicables",
+                "meses_excluidos": excluidos}
+
     idx = 1.0
-    for f in filas:
+    for f in mejor:
         idx *= (1.0 + float(f["ret"]))
 
-    revisados = [f["month"] for f in filas if int(f["revision"]) > 1]
-    degradados = [f["month"] for f in filas if f["quality"] != "ok"]
+    interrumpida = len(mejor) < len(aptos)
+    metodos = {}
+    for f in mejor:
+        k = _campo(f, "metodo", "medido") or "medido"
+        metodos[k] = metodos.get(k, 0) + 1
+
     return {
         "twr": idx - 1.0,
-        "meses": len(filas),
-        "desde": filas[0]["month"],
-        "hasta": filas[-1]["month"],
-        "meses_revisados": revisados,     # a estos les cambió la historia
-        "meses_degradados": degradados,
-        "motivo": None,
+        "meses": len(mejor),
+        "desde": mejor[0]["month"],
+        "hasta": mejor[-1]["month"],
+        "meses_revisados": [f["month"] for f in mejor if int(f["revision"]) > 1],
+        "meses_degradados": [f["month"] for f in filas if f["quality"] != "ok"],
+        "meses_excluidos": excluidos,
+        # Cuánto del número lo construyó una corrección es PARTE del número, no
+        # una nota al pie: el día que el agente aporte tramos, esto lo dice.
+        "metodo_mix": metodos,
+        "motivo": "cadena_interrumpida" if interrumpida else None,
     }
