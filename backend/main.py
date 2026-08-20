@@ -15554,6 +15554,39 @@ def admin_diagnose_negative_capital(min_capital: float = -50000.0, limit_account
         conn.close()
 
 
+@app.get("/api/admin/censo-flujos")
+def admin_censo_flujos(target_uid: int = None, incluir_p3: bool = True,
+                       uid: int = Depends(get_admin_user)):
+    """Censo READ-ONLY de los flujos ambiguos — Fase 1 del agente reconstructor.
+
+    Contesta la pregunta que dimensiona todo el proyecto: ¿cuántos traspasos de
+    títulos hay, en qué brokers, y cuántos de ésos YA están contados como aporte
+    del cliente? Sin este número, decidir si vale la pena un agente es adivinar.
+
+    Cuatro poblaciones (ver censo_flujos.py para el detalle de cada una):
+      P1  rechazadas que quedaron como fila cruda — la cola de flujos.candidatos()
+      P2a transfer_out, la marca estructurada
+      P2b el DEPÓSITO COMPENSATORIO que ya infla el capital aportado
+      P2c la firma numérica (cantidad sin plata), independiente del idioma
+    Más P3: sobre una muestra, a cuántos el replay del ledger no les puede
+    recrear la cartera de hoy (el gate que la Fase 7 va a usar).
+
+    `target_uid` acota a un cliente; sin él, corre sobre toda la base.
+    NO ESCRIBE NADA.
+    """
+    import censo_flujos
+    conn = get_db()
+    try:
+        return censo_flujos.contar(conn, uid=target_uid, incluir_p3=incluir_p3)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_censo_flujos FAILED")
+        raise HTTPException(status_code=500, detail=f"censo-flujos falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diagnose-sell-fx")
 def admin_diagnose_sell_fx(limit_ops: int = 500000, uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY del TC con el que se dolarizaron las ventas y los flujos.
