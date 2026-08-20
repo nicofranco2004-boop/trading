@@ -342,8 +342,11 @@ class BalanzInternacionalParser(Parser):
                 continue
 
             # ── Descripción no reconocida → la marcamos (Import Guardian). ───────
+            # row_index=0: fila descartada, sin RawRow. `ridx + 1` apuntaba a la
+            # próxima fila emitida —una buena—, que salía marcada `invalid` con
+            # el mensaje de otra. 0 = sentinel del repo (cf. FILE_UNREADABLE).
             result.parse_errors.append(RowError(
-                ridx + 1, ticker, "BALANZ_INTL_DESC_DESCONOCIDA",
+                0, ticker, "BALANZ_INTL_DESC_DESCONOCIDA",
                 f"Movimiento de Balanz Internacional no reconocido: '{desc_raw[:60]}'. "
                 f"Se omitió esta fila — escribinos para soportarlo."))
 

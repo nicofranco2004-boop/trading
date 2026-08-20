@@ -282,8 +282,13 @@ class PpiParser(Parser):
                     continue  # redundante con la hoja de moneda
                 else:
                     # Ingreso de Títulos / Canje / Traspaso / etc → follow-up.
+                    # row_index=0: esta fila se DESCARTA, no emite RawRow. `ridx`
+                    # es el contador de filas EMITIDAS, así que `ridx + 1` era la
+                    # PRÓXIMA fila —una buena— y quedaba marcada `invalid` con el
+                    # mensaje de otra. 0 es el sentinel del repo para el error que
+                    # no pertenece a ninguna fila emitida (cf. FILE_UNREADABLE).
                     result.parse_errors.append(RowError(
-                        ridx + 1, especie, "PPI_INSTRUMENTO_NO_SOPORTADO",
+                        0, especie, "PPI_INSTRUMENTO_NO_SOPORTADO",
                         f"Movimiento de títulos de PPI no soportado aún: "
                         f"'{desc_raw[:50]}'. Se omitió — escribinos para soportarlo."))
                 continue
@@ -314,7 +319,7 @@ class PpiParser(Parser):
                     # Conducto dólar-MEP: el ticker real vive en Instrumentos y la
                     # qty no matchea → lo flaggeamos para soportarlo con dato real.
                     result.parse_errors.append(RowError(
-                        ridx + 1, None, "PPI_SPOT_REVIEW",
+                        0, None, "PPI_SPOT_REVIEW",   # fila descartada → ver nota arriba
                         f"Operación SPOT (dólar MEP) de PPI: '{desc_raw[:50]}'. "
                         f"Se omitió — la soportamos con un export real."))
                     continue
@@ -372,7 +377,7 @@ class PpiParser(Parser):
                 _emit(base("INTERES" if cash_in else "FEE", monto=str(abs(importe))))
             else:
                 result.parse_errors.append(RowError(
-                    ridx + 1, None, "PPI_DESC_DESCONOCIDA",
+                    0, None, "PPI_DESC_DESCONOCIDA",   # fila descartada → ver nota arriba
                     f"Movimiento de PPI no reconocido: '{desc_raw[:60]}'. Se omitió "
                     f"esta fila — escribinos para soportarlo."))
 

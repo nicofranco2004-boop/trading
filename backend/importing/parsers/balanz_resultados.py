@@ -289,8 +289,11 @@ class BalanzResultadosParser(Parser):
             # precio+cantidad, generaría una COMPRA ESPURIA → posición fantasma.
             # Mejor avisar al usuario que tragarlo en silencio.
             if mov and not (mov.startswith("no realizado") or mov.startswith("orden")):
+                # row_index=0: fila descartada, sin RawRow. `ridx + 1` apuntaba a
+                # la próxima fila emitida —una buena—, que salía marcada `invalid`
+                # con el mensaje de otra. 0 = sentinel (cf. FILE_UNREADABLE).
                 result.parse_errors.append(RowError(
-                    ridx + 1, activo, "BALANZ_RES_TIPO_DESCONOCIDO",
+                    0, activo, "BALANZ_RES_TIPO_DESCONOCIDO",
                     f"Tipo de movimiento no reconocido para {activo}: "
                     f"'{_g(row, 'tipo_mov')}'. Se omitió la fila — escribinos si "
                     f"creés que debería importarse."))

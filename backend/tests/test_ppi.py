@@ -143,6 +143,21 @@ class PpiParserTest(unittest.TestCase):
         self.assertTrue(any(e.code == "PPI_SPOT_REVIEW" for e in self.res.parse_errors))
         self.assertFalse(any(r.get("activo") == "SPOT" for r in self.rows))
 
+    # ── El error de una fila descartada no puede marcar a otra ───────────────
+    def test_el_error_de_una_fila_descartada_no_apunta_a_una_emitida(self):
+        # `ridx` cuenta filas EMITIDAS, así que `ridx + 1` era la PRÓXIMA fila
+        # —una fila BUENA—, que salía marcada `invalid` en el preview con el
+        # mensaje de otra (pipeline.py aparea errores con raw rows por
+        # row_index). Las tres familias de error de PPI son todas de filas
+        # DESCARTADAS: ninguna puede apuntar a una fila emitida.
+        emitidos = {rr.row_index for rr in self.res.raw_rows}
+        self.assertTrue(self.res.parse_errors,
+                        "el fixture tiene que producir al menos un error")
+        for e in self.res.parse_errors:
+            self.assertNotIn(
+                e.row_index, emitidos,
+                f"{e.code} apunta a la fila emitida {e.row_index}, que es válida")
+
     # ── Reconciliación self-consistente del cash emitido ─────────────────────
     def test_emitted_cash_totals(self):
         emit = {"ARS": 0.0, "USD": 0.0}

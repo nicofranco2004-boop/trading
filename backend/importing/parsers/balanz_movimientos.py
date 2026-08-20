@@ -573,8 +573,12 @@ class BalanzMovimientosParser(Parser):
             # ── Descripción NO reconocida → la MARCAMOS (no la tragamos en
             # silencio). Aparece vía el Import Guardian para que la soportemos, en
             # vez de mis-importarla como un depósito/retiro genérico. ────────────
+            # row_index=0: esta fila se DESCARTA, no emite RawRow. `ridx` cuenta
+            # filas EMITIDAS, así que `ridx + 1` era la PRÓXIMA —una buena— y
+            # quedaba marcada `invalid` con el mensaje de otra. 0 es el sentinel
+            # del repo para el error sin fila propia (cf. FILE_UNREADABLE).
             result.parse_errors.append(RowError(
-                ridx + 1, ticker, "BALANZ_MOV_DESC_DESCONOCIDA",
+                0, ticker, "BALANZ_MOV_DESC_DESCONOCIDA",
                 f"Movimiento de Balanz no reconocido: '{desc_raw[:60]}'. Se omitió "
                 f"esta fila — escribinos para soportarlo."))
 
