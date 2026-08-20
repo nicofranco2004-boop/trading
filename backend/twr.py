@@ -77,7 +77,17 @@ def _es_fin_de_mes(fecha: str) -> bool:
 
 # Lo que dice `source` manda: es un hecho estampado al escribir, no una
 # deducción. La heurística de abajo queda sólo para las filas anteriores a esa
-# columna, que nunca la van a tener.
+# columna, que nunca la van a tener (source NULL).
+#
+# FALLA CERRADA: un `source` que NO esté acá es, por definición, un emisor que
+# este módulo no conoce — y la heurística lo ascendería a MEDICION con sólo
+# tener holdings_json. Ésa es exactamente la puerta por la que entraría un
+# borde RECONSTRUIDO (source='reconstruido') a la cadena publicada, sin que
+# nadie lo decida. Un emisor nuevo tiene que declararse acá a mano.
+# Verificado (2026-08-20): los únicos tres writers de snapshots.source en
+# producción escriben 'cron' (snapshots_job.py:769), 'browser' (main.py:4831)
+# e 'import' (persister.py:1290) — las tres claves de abajo. Las filas viejas
+# tienen NULL y siguen cayendo a la heurística.
 _POR_SOURCE = {"cron": MEDICION, "browser": INTRADIA, "import": SINTETICO_COSTO}
 
 
@@ -86,8 +96,8 @@ def clasificar_fila(row, tenia_posiciones: bool) -> str:
     algo no-cash para valuar: sin eso, un holdings_json vacío es lo correcto y
     no una señal de que la fila sea mala."""
     src = row["source"] if "source" in row.keys() else None
-    if src in _POR_SOURCE:
-        return _POR_SOURCE[src]
+    if src is not None:
+        return _POR_SOURCE.get(src, INDETERMINADO)
     tiene_holdings = bool(row["holdings_json"])
     tiene_fx = row["fx_to_usd_blue"] is not None
 

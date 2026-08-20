@@ -3287,6 +3287,33 @@ class TwrFase0Test(AdvisorBase):
         self.assertEqual(d["por_clase"][twr.INTRADIA], 1)
         self.assertEqual(d["por_clase"][twr.MEDICION], 0)
 
+    def test_un_source_desconocido_no_asciende_a_medicion(self):
+        # LA PUERTA DEL AGENTE. Un emisor que este módulo no conoce —el caso
+        # concreto es el reconstructor escribiendo source='reconstruido'— tenía
+        # composición estampada y la heurística lo ascendía a MEDICION, o sea
+        # que un borde RECONSTRUIDO entraba a la cadena publicada sin que nadie
+        # lo decidiera. Falla cerrada: un emisor nuevo se declara a mano.
+        import twr
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}], source="reconstruido")
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.MEDICION], 0)
+        self.assertEqual(d["por_clase"][twr.INDETERMINADO], 1)
+
+    def test_source_null_sigue_cayendo_a_la_heuristica(self):
+        # Contracara del anterior: las filas anteriores a la columna `source`
+        # tienen NULL y DEBEN seguir clasificándose por la heurística. Si el
+        # fail-closed se las comiera, toda la historia previa a e7432ec dejaría
+        # de ser medible de golpe.
+        import twr
+        self._pos(self.client_uid)
+        self._snap(self.client_uid, "2026-07-10", 100, fx=1400,
+                   hold=[{"asset": "AAPL", "value_usd": 100}], source=None)
+        d = self._diag(self.client_uid)
+        self.assertEqual(d["por_clase"][twr.MEDICION], 1)
+        self.assertEqual(d["por_clase"][twr.INDETERMINADO], 0)
+
     def test_serie_congelada_se_marca(self):
         # Un precio congelado (ticker delisted en asset_last_price, sin TTL) deja
         # la serie plana. Es peor que un hueco: el hueco se ve.
