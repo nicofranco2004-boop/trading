@@ -277,13 +277,59 @@ def bordes_medibles(conn, uid: int) -> list:
     return [r for r in filas if clasificar_fila(r, con_pos) == MEDICION]
 
 
+def _aplicar_resoluciones() -> bool:
+    """El interruptor de la vía de escritura. APAGADO por default, y no es
+    redundante con la columna `aplicado`: sin él, la primera carga de la
+    pantalla sella los meses con el flujo YA corregido y esas filas quedan
+    como REVISIÓN 1 — la que el asesor va a leer como "el número original".
+    Con el interruptor, "el agente resolvió" y "la resolución entró al número"
+    son dos actos separados."""
+    import os
+    return (os.environ.get("RECONSTRUCTOR_APLICAR", "0") or "0").strip() \
+        not in ("", "0", "false", "no")
+
+
+def _ajuste_resoluciones(conn, uid: int, desde: str, hasta: str) -> float:
+    """Cuánto de lo que la SSoT cuenta como flujo NO es flujo, según lo ya
+    resuelto y aprobado. Un traslado interno movió el saldo pero no es plata
+    nueva del cliente: se le resta al aporte neto del tramo.
+
+    Ventana (desde, hasta] — misma convención que los bordes del tramo: el
+    movimiento del día del borde inicial pertenece al tramo anterior.
+    Best-effort: si la tabla todavía no existe, el TWR sigue andando igual.
+    """
+    if not _aplicar_resoluciones():
+        return 0.0
+    try:
+        r = conn.execute(
+            """SELECT COALESCE(SUM(monto_usd), 0) a FROM flujo_resoluciones f
+                WHERE f.user_id = ? AND f.aplicado = 1 AND f.revocado_at IS NULL
+                  AND f.naturaleza = 'traslado_interno'
+                  AND f.fecha > ? AND f.fecha <= ?
+                  AND f.revision = (SELECT MAX(f2.revision) FROM flujo_resoluciones f2
+                                     WHERE f2.user_id = f.user_id
+                                       AND f2.scope_tipo = f.scope_tipo
+                                       AND f2.scope_id = f.scope_id)""",
+            (uid, desde, hasta)).fetchone()
+        return float(r["a"] or 0)
+    except Exception:
+        log.exception("[twr] _ajuste_resoluciones falló (no fatal)")
+        return 0.0
+
+
 def _flujo(conn, uid: int, desde: str, hasta: str) -> float:
     """Aportes netos entre dos fechas. Sale de la SSoT canónica de la app
     (`compute_net_deposited_db`), no de una cuenta propia — si el TWR usara su
-    propia definición de flujo, discutiría con el resto de las pantallas."""
+    propia definición de flujo, discutiría con el resto de las pantallas.
+
+    ⭐ ESTE ES EL ÚNICO LUGAR de toda la app donde una resolución del agente
+    toca un número. Si algún día hay un segundo, la vuelta atrás deja de ser
+    apagar una env var.
+    """
     from snapshots_job import compute_net_deposited_db
-    return (compute_net_deposited_db(conn, uid, as_of_date=hasta)
+    base = (compute_net_deposited_db(conn, uid, as_of_date=hasta)
             - compute_net_deposited_db(conn, uid, as_of_date=desde))
+    return base - _ajuste_resoluciones(conn, uid, desde, hasta)
 
 
 def tramos(conn, uid: int, hasta_mes: str = None) -> list:

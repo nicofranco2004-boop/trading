@@ -1713,6 +1713,59 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_twr_periods_user
                 ON twr_periods(user_id, month);
+
+            -- Dónde vive el veredicto del agente reconstructor (Fase 5).
+            --
+            -- Es la ÚNICA tabla en la que el agente escribe, y tiene UN SOLO
+            -- lector: twr._flujo. Esa restricción es deliberada y es lo que
+            -- hace el cambio reversible. Las alternativas que se descartaron,
+            -- con su motivo:
+            --   · compute_net_deposited_db → 6 call sites de producción, entre
+            --     ellos el recómputo de snapshots.net_deposited (la curva y el
+            --     Total Return del Dashboard del cliente RETAIL) y 3 lectores
+            --     de reporting/builder. Un veredicto equivocado saldría en
+            --     cinco pantallas y quedaría congelado en filas históricas.
+            --   · monthly_entries → se REGENERA (_recalc_pnl_realized_from_ops
+            --     hace UPDATE ... SET deposits=?, 52 call sites). La única
+            --     columna pegajosa es manual_deposits, y usarla sería la IA
+            --     escribiendo un depósito manual indistinguible del que cargó
+            --     el usuario a mano.
+            --   · excluded_at → es un tombstone de EXISTENCIA, no de
+            --     naturaleza. Un traslado interno SÍ pasó y SÍ movió el saldo.
+            --
+            -- Append-only, igual que twr_periods: revision+1, nunca UPDATE.
+            -- `monto_usd` va DESNORMALIZADO a propósito: la resolución es un
+            -- HECHO estampado en el momento de decidir. Si la fila de abajo
+            -- cambia, queremos una revisión nueva — no que el número sellado
+            -- se mueva solo por debajo.
+            CREATE TABLE IF NOT EXISTS flujo_resoluciones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                scope_tipo TEXT NOT NULL,        -- 'tx' | 'raw' | 'par'
+                scope_id TEXT NOT NULL,          -- id de la fila que se resuelve
+                batch_id TEXT,
+                fecha TEXT NOT NULL,             -- la del movimiento, no la de hoy
+                broker TEXT,
+                activo TEXT,
+                monto_usd REAL NOT NULL DEFAULT 0,
+                naturaleza TEXT NOT NULL,        -- 'traslado_interno' | 'aporte' | 'retiro'
+                confianza REAL,
+                via TEXT,                        -- par_compra_deposito | cruce_entre_brokers | texto_crudo | agente
+                evidencia_json TEXT,
+                modelo TEXT,                     -- NULL si no la resolvió un modelo
+                revision INTEGER NOT NULL DEFAULT 1,
+                aplicado INTEGER NOT NULL DEFAULT 0,   -- 0 = no toca ningún número
+                aprobado_por INTEGER,
+                aprobado_at TEXT,
+                revocado_at TEXT,
+                batch_ref TEXT,                  -- corrida que la creó (para deshacer en lote)
+                created_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(user_id, scope_tipo, scope_id, revision)
+            );
+            CREATE INDEX IF NOT EXISTS idx_flujo_res_user
+                ON flujo_resoluciones(user_id, fecha);
+            CREATE INDEX IF NOT EXISTS idx_flujo_res_batch
+                ON flujo_resoluciones(batch_ref);
         """)
 
         # Migración: `seen` de los avisos del libro (prende el puntito del sidebar).
@@ -15631,6 +15684,61 @@ def admin_censo_flujos(target_uid: int = None, incluir_p3: bool = True,
         log.exception("admin_censo_flujos FAILED")
         raise HTTPException(status_code=500, detail=f"censo-flujos falló: {type(e).__name__}: {e}")
     finally:
+        conn.close()
+
+
+@app.get("/api/admin/diag/flujo-contaminacion")
+def admin_diag_flujo_contaminacion(target_uid: int, uid: int = Depends(get_admin_user)):
+    """Cuánto cambiaría el TWR de un cliente si sus resoluciones se aplicaran.
+
+    READ-ONLY y CONTRAFÁCTICO: calcula el número con y sin las resoluciones en
+    memoria, sin sellar ni escribir nada. Es la forma de ver el impacto ANTES
+    de prender `RECONSTRUCTOR_APLICAR`, en vez de descubrirlo en la pantalla
+    del asesor.
+    """
+    import os
+    import twr as _twr
+    import flujos as _flujos
+    conn = get_db()
+    prev = os.environ.get("RECONSTRUCTOR_APLICAR")
+    try:
+        res = [dict(r) for r in _flujos.vigentes(conn, target_uid)]
+        aplicadas = [r for r in res if r.get("aplicado")]
+
+        os.environ.pop("RECONSTRUCTOR_APLICAR", None)      # sin corrección
+        sin = _twr.twr_de(conn, target_uid)
+        os.environ["RECONSTRUCTOR_APLICAR"] = "1"          # con corrección
+        # OJO: twr_de lee lo SELLADO, que ya está calculado con el flujo viejo.
+        # Para el contrafáctico hay que recomputar los tramos en memoria.
+        tramos_con = _twr.tramos(conn, target_uid)
+        idx = 1.0
+        for t in tramos_con:
+            if t["quality"] != "no_medible":
+                idx *= (1.0 + float(t["ret"]))
+        con = {"twr": idx - 1.0 if tramos_con else None, "meses": len(tramos_con)}
+
+        ajuste = sum(float(r["monto_usd"] or 0) for r in aplicadas
+                     if r["naturaleza"] == "traslado_interno")
+        return {
+            "user_id": target_uid,
+            "resoluciones": {"vigentes": len(res), "aplicadas": len(aplicadas)},
+            "ajuste_usd": round(ajuste, 2),
+            "twr_actual": sin.get("twr"),
+            "twr_con_ajuste": con["twr"],
+            "meses_actual": sin.get("meses"),
+            "nota": ("contrafáctico en memoria: no sella ni escribe. "
+                     "`twr_actual` sale de lo SELLADO; `twr_con_ajuste` "
+                     "recomputa los tramos con las resoluciones aplicadas."),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_diag_flujo_contaminacion FAILED")
+        raise HTTPException(status_code=500, detail=f"flujo-contaminacion falló: {type(e).__name__}: {e}")
+    finally:
+        os.environ.pop("RECONSTRUCTOR_APLICAR", None)
+        if prev is not None:
+            os.environ["RECONSTRUCTOR_APLICAR"] = prev
         conn.close()
 
 

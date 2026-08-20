@@ -207,3 +207,127 @@ def reconciliar(conn, uid: int) -> dict:
             {k: p[k] for k in ("raw_id", "broker", "evidencia")} for p in pendientes[:20]
         ],
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FASE 5 — la vía de escritura: dónde vive un veredicto y cómo llega al número
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Las vías cuya evidencia es un HECHO verificable contra la base (hay una pata
+# opuesta, hay un par COMPRA+DEPOSITO con el mismo pair_id), no una lectura de
+# texto ni una deducción. Sólo éstas se auto-aplican.
+VIAS_AUTOAPLICABLES = ("par_compra_deposito", "cruce_entre_brokers")
+
+
+def registrar(conn, uid: int, *, scope_tipo: str, scope_id, naturaleza: str,
+              fecha: str, monto_usd: float, via: str, evidencia=None,
+              broker: str = None, activo: str = None, batch_id: str = None,
+              confianza: float = None, modelo: str = None,
+              batch_ref: str = None, aplicado: bool = False,
+              aprobado_por: int = None) -> int:
+    """Escribe UN veredicto. Append-only: si ya había uno para el mismo scope,
+    entra como revisión nueva y la vieja queda legible.
+
+    `aplicado` es un acto SEPARADO de resolver: el agente escribe siempre con
+    aplicado=0 y alguien —una regla determinística exacta, o un humano— lo
+    promueve después. Devuelve el id de la fila nueva.
+    """
+    import json as _json
+    prev = conn.execute(
+        """SELECT MAX(revision) r FROM flujo_resoluciones
+            WHERE user_id=? AND scope_tipo=? AND scope_id=?""",
+        (uid, scope_tipo, str(scope_id))).fetchone()
+    rev = int((prev["r"] or 0)) + 1
+    cur = conn.execute(
+        """INSERT INTO flujo_resoluciones
+           (user_id, scope_tipo, scope_id, batch_id, fecha, broker, activo,
+            monto_usd, naturaleza, confianza, via, evidencia_json, modelo,
+            revision, aplicado, aprobado_por, aprobado_at, batch_ref)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (uid, scope_tipo, str(scope_id), batch_id, fecha, broker, activo,
+         float(monto_usd or 0), naturaleza, confianza, via,
+         _json.dumps(evidencia, ensure_ascii=False) if evidencia is not None else None,
+         modelo, rev, 1 if aplicado else 0, aprobado_por,
+         (_ahora(conn) if aplicado else None), batch_ref))
+    return cur.lastrowid
+
+
+def _ahora(conn) -> str:
+    return conn.execute("SELECT datetime('now') d").fetchone()["d"]
+
+
+def vigentes(conn, uid: int) -> list:
+    """La revisión VIGENTE de cada scope resuelto, sin las revocadas."""
+    return conn.execute(
+        """SELECT * FROM flujo_resoluciones f
+            WHERE f.user_id = ? AND f.revocado_at IS NULL
+              AND f.revision = (SELECT MAX(f2.revision) FROM flujo_resoluciones f2
+                                 WHERE f2.user_id = f.user_id
+                                   AND f2.scope_tipo = f.scope_tipo
+                                   AND f2.scope_id = f.scope_id)
+            ORDER BY f.fecha""", (uid,)).fetchall()
+
+
+def revocar(conn, uid: int, res_id: int, motivo: str = None) -> bool:
+    """Deshace una resolución sin borrarla: marca `revocado_at` en la fila.
+
+    Es el único UPDATE de este módulo y es deliberado — a diferencia de
+    twr_periods, acá no hay nadie que haya "visto" la fila: revocar no reescribe
+    una publicación, la saca de circulación. Lo que se publicó vive en
+    twr_periods, y ahí sí la corrección entra como revisión nueva: revocar mueve
+    `flow_usd`, que está en _CAMPOS_SELLO, así que el próximo sellado escribe
+    revision+1 y `sellados()` toma la máxima. Se auto-corrige sin borrar nada.
+    """
+    cur = conn.execute(
+        """UPDATE flujo_resoluciones SET revocado_at = datetime('now'),
+               evidencia_json = COALESCE(evidencia_json,'') || ?
+            WHERE id = ? AND user_id = ? AND revocado_at IS NULL""",
+        (f" | revocada: {motivo}" if motivo else "", res_id, uid))
+    return cur.rowcount == 1
+
+
+def revocar_lote(conn, uid: int, batch_ref: str, motivo: str = None) -> int:
+    """Deshace una corrida entera del agente. Devuelve cuántas revocó."""
+    cur = conn.execute(
+        """UPDATE flujo_resoluciones SET revocado_at = datetime('now')
+            WHERE user_id = ? AND batch_ref = ? AND revocado_at IS NULL""",
+        (uid, batch_ref))
+    return cur.rowcount
+
+
+def aplicar(conn, uid: int, batch_ref: str = None) -> dict:
+    """Corre la pasada determinística y ESCRIBE lo que se puede aplicar solo.
+
+    Sólo se auto-aplica lo resuelto por una vía cuya evidencia es un hecho
+    verificable (VIAS_AUTOAPLICABLES). Lo que salió del texto crudo NUNCA se
+    aplica automático: el texto contesta DIRECCIÓN, no NATURALEZA, y ahí es
+    justo donde una lectura equivocada fabrica o borra un aporte.
+
+    Nada de lo que resuelva un modelo pasa por acá: eso entra con aplicado=0.
+    """
+    escritas = auto = ambiguos = 0
+    for c in candidatos(conn, uid):
+        v = resolver(conn, uid, c)
+        if not v["resuelto"]:
+            continue
+        # Guarda de ambigüedad: si hay más de un candidato posible para el mismo
+        # movimiento y no hay un par explícito, no se resuelve. Dos traspasos
+        # del mismo monto el mismo día se cruzarían entre sí.
+        if v.get("via") == "cruce_entre_brokers" and v.get("ambiguo"):
+            ambiguos += 1
+            continue
+        auto_aplicable = (v["via"] in VIAS_AUTOAPLICABLES
+                          and v["naturaleza"] == "traslado_interno")
+        registrar(
+            conn, uid,
+            scope_tipo="raw", scope_id=c["raw_id"],
+            naturaleza=v["naturaleza"], fecha=(c.get("fecha") or ""),
+            monto_usd=float(c.get("monto_usd") or 0),
+            via=v["via"], evidencia=v.get("evidencia"),
+            broker=c.get("broker"), activo=c.get("asset"),
+            confianza=1.0 if auto_aplicable else None,
+            batch_ref=batch_ref, aplicado=auto_aplicable)
+        escritas += 1
+        auto += 1 if auto_aplicable else 0
+    return {"escritas": escritas, "auto_aplicadas": auto,
+            "ambiguos_omitidos": ambiguos}

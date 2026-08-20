@@ -3412,6 +3412,212 @@ class TwrGuardasTest(TwrInvariantesTest):
         self.assertEqual(n, 0)
 
 
+class FlujoResolucionesTest(TwrInvariantesTest):
+    """FASE 5 — la vía de escritura. Un veredicto tiene dónde vivir y UN SOLO
+    camino al número, apagable por env var, sin tocar ninguna tabla de plata.
+    """
+
+    def _res(self, uid, monto, fecha="2026-02-15", naturaleza="traslado_interno",
+             aplicado=True, via="cruce_entre_brokers", scope_id=None, ref=None):
+        import flujos
+        conn = main.get_db()
+        try:
+            rid = flujos.registrar(
+                conn, uid, scope_tipo="tx", scope_id=(scope_id or f"tx{monto}"),
+                naturaleza=naturaleza, fecha=fecha, monto_usd=monto, via=via,
+                evidencia="pata opuesta en B", aplicado=aplicado, batch_ref=ref)
+            conn.commit()
+            return rid
+        finally:
+            conn.close()
+
+    def _con_switch(self, on, fn):
+        import os
+        prev = os.environ.get("RECONSTRUCTOR_APLICAR")
+        if on:
+            os.environ["RECONSTRUCTOR_APLICAR"] = "1"
+        else:
+            os.environ.pop("RECONSTRUCTOR_APLICAR", None)
+        try:
+            return fn()
+        finally:
+            os.environ.pop("RECONSTRUCTOR_APLICAR", None)
+            if prev is not None:
+                os.environ["RECONSTRUCTOR_APLICAR"] = prev
+
+    # ── El interruptor es lo que hace esto reversible ───────────────────────
+    def test_con_el_interruptor_apagado_el_numero_es_identico(self):
+        # Si esto falla, la vuelta atrás deja de ser apagar una env var.
+        uid = self._cliente("switchoff@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        antes = self._con_switch(False, lambda: self._twr(uid))["twr"]
+        self._res(uid, monto=100.0)
+        despues = self._con_switch(False, lambda: self._twr(uid))["twr"]
+        self.assertEqual(antes, despues)
+
+    def test_con_el_interruptor_prendido_la_resolucion_mueve_el_flujo(self):
+        # Los 100 que entraron NO eran plata nueva: eran un traslado. Sin la
+        # corrección el mes rinde 0% (Dietz neutraliza el aporte); con ella, el
+        # capital de verdad se duplicó → +100%.
+        uid = self._cliente("switchon@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        self.assertAlmostEqual(self._con_switch(False, lambda: self._twr(uid))["twr"],
+                               0.0, places=6)
+        self._res(uid, monto=100.0)
+        r = self._con_switch(True, lambda: self._twr(uid))
+        self.assertAlmostEqual(r["twr"], 1.0, places=6)
+
+    # ── No toca ninguna tabla de plata ──────────────────────────────────────
+    def test_no_mueve_monthly_entries_ni_snapshots(self):
+        # Es LO que hace el cambio reversible: la SSoT queda intacta y la
+        # corrección vive en un solo lector.
+        uid = self._cliente("intacta@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        conn = main.get_db()
+        try:
+            antes = [conn.execute(f"SELECT COUNT(*) c, COALESCE(SUM({col}),0) s "
+                                  f"FROM {t} WHERE user_id=?", (uid,)).fetchone()
+                     for t, col in (("monthly_entries", "deposits"),
+                                    ("snapshots", "total_value"))]
+            antes = [(r["c"], r["s"]) for r in antes]
+        finally:
+            conn.close()
+        self._res(uid, monto=100.0)
+        self._con_switch(True, lambda: self._twr(uid))
+        conn = main.get_db()
+        try:
+            despues = [conn.execute(f"SELECT COUNT(*) c, COALESCE(SUM({col}),0) s "
+                                    f"FROM {t} WHERE user_id=?", (uid,)).fetchone()
+                       for t, col in (("monthly_entries", "deposits"),
+                                      ("snapshots", "total_value"))]
+            despues = [(r["c"], r["s"]) for r in despues]
+        finally:
+            conn.close()
+        self.assertEqual(antes, despues)
+
+    # ── aplicado=0 es un segundo gate, independiente del interruptor ────────
+    def test_una_resolucion_sin_aplicar_no_toca_el_numero(self):
+        uid = self._cliente("sinaplicar@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        self._res(uid, monto=100.0, aplicado=False)
+        r = self._con_switch(True, lambda: self._twr(uid))
+        self.assertAlmostEqual(r["twr"], 0.0, places=6)
+
+    # ── Revocar y el auto-corregido por revisión ────────────────────────────
+    def test_revocar_dispara_una_revision_nueva_del_mes(self):
+        # revocar mueve flow_usd, que está en _CAMPOS_SELLO → el próximo
+        # sellado escribe revision+1 y sellados() toma la máxima. Se corrige
+        # solo, sin borrar la historia que alguien ya vio.
+        import flujos
+        uid = self._cliente("revoca@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        rid = self._res(uid, monto=100.0)
+        con = self._con_switch(True, lambda: self._twr(uid))
+        self.assertAlmostEqual(con["twr"], 1.0, places=6)
+
+        conn = main.get_db()
+        try:
+            self.assertTrue(flujos.revocar(conn, uid, rid, "me equivoqué"))
+            conn.commit()
+        finally:
+            conn.close()
+        vuelto = self._con_switch(True, lambda: self._twr(uid))
+        self.assertAlmostEqual(vuelto["twr"], 0.0, places=6)
+        self.assertIn("2026-02", vuelto["meses_revisados"])
+
+    def test_revocar_un_lote_entero(self):
+        import flujos
+        uid = self._cliente("lote@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)])
+        self._res(uid, monto=10.0, scope_id="a", ref="run-9")
+        self._res(uid, monto=20.0, scope_id="b", ref="run-9")
+        self._res(uid, monto=30.0, scope_id="c", ref="otra")
+        conn = main.get_db()
+        try:
+            n = flujos.revocar_lote(conn, uid, "run-9")
+            conn.commit()
+            quedan = len(flujos.vigentes(conn, uid))
+        finally:
+            conn.close()
+        self.assertEqual(n, 2)
+        self.assertEqual(quedan, 1)
+
+    # ── Append-only y ventana ───────────────────────────────────────────────
+    def test_registrar_dos_veces_el_mismo_scope_hace_revision_nueva(self):
+        import flujos
+        uid = self._cliente("revs@x.com")
+        self._res(uid, monto=10.0, scope_id="x")
+        self._res(uid, monto=99.0, scope_id="x")
+        conn = main.get_db()
+        try:
+            revs = [r["revision"] for r in conn.execute(
+                "SELECT revision FROM flujo_resoluciones WHERE user_id=? "
+                "AND scope_id='x' ORDER BY revision", (uid,)).fetchall()]
+            v = flujos.vigentes(conn, uid)
+        finally:
+            conn.close()
+        self.assertEqual(revs, [1, 2])
+        self.assertEqual(len(v), 1)            # sólo la vigente
+        self.assertEqual(v[0]["monto_usd"], 99.0)
+
+    def test_el_diagnostico_muestra_el_impacto_sin_escribir(self):
+        # Ver el impacto ANTES de prender el interruptor, en vez de descubrirlo
+        # en la pantalla del asesor.
+        uid = self._cliente("diag@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        self._twr(uid)                      # sella con el flujo viejo
+        self._res(uid, monto=100.0)
+        conn = main.get_db()
+        try:
+            antes = conn.execute("SELECT COUNT(*) c FROM twr_periods WHERE user_id=?",
+                                 (uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+        adm = self._cliente_admin()
+        r = self.http.get("/api/admin/diag/flujo-contaminacion",
+                          params={"target_uid": uid},
+                          headers={"Authorization": f"Bearer {main.create_token(adm)}"})
+        self.assertEqual(r.status_code, 200, r.text)
+        b = r.json()
+        self.assertAlmostEqual(b["twr_actual"], 0.0, places=6)
+        self.assertAlmostEqual(b["twr_con_ajuste"], 1.0, places=6)
+        self.assertEqual(b["ajuste_usd"], 100.0)
+        conn = main.get_db()
+        try:
+            despues = conn.execute("SELECT COUNT(*) c FROM twr_periods WHERE user_id=?",
+                                   (uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(antes, despues)     # no selló nada
+
+    def _cliente_admin(self):
+        conn = main.get_db()
+        try:
+            return conn.execute(
+                "INSERT INTO users (email,password_hash,approved,is_admin) "
+                "VALUES (?,'x',1,1)",
+                (f"adm-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+        finally:
+            conn.commit(); conn.close()
+
+    def test_la_resolucion_del_dia_del_borde_inicial_es_del_tramo_anterior(self):
+        # Ventana (desde, hasta]: el movimiento del 31/01 pertenece a enero, no
+        # a febrero. Sin esto, un traslado del día del borde se restaría dos
+        # veces o ninguna, según de qué lado se mire.
+        uid = self._cliente("ventana@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        self._res(uid, monto=100.0, fecha="2026-01-31")
+        r = self._con_switch(True, lambda: self._twr(uid))
+        self.assertAlmostEqual(r["twr"], 0.0, places=6)   # NO entró a febrero
+
+
 class TwrEndpointTest(TwrInvariantesTest):
     """El TWR expuesto: cobertura pegada, y piso de meses."""
 
