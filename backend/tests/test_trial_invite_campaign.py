@@ -203,6 +203,26 @@ class CampanaDeInvitacion(unittest.TestCase):
                             f"variante {v}: no aclara que no se pide tarjeta")
             self.assertTrue(("no se renueva sola" in texto or "sin renovación automática" in texto),
                             f"variante {v}: no aclara que no se renueva sola")
+            # Lo que el mail tiene que HACER, más allá de la redacción:
+            self.assertIn("ya está habilitada", texto,
+                          f"variante {v}: no avisa que la prueba ya está disponible")
+            self.assertIn("se te abren con pro", texto,
+                          f"variante {v}: no anticipa nada de lo que da Pro")
+            self.assertIn("/planes", capt["texto"],
+                          f"variante {v}: sin link para activarla")
+            self.assertIn("activá tu prueba", texto,
+                          f"variante {v}: el link no se lee como la acción")
+
+    def test_el_anticipo_de_pro_no_promete_lo_que_no_hay(self):
+        """Los ganchos describen features REALES del plan (PRO_FEATURES del
+        catálogo). Un mail que promete algo que después no está es la peor
+        primera impresión posible, y encima llega justo cuando la persona entra
+        a mirar."""
+        from billing import emails
+        self.assertGreaterEqual(len(emails._PRO_GANCHOS), 3)
+        junto = " ".join(emails._PRO_GANCHOS).lower()
+        for concreto in ("chat libre", "60 análisis", "brokers"):
+            self.assertIn(concreto, junto, f"falta el gancho de {concreto}")
 
     def test_una_variante_inventada_cae_en_la_default(self):
         from billing import emails

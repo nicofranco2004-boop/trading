@@ -764,10 +764,33 @@ def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "P
 # botón de color se va a Promociones, que para esto es no existir.
 TRIAL_INVITE_VARIANTS = ("directo", "cartera", "lugar")
 
+# Lo que abre Pro, en la voz del que lo va a usar. Es un ANTICIPO, no el
+# catálogo: cuatro cosas concretas convencen más que catorce, y la lista larga
+# ya está en /planes. Salen de PRO_FEATURES (frontend/src/data/planCatalog.js)
+# — si se agrega algo grande al plan, conviene revisar acá también.
+_PRO_GANCHOS = (
+    "Chat libre con Rendi AI: preguntale lo que quieras sobre tu cartera, con "
+    "tus números adelante (en Free son 12 preguntas guiadas).",
+    "60 análisis por semana en vez de 1: podés pedirle que mire cada gráfico y "
+    "cada sección sin estar cuidando la cuota.",
+    "Todos tus brokers en una sola cartera, sin límite de cuántos conectes.",
+    "Se acuerda de lo que le aclarás entre sesiones, así no le repetís tu "
+    "situación cada vez.",
+)
+
 
 def send_trial_invite(*, to: str, user_name: str = "", variant: str = "lugar",
                       pro_days: int = 7, plus_days: int = 8, total_days: int = 15) -> bool:
-    """Avisa a un usuario Free que ya puede probar Rendi Pro/Plus gratis.
+    """Avisa a un usuario Free que YA ESTÁ HABILITADA la prueba gratis de Pro.
+
+    Estructura fija, y sólo cambia la apertura según `variant`:
+      1. la prueba ya está disponible  →  2. qué abre Pro (anticipo)
+      3. el plazo, sin tarjeta y sin renovación  →  4. el link para activarla
+
+    Que el cuerpo sea compartido no es prolijidad: hace que las tres variantes
+    digan lo mismo POR CONSTRUCCIÓN. Cuando cada una tenía su texto entero, una
+    podía olvidarse de aclarar que no se pide tarjeta y convertir peor por algo
+    que no era el mensaje.
 
     `variant`: 'directo' (qué es y listo) · 'cartera' (arranca por lo que va a
     ver de SU cartera) · 'lugar' (le guardamos un lugar — es literal: se invita
@@ -776,63 +799,65 @@ def send_trial_invite(*, to: str, user_name: str = "", variant: str = "lugar",
     """
     safe_name = html.escape((user_name or "").strip())
     hi_html = f"Hola {safe_name}," if safe_name else "Hola,"
-    hi_text = f"Hola {(user_name or '').strip()}," if (user_name or "").strip() else "Hola,"
+    hi_text = f"Hola {(user_name or '').strip()}," if (user_name or '').strip() else "Hola,"
     v = variant if variant in TRIAL_INVITE_VARIANTS else "lugar"
-    link = f'<a href="{APP_URL}/planes" style="color:#5b4ddb;">rendi.finance</a>'
+    activar = f"{APP_URL}/planes"
 
+    # ── 1. la apertura, lo único que cambia ────────────────────────────────
     if v == "directo":
-        subject = f"Te habilitamos {total_days} días de Rendi Pro"
-        parrafos = [
-            (f"{hi_html} ya podés probar Rendi Pro gratis por {total_days} días: "
-             f"los primeros {pro_days} con todo Pro y los {plus_days} siguientes con Plus.",
-             f"{hi_text} ya podés probar Rendi Pro gratis por {total_days} días: "
-             f"los primeros {pro_days} con todo Pro y los {plus_days} siguientes con Plus."),
-            ("No pedimos tarjeta y no se renueva sola. Cuando termina, tu cuenta vuelve "
-             "a Free y no se te cobra nada.",) * 2,
-            ("Se activa desde Configuración → Planes, con un botón. Tarda un segundo.",) * 2,
-        ]
+        subject = "Ya podés probar Rendi Pro gratis"
+        ap_html = (f"{hi_html} ya está habilitada la prueba gratuita del plan Pro "
+                   "dentro de Rendi.")
+        ap_text = (f"{hi_text} ya está habilitada la prueba gratuita del plan Pro "
+                   "dentro de Rendi.")
     elif v == "cartera":
         subject = "¿Qué te diría Rendi si viera toda tu cartera?"
-        parrafos = [
-            (f"{hi_html} con Pro, Rendi deja de mostrarte números y te dice qué está pasando "
-             "con tu plata: tu rendimiento real en dólares, cómo venís contra la inflación y "
-             "contra el S&amp;P 500, y en qué se te está yendo la ganancia.",
-             f"{hi_text} con Pro, Rendi deja de mostrarte números y te dice qué está pasando "
-             "con tu plata: tu rendimiento real en dólares, cómo venís contra la inflación y "
-             "contra el S&P 500, y en qué se te está yendo la ganancia."),
-            (f"Te habilitamos {total_days} días para que lo veas sobre TU cartera, no sobre un "
-             f"ejemplo: {pro_days} días con todo Pro y {plus_days} con Plus.",) * 2,
-            ("Sin tarjeta y sin renovación automática. Cuando termina volvés a Free.",) * 2,
-        ]
+        ap_html = (f"{hi_html} ya está habilitada la prueba gratuita del plan Pro dentro "
+                   "de Rendi, y es la forma de que Rendi deje de mostrarte números y te "
+                   "empiece a decir qué está pasando con tu plata.")
+        ap_text = (f"{hi_text} ya está habilitada la prueba gratuita del plan Pro dentro "
+                   "de Rendi, y es la forma de que Rendi deje de mostrarte números y te "
+                   "empiece a decir qué está pasando con tu plata.")
     else:  # 'lugar'
         subject = "Te guardamos un lugar para probar Rendi Pro"
-        parrafos = [
-            (f"{hi_html} estamos abriendo la prueba gratis de a poco, y te guardamos un lugar.",
-             f"{hi_text} estamos abriendo la prueba gratis de a poco, y te guardamos un lugar."),
-            (f"Son {total_days} días: {pro_days} con todo Pro —chat libre con Rendi AI, el "
-             f"máximo de análisis y brokers ilimitados— y {plus_days} más con Plus.",) * 2,
-            ("No pedimos tarjeta y no se renueva sola. Cuando termina, tu cuenta vuelve a Free "
-             "y no se te cobra nada: si no te sirvió, no hiciste nada.",) * 2,
-        ]
+        ap_html = (f"{hi_html} ya está habilitada la prueba gratuita del plan Pro dentro "
+                   "de Rendi. La estamos abriendo de a poco y te guardamos un lugar.")
+        ap_text = (f"{hi_text} ya está habilitada la prueba gratuita del plan Pro dentro "
+                   "de Rendi. La estamos abriendo de a poco y te guardamos un lugar.")
 
-    cuerpo_html = "".join(f'<p style="margin:0 0 14px;">{p[0]}</p>' for p in parrafos)
-    cuerpo_text = "\n\n".join(p[1] if len(p) > 1 else p[0] for p in parrafos)
+    # ── 2-4. el cuerpo, igual para las tres ────────────────────────────────
+    ganchos_html = "".join(
+        f'<li style="margin:0 0 7px;">{g}</li>' for g in _PRO_GANCHOS)
+    ganchos_text = "\n".join(f"  · {g}" for g in _PRO_GANCHOS)
+    plazo = (f"Son {total_days} días: los primeros {pro_days} con todo Pro y los "
+             f"{plus_days} siguientes con Plus. No pedimos tarjeta y no se renueva "
+             "sola — cuando termina, tu cuenta vuelve a Free y no se te cobra nada.")
+
     body_html = (
         '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
         "Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;\">"
-        f'{cuerpo_html}'
-        f'<p style="margin:0 0 14px;">Entrá a {link} y activala cuando quieras.</p>'
+        f'<p style="margin:0 0 14px;">{ap_html}</p>'
+        '<p style="margin:0 0 8px;">Algunas de las cosas que se te abren con Pro:</p>'
+        f'<ul style="margin:0 0 14px;padding-left:20px;">{ganchos_html}</ul>'
+        f'<p style="margin:0 0 14px;">{plazo}</p>'
+        f'<p style="margin:0 0 14px;"><a href="{activar}" style="color:#5b4ddb;">'
+        "Activá tu prueba gratis acá</a> — es un botón, tarda un segundo.</p>"
         '<p style="margin:0 0 14px;">Cualquier duda, respondé este mail.</p>'
         '<p style="margin:18px 0 0;">— Rendi</p>'
         "</div>"
     )
     text = (
-        f"{cuerpo_text}\n\n"
-        f"Entrá a {APP_URL}/planes y activala cuando quieras.\n\n"
+        f"{ap_text}\n\n"
+        "Algunas de las cosas que se te abren con Pro:\n"
+        f"{ganchos_text}\n\n"
+        f"{plazo}\n\n"
+        f"Activá tu prueba gratis acá: {activar}\n"
+        "Es un botón, tarda un segundo.\n\n"
         "Cualquier duda, respondé este mail.\n\n"
         "— Rendi"
     )
     return _send(to, subject, body_html, text, from_addr=_from_support())
+
 
 
 # ─── Email interno: alerta al equipo por cada signup real (primeros N) ───────
