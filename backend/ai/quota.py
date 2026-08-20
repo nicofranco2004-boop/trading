@@ -186,6 +186,23 @@ def get_tier(conn, user_id: int) -> Tier:
             approved = bool(row["approved"]) if "approved" in keys else True
             if "managed_by" in keys and row["managed_by"] is not None and not approved:
                 return "pro"
+
+            # Prueba de Pro ENCIMA de un plan pago (el Plus que quiere ver qué
+            # se está perdiendo). Va por arriba del override pago y no lo toca:
+            # su suscripción, su credit_active_until y su anchor quedan intactos,
+            # así que cuando esta fecha pasa vuelve solo a su plan de siempre sin
+            # que corra ningún cron ni haya nada que reparar.
+            #
+            # A propósito NO se implementó pisando users.tier: hacerlo le
+            # sobreescribía la ventana paga y le borraba el anchor, que es el
+            # estado roto que costó media semana cerrar.
+            if "pro_trial_until" in keys and row["pro_trial_until"]:
+                try:
+                    if str(row["pro_trial_until"]) > datetime.utcnow().isoformat():
+                        return "pro"
+                except Exception:
+                    pass
+
             override = ((row["tier"] if "tier" in keys else None) or "").strip().lower()
             is_admin = bool(row["is_admin"]) if "is_admin" in keys else False
             if override in ("pro", "plus", "advisor"):
@@ -253,12 +270,18 @@ def _window_floor(conn, user_id: int):
     """
     try:
         row = conn.execute(
-            "SELECT quota_window_from, credit_active_until FROM users WHERE id=?",
-            (user_id,)).fetchone()
+            "SELECT quota_window_from, credit_active_until, pro_trial_until "
+            "  FROM users WHERE id=?", (user_id,)).fetchone()
     except Exception:
-        return None            # esquema viejo sin la columna → sin piso (como antes)
+        try:                   # esquema sin pro_trial_until (tests viejos)
+            row = conn.execute(
+                "SELECT quota_window_from, credit_active_until FROM users WHERE id=?",
+                (user_id,)).fetchone()
+        except Exception:
+            return None        # esquema viejo sin ninguna → sin piso (como antes)
     if not row:
         return None
+    _keys = row.keys()
 
     def _d(v):
         try:
@@ -272,6 +295,18 @@ def _window_floor(conn, user_id: int):
         vencio = _d(cau)
         if vencio and (piso is None or vencio > piso):
             piso = vencio
+    # La prueba de Pro sobre un plan pago vence SOLA, en tiempo real, sin que
+    # nadie escriba nada — así que el piso del día que vuelve a Plus tiene que
+    # DERIVARSE de acá. Sin esto, el que probó Pro una semana volvía a su Plus
+    # arrastrando 60 análisis contra un techo de 6: castigado por haber probado.
+    if "pro_trial_until" in _keys and row["pro_trial_until"]:
+        try:
+            if str(row["pro_trial_until"]) <= datetime.utcnow().isoformat():
+                fin = _d(row["pro_trial_until"])
+                if fin and (piso is None or fin > piso):
+                    piso = fin
+        except Exception:
+            pass
     return piso
 
 

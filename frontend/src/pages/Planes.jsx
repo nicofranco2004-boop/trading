@@ -27,7 +27,9 @@ import { trackEvent } from '../utils/analytics'
 import { isSafePaymentUrl } from '../utils/safeUrl'
 import { api } from '../utils/api'
 import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
-import { TrialCta, TrialFinePrint } from '../components/plan/TrialCta'
+import {
+  TrialCta, TrialFinePrint, ProUpsellCta, ProUpsellFinePrint,
+} from '../components/plan/TrialCta'
 
 // ─── Pricing en ARS hardcoded (2026-05-31) ──────────────────────────────────
 // Cobramos en pesos fijo (no convertido al blue). Razón:
@@ -563,6 +565,9 @@ export default function Planes({ embedded = false }) {
                   // aclara que después sigue con Plus.
                   // TrialCta no renderiza nada si el server no lo habilita, así
                   // que no hace falta condicionarlo acá.
+                  // Se renderizan los dos: son excluyentes por elegibilidad
+                  // (uno pide NO tener plan pago, el otro pide pagar Plus), así
+                  // que nunca aparecen juntos y no hace falta condicionarlos.
                   belowCta={
                     <>
                       <TrialCta
@@ -570,6 +575,8 @@ export default function Planes({ embedded = false }) {
                         className="w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium text-data-violet bg-transparent border border-data-violet/40 hover:bg-data-violet/10 rounded-sm py-2.5 transition-colors disabled:opacity-60"
                       />
                       <TrialFinePrint />
+                      <ProUpsellCta />
+                      <ProUpsellFinePrint />
                     </>
                   }
                   onCtaClick={() => {

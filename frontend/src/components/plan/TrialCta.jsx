@@ -120,6 +120,70 @@ export function TrialCta({ source = 'paywall', className = '', onStarted }) {
   )
 }
 
+// ─── Probar Pro sin dejar el Plus que ya se paga ───────────────────────────
+// Otro mecanismo, no el free trial: el suscriptor de Plus es el mejor candidato
+// que hay para Pro —ya paga, ya usa la app— y era justo el único al que no se
+// le ofrecía nada, porque el trial normal lo excluye (le pisaría la ventana que
+// compró). El backend manda el estado resuelto en /api/plan/features →
+// pro_upsell: { active, used, can_start, days_left, days }.
+
+/** Botón "Probá Pro N días". Null si el server no lo habilita. */
+export function ProUpsellCta({ className = '', onStarted }) {
+  const { features } = usePlanFeatures()
+  const up = features?.pro_upsell
+  const [busy, setBusy] = useState(false)
+  const toast = useToast()
+
+  if (!up?.can_start) return null
+
+  async function start() {
+    if (busy) return
+    setBusy(true)
+    track('pro_upsell_clicked', { source: 'planes' })
+    try {
+      await api.post('/billing/trial/pro-upsell')
+      await refreshPlanFeatures()
+      window.dispatchEvent(new Event('rendi:portfolio-changed'))
+      track('pro_upsell_started', {})
+      toast.push(`Listo: tenés ${up.days} días de Pro. Tu Plus sigue igual.`,
+                 { type: 'success' })
+      onStarted?.()
+    } catch (e) {
+      const reason = e?.payload?.detail || e?.message || ''
+      toast.push(REASONS[reason] || 'No pudimos activarlo. Probá de nuevo en un minuto.',
+                 { type: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={start}
+      disabled={busy}
+      className={className || 'w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium text-data-violet bg-transparent border border-data-violet/40 hover:bg-data-violet/10 rounded-sm py-2.5 transition-colors disabled:opacity-60'}
+    >
+      {busy
+        ? <><Loader2 size={13} className="animate-spin" /> Activando…</>
+        : <><Sparkles size={13} strokeWidth={1.75} /> Probá Pro {up.days} días gratis</>}
+    </button>
+  )
+}
+
+/** La letra chica del upsell. Lo que más frena: "¿pierdo mi Plus?". */
+export function ProUpsellFinePrint({ className = '' }) {
+  const { features } = usePlanFeatures()
+  const up = features?.pro_upsell
+  if (!up?.can_start) return null
+  return (
+    <p className={className || 'mt-2 text-[10px] text-ink-3 text-center leading-relaxed'}>
+      Seguís con tu Plus y no se te cobra nada extra. A los {up.days} días volvés
+      a Plus solo.
+    </p>
+  )
+}
+
 /** La letra chica del trial + el (?) que explica las tres etapas.
  *
  *  Los días salen del SERVER (`pro_days`/`plus_days`/`total_days`), no de las
@@ -189,9 +253,47 @@ function TrialStage({ rango, plan, detalle }) {
  *  del cambio de etapa es la mitad del mecanismo del trial encadenado; si no
  *  se ve, el usuario pierde Pro sin enterarse de que lo tenía. */
 export function TrialBanner({ onSeePlans }) {
-  const { trial } = usePlanFeatures()
+  const { trial, features } = usePlanFeatures()
   const navigate = useNavigate()
   const { pathname } = useLocation()
+  const up = features?.pro_upsell
+
+  // La prueba de Pro sobre un plan pago usa la MISMA barra: para el usuario es
+  // lo mismo ("estoy probando algo que se termina"), y tener dos barras
+  // distintas en el shell sería ruido. Lo que cambia es que acá no vuelve a
+  // Free sino a SU plan, y eso es justo lo que hay que decirle.
+  if (!trial?.active && up?.active) {
+    const d = up.days_left
+    return (
+      <div className="sticky top-0 z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm">
+        <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
+          <div className="flex items-center gap-2 min-w-0">
+            <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
+            <p className="text-xs text-ink-1 min-w-0">
+              <span className="font-medium text-ink-0">Estás probando Rendi Pro.</span>
+              {d != null && (
+                <span className="text-ink-3">
+                  {' '}{d === 1 ? 'Te queda 1 día' : `Te quedan ${d} días`} y después
+                  volvés a tu Plus.
+                </span>
+              )}
+            </p>
+          </div>
+          {pathname !== '/planes' && (
+            <button
+              type="button"
+              onClick={() => { track('pro_upsell_banner_clicked', {}); navigate('/planes') }}
+              className="flex-shrink-0 inline-flex items-center gap-1 text-xs bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors"
+            >
+              Pasarme a Pro
+              <ArrowRight size={11} strokeWidth={2} />
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   if (!trial?.active) return null
 
   const { stage, days_left: left } = trial

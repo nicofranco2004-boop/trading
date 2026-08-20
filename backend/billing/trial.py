@@ -773,6 +773,131 @@ def send_due_trial_emails(conn) -> int:
 #      falló antes, y el problema es el onboarding, no el precio.
 #   2. De los que la usaron, ¿cuántos pagaron y cuándo?
 
+# ─── Probar Pro sin dejar el plan que ya se paga ────────────────────────────
+
+PRO_UPSELL_DAYS = 7    # al que ya paga no hay que convencerlo de que la app sirve
+
+
+def pro_upsell_eligibility(conn, user_id: int) -> dict:
+    """¿Puede probar Pro por encima de su plan pago?
+
+    Es para el suscriptor de PLUS: ya demostró que paga y ya usa la app, así
+    que es el mejor candidato que hay para Pro — y hasta ahora era justo el
+    único al que no se le ofrecía nada. El trial normal lo excluye con razón
+    (le pisaría la ventana que compró); esto es otro mecanismo.
+
+    No aplica a: quien ya está en Pro (no hay nada que mostrarle), quien no
+    paga (ése tiene el trial normal), admin, asesor y cuentas administradas.
+    """
+    try:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    except Exception as ex:
+        log.warning("pro_upsell_eligibility falló uid=%s: %s", user_id, ex)
+        return {"can_start": False, "reason": "unknown_user"}
+    if not row:
+        return {"can_start": False, "reason": "unknown_user"}
+    k = row.keys()
+
+    def g(c, d=None):
+        return row[c] if c in k else d
+
+    if g("pro_trial_used_at"):
+        return {"can_start": False, "reason": "already_used"}
+    if bool(g("is_admin")):
+        return {"can_start": False, "reason": "not_applicable"}
+    tier = (g("tier") or "").strip().lower()
+    if tier == "advisor" or g("managed_by") is not None:
+        return {"can_start": False, "reason": "not_applicable"}
+    if not trials_enabled():
+        return {"can_start": False, "reason": "disabled"}
+    # Ya lo está usando.
+    hasta = g("pro_trial_until")
+    if hasta and str(hasta) > datetime.utcnow().isoformat():
+        return {"can_start": False, "reason": "already_active"}
+    # Tiene que estar PAGANDO un plan por debajo de Pro. Se mira el crédito con
+    # anchor —el plan pago de verdad— y no users.tier, que durante el trial
+    # normal dice 'pro' sin que nadie haya pagado nada.
+    if not credit_is_trial(g("credit_active_until"), g("trial_ends_at")):
+        anchor = (g("credit_anchor_plan") or "").strip().lower()
+        cau = g("credit_active_until")
+        vigente = bool(cau and str(cau) > datetime.utcnow().isoformat())
+        if vigente and anchor == "plus":
+            return {"can_start": True, "reason": None}
+        if vigente and anchor == "pro":
+            return {"can_start": False, "reason": "already_pro"}
+    return {"can_start": False, "reason": "not_paying"}
+
+
+def start_pro_upsell(conn, user_id: int) -> dict:
+    """Le da PRO_UPSELL_DAYS días de Pro SIN tocar su plan pago.
+
+    No se escribe users.tier, ni credit_active_until, ni los anchors: su
+    suscripción, su fecha de renovación y su crédito quedan exactamente igual.
+    Cuando la fecha pasa, get_tier deja de devolver 'pro' y vuelve a su Plus
+    solo — sin cron, sin nada que reparar.
+
+    El UPDATE es condicional sobre pro_trial_used_at IS NULL: dos requests
+    simultáneos activan UNA sola vez.
+    """
+    el = pro_upsell_eligibility(conn, user_id)
+    if not el.get("can_start"):
+        return {"ok": False, **el}
+    ahora = datetime.utcnow()
+    hasta = ahora + timedelta(days=PRO_UPSELL_DAYS)
+    try:
+        with conn:
+            cur = conn.execute(
+                """UPDATE users SET pro_trial_until=?, pro_trial_used_at=?
+                    WHERE id=? AND pro_trial_used_at IS NULL""",
+                (hasta.isoformat(), ahora.isoformat(), user_id))
+            if not cur.rowcount:
+                return {"ok": False, "can_start": False, "reason": "already_used"}
+    except Exception as ex:
+        log.error("start_pro_upsell falló uid=%s: %s", user_id, ex)
+        return {"ok": False, "can_start": False, "reason": "error"}
+    # El corte de la ventana de cuota, para que su consumo de Plus no le coma
+    # la cuota de Pro que le acabamos de dar.
+    try:
+        from ai import quota as _q
+        _q.note_tier_change(conn, user_id)
+    except Exception as ex:
+        log.warning("pro upsell: no se pudo marcar el corte de cuota uid=%s: %s", user_id, ex)
+    log.info("pro upsell activado uid=%s hasta=%s", user_id, hasta.isoformat())
+    return {"ok": True, **pro_upsell_status(conn, user_id)}
+
+
+def pro_upsell_status(conn, user_id: int) -> dict:
+    """Estado para la UI: {active, used, can_start, days_left, ends_at, days}."""
+    out = {"active": False, "used": False, "can_start": False,
+           "days_left": None, "ends_at": None, "days": PRO_UPSELL_DAYS}
+    try:
+        row = conn.execute(
+            "SELECT pro_trial_until, pro_trial_used_at FROM users WHERE id=?",
+            (user_id,)).fetchone()
+    except Exception:
+        return out
+    if not row:
+        return out
+    out["used"] = bool(row["pro_trial_used_at"])
+    hasta = row["pro_trial_until"]
+    ahora = datetime.utcnow()
+    if hasta:
+        try:
+            fin = datetime.fromisoformat(str(hasta).replace("Z", ""))
+        except (TypeError, ValueError):
+            fin = None
+        if fin and fin > ahora:
+            restan = (fin - ahora).total_seconds() / 86400.0
+            out["active"] = True
+            out["ends_at"] = str(hasta)
+            # Mismo criterio de techo que status(): la barra de la app y
+            # cualquier otro lector tienen que decir el mismo número.
+            out["days_left"] = max(0, int(restan) + (1 if restan % 1 else 0))
+    if not out["active"]:
+        out["can_start"] = bool(pro_upsell_eligibility(conn, user_id).get("can_start"))
+    return out
+
+
 def activos(conn, limit: int = 200) -> dict:
     """Quiénes tienen la prueba corriendo AHORA MISMO, con nombre y apellido.
 

@@ -749,6 +749,17 @@ def init_db():
             # hace que la segunda tanda no repita gente de la primera. Sin índice
             # encima (la tabla es chica y el filtro va con el resto del WHERE).
             conn.execute("ALTER TABLE users ADD COLUMN trial_invite_email_sent_at TEXT")
+        if user_cols and 'pro_trial_until' not in user_cols:
+            # Prueba de Pro ENCIMA de un plan pago (el Plus que quiere ver qué se
+            # está perdiendo). Es una marca aparte a propósito: si se hiciera
+            # pisando users.tier + credit_active_until, le sobreescribiríamos la
+            # ventana que compró y le borraríamos el anchor. Vence sola —la mira
+            # quota.get_tier en tiempo real— así que no necesita cron ni deja
+            # nada que reparar. NULL = no tiene. Sin índice encima.
+            conn.execute("ALTER TABLE users ADD COLUMN pro_trial_until TEXT")
+        if user_cols and 'pro_trial_used_at' not in user_cols:
+            # Una sola vez por cuenta, para siempre (igual que trial_used_at).
+            conn.execute("ALTER TABLE users ADD COLUMN pro_trial_used_at TEXT")
         if user_cols and 'managed_by' not in user_cols:
             # Plan Asesor: si NO es NULL, la cuenta es un "cliente shadow" creado y
             # administrado por el asesor (users.id del asesor). Los shadows se
@@ -25024,6 +25035,27 @@ def billing_trial_start(uid: int = Depends(get_current_user)):
         conn.close()
 
 
+@app.post("/api/billing/trial/pro-upsell")
+def billing_pro_upsell_start(uid: int = Depends(get_current_user)):
+    """Le da 7 días de Pro al que YA PAGA Plus, sin tocarle el plan.
+
+    No es el free trial: aquel arranca una ventana de crédito y le pisaría al
+    suscriptor la que compró. Esto es una marca aparte que vence sola y lo
+    devuelve a su Plus, con su suscripción y su fecha de renovación intactas.
+
+    get_current_user y NO get_effective_user, igual que el trial: es de la
+    persona logueada, no del cliente que un asesor esté mirando."""
+    from billing import trial as _trial
+    conn = get_db()
+    try:
+        res = _trial.start_pro_upsell(conn, uid)
+        if not res.get("ok"):
+            raise HTTPException(409, res.get("reason") or "no se puede activar")
+        return res
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/billing/trial-funnel")
 def admin_trial_funnel(days: int = 90, uid: int = Depends(get_admin_user)):
     """Embudo del free trial: activaron → importaron → usaron la IA →
@@ -25096,6 +25128,9 @@ def plan_features(
             try:
                 from billing import trial as _trial
                 out["trial"] = _trial.status(conn, uid)
+                # Probar Pro sin dejar el plan que ya paga (para el suscriptor
+                # de Plus). Es otro mecanismo que el trial: va por separado.
+                out["pro_upsell"] = _trial.pro_upsell_status(conn, uid)
             except Exception as ex:
                 log.warning("plan_features: estado de trial falló uid=%s: %s", uid, ex)
         return out
