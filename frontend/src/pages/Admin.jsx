@@ -3202,7 +3202,12 @@ function TrialFunnelPanel({ data }) {
           es "¿subió de Plus a Pro?". Antes de esto, quien la activaba no
           figuraba en NINGÚN lado del panel — el embudo se alimenta de
           trial_started_at y este mecanismo ni lo escribe. */}
-      {upsell && (upsell.activaron > 0 || upsell.activos > 0) && (
+      {/* SIEMPRE visible, aunque esté en cero. Esconderlo cuando no hay nadie
+          hacía que "no lo usó nadie" y "está roto" se vieran EXACTAMENTE igual
+          — y con un mecanismo nuevo, lo primero que uno quiere saber es cuál de
+          las dos es. Si el bloque no aparece, el backend es viejo (no manda
+          pro_upsell) y eso también es un dato. */}
+      {upsell ? (
         <div className="mt-4 pt-3 border-t border-line">
           <div className="flex items-baseline gap-2 flex-wrap mb-2">
             <h3 className="text-sm font-medium text-ink-1">Probando Pro sobre su plan</h3>
@@ -3237,7 +3242,23 @@ function TrialFunnelPanel({ data }) {
               ))}
             </div>
           )}
+
+          {upsell.activos === 0 && upsell.activaron === 0 && (
+            <p className="text-[11px] text-ink-3 mt-2">
+              Todavía no la activó nadie. El número se actualiza solo cuando alguien
+              con plan pago aprieta “Probá Pro” en /planes.
+            </p>
+          )}
         </div>
+      ) : (
+        // El backend no manda `pro_upsell`: o la versión que está corriendo es
+        // anterior a esta métrica, o la migración de las columnas no llegó a
+        // aplicarse. Decirlo es mucho más útil que no mostrar nada, que es lo
+        // que hacía antes y volvía indistinguible "nadie la usó" de "está roto".
+        <p className="text-[11px] text-ink-3 mt-4 pt-3 border-t border-line">
+          La prueba de Pro sobre un plan pago no está reportando. El backend que está
+          corriendo no manda esa métrica — revisá que el último deploy haya levantado.
+        </p>
       )}
     </section>
   )
