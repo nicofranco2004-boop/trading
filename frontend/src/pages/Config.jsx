@@ -972,12 +972,118 @@ function PlanHeroFree({ usage }) {
 //   • subscription_status=authorized → ACTIVO + botón "Cancelar suscripción"
 //   • subscription_status=cancelled  → CANCELADO, vence X + botón "Reactivar"
 //     (que es un Suscribirse nuevo a /planes, no un undo de la cancelación)
+// ─── La prueba que corre ENCIMA del plan ────────────────────────────────────
+// El hero trataba los estados como excluyentes —un solo pill, un solo título—
+// y no lo son: alguien puede PAGAR Plus y estar PROBANDO Pro al mismo tiempo.
+// Por eso el que paga veía "Rendi Plus está activo" y nada de su prueba.
+//
+// Son dos capas: el plan es lo que compró y lo que va a quedar; la prueba es
+// temporal y tiene su propio reloj. El plan sigue describiéndose abajo como
+// siempre y la prueba va acá arriba, visiblemente transitoria — cuando termina,
+// esta franja desaparece sola.
+
+/** Fecha corta y legible ('27 de agosto'), o '' si no se puede leer. */
+function fechaCorta(iso) {
+  if (!iso) return ''
+  const d = new Date(String(iso).replace(' ', 'T'))
+  return isNaN(d) ? '' : d.toLocaleDateString('es-AR', { day: 'numeric', month: 'long' })
+}
+
+/** Franja de "estás probando Pro sobre tu plan pago". */
+function PruebaSobreElPlan({ dias, hasta, onVerPlanes }) {
+  const cuando = fechaCorta(hasta)
+  return (
+    <section className="border border-data-violet/30 bg-data-violet/[0.06] rounded-lg px-5 py-3.5 mb-3 flex items-start gap-3 flex-wrap">
+      <Sparkles size={15} strokeWidth={1.75} className="text-data-violet flex-shrink-0 mt-0.5" />
+      <div className="flex-1 min-w-[240px]">
+        <p className="text-sm font-medium text-ink-0">
+          Estás probando Pro · {dias === 1 ? '1 día' : `${dias} días`}
+        </p>
+        <p className="text-xs text-ink-2 mt-0.5 leading-relaxed">
+          {cuando ? `Hasta el ${cuando}. ` : ''}Después volvés a tu plan de siempre,
+          sin hacer nada y sin que se te cobre nada extra.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onVerPlanes}
+        className="inline-flex items-center gap-1 text-xs font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors"
+      >
+        Pasarme a Pro
+      </button>
+    </section>
+  )
+}
+
+/** Las tres etapas del trial encadenado, con fecha y días.
+ *
+ *  Responde las tres preguntas que la descripción de una línea no contestaba:
+ *  cuánto me queda de Pro, CUÁNDO empieza Plus, y cuándo se termina todo. El
+ *  punto lleno marca dónde está parado. */
+function FasesDelTrial({ trial }) {
+  const total = trial?.total_days ?? 15
+  const plusDias = trial?.plus_days ?? 8
+  const fin = trial?.ends_at ? new Date(String(trial.ends_at).replace(' ', 'T')) : null
+  const arranquePlus = fin && !isNaN(fin)
+    ? new Date(fin.getTime() - plusDias * 86400000) : null
+  const enPro = trial?.stage === 'pro'
+  const finFmt = fin && !isNaN(fin) ? fechaCorta(fin.toISOString()) : ''
+  const plusFmt = arranquePlus ? fechaCorta(arranquePlus.toISOString()) : ''
+  // Cuando la etapa Pro YA PASÓ, "ahora → 17 de agosto" es un sinsentido: hay
+  // que mostrar cuándo arrancó de verdad. El arranque es el fin menos el total.
+  const arranque = fin && !isNaN(fin)
+    ? new Date(fin.getTime() - total * 86400000) : null
+  const inicioFmt = arranque ? fechaCorta(arranque.toISOString()) : ''
+
+  const fila = (activa, pasada, label, cuando, dias) => (
+    <div className={`flex items-baseline gap-2.5 py-1 ${pasada ? 'opacity-45' : ''}`}>
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+        activa ? 'bg-data-violet' : 'bg-transparent border border-ink-3'
+      }`} />
+      <span className={`text-xs w-10 flex-shrink-0 ${activa ? 'text-ink-0 font-medium' : 'text-ink-2'}`}>
+        {label}
+      </span>
+      <span className="text-[11px] text-ink-3 flex-1 min-w-0">{cuando}</span>
+      {dias && <span className="text-[11px] text-ink-2 tabular flex-shrink-0">{dias}</span>}
+    </div>
+  )
+
+  return (
+    <div className="mt-2 border-t border-line/40 pt-2">
+      {fila(enPro, !enPro, 'Pro',
+            plusFmt
+              ? (enPro ? `ahora → ${plusFmt}`
+                       : (inicioFmt ? `${inicioFmt} → ${plusFmt}` : `terminó el ${plusFmt}`))
+              : `los primeros ${total - plusDias} días`,
+            enPro && trial?.days_to_switch != null
+              ? (trial.days_to_switch <= 1 ? 'hasta mañana' : `${trial.days_to_switch} días más`)
+              : null)}
+      {fila(!enPro, false, 'Plus',
+            plusFmt && finFmt ? `${plusFmt} → ${finFmt}` : `los ${plusDias} días siguientes`,
+            !enPro && trial?.days_left != null
+              ? (trial.days_left === 1 ? '1 día más' : `${trial.days_left} días más`)
+              : `${plusDias} días`)}
+      {fila(false, false, 'Free', finFmt ? `desde el ${finFmt}` : 'cuando termine', null)}
+    </div>
+  )
+}
+
 function PlanHeroPro({ tier = 'pro', usage }) {
   const navigate = useNavigate()
   const { user } = useAuth()
-  const { trial } = usePlanFeatures()
+  const { trial, features } = usePlanFeatures()
+  // Prueba de Pro ENCIMA de un plan pago. users.tier no se toca al activarla
+  // (por eso `tier` sigue diciendo 'plus' acá), así que el plan se describe
+  // igual que siempre y la prueba se suma arriba en su propia franja.
+  const upsell = features?.pro_upsell
   const count = usage?.analyses_count ?? 0
-  const isPlus = tier === 'plus'
+  // ⚠️ `tier` llega de /auth/me, que devuelve el tier EFECTIVO — y durante la
+  // prueba de Pro ése es 'pro' aunque el plan comprado siga siendo Plus. Si se
+  // usara tal cual, la pantalla le diría "Rendi Pro está activo" a alguien que
+  // paga Plus, o sea justo la confusión que esta franja viene a evitar. El plan
+  // base sale del ANCHOR, que es lo que de verdad se está pagando.
+  const planBase = upsell?.active ? (user?.credit_anchor_plan || tier) : tier
+  const isPlus = planBase === 'plus'
   const tierLabel = isPlus ? 'PLUS' : 'PRO'
   const limit = usage?.analyses_limit ?? (isPlus ? 6 : 60)
   const pct = limit > 0 ? Math.min(100, (count / limit) * 100) : 0
@@ -1112,6 +1218,14 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           : 'Tu suscripción está cancelada. Mantenés acceso hasta fin del período cobrado. Después la cuenta vuelve a Free.')
 
   return (
+    <>
+    {upsell?.active && (
+      <PruebaSobreElPlan
+        dias={upsell.days_left}
+        hasta={upsell.ends_at}
+        onVerPlanes={() => irALasCardsDePlanes(navigate)}
+      />
+    )}
     <section className={`border rounded-lg p-5 flex items-center gap-5 flex-wrap ${containerStyle}`}>
       <div className="flex-1 min-w-[240px]">
         <div className="flex items-center gap-2 mb-1.5">
@@ -1123,9 +1237,20 @@ function PlanHeroPro({ tier = 'pro', usage }) {
             <span className={`w-1.5 h-1.5 rounded-full ${statusPill.dotCls}`} />
             {statusPill.label}
           </span>
+          {/* Segundo chip: el plan y la prueba conviven, no se pisan. */}
+          {upsell?.active && (
+            <span className="inline-flex items-center gap-1 text-[12px] text-data-violet font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-data-violet" />
+              Probando Pro
+            </span>
+          )}
         </div>
         <h2 className="text-base font-semibold text-ink-0 leading-snug">{title}</h2>
         <p className="text-xs text-ink-2 mt-1">{descriptionText}</p>
+        {/* El calendario del trial encadenado: cuánto queda de Pro, CUÁNDO
+            arranca Plus, y cuándo se termina. La descripción de una línea no
+            contestaba ninguna de las tres. */}
+        {isTrial && <FasesDelTrial trial={trial} />}
       </div>
 
       <div className="min-w-[180px]">
@@ -1140,6 +1265,9 @@ function PlanHeroPro({ tier = 'pro', usage }) {
         </div>
         <p className="text-[10px] text-ink-3 leading-tight">
           Ventana móvil 7 días
+          {/* Sin esto el número salta de 6 a 60 y parece que le cambiamos el
+              plan: la cuota es la de Pro sólo mientras dure la prueba. */}
+          {upsell?.active && ' · cuota de Pro mientras dura la prueba'}
         </p>
       </div>
 
@@ -1236,6 +1364,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
         />
       )}
     </section>
+    </>
   )
 }
 
