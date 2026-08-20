@@ -108,7 +108,17 @@ export { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES }
 
 // ─── Página ──────────────────────────────────────────────────────────────────
 
-export default function Planes() {
+/** `embedded` = se renderiza DENTRO de otra pantalla (hoy, Configuración →
+ *  Planes). Saca el cromo de página —meta de SEO, encabezado, "Volver atrás"—
+ *  y deja las cards con sus botones.
+ *
+ *  Config mostraba su propia grilla de "qué incluye cada plan": plana, sin
+ *  precios, sin comprar y sin la prueba, con un link "Ver planes y precios" que
+ *  mandaba acá. O sea que el que iba a ver planes tenía que hacer un clic más
+ *  para poder comprar. Peor: era una SEGUNDA copia de las mismas features, que
+ *  se desincroniza sola. Ahora los dos lugares renderizan este mismo componente
+ *  y no hay forma de que digan cosas distintas. */
+export default function Planes({ embedded = false }) {
   const navigate = useNavigate()
   const { tier, loading, trial } = usePlanFeatures()
   const { user } = useAuth()
@@ -305,12 +315,14 @@ export default function Planes() {
   // su suscripción). El asesor ve su estado y un canal de contacto, no cards.
   if (user?.tier === 'advisor') {
     return (
-      <div className="page-shell">
-        <PageHeader
-          eyebrow="Planes"
-          title="Tenés el Plan Asesor"
-          subtitle="Tu plan incluye todos tus clientes con visión Pro, la operación grupal y el resumen de carteras."
-        />
+      <div className={embedded ? '' : 'page-shell'}>
+        {!embedded && (
+          <PageHeader
+            eyebrow="Planes"
+            title="Tenés el Plan Asesor"
+            subtitle="Tu plan incluye todos tus clientes con visión Pro, la operación grupal y el resumen de carteras."
+          />
+        )}
         <div className="max-w-xl border border-data-violet/30 bg-data-violet/[0.05] rounded-xl p-5">
           <p className="text-sm text-ink-1 leading-relaxed">
             Los planes de esta página son los individuales (Free, Plus y Pro) — no aplican a tu cuenta.
@@ -330,17 +342,21 @@ export default function Planes() {
   }
 
   return (
-    <div className="page-shell">
-      <PageMeta
-        title="Planes y precios — Rendi | Plus desde ARS 5.990/mes"
-        description="Elegí el plan de Rendi: Free para empezar, Plus para multi-broker, Pro con Rendi AI libre y memoria. Precios en pesos al blue del día. Cancelá cuando quieras."
-        canonical="/planes"
-      />
-      <PageHeader
-        eyebrow="Planes / Mejora tu cuenta"
-        title="Elegí el plan que mejor te sirve"
-        subtitle="Empezá gratis. Mejorá cuando necesites análisis más profundos, más brokers o features pro."
-      />
+    <div className={embedded ? '' : 'page-shell'}>
+      {!embedded && (
+        <>
+          <PageMeta
+            title="Planes y precios — Rendi | Plus desde ARS 5.990/mes"
+            description="Elegí el plan de Rendi: Free para empezar, Plus para multi-broker, Pro con Rendi AI libre y memoria. Precios en pesos al blue del día. Cancelá cuando quieras."
+            canonical="/planes"
+          />
+          <PageHeader
+            eyebrow="Planes / Mejora tu cuenta"
+            title="Elegí el plan que mejor te sirve"
+            subtitle="Empezá gratis. Mejorá cuando necesites análisis más profundos, más brokers o features pro."
+          />
+        </>
+      )}
 
       {/* Trial en curso: el banner explica en qué etapa está y cuánto le
           queda. Va ANTES del banner de crédito porque el trial también entra
@@ -591,15 +607,19 @@ export default function Planes() {
           <WhatsAppIcon size={13} />
           ¿Dudas sobre el plan? Hablanos por WhatsApp
         </a>
-        <div>
-          <button
-            type="button"
-            onClick={() => navigate(-1)}
-            className="text-xs text-ink-3 hover:text-ink-0 transition-colors inline-flex items-center gap-1"
-          >
-            Volver atrás
-          </button>
-        </div>
+        {/* "Volver atrás" es una acción de PÁGINA: dentro de Configuración no
+            tiene a dónde volver (ya estás en la pantalla que querías). */}
+        {!embedded && (
+          <div>
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              className="text-xs text-ink-3 hover:text-ink-0 transition-colors inline-flex items-center gap-1"
+            >
+              Volver atrás
+            </button>
+          </div>
+        )}
       </div>
 
       <p className="text-[11px] text-ink-3 text-center max-w-2xl mx-auto mt-4 leading-relaxed">

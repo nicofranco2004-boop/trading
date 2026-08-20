@@ -35,7 +35,7 @@ import ImportWizard from '../components/import/ImportWizard'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { whatsappUrl, SUPPORT_WHATSAPP_DISPLAY } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
-import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
+import Planes from './Planes'
 import InvestorProfileForm from '../components/InvestorProfileForm'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 
@@ -583,7 +583,15 @@ export default function Config() {
     return (
       <div className="space-y-5">
         <PlanHero tier={tier} usage={aiUsage} />
-        <PlanComparisonCards currentTier={tier} />
+        {/* Las cards REALES de /planes, no una copia. Antes acá había una
+            grilla propia de "qué incluye cada plan": sin precios, sin botón de
+            comprar y sin la prueba gratis, con un link que mandaba a /planes —
+            o sea que el que entraba a ver planes tenía que hacer un clic más
+            justo para poder pagar. Y era una segunda copia de las mismas
+            features, que se desincroniza sola. */}
+        <div id="planes-cards">
+          <Planes embedded />
+        </div>
       </div>
     )
   }
@@ -872,6 +880,16 @@ export default function Config() {
 // Pro + CTA upgrade (solo en Free). Tono violet para Pro, sutil para Free (que
 // SIGUE el highlight es el botón de upgrade).
 
+// Los CTA del hero de plan ("Mejorar plan", "Cambiar plan", "Ver planes"…)
+// mandaban a /planes. Ahora las cards están DEBAJO, en la misma pantalla, así
+// que navegar es un viaje redondo a lo mismo: alcanza con bajar hasta ellas.
+// Si el ancla no estuviera, cae a la navegación de siempre.
+function irALasCardsDePlanes(navigate) {
+  const el = typeof document !== 'undefined' && document.getElementById('planes-cards')
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  else irALasCardsDePlanes(navigate)
+}
+
 function PlanHero({ tier, usage }) {
   if (tier === 'admin') return <PlanHeroAdmin usage={usage} />
   if (tier === 'pro' || tier === 'plus') return <PlanHeroPro tier={tier} usage={usage} />
@@ -889,7 +907,7 @@ function PlanHeroFree({ usage }) {
 
   function onUpgradeClick() {
     track('plan_hero_upgrade_clicked', { source: 'config' })
-    navigate('/planes')
+    irALasCardsDePlanes(navigate)
   }
 
   return (
@@ -1155,7 +1173,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           // /planes donde hace "Suscribirme" normal.
           <button
             type="button"
-            onClick={() => navigate('/planes')}
+            onClick={() => irALasCardsDePlanes(navigate)}
             className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 rounded-sm px-3 py-2 transition-colors"
           >
             Reactivar suscripción
@@ -1171,14 +1189,14 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           <>
             <button
               type="button"
-              onClick={() => navigate('/planes')}
+              onClick={() => irALasCardsDePlanes(navigate)}
               className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 rounded-sm px-3 py-2 transition-colors"
             >
               Cambiar plan
             </button>
             <button
               type="button"
-              onClick={() => navigate('/planes')}
+              onClick={() => irALasCardsDePlanes(navigate)}
               className="inline-flex items-center gap-1.5 text-xs font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm px-3 py-2 transition-colors"
             >
               Configurar pago
@@ -1189,7 +1207,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           <>
             <button
               type="button"
-              onClick={() => navigate('/planes')}
+              onClick={() => irALasCardsDePlanes(navigate)}
               className="inline-flex items-center gap-1.5 text-xs font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm px-3 py-2 transition-colors"
             >
               {hasCredit && anchorPlan ? 'Cambiar plan' : 'Ver detalles del plan'}
@@ -1346,7 +1364,7 @@ function PlanHeroAdmin({ usage }) {
       </span>
       <button
         type="button"
-        onClick={() => navigate('/planes')}
+        onClick={() => irALasCardsDePlanes(navigate)}
         className="inline-flex items-center gap-1.5 text-[12.5px] text-ink-3 hover:text-ink-0 transition-colors font-medium"
       >
         Ver planes →
@@ -1355,70 +1373,3 @@ function PlanHeroAdmin({ usage }) {
   )
 }
 
-// ─── PlanComparisonCards ──────────────────────────────────────────────────────
-// Cuadros de "qué incluye cada plan" (Free / Plus / Pro) debajo del PlanHero,
-// en la sección Planes de Config. Reusa la MISMA data que /planes (data/
-// planCatalog.js) para no duplicar ni desincronizar. Resalta en violet el plan
-// que el user ya tiene. Para precios + upgrade, linkea a /planes.
-const CONFIG_PLANS = [
-  { id: 'free', name: 'Free', feat: FREE_FEATURES },
-  { id: 'plus', name: 'Plus', feat: PLUS_FEATURES },
-  { id: 'pro',  name: 'Pro',  feat: PRO_FEATURES },
-]
-
-function PlanComparisonCards({ currentTier }) {
-  const norm = (currentTier || 'free').toLowerCase()
-  return (
-    <section>
-      <div className="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
-        <h2 className="text-sm font-medium text-ink-1">Qué incluye cada plan</h2>
-        <Link to="/planes" className="text-xs text-data-violet hover:underline inline-flex items-center gap-1">
-          Ver planes y precios →
-        </Link>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {CONFIG_PLANS.map(p => {
-          const isCurrent = norm === p.id
-          return (
-            <div
-              key={p.id}
-              className={`rounded-lg border p-4 flex flex-col ${isCurrent ? 'border-data-violet/40 bg-data-violet/[0.04]' : 'border-line bg-bg-1'}`}
-            >
-              <div className="flex items-center justify-between gap-2 mb-3">
-                <span className={`text-sm font-semibold ${isCurrent ? 'text-data-violet' : 'text-ink-0'}`}>{p.name}</span>
-                {isCurrent && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-data-violet/15 text-data-violet">
-                    Tu plan
-                  </span>
-                )}
-              </div>
-
-              {/* Quotas — grid mini de números (análisis/sem, chat/sem, brokers) */}
-              <div className="grid grid-cols-3 gap-2 mb-3">
-                {p.feat.quotas.map(q => (
-                  <div key={q.label} className="rounded-sm bg-bg-2/50 border border-line/50 px-2 py-1.5 text-center">
-                    <div className="text-base font-medium tabular text-ink-0 leading-none">{q.value}</div>
-                    <div className="text-[10px] text-ink-3 mt-1 leading-tight">{q.label}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Essentials — features core con check */}
-              <ul className="space-y-1.5">
-                {p.feat.essentials.map((f, i) => (
-                  <li key={i} className="flex items-start gap-2">
-                    <Check size={13} strokeWidth={2.25} className="mt-0.5 flex-shrink-0 text-rendi-pos" aria-hidden="true" />
-                    <span className="text-xs text-ink-2 leading-snug">
-                      {f.label}
-                      {f.sub && <span className="block text-[11px] text-ink-3 mt-0.5">{f.sub}</span>}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )
-        })}
-      </div>
-    </section>
-  )
-}
