@@ -862,9 +862,8 @@ function BackupPanel({ toast }) {
 // Los candidatos salen de trial.eligibility(), el MISMO chequeo que decide si
 // el botón aparece: nadie recibe una invitación que después no puede aceptar.
 const TRIAL_VARIANTES = [
-  { id: 'lugar',   label: 'Te guardamos un lugar', hint: 'arranca por la invitación — es literal, se manda de a 50' },
+  { id: 'directo', label: 'Ahora podés probar Rendi Pro gratis', hint: 'el aviso derecho, sin vuelta' },
   { id: 'cartera', label: '¿Qué te diría de tu cartera?', hint: 'arranca por lo que va a ver de SU cartera' },
-  { id: 'directo', label: 'Te habilitamos 15 días', hint: 'qué es y listo, sin vuelta' },
 ]
 
 function TrialInvitePanel({ toast }) {
@@ -873,7 +872,7 @@ function TrialInvitePanel({ toast }) {
   const [sending, setSending] = useState(false)
   const [result, setResult] = useState(null)
   const [limit, setLimit] = useState(50)
-  const [variant, setVariant] = useState('lugar')
+  const [variant, setVariant] = useState('directo')
 
   async function loadPreview() {
     setLoading(true); setResult(null)

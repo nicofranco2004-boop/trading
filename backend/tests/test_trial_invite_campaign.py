@@ -182,7 +182,7 @@ class CampanaDeInvitacion(unittest.TestCase):
 
     # ── el texto del mail ───────────────────────────────────────────────────
 
-    def test_las_tres_variantes_prometen_lo_mismo(self):
+    def test_las_dos_variantes_prometen_lo_mismo(self):
         """Cambia la redacción, no la promesa. Las tres tienen que decir el
         plazo real, que no se pide tarjeta y que no se renueva sola — son las
         tres cosas que frenan a alguien antes de apretar, y una variante que se
@@ -203,8 +203,11 @@ class CampanaDeInvitacion(unittest.TestCase):
                             f"variante {v}: no aclara que no se pide tarjeta")
             self.assertTrue(("no se renueva sola" in texto or "sin renovación automática" in texto),
                             f"variante {v}: no aclara que no se renueva sola")
-            # Lo que el mail tiene que HACER, más allá de la redacción:
-            self.assertIn("ya está habilitada", texto,
+            # Lo que el mail tiene que HACER, más allá de la redacción. El
+            # "ahora" no es adorno: la campaña le llega a gente que ya usa Rendi
+            # hace rato, y lo primero que tiene que entender es que esto es
+            # NUEVO y está disponible para ella, no una publicidad genérica.
+            self.assertIn("ahora podés probar el plan pro gratis", texto,
                           f"variante {v}: no avisa que la prueba ya está disponible")
             self.assertIn("se te abren con pro", texto,
                           f"variante {v}: no anticipa nada de lo que da Pro")
@@ -230,7 +233,7 @@ class CampanaDeInvitacion(unittest.TestCase):
         with patch("billing.emails._send",
                    side_effect=lambda to, s, h, t, **kw: capt.update(asunto=s) or True):
             emails.send_trial_invite(to="x@y.z", variant="no-existe")
-        self.assertIn("lugar", capt["asunto"].lower())
+        self.assertIn("ahora podés probar", capt["asunto"].lower())
 
 
 if __name__ == "__main__":

@@ -762,7 +762,7 @@ def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "P
 # comparar. Todos en formato PLANO, igual que send_reengagement: un mail con
 # pinta de escrito 1-a-1 cae en la pestaña Principal de Gmail; uno con banner y
 # botón de color se va a Promociones, que para esto es no existir.
-TRIAL_INVITE_VARIANTS = ("directo", "cartera", "lugar")
+TRIAL_INVITE_VARIANTS = ("directo", "cartera")
 
 # Lo que abre Pro, en la voz del que lo va a usar. Es un ANTICIPO, no el
 # catálogo: cuatro cosas concretas convencen más que catorce, y la lista larga
@@ -779,7 +779,7 @@ _PRO_GANCHOS = (
 )
 
 
-def send_trial_invite(*, to: str, user_name: str = "", variant: str = "lugar",
+def send_trial_invite(*, to: str, user_name: str = "", variant: str = "directo",
                       pro_days: int = 7, plus_days: int = 8, total_days: int = 15) -> bool:
     """Avisa a un usuario Free que YA ESTÁ HABILITADA la prueba gratis de Pro.
 
@@ -793,39 +793,27 @@ def send_trial_invite(*, to: str, user_name: str = "", variant: str = "lugar",
     que no era el mensaje.
 
     `variant`: 'directo' (qué es y listo) · 'cartera' (arranca por lo que va a
-    ver de SU cartera) · 'lugar' (le guardamos un lugar — es literal: se invita
-    de a 50). Los días vienen de quien llama, que los saca del módulo del trial:
+    ver de SU cartera). Los días vienen de quien llama, que los saca del trial:
     hardcodearlos acá es cómo se termina prometiendo un plazo que ya no existe.
     """
     safe_name = html.escape((user_name or "").strip())
     hi_html = f"Hola {safe_name}," if safe_name else "Hola,"
     hi_text = f"Hola {(user_name or '').strip()}," if (user_name or '').strip() else "Hola,"
-    v = variant if variant in TRIAL_INVITE_VARIANTS else "lugar"
+    v = variant if variant in TRIAL_INVITE_VARIANTS else "directo"
     activar = f"{APP_URL}/planes"
 
     # ── 1. la apertura, lo único que cambia ────────────────────────────────
-    if v == "directo":
-        subject = "Ya podés probar Rendi Pro gratis"
-        ap_html = (f"{hi_html} ya está habilitada la prueba gratuita del plan Pro "
-                   "dentro de Rendi.")
-        ap_text = (f"{hi_text} ya está habilitada la prueba gratuita del plan Pro "
-                   "dentro de Rendi.")
-    elif v == "cartera":
+    if v == "cartera":
         subject = "¿Qué te diría Rendi si viera toda tu cartera?"
-        ap_html = (f"{hi_html} ya está habilitada la prueba gratuita del plan Pro dentro "
-                   "de Rendi, y es la forma de que Rendi deje de mostrarte números y te "
-                   "empiece a decir qué está pasando con tu plata.")
-        ap_text = (f"{hi_text} ya está habilitada la prueba gratuita del plan Pro dentro "
-                   "de Rendi, y es la forma de que Rendi deje de mostrarte números y te "
-                   "empiece a decir qué está pasando con tu plata.")
-    else:  # 'lugar'
-        subject = "Te guardamos un lugar para probar Rendi Pro"
-        ap_html = (f"{hi_html} ya está habilitada la prueba gratuita del plan Pro dentro "
-                   "de Rendi. La estamos abriendo de a poco y te guardamos un lugar.")
-        ap_text = (f"{hi_text} ya está habilitada la prueba gratuita del plan Pro dentro "
-                   "de Rendi. La estamos abriendo de a poco y te guardamos un lugar.")
+        ap = ("ahora podés probar el plan Pro gratis dentro de Rendi, y es la forma "
+              "de que Rendi deje de mostrarte números y te empiece a decir qué está "
+              "pasando con tu plata.")
+    else:  # 'directo' — el default
+        subject = "Ahora podés probar Rendi Pro gratis"
+        ap = "ahora podés probar el plan Pro gratis dentro de Rendi."
+    ap_html, ap_text = f"{hi_html} {ap}", f"{hi_text} {ap}"
 
-    # ── 2-4. el cuerpo, igual para las tres ────────────────────────────────
+    # ── 2-4. el cuerpo, igual para las dos ─────────────────────────────────
     ganchos_html = "".join(
         f'<li style="margin:0 0 7px;">{g}</li>' for g in _PRO_GANCHOS)
     ganchos_text = "\n".join(f"  · {g}" for g in _PRO_GANCHOS)

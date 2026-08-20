@@ -17637,7 +17637,7 @@ class GiftPlanEmailIn(ReengagementEmailIn):
 class TrialInviteEmailIn(BaseModel):
     confirm: bool = False                 # False = DRY RUN (muestra a quién, no manda)
     limit: int = Field(50, ge=1, le=200)  # tamaño de la tanda
-    variant: str = "lugar"                # 'directo' | 'cartera' | 'lugar'
+    variant: str = "directo"              # 'directo' | 'cartera'
 
 
 class BroadcastEmailIn(BaseModel):
@@ -17963,7 +17963,7 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
     from datetime import datetime as _dt
     import random as _random
 
-    variant = data.variant if data.variant in emails.TRIAL_INVITE_VARIANTS else "lugar"
+    variant = data.variant if data.variant in emails.TRIAL_INVITE_VARIANTS else "directo"
     conn = get_db()
     try:
         # Pre-filtro barato en SQL; la palabra final la tiene eligibility().
