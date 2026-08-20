@@ -12,6 +12,11 @@ import { HelpCircle } from 'lucide-react'
  *     <p>Drawdown = caída desde el máximo histórico.</p>
  *     <p className="text-ink-3">Fórmula: (valor − HWM) / HWM</p>
  *   </InfoTooltip>
+ *
+ * `align`: 'right' (default, el globo crece hacia la izquierda del ícono) |
+ * 'left' | 'center'. Usá 'center' cuando el ícono queda en el medio de una
+ * columna angosta: con 'right' el globo mide 256px hacia un solo lado y se
+ * escapa del contenedor (y de la pantalla, en mobile).
  */
 export default function InfoTooltip({ children, label = 'Cómo se calcula', size = 13, align = 'right', side = 'bottom' }) {
   const [open, setOpen] = useState(false)
@@ -50,7 +55,10 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
       </button>
       {open && (
         <div
-          className={`absolute z-30 w-64 px-3 py-2.5 rounded-lg bg-bg-2 dark:bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${align === 'right' ? 'right-0' : 'left-0'} ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}
+          className={`absolute z-30 w-64 max-w-[80vw] px-3 py-2.5 rounded-lg bg-bg-2 dark:bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${
+            align === 'center' ? 'left-1/2 -translate-x-1/2'
+              : align === 'right' ? 'right-0' : 'left-0'
+          } ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}
           role="tooltip"
         >
           {children}

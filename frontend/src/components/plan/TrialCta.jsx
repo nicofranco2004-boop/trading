@@ -14,6 +14,7 @@ import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Sparkles, Loader2, ArrowRight } from 'lucide-react'
 import { api } from '../../utils/api'
+import InfoTooltip from '../InfoTooltip'
 import { usePlanFeatures, refreshPlanFeatures } from '../../hooks/usePlanFeatures'
 import { track } from '../../utils/track'
 import { useToast } from '../Toast'
@@ -119,15 +120,63 @@ export function TrialCta({ source = 'paywall', className = '', onStarted }) {
   )
 }
 
-/** La letra chica del trial. Aclara que no se pide tarjeta y qué pasa después. */
+/** La letra chica del trial + el (?) que explica las tres etapas.
+ *
+ *  Los días salen del SERVER (`pro_days`/`plus_days`/`total_days`), no de las
+ *  constantes de acá: si mañana la prueba pasa a 5+10, el texto acompaña solo.
+ *  Hardcodear el 7 en la explicación es cómo se termina describiendo un plan
+ *  que ya no existe. Las constantes quedan de respaldo por si el payload viene
+ *  viejo. */
 export function TrialFinePrint({ className = '' }) {
   const { trial } = usePlanFeatures()
   if (!canOfferTrial(trial)) return null
+
+  const pro = trial?.pro_days ?? TRIAL_PRO_DAYS
+  const plus = trial?.plus_days ?? (TRIAL_TOTAL_DAYS - TRIAL_PRO_DAYS)
+  const total = trial?.total_days ?? TRIAL_TOTAL_DAYS
+
+  // Contenedor <div> y no <p>: el tooltip abre un <div> flotante, y un <div>
+  // adentro de un <p> es inválido → el navegador cierra el <p> por su cuenta,
+  // React pierde el hilo del DOM y el popover no aparece nunca. El botón se ve
+  // pero no hace nada, y ni los tests ni el build lo detectan.
   return (
-    <p className={className || 'mt-2 text-[10px] text-ink-3 text-center leading-relaxed'}>
-      Sin tarjeta. Los primeros {TRIAL_PRO_DAYS} días con todo Pro y los{' '}
-      {TRIAL_TOTAL_DAYS - TRIAL_PRO_DAYS} siguientes con Plus.
-    </p>
+    <div className={className || 'mt-2 text-[10px] text-ink-3 text-center leading-relaxed'}>
+      Sin tarjeta. Los primeros {pro} días con todo Pro y los {plus} siguientes con Plus.
+      {' '}
+      <InfoTooltip label="Cómo funciona la prueba" size={11} align="center" side="top">
+        <p className="font-medium text-ink-0">Cómo funciona la prueba</p>
+        <TrialStage
+          rango={pro === 1 ? 'Día 1' : `Días 1 a ${pro}`}
+          plan="Rendi Pro"
+          detalle="Todo desbloqueado: chat libre, el máximo de análisis y brokers ilimitados."
+        />
+        <TrialStage
+          rango={`Días ${pro + 1} a ${total}`}
+          plan="Rendi Plus"
+          detalle="Seguís con multi-broker y las features avanzadas, con menos cuota de IA."
+        />
+        <TrialStage
+          rango={`Día ${total + 1}`}
+          plan="Volvés a Free"
+          detalle="Tus datos quedan intactos. Si querés seguir con un plan, lo elegís vos."
+        />
+        <p className="text-ink-3 pt-1">
+          No pedimos tarjeta y no se renueva sola: cuando termina no se te cobra nada.
+        </p>
+      </InfoTooltip>
+    </div>
+  )
+}
+
+/** Una etapa de la prueba dentro del tooltip. */
+function TrialStage({ rango, plan, detalle }) {
+  return (
+    <span className="block pt-1.5">
+      <span className="text-ink-3">{rango}</span>
+      {' · '}
+      <span className="text-ink-0 font-medium">{plan}</span>
+      <span className="block text-ink-3">{detalle}</span>
+    </span>
   )
 }
 
