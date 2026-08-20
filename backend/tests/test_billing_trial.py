@@ -92,12 +92,23 @@ class TrialBase(unittest.TestCase):
         """El tier EFECTIVO — lo que realmente gatea las features."""
         return quota.get_tier(self.conn, self.uid)
 
-    def _suscribir(self, uid=None):
-        """Suscripción paga activa (la tabla exige external_reference)."""
+    def _suscribir(self, uid=None, cuando=None):
+        """Suscripción paga activa. Escribe las DOS filas que deja un cobro
+        real: la de `subscriptions` (que en la app nace cuando se genera el
+        link de pago) y la de `credit_ledger` kind='payment' (que solo existe
+        cuando entró la plata). El embudo mira el ledger justamente porque la
+        primera también la deja un checkout abandonado."""
+        uid = uid or self.uid
+        cuando = cuando or datetime.utcnow()
+        ts = _iso(cuando).replace("T", " ")[:19]
         self.conn.execute(
-            "INSERT INTO subscriptions (user_id, status, external_reference, period, amount_ars) "
-            "VALUES (?, 'authorized', ?, 'monthly', 10000)",
-            (uid or self.uid, f"ref-{uid or self.uid}"))
+            "INSERT INTO subscriptions (user_id, status, external_reference, period, "
+            "                           amount_ars, created_at) "
+            "VALUES (?, 'authorized', ?, 'monthly', 10000, ?)",
+            (uid, f"ref-{uid}", ts))
+        self.conn.execute(
+            "INSERT INTO credit_ledger (user_id, kind, amount_usd, days_delta, created_at) "
+            "VALUES (?, 'payment', 9.0, 30, ?)", (uid, ts))
         self.conn.commit()
 
     def _viajar(self, dias):
@@ -517,12 +528,8 @@ class TrialEmbudo(TrialBase):
     def test_la_tasa_cerrada_ignora_a_los_que_siguen_probando(self):
         terminado = self._otro("term@rendi.test", dias_atras=20)   # ya terminó
         self._otro("curso@rendi.test")                              # en curso
-        self._suscribir(terminado)
-        # La sub tiene que quedar DESPUÉS del arranque del trial para contar.
-        self.conn.execute(
-            "UPDATE subscriptions SET created_at=? WHERE user_id=?",
-            (_iso(datetime.utcnow() - timedelta(days=5)), terminado))
-        self.conn.commit()
+        # El cobro tiene que quedar DESPUÉS del arranque del trial para contar.
+        self._suscribir(terminado, cuando=datetime.utcnow() - timedelta(days=5))
         f = tr.funnel(self.conn)
         self.assertEqual(f["convirtieron"], 1)
         self.assertEqual(f["terminados"], 1)
@@ -538,8 +545,6 @@ class TrialEmbudo(TrialBase):
         for i in range(3):                       # 3 en curso, todos convierten
             u = self._otro(f"curso{i}@rendi.test")
             self._suscribir(u)
-            self.conn.execute("UPDATE subscriptions SET created_at=? WHERE user_id=?",
-                              (_iso(datetime.utcnow()), u))
         term = self._otro("term2@rendi.test", dias_atras=20)   # 1 terminado, no convierte
         self.conn.commit()
         f = tr.funnel(self.conn)
@@ -564,10 +569,7 @@ class TrialEmbudo(TrialBase):
 
     def test_distingue_en_que_momento_pagan(self):
         pro = self._otro("pro@rendi.test", dias_atras=3)     # está en la semana Pro
-        self._suscribir(pro)
-        self.conn.execute("UPDATE subscriptions SET created_at=? WHERE user_id=?",
-                          (_iso(datetime.utcnow() - timedelta(days=1)), pro))
-        self.conn.commit()
+        self._suscribir(pro, cuando=datetime.utcnow() - timedelta(days=1))
         f = tr.funnel(self.conn)
         self.assertEqual(f["cuando_pagan"]["durante_pro"], 1)
         self.assertEqual(f["cuando_pagan"]["durante_plus"], 0)
@@ -575,9 +577,7 @@ class TrialEmbudo(TrialBase):
     def test_no_cuenta_una_suscripcion_anterior_al_trial(self):
         # Alguien que ya pagaba y después le dieron un trial por otra vía: su
         # suscripción vieja no es una conversión del trial.
-        self._suscribir()
-        self.conn.execute("UPDATE subscriptions SET created_at=? WHERE user_id=?",
-                          (_iso(datetime.utcnow() - timedelta(days=200)), self.uid))
+        self._suscribir(cuando=datetime.utcnow() - timedelta(days=200))
         self.conn.execute("UPDATE users SET trial_started_at=?, trial_ends_at=? WHERE id=?",
                           (_iso(datetime.utcnow() - timedelta(days=20)),
                            _iso(datetime.utcnow() - timedelta(days=5)), self.uid))

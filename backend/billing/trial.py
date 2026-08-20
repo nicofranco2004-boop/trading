@@ -119,7 +119,15 @@ def stage_by_calendar(started_at, now=None):
         ini = datetime.fromisoformat(str(started_at).replace("Z", ""))
     except (TypeError, ValueError):
         return None
-    return "pro" if ((now or datetime.utcnow()) - ini) < timedelta(days=TRIAL_PRO_DAYS) else "plus"
+    # Por FECHA, no por instante: tiene que dar el mismo resultado que el corte
+    # que EJECUTA el cambio (step_down_due_trials, que compara date(...)). Con
+    # el corte por instante, el día 7 el cron de la madrugada baja a Plus a toda
+    # la cohorte de una, pero esta función seguía diciendo 'pro' hasta la hora
+    # exacta en que cada uno había apretado el botón: el panel del dueño decía
+    # "12 en la semana de Pro" mientras las 12 personas ya tenían Plus en su
+    # app. Reproducido con la cohorte del día 7 hora por hora.
+    hoy = (now or datetime.utcnow()).date()
+    return "pro" if (hoy - ini.date()).days < TRIAL_PRO_DAYS else "plus"
 
 
 def dias_restantes(hasta, ahora=None) -> int:
@@ -765,6 +773,68 @@ def send_due_trial_emails(conn) -> int:
 #      falló antes, y el problema es el onboarding, no el precio.
 #   2. De los que la usaron, ¿cuántos pagaron y cuándo?
 
+def activos(conn, limit: int = 200) -> dict:
+    """Quiénes tienen la prueba corriendo AHORA MISMO, con nombre y apellido.
+
+    El embudo ya traía `en_curso`, pero ese número cuenta por `trial_ends_at >
+    ahora` y NO pregunta si el crédito sigue siendo el del trial. Alguien que
+    activó la prueba y a los dos días PAGÓ conserva su trial_ends_at futuro, así
+    que seguía contando como "en curso" cuando ya es un cliente pago: el número
+    mezclaba a los que están probando con los que ya decidieron.
+
+    Acá el corte es `credit_is_trial` —el mismo discriminador que usan
+    status(), el step-down y restore-tier— más que no haya vencido y que no
+    tenga una suscripción paga. Es la misma pregunta que se hace la app para
+    decidir si le muestra la barra de "estás probando Rendi Pro".
+
+    La etapa sale del CALENDARIO (stage_by_calendar), no de users.tier: si el
+    cron todavía no corrió, el tier dice 'pro' pero por calendario ya le toca
+    Plus, y para mirar la población desde afuera importa dónde va cada uno.
+    """
+    ahora = datetime.utcnow()
+    salida = {"total": 0, "en_pro": 0, "en_plus": 0, "usuarios": []}
+    try:
+        filas = conn.execute(
+            """SELECT id, email, name, trial_started_at, trial_ends_at,
+                      credit_active_until
+                 FROM users
+                WHERE trial_started_at IS NOT NULL
+                  AND trial_ends_at IS NOT NULL
+                ORDER BY trial_ends_at ASC""").fetchall()
+    except Exception as ex:
+        log.warning("activos: no se pudo leer la tabla: %s", ex)
+        return salida
+
+    for r in filas:
+        if not credit_is_trial(r["credit_active_until"], r["trial_ends_at"]):
+            continue
+        try:
+            fin = datetime.fromisoformat(str(r["trial_ends_at"]).replace("Z", ""))
+        except (TypeError, ValueError):
+            continue
+        if fin <= ahora:
+            continue
+        if _has_paid_sub(conn, r["id"]):
+            continue
+        etapa = stage_by_calendar(r["trial_started_at"], ahora)
+        restan = (fin - ahora).total_seconds() / 86400.0
+        salida["total"] += 1
+        salida["en_plus" if etapa == "plus" else "en_pro"] += 1
+        if len(salida["usuarios"]) < max(1, limit):
+            salida["usuarios"].append({
+                "id": r["id"],
+                "email": r["email"],
+                "name": r["name"],
+                "stage": etapa,
+                # Días ENTEROS que le quedan, con el mismo criterio de techo que
+                # usa status() para que la barra de la app y el panel no digan
+                # números distintos sobre la misma persona.
+                "days_left": max(0, int(restan) + (1 if restan % 1 else 0)),
+                "ends_at": r["trial_ends_at"],
+            })
+    return salida
+
+
 def funnel(conn, days: int = 90) -> dict:
     """Embudo del trial de los últimos `days` días."""
     since = (datetime.utcnow() - timedelta(days=max(1, days))).isoformat()
@@ -787,27 +857,56 @@ def funnel(conn, days: int = 90) -> dict:
     # mismo día quedaba afuera — y el día 0 es donde más imports hay, porque el
     # trial se ofrece justo al terminar uno (audit 2026-08-10).
     # Sin esto el trial corre sobre una app vacía y no demuestra nada.
+    # La ventana es el DÍA del arranque, no el instante. El botón estrella del
+    # trial vive en la pantalla de "importación terminada" (es el mejor momento:
+    # la cartera acaba de entrar), así que por ese camino el batch se crea
+    # SIEMPRE unos minutos ANTES de que exista trial_started_at — y quedaba
+    # excluido por definición justo el caso más común. La pregunta que el panel
+    # quiere contestar es "¿la prueba corrió sobre una app con datos?", no
+    # "¿importó después del click?".
     importaron = _one(
         """SELECT COUNT(DISTINCT u.id) c FROM users u
             JOIN import_batches b ON b.user_id = u.id
            WHERE u.trial_started_at >= ? AND b.status='confirmed'
-             AND b.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)""", (since,))
+             AND substr(b.created_at,1,10)
+                 >= substr(replace(u.trial_started_at,'T',' '),1,10)""", (since,))
 
     # Usó la IA durante el trial (la razón principal para pasarse a un plan pago).
+    #
+    # Se cuenta desde el día SIGUIENTE al arranque, y se pierde a propósito el
+    # uso del día 0: ai_usage_daily agrega POR DÍA y no guarda hora, así que la
+    # fila del día del arranque mezcla lo de antes y lo de después de apretar el
+    # botón. Y el camino más común es justamente ese —gastar el análisis
+    # semanal de Free, chocar con el paywall y activar la prueba ahí mismo—;
+    # tanto, que start() resetea la ventana de cuota por ese motivo. Contando
+    # el día 0 daba "100% usó la IA" con gente que no la tocó ni una vez ya en
+    # la prueba. Preferimos quedarnos cortos: un número que sobra hace creer que
+    # el trial funciona cuando no, y esa es la equivocación cara.
     usaron_ia = _one(
         """SELECT COUNT(DISTINCT u.id) c FROM users u
             JOIN ai_usage_daily a ON a.user_id = u.id
            WHERE u.trial_started_at >= ?
-             AND a.date >= date(u.trial_started_at)
+             AND a.date > date(u.trial_started_at)
              AND COALESCE(a.analyses_count,0) + COALESCE(a.chat_count,0) > 0""", (since,))
 
-    # Convirtió = se suscribió DESPUÉS de arrancar el trial.
+    # ⭐ Convirtió = ENTRÓ PLATA después de arrancar el trial.
+    #
+    # La fuente es credit_ledger kind='payment', que solo tiene fila cuando
+    # grant_payment_credit acreditó un cobro. Antes se le preguntaba a
+    # `subscriptions`, y ahí hay fila desde que se GENERA EL LINK de pago:
+    # /api/billing/subscribe inserta 'pending' antes de que entre un peso, y el
+    # cron diario _cancel_stale_pending pasa esa fila a 'cancelled' a los 7
+    # días. O sea que 'cancelled' es el estado final de un CHECKOUT ABANDONADO,
+    # no de alguien que pagó y se dio de baja. Reproducido: 3 personas que
+    # abrieron el link y nunca pagaron + 1 que pagó de verdad daban
+    # "convirtieron 4, conversión 100%" cuando la respuesta es 1 y 25%.
+    # Abandonar un checkout es lo más común que hay, así que el error no era de
+    # borde: inflaba justo el número con el que se decide escalar el gasto.
+    _PAGO = """JOIN credit_ledger l ON l.user_id = u.id AND l.kind='payment'"""
+    _DESPUES = """l.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)"""
     convirtieron = _one(
-        """SELECT COUNT(DISTINCT u.id) c FROM users u
-            JOIN subscriptions s ON s.user_id = u.id
-           WHERE u.trial_started_at >= ?
-             AND s.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)
-             AND s.status IN ('authorized','cancelled','superseded')""", (since,))
+        f"""SELECT COUNT(DISTINCT u.id) c FROM users u {_PAGO}
+            WHERE u.trial_started_at >= ? AND {_DESPUES}""", (since,))
 
     en_curso = _one(
         """SELECT COUNT(*) c FROM users
@@ -819,21 +918,23 @@ def funnel(conn, days: int = 90) -> dict:
     # cuando el trial funciona bien —mucha conversión temprana— que es cuando
     # más se mira el número (audit 2026-08-10).
     convirtieron_cerrados = _one(
-        """SELECT COUNT(DISTINCT u.id) c FROM users u
-            JOIN subscriptions s ON s.user_id = u.id
-           WHERE u.trial_started_at >= ? AND u.trial_ends_at <= ?
-             AND s.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)
-             AND s.status IN ('authorized','cancelled','superseded')""", (since, now))
+        f"""SELECT COUNT(DISTINCT u.id) c FROM users u {_PAGO}
+            WHERE u.trial_started_at >= ? AND u.trial_ends_at <= ?
+              AND {_DESPUES}""", (since, now))
 
     # ¿En qué momento pagan? Dice si conviene mover el corte de Pro o los avisos.
+    #
+    # La fecha sale del ledger y no de subscriptions.created_at, que es cuándo
+    # se generó el LINK y no cuándo se pagó: el webhook actualiza esa fila a
+    # 'authorized' sin tocar created_at, así que alguien que abrió el checkout
+    # el día 13 y pagó el 20 —ya terminado el trial— figuraba como "pagó durante
+    # los días de Plus". Reproducido.
     etapas = {"durante_pro": 0, "durante_plus": 0, "despues": 0}
     try:
         for r in conn.execute(
-            """SELECT u.trial_started_at ini, MIN(s.created_at) pago
-                 FROM users u JOIN subscriptions s ON s.user_id = u.id
-                WHERE u.trial_started_at >= ?
-                  AND s.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)
-                  AND s.status IN ('authorized','cancelled','superseded')
+            f"""SELECT u.trial_started_at ini, MIN(l.created_at) pago
+                 FROM users u {_PAGO}
+                WHERE u.trial_started_at >= ? AND {_DESPUES}
                 GROUP BY u.id""", (since,)):
             try:
                 d = (datetime.fromisoformat(str(r["pago"]).replace("Z", ""))
@@ -869,6 +970,10 @@ def funnel(conn, days: int = 90) -> dict:
         "convirtieron_cerrados": convirtieron_cerrados,
         "pct_conversion_cerrada": _pct(convirtieron_cerrados, terminados),
         "cuando_pagan": etapas,
+        # QUIÉNES la tienen corriendo ahora. `en_curso` de arriba cuenta por
+        # fecha y se lleva puestos a los que ya pagaron; esto usa el mismo
+        # criterio que la app para decidir si sigue siendo una prueba.
+        "activos": activos(conn),
         "enabled": trials_enabled(),
         "monthly_cap": monthly_cap(),
         "activados_este_mes": _activations_this_month(conn),
