@@ -3104,7 +3104,7 @@ function TrialFunnelPanel({ data }) {
     convirtieron, pct_importaron: pctImp, pct_usaron_ia: pctIa,
     pct_conversion_cerrada: pctCerrada, cuando_pagan: cuando,
     enabled, monthly_cap: cap, activados_este_mes: esteMes, days,
-    activos,
+    activos, pro_upsell: upsell,
   } = data
   const viven = activos?.usuarios || []
 
@@ -3194,6 +3194,50 @@ function TrialFunnelPanel({ data }) {
           Pagan: {cuando.durante_pro} en la semana de Pro · {cuando.durante_plus} en los días de Plus
           · {cuando.despues} después de que terminó.
         </p>
+      )}
+
+      {/* ⭐ La prueba de Pro sobre un plan PAGO. Va en su propio bloque y no
+          sumada arriba: son preguntas distintas. En el trial la conversión es
+          "¿pasó a pagar algo?"; acá el que prueba YA PAGA, así que la pregunta
+          es "¿subió de Plus a Pro?". Antes de esto, quien la activaba no
+          figuraba en NINGÚN lado del panel — el embudo se alimenta de
+          trial_started_at y este mecanismo ni lo escribe. */}
+      {upsell && (upsell.activaron > 0 || upsell.activos > 0) && (
+        <div className="mt-4 pt-3 border-t border-line">
+          <div className="flex items-baseline gap-2 flex-wrap mb-2">
+            <h3 className="text-sm font-medium text-ink-1">Probando Pro sobre su plan</h3>
+            <span className="text-[11px] text-ink-3">
+              el que ya paga Plus, {upsell.dias_prueba || 7} días de Pro sin dejar su plan
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <ConvCell label="La tienen activa" value={upsell.activos} hint="ahora mismo" />
+            <ConvCell label="La activaron" value={upsell.activaron} hint={`últimos ${days} días`} />
+            <ConvCell label="Terminaron" value={upsell.terminados} hint="ya decidieron" />
+            <ConvCell
+              label="Subieron a Pro"
+              value={upsell.subieron_a_pro}
+              hint={upsell.pct_upgrade != null ? `${upsell.pct_upgrade}% de los cerrados` : 'sobre los cerrados'}
+            />
+          </div>
+
+          {upsell.usuarios?.length > 0 && (
+            <div className="mt-2.5 max-h-40 overflow-auto divide-y divide-line/40">
+              {upsell.usuarios.map(u => (
+                <div key={u.id} className="py-1.5 flex items-baseline justify-between gap-3 text-[11px]">
+                  <span className="text-ink-2 truncate flex-1">{u.email}</span>
+                  <span className="px-1.5 py-0.5 rounded-sm font-mono text-[9px] tracking-caps bg-data-cyan/15 text-data-cyan">
+                    {(u.plan || 'plus').toUpperCase()}
+                  </span>
+                  <span className="text-ink-3 tabular-nums w-20 text-right">
+                    {u.days_left === 1 ? 'último día' : `${u.days_left} días`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </section>
   )

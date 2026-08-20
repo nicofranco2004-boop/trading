@@ -235,6 +235,93 @@ class QuienPuede(ProUpsellBase):
             os.environ.pop("TRIALS_ENABLED", None)
 
 
+class LaMedicion(ProUpsellBase):
+    """Quien activa esta prueba tiene que APARECER en el panel de admin.
+
+    El caso que lo motivó: el papá de Nico la activó desde su Plus y el panel
+    mostraba 0 en todo. El embudo se alimenta de `trial_started_at` —el trial
+    encadenado— y este mecanismo ni lo escribe, así que era invisible.
+
+    Van medidos APARTE y no sumados: son preguntas distintas. En el trial la
+    conversión es "¿pasó a pagar algo?"; acá el que prueba YA PAGA, así que la
+    pregunta es "¿subió de Plus a Pro?"."""
+
+    def _con_upsell(self, hace_dias, dura=7, subio_dia=None):
+        ini = datetime.utcnow() - timedelta(days=hace_dias)
+        fin = ini + timedelta(days=dura)
+        cur = self.conn.execute(
+            """INSERT INTO users (email, password_hash, approved, email_verified, tier,
+                                  credit_active_until, credit_anchor_plan, credit_anchor_period,
+                                  credit_anchor_amount_usd, pro_trial_until, pro_trial_used_at)
+               VALUES (?, 'x', 1, 1, 'plus', ?, 'plus', 'monthly', 4.0, ?, ?)""",
+            (f"up-{uuid.uuid4().hex[:8]}@rendi.test",
+             _iso(datetime.utcnow() + timedelta(days=20)), _iso(fin), _iso(ini)))
+        uid = cur.lastrowid
+        if subio_dia is not None:
+            self.conn.execute(
+                """INSERT INTO credit_ledger (user_id, kind, amount_usd, days_delta,
+                                              to_plan, created_at)
+                   VALUES (?, 'plan_change', 9.0, 30, 'pro', ?)""",
+                (uid, _iso(ini + timedelta(days=subio_dia)).replace("T", " ")[:19]))
+        self.conn.commit()
+        return uid
+
+    def test_el_que_la_activa_aparece_en_el_panel(self):
+        papa = self._con_upsell(0)
+        u = tr.pro_upsell_stats(self.conn, 90)
+        self.assertEqual(u["activos"], 1, "activó la prueba y el panel muestra 0")
+        self.assertIn(papa, {x["id"] for x in u["usuarios"]})
+
+    def test_los_numeros_cierran(self):
+        self._con_upsell(0)                    # activa
+        self._con_upsell(3)                    # activa
+        self._con_upsell(20)                   # terminó, no subió
+        self._con_upsell(30)                   # terminó, no subió
+        self._con_upsell(25, subio_dia=4)      # terminó y SUBIÓ
+        u = tr.pro_upsell_stats(self.conn, 90)
+        self.assertEqual(u["activaron"], 5)
+        self.assertEqual(u["activos"], 2)
+        self.assertEqual(u["terminados"], 3)
+        self.assertEqual(u["activos"] + u["terminados"], u["activaron"])
+        self.assertEqual(u["subieron_a_pro"], 1)
+        self.assertEqual(u["pct_upgrade"], 33.3)      # 1 de 3 cerrados
+
+    def test_no_se_mezcla_con_el_trial_encadenado(self):
+        """Los dos números tienen que poder leerse por separado: si se sumaran,
+        la tasa de conversión del trial quedaría contaminada con gente que ya
+        pagaba antes de probar."""
+        self._con_upsell(0)
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified) "
+            "VALUES (?, 'x', 1, 1)", (f"ft-{uuid.uuid4().hex[:6]}@rendi.test",))
+        self.conn.commit()
+        tr.start(self.conn, cur.lastrowid)
+        f = tr.funnel(self.conn, 90)
+        self.assertEqual(f["activados"], 1, "el upsell se coló en los activados del trial")
+        self.assertEqual(f["activos"]["total"], 1)
+        self.assertEqual(f["pro_upsell"]["activos"], 1)
+
+    def test_la_lista_ordena_por_el_que_vence_primero(self):
+        self._con_upsell(5)      # le quedan 2
+        self._con_upsell(0)      # le quedan 7
+        self._con_upsell(3)      # le quedan 4
+        dias = [x["days_left"] for x in tr.pro_upsell_stats(self.conn, 90)["usuarios"]]
+        self.assertEqual(dias, sorted(dias))
+
+    def test_la_ventana_de_dias_no_mueve_a_los_activos(self):
+        # "Quiénes la tienen activa" es una foto del presente.
+        self._con_upsell(0)
+        self.assertEqual(tr.pro_upsell_stats(self.conn, 7)["activos"],
+                         tr.pro_upsell_stats(self.conn, 365)["activos"])
+
+    def test_el_largo_de_la_prueba_no_es_la_ventana(self):
+        # `days` es lo que se mira hacia atrás; `dias_prueba` es cuánto dura.
+        # Confundirlas hacía que el panel dijera "90 días de Pro".
+        u = tr.pro_upsell_stats(self.conn, 90)
+        self.assertEqual(u["days"], 90)
+        self.assertEqual(u["dias_prueba"], tr.PRO_UPSELL_DAYS)
+
+
 class ElEstadoParaLaUI(ProUpsellBase):
 
     def test_antes_de_activarlo(self):

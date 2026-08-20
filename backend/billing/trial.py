@@ -960,6 +960,86 @@ def activos(conn, limit: int = 200) -> dict:
     return salida
 
 
+def pro_upsell_stats(conn, days: int = 90, limit: int = 200) -> dict:
+    """La prueba de Pro sobre un plan pago, medida aparte del free trial.
+
+    Va separada a propósito: son dos preguntas distintas. En el trial la
+    conversión es "¿pasó a pagar algo?"; acá el que prueba YA PAGA, así que la
+    pregunta es "¿subió de Plus a Pro?". Sumarlas en un solo número borraría
+    las dos.
+
+    El upgrade se detecta en el credit_ledger (`to_plan='pro'` después de haber
+    activado la prueba), que es donde queda registrado tanto el cambio de plan
+    como un pago nuevo de Pro. Igual que en el embudo: se le pregunta al ledger
+    y no a `subscriptions`, donde hay fila desde que se genera el link de pago.
+    """
+    desde = (datetime.utcnow() - timedelta(days=max(1, days))).isoformat()
+    ahora = datetime.utcnow()
+    # `days` es la VENTANA que se mira hacia atrás; `dias_prueba` es cuánto dura
+    # la prueba. Nombrarlas igual es cómo el panel termina diciendo "90 días de
+    # Pro" en vez de 7.
+    out = {"days": days, "dias_prueba": PRO_UPSELL_DAYS,
+           "activaron": 0, "activos": 0, "terminados": 0,
+           "subieron_a_pro": 0, "pct_upgrade": None, "usuarios": []}
+
+    def _uno(sql, params=()):
+        try:
+            r = conn.execute(sql, params).fetchone()
+            return int(r["c"]) if r else 0
+        except Exception as ex:
+            log.warning("pro_upsell_stats falló: %s", ex)
+            return 0
+
+    out["activaron"] = _uno(
+        "SELECT COUNT(*) c FROM users WHERE pro_trial_used_at >= ?", (desde,))
+    out["subieron_a_pro"] = _uno(
+        """SELECT COUNT(DISTINCT u.id) c FROM users u
+             JOIN credit_ledger l ON l.user_id = u.id AND l.to_plan = 'pro'
+            WHERE u.pro_trial_used_at >= ?
+              AND l.created_at >= substr(replace(u.pro_trial_used_at,'T',' '),1,19)""",
+        (desde,))
+
+    # Quiénes la tienen corriendo AHORA (no depende de la ventana de días: es
+    # una foto del presente, igual que `activos` del trial).
+    try:
+        filas = conn.execute(
+            """SELECT id, email, name, pro_trial_until, credit_anchor_plan
+                 FROM users
+                WHERE pro_trial_until IS NOT NULL
+                ORDER BY pro_trial_until ASC""").fetchall()
+    except Exception as ex:
+        log.warning("pro_upsell_stats: no se pudo leer la tabla: %s", ex)
+        filas = []
+    for r in filas:
+        try:
+            fin = datetime.fromisoformat(str(r["pro_trial_until"]).replace("Z", ""))
+        except (TypeError, ValueError):
+            continue
+        if fin <= ahora:
+            continue
+        restan = (fin - ahora).total_seconds() / 86400.0
+        out["activos"] += 1
+        if len(out["usuarios"]) < max(1, limit):
+            out["usuarios"].append({
+                "id": r["id"], "email": r["email"], "name": r["name"],
+                "plan": (r["credit_anchor_plan"] or "plus"),
+                "days_left": max(0, int(restan) + (1 if restan % 1 else 0)),
+                "ends_at": r["pro_trial_until"],
+            })
+    out["terminados"] = max(0, out["activaron"] - out["activos"])
+    # La tasa sobre los que ya TERMINARON: el que sigue probando todavía no
+    # tuvo su chance de decidir. Mismo criterio que la del trial.
+    if out["terminados"]:
+        subieron_cerrados = _uno(
+            """SELECT COUNT(DISTINCT u.id) c FROM users u
+                 JOIN credit_ledger l ON l.user_id = u.id AND l.to_plan = 'pro'
+                WHERE u.pro_trial_used_at >= ? AND u.pro_trial_until <= ?
+                  AND l.created_at >= substr(replace(u.pro_trial_used_at,'T',' '),1,19)""",
+            (desde, ahora.isoformat()))
+        out["pct_upgrade"] = round(subieron_cerrados / out["terminados"] * 100, 1)
+    return out
+
+
 def funnel(conn, days: int = 90) -> dict:
     """Embudo del trial de los últimos `days` días."""
     since = (datetime.utcnow() - timedelta(days=max(1, days))).isoformat()
@@ -1099,6 +1179,10 @@ def funnel(conn, days: int = 90) -> dict:
         # fecha y se lleva puestos a los que ya pagaron; esto usa el mismo
         # criterio que la app para decidir si sigue siendo una prueba.
         "activos": activos(conn),
+        # La prueba de Pro sobre un plan pago: otro mecanismo, otra pregunta.
+        # Sin esto, quien la activaba no figuraba en NINGÚN lado del panel — el
+        # embudo se alimenta de trial_started_at y el upsell ni lo escribe.
+        "pro_upsell": pro_upsell_stats(conn, days),
         "enabled": trials_enabled(),
         "monthly_cap": monthly_cap(),
         "activados_este_mes": _activations_this_month(conn),
