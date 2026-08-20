@@ -15,6 +15,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { Sparkles, Loader2, ArrowRight } from 'lucide-react'
 import { api } from '../../utils/api'
 import InfoTooltip from '../InfoTooltip'
+import Modal from '../Modal'
 import { usePlanFeatures, refreshPlanFeatures } from '../../hooks/usePlanFeatures'
 import { track } from '../../utils/track'
 import { useToast } from '../Toast'
@@ -76,14 +77,18 @@ export function trialDaysLabel(days) {
 export function TrialCta({ source = 'paywall', className = '', onStarted }) {
   const { trial } = usePlanFeatures()
   const [busy, setBusy] = useState(false)
+  const [confirmando, setConfirmando] = useState(false)
   const toast = useToast()
 
   if (!canOfferTrial(trial)) return null
 
+  const pro = trial?.pro_days ?? TRIAL_PRO_DAYS
+  const plus = trial?.plus_days ?? (TRIAL_TOTAL_DAYS - TRIAL_PRO_DAYS)
+  const total = trial?.total_days ?? TRIAL_TOTAL_DAYS
+
   async function start() {
     if (busy) return
     setBusy(true)
-    track('trial_start_clicked', { source })
     try {
       await api.post('/billing/trial/start')
       // El tier cambió: sin esto la app sigue mostrando los candados de Free
@@ -91,9 +96,9 @@ export function TrialCta({ source = 'paywall', className = '', onStarted }) {
       await refreshPlanFeatures()
       window.dispatchEvent(new Event('rendi:portfolio-changed'))
       track('trial_started', { source })
-      toast.push(
-        `Listo: tenés ${TRIAL_PRO_DAYS} días de Pro y después ${TRIAL_TOTAL_DAYS - TRIAL_PRO_DAYS} de Plus.`,
-        { type: 'success' })
+      toast.push(`Listo: tenés ${pro} días de Pro y después ${plus} de Plus.`,
+                 { type: 'success' })
+      setConfirmando(false)
       onStarted?.()
     } catch (e) {
       // El 409 trae el motivo del server; cualquier otra cosa es un problema
@@ -101,22 +106,28 @@ export function TrialCta({ source = 'paywall', className = '', onStarted }) {
       const reason = e?.payload?.detail || e?.message || ''
       toast.push(REASONS[reason] || 'No pudimos activar la prueba. Probá de nuevo en un minuto.',
                  { type: 'error' })
+      setConfirmando(false)
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <button
-      type="button"
-      onClick={start}
-      disabled={busy}
-      className={className || 'w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet hover:bg-rendi-violet-hover text-white rounded-sm py-2.5 transition-colors disabled:opacity-60'}
-    >
-      {busy
-        ? <><Loader2 size={13} className="animate-spin" /> Activando…</>
-        : <><Sparkles size={13} strokeWidth={1.75} /> Probar gratis {TRIAL_TOTAL_DAYS} días</>}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => { track('trial_start_clicked', { source }); setConfirmando(true) }}
+        className={className || 'w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet hover:bg-rendi-violet-hover text-white rounded-sm py-2.5 transition-colors disabled:opacity-60'}
+      >
+        <Sparkles size={13} strokeWidth={1.75} /> Probar gratis {total} días
+      </button>
+      {confirmando && (
+        <TrialConfirmModal
+          kind="trial" pro={pro} plus={plus} total={total} busy={busy}
+          onConfirm={start} onClose={() => setConfirmando(false)}
+        />
+      )}
+    </>
   )
 }
 
@@ -132,6 +143,7 @@ export function ProUpsellCta({ className = '', onStarted }) {
   const { features } = usePlanFeatures()
   const up = features?.pro_upsell
   const [busy, setBusy] = useState(false)
+  const [confirmando, setConfirmando] = useState(false)
   const toast = useToast()
 
   if (!up?.can_start) return null
@@ -139,7 +151,6 @@ export function ProUpsellCta({ className = '', onStarted }) {
   async function start() {
     if (busy) return
     setBusy(true)
-    track('pro_upsell_clicked', { source: 'planes' })
     try {
       await api.post('/billing/trial/pro-upsell')
       await refreshPlanFeatures()
@@ -147,27 +158,34 @@ export function ProUpsellCta({ className = '', onStarted }) {
       track('pro_upsell_started', {})
       toast.push(`Listo: tenés ${up.days} días de Pro. Tu Plus sigue igual.`,
                  { type: 'success' })
+      setConfirmando(false)
       onStarted?.()
     } catch (e) {
       const reason = e?.payload?.detail || e?.message || ''
       toast.push(REASONS[reason] || 'No pudimos activarlo. Probá de nuevo en un minuto.',
                  { type: 'error' })
+      setConfirmando(false)
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <button
-      type="button"
-      onClick={start}
-      disabled={busy}
-      className={className || 'w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium text-data-violet bg-transparent border border-data-violet/40 hover:bg-data-violet/10 rounded-sm py-2.5 transition-colors disabled:opacity-60'}
-    >
-      {busy
-        ? <><Loader2 size={13} className="animate-spin" /> Activando…</>
-        : <><Sparkles size={13} strokeWidth={1.75} /> Probá Pro {up.days} días gratis</>}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => { track('pro_upsell_clicked', { source: 'planes' }); setConfirmando(true) }}
+        className={className || 'w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium text-data-violet bg-transparent border border-data-violet/40 hover:bg-data-violet/10 rounded-sm py-2.5 transition-colors disabled:opacity-60'}
+      >
+        <Sparkles size={13} strokeWidth={1.75} /> Probá Pro {up.days} días gratis
+      </button>
+      {confirmando && (
+        <TrialConfirmModal
+          kind="pro_upsell" dias={up.days} busy={busy}
+          onConfirm={start} onClose={() => setConfirmando(false)}
+        />
+      )}
+    </>
   )
 }
 
@@ -209,21 +227,7 @@ export function TrialFinePrint({ className = '' }) {
       {' '}
       <InfoTooltip label="Cómo funciona la prueba" size={11} align="center" side="top">
         <p className="font-medium text-ink-0">Cómo funciona la prueba</p>
-        <TrialStage
-          rango={pro === 1 ? 'Día 1' : `Días 1 a ${pro}`}
-          plan="Rendi Pro"
-          detalle="Todo desbloqueado: chat libre, el máximo de análisis y brokers ilimitados."
-        />
-        <TrialStage
-          rango={`Días ${pro + 1} a ${total}`}
-          plan="Rendi Plus"
-          detalle="Seguís con multi-broker y las features avanzadas, con menos cuota de IA."
-        />
-        <TrialStage
-          rango={`Día ${total + 1}`}
-          plan="Volvés a Free"
-          detalle="Tus datos quedan intactos. Si querés seguir con un plan, lo elegís vos."
-        />
+        <EtapasDelTrial pro={pro} plus={plus} total={total} />
         <p className="text-ink-3 pt-1">
           No pedimos tarjeta y no se renueva sola: cuando termina no se te cobra nada.
         </p>
@@ -241,6 +245,110 @@ function TrialStage({ rango, plan, detalle }) {
       <span className="text-ink-0 font-medium">{plan}</span>
       <span className="block text-ink-3">{detalle}</span>
     </span>
+  )
+}
+
+
+// ─── El cartel de confirmación ──────────────────────────────────────────────
+// Antes el botón activaba en el acto, y eso es un problema real: la prueba se
+// puede usar UNA SOLA VEZ POR CUENTA, para siempre. Un click sin querer se la
+// quemaba sin que la persona llegara a leer qué le daba ni cuánto duraba.
+//
+// El paso de confirmación es además donde se termina de vender: es el único
+// momento en que se tiene la atención completa para explicar las etapas.
+//
+// Usa el Modal de la casa, que en mobile se renderiza como bottom sheet —
+// importa, porque la mayoría entra desde el celular.
+
+/** Las etapas del trial encadenado. Una sola fuente para el (?) y el cartel:
+ *  si mañana cambia el plazo, no pueden decir cosas distintas. */
+function EtapasDelTrial({ pro, plus, total }) {
+  return (
+    <>
+      <TrialStage
+        rango={pro === 1 ? 'Día 1' : `Días 1 a ${pro}`}
+        plan="Rendi Pro"
+        detalle="Todo desbloqueado: chat libre, el máximo de análisis y brokers ilimitados."
+      />
+      <TrialStage
+        rango={`Días ${pro + 1} a ${total}`}
+        plan="Rendi Plus"
+        detalle="Seguís con multi-broker y las features avanzadas, con menos cuota de IA."
+      />
+      <TrialStage
+        rango={`Día ${total + 1}`}
+        plan="Volvés a Free"
+        detalle="Tus datos quedan intactos. Si querés seguir con un plan, lo elegís vos."
+      />
+    </>
+  )
+}
+
+/** `kind`: 'trial' (los 15 días encadenados) | 'pro_upsell' (probar Pro sin
+ *  dejar el Plus que ya se paga). */
+export function TrialConfirmModal({ kind, dias, pro, plus, total, busy, onConfirm, onClose }) {
+  const esUpsell = kind === 'pro_upsell'
+  return (
+    <Modal
+      title={esUpsell ? `Probá Rendi Pro por ${dias} días` : `Probá Rendi gratis ${total} días`}
+      onClose={busy ? () => {} : onClose}
+    >
+      <div className="space-y-4">
+        {esUpsell ? (
+          <>
+            <p className="text-sm text-ink-1 leading-relaxed">
+              Por {dias} días vas a tener todo Pro, y <b className="text-ink-0">tu plan Plus
+              sigue exactamente igual</b>: misma suscripción, misma fecha de renovación, y
+              no se te cobra nada extra.
+            </p>
+            <ul className="text-sm text-ink-2 space-y-1.5 list-disc pl-5">
+              <li>Chat libre con Rendi AI, sin preguntas guiadas.</li>
+              <li>60 análisis por semana en vez de 6.</li>
+              <li>Brokers ilimitados y los 12 detectores de comportamiento.</li>
+              <li>Memoria: se acuerda de lo que le aclarás entre sesiones.</li>
+            </ul>
+            <p className="text-xs text-ink-3 leading-relaxed">
+              A los {dias} días volvés a tu Plus solo, sin que tengas que hacer nada.
+              Se puede usar una sola vez.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-ink-1 leading-relaxed">
+              Son {total} días en dos tramos, y después tu cuenta vuelve a Free.
+            </p>
+            <div className="text-sm text-ink-2 border border-line/60 rounded-lg px-3.5 py-2.5">
+              <EtapasDelTrial pro={pro} plus={plus} total={total} />
+            </div>
+            <p className="text-xs text-ink-3 leading-relaxed">
+              No pedimos tarjeta y no se renueva sola: cuando termina no se te cobra nada.
+              Se puede usar una sola vez.
+            </p>
+          </>
+        )}
+
+        <div className="flex gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="flex-1 inline-flex items-center justify-center text-sm font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm py-3 transition-colors disabled:opacity-60"
+          >
+            Ahora no
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="flex-1 inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet hover:bg-rendi-violet-hover text-white rounded-sm py-3 transition-colors disabled:opacity-60"
+          >
+            {busy
+              ? <><Loader2 size={13} className="animate-spin" /> Activando…</>
+              : <><Sparkles size={13} strokeWidth={1.75} /> Empezar la prueba</>}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
