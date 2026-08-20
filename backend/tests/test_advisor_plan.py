@@ -3358,6 +3358,36 @@ class TwrGuardasTest(TwrInvariantesTest):
         self.assertEqual(r["rechazados"], 1)
         self.assertEqual(r["sellados"], 0)
 
+    # ── Un agujero no congela el sellado para siempre ───────────────────────
+    def test_un_mes_no_medible_no_arrastra_a_los_que_vienen_despues(self):
+        # Con las guardas prendidas, G3 rechazaba TODOS los no_medible (el
+        # denominador <=0 es la definición de ese estado, no una falla) y G5
+        # cascadeaba sobre los siguientes porque el ancla de contigüidad no
+        # avanzaba. Medido antes del fix: 4 meses sellados pasaban a 1, y un mes
+        # nuevo e impecable ya no entraba nunca más.
+        import os
+        uid = self._cliente("cascada@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 50.0),
+                          ("2026-03-31", 60.0), ("2026-04-30", 70.0),
+                          ("2026-05-31", 80.0)],
+                    flujos={"2026-02": -200.0})     # febrero queda no_medible
+        os.environ["TWR_GUARDAS"] = "1"
+        try:
+            r = self._sellar(uid)
+        finally:
+            os.environ.pop("TWR_GUARDAS", None)
+        conn = main.get_db()
+        try:
+            meses = [x["month"] for x in conn.execute(
+                "SELECT DISTINCT month FROM twr_periods WHERE user_id=? ORDER BY month",
+                (uid,)).fetchall()]
+        finally:
+            conn.close()
+        self.assertEqual(r["rechazados"], 0)
+        self.assertIn("2026-03", meses)
+        self.assertIn("2026-04", meses)
+        self.assertIn("2026-05", meses)
+
     # ── Retracción: se puede deshacer sin pisar lo publicado ────────────────
     def test_retractar_no_pisa_la_revision_vieja(self):
         # Alguien VIO ese número y decidió con él: la fila tiene que seguir
@@ -3548,6 +3578,74 @@ class FlujoResolucionesTest(TwrInvariantesTest):
         self.assertEqual(quedan, 1)
 
     # ── Append-only y ventana ───────────────────────────────────────────────
+    def test_una_resolucion_sin_fecha_falla_ruidosa(self):
+        # La columna es NOT NULL pero '' pasa igual, y una resolución sin fecha
+        # nunca cae en la ventana de ningún tramo: se guarda, se ve en el panel
+        # y no hace nada. Un veredicto que no se puede fechar no es un veredicto.
+        import flujos
+        uid = self._cliente("sinfecha@x.com")
+        conn = main.get_db()
+        try:
+            for mala in ("", "   ", "12/04/2026", "2026-4"):
+                with self.assertRaises(ValueError):
+                    flujos.registrar(conn, uid, scope_tipo="tx", scope_id="z",
+                                     naturaleza="traslado_interno", fecha=mala,
+                                     monto_usd=10.0, via="cruce_entre_brokers")
+        finally:
+            conn.close()
+
+    def test_una_compra_comun_no_es_pata_opuesta_de_un_traslado(self):
+        # El cruce era ciego a la DIRECCIÓN: alcanzaba "otro broker, misma
+        # cantidad, ±4 días". Una COMPRA del mismo papel y la misma cantidad en
+        # otro broker pasaba como "pata opuesta" y convertía un aporte REAL en
+        # traslado interno — el error más caro que este módulo puede cometer.
+        import flujos
+        uid = self._cliente("compra@x.com")
+        conn = main.get_db()
+        try:
+            bid = uuid.uuid4().hex[:12]
+            conn.execute("INSERT INTO import_batches (id,user_id,broker,"
+                         "parser_format,file_hash,status) VALUES (?,?,'IOL','t',?,'confirmed')",
+                         (bid, uid, bid))
+            rid = conn.execute("INSERT INTO import_raw_rows (batch_id,row_index,"
+                               "raw_json,status) VALUES (?,0,'{}','valid')", (bid,)).lastrowid
+            conn.execute(
+                "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,"
+                "operation_type,asset_symbol,quantity,transfer_out) "
+                "VALUES (?,?,'2026-04-12','IOL','BUY','AAPL',12,0)", (bid, rid))
+            conn.commit()
+            par = flujos.cruce_entre_brokers(conn, uid, "AAPL", "2026-04-12", 12.0, "Balanz")
+        finally:
+            conn.close()
+        self.assertIsNone(par, "una COMPRA no puede ser la pata que SALE")
+
+    def test_dos_contrapartes_posibles_se_marcan_ambiguas(self):
+        # Quedarse con el primer match es elegir al azar. La marca hace que la
+        # guarda de aplicar() deje de ser decorativa: hasta hoy leía
+        # v.get('ambiguo'), que nadie escribía nunca.
+        import flujos
+        uid = self._cliente("ambiguo@x.com")
+        conn = main.get_db()
+        try:
+            for brk in ("IOL", "PPI"):
+                bid = uuid.uuid4().hex[:12]
+                conn.execute("INSERT INTO import_batches (id,user_id,broker,"
+                             "parser_format,file_hash,status) VALUES (?,?,?,'t',?,'confirmed')",
+                             (bid, uid, brk, bid))
+                rid = conn.execute("INSERT INTO import_raw_rows (batch_id,row_index,"
+                                   "raw_json,status) VALUES (?,0,'{}','valid')", (bid,)).lastrowid
+                conn.execute(
+                    "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,"
+                    "operation_type,asset_symbol,quantity,transfer_out) "
+                    "VALUES (?,?,'2026-04-12',?,'SELL','AAPL',12,1)", (bid, rid, brk))
+            conn.commit()
+            par = flujos.cruce_entre_brokers(conn, uid, "AAPL", "2026-04-12", 12.0, "Balanz")
+        finally:
+            conn.close()
+        self.assertIsNotNone(par)
+        self.assertTrue(par["ambiguo"])
+        self.assertEqual(par["candidatos_opuestos"], 2)
+
     def test_registrar_dos_veces_el_mismo_scope_hace_revision_nueva(self):
         import flujos
         uid = self._cliente("revs@x.com")
@@ -3595,6 +3693,53 @@ class FlujoResolucionesTest(TwrInvariantesTest):
         finally:
             conn.close()
         self.assertEqual(antes, despues)     # no selló nada
+
+    # ── Los interruptores fallan CERRADOS ───────────────────────────────────
+    def test_una_palabra_de_apagado_no_puede_prender_el_interruptor(self):
+        # La primera versión hacía `not in ("", "0", "false", "no")`, así que
+        # 'False' con mayúscula, 'off' o 'NO' PRENDÍAN la vía de escritura. Y
+        # eso pega justo en el rollback documentado: editar el valor a 'False'
+        # en Railway —en vez de borrar la variable— la dejaba prendida mientras
+        # el operador creía que la había apagado.
+        import os, twr
+        for v in ("False", "FALSE", "off", "Off", "NO", "0.0", "n", "None",
+                  "disabled", "0", "false", "no", "", "  "):
+            os.environ["RECONSTRUCTOR_APLICAR"] = v
+            os.environ["TWR_GUARDAS"] = v
+            try:
+                self.assertFalse(twr._aplicar_resoluciones(), f"{v!r} prendió el aplicar")
+                self.assertFalse(twr._guardas_activas(), f"{v!r} prendió las guardas")
+            finally:
+                os.environ.pop("RECONSTRUCTOR_APLICAR", None)
+                os.environ.pop("TWR_GUARDAS", None)
+        for v in ("1", "true", "TRUE", "yes", "si", "on", " 1 "):
+            os.environ["RECONSTRUCTOR_APLICAR"] = v
+            try:
+                self.assertTrue(twr._aplicar_resoluciones(), f"{v!r} no prendió")
+            finally:
+                os.environ.pop("RECONSTRUCTOR_APLICAR", None)
+
+    def test_el_diagnostico_no_toca_el_interruptor_global(self):
+        # La primera versión prendía RECONSTRUCTOR_APLICAR para el contrafáctico
+        # y la volvía a apagar. os.environ es estado GLOBAL del proceso y este
+        # endpoint es `def` (corre en el threadpool): cualquier request
+        # concurrente durante esa ventana se llevaba el número corregido sin que
+        # nadie lo hubiera habilitado. Ahora va por parámetro.
+        import os
+        uid = self._cliente("noleak@x.com")
+        self._serie(uid, [("2026-01-31", 100.0), ("2026-02-28", 200.0)],
+                    flujos={"2026-02": 100.0})
+        self._res(uid, monto=100.0)
+        adm = self._cliente_admin()
+        h = {"Authorization": f"Bearer {main.create_token(adm)}"}
+        self.assertIsNone(os.environ.get("RECONSTRUCTOR_APLICAR"))
+        r = self.http.get("/api/admin/diag/flujo-contaminacion",
+                          params={"target_uid": uid}, headers=h)
+        self.assertEqual(r.status_code, 200, r.text)
+        # Ni durante ni después: el interruptor global nunca se tocó.
+        self.assertIsNone(os.environ.get("RECONSTRUCTOR_APLICAR"))
+        # Y el número publicado sigue siendo el de sin corrección.
+        self.assertAlmostEqual(self._twr(uid)["twr"], 0.0, places=6)
 
     def _cliente_admin(self):
         conn = main.get_db()

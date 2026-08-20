@@ -136,19 +136,42 @@ def cruce_entre_brokers(conn, uid: int, asset: str, fecha: str,
     hasta = (d + timedelta(days=DIAS_CRUCE)).isoformat()
 
     filas = conn.execute(
-        """SELECT n.id, n.broker, n.date, n.quantity, n.operation_type
+        """SELECT n.id, n.broker, n.date, n.quantity, n.operation_type,
+                  n.transfer_out, n.gross_amount
            FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
+           JOIN import_batches b2 ON b2.id = n.batch_id
            WHERE b.user_id = ? AND n.excluded_at IS NULL
+             AND b.status = 'confirmed'
              AND UPPER(n.asset_symbol) = ? AND n.date BETWEEN ? AND ?
              AND n.broker != ?""",
         (uid, (asset or "").upper(), desde, hasta, broker or "")).fetchall()
 
+    # La contraparte tiene que SALIR. Antes alcanzaba con "otro broker, misma
+    # cantidad, ±4 días": una COMPRA común de la misma cantidad del mismo papel
+    # en otro broker pasaba como "pata opuesta" y convertía un aporte real en
+    # traslado interno. La dirección es lo único que distingue una mudanza de
+    # dos operaciones que casualmente coinciden.
+    def _sale(f) -> bool:
+        if int(f["transfer_out"] or 0) == 1:
+            return True
+        if (f["operation_type"] or "").upper() in ("SELL", "WITHDRAW", "TRANSFER_OUT"):
+            return True
+        return float(f["quantity"] or 0) < 0
+
     tol = max(abs(cantidad) * TOL_CANTIDAD, 1e-6)
-    for f in filas:
-        if abs(abs(float(f["quantity"] or 0)) - abs(cantidad)) <= tol:
-            return {"broker": f["broker"], "date": f["date"],
-                    "quantity": float(f["quantity"] or 0), "tx_id": f["id"]}
-    return None
+    matches = [f for f in filas
+               if _sale(f)
+               and abs(abs(float(f["quantity"] or 0)) - abs(cantidad)) <= tol]
+    if not matches:
+        return None
+    # Más de una contraparte posible = ambiguo. Dos traspasos del mismo monto el
+    # mismo día se cruzarían entre sí, y quedarse con el primero es elegir al
+    # azar. Se devuelve la marca para que la guarda de `aplicar()` deje de ser
+    # decorativa: hasta hoy leía `v.get("ambiguo")`, que nadie escribía nunca.
+    f = matches[0]
+    return {"broker": f["broker"], "date": f["date"],
+            "quantity": float(f["quantity"] or 0), "tx_id": f["id"],
+            "ambiguo": len(matches) > 1, "candidatos_opuestos": len(matches)}
 
 
 def resolver(conn, uid: int, cand: dict) -> dict:
@@ -174,6 +197,7 @@ def resolver(conn, uid: int, cand: dict) -> dict:
                 "via": "cruce_entre_brokers",
                 "evidencia": f"pata opuesta en {par['broker']} el {par['date']}",
                 "par": par,
+                "ambiguo": bool(par.get("ambiguo")),
             }
 
     return {"resuelto": False, "naturaleza": None, "via": None,
@@ -233,6 +257,16 @@ def registrar(conn, uid: int, *, scope_tipo: str, scope_id, naturaleza: str,
     promueve después. Devuelve el id de la fila nueva.
     """
     import json as _json
+    # Falla RUIDOSA. La columna es NOT NULL pero '' pasa igual, y una resolución
+    # con fecha vacía es peor que no tenerla: nunca cae dentro de la ventana
+    # (desde, hasta] de ningún tramo, así que se guarda, se ve en el panel y no
+    # hace nada. Un veredicto que no se puede fechar no es un veredicto.
+    f = (fecha or "").strip()
+    if len(f) < 10 or f[4] != "-" or f[7] != "-":
+        raise ValueError(f"flujo_resoluciones: fecha inválida {fecha!r} "
+                         f"(scope {scope_tipo}:{scope_id})")
+    fecha = f[:10]
+
     prev = conn.execute(
         """SELECT MAX(revision) r FROM flujo_resoluciones
             WHERE user_id=? AND scope_tipo=? AND scope_id=?""",
@@ -305,16 +339,26 @@ def aplicar(conn, uid: int, batch_ref: str = None) -> dict:
 
     Nada de lo que resuelva un modelo pasa por acá: eso entra con aplicado=0.
     """
-    escritas = auto = ambiguos = 0
+    escritas = auto = ambiguos = sin_datos = 0
     for c in candidatos(conn, uid):
         v = resolver(conn, uid, c)
         if not v["resuelto"]:
             continue
-        # Guarda de ambigüedad: si hay más de un candidato posible para el mismo
-        # movimiento y no hay un par explícito, no se resuelve. Dos traspasos
-        # del mismo monto el mismo día se cruzarían entre sí.
-        if v.get("via") == "cruce_entre_brokers" and v.get("ambiguo"):
+        # Guarda de ambigüedad: si hay más de una contraparte posible, no se
+        # resuelve. Dos traspasos del mismo monto el mismo día se cruzarían
+        # entre sí, y quedarse con el primero es elegir al azar.
+        if v.get("ambiguo"):
             ambiguos += 1
+            continue
+        # ⚠️ HOY ESTO OMITE TODO. `candidatos()` devuelve
+        # {raw_id, broker, texto, raw_json} y NO trae fecha ni monto: sin
+        # parsear el raw_json (tarea de la Fase 3) no hay con qué fechar ni
+        # cuantificar la resolución. Antes se escribía igual, con fecha='' y
+        # monto_usd=0 — filas que se ven en el panel y no mueven nada.
+        # Preferimos contarlas acá y no escribirlas: el día que candidatos()
+        # traiga los campos, esto empieza a funcionar solo.
+        if not (c.get("fecha") or "").strip():
+            sin_datos += 1
             continue
         auto_aplicable = (v["via"] in VIAS_AUTOAPLICABLES
                           and v["naturaleza"] == "traslado_interno")
@@ -330,4 +374,7 @@ def aplicar(conn, uid: int, batch_ref: str = None) -> dict:
         escritas += 1
         auto += 1 if auto_aplicable else 0
     return {"escritas": escritas, "auto_aplicadas": auto,
-            "ambiguos_omitidos": ambiguos}
+            "ambiguos_omitidos": ambiguos,
+            # Si esto es > 0 y `escritas` es 0, no es que no haya trabajo: es
+            # que la cola todavía no trae fecha ni monto (Fase 3 pendiente).
+            "omitidos_sin_datos": sin_datos}

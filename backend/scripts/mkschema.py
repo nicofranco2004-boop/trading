@@ -16,6 +16,18 @@ Lo que hay que traducir:
   DATETIME/TIMESTAMP                → timestamptz  (ojo: acá se guardan como TEXT)
   BOOLEAN 0/1                       → smallint     (NO boolean: el código compara =1)
 
+⚠️ LO QUE ESTE GENERADOR NO TRADUCE: TRIGGERS.
+Sólo lee tablas, índices y FKs de sqlite_master. Hoy hay UN trigger que importa
+y que queda afuera: `trg_twr_periods_append_only` (main.py, migración de
+twr_periods), que aborta cualquier UPDATE sobre la tabla sellada del TWR. En
+Postgres eso no es un `RAISE(ABORT, …)`: necesita una FUNCTION en plpgsql más un
+TRIGGER, y el cuerpo va entre `$$`, que además rompería el splitter por `;` de
+tests/test_esquema_pg_reaplicable.py.
+Consecuencia concreta para el día del pasaje: en Postgres, `twr_periods` es
+append-only sólo por CONVENCIÓN (nadie hace UPDATE fuera de twr.sellar /
+twr.retractar), no por contrato de la base. Si se quiere la garantía dura allá,
+hay que agregar soporte de triggers acá Y enseñarle dollar-quoting al test.
+
 Decisiones deliberadas:
   · Los 0/1 quedan smallint, no boolean. El código hace `WHERE is_cash=1` en
     decenas de lugares; convertirlos a boolean obliga a tocar todos esos sitios y

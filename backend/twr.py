@@ -277,6 +277,27 @@ def bordes_medibles(conn, uid: int) -> list:
     return [r for r in filas if clasificar_fila(r, con_pos) == MEDICION]
 
 
+def _flag(nombre: str) -> bool:
+    """Lee un interruptor de seguridad. ALLOWLIST DE ENCENDIDO, no lista de
+    apagado: cualquier valor que no sea explícitamente "prendido" queda
+    APAGADO, typo incluido.
+
+    La primera versión hacía `not in ("", "0", "false", "no")`, así que
+    `RECONSTRUCTOR_APLICAR="False"` (con mayúscula) o `"off"` PRENDÍAN la vía de
+    escritura. Y eso pega justo en el plan de rollback: el docstring de acá
+    abajo dice que la vuelta atrás es "apagar una env var" — pero editar el
+    valor a `False` en Railway, en vez de borrar la variable, la dejaba
+    prendida mientras el operador creía que la había apagado.
+
+    Es además el idioma del resto de la casa (mantenimiento.py compara
+    == "1" / == "0"; ALLOW_REGISTRATION usa .lower() == "true"): éste era el
+    outlier.
+    """
+    import os
+    return (os.environ.get(nombre, "") or "").strip().lower() in (
+        "1", "true", "yes", "si", "sí", "on")
+
+
 def _aplicar_resoluciones() -> bool:
     """El interruptor de la vía de escritura. APAGADO por default, y no es
     redundante con la columna `aplicado`: sin él, la primera carga de la
@@ -284,12 +305,11 @@ def _aplicar_resoluciones() -> bool:
     como REVISIÓN 1 — la que el asesor va a leer como "el número original".
     Con el interruptor, "el agente resolvió" y "la resolución entró al número"
     son dos actos separados."""
-    import os
-    return (os.environ.get("RECONSTRUCTOR_APLICAR", "0") or "0").strip() \
-        not in ("", "0", "false", "no")
+    return _flag("RECONSTRUCTOR_APLICAR")
 
 
-def _ajuste_resoluciones(conn, uid: int, desde: str, hasta: str) -> float:
+def _ajuste_resoluciones(conn, uid: int, desde: str, hasta: str,
+                         aplicar: bool = None) -> float:
     """Cuánto de lo que la SSoT cuenta como flujo NO es flujo, según lo ya
     resuelto y aprobado. Un traslado interno movió el saldo pero no es plata
     nueva del cliente: se le resta al aporte neto del tramo.
@@ -297,8 +317,16 @@ def _ajuste_resoluciones(conn, uid: int, desde: str, hasta: str) -> float:
     Ventana (desde, hasta] — misma convención que los bordes del tramo: el
     movimiento del día del borde inicial pertenece al tramo anterior.
     Best-effort: si la tabla todavía no existe, el TWR sigue andando igual.
+
+    `aplicar` fuerza la decisión para ESTA llamada (None = leer la env). Existe
+    para el contrafáctico del diagnóstico: la primera versión prendía la env
+    var, calculaba y la volvía a apagar — y `os.environ` es estado GLOBAL del
+    proceso, así que cualquier request concurrente (los endpoints sync corren en
+    el threadpool) veía el interruptor prendido durante esa ventana y se llevaba
+    el número corregido sin que nadie lo hubiera habilitado. Explícito por
+    parámetro, no ambiente.
     """
-    if not _aplicar_resoluciones():
+    if not (_aplicar_resoluciones() if aplicar is None else aplicar):
         return 0.0
     try:
         r = conn.execute(
@@ -317,7 +345,7 @@ def _ajuste_resoluciones(conn, uid: int, desde: str, hasta: str) -> float:
         return 0.0
 
 
-def _flujo(conn, uid: int, desde: str, hasta: str) -> float:
+def _flujo(conn, uid: int, desde: str, hasta: str, aplicar: bool = None) -> float:
     """Aportes netos entre dos fechas. Sale de la SSoT canónica de la app
     (`compute_net_deposited_db`), no de una cuenta propia — si el TWR usara su
     propia definición de flujo, discutiría con el resto de las pantallas.
@@ -329,10 +357,10 @@ def _flujo(conn, uid: int, desde: str, hasta: str) -> float:
     from snapshots_job import compute_net_deposited_db
     base = (compute_net_deposited_db(conn, uid, as_of_date=hasta)
             - compute_net_deposited_db(conn, uid, as_of_date=desde))
-    return base - _ajuste_resoluciones(conn, uid, desde, hasta)
+    return base - _ajuste_resoluciones(conn, uid, desde, hasta, aplicar)
 
 
-def tramos(conn, uid: int, hasta_mes: str = None) -> list:
+def tramos(conn, uid: int, hasta_mes: str = None, aplicar: bool = None) -> list:
     """Los tramos MENSUALES medibles de un usuario, sin tocar la base.
 
     El cliente entra recién desde su primer mes CALENDARIO COMPLETO: el mes de
@@ -359,7 +387,7 @@ def tramos(conn, uid: int, hasta_mes: str = None) -> list:
             continue
         b0, b1 = cierre[meses[i - 1]], cierre[mes]
         v0, v1 = float(b0["total_value"]), float(b1["total_value"])
-        flow = _flujo(conn, uid, b0["date"], b1["date"])
+        flow = _flujo(conn, uid, b0["date"], b1["date"], aplicar)
         r = dietz(v0, v1, flow)
         if r is None:
             # NO desaparecer en silencio. Antes acá había un `continue` pelado:
@@ -410,8 +438,7 @@ SENSIBILIDAD_MAX = 0.02
 # midió cuántos meses reales tumbarían se prenden. Prender una guarda a ciegas
 # sobre 40.000 snapshots es cómo se rompe una pantalla que hoy anda.
 def _guardas_activas() -> bool:
-    import os
-    return (os.environ.get("TWR_GUARDAS", "0") or "0").strip() not in ("", "0", "false", "no")
+    return _flag("TWR_GUARDAS")
 
 
 def verificar_tramo(conn, uid: int, t: dict, prev_mes: dict = None) -> dict:
@@ -445,9 +472,15 @@ def verificar_tramo(conn, uid: int, t: dict, prev_mes: dict = None) -> dict:
             det["G2"] = {"ret": ret, "rederivado": re_ret}
 
     # G3 — DOMINIO. Piso de −100% y denominador positivo.
-    if ret < -1.0 or (v0 + 0.5 * flow) <= 0:
-        f.append("G3_dominio")
-        det["G3"] = {"ret": ret, "denom": v0 + 0.5 * flow}
+    # La excepción de `no_medible` NO es un caso especial: el denominador <= 0
+    # es LA DEFINICIÓN de ese estado. Sin ella, G3 rechazaba el 100% de los
+    # meses no medibles (verificado sobre 68 combinaciones) y, peor, arrastraba
+    # por G5 a todos los meses SANOS que venían después. La exención ya estaba
+    # pensada en G2 y no se había propagado acá.
+    if t.get("quality") != "no_medible":
+        if ret < -1.0 or (v0 + 0.5 * flow) <= 0:
+            f.append("G3_dominio")
+            det["G3"] = {"ret": ret, "denom": v0 + 0.5 * flow}
 
     # G4 — MES CERRADO. `tramos()` ya filtra, pero sellar confiaba ciegamente en
     # ese filtro: si alguien llama sellar() con otro hasta_mes, sella el mes en
@@ -523,11 +556,18 @@ def sellar(conn, uid: int, hasta_mes: str = None) -> dict:
         v = verificar_tramo(conn, uid, t, prev_mes)
         for cod in v["fallas"]:
             motivos[cod] = motivos.get(cod, 0) + 1
+        # El ancla de contigüidad avanza SIEMPRE, se haya sellado el mes o no.
+        # Antes se actualizaba después del `continue`, así que un mes rechazado
+        # dejaba a `prev_mes` en el mes anterior y G5 tumbaba al siguiente por
+        # "no contiguo" — y al siguiente, y al siguiente. Un solo agujero
+        # congelaba el sellado de esa cuenta PARA SIEMPRE (medido: 4 meses
+        # sellados pasaban a 1, y un mes nuevo e impecable ya nunca entraba,
+        # porque la cascada se re-corre entera en cada llamada).
+        prev_mes = t
         if not v["ok"] and activas:
             rechazados += 1
             log.warning("[twr] uid=%s mes=%s RECHAZADO por %s", uid, t["month"], v["fallas"])
             continue
-        prev_mes = t
 
         prev = conn.execute(
             "SELECT * FROM twr_periods WHERE user_id=? AND month=? "

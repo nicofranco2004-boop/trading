@@ -2531,6 +2531,17 @@ def init_db():
                 ("guardas_json", "TEXT"),
             ):
                 conn.execute(f"ALTER TABLE twr_periods ADD COLUMN {_col} {_tipo}")
+            # Backfill de las filas YA selladas. `metodo` y `flow_source` entran
+            # a _CAMPOS_SELLO, o sea que participan de la comprobación de
+            # idempotencia: sin esto, las filas viejas quedaban con flow_source
+            # NULL, el primer sellado post-deploy las veía "distintas" y subía
+            # TODAS a revision+1 marcándolas como `meses_revisados` — que es,
+            # literalmente, avisarle a cada asesor "te cambió la historia" sin
+            # que nada hubiera cambiado. (`metodo` ya trae DEFAULT 'medido', que
+            # ADD COLUMN sí aplica a las filas viejas; `flow_source` no puede
+            # tener default porque para una fila futura del agente sería mentira.)
+            conn.execute("UPDATE twr_periods SET flow_source='ledger' "
+                         "WHERE flow_source IS NULL")
         # Índice DESPUÉS del ALTER y FUERA del if — misma lección que `excluded_at`:
         # dentro del bloque de esquema corría antes de que la columna existiera y
         # tumbaba el arranque contra cualquier base ya creada (boot loop → 502).
@@ -3525,6 +3536,11 @@ _RESET_PORTFOLIO_TABLES = (
     "brokers", "positions", "archived_positions", "operations",
     "monthly_entries", "snapshots", "plazos_fijos", "goals", "twr_periods",
     "deleted_ops_journal", "bond_cashflow_skips",
+    # Las resoluciones del reconstructor son OPINIONES SOBRE FILAS que el reset
+    # borra: si sobreviven, siguen restándole dólares al flujo de tramos que ya
+    # no existen — y la fila a la que apuntan (scope_id) puede reasignarse a
+    # otra cosa en el próximo import.
+    "flujo_resoluciones",
     "ai_analyses_cache", "ai_user_facts",
 )
 # Keys de config que son de CARTERA (se borran); el resto —onboarding,
@@ -15696,21 +15712,20 @@ def admin_diag_flujo_contaminacion(target_uid: int, uid: int = Depends(get_admin
     de prender `RECONSTRUCTOR_APLICAR`, en vez de descubrirlo en la pantalla
     del asesor.
     """
-    import os
     import twr as _twr
     import flujos as _flujos
     conn = get_db()
-    prev = os.environ.get("RECONSTRUCTOR_APLICAR")
     try:
         res = [dict(r) for r in _flujos.vigentes(conn, target_uid)]
         aplicadas = [r for r in res if r.get("aplicado")]
 
-        os.environ.pop("RECONSTRUCTOR_APLICAR", None)      # sin corrección
-        sin = _twr.twr_de(conn, target_uid)
-        os.environ["RECONSTRUCTOR_APLICAR"] = "1"          # con corrección
-        # OJO: twr_de lee lo SELLADO, que ya está calculado con el flujo viejo.
-        # Para el contrafáctico hay que recomputar los tramos en memoria.
-        tramos_con = _twr.tramos(conn, target_uid)
+        # `aplicar` va por PARÁMETRO, no por env var. La primera versión prendía
+        # RECONSTRUCTOR_APLICAR, calculaba y la volvía a apagar — y os.environ es
+        # estado GLOBAL del proceso: este endpoint es `def`, o sea que corre en
+        # el threadpool, así que cualquier request concurrente durante esa
+        # ventana se llevaba el número corregido sin que nadie lo habilitara.
+        sin = _twr.twr_de(conn, target_uid)          # lo SELLADO, sin corrección
+        tramos_con = _twr.tramos(conn, target_uid, aplicar=True)
         idx = 1.0
         for t in tramos_con:
             if t["quality"] != "no_medible":
@@ -15736,9 +15751,6 @@ def admin_diag_flujo_contaminacion(target_uid: int, uid: int = Depends(get_admin
         log.exception("admin_diag_flujo_contaminacion FAILED")
         raise HTTPException(status_code=500, detail=f"flujo-contaminacion falló: {type(e).__name__}: {e}")
     finally:
-        os.environ.pop("RECONSTRUCTOR_APLICAR", None)
-        if prev is not None:
-            os.environ["RECONSTRUCTOR_APLICAR"] = prev
         conn.close()
 
 
