@@ -2433,15 +2433,21 @@ class ReconstruccionVsMedicionTest(AdvisorBase):
 class FlujosDeterministaTest(AdvisorBase):
     """La pasada que resuelve sin modelo. Lo que queda es lo que justifica uno."""
 
-    def _batch(self, uid, broker="Cocos"):
+    # ⚠️ Los status de estos fixtures son los que PRODUCCIÓN escribe de verdad:
+    # `import_batches.status` ∈ {'preview','confirmed'} y `import_raw_rows.status`
+    # ∈ {'valid','invalid'} (pipeline.py). Antes decían 'done' / 'ok' / 'error',
+    # tres strings que el código no escribe en ningún lado — así que estos tests
+    # pasaban en verde sobre filas que no pueden existir, y por eso nadie vio
+    # que en producción la cola de candidatos estaba vacía.
+    def _batch(self, uid, broker="Cocos", status="confirmed"):
         import uuid as _u
         bid = _u.uuid4().hex[:12]
         conn = main.get_db()
         try:
             conn.execute(
                 "INSERT INTO import_batches (id,user_id,broker,parser_format,"
-                "file_hash,status) VALUES (?,?,?,'test',?,'done')",
-                (bid, uid, broker, bid))
+                "file_hash,status) VALUES (?,?,?,'test',?,?)",
+                (bid, uid, broker, bid, status))
             conn.commit()
         finally:
             conn.close()
@@ -2453,7 +2459,7 @@ class FlujosDeterministaTest(AdvisorBase):
         try:
             rid = conn.execute(
                 "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status,"
-                "errors_json) VALUES (?,0,?,'error',?)",
+                "errors_json) VALUES (?,0,?,'invalid',?)",
                 (bid, _j.dumps({"tipo": texto}), errores)).lastrowid
             conn.commit()
             return rid
@@ -2465,7 +2471,7 @@ class FlujosDeterministaTest(AdvisorBase):
         try:
             rid = conn.execute(
                 "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status) "
-                "VALUES (?,0,'{}','ok')", (bid,)).lastrowid
+                "VALUES (?,0,'{}','valid')", (bid,)).lastrowid
             conn.execute(
                 "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,"
                 "operation_type,asset_symbol,quantity) VALUES (?,?,?,?,?,?,?)",
@@ -2487,6 +2493,59 @@ class FlujosDeterministaTest(AdvisorBase):
         self.assertEqual(flujos.direccion_por_texto("ACAT OUT — journaled shares"),
                          "salida")
         self.assertIsNone(flujos.direccion_por_texto("Movimiento varios"))
+
+    def test_las_tildes_no_pueden_hacer_fallar_el_match(self):
+        # PPI escribe "Retiro de Títulos" y el vocabulario está sin tildes: sin
+        # deacentuar, la clave nunca matchea y el caso más común de todos cae
+        # como "no se pudo resolver".
+        import flujos
+        self.assertEqual(flujos.direccion_por_texto("Retiro de Títulos"), "salida")
+        self.assertEqual(flujos.direccion_por_texto("Ingreso de Títulos"), "entrada")
+
+    def test_un_aporte_real_no_se_confunde_con_un_traslado(self):
+        # "Wire Received" de Schwab es plata NUEVA del cliente. Con un
+        # "RECEIVED" suelto en el vocabulario matcheaba ENTRADA por subcadena
+        # y un aporte se convertía en candidato a traslado interno — que es
+        # exactamente el error que este módulo existe para no cometer.
+        import flujos
+        self.assertIsNone(flujos.direccion_por_texto("Tfr CITIBANK NA — WIRE RECEIVED"))
+        self.assertIsNone(flujos.direccion_por_texto("Funds Delivered to bank"))
+        # La forma anclada sí tiene que seguir andando.
+        self.assertEqual(flujos.direccion_por_texto("SHARES RECEIVED — AAPL"), "entrada")
+
+    def test_un_batch_de_preview_no_es_un_caso_pendiente(self):
+        # Los previews se limpian por TTL a la hora: no son la ambigüedad de
+        # nadie. Antes entraban porque el filtro de status era inefectivo.
+        import flujos
+        bid = self._batch(self.client_uid, status="preview")
+        self._cruda(bid, "Transferencia Recibida")
+        conn = self._conn()
+        try:
+            self.assertEqual(flujos.candidatos(conn, self.client_uid), [])
+        finally:
+            conn.close()
+
+    def test_una_fila_valida_no_es_un_candidato(self):
+        # `r.status != 'ok'` era SIEMPRE verdadero (el pipeline escribe
+        # 'valid'/'invalid'), así que la query se traía TODAS las filas crudas
+        # del usuario y filtraba recién en Python.
+        import flujos, json as _j
+        bid = self._batch(self.client_uid)
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status,"
+                "errors_json) VALUES (?,0,?,'valid',?)",
+                (bid, _j.dumps({"tipo": "Transferencia Recibida"}),
+                 "TRANSFER_NOT_SUPPORTED"))
+            conn.commit()
+        finally:
+            conn.close()
+        conn = self._conn()
+        try:
+            self.assertEqual(flujos.candidatos(conn, self.client_uid), [])
+        finally:
+            conn.close()
 
     def test_resuelve_por_texto_crudo_sin_tocar_el_modelo(self):
         import flujos

@@ -1539,7 +1539,7 @@ otros tres no estaban en la cuenta:
 | lector | qué dejaba de andar |
 |---|---|
 | `reconstruct_csv_from_batch` | "Editar y rehacer" (el único que estaba contado) |
-| `flujos.py:candidatos()` | decide si un traspaso de títulos es entrante o saliente. Lee filas con `status != 'ok'` **dentro de batches confirmados** — justo la población que el vaciado tocaba. Con la columna vacía, todo flujo ambiguo quedaba **indecidible para siempre, sin error** |
+| `flujos.py:candidatos()` | decide si un traspaso de títulos es entrante o saliente. Lee filas rechazadas **dentro de batches confirmados** — justo la población que el vaciado tocaba. Con la columna vacía, todo flujo ambiguo quedaba **indecidible para siempre, sin error**. ⚠️ Corrección (Fase 1 del reconstructor): cuando se escribió esta fila el filtro era `status != 'ok'`, que era **siempre verdadero** (el pipeline escribe `'valid'`/`'invalid'`, nunca `'ok'`) y **no acotaba por batch**. Hoy sí: `r.status='invalid' AND b.status='confirmed'`. La conclusión de la fila no cambia — la población que el vaciado tocaba es exactamente ésa |
 | `main.py:16039` `fila_original` | el diagnóstico de montos inflados: es lo que distingue "lo rompió el parser" de "vino mal del broker" |
 | `main.py:28427` | la pantalla donde el usuario ve sus filas crudas |
 
@@ -2293,9 +2293,20 @@ python3 -m pytest tests -q
   antes, deja de importar; si no, `BACKUP_LOCAL_KEEP_DAYS=3` libera 2,5 GB.
 - **El 92% de las filas (3,1 de 3,4 millones) son andamio de import**
   (`import_raw_rows` guarda el CSV entero, para siempre, sin retención). El negocio
-  real son ~250 mil filas. **No migres la basura**: vaciar `raw_json` de los imports
-  viejos antes de copiar. Ojo: **vaciar el campo con `UPDATE`, nunca `DELETE` la
-  fila** — borrarla cascadea y se lleva su fila del ledger normalizado.
+  real son ~250 mil filas.
+  🔴 **DESACTUALIZADO — este párrafo decía "no migres la basura: vaciá `raw_json`",
+  y esa decisión SE DIO VUELTA en la sesión 9: se migra todo** (ver el paso 5 del
+  día del pasaje, línea ~1099, y el detalle en "El paso 4 NO es inocuo"). Vaciar
+  apagaba CUATRO lectores, entre ellos `flujos.py:candidatos()` — con la columna
+  vacía, **todo flujo ambiguo quedaba indecidible para siempre, sin dar un error**
+  (línea ~1542). Se deja el párrafo con la corrección encima en vez de borrarlo,
+  porque la idea es tentadora y va a volver a proponerse sola: el costo real de
+  migrarlas ya está medido (28 de 34 segundos de CPU, línea ~1992) y es barato.
+  Si algún día se retoma, la única forma segura es **`UPDATE` acotado a
+  `status='confirmed'`, nunca `DELETE` la fila** (cascadea y se lleva su fila del
+  ledger normalizado) y **nunca a un batch en `preview`** (lo convierte en una
+  confirmación vacía y silenciosa) — y exceptuando las filas `status='invalid'`,
+  que son la cola de casos del agente reconstructor.
 - Los tres dueños del lock ya arreglados en `main`: el reset (por tandas), el
   `import_confirm` (transacción de 177→56 líneas) y los precios (1 escritura por
   minuto en vez de 1 por visita). Cada uno con test estructural que impide que

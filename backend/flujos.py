@@ -22,26 +22,50 @@ DIAS_CRUCE = 4
 # Tolerancia de cantidad al cruzar patas: los brokers redondean distinto.
 TOL_CANTIDAD = 0.001
 
+# Tope de filas que se traen de una vez. No es todavía el "300 ambigüedades =
+# ledger roto, cortar y avisar" del diseño (eso es la Fase 3, con el conteo
+# reportado): acá es sólo la guarda para no escanear la tabla más grande de la
+# base — `import_raw_rows` son 3,1 de 3,4M de filas.
+MAX_CANDIDATOS = 301
+
 # Vocabulario de dirección en las filas CRUDAS. El normalizador mapea a tipos
 # canónicos y en el camino descarta la descripción — pero la fila original
 # queda guardada, y ahí el broker muchas veces dijo exactamente qué era.
+#
+# El texto llega DEACENTUADO por `_texto_crudo`, así que acá va todo sin tildes.
+# Y las claves tienen que estar ANCLADAS al sustantivo: un "RECEIVED" suelto
+# matchea el "Wire Received" de Schwab, que es un aporte REAL de plata — o sea
+# que la clave más laxa convertía un aporte en un candidato a traslado.
 ENTRADA = ("TRANSFERENCIA RECIBIDA", "TRANSFER IN", "TRANSFER_IN", "ACAT IN",
-           "INGRESO DE TITULOS", "INGRESO DE TÍTULOS", "TRASPASO RECIBIDO",
-           "JOURNALED SHARES IN", "RECEIVED", "DEPOSITO DE TITULOS")
+           "INGRESO DE TITULOS", "TRASPASO RECIBIDO",
+           "JOURNALED SHARES IN", "SHARES RECEIVED", "DEPOSITO DE TITULOS")
 SALIDA = ("TRANSFERENCIA ENVIADA", "TRANSFER OUT", "TRANSFER_OUT", "ACAT OUT",
-          "EGRESO DE TITULOS", "EGRESO DE TÍTULOS", "TRASPASO ENVIADO",
-          "JOURNALED SHARES OUT", "DELIVERED", "RETIRO DE TITULOS")
+          "EGRESO DE TITULOS", "TRASPASO ENVIADO",
+          "JOURNALED SHARES OUT", "SHARES DELIVERED", "RETIRO DE TITULOS")
+
+
+def _deaccent(s: str) -> str:
+    """Sin tildes ni ñ. Los brokers escriben 'Retiro de Títulos' y el
+    vocabulario está sin tildes: sin esto, la clave nunca matchea.
+    Misma tabla que `importing.parsers.iol._deaccent` — se replica acá para no
+    hacer que el núcleo compartido dependa de un parser puntual."""
+    for a, b in (("ó", "o"), ("í", "i"), ("á", "a"), ("é", "e"), ("ú", "u"),
+                 ("ñ", "n"), ("Ó", "O"), ("Í", "I"), ("Á", "A"), ("É", "E"),
+                 ("Ú", "U"), ("Ñ", "N")):
+        s = s.replace(a, b)
+    return s
 
 
 def _texto_crudo(raw_json: str) -> str:
-    """El contenido de la fila original, aplanado para buscar palabras."""
+    """El contenido de la fila original, aplanado y normalizado para buscar
+    palabras: mayúsculas y sin tildes."""
     try:
         d = json.loads(raw_json or "{}")
     except (ValueError, TypeError):
-        return str(raw_json or "").upper()
+        return _deaccent(str(raw_json or "")).upper()
     if isinstance(d, dict):
-        return " ".join(str(v) for v in d.values()).upper()
-    return str(d).upper()
+        return _deaccent(" ".join(str(v) for v in d.values())).upper()
+    return _deaccent(str(d)).upper()
 
 
 def candidatos(conn, uid: int) -> list:
@@ -51,19 +75,32 @@ def candidatos(conn, uid: int) -> list:
     fila cruda queda guardada. Ahí es donde hay que mirar antes de deducir nada
     — el broker suele haber escrito qué era.
     """
+    # El filtro va en SQL, no en Python. `r.status != 'ok'` era SIEMPRE
+    # verdadero —el pipeline escribe 'valid'/'invalid', nunca 'ok'— así que
+    # esto se traía las filas crudas ENTERAS del usuario, sin tope, para
+    # descartarlas después en memoria.
+    # Y `b.status='confirmed'` importa por dos motivos: saca los batches de
+    # 'preview' (que se limpian por TTL a la hora, así que no son un caso
+    # pendiente de nadie) y saca los REVERTIDOS — el usuario ya deshizo ese
+    # import y sus filas no son una ambigüedad a resolver.
     filas = conn.execute(
         """SELECT r.id, r.batch_id, r.raw_json, r.errors_json, b.broker
            FROM import_raw_rows r JOIN import_batches b ON b.id = r.batch_id
-           WHERE b.user_id = ? AND r.status != 'ok'
-           ORDER BY r.id""", (uid,)).fetchall()
+           WHERE b.user_id = ?
+             AND r.status = 'invalid'
+             AND b.status = 'confirmed'
+             AND UPPER(COALESCE(r.errors_json,'')) LIKE '%TRANSFER%'
+           ORDER BY r.id
+           LIMIT ?""", (uid, MAX_CANDIDATOS)).fetchall()
+
+    if len(filas) >= MAX_CANDIDATOS:
+        # Nunca truncar en silencio: si esto suena, el conteo que reporte
+        # `reconciliar()` es un piso, no el total.
+        log.warning("[flujos] uid=%s alcanzó el tope de %s candidatos — "
+                    "la lista está TRUNCADA", uid, MAX_CANDIDATOS)
 
     out = []
     for r in filas:
-        errs = (r["errors_json"] or "")
-        # Sólo los que hablan de traspaso de títulos: un error de formato de
-        # fecha no es un flujo ambiguo.
-        if "TRANSFER" not in errs.upper():
-            continue
         out.append({
             "raw_id": r["id"], "broker": r["broker"],
             "texto": _texto_crudo(r["raw_json"]),
@@ -73,8 +110,11 @@ def candidatos(conn, uid: int) -> list:
 
 
 def direccion_por_texto(texto: str):
-    """'entrada' | 'salida' | None, leyendo lo que escribió el broker."""
-    t = (texto or "").upper()
+    """'entrada' | 'salida' | None, leyendo lo que escribió el broker.
+
+    Deacentúa por su cuenta: se la llama tanto con el texto ya normalizado por
+    `_texto_crudo` como con una nota suelta de un parser."""
+    t = _deaccent(texto or "").upper()
     if any(k in t for k in ENTRADA):
         return "entrada"
     if any(k in t for k in SALIDA):
