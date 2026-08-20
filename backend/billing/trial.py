@@ -339,7 +339,7 @@ def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int) -> dict:
                       -- gastó su análisis de Free, el primer día de Pro no puede
                       -- salirle 1/60 (el día 1 es el que decide si la prueba se
                       -- usa o se quema).
-                      quota_window_from=date('now'),
+                      quota_window_from=date('now','localtime'),
                       trial_started_at=?, trial_used_at=?, trial_ends_at=?,
                       credit_anchor_plan=NULL, credit_anchor_period=NULL,
                       credit_anchor_amount_usd=NULL, credit_anchor_at=NULL
@@ -530,7 +530,12 @@ def step_down_due_trials(conn) -> int:
             # iba después.
             conn.execute(
                 "UPDATE users SET tier='plus', quota_window_from=? WHERE id=? AND tier='pro'",
-                (datetime.utcnow().date().isoformat(), r["id"]))
+                # Fecha LOCAL, el mismo reloj con el que ai_usage_daily guarda
+                # el consumo (date.today()). Con utcnow() el piso quedaba un día
+                # adelante en cualquier servidor que no corra en UTC, la ventana
+                # daba vacía y el usuario tenía cuota infinita hasta que el reloj
+                # lo alcanzaba.
+                (datetime.now().date().isoformat(), r["id"]))
             try:
                 conn.execute(
                     """INSERT INTO credit_ledger

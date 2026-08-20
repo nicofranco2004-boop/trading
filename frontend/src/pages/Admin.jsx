@@ -320,6 +320,7 @@ export default function Admin() {
       <ReengagementPanel toast={toast} />
 
       {/* ── Campaña regalo Pro: avisar que les regalamos un mes + cargá historial ── */}
+      <TrialInvitePanel toast={toast} />
       <GiftPlanPanel toast={toast} />
 
       {/* ── Backup manual (S3) — hacelo ANTES de cualquier recompute/repair ── */}
@@ -851,6 +852,145 @@ function BackupPanel({ toast }) {
     </div>
   )
 }
+
+// ─── TrialInvitePanel — "ya podés probar Rendi Pro gratis", de a tandas ──────
+// El aviso se manda por tandas al azar (50 por defecto) y cada persona avisada
+// sale del bolillero: la tanda siguiente sortea sólo entre los que faltan. Así
+// la difusión se abre de a poco —y con ella el gasto de IA— sin depender de un
+// tope automático.
+//
+// Los candidatos salen de trial.eligibility(), el MISMO chequeo que decide si
+// el botón aparece: nadie recibe una invitación que después no puede aceptar.
+const TRIAL_VARIANTES = [
+  { id: 'lugar',   label: 'Te guardamos un lugar', hint: 'arranca por la invitación — es literal, se manda de a 50' },
+  { id: 'cartera', label: '¿Qué te diría de tu cartera?', hint: 'arranca por lo que va a ver de SU cartera' },
+  { id: 'directo', label: 'Te habilitamos 15 días', hint: 'qué es y listo, sin vuelta' },
+]
+
+function TrialInvitePanel({ toast }) {
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState(null)
+  const [limit, setLimit] = useState(50)
+  const [variant, setVariant] = useState('lugar')
+
+  async function loadPreview() {
+    setLoading(true); setResult(null)
+    try {
+      setPreview(await api.post('/admin/email/trial-invite', { confirm: false, limit, variant }))
+    } catch (e) {
+      toast.push('Error al previsualizar: ' + e.message, { type: 'error' })
+    } finally { setLoading(false) }
+  }
+
+  async function send() {
+    const n = preview?.en_esta_tanda || 0
+    if (!n) return
+    if (!confirm(`¿Mandar el aviso de la prueba gratis a ${n} persona${n > 1 ? 's' : ''}? `
+                 + 'Quedan marcadas y no vuelven a salir sorteadas.')) return
+    setSending(true)
+    try {
+      const r = await api.post('/admin/email/trial-invite', { confirm: true, limit, variant })
+      setResult(r)
+      toast.push(`Enviados ${r.sent_count}${r.failed_count ? ` · fallaron ${r.failed_count}` : ''} · quedan ${r.quedan_despues}`,
+                 { type: r.failed_count ? 'warn' : 'success' })
+      await loadPreview()
+    } catch (e) {
+      toast.push('Error al enviar: ' + e.message, { type: 'error' })
+    } finally { setSending(false) }
+  }
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Mail size={16} className="text-data-violet" />
+          <h2 className="font-semibold text-ink-0">Prueba gratis · avisar por tandas</h2>
+        </div>
+        <button
+          onClick={loadPreview}
+          disabled={loading}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Recalcular' : 'Ver la tanda'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Sortea <b>{limit}</b> personas entre las que todavía no recibieron el aviso, les manda el mail y las marca.
+        La próxima tanda sortea sólo entre las que faltan, así que <b>nadie lo recibe dos veces</b>. Sólo entran
+        quienes hoy <b>pueden activar la prueba</b> (mismo chequeo que el botón), así que nadie recibe una invitación
+        que después no puede aceptar. Un envío que falla no deja la marca: vuelve al bolillero.
+      </p>
+
+      <div className="flex items-end gap-3 flex-wrap">
+        <label className="text-[11px] text-ink-3">
+          Tamaño de la tanda
+          <input
+            type="number" min={1} max={200} value={limit}
+            onChange={e => { setLimit(Math.max(1, Math.min(200, Number(e.target.value) || 1))); setPreview(null) }}
+            className="mt-1 block w-24 bg-bg-2 dark:bg-bg-1 border border-line/60 rounded-md px-2 py-1 text-sm text-ink-0"
+          />
+        </label>
+        <label className="text-[11px] text-ink-3 flex-1 min-w-[240px]">
+          Texto del mail
+          <select
+            value={variant}
+            onChange={e => { setVariant(e.target.value); setPreview(null) }}
+            className="mt-1 block w-full bg-bg-2 dark:bg-bg-1 border border-line/60 rounded-md px-2 py-1 text-sm text-ink-0"
+          >
+            {TRIAL_VARIANTES.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
+          </select>
+          <span className="block mt-1 text-[10px] text-ink-3">
+            {TRIAL_VARIANTES.find(v => v.id === variant)?.hint}
+          </span>
+        </label>
+      </div>
+
+      {preview && (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <ConvCell label="En esta tanda" value={preview.en_esta_tanda} hint="se les manda ahora" />
+            <ConvCell label="Elegibles" value={preview.elegibles} hint="pueden activar hoy" />
+            <ConvCell label="Quedan después" value={preview.quedan_despues} hint="para próximas tandas" />
+            <ConvCell label="Ya avisados" value={preview.ya_avisados} hint="no vuelven a salir" />
+          </div>
+
+          {preview.recipients?.length > 0 && (
+            <div className="max-h-48 overflow-auto border border-line/50 rounded-md divide-y divide-line/40">
+              {preview.recipients.map(r => (
+                <div key={r.id} className="px-3 py-1.5 text-[11px] text-ink-2 flex justify-between gap-3">
+                  <span className="truncate">{r.email}</span>
+                  <span className="text-ink-3 flex-shrink-0">{r.name || '—'}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button
+            onClick={send}
+            disabled={sending || !preview.en_esta_tanda}
+            className="w-full text-sm font-medium bg-data-violet hover:bg-data-violet/90 text-white rounded-md py-2 disabled:opacity-50 transition-colors"
+          >
+            {sending ? 'Enviando…'
+              : preview.en_esta_tanda ? `Mandar el aviso a ${preview.en_esta_tanda}`
+              : 'No queda nadie por avisar'}
+          </button>
+        </>
+      )}
+
+      {result && (
+        <p className="text-xs text-ink-2">
+          Enviados <b className="text-rendi-pos">{result.sent_count}</b>
+          {result.failed_count ? <> · fallaron <b className="text-rendi-neg">{result.failed_count}</b></> : null}
+          {' '}· quedan <b>{result.quedan_despues}</b> por avisar.
+        </p>
+      )}
+    </div>
+  )
+}
+
 
 // ─── GiftPlanPanel — mail "te regalamos un mes de Pro, cargá tu historial" ────
 // Para usuarios con ≤1 operación a los que YA se les regaló un mes de Pro (vía

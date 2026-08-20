@@ -374,7 +374,7 @@ def convert_plan(
         conn.execute(
             """UPDATE users
                SET tier = ?,
-                   quota_window_from = date('now'),
+                   quota_window_from = date('now','localtime'),
                    credit_active_until = ?,
                    credit_anchor_plan = ?,
                    credit_anchor_period = ?,

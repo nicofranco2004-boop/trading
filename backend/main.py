@@ -742,6 +742,13 @@ def init_db():
             # tu historial". NULL = nunca se le mandó. Lo usa /api/admin/email/gift-plus
             # como idempotencia (no re-mailea salvo resend=True; fallidos se reintentan).
             conn.execute("ALTER TABLE users ADD COLUMN gift_plan_email_sent_at TEXT")
+        if user_cols and 'trial_invite_email_sent_at' not in user_cols:
+            # Timestamp ISO del mail "ya podés probar Rendi Pro gratis". NULL =
+            # nunca se le avisó, o sea que entra en el sorteo de la próxima tanda.
+            # La campaña se manda de a 50 al azar; esta columna es lo único que
+            # hace que la segunda tanda no repita gente de la primera. Sin índice
+            # encima (la tabla es chica y el filtro va con el resto del WHERE).
+            conn.execute("ALTER TABLE users ADD COLUMN trial_invite_email_sent_at TEXT")
         if user_cols and 'managed_by' not in user_cols:
             # Plan Asesor: si NO es NULL, la cuenta es un "cliente shadow" creado y
             # administrado por el asesor (users.id del asesor). Los shadows se
@@ -17627,6 +17634,12 @@ class GiftPlanEmailIn(ReengagementEmailIn):
     plan_label: str = "Pro"      # etiqueta del plan regalado que aparece en el mail
 
 
+class TrialInviteEmailIn(BaseModel):
+    confirm: bool = False                 # False = DRY RUN (muestra a quién, no manda)
+    limit: int = Field(50, ge=1, le=200)  # tamaño de la tanda
+    variant: str = "lugar"                # 'directo' | 'cartera' | 'lugar'
+
+
 class BroadcastEmailIn(BaseModel):
     subject: str = Field(..., min_length=1, max_length=200)
     body: str = Field(..., min_length=1, max_length=20000)   # texto plano; {nombre} se reemplaza
@@ -17918,6 +17931,123 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
             "sent": sent,
             "failed": failed,
             "skipped": skipped,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/email/trial-invite")
+def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_admin_user)):
+    """Campaña por TANDAS: avisar que la prueba gratis ya está disponible.
+
+    Cada corrida sortea `limit` usuarios (50 por defecto) entre los que TODAVÍA
+    no recibieron el aviso, les manda el mail y los marca. La tanda siguiente ya
+    no los tiene en el bolillero, así que nadie recibe el mismo aviso dos veces
+    y la lista se va vaciando sola.
+
+    ⭐ El filtro que importa es `trial.eligibility()`, el MISMO que decide si el
+    botón aparece. Cualquier otro criterio (tier='free', sin suscripción…) se
+    desincroniza de las reglas del trial y termina invitando a alguien que entra,
+    no encuentra ningún botón y se queda pensando que la app está rota. Invitar a
+    quien no puede aceptar es peor que no invitar.
+
+    `confirm=False` (default) es DRY RUN: devuelve a quiénes les tocaría y
+    cuántos quedan, sin mandar nada.
+
+    Marcamos ANTES de mandar y desmarcamos si el envío falla: si el proceso se
+    cae a la mitad, el peor caso es que alguien quede sin invitar (se lo agarra
+    la próxima tanda), nunca que le llegue dos veces.
+    """
+    from billing import emails
+    from billing import trial as _trial
+    from datetime import datetime as _dt
+    import random as _random
+
+    variant = data.variant if data.variant in emails.TRIAL_INVITE_VARIANTS else "lugar"
+    conn = get_db()
+    try:
+        # Pre-filtro barato en SQL; la palabra final la tiene eligibility().
+        rows = conn.execute(
+            """SELECT id, email, name FROM users
+                WHERE COALESCE(is_admin,0) = 0
+                  AND managed_by IS NULL
+                  AND COALESCE(email_verified,0) = 1
+                  AND TRIM(COALESCE(email,'')) <> ''
+                  AND trial_invite_email_sent_at IS NULL""").fetchall()
+
+        elegibles = []
+        for r in rows:
+            try:
+                if _trial.eligibility(conn, r["id"]).get("can_start"):
+                    elegibles.append(dict(r))
+            except Exception as ex:
+                log.warning("trial-invite: eligibility falló uid=%s: %s", r["id"], ex)
+
+        _random.shuffle(elegibles)
+        tanda = elegibles[: data.limit]
+        ya_avisados = conn.execute(
+            "SELECT COUNT(*) c FROM users WHERE trial_invite_email_sent_at IS NOT NULL"
+        ).fetchone()["c"]
+
+        if not data.confirm:
+            return {
+                "dry_run": True,
+                "variant": variant,
+                "elegibles": len(elegibles),
+                "en_esta_tanda": len(tanda),
+                "quedan_despues": max(0, len(elegibles) - len(tanda)),
+                "ya_avisados": ya_avisados,
+                "recipients": [{"id": t["id"], "email": t["email"], "name": t.get("name")}
+                               for t in tanda],
+            }
+
+        pro_days = getattr(_trial, "TRIAL_PRO_DAYS", 7)
+        plus_days = getattr(_trial, "TRIAL_PLUS_DAYS", 8)
+        enviados, fallados = [], []
+        for t in tanda:
+            marca = _dt.utcnow().isoformat()
+            try:
+                conn.execute("UPDATE users SET trial_invite_email_sent_at=? WHERE id=?",
+                             (marca, t["id"]))
+                conn.commit()
+            except Exception as ex:
+                log.error("trial-invite: no se pudo marcar uid=%s: %s", t["id"], ex)
+                fallados.append({"id": t["id"], "email": t["email"]})
+                continue
+            ok = False
+            try:
+                ok = emails.send_trial_invite(
+                    to=t["email"], user_name=(t.get("name") or ""), variant=variant,
+                    pro_days=pro_days, plus_days=plus_days,
+                    total_days=pro_days + plus_days)
+            except Exception as ex:
+                log.error("trial-invite: envío falló para %s: %s", t["email"], ex)
+                ok = False
+            if ok:
+                enviados.append({"id": t["id"], "email": t["email"]})
+            else:
+                # Se destraba para que entre de nuevo al bolillero: el aviso no
+                # llegó, así que la marca sería mentira.
+                try:
+                    conn.execute(
+                        "UPDATE users SET trial_invite_email_sent_at=NULL WHERE id=?",
+                        (t["id"],))
+                    conn.commit()
+                except Exception as ex:
+                    log.error("trial-invite: no se pudo desmarcar uid=%s: %s", t["id"], ex)
+                fallados.append({"id": t["id"], "email": t["email"]})
+
+        log.info("trial-invite: variante=%s enviados=%d fallados=%d", variant,
+                 len(enviados), len(fallados))
+        return {
+            "dry_run": False,
+            "variant": variant,
+            "sent_count": len(enviados),
+            "failed_count": len(fallados),
+            "quedan_despues": max(0, len(elegibles) - len(enviados)),
+            "ya_avisados": ya_avisados + len(enviados),
+            "sent": enviados,
+            "failed": fallados,
         }
     finally:
         conn.close()
@@ -18289,7 +18419,7 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
             detalle += " [prueba gratis: etapa por calendario, sin anchor]"
         with conn:
             conn.execute(
-                "UPDATE users SET tier = ?, quota_window_from = date('now') WHERE id = ?",
+                "UPDATE users SET tier = ?, quota_window_from = date('now','localtime') WHERE id = ?",
                 (target_plan, target_uid),
             )
             conn.execute(
@@ -18439,7 +18569,7 @@ def admin_billing_grant_comp(
             conn.execute(
                 """UPDATE users
                    SET tier = ?,
-                       quota_window_from = date('now'),
+                       quota_window_from = date('now','localtime'),
                        credit_active_until = ?,
                        credit_anchor_plan = ?,
                        credit_anchor_period = 'monthly',
@@ -25498,7 +25628,7 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
     before_tier = before_row["tier"] if before_row else None
 
     with conn:
-        conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now') "
+        conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now','localtime') "
                      "WHERE id = ?", (target_tier, uid))
 
         # Buscar la pending subscription que creó /api/billing/subscribe.
@@ -26118,7 +26248,7 @@ def _process_preapproval_event(conn, preapproval_id: str):
             before_row = conn.execute("SELECT tier FROM users WHERE id = ?", (user_id,)).fetchone()
             before_tier = before_row["tier"] if before_row else None
             with conn:
-                conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now') "
+                conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now','localtime') "
                              "WHERE id = ?", (target_tier, user_id))
                 conn.execute(
                     "UPDATE billing_events SET user_id = ? WHERE mp_data_id = ?",

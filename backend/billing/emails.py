@@ -754,6 +754,87 @@ def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "P
     return _send(to, subject, body_html, text, from_addr=_from_support())
 
 
+# ─── Campaña: avisar que la prueba gratis está disponible ───────────────────
+
+# Tres textos para la MISMA campaña. Se manda de a tandas de 50, así que se
+# puede mandar una variante por tanda y mirar cuál activa más en el embudo del
+# trial (/api/admin/billing/trial-funnel) — sin la tanda no habría con qué
+# comparar. Todos en formato PLANO, igual que send_reengagement: un mail con
+# pinta de escrito 1-a-1 cae en la pestaña Principal de Gmail; uno con banner y
+# botón de color se va a Promociones, que para esto es no existir.
+TRIAL_INVITE_VARIANTS = ("directo", "cartera", "lugar")
+
+
+def send_trial_invite(*, to: str, user_name: str = "", variant: str = "lugar",
+                      pro_days: int = 7, plus_days: int = 8, total_days: int = 15) -> bool:
+    """Avisa a un usuario Free que ya puede probar Rendi Pro/Plus gratis.
+
+    `variant`: 'directo' (qué es y listo) · 'cartera' (arranca por lo que va a
+    ver de SU cartera) · 'lugar' (le guardamos un lugar — es literal: se invita
+    de a 50). Los días vienen de quien llama, que los saca del módulo del trial:
+    hardcodearlos acá es cómo se termina prometiendo un plazo que ya no existe.
+    """
+    safe_name = html.escape((user_name or "").strip())
+    hi_html = f"Hola {safe_name}," if safe_name else "Hola,"
+    hi_text = f"Hola {(user_name or '').strip()}," if (user_name or "").strip() else "Hola,"
+    v = variant if variant in TRIAL_INVITE_VARIANTS else "lugar"
+    link = f'<a href="{APP_URL}/planes" style="color:#5b4ddb;">rendi.finance</a>'
+
+    if v == "directo":
+        subject = f"Te habilitamos {total_days} días de Rendi Pro"
+        parrafos = [
+            (f"{hi_html} ya podés probar Rendi Pro gratis por {total_days} días: "
+             f"los primeros {pro_days} con todo Pro y los {plus_days} siguientes con Plus.",
+             f"{hi_text} ya podés probar Rendi Pro gratis por {total_days} días: "
+             f"los primeros {pro_days} con todo Pro y los {plus_days} siguientes con Plus."),
+            ("No pedimos tarjeta y no se renueva sola. Cuando termina, tu cuenta vuelve "
+             "a Free y no se te cobra nada.",) * 2,
+            ("Se activa desde Configuración → Planes, con un botón. Tarda un segundo.",) * 2,
+        ]
+    elif v == "cartera":
+        subject = "¿Qué te diría Rendi si viera toda tu cartera?"
+        parrafos = [
+            (f"{hi_html} con Pro, Rendi deja de mostrarte números y te dice qué está pasando "
+             "con tu plata: tu rendimiento real en dólares, cómo venís contra la inflación y "
+             "contra el S&amp;P 500, y en qué se te está yendo la ganancia.",
+             f"{hi_text} con Pro, Rendi deja de mostrarte números y te dice qué está pasando "
+             "con tu plata: tu rendimiento real en dólares, cómo venís contra la inflación y "
+             "contra el S&P 500, y en qué se te está yendo la ganancia."),
+            (f"Te habilitamos {total_days} días para que lo veas sobre TU cartera, no sobre un "
+             f"ejemplo: {pro_days} días con todo Pro y {plus_days} con Plus.",) * 2,
+            ("Sin tarjeta y sin renovación automática. Cuando termina volvés a Free.",) * 2,
+        ]
+    else:  # 'lugar'
+        subject = "Te guardamos un lugar para probar Rendi Pro"
+        parrafos = [
+            (f"{hi_html} estamos abriendo la prueba gratis de a poco, y te guardamos un lugar.",
+             f"{hi_text} estamos abriendo la prueba gratis de a poco, y te guardamos un lugar."),
+            (f"Son {total_days} días: {pro_days} con todo Pro —chat libre con Rendi AI, el "
+             f"máximo de análisis y brokers ilimitados— y {plus_days} más con Plus.",) * 2,
+            ("No pedimos tarjeta y no se renueva sola. Cuando termina, tu cuenta vuelve a Free "
+             "y no se te cobra nada: si no te sirvió, no hiciste nada.",) * 2,
+        ]
+
+    cuerpo_html = "".join(f'<p style="margin:0 0 14px;">{p[0]}</p>' for p in parrafos)
+    cuerpo_text = "\n\n".join(p[1] if len(p) > 1 else p[0] for p in parrafos)
+    body_html = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
+        "Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;\">"
+        f'{cuerpo_html}'
+        f'<p style="margin:0 0 14px;">Entrá a {link} y activala cuando quieras.</p>'
+        '<p style="margin:0 0 14px;">Cualquier duda, respondé este mail.</p>'
+        '<p style="margin:18px 0 0;">— Rendi</p>'
+        "</div>"
+    )
+    text = (
+        f"{cuerpo_text}\n\n"
+        f"Entrá a {APP_URL}/planes y activala cuando quieras.\n\n"
+        "Cualquier duda, respondé este mail.\n\n"
+        "— Rendi"
+    )
+    return _send(to, subject, body_html, text, from_addr=_from_support())
+
+
 # ─── Email interno: alerta al equipo por cada signup real (primeros N) ───────
 
 def send_new_signup_admin(*, to: str, new_user_email: str,
