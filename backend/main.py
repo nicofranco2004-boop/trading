@@ -15587,6 +15587,36 @@ def admin_censo_flujos(target_uid: int = None, incluir_p3: bool = True,
         conn.close()
 
 
+@app.get("/api/admin/censo-capital")
+def admin_censo_capital(target_uid: int = None, uid: int = Depends(get_admin_user)):
+    """Censo READ-ONLY de quiénes tienen el NÚMERO roto hoy.
+
+    Hermano de /api/admin/censo-flujos y complementario a propósito: aquél mide
+    el andamio del import, éste mide el resultado que el usuario ve. La
+    diferencia no es académica — en la corrida del 2026-08-20, de los 45
+    usuarios con el capital más roto, 27 eran INVISIBLES para el censo de
+    imports (su corrupción vive en pnl_realized o en positions, no en una fila
+    normalizada grande).
+
+    C1 capital declarado ≫ cartera real (con atribución: ¿lo explica el seed
+    sintético o es otra cosa?) · C2 pnl_realized imposible · C3 costo o precio
+    imposible en positions · C4 snapshots negativos.
+
+    NO ESCRIBE NADA.
+    """
+    import censo_capital
+    conn = get_db()
+    try:
+        return censo_capital.contar(conn, uid=target_uid)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_censo_capital FAILED")
+        raise HTTPException(status_code=500, detail=f"censo-capital falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diagnose-sell-fx")
 def admin_diagnose_sell_fx(limit_ops: int = 500000, uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY del TC con el que se dolarizaron las ventas y los flujos.
