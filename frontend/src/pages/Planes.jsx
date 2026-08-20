@@ -27,6 +27,7 @@ import { trackEvent } from '../utils/analytics'
 import { isSafePaymentUrl } from '../utils/safeUrl'
 import { api } from '../utils/api'
 import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
+import { TrialCta, TrialFinePrint } from '../components/plan/TrialCta'
 
 // ─── Pricing en ARS hardcoded (2026-05-31) ──────────────────────────────────
 // Cobramos en pesos fijo (no convertido al blue). Razón:
@@ -539,6 +540,22 @@ export default function Planes() {
                   ctaLabel={proCtaInfo.label}
                   ctaDisabled={proCtaInfo.disabled}
                   ctaLoading={subscribing}
+                  // La prueba va en la card de Pro porque es con Pro que
+                  // ARRANCA (7 días de Pro y después 8 de Plus). No se repite
+                  // en la de Plus: es UNA sola prueba, y dos botones que hacen
+                  // lo mismo se leen como dos ofertas distintas. La letra chica
+                  // aclara que después sigue con Plus.
+                  // TrialCta no renderiza nada si el server no lo habilita, así
+                  // que no hace falta condicionarlo acá.
+                  belowCta={
+                    <>
+                      <TrialCta
+                        source="planes"
+                        className="w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium text-data-violet bg-transparent border border-data-violet/40 hover:bg-data-violet/10 rounded-sm py-2.5 transition-colors disabled:opacity-60"
+                      />
+                      <TrialFinePrint />
+                    </>
+                  }
                   onCtaClick={() => {
                     if (proCtaInfo.action === 'change') {
                       onChangePlanClick('pro', billingPeriod)
@@ -778,6 +795,7 @@ function PlanCard({
   isCurrent, ctaLabel, ctaDisabled, ctaLoading, onCtaClick,
   variant = 'free',  // 'free' | 'plus' | 'pro'
   badge,             // ej: "Recomendado", "Más completo"
+  belowCta,          // slot justo debajo del botón de compra (la prueba gratis)
 }) {
   const isPlus = variant === 'plus'
   const isPro  = variant === 'pro'
@@ -840,7 +858,7 @@ function PlanCard({
         type="button"
         onClick={onCtaClick}
         disabled={ctaDisabled}
-        className={`w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-sm py-2.5 mb-5 transition-colors ${ctaBg}`}
+        className={`w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-sm py-2.5 transition-colors ${belowCta ? 'mb-3' : 'mb-5'} ${ctaBg}`}
       >
         {ctaLoading
           ? <Loader2 size={13} strokeWidth={1.75} className="animate-spin" />
@@ -849,6 +867,12 @@ function PlanCard({
         <span>{ctaLabel}</span>
         {!ctaDisabled && !ctaLoading && <ArrowRight size={13} strokeWidth={1.75} />}
       </button>
+
+      {/* La prueba gratis va DEBAJO del botón de compra y con menos peso
+          visual: el que ya se decidió a pagar tiene que seguir viendo el botón
+          de pagar como la acción principal. Si los dos pesan igual, la prueba
+          se come la venta que ya estaba hecha. */}
+      {belowCta && <div className="mb-5">{belowCta}</div>}
 
       {/* ─── Features estructuradas en 3 secciones ──────────────────────── */}
       {/* Soporta dos shapes para back-compat:                                */}
