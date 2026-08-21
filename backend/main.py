@@ -15703,6 +15703,37 @@ def admin_censo_flujos(target_uid: int = None, incluir_p3: bool = True,
         conn.close()
 
 
+@app.get("/api/admin/diagnostico")
+def admin_diagnostico(target_uid: int = None, limite: int = 120,
+                      uid: int = Depends(get_admin_user)):
+    """Por qué el número de esta persona está roto — el diagnosticador.
+
+    Sin `target_uid` hace el BARRIDO: diagnostica a todos los que tienen el
+    capital declarado muy por encima de su cartera real y los agrupa por causa
+    raíz. Con `target_uid`, el detalle de uno.
+
+    Es el agente reconstructor reapuntado: la pregunta original (aporte vs
+    traslado) se midió y resultó vacía — cero traslados internos en toda la
+    base. Ésta es la que tiene caseload.
+
+    NO ESCRIBE NADA. La corrección vive en flujo_resoluciones, detrás de dos
+    interruptores.
+    """
+    import diagnostico
+    conn = get_db()
+    try:
+        if target_uid is not None:
+            return diagnostico.de_usuario(conn, int(target_uid))
+        return diagnostico.barrido(conn, limite=limite)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_diagnostico FAILED")
+        raise HTTPException(status_code=500, detail=f"diagnostico falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diag/flujo-contaminacion")
 def admin_diag_flujo_contaminacion(target_uid: int, uid: int = Depends(get_admin_user)):
     """Cuánto cambiaría el TWR de un cliente si sus resoluciones se aplicaran.
