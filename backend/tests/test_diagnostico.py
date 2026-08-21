@@ -70,6 +70,21 @@ class DiagnosticoTest(unittest.TestCase):
         finally:
             conn.commit(); conn.close()
 
+    def _link(self, bid, raw_id, op_id):
+        """Liga una operación a la fila importada que la generó.
+
+        Sin el link no hay forma de saber si el motor tomó el precio crudo o el
+        escalado — y esa es justo la diferencia entre una fila per-100 sana y
+        un número roto."""
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO import_op_links (batch_id,raw_row_id,operation_id) "
+                "VALUES (?,?,?)", (bid, raw_id, op_id))
+            conn.commit()
+        finally:
+            conn.close()
+
     def _monthly(self, capital_final, manual_dep=0.0, broker="global", ym=(2025, 9)):
         conn = main.get_db()
         try:
@@ -134,15 +149,121 @@ class DiagnosticoTest(unittest.TestCase):
                  gross=115.0, gross_usd=115.0)
         self.assertNotIn("R1_conducto_mep_cocos", self._causas(self._diag()))
 
+    def _conducto_espejo(self):
+        """El MISMO conducto, con la pata en pesos del otro lado: la COMPRA.
+
+        Calcado de uid 92 en prod (T661O, compra 1,08 contra venta 0,00076 =
+        ratio 1.416 ≈ el dólar). El detector viejo pedía venta/compra > 300, así
+        que a estas cuentas no las veía: 679, 92 y 520 salían "sin causa
+        conocida" con −13,9M / −10,8M / −4,8M de daño.
+        """
+        bid = self._batch()
+        self._tx(bid, "BUY", asset="T661O", qty=1314184, price=1.08,
+                 gross=1419318.72, gross_usd=1419318.72)
+        self._tx(bid, "SELL", asset="T661O", qty=1314184, price=0.00076,
+                 gross=998.78, gross_usd=998.78, notes="MEP")
+        return bid
+
+    def test_detecta_el_conducto_con_la_COMPRA_en_pesos(self):
+        # ⭐ El espejo del caso de arriba. Un detector que sólo mira una
+        # dirección no es medio detector: es uno que además manda la regla de
+        # corrección contra la pata SANA.
+        self._conducto_espejo()
+        self._op("T661O", 1.08, 0.00076, 1314184, -1_418_319.0)
+        r1 = next(c for c in self._diag()["causas"]
+                  if c["causa"] == "R1_conducto_mep_cocos")
+        self.assertEqual(r1["pares_buy_en_pesos"], 1)
+        self.assertEqual(r1["pares_sell_en_pesos"], 0)
+        self.assertEqual(r1["muestra"][0]["pata_peso"], "buy")
+
+    def test_cada_par_dice_CUAL_pata_esta_en_pesos(self):
+        # La `regla` es direccional. Si el par no dice de qué lado está el
+        # peso, aplicarla es adivinar — y adivinar mal re-etiqueta la pata que
+        # ya estaba bien.
+        self._conducto()
+        self._op("DHS9O", 0.00072, 1.095, 3473097, 1_211_379.0)
+        r1 = next(c for c in self._diag()["causas"]
+                  if c["causa"] == "R1_conducto_mep_cocos")
+        self.assertEqual(r1["muestra"][0]["pata_peso"], "sell")
+        self.assertIn("pata_peso", r1["regla"])
+
+    def test_el_par_SIN_dano_no_es_una_cuenta_rota(self):
+        # uid 456 en prod: tiene el par recíproco y capital_declarado == cartera
+        # al centavo. El mislabel existe pero nunca llegó a una operación.
+        # Hacer simétrico el detector sin esta guarda cambia un falso negativo
+        # por un falso positivo, que no es progreso.
+        self._conducto_espejo()          # el par existe…
+        # …pero no hay ninguna operación con la escala rota.
+        self.assertNotIn("R1_conducto_mep_cocos", self._causas(self._diag()))
+
     # ── R3 y R4: los que se arreglan solos ──────────────────────────────────
     def test_per100_se_puede_arreglar_solo(self):
         bid = self._batch(parser="ieb", broker="IEB")
         # unit_price × qty / gross_amount == 100 exacto = la firma del per-100.
-        self._tx(bid, "SELL", asset="AL30", qty=32100, price=89797.07,
-                 gross=28824859.47, gross_usd=20370.90, ccy="ARS")
+        rid = self._tx(bid, "SELL", asset="AL30", qty=32100, price=89797.07,
+                       gross=28824859.47, gross_usd=20370.90, ccy="ARS")
+        # …y la operación que el motor construyó tomando el precio CRUDO
+        # (89797,07) en vez del escalado (gross/qty = 897,97). Ahí vive el daño:
+        # la fila per-100 por sí sola es la convención de cotización del bono,
+        # no un defecto.
+        oid = self._op("AL30", 850.00, 89797.07, 32100, 2_882_485.0)
+        self._link(bid, rid, oid)
         c = next(x for x in self._diag()["causas"] if x["causa"] == "R3_per100")
         self.assertEqual(c["auto_arreglable"], "si_deterministico")
         self.assertIn("gross_amount/quantity", c["regla"])
+        self.assertEqual(c["ops_afectadas"], 1)
+
+    def test_la_fila_per100_SIN_operacion_no_es_un_numero_roto(self):
+        # uid 733 en prod: 1 fila con la firma per-100 y CERO operaciones
+        # ligadas. Contar filas en vez de daño lo metía en la cola de trabajo.
+        bid = self._batch(parser="ieb", broker="IEB")
+        self._tx(bid, "SELL", asset="AL30", qty=32100, price=89797.07,
+                 gross=28824859.47, gross_usd=20370.90, ccy="ARS")
+        self.assertNotIn("R3_per100", self._causas(self._diag()))
+
+    def test_el_bono_per100_bien_construido_no_es_un_hallazgo(self):
+        # Misma fila, pero el motor SÍ tomó gross/qty. La firma per-100 está
+        # igual —es la convención del bono— y acá no hay nada que corregir.
+        bid = self._batch(parser="ieb", broker="IEB")
+        rid = self._tx(bid, "SELL", asset="AL30", qty=32100, price=89797.07,
+                       gross=28824859.47, gross_usd=20370.90, ccy="ARS")
+        oid = self._op("AL30", 850.00, 897.9707, 32100, 1_540.0)
+        self._link(bid, rid, oid)
+        self.assertNotIn("R3_per100", self._causas(self._diag()))
+
+    def test_r4_marca_las_filas_que_NO_hay_que_tocar(self):
+        # 🔴 27 filas que este detector agarra en prod están BIEN: son dólares
+        # con la moneda INFERIDA a ARS porque el parser no supo la divisa
+        # (`divisa=OTHER`). Aplicarles la regla las achica ~1.200× y borra renta
+        # real. El diagnóstico las cuenta, pero avisa que la reparación no las
+        # toca — un selector de diagnóstico más ancho que el de reparación es
+        # correcto sólo si dice dónde está la diferencia.
+        bid = self._batch(parser="ieb", broker="IEB")
+        rid = self._tx(bid, "DIVIDEND", asset="AL30", qty=1, price=25.36,
+                       gross=25.36, gross_usd=0.0179, ccy="ARS",
+                       notes="IEB:RTA · divisa=OTHER")
+        oid = self._op("AL30", 0, 0, 1, 25.36)
+        self._link(bid, rid, oid)
+        c = next(x for x in self._diag()["causas"]
+                 if x["causa"] == "R4_renta_moneda_ignorada")
+        self.assertEqual(c["filas_moneda_inferida"], 1)
+        self.assertIn("divisa=OTHER", c["ojo"])
+        self.assertIn("no se tocan", c["ojo"])
+
+    def test_r4_marca_el_sello_1415(self):
+        # El otro subconjunto que la reparación no puede tratar igual: TC
+        # sellado a 1415,00 en cuenta fx v1. Pasar el P&L al MEP histórico
+        # dejando los flujos al sello es migrar UNA sola pata del FX — el
+        # patrón que en este repo ya llevó un error de 1,23× a 9,1×.
+        bid = self._batch(parser="ieb", broker="IEB")
+        rid = self._tx(bid, "INTEREST", asset="AL30", qty=1, price=141500.0,
+                       gross=141500.0, gross_usd=100.0, ccy="ARS")
+        oid = self._op("AL30", 0, 0, 1, 141500.0)
+        self._link(bid, rid, oid)
+        c = next(x for x in self._diag()["causas"]
+                 if x["causa"] == "R4_renta_moneda_ignorada")
+        self.assertEqual(c["filas_con_sello_1415"], 1)
+        self.assertIn("1415", c["ojo"])
 
     def test_renta_balanz_NO_se_puede_arreglar_sola(self):
         # No hay dato bueno en ninguna parte: la columna "Moneda Venta" del
@@ -220,6 +341,29 @@ class DiagnosticoTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertIn("truncado", r.json())
         self.assertIn("1415", r.json()["caveat"])   # el caveat del FX viaja siempre
+
+    def test_el_barrido_dice_a_quien_NO_miro(self):
+        # 🔴 Tres filtros descartaban gente en silencio, y un barrido que no
+        # dice a quién no miró se lee como censo. El peor era el piso de
+        # `cap > 1.000.000`: ordena por tamaño de CLIENTE, no de ERROR, así que
+        # dejaba afuera a 37 usuarios con ratio>10 — uid 859 está 2.062× mal
+        # sobre una cartera de US$390.
+        self._monthly(9_000_000.0)      # global, y este usuario no tiene snapshot
+        j = self.http.get("/api/admin/diagnostico", params={"limite": 5},
+                          headers=self.h).json()
+        self.assertIn("no_mirados", j)
+        self.assertIn(self.uid, j["no_mirados"]["no_rankeables"]["uids"])
+        self.assertIn("SÍNTOMA", j["no_mirados"]["no_rankeables"]["por_que"])
+        self.assertEqual(j["umbrales"]["cap_min_usd"], 1000.0)
+
+    def test_el_piso_de_dano_se_puede_mover(self):
+        # Poder mirar a los que quedan justo afuera de la banda sin editar
+        # código es lo que evita que el umbral se vuelva incuestionable.
+        r = self.http.get("/api/admin/diagnostico",
+                          params={"limite": 5, "cap_min": 50, "ratio_min": 2},
+                          headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["umbrales"], {"cap_min_usd": 50.0, "ratio_min": 2.0})
 
     def test_requiere_admin(self):
         r = self.http.get("/api/admin/diagnostico",
