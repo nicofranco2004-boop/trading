@@ -15990,6 +15990,54 @@ def admin_repair_pnl_escala(apply: bool = False, user_id: int = None,
         conn.close()
 
 
+@app.post("/api/admin/repair-pnl-escala/revertir")
+def admin_repair_pnl_escala_revertir(user_id: int, batch_ref: str = None,
+                                     uid: int = Depends(get_admin_user)):
+    """Deshace una corrida del repair y devuelve la cuenta a su estado anterior.
+
+    🔴 EXISTE PORQUE LA VUELTA ATRÁS SON DOS PASOS Y NADIE LOS FORZABA.
+    `reparacion_pnl.revertir` restituye `operations`, que es lo único que el
+    repair escribe a mano — pero `monthly_entries` es un DERIVADO, y hasta que
+    no vuelve a correr la cadena sigue con los valores reparados. Medido sobre
+    un clon de uid 54: después de `revertir()` solo, `operations` volvía a su
+    huella original y `monthly_entries` seguía en la nueva. Con el recalc
+    después, las tres tablas (operations, monthly_entries, snapshots) vuelven
+    BYTE A BYTE al estado inicial.
+
+    Dejar los dos pasos sueltos era ofrecer una red que se rompe si el que la
+    usa hace la mitad.
+
+    Sin `batch_ref` revierte TODAS las correcciones de este repair que el
+    usuario tenga.
+    """
+    conn = get_db()
+    try:
+        import reparacion_pnl
+        antes = reparacion_pnl.medir(conn, int(user_id))
+        with conn:
+            vueltas = reparacion_pnl.revertir(conn, int(user_id), batch_ref)
+            if vueltas:
+                # Sin esto la vuelta atrás queda a mitad de camino.
+                _recalc_pnl_realized_from_ops(conn, int(user_id))
+        despues = reparacion_pnl.medir(conn, int(user_id))
+        log.warning("repair-pnl-escala REVERTIDO: %d filas de uid %s (batch_ref=%s)",
+                    vueltas, user_id, batch_ref)
+        return {"user_id": int(user_id), "batch_ref": batch_ref,
+                "filas_revertidas": vueltas, "antes": antes, "despues": despues,
+                "nota": ("se revirtió `operations` Y se recomputó la cadena. Los "
+                         "snapshots derivados (source='import') se re-derivan "
+                         "solos del capital_final restituido; los que son "
+                         "mediciones nunca se tocaron.")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_repair_pnl_escala_revertir FAILED")
+        raise HTTPException(status_code=500,
+                            detail=f"revertir falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diag/flujo-contaminacion")
 def admin_diag_flujo_contaminacion(target_uid: int, uid: int = Depends(get_admin_user)):
     """Cuánto cambiaría el TWR de un cliente si sus resoluciones se aplicaran.

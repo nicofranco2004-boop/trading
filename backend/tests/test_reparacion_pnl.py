@@ -203,6 +203,71 @@ class ReparacionPnlTest(unittest.TestCase):
             # El undo se CONSUME: no queda basura en la columna.
             self.assertNotIn("pnl_escala_reparada", fila["undo_meta_json"] or "")
 
+    def test_revertir_SOLO_deja_la_cadena_a_medio_camino(self):
+        """⭐ Por qué existe el endpoint de revert y no alcanza con la función.
+
+        `revertir()` restituye `operations`, que es lo único que el repair
+        escribe a mano. `monthly_entries` es un DERIVADO y se queda con los
+        valores reparados hasta que la cadena vuelve a correr. Este test fija
+        ese hecho para que nadie "simplifique" el endpoint a una sola llamada.
+        """
+        import reparacion_pnl
+        self._caso_uid54()
+        res = self._run(apply=True)
+        conn = main.get_db()
+        try:
+            reparado = reparacion_pnl.medir(conn, self.uid)
+            reparacion_pnl.revertir(conn, self.uid, res["batch_ref"])
+            conn.commit()
+            a_medias = reparacion_pnl.medir(conn, self.uid)
+        finally:
+            conn.close()
+        # operations volvió, pero la suma derivada NO se movió sola.
+        self.assertAlmostEqual(a_medias["suma_pnl_realized"],
+                               reparado["suma_pnl_realized"], places=2)
+
+    def test_el_endpoint_de_revert_devuelve_la_cadena_entera(self):
+        import reparacion_pnl
+        self._caso_uid54()
+        conn = main.get_db()
+        try:
+            # La línea de base se toma con la cadena YA consistente, igual que
+            # hace el endpoint: medir antes de que `monthly_entries` exista
+            # compara contra 0 y no contra el estado real.
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+            conn.commit()
+            inicial = reparacion_pnl.medir(conn, self.uid)
+        finally:
+            conn.close()
+        res = self._run(apply=True)
+        r = self.http.post("/api/admin/repair-pnl-escala/revertir",
+                           params={"user_id": self.uid,
+                                   "batch_ref": res["batch_ref"]}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["filas_revertidas"], 5)
+        conn = main.get_db()
+        try:
+            final = reparacion_pnl.medir(conn, self.uid)
+        finally:
+            conn.close()
+        self.assertAlmostEqual(final["suma_pnl_realized"],
+                               inicial["suma_pnl_realized"], places=2)
+
+    def test_el_undo_guarda_el_valor_CRUDO_no_el_redondeado(self):
+        """Una vuelta atrás que restituye "casi" el valor original no es una
+        vuelta atrás: es un segundo cambio. Los campos del JSON van redondeados
+        para que se lean; el undo NO."""
+        import reparacion_pnl
+        oid = self._renta("2026-02-27", 1055645.7549, 739.5612)
+        res = self._run(apply=True)
+        conn = main.get_db()
+        try:
+            reparacion_pnl.revertir(conn, self.uid, res["batch_ref"])
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self._pnl(oid)["pnl_usd"], 1055645.7549)
+
     # ── el selector angosto ─────────────────────────────────────────────────
     def test_no_toca_la_fila_con_la_moneda_INFERIDA(self):
         # 27 filas de uid 870 en prod: dólares rotulados ARS porque el parser no

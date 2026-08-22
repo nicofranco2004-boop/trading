@@ -119,6 +119,13 @@ def candidatos(conn, uid: int) -> List[Dict[str, Any]]:
         "monto_ars": round(float(r["ars"] or 0), 2),
         "tc_implicito": (round(float(r["ars"]) / float(r["usd"]), 2)
                          if r["usd"] else None),
+        # 🔴 EL UNDO GUARDA EL VALOR CRUDO, NO EL REDONDEADO. Los campos de
+        # arriba están redondeados para que el JSON del ensayo se lea; si el
+        # undo usara ésos, revertir una fila con más de 2 decimales la dejaría
+        # cerca del original pero no IGUAL, y una vuelta atrás que no restituye
+        # el valor exacto no es una vuelta atrás: es un segundo cambio.
+        "_pnl_raw": (float(r["pnl_actual"]) if r["pnl_actual"] is not None else None),
+        "_usd_raw": (float(r["usd"]) if r["usd"] is not None else None),
         "_undo": r["undo_meta_json"], "_ccy": r["ccy_actual"],
     } for r in filas]
 
@@ -274,8 +281,8 @@ def aplicar(conn, uid: int, cands: List[Dict[str, Any]], *,
         except (ValueError, TypeError):
             meta = {}
         meta["pnl_escala_reparada"] = {
-            "antes": c["pnl_actual"],
-            "despues": c["pnl_correcto"],
+            "antes": c["_pnl_raw"],          # CRUDO: es lo que restituye `revertir`
+            "despues": c["_usd_raw"],
             "currency_antes": c["_ccy"],
             "monto_ars": c["monto_ars"],
             "tc_implicito": c["tc_implicito"],
@@ -288,8 +295,8 @@ def aplicar(conn, uid: int, cands: List[Dict[str, Any]], *,
                   SET pnl_usd = ?, currency = 'USD', undo_meta_json = ?
                 WHERE id = ? AND user_id = ?
                   AND ABS(COALESCE(pnl_usd,0) - ?) < 0.01""",
-            (c["pnl_correcto"], json.dumps(meta, ensure_ascii=False),
-             c["op_id"], uid, c["pnl_actual"]))
+            (c["_usd_raw"], json.dumps(meta, ensure_ascii=False),
+             c["op_id"], uid, c["_pnl_raw"]))
         hechas += cur.rowcount
     return hechas
 
