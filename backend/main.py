@@ -15740,6 +15740,256 @@ def admin_diagnostico(target_uid: int = None, limite: int = 120,
         conn.close()
 
 
+# Causas que este repair sabe corregir. R1 y R3 NO están, y el endpoint las
+# RECHAZA con 400 en vez de ignorarlas en silencio: cada una necesita su propio
+# ciclo (ver el docstring de reparacion_pnl).
+_PNL_ESCALA_SOPORTADAS = {"R4"}
+
+
+def _repair_pnl_escala_run(real_conn, uids, apply: bool) -> dict:
+    """Corre la reparación sobre `uids`. apply=False → sobre una COPIA del DB.
+
+    🔴 EL ENSAYO Y EL APPLY SON EL MISMO CÓDIGO. No es una promesa del docstring:
+    `_loop` es literalmente la misma función, y lo único que cambia es sobre qué
+    conexión corre. Un dry-run que recorre otro camino que el apply deja de ser
+    una red — es una segunda implementación que puede mentir. Mismo patrón que
+    `_repair_snapshots_summary`.
+    """
+    import reparacion_pnl
+    import diagnostico as _diag
+    from datetime import datetime as _dt
+    batch_ref = f"pnl-escala-{_dt.utcnow().strftime('%Y%m%dT%H%M%S')}"
+    hoy = _dt.utcnow().strftime("%Y-%m-%d")
+
+    def _loop(conn):
+        out = {"aplicado": apply, "batch_ref": batch_ref,
+               "filas_reparadas": 0, "usuarios": [], "errores": []}
+        for u in uids:
+            try:
+                # ── CAMINO A: el daño DECLARADO, del diagnosticador ───────────
+                # Sale de operations + import_normalized_tx, ANTES de tocar nada.
+                decl = _diag.r4_renta_moneda_ignorada(conn, u) or {}
+                cands = reparacion_pnl.candidatos(conn, u)
+                excl = reparacion_pnl.no_tocadas(conn, u)
+                derivados = reparacion_pnl.snapshots_derivados(conn, u)
+                # Predicción aritmética, del selector. NO usa monthly_entries.
+                delta_esperado = round(
+                    sum(c["pnl_actual"] - c["pnl_correcto"] for c in cands), 2)
+
+                fila = {
+                    "user_id": u,
+                    "filas_a_reparar": len(cands),
+                    "delta_esperado_usd": delta_esperado,
+                    "declarado_por_diagnostico": {
+                        "filas": decl.get("filas", 0),
+                        "declarado_usd": decl.get("declarado_usd", 0.0),
+                        "correcto_usd": decl.get("correcto_usd", 0.0),
+                    },
+                    "no_tocadas": excl,
+                    "snapshots_derivados_a_refrescar": len(derivados),
+                }
+                if not cands:
+                    fila["antes"] = reparacion_pnl.medir(conn, u)
+                    fila["veredicto"] = ("nada que reparar con el selector angosto"
+                                         + (f" ({len(excl)} fila(s) excluidas a propósito)"
+                                            if excl else ""))
+                    out["usuarios"].append(fila)
+                    continue
+
+                # 🔴 LÍNEA DE BASE ANTES DE MEDIR. `_recalc_pnl_realized_from_ops`
+                # es SELF-HEALING de drift acumulado (lo dice su docstring): si se
+                # mide `antes` sobre una cadena que todavía no está consistente
+                # con `operations`, el delta mezcla NUESTRA reparación con el
+                # drift que el recalc sana de paso, y el criterio de éxito deja de
+                # medir lo que dice medir. Lo detectó el test de la tautología:
+                # daba "se esperaba 5.737.497,01 y se midió −4.012,00".
+                # Va DESPUÉS del early-return: una cuenta sin nada que reparar no
+                # se toca ni para esto.
+                _recalc_pnl_realized_from_ops(conn, u)
+                antes = reparacion_pnl.medir(conn, u)
+                fila["antes"] = antes
+
+                hechas = reparacion_pnl.aplicar(conn, u, cands, fecha=hoy,
+                                                batch_ref=batch_ref)
+                # La cadena: operations → pnl_realized → capital_final.
+                _recalc_pnl_realized_from_ops(conn, u)
+                # Los snapshots DERIVADOS (source='import') se re-derivan del
+                # capital_final ya reparado. Los demás NO se tocan: son
+                # mediciones a mercado y pisarlas con el capital al costo es
+                # destructivo e irrecuperable (persister.py:1274-1287).
+                for s in derivados:
+                    conn.execute(
+                        """UPDATE snapshots SET total_value = COALESCE((
+                               SELECT m.capital_final FROM monthly_entries m
+                                WHERE m.user_id = snapshots.user_id
+                                  AND m.broker = 'global'
+                                  AND printf('%04d-%02d', m.year, m.month)
+                                      = substr(snapshots.date, 1, 7)
+                           ), total_value)
+                           WHERE user_id=? AND date=? AND source='import'""",
+                        (u, s["date"]))
+
+                # ── CAMINO B: el delta MEDIDO, de monthly_entries ─────────────
+                # Otra tabla, otra query, con toda la cadena de recomputo en el
+                # medio. Si los dos caminos salieran del mismo código, el
+                # criterio de éxito se verificaría contra sí mismo.
+                despues = reparacion_pnl.medir(conn, u)
+                # La IDENTIDAD va contra SUM(pnl_realized), que es aditiva.
+                # Contra el PICO no cierra y no es un error: el pico es un MAX
+                # sobre meses y puede mudarse de mes al reparar (medido en uid
+                # 54: 1.151,53 de diferencia por eso solo).
+                delta_medido = round(
+                    antes["suma_pnl_realized"] - despues["suma_pnl_realized"], 2)
+                delta_pico = round(
+                    antes["pico_capital_final"] - despues["pico_capital_final"], 2)
+                cierra = abs(delta_medido - delta_esperado) < 1.0
+
+                # El umbral se ancla SÓLO en el capital ya reparado. Meter el
+                # último snapshot en el max() era usar el número sucio para
+                # decidir qué está sucio: con un snapshot de 5,7M el umbral se
+                # iba a 11,4M y no reportaba nada. Se auto-anulaba.
+                umbral = max(despues["pico_capital_final"], 1000.0) * 2
+                sucios = reparacion_pnl.snapshots_sucios(conn, u, umbral)
+
+                fila.update({
+                    "filas_reparadas": hechas,
+                    "despues": despues,
+                    "delta_medido_usd": delta_medido,
+                    "delta_pico_capital_final_usd": delta_pico,
+                    "cierra": cierra,
+                    "snapshots_sin_reparar": sucios,
+                    "veredicto": (
+                        (f"OK: la P&L realizada bajó {delta_medido:,.2f}, que es "
+                         f"exactamente lo que el diagnóstico declaró. El pico de "
+                         f"capital_final bajó {delta_pico:,.2f} "
+                         f"({antes['pico_capital_final']:,.2f} → "
+                         f"{despues['pico_capital_final']:,.2f}); es un MAX sobre "
+                         f"meses, así que no tiene por qué coincidir al centavo.")
+                        if cierra else
+                        (f"⚠️ NO CIERRA: se esperaba un delta de {delta_esperado:,.2f} "
+                         f"y se midió {delta_medido:,.2f}. La diferencia está en la "
+                         f"cadena de recomputo, no en el selector — NO sigas "
+                         f"aplicando hasta entenderlo.")),
+                    "sigue_sucio_en_pantalla": sucios["cantidad"] > 0,
+                })
+                out["filas_reparadas"] += hechas
+                out["usuarios"].append(fila)
+            except Exception as ex:
+                conn.rollback()
+                out["errores"].append({"user_id": u, "error": f"{type(ex).__name__}: {ex}"})
+                continue
+            if apply:
+                conn.commit()
+        return out
+
+    if apply:
+        return _loop(real_conn)
+    dberrors.exigir_clon_soportado(real_conn, "Reparar P&L de escala (ensayo)")
+    import tempfile as _tf, sqlite3 as _sq, os as _os
+    tmp = _tf.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    clone = _sq.connect(tmp.name); clone.row_factory = _sq.Row
+    try:
+        real_conn.backup(clone)
+        return _loop(clone)
+    finally:
+        clone.close()
+        for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
+            try: _os.unlink(p)
+            except OSError: pass
+
+
+@app.post("/api/admin/repair-pnl-escala")
+def admin_repair_pnl_escala(apply: bool = False, user_id: int = None,
+                            causas: str = "R4", limite: int = 50,
+                            uid: int = Depends(get_admin_user)):
+    """Corrige la renta que entró con el monto en PESOS rotulado como dólares.
+
+    `_persist_dividend_or_interest` convierte por `brokers.currency` e ignora el
+    `gross_amount_usd` que la fila importada ya trae bien, así que un dividendo
+    de ARS 1.055.645,75 entró a `operations.pnl_usd` como 1.055.645,75 dólares.
+    De ahí va a `monthly_entries.pnl_realized` y a `capital_final`, que es el
+    número que la persona ve.
+
+    DRY-RUN POR DEFECTO. Con `apply=false` corre sobre una COPIA del DB y
+    devuelve exactamente lo que haría, con el mismo código. Hay que pedir
+    `apply=true` a mano. Es plata de gente.
+
+    REVERSIBLE: `operations.undo_meta_json` guarda el valor viejo bajo
+    `pnl_escala_reparada`, mergeado con lo que hubiera.
+
+    SÓLO R4. `causas=R1` o `R3` devuelven 400 con la explicación, en vez de que
+    el que lo corre crea que quedó todo limpio:
+      • R3 (per-100) tiene el cash inflado ×100 y el rebuild no lo toca — el
+        repo ya se niega a reconstruir estas cuentas (`fx_migrate.py:249-276`,
+        "el crimen perfecto"). Va detrás del procedimiento de cash.
+      • R1 (conducto MEP) reescribe `import_normalized_tx`, que no tiene
+        columna de undo. Necesita journal y ciclo propios.
+
+    NO ARREGLA LOS SNAPSHOTS que son mediciones. Sólo re-deriva los que tienen
+    `source='import'` (copias de `capital_final`). Los demás son registros
+    congelados de un estado que de verdad incluía el monto inflado, y sin
+    precios históricos no son recomputables: salen en `snapshots_sin_reparar`
+    para que el veredicto no diga "reparado" mientras el gráfico de Evolución
+    sigue mostrando el pico.
+    """
+    pedidas = {c.strip().upper() for c in (causas or "").split(",") if c.strip()}
+    if not pedidas:
+        pedidas = {"R4"}
+    fuera = pedidas - _PNL_ESCALA_SOPORTADAS
+    if fuera:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"este repair sólo corrige {sorted(_PNL_ESCALA_SOPORTADAS)}; "
+                    f"pediste {sorted(fuera)}. R3 (per-100) necesita el "
+                    f"procedimiento de CASH primero — el rebuild le arregla la "
+                    f"P&L y le deja el cash inflado ×100 sin la firma que lo "
+                    f"delata: es el «crimen perfecto» que ya documenta el guard "
+                    f"de importing/fx_migrate.py:249-276, que se niega a "
+                    f"reconstruir exactamente estas cuentas. R1 (conducto MEP) "
+                    f"reescribe import_normalized_tx, que no tiene columna de "
+                    f"undo, y necesita journal propio. Ninguna de las dos se "
+                    f"corrige desde acá."))
+
+    conn = get_db()
+    try:
+        if user_id is not None:
+            uids = [int(user_id)]
+        else:
+            uids = [r["user_id"] for r in conn.execute(
+                """SELECT DISTINCT o.user_id
+                     FROM operations o
+                     JOIN import_op_links l ON l.operation_id = o.id
+                     JOIN import_normalized_tx n ON n.raw_row_id = l.raw_row_id
+                                                AND l.batch_id = n.batch_id
+                     JOIN import_batches b ON b.id = n.batch_id
+                    WHERE b.status='confirmed' AND n.excluded_at IS NULL
+                      AND n.currency='ARS'
+                      AND ABS(COALESCE(o.pnl_usd,0) - COALESCE(n.gross_amount,0)) < 0.01
+                      AND ABS(COALESCE(n.gross_amount,0)
+                              - COALESCE(n.gross_amount_usd,0)) > 1
+                    ORDER BY o.user_id LIMIT ?""", (limite,)).fetchall()]
+        res = _repair_pnl_escala_run(conn, uids, apply)
+        # Nunca truncar en silencio.
+        res["truncado"] = user_id is None and len(uids) >= limite
+        if apply:
+            log.warning("repair-pnl-escala APLICADO: %d filas en %d usuario(s), "
+                        "batch_ref=%s", res["filas_reparadas"], len(uids),
+                        res["batch_ref"])
+        return res
+    except dberrors.EnsayoPorClonNoDisponible:
+        # Va ANTES del `except Exception`: si no, el handler que devuelve el 501
+        # explicativo nunca lo ve y el operador recibe un 500 críptico.
+        raise
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_repair_pnl_escala FAILED")
+        raise HTTPException(status_code=500,
+                            detail=f"repair-pnl-escala falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diag/flujo-contaminacion")
 def admin_diag_flujo_contaminacion(target_uid: int, uid: int = Depends(get_admin_user)):
     """Cuánto cambiaría el TWR de un cliente si sus resoluciones se aplicaran.

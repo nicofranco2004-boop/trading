@@ -133,7 +133,7 @@ class NingunEndpointSeTragaElAvisoTest(unittest.TestCase):
         "admin_backfill_recompute", "admin_repair_snapshots_all",
         "admin_backfill_mtm", "admin_backfill_currency",
         "admin_fx_migrate_user", "admin_fx_migrate_candidates",
-        "admin_fx_migrate_batch",
+        "admin_fx_migrate_batch", "admin_repair_pnl_escala",
     }
 
     def _analizar(self):

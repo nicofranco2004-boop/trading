@@ -40,6 +40,12 @@ PERMITIDOS = {
         "(dberrors.exigir_clon_soportado).",
     ("main.py", "_repair_snapshots_summary"):
         "Clon del ensayo, con guard.",
+    ("main.py", "_repair_pnl_escala_run"):
+        "Clon del ensayo, con guard (dberrors.exigir_clon_soportado). El "
+        "dry-run del repair de P&L de escala corre el MISMO `_loop` que el "
+        "apply sobre una copia, que es lo que hace que el ensayo no pueda "
+        "mentir; sin clon habría que escribir una segunda implementación del "
+        "camino, que es justo lo que se quiere evitar.",
     ("main.py", "admin_fx_migrate_user"):
         "Clon del ensayo, con guard.",
     ("main.py", "admin_fx_migrate_batch"):
