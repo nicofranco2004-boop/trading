@@ -32,12 +32,29 @@ FX_BASIS = "mep_venta"      # lo único disponible por fecha (ver límite 2)
 COBERTURA_MINIMA = 0.98     # sin casi todos los precios, el total no es el total
 
 
-def tenencia_en(conn, uid: int, fecha: str) -> dict:
+def tenencia_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
     """{(broker, asset): cantidad} a esa fecha, replayeando el ledger.
 
     Mismo orden canónico que el rebuild del importador (fecha, BUY antes que
     SELL el mismo día, id): sin eso el replay y el rebuild pueden diferir, que
     es la clase de bug donde el orden de las filas decide la P&L.
+
+    🔴 SÓLO BATCHES CONFIRMADOS. Hasta acá este replay no filtraba `b.status`,
+    mientras `censo_flujos.py` y `diagnostico.py` sí lo hacen. Medido contra la
+    copia de prod del 2026-08-16: eso metía **208.950 filas BUY/SELL de batches
+    REVERTIDOS**, en 313 usuarios (el 59%). El caso extremo es uid 109, que
+    tiene CERO posiciones y al que el replay le devolvía 82 activos — o sea que
+    devolvía la cartera de un import que la persona ya deshizo.
+
+    El daño no era sólo el número: `verificar_contra_hoy` usa esta función para
+    decidir si a alguien se le puede reconstruir el pasado, así que un replay
+    inflado le hacía decir "el ledger no reproduce las posiciones" cuando en
+    realidad estaba CONTANDO DE MÁS. Cualquier medición hecha con este
+    instrumento antes del fix mezcla las dos cosas y no sirve para decidir nada.
+
+    `session_id` incluye ADEMÁS un batch en preview — es el opt-in explícito
+    para proyectar "qué quedaría si confirmo esto", sin que un preview ajeno se
+    cuele nunca por default.
     """
     from importing.schema import OP_BUY, OP_SELL
     filas = conn.execute(
@@ -45,12 +62,13 @@ def tenencia_en(conn, uid: int, fecha: str) -> dict:
            FROM import_normalized_tx n
            JOIN import_batches b ON b.id = n.batch_id
            WHERE b.user_id = ? AND n.excluded_at IS NULL
+             AND (b.status = 'confirmed' OR b.id = ?)
              AND n.date <= ? AND n.asset_symbol IS NOT NULL
              AND n.operation_type IN (?, ?)
            ORDER BY n.date ASC,
                     CASE n.operation_type WHEN ? THEN 0 ELSE 1 END ASC,
                     n.id ASC""",
-        (uid, str(fecha)[:10], OP_BUY, OP_SELL, OP_BUY)).fetchall()
+        (uid, session_id or "", str(fecha)[:10], OP_BUY, OP_SELL, OP_BUY)).fetchall()
 
     pos = {}
     for r in filas:
@@ -72,21 +90,28 @@ _CASH_MAS = ("DEPOSIT", "SELL", "DIVIDEND", "INTEREST", "FUTURES_PNL")
 _CASH_MENOS = ("WITHDRAW", "BUY", "FEE", "IMPUESTO")
 
 
-def cash_en(conn, uid: int, fecha: str) -> dict:
+def cash_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
     """{(broker, moneda): saldo} a esa fecha, replayeando el ledger.
 
     Misma logica que el resto: lo que el ledger no explica, no se inventa. Un
     saldo negativo se deja como esta y `verificar_contra_hoy` lo va a marcar
     contra la realidad — es el ledger avisando que le falta un movimiento.
+
+    🔴 Mismo fix de status que `tenencia_en`: sin él, el saldo incluía el cash
+    de imports revertidos. Iba peor acá que allá, porque este replay no filtra
+    por `operation_type` en el WHERE (los DEPOSIT/WITHDRAW de un batch deshecho
+    entraban enteros al saldo).
     """
     filas = conn.execute(
         """SELECT n.broker, n.operation_type, n.gross_amount, n.fees, n.taxes,
                   COALESCE(n.settlement_currency, n.currency) ccy
            FROM import_normalized_tx n
            JOIN import_batches b ON b.id = n.batch_id
-           WHERE b.user_id = ? AND n.excluded_at IS NULL AND n.date <= ?
+           WHERE b.user_id = ? AND n.excluded_at IS NULL
+             AND (b.status = 'confirmed' OR b.id = ?)
+             AND n.date <= ?
            ORDER BY n.date ASC, n.id ASC""",
-        (uid, str(fecha)[:10])).fetchall()
+        (uid, session_id or "", str(fecha)[:10])).fetchall()
 
     saldos = {}
     for r in filas:
