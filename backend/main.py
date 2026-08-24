@@ -17026,6 +17026,150 @@ def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
         conn.close()
 
 
+@app.get("/api/admin/diagnose-reportes-basis")
+def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
+                                  limit_accounts: int = 500,
+                                  uid: int = Depends(get_admin_user)):
+    """READ-ONLY. Contesta las dos preguntas que quedaron abiertas con el guard
+    AUDIT D-1 (el que dejó de publicar el "P&L del período" cuando el arranque
+    sale de la cadena contable y el cierre del mercado).
+
+    (1) BLAST RADIUS — ¿a cuánta gente le desaparece el número?
+        El guard sólo publica si el borde del período es un cierre MEDIDO. Si el
+        cron no está escribiendo (ver memoria: APScheduler in-process no es
+        confiable en Railway), un montón de cuentas pasan de ver un número malo a
+        ver "—", y eso hay que saberlo ANTES de mergear, no después.
+
+    (2) EL CASO PUNTUAL — con `?user_id=N`, de dónde sale el `start_value` de esa
+        cuenta y cuánto se separa la cadena del mercado. Es lo que distingue los
+        tres orígenes posibles del "capital inicial de US$201.119" del reporte:
+        cadena contable / snapshot fabricado por el import / snapshot corrupto.
+
+    Usa `reporting.builder.fetch_snapshot_at_or_before(mtm_only=True)` y
+    `twr.clasificar_fila` — las MISMAS funciones que decide el guard. Un
+    diagnóstico que reimplemente el criterio mide otra cosa que la que corre.
+    """
+    from datetime import date as _date
+    from reporting.builder import fetch_snapshot_at_or_before, _border_is_fresh, _user_has_positions
+    from twr import clasificar_fila, MEDICION
+
+    today = _date.today()
+    period_start = f"{today.year:04d}-{today.month:02d}-01"
+    conn = get_db()
+    try:
+        def _clase_del_borde(au: int) -> str:
+            """Clase de la fila que el guard MIRARÍA primero (la más reciente
+            <= arranque del mes). 'sin_snapshot' si no hay ninguna."""
+            row = conn.execute(
+                """SELECT date, total_value, fx_to_usd_blue, holdings_json, source
+                     FROM snapshots
+                    WHERE user_id=? AND date<=? AND total_value > 0
+                    ORDER BY date DESC LIMIT 1""",
+                (au, period_start)).fetchone()
+            if not row:
+                return "sin_snapshot"
+            return clasificar_fila(row, _user_has_positions(conn, au))
+
+        def _detalle(au: int) -> dict:
+            me = conn.execute(
+                """SELECT capital_inicio, capital_final, deposits, withdrawals,
+                          pnl_realized, pnl_unrealized
+                     FROM monthly_entries
+                    WHERE user_id=? AND broker='global' AND year=? AND month=?""",
+                (au, today.year, today.month)).fetchone()
+            borde = fetch_snapshot_at_or_before(conn, au, period_start, mtm_only=True)
+            fresco = bool(borde and _border_is_fresh(borde.get("date"), period_start))
+            # El "mercado" tiene que salir de una MEDICION. Usar el último
+            # snapshot a secas medía la cadena contra sí misma: en las cuentas
+            # afectadas esa fila ES la cadena (la fabricó el import), así que el
+            # ratio daba 1.0 y la brecha 0 justo donde vale 2,7x. Si no hay
+            # ninguna medición, la brecha NO es medible — None, no 0.
+            ultimo = fetch_snapshot_at_or_before(conn, au, _iso_today(), mtm_only=True)
+            cadena = float(me["capital_inicio"] or 0) if me else 0.0
+            mercado = float(ultimo["total_value"] or 0) if ultimo else 0.0
+            return {
+                "user_id": au,
+                "publica_numero": fresco,          # False = el usuario ve "—"
+                "clase_del_borde": _clase_del_borde(au),
+                "borde_medido": ({"date": borde["date"], "total_value": round(float(borde["total_value"]), 2)}
+                                 if borde else None),
+                "borde_fresco": fresco,
+                "capital_inicio_cadena": round(cadena, 2),
+                "ultima_medicion": ({"date": ultimo["date"], "total_value": round(mercado, 2)}
+                                    if ultimo else None),
+                # >1 = la contabilidad cree que hay más plata que la que ve el mercado.
+                # Es la firma del caso reportado (201.119 contra 73.764 = 2,7x).
+                "ratio_cadena_vs_mercado": (round(cadena / mercado, 2) if mercado > 0 else None),
+                "brecha_usd": round(cadena - mercado, 2) if mercado > 0 else None,
+            }
+
+        # ── Modo detalle de una cuenta ───────────────────────────────────────
+        if user_id is not None:
+            d = _detalle(user_id)
+            d["snapshots_recientes"] = [
+                {"date": r["date"], "total_value": round(float(r["total_value"] or 0), 2),
+                 "source": r["source"],
+                 "clase": clasificar_fila(r, _user_has_positions(conn, user_id)),
+                 "tiene_composicion": bool(r["holdings_json"])}
+                for r in conn.execute(
+                    """SELECT date, total_value, fx_to_usd_blue, holdings_json, source
+                         FROM snapshots WHERE user_id=? AND date<=?
+                        ORDER BY date DESC LIMIT 8""", (user_id, period_start)).fetchall()
+            ]
+            d["lectura"] = (
+                "El borde es una MEDICION y está fresco → el período publica su número; "
+                "si igual se ve raro, el problema no es el borde."
+                if d["publica_numero"] else
+                "Sin cierre medido en el borde. Antes del guard, el reporte restaba el "
+                "valor de mercado de hoy contra `capital_inicio` (o contra un snapshot "
+                "fabricado al costo) y publicaba esa diferencia como la pérdida del mes."
+            )
+            return d
+
+        # ── Modo agregado ────────────────────────────────────────────────────
+        activos = [r["user_id"] for r in conn.execute(
+            """SELECT DISTINCT user_id FROM monthly_entries
+                WHERE broker='global' AND (capital_final > 0 OR deposits > 0)
+                ORDER BY user_id LIMIT ?""", (limit_accounts,)).fetchall()]
+
+        por_clase: dict = {}
+        publican = 0
+        cuentas = []
+        for au in activos:
+            d = _detalle(au)
+            por_clase[d["clase_del_borde"]] = por_clase.get(d["clase_del_borde"], 0) + 1
+            if d["publica_numero"]:
+                publican += 1
+            cuentas.append(d)
+
+        total = len(activos)
+        # Las que más se benefician del guard: cadena muy por encima del mercado.
+        con_brecha = sorted(
+            [c for c in cuentas if (c["ratio_cadena_vs_mercado"] or 0) > 1.5],
+            key=lambda c: c["ratio_cadena_vs_mercado"], reverse=True)[:25]
+
+        return {
+            "mes_en_curso": period_start,
+            "cuentas_evaluadas": total,
+            "conservan_el_numero": publican,
+            "pierden_el_numero": total - publican,
+            "pct_conserva": (round(publican / total * 100, 1) if total else None),
+            # cron = cierre real; browser = foto de media rueda; import = fabricada
+            # al costo; indeterminado = fila legacy sin `source`.
+            "clase_del_borde": por_clase,
+            "cuentas_con_brecha_cadena_vs_mercado": con_brecha,
+            "como_leerlo": (
+                "pct_conserva ALTO → deployá tranquilo: casi nadie pierde el número. "
+                "pct_conserva BAJO → el cron no está dejando cierres medidos; arreglá "
+                "eso ANTES de mergear, si no cambiás un número malo por un '—' masivo. "
+                "`cuentas_con_brecha_cadena_vs_mercado` son las que hoy ven una pérdida "
+                "fantasma: mismo síntoma que el reporte del usuario."
+            ),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diagnose-costo-inconsistente")
 def admin_diagnose_costo_inconsistente(tol: float = 0.02, limite: int = 200,
                                        uid: int = Depends(get_admin_user)):
