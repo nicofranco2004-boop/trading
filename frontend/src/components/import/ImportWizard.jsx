@@ -1824,6 +1824,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
  *  viaja en `detalle`; esto es sólo la etiqueta. */
 const MOTIVO_LABEL = {
   ausente_en_la_foto: 'no está en el resumen',
+  mas_que_la_foto: 'más que el resumen',
   escala_bono_amortizante: 'bono que amortiza',
   datos_manuales: 'lo editaste a mano',
   vencimiento_en_ventana: 'venció en el período',
@@ -1855,7 +1856,10 @@ function ReconcileStep({ data, aprobados, onToggle }) {
   const pendientes = new Set(dudosos.filter(d => d.requiere_aprobacion)
                                     .map(d => d.ticker))
   const seed = (data.to_seed || []).filter(x => !pendientes.has(x.ticker))
-  const over = data.over || []
+  // Mismo filtro que `seed` y `ausentes`: lo que espera aprobación NO puede
+  // aparecer también acá, porque esta sección AFIRMA que se aplica. En contexto
+  // asesor `over` entra a la lista de decisión, así que se va de ésta.
+  const over = (data.over || []).filter(x => !pendientes.has(x.ticker))
   const ausentes = (data.not_in_snapshot || []).filter(x => !pendientes.has(x.ticker))
   const conf = data.confianza || {}
   const ov = data.override || null

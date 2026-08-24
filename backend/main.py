@@ -2462,6 +2462,25 @@ def init_db():
         if batch_cols and 'fund_price_overrides' not in batch_cols:
             conn.execute("ALTER TABLE import_batches ADD COLUMN fund_price_overrides TEXT")
 
+        # Migración (2026-08-24): override_info en import_batches. JSON con lo que
+        # la foto DECIDIÓ — no sólo lo que aplicó.
+        #
+        # 🔴 EXISTE PARA CERRAR UN PUNTO CIEGO DE MEDICIÓN, no para el producto.
+        # Los `over` que las guardas frenan —cap del 50%, safe-to-rebuild,
+        # activo que vive en el sibling— NO dejan rastro: hoy sólo hay un
+        # `log.warning`. O sea que todo lo que sabemos de `over` está medido
+        # sobre la población que SOBREVIVIÓ tres filtros (n=21 sobre la copia de
+        # prod del 2026-08-16), y no hay forma de saber la tasa real ni de
+        # confirmar cuántos son de doble partición. Con esto, en un mes el
+        # número está.
+        #
+        # Sin índice A PROPÓSITO: se lee por `id` (que ya es PK) y en batch para
+        # analizar. Un `CREATE INDEX` sobre una columna recién agregada es lo que
+        # tiró prod 20 minutos el 2026-08-02.
+        batch_cols = _table_cols(conn, 'import_batches')
+        if batch_cols and 'override_info' not in batch_cols:
+            conn.execute("ALTER TABLE import_batches ADD COLUMN override_info TEXT")
+
         # Mapping templates guardados por usuario. Sirve para reusar el mapeo
         # de columnas entre imports recurrentes (ej.: usuario que importa export
         # de IBKR mensualmente, mapea una vez y reusa).
@@ -28416,7 +28435,7 @@ def import_classify_tenencia(
 
 
 def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, current,
-                            seed_date, *, complete, currency="ARS"):
+                            seed_date, *, complete, currency="ARS", gate_over=False):
     """Modo OVERRIDE (la foto PISA): sobre `rec`, reduce lo que Rendi tiene de MÁS
     (over) y —si `complete`— elimina lo que la foto NO lista (not_in_snapshot), con
     ventas transfer_out que cierran a costo (P&L 0, sin cash). Guardas duras (el
@@ -28440,14 +28459,29 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
             (uid, *sibs)):
             sibling_assets.add(r["asset"])
 
+    # 🔴 SE SEPARAN LOS DOS MOTIVOS DE FRENO, y no es cosmético: "tiene datos a
+    # mano" y "el activo vive en la otra partición del par" son hipótesis
+    # DISTINTAS sobre por qué apareció el `over`, y la segunda es justo la que no
+    # se puede medir hoy (ver `override_info` más abajo). Mezcladas en una sola
+    # lista `unsafe`, el dato se perdía.
+    frenado_manual, frenado_sibling = [], []
+
     def _reducible(tk):
-        return _is_safe_to_rebuild(conn, uid, pair_l, tk) and tk not in sibling_assets
+        if tk in sibling_assets:
+            frenado_sibling.append(tk)
+            return False
+        if not _is_safe_to_rebuild(conn, uid, pair_l, tk):
+            frenado_manual.append(tk)
+            return False
+        return True
 
     unsafe, safe_over, safe_nis = [], [], []
     for tk, rq, sq in rec.over:
         (safe_over.append((tk, rq, sq)) if _reducible(tk) else unsafe.append(tk))
     for tk, rq in rec.not_in_snapshot:
         (safe_nis.append((tk, rq)) if _reducible(tk) else unsafe.append(tk))
+    # Lo que ENTRÓ, antes de cualquier guarda. Es el denominador que hoy falta.
+    over_visto = [{"ticker": tk, "rendi": rq, "foto": sq} for tk, rq, sq in rec.over]
     # not_in_snapshot sólo se BORRA si complete → sólo entonces cuenta para el cap.
     _nis_cut = safe_nis if complete else []
     total_inv = sum(abs(v) for tk, v in invested_by_asset.items() if tk not in sibling_assets) or 0.0
@@ -28479,7 +28513,24 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
         override_removed = ([{"ticker": tk, "qty": rq} for tk, rq in safe_nis] if complete else [])
         rec.over, rec.not_in_snapshot = safe_over, safe_nis
     override_info = {"reduced": override_reduced, "removed": override_removed,
-                     "skipped_manual": sorted(set(unsafe)), "capped": bool(capped)}
+                     # `skipped_manual` queda como estaba (el frontend ya lo usa):
+                     # es la unión de los dos frenos. El desglose va aparte.
+                     "skipped_manual": sorted(set(unsafe)), "capped": bool(capped),
+                     # ── Para MEDIR, no para mostrar ────────────────────────
+                     # Todo lo que las guardas frenaron y hoy no deja rastro.
+                     # `over_visto` es el `over` COMPLETO que entró: sin esto, el
+                     # único `over` observable es el que sobrevivió tres filtros.
+                     "over_visto": over_visto,
+                     "frenado": {"manual": sorted(set(frenado_manual)),
+                                 "sibling": sorted(set(frenado_sibling))},
+                     "cap": {"cut_inv": round(cut_inv, 4), "total_inv": round(total_inv, 4),
+                             "n_cut": n_cut, "n_current": n_current},
+                     "broker": broker, "currency": currency}
+    # El gate va ACÁ y no antes: `rec.over` ya pasó las guardas, así que se marca
+    # exactamente lo que se va a armar. Una casilla sobre algo que el cap o
+    # safe-to-rebuild ya sacaron es una decisión que no puede aplicarse.
+    if gate_over:
+        _import_tenencia.marcar_over(rec)
     mx = conn.execute(
         f"SELECT MAX(n.date) d FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
         f"WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL "
@@ -28857,7 +28908,13 @@ def import_tenencia_preview(
 
             seed_txs = []
             rec = _import_tenencia.ReconcileResult()
-            _ov = {"reduced": [], "removed": [], "skipped_manual": [], "capped": False}
+            # `particiones` guarda el `override_info` de CADA partición tal cual.
+            # 🔴 Los agregados de abajo son con PÉRDIDA (concatenan listas y hacen
+            # OR del cap), y el que va a medir necesita saber qué pasó en la pata
+            # en pesos y en la de dólares por separado — la hipótesis de doble
+            # partición se responde justamente comparando las dos.
+            _ov = {"reduced": [], "removed": [], "skipped_manual": [], "capped": False,
+                   "particiones": []}
             for ccy in ("ARS", "USD"):
                 hs = [h for h in snap.holdings if h.currency == ccy]
                 if not hs:
@@ -28925,7 +28982,7 @@ def import_tenencia_preview(
                 _import_tenencia.marcar_ausentes(r1)
                 p_seed, p_ov = _tenencia_apply_override(
                     conn, uid, sub, pair, r1, _cur_inv(sub), cur_q, seed_date,
-                    complete=_complete, currency=ccy)
+                    complete=_complete, currency=ccy, gate_over=es_contexto_asesor)
                 seed_txs += p_seed
                 rec.matched += r1.matched
                 rec.to_seed += r1.to_seed
@@ -28936,6 +28993,7 @@ def import_tenencia_preview(
                 _ov["removed"] += p_ov["removed"]
                 _ov["skipped_manual"] += p_ov["skipped_manual"]
                 _ov["capped"] = _ov["capped"] or p_ov["capped"]
+                _ov["particiones"].append(p_ov)
             override_info = _ov
             # row_index ÚNICO entre particiones: build_tenencia_seed_txs reinicia en
             # -20000 en cada llamada → ARS y USD colisionarían y load_session_for_confirm
@@ -28976,7 +29034,7 @@ def import_tenencia_preview(
                 # transfer_out reversibles + guardas + cap 50%).
                 seed_txs, override_info = _tenencia_apply_override(
                     conn, uid, broker, pair, rec, invested_by_asset, current,
-                    seed_date, complete=_complete)
+                    seed_date, complete=_complete, gate_over=es_contexto_asesor)
             else:
                 override_info = None
                 seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
@@ -29119,6 +29177,12 @@ def import_tenencia_preview(
             if _fund_overrides:
                 conn.execute("UPDATE import_batches SET fund_price_overrides=? WHERE id=?",
                              (json.dumps(_fund_overrides), sid))
+            # Lo que la foto DECIDIÓ, guardado con el batch. Se escribe SIEMPRE que
+            # haya override (no sólo cuando aplicó algo): un batch donde el cap
+            # frenó todo es justamente el que hoy no deja rastro.
+            if override_info:
+                conn.execute("UPDATE import_batches SET override_info=? WHERE id=?",
+                             (json.dumps(override_info, default=str), sid))
         return {
             "session_id": sid,
             "date": snap.date,

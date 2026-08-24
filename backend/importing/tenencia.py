@@ -538,6 +538,59 @@ def marcar_ausentes(rec: ReconcileResult) -> int:
     return marcados
 
 
+MOTIVO_OVER = "mas_que_la_foto"
+
+
+def marcar_over(rec: ReconcileResult) -> int:
+    """`over` pasa a decisión: la reducción queda ARMADA pero no se aplica sola.
+
+    🔴 SÓLO EN CONTEXTO ASESOR, y el criterio es el mismo que ya se usó para
+    `fecha_desconocida`: no es que el asesor merezca más cuidado, es que
+    prender esto para todos rompería un mecanismo que HOY FUNCIONA.
+
+    Medido sobre la copia de prod del 2026-08-16: de los 21 `over` reales que se
+    pudieron reconstruir, en 19 la foto tenía razón y el recorte fue correcto.
+    No apareció ni un caso donde `over` haya destruido una tenencia real. Poner
+    una casilla delante de eso, para los ~140 usuarios que suben su propia foto,
+    sería cambiar un mecanismo que acierta por fricción — y encima sobre gente
+    que en su mayoría no sabe qué contestar.
+
+    Lo que cambia en el flujo del asesor es la CONSECUENCIA: la reducción cae
+    sobre la cuenta de un tercero que no está mirando, y `over` es el único
+    balde cuya cantidad NO tiene respaldo independiente (`snapshots.holdings_json`
+    guarda `value_usd`, o sea composición, no cantidades — por eso la respuesta
+    lo rotula `sin_verificar_cantidad`).
+
+    ⚠️ CORRE SOBRE `rec.over` YA FILTRADO por las guardas, y tiene que seguir
+    así. Marcar antes dejaría casillas para activos que el cap o
+    `_is_safe_to_rebuild` ya sacaron: una decisión ofrecida que no puede
+    aplicarse. Ese bug ya existe con `marcar_ausentes` (ver el test
+    `test_con_el_cap_disparado_la_CASILLA_no_tiene_nada_que_aplicar`) y no hay
+    que repetirlo.
+
+    La venta se ARMA igual, así que aprobarla conserva todo lo que el override
+    hace bien (fecha de ajuste, cierre a costo, P&L 0, `transfer_out`). Cambia
+    quién decide, no qué pasa cuando se decide.
+    """
+    marcados = 0
+    for tk, rq, sq in rec.over:
+        if rq - sq <= 1e-9:
+            continue
+        rec.requieren_aprobacion.add(tk)
+        rec.no_reconciliable.append({
+            "ticker": tk, "motivo": MOTIVO_OVER,
+            "rendi_qty": round(float(rq), 6), "foto_qty": round(float(sq), 6),
+            "requiere_aprobacion": True,
+            "detalle": ("el resumen del broker dice {:g} y nosotros teníamos {:g}. "
+                        "Suele ser una venta que el archivo de movimientos no "
+                        "trajo. Ajustar deja {:g} — pero si el resumen no cubre "
+                        "todo, le saca algo que sí tiene. Por eso no se hace "
+                        "solo.").format(float(sq), float(rq), float(sq)),
+        })
+        marcados += 1
+    return marcados
+
+
 def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
                             seed_date: str, currency: str = "ARS",
                             override: bool = False, complete: bool = False,
