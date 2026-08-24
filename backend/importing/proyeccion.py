@@ -169,9 +169,30 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
 
 MOTIVO_NO_VERIFICA = "proyeccion_no_verifica"
 
+# 🔴 TRES ESTADOS, Y NINGUNO PUEDE COLAPSAR CON OTRO.
+#
+# Esto devolvía `None` para DOS cosas opuestas —"coincide" y "no había con qué
+# comparar"— y el endpoint las publicaba juntas como `verifica: true`. O sea que
+# el campo afirmaba una verificación que en la mitad de los casos no se hizo, y
+# justo en la dimensión donde alguien se apoyaría para confiar en un retroceso
+# largo.
+#
+# Se cazó corriendo una foto REAL de tres meses atrás contra una DB temporal:
+# el flag dio `true` con CERO snapshots del cron en la base. No es un caso de
+# laboratorio — una cuenta nueva, o cualquier fecha anterior al primer snapshot
+# del cron, cae ahí.
+#
+# `sin_referencia` NO es una buena noticia y no se puede presentar como tal:
+# significa que la comparación contra la foto no tiene respaldo independiente,
+# que es lo MISMO que dice `no_coincide` sobre la confianza a tenerle — cambia
+# el motivo, no la conclusión.
+ESTADO_OK = "verificado_ok"
+ESTADO_NO_COINCIDE = "no_coincide"
+ESTADO_SIN_REFERENCIA = "sin_referencia"
+
 
 def verificar_contra_snapshot(conn, uid: int, fecha: str,
-                              proyectado: Dict[str, float]) -> Optional[dict]:
+                              proyectado: Dict[str, float]) -> dict:
     """¿La proyección reproduce la composición que el cron estampó ese día?
 
     Es la prueba más dura disponible y sale gratis: `snapshots.holdings_json` con
@@ -179,7 +200,7 @@ def verificar_contra_snapshot(conn, uid: int, fecha: str,
     ledger ni de la foto del broker, la escribió el cron nocturno. Si el
     retroceso está bien, coincide.
 
-    Devuelve None si no hay con qué comparar, o el detalle del desacuerdo.
+    Devuelve SIEMPRE un dict con `estado` — ver los tres estados arriba.
 
     Validado contra la copia de prod del 2026-08-16 sobre 3.855 pares
     (usuario, fecha): **98,6% de composición exacta**, y 13 de 440 usuarios
@@ -201,25 +222,33 @@ def verificar_contra_snapshot(conn, uid: int, fecha: str,
     sintética, y "falta un activo", que crea un lote— son de composición.
     """
     import json as _json
+    _sin = lambda por: {  # noqa: E731
+        "estado": ESTADO_SIN_REFERENCIA, "motivo_sin_referencia": por,
+        "detalle": ("no hay un snapshot del cron con el que contrastar la "
+                    "proyección a esa fecha, así que la comparación contra la "
+                    "foto no tiene respaldo independiente. No quiere decir que "
+                    "esté bien: quiere decir que no se pudo comprobar."),
+    }
     fila = conn.execute(
         """SELECT date, holdings_json FROM snapshots
             WHERE user_id=? AND source='cron' AND date <= ?
               AND holdings_json IS NOT NULL AND holdings_json <> ''
             ORDER BY date DESC LIMIT 1""", (uid, str(fecha)[:10])).fetchone()
     if not fila:
-        return None
+        return _sin("no_hay_snapshot_del_cron_hasta_esa_fecha")
     try:
         esperado = {_norm(h.get("asset")) for h in _json.loads(fila["holdings_json"])
                     if h.get("asset")}
     except (ValueError, TypeError):
-        return None
+        return _sin("holdings_json_ilegible")
     if not esperado:
-        return None
+        return _sin("el_snapshot_no_lista_activos")
     obtenido = set(proyectado)
     falta, sobra = sorted(esperado - obtenido), sorted(obtenido - esperado)
     if not falta and not sobra:
-        return None
+        return {"estado": ESTADO_OK, "snapshot_fecha": fila["date"]}
     return {
+        "estado": ESTADO_NO_COINCIDE,
         "motivo": MOTIVO_NO_VERIFICA,
         "snapshot_fecha": fila["date"],
         "falta": falta[:20],   # el cron lo tenía y la proyección no

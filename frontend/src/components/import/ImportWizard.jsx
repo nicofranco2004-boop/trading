@@ -1878,10 +1878,14 @@ function ReconcileStep({ data, aprobados, onToggle }) {
   const nada = !seed.length && !over.length && !ausentes.length && !dudosos.length
     && !ov?.capped && !(ov?.skipped_manual || []).length
 
-  const Chip = ({ ok }) => (
+  // 🔴 EL CHIP NEGATIVO NECESITA SU PROPIO TEXTO. Decía siempre "sin verificar
+  // la cantidad", que para `to_seed`/`not_in_snapshot` es la frase equivocada —
+  // esos baldes son de COMPOSICIÓN. Y antes nunca se veía, porque `confianza`
+  // venía hardcodeada en "verificada_composicion".
+  const Chip = ({ ok, no = 'sin verificar' }) => (
     <span className={`text-[10px] px-1.5 py-0.5 rounded ${ok
       ? 'bg-blue-500/10 text-blue-400' : 'bg-amber-500/10 text-amber-500'}`}>
-      {ok ? 'verificado contra tu histórico' : 'sin verificar la cantidad'}
+      {ok ? 'verificado contra tu histórico' : no}
     </span>
   )
 
@@ -1896,6 +1900,22 @@ function ReconcileStep({ data, aprobados, onToggle }) {
             <span className="text-ink-3"> (la fecha salió del nombre del archivo)</span>
           )}
         </p>
+        {/* 🔴 "No lo pudimos comprobar" NO es una buena noticia, y hasta acá se
+            publicaba como `verifica: true` — el mismo valor que "comprobamos y
+            coincide". Se dice una vez, arriba, y con el tono que corresponde. */}
+        {data.fecha_origen === 'fallback_hoy' && (
+          <p className="text-xs text-amber-500 mt-1">
+            El archivo no traía fecha, así que comparamos contra tu cartera de HOY.
+            Si la foto es de otro día, lo que se compró o vendió en el medio va a
+            aparecer como diferencia.
+          </p>
+        )}
+        {data.proyeccion?.estado === 'sin_referencia' && (
+          <p className="text-xs text-amber-500 mt-1">
+            No pudimos contrastar esto contra tu histórico: no tenemos un registro
+            nuestro de esa fecha. Puede estar bien — pero no lo comprobamos.
+          </p>
+        )}
       </div>
 
       {nada && (
@@ -1940,7 +1960,7 @@ function ReconcileStep({ data, aprobados, onToggle }) {
                    ? ('El resumen de tu broker dice menos que lo que teníamos: ajustamos, '
                       + 'y puede que falte una venta en el archivo.')
                    : 'El resumen de tu broker dice menos que lo que teníamos. No los tocamos.'}
-                 chip={<Chip ok={conf.over === 'verificada_composicion'} />} tono="warn">
+                 chip={<Chip ok={false} no="sin verificar la cantidad" />} tono="warn">
           {over.map(x => (
             <RecFila key={`o-${x.ticker}`} tk={x.ticker}
                   detalle={`teníamos ${x.rendi} · resumen ${x.tenencia}`

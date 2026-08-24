@@ -142,16 +142,71 @@ class ReconcileE2ETest(unittest.TestCase):
         motivos = {x["ticker"]: x["motivo"] for x in j["no_reconciliable"] if x.get("ticker")}
         self.assertEqual(motivos.get("NVDA"), "datos_manuales")
 
+    def _snapshot_del_cron(self, fecha, activos):
+        """Estampa un snapshot del cron — la referencia INDEPENDIENTE contra la
+        que se verifica la proyección. Sin esto no hay nada que verificar, y ese
+        es justamente el caso que este test tenía que distinguir y no distinguía.
+        """
+        import json as _json
+        conn = main.get_db()
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, source, holdings_json, "
+            "total_value, total_invested) VALUES (?,?,'cron',?,0,0)",
+            (self.uid, fecha, _json.dumps([{"asset": a, "value_usd": 1} for a in activos])))
+        conn.commit(); conn.close()
+
     def test_los_baldes_NO_se_presentan_con_la_misma_confianza(self):
         # La verificación contra el snapshot del cron compara COMPOSICIÓN, no
         # cantidades. Respalda `to_seed` y `not_in_snapshot`; no respalda `over`,
         # que es justo el que puede reducir una tenencia.
+        #
+        # ⚠️ EL SNAPSHOT NO ES DECORADO. Antes este test corría sin ninguno y
+        # pasaba igual, porque `confianza` estaba HARDCODEADA: afirmaba
+        # "verificada_composicion" sin que se hubiera verificado nada. El test
+        # daba verde midiendo una constante.
         self._importar_movimientos()
+        self._snapshot_del_cron(FOTO, ["MELI", "GGAL", "YPFD", "AAPL"])
         j = self._subir_foto()
+        self.assertEqual(j["proyeccion"]["estado"], "verificado_ok")
         conf = j["confianza"]
         self.assertEqual(conf["not_in_snapshot"], "verificada_composicion")
         self.assertEqual(conf["to_seed"], "verificada_composicion")
         self.assertEqual(conf["over"], "sin_verificar_cantidad")
+
+    # ── los tres estados, que antes eran uno ────────────────────────────────
+    def test_SIN_snapshot_no_dice_que_verifico(self):
+        # 🔴 El bug. Sin un snapshot del cron no hay con qué contrastar, y eso
+        # salía como `verifica: true` — el MISMO valor que "comprobamos y
+        # coincide". Se cazó con una foto real de tres meses atrás.
+        self._importar_movimientos()
+        j = self._subir_foto()
+        self.assertEqual(j["proyeccion"]["estado"], "sin_referencia")
+        self.assertIn("no se pudo comprobar", j["proyeccion"]["detalle"])
+        # …y la confianza de los baldes de composición TIENE que caerse con él.
+        self.assertEqual(j["confianza"]["to_seed"], "sin_verificar_composicion")
+        self.assertEqual(j["confianza"]["not_in_snapshot"], "sin_verificar_composicion")
+
+    def test_cuando_NO_coincide_lo_dice_y_va_a_decision(self):
+        # El tercer estado: hubo referencia y NO coincidió. Ése sí es un ítem a
+        # decidir, y no puede confundirse con los otros dos.
+        self._importar_movimientos()
+        self._snapshot_del_cron(FOTO, ["MELI", "GGAL", "YPFD", "AAPL", "FANTASMA"])
+        j = self._subir_foto()
+        self.assertEqual(j["proyeccion"]["estado"], "no_coincide")
+        motivos = {x.get("motivo") for x in j["no_reconciliable"]}
+        self.assertIn("proyeccion_no_verifica", motivos)
+        self.assertEqual(j["confianza"]["to_seed"], "sin_verificar_composicion")
+
+    def test_los_tres_estados_son_DISTINTOS_entre_si(self):
+        # El punto entero: que no puedan colapsar. Si alguien vuelve a mapear
+        # dos de ellos al mismo valor, esto cae.
+        from importing import proyeccion as pr
+        estados = {pr.ESTADO_OK, pr.ESTADO_NO_COINCIDE, pr.ESTADO_SIN_REFERENCIA}
+        self.assertEqual(len(estados), 3)
+        # Y ninguno es un booleano disfrazado.
+        for e in estados:
+            self.assertIsInstance(e, str)
+            self.assertNotIn(e, ("true", "false", "True", "False"))
 
 
 if __name__ == "__main__":

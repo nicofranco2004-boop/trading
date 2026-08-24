@@ -18,7 +18,8 @@ import unittest
 import uuid
 
 import main
-from importing.proyeccion import (MOTIVO_MANUAL, MOTIVO_SPLIT, MOTIVO_VENCIMIENTO,
+from importing.proyeccion import (ESTADO_NO_COINCIDE, ESTADO_OK, ESTADO_SIN_REFERENCIA,
+                                  MOTIVO_MANUAL, MOTIVO_SPLIT, MOTIVO_VENCIMIENTO,
                                   proyectar, verificar_contra_snapshot)
 
 HOY = "2026-08-16"
@@ -170,10 +171,12 @@ class ProyeccionTest(unittest.TestCase):
              source))
         self.conn.commit()
 
-    def test_si_la_composicion_coincide_no_dice_nada(self):
+    def test_si_la_composicion_coincide_lo_dice(self):
         self._snap("2026-06-30", ["AAPL", "TSLA"])
-        self.assertIsNone(verificar_contra_snapshot(
-            self.conn, self.uid, "2026-06-30", {"AAPL": 1.0, "TSLA": 2.0}))
+        r = verificar_contra_snapshot(self.conn, self.uid, "2026-06-30",
+                                      {"AAPL": 1.0, "TSLA": 2.0})
+        self.assertEqual(r["estado"], ESTADO_OK)
+        self.assertEqual(r["snapshot_fecha"], "2026-06-30")
 
     def test_marca_lo_que_SOBRA_en_la_proyeccion(self):
         # El caso peligroso: la proyección afirma una tenencia que la referencia
@@ -190,16 +193,52 @@ class ProyeccionTest(unittest.TestCase):
         self.assertEqual(r["falta"], ["KO"])
 
     def test_sin_snapshot_del_cron_no_inventa_un_veredicto(self):
-        # Falla ABIERTO a propósito: "no pude verificar" no es "está mal".
-        self.assertIsNone(verificar_contra_snapshot(
-            self.conn, self.uid, "2026-06-30", {"AAPL": 1.0}))
+        # Falla ABIERTO: "no pude verificar" no es "está mal". Pero TAMPOCO es
+        # "está bien", y esa es la parte que faltaba.
+        r = verificar_contra_snapshot(self.conn, self.uid, "2026-06-30", {"AAPL": 1.0})
+        self.assertEqual(r["estado"], ESTADO_SIN_REFERENCIA)
+        self.assertEqual(r["motivo_sin_referencia"],
+                         "no_hay_snapshot_del_cron_hasta_esa_fecha")
 
     def test_un_snapshot_que_NO_es_del_cron_no_sirve_de_referencia(self):
         # Los de `source='import'` son copias del capital_final, no mediciones
         # independientes: usarlos sería verificarse contra uno mismo.
         self._snap("2026-06-30", ["AAPL"], source="import")
-        self.assertIsNone(verificar_contra_snapshot(
-            self.conn, self.uid, "2026-06-30", {"OTRO": 1.0}))
+        r = verificar_contra_snapshot(self.conn, self.uid, "2026-06-30", {"OTRO": 1.0})
+        self.assertEqual(r["estado"], ESTADO_SIN_REFERENCIA)
+
+    def test_COINCIDE_y_SIN_REFERENCIA_no_pueden_dar_lo_mismo(self):
+        """🔴 El bug que este archivo tenía escrito y no veía.
+
+        Hasta acá, `test_si_la_composicion_coincide_no_dice_nada` y
+        `test_sin_snapshot_del_cron_no_inventa_un_veredicto` afirmaban los DOS
+        `assertIsNone(...)`. O sea que los tests documentaban que "verifiqué y
+        coincide" y "no tenía con qué verificar" salían por el mismo valor — y
+        el endpoint los publicaba juntos como `verifica: true`.
+
+        Se destapó corriendo una foto REAL de tres meses atrás contra una base
+        sin snapshots del cron: el flag dio `true` sin haber comprobado nada.
+        """
+        self._snap("2026-06-30", ["AAPL"])
+        coincide = verificar_contra_snapshot(self.conn, self.uid, "2026-06-30", {"AAPL": 1.0})
+        sin_ref = verificar_contra_snapshot(self.conn, self.uid, "2020-01-01", {"AAPL": 1.0})
+        self.assertNotEqual(coincide["estado"], sin_ref["estado"])
+        self.assertEqual(coincide["estado"], ESTADO_OK)
+        self.assertEqual(sin_ref["estado"], ESTADO_SIN_REFERENCIA)
+        # Y el tercero tampoco puede confundirse con ninguno de los dos.
+        no_coincide = verificar_contra_snapshot(
+            self.conn, self.uid, "2026-06-30", {"FANTASMA": 1.0})
+        self.assertEqual(no_coincide["estado"], ESTADO_NO_COINCIDE)
+        self.assertEqual(len({coincide["estado"], sin_ref["estado"],
+                              no_coincide["estado"]}), 3)
+
+    def test_sin_referencia_NUNCA_se_presenta_como_tranquilizador(self):
+        # El texto que ve una persona no puede sonar a "todo bien".
+        r = verificar_contra_snapshot(self.conn, self.uid, "2026-06-30", {"AAPL": 1.0})
+        d = r["detalle"].lower()
+        self.assertIn("no se pudo comprobar", d)
+        for tranquilizador in ("todo bien", "coincide", "verificado", "correcto"):
+            self.assertNotIn(tranquilizador, d)
 
 
 if __name__ == "__main__":

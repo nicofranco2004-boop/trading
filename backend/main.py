@@ -29125,11 +29125,28 @@ def import_tenencia_preview(
         if _proy_no_rec:
             rec.no_reconciliable += _proy_no_rec
         if fecha_origen != "fallback_hoy":
-            _falla = _import_proyeccion.verificar_contra_snapshot(
+            _ver = _import_proyeccion.verificar_contra_snapshot(
                 conn, uid, seed_date, current)
-            proy_info = {"fecha": seed_date, "verifica": _falla is None}
-            if _falla:
-                rec.no_reconciliable.append(_falla)
+            # 🔴 `estado`, NO un booleano. Antes esto era `verifica: _falla is
+            # None`, y `None` significaba DOS cosas opuestas: "coincide" y "no
+            # había con qué comparar". El campo afirmaba una verificación que en
+            # el segundo caso no existió.
+            proy_info = {"fecha": seed_date, "estado": _ver["estado"],
+                         "snapshot_fecha": _ver.get("snapshot_fecha"),
+                         "detalle": _ver.get("detalle"),
+                         "motivo_sin_referencia": _ver.get("motivo_sin_referencia")}
+            # Sólo el DESACUERDO es un ítem a decidir. `sin_referencia` no es un
+            # activo dudoso: es que toda la comparación quedó sin respaldo, y eso
+            # se dice una vez arriba, no una vez por activo.
+            if _ver["estado"] == _import_proyeccion.ESTADO_NO_COINCIDE:
+                rec.no_reconciliable.append(_ver)
+
+        # La composición sólo está "verificada" si el cron efectivamente tenía
+        # con qué contrastar Y coincidió. Sin proyección (fecha inventada) o sin
+        # snapshot de referencia, no se verificó nada.
+        _conf_composicion = ("verificada_composicion"
+                             if (proy_info or {}).get("estado") == _import_proyeccion.ESTADO_OK
+                             else "sin_verificar_composicion")
 
         _warnings = list(getattr(snap, "warnings", []) or [])
         _foto_completa = not _warnings
@@ -29209,9 +29226,16 @@ def import_tenencia_preview(
             #
             # Presentarlos con la misma seguridad sería afirmar una confianza
             # que no medimos. El frontend usa esto para diferenciarlos.
+            # 🔴 SALE DEL ESTADO REAL, NO DE UNA CONSTANTE. Esto estaba
+            # HARDCODEADO en "verificada_composicion", así que el chip decía
+            # "verificado contra tu histórico" SIEMPRE — incluso cuando no había
+            # un solo snapshot del cron con el que contrastar, o cuando la fecha
+            # cayó al reloj del servidor y no hubo proyección ninguna. Es el
+            # mismo error que el `verifica` booleano, un nivel más arriba: la
+            # señal decía OK y medía otra cosa.
             "confianza": {
-                "to_seed": "verificada_composicion",
-                "not_in_snapshot": "verificada_composicion",
+                "to_seed": _conf_composicion,
+                "not_in_snapshot": _conf_composicion,
                 "over": "sin_verificar_cantidad",
                 "detalle": ("la verificación contra el snapshot del cron compara "
                             "QUÉ activos había, no CUÁNTOS: `holdings_json` guarda "
