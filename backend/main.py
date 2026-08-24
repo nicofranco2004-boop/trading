@@ -28063,6 +28063,7 @@ from importing import rebuild as _import_rebuild
 from importing import maturity as _import_maturity
 from importing import recompute_backfill as _import_recompute
 from importing import tenencia as _import_tenencia
+from importing import proyeccion as _import_proyeccion
 from importing import excel as _import_excel
 from importing.parsers.registry import get_parser as _get_parser
 import wallbit as _wallbit
@@ -28443,6 +28444,43 @@ def import_tenencia_preview(
         seed_date = (snap.date or _fecha_nombre
                      or _import_excel.datetime.now().strftime("%Y-%m-%d"))
         override_info = None   # sólo lo puebla el path OVERRIDE de Balanz
+        # Inicializado ANTES de la bifurcación: la respuesta es común a los dos
+        # caminos y definirlo adentro de uno daba NameError en el otro.
+        proy_info = None
+        _proy_no_rec: List[dict] = []
+        # La tenencia proyectada a nivel PAR, que los dos caminos pueblan y el
+        # bloque comun de abajo verifica. Inicializada antes de la bifurcacion:
+        # definirla adentro de una rama daba UnboundLocalError en la otra —
+        # exactamente el mismo bug que `proy_info`, dos veces en el mismo sitio.
+        current: dict = {}
+
+        def _qty_a_fecha(brokers):
+            """Cuánto tenía en esos brokers A LA FECHA DE LA FOTO.
+
+            🔴 ES EL OTRO LADO DE LA COMPARACIÓN. `compute_reconcile` mide
+            contra el estado de HOY, y eso vale sólo si la foto ES de hoy. Con
+            movimientos posteriores al corte, toda compra sale como "Rendi tiene
+            de más" y toda venta como un falso "coincide" — y el asesor termina
+            decidiendo sobre una discrepancia que no existe.
+
+            Sólo proyecta con una fecha REAL. Si cayó al reloj del servidor
+            devuelve el estado actual: rodar hacia atrás hasta una fecha
+            inventada es peor que no rodar. (En contexto de asesor ese caso ya
+            cortó antes con `fecha_desconocida`.)
+            """
+            if fecha_origen == "fallback_hoy":
+                d = {}
+                _ph = ",".join("?" * len(brokers))
+                for r in conn.execute(
+                        f"SELECT asset, SUM(quantity) q FROM positions "
+                        f"WHERE user_id=? AND is_cash=0 AND broker IN ({_ph}) "
+                        f"GROUP BY asset", (uid, *brokers)):
+                    d[r["asset"]] = (r["q"] or 0)
+                return d
+            q_, nr_ = _import_proyeccion.proyectar(
+                conn, uid, pair=list(brokers), fecha=seed_date)
+            _proy_no_rec.extend(nr_)
+            return q_
 
         # 🔴 CON EL ASESOR, LA VARA ES OTRA — Y NO PORQUE MEREZCA MÁS CUIDADO.
         # Es que la CONSECUENCIA es distinta. Cuando alguien sube su propia foto,
@@ -28475,15 +28513,11 @@ def import_tenencia_preview(
             # mezclar magnitudes USD en el cash ARS del padre) y —clave— el override
             # SÍ toca los holdings en dólares (antes el path agregado los saltaba por
             # la guarda same-broker → la foto no pisaba nada en USD).
+            # Proyectado a la fecha de la foto (ver `_qty_a_fecha`), no el
+            # estado de hoy: sin esto una compra posterior al corte aparece
+            # como discrepancia contra el broker.
             def _cur_qty(bname):
-                d = {}
-                for r in conn.execute(
-                    "SELECT asset, SUM(quantity) q FROM positions "
-                    "WHERE user_id=? AND is_cash=0 AND broker=? GROUP BY asset",
-                    (uid, bname),
-                ):
-                    d[r["asset"]] = (r["q"] or 0)
-                return d
+                return _qty_a_fecha([bname])
 
             from importing.persister import broker_pair as _broker_pair
             pair = _broker_pair(conn, uid, broker)
@@ -28572,13 +28606,8 @@ def import_tenencia_preview(
             # de más un activo cross-currency: si la foto lo clasifica en la moneda X
             # pero Rendi lo tiene en la Y, la partición X vería gap=qty y sembraría un
             # BUY duplicado (padre + sibling = ×2). Descontamos lo ya tenido en el par.
-            _pair_qty = {}
-            _pph = ",".join("?" * len(pair))
-            for r in conn.execute(
-                f"SELECT asset, SUM(quantity) q FROM positions "
-                f"WHERE user_id=? AND is_cash=0 AND broker IN ({_pph}) GROUP BY asset",
-                (uid, *pair)):
-                _pair_qty[r["asset"]] = (r["q"] or 0)
+            _pair_qty = _qty_a_fecha(pair)
+            current = _pair_qty
 
             def _cur_inv(bname):
                 d = {}
@@ -28644,6 +28673,8 @@ def import_tenencia_preview(
             ):
                 current[r["asset"]] = current.get(r["asset"], 0.0) + (r["q"] or 0)
                 invested_by_asset[r["asset"]] = invested_by_asset.get(r["asset"], 0.0) + (r["inv"] or 0)
+            # Proyectado a la fecha de la foto (ver `_qty_a_fecha`).
+            current = _qty_a_fecha(pair)  # proyectado a la fecha de la foto
             rec = _import_tenencia.compute_reconcile(
                 current, snap, no_reconciliable_motivo=motivo_corte)
 
@@ -28746,6 +28777,18 @@ def import_tenencia_preview(
         # Completitud de la lectura (sólo la puebla el parser de IEB por ahora): si
         # hay warnings, la foto es PARCIAL → el override NO borró not_in_snapshot
         # (complete=False arriba). El frontend lo muestra.
+        # Lo que la proyección no pudo rodar hacia atrás (manual, vencimiento,
+        # split) entra al MISMO balde que el resto: el asesor ve una sola lista
+        # de "de esto no sé", no dos mecanismos distintos.
+        if _proy_no_rec:
+            rec.no_reconciliable += _proy_no_rec
+        if fecha_origen != "fallback_hoy":
+            _falla = _import_proyeccion.verificar_contra_snapshot(
+                conn, uid, seed_date, current)
+            proy_info = {"fecha": seed_date, "verifica": _falla is None}
+            if _falla:
+                rec.no_reconciliable.append(_falla)
+
         _warnings = list(getattr(snap, "warnings", []) or [])
         _foto_completa = not _warnings
         # Si no hay txs PERO sí hay FCI para fijar el valor, igual creamos el batch:
@@ -28796,6 +28839,31 @@ def import_tenencia_preview(
             "over": [{"ticker": t, "rendi": rq, "tenencia": tq} for t, rq, tq in rec.over],
             "not_in_snapshot": [{"ticker": t, "qty": q} for t, q in rec.not_in_snapshot],
             "override": override_info,
+            # 🔴 LOS BALDES NO VALEN LO MISMO Y NO PUEDEN MOSTRARSE IGUAL.
+            # La guarda que respalda la proyección (`verificar_contra_snapshot`)
+            # compara COMPOSICIÓN, porque `snapshots.holdings_json` guarda
+            # `value_usd` y no cantidades. O sea:
+            #
+            #   · `not_in_snapshot` y `to_seed` son de COMPOSICIÓN —¿está el
+            #     activo o no?— y la verificación los respalda de lleno: 98,6%
+            #     de composición exacta sobre 3.855 pares (usuario, fecha).
+            #   · `over` es de CANTIDAD —¿cuánto hay?— y la verificación NO lo
+            #     mira. Y es justo el balde que puede terminar REDUCIENDO una
+            #     tenencia.
+            #
+            # Presentarlos con la misma seguridad sería afirmar una confianza
+            # que no medimos. El frontend usa esto para diferenciarlos.
+            "confianza": {
+                "to_seed": "verificada_composicion",
+                "not_in_snapshot": "verificada_composicion",
+                "over": "sin_verificar_cantidad",
+                "detalle": ("la verificación contra el snapshot del cron compara "
+                            "QUÉ activos había, no CUÁNTOS: `holdings_json` guarda "
+                            "valor en USD. Por eso `over` —el único balde que "
+                            "depende de cantidades, y el que puede reducir una "
+                            "tenencia— queda sin respaldo independiente."),
+            },
+            "proyeccion": proy_info,
             # Lo que le hicimos a los tickers de la foto antes de compararlos.
             # Viaja SIEMPRE, aunque esté vacío: una transformación silenciosa
             # sobre los datos de alguien es lo que este flujo existe para evitar.
