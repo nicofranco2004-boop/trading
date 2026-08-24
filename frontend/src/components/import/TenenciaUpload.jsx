@@ -177,6 +177,20 @@ export default function TenenciaUpload({
                 <p className="mt-1 text-ink-3">Por eso no sacamos posiciones por ‘ausencia’ esta vez.</p>
               </div>
             )}
+            {/* AUDIT D-3: canal PROPIO. Estos avisos son de escala del aporte de
+                apertura, no de completitud de la lectura — meterlos en el bloque
+                de arriba les colgaba la frase "por eso no sacamos posiciones por
+                ausencia", que es falsa: el borrado ya se decidió con los warnings
+                del parser, y tres líneas más abajo el cartel de not_in_snapshot
+                dice justamente "los que correspondía los sacamos". */}
+            {(preview.avisos_escala?.length > 0) && (
+              <div className="rounded-md border border-rendi-warn/40 bg-rendi-warn/10 p-2.5 mb-2 text-xs text-rendi-warn">
+                <p className="font-medium mb-1">Este monto no nos cuadra:</p>
+                <ul className="list-disc pl-4 space-y-0.5">
+                  {preview.avisos_escala.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </div>
+            )}
             {(preview.not_in_snapshot?.length > 0) && (
               <p className="text-xs text-rendi-warn mb-2">
                 ⚠ Tenés {preview.not_in_snapshot.length} activo(s) en Rendi que no están en {docLabel} (¿vendidos?). {(preview.override?.removed?.length > 0) ? 'Los que correspondía los sacamos (ver arriba).' : 'No los tocamos.'}

@@ -297,3 +297,74 @@ class PpiTenenciaTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SeedPlausibilityTest(unittest.TestCase):
+    """AUDIT D-3: el aporte de apertura de una foto tiene que tener escala creíble.
+
+    Caso real (user 329): una foto de IEB sembró un aporte de US$1.700.854.139
+    en una cuenta cuya cartera valía ~US$18.300 — archivo de un broker sembrado
+    en otro, con los precios en pesos estampados como USD. Nada lo miró:
+    `build_tenencia_seed_txs` calcula Σ(cantidad × price_per1) sin ver la moneda
+    ni el tamaño de lo que ya existe, y el validator del import sólo exige > 0.
+    """
+
+    def test_caza_el_caso_real_del_329(self):
+        from importing.tenencia import seed_plausibility_warning
+        w = seed_plausibility_warning(1700854139.09, 18300.0, "USD", "Cocos · USD")
+        self.assertIsNotNone(w)
+        self.assertIn("Cocos · USD", w)
+        self.assertIn("otra moneda", w)
+
+    def test_pesos_se_normalizan_a_usd_antes_de_comparar(self):
+        """B3: los umbrales están en DÓLARES. Sin convertir, el piso de 100.000
+        quedaba en ~US$66 para una partición en pesos y el guard gritaba sobre el
+        import argentino más común — un guard que grita siempre deja de leerse."""
+        from importing.tenencia import seed_plausibility_warning
+        TC = 1520.0
+        # Cuenta AR normal: 15M ARS (~US$9.870) sobre 205k ARS de costo → mudo.
+        self.assertIsNone(seed_plausibility_warning(15_000_000.0, 205_000.0, "ARS", "Cocos", fx_usd=TC))
+        # Cuenta AR nueva con una apertura de ~US$6.578 → mudo.
+        self.assertIsNone(seed_plausibility_warning(10_000_000.0, 0.0, "ARS", "Cocos", fx_usd=TC))
+        # La misma cuenta con el monto roto del caso real → avisa igual.
+        self.assertIsNotNone(seed_plausibility_warning(1_700_854_139.09, 205_000.0, "ARS", "Cocos", fx_usd=TC))
+        # Sin fx (o fx inválido) no explota: cae a 1.0.
+        for bad in (0, -3, None, "x"):
+            seed_plausibility_warning(1_700_854_139.09, 18_300.0, "USD", "B", fx_usd=bad)
+
+    def test_la_nota_del_seed_es_una_constante_compartida(self):
+        """B2: es lo ÚNICO que distingue el DEPOSITO de apertura del DEPOSIT del
+        true-up de cash, que también es OP_DEPOSIT y viaja en la misma lista."""
+        from importing.tenencia import (TENENCIA_SEED_DEPOSIT_NOTE, build_tenencia_seed_txs,
+                                        compute_reconcile, TenenciaSnapshot, Holding)
+        from importing.schema import OP_DEPOSIT
+        h = Holding(ticker="GGAL", asset_type="STOCK", quantity=10.0,
+                    value=1000.0, currency="ARS", price_per1=100.0)
+        txs = build_tenencia_seed_txs(
+            "Cocos", compute_reconcile({}, TenenciaSnapshot(holdings=[h])), "2026-08-07")
+        dep = [t for t in txs if t.operation_type == OP_DEPOSIT]
+        self.assertEqual(len(dep), 1)
+        self.assertEqual(dep[0].notes, TENENCIA_SEED_DEPOSIT_NOTE)
+
+    def test_apertura_legitima_no_molesta(self):
+        """Una foto que llena un hueco grande es lo NORMAL: viene a aportar lo que
+        Rendi no tenía. El umbral busca errores de escala, no de encuadre."""
+        from importing.tenencia import seed_plausibility_warning
+        # 10x lo conocido: una apertura real perfectamente posible.
+        self.assertIsNone(seed_plausibility_warning(150000.0, 15000.0, "USD", "IEB"))
+        # Cuenta chica: cualquier múltiplo es ruido, no avisamos.
+        self.assertIsNone(seed_plausibility_warning(50000.0, 10.0, "USD", "Cocos"))
+
+    def test_sin_historial_solo_avisa_si_es_absurdo(self):
+        from importing.tenencia import seed_plausibility_warning
+        # Cuenta nueva con una apertura grande pero creíble → sin aviso.
+        self.assertIsNone(seed_plausibility_warning(500000.0, 0.0, "USD", "IEB"))
+        # Cuenta nueva con un monto que no puede ser → aviso.
+        w = seed_plausibility_warning(1700854139.09, 0.0, "USD", "Cocos · USD")
+        self.assertIsNotNone(w)
+        self.assertIn("no hay historial", w)
+
+    def test_no_explota_con_basura(self):
+        from importing.tenencia import seed_plausibility_warning
+        for total, base in ((None, 100.0), ("x", 100.0), (0, 0), (-5, 100.0)):
+            self.assertIsNone(seed_plausibility_warning(total, base, "USD", "B"))

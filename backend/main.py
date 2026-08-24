@@ -28543,6 +28543,7 @@ from importing import maturity as _import_maturity
 from importing import recompute_backfill as _import_recompute
 from importing import tenencia as _import_tenencia
 from importing import excel as _import_excel
+from importing import schema as _import_schema
 from importing.parsers.registry import get_parser as _get_parser
 import wallbit as _wallbit
 
@@ -29167,13 +29168,58 @@ def import_tenencia_preview(
         # hay warnings, la foto es PARCIAL → el override NO borró not_in_snapshot
         # (complete=False arriba). El frontend lo muestra.
         _warnings = list(getattr(snap, "warnings", []) or [])
+        # `foto_completa` significa "el PARSER leyó la foto entera" y se calcula
+        # ANTES de cualquier otro aviso: mezclarle avisos de otra naturaleza le
+        # cambia el significado al flag y, peor, mete el texto en el bloque de la
+        # UI que dice "por eso no sacamos posiciones por ausencia" — que sería
+        # falso, porque el gate real del borrado (`_complete`) ya se decidió 150
+        # líneas más arriba, desde `snap.warnings`.
         _foto_completa = not _warnings
+
+        # AUDIT D-3: aviso de ESCALA del aporte de apertura, en su propio canal.
+        # El seed sintético se calcula como Σ(cantidad × price_per1) SIN mirar la
+        # moneda ni el tamaño de lo que ya existe, y en todo el camino de import no
+        # hay una sola cota de magnitud sobre un flujo. Así entró el aporte de
+        # US$1.700.854.139 del user 329 (foto de IEB sembrada en Cocos, con los
+        # price_per1 en pesos estampados como USD). Avisa, no bloquea: un tope duro
+        # rompería a un usuario grande legítimo, y quien mira la foto puede decidir.
+        _avisos_escala: List[str] = []
+        # Los umbrales del guard están en DÓLARES; la partición en pesos hay que
+        # normalizarla o el piso queda en ~US$66 y grita en cada import argentino.
+        _tc_row = conn.execute(
+            "SELECT value FROM config WHERE user_id=? AND key='tc_mep'", (uid,)).fetchone()
+        try:
+            _tc_guard = float(_tc_row["value"]) if (_tc_row and _tc_row["value"]) else 0.0
+        except (TypeError, ValueError):
+            _tc_guard = 0.0
+        if _tc_guard <= 0:
+            _tc_guard = _user_tc_blue(conn, uid)
+        for _stx in seed_txs:
+            # SÓLO el DEPOSITO de apertura. El true-up de cash
+            # (`build_cash_trueup_txs`) también es OP_DEPOSIT y viaja en la misma
+            # lista: sin este filtro, una foto que sólo corrige el efectivo salía
+            # rotulada como "aporte de apertura" con una sugerencia que no aplica.
+            if (_stx.operation_type != _import_schema.OP_DEPOSIT
+                    or not _stx.gross_amount
+                    or _stx.notes != _import_tenencia.TENENCIA_SEED_DEPOSIT_NOTE):
+                continue
+            _base = float(conn.execute(
+                "SELECT COALESCE(SUM(COALESCE(invested,0) + COALESCE(commissions,0)), 0) AS s "
+                "FROM positions WHERE user_id=? AND broker=?",
+                (uid, _stx.broker)).fetchone()["s"] or 0)
+            _ccy = (_stx.currency or "ARS").upper()
+            _w = _import_tenencia.seed_plausibility_warning(
+                _stx.gross_amount, _base, _ccy, _stx.broker,
+                fx_usd=(_tc_guard if _ccy == "ARS" else 1.0))
+            if _w:
+                _avisos_escala.append(_w)
         # Si no hay txs PERO sí hay FCI para fijar el valor, igual creamos el batch:
         # el precio de la foto de esos fondos hay que estamparlo aunque las cantidades
         # y el cash ya coincidan (el valor mostrado seguiría a costo si no).
         if not seed_txs and not _fund_overrides:
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "foto_completa": _foto_completa, "warnings": _warnings,
+                    "avisos_escala": _avisos_escala,
                     "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}
         with conn:
             sid = _import_pipeline.store_preview_txs(
@@ -29188,6 +29234,7 @@ def import_tenencia_preview(
             "matched": len(rec.matched),
             "foto_completa": _foto_completa,
             "warnings": _warnings,
+            "avisos_escala": _avisos_escala,
             "to_seed": [{"ticker": h.ticker, "type": h.asset_type, "qty": gap,
                          "price": round(h.price_per1, 4), "value": round(gap * h.price_per1, 2),
                          "currency": h.currency} for h, gap in rec.to_seed],

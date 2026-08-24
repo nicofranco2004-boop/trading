@@ -164,6 +164,12 @@ def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
     return res
 
 
+# Nota del DEPOSITO de apertura. Es lo ÚNICO que lo distingue del DEPOSIT del
+# true-up de cash (`build_cash_trueup_txs`), que también es OP_DEPOSIT y viaja en
+# el mismo `seed_txs`: filtrar sólo por operation_type mezcla los dos.
+TENENCIA_SEED_DEPOSIT_NOTE = "Tenencia — aporte inicial sintético (Rendi)"
+
+
 def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
                             seed_date: str, currency: str = "ARS",
                             override: bool = False, complete: bool = False,
@@ -196,7 +202,7 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
         txs.append(NormalizedTx(
             row_index=idx, date=seed_date, broker=broker,
             operation_type=OP_DEPOSIT, gross_amount=total, currency=currency,
-            notes="Tenencia — aporte inicial sintético (Rendi)"))
+            notes=TENENCIA_SEED_DEPOSIT_NOTE))
         idx += 1
     for h, gap in reconcile.to_seed:
         txs.append(NormalizedTx(
@@ -1451,3 +1457,88 @@ def parse_inviu_tenencia(rows) -> TenenciaSnapshot:
 
     _warn_empty()
     return snap
+
+
+# ─── Guard de plausibilidad del seed sintético ───────────────────────────────
+# Nace del user 329: una foto de IEB sembró un "aporte inicial sintético" de
+# US$1.700.854.139 en una cuenta cuya cartera valía ~US$18.300, y le dejó la
+# pantalla de Reportes en "−200% / −US$1.700.868.676".
+#
+# Dos cosas fallaron a la vez y ninguna tenía red:
+#   1. la foto se importó al broker equivocado (archivo de IEB → broker Cocos);
+#   2. los `price_per1` venían en PESOS y la partición los estampó como USD
+#      (main.py: `sub = broker if ccy == "ARS" else usd_broker`, `currency=ccy`),
+#      así que el seed quedó ~1520× inflado. Las otras filas del MISMO batch sí
+#      se convirtieron — o sea el error es de esa rama, no del archivo.
+#
+# `build_tenencia_seed_txs` calcula `total = Σ(gap × price_per1)` sin mirar
+# NUNCA la moneda ni el tamaño de lo que ya existe. Y en todo el camino de
+# import no hay una sola cota de magnitud sobre un flujo (validator.py sólo
+# exige `> 0`), así que el número entró al libro sin que nada lo mirara.
+#
+# Esto NO bloquea: devuelve un aviso para que el wizard lo muestre ANTES de
+# confirmar. Un tope duro rompería a un usuario grande legítimo; la decisión
+# es de quien mira la foto.
+
+# Cuántas veces el patrimonio ya conocido puede valer un aporte de apertura
+# antes de que valga la pena preguntar. Una apertura legítima puede superar por
+# mucho lo que Rendi ya tenía (justamente viene a llenar el hueco), así que el
+# umbral es holgado a propósito: busca errores de ESCALA (~1e3), no de encuadre.
+SEED_SOSPECHOSO_FACTOR = 50.0
+# Piso para no molestar en cuentas chicas o recién abiertas, donde cualquier
+# múltiplo es ruido.
+SEED_SOSPECHOSO_PISO_USD = 100_000.0
+
+
+def seed_plausibility_warning(seed_total: float, patrimonio_conocido: float,
+                              currency: str, broker: str,
+                              fx_usd: float = 1.0) -> Optional[str]:
+    """Aviso si el aporte de apertura de una foto no tiene escala creíble.
+
+    `seed_total` y `patrimonio_conocido` van en la moneda `currency` (la del
+    sub-broker destino). `fx_usd` es cuántas unidades de esa moneda vale un dólar
+    — los umbrales están EN DÓLARES, así que sin convertir el piso de 100.000
+    quedaba en ~US$66 para una partición en pesos y el guard gritaba sobre el
+    import argentino más común. Las dos particiones de la MISMA foto tienen que
+    medirse con la misma vara.
+
+    Los montos del mensaje se muestran en la moneda nativa (que es la que el
+    usuario ve en la foto); la comparación es la que se normaliza.
+
+    Devuelve None cuando el aporte es plausible.
+    """
+    try:
+        total = float(seed_total or 0)
+        base = float(patrimonio_conocido or 0)
+        fx = float(fx_usd or 1.0)
+    except (TypeError, ValueError):
+        return None
+    if fx <= 0:
+        fx = 1.0
+    total_usd = total / fx
+    base_usd = base / fx
+    if total_usd <= SEED_SOSPECHOSO_PISO_USD:
+        return None
+
+    def _ar(n: float) -> str:
+        """Miles con punto. Formatea SÓLO el número: aplicar .replace(',', '.')
+        sobre la frase entera se come las comas de la prosa."""
+        return f"{n:,.0f}".replace(",", ".")
+
+    # Sin patrimonio previo no hay contra qué comparar: sólo avisamos si el
+    # monto es absurdo en términos absolutos.
+    if base_usd <= 0:
+        if total_usd >= SEED_SOSPECHOSO_PISO_USD * 100:
+            return (f"El aporte de apertura de esta foto es de {_ar(total)} {currency} "
+                    f"en {broker}, y no hay historial contra el cual contrastarlo. "
+                    f"Revisá que el archivo corresponda a ese broker y que los "
+                    f"importes estén en {currency}.")
+        return None
+    veces = total_usd / base_usd
+    if veces < SEED_SOSPECHOSO_FACTOR:
+        return None
+    return (f"El aporte de apertura de esta foto es de {_ar(total)} {currency} en "
+            f"{broker} — {_ar(veces)} veces lo que ya figura en esa cuenta "
+            f"({_ar(base)} {currency}). Suele significar que el archivo es de otro "
+            f"broker, o que los importes vienen en otra moneda que la del broker. "
+            f"Verificalo antes de confirmar.")
