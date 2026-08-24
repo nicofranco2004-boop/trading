@@ -72,6 +72,11 @@ const STEP_UPLOAD = 'upload'
 const STEP_MAP = 'map'
 const STEP_PREVIEW = 'preview'
 const STEP_SEED = 'seed'
+// Contra el resumen del broker. Va DESPUES de confirmar los movimientos —
+// la reconciliacion necesita las posiciones ya creadas — y ANTES de aplicar
+// la foto. Hasta ahora ese paso no existia: el wizard hacia preview +
+// confirm de la tenencia en la misma llamada, sin mostrar nada.
+const STEP_RECONCILE = 'reconcile'
 import { TrialCta, TrialFinePrint, TRIAL_PRO_DAYS } from '../plan/TrialCta'
 import { usePlanFeatures as _usePlanFeaturesTrial } from '../../hooks/usePlanFeatures'
 
@@ -243,7 +248,13 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   // apartamos acá y la aplicamos DESPUÉS de confirmar la Cuenta Corriente (la
   // reconciliación necesita las posiciones ya creadas). Flujo único para el user.
   const [tenenciaFile, setTenenciaFile] = useState(null)
-  const [tenenciaFormat, setTenenciaFormat] = useState(null)  // 'cocos' (CSV) o null (Bull Market PDF)
+  const [tenenciaFormat, setTenenciaFormat] = useState(null)
+  // Resultado del /imports/tenencia/preview y los tickers que el usuario
+  // aprobo explicitamente. Arranca VACIO a proposito: el default es NO
+  // aplicar, igual que en el backend. Que tenga que hacer algo para que
+  // entre, no algo para que no entre.
+  const [tenenciaPreview, setTenenciaPreview] = useState(null)
+  const [aprobados, setAprobados] = useState(new Set())  // 'cocos' (CSV) o null (Bull Market PDF)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [inspect, setInspect] = useState(null)        // {headers, sample_rows, rendi_fields, suggested_mapping}
@@ -675,8 +686,17 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
           tfd.append('broker', TENENCIA_BROKER_BY_FORMAT[format] || singleBroker || 'Bull Market')
           if (tenenciaFormat) tfd.append('format', tenenciaFormat)
           const tp = await api.upload('/imports/tenencia/preview', tfd)
+          // 🔴 ACA SE PARA. Antes esto confirmaba la foto en la misma llamada,
+          // sin mostrar nada: el usuario se enteraba de lo que la foto habia
+          // decidido recien en "Listo", y en una sola linea. Ahora, si hay algo
+          // que mirar, se muestra y se decide.
           if (tp?.session_id) {
-            await api.post('/imports/confirm', { session_id: tp.session_id, skip_row_indices: [] })
+            setTenenciaPreview({ ...tp, _movimientos: data })
+            setAprobados(new Set())
+            setStep(STEP_RECONCILE)
+            track('import_completed', { broker: format, rows: data?.imported ?? data?.rows ?? null })
+            onConfirmed?.(data)
+            return
           }
           tenInfo = tp
         } catch (e) {
@@ -695,6 +715,31 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
     } finally {
       setBusy(false)
     }
+  }
+
+  /** Aplica la foto con lo que el asesor aprobó. `aprobar_tickers` es OPT-IN:
+   *  lo que no se nombra, no entra — igual que en el backend. */
+  async function aplicarTenencia() {
+    if (!tenenciaPreview?.session_id) return
+    setBusy(true); setError(null)
+    try {
+      await api.post('/imports/confirm', {
+        session_id: tenenciaPreview.session_id,
+        skip_row_indices: [],
+        aprobar_tickers: Array.from(aprobados),
+      })
+      setConfirmResult({ ...(tenenciaPreview._movimientos || {}), tenencia: tenenciaPreview })
+      setStep(STEP_DONE)
+    } catch (ex) {
+      setError(ex.message || 'No pudimos aplicar la foto.')
+    } finally { setBusy(false) }
+  }
+
+  /** Saltear la foto: los movimientos ya se confirmaron, la foto no se aplica. */
+  function omitirTenencia() {
+    setConfirmResult({ ...(tenenciaPreview?._movimientos || {}),
+                       tenencia: { omitida: true } })
+    setStep(STEP_DONE)
   }
 
   // Acción del botón que lleva al paso de cash/precios (seed) desde el preview
@@ -723,6 +768,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
           skipMap={isSpecificParser}
           hasSeed={!!preview?.seed_suggestions?.needed}
           hasSeedAssets={(preview?.seed_suggestions?.brokers || []).some(b => (b.assets || []).length > 0)}
+          hasTenencia={!!tenenciaFile}
         />
 
         <div className="p-5 overflow-y-auto flex-1">
@@ -797,6 +843,18 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
               onSeedClick={goToSeedStep}
               redoBanner={redoBanner}
               faltaTenencia={faltaTenencia}
+            />
+          )}
+
+          {step === STEP_RECONCILE && tenenciaPreview && (
+            <ReconcileStep
+              data={tenenciaPreview}
+              aprobados={aprobados}
+              onToggle={tk => setAprobados(prev => {
+                const n = new Set(prev)
+                n.has(tk) ? n.delete(tk) : n.add(tk)
+                return n
+              })}
             />
           )}
 
@@ -896,6 +954,32 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
                 {busy && <Loader2 size={14} className="animate-spin" />}
                 Generar vista previa
               </button>
+            )}
+            {step === STEP_RECONCILE && (
+              <div className="flex items-center gap-2">
+                {/* El default visible es NO APLICAR: "Omitir" es una salida de
+                    primera clase, no un link escondido. Y el boton principal
+                    dice cuantos items se aprobaron — con 0, lo dice igual, para
+                    que nadie crea que aplicar el gap-fill implica aprobar lo
+                    dudoso. */}
+                <button
+                  onClick={omitirTenencia}
+                  disabled={busy}
+                  className="px-4 py-2 text-sm text-ink-2 hover:text-ink-1 disabled:opacity-50"
+                >
+                  Omitir la foto
+                </button>
+                <button
+                  onClick={aplicarTenencia}
+                  disabled={busy}
+                  className="px-4 py-2 text-sm rounded-md font-semibold transition disabled:opacity-50 flex items-center gap-2 bg-rendi-accent hover:bg-rendi-accent/90 text-white"
+                >
+                  {busy && <Loader2 size={14} className="animate-spin" />}
+                  {aprobados.size > 0
+                    ? `Aplicar (con ${aprobados.size} aprobado${aprobados.size === 1 ? '' : 's'})`
+                    : 'Aplicar sin los dudosos'}
+                </button>
+              </div>
             )}
             {step === STEP_PREVIEW && (() => {
               const valid = preview?.summary?.valid_rows || 0
@@ -1002,7 +1086,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
 }
 
 
-function Stepper({ step, skipMap, hasSeed, hasSeedAssets }) {
+function Stepper({ step, skipMap, hasSeed, hasSeedAssets, hasTenencia }) {
   const baseSteps = skipMap
     ? [
         { id: STEP_INTRO, label: 'Inicio' },
@@ -1016,7 +1100,10 @@ function Stepper({ step, skipMap, hasSeed, hasSeedAssets }) {
         { id: STEP_PREVIEW, label: 'Previsualización' },
       ]
   const seedSteps = hasSeed ? [{ id: STEP_SEED, label: hasSeedAssets ? 'Cash y precios' : 'Tu cash' }] : []
-  const steps = [...baseSteps, ...seedSteps, { id: STEP_DONE, label: 'Listo' }]
+  // El chip de la reconciliacion solo aparece si vino una foto: para un
+  // import sin resumen del broker ese paso no existe.
+  const reconcileSteps = hasTenencia ? [{ id: STEP_RECONCILE, label: 'Contra el broker' }] : []
+  const steps = [...baseSteps, ...seedSteps, ...reconcileSteps, { id: STEP_DONE, label: 'Listo' }]
   // Si el step actual es SEED pero hasSeed=false (caso transitorio), igual lo
   // resaltamos comparando por id.
   const idx = steps.findIndex(s => s.id === step)
@@ -1706,6 +1793,156 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
   )
 }
 
+
+/**
+ * Contra el resumen del broker — los cuatro baldes, y lo que no se pudo decidir.
+ *
+ * 🔴 EL DEFAULT VISIBLE ES "NO APLICAR", igual que en el backend: lo que
+ * requiere aprobación arranca DESTILDADO. El asesor tiene que hacer algo para
+ * que entre, no algo para que no entre.
+ *
+ * Y los baldes NO se presentan con la misma confianza, porque no la tienen: la
+ * verificación contra el snapshot del cron compara COMPOSICIÓN (qué activos
+ * había), no CANTIDADES — `snapshots.holdings_json` guarda `value_usd`. Así que
+ * respalda `to_seed` y `not_in_snapshot`, y NO respalda `over`, que es justo el
+ * único que puede reducir una tenencia. Eso viaja en `data.confianza` y se
+ * muestra.
+ */
+function ReconcileStep({ data, aprobados, onToggle }) {
+  const dudosos = data.no_reconciliable || []
+  // 🔴 Lo que espera aprobación NO puede aparecer también en "se completan":
+  // esa lista afirma que se va a aplicar, y esto justamente no se aplica solo.
+  // El backend deja la fila en `to_seed` a propósito (para que corran el ruteo
+  // de moneda y la herencia de costo), así que el filtrado es acá.
+  const pendientes = new Set(dudosos.filter(d => d.requiere_aprobacion)
+                                    .map(d => d.ticker))
+  const seed = (data.to_seed || []).filter(x => !pendientes.has(x.ticker))
+  const over = data.over || []
+  const ausentes = data.not_in_snapshot || []
+  const conf = data.confianza || {}
+  const nada = !seed.length && !over.length && !ausentes.length && !dudosos.length
+
+  const Chip = ({ ok }) => (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded ${ok
+      ? 'bg-blue-500/10 text-blue-400' : 'bg-amber-500/10 text-amber-500'}`}>
+      {ok ? 'verificado contra tu histórico' : 'sin verificar la cantidad'}
+    </span>
+  )
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <h3 className="text-base font-semibold text-ink-0">Contra el resumen del broker</h3>
+        <p className="text-xs text-ink-2 mt-0.5">
+          Comparamos lo que quedó importado con la foto
+          {data.fecha_usada && <> al <span className="font-medium text-ink-1">{data.fecha_usada}</span></>}.
+          {data.fecha_origen === 'nombre_archivo' && (
+            <span className="text-ink-3"> (la fecha salió del nombre del archivo)</span>
+          )}
+        </p>
+      </div>
+
+      {nada && (
+        <div className="px-3 py-3 rounded-md bg-blue-500/10 border border-blue-500/40 text-sm">
+          <div className="flex items-start gap-2">
+            <Info size={16} className="mt-0.5 flex-shrink-0 text-blue-500" />
+            <span className="text-ink-1">Todo coincide con el resumen del broker.</span>
+          </div>
+        </div>
+      )}
+
+      {seed.length > 0 && (
+        <RecSection titulo={`Se completan ${seed.length} posición(es) que faltaban`}
+                 sub="La foto las tiene y el import no las trajo — las agregamos como apertura, sin P&L."
+                 chip={<Chip ok={conf.to_seed === 'verificada_composicion'} />} tono="ok">
+          {seed.map(x => (
+            <RecFila key={`s-${x.ticker}`} tk={x.ticker}
+                  detalle={`+${x.qty} · ${x.currency} ${Number(x.value || 0).toLocaleString('es-AR')}`} />
+          ))}
+        </RecSection>
+      )}
+
+      {ausentes.length > 0 && (
+        <RecSection titulo={`${ausentes.length} activo(s) que el resumen no tiene`}
+                 sub="Están en Rendi y no aparecen en la foto. Puede ser una venta que el archivo no trajo, o que estén en otro broker."
+                 chip={<Chip ok={conf.not_in_snapshot === 'verificada_composicion'} />} tono="warn">
+          {ausentes.map(x => (
+            <RecFila key={`n-${x.ticker}`} tk={x.ticker} detalle={`tenés ${x.qty}`} />
+          ))}
+        </RecSection>
+      )}
+
+      {over.length > 0 && (
+        <RecSection titulo={`${over.length} activo(s) con más cantidad que el resumen`}
+                 sub="Rendi tiene más de lo que dice la foto."
+                 chip={<Chip ok={conf.over === 'verificada_composicion'} />} tono="warn">
+          {over.map(x => (
+            <RecFila key={`o-${x.ticker}`} tk={x.ticker}
+                  detalle={`Rendi ${x.rendi} · resumen ${x.tenencia}`} />
+          ))}
+        </RecSection>
+      )}
+
+      {dudosos.length > 0 && (
+        <RecSection titulo={`${dudosos.length} que necesitan que decidas vos`}
+                 sub="No pudimos concluir nada por nuestra cuenta. Nada de esto se aplica salvo que lo marques."
+                 tono="decide">
+          {dudosos.map((x, i) => {
+            const tk = x.ticker
+            const aprobable = !!x.requiere_aprobacion
+            return (
+              <div key={`d-${tk || i}`} className="flex items-start gap-2 py-1.5">
+                {aprobable ? (
+                  <input type="checkbox" className="mt-0.5 flex-shrink-0"
+                         checked={aprobados.has(tk)} onChange={() => onToggle(tk)} />
+                ) : <span className="w-3 flex-shrink-0" />}
+                <div className="min-w-0">
+                  <span className="font-mono text-xs text-ink-1">{tk || '—'}</span>
+                  <span className="text-[10px] ml-2 px-1.5 py-0.5 rounded bg-white/5 text-ink-3">
+                    {x.motivo}
+                  </span>
+                  {x.detalle && <p className="text-xs text-ink-2 mt-0.5">{x.detalle}</p>}
+                </div>
+              </div>
+            )
+          })}
+        </RecSection>
+      )}
+
+      {(data.tickers_normalizados || []).length > 0 && (
+        <p className="text-[11px] text-ink-3">
+          Ajustamos {data.tickers_normalizados.length} nombre(s) de la foto para que coincidan
+          con los tuyos ({data.tickers_normalizados.slice(0, 3).map(t => `${t.de}→${t.a}`).join(', ')}
+          {data.tickers_normalizados.length > 3 ? '…' : ''}).
+        </p>
+      )}
+    </div>
+  )
+}
+
+function RecSection({ titulo, sub, chip, tono, children }) {
+  const borde = tono === 'ok' ? 'border-blue-500/30'
+    : tono === 'decide' ? 'border-amber-500/40' : 'border-white/10'
+  return (
+    <div className={`rounded-md border ${borde} px-3 py-2.5`}>
+      <div className="flex items-start justify-between gap-2 mb-1">
+        <div className="font-medium text-sm text-ink-0">{titulo}</div>
+        {chip}
+      </div>
+      {sub && <p className="text-xs text-ink-2 mb-1.5">{sub}</p>}
+      <div className="max-h-44 overflow-y-auto">{children}</div>
+    </div>
+  )
+}
+
+function RecFila({ tk, detalle }) {
+  return (
+    <div className="flex items-center justify-between py-1 text-xs">
+      <span className="font-mono text-ink-1">{tk}</span>
+      <span className="text-ink-2 tabular">{detalle}</span>
+    </div>
+  )
+}
 
 function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                         skippedRowIndices = new Set(), onToggleSkipRow, onSeedClick,

@@ -157,7 +157,7 @@ class BonoAmortizanteTest(unittest.TestCase):
         snap = _snap(self._h_bono("AL30", 1000))
         rec = compute_reconcile({"AL30": 720.0}, snap)      # positions = residual
         self.assertEqual(len(rec.to_seed), 1)
-        self.assertEqual(marcar_bonos_amortizantes(rec), 1)
+        self.assertEqual(marcar_bonos_amortizantes(rec, {"AL30": 720.0}), 1)
         # Sigue en to_seed: no perdemos la tx ni su logica.
         self.assertEqual(len(rec.to_seed), 1)
         self.assertEqual(rec.no_reconciliable[0]["motivo"], "escala_bono_amortizante")
@@ -176,16 +176,49 @@ class BonoAmortizanteTest(unittest.TestCase):
                                         requiere_aprobacion)
         snap = _snap(_h("GGAL", 100, tipo="STOCK"))
         rec = compute_reconcile({"GGAL": 60.0}, snap)
-        self.assertEqual(marcar_bonos_amortizantes(rec), 0)
+        self.assertEqual(marcar_bonos_amortizantes(rec, {"GGAL": 60.0}), 0)
         self.assertEqual(len(rec.to_seed), 1)
         txs = build_tenencia_seed_txs("Cocos", rec, "2026-06-30")
         self.assertFalse(any(requiere_aprobacion(t.notes) for t in txs))
+
+    def test_SIN_tenencia_previa_el_bono_SI_se_auto_siembra(self):
+        """⭐ El discriminador, sacado de la propia medición.
+
+        Si Rendi no tenía NADA de este bono a la fecha de la foto, no puede
+        haber desajuste de escala: no hay residual del que diferir. Es un hueco
+        de apertura y se completa como cualquier otro.
+
+        7 de los 16 casos de la muestra limpia estaban así. Sin esta división la
+        guarda metía fricción en casi la mitad de los casos sin ninguna
+        ambigüedad que resolver.
+        """
+        from importing.tenencia import (marcar_bonos_amortizantes,
+                                        build_tenencia_seed_txs,
+                                        requiere_aprobacion)
+        snap = _snap(self._h_bono("AL30", 1000))
+        rec = compute_reconcile({}, snap)              # Rendi no tenía nada
+        self.assertEqual(marcar_bonos_amortizantes(rec, {}), 0)
+        self.assertEqual(len(rec.to_seed), 1)
+        self.assertEqual(rec.no_reconciliable, [])
+        txs = build_tenencia_seed_txs("Cocos", rec, "2026-06-30")
+        self.assertFalse(any(requiere_aprobacion(t.notes) for t in txs))
+
+    def test_el_motivo_dice_CUANTO_ya_tenia(self):
+        # No es lo mismo "no sabemos si esto es real" que "esto puede ser real,
+        # pero ya tenés 720 y la foto dice 1000 — confirmalo vos".
+        from importing.tenencia import marcar_bonos_amortizantes
+        snap = _snap(self._h_bono("AL30", 1000))
+        rec = compute_reconcile({"AL30": 720.0}, snap)
+        marcar_bonos_amortizantes(rec, {"AL30": 720.0})
+        x = rec.no_reconciliable[0]
+        self.assertEqual(x["rendi_qty"], 720.0)
+        self.assertIn("ya tenés 720", x["detalle"])
 
     def test_el_motivo_explica_QUE_hacer(self):
         from importing.tenencia import marcar_bonos_amortizantes
         snap = _snap(self._h_bono("GD30", 500))
         rec = compute_reconcile({"GD30": 320.0}, snap)
-        marcar_bonos_amortizantes(rec)
+        marcar_bonos_amortizantes(rec, {"GD30": 320.0})
         d = rec.no_reconciliable[0]["detalle"]
         # El motivo tiene que decir la verdad: NO sabemos en qué escala viene la
         # foto. La primera versión afirmaba "la foto trae el nominal (18 de 26)"

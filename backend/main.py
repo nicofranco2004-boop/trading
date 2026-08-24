@@ -28644,7 +28644,7 @@ def import_tenencia_preview(
                 # Los bonos amortizantes NO se auto-siembran: Rendi guarda el
                 # residual y la foto puede traer el nominal (ver
                 # `apartar_bonos_amortizantes`).
-                _import_tenencia.marcar_bonos_amortizantes(r1)
+                _import_tenencia.marcar_bonos_amortizantes(r1, cur_q)
                 p_seed, p_ov = _tenencia_apply_override(
                     conn, uid, sub, pair, r1, _cur_inv(sub), cur_q, seed_date,
                     complete=_complete, currency=ccy)
@@ -28681,7 +28681,7 @@ def import_tenencia_preview(
             current = _qty_a_fecha(pair)  # proyectado a la fecha de la foto
             rec = _import_tenencia.compute_reconcile(
                 current, snap, no_reconciliable_motivo=motivo_corte)
-            _import_tenencia.marcar_bonos_amortizantes(rec)
+            _import_tenencia.marcar_bonos_amortizantes(rec, current)
 
             # `complete` = la foto es TOTAL (todas las clases + monedas) → habilita
             # BORRAR not_in_snapshot. Balanz siempre; IEB sólo si el parser NO dejó

@@ -330,7 +330,9 @@ def requiere_aprobacion(notes: Optional[str]) -> bool:
     return MARCA_APROBACION in (notes or "")
 
 
-def marcar_bonos_amortizantes(rec: ReconcileResult) -> int:
+def marcar_bonos_amortizantes(rec: ReconcileResult,
+                              qty_actual: dict = None,
+                              eps: float = 1e-6) -> int:
     """Marca los bonos amortizantes de `to_seed` como pendientes de aprobación.
 
     NO los saca del balde: la tx sintética se construye igual, y con eso siguen
@@ -384,9 +386,21 @@ def marcar_bonos_amortizantes(rec: ReconcileResult) -> int:
     "no sé si te falta esto o si estamos midiendo distinto".
     """
     from pricing.bond_amortization import is_amortizing_bond
+    qty_actual = qty_actual or {}
     marcados = 0
     for h, gap in rec.to_seed:
         if not is_amortizing_bond(h.ticker):
+            continue
+        # 🔴 EL DISCRIMINADOR: si Rendi no tenia NADA de este bono a la fecha de
+        # la foto, no puede haber desajuste de escala — no hay residual del que
+        # diferir. Es un hueco de apertura y punto, asi que se auto-aplica como
+        # cualquier otro `to_seed`.
+        #
+        # Sale de la propia medicion: 7 de los 16 casos de la muestra limpia
+        # tenian `positions = 0` a esa fecha. Sin esta division, la guarda
+        # metia friccion en casi la mitad de los casos sin ninguna ambiguedad
+        # que resolver.
+        if abs(float(qty_actual.get(h.ticker, 0.0))) <= eps:
             continue
         # La marca viaja en el Holding → `build_tenencia_seed_txs` la pasa a las
         # `notes` de la tx sintética, y el confirm la lee de ahí.
@@ -395,11 +409,14 @@ def marcar_bonos_amortizantes(rec: ReconcileResult) -> int:
             "ticker": h.ticker, "motivo": MOTIVO_ESCALA_BONO,
             "foto_qty": h.quantity, "gap": gap,
             "requiere_aprobacion": True,
-            "detalle": ("es un bono amortizante: Rendi guarda el nominal "
-                        "RESIDUAL y no sabemos en qué escala lo reporta la "
-                        "foto. Puede ser un hueco de apertura REAL o un "
-                        "desajuste de escala, y desde acá no se distinguen. "
-                        "La compra queda ARMADA pero NO se aplica sola."),
+            "rendi_qty": round(float(qty_actual.get(h.ticker, 0.0)), 6),
+            "detalle": ("ya tenés {:g} de este bono, y es amortizante: Rendi "
+                        "guarda el nominal RESIDUAL y no sabemos en qué escala "
+                        "lo reporta la foto. Que la foto diga más puede ser un "
+                        "faltante REAL o las dos escalas midiendo distinto, y "
+                        "desde acá no se distinguen. La compra queda ARMADA "
+                        "pero NO se aplica sola: confirmala vos."
+                        ).format(float(qty_actual.get(h.ticker, 0.0))),
         })
         marcados += 1
     return marcados
