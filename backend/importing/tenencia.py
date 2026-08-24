@@ -313,6 +313,78 @@ def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
     return res
 
 
+MOTIVO_ESCALA_BONO = "escala_bono_amortizante"
+
+# Marca en `notes` de una tx sintética que NO se aplica sola. El confirm la
+# omite salvo que su row_index venga en `aprobar_row_indices`.
+#
+# 🔴 VA EN LA FILA Y NO EN UNA LISTA APARTE, y es deliberado: `skip_row_indices`
+# —el mecanismo que ya existía— es OPT-OUT, o sea que una fila se aplica salvo
+# que alguien se acuerde de omitirla. Para esto hace falta lo contrario. Con la
+# marca en la propia fila, el default es NO aplicar aunque el frontend no
+# implemente nada: falla CERRADO.
+MARCA_APROBACION = "[requiere-aprobacion]"
+
+
+def requiere_aprobacion(notes: Optional[str]) -> bool:
+    return MARCA_APROBACION in (notes or "")
+
+
+def marcar_bonos_amortizantes(rec: ReconcileResult) -> int:
+    """Marca los bonos amortizantes de `to_seed` como pendientes de aprobación.
+
+    NO los saca del balde: la tx sintética se construye igual, y con eso siguen
+    corriendo el ruteo cross-currency (el bono va a la partición donde viven sus
+    lotes, no duplicado en dos monedas) y la herencia del costo unitario del
+    lote existente en vez del precio en pesos de la foto. Esa lógica costó
+    trabajo y su test la protege.
+
+    Lo que cambia es QUIÉN DECIDE, no qué pasa cuando se decide.
+
+    🔴 `to_seed` ES EL ÚNICO BALDE QUE SE AUTO-APLICA SIN PREGUNTAR, y sobre un
+    bono amortizante su premisa no se cumple.
+
+    `positions` guarda el nominal RESIDUAL: `sweep_bond_amortizations` lo
+    re-escala por `residual_factor(hoy)` en cada confirmación de import
+    (`maturity.py:390-406`). La foto trae lo que el broker haya decidido
+    reportar, y si reporta el nominal ORIGINAL es sistemáticamente más grande.
+
+    Rendi < foto → `to_seed` → y `to_seed` fabrica una COMPRA sintética. O sea
+    que sin esta guarda, cada foto de una cuenta con AL30/GD30/AL29/GD29 —que en
+    carteras argentinas es casi todas— inventa una compra que nunca pasó, en
+    silencio, y encima con el sello de "esto lo confirma el resumen del broker".
+
+    El camino de la foto NO aplica `residual_factor` en ningún lado: sólo lo
+    hacen `maturity.py` y `recompute_backfill.py`, que son los que ESCRIBEN
+    `positions`. Así que las dos puntas de la comparación están en escalas
+    distintas y nadie las reconcilia.
+
+    Mientras no se sepa qué reporta cada broker, estos activos salen a decisión
+    del asesor como el resto: `no_reconciliable`. Es la respuesta honesta —
+    "no sé si te falta esto o si estamos midiendo distinto".
+    """
+    from pricing.bond_amortization import is_amortizing_bond
+    marcados = 0
+    for h, gap in rec.to_seed:
+        if not is_amortizing_bond(h.ticker):
+            continue
+        # La marca viaja en el Holding → `build_tenencia_seed_txs` la pasa a las
+        # `notes` de la tx sintética, y el confirm la lee de ahí.
+        h.name = f"{h.name or ''} {MARCA_APROBACION}".strip()
+        rec.no_reconciliable.append({
+            "ticker": h.ticker, "motivo": MOTIVO_ESCALA_BONO,
+            "foto_qty": h.quantity, "gap": gap,
+            "requiere_aprobacion": True,
+            "detalle": ("es un bono amortizante: Rendi guarda el nominal "
+                        "RESIDUAL y la foto puede estar reportando el "
+                        "ORIGINAL — medido, en 18 de 26 casos la foto trae el "
+                        "original. La compra queda ARMADA pero NO se aplica "
+                        "sola: hay que aprobarla."),
+        })
+        marcados += 1
+    return marcados
+
+
 def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
                             seed_date: str, currency: str = "ARS",
                             override: bool = False, complete: bool = False,
@@ -353,7 +425,10 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
             asset_symbol=h.ticker, asset_type=h.asset_type,
             quantity=gap, unit_price=h.price_per1,
             gross_amount=round(gap * h.price_per1, 4), currency=currency,
-            notes=f"{TENENCIA_APERTURA_NOTE_PREFIX} {h.ticker} a precio de {seed_date} (P&L 0)"))
+            notes=(f"{TENENCIA_APERTURA_NOTE_PREFIX} {h.ticker} a precio de "
+                   f"{seed_date} (P&L 0)"
+                   + (f" {MARCA_APROBACION}"
+                      if MARCA_APROBACION in (h.name or "") else ""))))
         idx += 1
     if override:
         # Reducciones que llevan el estado EXACTO a la foto. Precio/monto 0 +

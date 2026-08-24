@@ -202,9 +202,13 @@ class _OverrideE2EBase(unittest.TestCase):
             data={"broker": self.BROKER, "format": fmt},
             files={"file": (fname, data, ctype)})
 
-    def _confirm(self, sid):
+    def _confirm(self, sid, aprobar=None):
+        body = {"session_id": sid}
+        if aprobar:
+            # Opt-in: las filas marcadas `[requiere-aprobacion]` no entran solas.
+            body["aprobar_tickers"] = list(aprobar)
         return self.client.post("/api/imports/confirm",
-            headers={"Authorization": f"Bearer {self.token}"}, json={"session_id": sid})
+            headers={"Authorization": f"Bearer {self.token}"}, json=body)
 
 
 class CocosOverrideE2E(_OverrideE2EBase):
@@ -257,7 +261,16 @@ class CocosOverrideE2E(_OverrideE2EBase):
         """Change 1 (AL30): un bono amortizante que la foto reporta en AR$ pero que el
         usuario OPERA en USD (AL30D consolidado en el sibling) se re-taggea a la moneda
         donde YA viven sus lotes → se siembra en la partición USD, no en la ARS (evita
-        duplicar el bono en dos monedas). Verificamos la MONEDA del to_seed."""
+        duplicar el bono en dos monedas). Verificamos la MONEDA del to_seed.
+
+        ⚠️ RE-APUNTADO AL CAMINO APROBADO. Desde que un bono amortizante no se
+        auto-siembra —Rendi guarda el nominal RESIDUAL y la foto reporta el
+        ORIGINAL, así que el "faltante" es una compra que nunca pasó— esta tx
+        requiere aprobación explícita. Las TRES cosas que este test protege
+        siguen valiendo igual: la partición de moneda, la herencia del costo del
+        lote existente (0,7 USD/u y no el precio en pesos de la foto), y que el
+        valor no quede peso-como-USD. Lo que cambió es QUIÉN decide, no qué pasa
+        cuando se decide."""
         SIB = "Cocos · USD"
         # Mismo criterio que en setUp. Es otra CLAVE ('tc_mep' vs el 'tc_blue' que
         # siembra setUp), o sea otra fila: no se pisan entre sí. Conflicto por
@@ -290,12 +303,50 @@ class CocosOverrideE2E(_OverrideE2EBase):
         # foto en ARS (700) → costo en escala USD, consistente con la posición.
         self.assertAlmostEqual(al[0]["price"], 0.7, places=4)
         self.assertLess(al[0]["value"], 100)         # 50×0.7 = 35 USD, NO 35000 (peso-como-USD)
-        self._confirm(body["session_id"])
+        self._confirm(body["session_id"], aprobar=["AL30"])
         inv = self.conn.execute(  # el lote sembrado queda con costo en USD (no inflado)
             "SELECT COALESCE(SUM(invested),0) i FROM positions WHERE user_id=? AND broker=? "
             "AND asset='AL30' AND is_cash=0 AND notes LIKE 'Tenencia — apertura%'",
             (self.uid, SIB)).fetchone()["i"]
         self.assertAlmostEqual(float(inv), 35.0, places=2)   # 50×0.7, costo USD consistente
+
+
+    def test_sin_aprobacion_el_bono_NO_entra(self):
+        """⭐ Falla CERRADO. Es el mismo escenario del test de arriba pero
+        confirmando SIN aprobar: la compra sintética del bono no se aplica.
+
+        Sin esto, el opt-in sería decorativo — y ya se fabricaron 35 compras
+        fantasma de bonos amortizantes sobre 25 usuarios por la vía automática.
+        """
+        SIB = "Cocos · USD"
+        self.conn.execute("INSERT INTO config (user_id, key, value) VALUES (?,?,?) "
+                          "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
+                          (self.uid, "tc_mep", "1415"))
+        _pid = self.conn.execute("SELECT id FROM brokers WHERE user_id=? AND name=?",
+                                 (self.uid, self.BROKER)).fetchone()["id"]
+        self.conn.execute(
+            "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
+            (self.uid, SIB, "USDT", _pid)); self.conn.commit()
+        self._import_mov([self._buy("MELI", 52, 21000)])
+        self._import_mov_broker(SIB, "USD", [
+            NormalizedTx(row_index=0, date="2026-01-10", broker=SIB, operation_type=OP_BUY,
+                         asset_symbol="AL30", asset_type="BOND", quantity=100, unit_price=0.7,
+                         gross_amount=70, currency="USD")])
+        csv = ("instrumento;cantidad;precio;moneda;total\n"
+               "CEDEAR MERCADOLIBRE INC. (MELI);52;21000;ARS;1092000\n"
+               "BONO AR 2030 (AL30);150;700;ARS;105000\n"
+               "ARS;1000;1;ARS;1000\n")
+        body = self._preview("cocos", "foto.csv", csv, "text/csv").json()
+        # El reconcile SÍ lo ve y lo reporta como decisión pendiente…
+        motivos = {x.get("ticker"): x.get("motivo") for x in body.get("no_reconciliable", [])}
+        self.assertEqual(motivos.get("AL30"), "escala_bono_amortizante")
+        # …pero confirmar sin aprobarlo no lo siembra.
+        self._confirm(body["session_id"])
+        inv = self.conn.execute(
+            "SELECT COALESCE(SUM(invested),0) i FROM positions WHERE user_id=? AND broker=? "
+            "AND asset='AL30' AND is_cash=0 AND notes LIKE 'Tenencia — apertura%'",
+            (self.uid, SIB)).fetchone()["i"]
+        self.assertAlmostEqual(float(inv), 0.0, places=2)
 
     def test_reduces_usd_holding_in_sibling(self):
         """Cocos también pisa los holdings en DÓLARES (sibling USD): GLOB 100→60 en el

@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 # ninguna celda donde pueda venir la fecha. Por eso `parse_cocos_tenencia` nunca
 # la setea (47 de 47 en producción caen al fallback).
 FOTO_COCOS = ("instrumento;cantidad;precio;moneda;total\n"
-              "AL30 (AL30);1000;60,00;ARS;60000,00\n")
+              "Galicia (GGAL);1000;60,00;ARS;60000,00\n")
 
 
 def _user(conn, email, tier=None, approved=1):

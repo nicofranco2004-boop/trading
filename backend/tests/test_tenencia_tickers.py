@@ -121,5 +121,68 @@ class NormalizarTickersTest(unittest.TestCase):
         self.assertEqual(normalizar_tickers(snap), [])
 
 
+
+class BonoAmortizanteTest(unittest.TestCase):
+    """`to_seed` es el único balde que se auto-aplica, y sobre un bono
+    amortizante su premisa no se cumple.
+
+    `positions` guarda el nominal RESIDUAL (`sweep_bond_amortizations` lo
+    re-escala en cada import). La foto reporta el nominal ORIGINAL — medido
+    contra la copia de prod del 2026-08-16: de 26 casos medibles, 18 (69%)
+    cierran con la hipótesis `gap = N × (1 − residual_factor)`, y es consistente
+    en los cinco parsers con casos (Bull Market 3/3, IOL 3/3, PPI 1/1, Balanz
+    8/12, Cocos 3/7).
+
+    O sea que Rendi < foto SIEMPRE, y `to_seed` fabricaba una compra sintética
+    que nunca pasó — con el sello de "esto lo confirma el resumen del broker".
+    Ya pasó 35 veces sobre 25 usuarios antes de esta guarda.
+    """
+
+    def _h_bono(self, ticker, qty):
+        return Holding(ticker=ticker, asset_type="BOND", quantity=qty,
+                       value=qty * 0.6, currency="ARS", price_per1=0.6)
+
+    def test_un_bono_amortizante_NO_se_auto_siembra(self):
+        # La fila SE CONSTRUYE (asi el ruteo de moneda y la herencia de costo
+        # siguen corriendo) pero queda marcada: el confirm no la aplica sola.
+        from importing.tenencia import (marcar_bonos_amortizantes,
+                                        build_tenencia_seed_txs,
+                                        requiere_aprobacion)
+        snap = _snap(self._h_bono("AL30", 1000))
+        rec = compute_reconcile({"AL30": 720.0}, snap)      # positions = residual
+        self.assertEqual(len(rec.to_seed), 1)
+        self.assertEqual(marcar_bonos_amortizantes(rec), 1)
+        # Sigue en to_seed: no perdemos la tx ni su logica.
+        self.assertEqual(len(rec.to_seed), 1)
+        self.assertEqual(rec.no_reconciliable[0]["motivo"], "escala_bono_amortizante")
+        self.assertTrue(rec.no_reconciliable[0]["requiere_aprobacion"])
+        # Y la tx sintetica sale marcada, que es lo que el confirm lee.
+        txs = build_tenencia_seed_txs("Cocos", rec, "2026-06-30")
+        compras = [t for t in txs if t.asset_symbol == "AL30"]
+        self.assertEqual(len(compras), 1)
+        self.assertTrue(requiere_aprobacion(compras[0].notes))
+
+    def test_un_activo_normal_NO_queda_marcado(self):
+        # La guarda es quirurgica: no puede apagar el gap-fill, que es la razon
+        # de ser de la foto.
+        from importing.tenencia import (marcar_bonos_amortizantes,
+                                        build_tenencia_seed_txs,
+                                        requiere_aprobacion)
+        snap = _snap(_h("GGAL", 100, tipo="STOCK"))
+        rec = compute_reconcile({"GGAL": 60.0}, snap)
+        self.assertEqual(marcar_bonos_amortizantes(rec), 0)
+        self.assertEqual(len(rec.to_seed), 1)
+        txs = build_tenencia_seed_txs("Cocos", rec, "2026-06-30")
+        self.assertFalse(any(requiere_aprobacion(t.notes) for t in txs))
+
+    def test_el_motivo_explica_QUE_hacer(self):
+        from importing.tenencia import marcar_bonos_amortizantes
+        snap = _snap(self._h_bono("GD30", 500))
+        rec = compute_reconcile({"GD30": 320.0}, snap)
+        marcar_bonos_amortizantes(rec)
+        d = rec.no_reconciliable[0]["detalle"]
+        self.assertIn("RESIDUAL", d)
+        self.assertIn("ORIGINAL", d)
+
 if __name__ == "__main__":
     unittest.main()

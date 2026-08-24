@@ -28641,6 +28641,10 @@ def import_tenencia_preview(
                     if net > 1e-6:
                         _seed.append((h, net))
                 r1.to_seed = _seed
+                # Los bonos amortizantes NO se auto-siembran: Rendi guarda el
+                # residual y la foto puede traer el nominal (ver
+                # `apartar_bonos_amortizantes`).
+                _import_tenencia.marcar_bonos_amortizantes(r1)
                 p_seed, p_ov = _tenencia_apply_override(
                     conn, uid, sub, pair, r1, _cur_inv(sub), cur_q, seed_date,
                     complete=_complete, currency=ccy)
@@ -28677,6 +28681,7 @@ def import_tenencia_preview(
             current = _qty_a_fecha(pair)  # proyectado a la fecha de la foto
             rec = _import_tenencia.compute_reconcile(
                 current, snap, no_reconciliable_motivo=motivo_corte)
+            _import_tenencia.marcar_bonos_amortizantes(rec)
 
             # `complete` = la foto es TOTAL (todas las clases + monedas) → habilita
             # BORRAR not_in_snapshot. Balanz siempre; IEB sólo si el parser NO dejó
@@ -28799,7 +28804,15 @@ def import_tenencia_preview(
         # está activo, `to_seed` queda vacío por construcción → el flujo caía en
         # "tu cartera ya coincide con la foto", que es justo la mentira más cara
         # posible: le diría al asesor que verificó cuando no verificó nada.
-        if rec.no_reconciliable:
+        # 🔴 SOLO EL CORTE GLOBAL corta. `no_reconciliable` tiene ahora DOS
+        # poblaciones distintas y confundirlas rompe el flujo entero:
+        #
+        #   · el CORTE (motivo_corte): no se pudo comparar NADA — la fecha es
+        #     inventada. Ahí no hay veredicto que dar y se devuelve sólo eso.
+        #   · los ITEMS POR ACTIVO (bono amortizante, datos manuales, split,
+        #     vencimiento): el resto de la cartera SÍ se concilió bien. Cortar
+        #     acá tiraría un reconcile válido por un activo dudoso.
+        if motivo_corte and rec.no_reconciliable:
             return {
                 "session_id": None, "nothing_to_do": True,
                 "no_reconciliable": rec.no_reconciliable,
@@ -28977,6 +28990,18 @@ def import_preview(
 class ImportConfirmIn(BaseModel):
     session_id: str = Field(..., min_length=8, max_length=64)
     skip_row_indices: Optional[list] = None  # filas a omitir en este confirm
+    # 🔴 OPT-IN, al reves que `skip_row_indices`. Las filas sinteticas marcadas
+    # con `[requiere-aprobacion]` NO se aplican solas: hay que nombrarlas aca.
+    # Hoy son los bonos amortizantes, donde Rendi guarda el nominal RESIDUAL y
+    # la foto reporta el ORIGINAL (medido: 18 de 26 casos), asi que sembrar el
+    # "faltante" fabrica una compra que nunca paso. Falla CERRADO: si nadie las
+    # aprueba, no entran.
+    #
+    # Por TICKER y no por row_index: el camino particionado RENUMERA los indices
+    # sinteticos al combinar las particiones ARS y USD (`row_index = -20000 - i`),
+    # asi que un indice devuelto en el preview puede no ser el mismo en el
+    # confirm. El ticker es lo que el asesor ve y lo que no se mueve.
+    aprobar_tickers: Optional[list] = None
     # Estado inicial opcional: cash + posiciones que el usuario tenía antes
     # del primer movimiento del CSV. Si está presente, generamos DEPOSITs +
     # BUYs sintéticos al `seed_date` y re-validamos las filas que antes habían
@@ -29085,6 +29110,14 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
 
             # Filtrar filas que el usuario decidió omitir
             skip_set = set(data.skip_row_indices or [])
+            # Y las que requieren aprobación EXPLÍCITA (opt-in): se omiten salvo
+            # que vengan nombradas. Ver `tenencia.MARCA_APROBACION`.
+            _aprobados = {str(x).strip().upper()
+                          for x in (data.aprobar_tickers or [])}
+            for _t in txs:
+                if (_import_tenencia.requiere_aprobacion(getattr(_t, "notes", None))
+                        and (getattr(_t, "asset_symbol", "") or "").upper() not in _aprobados):
+                    skip_set.add(_t.row_index)
 
             # ── Anti-duplicación de re-importación ────────────────────────────
             # Omitimos automáticamente las filas cuyo fingerprint (fecha+broker+
