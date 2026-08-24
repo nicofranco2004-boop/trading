@@ -55,6 +55,10 @@ PERMITIDOS = {
         "admin). Mismo problema y mismo lugar en el plan.",
     ("seed.py", "seed"):
         "Script de desarrollo, no corre en producción.",
+    ("scripts/escala_foto_bonos.py", "<module>"):
+        "Herramienta de MEDICIÓN, no código de la app: abre una COPIA de prod en "
+        "`immutable=1` para contrastar la escala (nominal vs residual) que reporta "
+        "cada broker en su foto de tenencia. No corre en el servidor.",
     ("scripts/verificar_proyeccion.py", "<module>"):
         "Herramienta de MEDICIÓN, no código de la app: abre una COPIA de la base "
         "de producción en modo `immutable=1` (sólo lectura, físicamente incapaz "

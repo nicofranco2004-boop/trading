@@ -127,15 +127,21 @@ class BonoAmortizanteTest(unittest.TestCase):
     amortizante su premisa no se cumple.
 
     `positions` guarda el nominal RESIDUAL (`sweep_bond_amortizations` lo
-    re-escala en cada import). La foto reporta el nominal ORIGINAL — medido
-    contra la copia de prod del 2026-08-16: de 26 casos medibles, 18 (69%)
-    cierran con la hipótesis `gap = N × (1 − residual_factor)`, y es consistente
-    en los cinco parsers con casos (Bull Market 3/3, IOL 3/3, PPI 1/1, Balanz
-    8/12, Cocos 3/7).
+    re-escala en cada import) y la foto trae lo que el broker haya decidido
+    reportar. NO SABEMOS CUÁL — y averiguarlo costó dos mediciones:
 
-    O sea que Rendi < foto SIEMPRE, y `to_seed` fabricaba una compra sintética
-    que nunca pasó — con el sello de "esto lo confirma el resumen del broker".
-    Ya pasó 35 veces sobre 25 usuarios antes de esta guarda.
+      · la primera dijo "nominal, 18 de 26". Artefacto: el denominador salía de
+        una suma ingenua BUY−SELL del ledger, la fuente que este mismo trabajo
+        ya había declarado poco confiable.
+      · re-medida sin ledger, sobre batches REVERTIDOS (los únicos que no
+        contaminaron `positions` con su propio seed): 0 de 16 encajan en
+        nominal NI en residual, y 7 de 16 tenían `positions = 0` a esa fecha —
+        o sea huecos de apertura genuinos.
+
+    Así que no hay escala que normalizar. Lo que hay es que un `to_seed` sobre
+    un bono amortizante puede ser un hueco REAL o un desajuste, y desde acá no
+    se distinguen — y `to_seed` es el único balde que se aplica solo. Por eso va
+    a decisión. Ya se sembraron 35 así, sobre 25 usuarios, antes de esta guarda.
     """
 
     def _h_bono(self, ticker, qty):
@@ -181,8 +187,13 @@ class BonoAmortizanteTest(unittest.TestCase):
         rec = compute_reconcile({"GD30": 320.0}, snap)
         marcar_bonos_amortizantes(rec)
         d = rec.no_reconciliable[0]["detalle"]
+        # El motivo tiene que decir la verdad: NO sabemos en qué escala viene la
+        # foto. La primera versión afirmaba "la foto trae el nominal (18 de 26)"
+        # y eso resultó ser un artefacto del ledger en el denominador —
+        # re-medido sin ledger dio 0 de 16.
         self.assertIn("RESIDUAL", d)
-        self.assertIn("ORIGINAL", d)
+        self.assertIn("no sabemos", d)
+        self.assertIn("no se distinguen", d)
 
 if __name__ == "__main__":
     unittest.main()

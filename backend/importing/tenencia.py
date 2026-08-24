@@ -341,6 +341,26 @@ def marcar_bonos_amortizantes(rec: ReconcileResult) -> int:
 
     Lo que cambia es QUIÉN DECIDE, no qué pasa cuando se decide.
 
+    ⚠️ POR QUÉ NO SE NORMALIZA LA ESCALA, aunque sería lo obvio.
+    Una primera medición dijo que la foto trae el nominal en 18 de 26 casos.
+    ERA UN ARTEFACTO: el denominador salía de una suma ingenua de BUY−SELL del
+    ledger, que es justo la fuente que este trabajo ya había declarado poco
+    confiable — el razonamiento se mordía la cola.
+
+    Re-medido sin tocar el ledger, sobre la muestra limpia (batches de foto
+    REVERTIDOS, que no contaminaron `positions` con su propio seed) y usando
+    `ratio = positions_a_la_fecha / foto`, que debería dar `residual_factor(D)`
+    si la foto fuera nominal y 1 si fuera residual:
+
+        16 de 16 casos: NI UNO de los dos.
+        Y 7 de 16 con `positions_a_la_fecha = 0` — la persona no tenía NADA de
+        ese bono ese día, o sea que el seed era un hueco de apertura genuino.
+
+    Conclusión: la hipótesis del nominal NO se sostiene, y no hay una escala que
+    normalizar. Lo que hay es que un `to_seed` sobre un bono amortizante puede
+    ser un hueco real o un desajuste, y desde acá no se distinguen. Por eso va a
+    decisión y no a una conversión automática.
+
     🔴 `to_seed` ES EL ÚNICO BALDE QUE SE AUTO-APLICA SIN PREGUNTAR, y sobre un
     bono amortizante su premisa no se cumple.
 
@@ -376,10 +396,10 @@ def marcar_bonos_amortizantes(rec: ReconcileResult) -> int:
             "foto_qty": h.quantity, "gap": gap,
             "requiere_aprobacion": True,
             "detalle": ("es un bono amortizante: Rendi guarda el nominal "
-                        "RESIDUAL y la foto puede estar reportando el "
-                        "ORIGINAL — medido, en 18 de 26 casos la foto trae el "
-                        "original. La compra queda ARMADA pero NO se aplica "
-                        "sola: hay que aprobarla."),
+                        "RESIDUAL y no sabemos en qué escala lo reporta la "
+                        "foto. Puede ser un hueco de apertura REAL o un "
+                        "desajuste de escala, y desde acá no se distinguen. "
+                        "La compra queda ARMADA pero NO se aplica sola."),
         })
         marcados += 1
     return marcados

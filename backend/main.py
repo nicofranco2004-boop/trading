@@ -28992,10 +28992,13 @@ class ImportConfirmIn(BaseModel):
     skip_row_indices: Optional[list] = None  # filas a omitir en este confirm
     # 🔴 OPT-IN, al reves que `skip_row_indices`. Las filas sinteticas marcadas
     # con `[requiere-aprobacion]` NO se aplican solas: hay que nombrarlas aca.
-    # Hoy son los bonos amortizantes, donde Rendi guarda el nominal RESIDUAL y
-    # la foto reporta el ORIGINAL (medido: 18 de 26 casos), asi que sembrar el
-    # "faltante" fabrica una compra que nunca paso. Falla CERRADO: si nadie las
-    # aprueba, no entran.
+    # Hoy son los bonos amortizantes: Rendi guarda el nominal RESIDUAL
+    # (`sweep_bond_amortizations` lo re-escala en cada import) y la foto trae lo
+    # que el broker haya decidido reportar. NO SABEMOS CUAL — ver el detalle en
+    # `tenencia.marcar_bonos_amortizantes`. Como no se puede distinguir un hueco
+    # de apertura REAL de un desajuste de escala, sembrar el "faltante" puede
+    # fabricar una compra que nunca paso. Falla CERRADO: si nadie las aprueba,
+    # no entran.
     #
     # Por TICKER y no por row_index: el camino particionado RENUMERA los indices
     # sinteticos al combinar las particiones ARS y USD (`row_index = -20000 - i`),
