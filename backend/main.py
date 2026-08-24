@@ -28416,6 +28416,18 @@ def import_tenencia_preview(
     try:
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
             raise HTTPException(400, f"No encontramos el broker '{broker}'. {broker_hint}")
+        # 🔴 CUANDO NO SE PUDO LEER LA FECHA, DECIRLO. Antes esto caía al reloj
+        # del servidor en silencio y la respuesta devolvía `date: null`, que el
+        # frontend ni renderiza. Medido en prod: 93 de 152 fotos confirmadas
+        # están en esa situación, y `parse_cocos_tenencia` no setea fecha NUNCA
+        # (47 de 47 por código). O sea que en la mayoría de los casos la fecha
+        # con la que se sellan los lotes de apertura es inventada, y nadie lo
+        # sabe.
+        #
+        # Importa doble para la reconciliación: `compute_reconcile` compara la
+        # foto contra el estado de HOY, lo cual sólo vale si la foto ES de hoy.
+        # Con la fecha inventada esa premisa no se puede verificar.
+        fecha_origen = "archivo" if snap.date else "fallback_hoy"
         seed_date = snap.date or _import_excel.datetime.now().strftime("%Y-%m-%d")
         override_info = None   # sólo lo puebla el path OVERRIDE de Balanz
 
@@ -28705,6 +28717,7 @@ def import_tenencia_preview(
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "foto_completa": _foto_completa, "warnings": _warnings,
                     "tickers_normalizados": tickers_normalizados,
+                    "fecha_origen": fecha_origen, "fecha_usada": seed_date,
                     "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}
         with conn:
             sid = _import_pipeline.store_preview_txs(
@@ -28729,6 +28742,13 @@ def import_tenencia_preview(
             # Viaja SIEMPRE, aunque esté vacío: una transformación silenciosa
             # sobre los datos de alguien es lo que este flujo existe para evitar.
             "tickers_normalizados": tickers_normalizados,
+            # De dónde salió la fecha con la que se sellan los lotes de apertura.
+            # 'fallback_hoy' significa que NO se pudo leer del archivo y se usó
+            # el reloj del servidor — o sea que la comparación contra el estado
+            # actual se apoya en una premisa que no se pudo verificar.
+            "fecha_origen": fecha_origen,
+            "fecha_usada": seed_date,
+            "no_reconciliable": rec.no_reconciliable,
         }
     finally:
         conn.close()

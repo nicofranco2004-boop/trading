@@ -58,8 +58,13 @@ _SECTION_RE = re.compile(
 # Fila de tenencia: ticker (2-8 alfanum), nombre (lazy), 3 números AR al final.
 _ROW_RE = re.compile(
     r"^([A-Z0-9]{2,8})\s+(.+?)\s+(" + _AR_NUM + r")\s+(" + _AR_NUM + r")\s+(" + _AR_NUM + r")\s*$")
-_DATE_RE = re.compile(r"Tenencias?\s+al\s+(\d{2}/\d{2}/\d{4})", re.IGNORECASE)
-_TOTAL_RE = re.compile(r"Tenencias?\s+al\s+\d{2}/\d{2}/\d{4}\s+ARS\s+(" + _AR_NUM + r")", re.IGNORECASE)
+# Día y mes de 1 O 2 dígitos. Es el fix de `8cd5b120`, que se aplicó a todos los
+# parsers de MOVIMIENTOS y nunca llegó a los de FOTO: un "Tenencias al 9/6/2026"
+# no matcheaba y la fecha caía al fallback de HOY, en silencio. `_IOL_DATE_RE` ya
+# lo hacía bien y es, no por casualidad, el único parser de foto con 0 fallbacks
+# medidos en producción (0 de 25).
+_DATE_RE = re.compile(r"Tenencias?\s+al\s+(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE)
+_TOTAL_RE = re.compile(r"Tenencias?\s+al\s+\d{1,2}/\d{1,2}/\d{4}\s+ARS\s+(" + _AR_NUM + r")", re.IGNORECASE)
 
 
 def _num(s: str) -> float:
@@ -94,8 +99,16 @@ class TenenciaSnapshot:
 
 
 def _to_iso(d: str) -> Optional[str]:
-    m = re.match(r"(\d{2})/(\d{2})/(\d{4})", d or "")
-    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else None
+    """DD/MM/YYYY → YYYY-MM-DD, aceptando día y mes de 1 dígito.
+
+    El zero-padding va por `int()` y no por concatenación: con "9/6/2026" el
+    string crudo daba "2026-6-9", que ordena mal contra cualquier otra fecha
+    ISO y rompe los `date <= ?` del replay sin que nada avise.
+    """
+    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", d or "")
+    if not m:
+        return None
+    return f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
 
 
 def _canon_fund_ticker(ticker: str) -> str:
@@ -135,6 +148,9 @@ class ReconcileResult:
     to_seed: List[tuple] = field(default_factory=list)            # [(Holding, gap_qty)] huecos a crear como lote de apertura
     over: List[tuple] = field(default_factory=list)              # [(ticker, rendi_qty, snap_qty)] Rendi tiene de MÁS → revisar
     not_in_snapshot: List[tuple] = field(default_factory=list)   # [(ticker, rendi_qty)] en Rendi pero no en la foto (vendido?)
+    # [{ticker, motivo, rendi_qty, foto_qty}] — el activo NO se pudo comparar
+    # con confianza. NO es un quinto resultado: es la negativa a producir uno.
+    no_reconciliable: List[dict] = field(default_factory=list)
 
 
 def normalizar_tickers(snapshot: "TenenciaSnapshot") -> List[dict]:
@@ -205,14 +221,45 @@ def normalizar_tickers(snapshot: "TenenciaSnapshot") -> List[dict]:
 
 
 def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
-                      eps: float = 1e-6) -> ReconcileResult:
+                      eps: float = 1e-6,
+                      no_reconciliable_motivo: str = None) -> ReconcileResult:
     """Concilia la foto (Tenencia = verdad) contra lo que Rendi YA tiene por activo
     (sumando broker padre + sibling '· USD'). Por activo de la foto:
       • Rendi == foto  → matched (no se toca → NO duplica).
       • Rendi <  foto  → seedea SOLO la diferencia (el hueco comprado antes de la
                          ventana de la Cuenta Corriente) como lote de apertura.
       • Rendi >  foto  → over (la foto manda; se flaggea para ajustar).
-    Lo que Rendi tiene y la foto NO → not_in_snapshot (vendido / a revisar)."""
+    Lo que Rendi tiene y la foto NO → not_in_snapshot (vendido / a revisar).
+
+    `no_reconciliable_motivo` corta de raíz: con un motivo, TODO va a
+    `no_reconciliable` y los otros baldes quedan vacíos. No es un modo
+    defensivo de más — es la única respuesta honesta cuando la comparación no
+    se puede hacer.
+
+    El caso que lo motivó: esta función NO recibe fechas, así que compara la
+    foto contra el estado de HOY. Eso vale sólo si la foto ES de hoy. Cuando el
+    endpoint no pudo leer la fecha del archivo cae al reloj del servidor
+    (medido: 93 de 152 fotos confirmadas en prod, y `parse_cocos_tenencia` no
+    setea fecha NUNCA), o sea que compara contra una fecha INVENTADA. Mostrarle
+    a alguien un `over` o un `not_in_snapshot` salido de ahí, y encima pedirle
+    que decida si borra una tenencia, es peor que no mostrarle nada.
+    """
+    if no_reconciliable_motivo:
+        res = ReconcileResult()
+        vistos = set()
+        for h in snapshot.holdings:
+            vistos.add(h.ticker)
+            res.no_reconciliable.append({
+                "ticker": h.ticker, "motivo": no_reconciliable_motivo,
+                "rendi_qty": current_qty_by_asset.get(h.ticker, 0.0),
+                "foto_qty": h.quantity})
+        for asset, q in current_qty_by_asset.items():
+            if asset not in vistos and abs(q) > eps:
+                res.no_reconciliable.append({
+                    "ticker": asset, "motivo": no_reconciliable_motivo,
+                    "rendi_qty": q, "foto_qty": None})
+        return res
+
     res = ReconcileResult()
     snap_tickers = set()
     for h in snapshot.holdings:
@@ -645,7 +692,7 @@ def _ppi_extract_date(rows) -> Optional[str]:
                     return c.strftime("%Y-%m-%d")
                 except Exception:
                     pass
-            m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", _cell_s(c))
+            m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", _cell_s(c))
             if m:
                 d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
                 if 1 <= mo <= 12 and 1 <= d <= 31:   # ignora fechas imposibles (31/13/…)
@@ -1000,7 +1047,7 @@ _BAL_ROW_RE = re.compile(
     r"^(\S+)\s+(.+?)\s+(" + _BAL_AR + r")\s+(" + _BAL_GAR + r")\s+\$\s+("
     + _BAL_AR + r")\s+\$\s+(" + _BAL_AR + r")\s*$")
 _BAL_SECTION_TYPE = {"acciones": "STOCK", "bonos": "BOND", "cedears": "CEDEAR", "fondos": "FUND"}
-_BAL_DATE_RE = re.compile(r"fecha resumen\s+(\d{2})/(\d{2})/(\d{4})")
+_BAL_DATE_RE = re.compile(r"fecha resumen\s+(\d{1,2})/(\d{1,2})/(\d{4})")
 _BAL_TOTAL_RE = re.compile(r"^total\s+\$\s+(" + _BAL_AR + r")\s*$")
 # "Tipo de cambio para esa fecha: MEP $ 1.518,52 | US Dollar $ 1.570,60" → dólar MEP
 # de la foto. Lo usamos para convertir el precio-por-cuotaparte (que la foto trae en
@@ -1041,7 +1088,9 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
     _tnorm = _bal_norm(text)
     md = _BAL_DATE_RE.search(_tnorm)
     if md:
-        snap.date = f"{md.group(3)}-{md.group(2)}-{md.group(1)}"
+        # `int()` y no concatenación: con día/mes de 1 dígito el string crudo
+        # daba "2026-6-9", que no es ISO y ordena mal.
+        snap.date = f"{int(md.group(3)):04d}-{int(md.group(2)):02d}-{int(md.group(1)):02d}"
     mm = _BAL_MEP_RE.search(_tnorm)
     if mm:
         snap.fx_mep = _num(mm.group(1))
