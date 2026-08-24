@@ -113,6 +113,13 @@ def detect_high_turnover(report: PeriodReport, avg_trades_per_period: float = 0)
 
 def detect_deposits_vs_gains(report: PeriodReport) -> Optional[Insight]:
     """Si el crecimiento del período vino mayormente de aportes y no de rendimiento."""
+    # AUDIT D-1: sin base comparable, `delta_usd` viene en 0 porque el guard lo
+    # tapó — no porque el mercado no se haya movido. Leerlo como un hecho hacía
+    # que este detector disparara SIEMPRE (las dos salidas de abajo comparan
+    # contra abs(0)) y afirmara "el portfolio creció US$+0 por rendimiento de
+    # mercado" pegado a un headline que dice que no se puede medir.
+    if getattr(report.metrics, "basis_incomparable", False):
+        return None
     deps = report.metrics.deposits
     delta = report.metrics.delta_usd
     if deps < 500:
@@ -172,10 +179,15 @@ def detect_vs_benchmark(report: PeriodReport) -> Optional[Insight]:
     """Performance vs S&P 500 — solo aplica a períodos mensuales con bench disponible."""
     if report.period_type != "month":
         return None
-    sp = report.metrics.vs_sp500_pct
-    if sp is None or report.metrics.delta_pct is None:
+    # AUDIT D-2: `sp` es el retorno del S&P y `delta` el exceso en pp. Antes este
+    # detector derivaba el retorno restando (`delta_pct - vs_sp500_pct`) porque
+    # `vs_sp500_pct` guardaba el retorno del benchmark; ahora cada uno viene en su
+    # campo y no hay que despejar nada. Ojo: sin este cambio la resta se aplicaba
+    # dos veces y el chip contradecía a la narrativa en la misma tarjeta.
+    sp = report.metrics.sp500_return_pct
+    delta = report.metrics.vs_sp500_pct
+    if sp is None or delta is None or report.metrics.delta_pct is None:
         return None
-    delta = report.metrics.delta_pct - sp
     if abs(delta) < 1.0:
         return None  # casi igual, no es noticia
     if delta > 0:

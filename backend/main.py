@@ -30545,11 +30545,16 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
         target = (_date.fromisoformat(latest_date) - _td(days=days)).isoformat()
     except ValueError:
         return None
-    prev = conn.execute(
-        "SELECT date, total_value, total_invested, net_deposited FROM snapshots WHERE user_id=? AND date<=? ORDER BY date DESC LIMIT 1",
-        (uid, target),
-    ).fetchone()
-    if not prev or prev["total_value"] is None:
+    # AUDIT D-1: una fila que el import fabricó al costo no es un cierre, y
+    # restarle el valor de mercado de hoy da la brecha costo-vs-mercado, no la
+    # variación de N días. Acá aceptamos también las filas legacy sin `source`
+    # (INDETERMINADO): este chip no define el número principal de la pantalla, y
+    # descartarlas se lo borraría a usuarios con snapshots válidos pero viejos.
+    from reporting.builder import fetch_snapshot_at_or_before
+    from twr import MEDICION, INDETERMINADO
+    prev = fetch_snapshot_at_or_before(conn, uid, target,
+                                       accept=(MEDICION, INDETERMINADO))
+    if not prev or prev.get("total_value") is None:
         return None
     prev_v = float(prev["total_value"])
     if prev_v <= 0:
@@ -30603,14 +30608,20 @@ def _ytd_delta(conn, uid: int, latest_value: Optional[float],
     # anteriores como ganancia del año. Start desde el snapshot MtM del cierre
     # del año pasado cuando existe (solo global — snapshots no se desagregan).
     # Fallback: capital_inicio (usuarios sin snapshots previos al año).
+    # AUDIT D-1: ese SELECT aceptaba CUALQUIER fila — incluida la que el import
+    # fabrica al costo (`source='import'`, total_value = capital_final). Contra un
+    # latest_value a mercado, el KPI "YTD" quedaba haciendo exactamente la resta
+    # que el guard del período acaba de declarar impublicable: la tarjeta mostraba
+    # "P&L del año: —" y al lado "YTD 2026: −61,18%". Ahora sólo un cierre MEDIDO
+    # sirve de arranque; sin él no hay YTD (None), igual que el período.
     if broker_filter == "global":
-        snap = conn.execute(
-            "SELECT total_value FROM snapshots WHERE user_id=? AND date<=? "
-            "ORDER BY date DESC LIMIT 1",
-            (uid, f"{year:04d}-01-01"),
-        ).fetchone()
-        if snap and float(snap["total_value"] or 0) > 0:
-            start = float(snap["total_value"])
+        from reporting.builder import fetch_snapshot_at_or_before, _border_is_fresh
+        _yr_start = f"{year:04d}-01-01"
+        snap = fetch_snapshot_at_or_before(conn, uid, _yr_start, mtm_only=True)
+        if not (snap and float(snap.get("total_value") or 0) > 0
+                and _border_is_fresh(snap.get("date"), _yr_start, max_lag_days=5)):
+            return None
+        start = float(snap["total_value"])
     if start <= 0:
         return None
     # AUDIT B2 (2026-07): descontar los flujos netos del año (aportes − retiros)

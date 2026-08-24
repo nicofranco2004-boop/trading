@@ -400,8 +400,12 @@ function MonthDisclosure({ items, loading, broker, expandedKey, onToggle }) {
 
 function PeriodRow({ period, expanded, onToggle }) {
   const empty = !period.is_relevant && !period.is_current
-  const pct = period?.metrics?.delta_pct
-  const usd = period?.metrics?.delta_usd
+  // AUDIT D-1: sin base comparable el backend no publica el resultado del
+  // período (start salía de la cadena contable y end del mercado). Ni el % ni
+  // el monto: los dos eran el mismo número mal.
+  const noBasis = period?.metrics?.basis_incomparable === true
+  const pct = noBasis ? null : period?.metrics?.delta_pct
+  const usd = noBasis ? null : period?.metrics?.delta_usd
   const pctColor = pct == null
     ? 'text-ink-3'
     : pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
@@ -486,17 +490,27 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   const [showTech, setShowTech] = useState(false)
   const m = period.metrics || {}
   const snap = period.portfolio_snapshot || {}
-  const pct = m.delta_pct
-  const usd = m.delta_usd
+  // AUDIT D-1: ver PeriodRow. Con base incomparable no hay resultado del período
+  // que mostrar — publicar "US$ 0" sería afirmar que no pasó nada, que es tan
+  // falso como el −US$127.486 que mostraba antes.
+  const noBasis = m.basis_incomparable === true
+  const pct = noBasis ? null : m.delta_pct
+  const usd = noBasis ? null : m.delta_usd
   // Con % None (día/semana per-broker, base incompleta) la polaridad sale del
   // SIGNO del USD — antes (pct ?? 0) >= 0 pintaba VERDE una pérdida realized.
   const isPos = pct != null ? pct >= 0 : (usd ?? 0) >= 0
-  const colorClass = isPos ? 'text-rendi-pos' : 'text-rendi-neg'
+  // Sin base no hay signo que pintar: un "—" en verde sugiere un período bueno.
+  const colorClass = noBasis ? 'text-ink-3' : (isPos ? 'text-rendi-pos' : 'text-rendi-neg')
 
   // Detección de "período flat" — sin movimientos, sin trades.
   // En ese caso no mostramos P&L del período (sería engañoso "+US$ 0"),
   // sino que pivot a KPIs estáticos del portfolio actual.
-  const isFlat = (
+  // AUDIT D-1: `!noBasis &&` es imprescindible. El guard deja delta_usd en 0, así
+  // que un mes sin trades ni flujos caía en isFlat → el pill decía "Sin
+  // movimientos", se escondía el KPI con su "falta el cierre del arranque" y,
+  // peor, se escondían el headline y la narrativa que EXPLICAN por qué no hay
+  // número. El fix se anulaba a sí mismo y afirmaba que no pasó nada.
+  const isFlat = !noBasis && (
     (m.delta_usd === 0 || m.delta_usd == null) &&
     (m.trades_count === 0 || m.trades_count == null) &&
     !m.deposits && !m.withdrawals
@@ -526,8 +540,9 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label: `P&L ${periodLabel}`,
       value: usd != null ? `${usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(usd))}` : '—',
-      sub: pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : null,
-      tone: isPos ? 'pos' : 'neg',
+      sub: pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+        : noBasis ? 'falta el cierre del arranque' : null,
+      tone: noBasis ? undefined : (isPos ? 'pos' : 'neg'),
     })
   }
 

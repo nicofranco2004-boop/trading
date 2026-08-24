@@ -61,7 +61,11 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [weeksOpen, setWeeksOpen] = useState(false)
   const [metricsOpen, setMetricsOpen] = useState(false)
-  const deltaPct = p.metrics?.delta_pct
+  // AUDIT D-1: con base incomparable el período no tiene resultado publicable
+  // (start de la cadena contable vs end a mercado) — ni % ni monto.
+  const noBasis = p.metrics?.basis_incomparable === true
+  const deltaPct = noBasis ? null : p.metrics?.delta_pct
+  const deltaUsd = noBasis ? null : p.metrics?.delta_usd
   const positive = (deltaPct ?? 0) >= 0
   // Fase B: el delta_usd / valores monetarios respetan el toggle global
   // ARS/USD. El backend siempre devuelve USD; la conversión a ARS usa
@@ -108,11 +112,13 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
             {p.is_current && <Pill tone="signal" dot>En curso</Pill>}
           </div>
           <div className="flex items-baseline gap-2 flex-shrink-0">
-            <span className={`text-2xl font-semibold tabular ${positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+            <span className={`text-2xl font-semibold tabular ${
+              noBasis ? 'text-ink-3' : (positive ? 'text-rendi-pos' : 'text-rendi-neg')
+            }`}>
               {fmtPct(deltaPct)}
             </span>
             <span className="text-xs tabular text-ink-3">
-              {money.fmtMoney(p.metrics?.delta_usd, { signed: true })}
+              {noBasis ? null : money.fmtMoney(deltaUsd, { signed: true })}
             </span>
           </div>
         </div>
