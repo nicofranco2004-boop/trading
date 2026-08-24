@@ -17070,7 +17070,60 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
                 return "sin_snapshot"
             return clasificar_fila(row, _user_has_positions(conn, au))
 
-        def _detalle(au: int) -> dict:
+        def _lo_que_ve(au: int, mercado: float, cadena: float,
+                       borde: Optional[dict], live_real: bool) -> dict:
+            """El número que ESA cuenta está viendo hoy en Reportes → Mes.
+
+            Lo calcula con `compute_metrics_for_period`, el mismo motor que sirve
+            la pantalla — no una reimplementación. Sin esto el diagnóstico decía
+            "esta cuenta es sospechosa" pero no si está mostrando +440% o −3%.
+
+            `live_real=True` (sólo en el modo ?user_id=) valúa las posiciones a
+            precios de mercado igual que el endpoint real. En el modo agregado se
+            usa la última MEDICION como proxy: es el cierre del cron, así que el
+            número sale con precisión de cierre y sin 500 fetches a yfinance.
+            """
+            from reporting.builder import compute_metrics_for_period, parse_period_bounds
+            live = mercado or None
+            if live_real:
+                try:
+                    lv = compute_live_portfolio_value(conn, au, _user_tc_blue(conn, au), CRYPTO_YF)
+                    if lv and lv > 0:
+                        live = lv
+                except Exception:
+                    pass  # nos quedamos con el proxy
+            out: dict = {"live_usado": (round(float(live), 2) if live else None),
+                         "live_es_real": bool(live_real and live and live != mercado)}
+            try:
+                s, e = parse_period_bounds("month", period_start[:7])
+                m, _ops = compute_metrics_for_period(
+                    conn, au, "month", s, e, "global", bench=None, live_value=live)
+            except Exception as ex:
+                out["lo_que_ve_error"] = str(ex)[:200]
+                return out
+            out.update({
+                # El par que el usuario tiene en pantalla.
+                "ve_delta_usd": (None if m.basis_incomparable else round(m.delta_usd, 2)),
+                "ve_delta_pct": m.delta_pct,
+                "ve_start_value": round(m.start_value, 2),
+                "ve_end_value": round(m.end_value, 2),
+                "deposits_mes": round(m.deposits, 2),
+                "withdrawals_mes": round(m.withdrawals, 2),
+                "realized_mes": round(m.realized_pnl, 2),
+                "trades_mes": m.trades_count,
+            })
+            # La contradicción que el guard NO ve: dos fuentes para la MISMA fecha
+            # (arranque del mes) que no coinciden. El guard sólo pregunta si el
+            # borde es una medición, no si es plausible. En la cuenta 209 la cadena
+            # decía 787.149 y la medición del 1-ago 17.625 — 45x de diferencia, y
+            # el número se publicaba igual.
+            bv = float(borde["total_value"]) if borde else 0.0
+            out["contradiccion_borde_vs_cadena"] = (
+                round(max(cadena, bv) / min(cadena, bv), 1)
+                if (cadena > 0 and bv > 0) else None)
+            return out
+
+        def _detalle(au: int, live_real: bool = False) -> dict:
             me = conn.execute(
                 """SELECT capital_inicio, capital_final, deposits, withdrawals,
                           pnl_realized, pnl_unrealized
@@ -17097,6 +17150,7 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
                 "capital_inicio_cadena": round(cadena, 2),
                 "ultima_medicion": ({"date": ultimo["date"], "total_value": round(mercado, 2)}
                                     if ultimo else None),
+                **_lo_que_ve(au, mercado, cadena, borde, live_real),
                 # >1 = la contabilidad cree que hay más plata que la que ve el mercado.
                 # Es la firma del caso reportado (201.119 contra 73.764 = 2,7x).
                 "ratio_cadena_vs_mercado": (round(cadena / mercado, 2) if mercado > 0 else None),
@@ -17105,7 +17159,7 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
 
         # ── Modo detalle de una cuenta ───────────────────────────────────────
         if user_id is not None:
-            d = _detalle(user_id)
+            d = _detalle(user_id, live_real=True)
             d["snapshots_recientes"] = [
                 {"date": r["date"], "total_value": round(float(r["total_value"] or 0), 2),
                  "source": r["source"],
@@ -17148,6 +17202,21 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
             [c for c in cuentas if (c["ratio_cadena_vs_mercado"] or 0) > 1.5],
             key=lambda c: c["ratio_cadena_vs_mercado"], reverse=True)[:25]
 
+        # ── Lo que el guard NO tapa ──────────────────────────────────────────
+        # El guard exige que el borde sea una MEDICION, pero no que sea plausible.
+        # Si la medición del arranque es mala, el número se publica igual — y con
+        # el signo dado vuelta: en vez de una pérdida fantasma, una GANANCIA
+        # fantasma. Estas dos listas son las cuentas a revisar a mano.
+        publicando_extremos = sorted(
+            [c for c in cuentas
+             if c["publica_numero"] and c.get("ve_delta_pct") is not None
+             and abs(c["ve_delta_pct"]) >= 50],
+            key=lambda c: abs(c["ve_delta_pct"]), reverse=True)[:25]
+        borde_contradictorio = sorted(
+            [c for c in cuentas
+             if c["publica_numero"] and (c.get("contradiccion_borde_vs_cadena") or 0) >= 3],
+            key=lambda c: c["contradiccion_borde_vs_cadena"], reverse=True)[:25]
+
         return {
             "mes_en_curso": period_start,
             "cuentas_evaluadas": total,
@@ -17158,12 +17227,18 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
             # al costo; indeterminado = fila legacy sin `source`.
             "clase_del_borde": por_clase,
             "cuentas_con_brecha_cadena_vs_mercado": con_brecha,
+            "publicando_numeros_extremos": publicando_extremos,
+            "borde_contradice_la_cadena": borde_contradictorio,
             "como_leerlo": (
-                "pct_conserva ALTO → deployá tranquilo: casi nadie pierde el número. "
-                "pct_conserva BAJO → el cron no está dejando cierres medidos; arreglá "
-                "eso ANTES de mergear, si no cambiás un número malo por un '—' masivo. "
-                "`cuentas_con_brecha_cadena_vs_mercado` son las que hoy ven una pérdida "
-                "fantasma: mismo síntoma que el reporte del usuario."
+                "pct_conserva = cuánta gente conserva su número con el guard puesto. "
+                "BAJO significa que el cron no está dejando cierres medidos. "
+                "`cuentas_con_brecha_cadena_vs_mercado` = las que veían la pérdida "
+                "fantasma; el guard ya las tapa. "
+                "`publicando_numeros_extremos` y `borde_contradice_la_cadena` = lo que "
+                "el guard NO tapa: el borde ES una medición, así que el número se "
+                "publica, pero no cuadra con la cadena para la MISMA fecha. Leelas "
+                "mirando `ve_delta_pct` contra `deposits_mes`: si el delta es enorme y "
+                "no hay flujos que lo expliquen, es fantasma con el signo al revés."
             ),
         }
     finally:
