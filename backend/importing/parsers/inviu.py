@@ -142,6 +142,7 @@ class InviuParser(Parser):
     platform = "inviu"
     platform_label = "inviu"
     export_label = "Reporte de cuenta corriente (Excel)"
+    tenencia_format = "inviu_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
         cols = _resolve_columns(headers)

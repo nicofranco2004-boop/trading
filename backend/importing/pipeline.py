@@ -1264,6 +1264,25 @@ def parser_options() -> List[Dict[str, Any]]:
     ]
 
 
+# Dónde encuentra cada persona la foto de tenencia en su broker. Es el texto que
+# el wizard muestra cuando alguien importa movimientos y NO la trajo — que es el
+# 42,2% de la gente elegible (117 de 277 usuarios no subieron ninguna). Sin la
+# foto no hay contra qué verificar el import, así que el mejor chequeo del
+# sistema simplemente no corre.
+#
+# Cocos es el que más pierde por lejos: 68 usuarios elegibles sin foto, el 53%
+# de todo lo que se pierde, con apenas 42% de cobertura.
+TENENCIA_LABELS = {
+    "cocos_tenencia": "Inversiones → Estado de cuenta → Exportar",
+    "balanz_tenencia": "Mi cuenta → Resumen de cuenta (PDF)",
+    "iol_tenencia": "Mi cuenta → Estado de cuenta (PDF)",
+    "bullmarket_tenencia": "Mi cuenta → Otras consultas → Tenencia valorizada (PDF)",
+    "ppi_tenencia": "Mi cuenta → Estado de cuenta (Excel)",
+    "ieb_tenencia": "Portafolio → Exportar (Excel)",
+    "inviu_tenencia": "Tenencias → Exportar (Excel)",
+}
+
+
 def parser_options_grouped() -> List[Dict[str, Any]]:
     """Devuelve los parsers agrupados por plataforma para el dropdown a 2 niveles.
     Filtra plataformas que no tienen ningún parser soportado (ej.: Cocos
@@ -1294,12 +1313,24 @@ def parser_options_grouped() -> List[Dict[str, Any]]:
                 "platform": p.platform,
                 "platform_label": p.platform_label,
                 "exports": [],
+                # ¿Esta plataforma tiene foto de tenencia para verificar el
+                # import? Va a nivel PLATAFORMA y no de export porque es una
+                # propiedad del broker, no del archivo: Balanz tiene tres
+                # exports de movimientos y una sola foto. Es el mismo criterio
+                # con el que el wizard ya decide si acepta un PDF
+                # (`allowPdf` mira platform, no format_id).
+                "tenencia_format": None,
+                "tenencia_label": None,
             }
         grouped[p.platform]["exports"].append({
             "id": p.format_id,
             "label": p.export_label or p.display_name,
             "supported": p.is_supported,
         })
+        if p.tenencia_format and not grouped[p.platform]["tenencia_format"]:
+            grouped[p.platform]["tenencia_format"] = p.tenencia_format
+            grouped[p.platform]["tenencia_label"] = TENENCIA_LABELS.get(
+                p.tenencia_format)
     # Orden: generic primero, después binance, después el resto
     order = {"generic": 0, "binance": 1, "balanz": 2, "cocos": 3}
     return sorted(grouped.values(), key=lambda g: order.get(g["platform"], 99))

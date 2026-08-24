@@ -339,6 +339,7 @@ class CocosParser(Parser):
     platform = "cocos"
     platform_label = "Cocos Capital"
     export_label = "Actividad → Movimientos"
+    tenencia_format = "cocos_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}

@@ -124,6 +124,29 @@ function looksLikeCocosTenenciaCsv(headerLine) {
   return cells.size === want.length && want.every(t => cells.has(t))
 }
 
+/**
+ * ¿Hay que sugerirle a esta persona que suba la foto de tenencia?
+ *
+ * Devuelve `{label, broker}` para el aviso, o null si no corresponde.
+ *
+ * Está afuera del componente y exportada para poder testear la DECISIÓN, que es
+ * donde puede haber un error: la caja azul es trivial, elegir cuándo mostrarla
+ * no. En particular el caso `balanz_internacional`, que está en el dict
+ * `TENENCIA_BROKER_BY_FORMAT` de abajo pero cuya foto todavía no existe —
+ * mandarlo a buscar un archivo que ningún parser sabe leer es peor que no
+ * avisarle nada.
+ *
+ * Por eso la capacidad se lee de `parserGroups` (que viene del backend, donde
+ * está la verdad) y no de ese dict.
+ */
+export function resolverFaltaTenencia(parserGroups, platform,
+                                      { isSpecificParser, tenenciaFile }) {
+  if (!isSpecificParser || tenenciaFile) return null
+  const g = (parserGroups || []).find(x => x.platform === platform)
+  if (!g?.tenencia_format) return null
+  return { label: g.tenencia_label || null, broker: g.platform_label || platform }
+}
+
 // Broker que crea cada parser específico (hardcoded en el registry del backend).
 // La foto de tenencia se aplica sobre ese broker; para parsers específicos el
 // wizard no pide elegir broker (singleBroker queda vacío) → resolvemos por formato.
@@ -409,6 +432,22 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   // Parsers específicos (Binance, Cocos, etc.) ya saben qué significa cada
   // columna del archivo del broker — no hace falta que el usuario mapee.
   const isSpecificParser = format && format !== 'rendi_generic'
+
+  // ¿Este broker tiene foto de tenencia y la persona NO la trajo?
+  //
+  // La foto es el mejor chequeo que tiene el sistema: comparar el import contra
+  // el resumen del broker no depende de conocer el bug, porque la referencia es
+  // el broker. Pero sólo el 57,8% de la gente elegible la sube — al 42,2%
+  // restante no se le verifica nada, y un detector que no corre no detecta.
+  //
+  // 🔴 EL DATO SALE DEL BACKEND, NO DE `TENENCIA_BROKER_BY_FORMAT`. Ese dict de
+  // acá arriba mapea el NOMBRE DEL BROKER (para saber sobre cuál aplicar la
+  // foto) y ya se desincronizó de lo que existe: tiene `balanz_internacional`,
+  // cuya foto todavía no está escrita. Usarlo para este aviso mandaría a la
+  // gente a buscar un archivo que ningún parser sabe leer. `tenencia_format`
+  // viaja en /imports/parsers/grouped y es la capacidad real.
+  const faltaTenencia = resolverFaltaTenencia(parserGroups, platform,
+    { isSpecificParser, tenenciaFile })
 
   // Plataforma con importación bloqueada (ver BLOCKED_IMPORT_PLATFORMS).
   const isBlockedPlatform = !!BLOCKED_IMPORT_PLATFORMS[platform]
@@ -757,6 +796,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
               onToggleSkipRow={toggleSkipRow}
               onSeedClick={goToSeedStep}
               redoBanner={redoBanner}
+              faltaTenencia={faltaTenencia}
             />
           )}
 
@@ -1669,7 +1709,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
 
 function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                         skippedRowIndices = new Set(), onToggleSkipRow, onSeedClick,
-                        redoBanner = null }) {
+                        redoBanner = null, faltaTenencia = null }) {
   const s = preview.summary || {}
   const dup = preview.duplicate_of_batch_id
   const routing = preview.routing_summary
@@ -1708,6 +1748,39 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                 confirmar (no se duplican) — solo entran los movimientos <span className="font-medium text-ink-1">nuevos</span>.
                 Podés subir el historial actualizado o solo el mes nuevo sin problema.
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Sin el resumen del broker no hay contra qué verificar este import.
+          Va en AZUL y no en ámbar a propósito: el import es válido, no hay nada
+          roto — es el mismo criterio que el comentario de más abajo deja escrito
+          sobre el aviso de cash negativo ("alarmista"). Acá el tono es el de una
+          sugerencia que mejora el resultado, no el de una advertencia.
+          No bloquea: es información, no cambia comportamiento. */}
+      {faltaTenencia && (
+        <div className="px-3 py-3 rounded-md bg-blue-500/10 border border-blue-500/40 text-sm">
+          <div className="flex items-start gap-2">
+            <Info size={16} className="mt-0.5 flex-shrink-0 text-blue-500" />
+            <div>
+              <div className="font-semibold text-ink-0 mb-0.5">
+                Podés verificar este import con el resumen de {faltaTenencia.broker}
+              </div>
+              <p className="text-xs text-ink-2">
+                Si además del archivo de movimientos subís la{' '}
+                <span className="font-medium text-ink-1">tenencia</span> —la foto de lo que
+                tenés hoy en el broker— comparamos las dos cosas y te avisamos si algo no
+                coincide: un activo de más, uno que falta, una cantidad distinta. Sin ese
+                archivo el import entra igual, pero{' '}
+                <span className="font-medium text-ink-1">no hay contra qué chequearlo</span>.
+              </p>
+              {faltaTenencia.label && (
+                <p className="text-xs text-ink-2 mt-1.5">
+                  Dónde bajarla:{' '}
+                  <span className="font-medium text-ink-1">{faltaTenencia.label}</span>
+                  . Podés arrastrarla junto con este archivo, o subirla después.
+                </p>
+              )}
             </div>
           </div>
         </div>

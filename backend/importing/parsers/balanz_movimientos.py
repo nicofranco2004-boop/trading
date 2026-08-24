@@ -199,6 +199,7 @@ class BalanzMovimientosParser(Parser):
     platform = "balanz"
     platform_label = "Balanz"
     export_label = "Actividad → Movimientos (recomendado)"
+    tenencia_format = "balanz_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
         cols = _resolve_columns(headers)
