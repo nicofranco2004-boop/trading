@@ -137,6 +137,73 @@ class ReconcileResult:
     not_in_snapshot: List[tuple] = field(default_factory=list)   # [(ticker, rendi_qty)] en Rendi pero no en la foto (vendido?)
 
 
+def normalizar_tickers(snapshot: "TenenciaSnapshot") -> List[dict]:
+    """Pasa los tickers de la FOTO por la misma canonicalización que los movimientos.
+
+    🔴 EL BUG QUE ARREGLA. `compute_reconcile` matchea por IGUALDAD EXACTA DE
+    STRING contra `positions.asset`, y `positions.asset` viene del normalizador,
+    que sí aplica `consolidate_cd` (`normalizer.py:372`). La foto no pasaba por
+    ahí. Resultado: la misma tenencia entra dos veces con nombres distintos —
+    AL30D en la foto contra AL30 en Rendi— y el reconcile la reporta como DOS
+    problemas a la vez:
+
+      · un `not_in_snapshot` FALSO (AL30 está en Rendi y "no está en la foto"), y
+      · un `to_seed` FALSO (AL30D está en la foto y "falta en Rendi").
+
+    El primero es el peligroso: con el override prendido, cerrar ese activo
+    ausente con una venta sintética BORRA una tenencia que el cliente SÍ tiene.
+    En prod ya hay 7 tickers con sufijo D grabados en `positions` de 4 usuarios,
+    o sea que el desalineamiento no es hipotético.
+
+    FUSIONA lo que colapsa. Si la foto trae AL30 y AL30D por separado —que es
+    justo lo que pasa mientras el conducto MEP está abierto—, después de
+    consolidar los dos son AL30. Dejarlos como dos holdings sería peor que no
+    hacer nada: `compute_reconcile` itera holdings y compararía CADA UNO contra
+    la cantidad TOTAL de Rendi, produciendo un `over` y un `to_seed` del mismo
+    activo. Se fusionan por (ticker, moneda) — nunca entre monedas, porque el
+    camino de PPI particiona la foto por moneda y concilia cada parte contra su
+    sub-broker.
+
+    Devuelve el detalle de lo que cambió. No es decorativo: una transformación
+    silenciosa sobre los datos de alguien es exactamente lo que este flujo
+    existe para no hacer, y el asesor tiene que poder ver que su AL30D se leyó
+    como AL30 antes de confirmar.
+    """
+    from .tickers_cd import consolidate_cd
+    cambios: List[dict] = []
+    for h in snapshot.holdings:
+        antes = h.ticker
+        despues = consolidate_cd(antes, h.asset_type)
+        if despues and despues != antes:
+            h.ticker = despues
+            cambios.append({"de": antes, "a": despues,
+                            "asset_type": h.asset_type, "motivo": "sufijo_dolar"})
+
+    # Fusión por (ticker, moneda), preservando el orden de aparición.
+    fusionados: dict = {}
+    orden: List[tuple] = []
+    for h in snapshot.holdings:
+        k = (h.ticker, (h.currency or "").upper())
+        if k not in fusionados:
+            fusionados[k] = h
+            orden.append(k)
+            continue
+        prev = fusionados[k]
+        cambios.append({"de": h.ticker, "a": h.ticker, "asset_type": h.asset_type,
+                        "motivo": "fusion",
+                        "detalle": (f"dos filas de la foto quedaron en el mismo "
+                                    f"ticker: {prev.quantity} + {h.quantity}")})
+        prev.quantity += h.quantity
+        prev.value += h.value
+        # El precio se re-deriva del total: es lo que hace el resto del módulo
+        # (price_per1 = value/quantity) y auto-resuelve el per-100 de los bonos.
+        prev.price_per1 = (prev.value / prev.quantity) if prev.quantity else 0.0
+        prev.per100 = prev.per100 or h.per100
+    if len(fusionados) != len(snapshot.holdings):
+        snapshot.holdings = [fusionados[k] for k in orden]
+    return cambios
+
+
 def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
                       eps: float = 1e-6) -> ReconcileResult:
     """Concilia la foto (Tenencia = verdad) contra lo que Rendi YA tiene por activo

@@ -28403,6 +28403,15 @@ def import_tenencia_preview(
     if not snap.holdings:
         raise HTTPException(400, "No pudimos leer ninguna tenencia del archivo. Escribinos y lo revisamos.")
 
+    # Los tickers de la FOTO pasan por la misma canonicalización que los
+    # movimientos (`consolidate_cd`, que hasta acá sólo corría en el
+    # normalizador). Sin esto la foto dice AL30D donde Rendi dice AL30 y el
+    # reconcile inventa DOS problemas del mismo activo: un `not_in_snapshot`
+    # falso y un `to_seed` falso. El primero es el que hace daño — con override
+    # prendido, cerrar ese "ausente" borra una tenencia que el cliente sí tiene.
+    # Va acá porque es donde convergen los siete parsers de foto.
+    tickers_normalizados = _import_tenencia.normalizar_tickers(snap)
+
     conn = get_db()
     try:
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
@@ -28695,6 +28704,7 @@ def import_tenencia_preview(
         if not seed_txs and not _fund_overrides:
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "foto_completa": _foto_completa, "warnings": _warnings,
+                    "tickers_normalizados": tickers_normalizados,
                     "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}
         with conn:
             sid = _import_pipeline.store_preview_txs(
@@ -28715,6 +28725,10 @@ def import_tenencia_preview(
             "over": [{"ticker": t, "rendi": rq, "tenencia": tq} for t, rq, tq in rec.over],
             "not_in_snapshot": [{"ticker": t, "qty": q} for t, q in rec.not_in_snapshot],
             "override": override_info,
+            # Lo que le hicimos a los tickers de la foto antes de compararlos.
+            # Viaja SIEMPRE, aunque esté vacío: una transformación silenciosa
+            # sobre los datos de alguien es lo que este flujo existe para evitar.
+            "tickers_normalizados": tickers_normalizados,
         }
     finally:
         conn.close()
