@@ -28645,6 +28645,9 @@ def import_tenencia_preview(
                 # residual y la foto puede traer el nominal (ver
                 # `apartar_bonos_amortizantes`).
                 _import_tenencia.marcar_bonos_amortizantes(r1, cur_q)
+                # Lo ausente en la foto tampoco se cierra solo: cerrarlo
+                # registra una venta que no sabemos si paso.
+                _import_tenencia.marcar_ausentes(r1)
                 p_seed, p_ov = _tenencia_apply_override(
                     conn, uid, sub, pair, r1, _cur_inv(sub), cur_q, seed_date,
                     complete=_complete, currency=ccy)
@@ -28682,6 +28685,7 @@ def import_tenencia_preview(
             rec = _import_tenencia.compute_reconcile(
                 current, snap, no_reconciliable_motivo=motivo_corte)
             _import_tenencia.marcar_bonos_amortizantes(rec, current)
+            _import_tenencia.marcar_ausentes(rec)
 
             # `complete` = la foto es TOTAL (todas las clases + monedas) → habilita
             # BORRAR not_in_snapshot. Balanz siempre; IEB sólo si el parser NO dejó

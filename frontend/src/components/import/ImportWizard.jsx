@@ -800,6 +800,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
 
           {step === STEP_UPLOAD && (
             <UploadStep
+              faltaTenencia={faltaTenencia}
               sourceType={sourceType}
               platform={platform}
               format={format}
@@ -1364,7 +1365,7 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
 // Después del Paso 0 ya sabemos origen + broker + moneda. Acá solo: resumen de
 // lo elegido (con "Cambiar"), instrucciones de descarga (rama broker) o template
 // (rama propia), y el dropzone de archivos.
-function UploadStep({ sourceType, platform, format, parserGroups = [], files, setFiles,
+function UploadStep({ faltaTenencia = null, sourceType, platform, format, parserGroups = [], files, setFiles,
                       downloadTemplate, inputRef, importMode, singleBroker,
                       effectiveCurrency, isArsContext, useCurrencyRouting, onBack }) {
   const [fileError, setFileError] = useState(null)
@@ -1447,6 +1448,30 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
         </button>
       </div>
 
+      {/* Pedir la foto ACA rinde mas que avisar despues: el broker ya esta
+          elegido y la persona todavia esta en el momento de juntar archivos.
+          Mismo texto que el aviso del preview, en el momento util. */}
+      {faltaTenencia && files.length === 0 && (
+        <div className="px-3 py-2.5 rounded-md bg-blue-500/10 border border-blue-500/40 text-sm">
+          <div className="flex items-start gap-2">
+            <Info size={16} className="mt-0.5 flex-shrink-0 text-blue-500" />
+            <div>
+              <div className="font-semibold text-ink-0 mb-0.5">
+                Traé también el resumen de {faltaTenencia.broker}
+              </div>
+              <p className="text-xs text-ink-2">
+                Si subís los dos juntos comparamos el import contra la{' '}
+                <span className="font-medium text-ink-1">tenencia</span> y te avisamos
+                si algo no coincide. Podés arrastrarlos al mismo tiempo.
+                {faltaTenencia.label && (
+                  <> Dónde bajarla:{' '}
+                    <span className="font-medium text-ink-1">{faltaTenencia.label}</span>.</>
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Instrucciones de descarga del broker (rama broker) */}
       {isSpecific && platform !== 'generic' && (
         <BrokerInstructions lockBrokerId={platform} />
@@ -1794,6 +1819,19 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
 }
 
 
+/** Los `motivo` son un enum INTERNO. Quien mira esta pantalla confirma plata
+ *  ajena — no le mostramos `escala_bono_amortizante`. La explicación larga ya
+ *  viaja en `detalle`; esto es sólo la etiqueta. */
+const MOTIVO_LABEL = {
+  ausente_en_la_foto: 'no está en el resumen',
+  escala_bono_amortizante: 'bono que amortiza',
+  datos_manuales: 'lo editaste a mano',
+  vencimiento_en_ventana: 'venció en el período',
+  split_en_ventana: 'hubo un split',
+  fecha_desconocida: 'sin fecha del resumen',
+  proyeccion_no_verifica: 'no pudimos verificarlo',
+}
+
 /**
  * Contra el resumen del broker — los cuatro baldes, y lo que no se pudo decidir.
  *
@@ -1818,7 +1856,7 @@ function ReconcileStep({ data, aprobados, onToggle }) {
                                     .map(d => d.ticker))
   const seed = (data.to_seed || []).filter(x => !pendientes.has(x.ticker))
   const over = data.over || []
-  const ausentes = data.not_in_snapshot || []
+  const ausentes = (data.not_in_snapshot || []).filter(x => !pendientes.has(x.ticker))
   const conf = data.confianza || {}
   const nada = !seed.length && !over.length && !ausentes.length && !dudosos.length
 
@@ -1852,7 +1890,8 @@ function ReconcileStep({ data, aprobados, onToggle }) {
       )}
 
       {seed.length > 0 && (
-        <RecSection titulo={`Se completan ${seed.length} posición(es) que faltaban`}
+        <RecSection titulo={seed.length === 1 ? 'Se completa 1 posición que faltaba'
+          : `Se completan ${seed.length} posiciones que faltaban`}
                  sub="La foto las tiene y el import no las trajo — las agregamos como apertura, sin P&L."
                  chip={<Chip ok={conf.to_seed === 'verificada_composicion'} />} tono="ok">
           {seed.map(x => (
@@ -1863,7 +1902,8 @@ function ReconcileStep({ data, aprobados, onToggle }) {
       )}
 
       {ausentes.length > 0 && (
-        <RecSection titulo={`${ausentes.length} activo(s) que el resumen no tiene`}
+        <RecSection titulo={ausentes.length === 1 ? '1 activo que el resumen no tiene'
+          : `${ausentes.length} activos que el resumen no tiene`}
                  sub="Están en Rendi y no aparecen en la foto. Puede ser una venta que el archivo no trajo, o que estén en otro broker."
                  chip={<Chip ok={conf.not_in_snapshot === 'verificada_composicion'} />} tono="warn">
           {ausentes.map(x => (
@@ -1873,7 +1913,8 @@ function ReconcileStep({ data, aprobados, onToggle }) {
       )}
 
       {over.length > 0 && (
-        <RecSection titulo={`${over.length} activo(s) con más cantidad que el resumen`}
+        <RecSection titulo={over.length === 1 ? '1 activo con más cantidad que el resumen'
+          : `${over.length} activos con más cantidad que el resumen`}
                  sub="Rendi tiene más de lo que dice la foto."
                  chip={<Chip ok={conf.over === 'verificada_composicion'} />} tono="warn">
           {over.map(x => (
@@ -1884,7 +1925,8 @@ function ReconcileStep({ data, aprobados, onToggle }) {
       )}
 
       {dudosos.length > 0 && (
-        <RecSection titulo={`${dudosos.length} que necesitan que decidas vos`}
+        <RecSection titulo={dudosos.length === 1 ? 'Necesitamos que decidas vos'
+          : `${dudosos.length} cosas que necesitan que decidas vos`}
                  sub="No pudimos concluir nada por nuestra cuenta. Nada de esto se aplica salvo que lo marques."
                  tono="decide">
           {dudosos.map((x, i) => {
@@ -1899,7 +1941,7 @@ function ReconcileStep({ data, aprobados, onToggle }) {
                 <div className="min-w-0">
                   <span className="font-mono text-xs text-ink-1">{tk || '—'}</span>
                   <span className="text-[10px] ml-2 px-1.5 py-0.5 rounded bg-white/5 text-ink-3">
-                    {x.motivo}
+                    {MOTIVO_LABEL[x.motivo] || 'a revisar'}
                   </span>
                   {x.detalle && <p className="text-xs text-ink-2 mt-0.5">{x.detalle}</p>}
                 </div>

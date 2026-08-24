@@ -241,9 +241,34 @@ class CocosOverrideE2E(_OverrideE2EBase):
         body = pv.json()
         self.assertIn("MELI", {r["ticker"] for r in body["override"]["reduced"]})
         self.assertEqual({r["ticker"] for r in body["override"]["removed"]}, {"NVDA"})
-        self._confirm(body["session_id"])
+        # ⚠️ RE-APUNTADO: cerrar lo ausente registra una VENTA que no sabemos si
+        # pasó (el activo puede estar en otro broker, o haberse vendido después
+        # del corte), así que ya no se hace solo. Lo que este test protege —que
+        # el override reduzca y cierre bien— sigue valiendo sobre lo APROBADO.
+        self._confirm(body["session_id"], aprobar=["NVDA"])
         self.assertAlmostEqual(self._held("MELI"), 60, places=3)   # reducido
         self.assertAlmostEqual(self._held("NVDA"), 0, places=3)    # cerrado
+
+    def test_sin_aprobacion_lo_ausente_NO_se_cierra(self):
+        """⭐ Falla CERRADO. Mismo escenario, confirmando sin aprobar: la
+        tenencia sobrevive. Sin esto el opt-in seria decorativo — y es el caso
+        mas caro de todos, porque BORRA una posicion de alguien que no esta
+        mirando la pantalla."""
+        # Las MISMAS 6 posiciones que el test de arriba, a proposito: con menos,
+        # el cap de sanidad (>50% tocado -> solo gap-fill) frena el override
+        # entero y el test pasaria por el motivo equivocado.
+        self._import_mov([self._buy("MELI", 100, 21000), self._buy("AAPL", 20, 22000),
+                          self._buy("NVDA", 15, 12000), self._buy("KO", 10, 9000),
+                          self._buy("PG", 10, 9500), self._buy("XOM", 10, 11000)])
+        _extra = ("CEDEAR COCA-COLA COMPANY (KO);10;9000;ARS;90000\n"
+                  "CEDEAR DE PROCTER & GAMBLE (PG);10;9500;ARS;95000\n"
+                  "CEDEAR DE EXXON MOBIL CORPORATION (XOM);10;11000;ARS;110000\n")
+        body = self._preview("cocos", "foto.csv", self._csv(60, _extra), "text/csv").json()
+        motivos = {x.get("ticker"): x.get("motivo") for x in body.get("no_reconciliable", [])}
+        self.assertEqual(motivos.get("NVDA"), "ausente_en_la_foto")
+        self._confirm(body["session_id"])
+        self.assertAlmostEqual(self._held("NVDA"), 15, places=3)   # intacto
+        self.assertAlmostEqual(self._held("MELI"), 60, places=3)   # el over si se aplico
 
     def test_foto_sin_efectivo_no_cierra_nada(self):
         # Export parcial (sin las filas de moneda): no se puede concluir que lo

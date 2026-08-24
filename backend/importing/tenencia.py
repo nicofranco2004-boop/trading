@@ -151,6 +151,12 @@ class ReconcileResult:
     # [{ticker, motivo, rendi_qty, foto_qty}] — el activo NO se pudo comparar
     # con confianza. NO es un quinto resultado: es la negativa a producir uno.
     no_reconciliable: List[dict] = field(default_factory=list)
+    # Tickers cuya tx sintetica NO se aplica sola: la arma igual (para que corran
+    # el ruteo de moneda y la herencia de costo) pero sale marcada y el confirm la
+    # omite salvo aprobacion explicita. Vive ACA y no escondida en `Holding.name`
+    # —como estaba al principio— porque ahora la usan dos marcadores distintos y
+    # alcanza tanto a COMPRAS sinteticas (to_seed) como a VENTAS (not_in_snapshot).
+    requieren_aprobacion: set = field(default_factory=set)
 
 
 _FECHA_EN_NOMBRE = re.compile(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})")
@@ -402,9 +408,7 @@ def marcar_bonos_amortizantes(rec: ReconcileResult,
         # que resolver.
         if abs(float(qty_actual.get(h.ticker, 0.0))) <= eps:
             continue
-        # La marca viaja en el Holding → `build_tenencia_seed_txs` la pasa a las
-        # `notes` de la tx sintética, y el confirm la lee de ahí.
-        h.name = f"{h.name or ''} {MARCA_APROBACION}".strip()
+        rec.requieren_aprobacion.add(h.ticker)
         rec.no_reconciliable.append({
             "ticker": h.ticker, "motivo": MOTIVO_ESCALA_BONO,
             "foto_qty": h.quantity, "gap": gap,
@@ -417,6 +421,53 @@ def marcar_bonos_amortizantes(rec: ReconcileResult,
                         "desde acá no se distinguen. La compra queda ARMADA "
                         "pero NO se aplica sola: confirmala vos."
                         ).format(float(qty_actual.get(h.ticker, 0.0))),
+        })
+        marcados += 1
+    return marcados
+
+
+MOTIVO_AUSENTE = "ausente_en_la_foto"
+
+
+def marcar_ausentes(rec: ReconcileResult) -> int:
+    """Lo que está en Rendi y NO en la foto pasa a decisión del asesor.
+
+    🔴 CERRARLO ES INVENTAR UNA VENTA. El modo override, cuando la foto se leyó
+    completa, cierra estos activos con una venta sintética a costo. Eso asume
+    que "no está en el resumen" ⇒ "se vendió", y esa implicación no se sostiene:
+    el activo puede estar en OTRO broker que esta foto no cubre, puede haberse
+    vendido después del corte, o el resumen puede ser parcial de un modo que el
+    parser no detectó. Ninguna de las tres se distingue desde acá.
+
+    Es el mismo criterio que el bono amortizante y por el mismo motivo — no
+    sabemos — pero acá la consecuencia es peor: el bono inventa una compra que
+    infla; esto BORRA una tenencia. Y en el flujo del asesor lo borra sobre la
+    cuenta de alguien que no está mirando.
+
+    La venta sintética se ARMA igual, así que si el asesor la aprueba conserva
+    todo lo que el override ya hacía bien (fecha de ajuste, costo, P&L 0,
+    `transfer_out`). Cambia quién decide, no qué pasa cuando se decide.
+
+    ⚠️ Medido: el problema de NOMBRES —que produciría un `not_in_snapshot`
+    falso— resultó chico. De 180 cierres históricos, 1 (0,6%) era un ticker
+    escrito distinto, y era sufijo dólar D/C, que `normalizar_tickers` ya
+    arregla. O sea que estos cierres son mayormente reales como discrepancia;
+    lo que no está claro es qué significan.
+    """
+    marcados = 0
+    for tk, rq in rec.not_in_snapshot:
+        if abs(float(rq or 0)) <= 1e-9:
+            continue
+        rec.requieren_aprobacion.add(tk)
+        rec.no_reconciliable.append({
+            "ticker": tk, "motivo": MOTIVO_AUSENTE,
+            "rendi_qty": round(float(rq), 6), "foto_qty": None,
+            "requiere_aprobacion": True,
+            "detalle": ("tenés {:g} y el resumen del broker no lo lista. Puede "
+                        "estar en otro broker, haberse vendido después del "
+                        "corte, o que el resumen no lo cubra. Cerrarlo registra "
+                        "una VENTA que no sabemos si pasó, así que no se hace "
+                        "solo.").format(float(rq)),
         })
         marcados += 1
     return marcados
@@ -465,7 +516,7 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
             notes=(f"{TENENCIA_APERTURA_NOTE_PREFIX} {h.ticker} a precio de "
                    f"{seed_date} (P&L 0)"
                    + (f" {MARCA_APROBACION}"
-                      if MARCA_APROBACION in (h.name or "") else ""))))
+                      if h.ticker in reconcile.requieren_aprobacion else ""))))
         idx += 1
     if override:
         # Reducciones que llevan el estado EXACTO a la foto. Precio/monto 0 +
@@ -486,7 +537,10 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
                 row_index=idx, date=red_date, broker=broker, operation_type=OP_SELL,
                 asset_symbol=tk, quantity=round(qty, 6), unit_price=0.0,
                 gross_amount=0.0, currency=currency, transfer_out=True,
-                notes=f"Tenencia — ajuste a foto de {seed_date}: cierre de {tk} a costo (P&L 0)"))
+                notes=(f"Tenencia — ajuste a foto de {seed_date}: cierre de {tk} "
+                       f"a costo (P&L 0)"
+                       + (f" {MARCA_APROBACION}"
+                          if tk in reconcile.requieren_aprobacion else ""))))
             idx += 1
     return txs
 
