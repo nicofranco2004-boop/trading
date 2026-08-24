@@ -28854,10 +28854,21 @@ def import_tenencia_preview(
                                       if a not in _all_snap_tk]
                 # No SEEDEAR de más: el hueco real es vs lo tenido en TODO el par, no
                 # sólo en este sub-broker (un activo cross-currency ya está en el otro).
+                #
+                # 🔴 LA MISMA TOLERANCIA QUE `compute_reconcile`, Y NO ES DE
+                # ADORNO. Este re-neteo compara contra OTRO número (el par, no
+                # el sub-broker), así que puede fabricar un hueco que
+                # `compute_reconcile` ya había descartado: sub-broker en 0 y
+                # foto 90,10 entra como to_seed de 90,10, y acá netea contra
+                # 90,0963 del par → 0,0037 > 1e-6 → COMPRA sintética de
+                # redondeo, que se auto-aplica sin preguntar. Arreglar sólo
+                # `compute_reconcile` habría dejado esta puerta abierta: el
+                # medio arreglo que en este repo ya salió caro tres veces.
                 _seed = []
                 for h, _g in r1.to_seed:
-                    net = round(h.quantity - _pair_qty.get(h.ticker, 0), 6)
-                    if net > 1e-6:
+                    _pq = _pair_qty.get(h.ticker, 0)
+                    net = round(h.quantity - _pq, 6)
+                    if net > _import_tenencia.tolerancia_qty(_pq, h.quantity):
                         _seed.append((h, net))
                 r1.to_seed = _seed
                 # Los bonos amortizantes NO se auto-siembran: Rendi guarda el

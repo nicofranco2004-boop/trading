@@ -261,8 +261,71 @@ def normalizar_tickers(snapshot: "TenenciaSnapshot") -> List[dict]:
     return cambios
 
 
+# ── TOLERANCIA DE CANTIDAD ───────────────────────────────────────────────────
+# La foto NO reporta con la precisión del ledger, y la diferencia no es
+# información: es el redondeo del broker.
+EPS_QTY_ABS = 1e-6     # piso: ruido de float
+REL_QTY = 1e-4         # 0,01% de la tenencia comparada
+
+
+def tolerancia_qty(rendi_qty, foto_qty, *, rel: float = REL_QTY,
+                   abs_min: float = EPS_QTY_ABS) -> float:
+    """Desde qué diferencia de cantidad hay algo que decidir.
+
+    🔴 EL BUG QUE ARREGLA — Y ESTABA VIVO EN PRODUCCIÓN, no en el flujo del
+    asesor (que corrió cero veces) sino en el de cualquiera que sube su propia
+    foto.
+
+    `compute_reconcile` comparaba con un epsilon ABSOLUTO de 1e-6. La foto
+    reporta cuotapartes de FCI/money market con 2 decimales, así que una
+    tenencia de 90,1037 contra una foto de 90,10 daba un gap de 0,0037 → y eso
+    se convertía en un veredicto y en una fila sintética.
+
+    Medido sobre la copia de prod del 2026-08-16, 152 fotos confirmadas, y
+    re-corrido con ESTA función (no con una reimplementación de la regla):
+    los mismos insumos con `rel_eps=0` reproducen el comportamiento viejo.
+
+      · `over`:    38 de 60 eran esto → una VENTA sintética de 0,004 cuotapartes.
+      · `to_seed`: 39 de 559 → una COMPRA sintética. Y `to_seed` es el único
+        balde que SE AUTO-APLICA SIN PREGUNTAR.
+      · 77 filas sintéticas que ya no se crean, sobre 52 usuarios. El 100% en
+        FCI / money market (FCI:*, COCOSPPA, BCMMA, LECAPSA, INSTITUA, OPPORA,
+        PER3A, IOL*). Ningún caso cambia de balde: sólo pasan a `matched`.
+
+      (559 y no 580: 21 `to_seed` no se pueden reconstruir — 13 tuvieron
+       movimientos posteriores y 8 ya no tienen posición, así que no hay contra
+       qué comparar. No se cuentan ni a favor ni en contra.)
+
+    POR QUÉ RELATIVA Y NO UN ABSOLUTO MÁS GRANDE. Un umbral absoluto no
+    significa lo mismo en un FCI de 500.000 cuotapartes que en 0,05 BTC. Y la
+    medición lo confirma: ordenando TODOS los gaps (over + to_seed) por
+    `gap / tenencia`, hay un hueco limpio —
+
+        ruido    ...  4,1e-5   (0,0037 sobre 90,10 — u1005, FCI:COCOS-RENDIMIENTO-A)
+        ─────────── hueco x4,5 ───────────
+        señal    1,8e-4  ...   (5,54 sobre 30.066 — u549, ADBAICA)
+        entero   2,5e-3  ...   (1 lámina sobre 401 — u914, TRAN)
+
+    `rel = 1e-4` cae adentro del hueco: 2,4× arriba del ruido más grande medido
+    y 1,8× abajo de la primera señal. Y NINGUNO de los 21 `over` reales se
+    toca — el más chico en relativo es 1,86e-2 (u329 SAMI, 3 láminas sobre 161:
+    186× arriba del corte).
+
+    ⚠️ MÍNIMO O MÁXIMO DA LO MISMO, y conviene dejarlo escrito para que nadie
+    lo "arregle". La primera versión de este comentario decía que el mínimo
+    protegía de un caso patológico (una tenencia corrompida y enorme del lado
+    de Rendi agrandando la tolerancia). Es falso, y la cuenta lo cierra: si
+    `gap <= rel·max` entonces las dos puntas difieren en menos que `rel`, o sea
+    `min >= max·(1-rel)`, así que los dos umbrales quedan a un factor 0,9999 uno
+    del otro. Verificado además sobre 200.000 pares al azar: CERO casos donde
+    difiera el veredicto. Se usa el mínimo porque nunca es el más permisivo de
+    los dos, no porque cambie algo.
+    """
+    return max(abs_min, rel * min(abs(rendi_qty or 0.0), abs(foto_qty or 0.0)))
+
+
 def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
-                      eps: float = 1e-6,
+                      eps: float = EPS_QTY_ABS, rel_eps: float = REL_QTY,
                       no_reconciliable_motivo: str = None) -> ReconcileResult:
     """Concilia la foto (Tenencia = verdad) contra lo que Rendi YA tiene por activo
     (sumando broker padre + sibling '· USD'). Por activo de la foto:
@@ -307,7 +370,9 @@ def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
         snap_tickers.add(h.ticker)
         rq = current_qty_by_asset.get(h.ticker, 0.0)
         gap = h.quantity - rq
-        if abs(gap) <= eps:
+        # Tolerancia RELATIVA a la tenencia comparada: la foto redondea, y ese
+        # redondeo no es un veredicto (ver `tolerancia_qty`).
+        if abs(gap) <= tolerancia_qty(rq, h.quantity, rel=rel_eps, abs_min=eps):
             res.matched.append(h.ticker)
         elif gap > 0:
             res.to_seed.append((h, round(gap, 6)))
