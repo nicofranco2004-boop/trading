@@ -28741,6 +28741,25 @@ def import_tenencia_preview(
             from importing.persister import broker_pair as _broker_pair
             pair = _broker_pair(conn, uid, broker)
 
+            # ⚠️ ESTE BLOQUE CORRE DESPUÉS DE `normalizar_tickers`, QUE YA FUSIONÓ.
+            #    `normalizar_tickers` fusiona los holdings por (ticker, moneda) y su
+            #    docstring explica por qué: dos holdings del mismo ticker hacen que
+            #    `compute_reconcile` compare CADA UNO contra la cantidad TOTAL de
+            #    Rendi y produzca DOS `over` del mismo activo, que sumados pueden
+            #    pasarse de lo que la persona tiene. El re-tag de abajo cambia
+            #    `h.currency` y NO vuelve a fusionar → si la foto trae el mismo bono
+            #    en las dos monedas y una de las patas se re-taggea a la otra, quedan
+            #    otra vez dos holdings con la misma (ticker, moneda).
+            #
+            #    NO ESTÁ MEDIDO y por eso no se toca: en prod no se guardan las
+            #    fotos, sólo las txs sintéticas que salieron de ellas, así que no
+            #    hay con qué reproducirlo. Es angosto (pide un bono amortizante
+            #    listado en las dos monedas y con `own_q == 0` en la suya), pero es
+            #    el único camino que se ve capaz de fabricar un `over` lo bastante
+            #    grande como para dejar una tenencia en cero. Si alguna vez se
+            #    toca este bloque: re-fusionar por (ticker, moneda) DESPUÉS del
+            #    re-tag es la mitad barata del arreglo.
+            #
             # Bono amortizante cross-currency: la foto puede reportar el bono en AR$
             # (valor en pesos) aunque el usuario lo OPERE en USD (p.ej. AL30D, que el
             # parser consolida al sibling '· USD'). Si respetáramos la moneda de la foto,
@@ -28848,6 +28867,32 @@ def import_tenencia_preview(
                 cur_q = _cur_qty(sub)
                 r1 = _import_tenencia.compute_reconcile(
                     cur_q, snap_ccy, no_reconciliable_motivo=motivo_corte)
+                #
+                # ⚠️ LOS TRES BALDES SALEN DE ESTA COMPARACIÓN, PERO SÓLO DOS SE
+                #    CORRIGEN CROSS-PARTICIÓN. `compute_reconcile` midió contra
+                #    UN sub-broker (`cur_q`), no contra el par. Abajo:
+                #
+                #      · `not_in_snapshot` → se le saca lo que la foto trae en la
+                #        OTRA moneda (`_all_snap_tk`);
+                #      · `to_seed`         → se re-netea contra `_pair_qty`;
+                #      · `over`            → NO SE TOCA.
+                #
+                #    O sea que un activo partido entre el padre y el sibling
+                #    puede dar un `over` que no existe: la partición donde vive
+                #    la cantidad ve "Rendi tiene de más" contra la mitad de la
+                #    foto que le tocó. Es la asimetría de "arreglar una sola
+                #    pata" que en este repo ya salió cara tres veces.
+                #
+                #    NO SE ARREGLA ACÁ A CIEGAS, y el motivo es que no está
+                #    medido. Sobre la copia de prod del 2026-08-16 sólo 1 de los
+                #    21 `over` reales era de partición — pero ese número es un
+                #    PISO, no una medición: `_reducible()` ya bloquea los activos
+                #    que viven en el sibling, así que los `over` de partición se
+                #    filtran ANTES de aplicarse y no dejan rastro en la base.
+                #    Cuando `override_info` esté persistido se puede ver la tasa
+                #    real; recién ahí se sabe si la corrección hay que hacerla y
+                #    de qué lado.
+                #
                 # No borrar por 'ausencia' un activo que la foto SÍ trae en la OTRA
                 # moneda (mismo ticker cross-currency) — lo sacamos del not_in_snapshot.
                 r1.not_in_snapshot = [(a, q) for (a, q) in r1.not_in_snapshot
