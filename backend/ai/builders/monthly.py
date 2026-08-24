@@ -148,8 +148,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # significan internamente los fields. Documentamos los ambiguos.
         "_field_docs": {
             "_doc_scope": "Solo documentamos campos ambiguos donde el nombre no basta. Los demás (period, broker, monthly_insights, sections, highlights) son explícitos por su nombre — confiá en ellos.",
-            "metrics.delta_pct": "TWRR del mes — combina realized + unrealized.",
-            "metrics.delta_usd": "P&L absoluto USD del mes — combina realized + unrealized.",
+            "metrics.delta_pct": "TWRR del mes — combina realized + unrealized. null = no medible.",
+            "metrics.delta_usd": "P&L absoluto USD del mes — combina realized + unrealized. null = no medible.",
+            "metrics.basis_incomparable": "true = no hay cierre a mercado del arranque del mes. delta_pct y delta_usd vienen en null y NO son el resultado del período; start_value y end_value se midieron con reglas distintas y NO se pueden restar. No afirmes cuánto ganó o perdió: decí que falta el dato.",
             "metrics.realized_pnl": "USD de trades CERRADOS en el mes. Solo realized.",
             "metrics.unrealized_pnl": "USD mark-to-market de posiciones abiertas. Cambia día a día.",
             "metrics.trades_count": "Cantidad de operaciones CERRADAS en el mes (no incluye Compra/Dividendo/Interés).",
@@ -167,8 +168,16 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "headline": full.get("headline"),
         "subheadline": full.get("subheadline"),
         "metrics": {
-            "delta_pct": round(float(m.get("delta_pct") or 0), 2),
-            "delta_usd": round(float(m.get("delta_usd") or 0), 2),
+            # AUDIT D-1: `or 0` convertía el None del guard en un 0.0 duro, o sea
+            # "el mes fue plano" — justo lo contrario de lo que dice el headline
+            # que viaja tres líneas más arriba en el mismo packet.
+            "basis_incomparable": bool(m.get("basis_incomparable")),
+            "delta_pct": (
+                round(float(m["delta_pct"]), 2) if m.get("delta_pct") is not None else None
+            ),
+            "delta_usd": (
+                round(float(m["delta_usd"]), 2) if m.get("delta_usd") is not None else None
+            ),
             "start_value": round(float(m.get("start_value") or 0), 2),
             "end_value": round(float(m.get("end_value") or 0), 2),
             "deposits": round(float(m.get("deposits") or 0), 2),

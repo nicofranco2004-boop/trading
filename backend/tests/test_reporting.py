@@ -194,7 +194,9 @@ def _stub_metrics(**overrides) -> PeriodMetrics:
         start_value=10000, end_value=11000, delta_usd=1000, delta_pct=10.0,
         delta_pct_over_contrib=5.0, realized_pnl=1000, unrealized_pnl=0,
         deposits=0, withdrawals=0, trades_count=5, win_count=3, loss_count=2,
+        # AUDIT D-2: vs_* son el EXCESO en pp; el retorno del benchmark va aparte.
         win_rate=60.0, vs_sp500_pct=8.0, vs_inflation_pct=3.0,
+        sp500_return_pct=2.0, inflation_pct=7.0,
     )
     base.update(overrides)
     return PeriodMetrics(**base)
@@ -268,10 +270,28 @@ class DetectorsTest(unittest.TestCase):
         self.assertIsNone(i)  # delta = 5pp < 10pp
 
     def test_vs_benchmark_beat(self):
-        m = _stub_metrics(delta_pct=15.0, vs_sp500_pct=5.0)
+        # Cartera +15%, S&P +5% → exceso +10pp.
+        m = _stub_metrics(delta_pct=15.0, sp500_return_pct=5.0, vs_sp500_pct=10.0)
         i = detectors.detect_vs_benchmark(_stub_report(metrics=m))
         self.assertIsNotNone(i)
         self.assertEqual(i.code, "BEAT_BENCHMARK")
+        self.assertIn("Diferencia: +10.0 puntos", i.body)
+        self.assertIn("S&P 500: +5.0%", i.body)
+
+    def test_vs_benchmark_no_resta_dos_veces(self):
+        """AUDIT D-2: el detector lee el exceso, no lo despeja restando.
+
+        Con el bug, `vs_sp500_pct` traía el retorno del S&P y el detector hacía
+        `delta_pct - vs_sp500_pct`. Al corregir la semántica sin tocar el
+        detector, la resta se aplicaba DOS veces y el chip decía lo contrario
+        que la narrativa en la misma tarjeta.
+        """
+        # Cartera −63,37%, S&P +2,5% → exceso −65,87pp. El S&P le ganó.
+        m = _stub_metrics(delta_pct=-63.37, sp500_return_pct=2.5, vs_sp500_pct=-65.87)
+        i = detectors.detect_vs_benchmark(_stub_report(metrics=m))
+        self.assertIsNotNone(i)
+        self.assertEqual(i.code, "UNDERPERFORM_BENCHMARK")
+        self.assertIn("-65.9 puntos", i.body)
 
     # ─── Detectores nuevos de Phase 2 ────────────────────────────────────────
 

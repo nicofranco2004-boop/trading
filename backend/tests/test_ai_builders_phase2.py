@@ -58,6 +58,10 @@ def _base_db():
         CREATE TABLE snapshots (
             user_id INTEGER, date TEXT,
             total_value REAL, total_invested REAL, net_deposited REAL,
+            -- El fixture venía sin estas tres y `fetch_holdings_snapshot_at_or_before`
+            -- (builder.py) las pide desde que existen los movers → el test fallaba
+            -- con "no such column: holdings_json" en main, antes de AUDIT D-1.
+            fx_to_usd_blue REAL, holdings_json TEXT, source TEXT,
             PRIMARY KEY (user_id, date)
         );
         CREATE TABLE monthly_entries (

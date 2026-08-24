@@ -17026,6 +17026,225 @@ def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
         conn.close()
 
 
+@app.get("/api/admin/diagnose-reportes-basis")
+def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
+                                  limit_accounts: int = 500,
+                                  uid: int = Depends(get_admin_user)):
+    """READ-ONLY. Contesta las dos preguntas que quedaron abiertas con el guard
+    AUDIT D-1 (el que dejó de publicar el "P&L del período" cuando el arranque
+    sale de la cadena contable y el cierre del mercado).
+
+    (1) BLAST RADIUS — ¿a cuánta gente le desaparece el número?
+        El guard sólo publica si el borde del período es un cierre MEDIDO. Si el
+        cron no está escribiendo (ver memoria: APScheduler in-process no es
+        confiable en Railway), un montón de cuentas pasan de ver un número malo a
+        ver "—", y eso hay que saberlo ANTES de mergear, no después.
+
+    (2) EL CASO PUNTUAL — con `?user_id=N`, de dónde sale el `start_value` de esa
+        cuenta y cuánto se separa la cadena del mercado. Es lo que distingue los
+        tres orígenes posibles del "capital inicial de US$201.119" del reporte:
+        cadena contable / snapshot fabricado por el import / snapshot corrupto.
+
+    Usa `reporting.builder.fetch_snapshot_at_or_before(mtm_only=True)` y
+    `twr.clasificar_fila` — las MISMAS funciones que decide el guard. Un
+    diagnóstico que reimplemente el criterio mide otra cosa que la que corre.
+    """
+    from datetime import date as _date
+    from reporting.builder import fetch_snapshot_at_or_before, _border_is_fresh, _user_has_positions
+    from twr import clasificar_fila, MEDICION
+
+    today = _date.today()
+    period_start = f"{today.year:04d}-{today.month:02d}-01"
+    conn = get_db()
+    try:
+        def _clase_del_borde(au: int) -> str:
+            """Clase de la fila que el guard MIRARÍA primero (la más reciente
+            <= arranque del mes). 'sin_snapshot' si no hay ninguna."""
+            row = conn.execute(
+                """SELECT date, total_value, fx_to_usd_blue, holdings_json, source
+                     FROM snapshots
+                    WHERE user_id=? AND date<=? AND total_value > 0
+                    ORDER BY date DESC LIMIT 1""",
+                (au, period_start)).fetchone()
+            if not row:
+                return "sin_snapshot"
+            return clasificar_fila(row, _user_has_positions(conn, au))
+
+        def _lo_que_ve(au: int, mercado: float, cadena: float,
+                       borde: Optional[dict], live_real: bool) -> dict:
+            """El número que ESA cuenta está viendo hoy en Reportes → Mes.
+
+            Lo calcula con `compute_metrics_for_period`, el mismo motor que sirve
+            la pantalla — no una reimplementación. Sin esto el diagnóstico decía
+            "esta cuenta es sospechosa" pero no si está mostrando +440% o −3%.
+
+            `live_real=True` (sólo en el modo ?user_id=) valúa las posiciones a
+            precios de mercado igual que el endpoint real. En el modo agregado se
+            usa la última MEDICION como proxy: es el cierre del cron, así que el
+            número sale con precisión de cierre y sin 500 fetches a yfinance.
+            """
+            from reporting.builder import compute_metrics_for_period, parse_period_bounds
+            live = mercado or None
+            if live_real:
+                try:
+                    lv = compute_live_portfolio_value(conn, au, _user_tc_blue(conn, au), CRYPTO_YF)
+                    if lv and lv > 0:
+                        live = lv
+                except Exception:
+                    pass  # nos quedamos con el proxy
+            out: dict = {"live_usado": (round(float(live), 2) if live else None),
+                         "live_es_real": bool(live_real and live and live != mercado)}
+            try:
+                s, e = parse_period_bounds("month", period_start[:7])
+                m, _ops = compute_metrics_for_period(
+                    conn, au, "month", s, e, "global", bench=None, live_value=live)
+            except Exception as ex:
+                out["lo_que_ve_error"] = str(ex)[:200]
+                return out
+            out.update({
+                # El par que el usuario tiene en pantalla.
+                "ve_delta_usd": (None if m.basis_incomparable else round(m.delta_usd, 2)),
+                "ve_delta_pct": m.delta_pct,
+                "ve_start_value": round(m.start_value, 2),
+                "ve_end_value": round(m.end_value, 2),
+                "deposits_mes": round(m.deposits, 2),
+                "withdrawals_mes": round(m.withdrawals, 2),
+                "realized_mes": round(m.realized_pnl, 2),
+                "trades_mes": m.trades_count,
+            })
+            # La contradicción que el guard NO ve: dos fuentes para la MISMA fecha
+            # (arranque del mes) que no coinciden. El guard sólo pregunta si el
+            # borde es una medición, no si es plausible. En la cuenta 209 la cadena
+            # decía 787.149 y la medición del 1-ago 17.625 — 45x de diferencia, y
+            # el número se publicaba igual.
+            bv = float(borde["total_value"]) if borde else 0.0
+            out["contradiccion_borde_vs_cadena"] = (
+                round(max(cadena, bv) / min(cadena, bv), 1)
+                if (cadena > 0 and bv > 0) else None)
+            return out
+
+        def _detalle(au: int, live_real: bool = False) -> dict:
+            me = conn.execute(
+                """SELECT capital_inicio, capital_final, deposits, withdrawals,
+                          pnl_realized, pnl_unrealized
+                     FROM monthly_entries
+                    WHERE user_id=? AND broker='global' AND year=? AND month=?""",
+                (au, today.year, today.month)).fetchone()
+            borde = fetch_snapshot_at_or_before(conn, au, period_start, mtm_only=True)
+            fresco = bool(borde and _border_is_fresh(borde.get("date"), period_start))
+            # El "mercado" tiene que salir de una MEDICION. Usar el último
+            # snapshot a secas medía la cadena contra sí misma: en las cuentas
+            # afectadas esa fila ES la cadena (la fabricó el import), así que el
+            # ratio daba 1.0 y la brecha 0 justo donde vale 2,7x. Si no hay
+            # ninguna medición, la brecha NO es medible — None, no 0.
+            ultimo = fetch_snapshot_at_or_before(conn, au, _iso_today(), mtm_only=True)
+            cadena = float(me["capital_inicio"] or 0) if me else 0.0
+            mercado = float(ultimo["total_value"] or 0) if ultimo else 0.0
+            return {
+                "user_id": au,
+                "publica_numero": fresco,          # False = el usuario ve "—"
+                "clase_del_borde": _clase_del_borde(au),
+                "borde_medido": ({"date": borde["date"], "total_value": round(float(borde["total_value"]), 2)}
+                                 if borde else None),
+                "borde_fresco": fresco,
+                "capital_inicio_cadena": round(cadena, 2),
+                "ultima_medicion": ({"date": ultimo["date"], "total_value": round(mercado, 2)}
+                                    if ultimo else None),
+                **_lo_que_ve(au, mercado, cadena, borde, live_real),
+                # >1 = la contabilidad cree que hay más plata que la que ve el mercado.
+                # Es la firma del caso reportado (201.119 contra 73.764 = 2,7x).
+                "ratio_cadena_vs_mercado": (round(cadena / mercado, 2) if mercado > 0 else None),
+                "brecha_usd": round(cadena - mercado, 2) if mercado > 0 else None,
+            }
+
+        # ── Modo detalle de una cuenta ───────────────────────────────────────
+        if user_id is not None:
+            d = _detalle(user_id, live_real=True)
+            d["snapshots_recientes"] = [
+                {"date": r["date"], "total_value": round(float(r["total_value"] or 0), 2),
+                 "source": r["source"],
+                 "clase": clasificar_fila(r, _user_has_positions(conn, user_id)),
+                 "tiene_composicion": bool(r["holdings_json"])}
+                for r in conn.execute(
+                    """SELECT date, total_value, fx_to_usd_blue, holdings_json, source
+                         FROM snapshots WHERE user_id=? AND date<=?
+                        ORDER BY date DESC LIMIT 8""", (user_id, period_start)).fetchall()
+            ]
+            d["lectura"] = (
+                "El borde es una MEDICION y está fresco → el período publica su número; "
+                "si igual se ve raro, el problema no es el borde."
+                if d["publica_numero"] else
+                "Sin cierre medido en el borde. Antes del guard, el reporte restaba el "
+                "valor de mercado de hoy contra `capital_inicio` (o contra un snapshot "
+                "fabricado al costo) y publicaba esa diferencia como la pérdida del mes."
+            )
+            return d
+
+        # ── Modo agregado ────────────────────────────────────────────────────
+        activos = [r["user_id"] for r in conn.execute(
+            """SELECT DISTINCT user_id FROM monthly_entries
+                WHERE broker='global' AND (capital_final > 0 OR deposits > 0)
+                ORDER BY user_id LIMIT ?""", (limit_accounts,)).fetchall()]
+
+        por_clase: dict = {}
+        publican = 0
+        cuentas = []
+        for au in activos:
+            d = _detalle(au)
+            por_clase[d["clase_del_borde"]] = por_clase.get(d["clase_del_borde"], 0) + 1
+            if d["publica_numero"]:
+                publican += 1
+            cuentas.append(d)
+
+        total = len(activos)
+        # Las que más se benefician del guard: cadena muy por encima del mercado.
+        con_brecha = sorted(
+            [c for c in cuentas if (c["ratio_cadena_vs_mercado"] or 0) > 1.5],
+            key=lambda c: c["ratio_cadena_vs_mercado"], reverse=True)[:25]
+
+        # ── Lo que el guard NO tapa ──────────────────────────────────────────
+        # El guard exige que el borde sea una MEDICION, pero no que sea plausible.
+        # Si la medición del arranque es mala, el número se publica igual — y con
+        # el signo dado vuelta: en vez de una pérdida fantasma, una GANANCIA
+        # fantasma. Estas dos listas son las cuentas a revisar a mano.
+        publicando_extremos = sorted(
+            [c for c in cuentas
+             if c["publica_numero"] and c.get("ve_delta_pct") is not None
+             and abs(c["ve_delta_pct"]) >= 50],
+            key=lambda c: abs(c["ve_delta_pct"]), reverse=True)[:25]
+        borde_contradictorio = sorted(
+            [c for c in cuentas
+             if c["publica_numero"] and (c.get("contradiccion_borde_vs_cadena") or 0) >= 3],
+            key=lambda c: c["contradiccion_borde_vs_cadena"], reverse=True)[:25]
+
+        return {
+            "mes_en_curso": period_start,
+            "cuentas_evaluadas": total,
+            "conservan_el_numero": publican,
+            "pierden_el_numero": total - publican,
+            "pct_conserva": (round(publican / total * 100, 1) if total else None),
+            # cron = cierre real; browser = foto de media rueda; import = fabricada
+            # al costo; indeterminado = fila legacy sin `source`.
+            "clase_del_borde": por_clase,
+            "cuentas_con_brecha_cadena_vs_mercado": con_brecha,
+            "publicando_numeros_extremos": publicando_extremos,
+            "borde_contradice_la_cadena": borde_contradictorio,
+            "como_leerlo": (
+                "pct_conserva = cuánta gente conserva su número con el guard puesto. "
+                "BAJO significa que el cron no está dejando cierres medidos. "
+                "`cuentas_con_brecha_cadena_vs_mercado` = las que veían la pérdida "
+                "fantasma; el guard ya las tapa. "
+                "`publicando_numeros_extremos` y `borde_contradice_la_cadena` = lo que "
+                "el guard NO tapa: el borde ES una medición, así que el número se "
+                "publica, pero no cuadra con la cadena para la MISMA fecha. Leelas "
+                "mirando `ve_delta_pct` contra `deposits_mes`: si el delta es enorme y "
+                "no hay flujos que lo expliquen, es fantasma con el signo al revés."
+            ),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diagnose-costo-inconsistente")
 def admin_diagnose_costo_inconsistente(tol: float = 0.02, limite: int = 200,
                                        uid: int = Depends(get_admin_user)):
@@ -30745,11 +30964,16 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
         target = (_date.fromisoformat(latest_date) - _td(days=days)).isoformat()
     except ValueError:
         return None
-    prev = conn.execute(
-        "SELECT date, total_value, total_invested, net_deposited FROM snapshots WHERE user_id=? AND date<=? ORDER BY date DESC LIMIT 1",
-        (uid, target),
-    ).fetchone()
-    if not prev or prev["total_value"] is None:
+    # AUDIT D-1: una fila que el import fabricó al costo no es un cierre, y
+    # restarle el valor de mercado de hoy da la brecha costo-vs-mercado, no la
+    # variación de N días. Acá aceptamos también las filas legacy sin `source`
+    # (INDETERMINADO): este chip no define el número principal de la pantalla, y
+    # descartarlas se lo borraría a usuarios con snapshots válidos pero viejos.
+    from reporting.builder import fetch_snapshot_at_or_before
+    from twr import MEDICION, INDETERMINADO
+    prev = fetch_snapshot_at_or_before(conn, uid, target,
+                                       accept=(MEDICION, INDETERMINADO))
+    if not prev or prev.get("total_value") is None:
         return None
     prev_v = float(prev["total_value"])
     if prev_v <= 0:
@@ -30803,14 +31027,20 @@ def _ytd_delta(conn, uid: int, latest_value: Optional[float],
     # anteriores como ganancia del año. Start desde el snapshot MtM del cierre
     # del año pasado cuando existe (solo global — snapshots no se desagregan).
     # Fallback: capital_inicio (usuarios sin snapshots previos al año).
+    # AUDIT D-1: ese SELECT aceptaba CUALQUIER fila — incluida la que el import
+    # fabrica al costo (`source='import'`, total_value = capital_final). Contra un
+    # latest_value a mercado, el KPI "YTD" quedaba haciendo exactamente la resta
+    # que el guard del período acaba de declarar impublicable: la tarjeta mostraba
+    # "P&L del año: —" y al lado "YTD 2026: −61,18%". Ahora sólo un cierre MEDIDO
+    # sirve de arranque; sin él no hay YTD (None), igual que el período.
     if broker_filter == "global":
-        snap = conn.execute(
-            "SELECT total_value FROM snapshots WHERE user_id=? AND date<=? "
-            "ORDER BY date DESC LIMIT 1",
-            (uid, f"{year:04d}-01-01"),
-        ).fetchone()
-        if snap and float(snap["total_value"] or 0) > 0:
-            start = float(snap["total_value"])
+        from reporting.builder import fetch_snapshot_at_or_before, _border_is_fresh
+        _yr_start = f"{year:04d}-01-01"
+        snap = fetch_snapshot_at_or_before(conn, uid, _yr_start, mtm_only=True)
+        if not (snap and float(snap.get("total_value") or 0) > 0
+                and _border_is_fresh(snap.get("date"), _yr_start, max_lag_days=5)):
+            return None
+        start = float(snap["total_value"])
     if start <= 0:
         return None
     # AUDIT B2 (2026-07): descontar los flujos netos del año (aportes − retiros)

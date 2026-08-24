@@ -72,8 +72,19 @@ class PeriodMetrics:
     win_count: int
     loss_count: int
     win_rate: Optional[float]          # null si trades_count == 0
+    # OJO: estos dos son el EXCESO en puntos porcentuales (cartera − benchmark),
+    # que es lo que dice el nombre y lo que el frontend siempre asumió.
+    # Hasta AUDIT D-2 guardaban el retorno PROPIO del benchmark, así que la
+    # narrativa decía "quedaste 2,5 puntos por encima del S&P 500" en un mes de
+    # −63,4%. El retorno del benchmark ahora vive en `sp500_return_pct` /
+    # `inflation_pct`. Null si no se puede comparar (sin `delta_pct`).
     vs_sp500_pct: Optional[float]
     vs_inflation_pct: Optional[float]
+    sp500_return_pct: Optional[float] = None   # cuánto hizo el S&P en el período
+    inflation_pct: Optional[float] = None      # inflación AR del período
+    # AUDIT D-1: true = las dos puntas del período no son comparables (start de
+    # la cadena contable, end a mercado) → delta_usd/delta_pct no se publican.
+    basis_incomparable: bool = False
 
 
 @dataclass

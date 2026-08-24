@@ -20,9 +20,15 @@ export default function WeekCard({ week }) {
   const [open, setOpen] = useState(false)
   // Con % None (semana per-broker) la polaridad sale del SIGNO del USD — antes
   // `undefined >= 0` era false pero `null >= 0` es TRUE en JS → verde en pérdidas.
-  const positive = week.metrics.delta_pct != null
-    ? week.metrics.delta_pct >= 0
-    : (week.metrics.delta_usd ?? 0) >= 0
+  // AUDIT D-1: sin base comparable la semana no tiene resultado publicable — ni
+  // % ni monto. Estas semanas van anidadas DENTRO de la tarjeta del mes, así que
+  // sin esto el mes decía "—" y la semana de adentro, la pérdida fantasma.
+  const noBasis = week.metrics.basis_incomparable === true
+  const deltaPct = noBasis ? null : week.metrics.delta_pct
+  const deltaUsd = noBasis ? null : week.metrics.delta_usd
+  const positive = deltaPct != null
+    ? deltaPct >= 0
+    : (deltaUsd ?? 0) >= 0
   // Fase B: delta_usd y realized_pnl respetan el toggle global ARS/USD.
   const money = useMoneyFormat()
   const fmtUsd = (v) => money.fmtMoney(v, { signed: true })
@@ -45,14 +51,16 @@ export default function WeekCard({ week }) {
         aria-expanded={open}
       >
         <span className="text-xs font-mono text-ink-2 min-w-[80px]">{week.period_label}</span>
-        <span className={`text-xs font-semibold tabular min-w-[64px] ${positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-          {fmtPct(week.metrics.delta_pct)}
+        <span className={`text-xs font-semibold tabular min-w-[64px] ${
+          noBasis ? 'text-ink-3' : (positive ? 'text-rendi-pos' : 'text-rendi-neg')
+        }`}>
+          {fmtPct(deltaPct)}
         </span>
         <span className="text-xs text-ink-2 flex-1 truncate" title={week.headline}>
           {week.headline}
         </span>
         <span className="text-[10px] text-ink-3 font-mono tabular">
-          {fmtUsd(week.metrics.delta_usd)}
+          {noBasis ? null : fmtUsd(deltaUsd)}
         </span>
         {open
           ? <ChevronUp size={14} className="text-ink-3" strokeWidth={1.75} aria-hidden="true" />
