@@ -1858,7 +1858,21 @@ function ReconcileStep({ data, aprobados, onToggle }) {
   const over = data.over || []
   const ausentes = (data.not_in_snapshot || []).filter(x => !pendientes.has(x.ticker))
   const conf = data.confianza || {}
+  const ov = data.override || null
+  // 🔴 CUANDO EL CAP DISPARA, LA CASILLA NO HACE NADA. `marcar_ausentes` mete
+  // los ausentes en `no_reconciliable` ANTES de que corra el cap; si el cap
+  // dispara, `_tenencia_apply_override` vacía `rec.not_in_snapshot` y
+  // `build_tenencia_seed_txs` no llega a armar la venta. O sea que la fila
+  // seguía ofreciendo una decisión que ya no tenía efecto. Mientras eso sea
+  // así, la casilla no se muestra: prometer una acción que no va a pasar es
+  // exactamente lo que esta pantalla existe para no hacer.
+  const capAnulaLaDecision = !!ov?.capped
+  // ¿el ajuste SE APLICA, o sólo se informa? Con `override_info` ausente (foto
+  // que no pisa) o con el cap disparado, `over` se reporta y NO se toca nada.
+  // El título y el copy tienen que decir cuál de las dos cosas pasó.
+  const ajustamos = !!ov && !ov.capped
   const nada = !seed.length && !over.length && !ausentes.length && !dudosos.length
+    && !ov?.capped && !(ov?.skipped_manual || []).length
 
   const Chip = ({ ok }) => (
     <span className={`text-[10px] px-1.5 py-0.5 rounded ${ok
@@ -1913,16 +1927,26 @@ function ReconcileStep({ data, aprobados, onToggle }) {
       )}
 
       {over.length > 0 && (
-        <RecSection titulo={over.length === 1 ? '1 activo con más cantidad que el resumen'
-          : `${over.length} activos con más cantidad que el resumen`}
-                 sub="Rendi tiene más de lo que dice la foto."
+        <RecSection titulo={ajustamos
+          ? (over.length === 1 ? 'Ajustamos 1 activo al resumen'
+                               : `Ajustamos ${over.length} activos al resumen`)
+          : (over.length === 1 ? '1 activo con más cantidad que el resumen'
+                               : `${over.length} activos con más cantidad que el resumen`)}
+                 sub={ajustamos
+                   ? ('El resumen de tu broker dice menos que lo que teníamos: ajustamos, '
+                      + 'y puede que falte una venta en el archivo.')
+                   : 'El resumen de tu broker dice menos que lo que teníamos. No los tocamos.'}
                  chip={<Chip ok={conf.over === 'verificada_composicion'} />} tono="warn">
           {over.map(x => (
             <RecFila key={`o-${x.ticker}`} tk={x.ticker}
-                  detalle={`Rendi ${x.rendi} · resumen ${x.tenencia}`} />
+                  detalle={`teníamos ${x.rendi} · resumen ${x.tenencia}`
+                    + (ajustamos ? ` · ajustamos ${
+                        Number(((x.rendi || 0) - (x.tenencia || 0)).toFixed(6))}` : '')} />
           ))}
         </RecSection>
       )}
+
+      <OverrideDetalle ov={ov} />
 
       {dudosos.length > 0 && (
         <RecSection titulo={dudosos.length === 1 ? 'Necesitamos que decidas vos'
@@ -1932,6 +1956,7 @@ function ReconcileStep({ data, aprobados, onToggle }) {
           {dudosos.map((x, i) => {
             const tk = x.ticker
             const aprobable = !!x.requiere_aprobacion
+              && !(capAnulaLaDecision && x.motivo === 'ausente_en_la_foto')
             return (
               <div key={`d-${tk || i}`} className="flex items-start gap-2 py-1.5">
                 {aprobable ? (
@@ -1944,6 +1969,12 @@ function ReconcileStep({ data, aprobados, onToggle }) {
                     {MOTIVO_LABEL[x.motivo] || 'a revisar'}
                   </span>
                   {x.detalle && <p className="text-xs text-ink-2 mt-0.5">{x.detalle}</p>}
+                  {x.requiere_aprobacion && !aprobable && (
+                    <p className="text-[11px] text-ink-3 mt-0.5">
+                      Esta vez no se puede aplicar: no ajustamos ninguna cantidad
+                      (ver arriba).
+                    </p>
+                  )}
                 </div>
               </div>
             )
@@ -1973,6 +2004,76 @@ function RecSection({ titulo, sub, chip, tono, children }) {
       </div>
       {sub && <p className="text-xs text-ink-2 mb-1.5">{sub}</p>}
       <div className="max-h-44 overflow-y-auto">{children}</div>
+    </div>
+  )
+}
+
+/**
+ * Lo que el override decidió y NADIE VEÍA.
+ *
+ * 🔴 El backend viene devolviendo `override` —`reduced`, `removed`,
+ * `skipped_manual`, `capped`— desde siempre, y el frontend lo tiraba. O sea que
+ * la pantalla mostraba "Rendi tiene más de lo que dice la foto" mientras el
+ * confirm ya tenía armada la venta de la diferencia. Mentir por omisión.
+ *
+ * `reduced` NO se repite acá: es exactamente la lista de arriba (el endpoint
+ * devuelve `over` ya recortado a lo que se va a aplicar — ver
+ * `_tenencia_apply_override`, que hace `rec.over = safe_over`). Mostrarlo dos
+ * veces sería el bug de "el mismo ítem en dos listas" que ya nos mordió.
+ *
+ * Lo que queda acá es lo que NO se ve en ningún otro lado, y el cap es el peor:
+ * cuando dispara, `over` y `not_in_snapshot` se vacían y la pantalla se queda
+ * SIN NADA que mostrar — no es que avisa poco, es que no avisa.
+ */
+function OverrideDetalle({ ov }) {
+  if (!ov) return null
+  const skipped = ov.skipped_manual || []
+  const removed = ov.removed || []
+  if (!ov.capped && !skipped.length && !removed.length) return null
+  return (
+    <div className="rounded-md border border-white/10 px-3 py-2.5 space-y-2">
+      <div className="font-medium text-sm text-ink-0">Lo que no tocamos</div>
+
+      {ov.capped && (
+        <div className="px-2.5 py-2 rounded bg-amber-500/10 border border-amber-500/30">
+          <p className="text-xs text-ink-1">
+            <span className="font-medium">No ajustamos ninguna cantidad.</span> Las
+            diferencias contra el resumen eran demasiadas —más de la mitad de lo que
+            tenés— así que preferimos no tocar tu cartera. Completamos lo que faltaba
+            y dejamos el resto como estaba.
+          </p>
+          <p className="text-xs text-ink-2 mt-1">
+            Suele pasar cuando el archivo de movimientos cubre un período más corto
+            que el resumen. Si el resumen es el bueno, subí el historial completo.
+          </p>
+        </div>
+      )}
+
+      {skipped.length > 0 && (
+        <div>
+          <p className="text-xs text-ink-2">
+            {skipped.length === 1
+              ? 'Este activo tiene datos que cargaste a mano, así que no lo tocamos:'
+              : `Estos ${skipped.length} activos tienen datos que cargaste a mano, así que no los tocamos:`}
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {skipped.map(tk => (
+              <span key={`sk-${tk}`}
+                    className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-white/5 text-ink-1">
+                {tk}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {removed.length > 0 && (
+        <p className="text-xs text-ink-2">
+          {removed.length === 1
+            ? '1 activo que el resumen no lista queda armado para cerrarse, pero no se aplica solo: marcalo abajo si querés que entre.'
+            : `${removed.length} activos que el resumen no lista quedan armados para cerrarse, pero no se aplican solos: marcalos abajo si querés que entren.`}
+        </p>
+      )}
     </div>
   )
 }

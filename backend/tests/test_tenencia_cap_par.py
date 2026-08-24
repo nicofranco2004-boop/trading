@@ -107,6 +107,49 @@ class CapDelParTest(unittest.TestCase):
         for i in range(9):
             self._pos("TB", f"CHICO{i}", 1, 1_000.0)
 
+    def test_con_el_cap_disparado_la_CASILLA_no_tiene_nada_que_aplicar(self):
+        """🔴 La trampa que la pantalla tiene que decir.
+
+        `marcar_ausentes` mete los ausentes en `no_reconciliable` con
+        `requiere_aprobacion: True` ANTES de que corra el cap. Si el cap
+        dispara, `_tenencia_apply_override` vacía `rec.not_in_snapshot` y
+        `build_tenencia_seed_txs` no llega a armar NINGUNA venta — o sea que la
+        casilla del wizard sigue ofreciendo una decisión que ya no tiene
+        efecto. El frontend la esconde por esto (`capAnulaLaDecision`); el test
+        fija el comportamiento del backend del que depende.
+        """
+        self._cartera_pesos()
+        self.conn.commit()
+        pair = broker_pair(self.conn, self.uid, "TB")
+        ph = ",".join("?" * len(pair))
+        current, invested = {}, {}
+        for r in self.conn.execute(
+                f"SELECT asset, SUM(quantity) q, SUM(invested) inv FROM positions "
+                f"WHERE user_id=? AND is_cash=0 AND broker IN ({ph}) GROUP BY asset",
+                (self.uid, *pair)):
+            current[r["asset"]] = r["q"] or 0
+            invested[r["asset"]] = r["inv"] or 0
+        snap = tn.TenenciaSnapshot(
+            holdings=[tn.Holding(ticker="GRANDE", asset_type="CEDEAR", quantity=1,
+                                 value=1_000_000.0, currency="ARS",
+                                 price_per1=1_000_000.0)],
+            date="2026-08-19")
+        rec = tn.compute_reconcile(current, snap)
+        tn.marcar_ausentes(rec)                     # igual que el endpoint
+        pendientes = {x["ticker"] for x in rec.no_reconciliable
+                      if x.get("requiere_aprobacion")}
+        self.assertEqual(len(pendientes), 9, "los 9 chicos van a decisión")
+        txs, ov = main._tenencia_apply_override(
+            self.conn, self.uid, "TB", pair, rec, invested, current,
+            "2026-08-19", complete=True)
+        self.assertTrue(ov["capped"])
+        # Ninguna VENTA armada → aprobar cualquiera de los 9 no haría nada.
+        ventas = [t for t in txs if t.operation_type == "SELL"]
+        self.assertEqual(ventas, [], "con el cap disparado no se arma ninguna venta")
+        # …y sin embargo la decisión sigue ofrecida. Eso es lo que la pantalla
+        # tiene que aclarar, y por eso el wizard mira `override.capped`.
+        self.assertTrue(pendientes)
+
     def test_sin_cuenta_en_dolares_la_guarda_corta(self):
         self._cartera_pesos()
         ov = self._aplicar_foto_del_grande()
