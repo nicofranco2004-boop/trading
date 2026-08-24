@@ -153,6 +153,41 @@ class ReconcileResult:
     no_reconciliable: List[dict] = field(default_factory=list)
 
 
+_FECHA_EN_NOMBRE = re.compile(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})")
+
+
+def fecha_de_nombre_archivo(nombre: str) -> Optional[str]:
+    """La fecha que el broker puso en el NOMBRE del export. None si no hay.
+
+    Existe por Cocos: `parse_cocos_tenencia` no puede leer la fecha del
+    contenido —el CSV es un header exacto de 5 columnas
+    (instrumento;cantidad;precio;moneda;total) sin preámbulo ni columna de
+    fecha— así que las 47 fotos de Cocos en producción caen todas al fallback
+    de "hoy". Y Cocos es el broker que más importa: 42% de cobertura de foto,
+    el 53% de todos los usuarios que quedan sin verificar.
+
+    Pero la fecha SÍ está: 82 de 82 exports de Cocos se llaman
+    `portfolio_report_YYYYMMDD.csv`. Balanz hace lo mismo
+    (`ResumenDeCuenta_20260706.pdf`), así que sirve de red para varios.
+
+    ⚠️ ES EVIDENCIA MÁS DÉBIL QUE EL CONTENIDO, y por eso el llamador la reporta
+    con un `fecha_origen` PROPIO en vez de hacerla pasar por leída del archivo:
+    el nombre lo puede cambiar cualquiera, y el sufijo `(1)` de las descargas
+    duplicadas muestra que el navegador ya lo toca. Quien decide sobre plata
+    ajena tiene que poder ver de dónde salió la fecha.
+
+    Descarta lo que no puede ser una fecha (mes 13, día 32) en vez de devolver
+    un ISO inválido que después ordena mal en cualquier `date <= ?`.
+    """
+    m = _FECHA_EN_NOMBRE.search(nombre or "")
+    if not m:
+        return None
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not (1 <= mo <= 12 and 1 <= d <= 31):
+        return None
+    return f"{y:04d}-{mo:02d}-{d:02d}"
+
+
 def normalizar_tickers(snapshot: "TenenciaSnapshot") -> List[dict]:
     """Pasa los tickers de la FOTO por la misma canonicalización que los movimientos.
 

@@ -28275,6 +28275,7 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
 
 @app.post("/api/imports/tenencia/preview")
 def import_tenencia_preview(
+    request: Request,
     file: UploadFile = File(...),
     broker: str = Form(...),
     format: Optional[str] = Form(None),
@@ -28427,9 +28428,43 @@ def import_tenencia_preview(
         # Importa doble para la reconciliación: `compute_reconcile` compara la
         # foto contra el estado de HOY, lo cual sólo vale si la foto ES de hoy.
         # Con la fecha inventada esa premisa no se puede verificar.
-        fecha_origen = "archivo" if snap.date else "fallback_hoy"
-        seed_date = snap.date or _import_excel.datetime.now().strftime("%Y-%m-%d")
+        # Cascada de tres escalones, cada uno con su origen declarado. El del
+        # medio existe por Cocos: su CSV no tiene dónde poner la fecha (header
+        # exacto de 5 columnas, sin preámbulo), pero 82 de 82 exports se llaman
+        # `portfolio_report_YYYYMMDD.csv`. Sin este escalón, el parser de foto
+        # más usado —y el que peor cobertura tiene— quedaría permanentemente
+        # inservible en el flujo del asesor, porque siempre cortaría por
+        # `fecha_desconocida`.
+        _fecha_nombre = (None if snap.date else
+                         _import_tenencia.fecha_de_nombre_archivo(file.filename or ""))
+        fecha_origen = ("archivo" if snap.date
+                        else "nombre_archivo" if _fecha_nombre
+                        else "fallback_hoy")
+        seed_date = (snap.date or _fecha_nombre
+                     or _import_excel.datetime.now().strftime("%Y-%m-%d"))
         override_info = None   # sólo lo puebla el path OVERRIDE de Balanz
+
+        # 🔴 CON EL ASESOR, LA VARA ES OTRA — Y NO PORQUE MEREZCA MÁS CUIDADO.
+        # Es que la CONSECUENCIA es distinta. Cuando alguien sube su propia foto,
+        # ésta le completa la apertura: es aditivo y de bajo riesgo. Cuando un
+        # asesor la sube por un cliente, la foto va a DIRIGIR DECISIONES,
+        # incluida la de cerrar posiciones que "no están en el resumen". Un
+        # `not_in_snapshot` calculado contra una fecha inventada, con el override
+        # prendido, borra una tenencia real de una persona que no está mirando.
+        #
+        # Por eso el corte no se aplica a todos: hacerlo alcanzaría al 61% de las
+        # fotos —incluidas las 47 de Cocos, que son el 100% de ese parser, porque
+        # no lee la fecha— y rompería un flujo que hoy funciona para gente que en
+        # su mayoría no es asesor.
+        #
+        # El contexto se detecta comparando el uid AUTENTICADO (el asesor) con el
+        # efectivo (el cliente): si difieren, hay un tercero decidiendo sobre
+        # plata ajena. Mismo patrón que ya usan otros 5 endpoints.
+        _auth_uid = getattr(request.state, "rendi_auth_uid", uid)
+        es_contexto_asesor = _auth_uid != uid
+        motivo_corte = ("fecha_desconocida"
+                        if (es_contexto_asesor and fecha_origen == "fallback_hoy")
+                        else None)
 
         if is_ppi or is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol or is_inviu:
             # TODA foto rutea las posiciones en dólares al sibling '<broker> · USD'
@@ -28563,7 +28598,8 @@ def import_tenencia_preview(
                 sub = broker if ccy == "ARS" else usd_broker
                 snap_ccy = _import_tenencia.TenenciaSnapshot(holdings=hs, date=snap.date)
                 cur_q = _cur_qty(sub)
-                r1 = _import_tenencia.compute_reconcile(cur_q, snap_ccy)
+                r1 = _import_tenencia.compute_reconcile(
+                    cur_q, snap_ccy, no_reconciliable_motivo=motivo_corte)
                 # No borrar por 'ausencia' un activo que la foto SÍ trae en la OTRA
                 # moneda (mismo ticker cross-currency) — lo sacamos del not_in_snapshot.
                 r1.not_in_snapshot = [(a, q) for (a, q) in r1.not_in_snapshot
@@ -28584,6 +28620,7 @@ def import_tenencia_preview(
                 rec.to_seed += r1.to_seed
                 rec.over += r1.over
                 rec.not_in_snapshot += r1.not_in_snapshot
+                rec.no_reconciliable += r1.no_reconciliable
                 _ov["reduced"] += p_ov["reduced"]
                 _ov["removed"] += p_ov["removed"]
                 _ov["skipped_manual"] += p_ov["skipped_manual"]
@@ -28607,7 +28644,8 @@ def import_tenencia_preview(
             ):
                 current[r["asset"]] = current.get(r["asset"], 0.0) + (r["q"] or 0)
                 invested_by_asset[r["asset"]] = invested_by_asset.get(r["asset"], 0.0) + (r["inv"] or 0)
-            rec = _import_tenencia.compute_reconcile(current, snap)
+            rec = _import_tenencia.compute_reconcile(
+                current, snap, no_reconciliable_motivo=motivo_corte)
 
             # `complete` = la foto es TOTAL (todas las clases + monedas) → habilita
             # BORRAR not_in_snapshot. Balanz siempre; IEB sólo si el parser NO dejó
@@ -28713,6 +28751,26 @@ def import_tenencia_preview(
         # Si no hay txs PERO sí hay FCI para fijar el valor, igual creamos el batch:
         # el precio de la foto de esos fondos hay que estamparlo aunque las cantidades
         # y el cash ya coincidan (el valor mostrado seguiría a costo si no).
+        # 🔴 "No hay nada que hacer" y "no pudimos comprobar nada" son cosas
+        # OPUESTAS, y sin esta rama salían con el mismo mensaje. Cuando el corte
+        # está activo, `to_seed` queda vacío por construcción → el flujo caía en
+        # "tu cartera ya coincide con la foto", que es justo la mentira más cara
+        # posible: le diría al asesor que verificó cuando no verificó nada.
+        if rec.no_reconciliable:
+            return {
+                "session_id": None, "nothing_to_do": True,
+                "no_reconciliable": rec.no_reconciliable,
+                "motivo": motivo_corte,
+                "fecha_origen": fecha_origen, "fecha_usada": seed_date,
+                "tickers_normalizados": tickers_normalizados,
+                "foto_completa": _foto_completa, "warnings": _warnings,
+                "message": ("No pudimos leer la fecha de este resumen, así que no "
+                            "sabemos a qué día corresponde. Comparar la cartera de "
+                            "hoy contra una foto de fecha desconocida puede marcar "
+                            "como sobrante algo que se compró después, o como "
+                            "faltante algo que se vendió. Subí un resumen que "
+                            "indique su fecha."),
+            }
         if not seed_txs and not _fund_overrides:
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "foto_completa": _foto_completa, "warnings": _warnings,
