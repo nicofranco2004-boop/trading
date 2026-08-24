@@ -17264,6 +17264,266 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
         conn.close()
 
 
+@app.get("/api/admin/diagnose-flujo-implausible")
+def admin_diagnose_flujo_implausible(user_id: Optional[int] = None,
+                                     mes: Optional[str] = None,
+                                     factor: float = 20.0,
+                                     limit: int = 100,
+                                     uid: int = Depends(get_admin_user)):
+    """READ-ONLY. Rastrea flujos de caja absurdos hasta la fila del archivo que
+    los produjo.
+
+    Nace del `user_id=329`: un DEPOSITO de **US$1.700.868.504,59** en una cuenta
+    cuya cartera vale ~US$18.300. Le mostraba "−200% / −US$1.700.868.676" en
+    Reportes → Mes. El −200% no mide nada: con `flows >> capital_inicial`,
+    Modified Dietz tiende a −2 exacto, así que es la FIRMA de un flujo basura,
+    no una medición.
+
+    La causa de fondo está confirmada por código: **en todo el camino de import
+    no hay una sola cota de magnitud sobre un flujo de caja.**
+    `importing/validator.py:122-127` sólo exige `_gt_zero(gross_amount)`, y el
+    único guard de escala del stack (el triángulo cantidad×precio=monto,
+    `normalizer.py:457-478`) no aplica a un DEPOSIT porque no tiene ni cantidad
+    ni precio.
+
+    Qué distingue a los candidatos (cada campo del JSON mata una hipótesis):
+      · `cantidad_cruda` llena con `monto_crudo` vacío → el heurístico de
+        `normalizer.py:419-429` tomó la CANTIDAD como monto (un token de
+        ~US$0,000001 da el factor 1e6 clavado).
+      · `coma_con_3plus_decimales` → `normalizer.py:93-99` borra la coma decimal
+        cuando hay más de 2 decimales: '1700,868504' → 1700868504.
+      · `monto_crudo` ya absurdo → el archivo vino roto; el bug es la falta de cota.
+      · `tc_implicito == 1` con moneda ARS/NULL → pesos contados como dólares
+        (`_norm_currency` devuelve None para todo lo que no sea uno de 5
+        literales, y `pipeline.py:94-95` no divide salvo el literal 'ARS').
+
+    Sin `user_id` hace el BARRIDO: todas las cuentas cuyo mayor flujo supera
+    `factor` veces el pico histórico de su cartera.
+    """
+    import json as _json
+    import re as _re
+
+    if mes is not None and not _re.match(r"^\d{4}-(0[1-9]|1[0-2])$", mes):
+        raise HTTPException(400, "mes inválido, formato YYYY-MM")
+    limit = max(1, min(int(limit), 500))
+    conn = get_db()
+    try:
+        # ── BARRIDO: quién más tiene la firma ────────────────────────────────
+        if user_id is None:
+            rows = conn.execute(
+                """WITH f AS (
+                     SELECT b.user_id AS uid,
+                            MAX(ABS(COALESCE(n.gross_amount_usd, n.gross_amount))) AS mayor,
+                            COUNT(*) AS n_flujos
+                       FROM import_normalized_tx n
+                       JOIN import_batches b ON b.id = n.batch_id
+                      WHERE b.status='confirmed' AND n.excluded_at IS NULL
+                        AND n.operation_type IN ('DEPOSIT','WITHDRAW')
+                      GROUP BY b.user_id),
+                   p AS (SELECT user_id AS uid, MAX(total_value) AS pico
+                           FROM snapshots WHERE total_value > 0 GROUP BY user_id)
+                 SELECT f.uid, ROUND(f.mayor,2) AS mayor_flujo_usd, f.n_flujos,
+                        ROUND(COALESCE(p.pico,0),2) AS pico_cartera,
+                        ROUND(f.mayor / NULLIF(p.pico,0), 1) AS veces_la_cartera
+                   FROM f LEFT JOIN p ON p.uid = f.uid
+                  WHERE p.pico IS NULL OR f.mayor > p.pico * ?
+                  ORDER BY (f.mayor / NULLIF(COALESCE(p.pico,1),0)) DESC
+                  LIMIT ?""",
+                (factor, limit)).fetchall()
+            return {
+                "solo_lectura": True,
+                "modo": "barrido",
+                "factor_umbral": factor,
+                "cuentas": [dict(r) for r in rows],
+                "como_leerlo": (
+                    "`veces_la_cartera` = el mayor flujo dividido el pico histórico de "
+                    "esa cartera. Un retail no aporta 20x lo que llegó a tener. "
+                    "`pico_cartera` en null = nunca tuvo snapshot con valor. "
+                    "Abrí cada una con ?user_id=N para ver la fila culpable."
+                ),
+            }
+
+        # ── Q0: monthly, global y per-broker ─────────────────────────────────
+        ym = mes or _iso_today()[:7]
+        y, m = int(ym[:4]), int(ym[5:7])
+        me_rows = [dict(r) for r in conn.execute(
+            """SELECT broker, deposits, withdrawals, manual_deposits, manual_withdrawals,
+                      capital_inicio, capital_final, pnl_realized, pnl_unrealized
+                 FROM monthly_entries WHERE user_id=? AND year=? AND month=?
+                ORDER BY (broker='global') DESC, ABS(deposits) DESC""",
+            (user_id, y, m)).fetchall()]
+
+        def _r2(v):
+            return round(float(v or 0), 2)
+
+        glob = next((r for r in me_rows if r["broker"] == "global"), None)
+        por_broker = []
+        for r in me_rows:
+            if r["broker"] == "global":
+                continue
+            por_broker.append({
+                "broker": r["broker"],
+                "deposits": _r2(r["deposits"]),
+                "withdrawals": _r2(r["withdrawals"]),
+                "manual_deposits": _r2(r["manual_deposits"]),
+                "manual_withdrawals": _r2(r["manual_withdrawals"]),
+            })
+
+        # ── Q1: los flujos, con el crudo del parser ──────────────────────────
+        flujos = []
+        for r in conn.execute(
+            """SELECT n.id, n.date, n.broker, n.operation_type, n.currency,
+                      n.gross_amount, n.gross_amount_usd, n.quantity, n.unit_price,
+                      n.asset_symbol, n.notes, n.raw_row_id,
+                      rr.row_index, rr.raw_json,
+                      b.id AS batch_id, b.file_name, b.parser_format, b.created_at,
+                      b.confirmed_at, b.route_by_currency
+                 FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id = n.batch_id
+                 LEFT JOIN import_raw_rows rr ON rr.id = n.raw_row_id
+                WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                  AND n.operation_type IN ('DEPOSIT','WITHDRAW')
+                  AND substr(n.date,1,7)=?
+                ORDER BY ABS(COALESCE(n.gross_amount_usd, n.gross_amount)) DESC
+                LIMIT ?""",
+            (user_id, ym, limit)).fetchall():
+            nativo = float(r["gross_amount"] or 0)
+            usd = float(r["gross_amount_usd"]) if r["gross_amount_usd"] is not None else None
+            crudo = {}
+            try:
+                crudo = _json.loads(r["raw_json"]) if r["raw_json"] else {}
+                if not isinstance(crudo, dict):
+                    crudo = {}
+            except (ValueError, TypeError):
+                crudo = {}
+
+            def _crudo(*keys):
+                for k in keys:
+                    v = crudo.get(k)
+                    if v not in (None, ""):
+                        return str(v)
+                return ""
+
+            monto_crudo = _crudo("monto", "amount", "importe", "monto_bruto")
+            cant_cruda = _crudo("cantidad", "quantity", "qty", "nominales", "units")
+            sintetica = (r["row_index"] is not None and int(r["row_index"]) < 0)
+            tc_impl = (round(nativo / usd, 4) if (usd not in (None, 0)) else None)
+            cur = (r["currency"] or "").upper()
+            flujos.append({
+                "tx_id": r["id"],
+                "fecha": r["date"],
+                "broker": r["broker"],
+                "tipo": r["operation_type"],
+                "monto_nativo": round(nativo, 2),
+                "moneda": r["currency"],
+                "monto_usd_estampado": (round(usd, 2) if usd is not None else None),
+                "tc_implicito": tc_impl,
+                # Pesos contados 1:1 como dólares: el multiplicador silencioso ~1415.
+                "fx_sospechoso": bool(tc_impl == 1.0 and cur in ("ARS", "")),
+                "cantidad": r["quantity"],
+                "precio": r["unit_price"],
+                "activo": r["asset_symbol"],
+                # ── Las señales que separan las hipótesis ──
+                "monto_crudo": monto_crudo,
+                "cantidad_cruda": cant_cruda,
+                "monto_crudo_disponible": bool(monto_crudo) and not sintetica,
+                # normalizer.py:419-429 tomó la CANTIDAD como monto.
+                "señal_cantidad_como_monto": bool(cant_cruda and not monto_crudo),
+                # normalizer.py:93-99 borra la coma con 3+ decimales → ×10^n.
+                "señal_coma_3plus_decimales": bool(
+                    _re.search(r",\d{3,}\s*$", monto_crudo or "")),
+                "sintetica": sintetica,
+                "fila_del_archivo": r["row_index"],
+                "notes": r["notes"],
+                "batch": {
+                    "id": r["batch_id"], "file_name": r["file_name"],
+                    "parser_format": r["parser_format"], "created_at": r["created_at"],
+                    "confirmed_at": r["confirmed_at"],
+                    "route_by_currency": r["route_by_currency"],
+                },
+            })
+
+        suma_imports = float(conn.execute(
+            """SELECT COALESCE(SUM(CASE WHEN n.operation_type='DEPOSIT'
+                                        THEN COALESCE(n.gross_amount_usd, n.gross_amount)
+                                        ELSE 0 END), 0) AS s
+                 FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                  AND n.operation_type IN ('DEPOSIT','WITHDRAW')
+                  AND substr(n.date,1,7)=?""",
+            (user_id, ym)).fetchone()["s"] or 0)
+        manual_total = sum(b["manual_deposits"] for b in por_broker)
+        dep_glob = _r2(glob["deposits"]) if glob else 0.0
+        gap = round(dep_glob - suma_imports - manual_total, 2)
+        if abs(dep_glob - manual_total) < max(1.0, abs(dep_glob) * 0.01):
+            veredicto = "MANUAL"
+        elif abs(dep_glob - suma_imports) < max(1.0, abs(dep_glob) * 0.01):
+            veredicto = "IMPORT"
+        elif abs(gap) > max(1.0, abs(dep_glob) * 0.01):
+            veredicto = "DRIFT_SIN_FUENTE"
+        else:
+            veredicto = "MIXTO"
+
+        mayor = max([abs(f["monto_usd_estampado"] or f["monto_nativo"]) for f in flujos], default=0.0)
+
+        # ── Q5: brokers mal marcados (pesos en un broker USD) ────────────────
+        brokers = []
+        for b in conn.execute(
+            "SELECT id, name, currency FROM brokers WHERE user_id=? ORDER BY name",
+            (user_id,)).fetchall():
+            tx_ars = conn.execute(
+                """SELECT COUNT(*) AS c FROM import_normalized_tx n
+                     JOIN import_batches ib ON ib.id=n.batch_id
+                    WHERE ib.user_id=? AND ib.status='confirmed' AND n.broker=?
+                      AND UPPER(COALESCE(n.currency,''))='ARS'""",
+                (user_id, b["name"])).fetchone()["c"] or 0
+            cur = (b["currency"] or "").upper()
+            brokers.append({"name": b["name"], "currency": b["currency"],
+                            "tx_ars": tx_ars,
+                            "suspect": bool(cur in ("USD", "USDT") and tx_ars > 0)})
+
+        return {
+            "solo_lectura": True,
+            "modo": "detalle",
+            "user_id": user_id,
+            "mes": ym,
+            "monthly_global": ({
+                "deposits": dep_glob,
+                "withdrawals": _r2(glob["withdrawals"]),
+                "manual_deposits": _r2(glob["manual_deposits"]),
+                "capital_inicio": _r2(glob["capital_inicio"]),
+                "capital_final": _r2(glob["capital_final"]),
+                "pnl_realized": _r2(glob["pnl_realized"]),
+                "pnl_unrealized": _r2(glob["pnl_unrealized"]),
+            } if glob else None),
+            "monthly_por_broker": por_broker,
+            "reconciliacion": {
+                "deposits_monthly": dep_glob,
+                "suma_imports_confirmados": round(suma_imports, 2),
+                "suma_manual_per_broker": round(manual_total, 2),
+                "gap": gap,
+                "veredicto": veredicto,
+            },
+            "concentracion": {
+                "filas": len(flujos),
+                "mayor_fila_usd": round(mayor, 2),
+                "pct_de_la_mayor": (round(mayor / dep_glob * 100, 1) if dep_glob else None),
+                "veredicto": ("UNA_FILA_DOMINA" if (dep_glob and mayor >= dep_glob * 0.9)
+                              else "REPARTIDO"),
+            },
+            "flujos": flujos,
+            "brokers": brokers,
+            "gaps_de_auditoria": [
+                "el archivo original NO se guarda: import_batches sólo tiene file_name + file_hash (main.py:2287-2302) → para cerrar el caso hay que pedirle el archivo al usuario",
+                "el TC aplicado NO se persiste: `tc_implicito` es una división, no un dato (pipeline.py no guarda el rate); con currency != 'ARS' el cociente es 1.0 POR CONSTRUCCIÓN, así que no distingue 'no había que dividir' de 'había que dividir y no se dividió'",
+                "las filas sintéticas de foto pierden el monto: store_preview_txs vuelca sólo {asset, op, qty, price, notes} → monto_crudo vacío y el rastreo se corta ahí",
+                "los flujos MANUALES no tienen fila fuente en ninguna tabla: sólo el agregado manual_deposits (el único rastro parcial es positions.undo_meta_json.autodep)",
+            ],
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diagnose-costo-inconsistente")
 def admin_diagnose_costo_inconsistente(tol: float = 0.02, limite: int = 200,
                                        uid: int = Depends(get_admin_user)):
@@ -28303,6 +28563,7 @@ from importing import recompute_backfill as _import_recompute
 from importing import tenencia as _import_tenencia
 from importing import proyeccion as _import_proyeccion
 from importing import excel as _import_excel
+from importing import schema as _import_schema
 from importing.parsers.registry import get_parser as _get_parser
 import wallbit as _wallbit
 
@@ -29149,7 +29410,51 @@ def import_tenencia_preview(
                              else "sin_verificar_composicion")
 
         _warnings = list(getattr(snap, "warnings", []) or [])
+        # `foto_completa` significa "el PARSER leyó la foto entera" y se calcula
+        # ANTES de cualquier otro aviso: mezclarle avisos de otra naturaleza le
+        # cambia el significado al flag y, peor, mete el texto en el bloque de la
+        # UI que dice "por eso no sacamos posiciones por ausencia" — que sería
+        # falso, porque el gate real del borrado (`_complete`) ya se decidió 150
+        # líneas más arriba, desde `snap.warnings`.
         _foto_completa = not _warnings
+
+        # AUDIT D-3: aviso de ESCALA del aporte de apertura, en su propio canal.
+        # El seed sintético se calcula como Σ(cantidad × price_per1) SIN mirar la
+        # moneda ni el tamaño de lo que ya existe, y en todo el camino de import no
+        # hay una sola cota de magnitud sobre un flujo. Así entró el aporte de
+        # US$1.700.854.139 del user 329 (foto de IEB sembrada en Cocos, con los
+        # price_per1 en pesos estampados como USD). Avisa, no bloquea: un tope duro
+        # rompería a un usuario grande legítimo, y quien mira la foto puede decidir.
+        _avisos_escala: List[str] = []
+        # Los umbrales del guard están en DÓLARES; la partición en pesos hay que
+        # normalizarla o el piso queda en ~US$66 y grita en cada import argentino.
+        _tc_row = conn.execute(
+            "SELECT value FROM config WHERE user_id=? AND key='tc_mep'", (uid,)).fetchone()
+        try:
+            _tc_guard = float(_tc_row["value"]) if (_tc_row and _tc_row["value"]) else 0.0
+        except (TypeError, ValueError):
+            _tc_guard = 0.0
+        if _tc_guard <= 0:
+            _tc_guard = _user_tc_blue(conn, uid)
+        for _stx in seed_txs:
+            # SÓLO el DEPOSITO de apertura. El true-up de cash
+            # (`build_cash_trueup_txs`) también es OP_DEPOSIT y viaja en la misma
+            # lista: sin este filtro, una foto que sólo corrige el efectivo salía
+            # rotulada como "aporte de apertura" con una sugerencia que no aplica.
+            if (_stx.operation_type != _import_schema.OP_DEPOSIT
+                    or not _stx.gross_amount
+                    or _stx.notes != _import_tenencia.TENENCIA_SEED_DEPOSIT_NOTE):
+                continue
+            _base = float(conn.execute(
+                "SELECT COALESCE(SUM(COALESCE(invested,0) + COALESCE(commissions,0)), 0) AS s "
+                "FROM positions WHERE user_id=? AND broker=?",
+                (uid, _stx.broker)).fetchone()["s"] or 0)
+            _ccy = (_stx.currency or "ARS").upper()
+            _w = _import_tenencia.seed_plausibility_warning(
+                _stx.gross_amount, _base, _ccy, _stx.broker,
+                fx_usd=(_tc_guard if _ccy == "ARS" else 1.0))
+            if _w:
+                _avisos_escala.append(_w)
         # Si no hay txs PERO sí hay FCI para fijar el valor, igual creamos el batch:
         # el precio de la foto de esos fondos hay que estamparlo aunque las cantidades
         # y el cash ya coincidan (el valor mostrado seguiría a costo si no).
@@ -29186,6 +29491,7 @@ def import_tenencia_preview(
                     "foto_completa": _foto_completa, "warnings": _warnings,
                     "tickers_normalizados": tickers_normalizados,
                     "fecha_origen": fecha_origen, "fecha_usada": seed_date,
+                    "avisos_escala": _avisos_escala,
                     "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}
         with conn:
             sid = _import_pipeline.store_preview_txs(
@@ -29206,6 +29512,7 @@ def import_tenencia_preview(
             "matched": len(rec.matched),
             "foto_completa": _foto_completa,
             "warnings": _warnings,
+            "avisos_escala": _avisos_escala,
             "to_seed": [{"ticker": h.ticker, "type": h.asset_type, "qty": gap,
                          "price": round(h.price_per1, 4), "value": round(gap * h.price_per1, 2),
                          "currency": h.currency} for h, gap in rec.to_seed],
