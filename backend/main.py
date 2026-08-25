@@ -12448,7 +12448,22 @@ def _is_synthetic_seed_row(src) -> bool:
 
 
 def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) -> None:
-    """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
+    """⚠️ ANOTADO, NO ARREGLADO: el `_recompute_snapshots_netdep_for_user` de abajo
+    re-estampa `net_deposited` con `compute_net_deposited_db`, que trunca la fecha
+    a MES — o sea pisa el valor diario que el cron había escrito bien, con un único
+    valor por mes, para todos los snapshots desde `since_date`.
+
+    Para Diagnóstico y Reportes eso es INOCUO: la curva saca el aportado de
+    `twr.netdep_canonico`, que recalcula desde la contabilidad y no lee esta
+    columna. Verificado y fijado en
+    `tests/test_audit_ronda5.py::ReEstampadoPorMesEsInocuoTest`.
+
+    Lo que SÍ queda afectado son los lectores que leen la columna cruda:
+    `/api/snapshots` (el chart del Dashboard) y el informe del asesor. Arreglarlo
+    pide granularidad diaria de verdad —construir el mapa desde las fechas reales
+    de los movimientos—, que es un trabajo aparte.
+
+    Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
     revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
     autoritativo (recompone monthly desde fuentes, excluyendo lo ya borrado) →
     refrescar snapshots desde la fecha afectada → re-backfill de month-ends. El

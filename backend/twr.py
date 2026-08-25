@@ -256,56 +256,31 @@ def clasificar_serie(filas, primera_pos, orden_desc: bool = False) -> list:
     return clases[::-1] if orden_desc else clases
 
 
-def backfill_source_legacy(conn, uids: list) -> dict:
-    """Estampa `source='cron'` en las filas LEGACY que la cadencia identifica como
-    del cron. Idempotente: sólo toca filas con `source IS NULL`.
-
-    ⚠️ POR QUÉ MATERIALIZAR Y NO RESOLVERLO A READ-TIME.
-    Resolverlo al leer parece equivalente y es más barato, pero es ESTRICTAMENTE
-    MÁS DÉBIL, y ya lo pagamos: cada lector tiene que ACORDARSE de llamar a
-    `clasificar_serie`, y uno no se acordó. Llegaron a convivir dos criterios sobre
-    la MISMA fila del MISMO usuario en la misma sesión — `serie_medible` la veía
-    MEDICION y `/api/snapshots` INTRADIA, con lo cual a un usuario sano se le
-    degradaban 549 de 600 fotos en la lista y ninguna en la curva.
-    Materializado, eso es imposible: no hay dos lectores que puedan discrepar, una
-    fila nueva no puede reescribir la clase del pasado, y la clase deja de depender
-    de qué ventana se leyó.
-
-    Va por TANDAS y sin crear ningún índice: en este repo una migración que tocó el
-    orden columna/índice se llevó producción puesta 20 minutos.
-    """
-    tocados = filas = 0
-    for uid in uids:
-        rows = conn.execute(
-            """SELECT id, date, total_value, fx_to_usd_blue, holdings_json, source,
-                      mtm_coverage
-                 FROM snapshots WHERE user_id=? ORDER BY date""", (uid,)).fetchall()
-        if not rows:
-            continue
-        if all(r["source"] is not None for r in rows):
-            continue                       # ya estampado: nada que hacer
-        primera = primera_fecha_con_posiciones(conn, uid)
-        clases = clasificar_serie(rows, primera)
-        # SÓLO lo que aporta la cadencia: filas que solas se leerían INTRADIA y que
-        # la tanda diaria identifica como del cron. Una fila que ya se clasifica
-        # bien mirada sola (p. ej. la de una cartera 100% cash) no necesita
-        # estamparse — y estamparla sería afirmar 'cron' sobre algo que también
-        # pudo escribir el browser.
-        solas = [clasificar_fila(r, _tenia_posiciones_en(primera, r["date"]))
-                 for r in rows]
-        ids = [r["id"] for r, c, sola in zip(rows, clases, solas)
-               if r["source"] is None and c == MEDICION and sola == INTRADIA]
-        if not ids:
-            continue
-        for i in range(0, len(ids), 500):
-            lote = ids[i:i + 500]
-            ph = ",".join("?" * len(lote))
-            conn.execute(
-                f"UPDATE snapshots SET source='cron' WHERE source IS NULL AND id IN ({ph})",
-                lote)
-        tocados += 1
-        filas += len(ids)
-    return {"usuarios": tocados, "filas": filas}
+# ⚠️ LA CLASIFICACIÓN ES READ-TIME, NO ESTÁ MATERIALIZADA. Decisión explícita.
+#
+# Hubo acá un `backfill_source_legacy` que estampaba `source='cron'` en las filas
+# legacy que la cadencia identifica. Se sacó, y conviene saber por qué antes de
+# volver a escribirlo:
+#
+#  · Nunca se enchufó. El commit que lo agregó decía "corre en un thread daemon al
+#    startup" y ese thread no existía: `git grep backfill_source` devolvía la
+#    definición y sus tests, cero call-sites. Este repo ya tiene dos casos del
+#    mismo patrón (`plausibility.py`, el backfill a mercado); un tercero es peor
+#    que no tenerlo, porque instala la premisa falsa de que prod está
+#    materializado.
+#  · Materializar es IRREVERSIBLE en el sentido que importa: una fila mal
+#    estampada 'cron' pierde su ambigüedad para siempre y pasa a ser
+#    BORDE_PERIODO, el filtro más estricto. La cadencia acierta casi siempre, pero
+#    "casi siempre" no alcanza para una escritura que no se puede deshacer.
+#
+# Lo que hace innecesario materializarlo HOY es `clasificar_serie` + el test de
+# contrato (`tests/test_contrato_clasificacion.py`): los 7 lectores están
+# obligados a devolver la misma clase sobre la misma fila, y el test falla en el
+# momento en que aparece el octavo que se olvida. Ese test es la garantía; el
+# backfill sería una optimización con riesgo propio.
+#
+# Si algún día se materializa, tiene que ir con dry-run, log de lo que tocó y una
+# decisión tomada sobre qué hacer con las filas que la cadencia no puede afirmar.
 
 
 def _usuarios_con_posiciones(conn, ids: list) -> set:
@@ -682,75 +657,34 @@ def netdep_canonico(conn, uid: int):
     return _en
 
 
-# Cuánto puede alejarse la estampa del total contable del mes sin que se la
-# considere desactualizada. Un dólar, o una millonésima del total.
-_TOL_ESTAMPA = 1.0
-
-
 def _aportado_por_punto(conn, uid: int, filas):
-    """Devuelve fila → aportado acumulado, eligiendo la mejor fuente MES A MES.
+    """Devuelve fila → aportado acumulado. Es `netdep_canonico`, a secas.
 
-    ⚠️ NINGUNA DE LAS DOS FUENTES SIRVE SOLA, y elegir mal rompe cosas distintas:
+    ⚠️ ACÁ HUBO UN INTENTO DE MEJORARLO Y SALIÓ MAL. La versión anterior prefería
+    la ESTAMPA de cada fila —que sí tiene resolución diaria— y caía al canónico
+    sólo en los meses donde la estampa dejaba de coincidir con la contabilidad.
+    La señal para detectar esos meses miraba la fila de FIN DE MES, y esa fila es
+    justamente la única que un import nunca deja vieja: el import cae un día
+    cualquiera, el cron sigue corriendo y reescribe el resto del mes con la
+    contabilidad nueva. El mes pasaba como confiable, se usaban estampas mitad
+    viejas mitad nuevas, y el escalón entre unas y otras se leía como un flujo de
+    US$50.000 contra un valor inmóvil: −37,04% de drawdown en un julio PLANO, el
+    mismo número que dos rondas antes se había cerrado. Y no se autocura al
+    cerrar el mes.
 
-    · LA ESTAMPA (`snapshots.net_deposited`) es DIARIA de verdad: el cron corre
-      todos los días y escribe el acumulado del momento, así que un depósito del
-      20 aparece el 20. Pero un import reescribe `monthly_entries` hacia atrás y
-      NO re-estampa las fotos viejas: quedan estampas de dos momentos en la misma
-      serie y la resta mide cuánto cambió la contabilidad, no un flujo. Eso
-      publicaba −37% en un mes donde no pasó nada.
+    El canónico es MENOS PRECISO —tiene resolución mensual, porque los flujos
+    manuales viven en `monthly_entries.manual_*` sin fecha— pero NO INVENTA, y esa
+    es la propiedad que importa acá. Las dos puntas de cualquier resta salen de la
+    misma lectura.
 
-    · EL CANÓNICO (`netdep_canonico`) es consistente —las dos puntas salen de la
-      misma lectura— pero tiene resolución MENSUAL, porque los flujos manuales se
-      guardan en `monthly_entries.manual_*` sin fecha. Enchufado punto a punto en
-      una curva DIARIA, retro-atribuye el depósito del 20 al día 1: aparece un
-      flujo enorme contra un valor que todavía no lo incluye. Medido con el
-      mercado literalmente inmóvil: drawdown de −9,52% donde lo real es 0.
-
-    La regla: se prefiere la ESTAMPA, que es la que tiene resolución, y se cae al
-    canónico SÓLO en los meses donde la estampa dejó de coincidir con la
-    contabilidad actual — que es exactamente la señal de "acá hubo un import".
-    Un mes incompleto (el cron se cortó antes de fin de mes) no se juzga: ahí la
-    estampa puede ser legítimamente menor que el total del mes.
+    Si algún día hace falta resolución diaria, la vía NO es elegir entre dos
+    fuentes: es construir el mapa desde las FECHAS REALES de los movimientos, que
+    es el único lugar donde el dato existe con resolución diaria y sin ambigüedad.
     """
     canon = netdep_canonico(conn, uid)
     if canon is None:                      # sin contabilidad: sólo queda la estampa
         return lambda r: float(r["net_deposited"] or 0)
-
-    from datetime import date as _date, timedelta as _td
-
-    def _es_fin_de_mes(f):
-        try:
-            y, m, d = (int(x) for x in str(f)[:10].split("-"))
-            return (_date(y, m, d) + _td(days=1)).month != m
-        except (ValueError, TypeError):
-            return False
-
-    ultimo_del_mes, hay_estampa = {}, False
-    for r in filas:
-        ym = str(r["date"])[:7]
-        prev = ultimo_del_mes.get(ym)
-        if prev is None or str(r["date"]) > str(prev["date"]):
-            ultimo_del_mes[ym] = r
-        if (r["net_deposited"] or 0):
-            hay_estampa = True
-    if not hay_estampa:                    # filas legacy con la columna en 0
-        return lambda r: canon(str(r["date"])[:10])
-
-    desconfiar = set()
-    for ym, r in ultimo_del_mes.items():
-        if not _es_fin_de_mes(r["date"]):
-            continue                       # mes incompleto: no se juzga
-        esperado = canon(str(r["date"])[:10])
-        if abs(float(r["net_deposited"] or 0) - esperado) > max(
-                _TOL_ESTAMPA, abs(esperado) * 1e-6):
-            desconfiar.add(ym)
-
-    def _en(r):
-        ym = str(r["date"])[:7]
-        if ym in desconfiar:
-            return canon(str(r["date"])[:10])
-        return float(r["net_deposited"] or 0)
-    return _en
+    return lambda r: canon(str(r["date"])[:10])
 
 
 def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,

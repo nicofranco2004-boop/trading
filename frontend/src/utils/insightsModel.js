@@ -752,3 +752,38 @@ export function totalDePunto(pt) {
   if (!pt || !pt.apto || typeof pt.index !== 'number') return null
   return +((pt.index - 1) * 100).toFixed(2)
 }
+
+// ─── La resolución del gráfico sigue a lo MEDIDO ────────────────────────────
+/** Hasta acá la serie se dibuja punto por punto; más allá, un punto por mes. */
+export const RESOLUCION_DIARIA_DIAS = 92
+
+/**
+ * resolucionDeSerie
+ *
+ * 'diaria' | 'mensual', según cuánto abarca lo que EFECTIVAMENTE se midió — no
+ * según el rango que el usuario eligió con los botones.
+ *
+ * ⚠️ POR QUÉ. El resampleo mensual agrupa por `key.slice(0,7)` y se queda con el
+ * último punto de cada mes. Para alguien que recién empieza a medirse eso es
+ * demoledor: con 46 mediciones diarias repartidas en dos meses el gráfico dibuja
+ * DOS PUNTOS — una recta — y se come una caída real del 8,31% que ocurrió dentro
+ * de agosto. En la misma pantalla, la curva de drawdown de abajo dice «Máx
+ * histórico −8,3%»: los dos números son correctos y el de arriba no puede mostrar
+ * lo que el de abajo mide.
+ *
+ * Y le pega justo a la población que este trabajo vino a servir: después de los
+ * fixes la curva del que importó arranca el día que empezó el cron, así que
+ * cuanto más nuevo el usuario, más plana la línea — sin importar qué pasó con su
+ * plata.
+ *
+ * @param {Array<string>} keys fechas 'YYYY-MM-DD' en orden, SIN 'today'
+ * @returns {'diaria'|'mensual'}
+ */
+export function resolucionDeSerie(keys) {
+  const k = (keys || []).filter(x => x && x !== 'today')
+  if (k.length < 2) return 'diaria'
+  const a = Date.parse(k[0])
+  const b = Date.parse(k[k.length - 1])
+  if (!isFinite(a) || !isFinite(b)) return 'mensual'
+  return ((b - a) / 86400000) <= RESOLUCION_DIARIA_DIAS ? 'diaria' : 'mensual'
+}

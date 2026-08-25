@@ -42,6 +42,7 @@ import {
   drawdownFromPerf,
   cortarPorTramo,
   totalDePunto,
+  resolucionDeSerie,
   computeDrawdownOnReturns,
   computeBestWorstMonth,
   computeAssetContribution,
@@ -975,9 +976,18 @@ function InsightsDesktop({ _embeddedTab }) {
   //
   // Resampleo: para cada mes conservamos el ÚLTIMO punto del mes (el más
   // reciente), que representa el cierre mensual. "today" se mantiene aparte.
+  // La resolución la decide lo MEDIDO, no el botón de rango: ver
+  // `resolucionDeSerie` (insightsModel.js). Con 45 días de datos, agrupar por mes
+  // tira el 95% de la información y convierte el gráfico en una recta.
+  const resolucionChart = resolucionDeSerie(
+    activeSeries.filter(s => s.key !== 'today').map(s => s.key))
+
   const activeSeriesMonthly = (() => {
     const historical = activeSeries.filter(s => s.key !== 'today')
     const today = activeSeries.find(s => s.key === 'today')
+    if (resolucionChart === 'diaria') {
+      return today ? [...historical, today] : historical
+    }
     // Agrupar por mes (YYYY-MM) y quedarse con el último punto de cada mes.
     const byMonth = {}
     for (const s of historical) {
@@ -997,7 +1007,17 @@ function InsightsDesktop({ _embeddedTab }) {
     if (!effectiveRange || activeSeriesMonthly.length === 0) return activeSeriesMonthly
     const historical = activeSeriesMonthly.filter(s => s.key !== 'today')
     const today = activeSeriesMonthly.find(s => s.key === 'today')
-    const sliced = historical.slice(-effectiveRange)
+    let sliced
+    if (resolucionChart === 'diaria') {
+      // Con puntos diarios, `slice(-N)` daría N DÍAS donde N son meses.
+      const corte = new Date()
+      corte.setMonth(corte.getMonth() - effectiveRange)
+      const iso = corte.toISOString().slice(0, 10)
+      sliced = historical.filter(s => s.key >= iso)
+      if (sliced.length < 2) sliced = historical
+    } else {
+      sliced = historical.slice(-effectiveRange)
+    }
     return today ? [...sliced, today] : sliced
   })()
 
@@ -2378,6 +2398,10 @@ function InsightsDesktop({ _embeddedTab }) {
           {currency === 'USD' && (
             <div className="flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-1">
               {[
+                // 1M y 3M existen para el que recién empieza a medirse: con 45
+                // días de historia, "1A" y "MAX" son la misma recta.
+                { label: '1M', months: 1 },
+                { label: '3M', months: 3 },
                 { label: '1A', months: 12 },
                 { label: '2A', months: 24 },
                 { label: '5A', months: 60 },

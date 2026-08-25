@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  resolucionDeSerie,
   totalDePunto,
   cortarPorTramo,
   drawdownFromPerf,
@@ -632,5 +633,60 @@ describe('totalDePunto', () => {
   it('null/undefined no rompen', () => {
     expect(totalDePunto(null)).toBe(null)
     expect(totalDePunto({ apto: true })).toBe(null)
+  })
+})
+
+
+// ── La resolución sigue a lo MEDIDO ───────────────────────────────────────────
+// Con 46 mediciones diarias repartidas en dos meses, el resampleo mensual dibuja
+// DOS PUNTOS —una recta— y se come una caída real del 8,31%. En la misma pantalla
+// la curva de drawdown dice «Máx histórico −8,3%».
+describe('resolucionDeSerie', () => {
+  const dias = (desde, n) => {
+    const out = []
+    const d = new Date(desde)
+    for (let i = 0; i < n; i++) {
+      out.push(new Date(d.getTime() + i * 86400000).toISOString().slice(0, 10))
+    }
+    return out
+  }
+
+  it('46 días medidos → diaria (si no, es una recta)', () => {
+    expect(resolucionDeSerie(dias('2026-07-11', 46))).toBe('diaria')
+  })
+
+  it('dos años medidos → mensual', () => {
+    expect(resolucionDeSerie(['2024-01-01', '2026-01-01'])).toBe('mensual')
+  })
+
+  it('el umbral está en ~3 meses', () => {
+    expect(resolucionDeSerie(['2026-01-01', '2026-03-15'])).toBe('diaria')   // 73 d
+    expect(resolucionDeSerie(['2026-01-01', '2026-06-01'])).toBe('mensual')  // 151 d
+  })
+
+  it('ignora "today", que no es una fecha', () => {
+    expect(resolucionDeSerie(['2026-07-11', '2026-07-20', 'today'])).toBe('diaria')
+  })
+
+  it('con menos de dos puntos no agrupa', () => {
+    expect(resolucionDeSerie([])).toBe('diaria')
+    expect(resolucionDeSerie(['2026-07-11'])).toBe('diaria')
+    expect(resolucionDeSerie(null)).toBe('diaria')
+  })
+
+  it('el resampleo mensual perdería la caída; el diario no', () => {
+    // 2 meses de datos con una caída dentro de agosto.
+    const puntos = [
+      { key: '2026-07-15', total: 0 },
+      { key: '2026-07-31', total: 2 },
+      { key: '2026-08-10', total: 3 },
+      { key: '2026-08-14', total: -5.4 },   // la caída del 8,3%
+      { key: '2026-08-29', total: 1 },
+    ]
+    expect(resolucionDeSerie(puntos.map(p => p.key))).toBe('diaria')
+    // Lo que hacía el resampleo mensual: un punto por mes → la caída desaparece.
+    const porMes = {}
+    for (const p of puntos) porMes[p.key.slice(0, 7)] = p
+    expect(Object.values(porMes).map(p => p.total)).toEqual([2, 1])
   })
 })

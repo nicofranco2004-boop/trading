@@ -163,98 +163,10 @@ class ContratoDeClasificacionTest(unittest.TestCase):
         self.assertEqual(sum(1 for f in filas if f.get("sintetico")), 0)
 
 
-class BackfillDeSourceTest(unittest.TestCase):
-    """M-1 · materializar la clasificación. Resolverla al leer obliga a cada lector
-    a acordarse, y uno no se acordó."""
-
-    def setUp(self):
-        self.conn = main.get_db()
-        for t in ("snapshots", "positions", "users"):
-            try:
-                self.conn.execute(f"DELETE FROM {t}")
-            except Exception:
-                pass
-        self.uid = self.conn.execute(
-            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
-            (f"bf-{id(self)}@t", "x")).lastrowid
-        # CON posiciones: sin ellas, una fila con fx y sin holdings ya se clasifica
-        # MEDICION por la regla de "cartera 100% cash", y el backfill no la toca a
-        # propósito (podría haberla escrito el browser). El caso que el backfill
-        # existe para resolver es el de una cuenta CON cartera.
-        self.conn.execute(
-            "INSERT INTO positions (user_id, broker, asset, is_cash, quantity, "
-            "invested, entry_date) VALUES (?,'IBKR','AAPL',0,1,100,'2025-01-01')",
-            (self.uid,))
-        self.conn.commit()
-
-    def tearDown(self):
-        self.conn.close()
-
-    def _fila(self, d, src=None, fx=1200.0, hold=None):  # noqa: D401
-        self.conn.execute(
-            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
-            "net_deposited, source, fx_to_usd_blue, holdings_json) "
-            "VALUES (?,?,100000,100000,0,?,?,?)", (self.uid, d, src, fx, hold))
-        self.conn.commit()
-
-    def test_estampa_las_legacy_con_cadencia_de_cron(self):
-        d0 = _d.date(2026, 5, 1)
-        for i in range(20):
-            self._fila((d0 + _d.timedelta(days=i)).isoformat())
-        r = twr.backfill_source_legacy(self.conn, [self.uid])
-        self.conn.commit()
-        self.assertEqual(r["filas"], 20)
-        quedan = self.conn.execute(
-            "SELECT COUNT(*) c FROM snapshots WHERE user_id=? AND source IS NULL",
-            (self.uid,)).fetchone()["c"]
-        self.assertEqual(quedan, 0)
-
-    def test_es_idempotente(self):
-        d0 = _d.date(2026, 5, 1)
-        for i in range(20):
-            self._fila((d0 + _d.timedelta(days=i)).isoformat())
-        twr.backfill_source_legacy(self.conn, [self.uid])
-        self.conn.commit()
-        r2 = twr.backfill_source_legacy(self.conn, [self.uid])
-        self.conn.commit()
-        self.assertEqual(r2["filas"], 0)
-
-    def test_no_toca_una_fila_que_YA_dice_browser(self):
-        """Lo que dice `source` manda: el backfill sólo desambigua legacy."""
-        d0 = _d.date(2026, 5, 1)
-        for i in range(20):
-            self._fila((d0 + _d.timedelta(days=i)).isoformat(), src="browser")
-        r = twr.backfill_source_legacy(self.conn, [self.uid])
-        self.conn.commit()
-        self.assertEqual(r["filas"], 0)
-        quedan = self.conn.execute(
-            "SELECT COUNT(*) c FROM snapshots WHERE user_id=? AND source='browser'",
-            (self.uid,)).fetchone()["c"]
-        self.assertEqual(quedan, 20)
-
-    def test_no_estampa_una_tanda_salteada(self):
-        """Cinco visitas sueltas no son el cron."""
-        for d in ("2026-05-02", "2026-05-09", "2026-05-17", "2026-05-25", "2026-06-02"):
-            self._fila(d)
-        r = twr.backfill_source_legacy(self.conn, [self.uid])
-        self.conn.commit()
-        self.assertEqual(r["filas"], 0)
-        # Y siguen viéndose como lo que son: fotos de media rueda.
-        s = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(s["por_clase"][twr.INTRADIA], 5)
-
-    def test_despues_del_backfill_la_clase_no_depende_del_read_time(self):
-        d0 = _d.date(2026, 5, 1)
-        for i in range(20):
-            self._fila((d0 + _d.timedelta(days=i)).isoformat())
-        twr.backfill_source_legacy(self.conn, [self.uid])
-        self.conn.commit()
-        fila = self.conn.execute(
-            "SELECT date,total_value,fx_to_usd_blue,holdings_json,source,mtm_coverage "
-            "FROM snapshots WHERE user_id=? ORDER BY date LIMIT 1", (self.uid,)).fetchone()
-        # Mirada SOLA —sin la serie— ya se clasifica bien: eso es lo que el
-        # read-time no podía dar.
-        self.assertEqual(twr.clasificar_fila(fila, True), twr.MEDICION)
+# La clase `BackfillDeSourceTest` vivía acá y se fue con `backfill_source_legacy`:
+# la función nunca tuvo un call-site de producción. Lo que garantiza que los
+# lectores no se bifurquen no es el backfill sino el contrato de arriba — ver el
+# comentario largo en `twr.py`, donde está escrita la decisión.
 
 
 if __name__ == "__main__":
