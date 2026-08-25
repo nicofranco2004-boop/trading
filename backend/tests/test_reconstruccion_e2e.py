@@ -117,6 +117,43 @@ class ReconstruccionE2ETest(unittest.TestCase):
         cv = twr.curva_indexada(self.conn, self.uid)
         self.assertAlmostEqual(cv["twr"], 0.10, places=6)
 
+    def test_el_hook_post_import_reconstruye_sin_tocar_la_contabilidad(self):
+        """Hasta acá el reconstructor existía y no lo llamaba nadie más que
+        POST /api/admin/backfill-mtm. Sin hook, el valor no llegaba nunca."""
+        bf._HIST_CACHE.clear()
+        bf._fetch_monthly_close = lambda pk, si: {
+            "2024-08": 250.0, "2024-09": 300.0, "2024-10": 275.0}
+        cf_antes = [r["capital_final"] for r in self.conn.execute(
+            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND "
+            "broker='global' ORDER BY year, month", (self.uid,))]
+        r = main._reconstruir_mtm(self.uid)
+        self.assertTrue(r["reconstruida"])
+        self.assertEqual(r["snapshots"], 3)
+        self.assertAlmostEqual(r["cobertura_media"], 1.0, places=3)
+        cf_despues = [r2["capital_final"] for r2 in self.conn.execute(
+            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND "
+            "broker='global' ORDER BY year, month", (self.uid,))]
+        self.assertEqual(cf_antes, cf_despues)
+        cv = twr.curva_indexada(self.conn, self.uid)
+        self.assertAlmostEqual(cv["twr"], 0.10, places=6)
+
+    def test_el_hook_no_corre_dentro_del_request(self):
+        """`_fetch_monthly_close` sale a yfinance con timeout=8 POR TICKER: si eso
+        colgara del POST de confirmación, una cartera de 20 símbolos dejaría al
+        usuario esperando minutos. El disparo tiene que ser un thread."""
+        import inspect
+        src = inspect.getsource(main._reconstruir_mtm_post_import)
+        self.assertIn("Thread", src)
+        self.assertIn("daemon=True", src)
+
+    def test_una_cuenta_sin_import_no_se_reconstruye(self):
+        self.conn.execute("UPDATE import_batches SET status='reverted' WHERE user_id=?",
+                          (self.uid,))
+        self.conn.commit()
+        r = main._reconstruir_mtm(self.uid)
+        self.assertFalse(r["reconstruida"])
+        self.assertIn("import", (r.get("motivo") or ""))
+
 
 if __name__ == "__main__":
     unittest.main()

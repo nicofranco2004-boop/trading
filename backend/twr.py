@@ -269,6 +269,9 @@ MOTIVO_TEXTO = {
     "sin_mediciones": "Todavía no hay mediciones a mercado de esta cuenta.",
     "sin_tramo_continuo": "Hay mediciones, pero están demasiado separadas entre sí "
                           "como para medir un tramo sin inventar el recorrido del medio.",
+    "serie_partida": "La medición tiene un hueco en el medio. Los tramos de cada lado "
+                     "se miden solos, pero no se pueden encadenar: no se sabe qué pasó "
+                     "en el medio y suponerlo sería inventarlo.",
 }
 
 
@@ -600,14 +603,28 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 "drawdown_actual": None, "drawdown_maximo": None,
                 "drawdown_maximo_fecha": None, "drawdown_maximo_pico": None}
 
-    curva, idx = [], 1.0
-    legs = 0               # tramos que SÍ produjeron un retorno medible
-    pico = None            # sólo lo mueven los puntos aptos
-    pico_fecha = None
-    dd_max, dd_max_fecha, dd_max_pico_fecha = 0.0, None, None
+    # ⚠️ EL ÍNDICE Y EL PICO SE REINICIAN EN CADA TRAMO.
+    #
+    # `serie_medible` parte la serie donde hubo más de `max_hueco_dias` de
+    # silencio, y ese corte existe porque NO SE SABE qué pasó adentro del hueco.
+    # Si el índice se arrastrara de un tramo al siguiente, el derrumbe que ocurrió
+    # dentro del hueco desaparece y el tramo 2 compone encima del tramo 1.
+    # Medido: 10.000 → 12.000 · [hueco con caída a 6.000] · 6.000 → 6.600
+    # devolvía +32% cuando punta a punta es −34%. Y no es un caso de laboratorio:
+    # el backfill escribe un punto por mes, así que basta con que UN mes caiga
+    # bajo el piso de cobertura para que el hueco pase de 30 a ~60 días y parta
+    # la cadena — cruzar el umbral recableaba la curva entera en silencio.
+    curva = []
+    tramos_info = []       # {desde, hasta, twr, dd_max, legs} por tramo
     dd_actual = None
+    idx_ultimo_tramo = 1.0
 
     for tramo in s["tramos"]:
+        idx = 1.0
+        legs_t = 0
+        pico = None
+        pico_fecha = None
+        dd_max_t, dd_max_fecha_t, dd_max_pico_t = 0.0, None, None
         for i, p in enumerate(tramo):
             if i == 0:
                 ret = None                       # arranque de tramo: no hay v0
@@ -620,7 +637,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                     ret = dietz(a["value"], p["value"], flow)
             if ret is not None:
                 idx *= (1.0 + ret)
-                legs += 1
+                legs_t += 1
             punto = {"date": p["date"], "index": round(idx, 6),
                      "value": p["value"], "clase": p["clase"],
                      "apto": p["apto"], "ret": ret,
@@ -630,55 +647,99 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                     pico, pico_fecha = idx, p["date"]
                 dd = (idx / pico) - 1.0 if pico and pico > 0 else 0.0
                 dd_actual = dd
-                if dd < dd_max:
-                    dd_max, dd_max_fecha, dd_max_pico_fecha = dd, p["date"], pico_fecha
+                if dd < dd_max_t:
+                    dd_max_t, dd_max_fecha_t, dd_max_pico_t = dd, p["date"], pico_fecha
                 punto["drawdown"] = round(dd, 6)
             curva.append(punto)
+        tramos_info.append({
+            "desde": tramo[0]["date"], "hasta": tramo[-1]["date"],
+            "legs": legs_t, "twr": (idx - 1.0) if legs_t > 0 else None,
+            "drawdown_maximo": round(dd_max_t, 6) if legs_t > 0 else None,
+            "drawdown_maximo_fecha": dd_max_fecha_t,
+            "drawdown_maximo_pico": dd_max_pico_t,
+        })
+        idx_ultimo_tramo = idx
 
-    # El valor live cierra la curva SOLO si el último borde es base de mercado.
-    # Es la regla que `buildCumulativeReturnSeries` rompía: pisaba el cierre con el
-    # live sin mirar en qué base estaba el arranque, y ahí nacía el acantilado.
+    # Sólo se puede publicar UN número punta a punta si toda la medición cabe en
+    # UN tramo continuo. Con la serie partida, ni el TWR ni el drawdown máximo son
+    # afirmables: el peor momento puede haber estado adentro del hueco, y publicar
+    # el máximo de los tramos medidos sería dar una COTA INFERIOR con nombre de
+    # máximo — subestimar el riesgo con autoridad.
+    con_legs = [t for t in tramos_info if t["legs"] > 0]
+    legs = sum(t["legs"] for t in tramos_info)
+    partida = len(con_legs) > 1
+    publicable = len(con_legs) == 1
+
+    if publicable:
+        _t = con_legs[0]
+        idx = 1.0 + _t["twr"]
+        pico = max(1.0, idx)
+        dd_max = _t["drawdown_maximo"]
+        dd_max_fecha = _t["drawdown_maximo_fecha"]
+        dd_max_pico_fecha = _t["drawdown_maximo_pico"]
+        # `pico` sólo se usa de acá en adelante para el cierre live. El HWM del
+        # tramo es el índice más alto que alcanzó; se recalcula desde la curva
+        # para no depender de en qué punto quedó `idx`.
+        _idxs = [c["index"] for c in curva if c.get("apto")]
+        pico = max(_idxs) if _idxs else 1.0
+        pico_fecha = next((c["date"] for c in curva
+                           if c.get("apto") and c["index"] == pico), None)
+    else:
+        # ⚠️ Sin ningún tramo medido (o con la serie partida) el índice se quedó
+        # en 1.0 — y devolver eso como `twr: 0.0` / `drawdown: 0.0` es publicar
+        # "el período fue plano" sin haber medido nada. `drawdown_maximo` es el
+        # que faltaba: `twr` y `drawdown_actual` ya tenían su guard y éste no,
+        # así que el 452 iba a leer "peak histórico 0,0%" en el mismo lugar donde
+        # leía −45%, y con `drawdown_maximo_fecha` en None: se contradecía solo.
+        idx, pico, pico_fecha = 1.0, None, None
+        dd_actual = dd_max = dd_max_fecha = dd_max_pico_fecha = None
+
+    # El valor live cierra la curva SOLO si el último borde es base de mercado Y
+    # la serie no está partida (si lo está, no hay índice contra el cual componer).
     ultimo_apto = next((p for p in reversed(s["puntos"]) if p["apto"]), None)
-    if valor_live and valor_live > 0 and ultimo_apto is not None and curva:
-        if s["puntos"][-1]["apto"]:
-            r = dietz(ultimo_apto["value"], float(valor_live), 0.0)
-            if r is not None:
-                idx *= (1.0 + r)
-                legs += 1
-                if pico is None or idx > pico:
-                    pico, pico_fecha = idx, "hoy"
-                dd_actual = (idx / pico) - 1.0 if pico and pico > 0 else 0.0
-                if dd_actual < dd_max:
-                    dd_max, dd_max_fecha, dd_max_pico_fecha = dd_actual, "hoy", pico_fecha
-                curva.append({"date": "hoy", "index": round(idx, 6),
-                              "value": float(valor_live), "clase": MEDICION,
-                              "apto": True, "ret": r, "estimado": False,
-                              "drawdown": round(dd_actual, 6)})
+    if (publicable and valor_live and valor_live > 0
+            and ultimo_apto is not None and curva and s["puntos"][-1]["apto"]):
+        r = dietz(ultimo_apto["value"], float(valor_live), 0.0)
+        if r is not None:
+            idx *= (1.0 + r)
+            legs += 1
+            if pico is None or idx > pico:
+                pico, pico_fecha = idx, "hoy"
+            dd_actual = (idx / pico) - 1.0 if pico and pico > 0 else 0.0
+            if dd_max is None or dd_actual < dd_max:
+                dd_max, dd_max_fecha, dd_max_pico_fecha = dd_actual, "hoy", pico_fecha
+            curva.append({"date": "hoy", "index": round(idx, 6),
+                          "value": float(valor_live), "clase": MEDICION,
+                          "apto": True, "ret": r, "estimado": False,
+                          "drawdown": round(dd_actual, 6)})
 
-    aptos = [p for p in s["puntos"] if p["apto"]]
     cagr = None
-    if len(aptos) >= 2 and idx > 0:
-        años = _dias(aptos[0]["date"], curva[-1]["date"] if curva[-1]["date"] != "hoy"
-                     else aptos[-1]["date"]) / 365.25
-        if años >= 0.5:                # bajo medio año, anualizar es propaganda
-            cagr = idx ** (1.0 / años) - 1.0
+    if publicable and legs > 0 and idx > 0:
+        _c0 = next((c["date"] for c in curva if c.get("apto")), None)
+        _c1 = curva[-1]["date"] if curva[-1]["date"] != "hoy" else _hoy_art()
+        if _c0:
+            años = _dias(_c0, _c1) / 365.25
+            if años >= 0.5:            # bajo medio año, anualizar es propaganda
+                cagr = idx ** (1.0 / años) - 1.0
 
-    # ⚠️ Sin NINGÚN tramo medido, el índice se quedó en 1.0 — y devolver eso como
-    # `twr: 0.0` es publicar "el período fue plano" cuando en realidad no se midió
-    # nada. Es exactamente la clase de defecto que este módulo viene a cerrar: un
-    # número con autoridad y sin respaldo. Pasa cuando hay dos mediciones pero
-    # separadas por un hueco más largo que `max_hueco_dias`.
+    _motivo = s["motivo"]
+    if not _motivo:
+        if partida:
+            _motivo = "serie_partida"
+        elif legs == 0:
+            _motivo = "sin_tramo_continuo"
+
     return {
         **s,
         "curva": curva,
-        "twr": (idx - 1.0) if legs > 0 else None,
+        "twr": (idx - 1.0) if (publicable and legs > 0) else None,
         "tramos_medidos": legs,
-        "motivo": (s["motivo"] if s["motivo"]
-                   else (None if legs > 0 else "sin_tramo_continuo")),
-        "motivo_texto": (s["motivo_texto"] if s["motivo"]
-                         else (None if legs > 0 else MOTIVO_TEXTO["sin_tramo_continuo"])),
+        "tramos_detalle": tramos_info,
+        "serie_partida": partida,
+        "motivo": _motivo,
+        "motivo_texto": (MOTIVO_TEXTO.get(_motivo) if _motivo else None),
         "drawdown_actual": (round(dd_actual, 6) if dd_actual is not None else None),
-        "drawdown_maximo": round(dd_max, 6),
+        "drawdown_maximo": (round(dd_max, 6) if dd_max is not None else None),
         "drawdown_maximo_fecha": dd_max_fecha,
         "drawdown_maximo_pico": dd_max_pico_fecha,
         "cagr": cagr,

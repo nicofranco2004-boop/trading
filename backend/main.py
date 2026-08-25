@@ -29841,6 +29841,93 @@ def _auto_migrar_fx_post_import(uid: int) -> Optional[dict]:
     return {"migrada": True, "delta": out.get("delta")}
 
 
+def _reconstruir_mtm(uid: int) -> dict:
+    """Reconstruye la historia importada a PRECIO DE MERCADO, después del import.
+
+    POR QUÉ EXISTE
+    ──────────────
+    El import fabrica una foto por mes copiando la cadena contable
+    (`_backfill_snapshots_from_monthly`, persister.py:1289-1292): aportes + P&L
+    realizado, sin mark-to-market. Desde que `twr.clasificar_fila` las descarta,
+    esas fotos ya no ensucian la curva — pero el usuario que importa su historial
+    se quedaba SIN curva y sin saber por qué. Filtrar apagaba el número falso y le
+    borraba la historia. Esto es la otra mitad: reconstruirla a mercado.
+
+    Hasta acá el reconstructor existía y no lo llamaba nadie más que
+    `POST /api/admin/backfill-mtm`. Con esto, importar alcanza.
+
+    POR QUÉ ES SEGURO
+    ─────────────────
+    · Corre con el import YA COMMITEADO y en su PROPIA conexión: si falla, se
+      cuelga o frena, el import del usuario queda intacto. Mismo patrón que
+      `_auto_migrar_fx_post_import`.
+    · NO toca `monthly_entries` ni `positions` ni `cash`: sólo escribe filas en
+      `snapshots` con `source='mtm_backfill'`, y nunca pisa una MEDICIÓN del cron.
+    · Cada mes lleva su COBERTURA estampada. El que no llega al piso
+      (`twr.COBERTURA_MINIMA`) queda clasificado como contable y no sostiene ni un
+      pico ni un denominador. O sea: en el peor caso el usuario queda como estaba.
+
+    ⚠️ NO todo es reconstruible. El reconstructor saltea FCI, los bonos/ONs de
+    data912 y los CEDEAR cotizados en USD (backfill_historical_mtm.py:~150) porque
+    no hay serie histórica confiable. Medido sobre una cartera AR típica
+    (CEDEARs + bonos + FCI) la cobertura da ~50% y NO pasa el piso; una cartera de
+    exterior (acciones US + cripto) da 100%. Para el perfil argentino cargado de
+    renta fija esto todavía no entrega la curva.
+
+    Sincrónico a propósito: el que dispara es `_reconstruir_mtm_post_import`, que
+    lo manda a un thread. Separado para poder testearlo sin carreras.
+    """
+    conn = get_db()
+    try:
+        from scripts.backfill_historical_mtm import backfill_user
+        from datetime import datetime as _dt
+        res = backfill_user(conn, uid, _dt.utcnow().date())
+        if res.get("skipped"):
+            conn.rollback()
+            return {"reconstruida": False, "motivo": res.get("reason")}
+        conn.commit()
+        meses = res.get("months") or []
+        cobs = [m["coverage"] for m in meses if m.get("coverage") is not None]
+        log.info("mtm-auto: cuenta %s reconstruida — %s fotos, cobertura media %s",
+                 uid, res.get("snapshots_escritos"),
+                 round(sum(cobs) / len(cobs), 3) if cobs else None)
+        return {"reconstruida": True,
+                "snapshots": res.get("snapshots_escritos", 0),
+                "meses": len(meses),
+                "cobertura_media": round(sum(cobs) / len(cobs), 4) if cobs else None}
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log.exception("mtm-auto: falló la reconstrucción de %s — la cuenta queda igual", uid)
+        return {"reconstruida": False, "motivo": "error"}
+    finally:
+        conn.close()
+
+
+def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
+    """Dispara la reconstrucción EN BACKGROUND y vuelve al toque.
+
+    ⚠️ NO puede correr dentro del request. `_fetch_monthly_close` sale a yfinance
+    con `timeout=8` POR TICKER (backfill_historical_mtm.py:92); una cartera de 20
+    símbolos puede tardar minutos, y eso quedaría colgado del POST de confirmación
+    del import — el usuario esperando una pantalla en blanco por un cálculo que
+    puede llegar después. Mismo patrón de thread daemon que ya usan el reset de
+    datos (main.py:3650) y el backfill de FX (main.py:30979).
+
+    La curva aparece sola cuando el thread termina: `/insights/performance` la lee
+    de `snapshots` en el próximo render.
+    """
+    try:
+        import threading as _th
+        _th.Thread(target=_reconstruir_mtm, args=(uid,), daemon=True,
+                   name=f"mtm-backfill-{uid}").start()
+        return {"reconstruida": "en_curso"}
+    except Exception:
+        log.exception("mtm-auto: no se pudo lanzar la reconstrucción de %s", uid)
+        return {"reconstruida": False, "motivo": "error"}
+
 
 @app.post("/api/imports/confirm")
 def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)):
@@ -30081,9 +30168,19 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # entero del usuario.
         fx_migracion = _auto_migrar_fx_post_import(uid)
 
+        # ── Reconstrucción a mercado de la historia recién importada ──────────
+        # VA DESPUÉS del FX y por el mismo motivo que el FX va acá: fuera del
+        # `with conn:`, con el import ya commiteado y en su propia transacción.
+        # Y después del FX a propósito: la migración v1→v2 reescribe el P&L
+        # realizado, que es un sumando del costo sobre el que se apoya la
+        # reconstrucción — al revés reconstruiría sobre números que están por
+        # cambiar.
+        mtm_reconstruccion = _reconstruir_mtm_post_import(uid)
+
         return {"ok": True, "batch_id": data.session_id,
                 "skipped_by_user": len(skip_set), "auto_skipped_duplicates": auto_skipped,
                 "fx_migracion": fx_migracion,
+                "mtm_reconstruccion": mtm_reconstruccion,
                 **summary}
     except HTTPException:
         raise

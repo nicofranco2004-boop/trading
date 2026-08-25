@@ -114,6 +114,62 @@ def _hist_blue(conn, month_end_iso: str, fallback: float) -> float:
         return fallback
 
 
+# ─── Lo que el reconstructor NO ve ───────────────────────────────────────────
+def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: set):
+    """(costo_usd, afirmable) de la tenencia NO-CASH a `date_iso` que
+    `_holdings_asof` no puede ver.
+
+    `_holdings_asof` sólo mira `import_normalized_tx` de batches confirmados. Todo
+    lo cargado A MANO —y cualquier mes anterior a la primera compra importada—
+    queda invisible. El problema no es que falte: es que el silencio se leia como
+    "no habia nada que valuar" y de ahi salia cobertura 1,0. El codigo NO PUEDE
+    DISTINGUIR "no habia nada" de "no vi lo que habia", asi que tiene que
+    preguntarlo en otro lado antes de dar el veredicto optimista.
+
+    `afirmable=False` significa: hay tenencia que no veo y tampoco puedo ponerle
+    un numero → la cobertura de ese mes es None (desconocida), no 1,0.
+    """
+    costo = 0.0
+    afirmable = True
+    try:
+        for r in conn.execute(
+            """SELECT asset, invested, entry_date FROM positions
+                WHERE user_id=? AND COALESCE(is_cash,0)=0
+                  AND entry_date IS NOT NULL AND entry_date <= ?""",
+            (uid, date_iso),
+        ).fetchall():
+            if r["asset"] in vistos:
+                continue
+            inv = float(r["invested"] or 0)
+            if inv > 0:
+                costo += inv
+            else:
+                afirmable = False        # hay algo, pero no se cuanto valia
+    except Exception:
+        afirmable = False
+    try:
+        for r in conn.execute(
+            """SELECT asset, quantity, entry_price, fx_to_usd, entry_date, date
+                 FROM operations
+                WHERE user_id=? AND entry_date IS NOT NULL
+                  AND entry_date <= ? AND date > ?""",
+            (uid, date_iso, date_iso),
+        ).fetchall():
+            if r["asset"] in vistos:
+                continue
+            q = float(r["quantity"] or 0)
+            pe = float(r["entry_price"] or 0)
+            fx = float(r["fx_to_usd"] or 1) or 1.0
+            c = q * pe * fx
+            if c > 0:
+                costo += c
+            else:
+                afirmable = False
+    except Exception:
+        afirmable = False
+    return costo, afirmable
+
+
 # ─── Tenencias a fin de mes (net BUY−SELL + costo promedio) ───────────────────
 def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     """[{broker, asset, asset_type, quantity, invested(costo)}] tenidas a date_iso.
@@ -359,10 +415,32 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
                 val_mkt += efectivo
 
         total_unreal = sum(unreal_by_broker.values())
+
+        # ⚠️ LA TENENCIA QUE EL RECONSTRUCTOR NO VE CUENTA COMO COSTO, NO DESAPARECE.
+        #
+        # Antes, `base_cob == 0` se leia como "cartera 100% cash → la foto es
+        # exacta → cobertura 1,0". El razonamiento vale para una cartera de verdad
+        # toda en cash, pero el codigo no podia distinguir ESE caso de "no vi lo
+        # que habia", y elegia el veredicto optimista. Resultado medido: un import
+        # que solo traia un DEPOSIT (la tenencia real vivia en `positions`)
+        # persistia 3 fotos con `mtm_coverage=1,0` y CERO precios consultados,
+        # etiquetadas 'mtm_backfill' — o sea la cadena contable, que es lo que este
+        # trabajo viene a sacar de la curva, ahora con etiqueta de mercado.
+        # Antes mentia CON la etiqueta puesta (source='import') y todos los filtros
+        # la descartaban; asi era estrictamente peor.
+        _no_visto, _afirmable = _tenencia_no_vista(conn, uid, d, set(by_asset))
+        val_costo += _no_visto
+        if _no_visto > 0:
+            res["cost_fallbacks"] += 1
         base_cob = val_mkt + val_costo
-        # Sin holdings que valuar (cartera 100% cash) no hizo falta ningun precio:
-        # la foto es exacta, cobertura 1.0. No es un caso degradado.
-        cobertura = (val_mkt / base_cob) if base_cob > 0 else 1.0
+        if not _afirmable:
+            cobertura = None          # hay tenencia que no veo y no se cuanto vale
+        elif base_cob > 0:
+            cobertura = val_mkt / base_cob
+        else:
+            # Cero base Y nada invisible: se puede AFIRMAR que no habia nada
+            # no-cash que valuar. Recien ahi 1,0 es un hecho y no un supuesto.
+            cobertura = 1.0
 
         # Valor de la foto = costo(recomputado de columnas estables) + unrealized.
         # Se calcula SOLO para el global y NO se escribe en monthly_entries: ver el
@@ -400,10 +478,11 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
                                  else (row["capital_final"] or 0))
                 after_global = new_cf
                 cost_global = cost
+        _cob = round(cobertura, 4) if cobertura is not None else None
         res["months"].append({"ym": ym, "before": before_global, "after": after_global,
-                              "coverage": round(cobertura, 4)})
+                              "coverage": _cob})
         por_mes[ym] = {"date": d, "value": after_global, "cost": cost_global,
-                       "coverage": round(cobertura, 4),
+                       "coverage": _cob,
                        "holdings": [{"asset": a, "value_usd": round(v, 2)}
                                     for a, v in by_asset.items()]}
 

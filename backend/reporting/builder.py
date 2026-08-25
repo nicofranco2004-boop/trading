@@ -277,6 +277,49 @@ def _border_is_fresh(snap_date: Optional[str], period_start: str,
     return 0 <= lag <= max_lag_days
 
 
+def _ventana_cubre(medido_desde: Optional[str], medido_hasta: Optional[str],
+                   period_start: str, period_end: str, es_actual: bool,
+                   tol_dias: int = _BORDER_MAX_LAG_DAYS) -> bool:
+    """¿La ventana efectivamente medida cubre el período que se va a publicar?
+
+    Un % calculado sobre julio-a-hoy no puede presentarse como "el año": va al lado
+    de un monto que sí es del año entero y el lector no tiene forma de saber que
+    describen ventanas distintas.
+
+    Para el período EN CURSO el cierre esperado es HOY, no el 31/12 — exigir el
+    fin del año calendario apagaría el número para todo el mundo, todo el año.
+    """
+    if not medido_desde or not medido_hasta:
+        return False
+    try:
+        _fmt = "%Y-%m-%d"
+        d0 = datetime.strptime(str(medido_desde)[:10], _fmt)
+        d1 = datetime.strptime(str(medido_hasta)[:10], _fmt)
+        p0 = datetime.strptime(period_start[:10], _fmt)
+        p1 = datetime.strptime(period_end[:10], _fmt)
+    except (ValueError, TypeError):
+        return False
+    if es_actual:
+        hoy = datetime.strptime(_hoy_iso(), _fmt)
+        if hoy < p1:
+            p1 = hoy
+    # El arranque medido no puede empezar DESPUÉS del período (más allá de la
+    # tolerancia), y el cierre medido no puede terminar ANTES.
+    return ((d0 - p0).days <= tol_dias) and ((p1 - d1).days <= tol_dias)
+
+
+def _hoy_iso() -> str:
+    return datetime.utcnow().date().isoformat()
+
+
+def _dia_anterior(iso: str):
+    """El día anterior a una fecha ISO. None si la fecha no parsea."""
+    try:
+        return (datetime.strptime(iso[:10], "%Y-%m-%d") - timedelta(days=1)).date().isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
 def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
                            broker_filter: str):
     """Las dos puntas de un período CERRADO, medidas a mercado. None si no se puede.
@@ -298,11 +341,28 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
         return None
     from twr import MEDICION, RECONSTRUIDO
     acepta = (MEDICION, RECONSTRUIDO)
-    ini = fetch_snapshot_at_or_before(conn, uid, period_start, accept=acepta)
+
+    # ⚠️ EL BORDE DE APERTURA VA ESTRICTAMENTE ANTES DEL PERÍODO.
+    #
+    # Con `<= period_start` y el cron sano, el borde elegido era la foto del
+    # PROPIO día 1 — que ya tiene adentro el depósito de ese día. Y como
+    # `deposits` seguía saliendo del MES CALENDARIO COMPLETO de monthly_entries,
+    # el aporte se restaba dos veces. Medido en un mes plano con un depósito de
+    # US$10.000 el 1 de mayo y cron diario completo:
+    #     start 110.000 · end 110.000 · dep 10.000 → delta −US$10.000 / −8,7%
+    # cuando lo real era 0. No hacía falta haber importado nada: le pegaba a todo
+    # el padrón sano. El borde correcto es el CIERRE DEL PERÍODO ANTERIOR.
+    _prev = _dia_anterior(period_start)
+    if _prev is None:
+        return None
+    ini = fetch_snapshot_at_or_before(conn, uid, _prev, accept=acepta)
     if not ini or not (float(ini.get("total_value") or 0) > 0):
         return None
-    if not _border_is_fresh(ini.get("date"), period_start):
+    if not _border_is_fresh(ini.get("date"), period_start, _BORDER_MAX_LAG_DAYS):
         return None
+    if str(ini.get("date"))[:10] >= period_start:
+        return None                     # defensa: nunca dentro del período
+
     fin = fetch_snapshot_at_or_before(conn, uid, period_end, accept=acepta)
     if not fin or not (float(fin.get("total_value") or 0) > 0):
         return None
@@ -314,7 +374,28 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
         return None
     if str(fin.get("date"))[:10] <= str(ini.get("date"))[:10]:
         return None                     # sin dos bordes distintos no hay tramo
-    return float(ini["total_value"]), float(fin["total_value"])
+
+    # Los flujos tienen que ser los de la VENTANA ENTRE LOS DOS BORDES, no los del
+    # mes calendario: si el cierre quedó rezagado (cron caído los últimos días),
+    # los aportes posteriores al borde no ocurrieron dentro de lo medido. El
+    # `net_deposited` estampado en cada foto es la fuente con granularidad diaria;
+    # es el mismo criterio que ya usa la rama del mes en curso (builder.py:492-498).
+    _nd0 = float(ini.get("net_deposited") or 0)
+    _nd1 = float(fin.get("net_deposited") or 0)
+    flujo = None
+    if _nd0 > 0 or _nd1 > 0:
+        flujo = _nd1 - _nd0
+    else:
+        # Filas legacy con net_deposited=0 (anteriores a Phase 6): no se puede
+        # afirmar el flujo desde la foto → SSoT canónica, granularidad mensual.
+        try:
+            from snapshots_job import compute_net_deposited_db
+            flujo = (compute_net_deposited_db(conn, uid, as_of_date=str(fin["date"])[:10])
+                     - compute_net_deposited_db(conn, uid, as_of_date=str(ini["date"])[:10]))
+        except Exception:
+            log.exception("flujo de la ventana medida fallo uid=%s", uid)
+            return None
+    return float(ini["total_value"]), float(fin["total_value"]), flujo
 
 
 def fetch_monthly_entry(conn, uid: int, year: int, month: int,
@@ -523,7 +604,12 @@ def compute_metrics_for_period(
             # regresión, pero ahora ETIQUETADA como tal.
             _b = bordes_mercado_periodo(conn, uid, period_start, period_end, broker_filter)
             if _b:
-                start_value, end_value = _b
+                # Los flujos vienen de la MISMA ventana que las dos puntas. Tomar
+                # las puntas del mercado y los aportes del mes calendario restaba
+                # el aporte dos veces (ver `bordes_mercado_periodo`).
+                start_value, end_value, _flujo_ventana = _b
+                deposits = max(0.0, _flujo_ventana)
+                withdrawals = max(0.0, -_flujo_ventana)
                 _basis = "mercado"
                 _start_is_mtm = True
     elif period_type == "year":
@@ -565,7 +651,12 @@ def compute_metrics_for_period(
             # Año CERRADO: mismas dos puntas medidas que pide el mes.
             _b = bordes_mercado_periodo(conn, uid, period_start, period_end, broker_filter)
             if _b:
-                start_value, end_value = _b
+                # Los flujos vienen de la MISMA ventana que las dos puntas. Tomar
+                # las puntas del mercado y los aportes del mes calendario restaba
+                # el aporte dos veces (ver `bordes_mercado_periodo`).
+                start_value, end_value, _flujo_ventana = _b
+                deposits = max(0.0, _flujo_ventana)
+                withdrawals = max(0.0, -_flujo_ventana)
                 _basis = "mercado"
                 _start_is_mtm = True
         # El TWR del año, DESDE EL MISMO MOTOR que la sección Diagnóstico. Si los
@@ -587,7 +678,17 @@ def compute_metrics_for_period(
                 _c = _twr.curva_indexada(
                     conn, uid, _desde, period_end,
                     valor_live=(float(live_value) if year_is_current and live_value else None))
-                if _c.get("twr") is not None:
+                # ⚠️ EL TWR TIENE QUE CUBRIR EL PERÍODO QUE SE ESTÁ PUBLICANDO.
+                #
+                # Sin esta guarda, un usuario con mediciones sólo desde julio
+                # recibía el +10,0% de julio-a-hoy junto al −US$7.000 del año
+                # entero, los dos en el mismo hero (MonthCard.jsx:118 y :121), y
+                # `basis_incomparable` no lo tapaba porque el año en curso ya
+                # tenía su propio guard para otra cosa. El % y el monto tienen que
+                # describir LA MISMA VENTANA o el % no se publica.
+                if (_c.get("twr") is not None
+                        and _ventana_cubre(_c.get("medido_desde"), _c.get("medido_hasta"),
+                                           period_start, period_end, year_is_current)):
                     year_twr_pct = round(_c["twr"] * 100, 2)
                     _basis = "mercado"
             except Exception:
@@ -596,7 +697,21 @@ def compute_metrics_for_period(
         # mensuales (TWR encadenado), no un Modified Dietz único anual. Así el
         # anual coincide con lo que sugieren los meses y no depende del timing
         # de los aportes. El último mes del año en curso usa live como cierre.
-        if rows:
+        #
+        # ⚠️ CON AGUJEROS EN EL MEDIO LA COMPOSICIÓN NO SE PUBLICA. Si a
+        # `monthly_entries` le faltan meses entre el primero y el último, la
+        # composición los saltea — o sea los cuenta como +0% — y el % termina
+        # describiendo una ventana MÁS CORTA que `delta_usd`, que sí va de punta
+        # a punta. Los dos van juntos en el mismo hero (MonthCard.jsx:118 y :121).
+        # Medido: un año con filas sólo en enero y en el mes en curso publicaba
+        # "+8,11%" al lado de "−US$7.000". Sin composición confiable queda el
+        # Modified Dietz único del año, que cubre exactamente la misma ventana que
+        # el monto. (Este agujero es anterior a este trabajo: origin/main da el
+        # mismo 8,11 en el mismo escenario.)
+        _meses_con_fila = sorted(int(r["month"]) for r in rows) if rows else []
+        _hay_agujero = bool(_meses_con_fila) and (
+            len(_meses_con_fila) != (_meses_con_fila[-1] - _meses_con_fila[0] + 1))
+        if rows and not _hay_agujero:
             comp = 1.0
             have_comp = False
             for i, r in enumerate(rows):

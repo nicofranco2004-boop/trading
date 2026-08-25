@@ -1217,6 +1217,13 @@ function InsightsDesktop({ _embeddedTab }) {
     // vez de colapsar el gráfico al empty-state.
     let series = windowSeries
     if (series.length === 0) {
+      // ⚠️ Si SABEMOS por qué falta la línea del usuario, no se dibuja el
+      // benchmark solo. El skeleton existe para el caso "el portfolio en pesos no
+      // se pudo armar", no para tapar un motivo conocido: a una cuenta recién
+      // importada le dibujaba el S&P solo, sin la cartera y sin ninguna
+      // explicación, y si el benchmark tampoco cargaba el copy le echaba la culpa
+      // al benchmark. El usuario tiene que leer POR QUÉ falta su línea.
+      if (perf?.motivo) return []
       if (shadowPctByMonth.size === 0) return []
       series = buildBenchOnlySkeleton()
     }
@@ -1290,13 +1297,20 @@ function InsightsDesktop({ _embeddedTab }) {
   // La tira de KPIs (`InsightsKpiStrip`) espera {currentPct, maxPct}: es EL lugar
   // donde el usuario leyó "Drawdown actual −45,0% / peak histórico −85,0%". Se le
   // da la misma forma, con los números del backend.
-  const drawdownTwrr = (perf && perf.drawdown_maximo != null) ? {
-    currentPct: (perf.drawdown_actual || 0) * 100,
+  // ⚠️ Los dos campos tienen que venir NO-NULL. El `|| 0` que estaba acá
+  // convertía "no se pudo medir" en "0,0%", que es el mismo defecto con otra
+  // cara: el backend ahora devuelve None cuando no hay tramo medible, pero un
+  // `null || 0` lo volvía a fabricar del lado del cliente. Y aguas abajo
+  // `computeDrawdownTolerance` sólo se abstiene con null, así que un 0,0%
+  // inventado le habría dicho al perfil del inversor que su drawdown real es 0.
+  const _ddOk = perf && perf.drawdown_maximo != null && perf.drawdown_actual != null
+  const drawdownTwrr = _ddOk ? {
+    currentPct: perf.drawdown_actual * 100,
     maxPct: perf.drawdown_maximo * 100,
   } : null
-  const drawdown = (perf && perf.drawdown_maximo != null) ? {
+  const drawdown = _ddOk ? {
     max: perf.drawdown_maximo * 100,
-    current: (perf.drawdown_actual || 0) * 100,
+    current: perf.drawdown_actual * 100,
     peakReturnPct: null,
     troughReturnPct: null,
   } : null
@@ -2384,12 +2398,19 @@ function InsightsDesktop({ _embeddedTab }) {
         </div>
 
         {chartData.length === 0 ? (
-          <div className="text-center py-10 text-ink-3 text-sm mt-4">
-            <Info size={20} className="mx-auto mb-2 opacity-50" />
-            {globalMonthly.length === 0
-              ? 'Cargá al menos un mes en Resumen Mensual para visualizar la evolución.'
-              : 'Cargando la comparativa… si no aparece, los datos del benchmark no están disponibles por ahora.'}
-          </div>
+          perf?.motivo_texto ? (
+            // El motivo REAL, del backend (`twr.MOTIVO_TEXTO`). Antes este lugar
+            // decía "los datos del benchmark no están disponibles" — le echaba la
+            // culpa al benchmark cuando lo que falta es la medición del usuario.
+            <SinMediciones />
+          ) : (
+            <div className="text-center py-10 text-ink-3 text-sm mt-4">
+              <Info size={20} className="mx-auto mb-2 opacity-50" />
+              {globalMonthly.length === 0
+                ? 'Cargá al menos un mes en Resumen Mensual para visualizar la evolución.'
+                : 'Cargando la comparativa… si no aparece, los datos del benchmark no están disponibles por ahora.'}
+            </div>
+          )
         ) : (
           <ResponsiveContainer width="100%" height={320}>
             {/* Clean pass 2026-07: área con gradiente bajo la línea principal,

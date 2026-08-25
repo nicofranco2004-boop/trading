@@ -70,7 +70,15 @@ class Regresion452Test(_Base):
         # La foto contable NO entra: queda una sola medición → no hay período.
         self.assertEqual(len(c["puntos"]), 1)
         self.assertIsNone(c["twr"])
-        self.assertEqual(c["drawdown_maximo"], 0.0)
+        # ⚠️ None, NO 0.0. Este assert decía `== 0.0` y BLINDABA el defecto como si
+        # fuera el resultado correcto: el 452 iba a leer "Drawdown actual 0,0% ·
+        # peak histórico 0,0%" en el mismo lugar donde leía −45%, con
+        # `drawdown_maximo_fecha` en None — un máximo sin fecha ni pico, que se
+        # contradice solo. Y el frontend gatea con `!= null`, y en JS `0.0 != null`
+        # es true, así que pasaba derecho hasta el perfil del inversor y la IA.
+        self.assertIsNone(c["drawdown_maximo"])
+        self.assertIsNone(c["drawdown_actual"])
+        self.assertIsNone(c["drawdown_maximo_fecha"])
         self.assertEqual(c["motivo"], "una_sola_medicion")
         self.assertTrue(c["motivo_texto"])
         # Y lo descartado no se tira: queda para la banda contable.

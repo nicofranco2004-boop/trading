@@ -113,6 +113,12 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
         "cobertura_reconstruccion": c["cobertura_reconstruccion"],
         "por_clase": c["por_clase"],
         "tramos": len(c["tramos"]),
+        # `tramos_medidos` es el que el frontend necesita para gatear: `tramos`
+        # cuenta los pedazos de la serie, no cuántos produjeron un retorno. Sin
+        # esto, gatear por `perf.tramos_medidos` daba undefined y no gateaba nada.
+        "tramos_medidos": c.get("tramos_medidos", 0),
+        "serie_partida": c.get("serie_partida", False),
+        "tramos_detalle": c.get("tramos_detalle", []),
         "twr": c["twr"],
         "cagr": c["cagr"],
         "drawdown_actual": c["drawdown_actual"],
