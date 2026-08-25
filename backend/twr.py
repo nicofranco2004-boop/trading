@@ -356,9 +356,9 @@ def diagnosticar(conn, ids: list) -> dict:
         filas = por_user.get(uid, [])
         conteo = {c: 0 for c in CLASES}
         mediciones = []
-        primera = primera_por_user.get(uid)
-        for r in filas:
-            c = clasificar_fila(r, _tenia_posiciones_en(primera, r["date"]))
+        # Por SERIE: mirando una fila legacy sola no se ve la cadencia, y este
+        # diagnóstico tiene que reportar la MISMA clase que usan los otros lectores.
+        for r, c in zip(filas, clasificar_serie(filas, primera_por_user.get(uid))):
             conteo[c] += 1
             if c == MEDICION:
                 mediciones.append(r["date"])

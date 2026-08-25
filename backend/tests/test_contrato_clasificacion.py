@@ -12,6 +12,12 @@ Los cinco:
   3. reporting.builder.fetch_snapshot_at_or_before      (el borde de PERÍODO)
   4. GET /api/snapshots                                 (la LISTA que lee el front)
   5. scripts.backfill_historical_mtm._persist_mtm_snapshots  (a quién NO pisar)
+  6. twr.diagnosticar                                   (el semáforo de datos)
+  7. GET /api/admin/diagnose-reportes-basis            (el diagnóstico del dueño)
+
+Los dos últimos aparecieron en el barrido "¿quién MÁS lee este dato?". El
+docstring del endpoint admin dice textual: «un diagnóstico que reimplemente el
+criterio mide otra cosa que la que corre» — y estaba reimplementándolo.
 """
 import datetime as _d
 import os
@@ -102,10 +108,16 @@ class ContratoDeClasificacionTest(unittest.TestCase):
             (self.uid, self.ultima)).fetchone()["total_value"]
         return twr.MEDICION if abs(despues - antes) < 1e-9 else None
 
-    def test_los_CINCO_lectores_deciden_lo_mismo(self):
+    def _clase_diagnosticar(self):
+        d = twr.diagnosticar(self.conn, [self.uid])[self.uid]
+        # Si la última fila fuera INTRADIA, `medicion` no llegaría a DIAS.
+        return twr.MEDICION if d["por_clase"][twr.MEDICION] == self.DIAS else None
+
+    def test_los_lectores_deciden_lo_mismo(self):
         veredictos = {
             "twr.serie_medible": self._clase_serie_medible(),
             "twr.bordes_medibles": self._clase_bordes_medibles(),
+            "twr.diagnosticar": self._clase_diagnosticar(),
             "builder.fetch_snapshot_at_or_before": self._clase_borde_periodo(),
             "GET /api/snapshots": self._clase_api_snapshots(),
             "backfill._persist_mtm_snapshots": self._clase_persister_mtm(),
@@ -114,6 +126,25 @@ class ContratoDeClasificacionTest(unittest.TestCase):
         self.assertEqual(
             distintos, {twr.MEDICION},
             "los lectores no coinciden sobre la MISMA fila: " + repr(veredictos))
+
+    def test_el_diagnostico_del_admin_reporta_la_misma_clase(self):
+        """Reimplementarlo hace que el dueño mida otra cosa que la que corre —
+        y este endpoint es justamente el que se usa para decidir si mergear."""
+        from fastapi.testclient import TestClient
+        main.app.dependency_overrides[main.get_admin_user] = lambda: self.uid
+        try:
+            r = TestClient(main.app).get(
+                f"/api/admin/diagnose-reportes-basis?user_id={self.uid}")
+        finally:
+            main.app.dependency_overrides.clear()
+        if r.status_code != 200:
+            self.skipTest(f"el endpoint de diagnóstico no respondió: {r.status_code}")
+        j = r.json()
+        recientes = j.get("snapshots_recientes") or []
+        if not recientes:
+            self.skipTest("sin snapshots_recientes en la respuesta")
+        for fila in recientes:
+            self.assertEqual(fila["clase"], twr.MEDICION, repr(fila))
 
     def test_la_lista_y_la_curva_ven_los_mismos_aptos(self):
         """El síntoma concreto de la última bifurcación: 600 aptos en la curva y

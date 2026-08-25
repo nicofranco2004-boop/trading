@@ -17190,7 +17190,7 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
     """
     from datetime import date as _date
     from reporting.builder import fetch_snapshot_at_or_before, _border_is_fresh, _user_has_positions
-    from twr import clasificar_fila, MEDICION
+    from twr import clasificar_serie, primera_fecha_con_posiciones, MEDICION
 
     today = _date.today()
     period_start = f"{today.year:04d}-{today.month:02d}-01"
@@ -17198,16 +17198,23 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
     try:
         def _clase_del_borde(au: int) -> str:
             """Clase de la fila que el guard MIRARÍA primero (la más reciente
-            <= arranque del mes). 'sin_snapshot' si no hay ninguna."""
-            row = conn.execute(
+            <= arranque del mes). 'sin_snapshot' si no hay ninguna.
+
+            ⚠️ Trae una VENTANA y clasifica por SERIE, no la fila sola. La cadencia
+            diaria es lo único que distingue una foto vieja del cron de una del
+            browser, y este endpoint existe para reportar lo que el guard VE: si
+            reimplementa el criterio mide otra cosa que la que corre — que es
+            exactamente lo que el docstring de arriba dice que no puede pasar."""
+            rows = conn.execute(
                 """SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage
                      FROM snapshots
                     WHERE user_id=? AND date<=? AND total_value > 0
-                    ORDER BY date DESC LIMIT 1""",
-                (au, period_start)).fetchone()
-            if not row:
+                    ORDER BY date DESC LIMIT 90""",
+                (au, period_start)).fetchall()
+            if not rows:
                 return "sin_snapshot"
-            return clasificar_fila(row, _user_has_positions(conn, au))
+            primera = primera_fecha_con_posiciones(conn, au)
+            return clasificar_serie(rows, primera, orden_desc=True)[0]
 
         def _lo_que_ve(au: int, mercado: float, cadena: float,
                        borde: Optional[dict], live_real: bool) -> dict:
@@ -17299,15 +17306,18 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
         # ── Modo detalle de una cuenta ───────────────────────────────────────
         if user_id is not None:
             d = _detalle(user_id, live_real=True)
+            # Ventana grande para que la cadencia se pueda ver; se muestran 8.
+            _recientes = conn.execute(
+                """SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage
+                     FROM snapshots WHERE user_id=? AND date<=?
+                    ORDER BY date DESC LIMIT 90""", (user_id, period_start)).fetchall()
+            _cls = clasificar_serie(
+                _recientes, primera_fecha_con_posiciones(conn, user_id), orden_desc=True)
             d["snapshots_recientes"] = [
                 {"date": r["date"], "total_value": round(float(r["total_value"] or 0), 2),
-                 "source": r["source"],
-                 "clase": clasificar_fila(r, _user_has_positions(conn, user_id)),
+                 "source": r["source"], "clase": c,
                  "tiene_composicion": bool(r["holdings_json"])}
-                for r in conn.execute(
-                    """SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage
-                         FROM snapshots WHERE user_id=? AND date<=?
-                        ORDER BY date DESC LIMIT 8""", (user_id, period_start)).fetchall()
+                for r, c in list(zip(_recientes, _cls))[:8]
             ]
             d["lectura"] = (
                 "El borde es una MEDICION y está fresco → el período publica su número; "
