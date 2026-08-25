@@ -615,13 +615,13 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
     # bajo el piso de cobertura para que el hueco pase de 30 a ~60 días y parta
     # la cadena — cruzar el umbral recableaba la curva entera en silencio.
     curva = []
-    tramos_info = []       # {desde, hasta, twr, dd_max, legs} por tramo
-    dd_actual = None
+    tramos_info = []       # {desde, hasta, twr, dd_max, dd_actual, legs} por tramo
     idx_ultimo_tramo = 1.0
 
     for tramo in s["tramos"]:
         idx = 1.0
         legs_t = 0
+        dd_actual_t = None
         pico = None
         pico_fecha = None
         dd_max_t, dd_max_fecha_t, dd_max_pico_t = 0.0, None, None
@@ -646,7 +646,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 if pico is None or idx > pico:
                     pico, pico_fecha = idx, p["date"]
                 dd = (idx / pico) - 1.0 if pico and pico > 0 else 0.0
-                dd_actual = dd
+                dd_actual_t = dd
                 if dd < dd_max_t:
                     dd_max_t, dd_max_fecha_t, dd_max_pico_t = dd, p["date"], pico_fecha
                 punto["drawdown"] = round(dd, 6)
@@ -655,6 +655,14 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             "desde": tramo[0]["date"], "hasta": tramo[-1]["date"],
             "legs": legs_t, "twr": (idx - 1.0) if legs_t > 0 else None,
             "drawdown_maximo": round(dd_max_t, 6) if legs_t > 0 else None,
+            # ⚠️ POR TRAMO, no "el último que vi". `dd_actual` era una sola
+            # variable que se pisaba en cada punto apto de CUALQUIER tramo: con un
+            # punto suelto al final (hueco > max_hueco_dias), el último valor
+            # escrito era el de ese punto — cuyo índice arranca en 1,0 — y el
+            # drawdown daba 0,0% con el usuario 36% abajo de su pico. Misma
+            # familia que el bug que este trabajo vino a cerrar, introducida por
+            # el fix de la serie partida.
+            "drawdown_actual": round(dd_actual_t, 6) if (legs_t > 0 and dd_actual_t is not None) else None,
             "drawdown_maximo_fecha": dd_max_fecha_t,
             "drawdown_maximo_pico": dd_max_pico_t,
         })
@@ -677,6 +685,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         dd_max = _t["drawdown_maximo"]
         dd_max_fecha = _t["drawdown_maximo_fecha"]
         dd_max_pico_fecha = _t["drawdown_maximo_pico"]
+        dd_actual = _t["drawdown_actual"]
         # `pico` sólo se usa de acá en adelante para el cierre live. El HWM del
         # tramo es el índice más alto que alcanzó; se recalcula desde la curva
         # para no depender de en qué punto quedó `idx`.

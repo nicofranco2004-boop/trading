@@ -155,6 +155,21 @@ class B2_SeriePartidaTest(_Base):
         self.assertIsNone(c["drawdown_maximo"])
         self.assertIsNone(c["drawdown_actual"])
 
+    def test_un_punto_suelto_al_final_no_pone_el_drawdown_en_cero(self):
+        """Regresión que introdujo el propio fix de la serie partida: `dd_actual`
+        era UNA variable que se pisaba en cada punto apto de cualquier tramo. Con
+        un punto suelto al final, el último valor escrito era el de ese punto
+        —cuyo índice arranca en 1,0— y el drawdown daba 0,0% con el usuario 36%
+        abajo de su pico."""
+        self.pos()
+        self.snap("2026-01-31", 10000.0)
+        self.snap("2026-02-28", 11000.0)
+        self.snap("2026-03-31", 7000.0)
+        self.snap("2026-09-30", 7000.0)     # suelto, hueco > max_hueco_dias
+        c = twr.curva_indexada(self.conn, self.uid)
+        self.assertAlmostEqual(c["drawdown_maximo"], -0.363636, places=5)
+        self.assertAlmostEqual(c["drawdown_actual"], -0.363636, places=5)
+
     def test_un_solo_tramo_sigue_publicando_normal(self):
         self.pos()
         for d, v in (("2026-01-31", 10000.0), ("2026-02-28", 12000.0),
