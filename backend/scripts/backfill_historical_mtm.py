@@ -217,7 +217,7 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
         (uid,)).fetchone() is not None
     existentes = {
         r["date"]: r for r in conn.execute(
-            "SELECT date, total_value, fx_to_usd_blue, holdings_json, source "
+            "SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage "
             "FROM snapshots WHERE user_id=?", (uid,)).fetchall()
     }
 

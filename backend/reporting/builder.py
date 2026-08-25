@@ -11,11 +11,14 @@ Reusa lógica existente del backend:
 from __future__ import annotations
 
 import json
+import logging
 import math
 from datetime import date as date_cls, datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
 from realized_pnl import realized_usd_sql
+
+log = logging.getLogger(__name__)
 
 from .schema import (
     PeriodReport, PeriodMetrics, Insight, Highlight, AssetContribution,
@@ -139,6 +142,23 @@ def fetch_snapshots_in_range(conn, uid: int, start: str, end: str) -> List[Dict[
     return [dict(r) for r in rows]
 
 
+def _tiene_columna(conn, tabla: str, col: str) -> bool:
+    """¿La migración de esa columna ya corrió en esta base? Cacheado por conexión."""
+    cache = getattr(conn, "_cols_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            conn._cols_cache = cache
+        except AttributeError:
+            pass
+    if tabla not in cache:
+        try:
+            cache[tabla] = {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")}
+        except Exception:
+            return False
+    return col in cache[tabla]
+
+
 def _user_has_positions(conn, uid: int) -> bool:
     """¿Tiene (o tuvo) algo no-cash para valuar? `twr.clasificar_fila` lo necesita:
     en una cartera 100% cash el cron deja `holdings_json` NULL con razón, y esa
@@ -196,12 +216,18 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
     from twr import clasificar_fila, MEDICION
     allowed = accept if accept is not None else (MEDICION,)
     tenia_pos = _user_has_positions(conn, uid)
+    # `mtm_coverage` es la columna más nueva. Pedirla a secas ata este lector a que
+    # la migración de startup ya haya corrido — y un deploy donde el código llega
+    # antes que su columna es exactamente cómo se cayó producción el 2026-08-02.
+    # Sin la columna el clasificador degrada las fotos reconstruidas a contable,
+    # que es el lado seguro del error.
+    _cov = "mtm_coverage" if _tiene_columna(conn, "snapshots", "mtm_coverage") else "NULL AS mtm_coverage"
     rows = conn.execute(
-        """SELECT date, total_value, total_invested, net_deposited,
-                  fx_to_usd_blue, holdings_json, source
-             FROM snapshots
-            WHERE user_id = ? AND date <= ? AND total_value > 0
-            ORDER BY date DESC LIMIT ?""",
+        f"""SELECT date, total_value, total_invested, net_deposited,
+                   fx_to_usd_blue, holdings_json, source, {_cov}
+              FROM snapshots
+             WHERE user_id = ? AND date <= ? AND total_value > 0
+             ORDER BY date DESC LIMIT ?""",
         (uid, when, _BORDER_SCAN_LIMIT),
     ).fetchall()
     for r in rows:
@@ -249,6 +275,46 @@ def _border_is_fresh(snap_date: Optional[str], period_start: str,
     except (ValueError, TypeError):
         return False
     return 0 <= lag <= max_lag_days
+
+
+def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
+                           broker_filter: str):
+    """Las dos puntas de un período CERRADO, medidas a mercado. None si no se puede.
+
+    Por qué hace falta: para un mes cerrado, `start` y `end` salen de la MISMA fila
+    de `monthly_entries` (builder.py:386-387), y `_repair_monthly_chain`
+    (main.py:9316-9318) garantiza para todo mes cerrado
+        capital_final = capital_inicio + deposits − withdrawals + pnl_realized
+    con lo cual `end − start − flows` es, algebraicamente, `pnl_realized` y nada
+    más. El número no sabe nada del mercado: una cuenta que vendió con ganancia y
+    después se derrumbó a mercado igual publica un año positivo.
+
+    Se exige que las DOS puntas sean base de mercado. Una sola no sirve: mezclar
+    bases es exactamente lo que fabrica el fantasma. Y sólo aplica a 'global':
+    los snapshots son por usuario, no por broker, así que con un filtro de broker
+    activo esta pregunta no se puede responder y se sigue con la contabilidad.
+    """
+    if broker_filter != "global":
+        return None
+    from twr import MEDICION, RECONSTRUIDO
+    acepta = (MEDICION, RECONSTRUIDO)
+    ini = fetch_snapshot_at_or_before(conn, uid, period_start, accept=acepta)
+    if not ini or not (float(ini.get("total_value") or 0) > 0):
+        return None
+    if not _border_is_fresh(ini.get("date"), period_start):
+        return None
+    fin = fetch_snapshot_at_or_before(conn, uid, period_end, accept=acepta)
+    if not fin or not (float(fin.get("total_value") or 0) > 0):
+        return None
+    # El cierre tiene que caer DENTRO del período y cerca del final: un cierre de
+    # mitad de mes deja fuera media rueda de mercado.
+    if not (period_start <= str(fin.get("date"))[:10] <= period_end):
+        return None
+    if not _border_is_fresh(fin.get("date"), period_end):
+        return None
+    if str(fin.get("date"))[:10] <= str(ini.get("date"))[:10]:
+        return None                     # sin dos bordes distintos no hay tramo
+    return float(ini["total_value"]), float(fin["total_value"])
 
 
 def fetch_monthly_entry(conn, uid: int, year: int, month: int,
@@ -376,6 +442,7 @@ def compute_metrics_for_period(
     # durante toda la vida de la cuenta. Cuando eso pasa no publicamos NI el %
     # NI el monto — un número inventado con autoridad es peor que un "—".
     basis_incomparable = False
+    _basis = "contable"     # en qué base quedaron las dos puntas
     _start_is_mtm = False   # start_value salió de un cierre real a mercado
     _live_month_unmeasured = False  # (año) el mes vivo no tiene borde medido
 
@@ -450,6 +517,15 @@ def compute_metrics_for_period(
             if start_value <= 0 and end_value > 0 and (deposits - withdrawals) <= 0:
                 dw_incomplete = True
                 start_value = end_value
+        else:
+            # Mes CERRADO: si hay dos cierres medidos, el período se mide a
+            # mercado. Si no, queda la contabilidad — igual que antes, sin
+            # regresión, pero ahora ETIQUETADA como tal.
+            _b = bordes_mercado_periodo(conn, uid, period_start, period_end, broker_filter)
+            if _b:
+                start_value, end_value = _b
+                _basis = "mercado"
+                _start_is_mtm = True
     elif period_type == "year":
         # Sumamos los monthly_entries del año. start = capital_inicio del primer
         # mes con data; end = capital_final del último mes con data (o live
@@ -485,6 +561,37 @@ def compute_metrics_for_period(
             # año resta cadena contra mercado.
             if _basis_is_incomparable(_start_is_mtm, start_value, deposits, withdrawals):
                 basis_incomparable = True
+        else:
+            # Año CERRADO: mismas dos puntas medidas que pide el mes.
+            _b = bordes_mercado_periodo(conn, uid, period_start, period_end, broker_filter)
+            if _b:
+                start_value, end_value = _b
+                _basis = "mercado"
+                _start_is_mtm = True
+        # El TWR del año, DESDE EL MISMO MOTOR que la sección Diagnóstico. Si los
+        # dos números salieran de motores distintos volverían a contradecirse para
+        # el mismo período — que es el defecto que este trabajo viene a cerrar.
+        # `twr.curva_indexada` sólo encadena bordes en base de mercado; si no
+        # alcanzan, devuelve None y abajo queda la composición contable de siempre.
+        if broker_filter == "global":
+            try:
+                import twr as _twr
+                # ⚠️ El borde de APERTURA del año cae ANTES de period_start (el
+                # cierre del 31/12 anterior). Arrancar la ventana justo en
+                # period_start lo dejaba afuera y el año se quedaba con un solo
+                # punto → sin TWR, y volvía silenciosamente a la composición
+                # contable. Se abre la ventana hacia atrás la misma tolerancia
+                # que ya usa `_border_is_fresh` para aceptar un borde.
+                _desde = (datetime.strptime(period_start[:10], "%Y-%m-%d")
+                          - timedelta(days=_BORDER_MAX_LAG_DAYS)).date().isoformat()
+                _c = _twr.curva_indexada(
+                    conn, uid, _desde, period_end,
+                    valor_live=(float(live_value) if year_is_current and live_value else None))
+                if _c.get("twr") is not None:
+                    year_twr_pct = round(_c["twr"] * 100, 2)
+                    _basis = "mercado"
+            except Exception:
+                log.exception("year_twr desde twr.curva_indexada fallo uid=%s", uid)
         # AUDIT B1: el retorno del año = composición GEOMÉTRICA de los retornos
         # mensuales (TWR encadenado), no un Modified Dietz único anual. Así el
         # anual coincide con lo que sugieren los meses y no depende del timing
@@ -524,7 +631,12 @@ def compute_metrics_for_period(
                 if mp is not None:
                     comp *= (1 + mp / 100.0)
                     have_comp = True
-            if have_comp:
+            # La composición mensual sale de monthly_entries: es CONTABLE. Si las
+            # dos puntas del año ya quedaron en base de mercado, dejarla ganar
+            # volvería a publicar lo realizado sobre costo (el "+3,6% anual" de
+            # una cuenta derrumbada). Ahí manda el Dietz punta a punta de los
+            # bordes medidos, que es `delta_pct_val`.
+            if have_comp and year_twr_pct is None and _basis != "mercado":
                 year_twr_pct = round((comp - 1) * 100, 2)
     elif broker_filter != "global":
         # AUDIT H-8 — day/week con filtro de broker: los snapshots son GLOBALES,
@@ -686,6 +798,7 @@ def compute_metrics_for_period(
         sp500_return_pct=round(sp500_ret, 2) if sp500_ret is not None else None,
         inflation_pct=round(inflation_ret, 2) if inflation_ret is not None else None,
         basis_incomparable=basis_incomparable,
+        basis=_basis,
     )
     return metrics, ops
 

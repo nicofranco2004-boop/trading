@@ -85,6 +85,14 @@ class PeriodMetrics:
     # AUDIT D-1: true = las dos puntas del período no son comparables (start de
     # la cadena contable, end a mercado) → delta_usd/delta_pct no se publican.
     basis_incomparable: bool = False
+    # En qué BASE se midió el período: 'mercado' = las dos puntas salieron de
+    # cierres medidos (o reconstruidos a precio real); 'contable' = de la cadena
+    # de monthly_entries. Importa porque para un mes CERRADO la cadena garantiza
+    # `capital_final = capital_inicio + flujos + pnl_realized` (main.py:9316-9318),
+    # así que `end − start − flows` es EXACTAMENTE `pnl_realized`: el número no
+    # sabe nada del mercado. Eso es lo que producía "+3,6% anual" en una cuenta
+    # que a mercado se había derrumbado, y "9 de 12 meses positivos" perdiendo plata.
+    basis: str = "contable"
 
 
 @dataclass

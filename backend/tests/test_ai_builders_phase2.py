@@ -62,6 +62,9 @@ def _base_db():
             -- (builder.py) las pide desde que existen los movers → el test fallaba
             -- con "no such column: holdings_json" en main, antes de AUDIT D-1.
             fx_to_usd_blue REAL, holdings_json TEXT, source TEXT,
+            -- Idem `mtm_coverage`: sin ella `twr.clasificar_fila` degrada toda foto
+            -- reconstruida a contable y el lector de bordes rompe.
+            mtm_coverage REAL,
             PRIMARY KEY (user_id, date)
         );
         CREATE TABLE monthly_entries (

@@ -17112,7 +17112,7 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
             """Clase de la fila que el guard MIRARÍA primero (la más reciente
             <= arranque del mes). 'sin_snapshot' si no hay ninguna."""
             row = conn.execute(
-                """SELECT date, total_value, fx_to_usd_blue, holdings_json, source
+                """SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage
                      FROM snapshots
                     WHERE user_id=? AND date<=? AND total_value > 0
                     ORDER BY date DESC LIMIT 1""",
@@ -17217,7 +17217,7 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
                  "clase": clasificar_fila(r, _user_has_positions(conn, user_id)),
                  "tiene_composicion": bool(r["holdings_json"])}
                 for r in conn.execute(
-                    """SELECT date, total_value, fx_to_usd_blue, holdings_json, source
+                    """SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage
                          FROM snapshots WHERE user_id=? AND date<=?
                         ORDER BY date DESC LIMIT 8""", (user_id, period_start)).fetchall()
             ]

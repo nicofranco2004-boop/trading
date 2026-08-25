@@ -267,6 +267,8 @@ MOTIVO_TEXTO = {
     "una_sola_medicion": "Hay una sola medición: hace falta al menos una "
                          "segunda para medir un período.",
     "sin_mediciones": "Todavía no hay mediciones a mercado de esta cuenta.",
+    "sin_tramo_continuo": "Hay mediciones, pero están demasiado separadas entre sí "
+                          "como para medir un tramo sin inventar el recorrido del medio.",
 }
 
 
@@ -599,6 +601,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 "drawdown_maximo_fecha": None, "drawdown_maximo_pico": None}
 
     curva, idx = [], 1.0
+    legs = 0               # tramos que SÍ produjeron un retorno medible
     pico = None            # sólo lo mueven los puntos aptos
     pico_fecha = None
     dd_max, dd_max_fecha, dd_max_pico_fecha = 0.0, None, None
@@ -617,6 +620,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                     ret = dietz(a["value"], p["value"], flow)
             if ret is not None:
                 idx *= (1.0 + ret)
+                legs += 1
             punto = {"date": p["date"], "index": round(idx, 6),
                      "value": p["value"], "clase": p["clase"],
                      "apto": p["apto"], "ret": ret,
@@ -640,6 +644,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             r = dietz(ultimo_apto["value"], float(valor_live), 0.0)
             if r is not None:
                 idx *= (1.0 + r)
+                legs += 1
                 if pico is None or idx > pico:
                     pico, pico_fecha = idx, "hoy"
                 dd_actual = (idx / pico) - 1.0 if pico and pico > 0 else 0.0
@@ -658,10 +663,20 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         if años >= 0.5:                # bajo medio año, anualizar es propaganda
             cagr = idx ** (1.0 / años) - 1.0
 
+    # ⚠️ Sin NINGÚN tramo medido, el índice se quedó en 1.0 — y devolver eso como
+    # `twr: 0.0` es publicar "el período fue plano" cuando en realidad no se midió
+    # nada. Es exactamente la clase de defecto que este módulo viene a cerrar: un
+    # número con autoridad y sin respaldo. Pasa cuando hay dos mediciones pero
+    # separadas por un hueco más largo que `max_hueco_dias`.
     return {
         **s,
         "curva": curva,
-        "twr": (idx - 1.0) if len(aptos) >= 2 else None,
+        "twr": (idx - 1.0) if legs > 0 else None,
+        "tramos_medidos": legs,
+        "motivo": (s["motivo"] if s["motivo"]
+                   else (None if legs > 0 else "sin_tramo_continuo")),
+        "motivo_texto": (s["motivo_texto"] if s["motivo"]
+                         else (None if legs > 0 else MOTIVO_TEXTO["sin_tramo_continuo"])),
         "drawdown_actual": (round(dd_actual, 6) if dd_actual is not None else None),
         "drawdown_maximo": round(dd_max, 6),
         "drawdown_maximo_fecha": dd_max_fecha,
