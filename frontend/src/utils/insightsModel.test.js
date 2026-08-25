@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  drawdownFromPerf,
   netCapitalContributed,
   buildCumulativeReturnSeries,
   computeDrawdownOnReturns,
@@ -504,5 +505,39 @@ describe('computeAssetTypeBreakdown', () => {
     const r = computeAssetTypeBreakdown(positions, brokers)
     expect(r).toHaveLength(1)
     expect(r[0].value).toBe(1000)
+  })
+})
+
+
+// ── El gate del drawdown ──────────────────────────────────────────────────────
+// "No se pudo medir" NO puede convertirse en "0,0%". El backend devuelve null
+// cuando no hay tramo medible; el `|| 0` que había acá lo re-fabricaba del lado
+// del cliente y el usuario del caso 452 iba a leer "Drawdown actual 0,0% · peak
+// histórico 0,0%" exactamente donde antes leía −45%.
+describe('drawdownFromPerf', () => {
+  it('null cuando no hay ninguna medición (una sola foto)', () => {
+    expect(drawdownFromPerf({ drawdown_maximo: null, drawdown_actual: null })).toBe(null)
+  })
+
+  it('null si falta cualquiera de los dos campos', () => {
+    expect(drawdownFromPerf({ drawdown_maximo: -0.2, drawdown_actual: null })).toBe(null)
+    expect(drawdownFromPerf({ drawdown_maximo: null, drawdown_actual: -0.2 })).toBe(null)
+  })
+
+  it('null con perf ausente (el endpoint todavía no volvió)', () => {
+    expect(drawdownFromPerf(null)).toBe(null)
+    expect(drawdownFromPerf(undefined)).toBe(null)
+  })
+
+  it('un drawdown REAL de 0% sí se publica (no es lo mismo que no medido)', () => {
+    const d = drawdownFromPerf({ drawdown_maximo: 0, drawdown_actual: 0 })
+    expect(d).not.toBe(null)
+    expect(d.maxPct).toBe(0)
+  })
+
+  it('convierte a puntos porcentuales', () => {
+    const d = drawdownFromPerf({ drawdown_maximo: -0.45, drawdown_actual: -0.12 })
+    expect(d.maxPct).toBeCloseTo(-45, 6)
+    expect(d.currentPct).toBeCloseTo(-12, 6)
   })
 })

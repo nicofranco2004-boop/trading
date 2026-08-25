@@ -661,3 +661,29 @@ export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date(),
              capital_inicio_costo: m.capital_inicio, mtm: 'ambos' }
   })
 }
+
+// ─── Drawdown desde el endpoint canónico ────────────────────────────────────
+/**
+ * drawdownFromPerf
+ *
+ * El gate entre `/insights/performance` y todo lo que muestra drawdown (la tira
+ * de KPIs, la card, el perfil del inversor, el snapshot que viaja a la IA).
+ *
+ * ⚠️ EXIGE LOS DOS CAMPOS NO-NULL, y existe como función aparte justamente para
+ * que eso quede cubierto por un test. El backend devuelve `null` cuando no hay
+ * ningún tramo medible — pero acá había un `|| 0` que lo volvía a convertir en
+ * 0,0%, o sea re-fabricaba del lado del cliente el mismo número sin respaldo que
+ * el backend acababa de dejar de publicar. El usuario del caso 452 iba a leer
+ * "Drawdown actual 0,0% · peak histórico 0,0%" exactamente donde antes leía −45%.
+ *
+ * @param {Object|null} perf respuesta de /insights/performance
+ * @returns {{ currentPct: number, maxPct: number } | null} null = "no se pudo medir"
+ */
+export function drawdownFromPerf(perf) {
+  if (!perf) return null
+  const max = perf.drawdown_maximo
+  const cur = perf.drawdown_actual
+  if (max == null || cur == null) return null
+  if (!isFinite(max) || !isFinite(cur)) return null
+  return { currentPct: cur * 100, maxPct: max * 100 }
+}

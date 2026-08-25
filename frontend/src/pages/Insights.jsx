@@ -39,6 +39,7 @@ import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
 import {
   buildCumulativeReturnSeries,
+  drawdownFromPerf,
   computeDrawdownOnReturns,
   computeBestWorstMonth,
   computeAssetContribution,
@@ -1297,20 +1298,13 @@ function InsightsDesktop({ _embeddedTab }) {
   // La tira de KPIs (`InsightsKpiStrip`) espera {currentPct, maxPct}: es EL lugar
   // donde el usuario leyó "Drawdown actual −45,0% / peak histórico −85,0%". Se le
   // da la misma forma, con los números del backend.
-  // ⚠️ Los dos campos tienen que venir NO-NULL. El `|| 0` que estaba acá
-  // convertía "no se pudo medir" en "0,0%", que es el mismo defecto con otra
-  // cara: el backend ahora devuelve None cuando no hay tramo medible, pero un
-  // `null || 0` lo volvía a fabricar del lado del cliente. Y aguas abajo
-  // `computeDrawdownTolerance` sólo se abstiene con null, así que un 0,0%
-  // inventado le habría dicho al perfil del inversor que su drawdown real es 0.
-  const _ddOk = perf && perf.drawdown_maximo != null && perf.drawdown_actual != null
-  const drawdownTwrr = _ddOk ? {
-    currentPct: perf.drawdown_actual * 100,
-    maxPct: perf.drawdown_maximo * 100,
-  } : null
-  const drawdown = _ddOk ? {
-    max: perf.drawdown_maximo * 100,
-    current: perf.drawdown_actual * 100,
+  // El gate vive en `drawdownFromPerf` (insightsModel.js) para que esté cubierto
+  // por test: exige los DOS campos no-null. El `|| 0` que estaba acá re-fabricaba
+  // del lado del cliente el 0,0% que el backend acababa de dejar de publicar.
+  const drawdownTwrr = drawdownFromPerf(perf)
+  const drawdown = drawdownTwrr ? {
+    max: drawdownTwrr.maxPct,
+    current: drawdownTwrr.currentPct,
     peakReturnPct: null,
     troughReturnPct: null,
   } : null
