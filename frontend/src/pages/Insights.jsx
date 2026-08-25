@@ -191,6 +191,11 @@ function InsightsDesktop({ _embeddedTab }) {
     try { localStorage.setItem('rendi_insights_bench_ars', benchArs) } catch {}
   }, [benchArs])
   const selectedBench = currency === 'USD' ? benchUsd : benchArs
+  // El selector usa nombres de producto; el backend, los de la fuente de datos.
+  const BENCH_API_KEY = {
+    sp500: 'sp500', tbill: 'shv', gold: 'gld',
+    inflation: 'inflation_ar', merval: 'merval', plazo_fijo: 'plazo_fijo',
+  }
   const setSelectedBench = (key) => currency === 'USD' ? setBenchUsd(key) : setBenchArs(key)
   const [loading, setLoading] = useState(true)
   // Investor profile — perfil del test (7 preguntas). Lo usamos para cruzarlo
@@ -202,12 +207,33 @@ function InsightsDesktop({ _embeddedTab }) {
   // de import_normalized_tx (con conversión ARS→USD). No usamos op.commissions
   // del operations table porque queda contaminado por imports viejos con bugs.
   const [commissionsApi, setCommissionsApi] = useState(null)
+  // ── LA fuente de Performance (FASE 4) ──────────────────────────────────────
+  // `/insights/performance` sirve la curva del usuario Y el benchmark recortado
+  // al MISMO rango, calculados en Python sobre `twr.serie_medible`. Esta página
+  // ya NO arma esos números: había tres motores propios produciendo el mismo
+  // acantilado (`insightsModel.js:106`, el `benchSeries` de acá abajo y
+  // `evolution.js:234/:317`), y ninguno miraba en qué BASE estaba cada punta.
+  // Mientras el cálculo viva en JS sobre la cadena contable, cualquier guard
+  // nuevo en Python se queda corto — que es literalmente lo que ya pasó.
+  const [perf, setPerf] = useState(null)
 
   useEffect(() => { loadAll() }, [])
 
+  // El benchmark se recorta al rango del usuario EN EL BACKEND, así que cambiar
+  // el selector es una consulta nueva — no un re-slice de una serie ya traída.
+  useEffect(() => {
+    const k = BENCH_API_KEY[selectedBench]
+    if (!k) return
+    let vivo = true
+    api.get(`/insights/performance?bench=${k}`)
+      .then(r => { if (vivo) setPerf(r) })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [selectedBench])
+
   async function loadAll() {
     try {
-      const [mon, pos, bkrs, b, snaps, dol, ops, comm, prof] = await Promise.all([
+      const [mon, pos, bkrs, b, snaps, dol, ops, comm, prof, pf] = await Promise.all([
         api.get('/monthly'),
         api.get('/positions'),
         api.get('/brokers'),
@@ -220,8 +246,9 @@ function InsightsDesktop({ _embeddedTab }) {
         api.get('/operations').catch(() => []),
         api.get('/insights/commissions').catch(() => null),
         api.get('/auth/investor-profile').catch(() => ({})),
+        api.get('/insights/performance').catch(() => null),
       ])
-      setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops); setCommissionsApi(comm); setInvestorProfile(prof || {})
+      setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops); setCommissionsApi(comm); setInvestorProfile(prof || {}); setPerf(pf)
 
       const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
       // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
@@ -523,7 +550,13 @@ function InsightsDesktop({ _embeddedTab }) {
       const isBigWithdraw = net < 0 && flowRatio > 0.3
       const avgCap = isImportInitial ? net : (isBigWithdraw ? ci : ci + 0.5 * net)
       const rRaw = avgCap > 0 ? (cf - ci - net) / avgCap : 0
-      const r = Math.min(Math.max(rRaw, -0.99), 0.5)
+      // SIN TECHO. El `Math.min(..., 0.5)` que estaba acá limitaba las subidas de la
+      // CARTERA a +50% por mes y NO le aplicaba nada al BENCHMARK: el sesgo iba
+      // sistematicamente en contra del usuario y se componia mes a mes. Un +80% en
+      // cripto o post-devaluacion es perfectamente posible. El piso de -99% si
+      // queda: no se puede perder mas que todo. Mismo criterio que `twr.dietz`
+      // (backend/twr.py:215), cuyo docstring explica por que.
+      const r = Math.max(rRaw, -0.99)
       cumIdx *= (1 + r)
 
       const totalPct = +((cumIdx - 1) * 100).toFixed(2)
@@ -647,68 +680,66 @@ function InsightsDesktop({ _embeddedTab }) {
     return found ? bench.dolar_blue[found] : null
   }
 
-  // benchSeriesUsd — portfolio total en USD (globalMonthly) en % TIME-WEIGHTED
-  // (Modified Dietz, chain-linked). Misma fórmula EXACTA que seriesUsd del gráfico
-  // principal, para que ambas líneas coincidan y sean comparables contra el
-  // benchmark de índice simple (también time-weighted). Antes usaba MWR
-  // (gain/invested), que mezclaba metodologías con el benchmark.
+  // benchSeriesUsd — LA LÍNEA DEL PORTFOLIO EN USD, ahora servida por el backend.
+  //
+  // Acá vivía el segundo de los tres motores que fabricaban el acantilado: armaba
+  // el índice con Modified Dietz sobre `capital_inicio`/`capital_final` de
+  // `monthly_entries` —la cadena CONTABLE— y lo cerraba con `totalPortfolio`, que
+  // es valor de MERCADO. Las dos puntas en bases distintas: la caída vertical del
+  // final no era del mercado, era la brecha entre dos formas de medir. Encima
+  // truncaba las subidas a +50% mensual sin aplicarle nada al benchmark.
+  //
+  // Ahora los puntos salen de `twr.curva_indexada`, que sólo encadena bordes que
+  // están en base de mercado (medidos por el cron o reconstruidos a precio real
+  // con cobertura suficiente) y no deja que un punto no medido fije un pico.
+  //
+  // El efecto lateral que importa: como la serie ahora arranca en la primera
+  // MEDICIÓN, la ventana del chart arranca ahí, y el rebase de `chartData`
+  // ancla el benchmark en ese mismo punto. La cartera y el S&P pasan a arrancar
+  // en la misma fecha sin tocar el pipeline del gráfico.
+  //
+  // `realized` sigue siendo contable a propósito: "cuánto de lo ganado ya está
+  // realizado" ES una pregunta contable. Se mapea por mes sobre las fechas de la
+  // curva medida, sin mezclarse nunca con el índice.
   const benchSeriesUsd = (() => {
-    if (globalMonthly.length === 0) return []
-    const out = []
-    let cumRealized = 0, cumNetDeposits = 0
-    let cumIdx = 1.0
-    const baseline = globalMonthly[0].capital_inicio || 0
-    let peakNetDeposits = baseline
+    const curva = perf?.curva || []
+    if (curva.length === 0) return []
+
+    let cum = 0
+    const realizedByMonth = new Map()
+    let cumNet = 0, peakNet = globalMonthly[0]?.capital_inicio || 0
+    const netByMonth = new Map()
+    for (const m of globalMonthly) {
+      cum += (m.pnl_realized || 0)
+      cumNet += (m.deposits || 0) - (m.withdrawals || 0)
+      if (cumNet > peakNet) peakNet = cumNet
+      const k = monthKey(m.year, m.month).slice(0, 7)
+      realizedByMonth.set(k, cum)
+      netByMonth.set(k, { net: cumNet, peak: peakNet })
+    }
+    const mesesOrd = [...realizedByMonth.keys()].sort()
+    const alMes = (map, mk) => {
+      if (map.has(mk)) return map.get(mk)
+      let found = null
+      for (const k of mesesOrd) { if (k <= mk) found = k; else break }
+      return found ? map.get(found) : null
+    }
     const safeDenom = (netDep, peakDep) =>
       netDep >= peakDep * 0.6 && netDep > 1000 ? netDep : peakDep
 
-    const firstMk = monthKey(globalMonthly[0].year, globalMonthly[0].month)
-    out.push({ key: firstMk, label: benchLabel(firstMk), total: 0, realized: 0 })
-    for (let i = 0; i < globalMonthly.length; i++) {
-      const m = globalMonthly[i]
-      const isFirst = i === 0
-      const ci = m.capital_inicio || 0
-      const cf = m.capital_final || 0
-      const net = (m.deposits || 0) - (m.withdrawals || 0)
-      cumRealized += (m.pnl_realized || 0)
-      cumNetDeposits += net
-      if (cumNetDeposits > peakNetDeposits) peakNetDeposits = cumNetDeposits
-
-      // Modified Dietz con heurística big-withdrawal (idéntica al chart principal).
-      const isImportInitial = isFirst && ci === 0 && net > 0
-      const flowRatio = ci > 0 ? Math.abs(net) / ci : 0
-      const isBigWithdraw = net < 0 && flowRatio > 0.3
-      const avgCap = isImportInitial ? net : (isBigWithdraw ? ci : ci + 0.5 * net)
-      const rRaw = avgCap > 0 ? (cf - ci - net) / avgCap : 0
-      const r = Math.min(Math.max(rRaw, -0.99), 0.5)
-      // El mes-1 es el ANCLA del gráfico de comparación (0%): su retorno intra-mes
-      // NO se cuenta, igual que el benchmark, que ancla en price[mes-1] (también 0%).
-      // Sin este guard, cumIdx arrastraba r1 mientras el punto base mostraba 0% →
-      // la cartera quedaba 1 mes de capitalización adelantada respecto del benchmark.
-      if (!isFirst) cumIdx *= (1 + r)
-
-      const totalPct = +((cumIdx - 1) * 100).toFixed(2)
-      const denom = safeDenom(cumNetDeposits, peakNetDeposits)
-      const realPct = denom > 0 ? +((cumRealized / denom) * 100).toFixed(2) : 0
-      const k = monthKey(m.year, m.month)
-      out.push({ key: k, label: benchLabel(k), total: totalPct, realized: realPct })
-    }
-    // Punto "Hoy" — extiende el último mes con el live portfolio (igual al chart).
-    if (totalPortfolio > 0) {
-      const lastM = globalMonthly[globalMonthly.length - 1]
-      const lastCf = lastM.capital_final || 0
-      if (lastCf > 0) {
-        const rLive = (totalPortfolio - lastCf) / lastCf
-        cumIdx *= (1 + Math.max(rLive, -0.99))
+    return curva.map(pt => {
+      const esHoy = pt.date === 'hoy'
+      const mk = esHoy ? (mesesOrd[mesesOrd.length - 1] || '') : pt.date.slice(0, 7)
+      const nd = alMes(netByMonth, mk)
+      const rz = alMes(realizedByMonth, mk) || 0
+      const denom = nd ? safeDenom(nd.net, nd.peak) : 0
+      return {
+        key: esHoy ? 'today' : pt.date,
+        label: esHoy ? 'Hoy' : benchLabel(pt.date.slice(0, 7)),
+        total: +((pt.index - 1) * 100).toFixed(2),
+        realized: denom > 0 ? +((rz / denom) * 100).toFixed(2) : 0,
       }
-      const totalLive = +((cumIdx - 1) * 100).toFixed(2)
-      const denomLive = safeDenom(cumNetDeposits, peakNetDeposits)
-      const realLive = denomLive > 0 ? +((cumRealized / denomLive) * 100).toFixed(2) : 0
-      out.push({ key: 'today', label: 'Hoy', total: totalLive, realized: realLive })
-    }
-    // Deduplicar por key (el primer mes aparece 2 veces: punto base + primera iteración del loop)
-    const seen = new Set()
-    return out.filter(p => { if (seen.has(p.key)) return false; seen.add(p.key); return true })
+    })
   })()
 
   // benchSeriesArs — solo brokers ARS, capital en pesos (USD × blue del mes) en % acumulado MWR.
@@ -807,6 +838,55 @@ function InsightsDesktop({ _embeddedTab }) {
     const seen = new Set()
     return out.filter(p => { if (seen.has(p.key)) return false; seen.add(p.key); return true })
   })()
+
+  // ── FASE 5 · UI de la calidad del dato ─────────────────────────────────────
+  // Chip permanente sobre el gráfico. No es una advertencia de error: es el
+  // encabezado honesto de qué período está efectivamente medido. El usuario del
+  // caso 452 dedujo solo que el arranque era falso ("yo nunca llegué tan
+  // arriba"); esto se lo dice antes de que tenga que deducirlo.
+  const fmtFecha = (iso) => {
+    if (!iso) return ''
+    const [y, m, d] = String(iso).split('-')
+    return `${d}/${m}/${y}`
+  }
+  const ChipMedido = () => {
+    if (!perf?.medido_desde) return null
+    const cob = perf.cobertura_reconstruccion
+    return (
+      <div className="flex items-center gap-1.5">
+        <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-2 text-ink-2 border border-line whitespace-nowrap">
+          Medido desde {fmtFecha(perf.medido_desde)}
+        </span>
+        <InfoTooltip>
+          <p className="font-semibold text-ink-0">Desde cuándo esto es una medición</p>
+          <p>Antes de esa fecha no hay fotos de mercado de tu cartera: lo que existe
+             es la reconstrucción contable (aportes + lo ya vendido), que no baja
+             cuando baja el mercado y por eso da más alto que el valor real.</p>
+          <p>Se dibuja aparte, en gris, y nunca cuenta como un máximo.</p>
+          {cob != null && (
+            <>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Cobertura de la reconstrucción</p>
+              <p className="text-ink-3">{(cob * 100).toFixed(0)}% del valor se pudo valuar
+                 a precio de mercado real; el resto quedó al costo.</p>
+            </>
+          )}
+        </InfoTooltip>
+      </div>
+    )
+  }
+  // Estado vacío explicado. El copy vive en el backend (`twr.MOTIVO_TEXTO`) para
+  // que el asesor y el usuario final lean exactamente lo mismo.
+  const SinMediciones = () => (
+    <div className="text-center py-10 text-ink-3 text-sm">
+      <Activity size={20} className="mx-auto mb-2 opacity-50" />
+      <p className="max-w-md mx-auto">{perf?.motivo_texto ||
+        'Todavía no hay mediciones a mercado de esta cuenta.'}</p>
+      <p className="mt-1 text-xs text-ink-3/80">
+        En cuanto haya dos fotos de mercado, la curva aparece sola.
+      </p>
+    </div>
+  )
 
   // Selector de serie del portfolio (USD vs ARS) y label del benchmark.
   const activeSeries = currency === 'USD' ? benchSeriesUsd : benchSeriesArs
@@ -1183,14 +1263,28 @@ function InsightsDesktop({ _embeddedTab }) {
   // grandes como caídas y depósitos como recuperaciones falsas.
   // Ahora el drawdown refleja únicamente movimientos de mercado.
   const returnSeries = buildCumulativeReturnSeries(globalMonthly, totalPortfolio > 0 ? totalPortfolio : null)
-  const drawdownTwrr = computeDrawdownOnReturns(returnSeries)
-  // Mantenemos la forma del objeto para compatibilidad con código que ya
-  // lo lee (alertas D2, AICoach snapshot). max y current siguen siendo % negativos.
-  const drawdown = drawdownTwrr ? {
-    max: drawdownTwrr.maxPct,
-    current: drawdownTwrr.currentPct,
-    peakReturnPct: drawdownTwrr.peakReturnPct,
-    troughReturnPct: drawdownTwrr.troughReturnPct,
+  // ⚠️ EL DRAWDOWN YA NO SE CALCULA ACÁ. Salía de `buildCumulativeReturnSeries`,
+  // que en `insightsModel.js:106` hace
+  //     capFinal = (isLast && liveValue > 0) ? liveValue : m.capital_final
+  // sin mirar `m.mtm` — o sea cierra el último mes a valor de MERCADO contra un
+  // arranque que puede venir de la cadena CONTABLE. Trece líneas más arriba, el
+  // guard de `applyMtmToMonthly` (:592-597, :621, :653) dice textual que las dos
+  // puntas tienen que estar en la misma base; esa línea lo desarmaba entero.
+  // Medido con los datos del user 452: −47,3% donde lo real era ~0.
+  // Ahora manda `twr.curva_indexada`, que descarta lo que no es base de mercado
+  // y NUNCA deja que un punto no medido fije un pico.
+  // La tira de KPIs (`InsightsKpiStrip`) espera {currentPct, maxPct}: es EL lugar
+  // donde el usuario leyó "Drawdown actual −45,0% / peak histórico −85,0%". Se le
+  // da la misma forma, con los números del backend.
+  const drawdownTwrr = (perf && perf.drawdown_maximo != null) ? {
+    currentPct: (perf.drawdown_actual || 0) * 100,
+    maxPct: perf.drawdown_maximo * 100,
+  } : null
+  const drawdown = (perf && perf.drawdown_maximo != null) ? {
+    max: perf.drawdown_maximo * 100,
+    current: (perf.drawdown_actual || 0) * 100,
+    peakReturnPct: null,
+    troughReturnPct: null,
   } : null
 
   // Card 3 del perfil del inversor — requiere el drawdown ya computado.
@@ -1503,7 +1597,17 @@ function InsightsDesktop({ _embeddedTab }) {
   // Consistencia mensual — % meses positivos + std dev del retorno mensual.
   const consistency = computeMonthlyConsistency(returnSeries)
   // Drawdown como serie temporal (para chart underwater).
-  const drawdownSeries = buildDrawdownTimeSeries(returnSeries)
+  // Curva de drawdown: los puntos que el backend marcó como base de mercado. Un
+  // punto no-apto no aparece — no puede ser el fondo de una caída que nadie midió.
+  const MES_CORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+  const drawdownSeries = (perf?.curva || [])
+    .filter(p => p.apto && p.drawdown != null)
+    .map(p => ({
+      key: p.date,
+      label: p.date === 'hoy' ? 'Hoy'
+        : `${MES_CORTO[+p.date.slice(5, 7) - 1] || ''} '${p.date.slice(2, 4)}`,
+      ddPct: +(p.drawdown * 100).toFixed(2),
+    }))
   // Concentración por broker — pieData ya está calculado arriba.
   const brokerConcentration = computeBrokerConcentration(pieData)
   // Distribución por tipo de activo: combinamos posiciones abiertas + cash.
@@ -2189,6 +2293,7 @@ function InsightsDesktop({ _embeddedTab }) {
             <h2 className="font-semibold text-ink-0">
               {currency === 'USD' ? `Cartera vs ${benchmarkKey} (USD)` : `Cartera vs ${benchmarkKey} (ARS)`}
             </h2>
+            {currency === 'USD' && <ChipMedido />}
             <InfoTooltip>
               <p className="font-semibold text-ink-0">Qué mostramos</p>
               <p>Tu cartera comparada contra un benchmark, ambos en % desde el inicio del rango visible (las 3 líneas arrancan en 0%).</p>
@@ -2316,6 +2421,7 @@ function InsightsDesktop({ _embeddedTab }) {
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
+            <ChipMedido />
             <InfoTooltip>
               <p className="font-semibold text-ink-0">Qué es</p>
               <p>Cuánto bajaste desde tu mejor momento histórico. Si llegaste a +20% y ahora estás en +10%, tu drawdown es −10%.</p>
@@ -2328,19 +2434,16 @@ function InsightsDesktop({ _embeddedTab }) {
               <p className="text-ink-3">Calculado sobre el rendimiento ajustado por flujos (TWRR) — depósitos y retiros no se cuentan como subida/bajada de la cartera.</p>
             </InfoTooltip>
           </div>
-          {drawdownTwrr && (
+          {drawdown && (
             <div className="flex gap-3 text-xs">
-              <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdownTwrr.currentPct < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{drawdownTwrr.currentPct.toFixed(1)}%</span></span>
-              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg">{drawdownTwrr.maxPct.toFixed(1)}%</span></span>
+              <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdown.current < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{drawdown.current.toFixed(1)}%</span></span>
+              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg">{drawdown.max.toFixed(1)}%</span></span>
             </div>
           )}
         </div>
         <p className="text-xs text-ink-3 mb-4">Profundidad y duración de las caídas. El área negativa representa los períodos por debajo del máximo histórico.</p>
         {drawdownSeries.length < 2 ? (
-          <div className="text-center py-10 text-ink-3 text-sm">
-            <Activity size={20} className="mx-auto mb-2 opacity-50" />
-            Se requieren al menos 2 meses de historial para construir la curva.
-          </div>
+          <SinMediciones />
         ) : (
           <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={drawdownSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>

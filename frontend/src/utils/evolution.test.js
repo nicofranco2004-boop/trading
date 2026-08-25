@@ -423,3 +423,27 @@ describe("convertSeriesToArs (Phase C audit fix C1)", () => {
   })
 })
 
+
+// ── El clamp asimétrico eliminado ─────────────────────────────────────────────
+// `Math.min(Math.max(rRaw, -0.99), 0.5)` limitaba las subidas de la CARTERA a
+// +50% por mes y NO le aplicaba nada al BENCHMARK: el sesgo iba sistemáticamente
+// en contra del usuario y se componía mes a mes.
+describe('sin techo asimétrico', () => {
+  it('un tramo de +80% NO se trunca a +50%', () => {
+    const snaps = [
+      { date: '2025-01-31', total_value: 100, total_invested: 100, net_deposited: 100 },
+      { date: '2025-02-28', total_value: 180, total_invested: 100, net_deposited: 100 },
+    ]
+    const r = buildEvolutionFromSnapshots(snaps, [], BENCH, TCB)
+    expect(r.seriesUsd[1].total).toBeCloseTo(80, 1)
+  })
+
+  it('el piso de −99% sigue vigente', () => {
+    const snaps = [
+      { date: '2025-01-31', total_value: 100, total_invested: 100, net_deposited: 100 },
+      { date: '2025-02-28', total_value: -500, total_invested: 100, net_deposited: 100 },
+    ]
+    const r = buildEvolutionFromSnapshots(snaps, [], BENCH, TCB)
+    expect(r.seriesUsd[1].total).toBeGreaterThanOrEqual(-99)
+  })
+})

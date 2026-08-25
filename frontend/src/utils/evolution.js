@@ -314,7 +314,13 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
       const isBigWithdraw = flows < 0 && flowRatio > 0.3
       const avgCap = isBigWithdraw ? prevValueUsd : (prevValueUsd + 0.5 * flows)
       const rRaw = avgCap > 0 ? pnl / avgCap : 0
-      const r = Math.min(Math.max(rRaw, -0.99), 0.5)
+      // SIN TECHO. El `Math.min(..., 0.5)` que estaba acá limitaba las subidas de la
+      // CARTERA a +50% por mes y NO le aplicaba nada al BENCHMARK: el sesgo iba
+      // sistematicamente en contra del usuario y se componia mes a mes. Un +80% en
+      // cripto o post-devaluacion es perfectamente posible. El piso de -99% si
+      // queda: no se puede perder mas que todo. Mismo criterio que `twr.dietz`
+      // (backend/twr.py:215), cuyo docstring explica por que.
+      const r = Math.max(rRaw, -0.99)
       cumUsd *= (1 + r)
     }
 
@@ -347,7 +353,13 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
       const isBigWithdrawArs = flowsArs < 0 && flowRatioArs > 0.3
       const avgArs = isBigWithdrawArs ? prevValueArs : (prevValueArs + 0.5 * flowsArs)
       const rRawArs = avgArs > 0 ? pnlArs / avgArs : 0
-      const rArs = Math.min(Math.max(rRawArs, -0.99), 0.5)
+      // SIN TECHO. El `Math.min(..., 0.5)` que estaba acá limitaba las subidas de la
+      // CARTERA a +50% por mes y NO le aplicaba nada al BENCHMARK: el sesgo iba
+      // sistematicamente en contra del usuario y se componia mes a mes. Un +80% en
+      // cripto o post-devaluacion es perfectamente posible. El piso de -99% si
+      // queda: no se puede perder mas que todo. Mismo criterio que `twr.dietz`
+      // (backend/twr.py:215), cuyo docstring explica por que.
+      const rArs = Math.max(rRawArs, -0.99)
       cumArs *= (1 + rArs)
     }
     const denomRealizedArs = Math.max(baselineArs, peakValueArs * 0.8)
