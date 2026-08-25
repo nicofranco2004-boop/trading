@@ -619,9 +619,15 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         # La forma de la respuesta NO cambia cuando no hay datos: si faltaran
         # claves, cada consumidor tendría que adivinar — y el estado vacío es
         # justamente el que más se lee mal.
+        # ⚠️ TODAS las claves, también las nuevas. Ya pasó una vez con
+        # `drawdown_maximo_fecha`: un consumidor que gatea por `serie_partida` o
+        # `tramos_medidos` recibía undefined y no gateaba nada. El estado vacío es
+        # justamente el que más se lee mal, así que la forma no puede cambiar.
         return {**s, "curva": [], "twr": None, "cagr": None,
                 "drawdown_actual": None, "drawdown_maximo": None,
-                "drawdown_maximo_fecha": None, "drawdown_maximo_pico": None}
+                "drawdown_maximo_fecha": None, "drawdown_maximo_pico": None,
+                "tramos_medidos": 0, "tramos_detalle": [], "serie_partida": False,
+                "ventana_desde": None, "ventana_hasta": None}
 
     # ⚠️ EL ÍNDICE Y EL PICO SE REINICIAN EN CADA TRAMO.
     #

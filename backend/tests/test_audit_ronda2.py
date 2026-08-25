@@ -332,5 +332,134 @@ class CagrDenominadorTest(_Base):
         self.assertAlmostEqual(r["cagr"], 12.2, places=1)   # NO 791,61%
 
 
+class FormaDeLaRespuestaTest(_Base):
+    """El estado vacío es el que más se lee mal: la forma no puede cambiar.
+    Ya pasó con `drawdown_maximo_fecha`; volvió a pasar con las claves que agregó
+    el fix de la serie partida — un consumidor que gatea por `serie_partida` o
+    `tramos_medidos` recibía undefined y no gateaba nada."""
+
+    CLAVES = ("twr", "cagr", "drawdown_actual", "drawdown_maximo",
+              "drawdown_maximo_fecha", "drawdown_maximo_pico", "tramos_medidos",
+              "tramos_detalle", "serie_partida", "ventana_desde", "ventana_hasta",
+              "motivo", "motivo_texto", "curva", "contable", "por_clase")
+
+    def _casos(self):
+        return {
+            "sin historia": [],
+            "1 punto": [("2026-01-31", 100.0, "cron")],
+            "solo fabricadas": [("2026-01-31", 100.0, "import"),
+                                ("2026-02-28", 120.0, "import")],
+            "2 seguidos": [("2026-01-31", 100.0, "cron"), ("2026-02-28", 120.0, "cron")],
+            "3 tramos": [("2024-01-31", 100.0, "cron"), ("2025-01-31", 100.0, "cron"),
+                         ("2025-02-28", 70.0, "cron"), ("2026-01-31", 50.0, "cron")],
+            "huerfano al final": [("2025-01-31", 100.0, "cron"),
+                                  ("2025-02-28", 120.0, "cron"),
+                                  ("2026-01-31", 50.0, "cron")],
+        }
+
+    def test_la_forma_esta_completa_en_todos_los_casos(self):
+        for nombre, pts in self._casos().items():
+            with self.subTest(caso=nombre):
+                self.conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.uid,))
+                self.pos()
+                for d, v, src in pts:
+                    self.snap(d, v, src=src)
+                c = twr.curva_indexada(self.conn, self.uid)
+                for k in self.CLAVES:
+                    self.assertIn(k, c, f"{nombre}: falta {k}")
+
+    def test_los_campos_son_coherentes_entre_si(self):
+        for nombre, pts in self._casos().items():
+            with self.subTest(caso=nombre):
+                self.conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.uid,))
+                self.pos()
+                for d, v, src in pts:
+                    self.snap(d, v, src=src)
+                c = twr.curva_indexada(self.conn, self.uid)
+                # No hay TWR sin la ventana que cubre.
+                if c["twr"] is not None:
+                    self.assertIsNotNone(c["ventana_desde"], f"{nombre}: twr sin ventana")
+                # El drawdown se publica exactamente cuando el TWR se publica.
+                self.assertEqual(c["drawdown_maximo"] is None, c["twr"] is None,
+                                 f"{nombre}: drawdown y twr no coinciden")
+                # No se anualiza lo que no se midió.
+                if c["cagr"] is not None:
+                    self.assertIsNotNone(c["twr"], f"{nombre}: cagr sin twr")
+
+    def test_el_endpoint_expone_todo_lo_que_el_front_gatea(self):
+        import performance as perf
+        self.pos()
+        r = perf.performance(self.conn, self.uid, {}, "sp500")
+        for k in ("tramos_medidos", "serie_partida", "curva", "benchmark",
+                  "motivo_texto", "contable", "medido_desde"):
+            self.assertIn(k, r)
+
+
+class CoberturaInvariantesTest(_Base):
+    def _cuenta(self, con_precio, invisible=False, venta_ars=False):
+        import scripts.backfill_historical_mtm as bf
+        self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)",
+                          (self.uid, "IBKR", "USDT"))
+        bid = f"B{self.uid}"
+        self.conn.execute(
+            "INSERT INTO import_batches (id,user_id,broker,parser_format,file_hash,status) "
+            "VALUES (?,?,?,?,?,'confirmed')", (bid, self.uid, "IBKR", "generic", bid))
+        rr = self.conn.execute(
+            "INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status) "
+            "VALUES (?,0,'{}','valid')", (bid,)).lastrowid
+        self.conn.execute(
+            """INSERT INTO import_normalized_tx (batch_id,raw_row_id,broker,asset_symbol,
+               asset_type,operation_type,quantity,unit_price,gross_amount,currency,date)
+               VALUES (?,?,'IBKR','AAPL','STOCK','BUY',100,100,10000,'USD','2024-08-05')""",
+            (bid, rr))
+        self.pos("2024-08-05", "AAPL", invested=10000.0, qty=100, currency="USD")
+        if invisible:
+            self.pos("2024-08-01", "GGAL", invested=100000.0, broker="Cocos",
+                     qty=500, currency="USD")
+        if venta_ars:
+            self.conn.execute(
+                "INSERT INTO operations (user_id,date,broker,asset,op_type,quantity,"
+                "entry_price,currency,fx_to_usd,entry_date) "
+                "VALUES (?,'2024-12-01','Cocos','YPFD','sell',100,1000.0,'ARS',1250.0,'2024-01-01')",
+                (self.uid,))
+        for (y, mo, ci, cf, dep) in ((2024, 8, 0, 10000, 10000), (2024, 9, 10000, 10000, 0)):
+            for b in ("global", "IBKR"):
+                self.me(y, mo, ci, cf, dep=dep, broker=b)
+        self.conn.commit()
+        self._orig = bf._fetch_monthly_close
+        self.addCleanup(lambda: setattr(bf, "_fetch_monthly_close", self._orig))
+        bf._HIST_CACHE.clear()
+        bf._fetch_monthly_close = ((lambda pk, si: {"2024-08": 150.0, "2024-09": 160.0})
+                                   if con_precio else (lambda pk, si: {}))
+        bf.backfill_user(self.conn, self.uid, _d.date(2026, 6, 26))
+        self.conn.commit()
+        return [r["mtm_coverage"] for r in self.conn.execute(
+            "SELECT mtm_coverage FROM snapshots WHERE user_id=? ORDER BY date", (self.uid,))]
+
+    def test_nunca_hay_cobertura_1_sin_haber_consultado_un_precio(self):
+        covs = self._cuenta(con_precio=False)
+        self.assertTrue(covs)
+        for c in covs:
+            self.assertNotEqual(c, 1.0)
+
+    def test_la_tenencia_invisible_baja_la_cobertura(self):
+        covs = self._cuenta(con_precio=True, invisible=True)
+        for c in covs:
+            self.assertLess(c, 0.5)
+
+    def test_una_venta_en_pesos_abierta_NO_hunde_una_cuenta_valuada_entera(self):
+        """El error de moneda (`q*pe*fx` en vez de `/fx`) hundía la cobertura de
+        99,68% a 0,02% y borraba el mes entero de la serie. Le pegaba a cualquier
+        cuenta argentina con una operación en ARS cruzando un fin de mes."""
+        covs = self._cuenta(con_precio=True, venta_ars=True)
+        for c in covs:
+            self.assertGreater(c, 0.9)
+
+    def test_todo_valuado_a_mercado_da_cobertura_1(self):
+        covs = self._cuenta(con_precio=True)
+        for c in covs:
+            self.assertAlmostEqual(c, 1.0, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()
