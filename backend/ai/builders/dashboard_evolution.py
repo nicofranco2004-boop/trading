@@ -32,10 +32,15 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # Período: por default 1 año. Si pasan 'period_days' lo respetamos.
     period_days = int(kwargs.get("period_days", 365))
 
-    snapshots = [dict(r) for r in conn.execute(
-        "SELECT date, total_value FROM snapshots WHERE user_id=? "
-        "ORDER BY date ASC", (user_id,)
-    ).fetchall()]
+    # ⚠️ NO se leen los snapshots crudos. La tabla mezcla mediciones reales del
+    # cron con fotos que el import FABRICA copiando la cadena contable
+    # (persister.py:1289-1292): esas no bajan con el mercado, asi que fijan
+    # picos que nunca existieron y el drawdown sale de la brecha entre dos
+    # formas de medir. `twr.serie_medible` deja solo lo que esta en base de
+    # mercado (medido por el cron o reconstruido a precio real).
+    import twr as _twr
+    _serie = _twr.serie_medible(conn, user_id)
+    snapshots = [{"date": p["date"], "total_value": p["value"]} for p in _serie["puntos"]]
 
     monthly = [dict(r) for r in conn.execute(
         "SELECT * FROM monthly_entries WHERE user_id=? AND broker='global' "
@@ -47,7 +52,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "screen": "dashboard.evolution",
             "period_days": period_days,
             "insufficient_data": True,
-            "reason": "Sin snapshots cargados — la curva necesita historial diario.",
+            # El motivo sale de `twr.MOTIVO_TEXTO`: el asesor y el usuario final
+            # tienen que leer exactamente lo mismo.
+            "reason": (_serie.get("motivo_texto")
+                       or "Sin snapshots cargados — la curva necesita historial diario."),
         }
 
     # Cortar a la ventana solicitada

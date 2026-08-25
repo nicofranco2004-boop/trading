@@ -17,7 +17,13 @@ from ai.builders.insights_summary import build
 def _conn(with_data=True):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE snapshots (user_id INT, date TEXT, total_value REAL, net_deposited REAL, total_invested REAL)")
+    # `source`/`fx_to_usd_blue`/`holdings_json`/`mtm_coverage` existen en el schema
+    # real (init_db las migra) y son las que `twr.clasificar_fila` necesita para
+    # distinguir una medicion de una foto fabricada por el import. Sin ellas el
+    # fixture miente sobre el schema y el builder rompe.
+    conn.execute("CREATE TABLE snapshots (user_id INT, date TEXT, total_value REAL, "
+                 "net_deposited REAL, total_invested REAL, source TEXT, "
+                 "fx_to_usd_blue REAL, holdings_json TEXT, mtm_coverage REAL)")
     conn.execute("CREATE TABLE monthly_entries (user_id INT, broker TEXT, year INT, month INT, capital_inicio REAL, capital_final REAL, deposits REAL, withdrawals REAL)")
     # currency/fx_to_usd: existen en el schema real (init_db las migra) y el
     # builder las necesita para convertir Cupón/Amortización, que guardan el

@@ -184,13 +184,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     today = date.today()
 
     # ── 1. Snapshots para TWR + drawdown ─────────────────────────────────────
-    rows = conn.execute(
-        """SELECT date, total_value, net_deposited
-             FROM snapshots
-            WHERE user_id = ? ORDER BY date ASC""",
-        (user_id,),
-    ).fetchall()
-    snaps = [dict(r) for r in rows]
+    # ⚠️ NO se leen los snapshots crudos: la tabla mezcla mediciones reales del
+    # cron con fotos que el import FABRICA copiando la cadena contable
+    # (persister.py:1289-1292). Encadenadas contra una medición de verdad fijan
+    # picos que nunca existieron — es el "−45% de drawdown" que reportó el user.
+    import twr as _twr
+    _serie = _twr.serie_medible(conn, user_id)
+    snaps = [{"date": p["date"], "total_value": p["value"],
+              "net_deposited": p["net_deposited"]} for p in _serie["puntos"]]
     # Filtrar al window
     cutoff = today.toordinal() - window_days
     window_snaps = [

@@ -29,8 +29,11 @@ class CagrFromSnapshotsTest(unittest.TestCase):
 
     def _snap(self, date, val, dep):
         self.conn.execute(
-            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-            "VALUES (?,?,?,?,?)", (self.uid, date, val, dep, dep))
+            # `source='cron'` = lo que estampa el snapshot diario real. Sin eso la
+            # fila es indistinguible de las que fabrica el import copiando la cadena
+            # contable, y `twr.clasificar_fila` la descarta con razón.
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+            "VALUES (?,?,?,?,?,'cron')", (self.uid, date, val, dep, dep))
 
     def _monthly(self, y, mo, ci, cf, dep=0):
         self.conn.execute(

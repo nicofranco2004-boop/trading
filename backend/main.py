@@ -14827,14 +14827,17 @@ def _historical_cagr_global(conn, uid: int) -> dict:
 
     Cae a monthly_entries si hay <2 fines de mes en snapshots (cuenta sin snapshots
     todavía) — preserva el comportamiento previo para cuentas nuevas."""
-    snaps = conn.execute(
-        "SELECT date, total_value, net_deposited FROM snapshots WHERE user_id=? ORDER BY date ASC",
-        (uid,),
-    ).fetchall()
-    # Reducir a fin de mes: el ÚLTIMO snapshot de cada YYYY-MM (orden asc → pisa).
+    # ⚠️ NO se leen los snapshots crudos: la tabla mezcla mediciones del cron con
+    # fotos que el import FABRICA copiando la cadena contable
+    # (persister.py:1289-1292). Encadenar esas fabricaba un CAGR que no era del
+    # mercado. `twr.serie_medible` deja sólo lo que está en base de mercado.
+    import twr as _twr
+    _serie = _twr.serie_medible(conn, uid)
+    # Reducir a fin de mes: el ÚLTIMO punto de cada YYYY-MM (orden asc → pisa).
     by_month = {}
-    for s in snaps:
-        by_month[s["date"][:7]] = s
+    for _p in _serie["puntos"]:
+        by_month[_p["date"][:7]] = {"date": _p["date"], "total_value": _p["value"],
+                                    "net_deposited": _p["net_deposited"]}
     months = [by_month[k] for k in sorted(by_month)]
     if len(months) < 2:
         rows = conn.execute(
@@ -14857,7 +14860,10 @@ def _historical_cagr_global(conn, uid: int) -> dict:
             big_wd = flows < 0 and flow_ratio > 0.3        # retiro grande → avg = prev_val
             avg = prev_val if big_wd else (prev_val + 0.5 * flows)
             r = (pnl / avg) if avg > 0 else 0
-            r = max(-0.99, min(0.5, r))                    # mismo clamp que el chart
+            # SIN TECHO. El `min(0.5, r)` que estaba acá truncaba los meses buenos
+            # de la CARTERA y no se le aplicaba al benchmark → el CAGR salía
+            # sistemáticamente bajo. Mismo criterio que `twr.dietz`.
+            r = max(-0.99, r)
             cum *= (1 + r)
             n += 1
         prev_val, prev_dep = val, dep
@@ -33414,10 +33420,18 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     lo existente: snapshots (MtM sellado) para valor/mercado-vs-aportes —
     la MISMA descomposición del hero y de BookEvolution — y el motor
     canónico de valuación para las tenencias."""
-    snaps = conn.execute(
-        """SELECT date, total_value, net_deposited FROM snapshots
-           WHERE user_id=? AND date <= ? ORDER BY date ASC""",
-        (client_uid, end)).fetchall()
+    # ⚠️ Este informe SE LE MANDA AL CLIENTE: es la superficie donde un número
+    # inventado hace más daño. La tabla `snapshots` mezcla mediciones del cron con
+    # fotos que el import FABRICA copiando la cadena contable
+    # (persister.py:1289-1292) — dan MÁS ALTO que el valor real y no bajan con el
+    # mercado. Si la BASE del período sale de una de esas, el "retorno del
+    # período" que firma el asesor es la brecha entre dos formas de medir.
+    # Se filtra a base de mercado; sin base medible, `ret_pct` queda en None y el
+    # informe lo dice, que es lo que ya hace con la base vieja.
+    import twr as _twr
+    _pts = _twr.serie_medible(conn, client_uid, None, end)["puntos"]
+    snaps = [{"date": p["date"], "total_value": p["value"],
+              "net_deposited": p["net_deposited"]} for p in _pts]
     base_row = None   # último snapshot ANTERIOR al período (base de la descomposición)
     series = []
     for s in snaps:

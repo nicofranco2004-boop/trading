@@ -42,11 +42,15 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     today = date.today()
     cutoff = today - timedelta(days=window_days)
 
-    rows = conn.execute(
-        "SELECT date, total_value FROM snapshots WHERE user_id=? ORDER BY date ASC",
-        (user_id,),
-    ).fetchall()
-    snaps = [dict(r) for r in rows]
+    # ⚠️ NO se leen los snapshots crudos. La tabla mezcla mediciones reales del
+    # cron con fotos que el import FABRICA copiando la cadena contable
+    # (persister.py:1289-1292): esas no bajan con el mercado, asi que fijan
+    # picos que nunca existieron y el drawdown sale de la brecha entre dos
+    # formas de medir. `twr.serie_medible` deja solo lo que esta en base de
+    # mercado (medido por el cron o reconstruido a precio real).
+    import twr as _twr
+    _serie = _twr.serie_medible(conn, user_id)
+    snaps = [{"date": p["date"], "total_value": p["value"]} for p in _serie["puntos"]]
     window = [
         s for s in snaps
         if _parse_date(s["date"]) and _parse_date(s["date"]) >= cutoff

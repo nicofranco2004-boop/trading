@@ -261,10 +261,10 @@ class AdvisorClientsTest(AdvisorBase):
         conn = main.get_db()
         try:
             conn.execute(
-                "INSERT INTO snapshots (user_id, date, total_value, total_invested) VALUES (?,?,?,?)",
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, source) VALUES (?,?,?,?,'cron')",
                 (self.client_uid, "2026-07-20", 1000.0, 900.0))
             conn.execute(
-                "INSERT INTO snapshots (user_id, date, total_value, total_invested) VALUES (?,?,?,?)",
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, source) VALUES (?,?,?,?,'cron')",
                 (self.client_uid, "2026-07-21", 1234.5, 900.0))
             conn.commit()
         finally:
@@ -600,12 +600,12 @@ class AdvisorBookTest(AdvisorBase):
             "source=EXCLUDED.source", (self.today.isoformat(),))
         # Cliente 1 (self.client_uid, broker Cocos ARS): snapshots + posiciones
         conn.execute(
-            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-            "VALUES (?,?,?,?,?)",
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+            "VALUES (?,?,?,?,?,'cron')",
             (self.client_uid, (self.today - _d.timedelta(days=10)).isoformat(), 1000.0, 800.0, 800.0))
         conn.execute(
-            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-            "VALUES (?,?,?,?,?)",
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+            "VALUES (?,?,?,?,?,'cron')",
             (self.client_uid, self.today.isoformat(), 700.0, 800.0, 800.0))  # -30% del máximo
         # GGAL ganadora: invested 100k ARS, precio .BA 15000 × 10 = 150k ARS
         conn.execute(
@@ -689,8 +689,8 @@ class AdvisorBookTest(AdvisorBase):
         for date_s, tv in (((today - _d.timedelta(days=10)).isoformat(), 10000.0),
                            (today.isoformat(), 4000.0)):
             conn.execute(
-                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-                "VALUES (?,?,?,?,?)", (big, date_s, tv, 2000.0, 2000.0))
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                "VALUES (?,?,?,?,?,'cron')", (big, date_s, tv, 2000.0, 2000.0))
         conn.commit(); conn.close()
         r = self.http.get("/api/advisor/book", headers=self._hdr(self.advisor))
         by_uid = {q["client_uid"]: q for q in r.json()["queues"]}
@@ -1190,8 +1190,8 @@ class BookChatContextTest(AdvisorBase):
             "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
             "source=EXCLUDED.source", (today.isoformat(),))
         conn.execute(
-            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-            "VALUES (?,?,?,?,?)", (self.client_uid, today.isoformat(), 700.0, 800.0, 500.0))
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+            "VALUES (?,?,?,?,?,'cron')", (self.client_uid, today.isoformat(), 700.0, 800.0, 500.0))
         # GGAL: invested 100k ARS, precio .BA 15000 × 10 = 150k ARS (USD 150 al MEP 1000)
         conn.execute(
             """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
@@ -1400,8 +1400,8 @@ class BookHistoryTest(AdvisorBase):
                                (self.client_uid, self.d1, 1200.0, 900.0),
                                (self.client2, self.d1, 500.0, 500.0)):
             conn.execute(
-                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-                "VALUES (?,?,?,?,?)", (u, d, tv, tv, nd))
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                "VALUES (?,?,?,?,?,'cron')", (u, d, tv, tv, nd))
         conn.commit(); conn.close()
 
     def test_serie_suma_y_cliente_nuevo(self):
@@ -1427,8 +1427,8 @@ class BookHistoryTest(AdvisorBase):
         conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, c3))
         _link(conn, self.advisor, c3, label="Viejo V")
         conn.execute(
-            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-            "VALUES (?,?,?,?,?)",
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+            "VALUES (?,?,?,?,?,'cron')",
             (c3, (self.today - _d.timedelta(days=40)).isoformat(), 300.0, 300.0, 300.0))
         conn.commit(); conn.close()
         r = self.http.get("/api/advisor/book/history?days=30",
@@ -1495,8 +1495,8 @@ class BookDetailTest(AdvisorBase):
         ]
         for cid, date_s, tv, nd in rows:
             conn.execute(
-                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-                "VALUES (?,?,?,?,?)", (cid, date_s, tv, nd, nd))
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                "VALUES (?,?,?,?,?,'cron')", (cid, date_s, tv, nd, nd))
         conn.commit()
         conn.close()
 
@@ -1588,8 +1588,8 @@ class AdvisorReportsTest(AdvisorBase):
         for (d, tv, nd) in ((self.today - _d.timedelta(days=40), 1000.0, 800.0),
                             (self.today - _d.timedelta(days=1), 1200.0, 900.0)):
             conn.execute(
-                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-                "VALUES (?,?,?,?,?)", (self.client_uid, d.isoformat(), tv, tv, nd))
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                "VALUES (?,?,?,?,?,'cron')", (self.client_uid, d.isoformat(), tv, tv, nd))
         conn.execute(
             """INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, currency)
                VALUES (?,?,?,?,?,0,'ARS')""",
@@ -1805,8 +1805,8 @@ class AuditGrandeTest(AdvisorBase):
         for date_s, tv, nd in (((today - _d.timedelta(days=10)).isoformat(), 65000.0, 50000.0),
                                (end, 66000.0, 50000.0)):
             conn.execute(
-                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-                "VALUES (?,?,?,?,?)", (self.client_uid, date_s, tv, nd, nd))
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                "VALUES (?,?,?,?,?,'cron')", (self.client_uid, date_s, tv, nd, nd))
         conn.commit()
         p = main._advisor_report_payload(conn, self.advisor, self.client_uid, "Juan P",
                                          start, end, None, {"name": "A"}, 1400.0, 1000.0)
@@ -1827,8 +1827,8 @@ class AuditGrandeTest(AdvisorBase):
         for date_s, tv, nd in (((today - _d.timedelta(days=5)).isoformat(), 10000.0, 10000.0),
                                (end, 10500.0, 10000.0)):
             conn.execute(
-                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-                "VALUES (?,?,?,?,?)", (self.client_uid, date_s, tv, nd, nd))
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                "VALUES (?,?,?,?,?,'cron')", (self.client_uid, date_s, tv, nd, nd))
         conn.commit()
         p = main._advisor_report_payload(conn, self.advisor, self.client_uid, "Juan P",
                                          start, end, None, {"name": "A"}, 1400.0, 1000.0)
@@ -2073,8 +2073,8 @@ class AdvisorAlertsAuditTest(AdvisorBase):
         conn = main.get_db()
         try:
             conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.client_uid,))
-            conn.execute("INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
-                         "VALUES (?,?,?,?,?)", (self.client_uid, day, value, value, nd))
+            conn.execute("INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited, source) "
+                         "VALUES (?,?,?,?,?,'cron')", (self.client_uid, day, value, value, nd))
             conn.commit()
         finally:
             conn.close()
