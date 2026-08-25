@@ -20,6 +20,21 @@ class Parser(ABC):
     platform: str = "generic"
     platform_label: str = "Genérico"
     export_label: str = ""
+    # ¿Este broker tiene FOTO DE TENENCIA que se pueda subir para verificar el
+    # import? El `parser_format` de esa foto, o None.
+    #
+    # Existe porque la reconciliación contra la foto es el mejor chequeo que
+    # tiene el sistema —no depende de conocer el bug, la referencia es el
+    # broker— pero sólo el 57,8% de la gente elegible la sube (medido: 160 de
+    # 277 usuarios). El 42% restante no tiene ninguna verificación, y un
+    # detector que no corre no detecta nada.
+    #
+    # 🔴 LA VERDAD VIVE ACÁ Y NO EN EL FRONTEND. Hasta ahora el único mapeo
+    # movimientos→foto era un dict a mano en `ImportWizard.jsx`
+    # (TENENCIA_BROKER_BY_FORMAT), y ya se desincronizó: tiene una entrada para
+    # `balanz_internacional`, cuya foto NO existe. Un aviso manejado por ese
+    # dict le pediría al usuario un archivo que ningún parser sabe leer.
+    tenencia_format: Optional[str] = None
 
     @abstractmethod
     def parse(self, content: str, file_name: Optional[str] = None) -> ParseResult:

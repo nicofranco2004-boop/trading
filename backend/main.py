@@ -2473,6 +2473,25 @@ def init_db():
         if batch_cols and 'fund_price_overrides' not in batch_cols:
             conn.execute("ALTER TABLE import_batches ADD COLUMN fund_price_overrides TEXT")
 
+        # Migración (2026-08-24): override_info en import_batches. JSON con lo que
+        # la foto DECIDIÓ — no sólo lo que aplicó.
+        #
+        # 🔴 EXISTE PARA CERRAR UN PUNTO CIEGO DE MEDICIÓN, no para el producto.
+        # Los `over` que las guardas frenan —cap del 50%, safe-to-rebuild,
+        # activo que vive en el sibling— NO dejan rastro: hoy sólo hay un
+        # `log.warning`. O sea que todo lo que sabemos de `over` está medido
+        # sobre la población que SOBREVIVIÓ tres filtros (n=21 sobre la copia de
+        # prod del 2026-08-16), y no hay forma de saber la tasa real ni de
+        # confirmar cuántos son de doble partición. Con esto, en un mes el
+        # número está.
+        #
+        # Sin índice A PROPÓSITO: se lee por `id` (que ya es PK) y en batch para
+        # analizar. Un `CREATE INDEX` sobre una columna recién agregada es lo que
+        # tiró prod 20 minutos el 2026-08-02.
+        batch_cols = _table_cols(conn, 'import_batches')
+        if batch_cols and 'override_info' not in batch_cols:
+            conn.execute("ALTER TABLE import_batches ADD COLUMN override_info TEXT")
+
         # Mapping templates guardados por usuario. Sirve para reusar el mapeo
         # de columnas entre imports recurrentes (ej.: usuario que importa export
         # de IBKR mensualmente, mapea una vez y reusa).
@@ -28616,6 +28635,7 @@ from importing import rebuild as _import_rebuild
 from importing import maturity as _import_maturity
 from importing import recompute_backfill as _import_recompute
 from importing import tenencia as _import_tenencia
+from importing import proyeccion as _import_proyeccion
 from importing import excel as _import_excel
 from importing import schema as _import_schema
 from importing.parsers.registry import get_parser as _get_parser
@@ -28750,7 +28770,7 @@ def import_classify_tenencia(
 
 
 def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, current,
-                            seed_date, *, complete, currency="ARS"):
+                            seed_date, *, complete, currency="ARS", gate_over=False):
     """Modo OVERRIDE (la foto PISA): sobre `rec`, reduce lo que Rendi tiene de MÁS
     (over) y —si `complete`— elimina lo que la foto NO lista (not_in_snapshot), con
     ventas transfer_out que cierran a costo (P&L 0, sin cash). Guardas duras (el
@@ -28774,14 +28794,29 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
             (uid, *sibs)):
             sibling_assets.add(r["asset"])
 
+    # 🔴 SE SEPARAN LOS DOS MOTIVOS DE FRENO, y no es cosmético: "tiene datos a
+    # mano" y "el activo vive en la otra partición del par" son hipótesis
+    # DISTINTAS sobre por qué apareció el `over`, y la segunda es justo la que no
+    # se puede medir hoy (ver `override_info` más abajo). Mezcladas en una sola
+    # lista `unsafe`, el dato se perdía.
+    frenado_manual, frenado_sibling = [], []
+
     def _reducible(tk):
-        return _is_safe_to_rebuild(conn, uid, pair_l, tk) and tk not in sibling_assets
+        if tk in sibling_assets:
+            frenado_sibling.append(tk)
+            return False
+        if not _is_safe_to_rebuild(conn, uid, pair_l, tk):
+            frenado_manual.append(tk)
+            return False
+        return True
 
     unsafe, safe_over, safe_nis = [], [], []
     for tk, rq, sq in rec.over:
         (safe_over.append((tk, rq, sq)) if _reducible(tk) else unsafe.append(tk))
     for tk, rq in rec.not_in_snapshot:
         (safe_nis.append((tk, rq)) if _reducible(tk) else unsafe.append(tk))
+    # Lo que ENTRÓ, antes de cualquier guarda. Es el denominador que hoy falta.
+    over_visto = [{"ticker": tk, "rendi": rq, "foto": sq} for tk, rq, sq in rec.over]
     # not_in_snapshot sólo se BORRA si complete → sólo entonces cuenta para el cap.
     _nis_cut = safe_nis if complete else []
     total_inv = sum(abs(v) for tk, v in invested_by_asset.items() if tk not in sibling_assets) or 0.0
@@ -28813,7 +28848,24 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
         override_removed = ([{"ticker": tk, "qty": rq} for tk, rq in safe_nis] if complete else [])
         rec.over, rec.not_in_snapshot = safe_over, safe_nis
     override_info = {"reduced": override_reduced, "removed": override_removed,
-                     "skipped_manual": sorted(set(unsafe)), "capped": bool(capped)}
+                     # `skipped_manual` queda como estaba (el frontend ya lo usa):
+                     # es la unión de los dos frenos. El desglose va aparte.
+                     "skipped_manual": sorted(set(unsafe)), "capped": bool(capped),
+                     # ── Para MEDIR, no para mostrar ────────────────────────
+                     # Todo lo que las guardas frenaron y hoy no deja rastro.
+                     # `over_visto` es el `over` COMPLETO que entró: sin esto, el
+                     # único `over` observable es el que sobrevivió tres filtros.
+                     "over_visto": over_visto,
+                     "frenado": {"manual": sorted(set(frenado_manual)),
+                                 "sibling": sorted(set(frenado_sibling))},
+                     "cap": {"cut_inv": round(cut_inv, 4), "total_inv": round(total_inv, 4),
+                             "n_cut": n_cut, "n_current": n_current},
+                     "broker": broker, "currency": currency}
+    # El gate va ACÁ y no antes: `rec.over` ya pasó las guardas, así que se marca
+    # exactamente lo que se va a armar. Una casilla sobre algo que el cap o
+    # safe-to-rebuild ya sacaron es una decisión que no puede aplicarse.
+    if gate_over:
+        _import_tenencia.marcar_over(rec)
     mx = conn.execute(
         f"SELECT MAX(n.date) d FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
         f"WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL "
@@ -28829,6 +28881,7 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
 
 @app.post("/api/imports/tenencia/preview")
 def import_tenencia_preview(
+    request: Request,
     file: UploadFile = File(...),
     broker: str = Form(...),
     format: Optional[str] = Form(None),
@@ -28957,12 +29010,104 @@ def import_tenencia_preview(
     if not snap.holdings:
         raise HTTPException(400, "No pudimos leer ninguna tenencia del archivo. Escribinos y lo revisamos.")
 
+    # Los tickers de la FOTO pasan por la misma canonicalización que los
+    # movimientos (`consolidate_cd`, que hasta acá sólo corría en el
+    # normalizador). Sin esto la foto dice AL30D donde Rendi dice AL30 y el
+    # reconcile inventa DOS problemas del mismo activo: un `not_in_snapshot`
+    # falso y un `to_seed` falso. El primero es el que hace daño — con override
+    # prendido, cerrar ese "ausente" borra una tenencia que el cliente sí tiene.
+    # Va acá porque es donde convergen los siete parsers de foto.
+    tickers_normalizados = _import_tenencia.normalizar_tickers(snap)
+
     conn = get_db()
     try:
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
             raise HTTPException(400, f"No encontramos el broker '{broker}'. {broker_hint}")
-        seed_date = snap.date or _import_excel.datetime.now().strftime("%Y-%m-%d")
+        # 🔴 CUANDO NO SE PUDO LEER LA FECHA, DECIRLO. Antes esto caía al reloj
+        # del servidor en silencio y la respuesta devolvía `date: null`, que el
+        # frontend ni renderiza. Medido en prod: 93 de 152 fotos confirmadas
+        # están en esa situación, y `parse_cocos_tenencia` no setea fecha NUNCA
+        # (47 de 47 por código). O sea que en la mayoría de los casos la fecha
+        # con la que se sellan los lotes de apertura es inventada, y nadie lo
+        # sabe.
+        #
+        # Importa doble para la reconciliación: `compute_reconcile` compara la
+        # foto contra el estado de HOY, lo cual sólo vale si la foto ES de hoy.
+        # Con la fecha inventada esa premisa no se puede verificar.
+        # Cascada de tres escalones, cada uno con su origen declarado. El del
+        # medio existe por Cocos: su CSV no tiene dónde poner la fecha (header
+        # exacto de 5 columnas, sin preámbulo), pero 82 de 82 exports se llaman
+        # `portfolio_report_YYYYMMDD.csv`. Sin este escalón, el parser de foto
+        # más usado —y el que peor cobertura tiene— quedaría permanentemente
+        # inservible en el flujo del asesor, porque siempre cortaría por
+        # `fecha_desconocida`.
+        _fecha_nombre = (None if snap.date else
+                         _import_tenencia.fecha_de_nombre_archivo(file.filename or ""))
+        fecha_origen = ("archivo" if snap.date
+                        else "nombre_archivo" if _fecha_nombre
+                        else "fallback_hoy")
+        seed_date = (snap.date or _fecha_nombre
+                     or _import_excel.datetime.now().strftime("%Y-%m-%d"))
         override_info = None   # sólo lo puebla el path OVERRIDE de Balanz
+        # Inicializado ANTES de la bifurcación: la respuesta es común a los dos
+        # caminos y definirlo adentro de uno daba NameError en el otro.
+        proy_info = None
+        _proy_no_rec: List[dict] = []
+        # La tenencia proyectada a nivel PAR, que los dos caminos pueblan y el
+        # bloque comun de abajo verifica. Inicializada antes de la bifurcacion:
+        # definirla adentro de una rama daba UnboundLocalError en la otra —
+        # exactamente el mismo bug que `proy_info`, dos veces en el mismo sitio.
+        current: dict = {}
+
+        def _qty_a_fecha(brokers):
+            """Cuánto tenía en esos brokers A LA FECHA DE LA FOTO.
+
+            🔴 ES EL OTRO LADO DE LA COMPARACIÓN. `compute_reconcile` mide
+            contra el estado de HOY, y eso vale sólo si la foto ES de hoy. Con
+            movimientos posteriores al corte, toda compra sale como "Rendi tiene
+            de más" y toda venta como un falso "coincide" — y el asesor termina
+            decidiendo sobre una discrepancia que no existe.
+
+            Sólo proyecta con una fecha REAL. Si cayó al reloj del servidor
+            devuelve el estado actual: rodar hacia atrás hasta una fecha
+            inventada es peor que no rodar. (En contexto de asesor ese caso ya
+            cortó antes con `fecha_desconocida`.)
+            """
+            if fecha_origen == "fallback_hoy":
+                d = {}
+                _ph = ",".join("?" * len(brokers))
+                for r in conn.execute(
+                        f"SELECT asset, SUM(quantity) q FROM positions "
+                        f"WHERE user_id=? AND is_cash=0 AND broker IN ({_ph}) "
+                        f"GROUP BY asset", (uid, *brokers)):
+                    d[r["asset"]] = (r["q"] or 0)
+                return d
+            q_, nr_ = _import_proyeccion.proyectar(
+                conn, uid, pair=list(brokers), fecha=seed_date)
+            _proy_no_rec.extend(nr_)
+            return q_
+
+        # 🔴 CON EL ASESOR, LA VARA ES OTRA — Y NO PORQUE MEREZCA MÁS CUIDADO.
+        # Es que la CONSECUENCIA es distinta. Cuando alguien sube su propia foto,
+        # ésta le completa la apertura: es aditivo y de bajo riesgo. Cuando un
+        # asesor la sube por un cliente, la foto va a DIRIGIR DECISIONES,
+        # incluida la de cerrar posiciones que "no están en el resumen". Un
+        # `not_in_snapshot` calculado contra una fecha inventada, con el override
+        # prendido, borra una tenencia real de una persona que no está mirando.
+        #
+        # Por eso el corte no se aplica a todos: hacerlo alcanzaría al 61% de las
+        # fotos —incluidas las 47 de Cocos, que son el 100% de ese parser, porque
+        # no lee la fecha— y rompería un flujo que hoy funciona para gente que en
+        # su mayoría no es asesor.
+        #
+        # El contexto se detecta comparando el uid AUTENTICADO (el asesor) con el
+        # efectivo (el cliente): si difieren, hay un tercero decidiendo sobre
+        # plata ajena. Mismo patrón que ya usan otros 5 endpoints.
+        _auth_uid = getattr(request.state, "rendi_auth_uid", uid)
+        es_contexto_asesor = _auth_uid != uid
+        motivo_corte = ("fecha_desconocida"
+                        if (es_contexto_asesor and fecha_origen == "fallback_hoy")
+                        else None)
 
         if is_ppi or is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol or is_inviu:
             # TODA foto rutea las posiciones en dólares al sibling '<broker> · USD'
@@ -28973,19 +29118,34 @@ def import_tenencia_preview(
             # mezclar magnitudes USD en el cash ARS del padre) y —clave— el override
             # SÍ toca los holdings en dólares (antes el path agregado los saltaba por
             # la guarda same-broker → la foto no pisaba nada en USD).
+            # Proyectado a la fecha de la foto (ver `_qty_a_fecha`), no el
+            # estado de hoy: sin esto una compra posterior al corte aparece
+            # como discrepancia contra el broker.
             def _cur_qty(bname):
-                d = {}
-                for r in conn.execute(
-                    "SELECT asset, SUM(quantity) q FROM positions "
-                    "WHERE user_id=? AND is_cash=0 AND broker=? GROUP BY asset",
-                    (uid, bname),
-                ):
-                    d[r["asset"]] = (r["q"] or 0)
-                return d
+                return _qty_a_fecha([bname])
 
             from importing.persister import broker_pair as _broker_pair
             pair = _broker_pair(conn, uid, broker)
 
+            # ⚠️ ESTE BLOQUE CORRE DESPUÉS DE `normalizar_tickers`, QUE YA FUSIONÓ.
+            #    `normalizar_tickers` fusiona los holdings por (ticker, moneda) y su
+            #    docstring explica por qué: dos holdings del mismo ticker hacen que
+            #    `compute_reconcile` compare CADA UNO contra la cantidad TOTAL de
+            #    Rendi y produzca DOS `over` del mismo activo, que sumados pueden
+            #    pasarse de lo que la persona tiene. El re-tag de abajo cambia
+            #    `h.currency` y NO vuelve a fusionar → si la foto trae el mismo bono
+            #    en las dos monedas y una de las patas se re-taggea a la otra, quedan
+            #    otra vez dos holdings con la misma (ticker, moneda).
+            #
+            #    NO ESTÁ MEDIDO y por eso no se toca: en prod no se guardan las
+            #    fotos, sólo las txs sintéticas que salieron de ellas, así que no
+            #    hay con qué reproducirlo. Es angosto (pide un bono amortizante
+            #    listado en las dos monedas y con `own_q == 0` en la suya), pero es
+            #    el único camino que se ve capaz de fabricar un `over` lo bastante
+            #    grande como para dejar una tenencia en cero. Si alguna vez se
+            #    toca este bloque: re-fusionar por (ticker, moneda) DESPUÉS del
+            #    re-tag es la mitad barata del arreglo.
+            #
             # Bono amortizante cross-currency: la foto puede reportar el bono en AR$
             # (valor en pesos) aunque el usuario lo OPERE en USD (p.ej. AL30D, que el
             # parser consolida al sibling '· USD'). Si respetáramos la moneda de la foto,
@@ -29070,13 +29230,8 @@ def import_tenencia_preview(
             # de más un activo cross-currency: si la foto lo clasifica en la moneda X
             # pero Rendi lo tiene en la Y, la partición X vería gap=qty y sembraría un
             # BUY duplicado (padre + sibling = ×2). Descontamos lo ya tenido en el par.
-            _pair_qty = {}
-            _pph = ",".join("?" * len(pair))
-            for r in conn.execute(
-                f"SELECT asset, SUM(quantity) q FROM positions "
-                f"WHERE user_id=? AND is_cash=0 AND broker IN ({_pph}) GROUP BY asset",
-                (uid, *pair)):
-                _pair_qty[r["asset"]] = (r["q"] or 0)
+            _pair_qty = _qty_a_fecha(pair)
+            current = _pair_qty
 
             def _cur_inv(bname):
                 d = {}
@@ -29088,7 +29243,13 @@ def import_tenencia_preview(
 
             seed_txs = []
             rec = _import_tenencia.ReconcileResult()
-            _ov = {"reduced": [], "removed": [], "skipped_manual": [], "capped": False}
+            # `particiones` guarda el `override_info` de CADA partición tal cual.
+            # 🔴 Los agregados de abajo son con PÉRDIDA (concatenan listas y hacen
+            # OR del cap), y el que va a medir necesita saber qué pasó en la pata
+            # en pesos y en la de dólares por separado — la hipótesis de doble
+            # partición se responde justamente comparando las dos.
+            _ov = {"reduced": [], "removed": [], "skipped_manual": [], "capped": False,
+                   "particiones": []}
             for ccy in ("ARS", "USD"):
                 hs = [h for h in snap.holdings if h.currency == ccy]
                 if not hs:
@@ -29096,31 +29257,78 @@ def import_tenencia_preview(
                 sub = broker if ccy == "ARS" else usd_broker
                 snap_ccy = _import_tenencia.TenenciaSnapshot(holdings=hs, date=snap.date)
                 cur_q = _cur_qty(sub)
-                r1 = _import_tenencia.compute_reconcile(cur_q, snap_ccy)
+                r1 = _import_tenencia.compute_reconcile(
+                    cur_q, snap_ccy, no_reconciliable_motivo=motivo_corte)
+                #
+                # ⚠️ LOS TRES BALDES SALEN DE ESTA COMPARACIÓN, PERO SÓLO DOS SE
+                #    CORRIGEN CROSS-PARTICIÓN. `compute_reconcile` midió contra
+                #    UN sub-broker (`cur_q`), no contra el par. Abajo:
+                #
+                #      · `not_in_snapshot` → se le saca lo que la foto trae en la
+                #        OTRA moneda (`_all_snap_tk`);
+                #      · `to_seed`         → se re-netea contra `_pair_qty`;
+                #      · `over`            → NO SE TOCA.
+                #
+                #    O sea que un activo partido entre el padre y el sibling
+                #    puede dar un `over` que no existe: la partición donde vive
+                #    la cantidad ve "Rendi tiene de más" contra la mitad de la
+                #    foto que le tocó. Es la asimetría de "arreglar una sola
+                #    pata" que en este repo ya salió cara tres veces.
+                #
+                #    NO SE ARREGLA ACÁ A CIEGAS, y el motivo es que no está
+                #    medido. Sobre la copia de prod del 2026-08-16 sólo 1 de los
+                #    21 `over` reales era de partición — pero ese número es un
+                #    PISO, no una medición: `_reducible()` ya bloquea los activos
+                #    que viven en el sibling, así que los `over` de partición se
+                #    filtran ANTES de aplicarse y no dejan rastro en la base.
+                #    Cuando `override_info` esté persistido se puede ver la tasa
+                #    real; recién ahí se sabe si la corrección hay que hacerla y
+                #    de qué lado.
+                #
                 # No borrar por 'ausencia' un activo que la foto SÍ trae en la OTRA
                 # moneda (mismo ticker cross-currency) — lo sacamos del not_in_snapshot.
                 r1.not_in_snapshot = [(a, q) for (a, q) in r1.not_in_snapshot
                                       if a not in _all_snap_tk]
                 # No SEEDEAR de más: el hueco real es vs lo tenido en TODO el par, no
                 # sólo en este sub-broker (un activo cross-currency ya está en el otro).
+                #
+                # 🔴 LA MISMA TOLERANCIA QUE `compute_reconcile`, Y NO ES DE
+                # ADORNO. Este re-neteo compara contra OTRO número (el par, no
+                # el sub-broker), así que puede fabricar un hueco que
+                # `compute_reconcile` ya había descartado: sub-broker en 0 y
+                # foto 90,10 entra como to_seed de 90,10, y acá netea contra
+                # 90,0963 del par → 0,0037 > 1e-6 → COMPRA sintética de
+                # redondeo, que se auto-aplica sin preguntar. Arreglar sólo
+                # `compute_reconcile` habría dejado esta puerta abierta: el
+                # medio arreglo que en este repo ya salió caro tres veces.
                 _seed = []
                 for h, _g in r1.to_seed:
-                    net = round(h.quantity - _pair_qty.get(h.ticker, 0), 6)
-                    if net > 1e-6:
+                    _pq = _pair_qty.get(h.ticker, 0)
+                    net = round(h.quantity - _pq, 6)
+                    if net > _import_tenencia.tolerancia_qty(_pq, h.quantity):
                         _seed.append((h, net))
                 r1.to_seed = _seed
+                # Los bonos amortizantes NO se auto-siembran: Rendi guarda el
+                # residual y la foto puede traer el nominal (ver
+                # `apartar_bonos_amortizantes`).
+                _import_tenencia.marcar_bonos_amortizantes(r1, cur_q)
+                # Lo ausente en la foto tampoco se cierra solo: cerrarlo
+                # registra una venta que no sabemos si paso.
+                _import_tenencia.marcar_ausentes(r1)
                 p_seed, p_ov = _tenencia_apply_override(
                     conn, uid, sub, pair, r1, _cur_inv(sub), cur_q, seed_date,
-                    complete=_complete, currency=ccy)
+                    complete=_complete, currency=ccy, gate_over=es_contexto_asesor)
                 seed_txs += p_seed
                 rec.matched += r1.matched
                 rec.to_seed += r1.to_seed
                 rec.over += r1.over
                 rec.not_in_snapshot += r1.not_in_snapshot
+                rec.no_reconciliable += r1.no_reconciliable
                 _ov["reduced"] += p_ov["reduced"]
                 _ov["removed"] += p_ov["removed"]
                 _ov["skipped_manual"] += p_ov["skipped_manual"]
                 _ov["capped"] = _ov["capped"] or p_ov["capped"]
+                _ov["particiones"].append(p_ov)
             override_info = _ov
             # row_index ÚNICO entre particiones: build_tenencia_seed_txs reinicia en
             # -20000 en cada llamada → ARS y USD colisionarían y load_session_for_confirm
@@ -29140,7 +29348,12 @@ def import_tenencia_preview(
             ):
                 current[r["asset"]] = current.get(r["asset"], 0.0) + (r["q"] or 0)
                 invested_by_asset[r["asset"]] = invested_by_asset.get(r["asset"], 0.0) + (r["inv"] or 0)
-            rec = _import_tenencia.compute_reconcile(current, snap)
+            # Proyectado a la fecha de la foto (ver `_qty_a_fecha`).
+            current = _qty_a_fecha(pair)  # proyectado a la fecha de la foto
+            rec = _import_tenencia.compute_reconcile(
+                current, snap, no_reconciliable_motivo=motivo_corte)
+            _import_tenencia.marcar_bonos_amortizantes(rec, current)
+            _import_tenencia.marcar_ausentes(rec)
 
             # `complete` = la foto es TOTAL (todas las clases + monedas) → habilita
             # BORRAR not_in_snapshot. Balanz siempre; IEB sólo si el parser NO dejó
@@ -29156,7 +29369,7 @@ def import_tenencia_preview(
                 # transfer_out reversibles + guardas + cap 50%).
                 seed_txs, override_info = _tenencia_apply_override(
                     conn, uid, broker, pair, rec, invested_by_asset, current,
-                    seed_date, complete=_complete)
+                    seed_date, complete=_complete, gate_over=es_contexto_asesor)
             else:
                 override_info = None
                 seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
@@ -29241,6 +29454,35 @@ def import_tenencia_preview(
         # Completitud de la lectura (sólo la puebla el parser de IEB por ahora): si
         # hay warnings, la foto es PARCIAL → el override NO borró not_in_snapshot
         # (complete=False arriba). El frontend lo muestra.
+        # Lo que la proyección no pudo rodar hacia atrás (manual, vencimiento,
+        # split) entra al MISMO balde que el resto: el asesor ve una sola lista
+        # de "de esto no sé", no dos mecanismos distintos.
+        if _proy_no_rec:
+            rec.no_reconciliable += _proy_no_rec
+        if fecha_origen != "fallback_hoy":
+            _ver = _import_proyeccion.verificar_contra_snapshot(
+                conn, uid, seed_date, current)
+            # 🔴 `estado`, NO un booleano. Antes esto era `verifica: _falla is
+            # None`, y `None` significaba DOS cosas opuestas: "coincide" y "no
+            # había con qué comparar". El campo afirmaba una verificación que en
+            # el segundo caso no existió.
+            proy_info = {"fecha": seed_date, "estado": _ver["estado"],
+                         "snapshot_fecha": _ver.get("snapshot_fecha"),
+                         "detalle": _ver.get("detalle"),
+                         "motivo_sin_referencia": _ver.get("motivo_sin_referencia")}
+            # Sólo el DESACUERDO es un ítem a decidir. `sin_referencia` no es un
+            # activo dudoso: es que toda la comparación quedó sin respaldo, y eso
+            # se dice una vez arriba, no una vez por activo.
+            if _ver["estado"] == _import_proyeccion.ESTADO_NO_COINCIDE:
+                rec.no_reconciliable.append(_ver)
+
+        # La composición sólo está "verificada" si el cron efectivamente tenía
+        # con qué contrastar Y coincidió. Sin proyección (fecha inventada) o sin
+        # snapshot de referencia, no se verificó nada.
+        _conf_composicion = ("verificada_composicion"
+                             if (proy_info or {}).get("estado") == _import_proyeccion.ESTADO_OK
+                             else "sin_verificar_composicion")
+
         _warnings = list(getattr(snap, "warnings", []) or [])
         # `foto_completa` significa "el PARSER leyó la foto entera" y se calcula
         # ANTES de cualquier otro aviso: mezclarle avisos de otra naturaleza le
@@ -29290,9 +29532,39 @@ def import_tenencia_preview(
         # Si no hay txs PERO sí hay FCI para fijar el valor, igual creamos el batch:
         # el precio de la foto de esos fondos hay que estamparlo aunque las cantidades
         # y el cash ya coincidan (el valor mostrado seguiría a costo si no).
+        # 🔴 "No hay nada que hacer" y "no pudimos comprobar nada" son cosas
+        # OPUESTAS, y sin esta rama salían con el mismo mensaje. Cuando el corte
+        # está activo, `to_seed` queda vacío por construcción → el flujo caía en
+        # "tu cartera ya coincide con la foto", que es justo la mentira más cara
+        # posible: le diría al asesor que verificó cuando no verificó nada.
+        # 🔴 SOLO EL CORTE GLOBAL corta. `no_reconciliable` tiene ahora DOS
+        # poblaciones distintas y confundirlas rompe el flujo entero:
+        #
+        #   · el CORTE (motivo_corte): no se pudo comparar NADA — la fecha es
+        #     inventada. Ahí no hay veredicto que dar y se devuelve sólo eso.
+        #   · los ITEMS POR ACTIVO (bono amortizante, datos manuales, split,
+        #     vencimiento): el resto de la cartera SÍ se concilió bien. Cortar
+        #     acá tiraría un reconcile válido por un activo dudoso.
+        if motivo_corte and rec.no_reconciliable:
+            return {
+                "session_id": None, "nothing_to_do": True,
+                "no_reconciliable": rec.no_reconciliable,
+                "motivo": motivo_corte,
+                "fecha_origen": fecha_origen, "fecha_usada": seed_date,
+                "tickers_normalizados": tickers_normalizados,
+                "foto_completa": _foto_completa, "warnings": _warnings,
+                "message": ("No pudimos leer la fecha de este resumen, así que no "
+                            "sabemos a qué día corresponde. Comparar la cartera de "
+                            "hoy contra una foto de fecha desconocida puede marcar "
+                            "como sobrante algo que se compró después, o como "
+                            "faltante algo que se vendió. Subí un resumen que "
+                            "indique su fecha."),
+            }
         if not seed_txs and not _fund_overrides:
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "foto_completa": _foto_completa, "warnings": _warnings,
+                    "tickers_normalizados": tickers_normalizados,
+                    "fecha_origen": fecha_origen, "fecha_usada": seed_date,
                     "avisos_escala": _avisos_escala,
                     "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}
         with conn:
@@ -29302,6 +29574,12 @@ def import_tenencia_preview(
             if _fund_overrides:
                 conn.execute("UPDATE import_batches SET fund_price_overrides=? WHERE id=?",
                              (json.dumps(_fund_overrides), sid))
+            # Lo que la foto DECIDIÓ, guardado con el batch. Se escribe SIEMPRE que
+            # haya override (no sólo cuando aplicó algo): un batch donde el cap
+            # frenó todo es justamente el que hoy no deja rastro.
+            if override_info:
+                conn.execute("UPDATE import_batches SET override_info=? WHERE id=?",
+                             (json.dumps(override_info, default=str), sid))
         return {
             "session_id": sid,
             "date": snap.date,
@@ -29315,6 +29593,49 @@ def import_tenencia_preview(
             "over": [{"ticker": t, "rendi": rq, "tenencia": tq} for t, rq, tq in rec.over],
             "not_in_snapshot": [{"ticker": t, "qty": q} for t, q in rec.not_in_snapshot],
             "override": override_info,
+            # 🔴 LOS BALDES NO VALEN LO MISMO Y NO PUEDEN MOSTRARSE IGUAL.
+            # La guarda que respalda la proyección (`verificar_contra_snapshot`)
+            # compara COMPOSICIÓN, porque `snapshots.holdings_json` guarda
+            # `value_usd` y no cantidades. O sea:
+            #
+            #   · `not_in_snapshot` y `to_seed` son de COMPOSICIÓN —¿está el
+            #     activo o no?— y la verificación los respalda de lleno: 98,6%
+            #     de composición exacta sobre 3.855 pares (usuario, fecha).
+            #   · `over` es de CANTIDAD —¿cuánto hay?— y la verificación NO lo
+            #     mira. Y es justo el balde que puede terminar REDUCIENDO una
+            #     tenencia.
+            #
+            # Presentarlos con la misma seguridad sería afirmar una confianza
+            # que no medimos. El frontend usa esto para diferenciarlos.
+            # 🔴 SALE DEL ESTADO REAL, NO DE UNA CONSTANTE. Esto estaba
+            # HARDCODEADO en "verificada_composicion", así que el chip decía
+            # "verificado contra tu histórico" SIEMPRE — incluso cuando no había
+            # un solo snapshot del cron con el que contrastar, o cuando la fecha
+            # cayó al reloj del servidor y no hubo proyección ninguna. Es el
+            # mismo error que el `verifica` booleano, un nivel más arriba: la
+            # señal decía OK y medía otra cosa.
+            "confianza": {
+                "to_seed": _conf_composicion,
+                "not_in_snapshot": _conf_composicion,
+                "over": "sin_verificar_cantidad",
+                "detalle": ("la verificación contra el snapshot del cron compara "
+                            "QUÉ activos había, no CUÁNTOS: `holdings_json` guarda "
+                            "valor en USD. Por eso `over` —el único balde que "
+                            "depende de cantidades, y el que puede reducir una "
+                            "tenencia— queda sin respaldo independiente."),
+            },
+            "proyeccion": proy_info,
+            # Lo que le hicimos a los tickers de la foto antes de compararlos.
+            # Viaja SIEMPRE, aunque esté vacío: una transformación silenciosa
+            # sobre los datos de alguien es lo que este flujo existe para evitar.
+            "tickers_normalizados": tickers_normalizados,
+            # De dónde salió la fecha con la que se sellan los lotes de apertura.
+            # 'fallback_hoy' significa que NO se pudo leer del archivo y se usó
+            # el reloj del servidor — o sea que la comparación contra el estado
+            # actual se apoya en una premisa que no se pudo verificar.
+            "fecha_origen": fecha_origen,
+            "fecha_usada": seed_date,
+            "no_reconciliable": rec.no_reconciliable,
         }
     finally:
         conn.close()
@@ -29417,6 +29738,21 @@ def import_preview(
 class ImportConfirmIn(BaseModel):
     session_id: str = Field(..., min_length=8, max_length=64)
     skip_row_indices: Optional[list] = None  # filas a omitir en este confirm
+    # 🔴 OPT-IN, al reves que `skip_row_indices`. Las filas sinteticas marcadas
+    # con `[requiere-aprobacion]` NO se aplican solas: hay que nombrarlas aca.
+    # Hoy son los bonos amortizantes: Rendi guarda el nominal RESIDUAL
+    # (`sweep_bond_amortizations` lo re-escala en cada import) y la foto trae lo
+    # que el broker haya decidido reportar. NO SABEMOS CUAL — ver el detalle en
+    # `tenencia.marcar_bonos_amortizantes`. Como no se puede distinguir un hueco
+    # de apertura REAL de un desajuste de escala, sembrar el "faltante" puede
+    # fabricar una compra que nunca paso. Falla CERRADO: si nadie las aprueba,
+    # no entran.
+    #
+    # Por TICKER y no por row_index: el camino particionado RENUMERA los indices
+    # sinteticos al combinar las particiones ARS y USD (`row_index = -20000 - i`),
+    # asi que un indice devuelto en el preview puede no ser el mismo en el
+    # confirm. El ticker es lo que el asesor ve y lo que no se mueve.
+    aprobar_tickers: Optional[list] = None
     # Estado inicial opcional: cash + posiciones que el usuario tenía antes
     # del primer movimiento del CSV. Si está presente, generamos DEPOSITs +
     # BUYs sintéticos al `seed_date` y re-validamos las filas que antes habían
@@ -29525,6 +29861,14 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
 
             # Filtrar filas que el usuario decidió omitir
             skip_set = set(data.skip_row_indices or [])
+            # Y las que requieren aprobación EXPLÍCITA (opt-in): se omiten salvo
+            # que vengan nombradas. Ver `tenencia.MARCA_APROBACION`.
+            _aprobados = {str(x).strip().upper()
+                          for x in (data.aprobar_tickers or [])}
+            for _t in txs:
+                if (_import_tenencia.requiere_aprobacion(getattr(_t, "notes", None))
+                        and (getattr(_t, "asset_symbol", "") or "").upper() not in _aprobados):
+                    skip_set.add(_t.row_index)
 
             # ── Anti-duplicación de re-importación ────────────────────────────
             # Omitimos automáticamente las filas cuyo fingerprint (fecha+broker+

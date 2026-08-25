@@ -259,6 +259,7 @@ class BullMarketParser(Parser):
     platform = "bullmarket"
     platform_label = "Bull Market"
     export_label = "Cuenta Corriente (Excel) o Movimientos (CSV)"
+    tenencia_format = "bullmarket_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}

@@ -511,6 +511,7 @@ class IolParser(Parser):
     platform = "iol"
     platform_label = "IOL (InvertirOnline)"
     export_label = "Mi Cuenta → Movimientos → Detalle de Movimientos"
+    tenencia_format = "iol_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}

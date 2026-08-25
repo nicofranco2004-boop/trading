@@ -55,6 +55,16 @@ PERMITIDOS = {
         "admin). Mismo problema y mismo lugar en el plan.",
     ("seed.py", "seed"):
         "Script de desarrollo, no corre en producción.",
+    ("scripts/escala_foto_bonos.py", "<module>"):
+        "Herramienta de MEDICIÓN, no código de la app: abre una COPIA de prod en "
+        "`immutable=1` para contrastar la escala (nominal vs residual) que reporta "
+        "cada broker en su foto de tenencia. No corre en el servidor.",
+    ("scripts/verificar_proyeccion.py", "<module>"):
+        "Herramienta de MEDICIÓN, no código de la app: abre una COPIA de la base "
+        "de producción en modo `immutable=1` (sólo lectura, físicamente incapaz "
+        "de escribir) para contrastar la proyección hacia atrás contra "
+        "`snapshots.holdings_json` del cron. No corre en el servidor y no toca "
+        "la base viva.",
     ("scripts/copiar_a_postgres.py", "abrir_origen"):
         "ES el copiador: su trabajo es leer la SQLite para migrarla a Postgres, "
         "así que abrirla directo no es saltearse el interruptor, es el punto. Y la "

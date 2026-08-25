@@ -2303,7 +2303,7 @@ class ReconstruccionVsMedicionTest(AdvisorBase):
                          "VALUES (?,?,?)", (self.client_uid, broker, ccy))
             conn.execute(
                 "INSERT INTO import_batches (id,user_id,broker,parser_format,"
-                "file_hash,status) VALUES (?,?,?,'test',?,'done')",
+                "file_hash,status) VALUES (?,?,?,'test',?,'confirmed')",
                 (bid, self.client_uid, broker, bid))
             conn.commit()
         finally:
@@ -2440,7 +2440,7 @@ class FlujosDeterministaTest(AdvisorBase):
         try:
             conn.execute(
                 "INSERT INTO import_batches (id,user_id,broker,parser_format,"
-                "file_hash,status) VALUES (?,?,?,'test',?,'done')",
+                "file_hash,status) VALUES (?,?,?,'test',?,'confirmed')",
                 (bid, uid, broker, bid))
             conn.commit()
         finally:
@@ -2611,7 +2611,7 @@ class LedgerReplayTest(AdvisorBase):
         try:
             conn.execute(
                 "INSERT INTO import_batches (id,user_id,broker,parser_format,"
-                "file_hash,status) VALUES (?,?,'Cocos','test',?,'done')",
+                "file_hash,status) VALUES (?,?,'Cocos','test',?,'confirmed')",
                 (bid, uid, bid))
             conn.commit()
         finally:

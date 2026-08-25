@@ -184,6 +184,7 @@ class PpiParser(Parser):
     platform = "ppi"
     platform_label = "PPI (Portafolio Personal)"
     export_label = "Movimientos (Excel)"
+    tenencia_format = "ppi_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
         cols = _resolve_columns(headers)

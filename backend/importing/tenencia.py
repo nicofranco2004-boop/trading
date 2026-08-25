@@ -58,8 +58,13 @@ _SECTION_RE = re.compile(
 # Fila de tenencia: ticker (2-8 alfanum), nombre (lazy), 3 números AR al final.
 _ROW_RE = re.compile(
     r"^([A-Z0-9]{2,8})\s+(.+?)\s+(" + _AR_NUM + r")\s+(" + _AR_NUM + r")\s+(" + _AR_NUM + r")\s*$")
-_DATE_RE = re.compile(r"Tenencias?\s+al\s+(\d{2}/\d{2}/\d{4})", re.IGNORECASE)
-_TOTAL_RE = re.compile(r"Tenencias?\s+al\s+\d{2}/\d{2}/\d{4}\s+ARS\s+(" + _AR_NUM + r")", re.IGNORECASE)
+# Día y mes de 1 O 2 dígitos. Es el fix de `8cd5b120`, que se aplicó a todos los
+# parsers de MOVIMIENTOS y nunca llegó a los de FOTO: un "Tenencias al 9/6/2026"
+# no matcheaba y la fecha caía al fallback de HOY, en silencio. `_IOL_DATE_RE` ya
+# lo hacía bien y es, no por casualidad, el único parser de foto con 0 fallbacks
+# medidos en producción (0 de 25).
+_DATE_RE = re.compile(r"Tenencias?\s+al\s+(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE)
+_TOTAL_RE = re.compile(r"Tenencias?\s+al\s+\d{1,2}/\d{1,2}/\d{4}\s+ARS\s+(" + _AR_NUM + r")", re.IGNORECASE)
 
 
 def _num(s: str) -> float:
@@ -94,8 +99,16 @@ class TenenciaSnapshot:
 
 
 def _to_iso(d: str) -> Optional[str]:
-    m = re.match(r"(\d{2})/(\d{2})/(\d{4})", d or "")
-    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else None
+    """DD/MM/YYYY → YYYY-MM-DD, aceptando día y mes de 1 dígito.
+
+    El zero-padding va por `int()` y no por concatenación: con "9/6/2026" el
+    string crudo daba "2026-6-9", que ordena mal contra cualquier otra fecha
+    ISO y rompe los `date <= ?` del replay sin que nada avise.
+    """
+    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", d or "")
+    if not m:
+        return None
+    return f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
 
 
 def _canon_fund_ticker(ticker: str) -> str:
@@ -135,24 +148,231 @@ class ReconcileResult:
     to_seed: List[tuple] = field(default_factory=list)            # [(Holding, gap_qty)] huecos a crear como lote de apertura
     over: List[tuple] = field(default_factory=list)              # [(ticker, rendi_qty, snap_qty)] Rendi tiene de MÁS → revisar
     not_in_snapshot: List[tuple] = field(default_factory=list)   # [(ticker, rendi_qty)] en Rendi pero no en la foto (vendido?)
+    # [{ticker, motivo, rendi_qty, foto_qty}] — el activo NO se pudo comparar
+    # con confianza. NO es un quinto resultado: es la negativa a producir uno.
+    no_reconciliable: List[dict] = field(default_factory=list)
+    # Tickers cuya tx sintetica NO se aplica sola: la arma igual (para que corran
+    # el ruteo de moneda y la herencia de costo) pero sale marcada y el confirm la
+    # omite salvo aprobacion explicita. Vive ACA y no escondida en `Holding.name`
+    # —como estaba al principio— porque ahora la usan dos marcadores distintos y
+    # alcanza tanto a COMPRAS sinteticas (to_seed) como a VENTAS (not_in_snapshot).
+    requieren_aprobacion: set = field(default_factory=set)
+
+
+_FECHA_EN_NOMBRE = re.compile(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})")
+
+
+def fecha_de_nombre_archivo(nombre: str) -> Optional[str]:
+    """La fecha que el broker puso en el NOMBRE del export. None si no hay.
+
+    Existe por Cocos: `parse_cocos_tenencia` no puede leer la fecha del
+    contenido —el CSV es un header exacto de 5 columnas
+    (instrumento;cantidad;precio;moneda;total) sin preámbulo ni columna de
+    fecha— así que las 47 fotos de Cocos en producción caen todas al fallback
+    de "hoy". Y Cocos es el broker que más importa: 42% de cobertura de foto,
+    el 53% de todos los usuarios que quedan sin verificar.
+
+    Pero la fecha SÍ está: 82 de 82 exports de Cocos se llaman
+    `portfolio_report_YYYYMMDD.csv`. Balanz hace lo mismo
+    (`ResumenDeCuenta_20260706.pdf`), así que sirve de red para varios.
+
+    ⚠️ ES EVIDENCIA MÁS DÉBIL QUE EL CONTENIDO, y por eso el llamador la reporta
+    con un `fecha_origen` PROPIO en vez de hacerla pasar por leída del archivo:
+    el nombre lo puede cambiar cualquiera, y el sufijo `(1)` de las descargas
+    duplicadas muestra que el navegador ya lo toca. Quien decide sobre plata
+    ajena tiene que poder ver de dónde salió la fecha.
+
+    Descarta lo que no puede ser una fecha (mes 13, día 32) en vez de devolver
+    un ISO inválido que después ordena mal en cualquier `date <= ?`.
+    """
+    m = _FECHA_EN_NOMBRE.search(nombre or "")
+    if not m:
+        return None
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not (1 <= mo <= 12 and 1 <= d <= 31):
+        return None
+    return f"{y:04d}-{mo:02d}-{d:02d}"
+
+
+def normalizar_tickers(snapshot: "TenenciaSnapshot") -> List[dict]:
+    """Pasa los tickers de la FOTO por la misma canonicalización que los movimientos.
+
+    🔴 EL BUG QUE ARREGLA. `compute_reconcile` matchea por IGUALDAD EXACTA DE
+    STRING contra `positions.asset`, y `positions.asset` viene del normalizador,
+    que sí aplica `consolidate_cd` (`normalizer.py:372`). La foto no pasaba por
+    ahí. Resultado: la misma tenencia entra dos veces con nombres distintos —
+    AL30D en la foto contra AL30 en Rendi— y el reconcile la reporta como DOS
+    problemas a la vez:
+
+      · un `not_in_snapshot` FALSO (AL30 está en Rendi y "no está en la foto"), y
+      · un `to_seed` FALSO (AL30D está en la foto y "falta en Rendi").
+
+    El primero es el peligroso: con el override prendido, cerrar ese activo
+    ausente con una venta sintética BORRA una tenencia que el cliente SÍ tiene.
+    En prod ya hay 7 tickers con sufijo D grabados en `positions` de 4 usuarios,
+    o sea que el desalineamiento no es hipotético.
+
+    FUSIONA lo que colapsa. Si la foto trae AL30 y AL30D por separado —que es
+    justo lo que pasa mientras el conducto MEP está abierto—, después de
+    consolidar los dos son AL30. Dejarlos como dos holdings sería peor que no
+    hacer nada: `compute_reconcile` itera holdings y compararía CADA UNO contra
+    la cantidad TOTAL de Rendi, produciendo un `over` y un `to_seed` del mismo
+    activo. Se fusionan por (ticker, moneda) — nunca entre monedas, porque el
+    camino de PPI particiona la foto por moneda y concilia cada parte contra su
+    sub-broker.
+
+    Devuelve el detalle de lo que cambió. No es decorativo: una transformación
+    silenciosa sobre los datos de alguien es exactamente lo que este flujo
+    existe para no hacer, y el asesor tiene que poder ver que su AL30D se leyó
+    como AL30 antes de confirmar.
+    """
+    from .tickers_cd import consolidate_cd
+    cambios: List[dict] = []
+    for h in snapshot.holdings:
+        antes = h.ticker
+        despues = consolidate_cd(antes, h.asset_type)
+        if despues and despues != antes:
+            h.ticker = despues
+            cambios.append({"de": antes, "a": despues,
+                            "asset_type": h.asset_type, "motivo": "sufijo_dolar"})
+
+    # Fusión por (ticker, moneda), preservando el orden de aparición.
+    fusionados: dict = {}
+    orden: List[tuple] = []
+    for h in snapshot.holdings:
+        k = (h.ticker, (h.currency or "").upper())
+        if k not in fusionados:
+            fusionados[k] = h
+            orden.append(k)
+            continue
+        prev = fusionados[k]
+        cambios.append({"de": h.ticker, "a": h.ticker, "asset_type": h.asset_type,
+                        "motivo": "fusion",
+                        "detalle": (f"dos filas de la foto quedaron en el mismo "
+                                    f"ticker: {prev.quantity} + {h.quantity}")})
+        prev.quantity += h.quantity
+        prev.value += h.value
+        # El precio se re-deriva del total: es lo que hace el resto del módulo
+        # (price_per1 = value/quantity) y auto-resuelve el per-100 de los bonos.
+        prev.price_per1 = (prev.value / prev.quantity) if prev.quantity else 0.0
+        prev.per100 = prev.per100 or h.per100
+    if len(fusionados) != len(snapshot.holdings):
+        snapshot.holdings = [fusionados[k] for k in orden]
+    return cambios
+
+
+# ── TOLERANCIA DE CANTIDAD ───────────────────────────────────────────────────
+# La foto NO reporta con la precisión del ledger, y la diferencia no es
+# información: es el redondeo del broker.
+EPS_QTY_ABS = 1e-6     # piso: ruido de float
+REL_QTY = 1e-4         # 0,01% de la tenencia comparada
+
+
+def tolerancia_qty(rendi_qty, foto_qty, *, rel: float = REL_QTY,
+                   abs_min: float = EPS_QTY_ABS) -> float:
+    """Desde qué diferencia de cantidad hay algo que decidir.
+
+    🔴 EL BUG QUE ARREGLA — Y ESTABA VIVO EN PRODUCCIÓN, no en el flujo del
+    asesor (que corrió cero veces) sino en el de cualquiera que sube su propia
+    foto.
+
+    `compute_reconcile` comparaba con un epsilon ABSOLUTO de 1e-6. La foto
+    reporta cuotapartes de FCI/money market con 2 decimales, así que una
+    tenencia de 90,1037 contra una foto de 90,10 daba un gap de 0,0037 → y eso
+    se convertía en un veredicto y en una fila sintética.
+
+    Medido sobre la copia de prod del 2026-08-16, 152 fotos confirmadas, y
+    re-corrido con ESTA función (no con una reimplementación de la regla):
+    los mismos insumos con `rel_eps=0` reproducen el comportamiento viejo.
+
+      · `over`:    38 de 60 eran esto → una VENTA sintética de 0,004 cuotapartes.
+      · `to_seed`: 39 de 559 → una COMPRA sintética. Y `to_seed` es el único
+        balde que SE AUTO-APLICA SIN PREGUNTAR.
+      · 77 filas sintéticas que ya no se crean, sobre 52 usuarios. El 100% en
+        FCI / money market (FCI:*, COCOSPPA, BCMMA, LECAPSA, INSTITUA, OPPORA,
+        PER3A, IOL*). Ningún caso cambia de balde: sólo pasan a `matched`.
+
+      (559 y no 580: 21 `to_seed` no se pueden reconstruir — 13 tuvieron
+       movimientos posteriores y 8 ya no tienen posición, así que no hay contra
+       qué comparar. No se cuentan ni a favor ni en contra.)
+
+    POR QUÉ RELATIVA Y NO UN ABSOLUTO MÁS GRANDE. Un umbral absoluto no
+    significa lo mismo en un FCI de 500.000 cuotapartes que en 0,05 BTC. Y la
+    medición lo confirma: ordenando TODOS los gaps (over + to_seed) por
+    `gap / tenencia`, hay un hueco limpio —
+
+        ruido    ...  4,1e-5   (0,0037 sobre 90,10 — u1005, FCI:COCOS-RENDIMIENTO-A)
+        ─────────── hueco x4,5 ───────────
+        señal    1,8e-4  ...   (5,54 sobre 30.066 — u549, ADBAICA)
+        entero   2,5e-3  ...   (1 lámina sobre 401 — u914, TRAN)
+
+    `rel = 1e-4` cae adentro del hueco: 2,4× arriba del ruido más grande medido
+    y 1,8× abajo de la primera señal. Y NINGUNO de los 21 `over` reales se
+    toca — el más chico en relativo es 1,86e-2 (u329 SAMI, 3 láminas sobre 161:
+    186× arriba del corte).
+
+    ⚠️ MÍNIMO O MÁXIMO DA LO MISMO, y conviene dejarlo escrito para que nadie
+    lo "arregle". La primera versión de este comentario decía que el mínimo
+    protegía de un caso patológico (una tenencia corrompida y enorme del lado
+    de Rendi agrandando la tolerancia). Es falso, y la cuenta lo cierra: si
+    `gap <= rel·max` entonces las dos puntas difieren en menos que `rel`, o sea
+    `min >= max·(1-rel)`, así que los dos umbrales quedan a un factor 0,9999 uno
+    del otro. Verificado además sobre 200.000 pares al azar: CERO casos donde
+    difiera el veredicto. Se usa el mínimo porque nunca es el más permisivo de
+    los dos, no porque cambie algo.
+    """
+    return max(abs_min, rel * min(abs(rendi_qty or 0.0), abs(foto_qty or 0.0)))
 
 
 def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
-                      eps: float = 1e-6) -> ReconcileResult:
+                      eps: float = EPS_QTY_ABS, rel_eps: float = REL_QTY,
+                      no_reconciliable_motivo: str = None) -> ReconcileResult:
     """Concilia la foto (Tenencia = verdad) contra lo que Rendi YA tiene por activo
     (sumando broker padre + sibling '· USD'). Por activo de la foto:
       • Rendi == foto  → matched (no se toca → NO duplica).
       • Rendi <  foto  → seedea SOLO la diferencia (el hueco comprado antes de la
                          ventana de la Cuenta Corriente) como lote de apertura.
       • Rendi >  foto  → over (la foto manda; se flaggea para ajustar).
-    Lo que Rendi tiene y la foto NO → not_in_snapshot (vendido / a revisar)."""
+    Lo que Rendi tiene y la foto NO → not_in_snapshot (vendido / a revisar).
+
+    `no_reconciliable_motivo` corta de raíz: con un motivo, TODO va a
+    `no_reconciliable` y los otros baldes quedan vacíos. No es un modo
+    defensivo de más — es la única respuesta honesta cuando la comparación no
+    se puede hacer.
+
+    El caso que lo motivó: esta función NO recibe fechas, así que compara la
+    foto contra el estado de HOY. Eso vale sólo si la foto ES de hoy. Cuando el
+    endpoint no pudo leer la fecha del archivo cae al reloj del servidor
+    (medido: 93 de 152 fotos confirmadas en prod, y `parse_cocos_tenencia` no
+    setea fecha NUNCA), o sea que compara contra una fecha INVENTADA. Mostrarle
+    a alguien un `over` o un `not_in_snapshot` salido de ahí, y encima pedirle
+    que decida si borra una tenencia, es peor que no mostrarle nada.
+    """
+    if no_reconciliable_motivo:
+        res = ReconcileResult()
+        vistos = set()
+        for h in snapshot.holdings:
+            vistos.add(h.ticker)
+            res.no_reconciliable.append({
+                "ticker": h.ticker, "motivo": no_reconciliable_motivo,
+                "rendi_qty": current_qty_by_asset.get(h.ticker, 0.0),
+                "foto_qty": h.quantity})
+        for asset, q in current_qty_by_asset.items():
+            if asset not in vistos and abs(q) > eps:
+                res.no_reconciliable.append({
+                    "ticker": asset, "motivo": no_reconciliable_motivo,
+                    "rendi_qty": q, "foto_qty": None})
+        return res
+
     res = ReconcileResult()
     snap_tickers = set()
     for h in snapshot.holdings:
         snap_tickers.add(h.ticker)
         rq = current_qty_by_asset.get(h.ticker, 0.0)
         gap = h.quantity - rq
-        if abs(gap) <= eps:
+        # Tolerancia RELATIVA a la tenencia comparada: la foto redondea, y ese
+        # redondeo no es un veredicto (ver `tolerancia_qty`).
+        if abs(gap) <= tolerancia_qty(rq, h.quantity, rel=rel_eps, abs_min=eps):
             res.matched.append(h.ticker)
         elif gap > 0:
             res.to_seed.append((h, round(gap, 6)))
@@ -164,6 +384,211 @@ def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
     return res
 
 
+MOTIVO_ESCALA_BONO = "escala_bono_amortizante"
+
+# Marca en `notes` de una tx sintética que NO se aplica sola. El confirm la
+# omite salvo que su row_index venga en `aprobar_row_indices`.
+#
+# 🔴 VA EN LA FILA Y NO EN UNA LISTA APARTE, y es deliberado: `skip_row_indices`
+# —el mecanismo que ya existía— es OPT-OUT, o sea que una fila se aplica salvo
+# que alguien se acuerde de omitirla. Para esto hace falta lo contrario. Con la
+# marca en la propia fila, el default es NO aplicar aunque el frontend no
+# implemente nada: falla CERRADO.
+MARCA_APROBACION = "[requiere-aprobacion]"
+
+
+def requiere_aprobacion(notes: Optional[str]) -> bool:
+    return MARCA_APROBACION in (notes or "")
+
+
+def marcar_bonos_amortizantes(rec: ReconcileResult,
+                              qty_actual: dict = None,
+                              eps: float = 1e-6) -> int:
+    """Marca los bonos amortizantes de `to_seed` como pendientes de aprobación.
+
+    NO los saca del balde: la tx sintética se construye igual, y con eso siguen
+    corriendo el ruteo cross-currency (el bono va a la partición donde viven sus
+    lotes, no duplicado en dos monedas) y la herencia del costo unitario del
+    lote existente en vez del precio en pesos de la foto. Esa lógica costó
+    trabajo y su test la protege.
+
+    Lo que cambia es QUIÉN DECIDE, no qué pasa cuando se decide.
+
+    ⚠️ POR QUÉ NO SE NORMALIZA LA ESCALA, aunque sería lo obvio.
+    Una primera medición dijo que la foto trae el nominal en 18 de 26 casos.
+    ERA UN ARTEFACTO: el denominador salía de una suma ingenua de BUY−SELL del
+    ledger, que es justo la fuente que este trabajo ya había declarado poco
+    confiable — el razonamiento se mordía la cola.
+
+    Re-medido sin tocar el ledger, sobre la muestra limpia (batches de foto
+    REVERTIDOS, que no contaminaron `positions` con su propio seed) y usando
+    `ratio = positions_a_la_fecha / foto`, que debería dar `residual_factor(D)`
+    si la foto fuera nominal y 1 si fuera residual:
+
+        16 de 16 casos: NI UNO de los dos.
+        Y 7 de 16 con `positions_a_la_fecha = 0` — la persona no tenía NADA de
+        ese bono ese día, o sea que el seed era un hueco de apertura genuino.
+
+    Conclusión: la hipótesis del nominal NO se sostiene, y no hay una escala que
+    normalizar. Lo que hay es que un `to_seed` sobre un bono amortizante puede
+    ser un hueco real o un desajuste, y desde acá no se distinguen. Por eso va a
+    decisión y no a una conversión automática.
+
+    🔴 `to_seed` ES EL ÚNICO BALDE QUE SE AUTO-APLICA SIN PREGUNTAR, y sobre un
+    bono amortizante su premisa no se cumple.
+
+    `positions` guarda el nominal RESIDUAL: `sweep_bond_amortizations` lo
+    re-escala por `residual_factor(hoy)` en cada confirmación de import
+    (`maturity.py:390-406`). La foto trae lo que el broker haya decidido
+    reportar, y si reporta el nominal ORIGINAL es sistemáticamente más grande.
+
+    Rendi < foto → `to_seed` → y `to_seed` fabrica una COMPRA sintética. O sea
+    que sin esta guarda, cada foto de una cuenta con AL30/GD30/AL29/GD29 —que en
+    carteras argentinas es casi todas— inventa una compra que nunca pasó, en
+    silencio, y encima con el sello de "esto lo confirma el resumen del broker".
+
+    El camino de la foto NO aplica `residual_factor` en ningún lado: sólo lo
+    hacen `maturity.py` y `recompute_backfill.py`, que son los que ESCRIBEN
+    `positions`. Así que las dos puntas de la comparación están en escalas
+    distintas y nadie las reconcilia.
+
+    Mientras no se sepa qué reporta cada broker, estos activos salen a decisión
+    del asesor como el resto: `no_reconciliable`. Es la respuesta honesta —
+    "no sé si te falta esto o si estamos midiendo distinto".
+    """
+    from pricing.bond_amortization import is_amortizing_bond
+    qty_actual = qty_actual or {}
+    marcados = 0
+    for h, gap in rec.to_seed:
+        if not is_amortizing_bond(h.ticker):
+            continue
+        # 🔴 EL DISCRIMINADOR: si Rendi no tenia NADA de este bono a la fecha de
+        # la foto, no puede haber desajuste de escala — no hay residual del que
+        # diferir. Es un hueco de apertura y punto, asi que se auto-aplica como
+        # cualquier otro `to_seed`.
+        #
+        # Sale de la propia medicion: 7 de los 16 casos de la muestra limpia
+        # tenian `positions = 0` a esa fecha. Sin esta division, la guarda
+        # metia friccion en casi la mitad de los casos sin ninguna ambiguedad
+        # que resolver.
+        if abs(float(qty_actual.get(h.ticker, 0.0))) <= eps:
+            continue
+        rec.requieren_aprobacion.add(h.ticker)
+        rec.no_reconciliable.append({
+            "ticker": h.ticker, "motivo": MOTIVO_ESCALA_BONO,
+            "foto_qty": h.quantity, "gap": gap,
+            "requiere_aprobacion": True,
+            "rendi_qty": round(float(qty_actual.get(h.ticker, 0.0)), 6),
+            "detalle": ("ya tenés {:g} de este bono, y es amortizante: Rendi "
+                        "guarda el nominal RESIDUAL y no sabemos en qué escala "
+                        "lo reporta la foto. Que la foto diga más puede ser un "
+                        "faltante REAL o las dos escalas midiendo distinto, y "
+                        "desde acá no se distinguen. La compra queda ARMADA "
+                        "pero NO se aplica sola: confirmala vos."
+                        ).format(float(qty_actual.get(h.ticker, 0.0))),
+        })
+        marcados += 1
+    return marcados
+
+
+MOTIVO_AUSENTE = "ausente_en_la_foto"
+
+
+def marcar_ausentes(rec: ReconcileResult) -> int:
+    """Lo que está en Rendi y NO en la foto pasa a decisión del asesor.
+
+    🔴 CERRARLO ES INVENTAR UNA VENTA. El modo override, cuando la foto se leyó
+    completa, cierra estos activos con una venta sintética a costo. Eso asume
+    que "no está en el resumen" ⇒ "se vendió", y esa implicación no se sostiene:
+    el activo puede estar en OTRO broker que esta foto no cubre, puede haberse
+    vendido después del corte, o el resumen puede ser parcial de un modo que el
+    parser no detectó. Ninguna de las tres se distingue desde acá.
+
+    Es el mismo criterio que el bono amortizante y por el mismo motivo — no
+    sabemos — pero acá la consecuencia es peor: el bono inventa una compra que
+    infla; esto BORRA una tenencia. Y en el flujo del asesor lo borra sobre la
+    cuenta de alguien que no está mirando.
+
+    La venta sintética se ARMA igual, así que si el asesor la aprueba conserva
+    todo lo que el override ya hacía bien (fecha de ajuste, costo, P&L 0,
+    `transfer_out`). Cambia quién decide, no qué pasa cuando se decide.
+
+    ⚠️ Medido: el problema de NOMBRES —que produciría un `not_in_snapshot`
+    falso— resultó chico. De 180 cierres históricos, 1 (0,6%) era un ticker
+    escrito distinto, y era sufijo dólar D/C, que `normalizar_tickers` ya
+    arregla. O sea que estos cierres son mayormente reales como discrepancia;
+    lo que no está claro es qué significan.
+    """
+    marcados = 0
+    for tk, rq in rec.not_in_snapshot:
+        if abs(float(rq or 0)) <= 1e-9:
+            continue
+        rec.requieren_aprobacion.add(tk)
+        rec.no_reconciliable.append({
+            "ticker": tk, "motivo": MOTIVO_AUSENTE,
+            "rendi_qty": round(float(rq), 6), "foto_qty": None,
+            "requiere_aprobacion": True,
+            "detalle": ("tenés {:g} y el resumen del broker no lo lista. Puede "
+                        "estar en otro broker, haberse vendido después del "
+                        "corte, o que el resumen no lo cubra. Cerrarlo registra "
+                        "una VENTA que no sabemos si pasó, así que no se hace "
+                        "solo.").format(float(rq)),
+        })
+        marcados += 1
+    return marcados
+
+
+MOTIVO_OVER = "mas_que_la_foto"
+
+
+def marcar_over(rec: ReconcileResult) -> int:
+    """`over` pasa a decisión: la reducción queda ARMADA pero no se aplica sola.
+
+    🔴 SÓLO EN CONTEXTO ASESOR, y el criterio es el mismo que ya se usó para
+    `fecha_desconocida`: no es que el asesor merezca más cuidado, es que
+    prender esto para todos rompería un mecanismo que HOY FUNCIONA.
+
+    Medido sobre la copia de prod del 2026-08-16: de los 21 `over` reales que se
+    pudieron reconstruir, en 19 la foto tenía razón y el recorte fue correcto.
+    No apareció ni un caso donde `over` haya destruido una tenencia real. Poner
+    una casilla delante de eso, para los ~140 usuarios que suben su propia foto,
+    sería cambiar un mecanismo que acierta por fricción — y encima sobre gente
+    que en su mayoría no sabe qué contestar.
+
+    Lo que cambia en el flujo del asesor es la CONSECUENCIA: la reducción cae
+    sobre la cuenta de un tercero que no está mirando, y `over` es el único
+    balde cuya cantidad NO tiene respaldo independiente (`snapshots.holdings_json`
+    guarda `value_usd`, o sea composición, no cantidades — por eso la respuesta
+    lo rotula `sin_verificar_cantidad`).
+
+    ⚠️ CORRE SOBRE `rec.over` YA FILTRADO por las guardas, y tiene que seguir
+    así. Marcar antes dejaría casillas para activos que el cap o
+    `_is_safe_to_rebuild` ya sacaron: una decisión ofrecida que no puede
+    aplicarse. Ese bug ya existe con `marcar_ausentes` (ver el test
+    `test_con_el_cap_disparado_la_CASILLA_no_tiene_nada_que_aplicar`) y no hay
+    que repetirlo.
+
+    La venta se ARMA igual, así que aprobarla conserva todo lo que el override
+    hace bien (fecha de ajuste, cierre a costo, P&L 0, `transfer_out`). Cambia
+    quién decide, no qué pasa cuando se decide.
+    """
+    marcados = 0
+    for tk, rq, sq in rec.over:
+        if rq - sq <= 1e-9:
+            continue
+        rec.requieren_aprobacion.add(tk)
+        rec.no_reconciliable.append({
+            "ticker": tk, "motivo": MOTIVO_OVER,
+            "rendi_qty": round(float(rq), 6), "foto_qty": round(float(sq), 6),
+            "requiere_aprobacion": True,
+            "detalle": ("el resumen del broker dice {:g} y nosotros teníamos {:g}. "
+                        "Suele ser una venta que el archivo de movimientos no "
+                        "trajo. Ajustar deja {:g} — pero si el resumen no cubre "
+                        "todo, le saca algo que sí tiene. Por eso no se hace "
+                        "solo.").format(float(sq), float(rq), float(sq)),
+        })
+        marcados += 1
+    return marcados
 # Nota del DEPOSITO de apertura. Es lo ÚNICO que lo distingue del DEPOSIT del
 # true-up de cash (`build_cash_trueup_txs`), que también es OP_DEPOSIT y viaja en
 # el mismo `seed_txs`: filtrar sólo por operation_type mezcla los dos.
@@ -210,7 +635,10 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
             asset_symbol=h.ticker, asset_type=h.asset_type,
             quantity=gap, unit_price=h.price_per1,
             gross_amount=round(gap * h.price_per1, 4), currency=currency,
-            notes=f"{TENENCIA_APERTURA_NOTE_PREFIX} {h.ticker} a precio de {seed_date} (P&L 0)"))
+            notes=(f"{TENENCIA_APERTURA_NOTE_PREFIX} {h.ticker} a precio de "
+                   f"{seed_date} (P&L 0)"
+                   + (f" {MARCA_APROBACION}"
+                      if h.ticker in reconcile.requieren_aprobacion else ""))))
         idx += 1
     if override:
         # Reducciones que llevan el estado EXACTO a la foto. Precio/monto 0 +
@@ -231,7 +659,10 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
                 row_index=idx, date=red_date, broker=broker, operation_type=OP_SELL,
                 asset_symbol=tk, quantity=round(qty, 6), unit_price=0.0,
                 gross_amount=0.0, currency=currency, transfer_out=True,
-                notes=f"Tenencia — ajuste a foto de {seed_date}: cierre de {tk} a costo (P&L 0)"))
+                notes=(f"Tenencia — ajuste a foto de {seed_date}: cierre de {tk} "
+                       f"a costo (P&L 0)"
+                       + (f" {MARCA_APROBACION}"
+                          if tk in reconcile.requieren_aprobacion else ""))))
             idx += 1
     return txs
 
@@ -584,7 +1015,7 @@ def _ppi_extract_date(rows) -> Optional[str]:
                     return c.strftime("%Y-%m-%d")
                 except Exception:
                     pass
-            m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", _cell_s(c))
+            m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", _cell_s(c))
             if m:
                 d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
                 if 1 <= mo <= 12 and 1 <= d <= 31:   # ignora fechas imposibles (31/13/…)
@@ -939,7 +1370,7 @@ _BAL_ROW_RE = re.compile(
     r"^(\S+)\s+(.+?)\s+(" + _BAL_AR + r")\s+(" + _BAL_GAR + r")\s+\$\s+("
     + _BAL_AR + r")\s+\$\s+(" + _BAL_AR + r")\s*$")
 _BAL_SECTION_TYPE = {"acciones": "STOCK", "bonos": "BOND", "cedears": "CEDEAR", "fondos": "FUND"}
-_BAL_DATE_RE = re.compile(r"fecha resumen\s+(\d{2})/(\d{2})/(\d{4})")
+_BAL_DATE_RE = re.compile(r"fecha resumen\s+(\d{1,2})/(\d{1,2})/(\d{4})")
 _BAL_TOTAL_RE = re.compile(r"^total\s+\$\s+(" + _BAL_AR + r")\s*$")
 # "Tipo de cambio para esa fecha: MEP $ 1.518,52 | US Dollar $ 1.570,60" → dólar MEP
 # de la foto. Lo usamos para convertir el precio-por-cuotaparte (que la foto trae en
@@ -980,7 +1411,9 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
     _tnorm = _bal_norm(text)
     md = _BAL_DATE_RE.search(_tnorm)
     if md:
-        snap.date = f"{md.group(3)}-{md.group(2)}-{md.group(1)}"
+        # `int()` y no concatenación: con día/mes de 1 dígito el string crudo
+        # daba "2026-6-9", que no es ISO y ordena mal.
+        snap.date = f"{int(md.group(3)):04d}-{int(md.group(2)):02d}-{int(md.group(1)):02d}"
     mm = _BAL_MEP_RE.search(_tnorm)
     if mm:
         snap.fx_mep = _num(mm.group(1))

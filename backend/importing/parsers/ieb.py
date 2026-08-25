@@ -272,6 +272,7 @@ class IebParser(Parser):
     platform = "ieb"
     platform_label = "IEB · Invertir en Bolsa"
     export_label = "Movimientos"
+    tenencia_format = "ieb_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}
