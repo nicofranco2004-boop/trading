@@ -141,8 +141,14 @@ class CaveatPosicionesPorFechaTest(_Base):
         # Fila de browser de 2026: fx sin holdings, POSTERIOR a que tuviera cartera.
         self.snap("2026-03-31", 5000.0, None, fx=1200.0)
         s = twr.serie_medible(self.conn, self.uid)
+        # Queda INTRADIA: una foto de media rueda SÍ es valor de mercado y puede
+        # sostener una serie, pero NO asciende a MEDICION, que es lo que la
+        # habilitaría como BORDE de período contra un valor live.
         self.assertEqual(s["por_clase"][twr.INTRADIA], 1)
-        self.assertEqual(s["puntos"], [])          # NO ascendió
+        self.assertEqual(s["por_clase"][twr.MEDICION], 0)
+        self.assertNotIn(twr.INTRADIA, twr.BORDE_PERIODO)
+        s_borde = twr.serie_medible(self.conn, self.uid, aceptar=twr.BORDE_PERIODO)
+        self.assertEqual(s_borde["puntos"], [])    # NO ascendió
 
     def test_el_100_por_ciento_cash_sigue_siendo_medicion(self):
         """El otro lado: sin posiciones NUNCA, el cron deja holdings NULL con razón

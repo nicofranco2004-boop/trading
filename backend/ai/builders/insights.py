@@ -135,7 +135,10 @@ def _compute_drawdown(values: List[float]) -> Dict[str, Any]:
     """Drawdown sobre serie de valores. No es TWRR — solo MV/peak, suficiente
     para la narrativa. Devuelve current_pct, max_pct, days_since_peak."""
     if not values or len(values) < 2:
-        return {"current_pct": 0.0, "max_pct": 0.0, "days_since_peak": None}
+        # None, NO 0.0: "no se pudo medir" no es "no caíste". Ver el comentario
+        # equivalente en insights_drawdown.py.
+        return {"current_pct": None, "max_pct": None, "days_since_peak": None,
+                "insufficient_data": True}
 
     peak = values[0]
     peak_idx = 0

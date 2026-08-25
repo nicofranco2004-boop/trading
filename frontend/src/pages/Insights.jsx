@@ -730,19 +730,31 @@ function InsightsDesktop({ _embeddedTab }) {
     const safeDenom = (netDep, peakDep) =>
       netDep >= peakDep * 0.6 && netDep > 1000 ? netDep : peakDep
 
-    return curva.map(pt => {
+    // ⚠️ LA LÍNEA SE CORTA ENTRE TRAMOS.
+    // El índice se reinicia en cada tramo (twr.py: el derrumbe que pasó dentro del
+    // hueco no se puede componer). Dibujados seguido, el salto de +20% a 0% se lee
+    // como "volví a break-even" cuando la cartera se partió al medio. Un punto en
+    // null hace que Recharts deje el hueco a la vista — que es la verdad: no se
+    // sabe qué pasó en el medio.
+    const arranques = new Set((perf?.tramos_detalle || []).slice(1).map(t => t.desde))
+    const out = []
+    curva.forEach((pt, i) => {
       const esHoy = pt.date === 'hoy'
+      if (!esHoy && i > 0 && arranques.has(pt.date)) {
+        out.push({ key: `corte-${pt.date}`, label: '', total: null, realized: null })
+      }
       const mk = esHoy ? (mesesOrd[mesesOrd.length - 1] || '') : pt.date.slice(0, 7)
       const nd = alMes(netByMonth, mk)
       const rz = alMes(realizedByMonth, mk) || 0
       const denom = nd ? safeDenom(nd.net, nd.peak) : 0
-      return {
+      out.push({
         key: esHoy ? 'today' : pt.date,
         label: esHoy ? 'Hoy' : benchLabel(pt.date.slice(0, 7)),
         total: +((pt.index - 1) * 100).toFixed(2),
         realized: denom > 0 ? +((rz / denom) * 100).toFixed(2) : 0,
-      }
+      })
     })
+    return out
   })()
 
   // benchSeriesArs — solo brokers ARS, capital en pesos (USD × blue del mes) en % acumulado MWR.
@@ -855,10 +867,12 @@ function InsightsDesktop({ _embeddedTab }) {
   const ChipMedido = () => {
     if (!perf?.medido_desde) return null
     const cob = perf.cobertura_reconstruccion
+    const partida = !!perf.serie_partida
     return (
       <div className="flex items-center gap-1.5">
         <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-2 text-ink-2 border border-line whitespace-nowrap">
           Medido desde {fmtFecha(perf.medido_desde)}
+          {partida && ' · con un hueco'}
         </span>
         <InfoTooltip>
           <p className="font-semibold text-ink-0">Desde cuándo esto es una medición</p>
@@ -872,6 +886,16 @@ function InsightsDesktop({ _embeddedTab }) {
               <p className="font-semibold text-ink-0">Cobertura de la reconstrucción</p>
               <p className="text-ink-3">{(cob * 100).toFixed(0)}% del valor se pudo valuar
                  a precio de mercado real; el resto quedó al costo.</p>
+            </>
+          )}
+          {partida && (
+            <>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Hay un hueco en el medio</p>
+              <p className="text-ink-3">Cada tramo se mide solo y la línea se corta
+                 donde falta la medición. No se encadenan: no se sabe qué pasó en el
+                 medio, y suponerlo sería inventarlo. Por eso el acumulado y el
+                 drawdown de punta a punta aparecen como "—".</p>
             </>
           )}
         </InfoTooltip>

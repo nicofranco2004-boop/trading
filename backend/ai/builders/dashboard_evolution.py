@@ -62,8 +62,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     from datetime import timedelta
     cutoff = (datetime.utcnow() - timedelta(days=period_days)).date().isoformat()
     in_window = [s for s in snapshots if s["date"] >= cutoff and s.get("total_value")]
+    # ⚠️ El fallback amplía la ventana; el rótulo tiene que decirlo. Sin esto el
+    # paquete salía con `period_days: 365` y un `value_now` de hace tres años, y
+    # el LLM leía "así evolucionó tu último año". Ningún campo declaraba la
+    # ventana real.
+    ventana_ampliada = False
     if len(in_window) < 2:
         in_window = [s for s in snapshots if s.get("total_value")][-12:]
+        ventana_ampliada = True
 
     if len(in_window) < 2:
         return {
@@ -74,6 +80,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         }
 
     values = [(s["date"], float(s["total_value"])) for s in in_window]
+    _ventana_real = {"desde": values[0][0], "hasta": values[-1][0],
+                     "ampliada": ventana_ampliada}
     value_start = values[0][1]
     value_end = values[-1][1]
     delta_usd = value_end - value_start
@@ -121,6 +129,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "delta_usd": int(round(delta_usd)),
         "peak": {"date": peak[0], "value": int(round(peak[1]))},
         "trough": {"date": trough[0], "value": int(round(trough[1]))},
+        # La ventana que estos números describen DE VERDAD (puede no ser
+        # `period_days` si hubo que ampliarla por falta de mediciones).
+        "ventana": _ventana_real,
         "current_drawdown_pct": round(current_dd, 4),
         "best_month": best_month,
         "worst_month": worst_month,

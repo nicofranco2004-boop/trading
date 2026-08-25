@@ -116,7 +116,7 @@ class AnualTest(_Base):
         self.snap("2025-12-30", 62000.0)
         c = twr.curva_indexada(self.conn, self.uid, "2024-12-27", "2025-12-31")
         self.assertIsNone(c["twr"])
-        self.assertEqual(c["motivo"], "sin_tramo_continuo")
+        self.assertIn(c["motivo"], ("serie_partida", "sin_tramo_continuo"))
         self.assertTrue(c["motivo_texto"])
 
     def test_una_sola_punta_medida_NO_alcanza(self):

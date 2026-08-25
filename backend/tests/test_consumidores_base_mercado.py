@@ -47,13 +47,23 @@ class CagrObjetivosTest(_Base):
     def test_la_foto_fabricada_no_entra_en_el_cagr(self):
         # Una foto inventada MUY alta al principio: si entrara, el CAGR se hunde.
         self.snap("2025-01-31", 999999.0, source="import")
-        for i, (d, v) in enumerate((("2025-02-28", 1000.0), ("2025-03-31", 1100.0),
-                                    ("2025-04-30", 1200.0))):
+        for d, v in (("2025-02-28", 1000.0), ("2025-03-31", 1100.0),
+                     ("2025-04-30", 1150.0), ("2025-05-31", 1200.0),
+                     ("2025-06-30", 1250.0), ("2025-07-31", 1300.0)):
             self.snap(d, v)
         r = main._historical_cagr_global(self.conn, self.uid)
         self.assertIsNotNone(r["cagr"])
-        self.assertGreater(r["cagr"], 0)          # subió: 1000 → 1200
-        self.assertEqual(r["months"], 2)          # los 2 tramos medibles, no 3
+        self.assertGreater(r["cagr"], 0)          # subió: 1000 → 1300
+        # El span va de la PRIMERA a la ÚLTIMA medición: feb→jul = 5 meses. La
+        # foto fabricada de enero no entra (si entrara, el arranque sería 999.999).
+        self.assertEqual(r["months"], 5)
+
+    def test_dos_mediciones_muy_separadas_no_explotan_el_cagr(self):
+        self.snap("2025-01-31", 100000.0)
+        self.snap("2026-08-31", 120000.0)         # 19 meses, +20%
+        r = main._historical_cagr_global(self.conn, self.uid)
+        self.assertEqual(r["months"], 19)
+        self.assertAlmostEqual(r["cagr"], 12.2, places=1)   # no 791,61%
 
     def test_sin_clamp_asimetrico_un_mes_de_mas_80_no_se_trunca(self):
         self.snap("2025-01-31", 100.0)

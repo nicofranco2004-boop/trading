@@ -14905,8 +14905,26 @@ def _historical_cagr_global(conn, uid: int) -> dict:
         prev_val, prev_dep = val, dep
     if n == 0:
         return {"cagr": None, "months": len(months), "total_return": None, "reason": "Datos insuficientes."}
-    cagr = cum ** (12 / n) - 1
-    return {"cagr": round(cagr * 100, 2), "months": n,
+    # ⚠️ SE ANUALIZA POR TIEMPO TRANSCURRIDO, no por cantidad de pares.
+    # `n` cuenta TRAMOS encadenados y `12/n` asume que cada tramo es un mes. Con
+    # los snapshots crudos eso era casi cierto (el import fabrica una foto por
+    # mes); con la serie filtrada a base de mercado deja de serlo, y cada hueco de
+    # meses se anualiza como si fuera uno solo: dos mediciones separadas 19 meses
+    # con +20% entre ellas publicaban 791,61% de CAGR. Ese número sale por
+    # /api/goals/cagr y viaja a la IA. Los meses de calendario entre la primera y
+    # la última medición son el denominador honesto.
+    def _ym(x):
+        y, m = (int(v) for v in str(x["date"])[:7].split("-"))
+        return y * 12 + m
+    #
+    # NO se agrega acá un piso de "mínimo un trimestre para anualizar", aunque
+    # anualizar un solo mes sea discutible: eso es una decisión de producto que
+    # cambia un número que hoy se publica, y `tests/test_cagr_snapshots.py:50`
+    # fija el comportamiento actual a propósito. Lo que sí era un defecto —y es lo
+    # que se corrige— es el DENOMINADOR.
+    meses_span = max(1, _ym(months[-1]) - _ym(months[0]))
+    cagr = cum ** (12 / meses_span) - 1
+    return {"cagr": round(cagr * 100, 2), "months": meses_span,
             "total_return": round(cum - 1, 6), "reason": None}
 
 

@@ -56,10 +56,30 @@ INDETERMINADO = "indeterminado"      # no se puede afirmar cuál es — no se us
 
 CLASES = (MEDICION, RECONSTRUIDO, INTRADIA, SINTETICO_COSTO, INDETERMINADO)
 
-# Las dos clases que están EN BASE DE MERCADO. Es la única lista que puede
-# sostener un pico o un denominador: mezclar una de éstas con base contable en
-# las dos puntas de un mismo tramo es exactamente lo que fabrica el fantasma.
-BASE_MERCADO = (MEDICION, RECONSTRUIDO)
+# ⚠️ DOS PREGUNTAS DISTINTAS, DOS LISTAS DISTINTAS.
+#
+# Confundirlas costó caro: al filtrar TODA serie con la lista de bordes, un
+# usuario 100% sano —600 fotos del cron, cero imports— se quedaba con 51 puntos.
+# Las columnas `holdings_json` y `source` se agregaron el 2026-07-04 y el
+# 2026-08-06; TODO lo que el cron escribió antes tiene fx pero no composición, y
+# la heurística lo llama INTRADIA (twr.py:100-102). Su CAGR pasaba de +13,7%
+# sobre 19 meses a −56,9% sobre "1 mes".
+#
+#   BORDE_PERIODO — ¿esta fila sirve para cerrar UN PERÍODO contra el valor de
+#     hoy? Ahí la exigencia es máxima: una foto de media rueda contra un live
+#     fabrica el "P&L del mes". Es la lista que usan `bordes_mercado_periodo` y
+#     `fetch_snapshot_at_or_before`.
+#
+#   BASE_MERCADO — ¿esta fila es un VALOR DE MERCADO? Una foto intradía lo es:
+#     la sacó el browser a media rueda, pero es posiciones × precio, no
+#     contabilidad. Encadenar cientos de ellas mete ruido de timing; descartarlas
+#     borra la historia. Es la lista que sostiene picos y denominadores de una
+#     serie encadenada.
+#
+# Lo que NUNCA entra en ninguna de las dos es SINTETICO_COSTO: eso no es una
+# medición de nada, es la cadena contable copiada. Ése era el defecto.
+BORDE_PERIODO = (MEDICION, RECONSTRUIDO)
+BASE_MERCADO = (MEDICION, RECONSTRUIDO, INTRADIA)
 
 # Piso de cobertura para que una foto reconstruida cuente como base de mercado.
 # `mtm_coverage` dice qué fracción del valor NO-CASH se pudo valuar a precio real;
@@ -641,6 +661,14 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             punto = {"date": p["date"], "index": round(idx, 6),
                      "value": p["value"], "clase": p["clase"],
                      "apto": p["apto"], "ret": ret,
+                     # A qué TRAMO pertenece. Sin esto el punto sale con el índice
+                     # reiniciado a 1,0 y sin ninguna marca, y el chart lo dibuja
+                     # como continuación: la línea "se recupera" a breakeven
+                     # mientras la cartera iba de 8.000 a 6.000. El hueco lo
+                     # rellenaba el reinicio del índice en vez de una interpolación,
+                     # que es el mismo crimen con otra cara.
+                     "tramo": len(tramos_info),
+                     "arranque_tramo": i == 0,
                      "estimado": ret is None and i > 0}
             if p["apto"]:
                 if pico is None or idx > pico:
@@ -675,8 +703,21 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
     # máximo — subestimar el riesgo con autoridad.
     con_legs = [t for t in tramos_info if t["legs"] > 0]
     legs = sum(t["legs"] for t in tramos_info)
-    partida = len(con_legs) > 1
-    publicable = len(con_legs) == 1
+    # ⚠️ CUALQUIER hueco parte la serie, tenga o no legs el otro lado.
+    # Contar sólo los tramos CON legs dejaba invisible al tramo huérfano de UN
+    # punto: `partida` quedaba False, `motivo` None, y con eso el cierre live
+    # componía por encima del hueco (devolvía +32% donde punta a punta era −34%)
+    # y `medido_hasta` se estiraba hasta el otro lado, con lo cual el guard del
+    # año daba por cubierto un período que sólo se midió dos meses.
+    partida = len(s["tramos"]) > 1
+    publicable = (len(con_legs) == 1 and not partida)
+    # La ventana que el número REALMENTE cubre. `medido_desde`/`medido_hasta` de
+    # `serie_medible` describen TODOS los puntos aptos; el TWR sólo cubre el tramo
+    # publicado. Quien tenga que probar cobertura (reporting/builder.py) debe
+    # mirar esto, no aquéllos.
+    _tp = con_legs[0] if publicable else None
+    ventana_desde = _tp["desde"] if _tp else None
+    ventana_hasta = _tp["hasta"] if _tp else None
 
     if publicable:
         _t = con_legs[0]
@@ -703,12 +744,29 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         idx, pico, pico_fecha = 1.0, None, None
         dd_actual = dd_max = dd_max_fecha = dd_max_pico_fecha = None
 
-    # El valor live cierra la curva SOLO si el último borde es base de mercado Y
-    # la serie no está partida (si lo está, no hay índice contra el cual componer).
-    ultimo_apto = next((p for p in reversed(s["puntos"]) if p["apto"]), None)
+    # El valor live cierra la curva SOLO si la serie es UN tramo continuo y su
+    # último punto es base de mercado. Antes `ultimo_apto` se buscaba sobre
+    # `s["puntos"]` ENTERO: con un punto huérfano del otro lado del hueco, la pata
+    # live se componía encima del índice del tramo 1 y el hueco desaparecía.
+    ultimo_apto = None
+    if publicable:
+        ultimo_apto = next((p for p in reversed(s["tramos"][0]) if p["apto"]), None)
     if (publicable and valor_live and valor_live > 0
             and ultimo_apto is not None and curva and s["puntos"][-1]["apto"]):
-        r = dietz(ultimo_apto["value"], float(valor_live), 0.0)
+        # ⚠️ EL FLUJO NO ES CERO. Todo lo que entró o salió DESPUÉS del último
+        # snapshot medido —el depósito de hoy, antes de que el cron nocturno
+        # escriba la foto— se computaba entero como rendimiento: un usuario con el
+        # mercado plano que depositaba US$20.000 leía "+20,00%" al lado de "US$0"
+        # de P&L. Se pregunta a la SSoT canónica, la misma que usa `_flujo`.
+        _flujo_live = 0.0
+        try:
+            from snapshots_job import compute_net_deposited_db
+            _flujo_live = (compute_net_deposited_db(conn, uid)
+                           - float(ultimo_apto["net_deposited"] or 0))
+        except Exception:
+            log.exception("flujo live uid=%s", uid)
+            _flujo_live = 0.0
+        r = dietz(ultimo_apto["value"], float(valor_live), _flujo_live)
         if r is not None:
             idx *= (1.0 + r)
             legs += 1
@@ -722,14 +780,18 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                           "apto": True, "ret": r, "estimado": False,
                           "drawdown": round(dd_actual, 6)})
 
+    # El CAGR se anualiza sobre la ventana QUE EL ÍNDICE MIDIÓ, no sobre las
+    # fechas extremas de la curva. Tomándolas de `curva[0]`/`curva[-1]` —que
+    # pueden ser tramos huérfanos— se publicaba −16,32% anual para una medición
+    # de 28 días, esquivando el propio piso de medio año de dos líneas más abajo.
     cagr = None
-    if publicable and legs > 0 and idx > 0:
-        _c0 = next((c["date"] for c in curva if c.get("apto")), None)
-        _c1 = curva[-1]["date"] if curva[-1]["date"] != "hoy" else _hoy_art()
-        if _c0:
-            años = _dias(_c0, _c1) / 365.25
-            if años >= 0.5:            # bajo medio año, anualizar es propaganda
-                cagr = idx ** (1.0 / años) - 1.0
+    if publicable and legs > 0 and idx > 0 and ventana_desde:
+        _c1 = ventana_hasta
+        if curva and curva[-1]["date"] == "hoy":
+            _c1 = _hoy_art()
+        años = _dias(ventana_desde, _c1) / 365.25
+        if años >= 0.5:                # bajo medio año, anualizar es propaganda
+            cagr = idx ** (1.0 / años) - 1.0
 
     _motivo = s["motivo"]
     if not _motivo:
@@ -745,6 +807,9 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         "tramos_medidos": legs,
         "tramos_detalle": tramos_info,
         "serie_partida": partida,
+        # La ventana que el TWR publicado cubre de verdad (None si no se publica).
+        "ventana_desde": ventana_desde,
+        "ventana_hasta": ventana_hasta,
         "motivo": _motivo,
         "motivo_texto": (MOTIVO_TEXTO.get(_motivo) if _motivo else None),
         "drawdown_actual": (round(dd_actual, 6) if dd_actual is not None else None),

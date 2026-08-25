@@ -58,17 +58,24 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     ]
 
     if len(window) < 2:
+        # ⚠️ None, NO 0.0. Un 0,0% con `recovered: True` le afirma al LLM "nunca
+        # caíste, estás en tu máximo" sobre una cuenta que fue de 150.000 a 60.000
+        # y de la que simplemente no hay mediciones suficientes. Es el mismo
+        # defecto que el frontend ya cierra mostrando "—".
         return {
             "screen": "insights.drawdown",
             "window_days": window_days,
-            "current_pct": 0.0,
-            "max_pct": 0.0,
+            "current_pct": None,
+            "max_pct": None,
             "days_since_peak": None,
             "peak_value": None,
             "trough_value": None,
             "dd_events": [],
             "events_count": 0,
-            "recovered": True,
+            "recovered": None,
+            "insufficient_data": True,
+            "reason": (_serie.get("motivo_texto")
+                       or "No hay mediciones a mercado suficientes para medir el drawdown."),
         }
 
     values = [(s["date"], float(s["total_value"] or 0)) for s in window]

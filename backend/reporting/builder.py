@@ -339,8 +339,10 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
     """
     if broker_filter != "global":
         return None
-    from twr import MEDICION, RECONSTRUIDO
-    acepta = (MEDICION, RECONSTRUIDO)
+    # BORDE_PERIODO, no BASE_MERCADO: cerrar un período contra el valor de hoy es
+    # la pregunta exigente. Una foto intradía sirve para sostener una serie, no
+    # para ser la punta de una resta contra un live.
+    from twr import BORDE_PERIODO as acepta
 
     # ⚠️ EL BORDE DE APERTURA VA ESTRICTAMENTE ANTES DEL PERÍODO.
     #
@@ -524,6 +526,7 @@ def compute_metrics_for_period(
     # NI el monto — un número inventado con autoridad es peor que un "—".
     basis_incomparable = False
     _basis = "contable"     # en qué base quedaron las dos puntas
+    _flujo_override = None  # flujo de la VENTANA MEDIDA (sólo para el Dietz)
     _start_is_mtm = False   # start_value salió de un cierre real a mercado
     _live_month_unmeasured = False  # (año) el mes vivo no tiene borde medido
 
@@ -562,11 +565,30 @@ def compute_metrics_for_period(
             # el import fabricó al costo entraba como si fuera mercado y el parche
             # C-2 quedaba sin efecto justo en las cuentas que más lo necesitaban.
             if broker_filter == "global":
-                _snap_prev = fetch_snapshot_at_or_before(conn, uid, period_start, mtm_only=True)
+                # ⚠️ `_dia_anterior`, igual que el período cerrado. Con
+                # `<= period_start` el borde elegido era la foto del PROPIO día 1,
+                # que ya tiene adentro el depósito de ese día, mientras `deposits`
+                # seguía siendo el del mes calendario: el aporte se restaba dos
+                # veces. Es el defecto que `bordes_mercado_periodo` documenta, y
+                # había quedado vivo justo en la rama más mirada — la del mes en
+                # curso. Medido: julio cierra 110.000, el 1/8 entra un aporte de
+                # 10.000, la cartera queda plana en 120.000 → "Mes difícil −8,0%".
+                _prev_d = _dia_anterior(period_start)
+                _snap_prev = (fetch_snapshot_at_or_before(
+                    conn, uid, _prev_d, mtm_only=True) if _prev_d else None)
                 if (_snap_prev and float(_snap_prev.get("total_value") or 0) > 0
                         and _border_is_fresh(_snap_prev.get("date"), period_start)):
                     start_value = float(_snap_prev["total_value"])
                     _start_is_mtm = True
+                    # Y los flujos, de la MISMA ventana que las dos puntas.
+                    _nd_prev = float(_snap_prev.get("net_deposited") or 0)
+                    if _nd_prev > 0:
+                        try:
+                            from snapshots_job import compute_net_deposited_db
+                            _flujo_override = (compute_net_deposited_db(
+                                conn, uid, broker_filter='global') - _nd_prev)
+                        except Exception:
+                            log.exception("flujo de la ventana viva uid=%s", uid)
                     # Sin fila monthly, los flows del mes salen del net_deposited
                     # canónico (Δ vs el stamp del snapshot) — si no, un depósito
                     # intra-mes contaría como ganancia.
@@ -607,9 +629,17 @@ def compute_metrics_for_period(
                 # Los flujos vienen de la MISMA ventana que las dos puntas. Tomar
                 # las puntas del mercado y los aportes del mes calendario restaba
                 # el aporte dos veces (ver `bordes_mercado_periodo`).
+                #
+                # ⚠️ PERO `deposits`/`withdrawals` NO SE PISAN. Son los BRUTOS que
+                # la app PUBLICA — MonthCard.jsx:223-224 los renderiza como
+                # "Depósitos" y "Retiros", cifras que el usuario contrasta contra
+                # el resumen de su broker. Reemplazarlos por el neto mostraba
+                # "Depósitos US$6.000 · Retiros US$0" en un mes de 10.000 y 4.000,
+                # y con 50k para cada lado los dejaba en 0 → `is_relevant` daba
+                # False y el mes DESAPARECÍA del timeline. El neto sólo sirve para
+                # el denominador, así que viaja por su propia variable.
                 start_value, end_value, _flujo_ventana = _b
-                deposits = max(0.0, _flujo_ventana)
-                withdrawals = max(0.0, -_flujo_ventana)
+                _flujo_override = _flujo_ventana
                 _basis = "mercado"
                 _start_is_mtm = True
     elif period_type == "year":
@@ -654,9 +684,17 @@ def compute_metrics_for_period(
                 # Los flujos vienen de la MISMA ventana que las dos puntas. Tomar
                 # las puntas del mercado y los aportes del mes calendario restaba
                 # el aporte dos veces (ver `bordes_mercado_periodo`).
+                #
+                # ⚠️ PERO `deposits`/`withdrawals` NO SE PISAN. Son los BRUTOS que
+                # la app PUBLICA — MonthCard.jsx:223-224 los renderiza como
+                # "Depósitos" y "Retiros", cifras que el usuario contrasta contra
+                # el resumen de su broker. Reemplazarlos por el neto mostraba
+                # "Depósitos US$6.000 · Retiros US$0" en un mes de 10.000 y 4.000,
+                # y con 50k para cada lado los dejaba en 0 → `is_relevant` daba
+                # False y el mes DESAPARECÍA del timeline. El neto sólo sirve para
+                # el denominador, así que viaja por su propia variable.
                 start_value, end_value, _flujo_ventana = _b
-                deposits = max(0.0, _flujo_ventana)
-                withdrawals = max(0.0, -_flujo_ventana)
+                _flujo_override = _flujo_ventana
                 _basis = "mercado"
                 _start_is_mtm = True
         # El TWR del año, DESDE EL MISMO MOTOR que la sección Diagnóstico. Si los
@@ -673,8 +711,21 @@ def compute_metrics_for_period(
                 # punto → sin TWR, y volvía silenciosamente a la composición
                 # contable. Se abre la ventana hacia atrás la misma tolerancia
                 # que ya usa `_border_is_fresh` para aceptar un borde.
-                _desde = (datetime.strptime(period_start[:10], "%Y-%m-%d")
-                          - timedelta(days=_BORDER_MAX_LAG_DAYS)).date().isoformat()
+                # ⚠️ Abrir la ventana en `period_start − 5` no basta: `serie_medible`
+                # toma TODOS los puntos que caen ahí y `curva_indexada` encadena
+                # desde el más viejo, así que el % del año incorporaba los últimos
+                # 4 días del año anterior. Con cron diario sano eso publicaba
+                # −6,30% al lado de +US$20.315 de ganancia. El arranque tiene que
+                # ser EXACTAMENTE el borde de cierre del período anterior — el
+                # mismo que usa `bordes_mercado_periodo` para `delta_usd`, para
+                # que el % y el monto describan la misma ventana.
+                _prev_dia = _dia_anterior(period_start)
+                _snap_ini = (fetch_snapshot_at_or_before(
+                    conn, uid, _prev_dia, accept=_twr.BORDE_PERIODO)
+                    if _prev_dia else None)
+                _desde = (str(_snap_ini["date"])[:10] if _snap_ini
+                          else (datetime.strptime(period_start[:10], "%Y-%m-%d")
+                                - timedelta(days=_BORDER_MAX_LAG_DAYS)).date().isoformat())
                 _c = _twr.curva_indexada(
                     conn, uid, _desde, period_end,
                     valor_live=(float(live_value) if year_is_current and live_value else None))
@@ -686,8 +737,14 @@ def compute_metrics_for_period(
                 # `basis_incomparable` no lo tapaba porque el año en curso ya
                 # tenía su propio guard para otra cosa. El % y el monto tienen que
                 # describir LA MISMA VENTANA o el % no se publica.
+                # ⚠️ `ventana_desde/hasta`, NO `medido_desde/hasta`. Los segundos
+                # son el primer y el último punto APTO de TODA la serie; el TWR
+                # sólo cubre el tramo publicado. Con una foto medida suelta al
+                # arranque del año —el último cierre del cron de diciembre antes
+                # de que se cortara, forma común— el guard daba por cubierto el
+                # año y publicaba el % de dos meses al lado del monto de doce.
                 if (_c.get("twr") is not None
-                        and _ventana_cubre(_c.get("medido_desde"), _c.get("medido_hasta"),
+                        and _ventana_cubre(_c.get("ventana_desde"), _c.get("ventana_hasta"),
                                            period_start, period_end, year_is_current)):
                     year_twr_pct = round(_c["twr"] * 100, 2)
                     _basis = "mercado"
@@ -819,7 +876,10 @@ def compute_metrics_for_period(
             except (ValueError, TypeError, KeyError):
                 pass
 
-    flows = deposits - withdrawals
+    # El NETO que entra al cálculo. Cuando las dos puntas salieron de bordes
+    # medidos, es el flujo de ESA ventana (no el del mes calendario). Los brutos
+    # `deposits`/`withdrawals` siguen siendo los que se publican.
+    flows = _flujo_override if _flujo_override is not None else (deposits - withdrawals)
     delta_usd = end_value - start_value - flows
     delta_pct_val = _modified_dietz_pct(start_value, end_value, flows)
     delta_pct = round(delta_pct_val, 2) if delta_pct_val is not None else None

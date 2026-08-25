@@ -167,8 +167,16 @@ class B2_SeriePartidaTest(_Base):
         self.snap("2026-03-31", 7000.0)
         self.snap("2026-09-30", 7000.0)     # suelto, hueco > max_hueco_dias
         c = twr.curva_indexada(self.conn, self.uid)
-        self.assertAlmostEqual(c["drawdown_maximo"], -0.363636, places=5)
-        self.assertAlmostEqual(c["drawdown_actual"], -0.363636, places=5)
+        # Con un hueco, el drawdown punta a punta NO es afirmable (el peor momento
+        # pudo estar adentro): va None, y el del tramo queda en `tramos_detalle`.
+        self.assertTrue(c["serie_partida"])
+        self.assertIsNone(c["drawdown_maximo"])
+        self.assertIsNone(c["drawdown_actual"])
+        medido = [t for t in c["tramos_detalle"] if t["legs"] > 0][0]
+        self.assertAlmostEqual(medido["drawdown_maximo"], -0.363636, places=5)
+        self.assertAlmostEqual(medido["drawdown_actual"], -0.363636, places=5)
+        # Y lo que NO puede pasar es el 0,0%: eso decia "nunca caiste".
+        self.assertNotEqual(c["drawdown_maximo"], 0.0)
 
     def test_un_solo_tramo_sigue_publicando_normal(self):
         self.pos()

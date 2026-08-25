@@ -115,54 +115,108 @@ def _hist_blue(conn, month_end_iso: str, fallback: float) -> float:
 
 
 # ─── Lo que el reconstructor NO ve ───────────────────────────────────────────
-def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: set):
+def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
     """(costo_usd, afirmable) de la tenencia NO-CASH a `date_iso` que
     `_holdings_asof` no puede ver.
 
     `_holdings_asof` sólo mira `import_normalized_tx` de batches confirmados. Todo
     lo cargado A MANO —y cualquier mes anterior a la primera compra importada—
-    queda invisible. El problema no es que falte: es que el silencio se leia como
-    "no habia nada que valuar" y de ahi salia cobertura 1,0. El codigo NO PUEDE
-    DISTINGUIR "no habia nada" de "no vi lo que habia", asi que tiene que
+    queda invisible. El problema no es que falte: es que el silencio se leía como
+    "no había nada que valuar" y de ahí salía cobertura 1,0. El código NO PUEDE
+    DISTINGUIR "no había nada" de "no vi lo que había", así que tiene que
     preguntarlo en otro lado antes de dar el veredicto optimista.
 
-    `afirmable=False` significa: hay tenencia que no veo y tampoco puedo ponerle
-    un numero → la cobertura de ese mes es None (desconocida), no 1,0.
+    `vistos` es {(broker, asset): cantidad} de lo que el reconstructor SÍ valuó.
+
+    ⚠️ TRES AGUJEROS QUE ESTA VERSIÓN CIERRA, todos medidos:
+      · `entry_date IS NOT NULL` hacía desaparecer la tenencia sin bajar
+        `afirmable`. Y NULL no es teórico: la columna se agregó por ALTER TABLE
+        (main.py:892) y el alta manual de Operaciones no la estampa. La foto
+        contable volvía a salir con cobertura 1,0 y a fijar el pico.
+      · comparaba SÓLO el nombre del activo. Alcanzaba con que el import viera UNA
+        unidad de AAPL en IBKR para declarar "ya vistas" 500 unidades de AAPL
+        cargadas a mano en Cocos. Los homónimos cross-broker son la norma acá:
+        el mismo AL30/GGAL vive en Cocos, Balanz e IOL a la vez.
+      · la moneda. `val_mkt`/`val_costo` están en USD; acá se sumaba
+        `positions.invested` CRUDO (está en la moneda nativa del lote, main.py:903)
+        y `q*pe*fx` MULTIPLICANDO por el TC cuando la convención del repo es
+        `usd = nativa / fx_to_usd` (main.py:10026). Error de fx² = 1.562.500×:
+        una sola venta en pesos abierta cruzando fin de mes hundía la cobertura
+        de 99,68% a 0,02% y borraba el mes entero de la serie.
     """
     costo = 0.0
     afirmable = True
+
+    def _a_usd(monto, moneda, fx=None):
+        """`invested`/`entry_price` vienen en la moneda NATIVA del lote."""
+        m = (moneda or "").strip().upper()
+        if not m or m in ("USD", "USDT", "USDC"):
+            return monto
+        try:
+            tc = float(fx) if fx else None
+        except (TypeError, ValueError):
+            tc = None
+        if not tc or tc <= 0:
+            try:
+                import main as _m
+                tc = float(_m._user_tc_blue(conn, uid))
+            except Exception:
+                tc = None
+        if not tc or tc <= 0:
+            return None                    # no se puede afirmar el costo en USD
+        return monto / tc
+
     try:
         for r in conn.execute(
-            """SELECT asset, invested, entry_date FROM positions
-                WHERE user_id=? AND COALESCE(is_cash,0)=0
-                  AND entry_date IS NOT NULL AND entry_date <= ?""",
-            (uid, date_iso),
+            """SELECT broker, asset, invested, quantity, currency, entry_date
+                 FROM positions
+                WHERE user_id=? AND COALESCE(is_cash,0)=0""",
+            (uid,),
         ).fetchall():
-            if r["asset"] in vistos:
+            # Sin entry_date NO se puede afirmar que no estuviera: se cuenta.
+            if r["entry_date"] and str(r["entry_date"])[:10] > date_iso:
                 continue
+            qty_vista = vistos.get((r["broker"], r["asset"]))
+            qty = float(r["quantity"] or 0)
+            if qty_vista is not None and qty > 0 and qty_vista >= qty - 1e-9:
+                continue                   # el import ya valuó al menos esta cantidad
             inv = float(r["invested"] or 0)
-            if inv > 0:
-                costo += inv
-            else:
-                afirmable = False        # hay algo, pero no se cuanto valia
+            if qty_vista is not None and qty > 0:
+                # visto PARCIAL: sólo la fracción no vista queda al costo.
+                inv = inv * max(0.0, (qty - qty_vista)) / qty
+            usd = _a_usd(inv, r["currency"]) if inv > 0 else 0.0
+            if usd is None:
+                afirmable = False
+            elif usd > 0:
+                costo += usd
+            elif not r["entry_date"]:
+                afirmable = False          # hay algo, sin fecha y sin costo
     except Exception:
         afirmable = False
     try:
         for r in conn.execute(
-            """SELECT asset, quantity, entry_price, fx_to_usd, entry_date, date
-                 FROM operations
-                WHERE user_id=? AND entry_date IS NOT NULL
-                  AND entry_date <= ? AND date > ?""",
-            (uid, date_iso, date_iso),
+            """SELECT broker, asset, quantity, entry_price, fx_to_usd, currency,
+                      entry_date, date
+                 FROM operations WHERE user_id=?""",
+            (uid,),
         ).fetchall():
-            if r["asset"] in vistos:
+            ed = str(r["entry_date"])[:10] if r["entry_date"] else None
+            sd = str(r["date"])[:10] if r["date"] else None
+            if ed and ed > date_iso:
+                continue                   # se abrió después
+            if sd and sd <= date_iso:
+                continue                   # ya estaba cerrada
+            if not ed and not sd:
+                continue
+            if (r["broker"], r["asset"]) in vistos:
                 continue
             q = float(r["quantity"] or 0)
             pe = float(r["entry_price"] or 0)
-            fx = float(r["fx_to_usd"] or 1) or 1.0
-            c = q * pe * fx
-            if c > 0:
-                costo += c
+            usd = _a_usd(q * pe, r["currency"], r["fx_to_usd"]) if (q and pe) else 0.0
+            if usd is None:
+                afirmable = False
+            elif usd > 0:
+                costo += usd
             else:
                 afirmable = False
     except Exception:
@@ -258,19 +312,34 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
     import json as _json
     from twr import clasificar_fila, MEDICION
 
-    # net_deposited acumulado por mes, de la contabilidad (que NO se toca).
+    # ⚠️ MISMA CONVENCION QUE EL CRON, o la resta entre dos fotos miente.
+    # El cron estampa `compute_net_deposited()` = BASELINE (`capital_inicio` de la
+    # primera fila) + flujos (snapshots_job.py:385-386). Acá se estampaba sólo el
+    # acumulado de flujos, SIN baseline. Como `bordes_mercado_periodo` y
+    # `curva_indexada` sacan el flujo de la ventana restando estas dos columnas,
+    # en cuanto un borde era del cron y el otro de acá la resta devolvía EL
+    # BASELINE ENTERO como si fuera un aporte de ese mes: un mes real de +US$2.000
+    # se publicaba como "Mes difícil −61,2% · Aportaste US$100.000 de capital
+    # nuevo". Y justo en la población que el backfill existe para servir (fotos
+    # reconstruidas viejas + cron nuevo).
+    filas_me = conn.execute(
+        "SELECT year, month, capital_inicio, deposits, withdrawals FROM monthly_entries "
+        "WHERE user_id=? AND broker='global' ORDER BY year, month", (uid,)).fetchall()
+    baseline = float(filas_me[0]["capital_inicio"] or 0) if filas_me else 0.0
     cum = 0.0
     net_dep_por_mes: dict = {}
-    for r in conn.execute(
-        "SELECT year, month, deposits, withdrawals FROM monthly_entries "
-        "WHERE user_id=? AND broker='global' ORDER BY year, month", (uid,)
-    ).fetchall():
+    for r in filas_me:
         cum += (r["deposits"] or 0) - (r["withdrawals"] or 0)
-        net_dep_por_mes[f"{r['year']}-{r['month']:02d}"] = cum
+        net_dep_por_mes[f"{r['year']}-{r['month']:02d}"] = baseline + cum
 
-    tenia_pos = conn.execute(
-        "SELECT 1 FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0 LIMIT 1",
-        (uid,)).fetchone() is not None
+    # ⚠️ El flag va POR FECHA, igual que en twr. Con "¿tiene posiciones HOY?" este
+    # módulo y `twr` clasificaban distinto la misma fila: una foto REAL del cron de
+    # cuando la persona estaba 100% cash (fx sí, holdings NULL) es MEDICION para
+    # twr e INTRADIA acá — y entraba al UPSERT, reemplazando la medición de mercado
+    # por la cadena contable, con source='mtm_backfill'. Destructivo y no
+    # reversible, y rompía la promesa escrita en el docstring de esta función.
+    from twr import primera_fecha_con_posiciones, _tenia_posiciones_en
+    primera_pos = primera_fecha_con_posiciones(conn, uid)
     existentes = {
         r["date"]: r for r in conn.execute(
             "SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage "
@@ -281,7 +350,8 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
     for ym, info in sorted(por_mes.items()):
         d = info["date"]
         prev = existentes.get(d)
-        if prev is not None and clasificar_fila(prev, tenia_pos) == MEDICION:
+        if prev is not None and clasificar_fila(
+                prev, _tenia_posiciones_en(primera_pos, d)) == MEDICION:
             continue                      # foto real del cron: manda ella
         net_dep = net_dep_por_mes.get(ym, 0.0)
         conn.execute(
@@ -428,7 +498,8 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
         # trabajo viene a sacar de la curva, ahora con etiqueta de mercado.
         # Antes mentia CON la etiqueta puesta (source='import') y todos los filtros
         # la descartaban; asi era estrictamente peor.
-        _no_visto, _afirmable = _tenencia_no_vista(conn, uid, d, set(by_asset))
+        _vistos = {(h["broker"], h["asset"]): float(h["quantity"] or 0) for h in hold}
+        _no_visto, _afirmable = _tenencia_no_vista(conn, uid, d, _vistos)
         val_costo += _no_visto
         if _no_visto > 0:
             res["cost_fallbacks"] += 1
