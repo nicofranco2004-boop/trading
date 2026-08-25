@@ -79,14 +79,22 @@ class HistMtmTest(unittest.TestCase):
         self.assertAlmostEqual(snap["2024-08"], 2500.0, places=1)
         self.assertAlmostEqual(snap["2024-09"], 2750.0, places=1)
 
+    def _snap(self, ym):
+        """El valor RECONSTRUIDO vive en snapshots, no en monthly_entries: ahi lo
+        recomputaria al costo `_repair_monthly_chain` (main.py:9314-9318)."""
+        y, m = (int(x) for x in ym.split("-"))
+        import calendar as _c
+        d = f"{y}-{m:02d}-{_c.monthrange(y, m)[1]:02d}"
+        r = self.conn.execute(
+            "SELECT total_value, source, mtm_coverage FROM snapshots WHERE user_id=? AND date=?",
+            (self.uid, d)).fetchone()
+        return r
+
     def test_idempotent(self):
         self._mock_prices({"2024-08": 250.0, "2024-09": 275.0})
         bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
         bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))  # 2da corrida
-        cf = self.conn.execute(
-            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND broker='global' AND year=2024 AND month=8",
-            (self.uid,)).fetchone()["capital_final"]
-        self.assertAlmostEqual(cf, 2500.0, places=1)   # NO se duplicó el unrealized
+        self.assertAlmostEqual(self._snap("2024-08")["total_value"], 2500.0, places=1)
 
     def test_no_price_falls_back_to_cost(self):
         self._mock_prices({})   # sin precio histórico → costo
@@ -177,10 +185,7 @@ class HistMtmTest(unittest.TestCase):
             bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
         finally:
             bf.sj.compute_broker_value_usd = orig
-        cf = self.conn.execute(
-            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND broker='global' AND year=2024 AND month=8",
-            (self.uid,)).fetchone()["capital_final"]
-        self.assertAlmostEqual(cf, -8000.0, places=1)       # costo, NO -9000 (no se empeora)
+        self.assertAlmostEqual(self._snap("2024-08")["total_value"], -8000.0, places=1)
 
     def test_costo_negativo_pero_mejora_se_respeta(self):
         # El otro lado del clamp: si el costo es negativo PERO el unrealized lo MEJORA
@@ -197,10 +202,7 @@ class HistMtmTest(unittest.TestCase):
             bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
         finally:
             bf.sj.compute_broker_value_usd = orig
-        cf = self.conn.execute(
-            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND broker='global' AND year=2024 AND month=8",
-            (self.uid,)).fetchone()["capital_final"]
-        self.assertAlmostEqual(cf, -5000.0, places=1)       # -8000 + 3000 = -5000 (mejora respetada)
+        self.assertAlmostEqual(self._snap("2024-08")["total_value"], -5000.0, places=1)
 
     def test_clamp_costo_positivo_no_flipea_a_negativo(self):
         # Caso #417 a nivel clamp: aunque el guard CONFÍE un unrealized negativo grande
@@ -214,11 +216,93 @@ class HistMtmTest(unittest.TestCase):
             bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
         finally:
             bf.sj.compute_broker_value_usd = orig
-        cf = self.conn.execute(
-            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND broker='global' AND year=2024 AND month=8",
-            (self.uid,)).fetchone()["capital_final"]
+        cf = self._snap("2024-08")["total_value"]
         self.assertAlmostEqual(cf, 2000.0, places=1)        # costo, NO -990
         self.assertGreaterEqual(cf, 0.0)
+
+    # ── Los tres defectos de plomeria que tenian la reconstruccion desconectada ──
+
+    def test_source_propio_no_disfrazado_de_import(self):
+        """Defecto 1: persistia via `_backfill_snapshots_from_monthly`, que estampa
+        source='import' (persister.py:1290) → el trabajo a mercado salia disfrazado
+        de contable y cualquier filtro por `source` lo descartaba."""
+        self._mock_prices({"2024-08": 250.0, "2024-09": 275.0})
+        bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        r = self._snap("2024-08")
+        self.assertEqual(r["source"], bf.MTM_SOURCE)
+        self.assertNotEqual(r["source"], "import")
+
+    def test_pisa_la_foto_sintetica_que_dejo_el_import(self):
+        """Defecto 2: `ON CONFLICT DO NOTHING` (persister.py:1291) → reconstruir no
+        pisaba ni la fila sintetica del propio import, asi que el grafico seguia
+        mostrando exactamente lo mismo que antes."""
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, source) VALUES (?,?,?,?,?,'import')",
+            (self.uid, "2024-08-31", 2000.0, 2000.0, 2000.0))
+        self.conn.commit()
+        self._mock_prices({"2024-08": 250.0, "2024-09": 275.0})
+        bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        r = self._snap("2024-08")
+        self.assertAlmostEqual(r["total_value"], 2500.0, places=1)   # pisada, no ignorada
+        self.assertEqual(r["source"], bf.MTM_SOURCE)
+
+    def test_no_pisa_una_medicion_real_del_cron(self):
+        """El limite de lo anterior: una foto REAL del cron manda sobre cualquier
+        reconstruccion. El criterio no se reescribe: lo decide twr.clasificar_fila."""
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, source, fx_to_usd_blue, holdings_json) "
+            "VALUES (?,?,?,?,?,'cron',?,?)",
+            (self.uid, "2024-08-31", 1234.5, 2000.0, 2000.0, 1000.0, '[]'))
+        self.conn.commit()
+        self._mock_prices({"2024-08": 250.0, "2024-09": 275.0})
+        bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        r = self._snap("2024-08")
+        self.assertAlmostEqual(r["total_value"], 1234.5, places=1)
+        self.assertEqual(r["source"], "cron")
+
+    def test_sobrevive_a_repair_monthly_chain(self):
+        """Defecto 3 — EL que hacia que la reconstruccion se autodestruyera.
+        `_repair_monthly_chain` (main.py:9314-9318) recomputa capital_final al costo
+        para todo mes cerrado, y se dispara desde ~20 lugares de main.py. Mientras el
+        ancla vivia en monthly_entries, la siguiente alta de una operacion la borraba.
+        Ahora vive en snapshots y la corrida no la toca."""
+        self._mock_prices({"2024-08": 250.0, "2024-09": 275.0})
+        bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        antes = self._snap("2024-08")["total_value"]
+        self.assertAlmostEqual(antes, 2500.0, places=1)
+        main._repair_monthly_chain(self.conn, self.uid, "global")
+        main._repair_monthly_chain(self.conn, self.uid, "IBKR")
+        self.conn.commit()
+        self.assertAlmostEqual(self._snap("2024-08")["total_value"], antes, places=1)
+
+    def test_cobertura_estampada_y_degradada_cuando_cae_al_costo(self):
+        """Sin cobertura, un mes mayormente al costo se presenta como medido — que es
+        cambiar una mentira etiquetada por una sin etiquetar."""
+        self._mock_prices({"2024-08": 250.0, "2024-09": 275.0})
+        bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        self.assertAlmostEqual(self._snap("2024-08")["mtm_coverage"], 1.0, places=3)
+        # Sin precio historico: todo cae al costo → cobertura 0.
+        for t in ("snapshots",):
+            self.conn.execute(f"DELETE FROM {t} WHERE user_id=?", (self.uid,))
+        self.conn.commit()
+        self._mock_prices({})
+        bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        self.assertAlmostEqual(self._snap("2024-08")["mtm_coverage"], 0.0, places=3)
+
+    def test_no_escribe_en_monthly_entries(self):
+        """La contabilidad queda intacta: la reconstruccion es una MEDICION, no un
+        asiento. Mezclarlas es lo que fabricaba el fantasma."""
+        cf_antes = self.conn.execute(
+            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND "
+            "broker='global' AND year=2024 AND month=8", (self.uid,)).fetchone()["capital_final"]
+        self._mock_prices({"2024-08": 250.0, "2024-09": 275.0})
+        bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        cf_despues = self.conn.execute(
+            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND "
+            "broker='global' AND year=2024 AND month=8", (self.uid,)).fetchone()["capital_final"]
+        self.assertAlmostEqual(cf_antes, cf_despues, places=4)
 
 
 if __name__ == "__main__":

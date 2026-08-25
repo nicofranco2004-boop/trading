@@ -26,8 +26,12 @@ FX histórico: BLUE de fx_rates_daily (último ≤ fin de mes, sin fuga al futur
 blue-proxy (Fase 1, sin schema nuevo; para cuentas en USD el FX ni se usa). Regla
 cardinal: si falta precio/FX/historia o hay split → AL COSTO (jamás infla).
 
-NO toca: positions, operations, cash, import_normalized_tx. Solo
-monthly_entries.capital_final (UPDATE) + snapshots (UPSERT vía el helper de import).
+NO toca: positions, operations, cash, import_normalized_tx NI monthly_entries. La
+reconstruccion se persiste SOLO en `snapshots`, con `source='mtm_backfill'` y la
+cobertura del mes estampada (`mtm_coverage`), por UPSERT que respeta las mediciones
+reales del cron. Escribir en monthly_entries.capital_final era inutil: para todo mes
+cerrado `_repair_monthly_chain` (main.py:9314-9318) lo recomputa al costo y se
+dispara desde ~20 lugares de main.py, asi que el ancla se borraba sola.
 Saltea cuentas sin import confirmado (manuales → no reconstruibles). El mes
 calendario EN CURSO no se toca (lo maneja el flujo live).
 
@@ -57,7 +61,6 @@ if BACKEND not in sys.path:
 
 import main                                              # noqa: E402
 import snapshots_job as sj                               # noqa: E402
-from importing.persister import _backfill_snapshots_from_monthly  # noqa: E402
 from importing.recompute_backfill import _clone_db                 # noqa: E402
 
 
@@ -159,12 +162,97 @@ def _month_end(year: int, month: int) -> str:
     return _date(year, month, calendar.monthrange(year, month)[1]).isoformat()
 
 
+# ─── Persistencia: el snapshot RECONSTRUIDO ──────────────────────────────────
+#
+# Por que el backfill NO escribe mas en `monthly_entries.capital_final`:
+# `_repair_monthly_chain` (main.py:9314-9318) recomputa, para TODO mes cerrado,
+#     capital_final = capital_inicio + deposits - withdrawals + pnl_realized
+# o sea EL COSTO, y se dispara desde ~20 lugares de main.py (cualquier alta,
+# edicion o borrado de una operacion). El MtM que este script dejaba ahi se
+# borraba solo en la siguiente pasada: el ancla se autodestruia. Ahora el
+# resultado vive donde nadie lo recalcula al costo — en `snapshots`, con su
+# propio `source` — y `monthly_entries` queda intacto (sigue siendo la
+# contabilidad, que es lo que tiene que ser).
+MTM_SOURCE = "mtm_backfill"
+
+# Piso de cobertura para que un mes reconstruido cuente como serie medible. Por
+# debajo, la foto es mayormente costo disfrazado de mercado: se persiste igual
+# (con su cobertura estampada, es informacion) pero `twr.clasificar_fila` la
+# degrada a SINTETICO_COSTO y no sostiene ni un pico ni un denominador.
+COBERTURA_MINIMA = 0.70
+
+
+def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
+    """UPSERT de las fotos reconstruidas. Devuelve cuantas escribio.
+
+    Dos defectos del camino viejo que esto cierra:
+      · `_backfill_snapshots_from_monthly` estampa source='import'
+        (persister.py:1290) → el trabajo a mercado salia disfrazado de contable
+        y cualquier filtro que se escriba despues lo descarta.
+      · usaba `ON CONFLICT DO NOTHING` (persister.py:1291) → no pisaba ni
+        siquiera la fila sintetica que el propio import habia dejado antes, asi
+        que reconstruir no cambiaba nada de lo que el grafico ya mostraba.
+
+    Lo que SI se respeta: una MEDICION real del cron nunca se pisa. El criterio
+    no se re-escribe aca, se le pregunta a `twr.clasificar_fila` — si dos
+    modulos deciden distinto que fila es una medicion, uno de los dos esta mal.
+    """
+    if not por_mes:
+        return 0
+    import json as _json
+    from twr import clasificar_fila, MEDICION
+
+    # net_deposited acumulado por mes, de la contabilidad (que NO se toca).
+    cum = 0.0
+    net_dep_por_mes: dict = {}
+    for r in conn.execute(
+        "SELECT year, month, deposits, withdrawals FROM monthly_entries "
+        "WHERE user_id=? AND broker='global' ORDER BY year, month", (uid,)
+    ).fetchall():
+        cum += (r["deposits"] or 0) - (r["withdrawals"] or 0)
+        net_dep_por_mes[f"{r['year']}-{r['month']:02d}"] = cum
+
+    tenia_pos = conn.execute(
+        "SELECT 1 FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0 LIMIT 1",
+        (uid,)).fetchone() is not None
+    existentes = {
+        r["date"]: r for r in conn.execute(
+            "SELECT date, total_value, fx_to_usd_blue, holdings_json, source "
+            "FROM snapshots WHERE user_id=?", (uid,)).fetchall()
+    }
+
+    escritos = 0
+    for ym, info in sorted(por_mes.items()):
+        d = info["date"]
+        prev = existentes.get(d)
+        if prev is not None and clasificar_fila(prev, tenia_pos) == MEDICION:
+            continue                      # foto real del cron: manda ella
+        net_dep = net_dep_por_mes.get(ym, 0.0)
+        conn.execute(
+            """INSERT INTO snapshots
+                 (user_id, date, total_value, total_invested, net_deposited,
+                  holdings_json, source, mtm_coverage)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 total_value   = excluded.total_value,
+                 net_deposited = excluded.net_deposited,
+                 holdings_json = excluded.holdings_json,
+                 source        = excluded.source,
+                 mtm_coverage  = excluded.mtm_coverage""",
+            (uid, d, info["value"], info["cost"], net_dep,
+             _json.dumps(info["holdings"]) if info["holdings"] else None,
+             MTM_SOURCE, info["coverage"]),
+        )
+        escritos += 1
+    return escritos
+
+
 # ─── Backfill de un usuario ───────────────────────────────────────────────────
 def backfill_user(conn, uid: int, today: _date) -> dict:
     """Devuelve {uid, skipped, reason, months:[{ym, before, after}], cost_fallbacks,
     cash_warning}. NO commitea (lo hace el caller). Idempotente."""
     res = {"uid": uid, "skipped": False, "reason": None, "months": [],
-           "cost_fallbacks": 0, "cash_warning": False}
+           "cost_fallbacks": 0, "cash_warning": False, "snapshots_escritos": 0}
 
     # Cuenta reconstruible solo si hay import confirmado.
     has_import = conn.execute(
@@ -197,6 +285,7 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
     except Exception:
         pass
 
+    por_mes: dict = {}                         # {ym: foto reconstruida}
     cur_ym = (today.year, today.month)         # mes en curso → NO tocar
     start_iso = _month_end(me_rows[0]["year"], me_rows[0]["month"])[:8] + "01"
 
@@ -215,7 +304,12 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
         mep = blue                              # Fase 1: MEP = blue-proxy
 
         # Unrealized por broker (valor_mercado − costo), con guardas → costo.
+        # `val_mkt`/`val_costo` miden la COBERTURA del mes: cuanto del valor
+        # no-cash salio de un precio real y cuanto cayo al costo. Sin ese numero
+        # un mes casi enteramente al costo se publicaria como medido.
         unreal_by_broker: dict = {}
+        val_mkt = val_costo = 0.0
+        by_asset: dict = {}
         for h in hold:
             b = h["broker"]
             btype = bcur.get(b, "USDT")
@@ -254,16 +348,31 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
             if not trusted:
                 u = 0.0                         # precio no confiable → costo
             unreal_by_broker[b] = unreal_by_broker.get(b, 0.0) + u
+            # Valor EFECTIVO del holding en la foto: a mercado si el precio se
+            # pudo usar, al costo si degrado (ahi u quedo en 0).
+            efectivo = inv + u
+            by_asset[h["asset"]] = by_asset.get(h["asset"], 0.0) + efectivo
             if price is None or not trusted:
                 res["cost_fallbacks"] += 1
+                val_costo += efectivo
+            else:
+                val_mkt += efectivo
 
         total_unreal = sum(unreal_by_broker.values())
+        base_cob = val_mkt + val_costo
+        # Sin holdings que valuar (cartera 100% cash) no hizo falta ningun precio:
+        # la foto es exacta, cobertura 1.0. No es un caso degradado.
+        cobertura = (val_mkt / base_cob) if base_cob > 0 else 1.0
 
-        # Escribir capital_final = costo(recomputado) + unrealized, por-broker + global.
+        # Valor de la foto = costo(recomputado de columnas estables) + unrealized.
+        # Se calcula SOLO para el global y NO se escribe en monthly_entries: ver el
+        # comentario de MTM_SOURCE — `_repair_monthly_chain` lo recomputaria al costo.
         rows = conn.execute(
             "SELECT broker, capital_inicio, deposits, withdrawals, pnl_realized, capital_final "
-            "FROM monthly_entries WHERE user_id=? AND year=? AND month=?", (uid, y, m)).fetchall()
+            "FROM monthly_entries WHERE user_id=? AND year=? AND month=? AND broker='global'",
+            (uid, y, m)).fetchall()
         before_global = after_global = 0.0
+        cost_global = 0.0
         for row in rows:
             b = row["broker"]
             cost = ((row["capital_inicio"] or 0) + (row["deposits"] or 0)
@@ -281,16 +390,26 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
             # Los corruptos siguen rotos: el costo en sí está mal → es otro fix.
             if new_cf < 0:
                 new_cf = max(cost, new_cf)
-            conn.execute(
-                "UPDATE monthly_entries SET capital_final=? WHERE user_id=? AND broker=? AND year=? AND month=?",
-                (new_cf, uid, b, y, m))
             if b == "global":
-                before_global = row["capital_final"] or 0
+                # "Antes" es lo que la curva MOSTRABA: la foto que ya estaba, y
+                # solo si no habia ninguna, la cadena contable.
+                prev_snap = conn.execute(
+                    "SELECT total_value FROM snapshots WHERE user_id=? AND date=?",
+                    (uid, d)).fetchone()
+                before_global = (prev_snap["total_value"] if prev_snap is not None
+                                 else (row["capital_final"] or 0))
                 after_global = new_cf
-        res["months"].append({"ym": ym, "before": before_global, "after": after_global})
+                cost_global = cost
+        res["months"].append({"ym": ym, "before": before_global, "after": after_global,
+                              "coverage": round(cobertura, 4)})
+        por_mes[ym] = {"date": d, "value": after_global, "cost": cost_global,
+                       "coverage": round(cobertura, 4),
+                       "holdings": [{"asset": a, "value_usd": round(v, 2)}
+                                    for a, v in by_asset.items()]}
 
-    # Re-derivar snapshots desde global.capital_final (lo que lee el chart).
-    _backfill_snapshots_from_monthly(conn, uid)
+    # La reconstruccion se persiste como foto propia (source='mtm_backfill'), no
+    # como una fila 'import' derivada de la cadena contable.
+    res["snapshots_escritos"] = _persist_mtm_snapshots(conn, uid, por_mes)
     return res
 
 

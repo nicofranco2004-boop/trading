@@ -49,11 +49,23 @@ log = logging.getLogger(__name__)
 # NINGUNO de los dos sirve como borde.
 
 MEDICION = "medicion"                # cierre real a mercado — sirve de borde
+RECONSTRUIDO = "reconstruido"        # tenencia histórica valuada a precio real de mercado
 INTRADIA = "intradia"                # foto de media rueda escrita por un browser
 SINTETICO_COSTO = "sintetico_costo"  # fabricado por el import: contabilidad, no mercado
 INDETERMINADO = "indeterminado"      # no se puede afirmar cuál es — no se usa de borde
 
-CLASES = (MEDICION, INTRADIA, SINTETICO_COSTO, INDETERMINADO)
+CLASES = (MEDICION, RECONSTRUIDO, INTRADIA, SINTETICO_COSTO, INDETERMINADO)
+
+# Las dos clases que están EN BASE DE MERCADO. Es la única lista que puede
+# sostener un pico o un denominador: mezclar una de éstas con base contable en
+# las dos puntas de un mismo tramo es exactamente lo que fabrica el fantasma.
+BASE_MERCADO = (MEDICION, RECONSTRUIDO)
+
+# Piso de cobertura para que una foto reconstruida cuente como base de mercado.
+# `mtm_coverage` dice qué fracción del valor NO-CASH se pudo valuar a precio real;
+# por debajo del piso la foto es mayormente costo, y presentarla como medida sería
+# cambiar una mentira etiquetada (`source='import'`) por una sin etiquetar.
+COBERTURA_MINIMA = 0.70
 
 # Una serie PLANA es peor que un hueco: el hueco se ve, la serie plana pasa
 # todos los guards. Pasa cuando `apply_last_known_prices` completa un símbolo
@@ -78,7 +90,8 @@ def _es_fin_de_mes(fecha: str) -> bool:
 # Lo que dice `source` manda: es un hecho estampado al escribir, no una
 # deducción. La heurística de abajo queda sólo para las filas anteriores a esa
 # columna, que nunca la van a tener.
-_POR_SOURCE = {"cron": MEDICION, "browser": INTRADIA, "import": SINTETICO_COSTO}
+_POR_SOURCE = {"cron": MEDICION, "browser": INTRADIA, "import": SINTETICO_COSTO,
+               "mtm_backfill": RECONSTRUIDO}
 
 
 def clasificar_fila(row, tenia_posiciones: bool) -> str:
@@ -86,6 +99,15 @@ def clasificar_fila(row, tenia_posiciones: bool) -> str:
     algo no-cash para valuar: sin eso, un holdings_json vacío es lo correcto y
     no una señal de que la fila sea mala."""
     src = row["source"] if "source" in row.keys() else None
+    if src == "mtm_backfill":
+        # La reconstrucción sólo vale como base de mercado si de verdad se valuó a
+        # mercado. Sin cobertura estampada no se puede afirmar → contable.
+        cob = row["mtm_coverage"] if "mtm_coverage" in row.keys() else None
+        try:
+            ok = cob is not None and float(cob) >= COBERTURA_MINIMA
+        except (TypeError, ValueError):
+            ok = False
+        return RECONSTRUIDO if ok else SINTETICO_COSTO
     if src in _POR_SOURCE:
         return _POR_SOURCE[src]
     tiene_holdings = bool(row["holdings_json"])
@@ -103,6 +125,51 @@ def clasificar_fila(row, tenia_posiciones: bool) -> str:
     if _es_fin_de_mes(row["date"]):
         return SINTETICO_COSTO                # fin de mes sin nada estampado: el import
     return INDETERMINADO
+
+
+def primera_fecha_con_posiciones(conn, uid: int):
+    """La fecha más vieja en que esta persona tuvo algo NO-CASH. None si nunca.
+
+    ⚠️ ESTO ARREGLA UN FALSO ASCENSO. `_usuarios_con_posiciones` mira las posiciones
+    de HOY. Un usuario que vendió todo esta semana da `tenia_posiciones=False`, y con
+    ese False sus filas VIEJAS de browser —escritas cuando sí tenía cartera— dejan de
+    ser INTRADIA y ASCIENDEN a MEDICION: pasan a habilitar bordes de período que
+    nunca fueron una medición. El flag tiene que evaluarse a la fecha de CADA fila.
+
+    "Tuvo algo no-cash en o antes de D" es monótono: una vez verdadero, verdadero
+    para siempre. Así que alcanza con la fecha más temprana, y comparar contra ella.
+    Se mira la tenencia abierta (`positions.entry_date`) y también la ya cerrada
+    (`operations`), porque el usuario que vendió todo es justamente el caso a cubrir.
+    """
+    fechas = []
+    for q, args in (
+        ("SELECT MIN(entry_date) AS d FROM positions "
+         "WHERE user_id=? AND COALESCE(is_cash,0)=0 AND entry_date IS NOT NULL", (uid,)),
+        ("SELECT MIN(COALESCE(entry_date, date)) AS d FROM operations "
+         "WHERE user_id=? AND COALESCE(entry_date, date) IS NOT NULL", (uid,)),
+    ):
+        try:
+            r = conn.execute(q, args).fetchone()
+        except Exception:
+            continue
+        if r is not None and r["d"]:
+            fechas.append(str(r["d"])[:10])
+    if not fechas:
+        # Sin fechas utilizables, pero puede haber posiciones no-cash sin entry_date:
+        # ahí lo conservador es asumir que SÍ tenía (no ascender nada).
+        try:
+            hay = conn.execute(
+                "SELECT 1 FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0 LIMIT 1",
+                (uid,)).fetchone() is not None
+        except Exception:
+            hay = False
+        return "0000-01-01" if hay else None
+    return min(fechas)
+
+
+def _tenia_posiciones_en(primera, fecha) -> bool:
+    """El flag que `clasificar_fila` necesita, evaluado A LA FECHA DE LA FILA."""
+    return bool(primera) and str(fecha)[:10] >= primera
 
 
 def _usuarios_con_posiciones(conn, ids: list) -> set:
@@ -139,22 +206,23 @@ def diagnosticar(conn, ids: list) -> dict:
         return {}
     ids = [int(x) for x in ids]
     ph = ",".join("?" * len(ids))
-    con_pos = _usuarios_con_posiciones(conn, ids)
-
     por_user = defaultdict(list)
     for r in conn.execute(
-            f"""SELECT user_id, date, total_value, fx_to_usd_blue, holdings_json, source
+            f"""SELECT user_id, date, total_value, fx_to_usd_blue, holdings_json, source,
+                       mtm_coverage
                 FROM snapshots WHERE user_id IN ({ph}) AND total_value > 0
                 ORDER BY user_id, date""", ids).fetchall():
         por_user[r["user_id"]].append(r)
+    primera_por_user = {uid: primera_fecha_con_posiciones(conn, uid) for uid in ids}
 
     out = {}
     for uid in ids:
         filas = por_user.get(uid, [])
         conteo = {c: 0 for c in CLASES}
         mediciones = []
+        primera = primera_por_user.get(uid)
         for r in filas:
-            c = clasificar_fila(r, uid in con_pos)
+            c = clasificar_fila(r, _tenia_posiciones_en(primera, r["date"]))
             conteo[c] += 1
             if c == MEDICION:
                 mediciones.append(r["date"])
@@ -247,12 +315,14 @@ def bordes_medibles(conn, uid: int) -> list:
     """Los cierres que sirven de borde, en orden. SOLO mediciones a mercado:
     una foto intradía del browser o una fila fabricada al costo por el import
     no son un cierre, y encadenarlas mide cualquier cosa menos el mercado."""
-    con_pos = uid in _usuarios_con_posiciones(conn, [uid])
+    primera = primera_fecha_con_posiciones(conn, uid)
     filas = conn.execute(
-        """SELECT id, date, total_value, fx_to_usd_blue, holdings_json, source
+        """SELECT id, date, total_value, fx_to_usd_blue, holdings_json, source,
+                  mtm_coverage
            FROM snapshots WHERE user_id=? AND total_value > 0 ORDER BY date""",
         (uid,)).fetchall()
-    return [r for r in filas if clasificar_fila(r, con_pos) == MEDICION]
+    return [r for r in filas
+            if clasificar_fila(r, _tenia_posiciones_en(primera, r["date"])) == MEDICION]
 
 
 def _flujo(conn, uid: int, desde: str, hasta: str) -> float:
@@ -389,4 +459,212 @@ def twr_de(conn, uid: int, desde_mes: str = None, hasta_mes: str = None) -> dict
         "meses_revisados": revisados,     # a estos les cambió la historia
         "meses_degradados": degradados,
         "motivo": None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FASE 2 — LA SERIE CANÓNICA
+#
+# Todo lo que dibuje una curva de performance o publique un drawdown tiene que
+# salir de acá. Mientras cada pantalla arme su propia serie sobre la cadena
+# contable, cualquier guard nuevo en Python se queda corto — que es literalmente
+# lo que ya pasó: `applyMtmToMonthly` descarta sintéticos y se abstiene sin borde
+# medido (insightsModel.js:621 y :653), y trece líneas después
+# `buildCumulativeReturnSeries` (insightsModel.js:106) pisa el cierre con el
+# valor live sin mirar `m.mtm` y desarma el guard entero.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Cuántos días de silencio parten la serie en dos tramos. Más que esto y unir los
+# dos puntos con una recta es inventar el recorrido del medio.
+MAX_HUECO_DIAS = 45
+
+
+def _dias(a: str, b: str) -> int:
+    from datetime import date
+    ya, ma, da = (int(x) for x in str(a)[:10].split("-"))
+    yb, mb, db = (int(x) for x in str(b)[:10].split("-"))
+    return abs((date(yb, mb, db) - date(ya, ma, da)).days)
+
+
+def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
+                  aceptar: tuple = BASE_MERCADO,
+                  max_hueco_dias: int = MAX_HUECO_DIAS) -> dict:
+    """Los puntos de la serie que SE PUEDEN usar, partidos donde hay huecos.
+
+    `aceptar` es el nivel de exigencia:
+      · BASE_MERCADO (default) — MEDICION|RECONSTRUIDO. El único nivel que puede
+        sostener un pico o un denominador.
+      · BASE_MERCADO + (INDETERMINADO,) — afloja para no borrarle la línea a los
+        usuarios cuyas filas son anteriores a la columna `source`. Esas filas
+        entran marcadas con `apto=False`: pueden sostener UNA LÍNEA, nunca ser un
+        pico ni un denominador. La regla se aplica en `curva_indexada`, no queda
+        librada al criterio del que consuma esto.
+
+    LOS HUECOS NO SE RELLENAN. Un hueco visible es información; uno interpolado es
+    exactamente el mismo crimen que el snapshot sintético — un número que el
+    sistema inventó y que el usuario lee como si lo hubiera vivido.
+
+    Devuelve también `contable`: lo que quedó AFUERA. No se tira, porque el
+    usuario importó esa historia y tiene derecho a verla — pero va por separado,
+    para dibujarse como banda y nunca como continuación de la línea medida.
+    """
+    q = ["""SELECT date, total_value, total_invested, net_deposited,
+                   fx_to_usd_blue, holdings_json, source, mtm_coverage
+              FROM snapshots WHERE user_id=? AND total_value > 0"""]
+    args = [uid]
+    if desde:
+        q.append("AND date >= ?"); args.append(desde)
+    if hasta:
+        q.append("AND date <= ?"); args.append(hasta)
+    q.append("ORDER BY date")
+    filas = conn.execute(" ".join(q), args).fetchall()
+
+    primera_pos = primera_fecha_con_posiciones(conn, uid)
+    puntos, contable, conteo = [], [], {c: 0 for c in CLASES}
+    for r in filas:
+        c = clasificar_fila(r, _tenia_posiciones_en(primera_pos, r["date"]))
+        conteo[c] += 1
+        d = str(r["date"])[:10]
+        if c in aceptar:
+            puntos.append({
+                "date": d, "value": float(r["total_value"]),
+                "net_deposited": float(r["net_deposited"] or 0),
+                "clase": c, "apto": c in BASE_MERCADO,
+                "cobertura": (float(r["mtm_coverage"])
+                              if r["mtm_coverage"] is not None else None),
+            })
+        else:
+            contable.append({"date": d, "value": float(r["total_value"]), "clase": c})
+
+    # Partir donde el silencio es demasiado largo.
+    tramos, actual = [], []
+    for p in puntos:
+        if actual and _dias(actual[-1]["date"], p["date"]) > max_hueco_dias:
+            tramos.append(actual); actual = []
+        actual.append(p)
+    if actual:
+        tramos.append(actual)
+
+    aptos = [p for p in puntos if p["apto"]]
+    total = len(filas)
+    cobertura = (len(aptos) / total) if total else 0.0
+    # Cobertura media de lo reconstruido: un tramo reconstruido al 71% pasa el
+    # piso pero NO es lo mismo que una foto del cron, y el usuario tiene que
+    # poder verlo en el tooltip.
+    cobs = [p["cobertura"] for p in puntos
+            if p["clase"] == RECONSTRUIDO and p["cobertura"] is not None]
+
+    return {
+        "puntos": puntos,
+        "tramos": tramos,
+        "contable": contable,
+        "por_clase": conteo,
+        "cobertura": round(cobertura, 4),
+        "cobertura_reconstruccion": (round(sum(cobs) / len(cobs), 4) if cobs else None),
+        "medido_desde": (aptos[0]["date"] if aptos else None),
+        "medido_hasta": (aptos[-1]["date"] if aptos else None),
+        "motivo": _motivo(conteo, len(aptos)),
+        "motivo_texto": MOTIVO_TEXTO.get(_motivo(conteo, len(aptos))),
+    }
+
+
+def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
+                   aceptar: tuple = BASE_MERCADO,
+                   max_hueco_dias: int = MAX_HUECO_DIAS,
+                   valor_live: float = None) -> dict:
+    """La curva indexada + drawdown + CAGR, encadenando `dietz` sobre `serie_medible`.
+
+    SIN CLAMPS ASIMÉTRICOS. El techo de +50% por mes que aplica el lado retail
+    (`Insights.jsx:683`, `evolution.js:317`) trunca meses reales y —el punto— NO se
+    le aplica al benchmark, así que el sesgo va sistemáticamente en contra del
+    usuario y se compone mes a mes. Sólo queda el piso de −100% de `dietz`: no se
+    puede perder más que todo.
+
+    LAS DOS REGLAS QUE NO SE NEGOCIAN:
+      · un punto no-apto (INDETERMINADO) nunca es DENOMINADOR: si el arranque de
+        un tramo no es base de mercado, ese tramo no produce retorno.
+      · un punto no-apto nunca es PICO: el drawdown se mide contra máximos que de
+        verdad se alcanzaron, no contra un valor que el sistema no puede afirmar.
+        Es exactamente el defecto que reportó el usuario ("yo nunca llegué tan
+        arriba"): el pico lo había puesto el sistema.
+    """
+    s = serie_medible(conn, uid, desde, hasta, aceptar=aceptar,
+                      max_hueco_dias=max_hueco_dias)
+    if not s["puntos"]:
+        # La forma de la respuesta NO cambia cuando no hay datos: si faltaran
+        # claves, cada consumidor tendría que adivinar — y el estado vacío es
+        # justamente el que más se lee mal.
+        return {**s, "curva": [], "twr": None, "cagr": None,
+                "drawdown_actual": None, "drawdown_maximo": None,
+                "drawdown_maximo_fecha": None, "drawdown_maximo_pico": None}
+
+    curva, idx = [], 1.0
+    pico = None            # sólo lo mueven los puntos aptos
+    pico_fecha = None
+    dd_max, dd_max_fecha, dd_max_pico_fecha = 0.0, None, None
+    dd_actual = None
+
+    for tramo in s["tramos"]:
+        for i, p in enumerate(tramo):
+            if i == 0:
+                ret = None                       # arranque de tramo: no hay v0
+            else:
+                a = tramo[i - 1]
+                if not a["apto"]:
+                    ret = None                   # denominador no publicable
+                else:
+                    flow = p["net_deposited"] - a["net_deposited"]
+                    ret = dietz(a["value"], p["value"], flow)
+            if ret is not None:
+                idx *= (1.0 + ret)
+            punto = {"date": p["date"], "index": round(idx, 6),
+                     "value": p["value"], "clase": p["clase"],
+                     "apto": p["apto"], "ret": ret,
+                     "estimado": ret is None and i > 0}
+            if p["apto"]:
+                if pico is None or idx > pico:
+                    pico, pico_fecha = idx, p["date"]
+                dd = (idx / pico) - 1.0 if pico and pico > 0 else 0.0
+                dd_actual = dd
+                if dd < dd_max:
+                    dd_max, dd_max_fecha, dd_max_pico_fecha = dd, p["date"], pico_fecha
+                punto["drawdown"] = round(dd, 6)
+            curva.append(punto)
+
+    # El valor live cierra la curva SOLO si el último borde es base de mercado.
+    # Es la regla que `buildCumulativeReturnSeries` rompía: pisaba el cierre con el
+    # live sin mirar en qué base estaba el arranque, y ahí nacía el acantilado.
+    ultimo_apto = next((p for p in reversed(s["puntos"]) if p["apto"]), None)
+    if valor_live and valor_live > 0 and ultimo_apto is not None and curva:
+        if s["puntos"][-1]["apto"]:
+            r = dietz(ultimo_apto["value"], float(valor_live), 0.0)
+            if r is not None:
+                idx *= (1.0 + r)
+                if pico is None or idx > pico:
+                    pico, pico_fecha = idx, "hoy"
+                dd_actual = (idx / pico) - 1.0 if pico and pico > 0 else 0.0
+                if dd_actual < dd_max:
+                    dd_max, dd_max_fecha, dd_max_pico_fecha = dd_actual, "hoy", pico_fecha
+                curva.append({"date": "hoy", "index": round(idx, 6),
+                              "value": float(valor_live), "clase": MEDICION,
+                              "apto": True, "ret": r, "estimado": False,
+                              "drawdown": round(dd_actual, 6)})
+
+    aptos = [p for p in s["puntos"] if p["apto"]]
+    cagr = None
+    if len(aptos) >= 2 and idx > 0:
+        años = _dias(aptos[0]["date"], curva[-1]["date"] if curva[-1]["date"] != "hoy"
+                     else aptos[-1]["date"]) / 365.25
+        if años >= 0.5:                # bajo medio año, anualizar es propaganda
+            cagr = idx ** (1.0 / años) - 1.0
+
+    return {
+        **s,
+        "curva": curva,
+        "twr": (idx - 1.0) if len(aptos) >= 2 else None,
+        "drawdown_actual": (round(dd_actual, 6) if dd_actual is not None else None),
+        "drawdown_maximo": round(dd_max, 6),
+        "drawdown_maximo_fecha": dd_max_fecha,
+        "drawdown_maximo_pico": dd_max_pico_fecha,
+        "cagr": cagr,
     }

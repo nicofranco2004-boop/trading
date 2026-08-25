@@ -1337,6 +1337,17 @@ def init_db():
         # los movers de un período aparecen recién cuando sus bordes tienen la foto.
         if 'holdings_json' not in snap_cols:
             conn.execute("ALTER TABLE snapshots ADD COLUMN holdings_json TEXT")
+        # Reconstruccion MtM (2026-08) — que fraccion del valor NO-CASH de la foto se
+        # pudo valuar a precio de mercado real, y que fraccion cayo al costo. Solo la
+        # escribe el backfill historico (`source='mtm_backfill'`): una fila del cron
+        # es 100% mercado por construccion y deja esto en NULL.
+        #
+        # Sin este numero, un mes reconstruido MAYORMENTE AL COSTO se presentaria como
+        # medido — que es cambiar una mentira etiquetada (`source='import'`) por una
+        # sin etiquetar. `twr.clasificar_fila` exige un piso de cobertura para
+        # aceptarlo como RECONSTRUIDO; por debajo del piso vuelve a ser contable.
+        if 'mtm_coverage' not in snap_cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN mtm_coverage REAL")
         # Phase C — tabla global de FX rates diarios. NO está particionada por
         # user (el dólar blue es público y único). Se rellena con backfill desde
         # argentinadatos.com al startup si está vacía, y se actualiza cada día
@@ -11370,6 +11381,46 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
         "las_sospechosas": sospechosas[:20],
         "detalle": detalle[:60],
     }
+
+
+@app.get("/api/insights/performance")
+def insights_performance(
+    bench: str = "sp500",
+    desde: str = None,
+    hasta: str = None,
+    valor_live: float = None,
+    incluir_indeterminado: bool = False,
+    uid: int = Depends(get_effective_user),
+):
+    """LA fuente de la sección Performance: curva del usuario + benchmark RECORTADO
+    AL MISMO RANGO, con la calidad del dato explícita.
+
+    Existe para que el cálculo deje de vivir en JS sobre la cadena contable. Había
+    TRES motores independientes fabricando el mismo acantilado
+    (`insightsModel.js:106`, `Insights.jsx:698-701`, `evolution.js:234/:317`) y
+    ninguno miraba en qué BASE estaba cada punta. Acá el criterio es uno solo y es
+    el de `twr.clasificar_fila`.
+
+    · `curva`     — índice encadenado sobre `dietz`, SIN clamps asimétricos.
+    · `benchmark` — un punto por cada fecha de `curva`, indexado a 1.0 en la MISMA
+                    fecha. Antes el índice se dibujaba completo y la cartera no.
+    · `contable`  — lo que quedó afuera. No se tira: es la banda gris punteada.
+    · `motivo_texto` — el copy del estado vacío, ya redactado en `twr.MOTIVO_TEXTO`.
+    """
+    import performance as perf
+    conn = get_db()
+    try:
+        data = _bench_cache["data"] or {}
+        if not data:
+            try:
+                data = _benchmarks_fetch_and_cache()
+            except Exception:
+                data = {}
+        return perf.performance(conn, uid, data, bench_key=bench, desde=desde,
+                                hasta=hasta, valor_live=valor_live,
+                                incluir_indeterminado=bool(incluir_indeterminado))
+    finally:
+        conn.close()
 
 
 @app.get("/api/insights/mtm-audit")
