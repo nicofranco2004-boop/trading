@@ -213,9 +213,8 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
         ).fetchone()
         return dict(row) if row else None
 
-    from twr import clasificar_fila, MEDICION
+    from twr import clasificar_serie, primera_fecha_con_posiciones, MEDICION
     allowed = accept if accept is not None else (MEDICION,)
-    tenia_pos = _user_has_positions(conn, uid)
     # `mtm_coverage` es la columna más nueva. Pedirla a secas ata este lector a que
     # la migración de startup ya haya corrido — y un deploy donde el código llega
     # antes que su columna es exactamente cómo se cayó producción el 2026-08-02.
@@ -230,8 +229,17 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
              ORDER BY date DESC LIMIT ?""",
         (uid, when, _BORDER_SCAN_LIMIT),
     ).fetchall()
-    for r in rows:
-        if clasificar_fila(r, tenia_pos) in allowed:
+    # ⚠️ POR SERIE, igual que `twr.serie_medible`. Con `clasificar_fila` fila por
+    # fila, los dos módulos decidían DISTINTO sobre la misma fila legacy: la
+    # cadencia diaria —lo único que distingue una foto vieja del cron de una del
+    # browser— no se ve mirando una fila sola. `serie_medible` la ascendía a
+    # MEDICION y este lector la seguía viendo INTRADIA, con lo cual un usuario
+    # anterior a julio-2026 no conseguía NINGÚN borde de período. Si dos módulos
+    # deciden distinto qué fila es una medición, uno de los dos está mal.
+    primera = primera_fecha_con_posiciones(conn, uid)
+    clases = clasificar_serie(rows, primera, orden_desc=True)
+    for r, c in zip(rows, clases):
+        if c in allowed:
             return dict(r)
     return None
 

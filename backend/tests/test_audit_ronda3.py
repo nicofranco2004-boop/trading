@@ -150,6 +150,33 @@ class UsuarioSanoConservaTodoTest(_Base):
         self.assertEqual(s["por_clase"][twr.INTRADIA], 20)
 
 
+class UnSoloCriterioTest(_Base):
+    """Si dos módulos deciden distinto qué fila es una medición, uno está mal."""
+
+    def test_los_dos_lectores_clasifican_igual_una_fila_legacy(self):
+        d0 = _d.date(2026, 1, 1)
+        for i in range(30):                      # cadencia diaria: es el cron
+            self._snap((d0 + _d.timedelta(days=i)).isoformat(), 100000.0 + i * 10,
+                       None, hold=None)
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertGreaterEqual(s["por_clase"][twr.MEDICION], 25)
+        # Y el lector de bordes tiene que ver LO MISMO.
+        b = builder.fetch_snapshot_at_or_before(
+            self.conn, self.uid, "2026-01-30", mtm_only=True)
+        self.assertIsNotNone(b, "el lector de bordes no vio la medición que sí ve la serie")
+
+    def test_el_periodo_cerrado_de_un_usuario_legacy_consigue_bordes(self):
+        d0 = _d.date(2026, 4, 1)
+        for i in range(61):                      # abril y mayo, diario
+            self._snap((d0 + _d.timedelta(days=i)).isoformat(), 100000.0, None, hold=None)
+        self.me(2026, 4, 100000.0, 100000.0)
+        self.me(2026, 5, 100000.0, 100000.0)
+        m, _ = builder.compute_metrics_for_period(
+            self.conn, self.uid, "month", "2026-05-01", "2026-05-31", "global", None)
+        self.assertEqual(m.basis, "mercado")
+        self.assertAlmostEqual(m.delta_usd, 0.0, places=2)
+
+
 class ImportNoFabricaPerdidaTest(_Base):
     def test_un_import_en_el_medio_no_inventa_37_por_ciento(self):
         """`snapshots.net_deposited` es una medición hecha sobre `monthly_entries`
