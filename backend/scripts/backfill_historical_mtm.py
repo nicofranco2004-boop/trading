@@ -310,7 +310,7 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
     if not por_mes:
         return 0
     import json as _json
-    from twr import clasificar_fila, MEDICION
+    from twr import clasificar_serie, MEDICION
 
     # ⚠️ MISMA CONVENCION QUE EL CRON, o la resta entre dos fotos miente.
     # El cron estampa `compute_net_deposited()` = BASELINE (`capital_inicio` de la
@@ -338,20 +338,22 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
     # twr e INTRADIA acá — y entraba al UPSERT, reemplazando la medición de mercado
     # por la cadena contable, con source='mtm_backfill'. Destructivo y no
     # reversible, y rompía la promesa escrita en el docstring de esta función.
-    from twr import primera_fecha_con_posiciones, _tenia_posiciones_en
+    from twr import primera_fecha_con_posiciones
     primera_pos = primera_fecha_con_posiciones(conn, uid)
-    existentes = {
-        r["date"]: r for r in conn.execute(
-            "SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage "
-            "FROM snapshots WHERE user_id=?", (uid,)).fetchall()
-    }
+    # ⚠️ `clasificar_serie`, NO fila por fila. Éste era el QUINTO lector, y el
+    # test de contrato lo encontró: mirando una fila legacy sola no se distingue
+    # una foto del cron de una del browser, así que este UPSERT pisaba mediciones
+    # reales que los otros cuatro lectores ya veían como tales.
+    _filas = conn.execute(
+        "SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage "
+        "FROM snapshots WHERE user_id=? ORDER BY date", (uid,)).fetchall()
+    _clases = clasificar_serie(_filas, primera_pos)
+    existentes = {r["date"]: c for r, c in zip(_filas, _clases)}
 
     escritos = 0
     for ym, info in sorted(por_mes.items()):
         d = info["date"]
-        prev = existentes.get(d)
-        if prev is not None and clasificar_fila(
-                prev, _tenia_posiciones_en(primera_pos, d)) == MEDICION:
+        if existentes.get(d) == MEDICION:
             continue                      # foto real del cron: manda ella
         net_dep = net_dep_por_mes.get(ym, 0.0)
         conn.execute(

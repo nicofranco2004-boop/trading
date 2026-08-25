@@ -373,7 +373,17 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
     ini = fetch_snapshot_at_or_before(conn, uid, _prev, accept=acepta)
     if not ini or not (float(ini.get("total_value") or 0) > 0):
         return None
-    if not _border_is_fresh(ini.get("date"), period_start, _BORDER_MAX_LAG_DAYS):
+    # ⚠️ UN SOLO DÍA DE TOLERANCIA, no cinco.
+    # Con 5, si al cron le faltaba UN día el borde retrocedía a antes de un
+    # depósito que igual se cuenta entero como flujo del período. Medido: abril
+    # plano en 100.000, depósito de 10.000 el 30/4, mayo plano en 110.000 con CERO
+    # aportes → con el cron muriendo el 30/4 daba 0,00%, y muriendo el 29/4 daba
+    # +10,00% inventado. El único parámetro que cambiaba era qué día se cortó el
+    # cron, y los huecos del cron son el caso ESPERADO en Railway
+    # (memoria del repo: `project_cron_infra`). Un mes cerrado no se autocura.
+    # Sin borde se cae a la cadena contable, que en ese mismo caso da 0,00: caer a
+    # contable es mejor que inventar.
+    if not _border_is_fresh(ini.get("date"), period_start, 1):
         return None
     if str(ini.get("date"))[:10] >= period_start:
         return None                     # defensa: nunca dentro del período
@@ -385,7 +395,10 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
     # mitad de mes deja fuera media rueda de mercado.
     if not (period_start <= str(fin.get("date"))[:10] <= period_end):
         return None
-    if not _border_is_fresh(fin.get("date"), period_end):
+    # Idem del lado del cierre, y por el mismo motivo: un cierre 5 días temprano
+    # deja fuera el movimiento de mercado de esos días pero cuenta igual los
+    # aportes del mes entero. Es la misma asimetría, con el signo dado vuelta.
+    if not _border_is_fresh(fin.get("date"), period_end, 1):
         return None
     if str(fin.get("date"))[:10] <= str(ini.get("date"))[:10]:
         return None                     # sin dos bordes distintos no hay tramo

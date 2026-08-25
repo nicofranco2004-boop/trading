@@ -41,6 +41,7 @@ import {
   buildCumulativeReturnSeries,
   drawdownFromPerf,
   cortarPorTramo,
+  totalDePunto,
   computeDrawdownOnReturns,
   computeBestWorstMonth,
   computeAssetContribution,
@@ -747,7 +748,8 @@ function InsightsDesktop({ _embeddedTab }) {
       out.push({
         key: esHoy ? 'today' : pt.date,
         label: esHoy ? 'Hoy' : benchLabel(pt.date.slice(0, 7)),
-        total: +((pt.index - 1) * 100).toFixed(2),
+        // Sólo los puntos aptos: ver `totalDePunto` (insightsModel.js).
+        total: totalDePunto(pt),
         realized: denom > 0 ? +((rz / denom) * 100).toFixed(2) : 0,
         tramo: pt.tramo,
       })

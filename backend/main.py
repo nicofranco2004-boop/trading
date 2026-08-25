@@ -4912,14 +4912,19 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
             "FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT ?",
             (uid, days),
         ).fetchall()
-        # La clase la decide `twr.clasificar_fila`, no una heurística propia: si
-        # dos módulos deciden distinto qué fila es una medición, uno está mal.
+        # ⚠️ `clasificar_serie`, NO `clasificar_fila`. Éste era el tercer lector y
+        # el que quedó sin migrar: mirando fila por fila, toda foto anterior al
+        # 2026-08-06 cae en INTRADIA — que desde que INTRADIA salió de
+        # `BASE_MERCADO` significa `apto=False` y `sintetico=True`. A un usuario
+        # SANO se le degradaban 549 de 600 fotos acá mientras la curva veía las
+        # 600, y `applyMtmToMonthly` (insightsModel.js:621) saltea las sintéticas:
+        # un mes que a mercado rindió +12,00% se mostraba 0,00%.
         import twr as _twr
         _primera = _twr.primera_fecha_con_posiciones(conn, uid)
+        _clases = _twr.clasificar_serie(rows, _primera, orden_desc=True)
     out = []
-    for r in rows:
+    for r, _clase in zip(rows, _clases):
         d = dict(r)
-        _clase = _twr.clasificar_fila(r, _twr._tenia_posiciones_en(_primera, r["date"]))
         d["clase"] = _clase
         # `apto`: esta fila puede sostener un pico o un denominador. Lo que NO es
         # apto se puede seguir dibujando, pero aparte y nunca como origen de un pico.
@@ -29922,18 +29927,17 @@ def _reconstruir_mtm(uid: int) -> dict:
     try:
         from scripts.backfill_historical_mtm import backfill_user
         from datetime import datetime as _dt
-        # ⚠️ RE-ESTAMPAR `net_deposited` ANTES de reconstruir.
-        # Esa columna es una medición que el escritor hizo sobre `monthly_entries`
-        # en el momento de escribir cada fila, y el import acaba de reescribir
-        # `monthly_entries` hacia atrás. Sin esto conviven en la misma serie
-        # estampas de dos momentos distintos, y todo el que las reste —el chart de
-        # evolución del Dashboard, el informe del asesor— lee la diferencia entre
-        # dos contabilidades como si fuera un flujo. `twr` ya no depende de la
-        # columna (usa `netdep_canonico`), pero el resto sí.
-        try:
-            _recompute_snapshots_netdep_for_user(conn, uid)
-        except Exception:
-            log.exception("mtm-auto: no se pudo re-estampar net_deposited de %s", uid)
+        # ⚠️ ACÁ NO SE RE-ESTAMPA `net_deposited`, Y ES A PROPÓSITO.
+        # Lo agregué en la ronda anterior para que las estampas viejas dejaran de
+        # mezclarse con las nuevas. El remedio resultó peor: la fórmula que estampa
+        # (`compute_net_deposited_db`, snapshots_job.py:350-352) trunca la fecha a
+        # MES, así que reescribe filas del cron que estaban BIEN al día y le mueve
+        # el aportado del día 20 al día 1. Medido sobre una cuenta SANA, sin ningún
+        # problema previo: 19 de 59 filas reescritas y el chip "variación desde el
+        # 1 del mes" pasó de 0 a +US$10.000 de ganancia inventada. Y esto corría en
+        # el camino de TODO import confirmado, de toda cuenta.
+        # La mezcla de estampas se resuelve donde corresponde: `twr.serie_medible`
+        # detecta cuándo la estampa dejó de coincidir con la contabilidad actual.
         res = backfill_user(conn, uid, _dt.utcnow().date())
         if res.get("skipped"):
             conn.rollback()

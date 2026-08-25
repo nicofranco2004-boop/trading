@@ -256,6 +256,58 @@ def clasificar_serie(filas, primera_pos, orden_desc: bool = False) -> list:
     return clases[::-1] if orden_desc else clases
 
 
+def backfill_source_legacy(conn, uids: list) -> dict:
+    """Estampa `source='cron'` en las filas LEGACY que la cadencia identifica como
+    del cron. Idempotente: sólo toca filas con `source IS NULL`.
+
+    ⚠️ POR QUÉ MATERIALIZAR Y NO RESOLVERLO A READ-TIME.
+    Resolverlo al leer parece equivalente y es más barato, pero es ESTRICTAMENTE
+    MÁS DÉBIL, y ya lo pagamos: cada lector tiene que ACORDARSE de llamar a
+    `clasificar_serie`, y uno no se acordó. Llegaron a convivir dos criterios sobre
+    la MISMA fila del MISMO usuario en la misma sesión — `serie_medible` la veía
+    MEDICION y `/api/snapshots` INTRADIA, con lo cual a un usuario sano se le
+    degradaban 549 de 600 fotos en la lista y ninguna en la curva.
+    Materializado, eso es imposible: no hay dos lectores que puedan discrepar, una
+    fila nueva no puede reescribir la clase del pasado, y la clase deja de depender
+    de qué ventana se leyó.
+
+    Va por TANDAS y sin crear ningún índice: en este repo una migración que tocó el
+    orden columna/índice se llevó producción puesta 20 minutos.
+    """
+    tocados = filas = 0
+    for uid in uids:
+        rows = conn.execute(
+            """SELECT id, date, total_value, fx_to_usd_blue, holdings_json, source,
+                      mtm_coverage
+                 FROM snapshots WHERE user_id=? ORDER BY date""", (uid,)).fetchall()
+        if not rows:
+            continue
+        if all(r["source"] is not None for r in rows):
+            continue                       # ya estampado: nada que hacer
+        primera = primera_fecha_con_posiciones(conn, uid)
+        clases = clasificar_serie(rows, primera)
+        # SÓLO lo que aporta la cadencia: filas que solas se leerían INTRADIA y que
+        # la tanda diaria identifica como del cron. Una fila que ya se clasifica
+        # bien mirada sola (p. ej. la de una cartera 100% cash) no necesita
+        # estamparse — y estamparla sería afirmar 'cron' sobre algo que también
+        # pudo escribir el browser.
+        solas = [clasificar_fila(r, _tenia_posiciones_en(primera, r["date"]))
+                 for r in rows]
+        ids = [r["id"] for r, c, sola in zip(rows, clases, solas)
+               if r["source"] is None and c == MEDICION and sola == INTRADIA]
+        if not ids:
+            continue
+        for i in range(0, len(ids), 500):
+            lote = ids[i:i + 500]
+            ph = ",".join("?" * len(lote))
+            conn.execute(
+                f"UPDATE snapshots SET source='cron' WHERE source IS NULL AND id IN ({ph})",
+                lote)
+        tocados += 1
+        filas += len(ids)
+    return {"usuarios": tocados, "filas": filas}
+
+
 def _usuarios_con_posiciones(conn, ids: list) -> set:
     """Quiénes tienen (o tuvieron) alguna posición no-cash. Se usa para no
     castigar al que está todo en pesos."""
@@ -630,14 +682,88 @@ def netdep_canonico(conn, uid: int):
     return _en
 
 
+# Cuánto puede alejarse la estampa del total contable del mes sin que se la
+# considere desactualizada. Un dólar, o una millonésima del total.
+_TOL_ESTAMPA = 1.0
+
+
+def _aportado_por_punto(conn, uid: int, filas):
+    """Devuelve fila → aportado acumulado, eligiendo la mejor fuente MES A MES.
+
+    ⚠️ NINGUNA DE LAS DOS FUENTES SIRVE SOLA, y elegir mal rompe cosas distintas:
+
+    · LA ESTAMPA (`snapshots.net_deposited`) es DIARIA de verdad: el cron corre
+      todos los días y escribe el acumulado del momento, así que un depósito del
+      20 aparece el 20. Pero un import reescribe `monthly_entries` hacia atrás y
+      NO re-estampa las fotos viejas: quedan estampas de dos momentos en la misma
+      serie y la resta mide cuánto cambió la contabilidad, no un flujo. Eso
+      publicaba −37% en un mes donde no pasó nada.
+
+    · EL CANÓNICO (`netdep_canonico`) es consistente —las dos puntas salen de la
+      misma lectura— pero tiene resolución MENSUAL, porque los flujos manuales se
+      guardan en `monthly_entries.manual_*` sin fecha. Enchufado punto a punto en
+      una curva DIARIA, retro-atribuye el depósito del 20 al día 1: aparece un
+      flujo enorme contra un valor que todavía no lo incluye. Medido con el
+      mercado literalmente inmóvil: drawdown de −9,52% donde lo real es 0.
+
+    La regla: se prefiere la ESTAMPA, que es la que tiene resolución, y se cae al
+    canónico SÓLO en los meses donde la estampa dejó de coincidir con la
+    contabilidad actual — que es exactamente la señal de "acá hubo un import".
+    Un mes incompleto (el cron se cortó antes de fin de mes) no se juzga: ahí la
+    estampa puede ser legítimamente menor que el total del mes.
+    """
+    canon = netdep_canonico(conn, uid)
+    if canon is None:                      # sin contabilidad: sólo queda la estampa
+        return lambda r: float(r["net_deposited"] or 0)
+
+    from datetime import date as _date, timedelta as _td
+
+    def _es_fin_de_mes(f):
+        try:
+            y, m, d = (int(x) for x in str(f)[:10].split("-"))
+            return (_date(y, m, d) + _td(days=1)).month != m
+        except (ValueError, TypeError):
+            return False
+
+    ultimo_del_mes, hay_estampa = {}, False
+    for r in filas:
+        ym = str(r["date"])[:7]
+        prev = ultimo_del_mes.get(ym)
+        if prev is None or str(r["date"]) > str(prev["date"]):
+            ultimo_del_mes[ym] = r
+        if (r["net_deposited"] or 0):
+            hay_estampa = True
+    if not hay_estampa:                    # filas legacy con la columna en 0
+        return lambda r: canon(str(r["date"])[:10])
+
+    desconfiar = set()
+    for ym, r in ultimo_del_mes.items():
+        if not _es_fin_de_mes(r["date"]):
+            continue                       # mes incompleto: no se juzga
+        esperado = canon(str(r["date"])[:10])
+        if abs(float(r["net_deposited"] or 0) - esperado) > max(
+                _TOL_ESTAMPA, abs(esperado) * 1e-6):
+            desconfiar.add(ym)
+
+    def _en(r):
+        ym = str(r["date"])[:7]
+        if ym in desconfiar:
+            return canon(str(r["date"])[:10])
+        return float(r["net_deposited"] or 0)
+    return _en
+
+
 def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                   aceptar: tuple = ACEPTA_LINEA,
                   max_hueco_dias: int = MAX_HUECO_DIAS) -> dict:
     """Los puntos de la serie que SE PUEDEN usar, partidos donde hay huecos.
 
     `aceptar` es el nivel de exigencia:
-      · BASE_MERCADO (default) — MEDICION|RECONSTRUIDO. El único nivel que puede
-        sostener un pico o un denominador.
+      · ACEPTA_LINEA (default) — lo que ENTRA a la serie dibujada: base de mercado
+        MÁS las fotos intradía. ⚠️ NO es lo mismo que base de mercado: los puntos
+        intradía vienen con `apto=False` y no pueden ser pico ni denominador. Un
+        consumidor que asuma "lo que me devolvieron ya es base de mercado" se
+        equivoca — para eso está el flag por punto.
       · BASE_MERCADO + (INDETERMINADO,) — afloja para no borrarle la línea a los
         usuarios cuyas filas son anteriores a la columna `source`. Esas filas
         entran marcadas con `apto=False`: pueden sostener UNA LÍNEA, nunca ser un
@@ -667,10 +793,7 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # Por SERIE, no fila por fila: la cadencia diaria es lo único que distingue una
     # foto vieja del cron de una del browser, y eso no se ve en una fila sola.
     clases = clasificar_serie(filas, primera_pos)
-    # El aportado se RECALCULA acá, no se lee de la columna estampada: ver
-    # `netdep_canonico`. Las dos puntas de cualquier resta salen de la misma
-    # lectura, que es lo que hace que la resta vuelva a ser un flujo.
-    _nd = netdep_canonico(conn, uid)      # None si no hay contabilidad
+    _nd = _aportado_por_punto(conn, uid, filas)
     puntos, contable, conteo = [], [], {c: 0 for c in CLASES}
     for r, c in zip(filas, clases):
         conteo[c] += 1
@@ -678,8 +801,7 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         if c in aceptar:
             puntos.append({
                 "date": d, "value": float(r["total_value"]),
-                "net_deposited": (_nd(d) if _nd is not None
-                                  else float(r["net_deposited"] or 0)),
+                "net_deposited": _nd(r),
                 "clase": c, "apto": c in BASE_MERCADO,
                 "cobertura": (float(r["mtm_coverage"])
                               if r["mtm_coverage"] is not None else None),

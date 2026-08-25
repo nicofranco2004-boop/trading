@@ -729,3 +729,26 @@ export function cortarPorTramo(puntos, vacio = { total: null, realized: null }) 
   }
   return out
 }
+
+// ─── Un punto de la línea principal ─────────────────────────────────────────
+/**
+ * totalDePunto
+ *
+ * El % acumulado que se dibuja para UN punto de `perf.curva`, o `null` si ese
+ * punto no se puede dibujar.
+ *
+ * ⚠️ SÓLO LOS PUNTOS APTOS. El backend emite `apto` por punto porque en los
+ * no-aptos —una foto intradía del browser, un arranque de tramo— el índice NO
+ * avanzó: el `index` que traen es el arrastrado del último punto medido.
+ * Dibujarlos igual los muestra en 0,00%, que es el bug original con el signo dado
+ * vuelta: en vez de un −45% fabricado, un 0,0% fabricado que además se lee
+ * tranquilizador. La curva de drawdown ya honraba el contrato filtrando por
+ * `p.apto`; la línea principal lo ignoraba.
+ *
+ * @param {Object} pt punto de `perf.curva`
+ * @returns {number|null}
+ */
+export function totalDePunto(pt) {
+  if (!pt || !pt.apto || typeof pt.index !== 'number') return null
+  return +((pt.index - 1) * 100).toFixed(2)
+}

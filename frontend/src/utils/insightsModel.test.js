@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  totalDePunto,
   cortarPorTramo,
   drawdownFromPerf,
   netCapitalContributed,
@@ -600,5 +601,36 @@ describe('cortarPorTramo', () => {
   it('vacío y null no rompen', () => {
     expect(cortarPorTramo([])).toEqual([])
     expect(cortarPorTramo(null)).toEqual([])
+  })
+})
+
+
+// ── Un punto no-apto no se dibuja ─────────────────────────────────────────────
+// En los no-aptos el índice NO avanzó: el `index` que traen es el arrastrado del
+// último punto medido. Dibujarlos los muestra en 0,00% — el bug original con el
+// signo dado vuelta, y encima se lee tranquilizador.
+describe('totalDePunto', () => {
+  it('un punto apto se dibuja', () => {
+    expect(totalDePunto({ apto: true, index: 1.2 })).toBeCloseTo(20, 6)
+  })
+
+  it('una foto intradía (no apta) NO se dibuja', () => {
+    expect(totalDePunto({ apto: false, index: 1.0 })).toBe(null)
+  })
+
+  it('el arrastre del índice en un no-apto no se publica como 0,00%', () => {
+    // 4 cierres planos + 1 foto del browser: el no-apto trae index=1.0 arrastrado.
+    const curva = [
+      { date: '2026-01-05', apto: true, index: 1.0 },
+      { date: '2026-01-06', apto: true, index: 1.0 },
+      { date: '2026-01-07', apto: false, index: 1.0 },
+      { date: '2026-01-08', apto: true, index: 1.0 },
+    ]
+    expect(curva.map(totalDePunto)).toEqual([0, 0, null, 0])
+  })
+
+  it('null/undefined no rompen', () => {
+    expect(totalDePunto(null)).toBe(null)
+    expect(totalDePunto({ apto: true })).toBe(null)
   })
 })
