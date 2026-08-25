@@ -447,3 +447,42 @@ describe('sin techo asimétrico', () => {
     expect(r.seriesUsd[1].total).toBeGreaterThanOrEqual(-99)
   })
 })
+
+// ── Sólo base de mercado ──────────────────────────────────────────────────────
+// `snapshots` mezcla mediciones del cron con fotos que el import FABRICA copiando
+// la cadena contable: encadenarlas fabrica un desplome que nadie vivió.
+describe('descarta los puntos que no son base de mercado', () => {
+  const medido = (date, v) => ({ date, total_value: v, total_invested: 100, net_deposited: 100, apto: true })
+  const fabricado = (date, v) => ({ date, total_value: v, total_invested: 100, net_deposited: 100, apto: false })
+
+  it('una foto fabricada altísima no fabrica un desplome', () => {
+    const r = buildEvolutionFromSnapshots(
+      [fabricado('2025-01-31', 999999), medido('2025-02-28', 100), medido('2025-03-31', 110)],
+      [], BENCH, TCB)
+    expect(r.seriesUsd).toHaveLength(2)
+    expect(r.seriesUsd[1].total).toBeCloseTo(10, 1)   // +10%, no −99,99%
+  })
+
+  it('acepta el nombre viejo `sintetico` (backend anterior al cambio)', () => {
+    const r = buildEvolutionFromSnapshots(
+      [{ date: '2025-01-31', total_value: 999999, total_invested: 100, net_deposited: 100, sintetico: true },
+       { date: '2025-02-28', total_value: 100, total_invested: 100, net_deposited: 100, sintetico: false },
+       { date: '2025-03-31', total_value: 110, total_invested: 100, net_deposited: 100, sintetico: false }],
+      [], BENCH, TCB)
+    expect(r.seriesUsd).toHaveLength(2)
+  })
+
+  it('sin la marca (fixture viejo) no se descarta nada', () => {
+    const r = buildEvolutionFromSnapshots(
+      [{ date: '2025-01-31', total_value: 100, total_invested: 100, net_deposited: 100 },
+       { date: '2025-02-28', total_value: 110, total_invested: 100, net_deposited: 100 }],
+      [], BENCH, TCB)
+    expect(r.seriesUsd).toHaveLength(2)
+  })
+
+  it('si queda menos de 2 puntos medidos devuelve null (el caller cae a monthly)', () => {
+    const r = buildEvolutionFromSnapshots(
+      [fabricado('2025-01-31', 100), medido('2025-02-28', 110)], [], BENCH, TCB)
+    expect(r).toBe(null)
+  })
+})

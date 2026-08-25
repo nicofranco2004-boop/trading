@@ -4865,13 +4865,23 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
     days = max(1, min(days, 3650))
     with db_abierta() as conn:
         rows = conn.execute(
-            "SELECT date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json "
+            "SELECT date, total_value, total_invested, net_deposited, fx_to_usd_blue, "
+            "holdings_json, source, mtm_coverage "
             "FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT ?",
             (uid, days),
         ).fetchall()
+        # La clase la decide `twr.clasificar_fila`, no una heurística propia: si
+        # dos módulos deciden distinto qué fila es una medición, uno está mal.
+        import twr as _twr
+        _primera = _twr.primera_fecha_con_posiciones(conn, uid)
     out = []
     for r in rows:
         d = dict(r)
+        _clase = _twr.clasificar_fila(r, _twr._tenia_posiciones_en(_primera, r["date"]))
+        d["clase"] = _clase
+        # `apto`: esta fila puede sostener un pico o un denominador. Lo que NO es
+        # apto se puede seguir dibujando, pero aparte y nunca como origen de un pico.
+        d["apto"] = _clase in _twr.BASE_MERCADO
         # ⚠️ `sintetico`: esta fila NO la sacó el cron, la FABRICÓ
         # `_backfill_snapshots_from_monthly` (persister.py:1175) tras un import,
         # escribiendo `total_value = capital_final del mes` — o sea la cadena a
@@ -4885,7 +4895,14 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
         # saltea cuando hay blue y la composición por activo se filtra al
         # frontend en cada una de las 3.650 filas.
         _hold = d.pop("holdings_json", None)
-        d["sintetico"] = (d.get("fx_to_usd_blue") is None and not (_hold or "").strip())
+        d.pop("source", None)
+        d.pop("mtm_coverage", None)
+        # `sintetico` se mantiene por compatibilidad con lo que el frontend ya lee
+        # (`applyMtmToMonthly`, insightsModel.js:621), pero ahora sale del
+        # clasificador canónico en vez de la heurística de las dos columnas NULL:
+        # esa heurística no conoce `source` y por lo tanto tampoco distinguía una
+        # foto RECONSTRUIDA a mercado de una fabricada al costo.
+        d["sintetico"] = not d["apto"]
         out.append(d)
     return list(reversed(out))
 

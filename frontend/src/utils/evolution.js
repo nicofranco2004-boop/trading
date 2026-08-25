@@ -233,6 +233,16 @@ export function computeDailyPnl(snapshots, opts = {}) {
  */
 export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcBlue) {
   if (!snapshots || snapshots.length < 2) return null
+  // ⚠️ Sólo puntos en BASE DE MERCADO. `snapshots` mezcla mediciones del cron con
+  // fotos que el import FABRICA copiando la cadena contable
+  // (backend/importing/persister.py:1289-1292): no bajan con el mercado y dan más
+  // alto que el valor real, así que encadenarlas contra una medición de verdad
+  // fabrica un desplome que el usuario nunca vivió. La clase la decide el backend
+  // con `twr.clasificar_fila` y viaja en `apto` (/api/snapshots); `sintetico` es
+  // el mismo dato con el nombre viejo, para snapshots servidos por un backend
+  // anterior a este cambio.
+  snapshots = snapshots.filter(s => (s?.apto !== undefined ? s.apto : !s?.sintetico))
+  if (snapshots.length < 2) return null
 
   // Pre-compute cumulative pnl_realized by YYYY-MM
   const cumRealizedByMonth = new Map()

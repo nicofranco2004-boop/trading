@@ -114,6 +114,8 @@ function ctaForCategory(cat) {
   return map[cat] || { label: 'Ver detalle', href: '#diagnostico' }
 }
 
+const MES_CORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+
 export default function Insights({ _embeddedTab }) {
   // Estructura única para desktop y mobile. La diferencia se maneja con
   // useIsMobile() abajo: en mobile mostramos la card "Insight del día" como
@@ -888,6 +890,18 @@ function InsightsDesktop({ _embeddedTab }) {
     </div>
   )
 
+  // ── La banda gris: la RECONSTRUCCIÓN CONTABLE ─────────────────────────────
+  // El usuario importó esta historia y tiene derecho a verla — pero va en su
+  // propio panel, con su propio eje y en dólares crudos, NUNCA como continuación
+  // de la línea medida ni dentro del índice. Es la parte que no baja cuando baja
+  // el mercado: si se la deja tocar el índice, vuelve a poner un pico que nadie
+  // alcanzó, que es exactamente lo que el usuario del caso reportó.
+  const contableSeries = (perf?.contable || []).map(p => ({
+    key: p.date,
+    label: `${MES_CORTO[+p.date.slice(5, 7) - 1] || ''} '${p.date.slice(2, 4)}`,
+    usd: +p.value.toFixed(2),
+  }))
+
   // Selector de serie del portfolio (USD vs ARS) y label del benchmark.
   const activeSeries = currency === 'USD' ? benchSeriesUsd : benchSeriesArs
 
@@ -1599,7 +1613,6 @@ function InsightsDesktop({ _embeddedTab }) {
   // Drawdown como serie temporal (para chart underwater).
   // Curva de drawdown: los puntos que el backend marcó como base de mercado. Un
   // punto no-apto no aparece — no puede ser el fondo de una caída que nadie midió.
-  const MES_CORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
   const drawdownSeries = (perf?.curva || [])
     .filter(p => p.apto && p.drawdown != null)
     .map(p => ({
@@ -2407,6 +2420,45 @@ function InsightsDesktop({ _embeddedTab }) {
         )}
       </div>
       </AskAIAbout>
+
+      {currency === 'USD' && contableSeries.length >= 2 && (
+        <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5 mt-6">
+          <div className="flex items-center gap-1.5 mb-1">
+            <h2 className="font-semibold text-ink-0">Reconstrucción contable</h2>
+            <InfoTooltip>
+              <p className="font-semibold text-ink-0">Qué es esta banda</p>
+              <p>El tramo de tu historia del que todavía no hay fotos de mercado.
+                 Se arma con lo que aportaste más lo que ya vendiste.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Por qué va aparte</p>
+              <p>No baja cuando baja el mercado, así que da más alto que el valor
+                 real. Mezclarla con la línea medida ponía un máximo que nunca
+                 existió, y todo lo que viniera después parecía una caída.</p>
+              <p className="text-ink-3">Por eso se dibuja en su propio eje, en
+                 dólares, y nunca cuenta como pico ni entra en el % acumulado.</p>
+            </InfoTooltip>
+          </div>
+          <p className="text-xs text-ink-3 mb-4">
+            Tu historia antes de la primera medición. Es contabilidad, no mercado
+            — mirala como referencia, no como rendimiento.
+          </p>
+          <ResponsiveContainer width="100%" height={160}>
+            <ComposedChart data={contableSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+              <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} width={56}
+                     tickFormatter={v => `US$${Math.round(v / 1000)}k`} />
+              <Tooltip
+                contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px' }}
+                labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
+                formatter={(v) => [`US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
+              />
+              <Line type="monotone" dataKey="usd" name="Reconstrucción contable"
+                    stroke="#7C8698" strokeWidth={1.75} strokeDasharray="4 4" dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
 
       {/* Drawdown curve (underwater chart) — visualiza la profundidad
           y duración de las caídas sobre el rendimiento ajustado por flujos.
