@@ -93,11 +93,15 @@ class CriterioDeAceptacionTest(_Base):
         self.assertEqual(r["months"], 19)
         self.assertGreater(r["cagr"], 15)
 
-    def test_intradia_sostiene_serie_pero_NO_es_borde_de_periodo(self):
-        self.assertIn(twr.INTRADIA, twr.BASE_MERCADO)
+    def test_intradia_sostiene_la_linea_pero_no_es_pico_ni_denominador(self):
+        """La lista que dice qué ENTRA a la serie no es la que dice qué puede ser
+        PICO o DENOMINADOR. Meter INTRADIA en la segunda hacía que una foto del
+        browser fijara máximos."""
+        self.assertIn(twr.INTRADIA, twr.ACEPTA_LINEA)
+        self.assertNotIn(twr.INTRADIA, twr.BASE_MERCADO)
         self.assertNotIn(twr.INTRADIA, twr.BORDE_PERIODO)
+        self.assertNotIn(twr.SINTETICO_COSTO, twr.ACEPTA_LINEA)
         self.assertNotIn(twr.SINTETICO_COSTO, twr.BASE_MERCADO)
-        self.assertNotIn(twr.SINTETICO_COSTO, twr.BORDE_PERIODO)
 
     def test_la_foto_FABRICADA_sigue_afuera_de_las_dos(self):
         """Lo que no puede pasar es que aflojar el criterio deje entrar el defecto."""
@@ -163,10 +167,12 @@ class ValorLiveTest(_Base):
         snapshot medido se computaba entero como rendimiento. Mercado plano +
         depósito de US$20.000 = '+20,00%' al lado de 'US$0' de P&L."""
         self.pos()
+        self.me(2025, 12, 100000.0, 100000.0)
         self.me(2026, 1, 100000.0, 100000.0)
         self.me(2026, 2, 100000.0, 120000.0, dep=20000.0)
+        # El depósito entra HOY (febrero), DESPUÉS del último cierre medido.
+        self.snap("2025-12-31", 100000.0, nd=100000.0)
         self.snap("2026-01-31", 100000.0, nd=100000.0)
-        self.snap("2026-02-27", 100000.0, nd=100000.0)
         c = twr.curva_indexada(self.conn, self.uid, valor_live=120000.0)
         self.assertAlmostEqual(c["twr"], 0.0, places=4)
 

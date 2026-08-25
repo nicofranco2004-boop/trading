@@ -65,21 +65,30 @@ CLASES = (MEDICION, RECONSTRUIDO, INTRADIA, SINTETICO_COSTO, INDETERMINADO)
 # la heurística lo llama INTRADIA (twr.py:100-102). Su CAGR pasaba de +13,7%
 # sobre 19 meses a −56,9% sobre "1 mes".
 #
-#   BORDE_PERIODO — ¿esta fila sirve para cerrar UN PERÍODO contra el valor de
-#     hoy? Ahí la exigencia es máxima: una foto de media rueda contra un live
-#     fabrica el "P&L del mes". Es la lista que usan `bordes_mercado_periodo` y
-#     `fetch_snapshot_at_or_before`.
+# Aflojar la lista fue lo correcto; aflojar UNA SOLA lista no. `BASE_MERCADO`
+# respondía a la vez "¿qué punto entra a la serie?" y "¿qué punto puede ser PICO o
+# DENOMINADOR?", y meter INTRADIA ahí adentro hizo que una foto del browser fijara
+# máximos: una cartera plana en 10.000 todos los cierres publicaba
+# "Drawdown −33,3%" con el pico en la foto de media rueda, y el drawdown EMPEORABA
+# cuantas más veces el usuario abría la app. El sesgo va en una sola dirección
+# —los picos sólo suben—, así que cada foto que sobrevive lo empeora para siempre.
 #
-#   BASE_MERCADO — ¿esta fila es un VALOR DE MERCADO? Una foto intradía lo es:
-#     la sacó el browser a media rueda, pero es posiciones × precio, no
-#     contabilidad. Encadenar cientos de ellas mete ruido de timing; descartarlas
-#     borra la historia. Es la lista que sostiene picos y denominadores de una
-#     serie encadenada.
+#   BASE_MERCADO — el punto es un cierre afirmable: puede ser BORDE de período,
+#     PICO y DENOMINADOR. Es la exigencia máxima y es UNA sola pregunta: cerrar un
+#     período contra el valor de hoy y fijar un máximo histórico piden lo mismo.
 #
-# Lo que NUNCA entra en ninguna de las dos es SINTETICO_COSTO: eso no es una
-# medición de nada, es la cadena contable copiada. Ése era el defecto.
-BORDE_PERIODO = (MEDICION, RECONSTRUIDO)
-BASE_MERCADO = (MEDICION, RECONSTRUIDO, INTRADIA)
+#   ACEPTA_LINEA — lo que entra a la serie DIBUJADA. Una foto intradía es un valor
+#     de mercado (posiciones × precio, no contabilidad), así que sostiene la línea;
+#     entra con `apto=False` y `curva_indexada` se encarga de que nunca sea pico ni
+#     denominador. Es el mismo contrato que ya estaba escrito para INDETERMINADO.
+#
+# Lo que NUNCA entra en ninguna es SINTETICO_COSTO: no es una medición de nada,
+# es la cadena contable copiada. Ése era el defecto original.
+BASE_MERCADO = (MEDICION, RECONSTRUIDO)
+ACEPTA_LINEA = BASE_MERCADO + (INTRADIA,)
+# Alias explícito para los callers que preguntan por un BORDE de período. Es la
+# misma tupla a propósito: son la misma exigencia.
+BORDE_PERIODO = BASE_MERCADO
 
 # Piso de cobertura para que una foto reconstruida cuente como base de mercado.
 # `mtm_coverage` dice qué fracción del valor NO-CASH se pudo valuar a precio real;
@@ -190,6 +199,61 @@ def primera_fecha_con_posiciones(conn, uid: int):
 def _tenia_posiciones_en(primera, fecha) -> bool:
     """El flag que `clasificar_fila` necesita, evaluado A LA FECHA DE LA FILA."""
     return bool(primera) and str(fecha)[:10] >= primera
+
+
+# Cuántas ruedas seguidas —día calendario a día calendario, sin saltar ninguno—
+# hacen falta para afirmar que a esa tanda la escribió el cron y no una persona.
+# El cron corre TODOS los días, incluidos sábados, domingos y feriados; el browser
+# escribe salteado y sólo cuando el usuario entra. Siete días corridos sin un solo
+# hueco ya es una cadencia que una persona no produce.
+RACHA_CRON_MINIMA = 7
+
+
+def clasificar_serie(filas, primera_pos, orden_desc: bool = False) -> list:
+    """Clasifica una SERIE de snapshots. Devuelve una clase por fila, en el mismo
+    orden en que vinieron.
+
+    Hace todo lo que hace `clasificar_fila` MÁS una cosa que una fila sola no
+    puede saber: la CADENCIA.
+
+    ⚠️ POR QUÉ HACE FALTA. `clasificar_fila` mira una fila aislada y, sin
+    `source` ni `holdings_json`, cae en `if tiene_fx: return INTRADIA  # el
+    browser` (twr.py, más abajo). Pero las columnas `holdings_json` y `source` se
+    agregaron el 2026-07-04 y el 2026-08-06: TODAS las fotos que el cron escribió
+    antes tienen esa firma y quedaban etiquetadas como si las hubiera sacado una
+    persona a media rueda. Con eso, o se les negaba la serie a los usuarios viejos,
+    o —aflojando la lista— una foto de browser pasaba a fijar picos.
+
+    La información para desambiguarlas SÍ existe, pero está en el vecindario, no
+    en la fila: una tanda de días calendario consecutivos SIN UN SOLO HUECO la
+    escribió el cron. Sólo se aplica a filas LEGACY (sin `source`): una fila que
+    dice `source='browser'` se respeta siempre — lo que dice `source` manda.
+    """
+    filas = list(filas)
+    if orden_desc:
+        filas = filas[::-1]
+    clases = [clasificar_fila(r, _tenia_posiciones_en(primera_pos, r["date"]))
+              for r in filas]
+
+    def _legacy(r):
+        try:
+            return ("source" not in r.keys()) or (r["source"] is None)
+        except AttributeError:
+            return r.get("source") is None
+
+    # Rachas de días calendario consecutivos.
+    ini = 0
+    for i in range(1, len(filas) + 1):
+        corta = (i == len(filas)) or (_dias(filas[i - 1]["date"], filas[i]["date"]) != 1)
+        if not corta:
+            continue
+        if (i - ini) >= RACHA_CRON_MINIMA:
+            for j in range(ini, i):
+                if clases[j] == INTRADIA and _legacy(filas[j]):
+                    clases[j] = MEDICION
+        ini = i
+
+    return clases[::-1] if orden_desc else clases
 
 
 def _usuarios_con_posiciones(conn, ids: list) -> set:
@@ -346,8 +410,7 @@ def bordes_medibles(conn, uid: int) -> list:
                   mtm_coverage
            FROM snapshots WHERE user_id=? AND total_value > 0 ORDER BY date""",
         (uid,)).fetchall()
-    return [r for r in filas
-            if clasificar_fila(r, _tenia_posiciones_en(primera, r["date"])) == MEDICION]
+    return [r for r, c in zip(filas, clasificar_serie(filas, primera)) if c == MEDICION]
 
 
 def _flujo(conn, uid: int, desde: str, hasta: str) -> float:
@@ -511,8 +574,64 @@ def _dias(a: str, b: str) -> int:
     return abs((date(yb, mb, db) - date(ya, ma, da)).days)
 
 
+def netdep_canonico(conn, uid: int):
+    """date → net_deposited, calculado AHORA desde `monthly_entries`.
+
+    ⚠️ POR QUÉ NO SE USA LA COLUMNA ESTAMPADA. `snapshots.net_deposited` no es un
+    hecho del día: es una MEDICIÓN que el escritor hizo sobre `monthly_entries` EN
+    EL MOMENTO de escribir la fila (snapshots_job.py:752). Un import reescribe
+    `monthly_entries` hacia atrás y NO re-estampa las fotos viejas, así que en la
+    misma serie conviven estampas de dos momentos distintos. Restarlas para sacar
+    "el flujo de la ventana" no mide un flujo: mide cuánto cambió la contabilidad
+    entre los dos momentos en que se escribió cada foto.
+
+    Medido: julio plano en 110.000, cero aportes en julio, cron diario sano, y un
+    import del historial 2025 el 16/7 → el mes cerrado publicaba −US$50.000 /
+    −37,04% y Diagnóstico el mismo −37,04% de drawdown. Y un mes cerrado NO SE
+    AUTOCURA NUNCA. El par mezclado está GARANTIZADO, no es mala suerte: el
+    reconstructor estampa desde el `monthly_entries` actual y saltea las fotos del
+    cron a propósito.
+
+    Las dos puntas salen de la MISMA lectura, así que la resta vuelve a ser un
+    flujo. Es la convención canónica —filas 'global' + baseline— la misma que
+    estampan el cron (`compute_net_deposited`) y `_recompute_snapshots_netdep_for_user`.
+    """
+    filas = conn.execute(
+        "SELECT year, month, capital_inicio, deposits, withdrawals FROM monthly_entries "
+        "WHERE user_id=? AND broker='global' ORDER BY year, month", (uid,)).fetchall()
+    if not filas:
+        # Sin contabilidad no hay nada que afirmar: devolver 0 para todo convertiría
+        # cualquier aporte en ganancia. El caller se queda con lo estampado.
+        return None
+    baseline = float(filas[0]["capital_inicio"] or 0)
+    acum, cum = [], 0.0
+    for r in filas:
+        cum += float(r["deposits"] or 0) - float(r["withdrawals"] or 0)
+        acum.append((f"{int(r['year']):04d}-{int(r['month']):02d}", baseline + cum))
+
+    def _en(fecha):
+        ym = str(fecha)[:7]
+        # ⚠️ ANTES DE LA PRIMERA FILA VALE EL BASELINE, NO CERO — y acá se aparta a
+        # propósito de lo que estampa `compute_net_deposited_db`.
+        # El baseline (`capital_inicio` de la primera fila) es un STOCK: la plata
+        # que ya estaba cuando arranca la contabilidad. La convención estampada lo
+        # atribuye al primer mes, y eso está bien para "cuánto puso en total" pero
+        # es veneno para una RESTA: el borde anterior daba 0 y el posterior daba el
+        # baseline entero, así que un año entero publicaba −62,3% porque el primer
+        # tramo leía el baseline como un aporte de enero. Un stock tiene que
+        # aparecer a los DOS lados de la resta para cancelarse.
+        v = baseline
+        for k, val in acum:
+            if k <= ym:
+                v = val
+            else:
+                break
+        return v
+    return _en
+
+
 def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
-                  aceptar: tuple = BASE_MERCADO,
+                  aceptar: tuple = ACEPTA_LINEA,
                   max_hueco_dias: int = MAX_HUECO_DIAS) -> dict:
     """Los puntos de la serie que SE PUEDEN usar, partidos donde hay huecos.
 
@@ -545,15 +664,22 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     filas = conn.execute(" ".join(q), args).fetchall()
 
     primera_pos = primera_fecha_con_posiciones(conn, uid)
+    # Por SERIE, no fila por fila: la cadencia diaria es lo único que distingue una
+    # foto vieja del cron de una del browser, y eso no se ve en una fila sola.
+    clases = clasificar_serie(filas, primera_pos)
+    # El aportado se RECALCULA acá, no se lee de la columna estampada: ver
+    # `netdep_canonico`. Las dos puntas de cualquier resta salen de la misma
+    # lectura, que es lo que hace que la resta vuelva a ser un flujo.
+    _nd = netdep_canonico(conn, uid)      # None si no hay contabilidad
     puntos, contable, conteo = [], [], {c: 0 for c in CLASES}
-    for r in filas:
-        c = clasificar_fila(r, _tenia_posiciones_en(primera_pos, r["date"]))
+    for r, c in zip(filas, clases):
         conteo[c] += 1
         d = str(r["date"])[:10]
         if c in aceptar:
             puntos.append({
                 "date": d, "value": float(r["total_value"]),
-                "net_deposited": float(r["net_deposited"] or 0),
+                "net_deposited": (_nd(d) if _nd is not None
+                                  else float(r["net_deposited"] or 0)),
                 "clase": c, "apto": c in BASE_MERCADO,
                 "cobertura": (float(r["mtm_coverage"])
                               if r["mtm_coverage"] is not None else None),
@@ -594,7 +720,7 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
 
 
 def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
-                   aceptar: tuple = BASE_MERCADO,
+                   aceptar: tuple = ACEPTA_LINEA,
                    max_hueco_dias: int = MAX_HUECO_DIAS,
                    valor_live: float = None) -> dict:
     """La curva indexada + drawdown + CAGR, encadenando `dietz` sobre `serie_medible`.
@@ -651,16 +777,29 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         pico = None
         pico_fecha = None
         dd_max_t, dd_max_fecha_t, dd_max_pico_t = 0.0, None, None
+        ancla = None       # último punto APTO: el único que puede ser denominador
         for i, p in enumerate(tramo):
-            if i == 0:
-                ret = None                       # arranque de tramo: no hay v0
+            # ⚠️ UN PUNTO NO-APTO NO TOCA EL ÍNDICE, NI COMO v0 NI COMO v1.
+            #
+            # Antes sólo se le negaba ser DENOMINADOR (v0). Pero la pata que ENTRABA
+            # a la foto intradía sí se encadenaba, y eso mueve el índice para
+            # siempre: cuatro cierres planos en 10.000 con una foto del browser de
+            # 15.000 en el medio devolvían twr=+50%. Y con flujos el encadenado
+            # dejaba de telescopiar — el mismo mes plano daba +3,45% o −3,41% según
+            # de qué lado de la foto cayera el depósito.
+            #
+            # La cadena avanza de punto APTO a punto APTO, salteando lo que no lo
+            # es. El no-apto se dibuja (sostiene la línea, que es para lo que entró)
+            # arrastrando el índice vigente, sin retorno propio.
+            if not p["apto"]:
+                ret = None
+            elif ancla is None:
+                ret = None                       # arranque medible del tramo
             else:
-                a = tramo[i - 1]
-                if not a["apto"]:
-                    ret = None                   # denominador no publicable
-                else:
-                    flow = p["net_deposited"] - a["net_deposited"]
-                    ret = dietz(a["value"], p["value"], flow)
+                flow = p["net_deposited"] - ancla["net_deposited"]
+                ret = dietz(ancla["value"], p["value"], flow)
+            if p["apto"]:
+                ancla = p
             if ret is not None:
                 idx *= (1.0 + ret)
                 legs_t += 1
@@ -675,7 +814,10 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                      # que es el mismo crimen con otra cara.
                      "tramo": len(tramos_info),
                      "arranque_tramo": i == 0,
-                     "estimado": ret is None and i > 0}
+                     # `estimado`: este punto se dibuja pero el índice no avanzó en
+                     # él. Es lo que el consumidor necesita para no leerlo como un
+                     # retorno.
+                     "estimado": (ret is None and i > 0) or (not p["apto"])}
             if p["apto"]:
                 if pico is None or idx > pico:
                     pico, pico_fecha = idx, p["date"]

@@ -50,6 +50,21 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # mercado (medido por el cron o reconstruido a precio real).
     import twr as _twr
     _serie = _twr.serie_medible(conn, user_id)
+    # ⚠️ Y TAMPOCO se aplana la serie ignorando los TRAMOS. `serie_medible` la
+    # parte donde hubo más de `max_hueco_dias` de silencio; aplanando los puntos,
+    # el pico sale de un tramo y el fondo del otro, o sea el packet le afirma al
+    # modelo el derrumbe que ocurrió ADENTRO del hueco — el mismo que
+    # `curva_indexada` se niega a publicar por escrito y que la pantalla muestra
+    # como "—". Se usa SÓLO el tramo que produjo retorno; si hay más de uno, no
+    # hay drawdown afirmable.
+    _tramos_con_legs = [t for t in _twr.curva_indexada(conn, user_id)["tramos_detalle"]
+                        if t["legs"] > 0]
+    if len(_tramos_con_legs) == 1:
+        _d0, _d1 = _tramos_con_legs[0]["desde"], _tramos_con_legs[0]["hasta"]
+        _serie = dict(_serie, puntos=[p for p in _serie["puntos"] if _d0 <= p["date"] <= _d1])
+    elif len(_tramos_con_legs) != 0:
+        _serie = dict(_serie, puntos=[],
+                     motivo_texto=_twr.MOTIVO_TEXTO.get("serie_partida"))
     snaps = [{"date": p["date"], "total_value": p["value"]} for p in _serie["puntos"]]
     window = [
         s for s in snaps

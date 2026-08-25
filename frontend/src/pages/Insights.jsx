@@ -40,6 +40,7 @@ import { buildEvolutionFromSnapshots } from '../utils/evolution'
 import {
   buildCumulativeReturnSeries,
   drawdownFromPerf,
+  cortarPorTramo,
   computeDrawdownOnReturns,
   computeBestWorstMonth,
   computeAssetContribution,
@@ -730,19 +731,15 @@ function InsightsDesktop({ _embeddedTab }) {
     const safeDenom = (netDep, peakDep) =>
       netDep >= peakDep * 0.6 && netDep > 1000 ? netDep : peakDep
 
-    // ⚠️ LA LÍNEA SE CORTA ENTRE TRAMOS.
-    // El índice se reinicia en cada tramo (twr.py: el derrumbe que pasó dentro del
-    // hueco no se puede componer). Dibujados seguido, el salto de +20% a 0% se lee
-    // como "volví a break-even" cuando la cartera se partió al medio. Un punto en
-    // null hace que Recharts deje el hueco a la vista — que es la verdad: no se
-    // sabe qué pasó en el medio.
-    const arranques = new Set((perf?.tramos_detalle || []).slice(1).map(t => t.desde))
+    // Cada punto viaja con SU TRAMO. El corte de la línea NO se inserta acá: si se
+    // mete un punto sintético antes del resampleo mensual, su clave ('corte-…')
+    // cae en el bucket 'corte-2' de `s.key.slice(0,7)` y después ordena AL FINAL
+    // (porque 'c' > '2' comparando strings), con lo cual los dos tramos terminan
+    // dibujados pegados — exactamente lo que el corte venía a impedir. Se inserta
+    // después de resamplear, sobre `windowSeries`.
     const out = []
     curva.forEach((pt, i) => {
       const esHoy = pt.date === 'hoy'
-      if (!esHoy && i > 0 && arranques.has(pt.date)) {
-        out.push({ key: `corte-${pt.date}`, label: '', total: null, realized: null })
-      }
       const mk = esHoy ? (mesesOrd[mesesOrd.length - 1] || '') : pt.date.slice(0, 7)
       const nd = alMes(netByMonth, mk)
       const rz = alMes(realizedByMonth, mk) || 0
@@ -752,6 +749,7 @@ function InsightsDesktop({ _embeddedTab }) {
         label: esHoy ? 'Hoy' : benchLabel(pt.date.slice(0, 7)),
         total: +((pt.index - 1) * 100).toFixed(2),
         realized: denom > 0 ? +((rz / denom) * 100).toFixed(2) : 0,
+        tramo: pt.tramo,
       })
     })
     return out
@@ -1001,6 +999,15 @@ function InsightsDesktop({ _embeddedTab }) {
     return today ? [...sliced, today] : sliced
   })()
 
+  // ⚠️ EL CORTE ENTRE TRAMOS VA ACÁ: después de resamplear y ordenar.
+  // El índice se reinicia en cada tramo (twr.py) porque el derrumbe que pasó
+  // dentro del hueco no se puede componer. Dibujados seguido, el salto de +20% a
+  // 0% se lee como "volví a break-even" cuando la cartera se partió al medio. Un
+  // punto en null hace que Recharts deje el hueco a la vista, que es la verdad.
+  // Insertado acá el punto ya no pasa por el bucketing mensual, así que aterriza
+  // EN SU FECHA y no al final del gráfico.
+  const windowSeriesCortada = cortarPorTramo(windowSeries)
+
   // Construir chartData rebased: ambas líneas arrancan en 0% en el primer
   // punto de la ventana — permite comparación justa en cualquier sub-período.
   // Fórmula de rebase (chain-linking TWRR):
@@ -1240,7 +1247,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // benchmark para dibujar, usamos un skeleton de meses y dejamos la línea
     // del portfolio en null — así inflación/Merval/S&P siguen apareciendo en
     // vez de colapsar el gráfico al empty-state.
-    let series = windowSeries
+    let series = windowSeriesCortada
     if (series.length === 0) {
       // ⚠️ Si SABEMOS por qué falta la línea del usuario, no se dibuja el
       // benchmark solo. El skeleton existe para el caso "el portfolio en pesos no
@@ -1645,14 +1652,19 @@ function InsightsDesktop({ _embeddedTab }) {
   // Drawdown como serie temporal (para chart underwater).
   // Curva de drawdown: los puntos que el backend marcó como base de mercado. Un
   // punto no-apto no aparece — no puede ser el fondo de una caída que nadie midió.
-  const drawdownSeries = (perf?.curva || [])
-    .filter(p => p.apto && p.drawdown != null)
-    .map(p => ({
-      key: p.date,
-      label: p.date === 'hoy' ? 'Hoy'
-        : `${MES_CORTO[+p.date.slice(5, 7) - 1] || ''} '${p.date.slice(2, 4)}`,
-      ddPct: +(p.drawdown * 100).toFixed(2),
-    }))
+  // El mismo corte que la línea principal: sin él, el primer punto del tramo 2
+  // vale 0% de drawdown y pegado al tramo 1 se lee como "recuperé todo".
+  const drawdownSeries = cortarPorTramo(
+    (perf?.curva || [])
+      .filter(p => p.apto && p.drawdown != null)
+      .map(p => ({
+        key: p.date,
+        tramo: p.tramo,
+        label: p.date === 'hoy' ? 'Hoy'
+          : `${MES_CORTO[+p.date.slice(5, 7) - 1] || ''} '${p.date.slice(2, 4)}`,
+        ddPct: +(p.drawdown * 100).toFixed(2),
+      })),
+    { ddPct: null })
   // Concentración por broker — pieData ya está calculado arriba.
   const brokerConcentration = computeBrokerConcentration(pieData)
   // Distribución por tipo de activo: combinamos posiciones abiertas + cash.

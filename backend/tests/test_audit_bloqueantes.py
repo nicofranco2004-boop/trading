@@ -65,6 +65,11 @@ class B1_AporteRestadoDosVecesTest(_Base):
 
     def _mes_plano_con_aporte_el_dia_1(self):
         self.pos()
+        # La fila de ABRIL tambien: una cuenta con snapshots de abril SIEMPRE tiene
+        # su fila del mes. Sin ella, el `capital_inicio` de mayo pasa a ser el
+        # BASELINE de toda la cuenta y el aportado canonico salta de 0 a 110.000
+        # dentro de mayo — un estado que la app no produce.
+        self.me(2026, 4, 100000.0, 100000.0)
         self.me(2026, 5, 100000.0, 110000.0, dep=10000.0)
         for d in range(20, 31):
             self.snap(f"2026-04-{d:02d}", 100000.0, nd=0.0)
@@ -86,13 +91,14 @@ class B1_AporteRestadoDosVecesTest(_Base):
         b = builder.bordes_mercado_periodo(
             self.conn, self.uid, "2026-05-01", "2026-05-31", "global")
         self.assertIsNotNone(b)
-        v0, v1, flujo = b
-        self.assertAlmostEqual(v0, 100000.0, places=2)
-        self.assertAlmostEqual(flujo, 10000.0, places=2)   # el flujo DE LA VENTANA
+        v0, v1 = b
+        self.assertAlmostEqual(v0, 100000.0, places=2)     # cierre de ABRIL
+        self.assertAlmostEqual(v1, 110000.0, places=2)
 
     def test_el_mes_con_ganancia_real_sigue_midiendo_la_ganancia(self):
         """La contracara: el fix no puede apagar un mes que sí ganó."""
         self.pos()
+        self.me(2026, 4, 100000.0, 100000.0)
         self.me(2026, 5, 100000.0, 115000.0, dep=10000.0)
         self.snap("2026-04-30", 100000.0, nd=0.0)
         for d in range(1, 32):
@@ -102,18 +108,25 @@ class B1_AporteRestadoDosVecesTest(_Base):
         self.assertAlmostEqual(m.delta_usd, 5000.0, places=2)
         self.assertGreater(m.delta_pct, 0)
 
-    def test_cierre_rezagado_no_cuenta_aportes_posteriores_al_borde(self):
-        """El cron muere el 28; el aporte del 30 no ocurrió dentro de lo medido."""
+    def test_el_flujo_NO_sale_de_restar_dos_estampas(self):
+        """`snapshots.net_deposited` no es un hecho del día: es una medición hecha
+        sobre `monthly_entries` en el momento de escribir la fila. Un import la
+        reescribe hacia atrás sin re-estampar las fotos viejas, así que restar dos
+        estampas mide cuánto cambió la contabilidad entre dos momentos, no el flujo.
+        El flujo correcto son los `deposits`/`withdrawals` del propio período, y son
+        exactamente la ventana porque el borde de apertura es el cierre anterior."""
         self.pos()
-        self.me(2026, 5, 100000.0, 120000.0, dep=20000.0)
-        self.snap("2026-04-30", 100000.0, nd=0.0)
-        for d in range(1, 29):
-            self.snap(f"2026-05-{d:02d}", 110000.0, nd=10000.0)
-        b = builder.bordes_mercado_periodo(
-            self.conn, self.uid, "2026-05-01", "2026-05-31", "global")
-        self.assertIsNotNone(b)
-        _, _, flujo = b
-        self.assertAlmostEqual(flujo, 10000.0, places=2)   # no 20.000
+        self.me(2026, 4, 100000.0, 100000.0)
+        self.me(2026, 5, 100000.0, 110000.0, dep=10000.0)
+        # Estampas MENTIROSAS a propósito: si el flujo saliera de acá, daría 999.
+        self.snap("2026-04-30", 100000.0, nd=1.0)
+        for d in range(1, 32):
+            self.snap(f"2026-05-{d:02d}", 110000.0, nd=1000.0)
+        m, _ = builder.compute_metrics_for_period(
+            self.conn, self.uid, "month", "2026-05-01", "2026-05-31", "global", None)
+        self.assertEqual(m.basis, "mercado")
+        self.assertAlmostEqual(m.deposits, 10000.0, places=2)
+        self.assertAlmostEqual(m.delta_usd, 0.0, places=2)
 
 
 class B2_SeriePartidaTest(_Base):

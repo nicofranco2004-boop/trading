@@ -4856,19 +4856,42 @@ def post_snapshot(data: SnapshotIn, request: Request,
 
     conn = get_db()
     try:
-        conn.execute(
-            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, source)
-               VALUES (?, ?, ?, ?, ?, ?, 'browser')
-               ON CONFLICT(user_id, date) DO UPDATE SET
-                 total_value=excluded.total_value,
-                 total_invested=excluded.total_invested,
-                 net_deposited=excluded.net_deposited,
-                 fx_to_usd_blue=COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue),
-                 -- Un cierre del cron NO se degrada a 'browser' por una visita
-                 -- posterior: si ya había una medición, la marca se conserva.
-                 source=COALESCE(snapshots.source, 'browser')""",
-            (uid, today, data.total_value, data.total_invested, data.net_deposited, blue_now),
-        )
+        # ⚠️ UN CIERRE DEL CRON NO SE PISA — NI LA MARCA NI EL VALOR.
+        # Antes se conservaba `source='cron'` pero se sobreescribía `total_value`
+        # con el número de media rueda del browser: la fila quedaba diciendo
+        # "cierre medido" con un valor que no era el cierre, y pasaba
+        # `BORDE_PERIODO`, el filtro más estricto de todos. Eso rompe la premisa
+        # sobre la que se apoya el resto del andamiaje ("lo que dice `source`
+        # manda", twr.py). El cierre del cron es LA medición del día.
+        #
+        # El guard va en Python y no en un CASE dentro del ON CONFLICT porque ahí
+        # la columna aparece a los dos lados de su propia asignación, que es
+        # justo el patrón que `pgshim` marca como ambiguo en Postgres.
+        _prev = conn.execute(
+            "SELECT source FROM snapshots WHERE user_id=? AND date=?", (uid, today)
+        ).fetchone()
+        if _prev is not None and _prev["source"] == "cron":
+            conn.execute(
+                """UPDATE snapshots
+                      SET net_deposited = ?,
+                          fx_to_usd_blue = COALESCE(?, snapshots.fx_to_usd_blue)
+                    WHERE user_id = ? AND date = ?""",
+                (data.net_deposited, blue_now, uid, today),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, source)
+                   VALUES (?, ?, ?, ?, ?, ?, 'browser')
+                   ON CONFLICT(user_id, date) DO UPDATE SET
+                     total_value=excluded.total_value,
+                     total_invested=excluded.total_invested,
+                     net_deposited=excluded.net_deposited,
+                     fx_to_usd_blue=COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue),
+                     -- Un cierre del cron NO se degrada a 'browser' por una visita
+                     -- posterior: si ya había una medición, la marca se conserva.
+                     source=COALESCE(snapshots.source, 'browser')""",
+                (uid, today, data.total_value, data.total_invested, data.net_deposited, blue_now),
+            )
         conn.commit()
         conn.close()
         return {"ok": True, "date": today, "fx_to_usd_blue": blue_now}
@@ -29899,6 +29922,18 @@ def _reconstruir_mtm(uid: int) -> dict:
     try:
         from scripts.backfill_historical_mtm import backfill_user
         from datetime import datetime as _dt
+        # ⚠️ RE-ESTAMPAR `net_deposited` ANTES de reconstruir.
+        # Esa columna es una medición que el escritor hizo sobre `monthly_entries`
+        # en el momento de escribir cada fila, y el import acaba de reescribir
+        # `monthly_entries` hacia atrás. Sin esto conviven en la misma serie
+        # estampas de dos momentos distintos, y todo el que las reste —el chart de
+        # evolución del Dashboard, el informe del asesor— lee la diferencia entre
+        # dos contabilidades como si fuera un flujo. `twr` ya no depende de la
+        # columna (usa `netdep_canonico`), pero el resto sí.
+        try:
+            _recompute_snapshots_netdep_for_user(conn, uid)
+        except Exception:
+            log.exception("mtm-auto: no se pudo re-estampar net_deposited de %s", uid)
         res = backfill_user(conn, uid, _dt.utcnow().date())
         if res.get("skipped"):
             conn.rollback()

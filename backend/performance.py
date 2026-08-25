@@ -93,7 +93,8 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
                 desde: str = None, hasta: str = None, valor_live: float = None,
                 incluir_indeterminado: bool = False) -> dict:
     """Todo lo que la sección Performance necesita, en una sola respuesta."""
-    aceptar = twr.BASE_MERCADO + ((twr.INDETERMINADO,) if incluir_indeterminado else ())
+    # ACEPTA_LINEA, no BASE_MERCADO: la intradía sostiene la línea con apto=False.
+    aceptar = twr.ACEPTA_LINEA + ((twr.INDETERMINADO,) if incluir_indeterminado else ())
     c = twr.curva_indexada(conn, uid, desde, hasta, aceptar=aceptar,
                            valor_live=valor_live)
     fechas = [p["date"] for p in c["curva"]]

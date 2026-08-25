@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  cortarPorTramo,
   drawdownFromPerf,
   netCapitalContributed,
   buildCumulativeReturnSeries,
@@ -539,5 +540,65 @@ describe('drawdownFromPerf', () => {
     const d = drawdownFromPerf({ drawdown_maximo: -0.45, drawdown_actual: -0.12 })
     expect(d.maxPct).toBeCloseTo(-45, 6)
     expect(d.currentPct).toBeCloseTo(-12, 6)
+  })
+})
+
+
+// ── El corte entre tramos ─────────────────────────────────────────────────────
+// El índice y el pico se reinician en cada tramo, así que el primer punto del
+// tramo 2 vale 0% — dibujado pegado al tramo 1 se lee como "recuperé todo" con la
+// cartera 60% abajo. En la curva de drawdown es peor: el encabezado está gateado
+// y muestra "—", así que el gráfico queda solo, sin nada que lo contradiga.
+describe('cortarPorTramo', () => {
+  const serie = [
+    { key: '2026-01-31', tramo: 0, total: 0 },
+    { key: '2026-02-28', tramo: 0, total: 50 },
+    { key: '2026-03-31', tramo: 0, total: 40 },
+    { key: '2026-08-18', tramo: 1, total: 0 },
+    { key: '2026-08-19', tramo: 1, total: 3 },
+  ]
+
+  it('corta EN LA FRONTERA, no al final', () => {
+    const r = cortarPorTramo(serie)
+    const i = r.findIndex(p => String(p.key).startsWith('corte-'))
+    expect(i).toBe(3)                                   // entre 03-31 y 08-18
+    expect(r[i - 1].key).toBe('2026-03-31')
+    expect(r[i + 1].key).toBe('2026-08-18')
+    expect(r[r.length - 1].key).toBe('2026-08-19')      // NO al final
+  })
+
+  it('el punto de corte va en null para que Recharts deje el hueco', () => {
+    const r = cortarPorTramo(serie)
+    const corte = r.find(p => String(p.key).startsWith('corte-'))
+    expect(corte.total).toBe(null)
+    expect(corte.realized).toBe(null)
+    expect(corte.label).toBe('')
+  })
+
+  it('con tres tramos hay DOS cortes, no uno', () => {
+    const tres = [...serie, { key: '2027-02-01', tramo: 2, total: 0 }]
+    const r = cortarPorTramo(tres)
+    expect(r.filter(p => String(p.key).startsWith('corte-'))).toHaveLength(2)
+  })
+
+  it('una serie de un solo tramo no se toca', () => {
+    const uno = serie.filter(p => p.tramo === 0)
+    expect(cortarPorTramo(uno)).toHaveLength(uno.length)
+  })
+
+  it('sin `tramo` (backend viejo) no corta nada', () => {
+    const sinTramo = serie.map(({ tramo, ...r }) => r)
+    expect(cortarPorTramo(sinTramo)).toHaveLength(serie.length)
+  })
+
+  it('acepta campos vacíos propios (la curva de drawdown usa ddPct)', () => {
+    const r = cortarPorTramo(serie, { ddPct: null })
+    const corte = r.find(p => String(p.key).startsWith('corte-'))
+    expect(corte.ddPct).toBe(null)
+  })
+
+  it('vacío y null no rompen', () => {
+    expect(cortarPorTramo([])).toEqual([])
+    expect(cortarPorTramo(null)).toEqual([])
   })
 })

@@ -687,3 +687,45 @@ export function drawdownFromPerf(perf) {
   if (!isFinite(max) || !isFinite(cur)) return null
   return { currentPct: cur * 100, maxPct: max * 100 }
 }
+
+// ─── El corte de la línea entre tramos ──────────────────────────────────────
+/**
+ * cortarPorTramo
+ *
+ * Inserta un punto en `null` cada vez que cambia el tramo, para que Recharts
+ * deje el hueco A LA VISTA en vez de unir los dos lados con una recta.
+ *
+ * ⚠️ EXISTE COMO FUNCIÓN APARTE PARA PODER TESTEARLA, y porque el mismo corte
+ * hace falta en dos gráficos distintos que antes lo resolvían cada uno a su
+ * manera (o no lo resolvían).
+ *
+ * El índice y el pico se reinician en cada tramo (backend/twr.py) porque el
+ * derrumbe que ocurrió dentro del hueco no se puede componer. Dibujados seguido,
+ * el primer punto del tramo 2 vale 0% y se lee como "recuperé todo" — con la
+ * cartera 60% abajo. En la curva de drawdown el efecto era peor: el encabezado SÍ
+ * está gateado y muestra "—", así que el gráfico quedaba solo, sin ningún número
+ * que lo contradiga, y su propio tooltip dice "0%: estás en tu máximo histórico".
+ *
+ * ⚠️ Y VA DESPUÉS DE CUALQUIER RESAMPLEO/ORDEN. Insertado antes, la clave del
+ * corte ('corte-…') cae en el bucket `key.slice(0,7)` = 'corte-2' y después
+ * ordena AL FINAL del gráfico (porque 'c' > '2' comparando strings), con lo cual
+ * los dos tramos terminan dibujados pegados igual — que es exactamente lo que el
+ * corte venía a impedir. Con tres o más tramos, encima, todos caen en el mismo
+ * bucket y sobrevive uno solo.
+ *
+ * @param {Array}  puntos  con `tramo` (número) y `key`
+ * @param {Object} vacio   campos en null que definen el punto de corte
+ * @returns {Array} la misma serie con los cortes intercalados
+ */
+export function cortarPorTramo(puntos, vacio = { total: null, realized: null }) {
+  const out = []
+  for (let i = 0; i < (puntos || []).length; i++) {
+    const p = puntos[i]
+    const prev = puntos[i - 1]
+    if (prev && p?.tramo != null && prev?.tramo != null && p.tramo !== prev.tramo) {
+      out.push({ key: `corte-${p.key}`, label: '', ...vacio })
+    }
+    out.push(p)
+  }
+  return out
+}
