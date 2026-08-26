@@ -29954,8 +29954,8 @@ def _reconstruir_mtm(uid: int) -> dict:
     · NO toca `monthly_entries` ni `positions` ni `cash`: sólo escribe filas en
       `snapshots` con `source='mtm_backfill'`, y nunca pisa una MEDICIÓN del cron.
     · Cada mes lleva su COBERTURA estampada. El que no llega al piso
-      (`twr.COBERTURA_MINIMA`) queda clasificado como contable y no sostiene ni un
-      pico ni un denominador. O sea: en el peor caso el usuario queda como estaba.
+      se declara con su porcentaje y sus instrumentos, y la curva se muestra igual:
+      el usuario ve su historia y sabe qué parte es estimada.
 
     ⚠️ NO todo es reconstruible. El reconstructor saltea FCI, los bonos/ONs de
     data912 y los CEDEAR cotizados en USD (backfill_historical_mtm.py:~150) porque

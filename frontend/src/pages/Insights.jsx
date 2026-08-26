@@ -874,14 +874,38 @@ function InsightsDesktop({ _embeddedTab }) {
     return `${d}/${m}/${y}`
   }
   const ChipMedido = () => {
-    if (!perf?.medido_desde) return null
+    if (!perf) return null
     const cob = perf.cobertura_reconstruccion
     const partida = !!perf.serie_partida
     const alCosto = perf.instrumentos_al_costo || []
+    // ⚠️ SIN `medido_desde` el chip TAMBIÉN se muestra. Antes devolvía null, así
+    // que el cartel que explicaría por qué no hay curva desaparecía junto con la
+    // curva: quedaba un gráfico en blanco y un toggle sin ninguna pista de que
+    // ahí está la respuesta.
+    if (!perf.medido_desde) {
+      return (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-2 text-ink-2 border border-line">
+            Sin mediciones todavía
+          </span>
+          <InfoTooltip>
+            <p className="font-semibold text-ink-0">Por qué no hay curva</p>
+            <p>{perf.motivo_texto || 'Todavía no hay mediciones a mercado de esta cuenta.'}</p>
+            {modoPerf === 'certero' && (
+              <p className="text-ink-3">Probá el modo <strong>Estimado</strong>: incluye
+                 tu historia contable, que es aproximada pero te deja ver la forma.</p>
+            )}
+          </InfoTooltip>
+        </div>
+      )
+    }
     return (
       <div className="flex items-center gap-1.5">
         <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-2 text-ink-2 border border-line whitespace-nowrap">
           Medido desde {fmtFecha(perf.medido_desde)}
+          {/* La cobertura, VISIBLE — no escondida en el tooltip. Era el punto:
+              mostrar la curva y declarar qué parte es estimada. */}
+          {cob != null && cob < 0.999 && ` · ${(cob * 100).toFixed(0)}% a precio real`}
           {partida && ' · con un hueco'}
         </span>
         <InfoTooltip>

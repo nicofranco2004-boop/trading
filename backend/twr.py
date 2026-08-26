@@ -94,19 +94,27 @@ BORDE_PERIODO = BASE_MERCADO
 # `mtm_coverage` dice qué fracción del valor NO-CASH se pudo valuar a precio real;
 # por debajo del piso la foto es mayormente costo, y presentarla como medida sería
 # cambiar una mentira etiquetada (`source='import'`) por una sin etiquetar.
-# ⚠️ NO ES UN SEMÁFORO, ES UN PORCENTAJE.
-# Antes esto era un umbral duro: una foto reconstruida por debajo del 0,70 se
-# degradaba a contable y el mes DESAPARECÍA de la curva. Al que tenía 88% de la
-# cartera valuada a precio real no se le mostraba nada, en vez de mostrarle su
-# curva diciéndole qué parte es estimada.
+# ⚠️ LA COBERTURA NO ES UN UMBRAL. ES UN NÚMERO QUE SE MUESTRA.
 #
-# Ahora la cobertura viaja como número y el que decide es el MODO:
-#   · CERTERO  — sólo lo valuado a precio real. La línea divisoria NO es "foto del
-#     cron vs reconstrucción" (la reconstrucción de un CEDEAR o una acción es
-#     exacta, no una estimación): es "valuado a precio real vs valuado al costo".
-#   · ESTIMADO — la historia completa, con la parte al costo declarada.
-COBERTURA_CERTERA = 0.995      # prácticamente todo valuado a precio real
-COBERTURA_MINIMA = 0.70        # piso histórico; sólo se usa como referencia
+# Hubo acá un piso de 0,70 y después uno de 0,995, y los dos hacían lo mismo:
+# esconderle la curva entera al que no llegaba. Con 0,995, una cartera mixta
+# argentina (55% de cobertura) y hasta la del propio demo (82%) no veían NADA en
+# el modo que la app abre por defecto — o sea justo el usuario que este trabajo
+# venía a servir. Endurecer el piso fue ir en la dirección opuesta.
+#
+# Lo que se pidió es: mostrar la curva SIEMPRE y DECLARAR qué parte es estimada.
+# Así que la cobertura viaja como porcentaje y con nombres, y no filtra nada.
+#
+# Lo que distingue a los modos es OTRA COSA, y es la que importa:
+#   · CERTERO (default) — todo lo que está valuado a PRECIO REAL: la foto del
+#     cron, la intradía y la reconstrucción histórica. Que la reconstrucción esté
+#     al 70% o al 100% no la saca de la curva: lo dice el número.
+#   · ESTIMADO — además, la cadena CONTABLE (aportes + realizado, sin precio de
+#     mercado). Es "un aproximado que puede estar mal, y lo sabés": nunca es el
+#     default, y va etiquetado.
+#
+# SINTETICO_COSTO fuera del default es lo que impide que vuelva el defecto
+# original (el −45% del caso 452 salía justamente de encadenar esa cadena).
 
 # Una serie PLANA es peor que un hueco: el hueco se ve, la serie plana pasa
 # todos los guards. Pasa cuando `apply_last_known_prices` completa un símbolo
@@ -145,7 +153,7 @@ def clasificar_fila(row, tenia_posiciones: bool) -> str:
         # mercado. Sin cobertura estampada no se puede afirmar → contable.
         # Con cobertura estampada es una reconstrucción a mercado; CUÁNTA parte se
         # valuó a precio real lo dice `mtm_coverage`, y quien decide qué hacer con
-        # eso es el modo (ver COBERTURA_CERTERA). Sin cobertura no se puede
+        # eso es el modo, y NINGUNO la usa para filtrar. Sin cobertura no se puede
         # afirmar nada → contable.
         cob = row["mtm_coverage"] if "mtm_coverage" in row.keys() else None
         try:
@@ -796,6 +804,9 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     primera_pos = primera_fecha_con_posiciones(conn, uid)
     # Por SERIE, no fila por fila: la cadencia diaria es lo único que distingue una
     # foto vieja del cron de una del browser, y eso no se ve en una fila sola.
+    # En ESTIMADO entra también la cadena contable, etiquetada.
+    if modo == MODO_ESTIMADO:
+        aceptar = tuple(set(aceptar) | {SINTETICO_COSTO, INDETERMINADO})
     clases = clasificar_serie(filas, primera_pos)
     _nd = _aportado_por_punto(conn, uid, filas)
     puntos, contable, conteo = [], [], {c: 0 for c in CLASES}
@@ -805,12 +816,18 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         if c in aceptar:
             _cob = (float(r["mtm_coverage"])
                     if r["mtm_coverage"] is not None else None)
-            # En CERTERO, una foto reconstruida sólo es base de mercado si de verdad
-            # está valuada a precio real. En ESTIMADO entra igual y la cobertura se
-            # declara. Las fotos del cron son 100% precio real por construcción.
+            # NINGÚN umbral de CALIDAD: una reconstrucción al 55% o al 70% entra
+            # igual y el número lo dice. La única frontera es entre "algo se valuó
+            # a precio real" y "NADA": cobertura 0 significa que no se consultó un
+            # solo precio, o sea la cadena contable con etiqueta de mercado — que
+            # es exactamente el defecto original. Eso no es una reconstrucción
+            # parcial, es una no-reconstrucción.
             _apto = c in BASE_MERCADO
             if _apto and c == RECONSTRUIDO and modo == MODO_CERTERO:
-                _apto = (_cob is not None and _cob >= COBERTURA_CERTERA)
+                _apto = (_cob is not None and _cob > 0)
+            if not _apto and modo == MODO_ESTIMADO and c in (
+                    SINTETICO_COSTO, INDETERMINADO, RECONSTRUIDO):
+                _apto = True
             puntos.append({
                 "date": d, "value": float(r["total_value"]),
                 "net_deposited": _nd(r),
@@ -837,10 +854,23 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # intradía, o una reconstrucción mayormente al costo— hacía de puente y evitaba
     # el corte: la serie quedaba entera y el índice se encadenaba por encima de un
     # silencio de dos meses.
+    # ⚠️ EL SILENCIO SE MIDE SIEMPRE CONTRA EL PUNTO ANTERIOR, mida o no.
+    #
+    # Las dos ramas exigían `ultimo_apto is not None`, y `ultimo_apto` arranca en
+    # None y se resetea en cada corte. Resultado: todo hueco ANTERIOR al primer
+    # punto apto de un tramo quedaba sin medir. Con una sola foto de browser el 5
+    # de enero y el cron desde el 1 de agosto, los cinco meses de silencio
+    # desaparecían y la serie quedaba entera. Un silencio es un silencio aunque el
+    # punto que lo abre no sirva para medir.
+    #
+    # El desborde del denominador sí se mide entre puntos APTOS, que es por donde
+    # corre la cadena.
     tramos, actual, ultimo_apto = [], [], None
     for p in puntos:
         corta = False
-        if actual and p["apto"] and ultimo_apto is not None:
+        if actual and _dias(actual[-1]["date"], p["date"]) > max_hueco_dias:
+            corta = True
+        elif actual and p["apto"] and ultimo_apto is not None:
             if _dias(ultimo_apto["date"], p["date"]) > max_hueco_dias:
                 corta = True
             else:
@@ -848,10 +878,6 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                            p["net_deposited"] - ultimo_apto["net_deposited"])
                 if _r is not None and _r <= -1.0 + 1e-12:
                     corta = True       # el flujo desbordó el denominador
-        elif actual and not p["apto"] and ultimo_apto is not None:
-            # Silencio largo antes de un punto que ni siquiera puede medir.
-            if _dias(actual[-1]["date"], p["date"]) > max_hueco_dias:
-                corta = True
         if corta:
             tramos.append(actual); actual = []; ultimo_apto = None
         actual.append(p)
@@ -997,8 +1023,15 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                     dd_max_t, dd_max_fecha_t, dd_max_pico_t = dd, p["date"], pico_fecha
                 punto["drawdown"] = round(dd, 6)
             curva.append(punto)
+        # ⚠️ `desde`/`hasta` son del primer y último punto APTO del tramo, no del
+        # primero y último que HAY. `ventana_desde` es el dato con el que
+        # `reporting/builder.py` decide si el % anual cubre el período: tomándolo
+        # de un punto no-apto, decía que la medición arrancaba meses antes de
+        # donde de verdad arranca.
+        _aptos_t = [q for q in tramo if q["apto"]]
         tramos_info.append({
-            "desde": tramo[0]["date"], "hasta": tramo[-1]["date"],
+            "desde": (_aptos_t[0]["date"] if _aptos_t else tramo[0]["date"]),
+            "hasta": (_aptos_t[-1]["date"] if _aptos_t else tramo[-1]["date"]),
             "legs": legs_t, "twr": (idx - 1.0) if legs_t > 0 else None,
             "drawdown_maximo": round(dd_max_t, 6) if legs_t > 0 else None,
             # ⚠️ POR TRAMO, no "el último que vi". `dd_actual` era una sola

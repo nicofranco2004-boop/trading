@@ -134,9 +134,10 @@ class B2_SeriePartidaTest(_Base):
         self.pos()
         self.snap("2026-01-31", 10000.0)
         self.snap("2026-02-28", 12000.0)
-        self.snap("2026-03-31", 7000.0, src="mtm_backfill", cov=0.20)   # sale
-        self.snap("2026-04-30", 6000.0)
-        self.snap("2026-05-31", 6600.0)
+        # Hueco REAL de tres meses (antes se forzaba con una cobertura baja, que
+        # ya no excluye nada — la cobertura es un número, no un filtro).
+        self.snap("2026-06-30", 6000.0)
+        self.snap("2026-07-31", 6600.0)
         c = twr.curva_indexada(self.conn, self.uid)
         self.assertEqual(len(c["tramos"]), 2)
         self.assertIsNone(c["twr"])              # NO +32%

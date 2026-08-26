@@ -49,23 +49,47 @@ class _Base(unittest.TestCase):
 
 
 class DosModosTest(_Base):
-    def test_una_reconstruccion_PARCIAL_no_es_apta_en_certero_pero_si_en_estimado(self):
-        self.recon("2026-01-31", 1000.0, 0.88, al_costo=("FCI Balanz",))
-        self.recon("2026-02-28", 1100.0, 0.88, al_costo=("FCI Balanz",))
+    def test_la_cobertura_NO_filtra_nada(self):
+        """El criterio principal: con 0,70 / 0,82 / 0,88 / 0,94 / 0,99 el modo por
+        DEFECTO muestra la curva en los cinco, y declara la cobertura. Un piso
+        —fuera 0,70 o 0,995— le esconde la curva entera al que no llega, que es lo
+        contrario de lo que hace falta."""
+        for cov in (0.70, 0.8214, 0.88, 0.94, 0.99):
+            with self.subTest(cobertura=cov):
+                self.conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.uid,))
+                self.recon("2026-01-31", 1000.0, cov, al_costo=("FCI Balanz",))
+                self.recon("2026-02-28", 1100.0, cov, al_costo=("FCI Balanz",))
+                c = twr.curva_indexada(self.conn, self.uid, modo=twr.MODO_CERTERO)
+                self.assertAlmostEqual(c["twr"], 0.10, places=6)
+                self.assertAlmostEqual(c["cobertura_reconstruccion"], cov, places=4)
+                self.assertIn("FCI Balanz", c["instrumentos_al_costo"])
+
+    def test_una_cartera_mixta_argentina_al_55_ve_su_curva(self):
+        """55% es la cobertura medida de una cartera mixta (CEDEARs + bonos + FCI).
+        Con el piso de 0,995 no veía NADA en el modo por defecto."""
+        self.recon("2026-01-31", 1000.0, 0.55, al_costo=("AL30", "FCI Balanz"))
+        self.recon("2026-02-28", 1100.0, 0.55, al_costo=("AL30", "FCI Balanz"))
+        c = twr.curva_indexada(self.conn, self.uid, modo=twr.MODO_CERTERO)
+        self.assertAlmostEqual(c["twr"], 0.10, places=6)
+        self.assertEqual(c["instrumentos_al_costo"], ["AL30", "FCI Balanz"])
+
+    def test_lo_que_separa_los_modos_es_la_cadena_contable(self):
+        """No la cobertura. CERTERO = todo lo valuado a PRECIO REAL (a cualquier
+        cobertura). ESTIMADO = además la cadena contable, que es el "aproximado
+        que puede estar mal y lo sabés" — y nunca es el default, porque de ahí
+        salía el −45% del caso 452."""
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, source) VALUES (?,?,?,?,0,'import')",
+            (self.uid, "2025-12-31", 99999.0, 99999.0))
+        self.recon("2026-01-31", 1000.0, 0.55)
+        self.recon("2026-02-28", 1100.0, 0.55)
+        self.conn.commit()
         cert = twr.serie_medible(self.conn, self.uid, modo=twr.MODO_CERTERO)
         est = twr.serie_medible(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
-        self.assertEqual(len(cert["puntos"]), 2)                   # NO desaparece
-        self.assertFalse(any(p["apto"] for p in cert["puntos"]))
-        self.assertTrue(all(p["apto"] for p in est["puntos"]))
-
-    def test_el_mes_ya_no_DESAPARECE_por_no_llegar_a_un_umbral(self):
-        """Antes un umbral duro de 0,70 borraba el mes entero. Al que tenía 88%
-        valuado a precio real no se le mostraba nada."""
-        self.recon("2026-01-31", 1000.0, 0.88)
-        s = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(len(s["puntos"]), 1)
-        self.assertEqual(s["puntos"][0]["clase"], twr.RECONSTRUIDO)
-        self.assertAlmostEqual(s["puntos"][0]["cobertura"], 0.88, places=3)
+        self.assertEqual(len(cert["puntos"]), 2)      # la contable NO entra
+        self.assertEqual(len(est["puntos"]), 3)       # en estimado sí
+        self.assertTrue(all(p["apto"] for p in cert["puntos"]))
 
     def test_una_reconstruccion_a_precio_real_SI_es_apta_en_certero(self):
         """Un CEDEAR o una acción reconstruidos son exactos: entran en CERTERO."""
@@ -73,6 +97,24 @@ class DosModosTest(_Base):
         self.recon("2026-02-28", 1100.0, 1.0)
         c = twr.curva_indexada(self.conn, self.uid, modo=twr.MODO_CERTERO)
         self.assertAlmostEqual(c["twr"], 0.10, places=6)
+
+    def test_el_default_no_deja_entrar_la_cadena_contable(self):
+        """La garantía que no se puede perder: el defecto original salía de
+        encadenar la foto FABRICADA por el import."""
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, source) VALUES (?,?,?,?,0,'import')",
+            (self.uid, "2026-07-31", 139570.56, 139570.56))
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, source, fx_to_usd_blue, holdings_json) "
+            "VALUES (?,?,?,?,130.8,'cron',1400,'[]')",
+            (self.uid, "2026-08-24", 73604.02, 73604.02))
+        self.conn.commit()
+        c = twr.curva_indexada(self.conn, self.uid)      # default = certero
+        self.assertEqual(len(c["puntos"]), 1)
+        self.assertIsNone(c["twr"])
+        self.assertIsNone(c["drawdown_maximo"])
 
     def test_los_dos_modos_son_coherentes_entre_si(self):
         """Con todo valuado a precio real, los dos modos dan LO MISMO."""
@@ -105,8 +147,13 @@ class DosModosTest(_Base):
             main.app.dependency_overrides.clear()
         self.assertEqual(cert["modo"], "certero")
         self.assertEqual(est["modo"], "estimado")
-        self.assertIsNone(cert["twr"])          # parcial: no es certero
-        self.assertIsNotNone(est["twr"])        # pero sí estimado
+        # ⚠️ ESTE ASSERT PEDÍA LO CONTRARIO y por eso la suite no cazaba el bug:
+        # fijaba como correcto que una cobertura del 88% dejara SIN CURVA al modo
+        # por defecto. Con 0,88 el usuario tiene que VER su curva y leer qué parte
+        # es estimada; esconderla es justo lo que había que eliminar.
+        self.assertIsNotNone(cert["twr"])
+        self.assertIsNotNone(est["twr"])
+        self.assertAlmostEqual(cert["cobertura_reconstruccion"], 0.88, places=3)
 
 
 class CedearEnDolaresTest(_Base):

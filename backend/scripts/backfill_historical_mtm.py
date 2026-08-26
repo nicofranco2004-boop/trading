@@ -322,11 +322,12 @@ def _month_end(year: int, month: int) -> str:
 # contabilidad, que es lo que tiene que ser).
 MTM_SOURCE = "mtm_backfill"
 
-# Piso de cobertura para que un mes reconstruido cuente como serie medible. Por
-# debajo, la foto es mayormente costo disfrazado de mercado: se persiste igual
-# (con su cobertura estampada, es informacion) pero `twr.clasificar_fila` la
-# degrada a SINTETICO_COSTO y no sostiene ni un pico ni un denominador.
-COBERTURA_MINIMA = 0.70
+# ⚠️ YA NO HAY PISO DE COBERTURA. La cobertura se estampa y SE MUESTRA; no filtra
+# nada. Un piso —fuera 0,70 o 0,995— esconde la curva entera al que no llega, que
+# es exactamente lo contrario de lo que hace falta: ver el número y saber qué parte
+# es estimada. Se deja la constante sólo porque hay tests que la referencian como
+# valor de ejemplo.
+COBERTURA_REFERENCIA = 0.70
 
 
 def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
