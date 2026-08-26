@@ -330,7 +330,9 @@ class B5_CoberturaSinPreciosTest(_Base):
         bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
         self.conn.commit()
         c = twr.curva_indexada(self.conn, self.uid)
-        self.assertEqual(c["por_clase"][twr.RECONSTRUIDO], 0)
+        # Ya no desaparece de la serie: entra con su cobertura, pero NO es apta —
+        # no puede sostener un pico ni ser denominador.
+        self.assertEqual(sum(1 for p in c["puntos"] if p["apto"]), 0)
         self.assertIsNone(c["twr"])
 
     def test_cash_real_afirmable_sigue_dando_cobertura_1(self):

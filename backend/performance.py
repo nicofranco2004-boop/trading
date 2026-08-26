@@ -91,11 +91,21 @@ def benchmark_recortado(datos: dict, fechas: list, clave: str) -> list:
 
 def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
                 desde: str = None, hasta: str = None, valor_live: float = None,
-                incluir_indeterminado: bool = False) -> dict:
-    """Todo lo que la sección Performance necesita, en una sola respuesta."""
+                incluir_indeterminado: bool = False,
+                modo: str = twr.MODO_CERTERO) -> dict:
+    """Todo lo que la sección Performance necesita, en una sola respuesta.
+
+    `modo`:
+      · CERTERO (default) — sólo lo valuado a PRECIO REAL. Incluye las fotos del
+        cron Y la reconstrucción histórica: para un CEDEAR o una acción la
+        reconstrucción es EXACTA, no una estimación. La línea divisoria no es
+        "cron vs reconstrucción", es "precio real vs costo".
+      · ESTIMADO — la historia completa, incluyendo lo que no tiene precio
+        histórico y va al costo. La respuesta declara cuánto y de qué instrumentos.
+    """
     # ACEPTA_LINEA, no BASE_MERCADO: la intradía sostiene la línea con apto=False.
     aceptar = twr.ACEPTA_LINEA + ((twr.INDETERMINADO,) if incluir_indeterminado else ())
-    c = twr.curva_indexada(conn, uid, desde, hasta, aceptar=aceptar,
+    c = twr.curva_indexada(conn, uid, desde, hasta, modo=modo, aceptar=aceptar,
                            valor_live=valor_live)
     fechas = [p["date"] for p in c["curva"]]
     serie_b = (bench_data or {}).get(bench_key) or {}
@@ -112,6 +122,10 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
         "medido_hasta": c["medido_hasta"],
         "cobertura": c["cobertura"],
         "cobertura_reconstruccion": c["cobertura_reconstruccion"],
+        # La cobertura como NÚMERO y con nombres, no como semáforo: "94% de tu
+        # cartera valuada a precio real · el 6% restante (tus FCI) va al costo".
+        "instrumentos_al_costo": c.get("instrumentos_al_costo", []),
+        "modo": c.get("modo", modo),
         "por_clase": c["por_clase"],
         "tramos": len(c["tramos"]),
         # `tramos_medidos` es el que el frontend necesita para gatear: `tramos`

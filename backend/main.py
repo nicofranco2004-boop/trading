@@ -11454,6 +11454,7 @@ def insights_performance(
     hasta: str = None,
     valor_live: float = None,
     incluir_indeterminado: bool = False,
+    modo: str = "certero",
     uid: int = Depends(get_effective_user),
 ):
     """LA fuente de la sección Performance: curva del usuario + benchmark RECORTADO
@@ -11480,9 +11481,12 @@ def insights_performance(
                 data = _benchmarks_fetch_and_cache()
             except Exception:
                 data = {}
+        import twr as _twr
+        _modo = _twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO
         return perf.performance(conn, uid, data, bench_key=bench, desde=desde,
                                 hasta=hasta, valor_live=valor_live,
-                                incluir_indeterminado=bool(incluir_indeterminado))
+                                incluir_indeterminado=bool(incluir_indeterminado),
+                                modo=_modo)
     finally:
         conn.close()
 

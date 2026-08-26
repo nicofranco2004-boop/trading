@@ -119,11 +119,11 @@ class CalidadDelDatoTest(_Base):
         self.assertIsNone(r["twr"])
 
     def test_expone_medido_desde_y_cobertura(self):
-        self.snap("2026-01-31", 1000.0, source="mtm_backfill", cov=0.80)
+        self.snap("2026-01-31", 1000.0, source="mtm_backfill", cov=1.0)
         self.snap("2026-02-28", 1100.0)
         r = perf.performance(self.conn, self.uid, {"sp500": SP}, "sp500")
         self.assertEqual(r["medido_desde"], "2026-01-31")
-        self.assertAlmostEqual(r["cobertura_reconstruccion"], 0.80, places=3)
+        self.assertAlmostEqual(r["cobertura_reconstruccion"], 1.0, places=3)
         self.assertEqual(r["por_clase"][twr.RECONSTRUIDO], 1)
 
 

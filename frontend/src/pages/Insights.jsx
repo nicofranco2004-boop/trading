@@ -222,6 +222,10 @@ function InsightsDesktop({ _embeddedTab }) {
   // Mientras el cálculo viva en JS sobre la cadena contable, cualquier guard
   // nuevo en Python se queda corto — que es literalmente lo que ya pasó.
   const [perf, setPerf] = useState(null)
+  // CERTERO (default) vs ESTIMADO. La línea divisoria no es "foto del cron vs
+  // reconstrucción" —reconstruir un CEDEAR o una acción es EXACTO— sino
+  // "valuado a precio real vs valuado al costo".
+  const [modoPerf, setModoPerf] = useState('certero')
 
   useEffect(() => { loadAll() }, [])
 
@@ -231,11 +235,11 @@ function InsightsDesktop({ _embeddedTab }) {
     const k = BENCH_API_KEY[selectedBench]
     if (!k) return
     let vivo = true
-    api.get(`/insights/performance?bench=${k}`)
+    api.get(`/insights/performance?bench=${k}&modo=${modoPerf}`)
       .then(r => { if (vivo) setPerf(r) })
       .catch(() => {})
     return () => { vivo = false }
-  }, [selectedBench])
+  }, [selectedBench, modoPerf])
 
   async function loadAll() {
     try {
@@ -873,6 +877,7 @@ function InsightsDesktop({ _embeddedTab }) {
     if (!perf?.medido_desde) return null
     const cob = perf.cobertura_reconstruccion
     const partida = !!perf.serie_partida
+    const alCosto = perf.instrumentos_al_costo || []
     return (
       <div className="flex items-center gap-1.5">
         <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-2 text-ink-2 border border-line whitespace-nowrap">
@@ -888,9 +893,16 @@ function InsightsDesktop({ _embeddedTab }) {
           {cob != null && (
             <>
               <div className="border-t border-line/60 my-1.5" />
-              <p className="font-semibold text-ink-0">Cobertura de la reconstrucción</p>
-              <p className="text-ink-3">{(cob * 100).toFixed(0)}% del valor se pudo valuar
-                 a precio de mercado real; el resto quedó al costo.</p>
+              <p className="font-semibold text-ink-0">Cuánto está valuado a precio real</p>
+              <p className="text-ink-3">
+                {(cob * 100).toFixed(0)}% de tu cartera valuada a precio real
+                {alCosto.length > 0
+                  ? ` · el resto (${alCosto.slice(0, 4).join(', ')}${alCosto.length > 4 ? '…' : ''}) va al costo`
+                  : ''}.
+              </p>
+              <p className="text-ink-3">Los bonos y los FCI no tienen serie histórica
+                 confiable, así que se valúan al costo. Los CEDEARs y las acciones sí:
+                 para ésos la reconstrucción es exacta, no una estimación.</p>
             </>
           )}
           {partida && (
@@ -2378,6 +2390,27 @@ function InsightsDesktop({ _embeddedTab }) {
               {currency === 'USD' ? `Cartera vs ${benchmarkKey} (USD)` : `Cartera vs ${benchmarkKey} (ARS)`}
             </h2>
             {currency === 'USD' && <ChipMedido />}
+            {currency === 'USD' && (
+              <div className="flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-0.5 ml-1">
+                {[
+                  { k: 'certero', t: 'Certero', h: 'Sólo lo valuado a precio real' },
+                  { k: 'estimado', t: 'Estimado', h: 'Historia completa; lo que no tiene precio va al costo' },
+                ].map(({ k, t, h }) => (
+                  <button
+                    key={k}
+                    title={h}
+                    onClick={() => setModoPerf(k)}
+                    className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${
+                      modoPerf === k
+                        ? 'bg-blue-600 text-white'
+                        : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
             <InfoTooltip>
               <p className="font-semibold text-ink-0">Qué mostramos</p>
               <p>Tu cartera comparada contra un benchmark, ambos en % desde el inicio del rango visible (las 3 líneas arrancan en 0%).</p>

@@ -94,7 +94,19 @@ BORDE_PERIODO = BASE_MERCADO
 # `mtm_coverage` dice qué fracción del valor NO-CASH se pudo valuar a precio real;
 # por debajo del piso la foto es mayormente costo, y presentarla como medida sería
 # cambiar una mentira etiquetada (`source='import'`) por una sin etiquetar.
-COBERTURA_MINIMA = 0.70
+# ⚠️ NO ES UN SEMÁFORO, ES UN PORCENTAJE.
+# Antes esto era un umbral duro: una foto reconstruida por debajo del 0,70 se
+# degradaba a contable y el mes DESAPARECÍA de la curva. Al que tenía 88% de la
+# cartera valuada a precio real no se le mostraba nada, en vez de mostrarle su
+# curva diciéndole qué parte es estimada.
+#
+# Ahora la cobertura viaja como número y el que decide es el MODO:
+#   · CERTERO  — sólo lo valuado a precio real. La línea divisoria NO es "foto del
+#     cron vs reconstrucción" (la reconstrucción de un CEDEAR o una acción es
+#     exacta, no una estimación): es "valuado a precio real vs valuado al costo".
+#   · ESTIMADO — la historia completa, con la parte al costo declarada.
+COBERTURA_CERTERA = 0.995      # prácticamente todo valuado a precio real
+COBERTURA_MINIMA = 0.70        # piso histórico; sólo se usa como referencia
 
 # Una serie PLANA es peor que un hueco: el hueco se ve, la serie plana pasa
 # todos los guards. Pasa cuando `apply_last_known_prices` completa un símbolo
@@ -131,12 +143,15 @@ def clasificar_fila(row, tenia_posiciones: bool) -> str:
     if src == "mtm_backfill":
         # La reconstrucción sólo vale como base de mercado si de verdad se valuó a
         # mercado. Sin cobertura estampada no se puede afirmar → contable.
+        # Con cobertura estampada es una reconstrucción a mercado; CUÁNTA parte se
+        # valuó a precio real lo dice `mtm_coverage`, y quien decide qué hacer con
+        # eso es el modo (ver COBERTURA_CERTERA). Sin cobertura no se puede
+        # afirmar nada → contable.
         cob = row["mtm_coverage"] if "mtm_coverage" in row.keys() else None
         try:
-            ok = cob is not None and float(cob) >= COBERTURA_MINIMA
+            return RECONSTRUIDO if cob is not None and float(cob) >= 0 else SINTETICO_COSTO
         except (TypeError, ValueError):
-            ok = False
-        return RECONSTRUIDO if ok else SINTETICO_COSTO
+            return SINTETICO_COSTO
     if src in _POR_SOURCE:
         return _POR_SOURCE[src]
     tiene_holdings = bool(row["holdings_json"])
@@ -657,6 +672,27 @@ def netdep_canonico(conn, uid: int):
     return _en
 
 
+def _instrumentos_al_costo(row) -> list:
+    """Qué instrumentos de esa foto NO se pudieron valuar a precio y quedaron al
+    costo. Sale de `holdings_json`, donde el reconstructor los marca. Sirve para
+    poder decir "el 6% restante son tus FCI" en vez de un porcentaje pelado."""
+    try:
+        raw = row["holdings_json"]
+    except (KeyError, IndexError, TypeError):
+        return []
+    if not raw:
+        return []
+    try:
+        import json as _json
+        data = _json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return sorted({h.get("asset") for h in data
+                   if isinstance(h, dict) and h.get("al_costo") and h.get("asset")})
+
+
 def _aportado_por_punto(conn, uid: int, filas):
     """Devuelve fila → aportado acumulado, con el borde de mes ANCLADO al canónico
     y el día dentro del mes decidido por la estampa.
@@ -716,7 +752,12 @@ def _aportado_por_punto(conn, uid: int, filas):
     return _en
 
 
+MODO_CERTERO = "certero"
+MODO_ESTIMADO = "estimado"
+
+
 def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
+                  modo: str = MODO_CERTERO,
                   aceptar: tuple = ACEPTA_LINEA,
                   max_hueco_dias: int = MAX_HUECO_DIAS) -> dict:
     """Los puntos de la serie que SE PUEDEN usar, partidos donde hay huecos.
@@ -762,12 +803,19 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         conteo[c] += 1
         d = str(r["date"])[:10]
         if c in aceptar:
+            _cob = (float(r["mtm_coverage"])
+                    if r["mtm_coverage"] is not None else None)
+            # En CERTERO, una foto reconstruida sólo es base de mercado si de verdad
+            # está valuada a precio real. En ESTIMADO entra igual y la cobertura se
+            # declara. Las fotos del cron son 100% precio real por construcción.
+            _apto = c in BASE_MERCADO
+            if _apto and c == RECONSTRUIDO and modo == MODO_CERTERO:
+                _apto = (_cob is not None and _cob >= COBERTURA_CERTERA)
             puntos.append({
                 "date": d, "value": float(r["total_value"]),
                 "net_deposited": _nd(r),
-                "clase": c, "apto": c in BASE_MERCADO,
-                "cobertura": (float(r["mtm_coverage"])
-                              if r["mtm_coverage"] is not None else None),
+                "clase": c, "apto": _apto, "cobertura": _cob,
+                "al_costo": _instrumentos_al_costo(r),
             })
         else:
             contable.append({"date": d, "value": float(r["total_value"]), "clase": c})
@@ -784,21 +832,31 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # para medir ese tramo. Eso no es una pérdida, es una medición imposible — y lo
     # que corresponde con una medición imposible ya está resuelto acá: cortar,
     # igual que con un hueco.
-    tramos, actual = [], []
+    # ⚠️ EL HUECO SE MIDE ENTRE PUNTOS APTOS, que es por donde corre la cadena.
+    # Midiéndolo entre puntos consecutivos cualesquiera, un punto NO-APTO —una foto
+    # intradía, o una reconstrucción mayormente al costo— hacía de puente y evitaba
+    # el corte: la serie quedaba entera y el índice se encadenaba por encima de un
+    # silencio de dos meses.
+    tramos, actual, ultimo_apto = [], [], None
     for p in puntos:
         corta = False
-        if actual:
-            a = actual[-1]
-            if _dias(a["date"], p["date"]) > max_hueco_dias:
+        if actual and p["apto"] and ultimo_apto is not None:
+            if _dias(ultimo_apto["date"], p["date"]) > max_hueco_dias:
                 corta = True
-            elif a["apto"] and p["apto"]:
-                _r = dietz(a["value"], p["value"],
-                           p["net_deposited"] - a["net_deposited"])
+            else:
+                _r = dietz(ultimo_apto["value"], p["value"],
+                           p["net_deposited"] - ultimo_apto["net_deposited"])
                 if _r is not None and _r <= -1.0 + 1e-12:
                     corta = True       # el flujo desbordó el denominador
+        elif actual and not p["apto"] and ultimo_apto is not None:
+            # Silencio largo antes de un punto que ni siquiera puede medir.
+            if _dias(actual[-1]["date"], p["date"]) > max_hueco_dias:
+                corta = True
         if corta:
-            tramos.append(actual); actual = []
+            tramos.append(actual); actual = []; ultimo_apto = None
         actual.append(p)
+        if p["apto"]:
+            ultimo_apto = p
     if actual:
         tramos.append(actual)
 
@@ -810,6 +868,7 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # poder verlo en el tooltip.
     cobs = [p["cobertura"] for p in puntos
             if p["clase"] == RECONSTRUIDO and p["cobertura"] is not None]
+    al_costo = sorted({a for p in puntos for a in (p.get("al_costo") or [])})
 
     return {
         "puntos": puntos,
@@ -818,6 +877,10 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         "por_clase": conteo,
         "cobertura": round(cobertura, 4),
         "cobertura_reconstruccion": (round(sum(cobs) / len(cobs), 4) if cobs else None),
+        # Qué instrumentos quedaron al costo, por nombre. Un porcentaje pelado no
+        # le dice al usuario qué hacer; "tus FCI" sí.
+        "instrumentos_al_costo": al_costo,
+        "modo": modo,
         "medido_desde": (aptos[0]["date"] if aptos else None),
         "medido_hasta": (aptos[-1]["date"] if aptos else None),
         "motivo": _motivo(conteo, len(aptos)),
@@ -826,6 +889,7 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
 
 
 def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
+                   modo: str = MODO_CERTERO,
                    aceptar: tuple = ACEPTA_LINEA,
                    max_hueco_dias: int = MAX_HUECO_DIAS,
                    valor_live: float = None) -> dict:
@@ -845,7 +909,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         Es exactamente el defecto que reportó el usuario ("yo nunca llegué tan
         arriba"): el pico lo había puesto el sistema.
     """
-    s = serie_medible(conn, uid, desde, hasta, aceptar=aceptar,
+    s = serie_medible(conn, uid, desde, hasta, modo=modo, aceptar=aceptar,
                       max_hueco_dias=max_hueco_dias)
     if not s["puntos"]:
         # La forma de la respuesta NO cambia cuando no hay datos: si faltaran

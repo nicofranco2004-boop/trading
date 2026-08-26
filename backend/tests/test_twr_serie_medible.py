@@ -90,7 +90,7 @@ class Regresion452Test(_Base):
         (no la cadena contable), el usuario recupera su historia y el drawdown pasa
         a medir el mercado, no la brecha entre dos bases."""
         self.pos("2025-01-15")
-        self.snap("2026-07-31", 74000.0, "mtm_backfill", net_dep=0.0, cov=0.95)
+        self.snap("2026-07-31", 74000.0, "mtm_backfill", net_dep=0.0, cov=1.0)
         self.snap("2026-08-24", self.ULTIMA, "cron",
                   net_dep=self.DEPOSITS, fx=1400.0, hold="[]")
         c = twr.curva_indexada(self.conn, self.uid)
@@ -100,14 +100,20 @@ class Regresion452Test(_Base):
 
 
 class ClaseYCoberturaTest(_Base):
-    def test_reconstruido_bajo_el_piso_vuelve_a_ser_contable(self):
-        """Un mes reconstruido mayormente AL COSTO no puede presentarse como medido:
-        sería cambiar una mentira etiquetada por una sin etiquetar."""
+    def test_reconstruido_mayormente_al_costo_no_es_base_de_mercado_en_CERTERO(self):
+        """Un mes reconstruido mayormente AL COSTO no puede sostener un pico ni un
+        denominador. Pero ya no DESAPARECE: entra a la línea con su cobertura
+        declarada, y en modo ESTIMADO cuenta. Antes el umbral duro de 0,70 le
+        borraba el mes entero al que tenía 88% valuado a precio real."""
         self.pos("2025-01-15")
         self.snap("2026-06-30", 100.0, "mtm_backfill", cov=0.20)
         s = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(s["puntos"], [])
-        self.assertEqual(s["por_clase"][twr.SINTETICO_COSTO], 1)
+        self.assertEqual(len(s["puntos"]), 1)
+        self.assertEqual(s["puntos"][0]["clase"], twr.RECONSTRUIDO)
+        self.assertFalse(s["puntos"][0]["apto"])
+        self.assertAlmostEqual(s["puntos"][0]["cobertura"], 0.20, places=3)
+        est = twr.serie_medible(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
+        self.assertTrue(est["puntos"][0]["apto"])
 
     def test_reconstruido_sin_cobertura_estampada_no_se_confia(self):
         self.pos("2025-01-15")
@@ -115,14 +121,17 @@ class ClaseYCoberturaTest(_Base):
         s = twr.serie_medible(self.conn, self.uid)
         self.assertEqual(s["puntos"], [])
 
-    def test_reconstruido_sobre_el_piso_es_base_de_mercado(self):
+    def test_reconstruido_valuado_a_precio_real_es_base_de_mercado(self):
+        """La línea divisoria NO es "foto del cron vs reconstrucción": la
+        reconstrucción de un CEDEAR o una acción es EXACTA, no una estimación. Es
+        "valuado a precio real vs valuado al costo"."""
         self.pos("2025-01-15")
-        self.snap("2026-06-30", 100.0, "mtm_backfill", cov=0.90)
+        self.snap("2026-06-30", 100.0, "mtm_backfill", cov=1.0)
         s = twr.serie_medible(self.conn, self.uid)
         self.assertEqual(len(s["puntos"]), 1)
         self.assertEqual(s["puntos"][0]["clase"], twr.RECONSTRUIDO)
         self.assertTrue(s["puntos"][0]["apto"])
-        self.assertAlmostEqual(s["cobertura_reconstruccion"], 0.90, places=3)
+        self.assertAlmostEqual(s["cobertura_reconstruccion"], 1.0, places=3)
 
 
 class CaveatPosicionesPorFechaTest(_Base):

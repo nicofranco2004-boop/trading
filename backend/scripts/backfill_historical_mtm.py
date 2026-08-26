@@ -69,18 +69,28 @@ _HIST_CACHE: dict = {}
 
 def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     """{YYYY-MM: close} para un price_key ('AAPL', 'GGAL.BA', 'BTC'), desde start a
-    hoy. {} (→ costo) para lo que no tiene historia confiable en yfinance: FCI, bonos
-    AR (data912 es live-only), CEDEAR cotizado en USD (BAC, necesita CCL histórico)."""
+    hoy. {} (→ costo) sólo para lo que NO tiene historia confiable en yfinance: los
+    FCI y los bonos/ONs de data912, que es live-only.
+
+    Los CEDEARs y las acciones AR (.BA) SÍ tienen serie: medido, 24 de 24 meses
+    para AAPL.BA, KO.BA, MELI.BA, GGAL.BA e YPFD.BA. El que cotiza en dólares se
+    valúa por su subyacente — ver `_precio_por_subyacente`."""
     ck = (price_key, start_iso)
     if ck in _HIST_CACHE:
         return _HIST_CACHE[ck]
     base = price_key[:-3] if price_key.endswith(".BA") else price_key
     out: dict = {}
+    # ⚠️ EL CEDEAR COTIZADO EN USD YA NO SE SALTEA.
+    # Se saltea lo que NO tiene serie histórica confiable: FCI y los bonos/ONs de
+    # data912 (que es live-only). El CEDEAR en dólares estaba acá por otra razón —
+    # el código intentaba el camino largo (precio local ÷ CCL histórico)— y no hace
+    # falta: con el ratio, 100 CEDEARs de ratio 4 son 25 acciones equivalentes, y
+    # la acción SÍ tiene precio en dólares. Lo resuelve `_precio_por_subyacente`.
+    # (Y `CEDEAR_USD_RATIOS` tiene exactamente un ticker: BAC.)
     skip = (
         price_key.startswith("FCI:")
         or base in getattr(main, "AR_BONDS_DATA912", set())
-        or main._is_data912_bond(base)   # cualquier bono/ON de data912 → costo histórico (data912 es live-only)
-        or (price_key.endswith(".BA") and base in getattr(main, "CEDEAR_USD_RATIOS", {}))
+        or main._is_data912_bond(base)   # data912 es live-only → costo histórico
     )
     if not skip:
         yf_sym = main.CRYPTO_YF.get(base, price_key) if base in main.CRYPTO_SYMBOLS else price_key
@@ -99,6 +109,33 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
             out = {}
     _HIST_CACHE[ck] = out
     return out
+
+
+def _precio_por_subyacente(asset: str, ym: str, start_iso: str):
+    """Precio en USD de UN CEDEAR que cotiza en dólares, vía su SUBYACENTE.
+
+    Un CEDEAR con ratio 4 es 1/4 de acción: 100 CEDEARs = 25 acciones
+    equivalentes. La acción tiene precio histórico en dólares, así que no hace
+    falta ni el precio local ni el CCL histórico — que es el camino largo por el
+    que este caso terminaba salteado y valuado al costo.
+
+    None si el activo no es un CEDEAR-USD o si el subyacente no tiene precio.
+    """
+    ratios = getattr(main, "CEDEAR_USD_RATIOS", {}) or {}
+    base = asset[:-3] if str(asset).endswith(".BA") else str(asset)
+    ratio = ratios.get(base)
+    if not ratio:
+        return None
+    try:
+        px = _fetch_monthly_close(base, start_iso).get(ym)
+    except Exception:
+        return None
+    if px is None:
+        return None
+    try:
+        return float(px) / float(ratio)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
 
 
 # ─── FX histórico — BLUE de fx_rates_daily (último ≤ fin de mes) ──────────────
@@ -438,6 +475,7 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
         unreal_by_broker: dict = {}
         val_mkt = val_costo = 0.0
         by_asset: dict = {}
+        assets_al_costo: set = set()
         for h in hold:
             b = h["broker"]
             btype = bcur.get(b, "USDT")
@@ -446,14 +484,24 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
                 ars_names, ar_usd_names)
             # precio histórico del mes (None si no hay / split → costo)
             price = None
+            _px_sub = None
             if h["asset"] not in split_assets:
-                hist = _fetch_monthly_close(pkey, start_iso)
-                price = hist.get(ym)
-            prices = {pkey: price} if price is not None else {}
-            r = sj.compute_broker_value_usd(
-                [h], prices, btype, blue, broker_name=b, cedear_rate=mep)
-            val = r.get("value", 0) or 0
-            inv = r.get("invested", 0) or 0
+                # Primero el camino corto: si es un CEDEAR que cotiza en dólares,
+                # se valúa por su subyacente y no hace falta el CCL histórico.
+                _px_sub = _precio_por_subyacente(h["asset"], ym, start_iso)
+                if _px_sub is None:
+                    hist = _fetch_monthly_close(pkey, start_iso)
+                    price = hist.get(ym)
+            if _px_sub is not None:
+                val = _px_sub * float(h["quantity"] or 0)
+                inv = float(h["invested"] or 0)
+                price = _px_sub                 # hubo precio real: no es fallback
+            else:
+                prices = {pkey: price} if price is not None else {}
+                r = sj.compute_broker_value_usd(
+                    [h], prices, btype, blue, broker_name=b, cedear_rate=mep)
+                val = r.get("value", 0) or 0
+                inv = r.get("invested", 0) or 0
             u = val - inv
             # ── Guard anti-distorsión (espejo de trustMktValue del front) ─────────
             # Si el valor a mercado se va absurdamente lejos del costo, NO lo
@@ -483,6 +531,9 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
             if price is None or not trusted:
                 res["cost_fallbacks"] += 1
                 val_costo += efectivo
+                # Por NOMBRE, no sólo el conteo: un porcentaje pelado no le dice al
+                # usuario qué hacer; "tus FCI" sí.
+                assets_al_costo.add(h["asset"])
             else:
                 val_mkt += efectivo
 
@@ -556,7 +607,8 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
                               "coverage": _cob})
         por_mes[ym] = {"date": d, "value": after_global, "cost": cost_global,
                        "coverage": _cob,
-                       "holdings": [{"asset": a, "value_usd": round(v, 2)}
+                       "holdings": [{"asset": a, "value_usd": round(v, 2),
+                                     "al_costo": a in assets_al_costo}
                                     for a, v in by_asset.items()]}
 
     # La reconstruccion se persiste como foto propia (source='mtm_backfill'), no
