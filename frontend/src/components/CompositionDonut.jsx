@@ -29,6 +29,11 @@ import InfoTooltip from './InfoTooltip'
 // Debajo de este peso la porción no se lista aparte: se agrupa en "Otros" para
 // que la leyenda no se llene de slivers ilegibles. 10 clases de activo ya es
 // mucho; con 19 sectores sería inusable.
+//
+// Es el DEFAULT, no una constante: el eje por ACTIVO del libro del asesor
+// (~486 tickers en un libro de 100 clientes) ya viene cortado en top-N + un
+// "Resto" explícito desde el agregador, y volver a agrupar acá partiría ese
+// resto en dos "Otros" distintos. Ese caso pasa minSlicePct={0}.
 const MIN_SLICE_PCT = 1.5
 const OTHERS_COLOR = '#5A6478'
 // Cuántos activos mostramos al desplegar antes de cortar con "y N más".
@@ -53,6 +58,7 @@ export default function CompositionDonut({
   emptyLabel = 'Todavía no hay posiciones para mostrar.',
   height = 200,
   maxSlices = 10,
+  minSlicePct = MIN_SLICE_PCT,
   className = '',
 }) {
   const [active, setActive] = useState(null)
@@ -74,7 +80,7 @@ export default function CompositionDonut({
     const keep = []
     const rest = []
     for (const it of sorted) {
-      if (keep.length < maxSlices && it.pct >= MIN_SLICE_PCT) keep.push(it)
+      if (keep.length < maxSlices && it.pct >= minSlicePct) keep.push(it)
       else rest.push(it)
     }
     const withDetail = keep.map(it => ({
@@ -83,10 +89,16 @@ export default function CompositionDonut({
         key: a.asset, label: displayTicker(a.asset), value: a.value, pct: a.pct, pnl: a.pnl,
       })),
     }))
-    // Las porciones "no sé qué es" (otro / sin_dato) van al final, pegadas al
-    // "Otros" de agrupación: si no, quedan mezcladas entre sectores reales y
-    // se leen como uno más.
-    const unknownIdx = withDetail.findIndex(i => i.key === 'otro' || i.key === 'sin_dato')
+    // Las porciones RESIDUALES van al final, pegadas al "Otros" de agrupación:
+    // si no, quedan mezcladas entre porciones reales y se leen como una más.
+    // Son dos casos: las "no sé qué es" (otro / sin_dato) y el "Resto" que un
+    // caller puede traer ya agrupado (el eje por activo del libro del asesor
+    // corta en top-N y manda el resto en una porción propia). Ese Resto puede
+    // pesar más que la porción más grande — en un libro de 486 tickers pesa
+    // 16% mientras el primer activo pesa 14% — y sin esto encabezaría la
+    // torta, que es exactamente lo que un residual no tiene que hacer.
+    const RESIDUAL = new Set(['otro', 'sin_dato', '__resto__'])
+    const unknownIdx = withDetail.findIndex(i => RESIDUAL.has(i.key))
     if (unknownIdx >= 0 && unknownIdx < withDetail.length - 1) {
       withDetail.push(withDetail.splice(unknownIdx, 1)[0])
     }
@@ -112,7 +124,7 @@ export default function CompositionDonut({
       })
     }
     return withDetail
-  }, [items, maxSlices])
+  }, [items, maxSlices, minSlicePct])
 
   const isEmpty = slices.length === 0
 

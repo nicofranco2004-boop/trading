@@ -136,9 +136,24 @@ function isFciLike(ticker, assetType) {
  * del broker, que es lo que decide si el precio se pide por `.BA`. Un CEDEAR
  * comprado por dólar-MEP vive en un sub-broker "Cocos · USD" y sigue siendo
  * BYMA aunque la moneda diga USD.
+ *
+ * ── `position.is_ar_market` pre-resuelto ──────────────────────────────────
+ * Es la ÚNICA cosa que el clasificador saca de `brokers`. El libro del asesor
+ * agrega las carteras de hasta 500 clientes: mandar la lista de brokers de
+ * cada uno al navegador para que esta función la recorra sería mandar el
+ * modelo de datos entero, y `isArUsdBroker` además lee un registro global
+ * (setBrokersRegistry) que solo tiene los brokers de LA cuenta abierta — con
+ * carteras ajenas devolvería cualquier cosa.
+ *
+ * Así que el backend resuelve el mercado (tiene los brokers de todos, con
+ * parent_broker_id) y manda `is_ar_market` en la fila. Cuando viene, lo
+ * respetamos y no consultamos `brokers`. Es un parámetro opcional del MISMO
+ * clasificador, no una copia: la torta del asesor y la del cliente salen del
+ * mismo código y no pueden divergir.
  */
 function isArMarket(position, brokers) {
   if ((position.asset_type || '').toUpperCase() === 'CEDEAR') return true
+  if (position.is_ar_market != null) return Boolean(position.is_ar_market)
   if (isArUsdBroker(position.broker)) return true
   const broker = (brokers || []).find(b => b.name === position.broker)
   return broker?.currency === 'ARS'
@@ -149,6 +164,9 @@ function isArMarket(position, brokers) {
  * classifyAsset
  *
  * @param {Object} position  { asset, asset_type, broker, is_cash }
+ *                            `is_ar_market` OPCIONAL: si viene definido gana
+ *                            sobre `brokers` (ver isArMarket). Lo usa el libro
+ *                            del asesor, donde el mercado lo resuelve el backend.
  * @param {Array}  brokers   [{ name, currency }] — de GET /api/brokers
  * @returns {string} una clave de ASSET_CLASS_META
  */

@@ -281,3 +281,67 @@ describe('normalización del ticker', () => {
     expect(classifyAsset({ asset: 'GOOD', broker: 'Schwab' }, BR)).toBe('accion_us')
   })
 })
+
+// ─── El mercado pre-resuelto (libro del asesor) ─────────────────────────────
+// La fila del endpoint /advisor/book/composition no trae broker ni lista de
+// brokers: trae `is_ar_market` ya decidido por el backend. La prueba que
+// importa no es "clasifica algo", es que clasifique EXACTAMENTE IGUAL que la
+// misma posición con un broker de verdad — si divergen, la torta del asesor y
+// la del cliente muestran cosas distintas para la misma cartera, que es el
+// bug entero que este parámetro existe para evitar.
+describe('classifyAsset — is_ar_market pre-resuelto', () => {
+  const preAr = (asset, extra = {}) => ({ asset, is_ar_market: true, is_cash: 0, ...extra })
+  const preUs = (asset, extra = {}) => ({ asset, is_ar_market: false, is_cash: 0, ...extra })
+
+  it('paridad con un broker ARS: mismo veredicto sin lista de brokers', () => {
+    for (const t of ['AAPL', 'SPY', 'GGAL', 'YPFD', 'MIRG', 'NVDA', 'MELI']) {
+      expect(classifyAsset(preAr(t), [])).toBe(classifyAsset(pos(t, 'Balanz'), BROKERS))
+    }
+  })
+
+  it('paridad con un broker del exterior', () => {
+    for (const t of ['AAPL', 'SPY', 'YPF', 'GGAL', 'NVDA', 'QQQ']) {
+      expect(classifyAsset(preUs(t), [])).toBe(classifyAsset(pos(t, 'Schwab'), BROKERS))
+    }
+  })
+
+  it('paridad con el sub-broker "· USD" (BYMA con moneda USD)', () => {
+    expect(classifyAsset(preAr('MSFT'), [])).toBe(classifyAsset(pos('MSFT', 'Balanz · USD'), BROKERS))
+    expect(classifyAsset(preAr('PAMP'), [])).toBe(classifyAsset(pos('PAMP', 'Balanz · USD'), BROKERS))
+  })
+
+  it('el flag decide el mercado: AAPL es CEDEAR con true y acción US con false', () => {
+    expect(classifyAsset(preAr('AAPL'), [])).toBe('cedear')
+    expect(classifyAsset(preUs('AAPL'), [])).toBe('accion_us')
+  })
+
+  it('is_ar_market:false NO fuerza a "otro" un ticker AR desconocido — cae a accion_us', () => {
+    // La asimetría de la rama del exterior se mantiene: el flag elige la rama,
+    // no cortocircuita el resto del clasificador.
+    expect(classifyAsset(preUs('ZZZZ'), [])).toBe('accion_us')
+    expect(classifyAsset(preAr('ZZZZ'), [])).toBe('otro')
+  })
+
+  it('no pisa las reglas que corren ANTES del mercado', () => {
+    // Bono, cripto, FCI y stablecoin se resuelven sin mirar el mercado: el
+    // flag no puede cambiarlos.
+    expect(classifyAsset(preUs('AL30'), [])).toBe('bono')
+    expect(classifyAsset(preAr('BTC'), [])).toBe('cripto')
+    expect(classifyAsset(preAr('FCI:FIMA-PREMIUM-A'), [])).toBe('fci')
+    expect(classifyAsset(preUs('USDT'), [])).toBe('cash')
+    expect(classifyAsset(preUs('ARS', { is_cash: 1 }), [])).toBe('cash')
+  })
+
+  it('asset_type CEDEAR sigue mandando aunque el flag diga que no es BYMA', () => {
+    // Los dos caminos coinciden en producción (el backend marca is_ar_market
+    // en las CEDEAR), pero el orden se mantiene igual que en retail.
+    expect(classifyAsset(preUs('AAPL', { asset_type: 'CEDEAR' }), [])).toBe('cedear')
+  })
+
+  it('sin el campo, el comportamiento de retail queda intacto', () => {
+    expect(classifyAsset({ asset: 'AAPL', broker: 'Balanz', is_cash: 0 }, BROKERS)).toBe('cedear')
+    expect(classifyAsset({ asset: 'AAPL', broker: 'Schwab', is_cash: 0, is_ar_market: undefined }, BROKERS)).toBe('accion_us')
+    // null se trata como ausente (JSON puede mandarlo).
+    expect(classifyAsset({ asset: 'AAPL', broker: 'Balanz', is_cash: 0, is_ar_market: null }, BROKERS)).toBe('cedear')
+  })
+})
