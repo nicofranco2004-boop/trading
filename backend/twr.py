@@ -658,33 +658,62 @@ def netdep_canonico(conn, uid: int):
 
 
 def _aportado_por_punto(conn, uid: int, filas):
-    """Devuelve fila → aportado acumulado. Es `netdep_canonico`, a secas.
+    """Devuelve fila → aportado acumulado, con el borde de mes ANCLADO al canónico
+    y el día dentro del mes decidido por la estampa.
 
-    ⚠️ ACÁ HUBO UN INTENTO DE MEJORARLO Y SALIÓ MAL. La versión anterior prefería
-    la ESTAMPA de cada fila —que sí tiene resolución diaria— y caía al canónico
-    sólo en los meses donde la estampa dejaba de coincidir con la contabilidad.
-    La señal para detectar esos meses miraba la fila de FIN DE MES, y esa fila es
-    justamente la única que un import nunca deja vieja: el import cae un día
-    cualquiera, el cron sigue corriendo y reescribe el resto del mes con la
-    contabilidad nueva. El mes pasaba como confiable, se usaban estampas mitad
-    viejas mitad nuevas, y el escalón entre unas y otras se leía como un flujo de
-    US$50.000 contra un valor inmóvil: −37,04% de drawdown en un julio PLANO, el
-    mismo número que dos rondas antes se había cerrado. Y no se autocura al
-    cerrar el mes.
+        aportado(d) = clamp( canon(M) − (estampa(rn) − estampa(d)),
+                             min(canon(M−1), canon(M)),
+                             max(canon(M−1), canon(M)) )        rn = última fila de M
 
-    El canónico es MENOS PRECISO —tiene resolución mensual, porque los flujos
-    manuales viven en `monthly_entries.manual_*` sin fecha— pero NO INVENTA, y esa
-    es la propiedad que importa acá. Las dos puntas de cualquier resta salen de la
-    misma lectura.
+    ⚠️ POR QUÉ ASÍ, DESPUÉS DE DOS INTENTOS FALLIDOS.
 
-    Si algún día hace falta resolución diaria, la vía NO es elegir entre dos
-    fuentes: es construir el mapa desde las FECHAS REALES de los movimientos, que
-    es el único lugar donde el dato existe con resolución diaria y sin ambigüedad.
+    · Sólo la ESTAMPA: tiene resolución diaria de verdad, pero un import reescribe
+      la contabilidad hacia atrás sin re-estampar las fotos viejas. Conviven
+      estampas de dos momentos y el escalón entre unas y otras se lee como un
+      flujo: −37,04% de drawdown en un mes PLANO (ronda 4).
+
+    · Sólo el CANÓNICO: es consistente, pero tiene resolución MENSUAL —los flujos
+      manuales viven en `monthly_entries.manual_*` sin fecha—, así que el día 1 ya
+      trae el depósito del mes adentro. Si la serie ARRANCA dentro de ese mes, el
+      ancla ya lo incluye, el flujo del día en que la plata entra da CERO, y el
+      salto de valor se encadena como rendimiento: un depósito de US$200.000 con
+      el mercado plano publicaba +200,00% (ronda 5).
+
+    Las dos puntas de cada mes caen SIEMPRE en el canónico, así que la suma
+    telescopia exacto y ningún flujo cruza el borde de mes — eso mata el artefacto
+    del canónico puro. Y el corredor entre canon(M−1) y canon(M) impide que una
+    estampa stale se filtre: cuando el mes no tuvo flujo el corredor colapsa a un
+    punto, que es exactamente el caso del import a mitad de mes.
+
+    (El ideal sigue siendo reconstruir el aportado desde las FECHAS REALES de los
+    movimientos. Esto NO lo reemplaza — pero tampoco hacía falta esperar a eso.)
     """
     canon = netdep_canonico(conn, uid)
     if canon is None:                      # sin contabilidad: sólo queda la estampa
         return lambda r: float(r["net_deposited"] or 0)
-    return lambda r: canon(str(r["date"])[:10])
+
+    ultimo_del_mes = {}
+    for r in filas:
+        ym = str(r["date"])[:7]
+        prev = ultimo_del_mes.get(ym)
+        if prev is None or str(r["date"]) > str(prev["date"]):
+            ultimo_del_mes[ym] = r
+
+    def _mes_anterior(ym):
+        y, m = int(ym[:4]), int(ym[5:7])
+        return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
+
+    def _en(r):
+        ym = str(r["date"])[:7]
+        c_m = canon(f"{ym}-01")
+        c_prev = canon(f"{_mes_anterior(ym)}-01")
+        rn = ultimo_del_mes.get(ym)
+        if rn is None:
+            return c_m
+        v = c_m - (float(rn["net_deposited"] or 0) - float(r["net_deposited"] or 0))
+        lo, hi = (c_prev, c_m) if c_prev <= c_m else (c_m, c_prev)
+        return max(lo, min(hi, v))
+    return _en
 
 
 def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
@@ -743,10 +772,31 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         else:
             contable.append({"date": d, "value": float(r["total_value"]), "clase": c})
 
-    # Partir donde el silencio es demasiado largo.
+    # Partir donde el silencio es demasiado largo — y donde el flujo DESBORDA el
+    # denominador.
+    #
+    # ⚠️ EL CERO ABSORBENTE. `dietz` tiene piso en −1,0 (twr.py: "no se puede
+    # perder más que todo"), y cuando lo toca, `idx *= (1.0 + ret)` deja el índice
+    # en CERO — y el cero no se recupera con ninguna multiplicación posterior.
+    # Alguien con US$5.000 que deposita US$20.000 y después gana 21,55% real
+    # publicaba −100% PARA SIEMPRE. Pero un flujo de 2× la cartera no significa que
+    # el usuario perdió todo: significa que el denominador de Modified Dietz no da
+    # para medir ese tramo. Eso no es una pérdida, es una medición imposible — y lo
+    # que corresponde con una medición imposible ya está resuelto acá: cortar,
+    # igual que con un hueco.
     tramos, actual = [], []
     for p in puntos:
-        if actual and _dias(actual[-1]["date"], p["date"]) > max_hueco_dias:
+        corta = False
+        if actual:
+            a = actual[-1]
+            if _dias(a["date"], p["date"]) > max_hueco_dias:
+                corta = True
+            elif a["apto"] and p["apto"]:
+                _r = dietz(a["value"], p["value"],
+                           p["net_deposited"] - a["net_deposited"])
+                if _r is not None and _r <= -1.0 + 1e-12:
+                    corta = True       # el flujo desbordó el denominador
+        if corta:
             tramos.append(actual); actual = []
         actual.append(p)
     if actual:

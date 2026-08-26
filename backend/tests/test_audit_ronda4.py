@@ -56,19 +56,16 @@ class DepositoAMitadDeMesTest(_Base):
     DIARIA retro-atribuye el depósito del 20 al día 1: un flujo contra un valor que
     todavía no lo incluye.
 
-    ⚠️ LOS DOS PRIMEROS TESTS ESTÁN MARCADOS COMO FALLO ESPERADO, A PROPÓSITO.
-    En la ronda 4 esto se "arregló" prefiriendo la estampa diaria y cayendo al
-    canónico sólo en los meses sospechosos. La señal para detectar esos meses
-    miraba la fila de FIN DE MES — la única que un import nunca deja vieja, porque
-    el import cae un día cualquiera y el cron reescribe el resto del mes. El
-    resultado fue reabrir el −37,04% que dos rondas antes se había cerrado.
-    Se volvió al canónico puro: es menos preciso, pero el error que deja es
-    acotado y del mismo signo siempre, en vez de uno que depende de qué día cayó
-    un import.
-    El arreglo de verdad NO es elegir entre dos fuentes: es construir el mapa desde
-    las FECHAS REALES de los movimientos, el único lugar donde el dato existe con
-    resolución diaria. Estos tests quedan acá para que ese trabajo tenga su
-    criterio escrito y para que, el día que se haga, avisen solos.
+    HISTORIA, porque costó tres intentos: la ronda 4 prefirió la estampa y cayó al
+    canónico sólo en los meses "sospechosos" —y la señal miraba la fila de fin de
+    mes, la única que un import nunca deja vieja—, así que reabrió el −37,04%. La
+    ronda 5 volvió al canónico puro y reabrió esto. Lo que finalmente funciona es
+    anclar los BORDES DE MES al canónico y dejar que la estampa decida sólo EN QUÉ
+    DÍA cae el flujo dentro del mes, con el resultado acotado al corredor entre los
+    dos canónicos (`twr._aportado_por_punto`).
+
+    Estos dos tests estuvieron marcados como `expectedFailure` mientras el defecto
+    vivía. Ya no: pasan.
     """
 
     def _mercado_inmovil_con_deposito_el_20(self):
@@ -80,14 +77,12 @@ class DepositoAMitadDeMesTest(_Base):
             v = 100000.0 if d < 20 else 110000.0
             self.cron(f"2026-02-{d:02d}", v, nd=v)
 
-    @unittest.expectedFailure
     def test_el_mercado_inmovil_no_produce_drawdown(self):
         self._mercado_inmovil_con_deposito_el_20()
         c = twr.curva_indexada(self.conn, self.uid)
         self.assertAlmostEqual(c["drawdown_maximo"], 0.0, places=6)
         self.assertAlmostEqual(c["twr"], 0.0, places=6)
 
-    @unittest.expectedFailure
     def test_el_aportado_del_dia_1_no_incluye_el_deposito_del_20(self):
         self._mercado_inmovil_con_deposito_el_20()
         s = twr.serie_medible(self.conn, self.uid)

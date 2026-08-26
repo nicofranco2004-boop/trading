@@ -12448,20 +12448,12 @@ def _is_synthetic_seed_row(src) -> bool:
 
 
 def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) -> None:
-    """⚠️ ANOTADO, NO ARREGLADO: el `_recompute_snapshots_netdep_for_user` de abajo
-    re-estampa `net_deposited` con `compute_net_deposited_db`, que trunca la fecha
-    a MES — o sea pisa el valor diario que el cron había escrito bien, con un único
-    valor por mes, para todos los snapshots desde `since_date`.
-
-    Para Diagnóstico y Reportes eso es INOCUO: la curva saca el aportado de
-    `twr.netdep_canonico`, que recalcula desde la contabilidad y no lee esta
-    columna. Verificado y fijado en
+    """El `_recompute_snapshots_netdep_for_user` de abajo re-estampa
+    `net_deposited`. Estuvo anotado como problema: usaba una fórmula truncada a MES
+    y pisaba con un valor único el dato diario que el cron había escrito bien.
+    Ahora usa `twr._aportado_por_punto`, que ancla el borde de mes al canónico y
+    conserva el día — corrige lo stale sin tirar la resolución. Fijado en
     `tests/test_audit_ronda5.py::ReEstampadoPorMesEsInocuoTest`.
-
-    Lo que SÍ queda afectado son los lectores que leen la columna cruda:
-    `/api/snapshots` (el chart del Dashboard) y el informe del asesor. Arreglarlo
-    pide granularidad diaria de verdad —construir el mapa desde las fechas reales
-    de los movimientos—, que es un trabajo aparte.
 
     Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
     revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
@@ -15110,6 +15102,31 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
         (uid,),
     ).fetchall()
 
+    # ⚠️ SE CONSERVA LA RESOLUCIÓN DIARIA.
+    # Esta función estampaba `compute_net_deposited_db(as_of_date=<fecha>)`, que
+    # trunca la fecha a MES: reescribía con UN valor por mes las filas que el cron
+    # había escrito bien al día, y así destruía la única fuente de resolución
+    # diaria que hay. Con eso, el aportado del día 20 pasaba al día 1 y la curva
+    # publicaba un drawdown que no existió.
+    # `twr._aportado_por_punto` ancla los bordes de mes al canónico —que es lo que
+    # esta función viene a corregir— y usa la estampa VIEJA sólo para saber en qué
+    # día del mes cayó el flujo. Misma corrección, sin tirar la resolución.
+    try:
+        import twr as _twr
+        _filas_tw = conn.execute(
+            "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
+            (uid,)).fetchall()
+        _fn = _twr._aportado_por_punto(conn, uid, _filas_tw)
+        _nuevo_por_fila = {r["id"]: _fn(r) for r in _filas_tw}
+    except Exception:
+        log.exception("netdep recompute: no se pudo usar el aportado anclado uid=%s", uid)
+        from snapshots_job import compute_net_deposited_db as _cnd
+        _nuevo_por_fila = {
+            r["id"]: float(_cnd(conn, uid, as_of_date=r["date"],
+                                broker_filter='global', include_baseline=True) or 0)
+            for r in conn.execute(
+                "SELECT id, date FROM snapshots WHERE user_id=?", (uid,)).fetchall()}
+
     updated = 0
     details = [] if with_details else None
     for snap in snaps:
@@ -15123,9 +15140,7 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
         # PISABA los stamps canónicos → el lado prev de los Δ chips quedaba sin
         # baseline mientras el lado latest (H-7) lo incluye → Δ1d = −baseline
         # entero como "pérdida fantasma" tras cada deploy.
-        from snapshots_job import compute_net_deposited_db as _cnd
-        new_net = float(_cnd(conn, uid, as_of_date=snap_date,
-                             broker_filter='global', include_baseline=True) or 0)
+        new_net = float(_nuevo_por_fila.get(snap["id"], 0.0) or 0)
 
         if abs(new_net - old_net) > 0.01:
             conn.execute(

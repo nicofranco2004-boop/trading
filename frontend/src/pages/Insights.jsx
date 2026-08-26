@@ -749,6 +749,10 @@ function InsightsDesktop({ _embeddedTab }) {
       out.push({
         key: esHoy ? 'today' : pt.date,
         label: esHoy ? 'Hoy' : benchLabel(pt.date.slice(0, 7)),
+        // ⚠️ Con la serie ya diaria, una etiqueta mes/año repite: el eje mostraba
+        // «Jul '26 · Jul '26 · Jul '26 · … · Ago '26 · Ago '26», nueve repetidas de
+        // once. Ningún número está mal, pero es lo primero que se ve.
+        labelDia: esHoy ? 'Hoy' : `${pt.date.slice(8, 10)}/${pt.date.slice(5, 7)}`,
         // Sólo los puntos aptos: ver `totalDePunto` (insightsModel.js).
         total: totalDePunto(pt),
         realized: denom > 0 ? +((rz / denom) * 100).toFixed(2) : 0,
@@ -1321,6 +1325,7 @@ function InsightsDesktop({ _embeddedTab }) {
         ? +((((100 + s.benchPct) / (100 + baseBench)) - 1) * 100).toFixed(2) : null
       return {
         label: s.label,
+        labelDia: s.labelDia ?? s.label,
         [`${userName} P/L total`]: rebaseTotal,
         [`${userName} P/L realizado`]: rebaseRealized,
         [benchmarkKey]: rebaseBench,
@@ -2480,7 +2485,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 </linearGradient>
               </defs>
               <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+              <XAxis dataKey={resolucionChart === 'diaria' ? "labelDia" : "label"} tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
               <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} width={44} />
               <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.5} strokeDasharray="2 4" />
               <Tooltip

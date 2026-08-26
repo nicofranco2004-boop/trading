@@ -99,30 +99,42 @@ class ImportAMitadDeMesTest(_Base):
 
 
 class ReEstampadoPorMesEsInocuoTest(_Base):
-    """B-3 · `_cascade_after_movement_delete` (main.py:12450) sigue re-estampando
-    `net_deposited` con la fórmula truncada a mes. Con el aportado canónico la
-    curva NO lo lee, así que para Diagnóstico y Reportes es inocuo — y este test
-    existe para que siga siéndolo.
+    """B-3 · `_cascade_after_movement_delete` (main.py:12450) re-estampa
+    `net_deposited` al borrar un movimiento.
 
-    ⚠️ Lo que NO cubre: la columna sí cambia, y la leen `/api/snapshots` (el chart
-    del Dashboard) y el informe del asesor. Queda anotado, no arreglado: es de otra
-    ronda."""
+    Estaba anotado como "inocuo" mientras la curva usaba el canónico puro. Dejó de
+    serlo con el aportado anclado: la fórmula usa la estampa para saber en qué DÍA
+    del mes cayó el flujo, y el re-estampado la aplanaba a un valor por mes — o sea
+    destruía justo el dato que la curva necesita. Ahora el re-estampado usa el
+    MISMO aportado anclado, así que corrige lo stale sin tirar la resolución."""
 
     def test_la_curva_no_cambia_aunque_se_re_estampe(self):
+        # ⚠️ Este test pedía sólo que el número NO SE MOVIERA, y el fixture
+        # publicaba +10,00% inventado: verificaba que una mentira fuera estable.
+        # Ahora exige primero que el número sea CORRECTO —mercado plano, un
+        # depósito: 0,00%— y recién después que el re-estampado no lo mueva.
+        self.me(2026, 1, 100000.0, 100000.0)
+        for d in range(1, 32):
+            self.cron(f"2026-01-{d:02d}", 100000.0, 100000.0)
         self.me(2026, 2, 100000.0, 110000.0, dep=10000.0)
         for d in range(1, 29):
             v = 100000.0 if d < 20 else 110000.0
             self.cron(f"2026-02-{d:02d}", v, v)
         antes = twr.curva_indexada(self.conn, self.uid)
+        self.assertAlmostEqual(antes["twr"], 0.0, places=6)
+        self.assertAlmostEqual(antes["drawdown_maximo"], 0.0, places=6)
         main._recompute_snapshots_netdep_for_user(self.conn, self.uid)
         self.conn.commit()
         despues = twr.curva_indexada(self.conn, self.uid)
+        self.assertAlmostEqual(despues["twr"], 0.0, places=6)
         self.assertEqual(antes["twr"], despues["twr"])
         self.assertEqual(antes["drawdown_maximo"], despues["drawdown_maximo"])
 
-    def test_pero_la_columna_SI_cambia(self):
-        """Documentado a propósito: si algún día esto deja de ser cierto, es porque
-        alguien arregló la granularidad — y entonces este test avisa."""
+    def test_a_un_usuario_sano_no_le_toca_NI_UNA_fila(self):
+        """Antes reescribía 19 de 28 filas con un único valor por mes, destruyendo
+        la resolución diaria que el cron había escrito bien. Ahora el re-estampado
+        usa el mismo aportado anclado que la curva, así que en una cuenta sana no
+        tiene nada que corregir."""
         self.me(2026, 2, 100000.0, 110000.0, dep=10000.0)
         for d in range(1, 29):
             v = 100000.0 if d < 20 else 110000.0
@@ -133,8 +145,88 @@ class ReEstampadoPorMesEsInocuoTest(_Base):
         self.conn.commit()
         despues = {r["date"]: r["net_deposited"] for r in self.conn.execute(
             "SELECT date, net_deposited FROM snapshots WHERE user_id=?", (self.uid,))}
-        cambiadas = sum(1 for k in antes if antes[k] != despues[k])
-        self.assertGreater(cambiadas, 0)
+        self.assertEqual(antes, despues)
+
+    def test_pero_SI_corrige_una_estampa_stale(self):
+        """Lo que la función existe para hacer: si la contabilidad cambió, las
+        estampas viejas se corrigen — anclando el borde de mes, no aplanando el mes."""
+        self.me(2026, 2, 100000.0, 110000.0, dep=10000.0)
+        for d in range(1, 29):
+            v = 100000.0 if d < 20 else 110000.0
+            self.cron(f"2026-02-{d:02d}", v, 55555.0)      # estampa stale
+        main._recompute_snapshots_netdep_for_user(self.conn, self.uid)
+        self.conn.commit()
+        fin = self.conn.execute(
+            "SELECT net_deposited FROM snapshots WHERE user_id=? AND date='2026-02-28'",
+            (self.uid,)).fetchone()["net_deposited"]
+        self.assertAlmostEqual(fin, 110000.0, places=2)     # anclado al canónico
+
+
+class AportadoAncladoTest(_Base):
+    """A-1/A-2/A-3 · el aportado anclado al canónico en los bordes de mes."""
+
+    def _plano_con_deposito(self, dep, base=100000.0, con_mes_previo=True):
+        if con_mes_previo:
+            self.me(2026, 1, base, base)
+            for d in range(1, 32):
+                self.cron(f"2026-01-{d:02d}", base, base)
+        self.me(2026, 2, base, base + dep, dep=dep)
+        for d in range(1, 29):
+            v = base if d < 20 else base + dep
+            self.cron(f"2026-02-{d:02d}", v, v)
+
+    def test_un_deposito_no_es_ganancia_sea_del_tamano_que_sea(self):
+        """El canónico puro publicaba el depósito ENTERO como rendimiento cuando
+        la serie arrancaba dentro del mes: 10k→+10%, 200k→+200%."""
+        for dep in (10000.0, 50000.0, 100000.0, 200000.0):
+            with self.subTest(deposito=dep):
+                self.conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.uid,))
+                self.conn.execute("DELETE FROM monthly_entries WHERE user_id=?", (self.uid,))
+                self._plano_con_deposito(dep, con_mes_previo=False)
+                c = twr.curva_indexada(self.conn, self.uid)
+                self.assertAlmostEqual(c["twr"], 0.0, places=6)
+
+    def test_un_deposito_grande_no_clava_el_indice_en_menos_100(self):
+        """`dietz` tiene piso en −1,0 y `idx *= (1+ret)` deja el índice en CERO,
+        que es absorbente: −100% para siempre."""
+        self.me(2026, 1, 5000.0, 5000.0)
+        for d in range(1, 32):
+            self.cron(f"2026-01-{d:02d}", 5000.0, 5000.0)
+        self.me(2026, 2, 5000.0, 25000.0, dep=20000.0)
+        for d in range(1, 29):
+            v = 5000.0 if d < 20 else 25000.0
+            self.cron(f"2026-02-{d:02d}", v, v)
+        self.me(2026, 3, 25000.0, 30387.5)
+        for d in range(1, 32):
+            self.cron(f"2026-03-{d:02d}", 25000.0 + 5387.5 * d / 31.0, 25000.0)
+        c = twr.curva_indexada(self.conn, self.uid)
+        self.assertAlmostEqual(c["twr"], 0.2155, places=3)      # el retorno REAL
+
+    def test_si_dietz_toca_el_piso_se_corta_en_vez_de_clavar(self):
+        """Un flujo que desborda el denominador no es "perdí todo": es una
+        medición imposible, y eso ya se resuelve cortando, como con un hueco."""
+        self.me(2026, 1, 1000.0, 1000.0)
+        self.me(2026, 2, 1000.0, 1000.0, dep=10000.0)
+        self.me(2026, 3, 1000.0, 1500.0)
+        self.cron("2026-01-31", 1000.0, 1000.0)
+        self.cron("2026-02-28", 1000.0, 11000.0)
+        self.cron("2026-03-31", 1500.0, 11000.0)
+        c = twr.curva_indexada(self.conn, self.uid)
+        self.assertGreater(len(c["tramos"]), 1)
+        self.assertNotEqual(c["twr"], -1.0)
+
+    def test_los_bordes_de_mes_caen_en_el_canonico(self):
+        """La propiedad de la que sale todo lo demás: si las dos puntas de cada mes
+        están ancladas, ningún flujo cruza el borde y la suma telescopia."""
+        self._plano_con_deposito(10000.0)
+        canon = twr.netdep_canonico(self.conn, self.uid)
+        s = twr.serie_medible(self.conn, self.uid)
+        por_fecha = {p["date"]: p["net_deposited"] for p in s["puntos"]}
+        self.assertAlmostEqual(por_fecha["2026-01-31"], canon("2026-01-31"), places=2)
+        self.assertAlmostEqual(por_fecha["2026-02-28"], canon("2026-02-28"), places=2)
+        # Y adentro del mes, el flujo cae EL DÍA que entró.
+        self.assertAlmostEqual(por_fecha["2026-02-19"], 100000.0, places=2)
+        self.assertAlmostEqual(por_fecha["2026-02-20"], 110000.0, places=2)
 
 
 class LaClasificacionNoEstaMaterializadaTest(unittest.TestCase):
