@@ -33,6 +33,10 @@ import { toDistributionAiParams } from './distributionAi'
 // puede efectivamente mirar de a uno.
 export const DEFAULT_TOP_ASSETS = 12
 
+// Cuántos activos dispersos entran en el packet de la IA (vienen ordenados
+// por amplitud desde el backend, así que son los que más se abren).
+const MAX_DISPERSOS = 4
+
 // Paleta de porciones. Son los data accents del design system (los mismos que
 // usan ASSET_CLASS_META y SECTOR_META). Nunca rendi-neg (#FF5360): en esta app
 // el rojo es pérdida, no una categoría.
@@ -246,10 +250,49 @@ export function realizedToOps(rows = []) {
  * Claves cortas (`a`/`c`) por el mismo motivo que en distributionAi: viajan
  * por red y entran en el contexto del modelo.
  */
-export function toBookCompositionAiParams(breakdown, { clients, mostHeld } = {}) {
+export function toBookCompositionAiParams(breakdown, { clients, mostHeld, spread } = {}) {
   const params = toDistributionAiParams(breakdown)
   if (clients > 0) params.clientes = clients
   const difundidos = (mostHeld || []).map(a => ({ a: a.asset, c: a.clients }))
   if (difundidos.length) params.mas_difundidos = difundidos
+  // Los activos donde más se abren los clientes entre sí. Sin esto el modelo
+  // solo ve el % agrupado y no puede decir lo único que de verdad importa en
+  // un libro: que un promedio sano puede tener a alguien en rojo adentro.
+  const dispersos = (spread || [])
+    .slice(0, MAX_DISPERSOS)
+    .map(s => ({ a: s.asset, c: s.clients, min: s.min_pct, max: s.max_pct }))
+  if (dispersos.length) params.mas_dispersos = dispersos
   return params
+}
+
+/**
+ * attachSpread — pega el rango de retorno entre clientes a cada activo del
+ * breakdown, sin tocar los agregadores compartidos.
+ *
+ * Por qué acá y no dentro de computeClassBreakdown: ese módulo es el del
+ * retail y no sabe de clientes. El rango es información del libro, así que se
+ * adosa después, sobre el resultado ya calculado. Las porciones y los % no se
+ * tocan — solo se agrega un campo a cada activo del desglose.
+ *
+ * La clave es el ticker normalizado, juntando los dos mercados: el backend ya
+ * junta AAPL-CEDEAR con AAPL-acción para el rango, porque "de los clientes que
+ * tienen AAPL, el peor está en X y el mejor en Y" sigue siendo cierto y es
+ * cómo la torta por activo ya consolida.
+ */
+export function attachSpread(breakdown, spreadRows) {
+  const bySpread = new Map(
+    (spreadRows || []).map(s => [normalizeTicker(s.asset), s]),
+  )
+  if (bySpread.size === 0 || !breakdown?.items?.length) return breakdown
+  return {
+    ...breakdown,
+    items: breakdown.items.map(i => (
+      i.assets?.length
+        ? { ...i, assets: i.assets.map(a => {
+            const s = bySpread.get(normalizeTicker(a.asset))
+            return s ? { ...a, spread: s } : a
+          }) }
+        : i
+    )),
+  }
 }

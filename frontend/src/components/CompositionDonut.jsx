@@ -87,6 +87,8 @@ export default function CompositionDonut({
       ...it,
       detail: (it.assets || []).map(a => ({
         key: a.asset, label: displayTicker(a.asset), value: a.value, pct: a.pct, pnl: a.pnl,
+        // Dispersión entre carteras — solo la manda el libro del asesor.
+        spread: a.spread,
       })),
     }))
     // Las porciones RESIDUALES van al final, pegadas al "Otros" de agrupación:
@@ -108,6 +110,7 @@ export default function CompositionDonut({
         ...r,
         detail: (r.assets || []).map(a => ({
           key: a.asset, label: displayTicker(a.asset), value: a.value, pct: a.pct, pnl: a.pnl,
+          spread: a.spread,
         })),
       }]
     }
@@ -288,7 +291,8 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
             </div>
           )}
           {shown.map(d => (
-            <div key={d.key} className="flex items-baseline justify-between gap-3 text-[11px]">
+            <div key={d.key}>
+            <div className="flex items-baseline justify-between gap-3 text-[11px]">
               <span className="text-ink-1 font-mono font-medium truncate">{d.label}</span>
               <div className="flex items-baseline gap-2 flex-shrink-0">
                 <span className="text-ink-2 tabular">{fmt(d.value)}</span>
@@ -296,15 +300,43 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
                   {d.pct.toFixed(1)}%
                 </span>
                 {slice.pnl && (
-                  <span className={`tabular font-medium min-w-[46px] text-right ${
-                    d.pnl ? toneOf(d.pnl.total) : 'text-ink-3'
-                  }`}>
+                  <span
+                    className={`tabular font-medium min-w-[46px] text-right ${
+                      d.pnl ? toneOf(d.pnl.total) : 'text-ink-3'
+                    }`}
+                    // El '—' significa "no hay tasa que valga", y hay dos
+                    // motivos: falta el costo de alguna venta, o el capital
+                    // que generó ese resultado ya no está en la posición (un
+                    // bono amortizado que siguió pagando cupones). En los dos
+                    // casos el MONTO sigue siendo válido; la tasa no.
+                    title={d.pnl && d.pnl.pct == null
+                      ? 'Sin tasa confiable: falta el costo de alguna venta, o el capital que generó este resultado ya no está en la posición.'
+                      : undefined}
+                  >
                     {d.pnl?.pct != null
                       ? `${signed(d.pnl.pct)}${Math.abs(d.pnl.pct).toFixed(1)}%`
                       : '—'}
                   </span>
                 )}
               </div>
+            </div>
+            {d.spread && (
+              // El % de arriba es AGRUPADO: la plata de todas las carteras
+              // junta. Este rango dice cuánto se abren los clientes por
+              // adentro — un +9,8% promedio puede ser alguien en −20%. Sale
+              // del mismo cálculo de tres patas que el agrupado, así que el
+              // rango siempre lo contiene.
+              <div className="text-[10px] text-ink-3 tabular pl-0.5 -mt-0.5">
+                {d.spread.clients} carteras · de{' '}
+                <span className={toneOf(d.spread.min_pct)}>
+                  {signed(d.spread.min_pct)}{Math.abs(d.spread.min_pct).toFixed(1)}%
+                </span>
+                {' '}a{' '}
+                <span className={toneOf(d.spread.max_pct)}>
+                  {signed(d.spread.max_pct)}{Math.abs(d.spread.max_pct).toFixed(1)}%
+                </span>
+              </div>
+            )}
             </div>
           ))}
           {hidden > 0 && (

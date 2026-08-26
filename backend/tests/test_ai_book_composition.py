@@ -149,5 +149,46 @@ class PromptTest(unittest.TestCase):
         self.assertIn("NO son sectores económicos", render("advisor"))
 
 
+class DispersionEnElPacketTest(unittest.TestCase):
+    """`mas_dispersos` — lo que el % agrupado esconde, para el modelo.
+
+    Sin esto el modelo solo ve el agrupado y no puede decir lo único que de
+    verdad importa en un libro: que un promedio sano puede tener a un cliente
+    en rojo adentro.
+    """
+
+    def _pkt(self, **over):
+        build, _ = get_topic("book.composition_type")
+        return build(None, 1, **_params(**over))
+
+    def test_llega_con_nombres_legibles_para_el_modelo(self):
+        pkt = self._pkt(mas_dispersos=[{"a": "AAPL", "c": 5, "min": -20.4, "max": 38.1}])
+        self.assertEqual(pkt["mas_dispersos"], [{
+            "ticker": "AAPL", "clientes": 5,
+            "peor_cliente_pct": -20.4, "mejor_cliente_pct": 38.1,
+        }])
+
+    def test_descarta_lo_que_no_es_dispersion(self):
+        pkt = self._pkt(mas_dispersos=[
+            {"a": "SOLO", "c": 1, "min": 3, "max": 3},      # un cliente: no hay rango
+            {"a": "SINMAX", "c": 4, "min": 3},               # incompleto
+            {"c": 4, "min": 1, "max": 2},                    # sin ticker
+            "basura",
+            {"a": "OK", "c": 3, "min": -5, "max": 12},
+        ])
+        self.assertEqual([d["ticker"] for d in pkt["mas_dispersos"]], ["OK"])
+
+    def test_sin_dispersion_no_inventa_la_clave(self):
+        pkt = self._pkt(mas_dispersos=[])
+        self.assertNotIn("mas_dispersos", pkt)
+
+    def test_el_prompt_le_dice_al_modelo_que_el_resultado_es_AGRUPADO(self):
+        for t in ("book.composition_type", "book.composition_sector"):
+            _, render = get_topic(t)
+            p = render("advisor")
+            self.assertIn("AGRUPADO", p)
+            self.assertIn("mas_dispersos", p)
+
+
 if __name__ == "__main__":
     unittest.main()

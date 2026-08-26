@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computePnlByKey } from './assetPnl.js'
+import { computePnlByKey, ratePct } from './assetPnl.js'
 import { classifyAsset } from './assetClass.js'
 import { classifySector } from './assetSector.js'
 import { computeClassBreakdown } from './assetClass.js'
@@ -296,5 +296,66 @@ describe('renta con acentos', () => {
     const b = out.get('bono')
     expect(b.realized).toBe(50)
     expect(b.income).toBe(0)
+  })
+})
+
+// ─── Cuándo el % deja de ser un rendimiento ────────────────────────────────
+// total/costo se rompe cuando la plata se ganó sobre un capital que ya no
+// está: un bono que amortizó casi todo sigue sumando años de cupones contra
+// un costo residual. Medido en el libro demo, GD35 con US$15 de posición y
+// US$1.463 de renta cobrada daba +9.804% — eso no comunica un rendimiento,
+// comunica que el denominador se evaporó. Mostramos el monto y ocultamos la
+// tasa, igual que ya se hace cuando falta el costo de una venta.
+describe('ratePct — la tasa, o null cuando no hay tasa que valga', () => {
+  it('devuelve la tasa normal cuando el costo se sostiene', () => {
+    expect(ratePct(200, 1000, false)).toBeCloseTo(20, 9)
+    expect(ratePct(-300, 1000, false)).toBeCloseTo(-30, 9)
+  })
+
+  it('null si no hay costo o el costo está incompleto', () => {
+    expect(ratePct(200, 0, false)).toBeNull()
+    expect(ratePct(200, -5, false)).toBeNull()
+    expect(ratePct(200, 1000, true)).toBeNull()
+  })
+
+  it('null cuando el resultado supera 10× el costo (el denominador se evaporó)', () => {
+    expect(ratePct(1464, 15, false)).toBeNull()      // GD35: +9.804%
+    expect(ratePct(2459, 185, false)).toBeNull()     // AL30: +1.331%
+  })
+
+  it('la pérdida grande también se corta: −5000% no es una tasa', () => {
+    expect(ratePct(-1464, 15, false)).toBeNull()
+  })
+
+  it('el borde es 10× exacto y sigue siendo válido', () => {
+    expect(ratePct(1000, 100, false)).toBeCloseTo(1000, 6)   // 10× justo
+    expect(ratePct(1001, 100, false)).toBeNull()             // apenas arriba
+  })
+})
+
+describe('el guard llega hasta la porción y el activo', () => {
+  const brokers = [{ name: 'Balanz', currency: 'ARS' }]
+  const classify = () => 'bono'
+
+  it('un bono amortizado con mucha renta muestra monto pero no tasa', () => {
+    const out = computePnlByKey(
+      [{ asset: 'GD35', broker: 'Balanz', asset_type: 'BONO', value_usd: 15, pnl_usd: 0 }],
+      [{ asset: 'GD35', broker: 'Balanz', op_type: 'Cupón', pnl_usd: 1463, pnl_pct: null }],
+      brokers, classify,
+    )
+    const b = out.get('bono')
+    expect(b.total).toBe(1463)          // el monto sigue estando
+    expect(b.pct).toBeNull()            // la tasa no
+    expect(b.byAsset[0].total).toBe(1463)
+    expect(b.byAsset[0].pct).toBeNull()
+  })
+
+  it('un bono normal conserva su tasa', () => {
+    const out = computePnlByKey(
+      [{ asset: 'AO28', broker: 'Balanz', asset_type: 'BONO', value_usd: 18152, pnl_usd: 724 }],
+      [{ asset: 'AO28', broker: 'Balanz', op_type: 'Cupón', pnl_usd: 881, pnl_pct: null }],
+      brokers, classify,
+    )
+    expect(out.get('bono').pct).toBeCloseTo((724 + 881) / 17428 * 100, 6)
   })
 })

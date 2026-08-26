@@ -481,5 +481,143 @@ class ResultadoPorPorcionTest(CompositionBase):
         self.assertEqual(self._get(self.otro_asesor).json()["realized_by_asset"], [])
 
 
+class TasaQueNoEsTasaTest(CompositionBase):
+    """_rate_pct — cuándo el % deja de comunicar un rendimiento.
+
+    total/costo se rompe cuando la plata se ganó sobre un capital que ya no
+    está: un bono que amortizó casi todo sigue sumando años de cupones contra
+    un costo residual. En el libro demo, GD35 con US$15 de posición y US$1.463
+    de renta daba +9.804%.
+    """
+
+    def test_tasa_normal(self):
+        self.assertAlmostEqual(main._rate_pct(200, 1000, False), 20.0)
+        self.assertAlmostEqual(main._rate_pct(-300, 1000, False), -30.0)
+
+    def test_sin_costo_o_costo_incompleto_no_hay_tasa(self):
+        self.assertIsNone(main._rate_pct(200, 0, False))
+        self.assertIsNone(main._rate_pct(200, -5, False))
+        self.assertIsNone(main._rate_pct(200, 1000, True))
+
+    def test_el_denominador_evaporado_no_da_tasa(self):
+        self.assertIsNone(main._rate_pct(1464, 15, False))     # GD35
+        self.assertIsNone(main._rate_pct(-1464, 15, False))    # y la pérdida igual
+
+    def test_el_borde_es_10x_y_sigue_valiendo(self):
+        self.assertAlmostEqual(main._rate_pct(1000, 100, False), 1000.0)
+        self.assertIsNone(main._rate_pct(1001, 100, False))
+
+    def test_misma_constante_que_el_frontend(self):
+        # Si alguien mueve una sola de las dos, el rango del asesor y el % de
+        # la torta empiezan a contar historias distintas.
+        import re, os
+        js = os.path.join(os.path.dirname(BACKEND), "frontend", "src", "utils", "assetPnl.js")
+        with open(js, encoding="utf-8") as f:
+            m = re.search(r"const MAX_PNL_TO_COST = (\d+)", f.read())
+        self.assertIsNotNone(m, "no encontré MAX_PNL_TO_COST en assetPnl.js")
+        self.assertEqual(int(m.group(1)), main.MAX_PNL_TO_COST)
+
+
+class DispersionEntreClientesTest(CompositionBase):
+    """return_spread — lo que el % agrupado esconde.
+
+    "AAPL +9,8%" puede ser un cliente en −20% y otro en +40%: el libro se ve
+    bien y hay alguien enojado. El rango se calcula POR CLIENTE con las mismas
+    tres patas y el mismo guard que el agrupado, si no podría no contener al
+    número que está justo al lado.
+    """
+
+    def _spread(self, body, asset):
+        return next((r for r in body["return_spread"] if r["asset"] == asset), None)
+
+    def test_dos_clientes_con_el_mismo_activo_dan_un_rango(self):
+        # Ana: costo 100 → vale 80 (−20%). Beto: costo 100 → vale 140 (+40%).
+        self._broker(self.ana, "Schwab", "USD")
+        self._broker(self.beto, "Schwab", "USD")
+        self._pos(self.ana, "Schwab", "AAPL", 1, 100)
+        self._pos(self.beto, "Schwab", "AAPL", 1, 100)
+        self._price("AAPL", 80)
+        self.conn.commit()
+        # Mismo precio para los dos: el rango arranca en cero.
+        s = self._spread(self._get().json(), "AAPL")
+        self.assertIsNotNone(s)
+        self.assertEqual(s["clients"], 2)
+        self.assertAlmostEqual(s["min_pct"], -20.0, places=1)
+        self.assertAlmostEqual(s["max_pct"], -20.0, places=1)
+
+    def test_el_rango_separa_al_que_compro_caro_del_que_compro_barato(self):
+        self._broker(self.ana, "Schwab", "USD")
+        self._broker(self.beto, "Schwab", "USD")
+        self._pos(self.ana, "Schwab", "AAPL", 1, 200)    # compró caro
+        self._pos(self.beto, "Schwab", "AAPL", 1, 50)    # compró barato
+        self._price("AAPL", 100)
+        self.conn.commit()
+        s = self._spread(self._get().json(), "AAPL")
+        self.assertAlmostEqual(s["min_pct"], -50.0, places=1)
+        self.assertAlmostEqual(s["max_pct"], 100.0, places=1)
+
+    def test_el_rango_CONTIENE_al_porcentaje_agrupado(self):
+        # La propiedad que hace que las dos cifras no se contradigan.
+        self._broker(self.ana, "Schwab", "USD")
+        self._broker(self.beto, "Schwab", "USD")
+        self._pos(self.ana, "Schwab", "AAPL", 1, 200)
+        self._pos(self.beto, "Schwab", "AAPL", 1, 50)
+        self._price("AAPL", 100)
+        self.conn.commit()
+        b = self._get().json()
+        fila = self._row(b, "AAPL")
+        agrupado = fila["pnl_usd"] / fila["invested_usd"] * 100    # 50/250 = 20%
+        s = self._spread(b, "AAPL")
+        self.assertLessEqual(s["min_pct"], agrupado)
+        self.assertGreaterEqual(s["max_pct"], agrupado)
+
+    def test_un_solo_cliente_no_tiene_dispersion(self):
+        self._broker(self.ana, "Schwab", "USD")
+        self._pos(self.ana, "Schwab", "AAPL", 1, 100)
+        self._price("AAPL", 120)
+        self.conn.commit()
+        self.assertIsNone(self._spread(self._get().json(), "AAPL"))
+
+    def test_lo_cerrado_y_la_renta_entran_en_el_retorno_de_cada_cliente(self):
+        # Si el rango mirara solo lo abierto, podría quedar afuera del
+        # agrupado (que sí suma las tres patas).
+        self._broker(self.ana, "Schwab", "USD")
+        self._broker(self.beto, "Schwab", "USD")
+        self._pos(self.ana, "Schwab", "AAPL", 1, 100)
+        self._pos(self.beto, "Schwab", "AAPL", 1, 100)
+        self._price("AAPL", 100)
+        self._op(self.beto, "Schwab", "AAPL", "Dividendo", 50.0)
+        self.conn.commit()
+        s = self._spread(self._get().json(), "AAPL")
+        self.assertAlmostEqual(s["min_pct"], 0.0, places=1)     # Ana, sin renta
+        self.assertAlmostEqual(s["max_pct"], 50.0, places=1)    # Beto, con el dividendo
+
+    def test_un_cliente_con_la_tasa_rota_no_entra_en_el_rango(self):
+        # Bono amortizado con mucha renta: su % no es un rendimiento, así que
+        # no puede definir el extremo del rango.
+        self._broker(self.ana, "Balanz", "ARS")
+        self._broker(self.beto, "Balanz", "ARS")
+        self._pos(self.ana, "Balanz", "AL30", 10, 100000, asset_type="BONO")
+        self._pos(self.beto, "Balanz", "AL30", 10, 100000, asset_type="BONO")
+        self._price("AL30.BA", 10000)
+        self._op(self.beto, "Balanz", "AL30", "Cupón", 999999.0)
+        self.conn.commit()
+        s = self._spread(self._get().json(), "AL30")
+        # Beto queda excluido por el guard → un solo cliente medible → sin rango
+        self.assertIsNone(s)
+
+    def test_junta_los_dos_mercados_del_mismo_ticker(self):
+        self._broker(self.ana, "Balanz", "ARS")
+        self._broker(self.beto, "Schwab", "USD")
+        self._pos(self.ana, "Balanz", "AAPL", 10, 100000)   # CEDEAR
+        self._pos(self.beto, "Schwab", "AAPL", 1, 100)      # acción US
+        self._price("AAPL.BA", 20000)
+        self._price("AAPL", 150)
+        self.conn.commit()
+        s = self._spread(self._get().json(), "AAPL")
+        self.assertIsNotNone(s)
+        self.assertEqual(s["clients"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

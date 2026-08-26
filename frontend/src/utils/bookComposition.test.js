@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, toBookCompositionAiParams, DEFAULT_TOP_ASSETS } from './bookComposition.js'
+import { assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, attachSpread, toBookCompositionAiParams, DEFAULT_TOP_ASSETS } from './bookComposition.js'
 import { computeClassBreakdown } from './assetClass.js'
 import { computeSectorBreakdown } from './assetSector.js'
 
@@ -313,5 +313,43 @@ describe('toBookCompositionAiParams — el packet del libro para la IA', () => {
     const p = toBookCompositionAiParams(computeClassBreakdown(rows, []))
     expect(p.clientes).toBeUndefined()
     expect(p.mas_difundidos).toBeUndefined()
+  })
+})
+
+describe('attachSpread — el rango entre clientes al lado del % agrupado', () => {
+  const rows = [
+    { asset: 'AAPL', value_usd: 600, invested_usd: 500, pnl_usd: 100, is_ar_market: false, is_cash: false, clients: 5 },
+    { asset: 'GGAL', value_usd: 400, invested_usd: 380, pnl_usd: 20, is_ar_market: true, is_cash: false, clients: 3 },
+  ]
+  const spread = [
+    { asset: 'AAPL', clients: 5, min_pct: -20.4, max_pct: 38.1 },
+    { asset: 'GGAL', clients: 3, min_pct: 1.2, max_pct: 9.0 },
+  ]
+
+  it('pega el rango a cada activo sin tocar porciones ni porcentajes', () => {
+    const bd = computeClassBreakdown(rows, [], [], [])
+    const out = attachSpread(bd, spread)
+    expect(out.total).toBe(bd.total)
+    expect(out.items.map(i => i.pct)).toEqual(bd.items.map(i => i.pct))
+    const aapl = out.items.flatMap(i => i.assets).find(a => a.asset === 'AAPL')
+    expect(aapl.spread).toEqual(spread[0])
+  })
+
+  it('un activo sin rango queda sin el campo (no un objeto vacío)', () => {
+    const out = attachSpread(computeClassBreakdown(rows, [], [], []), [spread[0]])
+    const ggal = out.items.flatMap(i => i.assets).find(a => a.asset === 'GGAL')
+    expect(ggal.spread).toBeUndefined()
+  })
+
+  it('normaliza el .BA para matchear', () => {
+    const bd = computeClassBreakdown([{ asset: 'AMD.BA', value_usd: 100, invested_usd: 90, pnl_usd: 10, is_ar_market: true, is_cash: false }], [], [], [])
+    const out = attachSpread(bd, [{ asset: 'AMD', clients: 4, min_pct: -3, max_pct: 12 }])
+    expect(out.items.flatMap(i => i.assets)[0].spread.clients).toBe(4)
+  })
+
+  it('sin rangos devuelve el breakdown tal cual', () => {
+    const bd = computeClassBreakdown(rows, [], [], [])
+    expect(attachSpread(bd, [])).toBe(bd)
+    expect(attachSpread(bd, null)).toBe(bd)
   })
 })

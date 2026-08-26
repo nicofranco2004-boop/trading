@@ -27,6 +27,23 @@
 // para cobrar el cupón — el capital ya está contado, por la posición abierta o
 // por el costo de la venta que la cerró. Suma arriba, no abajo.
 
+// ── Cuándo el % deja de ser un rendimiento ────────────────────────────────
+// El % sale de total/costo, y el costo es el que la posición tiene HOY. Eso se
+// rompe cuando la plata se ganó sobre un capital que ya no está: un bono que
+// amortizó casi todo, o una posición vendida en su mayor parte, sigue sumando
+// años de cupones o dividendos contra un costo residual de dos pesos. Medido
+// en el libro demo: GD35 con US$15 de posición y US$1.463 de renta cobrada
+// daba +9.804%. Eso no comunica un rendimiento, comunica que el denominador
+// se evaporó.
+//
+// No hay forma de reconstruir el capital histórico desde acá (haría falta el
+// costo de lo amortizado, que no está en `positions`). Así que aplicamos la
+// misma regla que el resto del archivo ya usa para el costo incompleto:
+// cuando el número no se sostiene, mostramos el MONTO y ocultamos la tasa —
+// falta el costo, no el dato. El umbral es una heurística declarada, no una
+// verdad: arriba de 10× el costo (>1000%) ya no hay lectura posible.
+const MAX_PNL_TO_COST = 10
+
 import { normalizeTicker } from './assetClass'
 
 // Operaciones que no son un activo: conversiones de moneda (ARS→USDT). Tienen
@@ -53,6 +70,20 @@ function assetFor(bucket, ticker) {
     bucket.byAsset.set(ticker, { pnl: 0, cost: 0, costIncomplete: false })
   }
   return bucket.byAsset.get(ticker)
+}
+
+/**
+ * ratePct — la tasa, o null cuando no hay tasa que valga.
+ *
+ * Tres motivos para no publicarla, y los tres devuelven null en vez de un
+ * número inventado: no hay costo, el costo está incompleto (alguna venta no
+ * trajo con qué despejarlo), o el costo es tan chico contra el resultado que
+ * el cociente ya no es un rendimiento (ver MAX_PNL_TO_COST arriba).
+ */
+export function ratePct(total, cost, costIncomplete) {
+  if (costIncomplete || !(cost > 0)) return null
+  if (Math.abs(total) > cost * MAX_PNL_TO_COST) return null
+  return (total / cost) * 100
 }
 
 /**
@@ -154,13 +185,13 @@ export function computePnlByKey(positions = [], operations = [], brokers = [], c
   // ── Cierre ───────────────────────────────────────────────────────────────
   for (const b of out.values()) {
     b.total = b.realized + b.unrealized + b.income
-    b.pct = (!b.costIncomplete && b.cost > 0) ? (b.total / b.cost) * 100 : null
+    b.pct = ratePct(b.total, b.cost, b.costIncomplete)
     b.byAsset = [...b.byAsset]
       .map(([asset, v]) => ({
         asset,
         total: v.pnl,
         cost: v.cost,
-        pct: (!v.costIncomplete && v.cost > 0) ? (v.pnl / v.cost) * 100 : null,
+        pct: ratePct(v.pnl, v.cost, v.costIncomplete),
       }))
       .sort((x, y) => y.total - x.total)
   }
@@ -183,6 +214,6 @@ export function mergePnl(computed, extra) {
     total,
     cost,
     costIncomplete: incomplete,
-    pct: (!incomplete && cost > 0) ? (total / cost) * 100 : null,
+    pct: ratePct(total, cost, incomplete),
   }
 }

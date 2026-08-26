@@ -32,11 +32,18 @@ mismos topes de tamaño) y agregándole lo que solo tiene sentido en un libro:
                        Es la otra pregunta del asesor: un activo chico que
                        está en 20 de 25 carteras es una decisión suya, no del
                        mercado. La torta pondera por valor; esto no.
+    mas_dispersos    — dónde más se abren los clientes entre sí. El % de cada
+                       porción es AGRUPADO (Σresultado ÷ Σcosto), que es el
+                       número correcto para el titular pero esconde lo que al
+                       asesor le importa: "+9,8% en AAPL" puede ser un cliente
+                       en −20% y otro en +40%. El libro se ve bien y hay
+                       alguien enojado.
 
 Params esperados (los manda AskAIAbout desde BookComposition.jsx):
     total_usd, slices, unclassified_pct   — igual que distribution
     clientes            — int
     mas_difundidos      — [{a: ticker, c: clientes}]
+    mas_dispersos       — [{a: ticker, c: clientes, min: %, max: %}]
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ from typing import Any, Dict, List
 from .distribution import _build, _num
 
 MAX_DIFUNDIDOS = 6
+MAX_DISPERSOS = 4
 
 
 def _clean_difundidos(raw) -> List[Dict[str, Any]]:
@@ -57,6 +65,26 @@ def _clean_difundidos(raw) -> List[Dict[str, Any]]:
         if not ticker or n is None or n < 2:
             continue
         out.append({"ticker": ticker, "clientes": int(n)})
+    return out
+
+
+def _clean_dispersos(raw) -> List[Dict[str, Any]]:
+    # El tope se aplica DESPUÉS de filtrar: acá el cap es por tamaño del
+    # prompt, y perder una fila válida porque una inválida le ocupó el lugar
+    # sería recortar señal para dejar entrar ruido.
+    out = []
+    for d in (raw or []):
+        if not isinstance(d, dict):
+            continue
+        ticker = str(d.get("a") or d.get("asset") or "")[:24]
+        n = _num(d.get("c"))
+        lo, hi = _num(d.get("min")), _num(d.get("max"))
+        if not ticker or n is None or n < 2 or lo is None or hi is None:
+            continue
+        out.append({"ticker": ticker, "clientes": int(n),
+                    "peor_cliente_pct": round(lo, 1), "mejor_cliente_pct": round(hi, 1)})
+        if len(out) >= MAX_DISPERSOS:
+            break
     return out
 
 
@@ -74,6 +102,10 @@ def _build_book(axis_key: str, axis_label: str, **params) -> Dict[str, Any]:
     difundidos = _clean_difundidos(params.get("mas_difundidos"))
     if difundidos:
         pkt["mas_difundidos"] = difundidos
+
+    dispersos = _clean_dispersos(params.get("mas_dispersos"))
+    if dispersos:
+        pkt["mas_dispersos"] = dispersos
 
     return pkt
 

@@ -35280,8 +35280,32 @@ def _strip_accents(s: str) -> str:
                    if not unicodedata.combining(c))
 
 
-def _advisor_realized_by_asset(conn, ids: list):
-    """Lo CERRADO y la RENTA del libro, agregado por (activo, mercado).
+MAX_PNL_TO_COST = 10   # espejo de assetPnl.js — ver _rate_pct
+
+
+def _rate_pct(total: float, cost: float, incomplete: bool):
+    """La tasa, o None cuando no hay tasa que valga. Espejo de ratePct()
+    (frontend/src/utils/assetPnl.js), MISMA constante.
+
+    Tres motivos para no publicarla: no hay costo, el costo está incompleto
+    (alguna venta no trajo con qué despejarlo), o el costo es tan chico contra
+    el resultado que el cociente dejó de ser un rendimiento — un bono que
+    amortizó casi todo sigue sumando años de cupones contra un costo residual
+    (GD35: US$15 de posición, US$1.463 de renta ⇒ +9.804%).
+    """
+    if incomplete or not cost or cost <= 0:
+        return None
+    if abs(total) > cost * MAX_PNL_TO_COST:
+        return None
+    return (total / cost) * 100
+
+
+def _advisor_realized_raw(conn, ids: list) -> dict:
+    """Lo cerrado y la renta POR CLIENTE: {(uid, ASSET, is_ar): bucket}.
+
+    Es la materia prima de dos cosas: el agregado cross-cliente que consume la
+    torta (_advisor_realized_by_asset) y el rango de retorno entre clientes
+    (_advisor_return_spread). Una sola pasada por `operations`.
 
     Por qué agregado y no crudo: `operations` tiene media de 195 filas por
     usuario y máximo 6.415 — mandar las filas de 500 clientes al navegador es
@@ -35350,7 +35374,7 @@ def _advisor_realized_by_asset(conn, ids: list):
         is_ar = ((atype or "").upper() == "CEDEAR"
                  or r["broker"] in ars_names or r["broker"] in ar_usd_names)
 
-        k = (asset.upper(), bool(is_ar))
+        k = (r["user_id"], asset.upper(), bool(is_ar))
         b = agg.get(k)
         if b is None:
             b = agg[k] = {"asset": asset.upper(), "asset_type": atype,
@@ -35373,8 +35397,31 @@ def _advisor_realized_by_asset(conn, ids: list):
         else:
             b["cost_incomplete"] = True
 
+    return agg
+
+
+def _advisor_realized_by_asset(conn, ids: list, raw: dict = None):
+    """El pliegue cross-cliente de _advisor_realized_raw: una fila por
+    (activo, mercado), que es lo que la torta necesita."""
+    raw = _advisor_realized_raw(conn, ids) if raw is None else raw
+    folded = {}
+    for (_uid, asset, is_ar), b in raw.items():
+        k = (asset, is_ar)
+        f = folded.get(k)
+        if f is None:
+            f = folded[k] = {"asset": asset, "asset_type": b["asset_type"],
+                             "is_ar_market": is_ar, "realized_usd": 0.0,
+                             "income_usd": 0.0, "cost_usd": 0.0,
+                             "cost_incomplete": False}
+        elif b["asset_type"] and not f["asset_type"]:
+            f["asset_type"] = b["asset_type"]
+        f["realized_usd"] += b["realized_usd"]
+        f["income_usd"] += b["income_usd"]
+        f["cost_usd"] += b["cost_usd"]
+        f["cost_incomplete"] = f["cost_incomplete"] or b["cost_incomplete"]
+
     out = []
-    for b in agg.values():
+    for b in folded.values():
         if b["realized_usd"] == 0 and b["income_usd"] == 0:
             continue
         out.append({
@@ -35386,6 +35433,59 @@ def _advisor_realized_by_asset(conn, ids: list):
             "cost_incomplete": b["cost_incomplete"],
         })
     out.sort(key=lambda r: -(abs(r["realized_usd"]) + abs(r["income_usd"])))
+    return out
+
+
+def _advisor_return_spread(valued_rows: list, realized_raw: dict):
+    """El rango de retorno ENTRE CLIENTES para cada activo.
+
+    El % que muestra la torta es AGRUPADO: Σresultado ÷ Σcosto de todo lo que
+    cae en la porción. Es el número correcto para el titular — es el retorno de
+    la plata efectivamente puesta ahí, y es el único que se reconcilia con los
+    montos de la pantalla. Pero en un libro esconde algo que al asesor le
+    importa más: "AAPL +9,8%" puede ser un cliente en −20% y otro en +40%. El
+    libro se ve bien y hay alguien enojado.
+
+    Así que al lado del agrupado va el rango. Se calcula POR CLIENTE con las
+    MISMAS tres patas y el mismo guard de tasa que el agrupado (_rate_pct), si
+    no el rango podría no contener al número que está justo al lado — dos
+    medidas distintas a diez centímetros es el bug clásico de esta app.
+
+    Devuelve [{asset, clients, min_pct, max_pct}] solo para los activos con al
+    menos DOS clientes con retorno medible: con uno no hay dispersión que
+    contar.
+    """
+    per = {}   # (uid, ASSET, is_ar) -> [total, cost, incomplete]
+
+    for vr in valued_rows:
+        k = (vr["client_uid"], (vr["asset"] or "").upper(), bool(vr.get("is_ar_market")))
+        acc = per.setdefault(k, [0.0, 0.0, False])
+        acc[0] += vr["pnl_usd"]
+        acc[1] += vr["invested_usd"]
+
+    for k, b in (realized_raw or {}).items():
+        acc = per.setdefault(k, [0.0, 0.0, False])
+        acc[0] += b["realized_usd"] + b["income_usd"]
+        acc[1] += b["cost_usd"]
+        acc[2] = acc[2] or b["cost_incomplete"]
+
+    # Los dos mercados del mismo ticker se juntan: "de los clientes que tienen
+    # AAPL, el peor está en X y el mejor en Y" sigue siendo cierto, y es cómo
+    # la torta por activo ya consolida.
+    by_asset = {}
+    for (_uid, asset, _is_ar), (total, cost, incomplete) in per.items():
+        pct = _rate_pct(total, cost, incomplete)
+        if pct is None:
+            continue
+        by_asset.setdefault(asset, []).append(pct)
+
+    out = []
+    for asset, pcts in by_asset.items():
+        if len(pcts) < 2:
+            continue
+        out.append({"asset": asset, "clients": len(pcts),
+                    "min_pct": round(min(pcts), 1), "max_pct": round(max(pcts), 1)})
+    out.sort(key=lambda r: -(r["max_pct"] - r["min_pct"]))
     return out
 
 
@@ -35409,7 +35509,7 @@ def advisor_book_composition(uid: int = Depends(get_current_user)):
         ids = _advisor_client_ids(conn, uid)
         empty = {
             "total_usd": 0.0, "clients": 0, "as_of": None, "rows": [],
-            "realized_by_asset": [],
+            "realized_by_asset": [], "return_spread": [],
             "included": {"positions_usd": 0.0, "cash_usd": 0.0,
                          "plazos_fijos_usd": 0.0, "plazos_fijos_count": 0},
             "excluded": {"no_price": 0, "orphan_broker": 0},
@@ -35424,6 +35524,7 @@ def advisor_book_composition(uid: int = Depends(get_current_user)):
         # cubre la primera; sin las otras dos la torta no cierra contra nada.
         stats = {"no_price": 0, "orphan_broker": 0}
         valued, _skipped = _advisor_positions_valued(conn, ids, tc_blue, tc_mep, stats)
+        _realized_raw = _advisor_realized_raw(conn, ids)
         cash_rows, cash_orphan = _advisor_cash_usd(conn, ids, tc_mep)
         stats["orphan_broker"] += cash_orphan
         pf = _advisor_pf_usd(conn, ids, tc_blue)
@@ -35496,7 +35597,11 @@ def advisor_book_composition(uid: int = Depends(get_current_user)):
             # Lo cerrado + la renta, para que la torta muestre RESULTADO y no
             # solo peso. Va aparte de `rows` porque una venta ya no es una
             # posición: el activo puede no estar más en ninguna cartera.
-            "realized_by_asset": _advisor_realized_by_asset(conn, ids),
+            "realized_by_asset": _advisor_realized_by_asset(conn, ids, _realized_raw),
+            # El rango de retorno entre clientes por activo: el % agrupado de
+            # la torta esconde que un cliente puede estar en −20% y otro en
+            # +40% con el mismo papel.
+            "return_spread": _advisor_return_spread(valued, _realized_raw),
             "included": {
                 "positions_usd": round(positions_usd, 2),
                 "cash_usd": round(cash_usd, 2),

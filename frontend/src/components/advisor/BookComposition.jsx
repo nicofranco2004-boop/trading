@@ -34,7 +34,7 @@ import AskAIAbout from '../ai/AskAIAbout'
 import { computeClassBreakdown } from '../../utils/assetClass'
 import { computeSectorBreakdown } from '../../utils/assetSector'
 import {
-  assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps,
+  assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, attachSpread,
   toBookCompositionAiParams, DEFAULT_TOP_ASSETS,
 } from '../../utils/bookComposition'
 import { fmtUsd, fmtArs } from '../../utils/format'
@@ -67,13 +67,23 @@ export default function BookComposition({ data, error = false }) {
   // cupones se leería como si no hubiera rendido nada.
   const ops = useMemo(() => realizedToOps(data?.realized_by_asset), [data])
 
+  // El % de cada porción es AGRUPADO (Σresultado ÷ Σcosto): el retorno de la
+  // plata efectivamente puesta ahí, que es el único que se reconcilia con los
+  // montos de al lado. `attachSpread` le pega el rango entre clientes, que es
+  // lo que el agrupado esconde — "+9,8% en AAPL" puede ser un cliente en −20%
+  // y otro en +40%.
+  const spread = data?.return_spread
   const clase = useMemo(
-    () => computeClassBreakdown(rows || [], [], [pfSlice(included, 'plazo_fijo')].filter(Boolean), ops),
-    [rows, included, ops],
+    () => attachSpread(
+      computeClassBreakdown(rows || [], [], [pfSlice(included, 'plazo_fijo')].filter(Boolean), ops),
+      spread),
+    [rows, included, ops, spread],
   )
   const sector = useMemo(
-    () => computeSectorBreakdown(rows || [], [], [pfSlice(included, 'renta_fija')].filter(Boolean), ops),
-    [rows, included, ops],
+    () => attachSpread(
+      computeSectorBreakdown(rows || [], [], [pfSlice(included, 'renta_fija')].filter(Boolean), ops),
+      spread),
+    [rows, included, ops, spread],
   )
   // Ojo: la torta por activo queda a propósito SIN resultado. El P&L por
   // activo cross-cliente ya lo muestra la sección Estrella de esta misma
@@ -95,8 +105,8 @@ export default function BookComposition({ data, error = false }) {
   // clientes?") y el prompt del libro ya se la describe al modelo con ese
   // sentido.
   const aiOpts = useMemo(
-    () => ({ clients: data?.clients, mostHeld: difundidos }),
-    [data, difundidos],
+    () => ({ clients: data?.clients, mostHeld: difundidos, spread }),
+    [data, difundidos, spread],
   )
   const aiClase = useMemo(() => toBookCompositionAiParams(clase, aiOpts), [clase, aiOpts])
   const aiSector = useMemo(() => toBookCompositionAiParams(sector, aiOpts), [sector, aiOpts])
@@ -157,6 +167,12 @@ export default function BookComposition({ data, error = false }) {
                 Cada posición de cada cliente se clasifica por dónde cotiza y qué
                 instrumento es. Un CEDEAR y la acción del exterior son porciones
                 distintas aunque compartan ticker: no son el mismo riesgo.
+              </p>
+              <p>
+                El rendimiento de cada porción es el de la plata junta: resultado
+                total sobre capital total. Al desplegar un activo verás además
+                cuánto se abren los clientes entre sí — el promedio puede tapar
+                a uno que está en rojo.
               </p>
               <p className="text-ink-3">
                 Incluye el efectivo y los plazos fijos de todas las carteras.
