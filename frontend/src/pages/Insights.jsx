@@ -1518,9 +1518,16 @@ function InsightsDesktop({ _embeddedTab }) {
   // Concentración por broker — pieData ya está calculado arriba.
   const brokerConcentration = computeBrokerConcentration(pieData)
   // Distribución por tipo de activo: combinamos posiciones abiertas + cash.
+  // Spread completo en vez de elegir campos a mano: la versión anterior
+  // enumeraba {asset, asset_type, broker, is_cash, value_usd} y se comía el
+  // `pnl_usd` que aiPositions SÍ trae resuelto (:1448) — sin él, la torta se
+  // quedaba sin la pata de resultado no realizado y el "Resultado" del
+  // desplegable solo aparecía en las clases que tuvieran ventas. El Dashboard
+  // mostraba el número y Métricas no.
+  // Los campos de más son inertes para los consumidores (leen por nombre).
   const positionsForType = [
-    ...aiPositions.map(p => ({ asset: p.asset, asset_type: p.asset_type, broker: p.broker, is_cash: false, value_usd: p.value_usd })),
-    ...aiCash.map(c => ({ asset: c.asset, broker: c.broker, is_cash: true, value_usd: c.value_usd })),
+    ...aiPositions.map(p => ({ ...p, is_cash: false })),
+    ...aiCash.map(c => ({ ...c, is_cash: true })),
   ]
   const assetTypeBreakdown = computeAssetTypeBreakdown(positionsForType, brokers)
   // Los dos ejes de la torta de distribución. MISMOS agregadores que el

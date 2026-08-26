@@ -208,3 +208,49 @@ describe('porciones sintéticas con resultado propio (plazo fijo)', () => {
     expect(items.find(i => i.key === 'plazo_fijo').pnl).toBeNull()
   })
 })
+
+
+describe('regresión: la proyección de la página no puede comerse pnl_usd', () => {
+  // Bug real (Métricas mostraba las tortas sin "Resultado" mientras el Dashboard
+  // sí lo mostraba): Insights armaba su lista de posiciones enumerando campos a
+  // mano y dejaba afuera `pnl_usd`. Sin él NO hay pata de no realizado, así que
+  // el resultado solo aparecía en las clases que además tuvieran ventas — y un
+  // CEDEAR que nunca vendiste no tiene ninguna.
+  const BR = [{ name: 'Balanz', currency: 'ARS' }, { name: 'Schwab', currency: 'USD' }]
+  const cartera = [
+    { asset: 'AAPL', asset_type: 'CEDEAR', broker: 'Balanz', value_usd: 1200, pnl_usd: 200 },
+    { asset: 'NVDA', asset_type: 'CEDEAR', broker: 'Balanz', value_usd: 900, pnl_usd: -100 },
+  ]
+
+  it('con pnl_usd, una clase SIN ventas igual muestra resultado', () => {
+    const { items } = computeClassBreakdown(
+      cartera.map(p => ({ ...p, is_cash: false })), BR, [], [],  // cero operaciones
+    )
+    const cedear = items.find(i => i.key === 'cedear')
+    expect(cedear.pnl).not.toBeNull()
+    expect(cedear.pnl.total).toBe(100)
+    expect(cedear.pnl.unrealized).toBe(100)
+  })
+
+  it('la proyección que enumera campos a mano rompe el resultado', () => {
+    // Reproduce la proyección vieja: mismo set de posiciones, sin pnl_usd.
+    const proyeccionVieja = cartera.map(p => ({
+      asset: p.asset, asset_type: p.asset_type, broker: p.broker,
+      is_cash: false, value_usd: p.value_usd,
+    }))
+    const { items } = computeClassBreakdown(proyeccionVieja, BR, [], [])
+    // El peso sale bien — por eso la torta se veía normal y el bug no cantaba.
+    expect(items.find(i => i.key === 'cedear').value).toBe(2100)
+    // Pero el resultado desaparece.
+    expect(items.find(i => i.key === 'cedear').pnl).toBeNull()
+  })
+
+  it('el peso es idéntico con y sin pnl_usd — el bug es invisible en la torta', () => {
+    const conPnl = computeClassBreakdown(cartera.map(p => ({ ...p, is_cash: false })), BR, [], [])
+    const sinPnl = computeClassBreakdown(
+      cartera.map(({ asset, asset_type, broker, value_usd }) =>
+        ({ asset, asset_type, broker, value_usd, is_cash: false })), BR, [], [])
+    expect(conPnl.items.map(i => [i.key, i.pct]))
+      .toEqual(sinPnl.items.map(i => [i.key, i.pct]))
+  })
+})
