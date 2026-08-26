@@ -327,13 +327,6 @@ class LasTresFuentesTest(CompositionBase):
         self.assertEqual(b["included"]["plazos_fijos_count"], 1)
         self.assertAlmostEqual(b["total_usd"], 1000.0, places=2)
 
-    def test_plazo_fijo_en_pesos_va_al_blue(self):
-        # Espejo de pfUsd() del frontend, que convierte al blue (1250).
-        self._pf(self.ana, 1_250_000, moneda="ARS", tasa=0.0)
-        self.conn.commit()
-        self.assertAlmostEqual(
-            self._get().json()["included"]["plazos_fijos_usd"], 1000.0, places=2)
-
     def test_plazo_fijo_cerrado_no_cuenta(self):
         self._pf(self.ana, 1000, moneda="USD")
         self.conn.execute("UPDATE plazos_fijos SET closed_at = datetime('now')")
@@ -857,6 +850,87 @@ class TickerNormalizadoEnElRangoTest(CompositionBase):
         s = self._spread(self._get().json(), "GGAL")
         self.assertEqual(s["clients"], 2)
         self.assertEqual(s["clients_total"], 2)
+
+
+class PlazosFijosAlMismoDolarTest(CompositionBase):
+    """El PF del libro tiene que valer lo mismo que en el Dashboard del cliente.
+
+    El frontend hace `pfUsd(totals, tcBlue)` y el nombre engaña: el `tcBlue` del
+    CurrencyContext TIENE EL VALOR DEL MEP (cascada mep→ccl→blue), y está
+    escrito así en su cabecera. Convertir al blue de verdad hacía valer el mismo
+    plazo fijo ~25% distinto según qué pantalla lo mirara, y mezclaba dos
+    dólares dentro del mismo total.
+    """
+
+    def test_el_plazo_fijo_en_pesos_va_al_MEP(self):
+        # Fixture: MEP 1000, blue 1250. Al MEP son US$1.250; al blue, US$1.000.
+        self._pf(self.ana, 1_250_000, moneda="ARS", tasa=0.0)
+        self.conn.commit()
+        self.assertAlmostEqual(
+            self._get().json()["included"]["plazos_fijos_usd"], 1250.0, places=2)
+
+    def test_el_libro_no_mezcla_dos_dolares(self):
+        # Cash en pesos y plazo fijo en pesos, mismo monto ⇒ mismo valor USD.
+        self._broker(self.ana, "Balanz", "ARS")
+        self._pos(self.ana, "Balanz", "ARS", 0, 1_000_000, is_cash=1)
+        self._pf(self.ana, 1_000_000, moneda="ARS", tasa=0.0)
+        self.conn.commit()
+        inc = self._get().json()["included"]
+        self.assertAlmostEqual(inc["cash_usd"], inc["plazos_fijos_usd"], places=2)
+
+    def test_el_plazo_fijo_en_dolares_no_se_convierte(self):
+        self._pf(self.ana, 1000, moneda="USD", tasa=0.0)
+        self.conn.commit()
+        self.assertAlmostEqual(
+            self._get().json()["included"]["plazos_fijos_usd"], 1000.0, places=2)
+
+
+class ClientesConSoloPlazosFijosTest(CompositionBase):
+    """Su plata entra en el total, así que tienen que entrar en el conteo."""
+
+    def test_un_cliente_PF_only_cuenta_como_cliente(self):
+        self._broker(self.ana, "Schwab", "USD")
+        self._pos(self.ana, "Schwab", "AAPL", 2, 300)
+        self._price("AAPL", 250)
+        self._pf(self.beto, 1_000_000, moneda="ARS", tasa=0.0)   # Beto: solo PF
+        self.conn.commit()
+
+        b = self._get().json()
+        self.assertEqual(b["clients"], 2,
+                         "Beto aporta plata a la torta: no puede faltar en el conteo")
+        self.assertGreater(b["included"]["plazos_fijos_usd"], 0)
+
+    def test_un_libro_entero_en_plazos_fijos_cuenta_a_todos(self):
+        self._pf(self.ana, 1_000_000, moneda="ARS", tasa=0.0)
+        self._pf(self.beto, 2_000_000, moneda="ARS", tasa=0.0)
+        self.conn.commit()
+        b = self._get().json()
+        self.assertEqual(b["clients"], 2)
+        self.assertEqual(b["rows"], [], "sin posiciones ni cash, rows queda vacío")
+        self.assertGreater(b["total_usd"], 0, "pero el patrimonio existe")
+
+
+class CostoDeVentasQueSeCancelanTest(CompositionBase):
+    """Un neto de cero no significa que no hubo capital en juego."""
+
+    def test_la_fila_sobrevive_aunque_lo_realizado_neto_sea_cero(self):
+        # Ana vendió +500 (costo 5.000) y Beto −500 (costo 5.000): neto 0.
+        self._broker(self.ana, "Schwab", "USD")
+        self._broker(self.beto, "Schwab", "USD")
+        self._op(self.ana, "Schwab", "AAPL", "Venta", 500.0, 10.0)
+        self._op(self.beto, "Schwab", "AAPL", "Venta", -500.0, -10.0)
+        self.conn.commit()
+
+        r = self._realized(self._get().json(), "AAPL")
+        self.assertIsNotNone(r, "la fila no se puede tirar: lleva el costo")
+        self.assertEqual(r["realized_usd"], 0.0)
+        self.assertAlmostEqual(r["cost_usd"], 10000.0, places=2)
+
+    def test_sin_costo_y_sin_resultado_la_fila_no_existe(self):
+        self._broker(self.ana, "Schwab", "USD")
+        self._op(self.ana, "Schwab", "AAPL", "Venta", 0.0, 0.0)
+        self.conn.commit()
+        self.assertEqual(self._get().json()["realized_by_asset"], [])
 
 
 if __name__ == "__main__":

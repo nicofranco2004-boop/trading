@@ -168,7 +168,14 @@ export function computePnlByKey(positions = [], operations = [], brokers = [], c
     if (!isRealAssetOp(op)) continue
     // NO `op.pnl_usd` crudo: un cupón en pesos entraría 1250× inflado.
     const pnl = opPnlUsd(op)
-    if (pnl == null || pnl === 0) continue
+    if (pnl == null) continue
+    // `cost_usd` explícito: SOLO lo manda el libro del asesor, que agrega las
+    // ventas en el backend y ya sabe el costo exacto. Una fila con resultado
+    // NETO cero (un cliente vendió +500 y otro −500) igual tiene capital que va
+    // al denominador, así que no se puede saltear por pnl === 0.
+    const explicitCost = Number(op.cost_usd)
+    const hasExplicitCost = Number.isFinite(explicitCost) && explicitCost > 0
+    if (pnl === 0 && !hasExplicitCost) continue
 
     const ticker = normalizeTicker(op.asset)
     // El hint puede venir en la fila: el libro del asesor agrega las
@@ -203,6 +210,13 @@ export function computePnlByKey(positions = [], operations = [], brokers = [], c
 
     b.realized += pnl
     a.pnl += pnl
+    // Con el costo explícito no hace falta despejarlo: es exacto y sobrevive
+    // al caso de resultado neto cero.
+    if (hasExplicitCost) {
+      b.cost += explicitCost
+      a.cost += explicitCost
+      continue
+    }
     // Costo despejado del par (pnl_usd, pnl_pct) — ver cabecera.
     const pct = op.pnl_pct
     if (pct != null && pct !== 0) {

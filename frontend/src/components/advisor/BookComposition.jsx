@@ -111,8 +111,29 @@ export default function BookComposition({ data, error = false }) {
   const aiClase = useMemo(() => toBookCompositionAiParams(clase, aiOpts), [clase, aiOpts])
   const aiSector = useMemo(() => toBookCompositionAiParams(sector, aiOpts), [sector, aiOpts])
 
-  if (error && !data) return null
-  if (!data || !rows?.length) return null
+  // Si falló el fetch y no hay nada que mostrar, avisamos en vez de
+  // desaparecer: la sección que se esfuma se lee como "esto todavía no existe"
+  // o "mi libro no tiene composición", no como un error recuperable con F5.
+  // Mismo criterio que BookEvolution al lado, que ya distingue error de vacío.
+  if (error && !data) {
+    return (
+      <section className="mb-4 bg-bg-1 border border-line/60 rounded-xl p-4">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold text-ink-0 mb-1">
+          <PieChart size={13} strokeWidth={1.75} className="text-data-violet" />
+          En qué está tu libro
+        </h2>
+        <p className="text-[11.5px] text-ink-3">
+          No pudimos calcular la composición recién — es la parte más pesada del
+          libro. Recargá la página para reintentar.
+        </p>
+      </section>
+    )
+  }
+  if (!data) return null
+  // El corte NO es por `rows`: los plazos fijos no viajan ahí (entran por
+  // `included` como porción sintética), así que un libro cuyos clientes solo
+  // cargaron plazos fijos tiene rows vacío y tortas perfectamente válidas.
+  // Cortar por rows le hacía desaparecer la sección entera.
   if (!(clase.total > 0)) return null
 
   const totalTxt = fmt(clase.total)

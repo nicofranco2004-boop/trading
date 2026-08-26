@@ -35236,7 +35236,7 @@ def _advisor_cash_usd(conn, ids: list, tc_mep: float):
     return rows, orphan
 
 
-def _advisor_pf_usd(conn, ids: list, tc_blue: float):
+def _advisor_pf_usd(conn, ids: list, tc_mep: float):
     """Plazos fijos abiertos del libro, valuados a hoy y sumados en USD.
 
     Los PF no son posiciones (viven en su propia tabla) y NO están ni en el
@@ -35246,16 +35246,26 @@ def _advisor_pf_usd(conn, ids: list, tc_blue: float):
     mitad invisible.
 
     Valuación: _pf_value, que ya existe y es el espejo declarado de computePf
-    del frontend — no una segunda implementación. ARS → USD al blue, igual que
-    pfUsd() en el frontend.
+    del frontend — no una segunda implementación.
 
-    Devuelve {'value_usd', 'invested_usd', 'count'}.
+    ⚠️ ARS → USD al MEP, NO al blue. El frontend hace `pfUsd(totals, tcBlue)` y
+    el nombre engaña: `tcBlue` del CurrencyContext TIENE EL VALOR DEL MEP
+    (cascada mep→ccl→blue), y está escrito así en su cabecera —
+    "la variable se sigue llamando tcBlue pero TIENE EL VALOR DEL MEP".
+    Usar el blue de verdad hacía valer el mismo plazo fijo ~25% distinto en el
+    libro que en el Dashboard del cliente, y encima mezclaba dos dólares dentro
+    del mismo total (el cash y los holdings de este endpoint ya iban al MEP).
+
+    Devuelve {'value_usd', 'invested_usd', 'count', 'clients'} — `clients` es el
+    set de client_uid con algún PF abierto: sin eso, un cliente cuyo patrimonio
+    está íntegramente en plazos fijos suma al total y desaparece del conteo.
     """
     if not ids:
-        return {"value_usd": 0.0, "invested_usd": 0.0, "count": 0}
+        return {"value_usd": 0.0, "invested_usd": 0.0, "count": 0, "clients": set()}
     ph = ",".join("?" * len(ids))
     value = invested = 0.0
     n = 0
+    clients = set()
     for r in conn.execute(
         f"""SELECT * FROM plazos_fijos
             WHERE user_id IN ({ph}) AND closed_at IS NULL""", ids,
@@ -35266,11 +35276,13 @@ def _advisor_pf_usd(conn, ids: list, tc_blue: float):
             continue
         cap = float(r["capital"] or 0)
         if (r["moneda"] or "ARS").upper() == "ARS":
-            v, cap = v / tc_blue, cap / tc_blue
+            v, cap = v / tc_mep, cap / tc_mep
         value += v
         invested += cap
         n += 1
-    return {"value_usd": value, "invested_usd": invested, "count": n}
+        clients.add(r["user_id"])
+    return {"value_usd": value, "invested_usd": invested, "count": n,
+            "clients": clients}
 
 
 def _strip_accents(s: str) -> str:
@@ -35433,7 +35445,12 @@ def _advisor_realized_by_asset(conn, ids: list, raw: dict = None):
 
     out = []
     for b in folded.values():
-        if b["realized_usd"] == 0 and b["income_usd"] == 0:
+        # Ojo con el `or`: dos clientes que vendieron +500 y −500 dan un neto de
+        # 0, pero el capital que estuvo en juego SÍ va al denominador del
+        # rendimiento. Tirar la fila perdía esos US$10.000 de costo y la porción
+        # publicaba un % 6× más alto que el real.
+        if (b["realized_usd"] == 0 and b["income_usd"] == 0
+                and not (b["cost_usd"] > 0)):
             continue
         out.append({
             "asset": b["asset"], "asset_type": b["asset_type"],
@@ -35580,7 +35597,7 @@ def advisor_book_composition(uid: int = Depends(get_current_user)):
         _realized_raw = _advisor_realized_raw(conn, ids)
         cash_rows, cash_orphan = _advisor_cash_usd(conn, ids, tc_mep)
         stats["orphan_broker"] += cash_orphan
-        pf = _advisor_pf_usd(conn, ids, tc_blue)
+        pf = _advisor_pf_usd(conn, ids, tc_mep)
 
         # ── Agregación ───────────────────────────────────────────────────
         # Clave = (activo, asset_type, mercado). asset_type y mercado entran en
@@ -35633,7 +35650,12 @@ def advisor_book_composition(uid: int = Depends(get_current_user)):
         total = positions_usd + cash_usd + pf["value_usd"]
 
         # Cuántos clientes aportan algo a la torta (≠ clientes del roster).
-        contributing = {vr["client_uid"] for vr in valued} | {cr["client_uid"] for cr in cash_rows}
+        # Los plazos fijos cuentan: entran como porción sintética en las TRES
+        # tortas, así que un cliente que pasó todo a plazo fijo aporta plata y
+        # no puede faltar en el conteo que va debajo del monto.
+        contributing = ({vr["client_uid"] for vr in valued}
+                        | {cr["client_uid"] for cr in cash_rows}
+                        | pf["clients"])
 
         # as_of: el precio más nuevo que entró en esta valuación. NO es la
         # fecha del snapshot del hero — son dos fuentes distintas y la UI

@@ -222,24 +222,36 @@ describe('realizedToOps — lo cerrado y la renta con forma de operaciones', () 
     realized_usd: 0, income_usd: 0, cost_usd: 0, cost_incomplete: false, ...o,
   })
 
-  it('el % de la venta reconstruye EXACTAMENTE el costo que sumó el backend', () => {
-    // computePnlByKey despeja el costo de (pnl_usd, pnl_pct); si el % no
-    // vuelve al mismo costo, el denominador del rendimiento se corre.
+  it('el costo viaja EXPLÍCITO, sin despejarlo de un porcentaje', () => {
     const [op] = realizedToOps([rr('AAPL', { realized_usd: 200, cost_usd: 800 })])
-    expect(op.pnl_pct).toBeCloseTo(25, 9)
-    expect(op.pnl_usd / (op.pnl_pct / 100)).toBeCloseTo(800, 6)
+    expect(op.pnl_usd).toBe(200)
+    expect(op.cost_usd).toBe(800)
   })
 
-  it('con el costo incompleto manda el % en null, no un número inventado', () => {
+  it('con el costo incompleto no manda costo: la tasa se oculta, no se inventa', () => {
     const [op] = realizedToOps([rr('AAPL', { realized_usd: 200, cost_usd: 0, cost_incomplete: true })])
-    expect(op.pnl_pct).toBeNull()
+    expect(op.cost_usd).toBeUndefined()
   })
 
   it('separa la venta de la renta en dos filas', () => {
     const ops = realizedToOps([rr('AL30', { realized_usd: 50, cost_usd: 500, income_usd: 120 })])
     expect(ops).toHaveLength(2)
     expect(ops.map(o => o.op_type)).toEqual(['Venta', 'Dividendo'])
-    expect(ops[1].pnl_pct).toBeNull()   // la renta no aporta costo
+    expect(ops[1].cost_usd).toBeUndefined()   // la renta no aporta costo
+  })
+
+  it('el resultado NETO cero igual manda su costo al denominador', () => {
+    // Un cliente vendió +500 y otro −500: el neto es 0, pero los US$10.000 que
+    // estuvieron en juego van al denominador igual. Antes la fila no emitía
+    // ninguna operación y la porción publicaba un % 6x más alto que el real.
+    const ops = realizedToOps([rr('AAPL', { realized_usd: 0, cost_usd: 10000 })])
+    expect(ops).toHaveLength(1)
+    expect(ops[0].pnl_usd).toBe(0)
+    expect(ops[0].cost_usd).toBe(10000)
+  })
+
+  it('neto cero SIN costo confiable no emite nada', () => {
+    expect(realizedToOps([rr('AAPL', { realized_usd: 0, cost_usd: 10000, cost_incomplete: true })])).toEqual([])
   })
 
   it('no emite filas para montos en cero', () => {
@@ -501,5 +513,22 @@ describe('el rango parcial viaja a la IA', () => {
       spread: [{ asset: 'GD35', clients: 3, clients_total: 3, min_pct: 5, max_pct: 9 }],
     })
     expect(p.mas_dispersos[0].ct).toBeUndefined()
+  })
+})
+
+describe('el denominador con ventas que se cancelan', () => {
+  it('la porción no infla su rendimiento cuando lo realizado neto es cero', () => {
+    // AAPL abierto: valor 2.200 sobre costo 2.000 (+200). Además dos clientes
+    // vendieron +500 y −500 sobre US$10.000 de costo.
+    // Correcto: 200 / (2.000 + 10.000) = +1,7%. Antes daba +10,0%.
+    const rows = [{ asset: 'AAPL', asset_type: null, is_ar_market: false, is_cash: false, value_usd: 2200, invested_usd: 2000, pnl_usd: 200, clients: 2 }]
+    const ops = realizedToOps([
+      { asset: 'AAPL', asset_type: null, is_ar_market: false, realized_usd: 0, income_usd: 0, cost_usd: 10000, cost_incomplete: false },
+    ])
+    const { items } = computeClassBreakdown(rows, [], [], ops)
+    const us = items.find(i => i.key === 'accion_us')
+    expect(us.pnl.total).toBe(200)
+    expect(us.pnl.cost).toBe(12000)
+    expect(us.pnl.pct).toBeCloseTo(200 / 12000 * 100, 6)
   })
 })

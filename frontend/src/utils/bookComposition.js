@@ -203,16 +203,13 @@ export function pfSlice(included, key, label = null, color = null) {
  * que el resultado por porción del asesor salga del MISMO motor que el del
  * cliente en su Dashboard.
  *
- * ── El % de la venta ──────────────────────────────────────────────────────
- * computePnlByKey despeja el costo de cada venta del par (pnl_usd, pnl_pct) —
- * no de `cost_basis_consumed`, que está 100% NULL en las filas reales, ni de
- * `entry_price × quantity`, que está en moneda nativa y tiene un bug abierto
- * de monedas mezcladas en la misma fila. Así que le devolvemos el `pnl_pct`
- * que reconstruye EXACTAMENTE el `cost_usd` que el backend ya sumó.
- *
- * Si al backend le faltó el costo de alguna venta (`cost_incomplete`),
- * mandamos el % en null: el monto sigue siendo válido, la tasa no, y
- * computePnlByKey la oculta en vez de publicar una inflada.
+ * ── El costo de la venta ──────────────────────────────────────────────────
+ * Para retail, computePnlByKey despeja el costo del par (pnl_usd, pnl_pct):
+ * `cost_basis_consumed` está 100% NULL en las filas reales y
+ * `entry_price × quantity` está en moneda nativa con un bug abierto de monedas
+ * mezcladas. Pero el libro del asesor agrega las ventas en el BACKEND, así que
+ * ahí el costo ya está sumado y viaja explícito en `cost_usd` — sin despejar
+ * nada.
  */
 export function realizedToOps(rows = []) {
   const ops = []
@@ -224,15 +221,21 @@ export function realizedToOps(rows = []) {
       asset_type: r.asset_type || null,
       is_ar_market: r.is_ar_market,
     }
-    if (r.realized_usd) {
-      const pct = (!r.cost_incomplete && r.cost_usd > 0)
-        ? (r.realized_usd / r.cost_usd) * 100
-        : null
-      ops.push({ ...base, op_type: 'Venta', pnl_usd: r.realized_usd, pnl_pct: pct })
+    // El costo va EXPLÍCITO, no despejado de un pnl_pct reconstruido. Además de
+    // ser exacto, es lo único que sobrevive al caso de resultado neto cero: dos
+    // clientes que vendieron +500 y −500 dan un neto de 0, y ese capital tiene
+    // que entrar igual al denominador. Si al backend le faltó el costo de
+    // alguna venta (`cost_incomplete`), no se manda: computePnlByKey marca la
+    // porción como incompleta y oculta la tasa en vez de publicar una inflada.
+    const cost = (!r.cost_incomplete && r.cost_usd > 0) ? r.cost_usd : null
+    if (r.realized_usd || cost) {
+      const op = { ...base, op_type: 'Venta', pnl_usd: r.realized_usd || 0 }
+      if (cost) op.cost_usd = cost
+      ops.push(op)
     }
     if (r.income_usd) {
       // La renta no aporta costo al denominador (ver la cabecera de assetPnl).
-      ops.push({ ...base, op_type: 'Dividendo', pnl_usd: r.income_usd, pnl_pct: null })
+      ops.push({ ...base, op_type: 'Dividendo', pnl_usd: r.income_usd })
     }
   }
   return ops
