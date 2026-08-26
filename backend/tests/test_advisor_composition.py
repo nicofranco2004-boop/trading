@@ -606,7 +606,12 @@ class DispersionEntreClientesTest(CompositionBase):
         # Beto queda excluido por el guard → un solo cliente medible → sin rango
         self.assertIsNone(s)
 
-    def test_junta_los_dos_mercados_del_mismo_ticker(self):
+    def test_los_dos_mercados_del_mismo_ticker_NO_se_mezclan(self):
+        # El CEDEAR de AAPL y la acción de AAPL caen en porciones DISTINTAS de
+        # la torta por tipo, cada una con su propio %. Un rango que juntara los
+        # dos describiría una población que no es la de la porción donde se
+        # muestra — medido en el libro demo, la fila de NU en "Acciones US"
+        # decía +6,8% con un rango que era el de los dos mercados juntos.
         self._broker(self.ana, "Balanz", "ARS")
         self._broker(self.beto, "Schwab", "USD")
         self._pos(self.ana, "Balanz", "AAPL", 10, 100000)   # CEDEAR
@@ -614,9 +619,36 @@ class DispersionEntreClientesTest(CompositionBase):
         self._price("AAPL.BA", 20000)
         self._price("AAPL", 150)
         self.conn.commit()
-        s = self._spread(self._get().json(), "AAPL")
-        self.assertIsNotNone(s)
-        self.assertEqual(s["clients"], 2)
+
+        # Un cliente por mercado ⇒ ningún mercado tiene dispersión que contar.
+        filas = [r for r in self._get().json()["return_spread"] if r["asset"] == "AAPL"]
+        self.assertEqual(filas, [])
+
+    def test_cada_mercado_lleva_su_propio_rango(self):
+        cara = self._user("cara2@rendi.test")
+        dani = self._user("dani@rendi.test")
+        self._link(self.asesor, cara)
+        self._link(self.asesor, dani)
+        # Dos clientes en el CEDEAR, dos en la acción del exterior.
+        for u in (self.ana, self.beto):
+            self._broker(u, "Balanz", "ARS")
+            self._pos(u, "Balanz", "AAPL", 10, 100000)
+        for u in (cara, dani):
+            self._broker(u, "Schwab", "USD")
+            self._pos(u, "Schwab", "AAPL", 1, 100)
+        self._price("AAPL.BA", 20000)
+        self._price("AAPL", 150)
+        self.conn.commit()
+
+        filas = {r["is_ar_market"]: r for r in self._get().json()["return_spread"]
+                 if r["asset"] == "AAPL"}
+        self.assertEqual(set(filas), {True, False}, "un rango por mercado")
+        self.assertEqual(filas[True]["clients"], 2)
+        self.assertEqual(filas[False]["clients"], 2)
+        # El CEDEAR va +100% (200.000 ARS al MEP 1000 = US$200 sobre US$100) y
+        # la acción +50%: rangos distintos, no uno solo de +50% a +100%.
+        self.assertAlmostEqual(filas[True]["min_pct"], 100.0, places=1)
+        self.assertAlmostEqual(filas[False]["min_pct"], 50.0, places=1)
 
 
 class MonedaNativaDeLasCobranzasTest(CompositionBase):
@@ -693,6 +725,138 @@ class MonedaNativaDeLasCobranzasTest(CompositionBase):
         for op in realized_pnl._NATIVE_CCY_OPS:
             self.assertIn("'" + op + "'", txt,
                           "assetPnl.js no cubre " + op + " en NATIVE_CCY_OPS")
+
+
+class RangoQueNoContieneAlAgrupadoTest(CompositionBase):
+    """El caso que rompía la invariante que el docstring prometía.
+
+    El agrupado (Σtotal/Σcost) es un promedio ponderado de los retornos
+    individuales, así que SIEMPRE cae entre el mínimo y el máximo... de los
+    clientes que entraron en la cuenta. Un cliente cuya tasa no es publicable
+    (denominador evaporado) quedaba AFUERA del rango pero su plata seguía en el
+    promedio: la pantalla mostraba "+18,3%" arriba y "de +5,0% a +5,0%" abajo.
+
+    Ahora viajan los dos conteos y la UI escribe "2 de 3 carteras".
+    """
+
+    def _spread(self, body, asset):
+        return next((r for r in body["return_spread"] if r["asset"] == asset), None)
+
+    def test_el_rango_avisa_cuando_no_cubre_a_todos(self):
+        # Ana: GD35 con el denominador evaporado (poca posición, mucha renta).
+        # Beto y Caro: medibles y parecidos. Caro se crea acá y no en el
+        # fixture para no cambiarle el roster a los otros tests.
+        cara = self._user("cara@rendi.test")
+        self._link(self.asesor, cara)
+        for u in (self.ana, self.beto, cara):
+            self._broker(u, "Balanz", "ARS")
+            self._pos(u, "Balanz", "GD35", 10, 100000, asset_type="BONO")
+        self._price("GD35.BA", 10000)
+        self._op(self.ana, "Balanz", "GD35", "Cupón", 999999.0)
+        self.conn.commit()
+
+        s = self._spread(self._get().json(), "GD35")
+        self.assertIsNotNone(s, "con dos clientes medibles tiene que haber rango")
+        self.assertEqual(s["clients"], 2, "Ana no es medible")
+        self.assertEqual(s["clients_total"], 3, "pero Ana TIENE el activo")
+
+    def test_cuando_todos_son_medibles_los_dos_conteos_coinciden(self):
+        for u in (self.ana, self.beto):
+            self._broker(u, "Schwab", "USD")
+            self._pos(u, "Schwab", "AAPL", 1, 100)
+        self._price("AAPL", 120)
+        self.conn.commit()
+        s = self._spread(self._get().json(), "AAPL")
+        self.assertEqual(s["clients"], s["clients_total"])
+
+
+class UnClienteEsUnClienteTest(CompositionBase):
+    """El mismo papel en dos mercados es UNA exposición, no dos clientes."""
+
+    def _spread(self, body, asset):
+        return next((r for r in body["return_spread"] if r["asset"] == asset), None)
+
+    def test_un_solo_cliente_con_el_ticker_en_dos_mercados_no_genera_rango(self):
+        # Ana es la ÚNICA cliente y tiene AAPL como CEDEAR y como acción US.
+        # Antes el endpoint decía clients:1 en el libro y clients:2 en el rango,
+        # en la MISMA respuesta.
+        padre = self._broker(self.ana, "Balanz", "ARS")
+        self._broker(self.ana, "Schwab", "USD")
+        self._pos(self.ana, "Balanz", "AAPL", 10, 100000)   # CEDEAR, +100%
+        self._pos(self.ana, "Schwab", "AAPL", 1, 100)       # acción US, -20%
+        self._price("AAPL.BA", 20000)
+        self._price("AAPL", 80)
+        self.conn.commit()
+
+        b = self._get().json()
+        self.assertEqual(b["clients"], 1)
+        self.assertIsNone(self._spread(b, "AAPL"),
+                          "un solo cliente no tiene dispersión, aunque tenga dos mercados")
+
+    def test_el_cliente_con_dos_mercados_cuenta_una_vez_en_CADA_uno(self):
+        # Ana tiene AAPL en los dos mercados; Beto solo la acción del exterior.
+        # En el mercado del exterior son DOS clientes (Ana y Beto), no tres.
+        self._broker(self.ana, "Balanz", "ARS")
+        self._broker(self.ana, "Schwab", "USD")
+        self._broker(self.beto, "Schwab", "USD")
+        self._pos(self.ana, "Balanz", "AAPL", 10, 100000)
+        self._pos(self.ana, "Schwab", "AAPL", 1, 100)
+        self._pos(self.beto, "Schwab", "AAPL", 1, 100)
+        self._price("AAPL.BA", 20000)
+        self._price("AAPL", 80)
+        self.conn.commit()
+
+        filas = {r["is_ar_market"]: r for r in self._get().json()["return_spread"]
+                 if r["asset"] == "AAPL"}
+        # Exterior: Ana y Beto, las dos al -20% (mismo costo, mismo precio).
+        self.assertEqual(filas[False]["clients"], 2)
+        self.assertAlmostEqual(filas[False]["min_pct"], -20.0, places=1)
+        self.assertAlmostEqual(filas[False]["max_pct"], -20.0, places=1)
+        # BYMA: solo Ana ⇒ no hay dispersión que contar.
+        self.assertNotIn(True, filas)
+
+
+class TickerNormalizadoEnElRangoTest(CompositionBase):
+    """El sufijo .BA no puede partir el rango en dos filas."""
+
+    def _spread(self, body, asset):
+        return next((r for r in body["return_spread"] if r["asset"] == asset), None)
+
+    def test_GGAL_y_GGAL_BA_son_el_mismo_activo(self):
+        # El sufijo llega por OPERACIONES, no por posiciones: una posición
+        # guardada como "GGAL.BA" el motor la excluye antes (pide GGAL.BA.BA y
+        # no hay precio), pero una fila de `operations` no pasa por ningún
+        # lookup de precio y entra con el símbolo crudo.
+        #
+        # Antes, esas dos filas creaban DOS entradas de rango que el Map del
+        # frontend colapsaba a una — y la segunda le robaba el rango a la
+        # primera, así que un activo mostraba la dispersión de otro.
+        self._broker(self.ana, "Balanz", "ARS")
+        self._broker(self.beto, "Balanz", "ARS")
+        self._pos(self.ana, "Balanz", "GGAL", 100, 100000)
+        self._pos(self.beto, "Balanz", "GGAL", 100, 200000)
+        self._price("GGAL.BA", 2000)
+        self._op(self.ana, "Balanz", "GGAL.BA", "Venta", 50.0, 10.0)
+        self.conn.commit()
+
+        b = self._get().json()
+        filas = [r for r in b["return_spread"] if r["asset"] in ("GGAL", "GGAL.BA")]
+        self.assertEqual(len(filas), 1, "tiene que haber UNA fila, no dos que se pisen")
+        self.assertEqual(filas[0]["asset"], "GGAL")
+        self.assertEqual(filas[0]["clients"], 2)
+
+    def test_la_venta_con_sufijo_suma_al_retorno_del_mismo_cliente(self):
+        # Y no crea un "tercer cliente" fantasma.
+        self._broker(self.ana, "Balanz", "ARS")
+        self._broker(self.beto, "Balanz", "ARS")
+        self._pos(self.ana, "Balanz", "GGAL", 100, 100000)
+        self._pos(self.beto, "Balanz", "GGAL", 100, 100000)
+        self._price("GGAL.BA", 2000)
+        self._op(self.ana, "Balanz", "GGAL.BA", "Venta", 100.0, 20.0)
+        self.conn.commit()
+        s = self._spread(self._get().json(), "GGAL")
+        self.assertEqual(s["clients"], 2)
+        self.assertEqual(s["clients_total"], 2)
 
 
 if __name__ == "__main__":

@@ -81,8 +81,16 @@ def _clean_dispersos(raw) -> List[Dict[str, Any]]:
         lo, hi = _num(d.get("min")), _num(d.get("max"))
         if not ticker or n is None or n < 2 or lo is None or hi is None:
             continue
-        out.append({"ticker": ticker, "clientes": int(n),
-                    "peor_cliente_pct": round(lo, 1), "mejor_cliente_pct": round(hi, 1)})
+        item = {"ticker": ticker, "clientes": int(n),
+                "peor_cliente_pct": round(lo, 1), "mejor_cliente_pct": round(hi, 1)}
+        # El rango puede no cubrir a todos los que tienen el activo: hay
+        # clientes cuya tasa no es publicable (el capital que generó su
+        # resultado ya no está en la posición). Sin este dato el modelo
+        # llamaría "el peor de tus clientes" a un mínimo que deja gente afuera.
+        ct = _num(d.get("ct"))
+        if ct is not None and ct > n:
+            item["clientes_con_el_activo"] = int(ct)
+        out.append(item)
         if len(out) >= MAX_DISPERSOS:
             break
     return out

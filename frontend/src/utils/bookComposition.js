@@ -260,7 +260,14 @@ export function toBookCompositionAiParams(breakdown, { clients, mostHeld, spread
   // un libro: que un promedio sano puede tener a alguien en rojo adentro.
   const dispersos = (spread || [])
     .slice(0, MAX_DISPERSOS)
-    .map(s => ({ a: s.asset, c: s.clients, min: s.min_pct, max: s.max_pct }))
+    .map(s => {
+      const o = { a: s.asset, c: s.clients, min: s.min_pct, max: s.max_pct }
+      // Si el rango no cubre a todos los que tienen el activo, el modelo tiene
+      // que saberlo: si no, describe como "el peor de tus clientes" a un
+      // mínimo que deja gente afuera.
+      if (s.clients_total > s.clients) o.ct = s.clients_total
+      return o
+    })
   if (dispersos.length) params.mas_dispersos = dispersos
   return params
 }
@@ -274,23 +281,71 @@ export function toBookCompositionAiParams(breakdown, { clients, mostHeld, spread
  * adosa después, sobre el resultado ya calculado. Las porciones y los % no se
  * tocan — solo se agrega un campo a cada activo del desglose.
  *
- * La clave es el ticker normalizado, juntando los dos mercados: el backend ya
- * junta AAPL-CEDEAR con AAPL-acción para el rango, porque "de los clientes que
- * tienen AAPL, el peor está en X y el mejor en Y" sigue siendo cierto y es
- * cómo la torta por activo ya consolida.
+ * El rango se elige por (ticker, MERCADO), no por ticker solo: el mismo papel
+ * comprado como CEDEAR y como acción del exterior cae en porciones distintas,
+ * cada una con su propio %, y un rango que juntara los dos describiría una
+ * población que no es la de la porción donde se muestra.
+ *
+ * @param {Object} breakdown   lo que devuelve computeClassBreakdown/Sector
+ * @param {Array}  spreadRows  data.return_spread
+ * @param {Object} opts        { rows, classify } — las filas del endpoint y el
+ *                             MISMO clasificador con el que se armó el
+ *                             breakdown, para resolver el mercado sin adivinar.
  */
-export function attachSpread(breakdown, spreadRows) {
-  const bySpread = new Map(
-    (spreadRows || []).map(s => [normalizeTicker(s.asset), s]),
-  )
-  if (bySpread.size === 0 || !breakdown?.items?.length) return breakdown
+export function attachSpread(breakdown, spreadRows, { rows, classify } = {}) {
+  // Índice por (ticker, mercado). Si dos filas caen en la misma clave se
+  // fusionan en vez de pisarse: los deploys no son atómicos (Vercel y Railway
+  // van por separado) y en la ventana donde este frontend habla con un backend
+  // viejo llegan 'GGAL' y 'GGAL.BA' como filas distintas.
+  const byKey = new Map()
+  for (const sp of spreadRows || []) {
+    const t = normalizeTicker(sp?.asset)
+    if (!t) continue
+    const k = `${t}|${sp.is_ar_market ? 1 : 0}`
+    const prev = byKey.get(k)
+    byKey.set(k, prev ? {
+      ...prev,
+      clients: Math.max(prev.clients || 0, sp.clients || 0),
+      clients_total: Math.max(prev.clients_total || 0, sp.clients_total || 0),
+      min_pct: Math.min(prev.min_pct, sp.min_pct),
+      max_pct: Math.max(prev.max_pct, sp.max_pct),
+    } : sp)
+  }
+  if (byKey.size === 0 || !breakdown?.items?.length) return breakdown
+
+  // Qué MERCADO le corresponde a cada (porción, ticker). No se adivina: se
+  // re-clasifican las filas con el MISMO clasificador que armó las porciones,
+  // así la respuesta es exacta y no una heurística sobre el nombre de la clase.
+  //
+  // Hace falta porque el mismo papel comprado de dos formas cae en porciones
+  // distintas — el CEDEAR de NU en "CEDEARs" y la acción en "Acciones US" —
+  // cada una con su propio %. Pegarle a las dos el rango de los dos mercados
+  // juntos hacía que el rango dejara de contener al número de al lado.
+  const markets = new Map()   // `${porcion}|${ticker}` -> Set(0|1)
+  for (const r of rows || []) {
+    if (!r || !(r.value_usd > 0) || !classify) continue
+    const key = classify(r, [])
+    const t = normalizeTicker(r.asset)
+    if (!key || !t) continue
+    const mk = `${key}|${t}`
+    if (!markets.has(mk)) markets.set(mk, new Set())
+    markets.get(mk).add(r.is_ar_market ? 1 : 0)
+  }
+
   return {
     ...breakdown,
     items: breakdown.items.map(i => (
       i.assets?.length
         ? { ...i, assets: i.assets.map(a => {
-            const s = bySpread.get(normalizeTicker(a.asset))
-            return s ? { ...a, spread: s } : a
+            const t = normalizeTicker(a.asset)
+            const ms = markets.get(`${i.key}|${t}`)
+            // Sin mercado resoluble, o con los DOS adentro de la misma porción
+            // (cripto que vive en un broker AR y en un exchange), no hay un
+            // rango que describa la misma población que el % de arriba. Antes
+            // de mostrar uno que no corresponde, no se muestra ninguno.
+            if (!ms || ms.size !== 1) return a
+            const sp = byKey.get(`${t}|${[...ms][0]}`)
+            return sp ? { ...a, spread: sp } : a
           }) }
         : i
     )),

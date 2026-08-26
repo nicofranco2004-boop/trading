@@ -324,10 +324,22 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
               // El % de arriba es AGRUPADO: la plata de todas las carteras
               // junta. Este rango dice cuánto se abren los clientes por
               // adentro — un +9,8% promedio puede ser alguien en −20%. Sale
-              // del mismo cálculo de tres patas que el agrupado, así que el
-              // rango siempre lo contiene.
-              <div className="text-[10px] text-ink-3 tabular pl-0.5 -mt-0.5">
-                {d.spread.clients} carteras · de{' '}
+              // del mismo cálculo de tres patas que el agrupado.
+              //
+              // "N de M carteras": cuando difieren, hay clientes cuya tasa no
+              // es publicable (el capital que generó su resultado ya no está
+              // en la posición) y que por eso NO están en el rango — pero su
+              // plata SÍ está en el % de arriba. Sin ese rótulo los dos
+              // números se contradicen sin explicación.
+              <div
+                className="text-[10px] text-ink-3 tabular pl-0.5 -mt-0.5"
+                title={d.spread.clients_total > d.spread.clients
+                  ? `De ${d.spread.clients_total} carteras con este activo, ${d.spread.clients_total - d.spread.clients} no tienen un rendimiento medible y quedan fuera del rango. El porcentaje de arriba sí las incluye.`
+                  : undefined}
+              >
+                {d.spread.clients_total > d.spread.clients
+                  ? `${d.spread.clients} de ${d.spread.clients_total} carteras`
+                  : `${d.spread.clients} carteras`} · de{' '}
                 <span className={toneOf(d.spread.min_pct)}>
                   {signed(d.spread.min_pct)}{Math.abs(d.spread.min_pct).toFixed(1)}%
                 </span>

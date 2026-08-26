@@ -35447,6 +35447,18 @@ def _advisor_realized_by_asset(conn, ids: list, raw: dict = None):
     return out
 
 
+def _norm_ticker(asset) -> str:
+    """'amd.ba' -> 'AMD'. Espejo de normalizeTicker (utils/assetClass.js).
+
+    Rendi guarda el activo SIN sufijo de mercado, pero no todos los
+    importadores respetan la convención. El frontend normaliza antes de
+    matchear, así que si acá agrupamos por el símbolo crudo el mismo papel sale
+    en dos filas y una le pisa el rango a la otra en el Map del cliente.
+    """
+    t = str(asset or "").upper().strip()
+    return t[:-3] if t.endswith(".BA") else t
+
+
 def _advisor_return_spread(valued_rows: list, realized_raw: dict):
     """El rango de retorno ENTRE CLIENTES para cada activo.
 
@@ -35458,43 +35470,73 @@ def _advisor_return_spread(valued_rows: list, realized_raw: dict):
     libro se ve bien y hay alguien enojado.
 
     Así que al lado del agrupado va el rango. Se calcula POR CLIENTE con las
-    MISMAS tres patas y el mismo guard de tasa que el agrupado (_rate_pct), si
-    no el rango podría no contener al número que está justo al lado — dos
-    medidas distintas a diez centímetros es el bug clásico de esta app.
+    MISMAS tres patas y el mismo guard de tasa que el agrupado (_rate_pct).
 
-    Devuelve [{asset, clients, min_pct, max_pct}] solo para los activos con al
-    menos DOS clientes con retorno medible: con uno no hay dispersión que
-    contar.
+    ⚠️ El rango contiene al agrupado SOLO si `clients == clients_total`. El
+    agrupado es Σtotal/Σcost, o sea un promedio ponderado de los retornos
+    individuales, y un promedio ponderado siempre cae entre el mínimo y el
+    máximo... de los clientes que entraron en la cuenta. Un cliente cuya tasa
+    no es publicable (denominador evaporado) queda AFUERA del rango pero su
+    plata sigue en el promedio, y entonces los dos números se separan: el caso
+    GD35 daba "+18,3%" arriba y "de +5,0% a +5,0%" abajo. Por eso viajan los
+    dos conteos y la UI escribe "2 de 3 carteras" cuando difieren.
+
+    ⚠️ El rango es POR MERCADO, no por ticker. El mismo papel comprado como
+    CEDEAR y como acción del exterior cae en porciones DISTINTAS de la torta
+    por tipo (una en "CEDEARs", otra en "Acciones US"), cada una con su propio
+    %. Un rango que juntara los dos mercados describiría una población que no
+    es la de la porción donde se muestra, y ahí el rango vuelve a no contener
+    al número de al lado — medido en el libro demo: la fila de NU en "Acciones
+    US" decía +6,8% con un rango de +14,8% a +41,5%, que era el de los dos
+    mercados juntos.
+
+    Devuelve [{asset, is_ar_market, clients, clients_total, min_pct, max_pct}]
+    solo para los pares (activo, mercado) con al menos DOS clientes con retorno
+    medible: con uno no hay dispersión que contar.
     """
-    per = {}   # (uid, ASSET, is_ar) -> [total, cost, incomplete]
+    # Clave: (cliente, TICKER NORMALIZADO). Los dos mercados del mismo papel se
+    # suman ANTES de sacar el porcentaje, no después. Un cliente que tiene AAPL
+    # como CEDEAR y como acción del exterior es UN cliente con una exposición a
+    # Apple, no dos: agrupando después, ese cliente aparecía dos veces en el
+    # rango y el propio guard de "menos de dos clientes no es dispersión" no lo
+    # frenaba (el libro decía clients:1 y el rango clients:2, en la misma
+    # respuesta).
+    per = {}   # (uid, TICKER, is_ar) -> [total, cost, incomplete]
 
     for vr in valued_rows:
-        k = (vr["client_uid"], (vr["asset"] or "").upper(), bool(vr.get("is_ar_market")))
+        k = (vr["client_uid"], _norm_ticker(vr["asset"]), bool(vr.get("is_ar_market")))
         acc = per.setdefault(k, [0.0, 0.0, False])
         acc[0] += vr["pnl_usd"]
         acc[1] += vr["invested_usd"]
 
-    for k, b in (realized_raw or {}).items():
+    for (uid, asset, is_ar), b in (realized_raw or {}).items():
+        k = (uid, _norm_ticker(asset), bool(is_ar))
         acc = per.setdefault(k, [0.0, 0.0, False])
         acc[0] += b["realized_usd"] + b["income_usd"]
         acc[1] += b["cost_usd"]
         acc[2] = acc[2] or b["cost_incomplete"]
 
-    # Los dos mercados del mismo ticker se juntan: "de los clientes que tienen
-    # AAPL, el peor está en X y el mejor en Y" sigue siendo cierto, y es cómo
-    # la torta por activo ya consolida.
+    # `clients` cuenta a los MEDIBLES; `clients_total`, a todos los que tienen
+    # el activo. Cuando difieren, el rango NO cubre a todo el mundo y la UI lo
+    # dice ("2 de 3 carteras"): el % que está justo arriba sí incluye al que
+    # falta, así que sin ese rótulo los dos números se contradicen sin
+    # explicación. Es exactamente el caso GD35 — un cliente con el denominador
+    # evaporado queda afuera del rango pero su plata sigue en el promedio.
     by_asset = {}
-    for (_uid, asset, _is_ar), (total, cost, incomplete) in per.items():
+    for (_uid, asset, is_ar), (total, cost, incomplete) in per.items():
+        d = by_asset.setdefault((asset, is_ar), {"pcts": [], "total": 0})
+        d["total"] += 1
         pct = _rate_pct(total, cost, incomplete)
-        if pct is None:
-            continue
-        by_asset.setdefault(asset, []).append(pct)
+        if pct is not None:
+            d["pcts"].append(pct)
 
     out = []
-    for asset, pcts in by_asset.items():
+    for (asset, is_ar), d in by_asset.items():
+        pcts = d["pcts"]
         if len(pcts) < 2:
             continue
-        out.append({"asset": asset, "clients": len(pcts),
+        out.append({"asset": asset, "is_ar_market": is_ar,
+                    "clients": len(pcts), "clients_total": d["total"],
                     "min_pct": round(min(pcts), 1), "max_pct": round(max(pcts), 1)})
     out.sort(key=lambda r: -(r["max_pct"] - r["min_pct"]))
     return out

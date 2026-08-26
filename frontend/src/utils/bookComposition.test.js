@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, attachSpread, toBookCompositionAiParams, DEFAULT_TOP_ASSETS } from './bookComposition.js'
-import { computeClassBreakdown } from './assetClass.js'
+import { computeClassBreakdown, classifyAsset } from './assetClass.js'
 import { opPnlUsd } from './assetPnl.js'
 import { computeSectorBreakdown } from './assetSector.js'
 
@@ -323,13 +323,14 @@ describe('attachSpread — el rango entre clientes al lado del % agrupado', () =
     { asset: 'GGAL', value_usd: 400, invested_usd: 380, pnl_usd: 20, is_ar_market: true, is_cash: false, clients: 3 },
   ]
   const spread = [
-    { asset: 'AAPL', clients: 5, min_pct: -20.4, max_pct: 38.1 },
-    { asset: 'GGAL', clients: 3, min_pct: 1.2, max_pct: 9.0 },
+    { asset: 'AAPL', is_ar_market: false, clients: 5, clients_total: 5, min_pct: -20.4, max_pct: 38.1 },
+    { asset: 'GGAL', is_ar_market: true, clients: 3, clients_total: 3, min_pct: 1.2, max_pct: 9.0 },
   ]
+  const opts = { rows, classify: classifyAsset }
 
   it('pega el rango a cada activo sin tocar porciones ni porcentajes', () => {
     const bd = computeClassBreakdown(rows, [], [], [])
-    const out = attachSpread(bd, spread)
+    const out = attachSpread(bd, spread, opts)
     expect(out.total).toBe(bd.total)
     expect(out.items.map(i => i.pct)).toEqual(bd.items.map(i => i.pct))
     const aapl = out.items.flatMap(i => i.assets).find(a => a.asset === 'AAPL')
@@ -337,21 +338,74 @@ describe('attachSpread — el rango entre clientes al lado del % agrupado', () =
   })
 
   it('un activo sin rango queda sin el campo (no un objeto vacío)', () => {
-    const out = attachSpread(computeClassBreakdown(rows, [], [], []), [spread[0]])
+    const out = attachSpread(computeClassBreakdown(rows, [], [], []), [spread[0]], opts)
     const ggal = out.items.flatMap(i => i.assets).find(a => a.asset === 'GGAL')
     expect(ggal.spread).toBeUndefined()
   })
 
   it('normaliza el .BA para matchear', () => {
-    const bd = computeClassBreakdown([{ asset: 'AMD.BA', value_usd: 100, invested_usd: 90, pnl_usd: 10, is_ar_market: true, is_cash: false }], [], [], [])
-    const out = attachSpread(bd, [{ asset: 'AMD', clients: 4, min_pct: -3, max_pct: 12 }])
+    const r = [{ asset: 'AMD.BA', value_usd: 100, invested_usd: 90, pnl_usd: 10, is_ar_market: true, is_cash: false }]
+    const out = attachSpread(computeClassBreakdown(r, [], [], []),
+      [{ asset: 'AMD', is_ar_market: true, clients: 4, clients_total: 4, min_pct: -3, max_pct: 12 }],
+      { rows: r, classify: classifyAsset })
     expect(out.items.flatMap(i => i.assets)[0].spread.clients).toBe(4)
   })
 
   it('sin rangos devuelve el breakdown tal cual', () => {
     const bd = computeClassBreakdown(rows, [], [], [])
-    expect(attachSpread(bd, [])).toBe(bd)
-    expect(attachSpread(bd, null)).toBe(bd)
+    expect(attachSpread(bd, [], opts)).toBe(bd)
+    expect(attachSpread(bd, null, opts)).toBe(bd)
+  })
+})
+
+// ─── El rango tiene que describir la MISMA población que el % de al lado ───
+// El mismo papel comprado como CEDEAR y como acción del exterior cae en
+// porciones DISTINTAS de la torta por tipo. Medido en el libro demo: la fila
+// de NU en "Acciones US" mostraba +6,8% con un rango de +14,8% a +41,5% — el
+// de los dos mercados juntos, o sea de otra población.
+describe('attachSpread — el mercado tiene que coincidir con la porción', () => {
+  const rows = [
+    { asset: 'NU', value_usd: 300, invested_usd: 200, pnl_usd: 100, is_ar_market: true, is_cash: false, clients: 4 },
+    { asset: 'NU', value_usd: 200, invested_usd: 190, pnl_usd: 10, is_ar_market: false, is_cash: false, clients: 3 },
+  ]
+  const spread = [
+    { asset: 'NU', is_ar_market: true, clients: 4, clients_total: 4, min_pct: 20, max_pct: 80 },
+    { asset: 'NU', is_ar_market: false, clients: 3, clients_total: 3, min_pct: -5, max_pct: 12 },
+  ]
+
+  it('cada porción recibe el rango de SU mercado', () => {
+    const out = attachSpread(computeClassBreakdown(rows, [], [], []), spread,
+      { rows, classify: classifyAsset })
+    const cedear = out.items.find(i => i.key === 'cedear').assets.find(a => a.asset === 'NU')
+    const usa = out.items.find(i => i.key === 'accion_us').assets.find(a => a.asset === 'NU')
+    expect(cedear.spread.min_pct).toBe(20)
+    expect(usa.spread.min_pct).toBe(-5)
+  })
+
+  it('el % agrupado de cada porción cae DENTRO de su rango', () => {
+    const out = attachSpread(computeClassBreakdown(rows, [], [], []), spread,
+      { rows, classify: classifyAsset })
+    for (const i of out.items) {
+      for (const a of (i.assets || [])) {
+        if (!a.spread || a.pnl?.pct == null) continue
+        expect(a.pnl.pct).toBeGreaterThanOrEqual(a.spread.min_pct)
+        expect(a.pnl.pct).toBeLessThanOrEqual(a.spread.max_pct)
+      }
+    }
+  })
+
+  it('si la porción MEZCLA los dos mercados, no se muestra rango', () => {
+    // Cripto en un broker AR y en un exchange caen los dos en 'cripto': ahí el
+    // % suma los dos mercados y ningún rango por mercado lo describe.
+    const cripto = [
+      { asset: 'BTC', value_usd: 300, invested_usd: 200, pnl_usd: 100, is_ar_market: true, is_cash: false },
+      { asset: 'BTC', value_usd: 200, invested_usd: 190, pnl_usd: 10, is_ar_market: false, is_cash: false },
+    ]
+    const out = attachSpread(computeClassBreakdown(cripto, [], [], []), [
+      { asset: 'BTC', is_ar_market: true, clients: 2, clients_total: 2, min_pct: 20, max_pct: 80 },
+      { asset: 'BTC', is_ar_market: false, clients: 2, clients_total: 2, min_pct: -5, max_pct: 12 },
+    ], { rows: cripto, classify: classifyAsset })
+    expect(out.items.find(i => i.key === 'cripto').assets[0].spread).toBeUndefined()
   })
 })
 
@@ -401,5 +455,51 @@ describe('el cupón en pesos da lo mismo por los dos caminos', () => {
       expect(o.currency).toBeUndefined()
       expect(opPnlUsd(o)).toBe(o.pnl_usd)
     }
+  })
+})
+
+describe('attachSpread — fusiona en vez de pisar', () => {
+  const rows = [
+    { asset: 'GGAL', value_usd: 400, invested_usd: 380, pnl_usd: 20, is_ar_market: true, is_cash: false, clients: 3 },
+  ]
+
+  it('dos filas que normalizan al mismo ticker y mercado se combinan, no se pisan', () => {
+    // Ventana de deploy no atómico: un backend viejo manda las dos por separado.
+    const out = attachSpread(computeClassBreakdown(rows, [], [], []), [
+      { asset: 'GGAL', is_ar_market: true, clients: 3, clients_total: 3, min_pct: -20, max_pct: 40 },
+      { asset: 'GGAL.BA', is_ar_market: true, clients: 9, clients_total: 9, min_pct: 1, max_pct: 2 },
+    ], { rows, classify: classifyAsset })
+    const g = out.items.flatMap(i => i.assets).find(a => a.asset === 'GGAL')
+    expect(g.spread.min_pct).toBe(-20)   // el peor de los dos grupos
+    expect(g.spread.max_pct).toBe(40)    // el mejor de los dos grupos
+    expect(g.spread.clients).toBe(9)
+  })
+
+  it('ignora filas sin ticker en vez de romper', () => {
+    const bd = computeClassBreakdown(rows, [], [], [])
+    expect(() => attachSpread(bd, [{ asset: '', clients: 2, min_pct: 1, max_pct: 2 }, null],
+      { rows, classify: classifyAsset })).not.toThrow()
+  })
+})
+
+describe('el rango parcial viaja a la IA', () => {
+  const rows = [
+    { asset: 'GD35', value_usd: 100, invested_usd: 100, pnl_usd: 0, is_ar_market: true, is_cash: false, clients: 3 },
+  ]
+
+  it('cuando no cubre a todos, manda cuántos lo tienen', () => {
+    const p = toBookCompositionAiParams(computeClassBreakdown(rows, [], [], []), {
+      clients: 3,
+      spread: [{ asset: 'GD35', clients: 2, clients_total: 3, min_pct: 5, max_pct: 5 }],
+    })
+    expect(p.mas_dispersos).toEqual([{ a: 'GD35', c: 2, min: 5, max: 5, ct: 3 }])
+  })
+
+  it('cuando cubre a todos no ensucia el packet', () => {
+    const p = toBookCompositionAiParams(computeClassBreakdown(rows, [], [], []), {
+      clients: 3,
+      spread: [{ asset: 'GD35', clients: 3, clients_total: 3, min_pct: 5, max_pct: 9 }],
+    })
+    expect(p.mas_dispersos[0].ct).toBeUndefined()
   })
 })

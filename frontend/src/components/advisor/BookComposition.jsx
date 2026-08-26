@@ -31,8 +31,8 @@ import { PieChart } from 'lucide-react'
 import CompositionDonut, { UnclassifiedNote } from '../CompositionDonut'
 import InfoTooltip from '../InfoTooltip'
 import AskAIAbout from '../ai/AskAIAbout'
-import { computeClassBreakdown } from '../../utils/assetClass'
-import { computeSectorBreakdown } from '../../utils/assetSector'
+import { computeClassBreakdown, classifyAsset } from '../../utils/assetClass'
+import { computeSectorBreakdown, classifySector } from '../../utils/assetSector'
 import {
   assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, attachSpread,
   toBookCompositionAiParams, DEFAULT_TOP_ASSETS,
@@ -76,13 +76,13 @@ export default function BookComposition({ data, error = false }) {
   const clase = useMemo(
     () => attachSpread(
       computeClassBreakdown(rows || [], [], [pfSlice(included, 'plazo_fijo')].filter(Boolean), ops),
-      spread),
+      spread, { rows, classify: classifyAsset }),
     [rows, included, ops, spread],
   )
   const sector = useMemo(
     () => attachSpread(
       computeSectorBreakdown(rows || [], [], [pfSlice(included, 'renta_fija')].filter(Boolean), ops),
-      spread),
+      spread, { rows, classify: classifySector }),
     [rows, included, ops, spread],
   )
   // Ojo: la torta por activo queda a propósito SIN resultado. El P&L por
