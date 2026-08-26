@@ -749,8 +749,42 @@ export function cortarPorTramo(puntos, vacio = { total: null, realized: null }) 
  * @returns {number|null}
  */
 export function totalDePunto(pt) {
-  if (!pt || !pt.apto || typeof pt.index !== 'number') return null
+  if (!pt || typeof pt.index !== 'number') return null
   return +((pt.index - 1) * 100).toFixed(2)
+}
+
+/**
+ * partirMedidoYEstimado
+ *
+ * Separa la serie en dos claves: lo MEDIDO (línea llena) y lo ESTIMADO (línea
+ * punteada). Cada tramo incluye el punto frontera del otro lado, para que las dos
+ * líneas se toquen y no queden dos segmentos flotando.
+ *
+ * ⚠️ POR QUÉ NO ALCANZA CON NO DIBUJARLOS. Antes `totalDePunto` devolvía null para
+ * los no-aptos y el punto desaparecía. Eso estaba bien cuando el índice del
+ * no-apto era el ARRASTRADO del anterior —dibujarlo mostraba un 0,0% que no midió
+ * nada—, pero el backend ahora le calcula su posición real. Esconderlo le borra la
+ * curva al que tiene la cartera mayormente al costo, que es justo a quien hay que
+ * mostrársela. Se dibuja, distinto, y el número publicado sigue saliendo sólo de
+ * lo medido.
+ *
+ * @param {Array} filas con `total` y `estimado`
+ * @param {string} claveMedida  nombre de la serie llena
+ * @param {string} claveEstimada nombre de la serie punteada
+ */
+export function partirMedidoYEstimado(filas, claveMedida, claveEstimada) {
+  const f = filas || []
+  return f.map((row, i) => {
+    const est = !!row.estimado
+    const vecinoDistinto =
+      (f[i - 1] && !!f[i - 1].estimado !== est) || (f[i + 1] && !!f[i + 1].estimado !== est)
+    const v = row[claveMedida] ?? null
+    return {
+      ...row,
+      [claveMedida]: (!est || vecinoDistinto) ? v : null,
+      [claveEstimada]: (est || vecinoDistinto) ? v : null,
+    }
+  })
 }
 
 // ─── La resolución del gráfico sigue a lo MEDIDO ────────────────────────────

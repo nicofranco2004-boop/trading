@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  partirMedidoYEstimado,
   resolucionDeSerie,
   totalDePunto,
   cortarPorTramo,
@@ -615,19 +616,23 @@ describe('totalDePunto', () => {
     expect(totalDePunto({ apto: true, index: 1.2 })).toBeCloseTo(20, 6)
   })
 
-  it('una foto intradía (no apta) NO se dibuja', () => {
-    expect(totalDePunto({ apto: false, index: 1.0 })).toBe(null)
+  it('una foto no apta SÍ se dibuja — con su posición real', () => {
+    // El backend le calcula un índice propio (no el arrastrado), así que
+    // esconderla le borraba la curva al que tiene la cartera al costo.
+    expect(totalDePunto({ apto: false, index: 1.15 })).toBeCloseTo(15, 6)
   })
 
-  it('el arrastre del índice en un no-apto no se publica como 0,00%', () => {
-    // 4 cierres planos + 1 foto del browser: el no-apto trae index=1.0 arrastrado.
-    const curva = [
-      { date: '2026-01-05', apto: true, index: 1.0 },
-      { date: '2026-01-06', apto: true, index: 1.0 },
-      { date: '2026-01-07', apto: false, index: 1.0 },
-      { date: '2026-01-08', apto: true, index: 1.0 },
+  it('la parte no medida va en su propia clave, para dibujarla punteada', () => {
+    const filas = [
+      { k: 'a', estimado: true, T: 0 },
+      { k: 'b', estimado: true, T: 10 },
+      { k: 'c', estimado: false, T: 12 },
+      { k: 'd', estimado: false, T: 15 },
     ]
-    expect(curva.map(totalDePunto)).toEqual([0, 0, null, 0])
+    const r = partirMedidoYEstimado(filas, 'T', 'E')
+    // El punto frontera aparece en las DOS, para que las líneas se toquen.
+    expect(r.map(x => x.T)).toEqual([null, 10, 12, 15])
+    expect(r.map(x => x.E)).toEqual([0, 10, 12, null])
   })
 
   it('null/undefined no rompen', () => {

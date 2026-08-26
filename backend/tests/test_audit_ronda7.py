@@ -65,14 +65,25 @@ class LaCoberturaNoEsUnUmbralTest(_Base):
     TABLA = (0.70, 0.8214, 0.88, 0.94, 0.99)
 
     def test_el_modo_por_defecto_muestra_la_curva_en_TODAS(self):
+        """⚠️ SON DOS PREGUNTAS. La curva se DIBUJA a cualquier cobertura —eso es
+        lo que la ronda 7 vino a ganar— pero el pico y el número publicado sólo
+        salen de puntos que superan el piso de medición: por debajo, el
+        `total_value` de la foto reconstruida ES el costo."""
         for cov in self.TABLA:
             with self.subTest(cobertura=cov):
                 self.conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.uid,))
                 self.recon("2026-01-31", 1000.0, cov, al_costo=("FCI Balanz",))
                 self.recon("2026-02-28", 1100.0, cov, al_costo=("FCI Balanz",))
                 c = twr.curva_indexada(self.conn, self.uid)      # default = certero
-                self.assertIsNotNone(c["twr"], f"cobertura {cov} quedó SIN CURVA")
-                self.assertAlmostEqual(c["twr"], 0.10, places=6)
+                idx = [p["index"] for p in c["curva"]]
+                self.assertEqual(len(idx), 2, f"cobertura {cov} quedó SIN CURVA")
+                self.assertGreater(max(idx), min(idx),
+                                   f"cobertura {cov} dibuja una recta")
+                if cov >= twr.COBERTURA_MEDICION:
+                    self.assertAlmostEqual(c["twr"], 0.10, places=6)
+                else:
+                    self.assertIsNone(c["twr"])
+                    self.assertTrue(all(p["estimado"] for p in c["curva"]))
 
     def test_y_declara_la_cobertura_con_nombres(self):
         self.recon("2026-01-31", 1000.0, 0.94, al_costo=("AL30", "FCI Balanz"))
@@ -85,23 +96,17 @@ class LaCoberturaNoEsUnUmbralTest(_Base):
         self.recon("2026-01-31", 1000.0, 0.55, al_costo=("AL30", "FCI Balanz"))
         self.recon("2026-02-28", 1100.0, 0.55, al_costo=("AL30", "FCI Balanz"))
         c = twr.curva_indexada(self.conn, self.uid)
-        self.assertAlmostEqual(c["twr"], 0.10, places=6)
+        idx = [p["index"] for p in c["curva"]]
+        self.assertGreater(max(idx), min(idx))       # la ve
+        self.assertIsNone(c["drawdown_maximo"])      # pero no fija picos
 
     def test_el_usuario_del_demo_al_82_tambien(self):
         self.recon("2026-01-31", 1000.0, 0.8214)
         self.recon("2026-02-28", 1100.0, 0.8214)
         c = twr.curva_indexada(self.conn, self.uid)
-        self.assertAlmostEqual(c["twr"], 0.10, places=6)
-
-    def test_la_UNICA_frontera_es_que_algo_se_haya_valuado(self):
-        """Cobertura 0 = ni un solo precio consultado = la cadena contable con
-        etiqueta de mercado. No es un umbral de calidad."""
-        self.recon("2026-01-31", 1000.0, 0.0)
-        self.recon("2026-02-28", 1100.0, 0.0)
-        c = twr.curva_indexada(self.conn, self.uid)
-        self.assertIsNone(c["twr"])
-        est = twr.curva_indexada(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
-        self.assertIsNotNone(est["twr"])
+        idx = [p["index"] for p in c["curva"]]
+        self.assertGreater(max(idx), min(idx))
+        self.assertAlmostEqual(idx[-1], 1.10, places=6)   # la forma es la real
 
 
 class ElSilencioNoDesapareceTest(_Base):
@@ -172,3 +177,92 @@ class ElDefaultSigueSiendoSeguroTest(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DosPreguntasNoUnaTest(_Base):
+    """RONDA 8 · el umbral se saca separando dos preguntas, no haciendo todo apto.
+    El mecanismo ya existía en el módulo: es el que usa INTRADIA."""
+
+    def test_la_cartera_al_95_por_ciento_de_costo_no_fija_un_pico(self):
+        """Con cobertura baja el `total_value` de la foto reconstruida ES EL COSTO,
+        así que la fila es contabilidad con etiqueta de mercado. Dejarla medir
+        devolvía el −47,26% del caso 452, con el pico en una fecha que el sistema
+        nunca midió — la queja literal del usuario que originó todo esto."""
+        self.recon("2026-04-30", 139570.56, 0.05)
+        self.cron("2026-05-14", 73604.02)
+        c = twr.curva_indexada(self.conn, self.uid)
+        self.assertIsNone(c["drawdown_maximo"])
+        self.assertIsNone(c["drawdown_maximo_pico"])
+        self.assertIsNone(c["twr"])
+
+    def test_la_frontera_ya_no_es_un_punto_basico(self):
+        """La cobertura se persiste redondeada a 4 decimales: 0,0 no daba curva y
+        0,0001 daba curva COMPLETA con pico y denominador."""
+        for cov in (0.0, 0.0001, 0.05):
+            with self.subTest(cobertura=cov):
+                self.conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.uid,))
+                self.recon("2026-04-30", 139570.56, cov)
+                self.cron("2026-05-14", 73604.02)
+                c = twr.curva_indexada(self.conn, self.uid)
+                self.assertIsNone(c["drawdown_maximo"])
+
+    def test_en_ESTIMADO_la_cadena_contable_tampoco_es_pico(self):
+        """Una cartera PLANA en 100.000 todo junio + UNA fila del import publicaba
+        −44,44% desde un máximo que puso el sistema. Y quedaba la inversión
+        absurda: la foto INTRADIA —posiciones × precio— no medía, y la fabricada
+        al costo sí."""
+        for i in range(29):
+            d = _d.date(2026, 6, 1) + _d.timedelta(days=i)
+            if d.day == 15:
+                continue
+            self.cron(d.isoformat(), 100000.0)
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, source) VALUES (?,'2026-06-15',180000,180000,0,'import')",
+            (self.uid,))
+        self.conn.commit()
+        for modo in (twr.MODO_CERTERO, twr.MODO_ESTIMADO):
+            with self.subTest(modo=modo):
+                c = twr.curva_indexada(self.conn, self.uid, modo=modo)
+                self.assertAlmostEqual(c["drawdown_maximo"], 0.0, places=6)
+                self.assertIsNone(c["drawdown_maximo_pico"])
+
+    def test_la_banda_contable_NO_se_vacia_cuando_entran_a_la_linea(self):
+        """Es la separación visual que existe para que nadie saque un pico de ahí:
+        perderla justo cuando sus filas se meten en la serie es lo peor de los dos
+        mundos."""
+        self.cron("2026-06-01", 100000.0)
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, source) VALUES (?,'2026-06-15',180000,180000,0,'import')",
+            (self.uid,))
+        self.conn.commit()
+        est = twr.curva_indexada(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
+        self.assertEqual(len(est["contable"]), 1)
+
+    def test_ningun_punto_no_apto_sale_con_estimado_False(self):
+        self.recon("2026-04-30", 139570.56, 0.05)
+        self.cron("2026-05-14", 73604.02)
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, source) VALUES (?,'2026-05-20',180000,180000,0,'import')",
+            (self.uid,))
+        self.conn.commit()
+        for modo in (twr.MODO_CERTERO, twr.MODO_ESTIMADO):
+            c = twr.curva_indexada(self.conn, self.uid, modo=modo)
+            malos = [p for p in c["curva"] if not p["apto"] and not p["estimado"]]
+            self.assertEqual(malos, [], f"{modo}: {malos}")
+
+    def test_la_curva_se_VE_aunque_ningun_punto_mida(self):
+        """Lo que la ronda 7 ganó y no se puede perder: sin esto, el que tiene la
+        cartera mayormente al costo veía una recta en 0,0%, que se lee
+        tranquilizador."""
+        for d, v in (("2026-01-31", 1000.0), ("2026-02-28", 1200.0), ("2026-03-31", 1100.0)):
+            self.recon(d, v, 0.55)
+        c = twr.curva_indexada(self.conn, self.uid)
+        idx = [p["index"] for p in c["curva"]]
+        self.assertEqual(len(idx), 3)
+        self.assertGreater(max(idx), min(idx))
+        self.assertAlmostEqual(idx[1], 1.20, places=6)   # la forma REAL
+        self.assertAlmostEqual(idx[2], 1.10, places=6)
+        self.assertIsNone(c["twr"])                      # pero no se publica

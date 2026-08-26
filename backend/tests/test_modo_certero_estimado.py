@@ -60,7 +60,8 @@ class DosModosTest(_Base):
                 self.recon("2026-01-31", 1000.0, cov, al_costo=("FCI Balanz",))
                 self.recon("2026-02-28", 1100.0, cov, al_costo=("FCI Balanz",))
                 c = twr.curva_indexada(self.conn, self.uid, modo=twr.MODO_CERTERO)
-                self.assertAlmostEqual(c["twr"], 0.10, places=6)
+                idx = [p["index"] for p in c["curva"]]
+                self.assertGreater(max(idx), min(idx))     # la curva SE VE
                 self.assertAlmostEqual(c["cobertura_reconstruccion"], cov, places=4)
                 self.assertIn("FCI Balanz", c["instrumentos_al_costo"])
 
@@ -70,7 +71,8 @@ class DosModosTest(_Base):
         self.recon("2026-01-31", 1000.0, 0.55, al_costo=("AL30", "FCI Balanz"))
         self.recon("2026-02-28", 1100.0, 0.55, al_costo=("AL30", "FCI Balanz"))
         c = twr.curva_indexada(self.conn, self.uid, modo=twr.MODO_CERTERO)
-        self.assertAlmostEqual(c["twr"], 0.10, places=6)
+        idx = [p["index"] for p in c["curva"]]
+        self.assertGreater(max(idx), min(idx))
         self.assertEqual(c["instrumentos_al_costo"], ["AL30", "FCI Balanz"])
 
     def test_lo_que_separa_los_modos_es_la_cadena_contable(self):
@@ -88,8 +90,10 @@ class DosModosTest(_Base):
         cert = twr.serie_medible(self.conn, self.uid, modo=twr.MODO_CERTERO)
         est = twr.serie_medible(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertEqual(len(cert["puntos"]), 2)      # la contable NO entra
-        self.assertEqual(len(est["puntos"]), 3)       # en estimado sí
-        self.assertTrue(all(p["apto"] for p in cert["puntos"]))
+        self.assertEqual(len(est["puntos"]), 3)       # en estimado sí, a la LÍNEA
+        # ...pero jamás como pico ni denominador, ni siquiera en estimado.
+        self.assertFalse(any(p["apto"] for p in est["puntos"]
+                             if p["clase"] == twr.SINTETICO_COSTO))
 
     def test_una_reconstruccion_a_precio_real_SI_es_apta_en_certero(self):
         """Un CEDEAR o una acción reconstruidos son exactos: entran en CERTERO."""
@@ -151,8 +155,9 @@ class DosModosTest(_Base):
         # fijaba como correcto que una cobertura del 88% dejara SIN CURVA al modo
         # por defecto. Con 0,88 el usuario tiene que VER su curva y leer qué parte
         # es estimada; esconderla es justo lo que había que eliminar.
-        self.assertIsNotNone(cert["twr"])
-        self.assertIsNotNone(est["twr"])
+        # La curva se ve en los dos; el número, sólo por encima del piso de medición.
+        self.assertTrue(len(cert["curva"]) > 0)
+        self.assertTrue(len(est["curva"]) > 0)
         self.assertAlmostEqual(cert["cobertura_reconstruccion"], 0.88, places=3)
 
 

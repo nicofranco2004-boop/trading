@@ -115,6 +115,16 @@ BORDE_PERIODO = BASE_MERCADO
 #
 # SINTETICO_COSTO fuera del default es lo que impide que vuelva el defecto
 # original (el −45% del caso 452 salía justamente de encadenar esa cadena).
+#
+# ⚠️ Y SON DOS PREGUNTAS, NO UNA — el módulo ya las separa para INTRADIA:
+#     ¿el punto ENTRA A LA LÍNEA?     → sí, para que el usuario vea su curva.
+#     ¿puede ser PICO o DENOMINADOR?  → no, si su valor sale de la contabilidad.
+# Sacar el umbral significaba lo primero. Nunca lo segundo: cuando la cobertura es
+# baja, `total_value` de la foto reconstruida ES EL COSTO (lo que no se pudo
+# precear entra con unrealized 0), así que esa fila es contabilidad con etiqueta
+# de mercado. Dejarla fijar un pico devolvió el −47,26% del caso 452 con el pico en
+# una fecha que el sistema nunca midió.
+COBERTURA_MEDICION = 0.90      # desde acá una reconstrucción puede ser pico/denominador
 
 # Una serie PLANA es peor que un hueco: el hueco se ve, la serie plana pasa
 # todos los guards. Pasa cuando `apply_last_known_prices` completa un símbolo
@@ -804,7 +814,12 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     primera_pos = primera_fecha_con_posiciones(conn, uid)
     # Por SERIE, no fila por fila: la cadencia diaria es lo único que distingue una
     # foto vieja del cron de una del browser, y eso no se ve en una fila sola.
-    # En ESTIMADO entra también la cadena contable, etiquetada.
+    # En ESTIMADO entra también la cadena contable — A LA LÍNEA, con apto=False.
+    # Forzarla a apta hacía que una fila fabricada por el import fijara el pico: una
+    # cartera PLANA en 100.000 todo junio publicaba −44,44% desde un máximo que
+    # puso el sistema. Y quedaba la inversión absurda de que la foto INTRADIA
+    # —posiciones × precio, un valor de mercado real— no midiera y la fabricada al
+    # costo sí.
     if modo == MODO_ESTIMADO:
         aceptar = tuple(set(aceptar) | {SINTETICO_COSTO, INDETERMINADO})
     clases = clasificar_serie(filas, primera_pos)
@@ -816,25 +831,24 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         if c in aceptar:
             _cob = (float(r["mtm_coverage"])
                     if r["mtm_coverage"] is not None else None)
-            # NINGÚN umbral de CALIDAD: una reconstrucción al 55% o al 70% entra
-            # igual y el número lo dice. La única frontera es entre "algo se valuó
-            # a precio real" y "NADA": cobertura 0 significa que no se consultó un
-            # solo precio, o sea la cadena contable con etiqueta de mercado — que
-            # es exactamente el defecto original. Eso no es una reconstrucción
-            # parcial, es una no-reconstrucción.
+            # TODO ENTRA A LA LÍNEA — el usuario ve su curva. Lo que se decide acá
+            # es OTRA cosa: quién puede ser pico y denominador. Mismo contrato que
+            # INTRADIA, que entra pero no mide.
             _apto = c in BASE_MERCADO
-            if _apto and c == RECONSTRUIDO and modo == MODO_CERTERO:
-                _apto = (_cob is not None and _cob > 0)
-            if not _apto and modo == MODO_ESTIMADO and c in (
-                    SINTETICO_COSTO, INDETERMINADO, RECONSTRUIDO):
-                _apto = True
+            if _apto and c == RECONSTRUIDO:
+                # Con cobertura baja el valor de la foto ES el costo: contabilidad
+                # con etiqueta de mercado. Se dibuja, no mide.
+                _apto = (_cob is not None and _cob >= COBERTURA_MEDICION)
             puntos.append({
                 "date": d, "value": float(r["total_value"]),
                 "net_deposited": _nd(r),
                 "clase": c, "apto": _apto, "cobertura": _cob,
                 "al_costo": _instrumentos_al_costo(r),
             })
-        else:
+        # ⚠️ La banda gris NO se vacía cuando esas filas entran a la línea. Es la
+        # separación visual que existe para que nadie saque un pico de ahí; perderla
+        # justo cuando sus filas se meten en la serie es lo peor de los dos mundos.
+        if c not in BASE_MERCADO:
             contable.append({"date": d, "value": float(r["total_value"]), "clase": c})
 
     # Partir donde el silencio es demasiado largo — y donde el flujo DESBORDA el
@@ -974,6 +988,8 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         pico_fecha = None
         dd_max_t, dd_max_fecha_t, dd_max_pico_t = 0.0, None, None
         ancla = None       # último punto APTO: el único que puede ser denominador
+        ancla_dib = None   # último punto CUALQUIERA: sólo para dibujar
+        idx_dib = 1.0
         for i, p in enumerate(tramo):
             # ⚠️ UN PUNTO NO-APTO NO TOCA EL ÍNDICE, NI COMO v0 NI COMO v1.
             #
@@ -994,12 +1010,37 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             else:
                 flow = p["net_deposited"] - ancla["net_deposited"]
                 ret = dietz(ancla["value"], p["value"], flow)
+            # ⚠️ DOS ÍNDICES, PORQUE SON DOS PREGUNTAS.
+            #   `idx_dib` — la FORMA de la historia: encadena TODOS los puntos, así
+            #     el usuario ve su curva aunque ninguno sirva para medir. Sin esto,
+            #     un usuario con la cartera al 55% al costo veía una recta en 0,0%
+            #     — que es peor que no ver nada, porque se lee tranquilizador.
+            #   `idx`     — el número PUBLICADO: avanza sólo de apto a apto, y es el
+            #     único que alimenta pico, drawdown, TWR y CAGR.
+            # El chip declara desde cuándo está medido y con qué cobertura, así que
+            # la línea puede mostrar más historia que la que el número cubre.
+            # Un punto no-apto que arrastra el índice vigente sale dibujado en el
+            # mismo % que el anterior: la línea queda plana justo donde el usuario
+            # necesita ver su historia, y un 0,0% que no midió nada se lee
+            # tranquilizador. Se le calcula una posición desde el último punto
+            # medido —su valor es real, sólo que no confiable para fijar un
+            # máximo— y `idx` NO se toca: el índice publicado sigue avanzando
+            # únicamente de punto apto a punto apto.
+            if ancla_dib is None:
+                idx_dib = 1.0
+            else:
+                _rp = dietz(ancla_dib["value"], p["value"],
+                            p["net_deposited"] - ancla_dib["net_deposited"])
+                if _rp is not None:
+                    idx_dib *= (1.0 + _rp)
+            ancla_dib = p
             if p["apto"]:
                 ancla = p
             if ret is not None:
                 idx *= (1.0 + ret)
                 legs_t += 1
-            punto = {"date": p["date"], "index": round(idx, 6),
+            idx_dibujo = idx_dib
+            punto = {"date": p["date"], "index": round(idx_dibujo, 6),
                      "value": p["value"], "clase": p["clase"],
                      "apto": p["apto"], "ret": ret,
                      # A qué TRAMO pertenece. Sin esto el punto sale con el índice
@@ -1011,10 +1052,12 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                      "tramo": len(tramos_info),
                      "arranque_tramo": i == 0,
                      # `estimado`: este punto se dibuja pero el índice no avanzó en
-                     # él. Es lo que el consumidor necesita para no leerlo como un
-                     # retorno.
-                     "estimado": (ret is None and i > 0) or (not p["apto"])}
+                     # él. TODO punto cuya clase no sea base de mercado sale con
+                     # esta marca — es lo que el frontend usa para dibujarlo
+                     # distinto y no leerlo como un retorno medido.
+                     "estimado": (not p["apto"]) or (ret is None and i > 0)}
             if p["apto"]:
+                # Sólo los aptos mueven el pico, y con el índice REAL.
                 if pico is None or idx > pico:
                     pico, pico_fecha = idx, p["date"]
                 dd = (idx / pico) - 1.0 if pico and pico > 0 else 0.0

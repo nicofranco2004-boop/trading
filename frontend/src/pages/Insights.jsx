@@ -42,6 +42,7 @@ import {
   drawdownFromPerf,
   cortarPorTramo,
   totalDePunto,
+  partirMedidoYEstimado,
   resolucionDeSerie,
   computeDrawdownOnReturns,
   computeBestWorstMonth,
@@ -757,8 +758,10 @@ function InsightsDesktop({ _embeddedTab }) {
         // «Jul '26 · Jul '26 · Jul '26 · … · Ago '26 · Ago '26», nueve repetidas de
         // once. Ningún número está mal, pero es lo primero que se ve.
         labelDia: esHoy ? 'Hoy' : `${pt.date.slice(8, 10)}/${pt.date.slice(5, 7)}`,
-        // Sólo los puntos aptos: ver `totalDePunto` (insightsModel.js).
+        // Todos los puntos se dibujan; los no medidos, punteados. Ver
+        // `totalDePunto` y `partirMedidoYEstimado` (insightsModel.js).
         total: totalDePunto(pt),
+        estimado: !!pt.estimado,
         realized: denom > 0 ? +((rz / denom) * 100).toFixed(2) : 0,
         tramo: pt.tramo,
       })
@@ -1347,7 +1350,7 @@ function InsightsDesktop({ _embeddedTab }) {
     const baseRealized = first.realized ?? 0
     const baseBench = first.benchPct ?? 0
 
-    return withBench.map(s => {
+    const filas = withBench.map(s => {
       const rebaseTotal = s.total != null
         ? +((((100 + s.total) / (100 + baseTotal)) - 1) * 100).toFixed(2) : null
       const rebaseRealized = s.realized != null
@@ -1362,11 +1365,15 @@ function InsightsDesktop({ _embeddedTab }) {
       return {
         label: s.label,
         labelDia: s.labelDia ?? s.label,
+        estimado: !!s.estimado,
         [`${userName} P/L total`]: rebaseTotal,
         [`${userName} P/L realizado`]: rebaseRealized,
         [benchmarkKey]: rebaseBench,
       }
     })
+    // La parte no medida va en su propia clave, para dibujarla punteada.
+    return partirMedidoYEstimado(
+      filas, `${userName} P/L total`, `${userName} estimado`)
   })()
 
   // ── Insight: Mejor / Peor mes ──
@@ -2552,6 +2559,9 @@ function InsightsDesktop({ _embeddedTab }) {
               />
               <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }} />
               <Area type="monotone" dataKey={`${userName} P/L total`} stroke="#21D07A" strokeWidth={2.5} fill="url(#portGrad)" dot={false} activeDot={{ r: 4 }} />
+              {/* Lo NO medido: misma curva, punteada y en un tono apagado. Es lo
+                  que comunica "esta parte es estimada" sin esconderla. */}
+              <Line type="monotone" dataKey={`${userName} estimado`} stroke="#21D07A" strokeOpacity={0.55} strokeWidth={2} strokeDasharray="3 4" dot={false} />
               <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="#E8B14A" strokeWidth={1.5} strokeDasharray="2 5" dot={false} />
               <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#46C6E0' : '#8B7DFF'} strokeWidth={1.75} strokeDasharray="5 5" dot={false} />
             </ComposedChart>

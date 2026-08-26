@@ -100,27 +100,23 @@ class Regresion452Test(_Base):
 
 
 class ClaseYCoberturaTest(_Base):
-    def test_una_reconstruccion_parcial_SI_cuenta_en_certero(self):
-        """No hay umbral de calidad: una reconstrucción al 20% entra igual y el
-        número lo dice. Esconderle la curva al que no llega a un piso es lo que
-        había que eliminar, no endurecerlo."""
+    def test_una_reconstruccion_parcial_ENTRA_pero_no_mide(self):
+        """Las dos preguntas separadas: entra a la línea (el usuario ve su curva)
+        y no puede ser pico ni denominador (con cobertura baja su `total_value`
+        ES el costo). Mismo contrato que INTRADIA."""
         self.pos("2025-01-15")
         self.snap("2026-06-30", 100.0, "mtm_backfill", cov=0.20)
         s = twr.serie_medible(self.conn, self.uid)
         self.assertEqual(len(s["puntos"]), 1)
         self.assertEqual(s["puntos"][0]["clase"], twr.RECONSTRUIDO)
-        self.assertTrue(s["puntos"][0]["apto"])
+        self.assertFalse(s["puntos"][0]["apto"])
         self.assertAlmostEqual(s["puntos"][0]["cobertura"], 0.20, places=3)
 
-    def test_pero_cobertura_CERO_no_es_una_reconstruccion(self):
-        """Cobertura 0 = no se consultó un solo precio = la cadena contable con
-        etiqueta de mercado. Ésa es la frontera, y no es de calidad."""
+    def test_por_encima_del_piso_de_medicion_SI_mide(self):
         self.pos("2025-01-15")
-        self.snap("2026-06-30", 100.0, "mtm_backfill", cov=0.0)
+        self.snap("2026-06-30", 100.0, "mtm_backfill", cov=0.95)
         s = twr.serie_medible(self.conn, self.uid)
-        self.assertFalse(s["puntos"][0]["apto"])
-        est = twr.serie_medible(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
-        self.assertTrue(est["puntos"][0]["apto"])
+        self.assertTrue(s["puntos"][0]["apto"])
 
     def test_reconstruido_sin_cobertura_estampada_no_se_confia(self):
         self.pos("2025-01-15")
