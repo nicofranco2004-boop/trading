@@ -34,6 +34,10 @@ import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, us
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
+import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDonut'
+import { computeClassBreakdown } from '../utils/assetClass'
+import { computeSectorBreakdown } from '../utils/assetSector'
+import { toDistributionAiParams } from '../utils/distributionAi'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
@@ -56,6 +60,7 @@ export default function Dashboard() {
 
 function PersonalDashboard() {
   const [positions, setPositions] = useState([])
+  const [operations, setOperations] = useState([])
   const [monthly, setMonthly] = useState([])
   const [config, setConfig] = useState({ tc_mep: 1415, tc_blue: 1415 })
   const [dolar, setDolar] = useState(null)
@@ -113,15 +118,21 @@ function PersonalDashboard() {
 
   async function loadAll() {
     try {
-      const [pos, mon, cfg, bkrs, dol, snaps] = await Promise.all([
+      const [pos, mon, cfg, bkrs, dol, snaps, ops] = await Promise.all([
         api.get('/positions'),
         api.get('/monthly'),
         api.get('/config'),
         api.get('/brokers'),
         api.get('/dolar').catch(() => null),
         api.get('/snapshots?days=3650').catch(() => []),
+        // Necesario para el rendimiento por porción de las tortas: sin las
+        // ventas y la renta (cupones/dividendos) el % sería el de las
+        // posiciones abiertas nada más, que para renta fija es casi cero.
+        // Si falla, las tortas se degradan a solo-peso en vez de mentir.
+        api.get('/operations').catch(() => []),
       ])
       setPositions(pos)
+      setOperations(ops || [])
       setMonthly(mon)
       setConfig(cfg)
       setBrokers(bkrs)
@@ -346,13 +357,59 @@ function PersonalDashboard() {
       // else → realCost * fForPct (fForPct=1 no-cripto) = realCost, ya en USD.
       const invForPct = isARS && costInUsd(p) ? realCost : isARS ? realCost / tcBlue : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
       const pnlPct = pnlUsd != null && invForPct > 0 ? pnlUsd / invForPct : null
-      return { asset: p.asset, value_usd: valueUsd, pnl_usd: pnlUsd, pnl_pct: pnlPct }
+      return {
+        asset: p.asset, value_usd: valueUsd, pnl_usd: pnlUsd, pnl_pct: pnlPct,
+        // Campos de CLASIFICACIÓN (no de valuación): los consume la torta de
+        // distribución vía assetClass/assetSector. El broker decide si el ticker
+        // es un CEDEAR o la acción US; asset_type es la señal del importador.
+        asset_type: p.asset_type, broker: p.broker, is_cash: p.is_cash,
+      }
     })
     // Cinturón anti-inconsistencia (dev-only): alerta si alguna fila no cierra
     // (value/pnl vs %) o huele a inflado — caza la clase GOOGL/bono automáticamente.
     auditPositions(rows, 'Dashboard.positionsForInsight')
     return rows
   }, [positions, prices, tcBlue, arsBrokerNames, exchangeBrokers, tcCripto, tcCedear])
+
+  // Cash valuado, para la torta de distribución. Va aparte de positionsForInsight
+  // a propósito: esa memo es la ruta auditada (auditPositions) y filtra el cash
+  // por diseño. Pero una torta que omite el efectivo miente — si tenés 40% en
+  // cash, ése es el dato más importante de tu asignación.
+  // FX: pesos → USD por el dólar-MEP (tcCedear), NO por el blue. Espeja la rama
+  // de cash de computeBrokerValue, que ya unificó cash y tenencias al MEP.
+  const cashForComposition = useMemo(() => {
+    return positions.filter(p => p.is_cash).map(p => ({
+      asset: p.asset,
+      broker: p.broker,
+      is_cash: 1,
+      asset_type: p.asset_type,
+      value_usd: arsBrokerNames.has(p.broker)
+        ? (p.invested || 0) / tcCedear
+        : (p.invested || 0),
+    }))
+  }, [positions, arsBrokerNames, tcCedear])
+
+  // ── Distribución: los dos ejes de la torta ────────────────────────────────
+  // Los plazos fijos viven en otra tabla (no son posiciones) pero SÍ son parte
+  // del patrimonio del hero — entran como porción sintética para que la torta
+  // sume el mismo total que el número de arriba.
+  const positionsForComposition = useMemo(
+    () => [...positionsForInsight, ...cashForComposition],
+    [positionsForInsight, cashForComposition],
+  )
+  const classBreakdown = useMemo(
+    () => computeClassBreakdown(positionsForComposition, brokers,
+      pf.valueUsd > 0 ? [{ key: 'plazo_fijo', value: pf.valueUsd, pnl: { total: pf.pnlUsd, cost: pf.investedUsd } }] : [], operations),
+    [positionsForComposition, brokers, pf.valueUsd, operations],
+  )
+  const sectorBreakdown = useMemo(
+    () => computeSectorBreakdown(positionsForComposition, brokers,
+      pf.valueUsd > 0 ? [{ key: 'renta_fija', value: pf.valueUsd, pnl: { total: pf.pnlUsd, cost: pf.investedUsd } }] : [], operations),
+    [positionsForComposition, brokers, pf.valueUsd, operations],
+  )
+  // Los breakdowns siempre vienen en USD (moneda interna de la valuación); el
+  // formateo respeta el toggle global, igual que AssetBreakdownBar.
+  const compFmt = (v) => (currency === 'ARS' ? fmtArs(v * tcBlue) : fmtUsd(v))
 
   const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, positions: positionsForInsight }), [totalValue, netDeposited, positionsForInsight])
 
@@ -1088,12 +1145,12 @@ function PersonalDashboard() {
       </Card>
       </AskAIAbout>
 
-      {/* ── Composición + Top holdings ─────────────────────────────────────── */}
+      {/* ── Distribución de activos + Top holdings ──────────────────────────── */}
       {positionsForInsight.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr] gap-4 mb-8">
           <AskAIAbout
             topic="dashboard.composition"
-            subtitle="Composición de la cartera"
+            subtitle="Distribución de activos"
             rounded={false}
           >
             <AssetBreakdownBar
@@ -1113,6 +1170,75 @@ function PersonalDashboard() {
               currency={currency}
               tcBlue={tcBlue}
             />
+          </AskAIAbout>
+        </div>
+      )}
+
+      {/* ── Distribución por tipo de activo y por sector ─────────────────────
+          Los dos ejes de la misma cartera. La barra de arriba responde "en qué
+          activos estoy"; estas dos responden "en qué clase de instrumento" y "a
+          qué parte de la economía". Incluyen efectivo y plazos fijos, así que
+          suman el patrimonio del hero — a diferencia de la barra, que es solo
+          tenencias.
+          El ✦ usa topics propios (`portfolio.distribution_*`) cuyo packet lo
+          arma el frontend: el corte y el resultado se calculan acá, y
+          recalcularlos en Python daría números distintos a los de la pantalla.
+          Ver la cabecera de backend/ai/builders/distribution.py. */}
+      {classBreakdown.items.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
+          <AskAIAbout
+            topic="portfolio.distribution_type"
+            params={toDistributionAiParams(classBreakdown)}
+            subtitle="Distribución por tipo de activo"
+            rounded={false}
+          >
+          <CompositionDonut
+            title="Distribución por tipo de activo"
+            items={classBreakdown.items}
+            fmt={compFmt}
+            info={
+              <>
+                <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                <p>
+                  Cada posición se clasifica por dónde cotiza y qué instrumento es:
+                  primero el mercado (BYMA o exterior), después el ticker. Por eso
+                  AAPL en un broker argentino es un CEDEAR y en uno del exterior es
+                  la acción.
+                </p>
+                <p className="text-ink-3">
+                  Incluye efectivo y plazos fijos, así que suma tu patrimonio total.
+                </p>
+              </>
+            }
+            footnote={<UnclassifiedNote data={classBreakdown.unclassified} kind="tipo" />}
+          />
+          </AskAIAbout>
+          <AskAIAbout
+            topic="portfolio.distribution_sector"
+            params={toDistributionAiParams(sectorBreakdown)}
+            subtitle="Distribución por sector"
+            rounded={false}
+          >
+          <CompositionDonut
+            title="Distribución por sector"
+            items={sectorBreakdown.items}
+            fmt={compFmt}
+            info={
+              <>
+                <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                <p>
+                  A qué parte de la economía estás expuesto. Un CEDEAR cuenta en el
+                  sector de su empresa subyacente: un CEDEAR de NVDA es exposición a
+                  semiconductores.
+                </p>
+                <p className="text-ink-3">
+                  Bonos, letras, FCI, plazos fijos y efectivo no tienen sector
+                  económico — van a su propia porción.
+                </p>
+              </>
+            }
+            footnote={<UnclassifiedNote data={sectorBreakdown.unclassified} kind="sector" />}
+          />
           </AskAIAbout>
         </div>
       )}
@@ -1222,7 +1348,7 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right' }) {
 }
 
 // ─── Asset breakdown bar ─────────────────────────────────────────────────────
-// Barra horizontal de composición del portfolio por activo. Top 5 + "otros".
+// Barra horizontal de distribución del portfolio por activo. Top 5 + "otros".
 // Más operativa que un pie — densa, leíble, sin ocupar mucho vertical space.
 
 const ASSET_COLORS = ['#21D07A', '#46C6E0', '#4E83FF', '#E8B14A', '#8B7DFF', '#5A6478']
@@ -1265,7 +1391,7 @@ function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcBlue = 1
   return (
     <div className="border border-line rounded-xl bg-bg-1 p-5">
       <div className="mb-3.5">
-        <h3 className="text-[14.5px] font-semibold text-ink-0 leading-tight">Composición</h3>
+        <h3 className="text-[14.5px] font-semibold text-ink-0 leading-tight">Distribución de activos</h3>
         <p className="text-xs text-ink-3 mt-0.5">{items.length} {items.length === 1 ? 'activo' : 'activos'} · por valor actual</p>
       </div>
       <div className="flex h-3 rounded-full overflow-hidden bg-bg-2 mb-4">

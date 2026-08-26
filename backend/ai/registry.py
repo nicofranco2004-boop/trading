@@ -25,6 +25,8 @@ from .builders.dashboard_composition import build as build_dashboard_composition
 from .builders.dashboard_evolution import build as build_dashboard_evolution
 from .builders.dashboard_top_holdings import build as build_dashboard_top_holdings
 from .builders.dashboard_brokers import build as build_dashboard_brokers
+from .builders.distribution import build_type as build_distribution_type
+from .builders.distribution import build_sector as build_distribution_sector
 from .builders.dashboard_events import build as build_dashboard_events
 from .builders.behavioral import build as build_behavioral
 from .builders.behavioral_card import build as build_behavioral_card
@@ -62,6 +64,10 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "dashboard.evolution": (build_dashboard_evolution, prompts.render_dashboard_evolution_prompt),
     "dashboard.top_holdings": (build_dashboard_top_holdings, prompts.render_dashboard_top_holdings_prompt),
     "dashboard.brokers": (build_dashboard_brokers, prompts.render_dashboard_brokers_prompt),
+    # Tortas de distribución. Comparten builder (un eje cada uno) y el packet
+    # lo manda el frontend — ver la cabecera de builders/distribution.py.
+    "portfolio.distribution_type": (build_distribution_type, prompts.render_distribution_type_prompt),
+    "portfolio.distribution_sector": (build_distribution_sector, prompts.render_distribution_sector_prompt),
     "dashboard.upcoming_events": (build_dashboard_events, prompts.render_dashboard_events_prompt),
     "behavioral": (build_behavioral, prompts.render_behavioral_prompt),
     "behavioral.card": (build_behavioral_card, prompts.render_behavioral_card_prompt),

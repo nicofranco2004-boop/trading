@@ -35,6 +35,11 @@ import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd,
 import { cedearEspecieBase } from '../utils/tickers'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
+import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDonut'
+import { computeClassBreakdown } from '../utils/assetClass'
+import { computeSectorBreakdown } from '../utils/assetSector'
+import { toDistributionAiParams } from '../utils/distributionAi'
+import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
 import {
@@ -135,6 +140,12 @@ function InsightsDesktop({ _embeddedTab }) {
   const { user } = useAuth()
   const { valuationDollar, currency, costBasis } = useCurrency()
   const plan = usePlanFeatures()
+  // Plazos fijos: viven en otra tabla y no entran en `positions`. Los traemos
+  // para que la torta de distribución sume el mismo patrimonio que el Dashboard.
+  // OJO: va acá arriba y no abajo con el resto de los cálculos — más abajo hay
+  // un `if (loading) return` y un hook después de un return condicional cambia
+  // la cantidad de hooks entre renders (React tira y salta el error boundary).
+  const pfTotals = usePfRollup()
   // "Desde tu última visita" — el hook va ARRIBA (antes del guard de loading);
   // el delta se computa con record(snapshot) más abajo, cuando la data existe.
   const lastVisit = useLastVisit(`diagnostico:${user?.email ?? 'anon'}`)
@@ -1512,6 +1523,22 @@ function InsightsDesktop({ _embeddedTab }) {
     ...aiCash.map(c => ({ asset: c.asset, broker: c.broker, is_cash: true, value_usd: c.value_usd })),
   ]
   const assetTypeBreakdown = computeAssetTypeBreakdown(positionsForType, brokers)
+  // Los dos ejes de la torta de distribución. MISMOS agregadores que el
+  // Dashboard — el objetivo es que las dos pantallas no puedan dar números
+  // distintos. El plazo fijo entra como porción sintética, igual que allá.
+  const pfRollup = pfUsd(pfTotals, tcBlue)
+  const pfSliceUsd = pfRollup.valueUsd
+  const pfPnl = { total: pfRollup.pnlUsd, cost: pfRollup.investedUsd }
+  const classBreakdown = computeClassBreakdown(
+    positionsForType, brokers,
+    pfSliceUsd > 0 ? [{ key: 'plazo_fijo', value: pfSliceUsd, pnl: pfPnl }] : [],
+    operations,
+  )
+  const sectorBreakdown = computeSectorBreakdown(
+    positionsForType, brokers,
+    pfSliceUsd > 0 ? [{ key: 'renta_fija', value: pfSliceUsd, pnl: pfPnl }] : [],
+    operations,
+  )
 
   // ── Phase 4: simulación de benchmarks con flujos sincronizados ────────────
   // "Qué hubiera pasado si la misma plata, con los mismos aportes y retiros,
@@ -2140,19 +2167,84 @@ function InsightsDesktop({ _embeddedTab }) {
         <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${(user?.email || 'anon').toLowerCase()}`} />
       )}
 
-      {/* ── Composición por activo — estándar, incluye cash. Movida arriba
+      {/* ── Distribución de activos — estándar, incluye cash. Movida arriba
           (era "Por activo" en Distribución, gateada Pro). El cruce por CLASE
           de activo vive ahora en el Perfil del inversor. ──────────────────── */}
       {compositionRows.length > 0 && (
         <section className="bg-white dark:bg-bg-1 border border-line rounded-xl p-4 sm:p-5">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <p className="eyebrow">Composición por activo</p>
+            <p className="eyebrow">Distribución de activos</p>
             <span className="text-xs text-ink-2">
               Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-ink-1'}`}>{cashRatio.toFixed(1)}%</span>
             </span>
           </div>
           <CompositionByAsset rows={compositionRows} />
         </section>
+      )}
+
+      {/* ── Los otros dos ejes de la misma cartera ──────────────────────────
+          Arriba está "en qué activos estoy"; acá "en qué clase de instrumento"
+          y "a qué parte de la economía". Mismo componente y mismos agregadores
+          que el Dashboard: si divergen los números, divergen en los dos lados
+          a la vez. ────────────────────────────────────────────────────────── */}
+      {classBreakdown.items.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <AskAIAbout
+            topic="portfolio.distribution_type"
+            params={toDistributionAiParams(classBreakdown)}
+            subtitle="Distribución por tipo de activo"
+            rounded={false}
+          >
+          <CompositionDonut
+            title="Distribución por tipo de activo"
+            items={classBreakdown.items}
+            fmt={amt}
+            height={230}
+            info={
+              <>
+                <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                <p>
+                  Primero dónde cotiza la posición (BYMA o exterior), después qué
+                  ticker es. Por eso AAPL en un broker argentino cuenta como CEDEAR
+                  y en uno del exterior como la acción US.
+                </p>
+                <p className="text-ink-3">
+                  Incluye efectivo y plazos fijos: la torta suma tu patrimonio.
+                </p>
+              </>
+            }
+            footnote={<UnclassifiedNote data={classBreakdown.unclassified} kind="tipo" />}
+          />
+          </AskAIAbout>
+          <AskAIAbout
+            topic="portfolio.distribution_sector"
+            params={toDistributionAiParams(sectorBreakdown)}
+            subtitle="Distribución por sector"
+            rounded={false}
+          >
+          <CompositionDonut
+            title="Distribución por sector"
+            items={sectorBreakdown.items}
+            fmt={amt}
+            height={230}
+            info={
+              <>
+                <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                <p>
+                  A qué parte de la economía estás expuesto. Un CEDEAR cuenta en el
+                  sector de su empresa: un CEDEAR de NVDA es exposición a
+                  semiconductores.
+                </p>
+                <p className="text-ink-3">
+                  Bonos, letras, FCI, plazos fijos y efectivo no tienen sector
+                  económico — van a su propia porción.
+                </p>
+              </>
+            }
+            footnote={<UnclassifiedNote data={sectorBreakdown.unclassified} kind="sector" />}
+          />
+          </AskAIAbout>
+        </div>
       )}
 
       {/* ── Alertas críticas (danger) — solo lo más urgente arriba ─────────── */}

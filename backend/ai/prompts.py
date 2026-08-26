@@ -697,6 +697,77 @@ def render_profile_summary_prompt(tier: str = "pro") -> str:
     )
 
 
+def render_distribution_type_prompt(tier: str = "pro") -> str:
+    view = "Distribución por tipo de activo (torta del Dashboard / Análisis)"
+    pkt = (
+        "porciones por clase de instrumento (CEDEARs, acciones AR, acciones US, "
+        "ETFs, bonos y letras, FCI, plazo fijo, cripto, efectivo) con peso %, "
+        "valor USD y RESULTADO por porción (monto y tasa), los activos de cada "
+        "una, rankings de las que más y las que menos rinden por tasa, y de quién más aporta en plata, "
+        "concentración y qué porcentaje no tiene rendimiento medible."
+    )
+    free = _maybe_free("portfolio.distribution_type", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Separar PESO de RESULTADO: la porción más grande casi nunca es la que más rindió, y confundirlas es el error de lectura más común en esta vista.",
+            "Qué dice el mix de instrumentos sobre el perfil real: cuánto riesgo de renta variable vs renta fija vs liquidez, y si eso es coherente entre sí.",
+            "El caso argentino: CEDEARs y acciones AR son riesgos distintos aunque coticen en el mismo mercado — uno es riesgo del subyacente extranjero más el spread cambiario, el otro es riesgo-país directo.",
+            "El efectivo y el plazo fijo como decisión: cuánta cartera está sin exposición y qué costo de oportunidad tiene.",
+        ],
+        insight_examples=[
+            "Que los CEDEARs sean la porción más grande no dice mucho por sí solo: lo que importa es si su resultado viene del subyacente o del movimiento del dólar implícito, porque eso cambia qué lo puede revertir.",
+            "Una porción chica con la mejor tasa no mueve la aguja en plata; conviene decirlo explícitamente para que no se lea como la señal principal.",
+        ],
+        pitfalls=[
+            "NUNCA sumar los porcentajes de resultado entre porciones: son tasas sobre bases distintas.",
+            "`menos_rinden` es la cola del ranking, NO una lista de pérdidas: si su resultado es positivo, decirlo como 'rinde menos que el resto', nunca como 'está perdiendo'.",
+            "Si `sin_rendimiento_medible_pct` es alto, decirlo antes de comentar cualquier tasa — el rendimiento no cubre toda la cartera.",
+            "Si una porción no trae `resultado_pct`, no estimarlo ni deducirlo del monto: falta el costo, no el dato.",
+            "No recomendar rebalanceos concretos ni porcentajes objetivo. Describir la exposición, no prescribir la cartera.",
+        ],
+    )
+
+
+def render_distribution_sector_prompt(tier: str = "pro") -> str:
+    view = "Distribución por sector económico (torta del Dashboard / Análisis)"
+    pkt = (
+        "porciones por sector (tecnología, semiconductores, energía, financiero, "
+        "salud, materiales, servicios públicos, renta fija, cripto, efectivo…) "
+        "con peso %, valor USD y RESULTADO por sector (monto y tasa), los "
+        "activos de cada uno, rankings de las que más y las que menos rinden por "
+        "tasa, y de quién más aporta en plata, concentración y qué porcentaje no "
+        "tiene rendimiento medible."
+    )
+    free = _maybe_free("portfolio.distribution_sector", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Qué sectores están traccionando el resultado y cuáles lo están restando, con el matiz de cuánto pesa cada uno — un sector que rinde mucho con peso chico explica poco del total.",
+            "Concentración sectorial real: si dos o tres sectores explican la mayoría, qué escenario macro los golpearía juntos.",
+            "Correlación escondida: sectores que parecen distintos pero responden al mismo factor (semiconductores y tecnología; energía y materiales en un ciclo de commodities).",
+            "Que un CEDEAR cuenta en el sector de su empresa subyacente — la exposición sectorial no depende de en qué mercado lo compraste.",
+        ],
+        insight_examples=[
+            "Tecnología y semiconductores separados pueden dar sensación de diversificación que no existe: en un shock de tasas o de ciclo de capex se mueven juntos, así que conviene leerlos como una sola apuesta.",
+            "Un sector que rinde bien pero pesa poco no está sosteniendo la cartera; el que la sostiene es el que combina peso y tasa, y suele ser menos vistoso.",
+        ],
+        pitfalls=[
+            "NUNCA sumar los porcentajes de resultado entre sectores: son tasas sobre bases distintas.",
+            "`menos_rinden` es la cola del ranking, NO una lista de pérdidas: si su resultado es positivo, decirlo como 'rinde menos que el resto', nunca como 'está perdiendo'.",
+            "Renta fija, FCI, plazo fijo, cripto y efectivo NO son sectores económicos — son su propia porción porque no tienen sector. No compararlos como si fueran industrias.",
+            "Si `sin_clasificar_pct` o `sin_rendimiento_medible_pct` son altos, aclararlo antes de sacar conclusiones sectoriales.",
+            "No proyectar el rendimiento sectorial pasado hacia adelante ni sugerir rotar de sector.",
+        ],
+    )
+
+
 def render_dashboard_composition_prompt(tier: str = "pro") -> str:
     view = "Composición del portfolio (sub-componente Dashboard)"
     pkt = (
