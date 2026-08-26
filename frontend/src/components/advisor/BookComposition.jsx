@@ -30,10 +30,12 @@ import { useMemo } from 'react'
 import { PieChart } from 'lucide-react'
 import CompositionDonut, { UnclassifiedNote } from '../CompositionDonut'
 import InfoTooltip from '../InfoTooltip'
+import AskAIAbout from '../ai/AskAIAbout'
 import { computeClassBreakdown } from '../../utils/assetClass'
 import { computeSectorBreakdown } from '../../utils/assetSector'
 import {
-  assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, DEFAULT_TOP_ASSETS,
+  assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps,
+  toBookCompositionAiParams, DEFAULT_TOP_ASSETS,
 } from '../../utils/bookComposition'
 import { fmtUsd, fmtArs } from '../../utils/format'
 import { useMoneyFormat } from '../../contexts/CurrencyContext'
@@ -87,6 +89,18 @@ export default function BookComposition({ data, error = false }) {
   )
   const difundidos = useMemo(() => mostHeldAssets(rows || []), [rows])
 
+  // Packets de la IA. Los topics son `book.composition_*` y NO
+  // `book.distribution_*`: `book.distribution` ya significa otra cosa del
+  // lado asesor (cuántos clientes en verde/rojo, la card "¿Cómo vienen tus
+  // clientes?") y el prompt del libro ya se la describe al modelo con ese
+  // sentido.
+  const aiOpts = useMemo(
+    () => ({ clients: data?.clients, mostHeld: difundidos }),
+    [data, difundidos],
+  )
+  const aiClase = useMemo(() => toBookCompositionAiParams(clase, aiOpts), [clase, aiOpts])
+  const aiSector = useMemo(() => toBookCompositionAiParams(sector, aiOpts), [sector, aiOpts])
+
   if (error && !data) return null
   if (!data || !rows?.length) return null
   if (!(clase.total > 0)) return null
@@ -126,6 +140,12 @@ export default function BookComposition({ data, error = false }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <AskAIAbout
+          topic="book.composition_type"
+          params={aiClase}
+          subtitle="Composición del libro por tipo de activo"
+          rounded={false}
+        >
         <CompositionDonut
           title="Por tipo de activo"
           items={clase.items}
@@ -145,6 +165,7 @@ export default function BookComposition({ data, error = false }) {
           )}
           footnote={<UnclassifiedNote data={clase.unclassified} kind="tipo" />}
         />
+        </AskAIAbout>
 
         <CompositionDonut
           title="Por activo"
@@ -191,6 +212,12 @@ export default function BookComposition({ data, error = false }) {
           )}
         />
 
+        <AskAIAbout
+          topic="book.composition_sector"
+          params={aiSector}
+          subtitle="Composición del libro por sector"
+          rounded={false}
+        >
         <CompositionDonut
           title="Por sector"
           items={sector.items}
@@ -211,6 +238,7 @@ export default function BookComposition({ data, error = false }) {
           )}
           footnote={<UnclassifiedNote data={sector.unclassified} kind="sector" />}
         />
+        </AskAIAbout>
       </div>
 
       {/* El pie que evita el número contradictorio: esta valuación NO es la

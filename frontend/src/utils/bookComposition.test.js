@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, DEFAULT_TOP_ASSETS } from './bookComposition.js'
+import { assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, toBookCompositionAiParams, DEFAULT_TOP_ASSETS } from './bookComposition.js'
 import { computeClassBreakdown } from './assetClass.js'
 import { computeSectorBreakdown } from './assetSector.js'
 
@@ -291,5 +291,27 @@ describe('resultado por porción, de punta a punta', () => {
     const slice = items.find(i => i.key === 'plazo_fijo')
     expect(slice.pnl.total).toBe(10)
     expect(slice.pnl.pct).toBeCloseTo(10, 6)
+  })
+})
+
+describe('toBookCompositionAiParams — el packet del libro para la IA', () => {
+  const rows = [
+    { asset: 'AAPL', value_usd: 600, invested_usd: 500, pnl_usd: 100, is_ar_market: true, is_cash: false, asset_type: 'CEDEAR', clients: 9 },
+    { asset: 'USD', value_usd: 400, invested_usd: 400, pnl_usd: 0, is_ar_market: false, is_cash: true, clients: 12 },
+  ]
+
+  it('lleva el corte de siempre más el contexto del libro', () => {
+    const bd = computeClassBreakdown(rows, [])
+    const p = toBookCompositionAiParams(bd, { clients: 12, mostHeld: mostHeldAssets(rows) })
+    expect(p.total_usd).toBe(1000)
+    expect(p.slices.map(s => s.label)).toEqual(['CEDEARs', 'Efectivo'])
+    expect(p.clientes).toBe(12)
+    expect(p.mas_difundidos).toEqual([{ a: 'USD', c: 12 }, { a: 'AAPL', c: 9 }])
+  })
+
+  it('sin contexto de libro no inventa las claves', () => {
+    const p = toBookCompositionAiParams(computeClassBreakdown(rows, []))
+    expect(p.clientes).toBeUndefined()
+    expect(p.mas_difundidos).toBeUndefined()
   })
 })

@@ -26,6 +26,7 @@
 
 import { normalizeTicker } from './assetClass'
 import { fciLabel } from './valuation'
+import { toDistributionAiParams } from './distributionAi'
 
 // Cuántos activos se muestran como porción propia antes del "Resto". 12 entra
 // cómodo en la leyenda del donut y cubre la parte de la torta que un asesor
@@ -231,4 +232,24 @@ export function realizedToOps(rows = []) {
     }
   }
   return ops
+}
+
+/**
+ * toBookCompositionAiParams — el corte del libro, listo para mandarle a la IA.
+ *
+ * Extiende el packet de retail (toDistributionAiParams) con lo que solo tiene
+ * sentido sobre un libro: sobre cuántos clientes está medido, y qué activos
+ * están en más carteras. Sin `mas_difundidos` el modelo no puede distinguir
+ * una postura del asesor (muchas carteras) de una cartera grande dominando el
+ * promedio ponderado (una sola) — y son dos conversaciones distintas.
+ *
+ * Claves cortas (`a`/`c`) por el mismo motivo que en distributionAi: viajan
+ * por red y entran en el contexto del modelo.
+ */
+export function toBookCompositionAiParams(breakdown, { clients, mostHeld } = {}) {
+  const params = toDistributionAiParams(breakdown)
+  if (clients > 0) params.clientes = clients
+  const difundidos = (mostHeld || []).map(a => ({ a: a.asset, c: a.clients }))
+  if (difundidos.length) params.mas_difundidos = difundidos
+  return params
 }
