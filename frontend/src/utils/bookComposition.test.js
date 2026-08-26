@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { assetSlicesFromRows, mostHeldAssets, pfSlice, DEFAULT_TOP_ASSETS } from './bookComposition.js'
+import { assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, DEFAULT_TOP_ASSETS } from './bookComposition.js'
 import { computeClassBreakdown } from './assetClass.js'
 import { computeSectorBreakdown } from './assetSector.js'
 
@@ -212,5 +212,84 @@ describe('las filas del libro alimentan los clasificadores del retail', () => {
     expect(clase.total).toBe(1500)
     expect(sector.total).toBe(1500)
     expect(activo.total).toBe(1500)
+  })
+})
+
+describe('realizedToOps — lo cerrado y la renta con forma de operaciones', () => {
+  const rr = (asset, o = {}) => ({
+    asset, asset_type: null, is_ar_market: false,
+    realized_usd: 0, income_usd: 0, cost_usd: 0, cost_incomplete: false, ...o,
+  })
+
+  it('el % de la venta reconstruye EXACTAMENTE el costo que sumó el backend', () => {
+    // computePnlByKey despeja el costo de (pnl_usd, pnl_pct); si el % no
+    // vuelve al mismo costo, el denominador del rendimiento se corre.
+    const [op] = realizedToOps([rr('AAPL', { realized_usd: 200, cost_usd: 800 })])
+    expect(op.pnl_pct).toBeCloseTo(25, 9)
+    expect(op.pnl_usd / (op.pnl_pct / 100)).toBeCloseTo(800, 6)
+  })
+
+  it('con el costo incompleto manda el % en null, no un número inventado', () => {
+    const [op] = realizedToOps([rr('AAPL', { realized_usd: 200, cost_usd: 0, cost_incomplete: true })])
+    expect(op.pnl_pct).toBeNull()
+  })
+
+  it('separa la venta de la renta en dos filas', () => {
+    const ops = realizedToOps([rr('AL30', { realized_usd: 50, cost_usd: 500, income_usd: 120 })])
+    expect(ops).toHaveLength(2)
+    expect(ops.map(o => o.op_type)).toEqual(['Venta', 'Dividendo'])
+    expect(ops[1].pnl_pct).toBeNull()   // la renta no aporta costo
+  })
+
+  it('no emite filas para montos en cero', () => {
+    expect(realizedToOps([rr('AAPL')])).toEqual([])
+    expect(realizedToOps([])).toEqual([])
+    expect(realizedToOps()).toEqual([])
+  })
+
+  it('lleva el tipo y el mercado para que el clasificador acierte la porción', () => {
+    const [op] = realizedToOps([
+      rr('KO', { realized_usd: 40, cost_usd: 200, asset_type: 'CEDEAR', is_ar_market: true }),
+    ])
+    expect(op.asset_type).toBe('CEDEAR')
+    expect(op.is_ar_market).toBe(true)
+  })
+})
+
+describe('resultado por porción, de punta a punta', () => {
+  const rows = [
+    { asset: 'AAPL', value_usd: 1200, invested_usd: 1000, pnl_usd: 200, is_ar_market: true, is_cash: false, asset_type: 'CEDEAR', clients: 3 },
+    { asset: 'AL30', value_usd: 500, invested_usd: 500, pnl_usd: 0, is_ar_market: true, is_cash: false, asset_type: 'BONO', clients: 2 },
+  ]
+
+  it('suma las tres patas: no realizado + realizado + renta', () => {
+    const ops = realizedToOps([
+      { asset: 'AAPL', asset_type: 'CEDEAR', is_ar_market: true, realized_usd: 100, income_usd: 0, cost_usd: 400, cost_incomplete: false },
+      { asset: 'AL30', asset_type: 'BONO', is_ar_market: true, realized_usd: 0, income_usd: 80, cost_usd: 0, cost_incomplete: false },
+    ])
+    const { items } = computeClassBreakdown(rows, [], [], ops)
+    const cedear = items.find(i => i.key === 'cedear')
+    const bono = items.find(i => i.key === 'bono')
+
+    // CEDEAR: 200 no realizado + 100 realizado = 300, sobre 1000 + 400 = 1400.
+    expect(cedear.pnl.total).toBe(300)
+    expect(cedear.pnl.pct).toBeCloseTo(300 / 1400 * 100, 6)
+    // Bono: todo el rendimiento está en el cupón, y no infla el denominador.
+    expect(bono.pnl.total).toBe(80)
+    expect(bono.pnl.income).toBe(80)
+    expect(bono.pnl.pct).toBeCloseTo(80 / 500 * 100, 6)
+  })
+
+  it('sin operaciones la torta sigue funcionando (solo peso)', () => {
+    const { items } = computeClassBreakdown(rows, [], [], null)
+    expect(items.every(i => i.pnl === null)).toBe(true)
+  })
+
+  it('el plazo fijo aporta su devengado y su costo a la porción', () => {
+    const pf = pfSlice({ plazos_fijos_usd: 110, plazos_fijos_invested_usd: 100 }, 'plazo_fijo')
+    const { items } = computeClassBreakdown(rows, [], [pf], [])
+    const slice = items.find(i => i.key === 'plazo_fijo')
+    expect(slice.pnl.total).toBe(10)
+    expect(slice.pnl.pct).toBeCloseTo(10, 6)
   })
 })

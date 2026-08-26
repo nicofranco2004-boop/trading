@@ -35273,6 +35273,122 @@ def _advisor_pf_usd(conn, ids: list, tc_blue: float):
     return {"value_usd": value, "invested_usd": invested, "count": n}
 
 
+def _strip_accents(s: str) -> str:
+    """'CUPÓN' → 'CUPON'. Espejo del .normalize('NFD') de assetPnl.js."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", s)
+                   if not unicodedata.combining(c))
+
+
+def _advisor_realized_by_asset(conn, ids: list):
+    """Lo CERRADO y la RENTA del libro, agregado por (activo, mercado).
+
+    Por qué agregado y no crudo: `operations` tiene media de 195 filas por
+    usuario y máximo 6.415 — mandar las filas de 500 clientes al navegador es
+    justamente lo que el diseño de este endpoint evita. Acá se suma y viajan
+    ~decenas de filas.
+
+    Por qué hace falta: una torta que solo mire posiciones abiertas cuenta el
+    rendimiento a medias. Medido contra la base de dev, los dividendos suman
+    US$10.972 y los intereses US$9.695 contra US$2.652 de ventas realizadas —
+    un bono que pagó renta toda su vida tiene su rendimiento EN LOS CUPONES.
+
+    El costo se despeja del par (pnl_usd, pnl_pct), igual que en el frontend:
+    `cost_basis_consumed` está 100% NULL en las filas reales y
+    `entry_price × quantity` está en la moneda nativa de la operación (hay un
+    bug abierto con entry y exit en monedas distintas en la misma fila, que
+    mezclado con USD da errores de ~1400×). Las dos puntas del par ya están
+    normalizadas a USD y son mutuamente consistentes.
+
+    Si a alguna venta le falta el % no se inventa el costo: se marca
+    `cost_incomplete` y el frontend oculta la tasa de esa porción en vez de
+    publicar una inflada.
+
+    `asset_type` sale de la posición abierta del mismo (broker, activo) —
+    mismo hint que usa computePnlByKey en retail: sin él, la venta de un
+    CEDEAR en una cuenta dólar se clasificaría como acción US y la ganancia
+    caería en la porción equivocada.
+    """
+    if not ids:
+        return []
+    from snapshots_job import _broker_name_sets
+    ph = ",".join("?" * len(ids))
+
+    brokers_by_uid = {}
+    for r in conn.execute(
+        f"SELECT id, user_id, name, currency, parent_broker_id FROM brokers WHERE user_id IN ({ph})", ids
+    ).fetchall():
+        brokers_by_uid.setdefault(r["user_id"], []).append(dict(r))
+
+    hints = {}
+    for r in conn.execute(
+        f"""SELECT user_id, broker, asset, asset_type FROM positions
+            WHERE user_id IN ({ph}) AND asset_type IS NOT NULL""", ids
+    ).fetchall():
+        hints[(r["user_id"], r["broker"], (r["asset"] or "").upper())] = r["asset_type"]
+
+    agg = {}
+    for r in conn.execute(
+        f"""SELECT user_id, broker, asset, op_type, pnl_usd, pnl_pct
+            FROM operations WHERE user_id IN ({ph}) AND pnl_usd IS NOT NULL""", ids
+    ).fetchall():
+        pnl = float(r["pnl_usd"] or 0)
+        if pnl == 0:
+            continue
+        asset = (r["asset"] or "").strip()
+        # Sin acentos, igual que assetPnl.js: la app escribe op_type='Cupón' y
+        # 'CUPÓN'.upper() no contiene 'CUPON' — los cupones se contaban como
+        # venta y le borraban el rendimiento % a la porción de bonos.
+        tipo = _strip_accents((r["op_type"] or "").upper())
+        # Espejo de isRealAssetOp: las conversiones de moneda (ARS→USDT) no son
+        # un activo y ensuciarían la porción "Sin clasificar".
+        if not asset or "\u2192" in asset or tipo.startswith("CONVERSION"):
+            continue
+
+        ars_names, ar_usd_names = _broker_name_sets(brokers_by_uid.get(r["user_id"], []))
+        atype = hints.get((r["user_id"], r["broker"], asset.upper()))
+        is_ar = ((atype or "").upper() == "CEDEAR"
+                 or r["broker"] in ars_names or r["broker"] in ar_usd_names)
+
+        k = (asset.upper(), bool(is_ar))
+        b = agg.get(k)
+        if b is None:
+            b = agg[k] = {"asset": asset.upper(), "asset_type": atype,
+                          "is_ar_market": bool(is_ar), "realized_usd": 0.0,
+                          "income_usd": 0.0, "cost_usd": 0.0, "cost_incomplete": False}
+        elif atype and not b["asset_type"]:
+            b["asset_type"] = atype
+
+        if "DIVIDENDO" in tipo or "INTER" in tipo or "CUPON" in tipo:
+            # La renta suma al resultado pero NO al capital invertido: no
+            # invertiste para cobrar el cupón, el capital ya está contado.
+            b["income_usd"] += pnl
+            continue
+
+        b["realized_usd"] += pnl
+        pct = r["pnl_pct"]
+        cost = (pnl / (float(pct) / 100)) if (pct is not None and float(pct) != 0) else None
+        if cost is not None and cost == cost and cost > 0 and cost != float("inf"):
+            b["cost_usd"] += cost
+        else:
+            b["cost_incomplete"] = True
+
+    out = []
+    for b in agg.values():
+        if b["realized_usd"] == 0 and b["income_usd"] == 0:
+            continue
+        out.append({
+            "asset": b["asset"], "asset_type": b["asset_type"],
+            "is_ar_market": b["is_ar_market"],
+            "realized_usd": round(b["realized_usd"], 2),
+            "income_usd": round(b["income_usd"], 2),
+            "cost_usd": round(b["cost_usd"], 2),
+            "cost_incomplete": b["cost_incomplete"],
+        })
+    out.sort(key=lambda r: -(abs(r["realized_usd"]) + abs(r["income_usd"])))
+    return out
+
+
 @app.get("/api/advisor/book/composition")
 def advisor_book_composition(uid: int = Depends(get_current_user)):
     """Composición del libro: filas ya valuadas y AGREGADAS por (activo,
@@ -35293,6 +35409,7 @@ def advisor_book_composition(uid: int = Depends(get_current_user)):
         ids = _advisor_client_ids(conn, uid)
         empty = {
             "total_usd": 0.0, "clients": 0, "as_of": None, "rows": [],
+            "realized_by_asset": [],
             "included": {"positions_usd": 0.0, "cash_usd": 0.0,
                          "plazos_fijos_usd": 0.0, "plazos_fijos_count": 0},
             "excluded": {"no_price": 0, "orphan_broker": 0},
@@ -35376,6 +35493,10 @@ def advisor_book_composition(uid: int = Depends(get_current_user)):
             "clients": len(contributing),
             "as_of": as_of,
             "rows": rows,
+            # Lo cerrado + la renta, para que la torta muestre RESULTADO y no
+            # solo peso. Va aparte de `rows` porque una venta ya no es una
+            # posición: el activo puede no estar más en ninguna cartera.
+            "realized_by_asset": _advisor_realized_by_asset(conn, ids),
             "included": {
                 "positions_usd": round(positions_usd, 2),
                 "cash_usd": round(cash_usd, 2),

@@ -100,12 +100,27 @@ export function computePnlByKey(positions = [], operations = [], brokers = [], c
     if (pnl == null || pnl === 0) continue
 
     const ticker = normalizeTicker(op.asset)
-    const hinted = typeHint.get(`${op.broker}|${ticker}`) || null
-    const key = classify({ asset: op.asset, broker: op.broker, asset_type: hinted, is_cash: 0 }, brokers)
+    // El hint puede venir en la fila: el libro del asesor agrega las
+    // operaciones en el backend y ahí ya se resolvió el tipo y el mercado
+    // (no hay `positions` del cliente en el navegador con qué inferirlos).
+    // En retail las filas de /api/operations no traen ninguno de los dos, así
+    // que los dos fallbacks quedan en undefined y no cambia nada.
+    const hinted = typeHint.get(`${op.broker}|${ticker}`) || op.asset_type || null
+    const key = classify({
+      asset: op.asset, broker: op.broker, asset_type: hinted, is_cash: 0,
+      is_ar_market: op.is_ar_market,
+    }, brokers)
     const b = bucketFor(out, key)
     const a = assetFor(b, ticker)
 
+    // Sin acentos: la app escribe op_type='Cupón' (main.py, 6 lugares) y
+    // 'CUPÓN'.includes('CUPON') es FALSE — los cupones caían en `realized`
+    // como si fueran una venta. El monto igual entraba en el total, pero sin
+    // pnl_pct con qué despejar el costo marcaban costIncomplete y le borraban
+    // el rendimiento % a TODA la porción de bonos, que es justo donde los
+    // cupones son el rendimiento.
     const tipo = String(op.op_type || '').toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     const esRenta = tipo.includes('DIVIDENDO') || tipo.includes('INTER') || tipo.includes('CUPON')
 
     if (esRenta) {

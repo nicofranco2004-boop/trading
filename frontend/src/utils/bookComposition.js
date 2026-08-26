@@ -187,3 +187,48 @@ export function pfSlice(included, key, label = null, color = null) {
   if (color) slice.color = color
   return slice
 }
+
+/**
+ * realizedToOps — lo cerrado y la renta del libro, con forma de operaciones.
+ *
+ * computePnlByKey (assetPnl.js) suma tres patas: no realizado (posiciones
+ * abiertas), realizado (ventas) y renta (dividendos, cupones, intereses). Las
+ * posiciones abiertas del libro ya vienen como `rows`; esto convierte el
+ * agregado de `realized_by_asset` en las filas que esa función espera, para
+ * que el resultado por porción del asesor salga del MISMO motor que el del
+ * cliente en su Dashboard.
+ *
+ * ── El % de la venta ──────────────────────────────────────────────────────
+ * computePnlByKey despeja el costo de cada venta del par (pnl_usd, pnl_pct) —
+ * no de `cost_basis_consumed`, que está 100% NULL en las filas reales, ni de
+ * `entry_price × quantity`, que está en moneda nativa y tiene un bug abierto
+ * de monedas mezcladas en la misma fila. Así que le devolvemos el `pnl_pct`
+ * que reconstruye EXACTAMENTE el `cost_usd` que el backend ya sumó.
+ *
+ * Si al backend le faltó el costo de alguna venta (`cost_incomplete`),
+ * mandamos el % en null: el monto sigue siendo válido, la tasa no, y
+ * computePnlByKey la oculta en vez de publicar una inflada.
+ */
+export function realizedToOps(rows = []) {
+  const ops = []
+  for (const r of rows || []) {
+    if (!r?.asset) continue
+    const base = {
+      asset: r.asset,
+      broker: null,               // el hint de tipo viene en la fila, no de posiciones
+      asset_type: r.asset_type || null,
+      is_ar_market: r.is_ar_market,
+    }
+    if (r.realized_usd) {
+      const pct = (!r.cost_incomplete && r.cost_usd > 0)
+        ? (r.realized_usd / r.cost_usd) * 100
+        : null
+      ops.push({ ...base, op_type: 'Venta', pnl_usd: r.realized_usd, pnl_pct: pct })
+    }
+    if (r.income_usd) {
+      // La renta no aporta costo al denominador (ver la cabecera de assetPnl).
+      ops.push({ ...base, op_type: 'Dividendo', pnl_usd: r.income_usd, pnl_pct: null })
+    }
+  }
+  return ops
+}

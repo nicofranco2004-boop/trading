@@ -210,6 +210,7 @@ describe('porciones sintéticas con resultado propio (plazo fijo)', () => {
 })
 
 
+
 describe('regresión: la proyección de la página no puede comerse pnl_usd', () => {
   // Bug real (Métricas mostraba las tortas sin "Resultado" mientras el Dashboard
   // sí lo mostraba): Insights armaba su lista de posiciones enumerando campos a
@@ -252,5 +253,48 @@ describe('regresión: la proyección de la página no puede comerse pnl_usd', ()
         ({ asset, asset_type, broker, value_usd, is_cash: false })), BR, [], [])
     expect(conPnl.items.map(i => [i.key, i.pct]))
       .toEqual(sinPnl.items.map(i => [i.key, i.pct]))
+  })
+})
+
+// ─── Los cupones son RENTA, aunque lleven acento ───────────────────────────
+// La app escribe op_type='Cupón' (main.py, 6 lugares) y el matcheo era
+// includes('CUPON') sobre el string en mayúsculas: 'CUPÓN' no lo contiene, así
+// que cada cupón entraba como si fuera una venta. El monto seguía sumando al
+// total, pero como los cupones no traen pnl_pct marcaban el costo incompleto y
+// le borraban el rendimiento % a TODA la porción de bonos — justo la porción
+// donde el cupón ES el rendimiento.
+describe('renta con acentos', () => {
+  const positions = [
+    { asset: 'AL30', broker: 'Balanz', asset_type: 'BONO', value_usd: 1000, pnl_usd: 0 },
+  ]
+  const brokers = [{ name: 'Balanz', currency: 'ARS' }]
+  const classify = () => 'bono'
+
+  it("'Cupón' cuenta como renta, no como venta", () => {
+    const out = computePnlByKey(positions, [
+      { asset: 'AL30', broker: 'Balanz', op_type: 'Cupón', pnl_usd: 80, pnl_pct: null },
+    ], brokers, classify)
+    const b = out.get('bono')
+    expect(b.income).toBe(80)
+    expect(b.realized).toBe(0)
+    expect(b.costIncomplete).toBe(false)
+    // Y por lo tanto la porción conserva su rendimiento %.
+    expect(b.pct).toBeCloseTo(8, 6)
+  })
+
+  it("'Interés' también", () => {
+    const out = computePnlByKey(positions, [
+      { asset: 'AL30', broker: 'Balanz', op_type: 'Interés', pnl_usd: 50, pnl_pct: null },
+    ], brokers, classify)
+    expect(out.get('bono').income).toBe(50)
+  })
+
+  it('una venta de verdad sigue siendo realizado', () => {
+    const out = computePnlByKey(positions, [
+      { asset: 'AL30', broker: 'Balanz', op_type: 'Venta', pnl_usd: 50, pnl_pct: 10 },
+    ], brokers, classify)
+    const b = out.get('bono')
+    expect(b.realized).toBe(50)
+    expect(b.income).toBe(0)
   })
 })

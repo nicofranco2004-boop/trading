@@ -97,6 +97,15 @@ class CompositionBase(unittest.TestCase):
                VALUES (?, 'Banco', ?, ?, ?, 'TNA', '2026-08-01', ?, '2026-08-31')""",
             (uid, capital, moneda, tasa, plazo))
 
+    def _op(self, uid, broker, asset, op_type, pnl_usd, pnl_pct=None, date="2026-05-10"):
+        self.conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd, pnl_pct)
+               VALUES (?,?,?,?,?,?,?)""",
+            (uid, date, broker, asset, op_type, pnl_usd, pnl_pct))
+
+    def _realized(self, body, asset):
+        return next((r for r in body["realized_by_asset"] if r["asset"] == asset), None)
+
     def _get(self, uid=None):
         uid = self.asesor if uid is None else uid
         return self.client.get(
@@ -373,6 +382,103 @@ class ExcluidoTest(CompositionBase):
         b = self._get().json()
         self.assertEqual(b["included"]["cash_usd"], 0)
         self.assertEqual(b["excluded"]["orphan_broker"], 1)
+
+
+class ResultadoPorPorcionTest(CompositionBase):
+    """Lo CERRADO y la RENTA — las otras dos patas del resultado.
+
+    Una torta que solo mire posiciones abiertas cuenta el rendimiento a
+    medias: un bono que pagó cupones toda su vida tiene su rendimiento EN LOS
+    CUPONES, no en la variación del precio.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._broker(self.ana, "Balanz", "ARS")
+        self._broker(self.beto, "Schwab", "USD")
+
+    def test_una_venta_llega_con_su_costo_despejado(self):
+        # El costo sale del par (pnl_usd, pnl_pct): +200 al 25% ⇒ costo 800.
+        self._op(self.ana, "Balanz", "AAPL", "Venta", 200.0, 25.0)
+        self.conn.commit()
+        r = self._realized(self._get().json(), "AAPL")
+        self.assertEqual(r["realized_usd"], 200.0)
+        self.assertAlmostEqual(r["cost_usd"], 800.0, places=2)
+        self.assertFalse(r["cost_incomplete"])
+
+    def test_sin_pnl_pct_el_costo_se_marca_incompleto_y_no_se_inventa(self):
+        self._op(self.ana, "Balanz", "AAPL", "Venta", 200.0, None)
+        self.conn.commit()
+        r = self._realized(self._get().json(), "AAPL")
+        self.assertEqual(r["realized_usd"], 200.0)
+        self.assertEqual(r["cost_usd"], 0.0)
+        self.assertTrue(r["cost_incomplete"])
+
+    def test_la_renta_suma_al_resultado_pero_NO_al_costo(self):
+        # No invertiste para cobrar el cupón: el capital ya está contado.
+        self._op(self.ana, "Balanz", "AL30", "Cupón", 50.0, None)
+        self._op(self.ana, "Balanz", "AL30", "Dividendo", 30.0, None)
+        self._op(self.ana, "Balanz", "AL30", "Interés", 20.0, None)
+        self.conn.commit()
+        r = self._realized(self._get().json(), "AL30")
+        self.assertEqual(r["income_usd"], 100.0)
+        self.assertEqual(r["realized_usd"], 0.0)
+        self.assertEqual(r["cost_usd"], 0.0)
+        self.assertFalse(r["cost_incomplete"])
+
+    def test_agrega_cross_cliente_por_activo_y_mercado(self):
+        self._op(self.ana, "Balanz", "AAPL", "Venta", 100.0, 10.0)     # BYMA
+        self._op(self.beto, "Schwab", "AAPL", "Venta", 300.0, 30.0)    # exterior
+        self.conn.commit()
+        filas = [r for r in self._get().json()["realized_by_asset"] if r["asset"] == "AAPL"]
+        self.assertEqual(len(filas), 2)
+        self.assertEqual({r["is_ar_market"] for r in filas}, {True, False})
+        ar = next(r for r in filas if r["is_ar_market"])
+        self.assertEqual(ar["realized_usd"], 100.0)
+
+    def test_dos_ventas_del_mismo_activo_suman_monto_y_costo(self):
+        self._op(self.ana, "Balanz", "AAPL", "Venta", 200.0, 25.0)   # costo 800
+        self._op(self.ana, "Balanz", "AAPL", "Venta", 100.0, 50.0)   # costo 200
+        self.conn.commit()
+        r = self._realized(self._get().json(), "AAPL")
+        self.assertEqual(r["realized_usd"], 300.0)
+        self.assertAlmostEqual(r["cost_usd"], 1000.0, places=2)
+
+    def test_las_conversiones_de_moneda_no_son_un_activo(self):
+        self._op(self.ana, "Balanz", "ARS→USDT", "Conversion", 5.0, None)
+        self._op(self.ana, "Balanz", "USD", "CONVERSION_OUT", 7.0, None)
+        self.conn.commit()
+        self.assertEqual(self._get().json()["realized_by_asset"], [])
+
+    def test_el_hint_de_tipo_viaja_para_que_el_clasificador_no_se_equivoque(self):
+        # Venta de un CEDEAR en una cuenta DÓLAR: sin el hint se clasificaría
+        # como acción US y la ganancia caería en la porción equivocada.
+        self._broker(self.beto, "Exterior", "USD")
+        self._pos(self.beto, "Exterior", "KO", 10, 200, asset_type="CEDEAR")
+        self._price("KO.BA", 5000)
+        self._op(self.beto, "Exterior", "KO", "Venta", 40.0, 20.0)
+        self.conn.commit()
+        r = self._realized(self._get().json(), "KO")
+        self.assertEqual(r["asset_type"], "CEDEAR")
+        self.assertTrue(r["is_ar_market"])
+
+    def test_una_venta_de_un_activo_que_ya_no_se_tiene_igual_cuenta(self):
+        # No hay posición abierta: la fila no está en `rows` pero sí acá.
+        self._op(self.ana, "Balanz", "GGAL", "Venta", 75.0, 15.0)
+        self.conn.commit()
+        b = self._get().json()
+        self.assertIsNone(self._row(b, "GGAL"))
+        self.assertIsNotNone(self._realized(b, "GGAL"))
+
+    def test_pnl_cero_no_genera_fila(self):
+        self._op(self.ana, "Balanz", "AAPL", "Venta", 0.0, 0.0)
+        self.conn.commit()
+        self.assertEqual(self._get().json()["realized_by_asset"], [])
+
+    def test_las_operaciones_de_otro_asesor_no_entran(self):
+        self._op(self.ana, "Balanz", "AAPL", "Venta", 200.0, 25.0)
+        self.conn.commit()
+        self.assertEqual(self._get(self.otro_asesor).json()["realized_by_asset"], [])
 
 
 if __name__ == "__main__":

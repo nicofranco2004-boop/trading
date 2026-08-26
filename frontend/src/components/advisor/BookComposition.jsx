@@ -33,7 +33,7 @@ import InfoTooltip from '../InfoTooltip'
 import { computeClassBreakdown } from '../../utils/assetClass'
 import { computeSectorBreakdown } from '../../utils/assetSector'
 import {
-  assetSlicesFromRows, mostHeldAssets, pfSlice, DEFAULT_TOP_ASSETS,
+  assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, DEFAULT_TOP_ASSETS,
 } from '../../utils/bookComposition'
 import { fmtUsd, fmtArs } from '../../utils/format'
 import { useMoneyFormat } from '../../contexts/CurrencyContext'
@@ -60,14 +60,24 @@ export default function BookComposition({ data, error = false }) {
     [isArs, convert],
   )
 
+  // Lo cerrado + la renta, con forma de operaciones: sin esto el "Resultado"
+  // de cada porción sería solo lo no realizado, y un bono que rindió todo en
+  // cupones se leería como si no hubiera rendido nada.
+  const ops = useMemo(() => realizedToOps(data?.realized_by_asset), [data])
+
   const clase = useMemo(
-    () => computeClassBreakdown(rows || [], [], [pfSlice(included, 'plazo_fijo')].filter(Boolean)),
-    [rows, included],
+    () => computeClassBreakdown(rows || [], [], [pfSlice(included, 'plazo_fijo')].filter(Boolean), ops),
+    [rows, included, ops],
   )
   const sector = useMemo(
-    () => computeSectorBreakdown(rows || [], [], [pfSlice(included, 'renta_fija')].filter(Boolean)),
-    [rows, included],
+    () => computeSectorBreakdown(rows || [], [], [pfSlice(included, 'renta_fija')].filter(Boolean), ops),
+    [rows, included, ops],
   )
+  // Ojo: la torta por activo queda a propósito SIN resultado. El P&L por
+  // activo cross-cliente ya lo muestra la sección Estrella de esta misma
+  // pantalla, y es OTRA cosa (solo no realizado). Dos números distintos para
+  // "cómo le fue a AAPL en el libro", a diez centímetros uno del otro, es el
+  // bug clásico de esta app. Acá la pregunta es cuánto pesa.
   const activo = useMemo(
     () => assetSlicesFromRows(
       rows || [],
