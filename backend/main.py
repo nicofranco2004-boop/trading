@@ -35317,6 +35317,15 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
     US$10.972 y los intereses US$9.695 contra US$2.652 de ventas realizadas —
     un bono que pagó renta toda su vida tiene su rendimiento EN LOS CUPONES.
 
+    ⚠️ `pnl_usd` NO se lee crudo: pasa por realized_pnl.realized_usd_sql(). La
+    columna se llama así pero en las cobranzas de renta fija guarda el monto en
+    la MONEDA DEL BROKER (`bond_cashflow` inserta net_amount tal cual), así que
+    un cupón de $125.000 sumado crudo cuenta 125.000 dólares. Ese módulo existe
+    justamente porque el criterio estaba copiado a mano en 4 lugares y divergió:
+    el síntoma en producción fue un cupón que el dashboard mostraba como US$100
+    y la IA, en el MISMO request, contaba como US$125.000. Este lector es el
+    quinto — no puede tener su propia versión de la regla.
+
     El costo se despeja del par (pnl_usd, pnl_pct), igual que en el frontend:
     `cost_basis_consumed` está 100% NULL en las filas reales y
     `entry_price × quantity` está en la moneda nativa de la operación (hay un
@@ -35353,7 +35362,9 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
 
     agg = {}
     for r in conn.execute(
-        f"""SELECT user_id, broker, asset, op_type, pnl_usd, pnl_pct
+        f"""SELECT user_id, broker, asset, op_type,
+                   {realized_pnl.realized_usd_sql()} AS pnl_usd,
+                   pnl_pct
             FROM operations WHERE user_id IN ({ph}) AND pnl_usd IS NOT NULL""", ids
     ).fetchall():
         pnl = float(r["pnl_usd"] or 0)

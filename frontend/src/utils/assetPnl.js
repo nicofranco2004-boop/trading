@@ -44,6 +44,45 @@
 // verdad: arriba de 10× el costo (>1000%) ya no hay lectura posible.
 const MAX_PNL_TO_COST = 10
 
+// ── `pnl_usd` no siempre es USD ───────────────────────────────────────────
+// La columna se llama así, pero en las COBRANZAS DE RENTA FIJA guarda el monto
+// en la MONEDA DEL BROKER: bond_cashflow inserta `net_amount` tal cual. Un
+// cupón de $125.000 en un broker en pesos entra a la columna como 125000, y
+// cualquiera que la sume cruda cuenta 125.000 DÓLARES.
+//
+// El backend tiene un módulo entero para esto (backend/realized_pnl.py) porque
+// el criterio estaba copiado a mano en cuatro lugares y divergió: el síntoma en
+// producción fue un cupón que el dashboard mostraba como US$100 y la IA, en el
+// MISMO request, le contaba al usuario como US$125.000. Acá va el espejo en JS,
+// con la MISMA lista y la misma regla — hay un test de paridad que lee el
+// módulo Python y falla si alguien mueve una sola de las dos.
+//
+// Por qué acá y no en GET /api/operations: ese endpoint devuelve la fila como
+// está guardada, y Operations.jsx carga `pnl_usd` en su formulario de edición y
+// lo vuelve a escribir (Operations.jsx:115 y :134). Convertir en el endpoint
+// haría que editar cualquier campo de un cupón le reescriba el monto en la DB.
+//
+// Las filas VIEJAS (sin `fx_to_usd` sellado) caen al ELSE y quedan como están.
+// Es deliberado y está medido en el docstring del módulo: de los 276 cupones
+// marcados ARS sin FX, ~125 son de bonos en dólares que YA están bien, y
+// convertirlos a todos los haría 1250× más chicos — un bug peor que el que
+// arregla.
+const NATIVE_CCY_OPS = ['Cupón', 'Amortización']
+
+/**
+ * opPnlUsd — el `pnl_usd` de la fila, en USD de verdad.
+ * Espejo de realized_usd() / realized_usd_sql() (backend/realized_pnl.py).
+ */
+export function opPnlUsd(op) {
+  const raw = op == null ? null : op.pnl_usd
+  if (raw == null) return raw
+  if (!NATIVE_CCY_OPS.includes(String(op.op_type || '').trim())) return raw
+  if (String(op.currency || '').toUpperCase() !== 'ARS') return raw
+  const fx = Number(op.fx_to_usd)
+  if (!Number.isFinite(fx) || fx <= 0) return raw
+  return raw / fx
+}
+
 import { normalizeTicker } from './assetClass'
 
 // Operaciones que no son un activo: conversiones de moneda (ARS→USDT). Tienen
@@ -127,7 +166,8 @@ export function computePnlByKey(positions = [], operations = [], brokers = [], c
   // ── Patas 2 y 3: lo cerrado y la renta ───────────────────────────────────
   for (const op of operations) {
     if (!isRealAssetOp(op)) continue
-    const pnl = op.pnl_usd
+    // NO `op.pnl_usd` crudo: un cupón en pesos entraría 1250× inflado.
+    const pnl = opPnlUsd(op)
     if (pnl == null || pnl === 0) continue
 
     const ticker = normalizeTicker(op.asset)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computePnlByKey, ratePct } from './assetPnl.js'
+import { computePnlByKey, ratePct, opPnlUsd } from './assetPnl.js'
 import { classifyAsset } from './assetClass.js'
 import { classifySector } from './assetSector.js'
 import { computeClassBreakdown } from './assetClass.js'
@@ -357,5 +357,61 @@ describe('el guard llega hasta la porción y el activo', () => {
       brokers, classify,
     )
     expect(out.get('bono').pct).toBeCloseTo((724 + 881) / 17428 * 100, 6)
+  })
+})
+
+// ─── `pnl_usd` no siempre es USD ───────────────────────────────────────────
+// En las cobranzas de renta fija la columna guarda el monto en la MONEDA DEL
+// BROKER. Sumarla cruda contaba un cupón de $125.000 como US$125.000 — el
+// mismo bug que en producción hizo que el dashboard dijera US$100 y la IA
+// US$125.000 en el mismo request (ver backend/realized_pnl.py).
+describe('opPnlUsd — normaliza el monto nativo de las cobranzas', () => {
+  const cupon = (o = {}) => ({ op_type: 'Cupón', pnl_usd: 125000, currency: 'ARS', fx_to_usd: 1250, ...o })
+
+  it('un cupón en pesos con FX sellado se convierte', () => {
+    expect(opPnlUsd(cupon())).toBe(100)
+  })
+
+  it('la amortización también', () => {
+    expect(opPnlUsd(cupon({ op_type: 'Amortización', pnl_usd: 62500 }))).toBe(50)
+  })
+
+  it('una VENTA no se toca: ahí pnl_usd ya es USD y fx_to_usd es el tc_venta', () => {
+    expect(opPnlUsd({ op_type: 'Venta', pnl_usd: 200, currency: 'ARS', fx_to_usd: 1250 })).toBe(200)
+  })
+
+  it('un cupón en dólares no se toca', () => {
+    expect(opPnlUsd(cupon({ currency: 'USD', pnl_usd: 100 }))).toBe(100)
+  })
+
+  it('las filas VIEJAS sin FX sellado quedan como estaban (deliberado)', () => {
+    // Convertirlas todas haría 1250x mas chicas a las ~125 que ya venian en
+    // dolares. Ver el docstring de backend/realized_pnl.py.
+    expect(opPnlUsd(cupon({ fx_to_usd: null }))).toBe(125000)
+    expect(opPnlUsd(cupon({ fx_to_usd: 0 }))).toBe(125000)
+    expect(opPnlUsd(cupon({ fx_to_usd: 'x' }))).toBe(125000)
+  })
+
+  it('null sigue siendo null (no 0): sin dato no es cero', () => {
+    expect(opPnlUsd({ op_type: 'Cupón', pnl_usd: null })).toBeNull()
+    expect(opPnlUsd(null)).toBeNull()
+  })
+})
+
+describe('la porción de bonos con un cupón en pesos', () => {
+  const BROKERS = [{ name: 'Balanz', currency: 'ARS' }]
+  const positions = [{ asset: 'AL30', broker: 'Balanz', asset_type: 'BONO', is_cash: 0, value_usd: 50000, pnl_usd: 0 }]
+  const classify = () => 'bono'
+
+  it('el cupón entra en USD, no 1250x inflado', () => {
+    // US$200 de cupón sobre US$50.000 de costo = +0,4%. Antes del arreglo la
+    // porción mostraba +500,0% (250.000 leidos como dolares).
+    const out = computePnlByKey(positions, [
+      { asset: 'AL30', broker: 'Balanz', op_type: 'Cupón', pnl_usd: 250000, pnl_pct: null, currency: 'ARS', fx_to_usd: 1250 },
+    ], BROKERS, classify)
+    const b = out.get('bono')
+    expect(b.income).toBe(200)
+    expect(b.total).toBe(200)
+    expect(b.pct).toBeCloseTo(0.4, 6)
   })
 })

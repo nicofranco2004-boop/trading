@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, attachSpread, toBookCompositionAiParams, DEFAULT_TOP_ASSETS } from './bookComposition.js'
 import { computeClassBreakdown } from './assetClass.js'
+import { opPnlUsd } from './assetPnl.js'
 import { computeSectorBreakdown } from './assetSector.js'
 
 // Una fila tal como la devuelve GET /api/advisor/book/composition.
@@ -351,5 +352,54 @@ describe('attachSpread — el rango entre clientes al lado del % agrupado', () =
     const bd = computeClassBreakdown(rows, [], [], [])
     expect(attachSpread(bd, [])).toBe(bd)
     expect(attachSpread(bd, null)).toBe(bd)
+  })
+})
+
+// ─── La invariante que justifica todo el diseño ────────────────────────────
+// El libro del asesor y la cartera del cliente tienen que dar EL MISMO número
+// para la misma plata. Con un cupón en pesos hay dos caminos distintos hasta
+// computePnlByKey: retail pasa la fila cruda de /api/operations, el asesor pasa
+// el agregado ya convertido del backend. Si no convergen, volvimos al bug que
+// en producción hizo que el dashboard dijera US$100 y la IA US$125.000.
+describe('el cupón en pesos da lo mismo por los dos caminos', () => {
+  // AL30 en un broker ARS: costo US$50.000, cupón de $250.000 al FX 1250.
+  // Verdad: US$200 sobre US$50.000 = +0,4%.
+  const posRetail = [{ asset: 'AL30', broker: 'Balanz', asset_type: 'BONO', is_cash: 0, value_usd: 50000, pnl_usd: 0 }]
+  const BROKERS = [{ name: 'Balanz', currency: 'ARS' }]
+
+  it('camino retail: la fila cruda de /api/operations', () => {
+    const { items } = computeClassBreakdown(posRetail, BROKERS, [], [
+      { asset: 'AL30', broker: 'Balanz', op_type: 'Cupón', pnl_usd: 250000, pnl_pct: null, currency: 'ARS', fx_to_usd: 1250 },
+    ])
+    const bono = items.find(i => i.key === 'bono')
+    expect(bono.pnl.total).toBe(200)
+    expect(bono.pnl.pct).toBeCloseTo(0.4, 6)
+  })
+
+  it('camino asesor: el agregado ya convertido del backend', () => {
+    // Lo que devuelve /advisor/book/composition despues del arreglo: el cupon
+    // ya viene en USD (realized_usd_sql lo dividio por el fx sellado).
+    const rows = [{ asset: 'AL30', asset_type: 'BONO', is_ar_market: true, is_cash: false, value_usd: 50000, invested_usd: 50000, pnl_usd: 0, clients: 1 }]
+    const ops = realizedToOps([
+      { asset: 'AL30', asset_type: 'BONO', is_ar_market: true, realized_usd: 0, income_usd: 200, cost_usd: 0, cost_incomplete: false },
+    ])
+    const { items } = computeClassBreakdown(rows, [], [], ops)
+    const bono = items.find(i => i.key === 'bono')
+    expect(bono.pnl.total).toBe(200)
+    expect(bono.pnl.pct).toBeCloseTo(0.4, 6)
+  })
+
+  it('realizedToOps no vuelve a convertir lo que el backend ya convirtio', () => {
+    // Las ops sinteticas son 'Venta'/'Dividendo', que NO estan en
+    // NATIVE_CCY_OPS — si alguien las renombrara a 'Cupon', opPnlUsd las
+    // dividiria por segunda vez.
+    const ops = realizedToOps([
+      { asset: 'AL30', asset_type: 'BONO', is_ar_market: true, realized_usd: 50, income_usd: 200, cost_usd: 500, cost_incomplete: false },
+    ])
+    for (const o of ops) {
+      expect(['Venta', 'Dividendo']).toContain(o.op_type)
+      expect(o.currency).toBeUndefined()
+      expect(opPnlUsd(o)).toBe(o.pnl_usd)
+    }
   })
 })

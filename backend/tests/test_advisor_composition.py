@@ -619,5 +619,81 @@ class DispersionEntreClientesTest(CompositionBase):
         self.assertEqual(s["clients"], 2)
 
 
+class MonedaNativaDeLasCobranzasTest(CompositionBase):
+    """`operations.pnl_usd` NO es USD en las cobranzas de renta fija.
+
+    Guarda el monto en la MONEDA DEL BROKER (bond_cashflow inserta net_amount
+    tal cual). Sumarlo crudo contaba un cupón de $125.000 como US$125.000. El
+    repo tiene un módulo — realized_pnl.py — que es el criterio ÚNICO, y existe
+    porque esto ya paso en produccion: el dashboard decia US$100 y la IA
+    US$125.000 en el MISMO request. Este endpoint es el quinto lector.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._broker(self.ana, "Balanz", "ARS")
+
+    def _op_fx(self, uid, broker, asset, op_type, pnl_usd, currency, fx):
+        self.conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type,
+                                       pnl_usd, pnl_pct, currency, fx_to_usd)
+               VALUES (?, '2026-06-01', ?,?,?,?, NULL, ?, ?)""",
+            (uid, broker, asset, op_type, pnl_usd, currency, fx))
+
+    def test_un_cupon_en_pesos_entra_en_dolares(self):
+        # $125.000 al FX sellado 1250 = US$100. Crudo serian US$125.000.
+        self._op_fx(self.ana, "Balanz", "AL30", "Cupón", 125000.0, "ARS", 1250.0)
+        self.conn.commit()
+        r = self._realized(self._get().json(), "AL30")
+        self.assertAlmostEqual(r["income_usd"], 100.0, places=2)
+
+    def test_la_amortizacion_tambien(self):
+        self._op_fx(self.ana, "Balanz", "AL30", "Amortización", 62500.0, "ARS", 1250.0)
+        self.conn.commit()
+        r = self._realized(self._get().json(), "AL30")
+        self.assertAlmostEqual(r["realized_usd"], 50.0, places=2)
+
+    def test_una_venta_NO_se_convierte(self):
+        # En Venta pnl_usd YA es USD y fx_to_usd guarda el tc_venta: dividir
+        # ahi romperia todo (lo dice el docstring del modulo).
+        self._op_fx(self.ana, "Balanz", "AAPL", "Venta", 200.0, "ARS", 1250.0)
+        self.conn.commit()
+        r = self._realized(self._get().json(), "AAPL")
+        self.assertAlmostEqual(r["realized_usd"], 200.0, places=2)
+
+    def test_un_cupon_en_dolares_no_se_toca(self):
+        self._op_fx(self.ana, "Balanz", "GD35", "Cupón", 100.0, "USD", 1250.0)
+        self.conn.commit()
+        self.assertAlmostEqual(self._realized(self._get().json(), "GD35")["income_usd"], 100.0, places=2)
+
+    def test_las_filas_viejas_sin_FX_quedan_como_estaban(self):
+        # Deliberado: de los 276 cupones marcados ARS sin FX sellado, ~125 son
+        # de bonos en dolares que YA estan bien. Convertirlos a todos los haria
+        # 1250x mas chicos. Ver el docstring de realized_pnl.py.
+        self._op_fx(self.ana, "Balanz", "AL30", "Cupón", 125000.0, "ARS", None)
+        self.conn.commit()
+        self.assertAlmostEqual(self._realized(self._get().json(), "AL30")["income_usd"], 125000.0, places=2)
+
+    def test_el_endpoint_usa_el_criterio_canonico_no_una_copia(self):
+        # Si alguien vuelve a leer la columna cruda, este test lo caza.
+        import inspect
+        src = inspect.getsource(main._advisor_realized_raw)
+        self.assertIn("realized_usd_sql", src,
+                      "_advisor_realized_raw tiene que pasar por realized_pnl, no leer pnl_usd crudo")
+
+    def test_la_lista_de_cobranzas_nativas_no_puede_divergir_del_frontend(self):
+        # El espejo en JS (opPnlUsd en utils/assetPnl.js) tiene que cubrir los
+        # MISMOS op_type. Si alguien agrega uno de un lado y no del otro, la
+        # torta del libro y la del cliente vuelven a dar numeros distintos.
+        import os
+        import realized_pnl
+        js = os.path.join(os.path.dirname(BACKEND), "frontend", "src", "utils", "assetPnl.js")
+        with open(js, encoding="utf-8") as f:
+            txt = f.read()
+        for op in realized_pnl._NATIVE_CCY_OPS:
+            self.assertIn("'" + op + "'", txt,
+                          "assetPnl.js no cubre " + op + " en NATIVE_CCY_OPS")
+
+
 if __name__ == "__main__":
     unittest.main()
