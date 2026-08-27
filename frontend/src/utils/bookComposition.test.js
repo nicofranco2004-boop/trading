@@ -363,10 +363,26 @@ describe('attachSpread — el rango entre clientes al lado del % agrupado', () =
     expect(out.items.flatMap(i => i.assets)[0].spread.clients).toBe(4)
   })
 
-  it('sin rangos devuelve el breakdown tal cual', () => {
+  it('sin rangos no agrega ningún rango, pero igual estampa el mercado', () => {
+    // El mercado va siempre: lo necesita el detalle por cliente para no
+    // mezclar el CEDEAR con la acción del exterior.
     const bd = computeClassBreakdown(rows, [], [], [])
-    expect(attachSpread(bd, [], opts)).toBe(bd)
-    expect(attachSpread(bd, null, opts)).toBe(bd)
+    for (const arg of [[], null]) {
+      const out = attachSpread(bd, arg, opts)
+      const assets = out.items.flatMap(i => i.assets)
+      expect(assets.every(a => a.spread === undefined)).toBe(true)
+      expect(assets.find(a => a.asset === 'AAPL').market).toBe(false)
+      expect(assets.find(a => a.asset === 'GGAL').market).toBe(true)
+      // y no tocó ni los pesos ni el total
+      expect(out.total).toBe(bd.total)
+      expect(out.items.map(i => i.pct)).toEqual(bd.items.map(i => i.pct))
+    }
+  })
+
+  it('sin breakdown devuelve lo que le dieron', () => {
+    expect(attachSpread(null, [], opts)).toBeNull()
+    const vacio = computeClassBreakdown([], [])
+    expect(attachSpread(vacio, [], opts)).toBe(vacio)
   })
 })
 
@@ -505,6 +521,22 @@ describe('el rango parcial viaja a la IA', () => {
       spread: [{ asset: 'GD35', clients: 2, clients_total: 3, min_pct: 5, max_pct: 5 }],
     })
     expect(p.mas_dispersos).toEqual([{ a: 'GD35', c: 2, min: 5, max: 5, ct: 3 }])
+  })
+
+  it('manda cuántos están en rojo — es la lectura accionable', () => {
+    const p = toBookCompositionAiParams(computeClassBreakdown(rows, [], [], []), {
+      clients: 3,
+      spread: [{ asset: 'GD35', clients: 4, clients_total: 4, clients_red: 2, min_pct: -20, max_pct: 30 }],
+    })
+    expect(p.mas_dispersos[0].rojo).toBe(2)
+  })
+
+  it('con todos en verde no ensucia el packet', () => {
+    const p = toBookCompositionAiParams(computeClassBreakdown(rows, [], [], []), {
+      clients: 3,
+      spread: [{ asset: 'GD35', clients: 4, clients_total: 4, clients_red: 0, min_pct: 5, max_pct: 30 }],
+    })
+    expect(p.mas_dispersos[0].rojo).toBeUndefined()
   })
 
   it('cuando cubre a todos no ensucia el packet', () => {

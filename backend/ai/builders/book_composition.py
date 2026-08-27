@@ -83,6 +83,12 @@ def _clean_dispersos(raw) -> List[Dict[str, Any]]:
             continue
         item = {"ticker": ticker, "clientes": int(n),
                 "peor_cliente_pct": round(lo, 1), "mejor_cliente_pct": round(hi, 1)}
+        # Cuántos de esos clientes están perdiendo. Es la lectura accionable:
+        # un activo con resultado agrupado bueno y dos clientes en rojo es una
+        # conversación pendiente, no una buena noticia.
+        rojo = _num(d.get("rojo"))
+        if rojo is not None and rojo > 0:
+            item["clientes_en_rojo"] = int(rojo)
         # El rango puede no cubrir a todos los que tienen el activo: hay
         # clientes cuya tasa no es publicable (el capital que generó su
         # resultado ya no está en la posición). Sin este dato el modelo

@@ -267,6 +267,9 @@ export function toBookCompositionAiParams(breakdown, { clients, mostHeld, spread
     .slice(0, MAX_DISPERSOS)
     .map(s => {
       const o = { a: s.asset, c: s.clients, min: s.min_pct, max: s.max_pct }
+      // Cuántos están en rojo: es la lectura accionable, y sin ella el modelo
+      // sólo ve un rango y no puede decir a quién conviene llamar.
+      if (s.clients_red > 0) o.rojo = s.clients_red
       // Si el rango no cubre a todos los que tienen el activo, el modelo tiene
       // que saberlo: si no, describe como "el peor de tus clientes" a un
       // mínimo que deja gente afuera.
@@ -316,7 +319,7 @@ export function attachSpread(breakdown, spreadRows, { rows, classify } = {}) {
       max_pct: Math.max(prev.max_pct, sp.max_pct),
     } : sp)
   }
-  if (byKey.size === 0 || !breakdown?.items?.length) return breakdown
+  if (!breakdown?.items?.length) return breakdown
 
   // Qué MERCADO le corresponde a cada (porción, ticker). No se adivina: se
   // re-clasifican las filas con el MISMO clasificador que armó las porciones,
@@ -349,8 +352,13 @@ export function attachSpread(breakdown, spreadRows, { rows, classify } = {}) {
             // rango que describa la misma población que el % de arriba. Antes
             // de mostrar uno que no corresponde, no se muestra ninguno.
             if (!ms || ms.size !== 1) return a
+            // `market` va SIEMPRE que sea resoluble, haya rango o no: es lo
+            // que necesita el detalle por cliente para no mezclar el CEDEAR
+            // con la acción del exterior, que en esta torta son porciones
+            // distintas.
+            const market = [...ms][0] === 1
             const sp = byKey.get(`${t}|${[...ms][0]}`)
-            return sp ? { ...a, spread: sp } : a
+            return sp ? { ...a, market, spread: sp } : { ...a, market }
           }) }
         : i
     )),

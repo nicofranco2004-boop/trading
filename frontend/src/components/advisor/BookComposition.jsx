@@ -26,12 +26,13 @@
 // dólar: el pie de la sección lo dice explícitamente en vez de dejar dos
 // números que se contradicen sin explicación.
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { PieChart } from 'lucide-react'
 import CompositionDonut, { UnclassifiedNote } from '../CompositionDonut'
 import CompositionByRisk from '../CompositionByRisk'
 import InfoTooltip from '../InfoTooltip'
 import AskAIAbout from '../ai/AskAIAbout'
+import AssetClientsModal from './AssetClientsModal'
 import { computeClassBreakdown, classifyAsset } from '../../utils/assetClass'
 import { computeSectorBreakdown, classifySector } from '../../utils/assetSector'
 import {
@@ -51,6 +52,8 @@ export default function BookComposition({ data, error = false }) {
   // early returns): si `series` pasa de <2 a ≥2 puntos entre renders, React
   // tira y se lleva la pantalla entera al error boundary. Acá no.
   const { isArs, convert } = useMoneyFormat()
+  // El activo cuyo detalle por cliente está abierto ({asset, market, label}).
+  const [detalle, setDetalle] = useState(null)
   const rows = data?.rows
   const included = data?.included
 
@@ -214,6 +217,7 @@ export default function BookComposition({ data, error = false }) {
           title="Por tipo de activo"
           items={clase.items}
           fmt={fmt}
+          onAssetClick={setDetalle}
           info={(
             <>
               <p className="font-semibold text-ink-0">Cómo se calcula</p>
@@ -292,6 +296,7 @@ export default function BookComposition({ data, error = false }) {
           title="Por sector"
           items={sector.items}
           fmt={fmt}
+          onAssetClick={setDetalle}
           info={(
             <>
               <p className="font-semibold text-ink-0">Cómo se calcula</p>
@@ -314,6 +319,16 @@ export default function BookComposition({ data, error = false }) {
       {/* El pie que evita el número contradictorio: esta valuación NO es la
           del hero, y decirlo es más barato que dejar al asesor descubriendo
           solo que dos totales de la misma pantalla no cierran. */}
+      {detalle && (
+        <AssetClientsModal
+          asset={detalle.asset}
+          market={detalle.market}
+          label={detalle.label}
+          fmt={fmt}
+          onClose={() => setDetalle(null)}
+        />
+      )}
+
       <p className="text-[10.5px] text-ink-3 leading-snug mt-2">
         Valuado con los últimos precios conocidos
         {data.as_of ? ` (al ${data.as_of})` : ''}

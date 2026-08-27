@@ -35507,9 +35507,9 @@ def _advisor_return_spread(valued_rows: list, realized_raw: dict):
     US" decía +6,8% con un rango de +14,8% a +41,5%, que era el de los dos
     mercados juntos.
 
-    Devuelve [{asset, is_ar_market, clients, clients_total, min_pct, max_pct}]
-    solo para los pares (activo, mercado) con al menos DOS clientes con retorno
-    medible: con uno no hay dispersión que contar.
+    Devuelve [{asset, is_ar_market, clients, clients_total, clients_red,
+    min_pct, max_pct}] solo para los pares (activo, mercado) con al menos DOS
+    clientes con retorno medible: con uno no hay dispersión que contar.
     """
     # Clave: (cliente, TICKER NORMALIZADO). Los dos mercados del mismo papel se
     # suman ANTES de sacar el porcentaje, no después. Un cliente que tiene AAPL
@@ -35552,8 +35552,13 @@ def _advisor_return_spread(valued_rows: list, realized_raw: dict):
         pcts = d["pcts"]
         if len(pcts) < 2:
             continue
+        # `clients_red` es lo que la UI muestra: la pregunta del asesor no es
+        # "cuál es el rango" sino "¿hay alguien perdiendo con esto?", que es la
+        # que le hace agarrar el teléfono. El rango completo igual viaja, para
+        # el hover y para el packet de la IA.
         out.append({"asset": asset, "is_ar_market": is_ar,
                     "clients": len(pcts), "clients_total": d["total"],
+                    "clients_red": sum(1 for p in pcts if p < 0),
                     "min_pct": round(min(pcts), 1), "max_pct": round(max(pcts), 1)})
     out.sort(key=lambda r: -(r["max_pct"] - r["min_pct"]))
     return out
@@ -35689,6 +35694,94 @@ def advisor_book_composition(uid: int = Depends(get_current_user)):
                 "orphan_broker": stats["orphan_broker"],
             },
         }
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/book/asset-clients")
+def advisor_book_asset_clients(asset: str, is_ar_market: bool = None,
+                               uid: int = Depends(get_current_user)):
+    """Quién tiene ESTE activo, y cómo le fue a cada uno.
+
+    El detalle que hay detrás de "2 de 6 clientes en rojo". Existe porque la
+    fila de la torta muestra dos números en unidades distintas — un rendimiento
+    ponderado POR PLATA (+1,0%) y un conteo de GENTE (2 de 6) — y puestos uno
+    al lado del otro parecen contradecirse. No se contradicen: el promedio lo
+    manda quien más tiene. La única forma de que eso se entienda es poder ver
+    los seis.
+
+    Se sirve APARTE y a pedido, no dentro de /composition: per-cliente
+    per-activo son ~32.000 filas para un libro de 500 clientes, que es
+    exactamente lo que el diseño de ese endpoint evita mandar. Acá el tope
+    natural es la cantidad de clientes que tienen ese activo.
+
+    Mismo motor y mismo criterio que la torta (_advisor_positions_valued +
+    _advisor_realized_raw + _rate_pct), así que el % de cada cliente es el
+    mismo que alimentó el rango: si acá dijera otra cosa, sería peor que no
+    tenerlo.
+    """
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        ids = _advisor_client_ids(conn, uid)
+        ticker = _norm_ticker(asset)
+        if not ids or not ticker:
+            return {"asset": ticker, "clients": []}
+
+        tc_blue, tc_mep = _advisor_book_fx(conn)
+        valued, _sk = _advisor_positions_valued(conn, ids, tc_blue, tc_mep)
+        realized_raw = _advisor_realized_raw(conn, ids)
+
+        # Mismo pliegue que _advisor_return_spread: (cliente, ticker, mercado).
+        # `is_ar_market` viene de la fila que el usuario tocó — sin él,
+        # mezclaríamos el CEDEAR con la acción del exterior, que en la torta
+        # son porciones distintas.
+        per = {}
+        for vr in valued:
+            if _norm_ticker(vr["asset"]) != ticker:
+                continue
+            if is_ar_market is not None and bool(vr.get("is_ar_market")) != is_ar_market:
+                continue
+            acc = per.setdefault(vr["client_uid"], [0.0, 0.0, False, 0.0])
+            acc[0] += vr["pnl_usd"]
+            acc[1] += vr["invested_usd"]
+            acc[3] += vr["value_usd"]
+        for (cid, a, is_ar), b in realized_raw.items():
+            if _norm_ticker(a) != ticker:
+                continue
+            if is_ar_market is not None and bool(is_ar) != is_ar_market:
+                continue
+            acc = per.setdefault(cid, [0.0, 0.0, False, 0.0])
+            acc[0] += b["realized_usd"] + b["income_usd"]
+            acc[1] += b["cost_usd"]
+            acc[2] = acc[2] or b["cost_incomplete"]
+
+        if not per:
+            return {"asset": ticker, "clients": []}
+
+        ph = ",".join("?" * len(per))
+        labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      f"""SELECT ac.client_uid, ac.label, u.name
+                          FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+                          WHERE ac.advisor_uid=? AND ac.client_uid IN ({ph})""",
+                      (uid, *per.keys())).fetchall()}
+
+        out = []
+        for cid, (total, cost, incomplete, value) in per.items():
+            out.append({
+                "client_uid": cid,
+                "label": labels.get(cid, f"Cliente {cid}"),
+                "value_usd": round(value, 2),
+                "pnl_usd": round(total, 2),
+                # None cuando la tasa no es publicable — mismo guard que el
+                # resto. La UI muestra el monto igual y la tasa como "—".
+                "pct": (lambda p: round(p, 1) if p is not None else None)(
+                    _rate_pct(total, cost, incomplete)),
+            })
+        # Peor primero: el que abre esto quiere saber a quién llamar.
+        out.sort(key=lambda r: (r["pct"] is None, r["pct"] if r["pct"] is not None else 0))
+        return {"asset": ticker, "clients": out}
     finally:
         conn.close()
 

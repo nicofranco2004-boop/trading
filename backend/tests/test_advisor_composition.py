@@ -933,5 +933,163 @@ class CostoDeVentasQueSeCancelanTest(CompositionBase):
         self.assertEqual(self._get().json()["realized_by_asset"], [])
 
 
+class ClientesEnRojoTest(CompositionBase):
+    """`clients_red` — lo único que la fila muestra hoy.
+
+    La pregunta del asesor no es "cuál es el rango" sino "¿hay alguien
+    perdiendo con esto?". La línea anterior mostraba el rango completo en toda
+    fila con dos o más clientes y no se entendía: cuatro porcentajes sin
+    etiqueta en la misma fila.
+    """
+
+    def _spread(self, body, asset):
+        return next((r for r in body["return_spread"] if r["asset"] == asset), None)
+
+    def _dos_clientes_en(self, asset, precio_ana, precio_beto=None):
+        # Mismo activo, mismo costo, distinto valor ⇒ distinto retorno.
+        for u, inv in ((self.ana, 100), (self.beto, 100)):
+            self._broker(u, "Schwab", "USD")
+            self._pos(u, "Schwab", asset, 1, inv)
+        self._price(asset, precio_ana)
+
+    def test_cuenta_a_los_que_pierden(self):
+        # Ana compró a 200 y vale 100 (−50%); Beto a 50 y vale 100 (+100%).
+        self._broker(self.ana, "Schwab", "USD")
+        self._broker(self.beto, "Schwab", "USD")
+        self._pos(self.ana, "Schwab", "AAPL", 1, 200)
+        self._pos(self.beto, "Schwab", "AAPL", 1, 50)
+        self._price("AAPL", 100)
+        self.conn.commit()
+
+        s = self._spread(self._get().json(), "AAPL")
+        self.assertEqual(s["clients"], 2)
+        self.assertEqual(s["clients_red"], 1)
+        self.assertAlmostEqual(s["min_pct"], -50.0, places=1)
+
+    def test_con_todos_en_verde_el_conteo_es_cero(self):
+        # La UI usa esto para NO dibujar la línea.
+        self._dos_clientes_en("AAPL", 120)
+        self.conn.commit()
+        s = self._spread(self._get().json(), "AAPL")
+        self.assertIsNotNone(s, "el rango sigue viajando (lo usa el hover y la IA)")
+        self.assertEqual(s["clients_red"], 0)
+
+    def test_todos_en_rojo(self):
+        self._dos_clientes_en("AAPL", 80)
+        self.conn.commit()
+        s = self._spread(self._get().json(), "AAPL")
+        self.assertEqual(s["clients_red"], 2)
+        self.assertEqual(s["clients"], 2)
+
+    def test_un_cero_exacto_no_es_rojo(self):
+        # Empatado no es perdiendo.
+        self._dos_clientes_en("AAPL", 100)
+        self.conn.commit()
+        self.assertEqual(self._spread(self._get().json(), "AAPL")["clients_red"], 0)
+
+
+class DetallePorClienteTest(CompositionBase):
+    """GET /advisor/book/asset-clients — el detalle detrás de "2 de 6 en rojo".
+
+    La fila de la torta muestra dos números en unidades distintas: un
+    rendimiento ponderado POR PLATA y un conteo de GENTE. Puestos uno al lado
+    del otro parecen contradecirse, y explicarlo en una línea no alcanzó. Este
+    endpoint es lo que se abre al hacer clic.
+    """
+
+    def _get_detalle(self, asset, is_ar=None, uid=None):
+        uid = self.asesor if uid is None else uid
+        q = "?asset=" + asset + ("" if is_ar is None else "&is_ar_market=" + str(is_ar).lower())
+        return self.client.get("/api/advisor/book/asset-clients" + q,
+                               headers={"Authorization": f"Bearer {main.create_token(uid)}"})
+
+    def test_un_asesor_ajeno_no_ve_estos_clientes(self):
+        self._broker(self.ana, "Schwab", "USD")
+        self._pos(self.ana, "Schwab", "AAPL", 1, 100)
+        self._price("AAPL", 120)
+        self.conn.commit()
+        self.assertEqual(self._get_detalle("AAPL", uid=self.otro_asesor).json()["clients"], [])
+
+    def test_sin_plan_asesor_403(self):
+        pepe = self._user("pepe2@rendi.test")
+        self.conn.commit()
+        self.assertEqual(self._get_detalle("AAPL", uid=pepe).status_code, 403)
+
+    def test_devuelve_a_cada_cliente_con_su_rendimiento(self):
+        # Ana compró a 200 y vale 100 (−50%); Beto a 50 y vale 100 (+100%).
+        for u, inv in ((self.ana, 200), (self.beto, 50)):
+            self._broker(u, "Schwab", "USD")
+            self._pos(u, "Schwab", "AAPL", 1, inv)
+        self._price("AAPL", 100)
+        self.conn.commit()
+
+        cs = self._get_detalle("AAPL", is_ar=False).json()["clients"]
+        self.assertEqual(len(cs), 2)
+        self.assertAlmostEqual(cs[0]["pct"], -50.0, places=1)
+        self.assertAlmostEqual(cs[1]["pct"], 100.0, places=1)
+
+    def test_el_peor_va_PRIMERO(self):
+        # El que abre esto quiere saber a quién llamar.
+        for u, inv in ((self.ana, 50), (self.beto, 200)):
+            self._broker(u, "Schwab", "USD")
+            self._pos(u, "Schwab", "AAPL", 1, inv)
+        self._price("AAPL", 100)
+        self.conn.commit()
+        cs = self._get_detalle("AAPL", is_ar=False).json()["clients"]
+        self.assertLess(cs[0]["pct"], cs[1]["pct"])
+
+    def test_el_mercado_separa_el_CEDEAR_de_la_accion(self):
+        # Si no filtrara, el detalle mostraría clientes que no están en la
+        # porción desde la que se abrió.
+        self._broker(self.ana, "Balanz", "ARS")
+        self._broker(self.beto, "Schwab", "USD")
+        self._pos(self.ana, "Balanz", "AAPL", 10, 100000)   # CEDEAR
+        self._pos(self.beto, "Schwab", "AAPL", 1, 100)      # acción US
+        self._price("AAPL.BA", 20000)
+        self._price("AAPL", 150)
+        self.conn.commit()
+
+        ar = self._get_detalle("AAPL", is_ar=True).json()["clients"]
+        us = self._get_detalle("AAPL", is_ar=False).json()["clients"]
+        self.assertEqual([c["client_uid"] for c in ar], [self.ana])
+        self.assertEqual([c["client_uid"] for c in us], [self.beto])
+        # Sin el filtro, los dos.
+        self.assertEqual(len(self._get_detalle("AAPL").json()["clients"]), 2)
+
+    def test_los_cupones_y_ventas_entran_en_el_rendimiento(self):
+        self._broker(self.ana, "Schwab", "USD")
+        self._broker(self.beto, "Schwab", "USD")
+        self._pos(self.ana, "Schwab", "AAPL", 1, 100)
+        self._pos(self.beto, "Schwab", "AAPL", 1, 100)
+        self._price("AAPL", 100)
+        self._op(self.beto, "Schwab", "AAPL", "Dividendo", 50.0)
+        self.conn.commit()
+        cs = {c["client_uid"]: c for c in self._get_detalle("AAPL", is_ar=False).json()["clients"]}
+        self.assertAlmostEqual(cs[self.ana]["pct"], 0.0, places=1)
+        self.assertAlmostEqual(cs[self.beto]["pct"], 50.0, places=1)
+
+    def test_la_tasa_no_publicable_llega_como_null_no_como_numero_roto(self):
+        self._broker(self.ana, "Balanz", "ARS")
+        self._pos(self.ana, "Balanz", "AL30", 10, 100000, asset_type="BONO")
+        self._price("AL30.BA", 10000)
+        self._op(self.ana, "Balanz", "AL30", "Cupón", 999999.0)
+        self.conn.commit()
+        c = self._get_detalle("AL30", is_ar=True).json()["clients"][0]
+        self.assertIsNone(c["pct"])
+        self.assertGreater(c["value_usd"], 0)
+
+    def test_normaliza_el_sufijo_BA(self):
+        self._broker(self.ana, "Balanz", "ARS")
+        self._pos(self.ana, "Balanz", "GGAL", 100, 100000)
+        self._price("GGAL.BA", 2000)
+        self.conn.commit()
+        self.assertEqual(len(self._get_detalle("ggal.ba", is_ar=True).json()["clients"]), 1)
+
+    def test_activo_inexistente_no_revienta(self):
+        r = self._get_detalle("NOEXISTE")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["clients"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

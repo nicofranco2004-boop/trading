@@ -59,6 +59,10 @@ export default function CompositionDonut({
   height = 200,
   maxSlices = 10,
   minSlicePct = MIN_SLICE_PCT,
+  // onAssetClick(asset) — opcional. Cuando viene, cada activo del desglose se
+  // vuelve clickeable. Lo usa el libro del asesor para abrir el detalle por
+  // cliente; retail no lo pasa y las filas siguen siendo texto.
+  onAssetClick = null,
   className = '',
 }) {
   const [active, setActive] = useState(null)
@@ -88,7 +92,7 @@ export default function CompositionDonut({
       detail: (it.assets || []).map(a => ({
         key: a.asset, label: displayTicker(a.asset), value: a.value, pct: a.pct, pnl: a.pnl,
         // Dispersión entre carteras — solo la manda el libro del asesor.
-        spread: a.spread,
+        spread: a.spread, asset: a.asset, market: a.market,
       })),
     }))
     // Las porciones RESIDUALES van al final, pegadas al "Otros" de agrupación:
@@ -110,7 +114,7 @@ export default function CompositionDonut({
         ...r,
         detail: (r.assets || []).map(a => ({
           key: a.asset, label: displayTicker(a.asset), value: a.value, pct: a.pct, pnl: a.pnl,
-          spread: a.spread,
+          spread: a.spread, asset: a.asset, market: a.market,
         })),
       }]
     }
@@ -193,6 +197,7 @@ export default function CompositionDonut({
                 onHover={() => setActive(i)}
                 onLeave={() => setActive(null)}
                 onToggle={() => toggle(s.key)}
+                onAssetClick={onAssetClick}
               />
             ))}
           </div>
@@ -211,7 +216,7 @@ export default function CompositionDonut({
 // Una fila de la leyenda. Desplegable solo si tiene detalle — las porciones
 // sintéticas (plazo fijo, que no viene de `positions`) no tienen qué mostrar,
 // y darles un chevron que no hace nada es peor que no tenerlo.
-function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onToggle }) {
+function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onToggle, onAssetClick }) {
   // Se despliega si hay algo que mostrar: activos, o al menos el resultado
   // (el plazo fijo no tiene activos pero sí interés devengado).
   const canExpand = slice.detail?.length > 0 || Boolean(slice.pnl)
@@ -290,8 +295,22 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
               </div>
             </div>
           )}
-          {shown.map(d => (
-            <div key={d.key}>
+          {shown.map(d => {
+            // Clickeable solo si el caller sabe qué hacer con el clic Y el
+            // activo tiene mercado resuelto (sin eso el detalle mezclaría el
+            // CEDEAR con la acción del exterior).
+            const clickable = Boolean(onAssetClick && d.asset)
+            const Row = clickable ? 'button' : 'div'
+            return (
+            <Row
+              key={d.key}
+              {...(clickable ? {
+                type: 'button',
+                onClick: () => onAssetClick({ asset: d.asset, market: d.market, label: d.label }),
+                className: 'w-full text-left rounded-sm px-1 -mx-1 hover:bg-bg-2/50 transition-colors',
+                title: `Ver quién tiene ${d.label} y cómo le fue a cada uno`,
+              } : {})}
+            >
             <div className="flex items-baseline justify-between gap-3 text-[11px]">
               <span className="text-ink-1 font-mono font-medium truncate">{d.label}</span>
               <div className="flex items-baseline gap-2 flex-shrink-0">
@@ -304,11 +323,6 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
                     className={`tabular font-medium min-w-[46px] text-right ${
                       d.pnl ? toneOf(d.pnl.total) : 'text-ink-3'
                     }`}
-                    // El '—' significa "no hay tasa que valga", y hay dos
-                    // motivos: falta el costo de alguna venta, o el capital
-                    // que generó ese resultado ya no está en la posición (un
-                    // bono amortizado que siguió pagando cupones). En los dos
-                    // casos el MONTO sigue siendo válido; la tasa no.
                     title={d.pnl && d.pnl.pct == null
                       ? 'Sin tasa confiable: falta el costo de alguna venta, o el capital que generó este resultado ya no está en la posición.'
                       : undefined}
@@ -320,37 +334,25 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
                 )}
               </div>
             </div>
-            {d.spread && (
-              // El % de arriba es AGRUPADO: la plata de todas las carteras
-              // junta. Este rango dice cuánto se abren los clientes por
-              // adentro — un +9,8% promedio puede ser alguien en −20%. Sale
-              // del mismo cálculo de tres patas que el agrupado.
-              //
-              // "N de M carteras": cuando difieren, hay clientes cuya tasa no
-              // es publicable (el capital que generó su resultado ya no está
-              // en la posición) y que por eso NO están en el rango — pero su
-              // plata SÍ está en el % de arriba. Sin ese rótulo los dos
-              // números se contradicen sin explicación.
-              <div
-                className="text-[10px] text-ink-3 tabular pl-0.5 -mt-0.5"
-                title={d.spread.clients_total > d.spread.clients
-                  ? `De ${d.spread.clients_total} carteras con este activo, ${d.spread.clients_total - d.spread.clients} no tienen un rendimiento medible y quedan fuera del rango. El porcentaje de arriba sí las incluye.`
-                  : undefined}
-              >
-                {d.spread.clients_total > d.spread.clients
-                  ? `${d.spread.clients} de ${d.spread.clients_total} carteras`
-                  : `${d.spread.clients} carteras`} · de{' '}
-                <span className={toneOf(d.spread.min_pct)}>
-                  {signed(d.spread.min_pct)}{Math.abs(d.spread.min_pct).toFixed(1)}%
+            {d.spread?.clients_red > 0 && (
+              // El % de al lado es un PROMEDIO PONDERADO POR PLATA: lo manda
+              // el cliente que más tiene. Por eso puede dar positivo con
+              // clientes en rojo adentro — no se contradicen, miden cosas
+              // distintas (plata una, gente la otra). Decirlo en una línea no
+              // alcanzó: la salida es poder abrirlo y ver a los seis.
+              <div className="text-[10px] text-ink-3 pl-0.5 -mt-0.5 flex items-center gap-1">
+                <span>
+                  <span className="tabular">{d.spread.clients_red}</span> de{' '}
+                  <span className="tabular">{d.spread.clients}</span> clientes en rojo
                 </span>
-                {' '}a{' '}
-                <span className={toneOf(d.spread.max_pct)}>
-                  {signed(d.spread.max_pct)}{Math.abs(d.spread.max_pct).toFixed(1)}%
-                </span>
+                {clickable && (
+                  <span className="text-data-violet">· ver quiénes</span>
+                )}
               </div>
             )}
-            </div>
-          ))}
+            </Row>
+            )
+          })}
           {hidden > 0 && (
             <div className="text-[11px] text-ink-3">y {hidden} más</div>
           )}
