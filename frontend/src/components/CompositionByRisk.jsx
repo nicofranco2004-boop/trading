@@ -89,9 +89,9 @@ export default function CompositionByRisk({
       </div>
 
       {/* Leyenda: qué instrumentos entraron en cada barra. No es decoración —
-          que la cripto esté en "renta variable" y los FCI en "renta fija" son
-          decisiones de criterio, y quien lee el número tiene derecho a saber
-          cuáles se tomaron sin abrir el código. */}
+          que la cripto y los FCI cuenten como "renta variable" son decisiones
+          de criterio, y quien lee el número tiene derecho a saber cuáles se
+          tomaron sin abrir el código. */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 pt-3 border-t border-line/40">
         {items.map(it => (
           <span key={it.key} className="inline-flex items-center gap-1.5 text-[10.5px] text-ink-3">

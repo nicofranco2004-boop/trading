@@ -580,9 +580,18 @@ describe('riskMixFromBreakdown', () => {
     const { items, total } = riskMixFromBreakdown(computeClassBreakdown(rows, []))
     const by = Object.fromEntries(items.map(i => [i.key, i.value]))
     expect(total).toBe(1000)
-    expect(by.variable).toBe(600)    // CEDEAR 300 + acción AR 100 + cripto 200
-    expect(by.fija).toBe(200)        // bono 150 + FCI 50
+    expect(by.variable).toBe(650)    // CEDEAR 300 + acción AR 100 + cripto 200 + FCI 50
+    expect(by.fija).toBe(150)        // solo el bono
     expect(by.efectivo).toBe(200)
+  })
+
+  it('los FCI cuentan como renta variable (decisión declarada)', () => {
+    // El importador no distingue money market de un fondo de acciones, así que
+    // esto es una apuesta explícita, no un dato. Está dicho en el tooltip de
+    // la card y en el comentario de CLASS_TO_RISK.
+    const solo = [{ asset: 'FCI:FIMA-PREMIUM-A', value_usd: 100, invested_usd: 100, pnl_usd: 0, is_ar_market: true, is_cash: false }]
+    const { items } = riskMixFromBreakdown(computeClassBreakdown(solo, []))
+    expect(items.map(i => i.key)).toEqual(['variable'])
   })
 
   it('la cripto cuenta como renta variable (decisión declarada)', () => {
@@ -594,7 +603,7 @@ describe('riskMixFromBreakdown', () => {
   it('los plazos fijos entran en renta fija', () => {
     const bd = computeClassBreakdown(rows, [], [pfSlice({ plazos_fijos_usd: 500, plazos_fijos_invested_usd: 480 }, 'plazo_fijo')])
     const by = Object.fromEntries(riskMixFromBreakdown(bd).items.map(i => [i.key, i.value]))
-    expect(by.fija).toBe(700)
+    expect(by.fija).toBe(650)   // bono 150 + plazo fijo 500
   })
 
   it('lo que el clasificador no supo tipar NO se reparte: va a su propia barra', () => {
@@ -603,8 +612,8 @@ describe('riskMixFromBreakdown', () => {
     const otro = items.find(i => i.key === 'otro')
     expect(otro.value).toBe(100)
     // y no infló ninguno de los otros dos
-    expect(items.find(i => i.key === 'variable').value).toBe(600)
-    expect(items.find(i => i.key === 'fija').value).toBe(200)
+    expect(items.find(i => i.key === 'variable').value).toBe(650)
+    expect(items.find(i => i.key === 'fija').value).toBe(150)
   })
 
   it('sin nada sin clasificar son exactamente TRES barras', () => {
@@ -620,9 +629,9 @@ describe('riskMixFromBreakdown', () => {
   it('cada barra dice qué clases la componen (para el pie de la card)', () => {
     const { items } = riskMixFromBreakdown(computeClassBreakdown(rows, []))
     expect(items.find(i => i.key === 'variable').classes).toEqual(
-      expect.arrayContaining(['CEDEARs', 'Acciones AR', 'Cripto']))
+      expect.arrayContaining(['CEDEARs', 'Acciones AR', 'Cripto', 'FCI']))
     expect(items.find(i => i.key === 'fija').classes).toEqual(
-      expect.arrayContaining(['Bonos y letras', 'FCI']))
+      expect.arrayContaining(['Bonos y letras']))
   })
 
   it('LA INVARIANTE: suma exactamente lo mismo que la torta que plegó', () => {

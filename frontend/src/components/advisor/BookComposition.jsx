@@ -198,9 +198,9 @@ export default function BookComposition({ data, error = false }) {
               aparte si querés ver cuánto pesa.
             </p>
             <p className="text-ink-3">
-              Los FCI van a renta fija — en Argentina el money market es el caso
-              dominante, pero un FCI de acciones caería del lado equivocado y
-              hoy el importador no distingue el tipo de fondo.
+              Los FCI cuentan como renta variable. El importador no distingue el
+              tipo de fondo, así que un money market queda contado como
+              exposición al mercado aunque rinda parecido a un plazo fijo.
             </p>
           </>
         )}

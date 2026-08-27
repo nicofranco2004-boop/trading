@@ -116,10 +116,12 @@ export const ASSET_CLASS_META = {
 //     riesgo y el corte que se pide es de tres. Ojo que en una cartera
 //     argentina puede pesar mucho: la torta por tipo la sigue mostrando
 //     aparte, que es donde se ve.
-//   • FCI va en renta fija. En Argentina el FCI money-market es el caso
-//     dominante por lejos, pero un FCI de acciones existe y acá cae del lado
-//     equivocado. El importador no distingue el tipo de fondo, así que no hay
-//     con qué separarlos hoy.
+//   • FCI va en renta VARIABLE (decisión del dueño, 2026-08-27). El
+//     importador no distingue el tipo de fondo, así que la elección es entre
+//     equivocarse con unos o con otros: un FCI money-market —el caso más común
+//     en Argentina— queda contado como exposición al mercado, y un FCI de
+//     acciones queda bien. Si algún día el catálogo distingue money-market de
+//     renta variable, esto se parte en dos y deja de ser una apuesta.
 //
 // 'otro' NO se reparte: si el clasificador no supo qué es, meterlo en
 // cualquiera de los dos lados sería inventar. Va a su propia barra, que la UI
@@ -136,7 +138,8 @@ export const RISK_GROUP_ORDER = Object.keys(RISK_GROUP_META)
 const CLASS_TO_RISK = {
   cedear: 'variable', accion_ar: 'variable', accion_us: 'variable',
   etf: 'variable', cripto: 'variable',
-  bono: 'fija', plazo_fijo: 'fija', fci: 'fija',
+  fci: 'variable',
+  bono: 'fija', plazo_fijo: 'fija',
   cash: 'efectivo',
   otro: 'otro',
 }
