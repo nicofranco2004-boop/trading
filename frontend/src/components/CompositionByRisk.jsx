@@ -58,13 +58,26 @@ export default function CompositionByRisk({
               <span className="w-[104px] shrink-0 text-xs text-ink-1 truncate whitespace-nowrap">
                 {it.label}
               </span>
-              <div className="flex-1 h-[6px] rounded-full bg-bg-3 overflow-hidden min-w-[40px]">
+              <div className="flex-1 h-[6px] rounded-full bg-bg-3 overflow-hidden min-w-[60px]">
                 <div
                   className="h-full rounded-full"
                   style={{ width: `${pct}%`, background: it.color }}
                 />
               </div>
-              <span className="text-ink-3 tabular text-[11px] flex-shrink-0">
+              {/* Ancho FIJO, no `flex-shrink-0` a secas: con ancho variable el
+                  riel de cada fila terminaba midiendo distinto según cuántos
+                  dígitos tuviera SU monto, y entonces las barras dejaban de
+                  compartir escala. Medido en el libro demo: 948px contra
+                  954px por un carácter de diferencia — poco acá, pero en
+                  mobile con el toggle en pesos el riel colapsa y una porción
+                  chica puede llegar a dibujar una barra más larga que una
+                  grande. En un gráfico cuyo único trabajo es comparar
+                  longitudes, eso lo invalida.
+
+                  Y en pantallas chicas el monto directamente no entra: se
+                  oculta para que el riel siga siendo legible. El % queda, que
+                  es el número que se compara. */}
+              <span className="hidden sm:block text-ink-3 tabular text-[11px] w-28 text-right flex-shrink-0">
                 {fmt(it.value)}
               </span>
               <span className="text-ink-0 tabular font-medium text-xs w-11 text-right flex-shrink-0">
