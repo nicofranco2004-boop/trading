@@ -104,6 +104,48 @@ export const ASSET_CLASS_META = {
   otro:      { label: 'Sin clasificar', color: '#8A93A6' },
 }
 
+// ─── El corte grueso: variable / fija / efectivo ────────────────────────────
+// Un nivel ARRIBA de la clase de activo. La clase contesta "qué instrumento
+// es"; esto contesta "cuánto de esto se puede mover", que es la primera
+// pregunta que se hace alguien mirando una cartera ajena.
+//
+// Dos decisiones que son juicio, no dato, y por eso están acá arriba y
+// escritas en el tooltip de la card:
+//
+//   • CRIPTO va en renta variable. No es una acción, pero es un activo de
+//     riesgo y el corte que se pide es de tres. Ojo que en una cartera
+//     argentina puede pesar mucho: la torta por tipo la sigue mostrando
+//     aparte, que es donde se ve.
+//   • FCI va en renta fija. En Argentina el FCI money-market es el caso
+//     dominante por lejos, pero un FCI de acciones existe y acá cae del lado
+//     equivocado. El importador no distingue el tipo de fondo, así que no hay
+//     con qué separarlos hoy.
+//
+// 'otro' NO se reparte: si el clasificador no supo qué es, meterlo en
+// cualquiera de los dos lados sería inventar. Va a su propia barra, que la UI
+// muestra solo si tiene peso.
+export const RISK_GROUP_META = {
+  variable: { label: 'Renta variable', color: '#8B7DFF' },
+  fija:     { label: 'Renta fija',     color: '#E8B14A' },
+  efectivo: { label: 'Efectivo',       color: '#5A6478' },
+  otro:     { label: 'Sin clasificar', color: '#8A93A6' },
+}
+
+export const RISK_GROUP_ORDER = Object.keys(RISK_GROUP_META)
+
+const CLASS_TO_RISK = {
+  cedear: 'variable', accion_ar: 'variable', accion_us: 'variable',
+  etf: 'variable', cripto: 'variable',
+  bono: 'fija', plazo_fijo: 'fija', fci: 'fija',
+  cash: 'efectivo',
+  otro: 'otro',
+}
+
+/** riskGroupOf — de una clave de ASSET_CLASS_META a una de RISK_GROUP_META. */
+export function riskGroupOf(classKey) {
+  return CLASS_TO_RISK[classKey] || 'otro'
+}
+
 export const ASSET_CLASS_ORDER = Object.keys(ASSET_CLASS_META)
 
 export function assetClassMeta(key) {

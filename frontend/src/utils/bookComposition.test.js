@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, attachSpread, toBookCompositionAiParams, DEFAULT_TOP_ASSETS } from './bookComposition.js'
+import { assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, attachSpread, riskMixFromBreakdown, toBookCompositionAiParams, DEFAULT_TOP_ASSETS } from './bookComposition.js'
 import { computeClassBreakdown, classifyAsset } from './assetClass.js'
 import { opPnlUsd } from './assetPnl.js'
 import { computeSectorBreakdown } from './assetSector.js'
@@ -530,5 +530,79 @@ describe('el denominador con ventas que se cancelan', () => {
     expect(us.pnl.total).toBe(200)
     expect(us.pnl.cost).toBe(12000)
     expect(us.pnl.pct).toBeCloseTo(200 / 12000 * 100, 6)
+  })
+})
+
+// ─── El corte grueso: variable / fija / efectivo ───────────────────────────
+describe('riskMixFromBreakdown', () => {
+  const rows = [
+    { asset: 'AAPL', value_usd: 300, invested_usd: 300, pnl_usd: 0, is_ar_market: true, is_cash: false },   // CEDEAR
+    { asset: 'GGAL', value_usd: 100, invested_usd: 100, pnl_usd: 0, is_ar_market: true, is_cash: false },   // acción AR
+    { asset: 'BTC', value_usd: 200, invested_usd: 200, pnl_usd: 0, is_ar_market: false, is_cash: false },   // cripto
+    { asset: 'AL30', value_usd: 150, invested_usd: 150, pnl_usd: 0, is_ar_market: true, is_cash: false },   // bono
+    { asset: 'FCI:FIMA-PREMIUM-A', value_usd: 50, invested_usd: 50, pnl_usd: 0, is_ar_market: true, is_cash: false },
+    { asset: 'USD', value_usd: 200, invested_usd: 200, pnl_usd: 0, is_ar_market: false, is_cash: true },
+  ]
+
+  it('agrupa en variable / fija / efectivo', () => {
+    const { items, total } = riskMixFromBreakdown(computeClassBreakdown(rows, []))
+    const by = Object.fromEntries(items.map(i => [i.key, i.value]))
+    expect(total).toBe(1000)
+    expect(by.variable).toBe(600)    // CEDEAR 300 + acción AR 100 + cripto 200
+    expect(by.fija).toBe(200)        // bono 150 + FCI 50
+    expect(by.efectivo).toBe(200)
+  })
+
+  it('la cripto cuenta como renta variable (decisión declarada)', () => {
+    const solo = [{ asset: 'BTC', value_usd: 100, invested_usd: 100, pnl_usd: 0, is_ar_market: false, is_cash: false }]
+    const { items } = riskMixFromBreakdown(computeClassBreakdown(solo, []))
+    expect(items.map(i => i.key)).toEqual(['variable'])
+  })
+
+  it('los plazos fijos entran en renta fija', () => {
+    const bd = computeClassBreakdown(rows, [], [pfSlice({ plazos_fijos_usd: 500, plazos_fijos_invested_usd: 480 }, 'plazo_fijo')])
+    const by = Object.fromEntries(riskMixFromBreakdown(bd).items.map(i => [i.key, i.value]))
+    expect(by.fija).toBe(700)
+  })
+
+  it('lo que el clasificador no supo tipar NO se reparte: va a su propia barra', () => {
+    const r = [...rows, { asset: 'ZZZZ', value_usd: 100, invested_usd: 100, pnl_usd: 0, is_ar_market: true, is_cash: false }]
+    const { items } = riskMixFromBreakdown(computeClassBreakdown(r, []))
+    const otro = items.find(i => i.key === 'otro')
+    expect(otro.value).toBe(100)
+    // y no infló ninguno de los otros dos
+    expect(items.find(i => i.key === 'variable').value).toBe(600)
+    expect(items.find(i => i.key === 'fija').value).toBe(200)
+  })
+
+  it('sin nada sin clasificar son exactamente TRES barras', () => {
+    const { items } = riskMixFromBreakdown(computeClassBreakdown(rows, []))
+    expect(items.map(i => i.key)).toEqual(['variable', 'fija', 'efectivo'])
+  })
+
+  it('los porcentajes suman 100', () => {
+    const { items } = riskMixFromBreakdown(computeClassBreakdown(rows, []))
+    expect(items.reduce((s, i) => s + i.pct, 0)).toBeCloseTo(100, 9)
+  })
+
+  it('cada barra dice qué clases la componen (para el pie de la card)', () => {
+    const { items } = riskMixFromBreakdown(computeClassBreakdown(rows, []))
+    expect(items.find(i => i.key === 'variable').classes).toEqual(
+      expect.arrayContaining(['CEDEARs', 'Acciones AR', 'Cripto']))
+    expect(items.find(i => i.key === 'fija').classes).toEqual(
+      expect.arrayContaining(['Bonos y letras', 'FCI']))
+  })
+
+  it('LA INVARIANTE: suma exactamente lo mismo que la torta que plegó', () => {
+    // Es el motivo por el que pliega el breakdown en vez de recorrer las filas.
+    const bd = computeClassBreakdown(rows, [], [pfSlice({ plazos_fijos_usd: 500, plazos_fijos_invested_usd: 480 }, 'plazo_fijo')])
+    const mix = riskMixFromBreakdown(bd)
+    expect(mix.total).toBe(bd.total)
+    expect(mix.items.reduce((s, i) => s + i.value, 0)).toBeCloseTo(bd.total, 9)
+  })
+
+  it('cartera vacía no revienta', () => {
+    expect(riskMixFromBreakdown(computeClassBreakdown([], []))).toEqual({ items: [], total: 0 })
+    expect(riskMixFromBreakdown(null)).toEqual({ items: [], total: 0 })
   })
 })

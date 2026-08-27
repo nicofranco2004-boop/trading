@@ -29,13 +29,14 @@
 import { useMemo } from 'react'
 import { PieChart } from 'lucide-react'
 import CompositionDonut, { UnclassifiedNote } from '../CompositionDonut'
+import CompositionByRisk from '../CompositionByRisk'
 import InfoTooltip from '../InfoTooltip'
 import AskAIAbout from '../ai/AskAIAbout'
 import { computeClassBreakdown, classifyAsset } from '../../utils/assetClass'
 import { computeSectorBreakdown, classifySector } from '../../utils/assetSector'
 import {
   assetSlicesFromRows, mostHeldAssets, pfSlice, realizedToOps, attachSpread,
-  toBookCompositionAiParams, DEFAULT_TOP_ASSETS,
+  riskMixFromBreakdown, toBookCompositionAiParams, DEFAULT_TOP_ASSETS,
 } from '../../utils/bookComposition'
 import { fmtUsd, fmtArs } from '../../utils/format'
 import { useMoneyFormat } from '../../contexts/CurrencyContext'
@@ -98,6 +99,11 @@ export default function BookComposition({ data, error = false }) {
     [rows, included],
   )
   const difundidos = useMemo(() => mostHeldAssets(rows || []), [rows])
+
+  // El corte grueso sale de PLEGAR la torta por tipo, no de recorrer las filas
+  // otra vez: así la barra y las tortas suman exactamente lo mismo por
+  // construcción, incluidas las porciones sintéticas (los plazos fijos).
+  const riesgo = useMemo(() => riskMixFromBreakdown(clase), [clase])
 
   // Packets de la IA. Los topics son `book.composition_*` y NO
   // `book.distribution_*`: `book.distribution` ya significa otra cosa del
@@ -169,6 +175,33 @@ export default function BookComposition({ data, error = false }) {
           {totalTxt} · {data.clients} {data.clients === 1 ? 'cliente' : 'clientes'}
         </span>
       </div>
+
+      <CompositionByRisk
+        items={riesgo.items}
+        total={riesgo.total}
+        fmt={fmt}
+        className="mb-3"
+        info={(
+          <>
+            <p className="font-semibold text-ink-0">Cómo se calcula</p>
+            <p>
+              El mismo corte que las tortas de abajo, agrupado en dos lados y el
+              efectivo: cuánto del libro se mueve con el mercado y cuánto no.
+              Suma exactamente el mismo total.
+            </p>
+            <p>
+              La <strong>cripto cuenta como renta variable</strong>: no es una
+              acción, pero es un activo de riesgo. La torta por tipo la muestra
+              aparte si querés ver cuánto pesa.
+            </p>
+            <p className="text-ink-3">
+              Los FCI van a renta fija — en Argentina el money market es el caso
+              dominante, pero un FCI de acciones caería del lado equivocado y
+              hoy el importador no distingue el tipo de fondo.
+            </p>
+          </>
+        )}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <AskAIAbout

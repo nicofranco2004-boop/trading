@@ -24,7 +24,9 @@
 // que se puede desplegar para ver qué hay adentro. Un "Otros" que dice cuántos
 // son y se abre no es el mismo objeto que un "Otros" del 60% sin explicación.
 
-import { normalizeTicker } from './assetClass'
+import {
+  normalizeTicker, riskGroupOf, RISK_GROUP_META, RISK_GROUP_ORDER,
+} from './assetClass'
 import { fciLabel } from './valuation'
 import { toDistributionAiParams } from './distributionAi'
 
@@ -352,5 +354,50 @@ export function attachSpread(breakdown, spreadRows, { rows, classify } = {}) {
           }) }
         : i
     )),
+  }
+}
+
+/**
+ * riskMixFromBreakdown — el corte grueso, plegando el breakdown por CLASE.
+ *
+ * No re-clasifica nada: toma las porciones que las tortas ya calcularon y las
+ * junta de a grupos. Es la única forma de garantizar que la barra y las tortas
+ * de abajo sumen exactamente el mismo total — si esto recorriera las filas por
+ * su cuenta, cualquier diferencia futura en el manejo de las porciones
+ * sintéticas (los plazos fijos) las haría divergir en silencio.
+ *
+ * Cada grupo se lleva las clases que lo componen para que el tooltip pueda
+ * decir qué hay adentro, en vez de pedirle al lector que confíe.
+ *
+ * @param {Object} breakdown  lo que devuelve computeClassBreakdown
+ * @returns {{items: Array<{key,label,color,value,pct,classes}>, total: number}}
+ */
+export function riskMixFromBreakdown(breakdown) {
+  const items = breakdown?.items || []
+  const total = breakdown?.total || 0
+  if (!(total > 0)) return { items: [], total: 0 }
+
+  const byGroup = new Map()
+  for (const it of items) {
+    if (!(it.value > 0)) continue
+    const g = riskGroupOf(it.key)
+    if (!byGroup.has(g)) byGroup.set(g, { value: 0, classes: [] })
+    const b = byGroup.get(g)
+    b.value += it.value
+    b.classes.push(it.label)
+  }
+
+  return {
+    total,
+    items: RISK_GROUP_ORDER
+      .filter(g => byGroup.has(g))
+      .map(g => ({
+        key: g,
+        label: RISK_GROUP_META[g].label,
+        color: RISK_GROUP_META[g].color,
+        value: byGroup.get(g).value,
+        pct: (byGroup.get(g).value / total) * 100,
+        classes: byGroup.get(g).classes,
+      })),
   }
 }
