@@ -182,7 +182,7 @@ export default function MobileSearch() {
             <button
               key={f.id}
               onClick={() => setFilter(f.id)}
-              className={`text-[10px] font-mono uppercase tracking-caps px-2.5 py-1 rounded-sm transition-colors ${
+              className={`text-[10px] px-2.5 py-1 rounded-sm transition-colors ${
                 filter === f.id
                   ? 'bg-bg-3 text-ink-0 border border-line-2'
                   : 'text-ink-3 hover:text-ink-1 border border-transparent'
@@ -262,7 +262,7 @@ function SectionHeader({ label, count }) {
       <span className="text-[12.5px] text-ink-2 font-medium">
         {label}
       </span>
-      <span className="text-[10px] font-mono tabular text-ink-3">
+      <span className="text-[10px] tabular text-ink-3">
         {count}
       </span>
     </div>

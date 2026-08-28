@@ -178,7 +178,7 @@ export default function OperationsMobile() {
               <div className="text-xl font-medium tabular text-ink-0 leading-none">
                 {(winRate * 100).toFixed(0)}%
               </div>
-              <div className="text-[10px] font-mono text-ink-3 leading-none mt-1">
+              <div className="text-[10px] tabular text-ink-3 leading-none mt-1">
                 <span className="text-rendi-pos">{wins}W</span> · <span className="text-rendi-neg">{losses}L</span>
               </div>
             </div>
@@ -193,7 +193,7 @@ export default function OperationsMobile() {
             <Filter size={11} strokeWidth={1.75} />
             Filtros
             {activeFiltersCount > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 rounded-sm bg-rendi-accent/20 text-rendi-accent text-[10px] font-mono">
+              <span className="ml-1 px-1.5 py-0.5 rounded-sm bg-rendi-accent/20 text-rendi-accent text-[10px] tabular">
                 {activeFiltersCount}
               </span>
             )}
@@ -298,11 +298,11 @@ function DayGroup({ date, ops, onDelete }) {
           <span className="text-[12.5px] text-ink-2 font-medium">
             {label}
           </span>
-          <span className="text-[10px] font-mono text-ink-3">
+          <span className="text-[10px] tabular text-ink-3">
             · {ops.length} {ops.length === 1 ? 'op' : 'ops'}
           </span>
         </div>
-        <span className={`text-[11px] font-mono tabular ${colorClass(subtotalDisp)}`}>
+        <span className={`text-[11px] tabular ${colorClass(subtotalDisp)}`}>
           {fmtConvertedCompactRaw(subtotalDisp, histMoney.currency, { signed: true })}
         </span>
       </div>
@@ -337,7 +337,7 @@ function OperationRow({ op, onDelete }) {
           </span>
         </div>
         <div className="flex items-center gap-2 mt-1.5">
-          <span className={`inline-flex items-center text-[9px] font-mono uppercase tracking-caps px-1 py-0.5 rounded-sm ${
+          <span className={`inline-flex items-center text-[9px] px-1 py-0.5 rounded-sm ${
             isBuy
               ? 'bg-data-blue/10 text-data-blue border border-data-blue/30'
               : 'bg-data-violet/10 text-data-violet border border-data-violet/30'
@@ -345,7 +345,7 @@ function OperationRow({ op, onDelete }) {
             {isBuy ? 'Compra' : (op.op_type || 'Venta')}
           </span>
           {op.quantity != null && (
-            <span className="text-[10px] font-mono text-ink-3 truncate">
+            <span className="text-[10px] tabular text-ink-3 truncate">
               {formatQty(op.quantity)} u.
             </span>
           )}
@@ -365,7 +365,7 @@ function OperationRow({ op, onDelete }) {
           </div>
         )}
         {op.pnl_pct != null && (
-          <div className={`text-[10px] font-mono tabular leading-none mt-1.5 ${colorClass(op.pnl_pct)}`}>
+          <div className={`text-[10px] tabular leading-none mt-1.5 ${colorClass(op.pnl_pct)}`}>
             {pctSigned(op.pnl_pct / 100)}
           </div>
         )}

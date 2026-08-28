@@ -971,7 +971,7 @@ export default function PositionsMobile() {
                 <button
                   key={o.id}
                   onClick={() => setSortBy(o.id)}
-                  className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-caps rounded transition-colors ${
+                  className={`px-2.5 py-1 text-[10px] rounded transition-colors ${
                     sortBy === o.id ? 'bg-bg-3 text-ink-0' : 'text-ink-3 hover:text-ink-1'
                   }`}
                 >
@@ -987,7 +987,7 @@ export default function PositionsMobile() {
               type="button"
               onClick={() => setShowAllLots(v => !v)}
               aria-pressed={showAllLots}
-              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-caps rounded-md transition-colors ${
+              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-[10px] rounded-md transition-colors ${
                 showAllLots ? 'bg-bg-3 text-ink-0' : 'bg-bg-2 text-ink-3 hover:text-ink-1'
               }`}
               title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
@@ -1000,7 +1000,7 @@ export default function PositionsMobile() {
                 type="button"
                 onClick={() => setShowDetail(v => !v)}
                 aria-pressed={showDetail}
-                className={`px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-caps rounded-md transition-colors ${
+                className={`px-2.5 py-1.5 text-[10px] rounded-md transition-colors ${
                   showDetail ? 'bg-bg-3 text-ink-0' : 'bg-bg-2 text-ink-3 hover:text-ink-1'
                 }`}
                 title="Mostrar el equivalente en USD de la variación diaria y el P&L en brokers ARS"
@@ -1417,7 +1417,7 @@ function BrokerFilterChip({ active, onClick, label, currency }) {
     >
       {label}
       {currency && (
-        <span className={`text-[9px] font-mono uppercase tracking-caps px-1 py-px rounded-sm ${
+        <span className={`text-[9px] px-1 py-px rounded-sm ${
           active ? 'bg-bg-0/15 text-bg-0' : 'bg-bg-3 text-ink-3'
         }`}>
           {currency}
@@ -1712,7 +1712,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
                 guarda como 'USDT' (centinela interno) pero son dólares reales. */}
             {p.is_cash ? cashAssetLabel(p) : fciLabel(p.asset)}
           </div>
-          <div className="text-[10px] font-mono text-ink-3 leading-none mt-1 truncate flex items-center gap-1">
+          <div className="text-[10px] tabular text-ink-3 leading-none mt-1 truncate flex items-center gap-1">
             {p.is_cash
               ? 'Cash'
               : p._isAgg
@@ -1731,11 +1731,11 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
             <div className={`text-[13px] font-medium tabular leading-none ${colorClass(p.dayVarLocal)}`}>
               {compactAmount(p.dayVarLocal, cur)}
             </div>
-            <div className={`text-[10px] font-mono tabular leading-none mt-1 ${colorClass(p.dayVarPct)}`}>
+            <div className={`text-[10px] tabular leading-none mt-1 ${colorClass(p.dayVarPct)}`}>
               {pctSigned(p.dayVarPct)}
             </div>
             {showDetail && p.isAR && p.dayVarUsd != null && (
-              <div className="text-[9px] font-mono tabular leading-none mt-1 text-ink-3">
+              <div className="text-[9px] tabular leading-none mt-1 text-ink-3">
                 {compactAmount(p.dayVarUsd, 'USD')}
               </div>
             )}
@@ -1752,11 +1752,11 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
             <div className={`text-[13px] font-medium tabular leading-none ${colorClass(p.pnlLocal)}`}>
               {compactAmount(p.pnlLocal, cur)}
             </div>
-            <div className={`text-[10px] font-mono tabular leading-none mt-1 ${colorClass(p.pnlPct)}`}>
+            <div className={`text-[10px] tabular leading-none mt-1 ${colorClass(p.pnlPct)}`}>
               {pctSigned(p.pnlPct)}
             </div>
             {showDetail && p.isAR && p.pnlUsd != null && (
-              <div className="text-[9px] font-mono tabular leading-none mt-1 text-ink-3">
+              <div className="text-[9px] tabular leading-none mt-1 text-ink-3">
                 {compactAmount(p.pnlUsd, 'USD')}
               </div>
             )}

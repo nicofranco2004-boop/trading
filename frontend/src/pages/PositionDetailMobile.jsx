@@ -21,6 +21,7 @@ import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUs
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import Panel from '../components/Panel'
 
 export default function PositionDetailMobile() {
   const { id } = useParams()
@@ -233,7 +234,7 @@ export default function PositionDetailMobile() {
               <span>
                 {pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(pnlUsd)).toLocaleString('en-US')}
               </span>
-              <span className="text-ink-3 font-mono text-xs">·</span>
+              <span className="text-ink-3 text-xs">·</span>
               <span>{pctSigned(pnlPct)}</span>
             </div>
           )}
@@ -251,9 +252,9 @@ export default function PositionDetailMobile() {
             <div className="text-[12.5px] text-ink-2 mb-2 font-medium">
               Precio · últimos 30 días
             </div>
-            <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
+            <Panel padding="sm">
               <AssetMiniChart symbol={priceSymbol(p.asset, isAR)} />
-            </div>
+            </Panel>
           </section>
         </AskAIAbout>
       )}
@@ -263,7 +264,7 @@ export default function PositionDetailMobile() {
         <div className="text-[12.5px] text-ink-2 mb-2 font-medium">
           Detalle
         </div>
-        <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
+        <Panel padding="none" className="overflow-hidden">
           {!p.is_cash && (
             <>
               <DetailRow label="Cantidad" value={formatQty(qty)} />
@@ -314,7 +315,7 @@ export default function PositionDetailMobile() {
           {p.entry_date && (
             <DetailRow label="Fecha de entrada" value={p.entry_date} bordered />
           )}
-        </div>
+        </Panel>
       </section>
 
       {/* Histórico de operaciones — sub-topic position.lots */}
@@ -328,7 +329,7 @@ export default function PositionDetailMobile() {
           <div className="text-[12.5px] text-ink-2 mb-2 font-medium">
             Operaciones de este activo · {operations.length}
           </div>
-          <ul className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
+          <Panel as="ul" padding="none" className="overflow-hidden">
             {operations.map((op, i) => (
               <li
                 key={op.id}
@@ -340,7 +341,7 @@ export default function PositionDetailMobile() {
                     {op.date} · <span className="text-ink-3">{op.op_type || 'op'}</span>
                   </div>
                   {op.quantity != null && (
-                    <div className="text-[10px] font-mono text-ink-3 leading-none mt-1">
+                    <div className="text-[10px] tabular text-ink-3 leading-none mt-1">
                       {formatQty(op.quantity)} u.
                     </div>
                   )}
@@ -352,7 +353,7 @@ export default function PositionDetailMobile() {
                 )}
               </li>
             ))}
-          </ul>
+          </Panel>
         </section>
       </AskAIAbout>
       )}

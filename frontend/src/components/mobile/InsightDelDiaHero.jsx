@@ -13,6 +13,7 @@ import {
   Brain, AlertTriangle, CheckCircle2, Info, ArrowRight, ChevronRight,
 } from 'lucide-react'
 import Pill from '../Pill'
+import Panel from '../Panel'
 import ShareCardModal from '../ShareCardModal'
 import { specFromInsight } from '../../utils/shareCard'
 import { api } from '../../utils/api'
@@ -43,7 +44,7 @@ export default function InsightDelDiaHero() {
   const flagged = (data.cards || []).filter(c => !c.insufficient_data)
   if (flagged.length === 0) {
     return (
-      <div className="bg-bg-1 border border-line/60 rounded-lg p-4 mb-5">
+      <Panel padding="md" className="mb-5">
         <div className="flex items-center gap-2 mb-1.5">
           <Brain size={14} strokeWidth={1.75} className="text-ink-3" />
           <span className="text-[12.5px] text-ink-2 font-medium">Insight del día</span>
@@ -51,7 +52,7 @@ export default function InsightDelDiaHero() {
         <p className="text-xs text-ink-2 leading-relaxed">
           Necesitamos más historial para detectar patrones. Cargá al menos 5 operaciones cerradas.
         </p>
-      </div>
+      </Panel>
     )
   }
 
@@ -83,14 +84,14 @@ export default function InsightDelDiaHero() {
         </p>
 
         {card.value_label && (
-          <div className="bg-bg-1 border border-line/40 rounded-sm p-2.5 mb-3">
+          <Panel padding="sm" className="mb-3">
             <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
               Indicador
             </div>
             <div className={`text-sm font-medium tabular leading-none ${tone.accent}`}>
               {card.value_label}
             </div>
-          </div>
+          </Panel>
         )}
 
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-line/30">

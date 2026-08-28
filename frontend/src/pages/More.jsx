@@ -17,6 +17,7 @@ import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
+import Panel from '../components/Panel'
 
 // Restructure 2026-05-27: 7 items en 3 grupos, espejado del sidebar desktop.
 // Las URLs viejas (/dashboard, /insights, etc.) redirigen al wrapper consolidado
@@ -94,7 +95,7 @@ export default function More() {
         <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
           Asistente
         </h2>
-        <div className="bg-bg-1 border border-data-violet/30 rounded-lg overflow-hidden">
+        <Panel padding="none" className="!border-data-violet/30 overflow-hidden">
           <button
             type="button"
             onClick={() => coachDrawer.open()}
@@ -107,7 +108,7 @@ export default function More() {
             </div>
             <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
           </button>
-        </div>
+        </Panel>
       </section>
 
       {allGroups.map((group) => (
@@ -115,7 +116,7 @@ export default function More() {
           <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
             {group.label}
           </h2>
-          <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
+          <Panel padding="none" className="overflow-hidden">
             {group.items.map((item, i) => {
               const Icon = item.icon
               return (
@@ -135,7 +136,7 @@ export default function More() {
                 </Link>
               )
             })}
-          </div>
+          </Panel>
         </section>
       ))}
 
@@ -147,7 +148,7 @@ export default function More() {
         <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
           Cuenta
         </h2>
-        <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
+        <Panel padding="none" className="overflow-hidden">
           <Link
             to="/config"
             className="flex items-center gap-3 px-4 py-3 hover:bg-bg-2/60 active:bg-bg-3 transition-colors"
@@ -179,11 +180,11 @@ export default function More() {
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium leading-tight">Cerrar sesión</div>
               {user?.name && (
-                <div className="text-[11px] text-ink-3 leading-tight mt-0.5 font-mono">{user.name}</div>
+                <div className="text-[11px] text-ink-3 leading-tight mt-0.5">{user.name}</div>
               )}
             </div>
           </button>
-        </div>
+        </Panel>
       </section>
 
       {/* Modal de recomendaciones — trigger desde el botón "Recomendaciones"
@@ -209,7 +210,7 @@ function PushNotificationsSection() {
         <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
           Notificaciones
         </h2>
-        <div className="bg-bg-1 border border-line/60 rounded-lg p-4">
+        <Panel padding="md">
           <div className="flex items-center gap-3">
             <BellOff size={16} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
             <p className="text-xs text-ink-2 leading-relaxed">
@@ -217,7 +218,7 @@ function PushNotificationsSection() {
               instalar Rendi como PWA primero (Compartir → Agregar a inicio).
             </p>
           </div>
-        </div>
+        </Panel>
       </section>
     )
   }
@@ -264,7 +265,7 @@ function PushNotificationsSection() {
       <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
         Notificaciones
       </h2>
-      <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
+      <Panel padding="none" className="overflow-hidden">
         {/* Toggle activar/desactivar */}
         <button
           onClick={handleToggle}
@@ -321,7 +322,7 @@ function PushNotificationsSection() {
             {error}
           </div>
         )}
-      </div>
+      </Panel>
     </section>
   )
 }

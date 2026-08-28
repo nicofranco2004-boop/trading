@@ -19,6 +19,7 @@ import { ArrowRight, TrendingUp, TrendingDown, Eye, EyeOff } from 'lucide-react'
 import MiniSparkline from '../components/MiniSparkline'
 import FlashValue from '../components/FlashValue'
 import Skeleton from '../components/Skeleton'
+import Panel from '../components/Panel'
 import BenchmarksLine from '../components/BenchmarksLine'
 import PersonalLayer from '../components/home/PersonalLayer'
 import Heatmap from '../components/home/Heatmap'
@@ -338,7 +339,7 @@ export default function HomeMobile() {
 
         {/* Sparkline 30d con delta del MISMO período (no histórico) */}
         {series30d ? (
-          <div className="bg-bg-1 border border-line/40 rounded-lg p-3">
+          <Panel padding="sm">
             <div className="flex items-baseline justify-between mb-1.5">
               <div className="flex items-center gap-1.5">
                 <span className="text-[12.5px] text-ink-2 font-medium">
@@ -351,7 +352,7 @@ export default function HomeMobile() {
                   {pctSigned(series30d.deltaPct)}
                 </span>
               </div>
-              <span className={`text-xs font-mono tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+              <span className={`text-xs tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
                 {hidden ? '••••••' : `${series30d.positive ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcBlue : series30d.deltaUsd))}`}
               </span>
             </div>
@@ -363,21 +364,21 @@ export default function HomeMobile() {
                 height={48}
               />
             </div>
-            <div className="flex items-baseline justify-between mt-1.5 text-[10px] font-mono text-ink-3">
+            <div className="flex items-baseline justify-between mt-1.5 text-[10px] text-ink-3">
               <span className="tabular">Hace 30d · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.first * tcBlue : series30d.first)}`}</span>
               <span className="tabular">Hoy · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.last * tcBlue : series30d.last)}`}</span>
             </div>
-          </div>
+          </Panel>
         ) : (
-          <div className="bg-bg-1 border border-line/40 rounded-lg p-3 text-center text-[11px] text-ink-3">
+          <Panel padding="sm" className="text-center text-[11px] text-ink-3">
             Cargá tus snapshots diarios para ver la evolución 30d.
-          </div>
+          </Panel>
         )}
       </section>
 
       {/* ── 2. KPI strip 2x2 ────────────────────────────────────────── */}
       <section className="px-4 mb-5">
-        <div className="grid grid-cols-2 border border-line/60 rounded-lg overflow-hidden bg-bg-1">
+        <Panel padding="none" className="grid grid-cols-2 overflow-hidden">
           <KpiCell
             label={kpis.pnlDayMeta && kpis.pnlDayMeta.dayDiff > 1 ? `P&L ${kpis.pnlDayMeta.dayDiff}d` : 'P&L Día'}
             value={hidden ? '••••••' : (kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlDay * tcBlue : kpis.pnlDay))}` : '—')}
@@ -409,7 +410,7 @@ export default function HomeMobile() {
             topBorder
             leftBorder
           />
-        </div>
+        </Panel>
       </section>
 
       {/* ── 2.5. Headline benchmarks ───────────────────────────────
@@ -497,7 +498,7 @@ function KpiCell({ label, value, sub, tone, subTone, bordered, leftBorder, topBo
         {value}
       </div>
       {sub && (
-        <div className={`text-[10px] font-mono tabular mt-1 leading-none ${subColor}`}>
+        <div className={`text-[10px] tabular mt-1 leading-none ${subColor}`}>
           {sub}
         </div>
       )}
