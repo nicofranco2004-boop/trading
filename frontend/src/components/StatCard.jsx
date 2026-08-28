@@ -1,7 +1,7 @@
 // StatCard — el componente más visible del producto.
 // ═══════════════════════════════════════════════════════════════════════════
 // Tres tonos de jerarquía:
-//   tone="hero"      → hero único de la pantalla. Instrument Serif italic.
+//   tone="hero"      → hero único de la pantalla. Geist 500 grande (.hero-number).
 //                       Solo 1 por página (Valor actual del Dashboard).
 //   tone="primary"   → métrica importante con tratamiento de card.
 //                       Para cards secundarias del hero (Capital aportado,
@@ -12,7 +12,7 @@
 //   tone="secondary" → fallback compatible con uso anterior. Card simple.
 //
 // API (no cambia respecto a la versión anterior):
-//   label        → string (label uppercase mono pequeño arriba)
+//   label        → string (rótulo sans sentence-case arriba, vía .kpi-label)
 //   value        → string | number (la cifra principal)
 //   sub          → string | ReactNode (subtítulo opcional debajo)
 //   hint         → string (texto adicional gris pequeño abajo)
@@ -25,7 +25,8 @@
 // Reglas semánticas (audit visual mayo 2026):
 // • rendi-pos solo aparece cuando positive=true y la cifra es la métrica
 //   principal del bloque. Nunca decorativo.
-// • Labels en mono uppercase pequeño + tracking amplio.
+// • Labels en sans sentence-case (.kpi-label). El mono uppercase se retiró en el
+//   clean pass 2026-07 — ver frontend/CLAUDE.md R2.
 // • Valores numéricos con tabular-nums para que no salten al actualizar.
 
 import InfoTooltip from './InfoTooltip'
@@ -82,7 +83,7 @@ export default function StatCard({
     : 'bg-bg-1 border border-line rounded-xl p-3 sm:p-4'  // card chica (legacy)
 
   // ─── Label común a todos los tonos ──────────────────────────────────────
-  const labelCls = 'label-mono mb-1.5'
+  const labelCls = 'kpi-label mb-1.5'
 
   // ─── Valor según tono ───────────────────────────────────────────────────
   const valueCls = isHero

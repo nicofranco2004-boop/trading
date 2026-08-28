@@ -3,7 +3,8 @@
 // Reemplaza Card. Filosofía v2:
 //   • bg-bg-1 (charcoal cold) en lugar de bg-white/bg-bg-2
 //   • Borde más sutil (line, no slate-200/800)
-//   • Radius default = rounded (6px, no 10px)
+//   • Radius = rounded-xl (12px). Es EL radio de superficie del sistema nuevo;
+//     el mismo que usan las cards del Plan Asesor. Ver frontend/CLAUDE.md R5.
 //   • Sin shadows, sin backdrop-blur, sin gradient
 //   • Padding alineado a spacing scale 4-8-12-16-24-32
 //

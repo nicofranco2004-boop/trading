@@ -1,5 +1,5 @@
 // MoversRail — top gainers / top losers (V2).
-// Dos columnas con DataRow denso. Eyebrows uppercase mono. Sin cards anidadas.
+// Dos columnas con DataRow denso. Eyebrows sans (<Eyebrow>). Sin cards anidadas.
 
 import { useEffect, useState } from 'react'
 import { TrendingUp, TrendingDown } from 'lucide-react'

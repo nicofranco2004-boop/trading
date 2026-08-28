@@ -1289,7 +1289,7 @@ function PositionsDesktop() {
   // (especialmente en mobile o brokers con muchas posiciones) el header
   // quede pegado arriba — convención fintech standard (Robinhood, Stripe).
   // Densidad: compacto baja padding (y alto de fila) para que entren más columnas.
-  const thBase = `${compact ? 'px-2 py-1.5' : 'px-2 py-2.5'} text-left label-mono whitespace-nowrap sticky top-0 bg-bg-2/95 backdrop-blur-sm`
+  const thBase = `${compact ? 'px-2 py-1.5' : 'px-2 py-2.5'} text-left kpi-label whitespace-nowrap sticky top-0 bg-bg-2/95 backdrop-blur-sm`
   const thClass = `${thBase} z-10`
   // Columna "Activo" FIJA al scrollear de costado (sticky left): no perdés la
   // referencia de qué activo estás viendo. Fondo sólido (bg-bg-1) para que el

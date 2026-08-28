@@ -256,7 +256,7 @@ export default function RentaFijaSections({
 
       {archived.length > 0 && (
         <div className="mt-3 text-xs text-ink-3">
-          <div className="mb-1.5 label-mono">Secciones eliminadas</div>
+          <div className="mb-1.5 kpi-label">Secciones eliminadas</div>
           <div className="flex flex-col gap-1.5">
             {archived.map(a => (
               <div key={a.id} className="flex items-center justify-between bg-bg-2/30 border border-line/60 rounded-lg px-3 py-1.5">

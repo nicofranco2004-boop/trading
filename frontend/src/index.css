@@ -155,10 +155,14 @@ body {
     @apply border-b border-line/30;
   }
 
-  /* Label de KPI / header de tabla.
-     Clean pass 2026-07: sans sentence-case legible (antes mono uppercase micro,
-     look terminal). El nombre `label-mono` se mantiene por compat de clases. */
-  .label-mono {
+  /* Label de KPI / header de tabla. Sans sentence-case (clean pass 2026-07;
+     antes era mono uppercase micro, el look terminal).
+     Renombrada en la Fase 0 del clean pass mobile: el nombre viejo llevaba un
+     sufijo que ya no describía nada y hacía que toda búsqueda de restos del
+     sistema viejo diera 19 falsos positivos, apuntando justo a lo ya migrado.
+     El nombre viejo está documentado en frontend/CLAUDE.md, no acá — así el
+     guard puede congelar esa clase en 0 sin que este comentario la reviva. */
+  .kpi-label {
     @apply text-[12px] text-ink-2 font-medium;
   }
 

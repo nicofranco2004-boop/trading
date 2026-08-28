@@ -11,7 +11,9 @@
 // • Cyan / Blue / Violet / Amber: solo como tipos de dato secundarios. Nunca
 //   como acento decorativo.
 // • Spacing system: solo 4·8·12·16·24·32·48·64·96·128.
-// • Radii: solo rounded-sm (4) / rounded (6) / rounded-lg (8). Cero curvas grandes.
+// • Radii: la escala está DECLARADA COMPLETA abajo, en px. xl (12) es el radio de
+//   superficie de la generación nueva — lo usa el átomo Panel y todo el Plan Asesor.
+//   Radios arbitrarios rounded-[Npx] prohibidos: si falta un paso, se agrega acá.
 // • Sombras: dark mode = sin sombras. Elevación = borde + cambio de fondo.
 
 export default {
@@ -21,7 +23,10 @@ export default {
     extend: {
       fontFamily: {
         // Geist = sans-only para UI, headlines, números (con tabular-nums + ss01).
-        // JetBrains Mono = solo para meta técnica (timestamps, kbd, labels uppercase).
+        // JetBrains Mono = SOLO meta técnica literal: bloques de código, atajos de
+        // teclado, glifos de ancho fijo, IDs/ordinales del importador y códigos de
+        // activo o moneda. NUNCA números del producto (van en Geist + tabular) ni
+        // rótulos (van en sans sentence-case). Ver frontend/CLAUDE.md, R1-R3.
         // CERO serif. El `display` queda apuntando a Geist para que componentes
         // viejos que usan `font-display` no se rompan visualmente — ya no es serif.
         sans:    ['Geist', 'system-ui', 'sans-serif'],
@@ -113,13 +118,29 @@ export default {
         },
       },
       borderRadius: {
-        // Solo 3 pasos. Nada de 12/20/24px.
-        sm: '4px',    // badges, chips, inputs, controles chicos
-        DEFAULT: '6px',   // cards, modales chicos, dropdowns (v2: 6, no 10)
-        lg: '8px',    // modales grandes, hero containers (v2: 8, no 16)
+        // Escala COMPLETA y en px. Antes acá vivían 3 pasos con el comentario
+        // "Solo 3 pasos. Nada de 12/20/24px." — pero esto está bajo `extend`, que
+        // NO reemplaza la escala default de Tailwind: md/xl/2xl/3xl/full seguían
+        // alcanzables y el código los usaba (478 usos fuera de los 3 pasos,
+        // empezando por el propio Panel.jsx, que es rounded-xl desde el clean pass).
+        // O sea: la escala declarada y la escala real llevaban meses en desacuerdo.
+        // Se declara la real. Los valores son idénticos a los defaults de
+        // tailwindcss 3.4.19 convertidos a px con root 16px → cambio visual CERO.
+        xs: '2px',        // swatches de leyenda (2×3px). Antes eran rounded-[2px].
+        sm: '4px',        // badges, chips, inputs, controles chicos
+        DEFAULT: '6px',   // cards chicas, dropdowns
+        md: '6px',        // DEPRECADO: alias de DEFAULT (0.375rem = 6px, idéntico).
+                          // No usar en código nuevo; los 307 usos existentes son deuda
+                          // pixel-invisible que se migra a `rounded` cuando se toque el archivo.
+        lg: '8px',        // modales grandes, hero containers
+        xl: '12px',       // ★ superficie de la generación nueva: Panel, cards del asesor
+        '2xl': '16px',    // sheets mobile (rounded-t-2xl) y poco más
+        '3xl': '24px',    // sólo halos decorativos de la landing
+        full: '9999px',   // dots, avatares, pills redondas
       },
       letterSpacing: {
-        // Para labels uppercase mono — el "specimen sheet" look
+        // Tracking para rótulos en MAYÚSCULA. La mayúscula NO está prohibida (el
+        // Plan Asesor la usa); lo prohibido es la mayúscula EN MONO. Ver R2.
         'label': '0.12em',  // v2: más compacto (0.12, no 0.18)
         'caps': '0.08em',
       },

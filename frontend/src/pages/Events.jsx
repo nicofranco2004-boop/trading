@@ -431,7 +431,7 @@ function KpiCell({ label, value, sub, tone = 'neutral' }) {
                         'text-ink-0'
   return (
     <div className="px-3 sm:px-4 py-3 min-w-0">
-      <p className="label-mono">{label}</p>
+      <p className="kpi-label">{label}</p>
       <p className={`data-hero ${valueColor} mt-1 truncate`}>{value}</p>
       {sub && <p className="mt-0.5 text-[11px] font-mono text-ink-3 truncate">{sub}</p>}
     </div>
@@ -444,7 +444,7 @@ function ControlGroup({ icon, label, children }) {
   return (
     <div className="flex items-center gap-1.5">
       <span className="text-ink-3">{icon}</span>
-      <span className="label-mono">{label}</span>
+      <span className="kpi-label">{label}</span>
       <div className="flex items-center gap-1">{children}</div>
     </div>
   )
@@ -487,7 +487,7 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
   return (
     <div className="bg-bg-1 border border-line rounded-xl mb-4 p-3 sm:p-4">
       <div className="flex items-center justify-between mb-2">
-        <p className="label-mono">{useImpact ? 'Distribución · por impacto' : 'Distribución'}</p>
+        <p className="kpi-label">{useImpact ? 'Distribución · por impacto' : 'Distribución'}</p>
         <p className="text-[12px] text-ink-3 font-medium">
           {windowDays} días · {events.length} {events.length === 1 ? 'evento' : 'eventos'}
         </p>
@@ -628,12 +628,12 @@ function EventTableSkeleton() {
   return (
     <div className="bg-bg-1 border border-line rounded-xl overflow-hidden">
       <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
-        <div className="label-mono">Fecha</div>
-        <div className="label-mono">Activo</div>
-        <div className="label-mono">Tipo</div>
-        <div className="label-mono">Detalle</div>
-        <div className="label-mono text-right">Monto</div>
-        <div className="label-mono text-right">Impact</div>
+        <div className="kpi-label">Fecha</div>
+        <div className="kpi-label">Activo</div>
+        <div className="kpi-label">Tipo</div>
+        <div className="kpi-label">Detalle</div>
+        <div className="kpi-label text-right">Monto</div>
+        <div className="kpi-label text-right">Impact</div>
       </div>
       <ul className="divide-y divide-line/40">
         {[1,2,3,4,5,6,7].map(i => (
@@ -962,13 +962,13 @@ function SpotlightHero({ event, impactPct, cobro, onView }) {
     <div className="bg-bg-1 border border-data-violet/40 rounded-lg p-4 mb-4 flex flex-wrap items-center gap-4">
       {/* Countdown */}
       <div className="text-center shrink-0 pr-4 border-r border-line">
-        <p className="label-mono text-data-violet mb-1">Próximo</p>
+        <p className="kpi-label text-data-violet mb-1">Próximo</p>
         <p className="text-2xl font-semibold text-ink-0 leading-none">
           {typeof countdown === 'number'
             ? <>{countdown}<span className="text-sm text-ink-2">d</span></>
             : countdown}
         </p>
-        <p className="label-mono mt-1">{shortDate(event.eventDate)}</p>
+        <p className="kpi-label mt-1">{shortDate(event.eventDate)}</p>
       </div>
       {/* Activo + contexto */}
       <div className="flex-1 min-w-[160px]">
@@ -987,7 +987,7 @@ function SpotlightHero({ event, impactPct, cobro, onView }) {
       <div className="text-right shrink-0">
         {cobro?.amount != null && (
           <>
-            <p className="label-mono mb-0.5">Tu cobro est.</p>
+            <p className="kpi-label mb-0.5">Tu cobro est.</p>
             <p className="text-xl font-semibold text-rendi-pos leading-none">
               +{cobro.currency === 'USD' ? '$' : `${cobro.currency} `}{formatCompact(cobro.amount)}
             </p>

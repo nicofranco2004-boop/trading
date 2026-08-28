@@ -1,5 +1,6 @@
 // Pill — chip compacto para status / labels / metadatos.
-// Estándar visual v2: uppercase mono, padding tight, border + bg sutil.
+// Estándar visual: sans sentence-case 12px, padding tight, border + bg sutil.
+// (Decía "uppercase mono" — dejó de serlo en el clean pass 2026-07.)
 //
 // Tones (semánticos, no decorativos):
 //   default → neutral (label genérico)

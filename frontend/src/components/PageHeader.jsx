@@ -4,7 +4,7 @@
 // negativo más agresivo. Mismo API estable hacia los componentes existentes.
 //
 // API estable + nuevo opcional `eyebrow`:
-//   eyebrow     → string opcional (uppercase mono pequeño arriba del título)
+//   eyebrow     → string opcional (sans semibold violeta arriba del título)
 //   title       → string (requerido)
 //   subtitle    → string opcional
 //   action      → ReactNode a la derecha

@@ -203,7 +203,7 @@ export default function News({ embedded = false }) {
       {/* Chips de filtro por ticker — sólo "Para ti" */}
       {tab === 'portfolio' && portfolioTickers.length > 1 && (
         <div className="flex items-center gap-1.5 mb-3 overflow-x-auto -mx-1 px-1 pb-1">
-          <span className="label-mono shrink-0 pr-1">Ticker</span>
+          <span className="kpi-label shrink-0 pr-1">Ticker</span>
           <TickerChip
             label="Todos"
             count={portfolioNews.length}
@@ -226,7 +226,7 @@ export default function News({ embedded = false }) {
       {availableTags.length > 0 && (
         <div className="flex items-center gap-1.5 mb-4 overflow-x-auto -mx-1 px-1 pb-1">
           <Tag size={11} strokeWidth={1.75} className="text-ink-3 shrink-0" />
-          <span className="label-mono shrink-0 pr-1">Tipo</span>
+          <span className="kpi-label shrink-0 pr-1">Tipo</span>
           <TickerChip
             label="Todos"
             count={rawNews.length}
@@ -247,7 +247,7 @@ export default function News({ embedded = false }) {
 
       {/* Filtro por sentimiento — POS/NEG detectado al ingerir (heurística). */}
       <div className="flex items-center gap-1.5 mb-4 flex-wrap">
-        <span className="label-mono shrink-0 pr-1">Ánimo</span>
+        <span className="kpi-label shrink-0 pr-1">Ánimo</span>
         {[
           { v: null, l: 'Todos' },
           { v: 'positive', l: 'Positivo', d: 'bg-rendi-pos' },

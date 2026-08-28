@@ -81,7 +81,7 @@ export default function MonthlyTeaser() {
       </div>
 
       <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="label-mono inline-flex items-center gap-1.5">
+        <span className="kpi-label inline-flex items-center gap-1.5">
           <Calendar size={11} strokeWidth={1.75} aria-hidden="true" />
           {lastMonth.name}{isLive ? ' en curso' : ' (último cierre)'}
         </span>
