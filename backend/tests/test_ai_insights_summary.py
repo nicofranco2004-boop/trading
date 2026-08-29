@@ -21,9 +21,24 @@ def _conn(with_data=True):
     # real (init_db las migra) y son las que `twr.clasificar_fila` necesita para
     # distinguir una medicion de una foto fabricada por el import. Sin ellas el
     # fixture miente sobre el schema y el builder rompe.
+    # `base`/`apto` (ronda 11): el estampo que decide si la fila puede medir. Sin
+    # ellas el fixture vuelve a mentir sobre el schema y `serie_medible` rompe con
+    # "no such column: base".
     conn.execute("CREATE TABLE snapshots (user_id INT, date TEXT, total_value REAL, "
                  "net_deposited REAL, total_invested REAL, source TEXT, "
-                 "fx_to_usd_blue REAL, holdings_json TEXT, mtm_coverage REAL)")
+                 "fx_to_usd_blue REAL, holdings_json TEXT, mtm_coverage REAL, "
+                 "base TEXT, apto INTEGER)")
+    conn.execute("""CREATE VIEW snapshots_medibles AS
+                    SELECT * FROM snapshots
+                     WHERE CASE
+                             WHEN apto IS NOT NULL THEN apto
+                             WHEN source = 'import'  THEN 0
+                             WHEN source = 'browser' THEN 0
+                             WHEN source = 'mtm_backfill'
+                                  THEN (CASE WHEN COALESCE(mtm_coverage,-1) >= 0.90
+                                             THEN 1 ELSE 0 END)
+                             ELSE 1
+                           END = 1""")
     conn.execute("CREATE TABLE monthly_entries (user_id INT, broker TEXT, year INT, month INT, capital_inicio REAL, capital_final REAL, deposits REAL, withdrawals REAL)")
     # currency/fx_to_usd: existen en el schema real (init_db las migra) y el
     # builder las necesita para convertir Cupón/Amortización, que guardan el

@@ -40,7 +40,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # mercado (medido por el cron o reconstruido a precio real).
     import twr as _twr
     _serie = _twr.serie_medible(conn, user_id)
-    snapshots = [{"date": p["date"], "total_value": p["value"]} for p in _serie["puntos"]]
+    snapshots = [{"date": p["date"], "total_value": p["value"]} for p in _serie["medibles"]]
 
     monthly = [dict(r) for r in conn.execute(
         "SELECT * FROM monthly_entries WHERE user_id=? AND broker='global' "

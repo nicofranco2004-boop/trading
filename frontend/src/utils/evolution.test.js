@@ -5,6 +5,8 @@ import {
   convertSeriesToArs,
   computeDailyPnl,
   computeReturnDelta,
+  diagnosticoSinMedicion,
+  textoSinMedicion,
 } from './evolution.js'
 
 const TCB = 1500
@@ -484,5 +486,103 @@ describe('descarta los puntos que no son base de mercado', () => {
     const r = buildEvolutionFromSnapshots(
       [fabricado('2025-01-31', 100), medido('2025-02-28', 110)], [], BENCH, TCB)
     expect(r).toBe(null)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RONDA 2 — lo que la pasada adversarial encontró abierto.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('ronda 2 — la función que MIDE aunque se llame build...Evolution', () => {
+  const TCB2 = 1500
+  const med = (date, v, nd = 100) => ({ date, total_value: v, total_invested: 100, net_deposited: nd, apto: true, clase: 'medicion' })
+  const intra = (date, v, nd = 100) => ({ date, total_value: v, total_invested: 100, net_deposited: nd, apto: false, clase: 'intradia' })
+
+  it('una foto INTRADIA no entra al chain-link ni fija el pico', () => {
+    // ⚠️ EL FIXTURE TIENE QUE PODER FALLAR: la intradía va con un valor MUY por
+    // encima de los cierres. Si vuelve a entrar, es denominador de un período y
+    // pico de la serie, y el acumulado se mueve. Es la forma del uid 93, que con
+    // UNA sola intradía pasaba de +7,82% a −33,44%.
+    const conIntra = [med('2026-01-31', 100), intra('2026-02-10', 400), med('2026-02-28', 110)]
+    const sinIntra = [med('2026-01-31', 100), med('2026-02-28', 110)]
+    const a = buildEvolutionFromSnapshots(conIntra, [], BENCH, TCB2)
+    const b = buildEvolutionFromSnapshots(sinIntra, [], BENCH, TCB2)
+    expect(a.seriesUsd.at(-1).total).toBeCloseTo(b.seriesUsd.at(-1).total, 6)
+    // y la intradía tampoco aporta un punto a la serie medida
+    expect(a.seriesUsd).toHaveLength(2)
+  })
+
+  it('§4.4 adentro del chain-link: net_deposited NEGATIVO no cae al cost basis', () => {
+    // ⚠️ CON `net_deposited` POSITIVO ESTE BUG ES INEXHIBIBLE. Los dos cierres
+    // tienen el MISMO nd negativo → flujos 0 → el retorno es el movimiento puro.
+    // Con el `> 0` viejo, ambos caían a `total_invested` (100 y 100) y daba lo
+    // mismo por casualidad; acá `total_invested` DIFIERE entre las dos filas, que
+    // es lo que destapa la contaminación.
+    const s = [
+      { date: '2026-01-31', total_value: 1000, total_invested: 800, net_deposited: -500, apto: true, clase: 'medicion' },
+      { date: '2026-02-28', total_value: 1100, total_invested: 900, net_deposited: -500, apto: true, clase: 'medicion' },
+    ]
+    const r = buildEvolutionFromSnapshots(s, [], BENCH, TCB2)
+    // flujos = (−500) − (−500) = 0 → retorno = (1100 − 1000) / 1000 = +10%
+    expect(r.seriesUsd.at(-1).total).toBeCloseTo(10, 6)
+  })
+
+  it('el 0 SIGUE significando "no lo tengo" (fallback legacy vivo)', () => {
+    const s = [
+      { date: '2026-01-31', total_value: 1000, total_invested: 900, net_deposited: 0, apto: true, clase: 'medicion' },
+      { date: '2026-02-28', total_value: 1100, total_invested: 900, net_deposited: 0, apto: true, clase: 'medicion' },
+    ]
+    const r = buildEvolutionFromSnapshots(s, [], BENCH, TCB2)
+    expect(r.seriesUsd.at(-1).total).toBeCloseTo(10, 6)
+  })
+})
+
+describe('ronda 2 — un cero falso es peor que un vacío', () => {
+  it('base negativa no publica "0,00%" con un monto al lado', () => {
+    // uid 1 en producción: +US$2.026,35 contra 0,00%, con base −11,92.
+    const s = [
+      { date: '2026-06-04', total_value: -11.92, total_invested: 10, net_deposited: 10, apto: true, clase: 'medicion' },
+      { date: '2026-08-16', total_value: 2000, total_invested: 10, net_deposited: 10, apto: true, clase: 'medicion' },
+    ]
+    expect(computeReturnDelta(s, { sinceDate: '2026-07-01' })).toBe(null)
+  })
+
+  it('base positiva sigue publicando normal', () => {
+    const s = [
+      { date: '2026-06-30', total_value: 1000, total_invested: 900, net_deposited: 900, apto: true, clase: 'medicion' },
+      { date: '2026-08-16', total_value: 1100, total_invested: 900, net_deposited: 900, apto: true, clase: 'medicion' },
+    ]
+    const d = computeReturnDelta(s, { sinceDate: '2026-07-01' })
+    expect(d).not.toBe(null)
+    expect(d.pct).toBeCloseTo(0.1, 6)
+  })
+})
+
+describe('ronda 2 — el vacío tiene que hablar', () => {
+  it('cuenta vacía → null (el vacío de siempre, no un sermón)', () => {
+    expect(diagnosticoSinMedicion([])).toBe(null)
+    expect(diagnosticoSinMedicion(null)).toBe(null)
+  })
+
+  it('57 filas y ninguna medida → dice cuántas hay y que son del import', () => {
+    // El uid 107 real: 57 snapshots, 0 medibles. El mensaje viejo le pedía
+    // "cargá tus snapshots diarios" — o sea lo que ya hizo.
+    const s = Array.from({ length: 57 }, (_, i) => ({
+      date: `2026-0${1 + (i % 6)}-1${i % 9}`, total_value: 100, apto: false, clase: 'sintetico_costo',
+    }))
+    const d = diagnosticoSinMedicion(s)
+    expect(d).not.toBe(null)
+    expect(d.filas).toBe(57)
+    expect(d.medidas).toBe(0)
+    const txt = textoSinMedicion(d)
+    expect(txt).toContain('57')
+    expect(txt).not.toMatch(/carg[áa] tus snapshots/i)
+  })
+
+  it('con 2 mediciones no dice nada (hay número)', () => {
+    const s = [
+      { date: '2026-08-15', total_value: 100, apto: true, clase: 'medicion' },
+      { date: '2026-08-16', total_value: 110, apto: true, clase: 'medicion' },
+    ]
+    expect(diagnosticoSinMedicion(s)).toBe(null)
   })
 })

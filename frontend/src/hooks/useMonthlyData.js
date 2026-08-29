@@ -38,6 +38,7 @@ import { api } from '../utils/api'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, setBrokersRegistry } from '../utils/valuation'
 import { computeBestWorstClosedOp } from '../utils/insightsModel'
+import { esApto, esDibujable, baseIncomparable } from '../utils/evolution'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -305,8 +306,13 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
   // En ese caso pasamos un map vacío para que las sparklines no se rendereen.
   const snapsByMonth = new Map()
   if (selectedBroker === 'global') {
+    // `snapsByMonth` alimenta DOS cosas con exigencias distintas: la sparkline
+    // del mes (dibujo) y el par baseSnap/lastSnap (medición). Acá se aplica la
+    // regla floja —la de dibujar—, y la exigente se aplica sobre el resultado,
+    // donde se usa. Meter las dos en un mismo array fue parte del enredo.
     for (const s of (snapshots || [])) {
       if (!s.date || s.total_value == null) continue
+      if (!esDibujable(s)) continue
       const period = s.date.slice(0, 7)
       if (!snapsByMonth.has(period)) snapsByMonth.set(period, [])
       snapsByMonth.get(period).push(s)
@@ -404,13 +410,28 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       // Base = último snapshot ANTES del mes (= valor MtM al cierre del mes
       // anterior). Si no hay (cuenta recién importada), el primer snapshot DENTRO
       // del mes como fallback.
+      // ⚠️ `esApto` EN LAS DOS PUNTAS. Éste es el bloque que produjo el número
+      // reclamado, y la ironía es que se escribió para matarlo: el comentario de
+      // acá arriba ya dice "esa mezcla de bases produce un rendimiento fantasma
+      // (ej. −64,9%)". Elegía `baseSnap` como el último snapshot anterior al mes
+      // SIN MIRAR si era una medición, y el fantasma volvía por esa puerta.
+      //
+      // Reproducido al centavo contra la copia de producción del 16/08 (uid 452):
+      //     baseSnap = 2026-07-31  196.631,56  source='import'  ← AL COSTO
+      //     lastSnap = 2026-08-16   67.214,75  source='cron'    ← A MERCADO
+      //     deltaUsd = 67.214,75 − 196.631,56 − 0 = −129.416,82
+      //     deltaPct = −129.416,82 / 196.631,56  = −65,82%
+      // Nadie perdió 129 mil dólares: la cartera nunca valió 196.631,56 a precio
+      // de mercado. Ese número es el capital_final de la cadena contable.
       let baseSnap = null
       for (const s of (snapshots || [])) {
         if (s.total_value == null || !s.date || s.date >= monthStart) continue
+        if (!esApto(s)) continue
         if (!baseSnap || s.date > baseSnap.date) baseSnap = s
       }
-      if (!baseSnap && monthSnaps.length >= 2) baseSnap = monthSnaps[0]
-      const lastSnap = monthSnaps.length ? monthSnaps[monthSnaps.length - 1] : null
+      const monthAptos = monthSnaps.filter(esApto)
+      if (!baseSnap && monthAptos.length >= 2) baseSnap = monthAptos[0]
+      const lastSnap = monthAptos.length ? monthAptos[monthAptos.length - 1] : null
       if (baseSnap && lastSnap && baseSnap.total_value > 0 && baseSnap.date < lastSnap.date) {
         const mtmStart = baseSnap.total_value
         const mtmEnd = lastSnap.total_value
@@ -470,8 +491,14 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
   let liveValue = null
   let liveDate = null
   if (selectedBroker === 'global') {
+    // ⚠️ EL BORDE DE CIERRE TAMBIÉN SE FILTRA. Sin `esApto`, el día que el
+    // usuario importa el "valor live" ES la cadena contable: la fila que el
+    // import acaba de fabricar es la más nueva y gana el sort. De ahí sale el
+    // fantasma con el signo dado vuelta (un +96% en vez de un −65%), que es por
+    // qué nadie lo fue a buscar. En la copia de producción son 180 usuarios (22%)
+    // cuya última fila no es una medición.
     const latestSnap = (snapshots || [])
-      .filter(s => s.date && s.total_value != null)
+      .filter(s => s.date && s.total_value != null && esApto(s))
       .sort((a, b) => b.date.localeCompare(a.date))[0]
     liveValue = latestSnap?.total_value ?? null
     liveDate = latestSnap?.date ?? null
@@ -539,18 +566,69 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       if (isCurrentYear && endSource === 'live' && newestWithCapital) {
         const gap = liveValue - (newestWithCapital.endUsd || 0)
         if (Math.abs(gap) > 0.01) {
-          // Mutamos el mes en su lugar dentro de `sorted` (es el mismo
-          // objeto). Recalculamos delta con el live como endUsd y Modified
-          // Dietz (mismo divisor que el cómputo mensual de arriba).
+          // Mutamos el mes en su lugar dentro de `sorted` (es el mismo objeto).
           newestWithCapital.endUsd = liveValue
-          const flows = (newestWithCapital.deposits || 0) - (newestWithCapital.withdrawals || 0)
-          newestWithCapital.deltaUsd = liveValue - (newestWithCapital.startUsd || 0) - flows
-          const avgCap = (newestWithCapital.startUsd || 0) + 0.5 * flows
-          newestWithCapital.deltaPct = avgCap > 0
-            ? (newestWithCapital.deltaUsd / avgCap) * 100
-            : 0
-          newestWithCapital.status = statusFromPct(newestWithCapital.deltaPct)
           newestWithCapital.isLive = true
+
+          // ⚠️ ACÁ SE PISABA EL FIX DE 130 LÍNEAS MÁS ARRIBA. Esto es lo que hizo
+          // que las rondas anteriores fueran INVISIBLES en pantalla: el bloque
+          // `isLiveMonth` calculaba con cuidado un delta de bases homogéneas (o
+          // se negaba a calcularlo), y acá el MISMO archivo lo sobrescribía con
+          //     deltaUsd = liveValue − startUsd − flows
+          // donde `startUsd` es `capital_inicio` de `monthly_entries`, o sea LA
+          // CADENA CONTABLE. Mercado menos contabilidad, publicado como
+          // rendimiento del mes: exactamente el bug que el otro bloque acababa
+          // de matar.
+          //
+          // La base tiene que ser una MEDICIÓN, igual que la punta. Si no la hay,
+          // no hay número — y eso es una respuesta, no una falla.
+          // ⚠️ Y TIENE QUE ESTAR PEGADA AL ARRANQUE DEL MES. Sin el piso de
+          // antigüedad, este loop agarraba la medición más reciente ANTERIOR al
+          // mes por vieja que fuera: si la última era del 31 de diciembre, el
+          // delta de "este mes" arrancaba en diciembre y se comía dos meses de
+          // mercado ajeno presentándolos como el mes en curso.
+          // Es el mismo `_border_is_fresh` / `_BORDER_MAX_LAG_DAYS = 5` que el
+          // backend ya aplica en la rama del mes en curso
+          // (`reporting/builder.py`, `bordes_mercado_periodo`). Mismo número a
+          // propósito: si se separan, uno de los dos está mal.
+          const _mStart = `${newestWithCapital.period}-01`
+          const _pisoBase = new Date(new Date(`${_mStart}T00:00:00Z`).getTime() - 5 * 86400000)
+            .toISOString().slice(0, 10)
+          let _baseMed = null
+          for (const s of (snapshots || [])) {
+            if (s.total_value == null || !s.date || s.date >= _mStart) continue
+            if (s.date < _pisoBase) continue
+            if (!esApto(s)) continue
+            if (!_baseMed || s.date > _baseMed.date) _baseMed = s
+          }
+          const flows = (newestWithCapital.deposits || 0) - (newestWithCapital.withdrawals || 0)
+          // Con cierre medido, ése manda. Sin él queda la cadena contable, y ahí
+          // decide el MISMO guard que ya usa el backend (`baseIncomparable`): si
+          // el período está dominado por dinero nuevo el número se publica igual
+          // —es el onboarding, y es correcto—; si la base contable es casi todo,
+          // no hay número.
+          const _start = (_baseMed && _baseMed.total_value > 0)
+            ? _baseMed.total_value
+            : (newestWithCapital.startUsd || 0)
+          const _startEsMedido = !!(_baseMed && _baseMed.total_value > 0)
+          if (_start > 0 && !baseIncomparable(_startEsMedido, _start,
+                                              newestWithCapital.deposits, newestWithCapital.withdrawals)) {
+            const avgCap = _start + 0.5 * flows
+            newestWithCapital.deltaUsd = liveValue - _start - flows
+            newestWithCapital.deltaPct = avgCap > 0
+              ? (newestWithCapital.deltaUsd / avgCap) * 100
+              : 0
+            newestWithCapital.status = statusFromPct(newestWithCapital.deltaPct)
+          } else {
+            // Sin base medida y con la cadena pesando de más: no se puede medir
+            // el mes. Se deja el valor live (que es un dato honesto) y se calla
+            // el porcentaje. `sinBaseMedida` es lo que la UI usa para explicar
+            // POR QUÉ no hay número, en vez de un "—" mudo.
+            newestWithCapital.deltaUsd = null
+            newestWithCapital.deltaPct = null
+            newestWithCapital.status = null
+            newestWithCapital.sinBaseMedida = true
+          }
         }
       }
 
@@ -573,8 +651,43 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       // El ytdUsd absoluto sigue siendo `endUsd - startUsd - flowsYear` (es
       // lo que coincide con el Hero del Dashboard). El % no es ytdUsd/startUsd.
       let ytdUsd, ytdPct
-      if (startUsd > 0 && endUsd > 0) {
-        ytdUsd = endUsd - startUsd - flowsYear
+      let ytdSinBaseMedida = false
+      // ⚠️ MISMA RESTA, UN NIVEL MÁS ARRIBA. Con `endSource === 'live'`, `endUsd`
+      // es el valor a MERCADO y `startUsd` es el `capital_inicio` del mes más
+      // viejo del año — la cadena CONTABLE. Restarlos publica en el Hero el
+      // mismo fantasma que el bloque del mes acaba de tapar, así que el guard va
+      // en los dos o el arreglo se ve por una pantalla y se escapa por la otra.
+      // (Con `endSource === 'manual'` las dos puntas son contables: homogéneo,
+      // no hay nada que guardar.)
+      //
+      // El criterio NO es nuevo: es el que `_ytd_delta` ya aplica en el backend
+      // (`main.py:31908-31914`) — el arranque del año tiene que ser un cierre
+      // MEDIDO, y sin él no hay YTD. Acá se agrega la única concesión que el
+      // repo ya se había hecho (`baseIncomparable`), para no borrarle el número
+      // al onboarding.
+      let _ytdStart = startUsd
+      if (endSource === 'live') {
+        const _yrStart = `${year}-01-01`
+        let _snapStart = null
+        for (const s of (snapshots || [])) {
+          if (s.total_value == null || !s.date || s.date >= _yrStart) continue
+          if (!esApto(s)) continue
+          if (!_snapStart || s.date > _snapStart.date) _snapStart = s
+        }
+        if (_snapStart && _snapStart.total_value > 0) {
+          _ytdStart = _snapStart.total_value
+        } else if (baseIncomparable(false, startUsd, flowsYear > 0 ? flowsYear : 0,
+                                    flowsYear < 0 ? -flowsYear : 0)) {
+          ytdSinBaseMedida = true
+        }
+      }
+      if (ytdSinBaseMedida) {
+        // Sin cierre medido al arranque del año no hay YTD. Se deja en null
+        // —NO en 0 y NO en un fallback fabricado— y `ytdSinBaseMedida` es lo que
+        // la UI usa para decir por qué.
+        ytdUsd = null
+      } else if (_ytdStart > 0 && endUsd > 0) {
+        ytdUsd = endUsd - _ytdStart - flowsYear
       } else {
         // Fallback: suma de deltaUsd por mes (incluye manual + partial + derived)
         ytdUsd = sorted.reduce((s, m) => s + m.deltaUsd, 0)
@@ -597,7 +710,11 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       // un TWRR de +115% post-crash). Si el cap. aportado es 0 o negativo,
       // queda null (no tiene sentido el ratio).
       const cumNetDepEnd = cumNetDepByYear.get(year) || 0
-      const ytdPctOverContrib = cumNetDepEnd > 0
+      // ⚠️ `ytdUsd` puede ser null (sin base medida) y en JS `null / 500 * 100`
+      // es 0, no null: sin este chequeo el guard de arriba se convierte en un
+      // "0,0%" publicado, que es peor que el número que vino a tapar porque se
+      // lee como "el año estuvo plano".
+      const ytdPctOverContrib = (cumNetDepEnd > 0 && ytdUsd != null)
         ? (ytdUsd / cumNetDepEnd) * 100
         : null
 
@@ -614,6 +731,7 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
         year,
         ytdUsd,
         ytdPct,
+        ytdSinBaseMedida,        // true → no hay cierre medido al arranque del año (la UI explica el vacío)
         ytdPctOverContrib,       // % alternativo: ytdUsd / capital aportado total al cierre
         capContribAtYearEnd: cumNetDepEnd,
         startUsd,

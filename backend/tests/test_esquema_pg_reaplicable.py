@@ -54,12 +54,28 @@ def sentencias():
 def no_reaplicables():
     """[(n, sentencia)] de las que fallarían —o peor, DUPLICARÍAN— al repetirse.
 
-    Dos formas son seguras y no hay una tercera hoy:
+    Tres formas son seguras:
       · `IF NOT EXISTS` → Postgres no hace nada la segunda vez.
       · `ADD CONSTRAINT <nombre>` → la segunda vez levanta `DuplicateObject`, que
         es lo único que `_init_db_postgres()` sabe atrapar.
+      · `CREATE OR REPLACE VIEW` → redefine sin error las veces que haga falta.
     Cualquier otra cosa se marca. Si mañana aparece una forma legítima nueva, se
     agrega acá **con el motivo escrito**, no se afloja el criterio.
+
+    ⚠️ LA TERCERA SE AGREGÓ CON `snapshots_medibles`, y el motivo va escrito acá
+    como pide el párrafo de arriba. Una vista no tiene `IF NOT EXISTS` en Postgres
+    —la forma idiomática es `OR REPLACE`— así que sin esta rama el archivo no podía
+    contener la vista, que es justo lo que hacía que Postgres no la tuviera. Y no
+    alcanza con `DROP VIEW IF EXISTS` + `CREATE VIEW` (lo que hace la migración de
+    SQLite): son dos sentencias, y la segunda cae en este mismo detector.
+
+    Por qué `OR REPLACE` es de verdad re-aplicable y no una excusa: Postgres deja
+    redefinir una vista mientras las columnas existentes no cambien de nombre ni de
+    tipo, y **permite agregar columnas al final**. Como el esquema de `snapshots`
+    sólo crece (cada ronda agregó columnas al final: `mtm_coverage`, `base`,
+    `apto`), el `SELECT *` de la vista aguanta. Lo que SÍ rompería el arranque es
+    RENOMBRAR o BORRAR una columna de `snapshots` — si algún día pasa, esta vista
+    hay que actualizarla en el mismo commit.
     """
     malas = []
     for i, s in enumerate(sentencias(), 1):
@@ -67,6 +83,8 @@ def no_reaplicables():
         if "IF NOT EXISTS" in arriba:
             continue
         if re.search(r"\bADD\s+CONSTRAINT\s+\S+", arriba):
+            continue
+        if re.search(r"\bCREATE\s+OR\s+REPLACE\s+VIEW\b", arriba):
             continue
         malas.append((i, s))
     return malas

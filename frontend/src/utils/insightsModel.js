@@ -713,16 +713,29 @@ export function drawdownFromPerf(perf) {
  * corte venía a impedir. Con tres o más tramos, encima, todos caen en el mismo
  * bucket y sobrevive uno solo.
  *
- * @param {Array}  puntos  con `tramo` (número) y `key`
+ * ⚠️ Y `campo` DECIDE QUÉ CORTA, porque son dos preguntas distintas.
+ *   · La LÍNEA principal corta por `segmento`: además del hueco, se parte donde
+ *     cambia la BASE de valuación (costo ↔ mercado). Un segmento que une una foto
+ *     al costo con una medición a mercado no dibuja un movimiento de la cartera,
+ *     dibuja el escalón entre dos formas de medir — medido, −47,26% en el caso que
+ *     originó todo esto, con el header diciendo "—" al lado.
+ *   · La curva de DRAWDOWN corta por `tramo`: sale del índice medido, que avanza
+ *     legítimamente de punto apto a punto apto SALTEANDO los del medio. Cortarla
+ *     por `segmento` partiría una cadena que sí es continua.
+ * Series sin el campo (la de ARS, que no sale de `perf.curva`) no cortan nunca:
+ * el guard exige que las dos puntas lo tengan.
+ *
+ * @param {Array}  puntos  con `tramo`/`segmento` (número) y `key`
  * @param {Object} vacio   campos en null que definen el punto de corte
+ * @param {string} campo   qué propiedad define el corte
  * @returns {Array} la misma serie con los cortes intercalados
  */
-export function cortarPorTramo(puntos, vacio = { total: null, realized: null }) {
+export function cortarPorTramo(puntos, vacio = { total: null, realized: null }, campo = 'tramo') {
   const out = []
   for (let i = 0; i < (puntos || []).length; i++) {
     const p = puntos[i]
     const prev = puntos[i - 1]
-    if (prev && p?.tramo != null && prev?.tramo != null && p.tramo !== prev.tramo) {
+    if (prev && p?.[campo] != null && prev?.[campo] != null && p[campo] !== prev[campo]) {
       out.push({ key: `corte-${p.key}`, label: '', ...vacio })
     }
     out.push(p)
@@ -787,6 +800,103 @@ export function partirMedidoYEstimado(filas, claveMedida, claveEstimada) {
   })
 }
 
+// ─── El eje X tiene que medir TIEMPO, no posiciones ─────────────────────────
+//
+// El gráfico usaba un eje de CATEGORÍA: reparte los puntos en partes iguales por
+// índice y no mira la fecha. Mientras la serie tuvo una sola densidad eso pasó
+// desapercibido. Desde que convive la cadena contable (un punto por cierre de
+// mes) con las mediciones (un punto por día), no: en la cuenta demo, 10 meses de
+// historia entraban en 11 casilleros y 6 semanas de mediciones en 48. El tiempo
+// quedaba comprimido ~40 veces del lado izquierdo, y la parte contable se leía
+// como un pico casi vertical que nunca ocurrió.
+//
+// ⚠️ MEDIODÍA LOCAL, NO UTC. Las marcas que genera una escala de tiempo caen en
+// límites de día LOCALES. Si los puntos se ubican a medianoche UTC, en Argentina
+// (UTC−3) cada punto queda 3 h a la izquierda de su propia marca. Con fechas sin
+// hora —que es lo único que hay acá— la lectura correcta es "ese día", así que se
+// ancla a la medianoche local y marca y punto coinciden.
+
+const MS_DIA = 86400000
+
+/**
+ * tsDeClave
+ *
+ * El instante que le corresponde a la clave de un punto, o `null` si la clave no
+ * es una fecha (los cortes; ver `rellenarTimestamps`).
+ *
+ *   '2026-08-25' → ese día a las 00:00 locales
+ *   '2026-08'    → el ÚLTIMO día del mes (las series contables son cierres de mes,
+ *                  no aperturas: ponerlas el día 1 las adelantaría un mes entero)
+ *   'today'      → ahora
+ *
+ * @param {string} key
+ * @param {number} [ahora] inyectable para poder testear
+ * @returns {number|null} epoch ms
+ */
+export function tsDeClave(key, ahora) {
+  if (typeof key !== 'string') return null
+  if (key === 'today') return ahora == null ? Date.now() : ahora
+  let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key)
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3]).getTime()
+  m = /^(\d{4})-(\d{2})$/.exec(key)
+  // `new Date(y, mes, 0)` = día 0 del mes SIGUIENTE = último día de este mes.
+  if (m) return new Date(+m[1], +m[2], 0).getTime()
+  return null
+}
+
+/**
+ * rellenarTimestamps
+ *
+ * Le pone `ts` a cada fila. Las que ya traen una fecha legible salen de
+ * `tsDeClave`; las que no —las filas de CORTE, que `cortarPorTramo` inserta con
+ * todo en null para que Recharts deje el hueco a la vista— van al PUNTO MEDIO
+ * entre sus vecinas.
+ *
+ * ⚠️ POR QUÉ EL PUNTO MEDIO. En un eje de categoría el corte ocupaba un casillero
+ * y no había nada que decidir. En un eje de tiempo necesita un instante o rompe el
+ * orden. El punto medio es el único lugar que no miente para ningún lado: no
+ * estira el tramo que termina ni el que empieza, y como la fila está vacía en
+ * TODAS las series, no se dibuja nada ahí — sólo marca dónde se corta.
+ *
+ * Los cortes no son decorativos: separan tramos valuados con REGLAS distintas.
+ * Unir el último punto medido con el primero contable dibujaría un salto que
+ * nunca ocurrió.
+ *
+ * ⚠️ SIEMPRE DEVUELVE NÚMEROS. Un eje `type="number"` con un `ts` en null no
+ * ubica la fila. Si una clave no se puede leer, la fila hereda el instante de la
+ * anterior más un día; si no hay ninguna legible en toda la serie, quedan
+ * equiespaciadas — exactamente el comportamiento viejo, que es el fallback
+ * correcto cuando no hay tiempo que respetar.
+ *
+ * @param {Array<Object>} filas cada una con `.key`
+ * @param {number} [ahora]
+ * @returns {Array<Object>} las mismas filas con `ts` numérico y creciente
+ */
+export function rellenarTimestamps(filas, ahora) {
+  const f = filas || []
+  const ts = f.map(r => tsDeClave(r && r.key, ahora))
+
+  // 1) Los cortes (y cualquier clave ilegible) al punto medio de sus vecinas.
+  for (let i = 0; i < ts.length; i++) {
+    if (ts[i] != null) continue
+    let a = null, b = null
+    for (let j = i - 1; j >= 0; j--) if (ts[j] != null) { a = ts[j]; break }
+    for (let j = i + 1; j < ts.length; j++) if (ts[j] != null) { b = ts[j]; break }
+    if (a != null && b != null) ts[i] = a + (b - a) / 2
+    else if (a != null) ts[i] = a + MS_DIA
+    else if (b != null) ts[i] = b - MS_DIA
+  }
+
+  // 2) Ninguna clave era legible: equiespaciadas, como el eje de categoría.
+  if (ts.every(v => v == null)) for (let i = 0; i < ts.length; i++) ts[i] = i * MS_DIA
+
+  // 3) Estrictamente creciente. Dos filas en el mismo instante se pisan y el
+  //    orden de dibujo pasa a depender del sort interno de la escala.
+  for (let i = 1; i < ts.length; i++) if (ts[i] <= ts[i - 1]) ts[i] = ts[i - 1] + 1
+
+  return f.map((r, i) => ({ ...r, ts: ts[i] }))
+}
+
 // ─── La resolución del gráfico sigue a lo MEDIDO ────────────────────────────
 /** Hasta acá la serie se dibuja punto por punto; más allá, un punto por mes. */
 export const RESOLUCION_DIARIA_DIAS = 92
@@ -820,4 +930,103 @@ export function resolucionDeSerie(keys) {
   const b = Date.parse(k[k.length - 1])
   if (!isFinite(a) || !isFinite(b)) return 'mensual'
   return ((b - a) / 86400000) <= RESOLUCION_DIARIA_DIAS ? 'diaria' : 'mensual'
+}
+
+/**
+ * acumuladoDeVentana — el rendimiento acumulado de la VENTANA VISIBLE del gráfico.
+ *
+ * ⚠️ POR QUÉ NO ES `ultimaFila[claveMedida]`, QUE ES LO QUE HABÍA.
+ *
+ * `partirMedidoYEstimado` reparte la serie en DOS claves para poder dibujar lo no
+ * medido punteado: lo medido queda en `claveMedida` y lo estimado en
+ * `claveEstimada`. Para un usuario 100% contable —los 331 que el modo Estimado
+ * vino a servir— TODOS los puntos caen en la segunda y NINGUNO en la primera, así
+ * que leer sólo la medida devolvía `null` y el KPI publicaba "—" **al lado de su
+ * propia curva dibujada**. El usuario veía la línea y un guión.
+ *
+ * ⚠️ Y POR QUÉ NO SE CABLEA `perf.twr`. Son dos números distintos y los dos están
+ * bien: `perf.twr` es de la ventana que el backend declara
+ * (`ventana_desde`/`ventana_hasta`); este KPI es del RANGO VISIBLE, que cambia con
+ * los tabs 1A/2A/5A/MAX. Presentar uno como el otro es el mismo crimen de esta
+ * familia con otra ropa: un número medido sobre un período publicado como si
+ * fuera de otro.
+ *
+ * ⚠️ Y POR QUÉ LA ÚLTIMA CORRIDA CONTIGUA Y NO "primera fila contra última".
+ * `pt.index` viene del índice POR BASE del backend: se reinicia a 1,0 cada vez que
+ * cambia la regla de valuación, y `cortarPorTramo` deja un `null` en el medio.
+ * Dividir el último punto (de mercado) por el primero (contable) sería encadenar a
+ * través de un corte de regla — la Fase 1 otra vez. Así que el número se compone
+ * DENTRO de la última corrida homogénea, y `parcial` avisa que empieza después del
+ * borde de la ventana para que la pantalla lo pueda decir.
+ *
+ * El cociente de dos valores ya rebaseados cancela la base común
+ * ((100+rebase(x))/(100+rebase(y)) === (100+x)/(100+y)), así que esto devuelve el
+ * acumulado crudo de la corrida sin tener que deshacer el rebase.
+ *
+ * @returns {null | {pct, estimado, parcial, puntos, desde, hasta}}
+ */
+export function acumuladoDeVentana(filas, claveMedida, claveEstimada) {
+  const f = Array.isArray(filas) ? filas : []
+  const valorDe = (r) => {
+    if (!r) return null
+    const m = r[claveMedida]
+    if (m != null) return m
+    const e = r[claveEstimada]
+    return e != null ? e : null
+  }
+  let fin = -1
+  for (let i = f.length - 1; i >= 0; i--) { if (valorDe(f[i]) != null) { fin = i; break } }
+  if (fin < 0) return null                       // ventana sin ningún punto: "—" es lo correcto
+  let ini = fin
+  while (ini - 1 >= 0 && valorDe(f[ini - 1]) != null) ini--
+  // ⚠️ EL NÚMERO ES `total`, NO EL COCIENTE ENTRE LA PRIMERA Y LA ÚLTIMA FILA.
+  //
+  // `total` es `(index − 1)·100` y el índice del backend SE REINICIA en cada
+  // cambio de base: o sea `total` ya es "el acumulado DESDE QUE EMPEZÓ este
+  // segmento". Usarlo es lo que hace que el número no dependa de qué filas
+  // sobrevivieron al recorte de la ventana ni al resampleo mensual.
+  //
+  // Con el cociente, el mismo usuario daba un número distinto según la
+  // resolución del gráfico: medido con la serie real del demo (11 filas
+  // contables + 45 mediciones diarias), en resolución DIARIA daba +1,43% y en
+  // MENSUAL daba `null` — porque el resampleo colapsa los 45 puntos del segmento
+  // medido en UNA fila, y una fila no tiene contra qué dividirse. Pero esa fila
+  // ya vale −0,52%, que es el acumulado entero del segmento.
+  //
+  // `total === 0` sí es "no hay nada que publicar": es el valor de un punto que
+  // ES el arranque de su segmento (índice 1,0) y no tiene nada después. Ahí el
+  // "0,0%" viejo se leía "tu cartera no se movió" sobre un artefacto del
+  // reinicio. Son 25 usuarios en la copia de producción.
+  const corrida = f.slice(ini, fin + 1)
+  const totalDe = (r) => (r && typeof r.total === 'number') ? r.total : null
+  const tFin = totalDe(f[fin])
+  const v0 = valorDe(f[ini])
+  const v1 = valorDe(f[fin])
+  let pct
+  if (tFin != null) {
+    // ⚠️ `total === 0` NO ES SIEMPRE UN ARTEFACTO, y la diferencia es el largo de
+    // la corrida. Con UNA sola fila en 0 el punto ES el arranque de su segmento y
+    // no hay nada después: publicar "0,0%" ahí se lee "tu cartera no se movió"
+    // sobre el reinicio del índice (son 32 usuarios en la copia de producción).
+    // Con VARIAS filas en 0 la cartera estuvo de verdad plana, y 0,0% es la
+    // respuesta correcta — suprimirlo sería el error opuesto.
+    if (tFin === 0 && ini === fin) return null
+    pct = tFin
+  } else {
+    // Sin `total` (filas de un consumidor que no lo pasa) se cae al cociente,
+    // que es correcto cuando la corrida arranca en el borde del segmento.
+    if (ini === fin) return null
+    if (!(100 + v0)) return null
+    pct = (((100 + v1) / (100 + v0)) - 1) * 100
+  }
+  return {
+    pct,
+    // La corrida es estimada si CUALQUIERA de sus puntos lo es: un tramo con un
+    // solo punto reconstruido ya no es una medición limpia.
+    estimado: corrida.some(r => !!r?.estimado),
+    parcial: ini > 0,
+    puntos: corrida.length,
+    desde: f[ini]?.label ?? null,
+    hasta: f[fin]?.label ?? null,
+  }
 }

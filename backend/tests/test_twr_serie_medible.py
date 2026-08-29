@@ -16,6 +16,16 @@ import main
 import twr
 
 
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
@@ -68,7 +78,7 @@ class Regresion452Test(_Base):
                   net_dep=self.DEPOSITS, fx=1400.0, hold="[]")
         c = twr.curva_indexada(self.conn, self.uid)
         # La foto contable NO entra: queda una sola medición → no hay período.
-        self.assertEqual(len(c["puntos"]), 1)
+        self.assertEqual(len(_todos(c)), 1)
         self.assertIsNone(c["twr"])
         # ⚠️ None, NO 0.0. Este assert decía `== 0.0` y BLINDABA el defecto como si
         # fuera el resultado correcto: el 452 iba a leer "Drawdown actual 0,0% ·
@@ -81,9 +91,12 @@ class Regresion452Test(_Base):
         self.assertIsNone(c["drawdown_maximo_fecha"])
         self.assertEqual(c["motivo"], "una_sola_medicion")
         self.assertTrue(c["motivo_texto"])
-        # Y lo descartado no se tira: queda para la banda contable.
+        # Y lo descartado no se tira: queda para la banda contable — bajo
+        # `value_no_medible`, que es como se llama el número crudo de algo que no
+        # mide (ronda 11): `["value"]` ahí levanta KeyError a propósito.
         self.assertEqual(len(c["contable"]), 1)
-        self.assertAlmostEqual(c["contable"][0]["value"], self.CI_CADENA, places=2)
+        self.assertNotIn("value", c["contable"][0])
+        self.assertAlmostEqual(c["contable"][0]["value_no_medible"], self.CI_CADENA, places=2)
 
     def test_452_reconstruido_a_mercado_recupera_la_historia(self):
         """El objetivo de negocio: si el mes de julio se RECONSTRUYE a precio real
@@ -94,7 +107,7 @@ class Regresion452Test(_Base):
         self.snap("2026-08-24", self.ULTIMA, "cron",
                   net_dep=self.DEPOSITS, fx=1400.0, hold="[]")
         c = twr.curva_indexada(self.conn, self.uid)
-        self.assertEqual(len(c["puntos"]), 2)
+        self.assertEqual(len(_todos(c)), 2)
         self.assertGreater(c["drawdown_actual"], -0.05)   # ~0, no −45%
         self.assertGreater(c["twr"], -0.05)
 
@@ -107,22 +120,22 @@ class ClaseYCoberturaTest(_Base):
         self.pos("2025-01-15")
         self.snap("2026-06-30", 100.0, "mtm_backfill", cov=0.20)
         s = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(len(s["puntos"]), 1)
-        self.assertEqual(s["puntos"][0]["clase"], twr.RECONSTRUIDO)
-        self.assertFalse(s["puntos"][0]["apto"])
-        self.assertAlmostEqual(s["puntos"][0]["cobertura"], 0.20, places=3)
+        self.assertEqual(len(_todos(s)), 1)
+        self.assertEqual(_todos(s)[0]["clase"], twr.RECONSTRUIDO)
+        self.assertFalse(_todos(s)[0]["apto"])
+        self.assertAlmostEqual(_todos(s)[0]["cobertura"], 0.20, places=3)
 
     def test_por_encima_del_piso_de_medicion_SI_mide(self):
         self.pos("2025-01-15")
         self.snap("2026-06-30", 100.0, "mtm_backfill", cov=0.95)
         s = twr.serie_medible(self.conn, self.uid)
-        self.assertTrue(s["puntos"][0]["apto"])
+        self.assertTrue(_todos(s)[0]["apto"])
 
     def test_reconstruido_sin_cobertura_estampada_no_se_confia(self):
         self.pos("2025-01-15")
         self.snap("2026-06-30", 100.0, "mtm_backfill", cov=None)
         s = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(s["puntos"], [])
+        self.assertEqual(_todos(s), [])
 
     def test_reconstruido_valuado_a_precio_real_es_base_de_mercado(self):
         """La línea divisoria NO es "foto del cron vs reconstrucción": la
@@ -131,9 +144,9 @@ class ClaseYCoberturaTest(_Base):
         self.pos("2025-01-15")
         self.snap("2026-06-30", 100.0, "mtm_backfill", cov=1.0)
         s = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(len(s["puntos"]), 1)
-        self.assertEqual(s["puntos"][0]["clase"], twr.RECONSTRUIDO)
-        self.assertTrue(s["puntos"][0]["apto"])
+        self.assertEqual(len(_todos(s)), 1)
+        self.assertEqual(_todos(s)[0]["clase"], twr.RECONSTRUIDO)
+        self.assertTrue(_todos(s)[0]["apto"])
         self.assertAlmostEqual(s["cobertura_reconstruccion"], 1.0, places=3)
 
 
@@ -160,7 +173,7 @@ class CaveatPosicionesPorFechaTest(_Base):
         self.assertEqual(s["por_clase"][twr.MEDICION], 0)
         self.assertNotIn(twr.INTRADIA, twr.BORDE_PERIODO)
         s_borde = twr.serie_medible(self.conn, self.uid, aceptar=twr.BORDE_PERIODO)
-        self.assertEqual(s_borde["puntos"], [])    # NO ascendió
+        self.assertEqual(_todos(s_borde), [])    # NO ascendió
 
     def test_el_100_por_ciento_cash_sigue_siendo_medicion(self):
         """El otro lado: sin posiciones NUNCA, el cron deja holdings NULL con razón
@@ -168,8 +181,8 @@ class CaveatPosicionesPorFechaTest(_Base):
         self.assertIsNone(twr.primera_fecha_con_posiciones(self.conn, self.uid))
         self.snap("2026-03-31", 5000.0, None, fx=1200.0)
         s = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(len(s["puntos"]), 1)
-        self.assertEqual(s["puntos"][0]["clase"], twr.MEDICION)
+        self.assertEqual(len(_todos(s)), 1)
+        self.assertEqual(_todos(s)[0]["clase"], twr.MEDICION)
 
 
 class HuecosTest(_Base):
@@ -183,7 +196,7 @@ class HuecosTest(_Base):
         self.assertEqual(len(s["tramos"][0]), 2)
         self.assertEqual(len(s["tramos"][1]), 1)
         # No se inventó ningún punto en el medio.
-        self.assertEqual(len(s["puntos"]), 3)
+        self.assertEqual(len(_todos(s)), 3)
 
     def test_el_tramo_nuevo_no_encadena_contra_el_viejo(self):
         self.pos("2025-01-15")
@@ -204,18 +217,45 @@ class IndeterminadoTest(_Base):
         self.snap("2026-03-15", 100.0, None)      # sin fx, sin holdings, no fin de mes
         s = twr.serie_medible(self.conn, self.uid)
         self.assertEqual(s["por_clase"][twr.INDETERMINADO], 1)
-        self.assertEqual(s["puntos"], [])
+        self.assertEqual(_todos(s), [])
 
     def test_indeterminado_sostiene_linea_pero_no_es_denominador(self):
+        """⚠️ RONDA 9 · ESTE TEST MIRABA LA ETIQUETA Y NO EL DIBUJO.
+
+        Medido sobre el código de la ronda 8: la línea dibujaba +100,00% —de 1,0000
+        a 2,0000— uniendo un punto que NO SE PUEDE AFIRMAR con una medición a
+        mercado. El test pasaba igual, porque lo único que chequeaba del punto
+        dibujado era `estimado`, y ése salía True por un motivo que no tenía nada
+        que ver: `ret is None and i > 0`. Es el caso 452 con el signo dado vuelta.
+
+        Lo que se afirma ahora es lo que el test quería afirmar: el segmento no
+        existe. El `estimado` del punto del cron pasa a False A PROPÓSITO — es una
+        medición real, y la etiqueta es del SEGMENTO, no del punto: que el tramo
+        anterior no midiera no convierte la foto del cron en una estimación.
+        """
         self.pos("2025-01-15")
         self.snap("2026-03-15", 1000.0, None)                       # INDETERMINADO
         self.snap("2026-03-20", 2000.0, "cron", fx=1200.0, hold="[]")
         c = twr.curva_indexada(self.conn, self.uid, aceptar=self._flojo())
-        self.assertEqual(len(c["puntos"]), 2)                        # está en la línea
-        self.assertFalse(c["puntos"][0]["apto"])
+        self.assertEqual(len(_todos(c)), 2)                  # sigue en la serie
+        self.assertFalse(_todos(c)[0]["apto"])
+        # ⚠️ RONDA 11 · LOS DOS SE DIBUJAN, PERO NO SE TOCAN. La ronda 10 sacaba de
+        # la curva el punto que no se puede afirmar; eso le borraba la historia al
+        # que no tiene mediciones y fue una pérdida peor que el problema. Se dibujan
+        # los dos, cada uno en SU segmento, y el frontend no puentea entre bases.
+        self.assertEqual([q["date"] for q in c["curva"]], ["2026-03-15", "2026-03-20"])
+        self.assertNotEqual(c["curva"][0]["segmento"], c["curva"][1]["segmento"])
+        self.assertEqual(c["curva"][0]["base"], twr.VALUADO_AL_COSTO)
+        self.assertEqual(c["curva"][1]["base"], twr.VALUADO_A_MERCADO)
+        # cada base arranca en 1,0: el ×2 NO se dibuja como un salto
+        self.assertAlmostEqual(c["curva"][0]["index"], 1.0, places=6)
+        self.assertAlmostEqual(c["curva"][1]["index"], 1.0, places=6)
         # El ×2 NO se publica como retorno: su v0 no es base de mercado.
         self.assertIsNone(c["curva"][1]["ret"])
-        self.assertTrue(c["curva"][1]["estimado"])
+        self.assertIsNone(c["twr"])
+        self.assertFalse(c["curva"][1]["estimado"])   # es una medición, no una estimación
+        # y el punto que no se puede afirmar sigue también en la banda
+        self.assertEqual([q["date"] for q in c["contable"]], ["2026-03-15"])
 
     def test_indeterminado_no_puede_ser_pico(self):
         self.pos("2025-01-15")
@@ -246,7 +286,7 @@ class SinClampAsimetricoTest(_Base):
 class SinDatosTest(_Base):
     def test_estado_vacio_trae_el_motivo_redactado(self):
         s = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(s["puntos"], [])
+        self.assertEqual(_todos(s), [])
         self.assertEqual(s["motivo"], "sin_historia")
         self.assertEqual(s["motivo_texto"], twr.MOTIVO_TEXTO["sin_historia"])
 

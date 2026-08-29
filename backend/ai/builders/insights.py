@@ -204,12 +204,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
                         if t["legs"] > 0]
     if len(_tramos_con_legs) == 1:
         _d0, _d1 = _tramos_con_legs[0]["desde"], _tramos_con_legs[0]["hasta"]
-        _serie = dict(_serie, puntos=[p for p in _serie["puntos"] if _d0 <= p["date"] <= _d1])
+        _serie = dict(_serie, medibles=[p for p in _serie["medibles"]
+                                       if _d0 <= p["date"] <= _d1])
     elif len(_tramos_con_legs) != 0:
-        _serie = dict(_serie, puntos=[],
+        _serie = dict(_serie, medibles=[],
                      motivo_texto=_twr.MOTIVO_TEXTO.get("serie_partida"))
     snaps = [{"date": p["date"], "total_value": p["value"],
-              "net_deposited": p["net_deposited"]} for p in _serie["puntos"]]
+              "net_deposited": p["net_deposited"]} for p in _serie["medibles"]]
     # Filtrar al window
     cutoff = today.toordinal() - window_days
     window_snaps = [

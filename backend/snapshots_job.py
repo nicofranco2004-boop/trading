@@ -756,8 +756,12 @@ def take_snapshot_for_user(
     # Phase C: stampamos fx_to_usd_blue (= tc_blue del día) para que cuando
     # el user mire la curva en ARS, cada punto use SU PROPIO blue (no el de hoy).
     conn.execute("""
-        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'cron')
+        -- `base`/`apto` se ESTAMPAN acá (ronda 11): el que escribe la fila es el
+        -- único que conoce el contexto, y así los ~40 lectores no tienen que
+        -- deducirlo cada uno a su manera. Un cierre del cron es posiciones ×
+        -- precio real y es un CIERRE: base de mercado y apto para fijar picos.
+        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json, source, base, apto)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'cron', 'mercado', 1)
         ON CONFLICT(user_id, date) DO UPDATE SET
             total_value = excluded.total_value,
             total_invested = excluded.total_invested,
@@ -766,7 +770,9 @@ def take_snapshot_for_user(
             holdings_json = COALESCE(excluded.holdings_json, snapshots.holdings_json),
             -- El cron SÍ pisa una foto intradía del browser: su cierre es la
             -- medición buena del día.
-            source = 'cron'
+            source = 'cron',
+            base = 'mercado',
+            apto = 1
     """, (uid, target_date, total_value, total_invested, net_deposited, tc_blue, holdings_json))
 
     return {

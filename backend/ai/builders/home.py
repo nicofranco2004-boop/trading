@@ -84,8 +84,17 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     }
 
     # ── 2. Portfolio del día via últimos 2 snapshots ─────────────────────────
+    # ⚠️ `snapshots_medibles`, NO `snapshots`. Esta resta es lo PRIMERO que ve el
+    # usuario al abrir la app, y la tabla cruda mezcla mediciones del cron con fotos
+    # que el import FABRICA copiando la cadena contable y con reconstrucciones que
+    # quedaron mayormente al costo. Si las dos puntas caen a distinto lado de ese
+    # borde, la resta no mide el día: mide la brecha entre dos formas de medir.
+    # Medido: publicaba `delta_pct_today = -47,26%` "HOY" para una cartera que no se
+    # había movido — el número exacto del caso 452, en el primer pantallazo.
+    # La vista sólo trae filas `apto=1` (base de mercado Y cierre afirmable), así que
+    # un lector que no sepa nada de esta historia hace lo correcto por default.
     snaps = conn.execute(
-        """SELECT date, total_value FROM snapshots
+        """SELECT date, total_value FROM snapshots_medibles
             WHERE user_id = ? ORDER BY date DESC LIMIT 2""",
         (user_id,),
     ).fetchall()

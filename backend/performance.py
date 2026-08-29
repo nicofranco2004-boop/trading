@@ -136,6 +136,18 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
         "tramos_detalle": c.get("tramos_detalle", []),
         "twr": c["twr"],
         "cagr": c["cagr"],
+        # ⚠️ FASE 2 · CON QUÉ REGLA SE CALCULÓ `twr`, Y QUÉ NO CUENTA.
+        # Esta respuesta es una LISTA BLANCA explícita —es el contrato del
+        # endpoint—, así que un campo nuevo en `curva_indexada` no llega solo: los
+        # dos de abajo salían None en el JSON mientras el motor los calculaba bien.
+        # Sin ellos el frontend no puede distinguir un +16,9% reconstruido de uno
+        # medido, y la pantalla no puede declarar el sesgo que el modo tiene.
+        "base_del_twr": c.get("base_del_twr"),
+        "excluye_no_realizado": c.get("excluye_no_realizado", False),
+        # La ventana que el número REALMENTE cubre (≠ `medido_desde`, que describe
+        # todos los puntos aptos). En estimado es la del tramo contable publicado.
+        "ventana_desde": c.get("ventana_desde"),
+        "ventana_hasta": c.get("ventana_hasta"),
         "drawdown_actual": c["drawdown_actual"],
         "drawdown_maximo": c["drawdown_maximo"],
         "drawdown_maximo_fecha": c["drawdown_maximo_fecha"],

@@ -180,7 +180,8 @@ _BORDER_MAX_LAG_DAYS = 5
 
 def fetch_snapshot_at_or_before(conn, uid: int, when: str,
                                 mtm_only: bool = False,
-                                accept: Optional[tuple] = None) -> Optional[Dict[str, Any]]:
+                                accept: Optional[tuple] = None,
+                                require_positive: bool = True) -> Optional[Dict[str, Any]]:
     """Último snapshot con date <= when. Útil para encontrar el "valor de
     arranque" de un período cuando no hay snapshot exacto en el primer día.
 
@@ -213,7 +214,8 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
         ).fetchone()
         return dict(row) if row else None
 
-    from twr import clasificar_serie, primera_fecha_con_posiciones, MEDICION
+    from twr import (clasificar_serie, primera_fecha_con_posiciones, MEDICION,
+                     bases_de_serie, BASE_MERCADO, VALUADO_A_MERCADO)
     allowed = accept if accept is not None else (MEDICION,)
     # `mtm_coverage` es la columna más nueva. Pedirla a secas ata este lector a que
     # la migración de startup ya haya corrido — y un deploy donde el código llega
@@ -221,11 +223,28 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
     # Sin la columna el clasificador degrada las fotos reconstruidas a contable,
     # que es el lado seguro del error.
     _cov = "mtm_coverage" if _tiene_columna(conn, "snapshots", "mtm_coverage") else "NULL AS mtm_coverage"
+    # `base`/`apto` estampados (ronda 11). Misma defensa que `mtm_coverage`: si la
+    # migración todavía no corrió, se piden como NULL y el clasificador deduce.
+    _bse = "base" if _tiene_columna(conn, "snapshots", "base") else "NULL AS base"
+    _apt = "apto" if _tiene_columna(conn, "snapshots", "apto") else "NULL AS apto"
+    # ⚠️ `total_value > 0` TIENE SENTIDO EN LA APERTURA Y NO EN EL CIERRE.
+    # Como borde de ARRANQUE, un 0 no sirve: es el denominador del período y
+    # dividir por él no da un porcentaje. Pero como borde de CIERRE, una cartera
+    # legítimamente vacía NO es "no hay medición": es una medición DE CERO.
+    # El usuario que vendió todo tiene un cierre válido en 0 y se lo estábamos
+    # salteando, y el guard seguía retrocediendo hasta encontrar una fila con
+    # valor — hasta 57 días atrás.
+    # Medido en la copia del 16/08: el uid 330 tiene sus últimas 6 filas
+    # `source='cron'`, clase `medicion`, `total_value = 0,00` y
+    # `net_deposited = 35.712,01` (vendió todo), y el lector saltaba a junio y
+    # publicaba "+8,76%" entre el 25 y el 30 de junio como "variación del último
+    # cierre". Son 160 usuarios cuya última fila medida quedaba descartada.
+    _pos = " AND total_value > 0" if require_positive else ""
     rows = conn.execute(
         f"""SELECT date, total_value, total_invested, net_deposited,
-                   fx_to_usd_blue, holdings_json, source, {_cov}
+                   fx_to_usd_blue, holdings_json, source, {_cov}, {_bse}, {_apt}
               FROM snapshots
-             WHERE user_id = ? AND date <= ? AND total_value > 0
+             WHERE user_id = ? AND date <= ?{_pos}
              ORDER BY date DESC LIMIT ?""",
         (uid, when, _BORDER_SCAN_LIMIT),
     ).fetchall()
@@ -238,10 +257,63 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
     # deciden distinto qué fila es una medición, uno de los dos está mal.
     primera = primera_fecha_con_posiciones(conn, uid)
     clases = clasificar_serie(rows, primera, orden_desc=True)
-    for r, c in zip(rows, clases):
-        if c in allowed:
+    # ⚠️ LA CLASE NO ALCANZA — HACE FALTA LA BASE. Éste era EL bug original, vivo
+    # en la pantalla del reclamo original después de nueve rondas: `c in allowed`
+    # acepta cualquier fila de clase RECONSTRUIDO, incluida una cuya cobertura es
+    # 0,05 — o sea una foto cuyo `total_value` ES EL COSTO. Con esa fila de borde de
+    # apertura, Reportes publicaba (medido, jul-2026):
+    #     HEADLINE "Mes difícil — -47.3%" · basis='mercado' · incomparable=False
+    #     "En jul 2026 perdiste US$ 65.967 (-47.3%)..."
+    # sobre una cartera cuya cadena contable se había movido +0,1%. El −47,3% era
+    # la brecha entre las dos formas de medir, no el mes.
+    #
+    # ⚠️ EL GUARD ES ESTRECHO A PROPÓSITO, NO ES `es_apto`. Lo que se rechaza es la
+    # fila cuya CLASE dice mercado y cuya BASE es costo — contabilidad con etiqueta
+    # de mercado. Las clases que el caller aceptó EXPLÍCITAMENTE sabiendo que no son
+    # mercado (INDETERMINADO en el chip de variación a 1/7/30 días, main.py:31707)
+    # siguen bajo su criterio: para eso existe `accept`, y endurecerlas acá le
+    # borraría el chip a los usuarios legacy — que es el error que este mismo
+    # docstring advierte cuatro párrafos más arriba.
+    bases = bases_de_serie(rows, clases)
+    for r, c, b in zip(rows, clases, bases):
+        if c in allowed and not (c in BASE_MERCADO and b != VALUADO_A_MERCADO):
             return dict(r)
     return None
+
+
+def fetch_latest_measured_snapshot(conn, uid: int,
+                                   accept: Optional[tuple] = None) -> Optional[Dict[str, Any]]:
+    """El último snapshot que puede servir de BORDE DE CIERRE.
+
+    ⚠️ EL ESPEJO QUE FALTABA, Y ES EL HALLAZGO ESTRUCTURAL DE TODO ESTE TRABAJO.
+    `fetch_snapshot_at_or_before` protege el borde de APERTURA, y once rondas lo
+    fueron enchufando lector por lector con mucho cuidado. NINGUNA miró el borde de
+    CIERRE — y la punta también puede ser una fila al costo: el día que el usuario
+    importa, la foto que el import fabrica es la más nueva y gana cualquier
+    `ORDER BY date DESC LIMIT 1`.
+
+    Cuando eso pasa la resta sale INVERTIDA: en vez del −65% fantasma que todos
+    fueron a buscar, publica un +96% fantasma. Mismo defecto, signo opuesto, y por
+    eso sobrevivió — nadie va a auditar un número que da bien.
+
+    Medido sobre la copia de producción del 16/08: 180 de 822 usuarios (22%) tienen
+    la última fila al costo. De ésos, 178 no tienen NINGUNA medición, así que para
+    ellos la respuesta correcta es None — no hay número — y el llamador tiene que
+    saber mostrarlo como un vacío explicado y no como un 0.
+
+    Delega en `fetch_snapshot_at_or_before` con una fecha tope que ninguna fila
+    alcanza, a propósito: si el criterio de "esta fila es una medición" viviera
+    escrito dos veces, sería exactamente el defecto que este trabajo vino a sacar.
+
+    ⚠️ `require_positive=False` — y ésa es la ÚNICA diferencia legítima entre los
+    dos bordes. Una cartera vacía no es "no hay medición": es una medición de cero.
+    Ver el comentario en `fetch_snapshot_at_or_before` (el caso del uid 330, que
+    vendió todo y publicaba la variación de dos días de junio como si fuera la del
+    último cierre).
+    """
+    return fetch_snapshot_at_or_before(conn, uid, "9999-12-31",
+                                       mtm_only=(accept is None), accept=accept,
+                                       require_positive=False)
 
 
 # Cuánto de la base del período puede venir de capital contable SIN medir antes
@@ -564,7 +636,26 @@ def compute_metrics_for_period(
             deposits = float(me.get("deposits") or 0)
             withdrawals = float(me.get("withdrawals") or 0)
             unrealized = float(me.get("pnl_unrealized") or 0)
-        month_is_current = live_value is not None and is_period_current(period_type, period_start, period_end)
+        # ⚠️ DOS PREGUNTAS DISTINTAS, Y ACÁ LAS DECIDÍA UN SOLO `and`.
+        #
+        #   ¿el período es el ACTUAL?   → un hecho del calendario. No depende de
+        #                                 que tengamos con qué medirlo.
+        #   ¿hay valor de CIERRE?       → un hecho de los datos.
+        #
+        # Mezcladas, un `live_value=None` hacía que el mes EN CURSO se tratara como
+        # un mes CERRADO y se calculara con `capital_inicio`/`capital_final` de
+        # `monthly_entries` — la cadena contable. Y eso no dejaba el número en
+        # blanco: lo REEMPLAZABA por una afirmación falsa. Medido sobre la copia de
+        # producción del 16/08, en los 196 usuarios con valor real y sin ningún
+        # cierre medible:
+        #     195 × "Mes sin grandes movimientos."   ← afirma que no pasó nada
+        #       1 × "Mes mixto — +2,5%."             ← publica un %
+        # cuando lo cierto es que no lo sabemos. El mes en curso sigue siendo el mes
+        # en curso aunque no haya con qué medirlo, y ahí lo que corresponde es
+        # decirlo (`basis_incomparable` → "Mes sin base para medir el rendimiento",
+        # que el generador de headline evalúa PRIMERO, builder.py:1236).
+        _period_is_current = is_period_current(period_type, period_start, period_end)
+        month_is_current = _period_is_current and live_value is not None
         if month_is_current:
             end_value = float(live_value)
             # AUDIT C-3: sin fila del mes (el rollover lazy solo corre al visitar
@@ -636,6 +727,32 @@ def compute_metrics_for_period(
             if start_value <= 0 and end_value > 0 and (deposits - withdrawals) <= 0:
                 dw_incomplete = True
                 start_value = end_value
+        elif _period_is_current:
+            # MES EN CURSO SIN CIERRE MEDIDO. No es un mes cerrado y no se puede
+            # tratar como tal: no hay con qué cerrarlo. Cae acá el usuario cuyas
+            # únicas filas las fabricó el import — 178 de los 822 de producción no
+            # tienen NINGUNA medición.
+            #
+            # Esto NO es una regresión de cobertura: el número que se deja de
+            # publicar nunca midió nada. Lo que cambia es que ahora se dice, en vez
+            # de dejar que la cadena contable conteste por su cuenta.
+            #
+            # ⚠️ SÓLO SI HAY ALGO QUE MEDIR. "No se puede medir" y "no hay nada"
+            # son dos cosas distintas, y confundirlas le pone al usuario RECIÉN
+            # REGISTRADO un "Mes sin base para medir el rendimiento" sobre una
+            # cuenta vacía — le contesta una pregunta que no hizo. Además
+            # `basis_incomparable` vuelve el mes RELEVANTE en la timeline
+            # (`is_relevant`), así que sin este chequeo la cuenta vacía empezaba a
+            # ocupar lugar en una pantalla donde antes, correctamente, no aparecía.
+            # (Lo cazó `test_empty_user_returns_n_months_with_no_relevant`.)
+            _hay_algo = bool(
+                me or start_value or end_value or deposits or withdrawals or ops
+                or conn.execute(
+                    "SELECT 1 FROM snapshots WHERE user_id = ? LIMIT 1", (uid,)
+                ).fetchone()
+            )
+            if _hay_algo:
+                basis_incomparable = True
         else:
             # Mes CERRADO: si hay dos cierres medidos, el período se mide a
             # mercado. Si no, queda la contabilidad — igual que antes, sin
@@ -729,10 +846,23 @@ def compute_metrics_for_period(
                 # ser EXACTAMENTE el borde de cierre del período anterior — el
                 # mismo que usa `bordes_mercado_periodo` para `delta_usd`, para
                 # que el % y el monto describan la misma ventana.
+                # ⚠️ Y EL BORDE TIENE QUE SER FRESCO. `fetch_snapshot_at_or_before`
+                # camina hacia atrás hasta encontrar uno aceptable, así que cuando el
+                # cierre del período anterior NO sirve —por ejemplo una foto
+                # reconstruida mayormente al costo, que el guard de base rechaza— se
+                # trae el anterior, que puede estar un mes antes. Medido: con el
+                # cierre del 31/12 rechazado, el año 2026 arrancaba su TWR el 30/11
+                # y publicaba "Año difícil — −26,4%" con delta_usd = US$0 y start ==
+                # end: el porcentaje describía 13 meses y el monto 12. Es la misma
+                # asimetría que `bordes_mercado_periodo` ya cierra con
+                # `_border_is_fresh` 350 líneas más arriba; acá faltaba.
                 _prev_dia = _dia_anterior(period_start)
                 _snap_ini = (fetch_snapshot_at_or_before(
                     conn, uid, _prev_dia, accept=_twr.BORDE_PERIODO)
                     if _prev_dia else None)
+                if _snap_ini is not None and not _border_is_fresh(
+                        _snap_ini.get("date"), period_start, 1):
+                    _snap_ini = None
                 _desde = (str(_snap_ini["date"])[:10] if _snap_ini
                           else (datetime.strptime(period_start[:10], "%Y-%m-%d")
                                 - timedelta(days=_BORDER_MAX_LAG_DAYS)).date().isoformat())
@@ -1335,11 +1465,26 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
         )
 
     # Oración 5: comparativa vs S&P 500 (solo si hay dato).
+    #
+    # ⚠️ FASE 2 · LA COMPARACIÓN SE PUBLICA, PERO CON EL SESGO DECLARADO.
+    # Comparar dos RETORNOS no es el crimen de la Fase 1 —ahí se restaban dos
+    # VALUACIONES medidas con reglas distintas—: acá cada retorno se calcula entero
+    # bajo su propia regla y recién después se contrastan. Por eso la frase queda.
+    #
+    # Lo que NO puede quedar es callado: con `basis='contable'` el retorno del
+    # usuario NO incluye lo no realizado (`pnl_unrealized = 0` en toda la cadena),
+    # así que una cartera que se duplicó sin vender nada entra a la comparación
+    # como ~0%. El sesgo es sistemático y va SIEMPRE para el mismo lado —en contra
+    # del usuario—, y sin decirlo la frase es engañosa aunque cada mitad esté bien
+    # calculada.
     if metrics.vs_sp500_pct is not None and abs(metrics.vs_sp500_pct) >= 0.5:
         sign = "encima" if metrics.vs_sp500_pct > 0 else "debajo"
-        parts.append(
-            f"Quedaste {abs(metrics.vs_sp500_pct):.1f} puntos por {sign} del S&P 500."
-        )
+        _frase = f"Quedaste {abs(metrics.vs_sp500_pct):.1f} puntos por {sign} del S&P 500."
+        if getattr(metrics, "basis", None) == "contable":
+            _frase += (" Ojo: tu número está reconstruido de tu contabilidad y no "
+                       "cuenta las ganancias que todavía no vendiste, así que la "
+                       "comparación te juega en contra.")
+        parts.append(_frase)
 
     return " ".join(parts) if parts else None
 

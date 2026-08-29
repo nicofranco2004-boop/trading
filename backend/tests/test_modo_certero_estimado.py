@@ -17,6 +17,16 @@ import performance as perf
 import twr
 
 
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
@@ -89,10 +99,10 @@ class DosModosTest(_Base):
         self.conn.commit()
         cert = twr.serie_medible(self.conn, self.uid, modo=twr.MODO_CERTERO)
         est = twr.serie_medible(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
-        self.assertEqual(len(cert["puntos"]), 2)      # la contable NO entra
-        self.assertEqual(len(est["puntos"]), 3)       # en estimado sí, a la LÍNEA
+        self.assertEqual(len(_todos(cert)), 2)      # la contable NO entra
+        self.assertEqual(len(_todos(est)), 3)       # en estimado sí, a la LÍNEA
         # ...pero jamás como pico ni denominador, ni siquiera en estimado.
-        self.assertFalse(any(p["apto"] for p in est["puntos"]
+        self.assertFalse(any(p["apto"] for p in _todos(est)
                              if p["clase"] == twr.SINTETICO_COSTO))
 
     def test_una_reconstruccion_a_precio_real_SI_es_apta_en_certero(self):
@@ -116,18 +126,30 @@ class DosModosTest(_Base):
             (self.uid, "2026-08-24", 73604.02, 73604.02))
         self.conn.commit()
         c = twr.curva_indexada(self.conn, self.uid)      # default = certero
-        self.assertEqual(len(c["puntos"]), 1)
+        self.assertEqual(len(_todos(c)), 1)
         self.assertIsNone(c["twr"])
         self.assertIsNone(c["drawdown_maximo"])
 
     def test_los_dos_modos_son_coherentes_entre_si(self):
-        """Con todo valuado a precio real, los dos modos dan LO MISMO."""
+        """Con todo valuado a precio real, el RETORNO de los dos modos es el mismo.
+
+        ⚠️ FASE 2 · "coherentes" ya no quiere decir "idénticos", y la diferencia es
+        el punto entero de la fase. Sin nada al costo no hay historia extra que
+        agregar, así que el retorno TIENE que coincidir — eso sigue siendo un
+        invariante y si se rompe, la cadena del estimado se está inventando legs.
+        Pero el DRAWDOWN no coincide y no debe: el modo estimado no lo publica
+        nunca, ni siquiera cuando por casualidad podría, porque lo que gobierna es
+        con qué regla se construyó el número que el usuario está mirando — y en
+        estimado esa regla no tiene camino de precios. Un drawdown que aparece y
+        desaparece según el toggle es peor que uno que nunca aparece.
+        """
         self.recon("2026-01-31", 1000.0, 1.0)
         self.recon("2026-02-28", 1100.0, 1.0)
         a = twr.curva_indexada(self.conn, self.uid, modo=twr.MODO_CERTERO)
         b = twr.curva_indexada(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertEqual(a["twr"], b["twr"])
-        self.assertEqual(a["drawdown_maximo"], b["drawdown_maximo"])
+        self.assertIsNotNone(a["drawdown_maximo"])
+        self.assertIsNone(b["drawdown_maximo"])
 
     def test_la_cobertura_publicada_coincide_con_lo_valuado(self):
         self.recon("2026-01-31", 1000.0, 0.94, al_costo=("FCI Balanz",))

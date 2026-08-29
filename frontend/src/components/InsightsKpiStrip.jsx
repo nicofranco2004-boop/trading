@@ -29,6 +29,7 @@ export default function InsightsKpiStrip({
   drawdownTwrr,
   winRate,
   cumulativeReturnPct,
+  acumuladoEstimado = null,
   benchmarkReturnPct,
   benchmarkLabel,
   ventanaMeses,
@@ -105,12 +106,27 @@ export default function InsightsKpiStrip({
           Sin el rótulo, este número se compara mentalmente contra el "Rendimiento
           anual" del Dashboard —que sí es toda la historia, y anualizado— y no hay
           forma de darse cuenta de que miden cosas distintas. */}
+      {/* ⚠️ FASE 2 · UN NÚMERO RECONSTRUIDO NO PUEDE VERSE IGUAL QUE UNO MEDIDO.
+          En modo Estimado este acumulado sale de la cadena contable: llega más
+          atrás y a cambio NO cuenta lo que todavía no vendiste. El chip del
+          gráfico ya lo dice; si el KPI queda mudo, el usuario se lleva el número
+          sin el asterisco. Y cuando la ventana tiene un corte de regla en el
+          medio, el número es de la última corrida homogénea —encadenar por encima
+          del corte sería la Fase 1 otra vez—, así que se declara desde cuándo. */}
       <KpiCell
-        label={`Acumulado ${ventanaLabel} · ${currency}`}
+        label={`Acumulado ${ventanaLabel} · ${currency}${acumuladoEstimado ? ' · recreado' : ''}`}
         value={cumulativeReturnPct != null ? `${fmtPctShort(cumulativeReturnPct, { decimals: 1, showPlus: true })}%` : '—'}
         tone={rendTone}
         sub={
-          benchmarkReturnPct != null
+          acumuladoEstimado
+            ? (acumuladoEstimado.parcial
+                /* No decimos "desde <fecha>": con el resampleo mensual la fila que
+                   abre la corrida puede no ser el arranque real del segmento, así
+                   que la fecha sería inventada. Lo que SÍ sabemos es que hay un
+                   corte de regla antes y que el número es de después de ese corte. */
+                ? 'de tu contabilidad · desde el último corte de la serie'
+                : 'de tu contabilidad · sólo se mueve cuando vendés')
+            : benchmarkReturnPct != null
             ? `vs ${benchmarkLabel}: ${fmtPctShort(benchmarkReturnPct, { decimals: 1, showPlus: true })}% · mismo período`
             : 'TWRR ajustado · sin anualizar'
         }

@@ -288,8 +288,27 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
             snaps = {r["user_id"]: r for r in conn.execute(
                 f"""SELECT s.user_id, s.date, s.total_value FROM snapshots s
                     WHERE s.user_id IN ({ph}) AND s.date < ?
+                      AND COALESCE(s.apto, CASE WHEN COALESCE(s.source,'') IN ('import','mtm_backfill') THEN 0 ELSE 1 END) = 1
+                    -- ⚠️ POR LA COLUMNA `apto`, NO POR EL STRING `source` (ronda 11).
+                    -- El filtro por string se equivocaba en las DOS direcciones sobre
+                    -- la misma fila: (a) una fila LEGACY del import —source NULL, fin
+                    -- de mes, valuada al costo— pasaba igual, y (b) una reconstrucción
+                    -- BUENA de cobertura 0,99 era rechazada. `apto` lo estampa quien
+                    -- escribe la fila y es el mismo dato que usan la curva y Reportes.
+                    -- El COALESCE cubre la ventana de un deploy donde el código llega
+                    -- antes de que la migración estampe: ahí cae a la heurística vieja,
+                    -- que es el lado seguro del error.
+                    -- ⚠️ NI LA CADENA CONTABLE NI LA RECONSTRUCCIÓN. Esta base se
+                    -- resta contra el valor VIVO (mercado), así que si sale de una
+                    -- fila fabricada al costo por el import —o de una foto de fin de
+                    -- mes reconstruida— el "%%" no mide el día: mide la brecha entre
+                    -- dos formas de medir. Es el mismo defecto que publicaba −47,26%
+                    -- en el informe firmado (ronda 10, A-2), en otra superficie del
+                    -- asesor. Es el criterio `mtm_only=True` que ya usan los otros
+                    -- lectores que comparan contra un live (main.py:17330).
                       AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
-                                    WHERE s2.user_id = s.user_id AND s2.date < ?)""",
+                                    WHERE s2.user_id = s.user_id AND s2.date < ?
+                                      AND COALESCE(s2.apto, CASE WHEN COALESCE(s2.source,'') IN ('import','mtm_backfill') THEN 0 ELSE 1 END) = 1)""",
                 ids + [_hoy, _hoy]).fetchall()}
             # Solo clientes con base: comparar vivo contra su último cierre.
             per = []

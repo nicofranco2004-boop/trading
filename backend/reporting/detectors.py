@@ -240,8 +240,25 @@ def detect_large_cash_drag(report: PeriodReport, positions: List[Dict[str, Any]]
 
 def detect_streak(report: PeriodReport, prior_deltas: List[float]) -> Optional[Insight]:
     """Racha: ≥3 períodos seguidos del mismo signo, contando el actual.
-    `prior_deltas` viene en orden cronológico ascendente, sin incluir el reporte actual."""
+    `prior_deltas` viene en orden cronológico ascendente, sin incluir el reporte actual.
+
+    ⚠️ FASE 2 · UNA RACHA NECESITA EL CAMINO, Y LA CADENA CONTABLE NO ES UN CAMINO.
+    Una racha afirma la FORMA de la historia —"venís subiendo desde hace 4 meses"—
+    y eso sólo se puede leer de una secuencia de precios. La cadena contable fuerza
+    `pnl_unrealized = 0`: sus deltas son, mes a mes, el realizado sobre el capital
+    inicial. Encadenarlos como si fueran el recorrido de la cartera describe una
+    forma que el mercado nunca dibujó — y hacia UN solo lado, porque vender con
+    ganancia es lo que produce el signo positivo.
+    Medido sobre la copia de producción del 16/08, marzo-julio: 88 rachas
+    (86 positivas) y 29 REVERSAL disparaban con `basis='contable'`, y CERO con
+    `basis='mercado'`. O sea: todo lo que este detector publicaba hoy salía de la
+    contabilidad.
+    `basis_incomparable` no lo tapaba: ese guard cubre el caso sin base, no el caso
+    con base contable comparable.
+    """
     if report.period_type != "month":
+        return None
+    if getattr(report.metrics, "basis", None) == "contable":
         return None
     current = report.metrics.delta_pct
     if current is None or abs(current) < 0.5:
@@ -302,8 +319,17 @@ def detect_realized_vs_unrealized_gap(report: PeriodReport) -> Optional[Insight]
 
 def detect_reversal(report: PeriodReport, prior_delta: Optional[float]) -> Optional[Insight]:
     """Período anterior y actual con signos opuestos y magnitud significativa.
-    Sirve para señalar volatilidad: "Mes anterior +8%, este -5%"."""
+    Sirve para señalar volatilidad: "Mes anterior +8%, este -5%".
+
+    ⚠️ FASE 2 · MISMA REGLA QUE LA RACHA. Su propio docstring dice para qué es:
+    "señalar VOLATILIDAD" — y la volatilidad es una propiedad del camino, no de las
+    puntas. Sobre la cadena contable, el cambio de signo casi siempre significa
+    "este mes vendí con pérdida y el anterior con ganancia", que no es que la
+    cartera se haya dado vuelta.
+    """
     if report.period_type != "month":
+        return None
+    if getattr(report.metrics, "basis", None) == "contable":
         return None
     if prior_delta is None:
         return None

@@ -16,6 +16,16 @@ import twr
 from reporting import builder
 
 
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
@@ -83,7 +93,7 @@ class CriterioDeAceptacionTest(_Base):
     def test_el_usuario_sano_no_pierde_su_historia(self):
         self._usuario_sano_con_historia_legacy()
         s = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(len(s["puntos"]), 600)
+        self.assertEqual(len(_todos(s)), 600)
         self.assertEqual(s["medido_desde"], "2025-01-01")
         self.assertEqual(len(s["tramos"]), 1)
 

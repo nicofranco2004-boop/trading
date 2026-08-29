@@ -19,6 +19,16 @@ import twr
 from reporting import builder
 
 
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
@@ -170,7 +180,7 @@ class ElDefaultSigueSiendoSeguroTest(_Base):
             (self.uid,))
         self.cron("2026-08-24", 73604.02)
         c = twr.curva_indexada(self.conn, self.uid)
-        self.assertEqual(len(c["puntos"]), 1)
+        self.assertEqual(len(_todos(c)), 1)
         self.assertIsNone(c["twr"])
         self.assertIsNone(c["drawdown_maximo"])
 
@@ -224,7 +234,21 @@ class DosPreguntasNoUnaTest(_Base):
         for modo in (twr.MODO_CERTERO, twr.MODO_ESTIMADO):
             with self.subTest(modo=modo):
                 c = twr.curva_indexada(self.conn, self.uid, modo=modo)
-                self.assertAlmostEqual(c["drawdown_maximo"], 0.0, places=6)
+                # La afirmación de fondo NO cambió: la fila de 180.000 que fabricó
+                # el import no fija un pico en ningún modo. Lo que cambió es CÓMO se
+                # dice, y es más fuerte que antes:
+                #   · CERTERO  → 0,0. Hay camino de precios (30 cierres del cron) y
+                #     ese camino dice que la cartera estuvo plana. Es una medición.
+                #   · ESTIMADO → None. La Fase 2 le sacó el drawdown al modo
+                #     contable entero, porque un drawdown necesita el CAMINO y la
+                #     cadena contable no es un camino de precios. Un 0,0 acá
+                #     afirmaría "no hubo caída"; None dice "no lo sabemos", que es
+                #     lo cierto.
+                if modo == twr.MODO_ESTIMADO:
+                    self.assertIsNone(c["drawdown_maximo"])
+                    self.assertIsNone(c["drawdown_actual"])
+                else:
+                    self.assertAlmostEqual(c["drawdown_maximo"], 0.0, places=6)
                 self.assertIsNone(c["drawdown_maximo_pico"])
 
     def test_la_banda_contable_NO_se_vacia_cuando_entran_a_la_linea(self):

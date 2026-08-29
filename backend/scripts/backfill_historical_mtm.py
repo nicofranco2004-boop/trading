@@ -330,6 +330,14 @@ MTM_SOURCE = "mtm_backfill"
 COBERTURA_REFERENCIA = 0.70
 
 
+def _twr_base_apto(coverage):
+    """(base, apto) de una foto reconstruida con ESA cobertura. Una sola fuente:
+    `twr.base_y_apto_para`, la misma que usan los otros tres escritores y la
+    migración. Si acá se escribiera la regla a mano, habría dos."""
+    import twr as _twr
+    return _twr.base_y_apto_para(_twr.RECONSTRUIDO, coverage)
+
+
 def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
     """UPSERT de las fotos reconstruidas. Devuelve cuantas escribio.
 
@@ -394,20 +402,30 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
         if existentes.get(d) == MEDICION:
             continue                      # foto real del cron: manda ella
         net_dep = net_dep_por_mes.get(ym, 0.0)
+        # ⚠️ EL ESTAMPO SALE DE LA COBERTURA DE **ESTA** FOTO (ronda 11). El
+        # reconstructor es el único que sabe qué fracción del valor de ESE mes se
+        # pudo valuar a precio real, así que es el que tiene que decidir la base —
+        # una vez, cuando escribe. Deducirla después, en lectura, es lo que hizo que
+        # la misma fila recibiera respuestas distintas según quién preguntaba y
+        # cuándo. Con cobertura baja el `total_value` de la foto ES el costo (lo que
+        # no se pudo precear entra con unrealized 0): base contable, y nunca apta.
+        _base, _apto = _twr_base_apto(info["coverage"])
         conn.execute(
             """INSERT INTO snapshots
                  (user_id, date, total_value, total_invested, net_deposited,
-                  holdings_json, source, mtm_coverage)
-               VALUES (?,?,?,?,?,?,?,?)
+                  holdings_json, source, mtm_coverage, base, apto)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(user_id, date) DO UPDATE SET
                  total_value   = excluded.total_value,
                  net_deposited = excluded.net_deposited,
                  holdings_json = excluded.holdings_json,
                  source        = excluded.source,
-                 mtm_coverage  = excluded.mtm_coverage""",
+                 mtm_coverage  = excluded.mtm_coverage,
+                 base          = excluded.base,
+                 apto          = excluded.apto""",
             (uid, d, info["value"], info["cost"], net_dep,
              _json.dumps(info["holdings"]) if info["holdings"] else None,
-             MTM_SOURCE, info["coverage"]),
+             MTM_SOURCE, info["coverage"], _base, _apto),
         )
         escritos += 1
     return escritos

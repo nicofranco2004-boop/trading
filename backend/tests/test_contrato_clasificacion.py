@@ -31,6 +31,16 @@ import twr
 from reporting import builder
 
 
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
 class ContratoDeClasificacionTest(unittest.TestCase):
     """El fixture es el que rompió los tres lectores: fotos del cron ANTERIORES a
     que existieran las columnas `holdings_json` (2026-07-04) y `source`
@@ -70,7 +80,7 @@ class ContratoDeClasificacionTest(unittest.TestCase):
     # ── los cinco, sobre la MISMA fila ───────────────────────────────────────
     def _clase_serie_medible(self):
         s = twr.serie_medible(self.conn, self.uid)
-        p = [x for x in s["puntos"] if x["date"] == self.ultima]
+        p = [x for x in _todos(s) if x["date"] == self.ultima]
         return p[0]["clase"] if p else None
 
     def _clase_bordes_medibles(self):
@@ -151,7 +161,7 @@ class ContratoDeClasificacionTest(unittest.TestCase):
         51 en la lista, para el mismo usuario en la misma sesión."""
         from fastapi.testclient import TestClient
         s = twr.serie_medible(self.conn, self.uid)
-        aptos_curva = sum(1 for p in s["puntos"] if p["apto"])
+        aptos_curva = len(s["medibles"])
         main.app.dependency_overrides[main.get_effective_user] = lambda: self.uid
         try:
             filas = TestClient(main.app).get("/api/snapshots?days=3650").json()

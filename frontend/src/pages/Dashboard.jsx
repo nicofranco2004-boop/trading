@@ -34,7 +34,7 @@ import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, us
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
-import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
+import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
 import { applyMtmToMonthly } from '../utils/insightsModel'
@@ -573,6 +573,12 @@ function PersonalDashboard() {
     const monthStart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
     return computeReturnDelta(snapshots, { liveValue: totalValuePositions, liveNetDeposited: netDepositedPositions, sinceDate: monthStart })
   }, [snapshots, totalValuePositions, netDepositedPositions])
+  // ¿Por qué no hay número? Sólo se arma cuando efectivamente no lo hay: si
+  // `monthlyVar`/`dailyVar` salieron, esto queda null y no se muestra nada.
+  const sinMedicion = useMemo(
+    () => ((dailyVar || monthlyVar) ? null : diagnosticoSinMedicion(snapshots)),
+    [snapshots, dailyVar, monthlyVar],
+  )
   // Realizado del MES en curso (flujo limpio: ventas cerradas + dividendos del mes).
   // Subdato del cuadro mensual — el único split realizado/no-realizado que aporta.
   const realizedThisMonth = useMemo(() => {
@@ -922,6 +928,24 @@ function PersonalDashboard() {
                 fmtSigned={fmtSigned}
               />
             ))}
+            {/* ⚠️ EL VACÍO TIENE QUE HABLAR. Sin esto, `.filter(Boolean)` hacía
+                DESAPARECER las cards "Hoy" y "Este mes" sin decir una palabra: el
+                usuario veía un hueco donde antes había un número y no tenía forma
+                de saber si se rompió algo, si perdió datos o si no calificaba.
+                Son 173 usuarios en la copia de producción. */}
+            {sinMedicion && (
+              <div className="col-span-2 sm:col-span-3 bg-bg-1 border border-line rounded-xl px-4 py-3.5">
+                <div className="text-[12px] text-ink-3 leading-none font-medium">
+                  Rendimiento del período
+                </div>
+                <div className="mt-2 text-[15px] font-medium text-ink-1 leading-snug">
+                  Todavía no podemos medirlo
+                </div>
+                <p className="text-[12px] text-ink-3 mt-1.5 leading-snug">
+                  {textoSinMedicion(sinMedicion)}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -959,11 +983,17 @@ function PersonalDashboard() {
             <p className="text-xs text-ink-2 mt-1 max-w-md">
               Rendimiento ajustado por flujos de capital — aportes y retiros se neutralizan para reflejar performance pura.
             </p>
-            {periodChange && (
+            {periodChange ? (
               <span className={`inline-flex items-center gap-1.5 mt-3 text-[12.5px] font-medium tabular rounded-full px-2.5 py-1 ${periodChange.delta >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
                 {periodChange.delta >= 0 ? '+' : '−'}USD {usd(Math.abs(periodChange.delta))}
                 <span className="opacity-80">· {pctSigned(periodChange.pct)}</span>
                 <span className="text-ink-3 font-normal">en {rangeLabel(range)}</span>
+              </span>
+            ) : sinMedicion && (
+              /* El chip se borraba sin decir nada — y está pegado al gráfico, que
+                 es donde el usuario del caso 452 dedujo solo que algo no cerraba. */
+              <span className="inline-flex items-center gap-1.5 mt-3 text-[12.5px] font-medium rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 border border-line/60">
+                Sin rendimiento medible en {rangeLabel(range)}
               </span>
             )}
           </div>

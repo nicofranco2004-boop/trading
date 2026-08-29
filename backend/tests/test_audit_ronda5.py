@@ -15,6 +15,16 @@ import twr
 from reporting import builder
 
 
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
@@ -94,7 +104,7 @@ class ImportAMitadDeMesTest(_Base):
         MISMA lectura de la contabilidad, no de dos momentos distintos."""
         self._julio_plano_con_import_el_16()
         s = twr.serie_medible(self.conn, self.uid)
-        julio = [p["net_deposited"] for p in s["puntos"] if p["date"].startswith("2026-07")]
+        julio = [p["net_deposited"] for p in _todos(s) if p["date"].startswith("2026-07")]
         self.assertEqual(len(set(julio)), 1, f"el aportado salta dentro de julio: {set(julio)}")
 
 
@@ -221,7 +231,7 @@ class AportadoAncladoTest(_Base):
         self._plano_con_deposito(10000.0)
         canon = twr.netdep_canonico(self.conn, self.uid)
         s = twr.serie_medible(self.conn, self.uid)
-        por_fecha = {p["date"]: p["net_deposited"] for p in s["puntos"]}
+        por_fecha = {p["date"]: p["net_deposited"] for p in _todos(s)}
         self.assertAlmostEqual(por_fecha["2026-01-31"], canon("2026-01-31"), places=2)
         self.assertAlmostEqual(por_fecha["2026-02-28"], canon("2026-02-28"), places=2)
         # Y adentro del mes, el flujo cae EL DÍA que entró.

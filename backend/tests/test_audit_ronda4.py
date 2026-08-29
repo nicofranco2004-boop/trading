@@ -15,6 +15,16 @@ import twr
 from reporting import builder
 
 
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
@@ -86,7 +96,7 @@ class DepositoAMitadDeMesTest(_Base):
     def test_el_aportado_del_dia_1_no_incluye_el_deposito_del_20(self):
         self._mercado_inmovil_con_deposito_el_20()
         s = twr.serie_medible(self.conn, self.uid)
-        por_fecha = {p["date"]: p["net_deposited"] for p in s["puntos"]}
+        por_fecha = {p["date"]: p["net_deposited"] for p in _todos(s)}
         self.assertAlmostEqual(por_fecha["2026-02-01"], 100000.0, places=2)
         self.assertAlmostEqual(por_fecha["2026-02-19"], 100000.0, places=2)
         self.assertAlmostEqual(por_fecha["2026-02-20"], 110000.0, places=2)
@@ -101,7 +111,7 @@ class DepositoAMitadDeMesTest(_Base):
         for d in range(1, 29):
             self.cron(f"2026-02-{d:02d}", 100000.0, nd=55555.0)   # estampa vieja
         s = twr.serie_medible(self.conn, self.uid)
-        feb = [p for p in s["puntos"] if p["date"].startswith("2026-02")]
+        feb = [p for p in _todos(s) if p["date"].startswith("2026-02")]
         for p in feb:
             self.assertAlmostEqual(p["net_deposited"], 100000.0, places=2)
 

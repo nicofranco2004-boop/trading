@@ -1348,6 +1348,58 @@ def init_db():
         # aceptarlo como RECONSTRUIDO; por debajo del piso vuelve a ser contable.
         if 'mtm_coverage' not in snap_cols:
             conn.execute("ALTER TABLE snapshots ADD COLUMN mtm_coverage REAL")
+        # ── LA BASE, ESTAMPADA EN LA FILA (ronda 11) ─────────────────────────
+        #
+        # `base` ('mercado'|'costo') = con qué REGLA se valuó ESA fila.
+        # `apto` (0|1)               = si puede ser PICO y DENOMINADOR.
+        #
+        # ⚠️ POR QUÉ SON COLUMNAS Y NO UN CÁLCULO. Durante once rondas la base se
+        # deducía en tiempo de LECTURA, y cada ronda encontró un lector más que se
+        # olvidaba de preguntarla — Reportes, el informe firmado del asesor,
+        # /api/goals/cagr, los packets de IA, el primer pantallazo de la app. Hay
+        # ~40 lugares que leen `snapshots` directo. Estampar el hecho una vez y que
+        # todos lo lean es lo único que escala: el lector que alguien escriba dentro
+        # de seis meses hace lo correcto sin saber nada de esta historia, porque la
+        # respuesta ya viene en la fila (y porque existe la vista de abajo).
+        #
+        # ⚠️ EL ORDEN IMPORTA: LA COLUMNA, DESPUÉS EL ÍNDICE. Un `CREATE INDEX` sobre
+        # una columna que todavía no existe tiró producción 20 minutos el 2026-08-02.
+        # Por eso se re-lee `snap_cols` entre medio y el índice va después.
+        if 'base' not in snap_cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN base TEXT")
+        if 'apto' not in snap_cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN apto INTEGER")
+        snap_cols = _table_cols(conn, 'snapshots')
+        if 'base' in snap_cols and 'apto' in snap_cols:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_apto "
+                         "ON snapshots(user_id, apto, date)")
+            # ⚠️ LA VISTA ES EL PUNTO DEL EJERCICIO. Un lector nuevo que escriba
+            # `FROM snapshots_medibles` hace lo correcto por default, sin haber
+            # leído una línea de `twr.py`. Los que legítimamente quieren TODO —el
+            # AUM del asesor, que MUESTRA un valor y no lo resta— siguen usando
+            # `snapshots` y eso queda explícito en el código de quien lo pide.
+            # ⚠️ LA VISTA TIENE QUE FUNCIONAR SOBRE LOS DATOS QUE YA EXISTEN.
+            # `WHERE apto = 1` a secas excluye las filas todavía sin estampar (apto
+            # NULL), o sea TODA la base hasta que la migración termine: durante esa
+            # ventana los lectores que usan la vista no verían NADA. El COALESCE
+            # deduce por fila mientras tanto —el mismo criterio que `twr.base_de`,
+            # sin la cadencia, que sólo se puede mirar por serie— y desaparece solo
+            # en cuanto `estampar_base` corre. Una fila legacy sin `source` se asume
+            # foto del cron: es lo que la cadencia confirma casi siempre, y negarle
+            # la base al usuario viejo fue la trampa de la ronda 3.
+            conn.execute("DROP VIEW IF EXISTS snapshots_medibles")
+            conn.execute("""
+                CREATE VIEW snapshots_medibles AS
+                SELECT * FROM snapshots
+                 WHERE CASE
+                         WHEN apto IS NOT NULL THEN apto
+                         WHEN source = 'import'  THEN 0
+                         WHEN source = 'browser' THEN 0
+                         WHEN source = 'mtm_backfill'
+                              THEN (CASE WHEN COALESCE(mtm_coverage, -1) >= 0.90
+                                         THEN 1 ELSE 0 END)
+                         ELSE 1
+                       END = 1""")
         # Phase C — tabla global de FX rates diarios. NO está particionada por
         # user (el dólar blue es público y único). Se rellena con backfill desde
         # argentinadatos.com al startup si está vacía, y se actualiza cada día
@@ -4880,8 +4932,12 @@ def post_snapshot(data: SnapshotIn, request: Request,
             )
         else:
             conn.execute(
-                """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, source)
-                   VALUES (?, ?, ?, ?, ?, ?, 'browser')
+                # `base`/`apto` estampados (ronda 11). Una foto del browser ES un
+                # valor de mercado (posiciones × precio), así que base='mercado' y
+                # sostiene la línea; pero es de MEDIA RUEDA, no un cierre, así que
+                # apto=0: nunca puede fijar un máximo ni ser denominador.
+                """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, source, base, apto)
+                   VALUES (?, ?, ?, ?, ?, ?, 'browser', 'mercado', 0)
                    ON CONFLICT(user_id, date) DO UPDATE SET
                      total_value=excluded.total_value,
                      total_invested=excluded.total_invested,
@@ -4889,7 +4945,9 @@ def post_snapshot(data: SnapshotIn, request: Request,
                      fx_to_usd_blue=COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue),
                      -- Un cierre del cron NO se degrada a 'browser' por una visita
                      -- posterior: si ya había una medición, la marca se conserva.
-                     source=COALESCE(snapshots.source, 'browser')""",
+                     source=COALESCE(snapshots.source, 'browser'),
+                     base='mercado',
+                     apto=COALESCE(snapshots.apto, 0)""",
                 (uid, today, data.total_value, data.total_invested, data.net_deposited, blue_now),
             )
         conn.commit()
@@ -4906,9 +4964,20 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
     # snapshots viejos a ARS con el TC HISTÓRICO de cada fecha, no el de hoy.
     days = max(1, min(days, 3650))
     with db_abierta() as conn:
+        # ⚠️ GUARDA DE COLUMNA, IGUAL QUE `reporting/builder.py:224-228` Y
+        # `twr._sel_estampo`. Acá se pedían `mtm_coverage, base, apto` a secas
+        # mientras los otros dos lectores del MISMO repo sí se protegían: dos
+        # criterios distintos para la misma pregunta. Un deploy donde el código
+        # llega antes que su columna es exactamente cómo se cayó producción el
+        # 2026-08-02, y en Postgres —donde la migración de ALTER no corre nunca
+        # porque `_init_db_postgres()` sale antes— este endpoint devolvía 500 fijo.
+        from reporting.builder import _tiene_columna as _tc
+        _cov = "mtm_coverage" if _tc(conn, "snapshots", "mtm_coverage") else "NULL AS mtm_coverage"
+        _bse = "base" if _tc(conn, "snapshots", "base") else "NULL AS base"
+        _apt = "apto" if _tc(conn, "snapshots", "apto") else "NULL AS apto"
         rows = conn.execute(
             "SELECT date, total_value, total_invested, net_deposited, fx_to_usd_blue, "
-            "holdings_json, source, mtm_coverage "
+            f"holdings_json, source, {_cov}, {_bse}, {_apt} "
             "FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT ?",
             (uid, days),
         ).fetchall()
@@ -4922,13 +4991,23 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
         import twr as _twr
         _primera = _twr.primera_fecha_con_posiciones(conn, uid)
         _clases = _twr.clasificar_serie(rows, _primera, orden_desc=True)
+        # La BASE también es de la serie, no de la fila: la calidad de una
+        # reconstrucción es una sola para todo el artefacto (twr.bases_de_serie).
+        # `rows` viene en orden DESC, igual que las clases.
+        _bases = _twr.bases_de_serie(rows, _clases)
     out = []
-    for r, _clase in zip(rows, _clases):
+    for r, _clase, _base in zip(rows, _clases, _bases):
         d = dict(r)
         d["clase"] = _clase
         # `apto`: esta fila puede sostener un pico o un denominador. Lo que NO es
         # apto se puede seguir dibujando, pero aparte y nunca como origen de un pico.
-        d["apto"] = _clase in _twr.BASE_MERCADO
+        # ⚠️ `es_apto`, NO `_clase in BASE_MERCADO`. Éste era el SEXTO lector y el
+        # que quedó con la regla vieja: una reconstrucción con cobertura 0,05 tiene
+        # clase RECONSTRUIDO, así que salía `apto=True` acá mientras la curva la
+        # daba `apto=False` — la misma fila, dos respuestas. `evolution.js:244`
+        # filtra por este flag, con lo cual el Dashboard encadenaba como medición
+        # una foto valuada 95% al costo: el caso 452 reimpreso en otra pantalla.
+        d["apto"] = _twr.es_apto(_clase, _base)
         # ⚠️ `sintetico`: esta fila NO la sacó el cron, la FABRICÓ
         # `_backfill_snapshots_from_monthly` (persister.py:1175) tras un import,
         # escribiendo `total_value = capital_final del mes` — o sea la cadena a
@@ -14907,19 +14986,62 @@ def _historical_cagr_global(conn, uid: int) -> dict:
     # (persister.py:1289-1292). Encadenar esas fabricaba un CAGR que no era del
     # mercado. `twr.serie_medible` deja sólo lo que está en base de mercado.
     import twr as _twr
+    # ⚠️ `medibles`, NO la serie entera. Aplanando todos los puntos, este CAGR
+    # encadenaba fotos al COSTO contra mediciones a mercado: medido, −92,27% anual
+    # para una cuenta y un día en que la pantalla publicaba 0,0%. El dato ya no deja
+    # hacerlo —los no medibles no traen `value`— pero el motivo va escrito igual:
+    # un CAGR es un número publicado, y un número publicado sale sólo de lo medido.
     _serie = _twr.serie_medible(conn, uid)
+    # ⚠️ Y TAMPOCO SE APLANA LA SERIE IGNORANDO LOS TRAMOS — el mismo criterio que
+    # ya usan los builders de IA (`insights_drawdown.py`). `serie_medible` la parte
+    # donde hubo demasiado silencio; encadenando por encima del hueco, este CAGR
+    # publicaba un derrumbe que la pantalla se niega a publicar. Medido: −45,82%
+    # anual con `twr.curva_indexada` devolviendo None por `serie_partida`. Que las
+    # dos puntas estén a mercado no alcanza: si no se sabe qué pasó en el medio, el
+    # tramo no se puede encadenar.
+    try:
+        _con_legs = [t for t in _twr.curva_indexada(conn, uid)["tramos_detalle"]
+                     if t["legs"] > 0]
+    except Exception:
+        _con_legs = []
+    if len(_con_legs) == 1:
+        _d0, _d1 = _con_legs[0]["desde"], _con_legs[0]["hasta"]
+        _serie = dict(_serie, medibles=[p for p in _serie["medibles"]
+                                        if _d0 <= p["date"] <= _d1])
+    elif len(_con_legs) > 1:
+        return {"cagr": None, "months": 0, "basis": "medido",
+                "reason": _twr.MOTIVO_TEXTO.get("serie_partida")}
     # Reducir a fin de mes: el ÚLTIMO punto de cada YYYY-MM (orden asc → pisa).
     by_month = {}
-    for _p in _serie["puntos"]:
+    for _p in _serie["medibles"]:
         by_month[_p["date"][:7]] = {"date": _p["date"], "total_value": _p["value"],
                                     "net_deposited": _p["net_deposited"]}
     months = [by_month[k] for k in sorted(by_month)]
     if len(months) < 2:
+        # ⚠️ EL FALLBACK NO PUBLICA UN PORCENTAJE. Acá se caía a `monthly_entries`
+        # sin ningún filtro, y `monthly_entries` de meses cerrados ESTÁ AL COSTO
+        # (pnl_unrealized forzado a 0) — lo dice el propio docstring de
+        # `_cagr_from_monthly_rows`. Medido: /api/goals/cagr devolvía −78,34% anual
+        # el mismo día en que `twr.curva_indexada` medía 0,0% para esa cuenta. Que
+        # el camino principal se arreglara no alcanzaba: el defecto vivía en la
+        # rama a la que se cae justo cuando NO hay nada medido, que es exactamente
+        # cuando más tienta inventar un número.
+        #
+        # El número contable no se tira —hay quien lo quiere— pero viaja con nombre
+        # propio y NO como `cagr`, para que nadie lo publique creyendo que es de
+        # mercado.
         rows = conn.execute(
             """SELECT deposits, withdrawals, capital_inicio, capital_final
                FROM monthly_entries WHERE user_id=? AND broker='global'
                ORDER BY year ASC, month ASC""", (uid,)).fetchall()
-        return _cagr_from_monthly_rows(rows)
+        _contable = _cagr_from_monthly_rows(rows)
+        return {"cagr": None,
+                "months": _contable.get("months", 0),
+                "cagr_contable_pct": _contable.get("cagr"),
+                "basis": "contable",
+                "reason": (_contable.get("reason")
+                           or "Todavía no hay dos cierres medidos a mercado: lo único "
+                              "que hay es la contabilidad, que no mide el mercado.")}
     # TWRR chain-linked (espejo de buildEvolutionFromSnapshots): el 1er fin de mes es
     # baseline (cum=1); cada período acumula su retorno ajustado por flujos.
     cum = 1.0
@@ -31155,6 +31277,89 @@ def _prewarm_news_cache():
 
 
 @app.on_event("startup")
+def _migrate_estampar_base():
+    """Estampa `snapshots.base` / `snapshots.apto` en las filas que no los tienen.
+
+    ⚠️ ESTE HOOK ES LA MITAD DEL FIX. Este repo ya tuvo un backfill que "corría en
+    un thread daemon al startup" y ese thread no existía (`backfill_source_legacy`,
+    ver el comentario largo en twr.py): un backfill sin call-site es peor que no
+    tenerlo, porque instala la premisa falsa de que producción está materializada.
+    Así que corre de verdad, y reintenta ante base trabada (ver el worker).
+
+    ⚠️ NO HAY endpoint de admin para forzarlo. El docstring decía que sí y era falso
+    —enumeradas las 252 rutas de `app.routes`, ninguna estampa—, que es exactamente
+    la premisa falsa contra la que advierte el párrafo de arriba. Si el estampado
+    falla, hoy la única palanca es un redeploy: por eso el worker reintenta.
+
+    Idempotente y NO DESTRUCTIVO: `solo_faltantes=True` toca únicamente las filas
+    con `base` en NULL. Una fila ya estampada no se vuelve a tocar nunca — es lo que
+    hace que un mes YA CERRADO no cambie porque el usuario importó historia vieja.
+
+    En background con 5s de gracia, igual que los otros hooks, y con la guarda de
+    la columna: en un deploy donde el código llega antes que la migración, esto no
+    puede romper el boot.
+    """
+    import threading
+
+    def worker():
+        try:
+            import time as _time
+            _time.sleep(5)
+            _log = logging.getLogger(__name__)
+            conn = get_db()
+            try:
+                if 'base' not in _table_cols(conn, 'snapshots'):
+                    _log.warning("estampar_base: la columna todavía no existe, se saltea")
+                    return
+                pend = conn.execute(
+                    "SELECT COUNT(*) c FROM snapshots WHERE base IS NULL").fetchone()["c"]
+                if not pend:
+                    return
+                import twr as _twr
+
+                # ⚠️ UN SOLO INTENTO NO ALCANZA, Y EL GUARD YA ESTABA ESCRITO.
+                # Reproducido sobre la copia de producción: basta con que otro
+                # escritor (import + rebuild) retenga el lock más que el
+                # `busy_timeout=15000` de `get_db()` justo en boot+5s para que esto
+                # tire `database is locked`, se trague la excepción y las 40.717
+                # filas queden en NULL. Y no se reintenta nunca: `railway.toml` usa
+                # `restartPolicyType = "on_failure"`, así que el proceso sigue vivo
+                # y nadie vuelve a pasar por acá hasta el próximo deploy. Con las
+                # filas sin estampar, la vista `snapshots_medibles` cae a su rama
+                # `ELSE 1` y el pico del asesor vuelve a salir de la cadena
+                # contable: medido, 169 alertas de drawdown con 81 picos
+                # `sintetico_costo` (peor caso −492.864%) contra 95 alertas y 0
+                # picos contables una vez estampado. Y esas alertas van POR MAIL.
+                #
+                # `_run_with_lock_retry` pide dos cosas y `estampar_base` las
+                # cumple, medidas: es idempotente (segunda corrida = 0 filas) y no
+                # deja estado parcial (el `with conn:` hace rollback entero). Es el
+                # único write masivo del startup que no lo estaba usando.
+                def _estampar():
+                    with conn:
+                        return _twr.estampar_base(conn)
+
+                r = _run_with_lock_retry(_estampar, attempts=5, base_delay=2.0)
+                _log.info("estampar_base: %s filas de %s usuarios (pendientes=%s)",
+                          r["filas"], r["usuarios"], pend)
+                queda = conn.execute(
+                    "SELECT COUNT(*) c FROM snapshots WHERE base IS NULL").fetchone()["c"]
+                if queda:
+                    _log.error("estampar_base: quedaron %s filas SIN estampar", queda)
+            finally:
+                conn.close()
+        except Exception as ex:
+            # ⚠️ `error`, no `warning`, y CON el conteo. Antes el único lugar del
+            # repo que sabe cuántas filas quedaron sin estampar era la línea de
+            # ÉXITO; en el camino de falla el mensaje no decía cuántas, así que no
+            # había forma de saber desde afuera si el estampado corrió.
+            logging.getLogger(__name__).error(
+                "estampar_base falló tras reintentos: %s", ex)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+@app.on_event("startup")
 def _migrate_snapshots_netdep():
     """Migración automática al deploy: backfill `snapshots.net_deposited`
     corrupto para TODOS los users.
@@ -31514,11 +31719,22 @@ from reporting.timeline import build_timeline, _compute_user_historical_win_rate
 
 
 def _latest_snapshot_value(conn, uid: int) -> Optional[float]:
-    row = conn.execute(
-        "SELECT total_value FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
-        (uid,),
-    ).fetchone()
-    return float(row["total_value"]) if row and row["total_value"] is not None else None
+    """El valor de cierre para restar contra un arranque de período.
+
+    ⚠️ ES UN BORDE, NO UN VALOR PARA MOSTRAR. Sus dos call-sites lo RESTAN:
+    el "P&L del mes en curso" (main.py:32071) y el packet mensual que va al prompt
+    del LLM (ai/builders/monthly.py:100). Sin filtro, el día del import la punta ES
+    la cadena contable y el mes publica "Mes sólido — +96,6%" con `basis_incomparable`
+    en false, cero operaciones cerradas y cero flujos.
+
+    `INDETERMINADO` entra por el mismo motivo que en el chip de variación: son las
+    filas legacy sin `source`, y excluirlas le borraría el número a los usuarios
+    viejos cuyo snapshot es perfectamente válido. En producción son 4 de 40.717.
+    """
+    from reporting.builder import fetch_latest_measured_snapshot
+    from twr import MEDICION as _MED, INDETERMINADO as _IND
+    row = fetch_latest_measured_snapshot(conn, uid, accept=(_MED, _IND))
+    return float(row["total_value"]) if row and row.get("total_value") is not None else None
 
 
 def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
@@ -31536,10 +31752,20 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     br_args: tuple = () if broker_filter == "global" else (broker_filter,)
 
     # Último snapshot global (no se desagrega por broker)
-    latest_snap = conn.execute(
-        "SELECT date, total_value FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
-        (uid,),
-    ).fetchone()
+    # ⚠️ ACÁ NACE LA ASIMETRÍA QUE NADIE VIO. Las cuatro métricas que salen de esta
+    # función —delta_1d, delta_7d, delta_30d e YTD— filtran su borde de APERTURA con
+    # mucho cuidado (`_snapshot_delta` usa `accept=`, `_ytd_delta` usa
+    # `mtm_only=True` + `_border_is_fresh`, los dos con AUDIT D-1 escrito al lado) y
+    # las cuatro reciben el borde de CIERRE de esta query, SIN FILTRAR.
+    #
+    # Con la punta al costo el motor publica un YTD de +96,63% y un Δ1d de +177,66%
+    # sobre una cartera cuya última medición real está 33% por debajo del arranque.
+    # Y no se queda en la pantalla: `_bench_cache`/chat lo toma en main.py:22532 y el
+    # prompt lo marca `_note: "Retornos REALES precalculados — citalos, NO hagas
+    # aritmética nueva"`, así que el modelo le afirma al usuario que le ganó al S&P.
+    from reporting.builder import fetch_latest_measured_snapshot
+    from twr import MEDICION as _MED, INDETERMINADO as _IND
+    latest_snap = fetch_latest_measured_snapshot(conn, uid, accept=(_MED, _IND))
     snap_value = float(latest_snap["total_value"]) if latest_snap and broker_filter == "global" else None
     # Si tenemos live override y es global, usamos eso como "ahora";
     # el snap_value se reserva como base para calcular delta_1d (vs cierre).
@@ -31701,10 +31927,28 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
     prev_v = float(prev["total_value"])
     if prev_v <= 0:
         return None
+    # ⚠️ AUSENTE ≠ NEGATIVO, y acá el error PUBLICA UN PORCENTAJE.
+    # El `<= 0` de antes leía un `net_deposited` NEGATIVO —retiros netos por encima
+    # de los aportes, un dato perfectamente legítimo— como si fuera un hueco, y caía
+    # a `total_invested`, que es COSTO. O sea: metía la base contable adentro del
+    # chip de variación, que es justo lo que el resto de este archivo se pasó once
+    # rondas sacando.
+    #
+    # Medido con la serie real del uid 452 (copia de producción del 16/08):
+    # el 15 y el 16 de agosto tienen EXACTAMENTE el mismo `total_value`
+    # (67.214,75 los dos — la cartera no se movió un centavo), y el chip Δ1d
+    # publicaba **+122,77%**. Los 76.795,18 de `total_invested` entrando donde iban
+    # −5.726,38 de flujos son toda la diferencia.
+    #
+    # La columna es `NOT NULL DEFAULT 0`, así que el hueco real —las filas
+    # anteriores a Phase 6— se escribe exactamente como 0. Ése es el único valor
+    # que significa "no lo tengo"; cualquier otro, signo incluido, es un dato.
+    #
+    # Es el MISMO arreglo que `netDepositedOf` en `frontend/src/utils/evolution.js`,
+    # y el comentario viejo de acá decía textual "mismo criterio que netDepositedOf
+    # del frontend": arreglar uno solo volvía a partir la regla en dos.
     prev_netdep = float(prev["net_deposited"] or 0)
-    # Legacy fallback (mismo criterio que netDepositedOf del frontend): snapshots
-    # viejos sin net_deposited → cost basis, para no desfasar el delta.
-    if prev_netdep <= 0:
+    if prev_netdep == 0:
         prev_netdep = float(prev["total_invested"] or 0)
     # Cashflow-adjusted: Δ(value − netDeposited). Si el caller no pasa
     # latest_netdep, ambos lados usan 0 (equivalent al raw diff legacy).
@@ -33988,7 +34232,12 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     # Se filtra a base de mercado; sin base medible, `ret_pct` queda en None y el
     # informe lo dice, que es lo que ya hace con la base vieja.
     import twr as _twr
-    _pts = _twr.serie_medible(conn, client_uid, None, end)["puntos"]
+    # ⚠️ `medibles`. El comentario de arriba prometía "se filtra a base de mercado"
+    # y no se filtraba: `puntos` traía TAMBIÉN las fotos al costo, y con una de ésas
+    # de base el informe FIRMADO publicaba (medido) "−47,26% · −US$65.966,54 de
+    # mercado" para un mes sin una sola operación. Es la superficie donde un número
+    # inventado hace más daño, porque sale del producto que el asesor firma.
+    _pts = _twr.serie_medible(conn, client_uid, None, end)["medibles"]
     snaps = [{"date": p["date"], "total_value": p["value"],
               "net_deposited": p["net_deposited"]} for p in _pts]
     base_row = None   # último snapshot ANTERIOR al período (base de la descomposición)
@@ -35048,13 +35297,48 @@ def _advisor_client_ids(conn, uid: int) -> list:
     ).fetchall()]
 
 
+def _es_base_de_mercado(row) -> bool:
+    """¿Este snapshot sirve como PUNTA de una resta contra otra punta a mercado?
+
+    ⚠️ EL BARRIDO DE LA RONDA 10. `_latest_snapshots` y `_snapshots_asof` eligen por
+    MAX(date) y no preguntan en qué BASE está la fila. Para mostrar el AUM eso está
+    bien —una reconstrucción es la mejor valuación que hay de ese cliente— pero para
+    restar dos puntas NO: si una sale de la cadena contable (import) o de una foto
+    reconstruida y la otra es una medición, la resta no mide el período, mide la
+    brecha entre dos formas de medir. Es el mismo defecto que publicaba −47,26% en el
+    informe firmado, en el delta del libro.
+
+    Por eso el filtro va en el CONSUMIDOR y no en la query: el AUM sigue viendo todo.
+    Las filas LEGACY (source NULL, anteriores a la columna) se aceptan a propósito —
+    son fotos del cron, y excluirlas le borraría el delta a los usuarios viejos.
+    """
+    if row is None:
+        return False
+    # ⚠️ PRIMERO LA COLUMNA ESTAMPADA (ronda 11). El string `source` se equivocaba en
+    # las dos direcciones: dejaba pasar la fila legacy del import (source NULL,
+    # valuada al costo) y rechazaba una reconstrucción buena de cobertura 0,99.
+    try:
+        _apto = row["apto"]
+    except (KeyError, IndexError, TypeError):
+        _apto = None
+    if _apto is not None:
+        return bool(_apto)
+    # Sin estampo (deploy en curso, antes de la migración) cae a la heurística
+    # vieja, que es el lado seguro del error.
+    try:
+        src = row["source"]
+    except (KeyError, IndexError, TypeError):
+        src = None
+    return src not in ("import", "mtm_backfill")
+
+
 def _latest_snapshots(conn, ids: list) -> dict:
-    """{uid: row(date,total_value,net_deposited)} del ÚLTIMO snapshot por cliente."""
+    """{uid: row(date,total_value,net_deposited,source)} del ÚLTIMO snapshot por cliente."""
     if not ids:
         return {}
     ph = ",".join("?" * len(ids))
     return {r["user_id"]: r for r in conn.execute(
-        f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited
+        f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited, s.source, s.apto
             FROM snapshots s
             WHERE s.user_id IN ({ph})
               AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
@@ -35069,7 +35353,7 @@ def _snapshots_asof(conn, ids: list, cutoff: str) -> dict:
         return {}
     ph = ",".join("?" * len(ids))
     return {r["user_id"]: r for r in conn.execute(
-        f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited
+        f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited, s.source, s.apto
             FROM snapshots s
             WHERE s.user_id IN ({ph})
               AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
@@ -35227,9 +35511,16 @@ def advisor_book(uid: int = Depends(get_current_user)):
             # Piso de antigüedad de la base (audit): un cliente con snapshots
             # frenados 60 días metía su delta de 2 meses en "últimos 7 días".
             _floor7 = (today - _td(days=14)).isoformat()
+            # ⚠️ Y LAS DOS PUNTAS EN BASE DE MERCADO (ver `_es_base_de_mercado`).
+            # El caso que le pega es justo el 452: un cliente cuya historia se
+            # reconstruyó y a quien el cron le empezó hace poco tiene la base al
+            # COSTO y el `latest` a mercado, así que su brecha entraba entera como
+            # "lo que se movió el libro esta semana".
             common = [i for i in latest if i in asof
                       and str(latest[i]["date"]) != str(asof[i]["date"])
-                      and str(asof[i]["date"]) >= _floor7]
+                      and str(asof[i]["date"]) >= _floor7
+                      and _es_base_de_mercado(latest[i])
+                      and _es_base_de_mercado(asof[i])]
             if not common:
                 return None, None
             now_v = sum(float(latest[i]["total_value"] or 0) for i in common)
@@ -35242,11 +35533,20 @@ def advisor_book(uid: int = Depends(get_current_user)):
         # ── Captación del mes (Δ net_deposited desde el 1° del mes, en USD) ──
         flows = None
         _stale_floor = (today.replace(day=1) - _td(days=8)).isoformat()
+        # ⚠️ ÉSTE ERA EL ÚNICO DELTA DEL LIBRO QUE QUEDÓ SIN FILTRAR. El hero
+        # (`_delta`, más arriba) ya exige `_es_base_de_mercado` en las dos puntas;
+        # acá se calcula `market_effect_usd = (v_now − v_then) − flujos` y se
+        # publica como "el mercado restó US$65.967". Con `v_then` saliendo de la
+        # foto del import (contable) y `v_now` del cierre del cron (mercado), eso
+        # no es el mercado: es el escalón entre dos reglas de medición, con el
+        # nombre del mercado puesto encima.
         common_m = [i for i in latest if i in asof_month
                     and str(latest[i]["date"]) != str(asof_month[i]["date"])
                     # Base demasiado vieja (cron caído): depósitos del mes
                     # ANTERIOR se colarían como captación de este mes (audit).
-                    and str(asof_month[i]["date"]) >= _stale_floor]
+                    and str(asof_month[i]["date"]) >= _stale_floor
+                    and _es_base_de_mercado(latest[i])
+                    and _es_base_de_mercado(asof_month[i])]
         if common_m:
             dep_now = sum(float(latest[i]["net_deposited"] or 0) for i in common_m)
             dep_then = sum(float(asof_month[i]["net_deposited"] or 0) for i in common_m)
@@ -35271,6 +35571,15 @@ def advisor_book(uid: int = Depends(get_current_user)):
             f"SELECT user_id, MAX(net_deposited) m FROM snapshots WHERE user_id IN ({_ph_d}) GROUP BY user_id",
             ids).fetchall()}
         for i, r in latest.items():
+            # ⚠️ ESTO ES UN PORCENTAJE PUBLICADO, NO UN VALOR MOSTRADO. Sale por la
+            # tarjeta Mejor/Peor del libro (AdvisorDashboard.jsx:702) y también entra
+            # al prompt de la IA del libro como `ret_pct`
+            # (`_advisor_book_chat_context`), donde el prompt le ORDENA al modelo
+            # rankear clientes con él. Con `latest[i]` sin filtrar, un cliente cuya
+            # última fila es la foto del import aparecía con "+39,6%" mientras su
+            # propia pantalla decía "—": el mismo cliente, dos respuestas.
+            if not _es_base_de_mercado(r):
+                continue
             nd = float(r["net_deposited"] or 0)
             base_nd = max(_max_nd.get(i, 0.0), nd)
             # Base mínima USD 100: un nd residual (~centavos) explota el %
@@ -35333,13 +35642,32 @@ def advisor_book(uid: int = Depends(get_current_user)):
         # Drawdown AJUSTADO POR FLUJOS: máximo de (total_value − net_deposited)
         # vs el valor actual de la misma serie. Sin el ajuste, un retiro grande
         # (comprarse un auto) quedaba flaggeado como "caída" para siempre.
+        # ⚠️ UN PICO TIENE QUE SER UN PRECIO QUE ALGUIEN PAGÓ. `MAX(...)` sobre
+        # `snapshots` a secas deja que el máximo histórico lo fije una fila que el
+        # import FABRICÓ al costo — un valor que la cartera nunca tuvo a mercado, y
+        # contra el que después se mide "cuánto cayó". De ahí sale la frase
+        # "Su ganancia cayó 167% desde el mejor momento", y ésta no se queda en la
+        # pantalla: viaja en el mail del asesor al cliente.
+        #
+        # El sesgo va en UNA SOLA DIRECCIÓN —los picos sólo suben— así que cada fila
+        # fabricada que sobrevive empeora el drawdown para siempre.
+        #
+        # Medido sobre la copia de producción del 16/08: de los 644 clientes con al
+        # menos una medición, a 157 (24%) el pico se lo fija una fila NO medida; en
+        # el peor caso el pico falso está 197% por encima del pico real.
+        #
+        # `snapshots_medibles` es la vista que la migración de arranque crea para
+        # exactamente esto (main.py:1390): trae adentro el COALESCE que deduce por
+        # fila mientras el estampado termina, así que no le borra el pico a nadie
+        # durante el deploy. El AUM sigue leyendo `snapshots` a propósito — ése
+        # MUESTRA un valor, no lo resta.
         max_snap = {r["user_id"]: {"adj_mx": float(r["adj_mx"] or 0),
                                     "mx": float(r["mx"] or 0)}
                     for r in conn.execute(
             f"""SELECT user_id,
                        MAX(total_value - COALESCE(net_deposited, 0)) adj_mx,
                        MAX(total_value) mx
-                FROM snapshots WHERE user_id IN ({ph}) GROUP BY user_id""",
+                FROM snapshots_medibles WHERE user_id IN ({ph}) GROUP BY user_id""",
             ids,
         ).fetchall()}
         # Última actividad: operación o alta de posición más reciente
@@ -35538,6 +35866,12 @@ def advisor_book_detail(uid: int = Depends(get_current_user)):
                    "share_pct": round(tv / total * 100, 1) if total > 0 else None,
                    "as_of": str(snap["date"])}
             then = asof_7d.get(cid)
+            # Mismo criterio que el delta del libro: restar dos puntas exige que las
+            # dos estén en base de mercado. El AUM (`value_usd`, arriba) sigue
+            # saliendo del último snapshot sea cual sea — ahí la reconstrucción es la
+            # mejor valuación disponible; lo que no se puede es RESTARLA.
+            if not (_es_base_de_mercado(snap) and _es_base_de_mercado(then)):
+                then = None
             if then is None or str(then["date"]) == str(snap["date"]):
                 row.update({"state": "new", "delta_7d_usd": None,
                             "delta_7d_pct": None, "flows_7d_usd": None,

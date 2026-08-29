@@ -312,10 +312,26 @@ class DetectorsTest(unittest.TestCase):
         self.assertIsNone(detectors.detect_large_cash_drag(_stub_report(), positions))
 
     def test_streak_positive_three_months(self):
-        r = _stub_report(metrics=_stub_metrics(delta_pct=2.5))
+        # ⚠️ `basis="mercado"` EXPLÍCITO. El default del stub es "contable", y desde
+        # la Fase 2 una racha no se publica sobre la cadena contable (necesita el
+        # CAMINO de los precios). Este test prueba la LÓGICA de la racha, así que
+        # tiene que correr sobre una base que la habilite; el gate tiene su propio
+        # test abajo.
+        r = _stub_report(metrics=_stub_metrics(delta_pct=2.5, basis="mercado"))
         i = detectors.detect_streak(r, prior_deltas=[3.0, 1.5])  # 2 anteriores + actual = 3
         self.assertIsNotNone(i)
         self.assertEqual(i.code, "STREAK_POSITIVE")
+
+    def test_streak_NO_se_publica_sobre_la_cadena_contable(self):
+        """FASE 2 · el camino no se puede afirmar desde un saldo mensual.
+
+        Mismo input que el test de arriba —racha de 3 meses positivos— cambiando
+        SOLO la base. Si esto vuelve a disparar, volvimos a publicar la forma de
+        una historia que el mercado nunca dibujó: medido sobre la copia de
+        producción, 88 rachas salían de `basis='contable'` y CERO de mercado.
+        """
+        r = _stub_report(metrics=_stub_metrics(delta_pct=2.5, basis="contable"))
+        self.assertIsNone(detectors.detect_streak(r, prior_deltas=[3.0, 1.5]))
 
     def test_streak_breaks_on_sign_change(self):
         r = _stub_report(metrics=_stub_metrics(delta_pct=2.5))
@@ -330,10 +346,18 @@ class DetectorsTest(unittest.TestCase):
         self.assertEqual(i.code, "REALIZED_VS_UNREALIZED_GAP")
 
     def test_reversal_triggers_sign_flip(self):
-        m = _stub_metrics(delta_pct=-4.0)  # actual negativo
+        m = _stub_metrics(delta_pct=-4.0, basis="mercado")  # actual negativo
         i = detectors.detect_reversal(_stub_report(metrics=m), prior_delta=5.0)
         self.assertIsNotNone(i)
         self.assertEqual(i.code, "REVERSAL")
+
+    def test_reversal_NO_se_publica_sobre_la_cadena_contable(self):
+        """FASE 2 · REVERSAL es una señal de VOLATILIDAD (lo dice su docstring), y
+        la volatilidad es del camino. Sobre la cadena contable el cambio de signo
+        suele significar "este mes vendí con pérdida", no que la cartera se dio
+        vuelta."""
+        m = _stub_metrics(delta_pct=-4.0, basis="contable")
+        self.assertIsNone(detectors.detect_reversal(_stub_report(metrics=m), prior_delta=5.0))
 
     def test_reversal_silent_same_sign(self):
         m = _stub_metrics(delta_pct=4.0)

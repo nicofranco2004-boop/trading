@@ -17,6 +17,16 @@ import scripts.backfill_historical_mtm as bf
 from importing.persister import _backfill_snapshots_from_monthly
 
 
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
 class ReconstruccionE2ETest(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
@@ -70,7 +80,7 @@ class ReconstruccionE2ETest(unittest.TestCase):
         self.assertEqual([r["total_value"] for r in filas], [2000.0] * 3)  # planas: es el costo
 
         s0 = twr.serie_medible(self.conn, self.uid)
-        self.assertEqual(s0["puntos"], [])          # nada de eso es medible
+        self.assertEqual(_todos(s0), [])          # nada de eso es medible
         self.assertEqual(s0["motivo"], "importado_sin_mediciones")
 
         # ── PASO 2: la reconstrucción a precio de mercado histórico ────────────
@@ -92,7 +102,7 @@ class ReconstruccionE2ETest(unittest.TestCase):
 
         # ── PASO 3: ahora SÍ hay historia medible ─────────────────────────────
         cv = twr.curva_indexada(self.conn, self.uid)
-        self.assertEqual(len(cv["puntos"]), 3)
+        self.assertEqual(len(_todos(cv)), 3)
         self.assertEqual(cv["medido_desde"], "2024-08-31")
         self.assertEqual(cv["por_clase"][twr.RECONSTRUIDO], 3)
         self.assertAlmostEqual(cv["twr"], 0.10, places=6)          # 2500 → 2750

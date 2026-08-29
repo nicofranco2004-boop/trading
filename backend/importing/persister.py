@@ -1286,8 +1286,11 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
         # (el migrador FX) corre `_recompute_snapshots_netdep_for_user` después,
         # que lo recalcula para TODOS los snapshots.
         conn.execute(
-            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source)
-               VALUES (?,?,?,?,?,'import')
+            # `base='costo'` estampado (ronda 11): esto es `capital_final` del mes,
+            # o sea la cadena CONTABLE con pnl_unrealized forzado a 0. No es una
+            # medición de nada y nunca puede ser pico ni denominador.
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source, base, apto)
+               VALUES (?,?,?,?,?,'import','costo',0)
                ON CONFLICT(user_id, date) DO NOTHING""",
             (uid, snap_date, cap_final, net_dep, net_dep),
         )

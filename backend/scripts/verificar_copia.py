@@ -163,12 +163,29 @@ def hash_fila(valores: List[Any], tipos: List[str]) -> int:
 # ── Leer el esquema: de Postgres, que es el que tiene tipos de verdad ─────────
 
 def esquema_pg(cur) -> Dict[str, List[Tuple[str, str]]]:
-    """{tabla: [(columna, tipo_declarado)]} del esquema activo, en orden."""
+    """{tabla: [(columna, tipo_declarado)]} del esquema activo, en orden.
+
+    ⚠️ SÓLO TABLAS BASE, y es la simetría exacta del `type='table'` que ya hace
+    `tablas_sqlite()`. `information_schema.columns` lista TAMBIÉN las vistas, y desde
+    que existe `snapshots_medibles` —la primera vista del repo— este lado devolvía 61
+    relaciones contra las 60 del origen. El preflight compara los dos conjuntos y
+    aborta la copia con `NoSePuedeCopiar` ante UN solo hallazgo: la vista sola
+    bloqueaba el pasaje entero.
+
+    Medido contra un Postgres real (PG 16) con el esquema de la rama aplicado:
+    sin el filtro `esquema_pg()` devuelve 61 y `tablas_sqlite()` 60; con el filtro,
+    60 y 60. Una vista no se copia —se recrea desde el esquema— así que no tiene
+    nada que hacer en una comparación origen-vs-destino de DATOS.
+    """
     filas = cur.execute("""
-        SELECT table_name, column_name, data_type
-          FROM information_schema.columns
-         WHERE table_schema = current_schema()
-         ORDER BY table_name, ordinal_position
+        SELECT c.table_name, c.column_name, c.data_type
+          FROM information_schema.columns c
+          JOIN information_schema.tables t
+            ON t.table_schema = c.table_schema
+           AND t.table_name = c.table_name
+         WHERE c.table_schema = current_schema()
+           AND t.table_type = 'BASE TABLE'
+         ORDER BY c.table_name, c.ordinal_position
     """).fetchall()
     out: Dict[str, List[Tuple[str, str]]] = {}
     for t, c, d in filas:

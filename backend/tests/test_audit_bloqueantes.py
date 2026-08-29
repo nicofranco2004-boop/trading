@@ -16,6 +16,16 @@ import twr
 from reporting import builder
 
 
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
@@ -333,7 +343,7 @@ class B5_CoberturaSinPreciosTest(_Base):
         c = twr.curva_indexada(self.conn, self.uid)
         # Ya no desaparece de la serie: entra con su cobertura, pero NO es apta —
         # no puede sostener un pico ni ser denominador.
-        self.assertEqual(sum(1 for p in c["puntos"] if p["apto"]), 0)
+        self.assertEqual(len(c["medibles"]), 0)
         self.assertIsNone(c["twr"])
 
     def test_cash_real_afirmable_sigue_dando_cobertura_1(self):
