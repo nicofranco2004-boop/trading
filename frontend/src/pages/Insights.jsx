@@ -318,7 +318,10 @@ function InsightsDesktop({ _embeddedTab }) {
       return (mktArs != null && trustMktValue(mktArs, realCost, p.asset_type))
         ? mktArs / tcCedear : realCost
     }
-    const price = p.price_override ?? prices[p.asset]
+    // Key normalizada primero (la que pide el fetch: 'BRK.B' se pide como
+    // 'BRK-B'), con fallback a la cruda para el last-known del cron y los
+    // payloads legacy. Leer sólo la cruda dejaba el lote al costo, P&L 0.
+    const price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
     const mkt = price != null ? price * (p.quantity || 0) : null
     return ((mkt != null && trustMktValue(mkt, realCost, p.asset_type, p.price_override != null)) ? mkt : realCost) * f
   }

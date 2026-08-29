@@ -23,7 +23,7 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { inferType } from '../utils/tickers'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -80,7 +80,11 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto, costBasis = 
   // Cripto en broker AR (no exchange) se valúa al dólar MEP; en exchange queda a spot.
   // El factor multiplica valor Y costo por igual → el P&L% no cambia.
   const f = cryptoBrokerFactor(p.asset, !!broker?.is_exchange, p.price_override != null, tcCripto, tcCedear)
-  const priceLocal = p.price_override ?? prices[p.asset]
+  // Misma key que pide symbolFor. Antes leía prices[p.asset] CRUDO: un
+  // class-share (BRK.B se pide como 'BRK-B') nunca matcheaba y el lote quedaba
+  // congelado al costo con P&L 0. El fallback a la cruda cubre el last-known
+  // del cron y los payloads legacy, igual que el motor canónico.
+  const priceLocal = p.price_override ?? prices[valuationPriceKey(p, isAR)] ?? prices[p.asset]
   const investedUsd = invested * f
   const mkt = (priceLocal != null ? priceLocal * qty : invested) * f
   const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
@@ -88,12 +92,13 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto, costBasis = 
 }
 
 // Símbolo de precio que necesita un lote (para fetchear el set correcto).
+// Delega en `valuationPriceKey`, que es LA key con la que la valuación lee — su
+// docstring existe justamente para este bug. La versión anterior le faltaba la
+// excepción de la cripto: en un sub-broker "· USD" pedía BTC.BA mientras la
+// valuación lee el spot (prices[BTC]) → el lote caía a costo.
 function symbolFor(p, brokers) {
-  if (p.is_cash) return null
   const isAR = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
-  // Lote en pesos (currency='ARS') aunque viva en cuenta USD → precio LOCAL .BA.
-  const useBA = isAR || isArUsdBroker(p.broker) || costInPesos(p)
-  return priceSymbol(p.asset, useBA, p.asset_type)
+  return valuationPriceKey(p, isAR)
 }
 
 export default function AssetDetail() {
@@ -123,6 +128,9 @@ export default function AssetDetail() {
       const myLots = (pos || []).filter(p => (p.asset || '').toUpperCase() === asset)
       setPositions(myLots)
       setBrokers(bkrs || [])
+      // Sin el registry, isArUsdBroker cae al fallback por NOMBRE y esta ficha
+      // rutea el precio al ADR US en vez del .BA local (~10× en GGAL/BMA).
+      setBrokersRegistry(bkrs || [])
       setDolar(dol)
       setOperations((ops || []).filter(o => (o.asset || '').toUpperCase() === asset))
       // Fetchar todos los símbolos de precio que necesitan los lotes

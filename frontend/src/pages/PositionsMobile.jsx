@@ -37,7 +37,7 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -388,6 +388,15 @@ export default function PositionsMobile() {
       ])
       setPositions(pos || [])
       setBrokers(bkrs || [])
+      // El registry de brokers ES un input de la valuación: sin él,
+      // isArUsdBroker cae a un fallback por NOMBRE (/·\s*USD$/) y un
+      // sub-broker AR renombrado se precia por su ADR US en vez del .BA local
+      // (~10× en GGAL/BMA), o queda congelado al costo si no tiene ADR. Acá no
+      // se llamaba nunca: sus dos únicos llamadores eran Positions.jsx (código
+      // muerto en mobile, corta antes en el fork) y useMonthlyData (sólo se
+      // alcanza entrando al Dashboard). O sea que el número de esta pantalla
+      // dependía de si el usuario había pasado antes por otra.
+      setBrokersRegistry(bkrs || [])
       setDolar(dol)
       setLoading(false)  // ← Mostrar la página AHORA con cost basis
 

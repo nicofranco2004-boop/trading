@@ -143,7 +143,10 @@ export default function FirstInsight() {
         valueUsd = (mktUsd != null && trustMktValue(mktUsd, cost, p.asset_type)) ? mktUsd : cost
         pnlUsd = valueUsd - cost
       } else {
-        const price = p.price_override ?? prices[p.asset]
+        // Key normalizada primero (la que pide el fetch: 'BRK.B' se pide como
+        // 'BRK-B'), con fallback a la cruda para el last-known del cron y los
+        // payloads legacy. Leer sólo la cruda dejaba el lote al costo, P&L 0.
+        const price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
         if (price != null) {
           // Premium dólar-cripto (broker no-exchange) a valor Y costo → ranking
           // best/worst consistente con el resto de la app. f=1 para todo lo demás.

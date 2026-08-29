@@ -17,7 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -53,17 +53,20 @@ export default function PositionDetailMobile() {
       }
       setPosition(p)
       setBrokers(bkrs || [])
+      // Input de la valuación, no decoración: sin el registry, isArUsdBroker cae
+      // al fallback por NOMBRE y un sub-broker AR renombrado se precia por su
+      // ADR US (~10×) o queda al costo. Acá no se llamaba nunca.
+      setBrokersRegistry(bkrs || [])
       setDolar(dol)
       // Filtrar ops del mismo asset + broker
       setOperations((ops || []).filter(o => o.asset === p.asset && o.broker === p.broker))
-      // Fetchar precio
+      // UNA sola key: la misma que la valuación va a LEER. Se pedía una y se leía
+      // otra (abajo se indexaba prices[p.asset] crudo), así que un class-share
+      // (BRK.B → se pide 'BRK-B') y un lote en pesos en cuenta USD (se pedía el
+      // ticker US y se lee el .BA) caían a costo EN SILENCIO: P&L 0 para siempre.
       const isAR = (bkrs || []).find(b => b.name === p.broker)?.currency === 'ARS'
-      // Instrumento BYMA (broker ARS, o sub-broker AR "· USD") → símbolo local .BA.
-      const useBA = isAR || isArUsdBroker(p.broker)
-      const sym = !p.is_cash
-        ? (useBA ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type))
-        : p.asset
-      if (!p.is_cash) {
+      const sym = valuationPriceKey(p, isAR)
+      if (sym) {
         try { setPrices(await api.get(`/prices?symbols=${sym}`)) } catch { /* silent */ }
       }
     } finally {
@@ -100,6 +103,10 @@ export default function PositionDetailMobile() {
   const isExch = !!brokers.find(b => b.name === p.broker)?.is_exchange
   const cryptoF = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
 
+  // La MISMA key que se pidió arriba. Todo lo que lea precios en este archivo
+  // sale de acá: pedir con una y leer con otra es el bug que congela el P&L.
+  const priceKey = valuationPriceKey(p, isAR)
+
   // Compute current value + P/L
   let valueUsd = 0, priceLocal = null, pnlUsd = null, pnlPct = null
   if (p.is_cash) {
@@ -131,7 +138,7 @@ export default function PositionDetailMobile() {
     pnlUsd = valueUsd - u.investedUsd
     pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
   } else if (isAR) {
-    priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
+    priceLocal = p.price_override ?? prices[priceKey]
     const investedUsd = invested / tcBlue   // hoy
     // mkt y cost comparados en la MISMA moneda (ARS, nativo → mode-independent): un
     // bono per-100 (×100) o colisión de ticker cae a costo (P&L 0 para esta posición).
@@ -147,7 +154,7 @@ export default function PositionDetailMobile() {
     // precio LOCAL .BA (ARS) → USD via MEP, no el ticker US (que vale 15-100× más,
     // y las acciones AR ni existen como acción US → quedaban en "—"). El FCI-USD NO
     // entra: su precio es el NAV en USD (va al else, sin ÷MEP).
-    const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+    const priceArs = prices[priceKey]
     priceLocal = priceArs != null ? priceArs / tcCedear : null
     // mkt y cost en la MISMA moneda (USD): un bono per-100 (×100) cae a costo.
     const mktUsd = priceLocal != null ? priceLocal * qty : null
@@ -155,7 +162,7 @@ export default function PositionDetailMobile() {
     pnlUsd = valueUsd - invested
     pnlPct = invested > 0 ? pnlUsd / invested : 0
   } else {
-    priceLocal = p.price_override ?? prices[p.asset]
+    priceLocal = p.price_override ?? prices[priceKey] ?? prices[p.asset]
     // Crypto en broker AR (no exchange) → factor ~MEP sobre value y costo (P/L% invariante).
     if (cryptoF !== 1 && priceLocal != null) priceLocal = priceLocal * cryptoF
     const investedF = invested * cryptoF

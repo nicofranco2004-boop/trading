@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker } from './valuation.js'
 import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
@@ -967,5 +967,82 @@ describe('avgCostUsdPerUnit', () => {
       const rate = modo === 'purchase' ? meli.tc_compra : HOY
       expect(prom * meli.quantity).toBeCloseTo(meli.invested / rate, 6)
     }
+  })
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// Los bugs de SÍMBOLO: pedir una key y leer otra.
+// Toda esta familia falla igual — la posición cae a costo EN SILENCIO y el P&L
+// queda en 0 para siempre, sin nada en pantalla que lo delate. Estos tests fijan
+// el mecanismo; los call-sites que lo sufrían (PositionDetailMobile, AssetDetail,
+// Insights, FirstInsight) viven en pages/ y no se pueden importar acá (el
+// entorno de tests es node, sin jsdom), así que se pinea lo que SÍ es puro:
+// la key canónica y el ruteo que depende del registry.
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('key de precio: la que se pide tiene que ser la que se lee', () => {
+  it('un class-share con punto se lee por la key normalizada, no por la cruda', () => {
+    // El fetch pide 'BRK-B' (priceSymbol normaliza). Leer prices['BRK.B'] deja el
+    // lote al costo. computeBrokerValue lee normalizada primero.
+    expect(priceSymbol('BRK.B', false)).toBe('BRK-B')
+    const p = { asset: 'BRK.B', quantity: 10, invested: 1000, is_cash: false, broker: 'Schwab', currency: 'USD' }
+    const broker = { name: 'Schwab', currency: 'USD' }
+    setBrokersRegistry([broker])
+    const r = computeBrokerValue([p], { 'BRK-B': 500 }, broker, 1466, 1412, null, 'today')
+    expect(r.value).toBeCloseTo(5000, 6)   // no 1000 (el costo)
+  })
+
+  it('valuationPriceKey saca la MISMA key que la valuación lee, rama por rama', () => {
+    const reg = [
+      { id: 1, name: 'Balanz', currency: 'ARS' },
+      { id: 2, name: 'Mi cuenta dólar', currency: 'USD', parent_broker_id: 1 },  // sub-broker AR renombrado
+      { id: 3, name: 'Schwab', currency: 'USD' },
+    ]
+    setBrokersRegistry(reg)
+    // broker ARS → .BA
+    expect(valuationPriceKey({ asset: 'GGAL', broker: 'Balanz' }, true)).toBe('GGAL.BA')
+    // sub-broker AR (por REGISTRY, no por nombre) → .BA
+    expect(valuationPriceKey({ asset: 'YPFD', broker: 'Mi cuenta dólar' }, false)).toBe('YPFD.BA')
+    // cripto en ese mismo sub-broker → spot, NUNCA .BA
+    expect(valuationPriceKey({ asset: 'BTC', broker: 'Mi cuenta dólar' }, false)).toBe('BTC')
+    // broker USD real → ticker US normalizado
+    expect(valuationPriceKey({ asset: 'BRK.B', broker: 'Schwab' }, false)).toBe('BRK-B')
+    // lote en pesos alojado en cuenta USD → .BA
+    expect(valuationPriceKey({ asset: 'AL30', broker: 'Schwab', currency: 'ARS' }, false)).toBe('AL30.BA')
+    // cash no tiene precio
+    expect(valuationPriceKey({ asset: 'ARS', broker: 'Balanz', is_cash: true }, true)).toBeNull()
+  })
+})
+
+describe('setBrokersRegistry: sin él, un sub-broker renombrado se rutea mal', () => {
+  const sub = { id: 2, name: 'Mi cuenta dólar', currency: 'USD', parent_broker_id: 1 }
+  const reg = [{ id: 1, name: 'Balanz', currency: 'ARS' }, sub]
+  // Acción argentina SIN ADR: con el ruteo correcto va por su .BA ÷ MEP.
+  const ypfd = { asset: 'YPFD', quantity: 100, invested: 1000, is_cash: false, broker: sub.name, currency: 'USD' }
+
+  it('con el registry VACÍO cae al fallback por nombre y no reconoce el sub-broker', () => {
+    setBrokersRegistry([])
+    expect(isArUsdBroker('Mi cuenta dólar')).toBe(false)          // no matchea /· USD$/
+    // Se rutea al ticker US pelado: YPFD no cotiza en US → sin precio → al costo.
+    expect(valuationPriceKey(ypfd, false)).toBe('YPFD')
+    const r = computeBrokerValue([ypfd], { 'YPFD.BA': 5000 }, sub, 1466, 1412, null, 'today')
+    expect(r.value).toBeCloseTo(1000, 6)                          // congelado al costo
+    expect(r.pnlUsd).toBeCloseTo(0, 6)                            // P&L 0 para siempre
+  })
+
+  it('con el registry POBLADO lo reconoce por parent_broker_id y lee el .BA', () => {
+    setBrokersRegistry(reg)
+    expect(isArUsdBroker('Mi cuenta dólar')).toBe(true)
+    expect(valuationPriceKey(ypfd, false)).toBe('YPFD.BA')
+    const r = computeBrokerValue([ypfd], { 'YPFD.BA': 5000 }, sub, 1466, 1412, null, 'today')
+    expect(r.value).toBeCloseTo(100 * 5000 / 1412, 6)             // .BA ÷ MEP
+  })
+
+  it('el nombre "X · USD" funciona sin registry — por eso el bug pasa desapercibido', () => {
+    // Es el caso de la cartera real: mientras nadie renombre, el fallback acierta.
+    setBrokersRegistry([])
+    expect(isArUsdBroker('Balanz · USD')).toBe(true)
+    expect(isArUsdBroker('Balanz - USD')).toBe(false)   // guión: NO
+    expect(isArUsdBroker('Balanz USD')).toBe(false)     // sin punto medio: NO
   })
 })
