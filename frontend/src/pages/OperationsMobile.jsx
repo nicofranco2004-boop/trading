@@ -20,8 +20,10 @@ import EmptyState from '../components/EmptyState'
 import BottomSheet from '../components/mobile/BottomSheet'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { useMoneyFormat, fmtConvertedRaw, fmtConvertedCompactRaw } from '../contexts/CurrencyContext'
+import { fmtConvertedRaw, fmtConvertedCompactRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
+import { useToast } from '../components/Toast'
+import { computeTradeStats } from '../utils/tradeStats'
 import { track } from '../utils/track'
 
 const PERIOD_OPTIONS = [
@@ -36,14 +38,27 @@ const RESULT_OPTIONS = [
   { id: 'losses', label: 'Perdedoras' },
 ]
 
+// Los defaults de los filtros, en UN solo lugar. Antes eran literales sueltos en
+// tres sitios y se desincronizaron: el estado arrancaba en 'all' pero el contador
+// comparaba contra '90d' (badge "1" sin filtrar) y "Restablecer" APLICABA 90
+// días — exactamente lo que el default 'all' había venido a arreglar.
+const FILTROS_INICIALES = { period: 'all', result: 'all', broker: 'all' }
+
 export default function OperationsMobile() {
   // P&L con el toggle global ARS/USD y FX HISTÓRICO por operación: el acumulado
   // suma los valores YA convertidos con el FX de cada trade (convert-then-sum),
   // no el total en USD al dólar de hoy — sino un movimiento posterior del blue
-  // infla/deflacta un resultado que ya ocurrió. `money` queda para los montos
-  // sin fecha propia (MovementsMobile).
-  const money = useMoneyFormat()
+  // infla/deflacta un resultado que ya ocurrió.
+  //
+  // Acá vivía un `useMoneyFormat` justificado como "para los montos sin fecha
+  // propia (MovementsMobile)". Era falso por partida doble: en esta función no
+  // se usaba nunca, y para las filas sin fecha tampoco hace falta un formateador
+  // aparte — `fmtMoneyAt` sin `dateIso` ya cae al blue de hoy, que es
+  // exactamente lo que hacía `fmtMoney`. Es un superset, no una alternativa:
+  // las filas con fecha van a SU FX y las que no la tienen quedan igual que antes.
+  // (Sí existen: los movimientos `pos-` de lotes manuales llegan con `date: ""`.)
   const histMoney = useHistoricalMoney()
+  const toast = useToast()
   const [view, setView] = useState('trades')  // 'trades' | 'movements'
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -52,9 +67,9 @@ export default function OperationsMobile() {
   // Default 'all' — el user puede acotar a 30d / 90d / 1y desde el sheet de
   // filtros si quiere. Antes default era 90d, pero esto escondía operaciones
   // viejas en users que recién aterrizan y no entendían por qué faltaban.
-  const [period, setPeriod] = useState('all')
-  const [result, setResult] = useState('all')
-  const [broker, setBroker] = useState('all')
+  const [period, setPeriod] = useState(FILTROS_INICIALES.period)
+  const [result, setResult] = useState(FILTROS_INICIALES.result)
+  const [broker, setBroker] = useState(FILTROS_INICIALES.broker)
 
   async function load() {
     const [o, b] = await Promise.all([
@@ -71,16 +86,39 @@ export default function OperationsMobile() {
     load()
   }, [])
 
+  // Ofrece DESHACER de verdad. El backend ya devolvía un `undo_token` en cada
+  // borrado y acá se tiraba: el "vas a poder deshacerlo" era mentira en mobile
+  // mientras el desktop sí lo ofrecía. Mismo patrón que Operations.jsx:157.
+  function offerUndo(res, undoBase, msg) {
+    const token = res?.undo_token
+    if (!token) { toast.push(msg, { type: 'success' }); return }
+    toast.push(msg, {
+      type: 'success',
+      duration: 12000,
+      actionLabel: 'Deshacer',
+      onAction: async () => {
+        try {
+          await api.post(`${undoBase}/${token}`)
+          await load()
+          toast.push('Listo, lo restauramos.', { type: 'success' })
+        } catch (ex) {
+          toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
+        }
+      },
+    })
+  }
+
   // Borrar una operación con cascada (mismo endpoint probado del desktop). El
   // backend recalcula P&L/tenencia/snapshots y bloquea con mensaje claro los
   // casos que aún no soporta (manuales, bonos, activos con data manual mezclada).
   async function del(op) {
     if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
     try {
-      await api.delete(`/operations/${op.id}`)
+      const res = await api.delete(`/operations/${op.id}`)
       await load()
+      offerUndo(res, '/operations/undo', 'Operación borrada.')
     } catch (ex) {
-      alert(ex?.message || 'No se pudo borrar la operación.')
+      toast.push(ex?.message || 'No se pudo borrar la operación.', { type: 'error', duration: 8000 })
     }
   }
 
@@ -113,12 +151,30 @@ export default function OperationsMobile() {
       .sort((a, b) => (a[0] < b[0] ? 1 : -1))
   }, [filtered])
 
-  const totalPnlDisp = histMoney.sumConvertedAt(filtered, o => (o.pnl_usd || 0))
-  const wins = filtered.filter(o => o.pnl_usd > 0).length
-  const losses = filtered.filter(o => o.pnl_usd < 0).length
-  const winRate = (wins + losses) > 0 ? wins / (wins + losses) : null
+  // KPIs sobre TODAS las ops, no las filtradas — el universo del desktop
+  // (Operations.jsx:219). Medir sobre `filtered` volvía falsa la etiqueta
+  // "acumulado" y era degenerado: con el chip "Ganadoras" el win rate daba
+  // 100% por construcción. Lo que se pierde de vista lo repone el renglón
+  // "X de Y operaciones" debajo del botón de filtros.
+  // Memoizado como en el desktop: ahora recorre TODAS las ops (antes las
+  // filtradas) y cada fila hace una búsqueda binaria en la serie FX.
+  const totalPnlDisp = useMemo(
+    () => histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0)),
+    [ops, histMoney.currency, histMoney.fxKey],
+  )
+  // Win rate: la definición del backend, la misma que el desktop.
+  const { trades, wins, losses, winRate } = useMemo(() => computeTradeStats(ops), [ops])
 
-  const activeFiltersCount = (period !== '90d' ? 1 : 0) + (result !== 'all' ? 1 : 0) + (broker !== 'all' ? 1 : 0)
+  // Derivado de FILTROS_INICIALES, no de literales sueltos: el badge marcaba
+  // "1" recién montado porque comparaba contra un default que ya no existía.
+  const activeFiltersCount = Object.keys(FILTROS_INICIALES)
+    .filter(k => ({ period, result, broker })[k] !== FILTROS_INICIALES[k]).length
+
+  function restablecerFiltros() {
+    setPeriod(FILTROS_INICIALES.period)
+    setResult(FILTROS_INICIALES.result)
+    setBroker(FILTROS_INICIALES.broker)
+  }
 
   // Toggle Trades / Movimientos. "Movimientos" consume /movements (depósitos,
   // retiros, dividendos, comisiones) con borrado — el tacho ya no es desktop-only.
@@ -164,7 +220,7 @@ export default function OperationsMobile() {
         <div className="flex items-baseline justify-between mb-3">
           <div>
             <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
-              P&L acumulado · {filtered.length} ops
+              P&L acumulado · {ops.length} ops
             </div>
             <div className={`text-xl font-medium tabular leading-none ${colorClass(totalPnlDisp)}`}>
               {fmtConvertedRaw(totalPnlDisp, histMoney.currency, { signed: true, decimals: 2 })}
@@ -179,7 +235,7 @@ export default function OperationsMobile() {
                 {(winRate * 100).toFixed(0)}%
               </div>
               <div className="text-[10px] tabular text-ink-3 leading-none mt-1">
-                <span className="text-rendi-pos">{wins}W</span> · <span className="text-rendi-neg">{losses}L</span>
+                <span className="text-rendi-pos">{wins}W</span> · <span className="text-rendi-neg">{losses}L</span> · {trades} cerradas
               </div>
             </div>
           )}
@@ -204,6 +260,15 @@ export default function OperationsMobile() {
             {result !== 'all' && ` · ${RESULT_OPTIONS.find(r => r.id === result)?.label}`}
           </span>
         </button>
+
+        {/* Los KPIs de arriba miden TODAS las ops; el feed de abajo, las
+            filtradas. Sin este renglón no hay forma de ver que son dos
+            universos — el desktop lo resuelve con su paginador. */}
+        {ops.length > 0 && (
+          <div className="mt-2 text-[12.5px] text-ink-3 tabular">
+            {filtered.length} de {ops.length} operaciones
+          </div>
+        )}
       </header>
 
       {/* Feed */}
@@ -215,7 +280,7 @@ export default function OperationsMobile() {
             action={
               activeFiltersCount > 0 && (
                 <button
-                  onClick={() => { setPeriod('all'); setResult('all'); setBroker('all') }}
+                  onClick={restablecerFiltros}
                   className="text-xs text-data-blue hover:text-rendi-accent font-medium"
                 >
                   Limpiar filtros
@@ -261,7 +326,7 @@ export default function OperationsMobile() {
 
           <div className="pt-2 flex items-center gap-2">
             <button
-              onClick={() => { setPeriod('90d'); setResult('all'); setBroker('all') }}
+              onClick={restablecerFiltros}
               className="flex-1 text-xs text-ink-2 hover:text-ink-0 border border-line/60 hover:bg-bg-2/60 rounded-sm py-2 transition-colors font-medium"
             >
               Restablecer
@@ -455,7 +520,8 @@ const MOVE_TYPE_META = {
 const DELETABLE_MOVE_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO', 'BUY', 'SELL']
 
 function MovementsMobile() {
-  const money = useMoneyFormat()
+  const histMoney = useHistoricalMoney()
+  const toast = useToast()
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
   const [deletingId, setDeletingId] = useState(null)
@@ -472,17 +538,44 @@ function MovementsMobile() {
     const isTrade = m.type === 'BUY' || m.type === 'SELL'
     const label = (MOVE_TYPE_META[m.type]?.label || 'movimiento').toLowerCase()
     const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
-    const monto = m.amount_usd ? ` (${money.fmtMoney(m.amount_usd)})` : ''
+    // Al FX de SU fecha, igual que la fila: si el confirm dijera un número y la
+    // fila otro, el usuario no sabría cuál está borrando.
+    const monto = m.amount_usd
+      ? ` (${histMoney.fmtMoneyAt(m.amount_usd, { stampedFx: m.fx_to_usd, rowCurrency: m.currency, dateIso: m.date, decimals: 2 })})`
+      : ''
     const efecto = isTrade
       ? 'Se recalcula todo: cartera, P&L, rendimiento, capital aportado y evolución.'
       : 'Se recalcula tu cartera, el capital aportado y la evolución.'
     if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto} Deja de contar en todos los cálculos.`)) return
     setDeletingId(m.id)
     try {
-      await api.delete(`/movements/${encodeURIComponent(m.id)}`)
+      const res = await api.delete(`/movements/${encodeURIComponent(m.id)}`)
       await load()
+      const okMsg = `Se borró ${label}${asset}.`
+      // Sólo los trades (BUY/SELL) tienen ruta de undo: su token lo redime
+      // /operations/undo. Los cash-flows no tienen endpoint que lo acepte, así
+      // que ahí no prometemos un botón que no lleva a ningún lado. Mismo
+      // criterio que el desktop (Operations.jsx:1189).
+      const base = (m.type === 'BUY' || m.type === 'SELL') ? '/operations/undo' : null
+      const token = res?.undo_token
+      if (token && base) {
+        toast.push(okMsg, {
+          type: 'success', duration: 12000, actionLabel: 'Deshacer',
+          onAction: async () => {
+            try {
+              await api.post(`${base}/${token}`)
+              await load()
+              toast.push('Listo, lo restauramos.', { type: 'success' })
+            } catch (ex) {
+              toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
+            }
+          },
+        })
+      } else {
+        toast.push(okMsg, { type: 'success' })
+      }
     } catch (ex) {
-      alert(ex?.message || 'No se pudo borrar el movimiento.')
+      toast.push(ex?.message || 'No se pudo borrar el movimiento.', { type: 'error', duration: 8000 })
     } finally {
       setDeletingId(null)
     }
@@ -518,7 +611,7 @@ function MovementsMobile() {
           </div>
           <ul>
             {items.map(m => (
-              <MovementRowMobile key={m.id} m={m} money={money} onDelete={handleDelete} deleting={deletingId === m.id} />
+              <MovementRowMobile key={m.id} m={m} histMoney={histMoney} onDelete={handleDelete} deleting={deletingId === m.id} />
             ))}
           </ul>
         </li>
@@ -527,7 +620,7 @@ function MovementsMobile() {
   )
 }
 
-function MovementRowMobile({ m, money, onDelete, deleting }) {
+function MovementRowMobile({ m, histMoney, onDelete, deleting }) {
   const meta = MOVE_TYPE_META[m.type] || { label: m.type, Icon: Repeat, tone: null }
   const { Icon } = meta
   const canDelete = DELETABLE_MOVE_TYPES.includes(m.type)
@@ -544,7 +637,13 @@ function MovementRowMobile({ m, money, onDelete, deleting }) {
         </div>
       </div>
       <div className={`flex-shrink-0 text-right text-sm font-medium tabular ${amountClass}`}>
-        {money.fmtMoney(m.amount_usd || 0)}
+        {histMoney.fmtMoneyAt(m.amount_usd || 0, {
+          stampedFx: m.fx_to_usd,
+          rowCurrency: m.currency,
+          dateIso: m.date,
+          signed: false,
+          decimals: 2,
+        })}
       </div>
       {canDelete && (
         <button

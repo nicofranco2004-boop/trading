@@ -23,6 +23,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { useToast } from '../components/Toast'
+import { computeTradeStats } from '../utils/tradeStats'
 
 const PAGE_SIZE = 50
 
@@ -225,9 +226,11 @@ function OperationsDesktop() {
     () => histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0)),
     [ops, histMoney.currency, histMoney.fxKey],
   )
-  const wins = ops.filter(o => o.pnl_usd > 0).length
-  const losses = ops.filter(o => o.pnl_usd < 0).length
-  const winRate = ops.length > 0 ? wins / ops.length : 0
+  // Win rate: UNA definición, la del backend (utils/tradeStats). Acá se contaban
+  // dividendos e intereses como ganadores y se dividía por ops.length (compras
+  // incluidas), así que el mismo usuario veía 93% acá, 100% en mobile y 85% en
+  // sus reportes. Ahora las tres dicen lo mismo.
+  const { trades, wins, losses, winRate } = useMemo(() => computeTradeStats(ops), [ops])
   // Mejor trade: guardamos la OP entera (no el escalar) para formatearla con SU FX
   // histórico. El máximo se elige sobre el valor que se VA A MOSTRAR: en pesos el
   // ranking puede diferir del ranking en USD (un trade viejo con dólar barato
@@ -394,12 +397,17 @@ function OperationsDesktop() {
           tone={totalPnlDisp >= 0 ? 'pos' : 'neg'}
           sub="acumulado histórico"
         />
-        <KpiCell
-          label="Win rate"
-          value={ops.length > 0 ? `${(winRate * 100).toFixed(0)}%` : '—'}
-          tone={ops.length > 0 ? (winRate >= 0.5 ? 'pos' : 'neg') : null}
-          sub={ops.length > 0 ? `${wins} ganadoras · ${losses} perdedoras` : 'sin operaciones'}
-        />
+        {/* Sin trades cerrados no hay win rate: la celda se OCULTA. Antes
+            mostraba "0%" en rojo, que le inventaba un fracaso al que sólo
+            cobró dividendos o todavía no vendió nada. */}
+        {winRate != null && (
+          <KpiCell
+            label="Win rate"
+            value={`${(winRate * 100).toFixed(0)}%`}
+            tone={winRate >= 0.5 ? 'pos' : 'neg'}
+            sub={`${wins} ganadoras · ${losses} perdedoras · ${trades} cerradas`}
+          />
+        )}
         <KpiCell
           label="Operaciones"
           value={ops.length.toLocaleString('es-AR')}

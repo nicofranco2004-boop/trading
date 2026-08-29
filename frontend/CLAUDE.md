@@ -100,6 +100,37 @@ tampoco lo hacían, así que esto los vuelve consistentes.
 `md` (6px) es **pixel-idéntico** a `DEFAULT`. Los 307 usos son deuda invisible: se migran a
 `rounded` cuando se toque el archivo por otra razón, nunca en un barrido propio.
 
+#### El borde de `Panel` no se pisa desde `className`. Hace falta `!`.
+
+`Panel` emite siempre `bg-bg-1 border border-line rounded-xl` y **después** concatena tu
+`className`. Eso engaña: uno escribe `<Panel className="border-data-violet/30">` y da por hecho
+que gana el violeta porque va último en el atributo. **No gana.** Las dos son utilidades de
+`border-color` con la MISMA especificidad (una clase), así que no decide el orden en el atributo
+— decide **cuál aparece después en la hoja compilada**. Y Tailwind las emite en **orden
+alfabético del nombre del color**:
+
+```
+.!border-data-violet/30   ← el `!` la saca del orden y le pone !important
+.border-amber-500/30      ← pierde contra line
+.border-data-violet/30    ← pierde contra line
+.border-line              ← el default de Panel
+.border-rendi-neg/30      ← gana, pero por casualidad alfabética
+```
+
+O sea: **todo color alfabéticamente anterior a `line` sale gris y nadie se entera.** No lo ve
+ningún test, y el código "se lee" correcto.
+
+El fix es el modificador important de Tailwind: `!border-data-violet/30`. Es el primer y único
+`!` del repo a propósito — no es un idioma para usar en cualquier lado, es la salida para
+*pisar un default que emite un átomo*. Único uso hoy: `More.jsx:98`.
+
+**`Config.jsx:500` tiene HOY este bug sin arreglar**: pide `border-amber-500/30` y renderiza
+gris. `Config.jsx:554` (`border-rendi-neg/30`) zafa sólo porque `rendi-neg` va después de
+`line` en el alfabeto. Queda anotado, no arreglado.
+
+Para re-verificarlo: `npm run build` y buscar en `dist/assets/*.css` el offset de cada
+`.border-*` — el que aparece más adelante es el que pinta.
+
 ### R6 — No se bifurca por viewport.
 
 Cero forks nuevos de `Página` → `PáginaMobile`. Lo responsive se resuelve con las variantes de

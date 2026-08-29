@@ -1,6 +1,6 @@
 {
   "_leeme": "Baseline del contrato de diseño. NO editar a mano: regenerar con `node scripts/gen-design-baseline.mjs --write` y sólo cuando la deuda BAJÓ. Unidad: ocurrencias (salvo mono_uppercase, que es coocurrencia por línea, y paginas_mobile, que cuenta archivos). Ruta ausente en un mapa = 0. El contrato está en frontend/CLAUDE.md; los patrones en scripts/design-patterns.mjs.",
-  "_archivosEscaneados": 286,
+  "_archivosEscaneados": 287,
   "totales": {
     "mono_clase": 317,
     "mono_inline": 22,
