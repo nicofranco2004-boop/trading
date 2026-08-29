@@ -473,136 +473,255 @@ export function buildPriceSymbols(positions, brokers) {
   return [...syms]
 }
 
+/**
+ * valuePositionLot — LA valuación de UN lote. Función pura.
+ *
+ * Es el cuerpo del loop de `computeBrokerValue` extraído tal cual: mismas seis
+ * ramas, mismo orden, misma aritmética. `computeBrokerValue` pasó a ser su suma
+ * y nada más.
+ *
+ * POR QUÉ EXISTE: había CINCO implementaciones de la valuación por lote
+ * (computeBrokerValue, valueEquityLot, AssetDetail.valueLot,
+ * PositionDetailMobile y PositionsMobile) y ninguna era "la buena a la que
+ * volver" — el desktop tampoco usa el motor canónico para sus filas, sólo para
+ * tres totales. Esta es la que va a serlo. Todavía NO la consume nadie más:
+ * migrar a los cinco lectores sólo es delta 0 después de alinear los
+ * comportamientos que hoy difieren (comisiones, modo 'purchase').
+ *
+ * EL ORDEN DE LAS RAMAS IMPORTA y es el de siempre:
+ *   1. cash                       (las ramas 2 y 3 lo excluyen con !p.is_cash)
+ *   2. costInPesos(p) && !isAR    — lote en pesos alojado en cuenta USD
+ *   3. costInUsd(p) && isAR       — lote de costo USD alojado en broker ARS
+ *   4. isAR nativo                — CEDEAR/acción AR/bono en broker ARS
+ *   5. (CEDEAR || arUsd) en broker USD, sin cripto/FCI/override → .BA ÷ MEP
+ *   6. else                       — USD nativo (+ factor cripto)
+ *
+ * @param {object} p   posición (un lote)
+ * @param {object} ctx { broker, prices, tcBlue, tcCedear, tcCripto, costBasis }
+ * @returns {{
+ *   valueUsd: number, investedUsd: number, investedUsdDisplay: number,
+ *   guardCost: number|null, priceLocal: number|null, priceTrusted: boolean|null,
+ *   pnlUsd: number, pnlPct: number|null, valueArs: number, invArs: number
+ * }}
+ *
+ * SOBRE TRES CAMPOS QUE LOS LECTORES SE ARMAN A MANO Y NOMBRAN DISTINTO:
+ *   · `guardCost` es el `realCost` EXACTO que este lote le pasa a
+ *     `trustMktValue`, en la moneda en la que esa rama compara (PESOS en las
+ *     ramas AR, USD en las demás). No es "el costo en dólares": mezclar las dos
+ *     cosas es lo que hacía que el guard comparara USD contra pesos.
+ *   · `investedUsdDisplay` es el costo en USD al rate del MODO (tc_compra en
+ *     'purchase'). Acá coincide siempre con `investedUsd` — se expone con su
+ *     nombre porque en AssetDetail:49-50 y PositionDetailMobile:141 ese número
+ *     y el del guard son dos variables distintas, y confundirlos afloja el
+ *     filtro anti-distorsión en modo 'purchase'.
+ *   · `priceLocal` es el precio por unidad TAL CUAL SALE de `prices`: en la
+ *     moneda del símbolo con el que se lo leyó (.BA → ARS; ticker US y FCI: →
+ *     USD). Ojo: AssetDetail y PositionDetailMobile llaman `priceLocal` a ese
+ *     número YA dividido por el MEP en algunas ramas. Acá no se convierte nada.
+ *   `priceTrusted` es null cuando no hubo precio que juzgar (cash, o sin dato).
+ */
+export function valuePositionLot(p, ctx = {}) {
+  const { broker, prices = {}, tcBlue, tcCedear, tcCripto = null, costBasis = 'today' } = ctx
+  const cedearRate = tcCedear ?? tcBlue
+  const isAR = broker?.currency === 'ARS'
+  const arUsd = isArUsdBroker(broker?.name)
+
+  // Cost basis económica = lo que pagaste por el activo + comisiones de compra.
+  // Las comisiones SÍ son costo real — afectan el cap inicial y el P&L.
+  // Para cash o legacy data sin commissions, p.commissions es 0 o null.
+  const comm = p.commissions || 0
+  const realCost = (p.invested || 0) + comm
+
+  const salida = (o) => ({
+    valueUsd: o.valueUsd,
+    investedUsd: o.investedUsd,
+    investedUsdDisplay: o.investedUsdDisplay ?? o.investedUsd,
+    guardCost: o.guardCost ?? null,
+    priceLocal: o.priceLocal ?? null,
+    priceTrusted: o.priceTrusted ?? null,
+    valueArs: o.valueArs,
+    invArs: o.invArs,
+    pnlUsd: o.valueUsd - o.investedUsd,
+    pnlPct: o.investedUsd > 0 ? (o.valueUsd - o.investedUsd) / o.investedUsd : null,
+  })
+
+  // ── 2. Lote en PESOS (currency='ARS') alojado en una cuenta USD (CEDEAR/acción
+  // AR cargado en dólares o mal ruteado): se valúa estilo-ARS — costo Y valor a
+  // USD por el dólar-MEP (cedearRate), igual que en un broker AR. Sin esto el
+  // costo en pesos se contaba como dólares (invertido inflado ~MEP×) y el guard
+  // de confianza comparaba USD vs pesos (rechazaba el precio e inflaba el valor).
+  if (!p.is_cash && !isAR && costInPesos(p)) {
+    const invUsd = realCost / costBasisRate(p, cedearRate, costBasis)
+    const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
+    const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
+    const trustArs = mktArs != null &&
+      trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
+    return salida({
+      investedUsd: invUsd,
+      invArs: realCost,
+      valueUsd: trustArs ? mktArs / cedearRate : invUsd,
+      valueArs: trustArs ? mktArs : realCost,
+      guardCost: realCost,
+      priceLocal: priceArs ?? null,
+      priceTrusted: mktArs != null ? trustArs : null,
+    })
+  }
+
+  // ── 3. Espejo del anterior: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
+  // comprado en dólar-MEP → currency='USD') alojado en un broker ARS (Balanz).
+  // El costo YA está en USD → NO se divide por el MEP; el valor va por el tipo de
+  // instrumento (usdLotValue: CEDEAR/acción-AR por .BA÷MEP, resto por precio USD).
+  // Sin esto, el path ARS dividía el costo USD por el MEP y el guard descartaba el
+  // precio real → la tenencia dólar colapsaba (~1/MEP). El equivalente en pesos
+  // (×cedearRate) alimenta el total ARS para que el invariante siga cerrando.
+  if (!p.is_cash && isAR && costInUsd(p)) {
+    const { investedUsd, valueUsd } = usdLotValue(p, prices, cedearRate)
+    // Metadata del guard: espeja lo que usdLotValue decide adentro. Los NÚMEROS
+    // salen de usdLotValue, no de acá — esto sólo reproduce la decisión.
+    const sym = priceSymbol(p.asset, true, p.asset_type)
+    const rawPrice = p.price_override ?? prices[sym]
+    const mktUsd = rawPrice != null
+      ? (sym.endsWith('.BA') ? (rawPrice * (p.quantity || 0)) / cedearRate : rawPrice * (p.quantity || 0))
+      : null
+    return salida({
+      investedUsd,
+      valueUsd,
+      invArs: investedUsd * cedearRate,
+      valueArs: valueUsd * cedearRate,
+      guardCost: investedUsd,
+      priceLocal: rawPrice ?? null,
+      priceTrusted: mktUsd != null
+        ? trustMktValue(mktUsd, investedUsd, p.asset_type, p.price_override != null)
+        : null,
+    })
+  }
+
+  if (isAR) {
+    // invArs = costo en pesos (moneda base del broker). Se computa para cash y
+    // no-cash por igual, como en el original.
+    if (p.is_cash) {
+      // ── 1. Cash en broker ARS.
+      // Unificación FX (espeja el backend behavioral._position_value_usd): el
+      // cash en pesos → USD por el dólar-MEP (cedearRate), IGUAL que las
+      // tenencias. Es el dólar al que dolarizás la plata quieta EN el broker
+      // (comprás un bono, salís en USD), no el blue de la calle. Antes iba al
+      // blue y quedaba inconsistente con los holdings y con el backend.
+      const cashArs = p.invested || 0  // cash no tiene commissions
+      const cashUsd = cashArs / cedearRate
+      return salida({
+        investedUsd: cashUsd,  // cash en pesos: invested USD = value USD (no FX gain)
+        valueUsd: cashUsd,
+        invArs: realCost,
+        valueArs: cashArs,
+      })
+    }
+    // ── 4. Holdings (CEDEARs / acciones AR / bonos) → a USD por el dólar-MEP
+    // (cedearRate), que es el dólar al que REALMENTE salís de la inversión y
+    // el que muestra el broker. Cash y holdings usan el MISMO rate (MEP).
+    // Antes valuábamos acá al blue y el total quedaba ~2% por debajo del broker.
+    // FX-phantom fix: invested y value usan el MISMO rate (MEP), así se mueven
+    // juntos y solo aparece P&L cuando el activo realmente rinde. En modo
+    // 'purchase' el COSTO va al tc_compra del lote (dólares reales invertidos);
+    // el valor sigue a cedearRate → el P&L absorbe la devaluación.
+    const invUsd = realCost / costBasisRate(p, cedearRate, costBasis)
+    // Sin asset_type a propósito: con isARS=true `priceSymbol` ignora el tipo
+    // (FCI: sale as-is y todo lo demás recibe .BA), así que la key es la MISMA
+    // que pide el fetch. Verificado leyendo priceSymbol rama por rama.
+    const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
+    const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
+    const trustArs = mktArs != null &&
+      trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
+    return salida({
+      investedUsd: invUsd,
+      invArs: realCost,
+      // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
+      valueUsd: trustArs ? mktArs / cedearRate : invUsd,
+      valueArs: trustArs ? mktArs : realCost,
+      guardCost: realCost,
+      priceLocal: priceArs ?? null,
+      priceTrusted: mktArs != null ? trustArs : null,
+    })
+  }
+
+  // ── Broker USD. invArs/valueArs quedan en 0: el total en pesos de un broker
+  // USD no se acumula (es el comportamiento de siempre).
+  if (p.is_cash) {
+    // ── 1. Cash en broker USD.
+    const v = p.invested || 0
+    return salida({ investedUsd: v, valueUsd: v, invArs: 0, valueArs: 0 })
+  }
+
+  // Premium dólar-cripto: la cripto de un BROKER (no exchange) se valúa al
+  // dólar MEP que muestra el broker. Factor a COSTO Y valor → P&L% invariante.
+  // 1 para CEDEAR/acciones/exchange/override/sin-rate.
+  const f = cryptoBrokerFactor(p.asset, broker?.is_exchange, p.price_override != null, tcCripto, cedearRate)
+  const investedUsd = realCost * f
+
+  if ((p.asset_type === 'CEDEAR' || arUsd) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
+    // ── 5. Instrumento de BYMA en broker USD: CEDEAR, o cualquier cosa en un
+    // sub-broker AR "· USD" (acciones argentinas como PAMP/YPFD incluidas,
+    // que NO tienen acción US). Se valúa por su precio LOCAL .BA (ARS) ÷ MEP
+    // (cedearRate = dólar-MEP), que es lo que muestra el broker. NO por el
+    // ticker US. La cripto NUNCA entra acá (no es .BA) → va a la rama spot.
+    // La decisión la toma el PADRE (arUsd/CEDEAR), NO isArStock: una acción AR
+    // en un broker USD extranjero real (Schwab, no arUsd) es su ADR NYSE en USD
+    // (GGAL/BMA), no el .BA local. Espeja _byma del backend (byma_broker_names).
+    // El FCI-USD tampoco: su precio es el NAV en USD (va al else, sin ÷MEP);
+    // sin excluirlo, un FCI ruteado a "· USD" se dividía por el MEP → al costo.
+    const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+    const mktUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / cedearRate : null
+    const trust = mktUsd != null && trustMktValue(mktUsd, realCost, p.asset_type)
+    // Sin `* f` a propósito: esta rama excluye la cripto, así que f siempre es 1.
+    return salida({
+      investedUsd,
+      valueUsd: trust ? mktUsd : realCost,
+      invArs: 0,
+      valueArs: 0,
+      guardCost: realCost,
+      priceLocal: priceArs ?? null,
+      priceTrusted: mktUsd != null ? trust : null,
+    })
+  }
+
+  // ── 6. USD nativo. Key normalizada primero (BRK.B/BRK B → 'BRK-B', la key que
+  // el fetch pide y el backend devuelve), fallback a la cruda (last-known del
+  // cron y payloads legacy). Sin esto, un class-share con punto se fetcheaba
+  // como 'BRK-B' pero se leía 'BRK.B' → caía a costo con el precio en memoria.
+  // Un CEDEAR solo llega acá CON override (la rama .BA lo captura antes) → la
+  // cadena corta en el override y el .BA de priceSymbol no se lee.
+  const price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
+  const mkt = price != null ? price * (p.quantity || 0) : null
+  const trust = mkt != null &&
+    trustMktValue(mkt, realCost, p.asset_type, p.price_override != null)
+  // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
+  // El factor cripto (1 para todo lo no-cripto-de-broker) escala valor.
+  return salida({
+    investedUsd,
+    valueUsd: (trust ? mkt : realCost) * f,
+    invArs: 0,
+    valueArs: 0,
+    guardCost: realCost,
+    priceLocal: price ?? null,
+    priceTrusted: mkt != null ? trust : null,
+  })
+}
+
+/**
+ * computeBrokerValue — la SUMA de valuePositionLot sobre los lotes del broker.
+ * Toda la lógica por lote vive en valuePositionLot; acá no queda ninguna rama.
+ */
 export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue, tcCripto = null, costBasis = 'today') {
   const bpos = allPositions.filter(p => p.broker === broker.name)
-  const arUsd = isArUsdBroker(broker.name)
+  const ctx = { broker, prices, tcBlue, tcCedear: cedearRate, tcCripto, costBasis }
   let value = 0, invested = 0
   let valueArs = 0, invArs = 0
 
   for (const p of bpos) {
-    // Cost basis económica = lo que pagaste por el activo + comisiones de compra.
-    // Las comisiones SÍ son costo real — afectan el cap inicial y el P&L.
-    // Para cash o legacy data sin commissions, p.commissions es 0 o null.
-    const comm = p.commissions || 0
-    const realCost = (p.invested || 0) + comm
-
-    // Lote en PESOS (currency='ARS') alojado en una cuenta USD (CEDEAR/acción AR
-    // cargado en dólares o mal ruteado): se valúa estilo-ARS — costo Y valor a USD
-    // por el dólar-MEP (cedearRate), igual que en un broker AR. Sin esto el costo
-    // en pesos se contaba como dólares (invertido inflado ~MEP×) y el guard de
-    // confianza comparaba USD vs pesos (rechazaba el precio e inflaba el valor).
-    if (!p.is_cash && broker.currency !== 'ARS' && costInPesos(p)) {
-      const invUsd = realCost / costBasisRate(p, cedearRate, costBasis)
-      invArs   += realCost
-      invested += invUsd
-      const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
-      const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
-      const trustArs = mktArs != null &&
-        trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
-      if (trustArs) { valueArs += mktArs;   value += mktArs / cedearRate }
-      else          { valueArs += realCost; value += invUsd }
-      continue
-    }
-
-    // Espejo del anterior: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
-    // comprado en dólar-MEP → currency='USD') alojado en un broker ARS (Balanz).
-    // El costo YA está en USD → NO se divide por el MEP; el valor va por el tipo de
-    // instrumento (usdLotValue: CEDEAR/acción-AR por .BA÷MEP, resto por precio USD).
-    // Sin esto, el path ARS dividía el costo USD por el MEP y el guard descartaba el
-    // precio real → la tenencia dólar colapsaba (~1/MEP). El equivalente en pesos
-    // (×cedearRate) alimenta el total ARS para que el invariante siga cerrando.
-    if (!p.is_cash && broker.currency === 'ARS' && costInUsd(p)) {
-      const { investedUsd, valueUsd } = usdLotValue(p, prices, cedearRate)
-      invested += investedUsd
-      value    += valueUsd
-      invArs   += investedUsd * cedearRate
-      valueArs += valueUsd * cedearRate
-      continue
-    }
-
-    if (broker.currency === 'ARS') {
-      invArs += realCost  // costo en pesos (moneda base del broker)
-
-      if (p.is_cash) {
-        const cashArs = p.invested || 0  // cash no tiene commissions
-        // Unificación FX (espeja el backend behavioral._position_value_usd): el
-        // cash en pesos → USD por el dólar-MEP (cedearRate), IGUAL que las
-        // tenencias. Es el dólar al que dolarizás la plata quieta EN el broker
-        // (comprás un bono, salís en USD), no el blue de la calle. Antes iba al
-        // blue y quedaba inconsistente con los holdings y con el backend.
-        const cashUsd = cashArs / cedearRate
-        valueArs  += cashArs
-        value     += cashUsd
-        invested  += cashUsd  // cash en pesos: invested USD = value USD (no FX gain)
-      } else {
-        // Holdings (CEDEARs / acciones AR / bonos) → a USD por el dólar-MEP
-        // (cedearRate), que es el dólar al que REALMENTE salís de la inversión y
-        // el que muestra el broker. Cash y holdings usan el MISMO rate (MEP).
-        // Antes valuábamos acá al blue y el total quedaba ~2% por debajo del broker.
-        // FX-phantom fix: invested y value usan el MISMO rate (MEP), así se mueven
-        // juntos y solo aparece P&L cuando el activo realmente rinde. En modo
-        // 'purchase' el COSTO va al tc_compra del lote (dólares reales invertidos);
-        // el valor sigue a cedearRate → el P&L absorbe la devaluación.
-        const invUsd = realCost / costBasisRate(p, cedearRate, costBasis)
-        invested += invUsd
-
-        const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
-        const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
-        const trustArs = mktArs != null &&
-          trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
-        if (trustArs) {
-          valueArs += mktArs
-          value    += mktArs / cedearRate
-        } else {
-          // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
-          valueArs += realCost
-          value    += invUsd
-        }
-      }
-    } else {
-      // USD broker
-      if (p.is_cash) {
-        value    += p.invested || 0
-        invested += p.invested || 0
-      } else {
-        // Premium dólar-cripto: la cripto de un BROKER (no exchange) se valúa al
-        // dólar MEP que muestra el broker. Factor a COSTO Y valor → P&L% invariante.
-        // 1 para CEDEAR/acciones/exchange/override/sin-rate.
-        const f = cryptoBrokerFactor(p.asset, broker.is_exchange, p.price_override != null, tcCripto, cedearRate)
-        invested += realCost * f
-
-        if ((p.asset_type === 'CEDEAR' || arUsd) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
-          // Instrumento de BYMA en broker USD: CEDEAR, o cualquier cosa en un
-          // sub-broker AR "· USD" (acciones argentinas como PAMP/YPFD incluidas,
-          // que NO tienen acción US). Se valúa por su precio LOCAL .BA (ARS) ÷ MEP
-          // (cedearRate = dólar-MEP), que es lo que muestra el broker. NO por el
-          // ticker US. La cripto NUNCA entra acá (no es .BA) → va a la rama spot.
-          // La decisión la toma el PADRE (arUsd/CEDEAR), NO isArStock: una acción AR
-          // en un broker USD extranjero real (Schwab, no arUsd) es su ADR NYSE en USD
-          // (GGAL/BMA), no el .BA local. Espeja _byma del backend (byma_broker_names).
-          // El FCI-USD tampoco: su precio es el NAV en USD (va al else, sin ÷MEP);
-          // sin excluirlo, un FCI ruteado a "· USD" se dividía por el MEP → al costo.
-          const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
-          const mktUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / cedearRate : null
-          value += (mktUsd != null && trustMktValue(mktUsd, realCost, p.asset_type))
-            ? mktUsd : realCost
-        } else {
-          // Key normalizada primero (BRK.B/BRK B → 'BRK-B', la key que el fetch
-          // pide y el backend devuelve), fallback a la cruda (last-known del cron
-          // y payloads legacy). Sin esto, un class-share con punto se fetcheaba
-          // como 'BRK-B' pero se leía 'BRK.B' → caía a costo con el precio en
-          // memoria. Un CEDEAR solo llega acá CON override (la rama .BA lo captura
-          // antes) → la cadena corta en el override y el .BA de priceSymbol no se lee.
-          const price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
-          const mkt = price != null ? price * (p.quantity || 0) : null
-          const trust = mkt != null &&
-            trustMktValue(mkt, realCost, p.asset_type, p.price_override != null)
-          // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
-          // El factor cripto (1 para todo lo no-cripto-de-broker) escala valor.
-          value += (trust ? mkt : realCost) * f
-        }
-      }
-    }
+    const r = valuePositionLot(p, ctx)
+    value    += r.valueUsd
+    invested += r.investedUsd
+    valueArs += r.valueArs
+    invArs   += r.invArs
   }
 
   return {

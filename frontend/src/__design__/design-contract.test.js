@@ -35,6 +35,17 @@
 // Dos excepciones declaradas: mono_uppercase es coocurrencia por línea (es un
 // par, no una ocurrencia) y paginas_mobile cuenta archivos.
 //
+// ⚠️ EL WALKER LEE TEXTO CRUDO — LOS COMENTARIOS CUENTAN
+// ──────────────────────────────────────────────────────
+// Si este test te falló y no tocaste ni una clase, mirá los COMENTARIOS que
+// escribiste: un comentario que cite el patrón literal del fork por viewport
+// (el `if (isMobile) return <` de Home/Positions) vuelve a sumar fork_viewport,
+// y uno que mencione `window.innerWidth` rompe "el breakpoint tiene un solo
+// dueño". Pasó dos veces en la Fase 2b y una en la 3. La cura es reescribir el
+// comentario, NUNCA aflojar el guard.
+// (Este archivo es la excepción: el walker excluye los *.test.js, por eso acá
+// se pueden nombrar los patrones sin activarlos.)
+//
 // LOS DOS HUECOS, DECLARADOS
 // ──────────────────────────
 // 1. Compensación intra-archivo: borrar un font-mono y agregar otro en el MISMO
