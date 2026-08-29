@@ -160,8 +160,9 @@ export const CATEGORIAS = {
     regla: 'R6',
     alcance: 'fuentes',
     nota:
-      'Los 3 forks que existen (Home→HomeMobile, Operations→OperationsMobile, ' +
-      'Positions→PositionsMobile) son textualmente idénticos. Congelado en 3 exacto.',
+      'Los forks que existen (Home→HomeMobile, Positions→PositionsMobile) son textualmente ' +
+      'idénticos. Congelado en 2 exacto: Operations era el tercero y murió en la Fase 3 — un ' +
+      'dueño de datos y dos ramas sobre components/operations/.',
     contar: (t) => contar(t, /if\s*\(\s*isMobile\s*\)\s*return\s*</g),
   },
 
@@ -169,9 +170,11 @@ export const CATEGORIAS = {
     regla: 'R6',
     alcance: 'fuentes',
     nota:
-      'La variante `isMobile ? <A/> : <B/>` hoy no existe en ningún .jsx (el único ' +
-      '`isMobile ?` con JSX cerca es `size={isMobile ? 12 : 13}`). Congelada en 0 para que ' +
-      'el fork no se cuele reescrito de otra forma.',
+      'La variante `isMobile ? <A/> : <B/>` no existe en ningún .jsx. Congelada en 0 para que ' +
+      'el fork no se cuele reescrito de otra forma. El patrón exige `<` pegado al `?` a ' +
+      'propósito: los ternarios de VALOR sobre isMobile son legítimos y hay varios ' +
+      "(`size={isMobile ? 12 : 13}`, `isMobile ? 'day' : groupBy` en Operations.jsx). Lo que " +
+      'R6 prohíbe es elegir el ÁRBOL con un ternario, no elegir un número o un string.',
     contar: (t) => contar(t, /isMobile\s*\?\s*</g),
   },
 
@@ -216,9 +219,9 @@ export const CATEGORIAS_ESPECIALES = {
     regla: 'R6',
     nota:
       'Cuenta ARCHIVOS, no ocurrencias: caza el fork que alguien escriba SIN la línea ' +
-      'canónica `if (isMobile) return <`. Son 4: los 3 gemelos de fork + PositionDetailMobile, ' +
-      'que no tiene gemelo desktop (es una ruta propia, /posiciones/:id). Un quinto archivo ' +
-      'es un fork nuevo aunque el patrón literal siga en 3.',
+      'canónica del despachador. Son 3: los 2 gemelos de fork + PositionDetailMobile, ' +
+      'que no tiene gemelo desktop (es una ruta propia, /posiciones/:id). Un cuarto archivo ' +
+      'es un fork nuevo aunque el patrón literal siga en 2.',
     medir: () => listarFuentes().filter((f) => /^src\/pages\/[^/]+Mobile\.jsx$/.test(f)).length,
   },
 }

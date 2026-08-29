@@ -10,8 +10,9 @@
 // trades GANADORES — plata que entró, sí, pero no es una operación que hayas
 // ganado o perdido. El backend ya los excluía.
 //
-// ⚠️ NO es (todavía) la única del frontend. Consumen ESTE helper Operations.jsx
-// y OperationsMobile.jsx. Siguen vivas con criterio propio:
+// ⚠️ NO es (todavía) la única del frontend. Lo consume Operations.jsx, que desde
+// la Fase 3 es la única pantalla de operaciones (antes eran dos, con el fork por
+// viewport). Siguen vivas con criterio propio:
 //   · Insights.jsx:1310-1325 — mismo predicado de tipo, pero denominador
 //     `wins + losses` y además descarta los micro-trades (|P&L| < US$1,50).
 //     Su número alimenta el payload de la IA, así que unificarlo cambia lo que

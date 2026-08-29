@@ -1,13 +1,24 @@
-// Operations — historial de operaciones cerradas (V2).
+// Operations — la pantalla de actividad: trades cerrados y movimientos.
 // ════════════════════════════════════════════════════════════════════════════
-// Header operativo + KPI strip denso + filtros mono caps + tabla compacta.
+// UN dueño de datos, DOS ramas de render. Hasta la Fase 3 esto era un fork por
+// viewport: un `if (isMobile)` que devolvía `<OperationsMobile />`, un archivo
+// de 661 líneas que reimplementaba filtros, agrupación y renderers. El fork no
+// duplicaba sólo la vista — duplicaba los números, y por eso hubo que dedicar
+// una fase entera a reconciliarlos antes de poder borrarlo.
+//
+// Ahora: un `useIsMobile()`, un `load()`, un set de filtros, un cálculo de KPIs,
+// y dos ramas que sólo eligen CÓMO se dibuja lo mismo. Los renderers viven en
+// components/operations/ y no tienen estado de datos.
+//
+// R6: las ramas se escriben `{isMobile && <A/>}` / `{!isMobile && <B/>}`, nunca
+// con ternario — el guard congela `fork_ternario` en 0. Modelo: Config.jsx:779.
 
-import { useEffect, useMemo, useState, Fragment } from 'react'
-import { Plus, Pencil, Trash2, RotateCcw, ArrowUpRight, ArrowDownRight, Search, X, SlidersHorizontal, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowDownToLine, ArrowUpFromLine, Coins, Receipt, Repeat } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import { usd, fmtUsd as fmtUsdRaw, pctSigned, colorClass } from '../utils/format'
+import { fmtUsd as fmtUsdRaw, colorClass } from '../utils/format'
 import { track } from '../utils/track'
 import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
@@ -16,16 +27,20 @@ import Panel from '../components/Panel'
 import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
 import InsightLine from '../components/InsightLine'
+import BottomSheet from '../components/mobile/BottomSheet'
 import { api } from '../utils/api'
-import OperationsMobile from './OperationsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
-import InlineAIButton from '../components/ai/InlineAIButton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { useToast } from '../components/Toast'
 import { computeTradeStats } from '../utils/tradeStats'
-
-const PAGE_SIZE = 50
+import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
+import TradesFeed from '../components/operations/TradesFeed'
+import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
+import MovementsFeed from '../components/operations/MovementsFeed'
+import {
+  MOVEMENT_TYPES, GROUP_OPTIONS, buildGroups, buildPeriodOptions, enPeriodo,
+} from '../components/operations/shared'
 
 // pnl_usd arranca como string vacío (no 0) para que el form distinga
 // "no completado" de "0 USD" — sin esto, el user que quiere cargar un trade
@@ -34,25 +49,28 @@ const PAGE_SIZE = 50
 // completado". Lo manejamos abajo en save(): vacío → null al backend.
 const EMPTY = { date: new Date().toISOString().slice(0, 10), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '' }
 
-function prettyOpType(raw) {
-  if (!raw) return '—'
-  const s = String(raw).trim()
-  if (s.startsWith('CONVERSION IMPORT ARS→USDT') || s.startsWith('CONVERSION IMPORT ARS→USD')) return 'Conversión ARS→USD'
-  if (s.startsWith('CONVERSION IMPORT USDT→ARS') || s.startsWith('CONVERSION IMPORT USD→ARS')) return 'Conversión USD→ARS'
-  return s
-}
+const RESULT_OPTIONS = [
+  { id: 'all',    label: 'Todas' },
+  { id: 'wins',   label: 'Ganadoras' },
+  { id: 'losses', label: 'Perdedoras' },
+]
+
+// Los defaults de los filtros, en UN solo lugar: estado inicial, contador de
+// filtros activos y los botones de reset se derivan de acá.
+const FILTROS_INICIALES = { asset: '', broker: 'all', result: 'all', period: 'all' }
 
 export default function Operations() {
   const isMobile = useIsMobile()
-  if (isMobile) return <OperationsMobile />
-  return <OperationsDesktop />
-}
-
-function OperationsDesktop() {
-  // tab: 'trades' = vista actual de operaciones cerradas con KPIs P&L
-  //      'all'    = historial unificado (trades + depósitos + retiros + dividendos + intereses + comisiones)
-  // Persistimos selección en localStorage para que respete preferencia del user.
-  const [tab, setTab] = useState(() => localStorage.getItem('rendi_operations_tab') || 'all')
+  // tab: 'trades' = operaciones cerradas con KPIs de P&L
+  //      'all'    = historial unificado (trades + depósitos + retiros + …)
+  // Un solo estado para las dos anchuras. El default sigue siendo por anchura
+  // (la tabla abre en 'all', el feed en 'trades'), pero ahora se persiste igual
+  // en las dos: antes el feed lo perdía en cada visita.
+  // El default por anchura sale de `isMobile`, NUNCA de una medición de ancho
+  // propia: el breakpoint tiene un solo dueño (useIsMobile) y el guard lo
+  // verifica archivo por archivo. `useIsMobile` resuelve sincrónico en el primer
+  // render, así que el inicializador perezoso lee el valor correcto.
+  const [tab, setTab] = useState(() => localStorage.getItem('rendi_operations_tab') || (isMobile ? 'trades' : 'all'))
   useEffect(() => { localStorage.setItem('rendi_operations_tab', tab) }, [tab])
   // P&L realizado con el toggle global ARS/USD, SIEMPRE a FX histórico:
   // cada trade se convierte con el suyo (op.fx_to_usd stampeado > lookup por
@@ -66,6 +84,11 @@ function OperationsDesktop() {
   const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
 
   const [ops, setOps] = useState([])
+  // El feed tenía su propio gate de carga y lo perdió al unificar: sin él, la
+  // rama angosta pinta "0 ops / +US$0,00" y un "sin resultados" que le echa la
+  // culpa a los filtros mientras el fetch todavía viaja. La tabla nunca lo tuvo
+  // (muestra su EmptyState de cartera vacía) y se deja como estaba.
+  const [loadingOps, setLoadingOps] = useState(true)
   const [brokers, setBrokers] = useState([])
   const toast = useToast()
   // Borrados en curso: deshabilita el tacho mientras corre. Sin esto el doble-click
@@ -73,15 +96,21 @@ function OperationsDesktop() {
   const [busyDel, setBusyDel] = useState({})
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY)
-  const [filterAsset, setFilterAsset] = useState('')
-  const [filterBroker, setFilterBroker] = useState('all')
-  const [filterResult, setFilterResult] = useState('all')
-  const [filterYear, setFilterYear] = useState('all')
+  const [filterAsset, setFilterAsset] = useState(FILTROS_INICIALES.asset)
+  const [filterBroker, setFilterBroker] = useState(FILTROS_INICIALES.broker)
+  const [filterResult, setFilterResult] = useState(FILTROS_INICIALES.result)
+  // UN eje temporal. Antes eran dos que no se solapaban: la tabla tenía años
+  // ('2026', '2025', …) y el feed ventanas relativas ('30d', '90d', '1y').
+  // Sumarlos habría dejado combinaciones imposibles (año 2024 + últimos 30 días
+  // = vacío garantizado). Nadie pierde nada: la tabla gana las ventanas y el
+  // feed gana los años.
+  const [period, setPeriod] = useState(FILTROS_INICIALES.period)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [page, setPage] = useState(0)
-  // Agrupación del tab "Solo P/L". 'asset' por defecto (1 fila por activo,
-  // reduce ruido). Estado PROPIO de este tab — no se comparte con MovementsView
-  // (que tiene su 'rendi_movements_group'). Persistido en localStorage.
+  // Agrupación del tab "Solo P/L". La tabla abre en 'asset' (1 fila por activo,
+  // reduce ruido) y persiste la elección; el feed no tiene control de agrupado y
+  // va siempre por día. Estado PROPIO de este tab — no se comparte con
+  // MovementsView (que tiene su 'rendi_movements_group').
   const [groupBy, setGroupBy] = useState(() => localStorage.getItem('rendi_trades_group') || 'asset')
   useEffect(() => { localStorage.setItem('rendi_trades_group', groupBy) }, [groupBy])
   // Grupos expandidos (Set de keys). Click en la fila-resumen togglea su detalle.
@@ -99,8 +128,10 @@ function OperationsDesktop() {
     api.get('/brokers').then(b => setBrokers(b))
   }, [])
 
-  async function load() { setOps(await api.get('/operations')) }
-
+  async function load() {
+    try { setOps(await api.get('/operations')) }
+    finally { setLoadingOps(false) }
+  }
   function openAdd() {
     setForm({ ...EMPTY, broker: brokers[0]?.name ?? '' })
     setModal('add')
@@ -174,7 +205,10 @@ function OperationsDesktop() {
     })
   }
 
-  async function del(id) {
+  // Firma única de borrado en las dos ramas: recibe el OBJETO. La tabla
+  // pasaba `op.id` y el feed `op`; al compartir renderer hubo que elegir una.
+  async function del(op) {
+    const id = op?.id ?? op
     if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
     setBusyDel(b => ({ ...b, [`op-${id}`]: true }))
     try {
@@ -282,11 +316,7 @@ function OperationsDesktop() {
 
     return out
   }, [ops])
-
-  const yearsAvailable = useMemo(() => {
-    const set = new Set(ops.map(o => o.date?.slice(0, 4)).filter(Boolean))
-    return [...set].sort().reverse()
-  }, [ops])
+  const periodOptions = useMemo(() => buildPeriodOptions(ops), [ops])
 
   const filteredOps = useMemo(() => {
     const q = filterAsset.trim().toUpperCase()
@@ -295,38 +325,43 @@ function OperationsDesktop() {
       if (filterBroker !== 'all' && o.broker !== filterBroker) return false
       if (filterResult === 'wins' && !(o.pnl_usd > 0)) return false
       if (filterResult === 'losses' && !(o.pnl_usd < 0)) return false
-      if (filterYear !== 'all' && !(o.date || '').startsWith(filterYear)) return false
+      if (!enPeriodo(o.date, period)) return false
       return true
     })
-  }, [ops, filterAsset, filterBroker, filterResult, filterYear])
+  }, [ops, filterAsset, filterBroker, filterResult, period])
 
-  const filtersActiveCount =
-    (filterAsset ? 1 : 0) +
-    (filterBroker !== 'all' ? 1 : 0) +
-    (filterResult !== 'all' ? 1 : 0) +
-    (filterYear !== 'all' ? 1 : 0)
+  const filtrosActuales = { asset: filterAsset, broker: filterBroker, result: filterResult, period }
+  const filtersActiveCount = Object.keys(FILTROS_INICIALES)
+    .filter(k => filtrosActuales[k] !== FILTROS_INICIALES[k]).length
   const filtersActive = filtersActiveCount > 0
+
+  function restablecerFiltros() {
+    setFilterAsset(FILTROS_INICIALES.asset)
+    setFilterBroker(FILTROS_INICIALES.broker)
+    setFilterResult(FILTROS_INICIALES.result)
+    setPeriod(FILTROS_INICIALES.period)
+  }
 
   // Reset a página 0 cuando cambian los filtros, el modo de agrupado, o el
   // dataset cambia de tamaño.
   useEffect(() => {
     setPage(0)
-  }, [filterAsset, filterBroker, filterResult, filterYear, groupBy, ops.length])
+  }, [filterAsset, filterBroker, filterResult, period, groupBy, ops.length])
 
-  const grouped = groupBy !== 'none'
+  // El feed no tiene control de agrupado: va siempre por día. No es un ternario
+  // de RENDER (lo que R6 prohíbe), es el valor efectivo del modo.
+  const groupByEfectivo = isMobile ? 'day' : groupBy
+  const grouped = groupByEfectivo !== 'none'
 
-  // Grupos por activo / mes sobre lo YA filtrado (filtramos y después agrupamos,
-  // como en MovementsView). Reusa buildGroups module-level: es genérica y las
-  // ops del tab trades comparten shape suficiente (date/asset/broker/pnl_usd) —
-  // movPnl lee op.pnl_usd, y acá TODAS las filas son trades cerrados con P&L.
+  // Grupos sobre lo YA filtrado (filtramos y después agrupamos). `buildGroups`
+  // es el mismo motor para la tabla y el feed desde la Fase 3.
   const groups = useMemo(
-    () => (grouped ? buildGroups(filteredOps, groupBy) : []),
-    [filteredOps, groupBy, grouped]
+    () => (grouped ? buildGroups(filteredOps, groupByEfectivo) : []),
+    [filteredOps, groupByEfectivo, grouped]
   )
 
-  // Paginación SOLO en modo 'none' (lista plana). En modo agrupado mostramos
-  // todos los grupos sin paginar y ocultamos el control (mismo criterio que
-  // MovementsView).
+  // Paginación SOLO en modo 'none' (lista plana), y por eso sólo en la tabla:
+  // el feed nunca sale de 'day'. En modo agrupado mostramos todos los grupos.
   const totalPages = Math.max(1, Math.ceil(filteredOps.length / PAGE_SIZE))
   const currentPage = Math.min(page, totalPages - 1)
   const pagedOps = useMemo(
@@ -334,100 +369,186 @@ function OperationsDesktop() {
     [filteredOps, currentPage]
   )
 
+  // R6: dos ramas, nunca un ternario de JSX. Esto es un ternario de VALOR.
+  const shellClass = isMobile ? 'pb-8' : 'page-shell-wide'
+
   return (
-    <div className="page-shell-wide">
-      <PageHeader
-        eyebrow="Tu actividad"
-        title="Operaciones"
-        subtitle={tab === 'trades'
-          ? 'Historial de trades cerrados con P&L realizado.'
-          : 'Todos los movimientos: trades, depósitos, retiros, dividendos y comisiones.'}
-        action={
-          <div className="flex items-center gap-2 flex-wrap">
-            <AnalyzeButton screen="operations" subtitle="Tu historial completo" />
-            <ExportCsvButton resource="operations" source="operations_header" variant="compact" />
-            <button
-              onClick={openAdd}
-              className="inline-flex items-center gap-1.5 text-xs bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors font-medium"
-            >
-              <Plus size={12} strokeWidth={2} /> Nueva operación
-            </button>
-          </div>
-        }
-      />
+    <div className={shellClass}>
+      {!isMobile && (
+        <PageHeader
+          eyebrow="Tu actividad"
+          title="Operaciones"
+          subtitle={tab === 'trades'
+            ? 'Historial de trades cerrados con P&L realizado.'
+            : 'Todos los movimientos: trades, depósitos, retiros, dividendos y comisiones.'}
+          action={
+            <div className="flex items-center gap-2 flex-wrap">
+              <AnalyzeButton screen="operations" subtitle="Tu historial completo" />
+              <ExportCsvButton resource="operations" source="operations_header" variant="compact" />
+              <button
+                onClick={openAdd}
+                className="inline-flex items-center gap-1.5 text-xs bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors font-medium"
+              >
+                <Plus size={12} strokeWidth={2} /> Nueva operación
+              </button>
+            </div>
+          }
+        />
+      )}
 
       {/* Tab switcher: Todos los movimientos vs solo Trades — mismo diseño
           que /posiciones y /analisis (filled pills + violet en activa). */}
-      <div className="inline-flex flex-wrap gap-2 mb-5">
-        <button
-          onClick={() => setTab('all')}
-          className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
-            tab === 'all'
-              ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
-              : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
-          }`}
-        >
-          Todos los movimientos
-        </button>
-        <button
-          onClick={() => setTab('trades')}
-          className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
-            tab === 'trades'
-              ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
-              : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
-          }`}
-        >
-          Solo P/L
-        </button>
-      </div>
+      {!isMobile && (
+        <div className="inline-flex flex-wrap gap-2 mb-5">
+          <button
+            onClick={() => setTab('all')}
+            className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
+              tab === 'all'
+                ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
+                : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
+            }`}
+          >
+            Todos los movimientos
+          </button>
+          <button
+            onClick={() => setTab('trades')}
+            className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
+              tab === 'trades'
+                ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
+                : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
+            }`}
+          >
+            Solo P/L
+          </button>
+        </div>
+      )}
+      {isMobile && (
+        <div className="px-4 pt-3">
+          <div className="flex w-full rounded-sm border border-line/60 bg-bg-1 p-0.5 text-xs font-medium">
+            <button
+              onClick={() => setTab('trades')}
+              className={`flex-1 py-1.5 rounded-sm transition-colors ${tab === 'trades' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
+            >
+              Trades
+            </button>
+            <button
+              onClick={() => setTab('all')}
+              className={`flex-1 py-1.5 rounded-sm transition-colors ${tab === 'all' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
+            >
+              Movimientos
+            </button>
+          </div>
+        </div>
+      )}
 
-      {/* Si el user eligió "Todos los movimientos", renderizamos un
-          componente aparte que fetcha /api/movements (unificado). El return
-          temprano evita renderizar el resto de la página (KPIs de trades,
-          tabla, modales) que solo aplica al tab "Solo trades". */}
-      {tab === 'all' && <MovementsView onChanged={load} />}
+      {/* `onChanged` llega en LAS DOS anchuras: borrar un movimiento recalcula
+          las operaciones del tab "Solo P/L", cuyos datos viven acá. Antes el
+          feed lo montaba sin el prop y borrar en el celular no refrescaba nada. */}
+      {tab === 'all' && <MovementsView onChanged={load} isMobile={isMobile} />}
+
       {tab === 'trades' && (
       <>
       {/* KPI strip denso */}
-      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap mb-4">
-        <KpiCell
-          first
-          label="P&L Realizado"
-          value={fmtConvertedRaw(totalPnlDisp, histMoney.currency, { decimals: 2 })}
-          tone={totalPnlDisp >= 0 ? 'pos' : 'neg'}
-          sub="acumulado histórico"
-        />
-        {/* Sin trades cerrados no hay win rate: la celda se OCULTA. Antes
-            mostraba "0%" en rojo, que le inventaba un fracaso al que sólo
-            cobró dividendos o todavía no vendió nada. */}
-        {winRate != null && (
+      {!isMobile && (
+        <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap mb-4">
           <KpiCell
-            label="Win rate"
-            value={`${(winRate * 100).toFixed(0)}%`}
-            tone={winRate >= 0.5 ? 'pos' : 'neg'}
-            sub={`${wins} ganadoras · ${losses} perdedoras · ${trades} cerradas`}
+            first
+            label="P&L Realizado"
+            value={fmtConvertedRaw(totalPnlDisp, histMoney.currency, { decimals: 2 })}
+            tone={totalPnlDisp >= 0 ? 'pos' : 'neg'}
+            sub="acumulado histórico"
           />
-        )}
-        <KpiCell
-          label="Operaciones"
-          value={ops.length.toLocaleString('es-AR')}
-          sub="total cerradas"
-        />
-        <KpiCell
-          label="Mejor trade"
-          value={bestTradeOp
-            ? histMoney.fmtMoneyAt(bestTradeOp.pnl_usd, {
-                stampedFx: bestTradeOp.fx_to_usd, rowCurrency: bestTradeOp.currency,
-                dateIso: bestTradeOp.date, decimals: 2,
-              })
-            : '—'}
-          tone={bestTradeOp && bestTradeOp.pnl_usd > 0 ? 'pos' : null}
-          sub="P&L individual"
-        />
-      </div>
+          {/* Sin trades cerrados no hay win rate: la celda se OCULTA. Antes
+              mostraba "0%" en rojo, que le inventaba un fracaso al que sólo
+              cobró dividendos o todavía no vendió nada. */}
+          {winRate != null && (
+            <KpiCell
+              label="Win rate"
+              value={`${(winRate * 100).toFixed(0)}%`}
+              tone={winRate >= 0.5 ? 'pos' : 'neg'}
+              sub={`${wins} ganadoras · ${losses} perdedoras · ${trades} cerradas`}
+            />
+          )}
+          <KpiCell
+            label="Operaciones"
+            value={ops.length.toLocaleString('es-AR')}
+            sub="total cerradas"
+          />
+          <KpiCell
+            label="Mejor trade"
+            value={bestTradeOp
+              ? histMoney.fmtMoneyAt(bestTradeOp.pnl_usd, {
+                  stampedFx: bestTradeOp.fx_to_usd, rowCurrency: bestTradeOp.currency,
+                  dateIso: bestTradeOp.date, decimals: 2,
+                })
+              : '—'}
+            tone={bestTradeOp && bestTradeOp.pnl_usd > 0 ? 'pos' : null}
+            sub="P&L individual"
+          />
+        </div>
+      )}
+
+      {/* Header sticky con KPIs + filtros. El `top-[88px]` está calibrado a la
+          altura del MobileTopBar, por eso vive acá y no adentro del feed. */}
+      {isMobile && !loadingOps && (
+        <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-3">
+          <div className="flex items-baseline justify-between mb-3">
+            <div>
+              <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
+                P&L acumulado · {ops.length} ops
+              </div>
+              <div className={`text-xl font-medium tabular leading-none ${colorClass(totalPnlDisp)}`}>
+                {fmtConvertedRaw(totalPnlDisp, histMoney.currency, { signed: true, decimals: 2 })}
+              </div>
+            </div>
+            {winRate != null && (
+              <div className="text-right">
+                <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
+                  Win rate
+                </div>
+                <div className="text-xl font-medium tabular text-ink-0 leading-none">
+                  {(winRate * 100).toFixed(0)}%
+                </div>
+                <div className="text-[10px] tabular text-ink-3 leading-none mt-1">
+                  <span className="text-rendi-pos">{wins}W</span> · <span className="text-rendi-neg">{losses}L</span> · {trades} cerradas
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => setFiltersOpen(true)}
+            className="w-full inline-flex items-center justify-between gap-2 bg-bg-2 border border-line/60 rounded-sm px-3 py-1.5 text-xs text-ink-2 hover:text-ink-0 hover:bg-bg-3 transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <Filter size={11} strokeWidth={1.75} />
+              Filtros
+              {filtersActiveCount > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 rounded-sm bg-rendi-accent/20 text-rendi-accent text-[10px] tabular">
+                  {filtersActiveCount}
+                </span>
+              )}
+            </span>
+            <span className="text-[12.5px] text-ink-2 font-medium">
+              {periodOptions.find(p => p.id === period)?.label}
+              {filterBroker !== 'all' && ` · ${filterBroker}`}
+              {filterResult !== 'all' && ` · ${RESULT_OPTIONS.find(r => r.id === filterResult)?.label}`}
+            </span>
+          </button>
+
+          {/* Los KPIs de arriba miden TODAS las ops; el feed de abajo, las
+              filtradas. Sin este renglón no hay forma de ver que son dos
+              universos — la tabla lo resuelve con su paginador. */}
+          {ops.length > 0 && (
+            <div className="mt-2 text-[12.5px] text-ink-3 tabular">
+              {filteredOps.length} de {ops.length} operaciones
+            </div>
+          )}
+        </header>
+      )}
 
       {/* Strip de patrones — observaciones derivadas de las operaciones. */}
-      {patterns.length > 0 && (
+      {!isMobile && patterns.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-4">
           {patterns.map(p => (
             <InsightLine key={p.key} tone="neutral">
@@ -448,7 +569,7 @@ function OperationsDesktop() {
       )}
 
       {/* Filtros — collapsable, abren con botón */}
-      {ops.length > 0 && (
+      {!isMobile && ops.length > 0 && (
         <div className="mb-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-2">
@@ -471,7 +592,7 @@ function OperationsDesktop() {
               </button>
               {filtersActive && (
                 <button
-                  onClick={() => { setFilterAsset(''); setFilterBroker('all'); setFilterResult('all'); setFilterYear('all') }}
+                  onClick={restablecerFiltros}
                   className="inline-flex items-center gap-1 text-[12.5px] text-ink-2 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition-colors font-medium"
                 >
                   <X size={11} strokeWidth={1.75} /> Limpiar
@@ -498,8 +619,7 @@ function OperationsDesktop() {
                   options={[{ id: 'all', label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]} />
                 <FilterPill label="Resultado" value={filterResult} onChange={setFilterResult}
                   options={[{ id: 'all', label: 'Todos' }, { id: 'wins', label: 'Ganadoras' }, { id: 'losses', label: 'Perdedoras' }]} />
-                <FilterPill label="Año" value={filterYear} onChange={setFilterYear}
-                  options={[{ id: 'all', label: 'Todos' }, ...yearsAvailable.map(y => ({ id: y, label: y }))]} />
+                <FilterPill label="Período" value={period} onChange={setPeriod} options={periodOptions} />
                 <FilterPill label="Agrupar" value={groupBy} onChange={setGroupBy} options={GROUP_OPTIONS} />
               </div>
             </Panel>
@@ -507,104 +627,93 @@ function OperationsDesktop() {
         </div>
       )}
 
-      <Panel padding="none">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-line text-[12.5px] text-ink-2 font-medium">
-                <th className="text-left px-4 py-2.5 font-medium">Fecha</th>
-                <th className="text-left px-3 py-2.5 font-medium">Broker</th>
-                <th className="text-left px-3 py-2.5 font-medium">Activo</th>
-                <th className="text-left px-3 py-2.5 font-medium">Tipo</th>
-                <th className="text-right px-3 py-2.5 font-medium">P. Entrada</th>
-                <th className="text-right px-3 py-2.5 font-medium">P. Salida</th>
-                <th className="text-right px-3 py-2.5 font-medium">Cant.</th>
-                <th className="text-right px-3 py-2.5 font-medium">P&L USD</th>
-                <th className="text-right px-3 py-2.5 font-medium">P&L %</th>
-                <th className="px-3 py-2.5 w-[60px]"></th>
-                <th className="px-3 py-2.5 w-[28px] text-center font-medium"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {ops.length === 0 && (
-                <tr><td colSpan={11}>
-                  <EmptyState
-                    icon={<ArrowUpRight size={20} />}
-                    title="Aún no hay operaciones registradas"
-                    description="Las ventas realizadas desde Posiciones quedan registradas automáticamente con su P&L realizado. También podés agregar operaciones manualmente."
-                    action={
-                      <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-xs bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors font-medium">
-                        <Plus size={12} strokeWidth={2} /> Agregar manualmente
-                      </button>
-                    }
-                  />
-                </td></tr>
-              )}
-              {ops.length > 0 && filteredOps.length === 0 && (
-                <tr><td colSpan={11}>
-                  <EmptyState title="Sin resultados para los filtros aplicados" description="Ajustá los filtros para ampliar la búsqueda." dense />
-                </td></tr>
-              )}
-              {/* Modo lista plana ('none') — la tabla de siempre, paginada. */}
-              {!grouped && pagedOps.map(op => (
-                <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} deleting={!!busyDel[`op-${op.id}`]} />
-              ))}
-              {/* Modo agrupado (por activo / mes) — fila-resumen expandible. */}
-              {grouped && groups.map(g => {
-                const isOpen = expandedGroups.has(g.key)
-                return (
-                  <Fragment key={g.key}>
-                    <TradeGroupRow
-                      group={g}
-                      groupBy={groupBy}
-                      isOpen={isOpen}
-                      onToggle={() => toggleGroup(g.key)}
-                      histMoney={histMoney}
-                      onDeleteGroup={groupBy === 'asset' ? delGroup : null}
-                      deleting={!!busyDel[`grp-${g.key}`]}
-                    />
-                    {isOpen && g.rows.map(op => (
-                      <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} indent deleting={!!busyDel[`op-${op.id}`]} />
-                    ))}
-                  </Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+      {!isMobile && (
+        <TradesTable
+          ops={ops}
+          filteredOps={filteredOps}
+          pagedOps={pagedOps}
+          groups={groups}
+          grouped={grouped}
+          groupBy={groupByEfectivo}
+          histMoney={histMoney}
+          expandedGroups={expandedGroups}
+          onToggleGroup={toggleGroup}
+          onEdit={openEdit}
+          onDelete={del}
+          onDeleteGroup={delGroup}
+          busyDel={busyDel}
+          onAdd={openAdd}
+          page={currentPage}
+          totalPages={totalPages}
+          onPage={setPage}
+        />
+      )}
 
-        {/* Paginación — oculta en modo agrupado (mismo criterio que MovementsView). */}
-        {!grouped && filteredOps.length > PAGE_SIZE && (
-          <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-line text-[12.5px] text-ink-3 font-medium">
-            <span className="tabular">
-              {currentPage * PAGE_SIZE + 1}–{Math.min((currentPage + 1) * PAGE_SIZE, filteredOps.length)} de {filteredOps.length}
-            </span>
-            <div className="flex items-center gap-1">
+      {isMobile && loadingOps && (
+        <div className="px-4 py-8 text-center text-ink-3 text-sm" aria-live="polite">
+          Cargando operaciones…
+        </div>
+      )}
+      {isMobile && !loadingOps && groups.length === 0 && (
+        <div className="px-4 py-10">
+          <EmptyState
+            title="Sin operaciones en este filtro"
+            description="Cambiá el período o limpiá los filtros para ver más."
+            action={
+              filtersActiveCount > 0 && (
+                <button
+                  onClick={restablecerFiltros}
+                  className="text-xs text-data-blue hover:text-rendi-accent font-medium"
+                >
+                  Limpiar filtros
+                </button>
+              )
+            }
+          />
+        </div>
+      )}
+      {isMobile && !loadingOps && groups.length > 0 && (
+        <TradesFeed groups={groups} histMoney={histMoney} onDelete={del} />
+      )}
+
+      {/* Sheet de filtros — sólo la rama angosta. */}
+      {isMobile && (
+        <BottomSheet
+          open={filtersOpen}
+          onClose={() => setFiltersOpen(false)}
+          eyebrow="Filtros"
+          title="Refinar operaciones"
+        >
+          <div className="p-4 space-y-5">
+            <FilterGroup label="Período" options={periodOptions} value={period} onChange={setPeriod} />
+            <FilterGroup label="Resultado" options={RESULT_OPTIONS} value={filterResult} onChange={setFilterResult} />
+            <FilterGroup
+              label="Broker"
+              options={[{ id: 'all', label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]}
+              value={filterBroker}
+              onChange={setFilterBroker}
+            />
+
+            <div className="pt-2 flex items-center gap-2">
               <button
-                onClick={() => setPage(p => Math.max(0, p - 1))}
-                disabled={currentPage === 0}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-sm border border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                aria-label="Página anterior"
+                onClick={restablecerFiltros}
+                className="flex-1 text-xs text-ink-2 hover:text-ink-0 border border-line/60 hover:bg-bg-2/60 rounded-sm py-2 transition-colors font-medium"
               >
-                <ChevronLeft size={11} strokeWidth={2} aria-hidden="true" /> Anterior
+                Restablecer
               </button>
-              <span className="px-3 tabular text-ink-2">
-                {currentPage + 1} / {totalPages}
-              </span>
               <button
-                onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-                disabled={currentPage >= totalPages - 1}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-sm border border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                aria-label="Página siguiente"
+                onClick={() => setFiltersOpen(false)}
+                className="flex-1 text-xs bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 rounded-sm py-2 transition-colors font-medium"
               >
-                Siguiente <ChevronRight size={11} strokeWidth={2} aria-hidden="true" />
+                Aplicar
               </button>
             </div>
           </div>
-        )}
-      </Panel>
+        </BottomSheet>
+      )}
 
-      {modal && (
+      {/* Alta/edición: sólo la rama ancha (el feed no tiene botón que lo abra). */}
+      {!isMobile && modal && (
         <OpFormModal
           mode={modal}
           form={form}
@@ -622,6 +731,31 @@ function OperationsDesktop() {
 
 // ─── Subcomponentes ──────────────────────────────────────────────────────────
 
+// Chips de filtro del sheet mobile.
+function FilterGroup({ label, options, value, onChange }) {
+  return (
+    <div>
+      <div className="text-[12.5px] text-ink-2 mb-2 font-medium">
+        {label}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map(o => (
+          <button
+            key={o.id}
+            onClick={() => onChange(o.id)}
+            className={`text-xs px-3 py-1.5 rounded-sm border transition-colors ${
+              value === o.id
+                ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40'
+                : 'bg-bg-2 text-ink-2 border-line/60 hover:bg-bg-3 hover:text-ink-0'
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 function KpiCell({ label, value, sub, tone, first }) {
   const valueColor =
     tone === 'pos' ? 'text-rendi-pos' :
@@ -650,153 +784,6 @@ function FilterPill({ label, value, onChange, options }) {
     </label>
   )
 }
-
-// ─── Filas del tab "Solo P/L" ────────────────────────────────────────────────
-
-// Fila de un trade cerrado en la tabla del tab "Solo P/L". Se usa tanto en la
-// lista plana (modo 'none') como en el detalle de un grupo (modo agrupado),
-// donde va atenuada/indentada con "└" — mismo recurso visual que MovementRow.
-// Mantiene las acciones por-trade (analizar/editar/eliminar) en todos los modos.
-function TradeRow({ op, histMoney, onEdit, onDelete, indent = false, deleting = false }) {
-  const isWin = op.pnl_usd != null && op.pnl_usd > 0
-  const isLoss = op.pnl_usd != null && op.pnl_usd < 0
-  const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
-  const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
-  return (
-    <tr className={`border-b border-line/30 hover:bg-bg-2/40 transition-colors ${indent ? 'bg-bg-2/15' : ''}`}>
-      <td className={`px-4 py-2 text-xs font-mono tabular text-ink-2 ${indent ? 'pl-6 opacity-75' : ''}`}>
-        {indent && <span className="text-ink-3 font-mono select-none mr-1" title="Detalle">└</span>}
-        {op.date}
-      </td>
-      <td className={`px-3 py-2 text-xs text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.broker}</td>
-      <td className={`px-3 py-2 text-sm font-medium text-ink-0 ${indent ? 'opacity-75' : ''}`}>{op.asset}</td>
-      <td className={`px-3 py-2 text-[12.5px] text-ink-3 ${indent ? 'opacity-75' : ''} font-medium`}>{prettyOpType(op.op_type)}</td>
-      <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
-      <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
-      <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.quantity ?? '—'}</td>
-      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)} ${indent ? 'opacity-75' : ''}`}>
-        {op.pnl_usd == null
-          ? '—'
-          : histMoney.fmtMoneyAt(op.pnl_usd, {
-              stampedFx: op.fx_to_usd,
-              rowCurrency: op.currency,
-              dateIso: op.date,
-              signed: true,
-              decimals: 2,
-            })}
-      </td>
-      <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)} ${indent ? 'opacity-75' : ''}`}>
-        {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
-      </td>
-      <td className="px-3 py-2">
-        <div className="flex gap-1 justify-end items-center">
-          {op.pnl_usd != null && (
-            <InlineAIButton
-              topic="operations.trade"
-              params={{ operation_id: op.id }}
-              subtitle={`${op.asset} · ${op.date}`}
-              ariaLabel={`Analizar trade de ${op.asset}`}
-            />
-          )}
-          <button onClick={() => onEdit(op)} className="text-ink-3 hover:text-ink-0 transition-colors p-1" title="Editar" aria-label={`Editar operación ${op.asset}`}>
-            <Pencil size={13} strokeWidth={1.75} aria-hidden="true" />
-          </button>
-          <button onClick={() => onDelete(op.id)} disabled={deleting} className="text-ink-3 hover:text-rendi-neg transition-colors p-1 disabled:opacity-40 disabled:pointer-events-none" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}>
-            <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
-          </button>
-        </div>
-      </td>
-      <td className="pr-4 pl-1 py-2 align-middle text-right">
-        {ArrowIcon
-          ? <ArrowIcon size={16} strokeWidth={2.25} className={`inline-block ${arrowColor}`} aria-label={isWin ? 'Ganancia' : 'Pérdida'} />
-          : <span className="text-ink-3 text-xs">—</span>}
-      </td>
-    </tr>
-  )
-}
-
-// Fila-resumen de un grupo de trades (modo agrupado por activo o por mes).
-// Click → toggle del detalle. Muestra: etiqueta (ticker o mes) · broker(s) ·
-// # de trades · P&L total con flecha ↗/↘.
-//
-// ⚠️ CONVERT-THEN-SUM (money-critical): el total se arma convirtiendo CADA fila
-// con SU FX histórico y sumando eso — NO sumando los USD y convirtiendo al FX de
-// hoy. Antes usaba `fmtPnl` (= tcBlue actual, que además es el MEP), mientras las
-// filas usan el FX de su fecha: un grupo de UN trade mostraba dos números
-// distintos (reporte real: header +$147.007 vs su única fila +$135.444, mismo
-// pnl_usd × dos dólares). El invariante que garantiza esto es `total === Σ filas`.
-function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
-  const { label, count, brokers } = group
-  // Signo, color y flecha salen del MISMO número que se imprime. Derivarlos del
-  // USD crudo podía contradecir lo mostrado: un grupo con +100 USD de 2021 (fx 190)
-  // y −90 USD de 2026 (fx 1500) suma +10 USD (flecha verde) pero −$116.000 en
-  // pesos. En modo USD `pnlDisp === pnl`, así que no cambia nada.
-  const pnl = histMoney.sumConvertedAt(group.rows, r => movPnl(r))
-  const pnlDisp = pnl
-  const Chevron = isOpen ? ChevronUp : ChevronDown
-  const hasPnl = pnl !== 0
-  const Arrow = pnl > 0 ? ArrowUpRight : pnl < 0 ? ArrowDownRight : null
-  const brokersLabel = brokers.length === 0
-    ? '—'
-    : brokers.length <= 2
-    ? brokers.join(' · ')
-    : `${brokers.length} brokers`
-  return (
-    <tr
-      className="border-b border-line/40 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors"
-      onClick={onToggle}
-    >
-      {/* Etiqueta del grupo + chevron — ocupa Fecha */}
-      <td className="px-4 py-2.5">
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onToggle() }}
-          className="inline-flex items-center gap-1.5 text-ink-0 font-semibold text-sm"
-          aria-expanded={isOpen}
-        >
-          <Chevron size={13} strokeWidth={2} className="text-ink-3" aria-hidden="true" />
-          {label}
-        </button>
-      </td>
-      {/* Broker(s) — solo tiene sentido en agrupado por activo */}
-      <td className="px-3 py-2.5 text-ink-3 text-xs">
-        {groupBy === 'asset' ? brokersLabel : '—'}
-      </td>
-      {/* # trades — ocupa Activo … Cant. */}
-      <td className="px-3 py-2.5 text-ink-2" colSpan={5}>
-        <span className="text-[12.5px] font-medium">
-          {count} {count === 1 ? 'trade' : 'trades'}
-        </span>
-      </td>
-      {/* P&L total con flecha — bajo "P&L USD" */}
-      <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular ${colorClass(hasPnl ? pnl : null)}`}>
-        <span className="inline-flex items-center gap-1 justify-end">
-          {Arrow && <Arrow size={13} strokeWidth={2.25} aria-hidden="true" />}
-          {hasPnl ? fmtConvertedRaw(pnlDisp, histMoney.currency, { signed: true, decimals: 2 }) : '—'}
-        </span>
-      </td>
-      {/* Resto (P&L % · acciones) — hint del P&L + tacho para borrar el activo entero */}
-      <td className="px-3 py-2.5 text-right" colSpan={3}>
-        <div className="inline-flex items-center gap-2 justify-end">
-          {hasPnl && <span className="text-ink-3 text-[12px] font-medium">P&L total</span>}
-          {onDeleteGroup && (
-            <button
-              type="button"
-              disabled={deleting}
-              onClick={(e) => { e.stopPropagation(); onDeleteGroup(group) }}
-              aria-label={`Borrar todo el historial de ${label}`}
-              title={`Borrar todo el historial de ${label}`}
-              className="p-1 text-ink-3 hover:text-rendi-neg transition-colors disabled:opacity-40 disabled:pointer-events-none"
-            >
-              <Trash2 size={14} strokeWidth={1.75} />
-            </button>
-          )}
-        </div>
-      </td>
-    </tr>
-  )
-}
-
 // ¿Esta operación acreditó efectivo al crearse? El backend lo estampa en
 // `undo_meta_json` (src='manual_futures') porque la fila sola no permite
 // distinguir el camino. La API lo devuelve crudo, así que se parsea acá.
@@ -967,111 +954,18 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
 //   • 'import' → vinieron de un CSV (read-only)
 //   • 'monthly' → depósitos/retiros agregados mensualmente en /mensual
 
-const MOVEMENT_TYPES = [
-  { id: 'all',      label: 'Todos',        icon: SlidersHorizontal },
-  { id: 'BUY',      label: 'Compras',      icon: ArrowUpRight,      tone: 'pos' },
-  { id: 'SELL',     label: 'Ventas',       icon: ArrowDownRight,    tone: 'neg' },
-  { id: 'DEPOSIT',  label: 'Depósitos',    icon: ArrowDownToLine,   tone: 'pos' },
-  { id: 'WITHDRAW', label: 'Retiros',      icon: ArrowUpFromLine,   tone: 'neg' },
-  { id: 'DIVIDEND', label: 'Dividendos',   icon: Coins,             tone: 'pos' },
-  { id: 'INTEREST', label: 'Intereses',    icon: Coins,             tone: 'pos' },
-  { id: 'FEE',      label: 'Comisiones',   icon: Receipt,           tone: 'neg' },
-]
-
-const TYPE_META = {
-  BUY:      { label: 'Compra',     Icon: ArrowUpRight,     color: 'text-data-blue' },
-  SELL:     { label: 'Venta',      Icon: ArrowDownRight,   color: 'text-data-violet' },
-  DEPOSIT:  { label: 'Depósito',   Icon: ArrowDownToLine,  color: 'text-rendi-pos' },
-  WITHDRAW: { label: 'Retiro',     Icon: ArrowUpFromLine,  color: 'text-rendi-warn' },
-  DIVIDEND: { label: 'Dividendo',  Icon: Coins,            color: 'text-rendi-pos' },
-  INTEREST: { label: 'Interés',    Icon: Coins,            color: 'text-rendi-pos' },
-  FEE:      { label: 'Comisión',   Icon: Receipt,          color: 'text-ink-3' },
-}
-
-const MOV_PAGE_SIZE = 50
-
-// Opciones del pill "Agrupar". 'asset' es el default (reduce ruido: 1 fila por
-// activo). 'month' agrupa por YYYY-MM (útil para impuestos). 'none' = la lista
-// plana cronológica de siempre.
-const GROUP_OPTIONS = [
-  { id: 'asset', label: 'Activo' },
-  { id: 'month', label: 'Mes' },
-  { id: 'none',  label: 'Ninguno' },
-]
-
-const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-
-// Etiqueta legible de un YYYY-MM → "Mar 2026". Si no parsea, devuelve el raw.
-function prettyMonth(ym) {
-  if (!ym || ym.length < 7) return ym || 'Sin fecha'
-  const [y, m] = ym.split('-')
-  const idx = parseInt(m, 10) - 1
-  return idx >= 0 && idx < 12 ? `${MONTH_NAMES[idx]} ${y}` : ym
-}
-
-// P&L realizado de un movimiento. Solo las ventas (SELL, vía operations) traen
-// `pnl_usd` stampeado; el resto de los tipos (BUY/DEPOSIT/WITHDRAW/DIVIDEND/
-// INTEREST/FEE) no aportan P&L realizado y suman 0. Los dividendos/intereses
-// importados NO traen pnl_usd (su monto vive en amount_usd como ingreso), así
-// que acá cuentan 0 — el P&L realizado refleja estrictamente trades cerrados.
-function movPnl(m) {
-  return typeof m.pnl_usd === 'number' ? m.pnl_usd : 0
-}
-
-// Agrupa movimientos (ya filtrados) por activo o por mes. Devuelve grupos
-// { key, label, sublabel, rows, count, pnl } ordenados. Las filas de cada
-// grupo van por fecha desc (las movements ya vienen ordenadas así del backend,
-// pero re-ordenamos para robustez). El P&L del grupo suma movPnl de sus rows.
-function buildGroups(rows, groupBy) {
-  const map = new Map()
-  for (const m of rows) {
-    let key, label, sublabel
-    if (groupBy === 'month') {
-      key = (m.date || '').slice(0, 7) || 'Sin fecha'
-      label = prettyMonth(key)
-      sublabel = null
-    } else {
-      // 'asset' — ops sin activo (depósitos/retiros/conversiones) caen en un
-      // grupo "Sin activo" para no perderlas.
-      key = (m.asset || '').trim() || '__no_asset__'
-      label = key === '__no_asset__' ? 'Sin activo' : key
-      sublabel = null
-    }
-    if (!map.has(key)) map.set(key, { key, label, rows: [], pnl: 0, brokers: new Set() })
-    const g = map.get(key)
-    g.rows.push(m)
-    g.pnl += movPnl(m)
-    if (m.broker) g.brokers.add(m.broker)
-  }
-  const groups = [...map.values()].map(g => ({
-    key: g.key,
-    label: g.label,
-    rows: g.rows.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')),
-    count: g.rows.length,
-    pnl: g.pnl,
-    brokers: [...g.brokers],
-  }))
-  // Orden de los grupos: por mes → cronológico desc (más reciente arriba, igual
-  // que la lista plana). Por activo → P&L realizado desc (lo más relevante
-  // arriba), con desempate por # de movimientos y luego alfabético.
-  if (groupBy === 'month') {
-    groups.sort((a, b) => b.key.localeCompare(a.key))
-  } else {
-    groups.sort((a, b) => (b.pnl - a.pnl) || (b.count - a.count) || a.label.localeCompare(b.label))
-  }
-  return groups
-}
-
+// ─── Movimientos ─────────────────────────────────────────────────────────────
 // `onChanged` = el load() del padre. Borrar acá cambia también las operaciones del
 // tab 'Solo P/L', cuyos datos viven en el padre y se cargan una sola vez al montar:
 // sin avisarle, la operación borrada seguía visible ahí (y en sus KPIs) hasta recargar.
-function MovementsView({ onChanged }) {
+// Desde la Fase 3 el prop llega en LAS DOS anchuras (el feed lo montaba sin él).
+function MovementsView({ onChanged, isMobile }) {
   // Fase B: formatter atado al toggle global ARS/USD. Lo bajamos a
-  // computeMovementKpis y a MovementRow vía props para evitar shadow.
-  // Phase C audit fix H1: el HM (historical money) se usa en MovementRow
-  // para cada fila individual (cada movimiento tiene su date). El P&L de los
-  // headers de grupo también va por HM (convert-then-sum) para que coincida con
-  // sus filas. Los KPIs de montos (totales / promedios) siguen con `money`.
+  // computeMovementKpis y a los renderers vía props para evitar shadow.
+  // Phase C audit fix H1: el HM (historical money) se usa en cada fila
+  // individual (cada movimiento tiene su date). El P&L de los headers de grupo
+  // también va por HM (convert-then-sum) para que coincida con sus filas. Los
+  // KPIs de montos (totales / promedios) siguen con `money`.
   const money = useMoneyFormat()
   const histMoney = useHistoricalMoney()
   const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
@@ -1083,7 +977,8 @@ function MovementsView({ onChanged }) {
   const [filterYear, setFilterYear] = useState('all')
   const [page, setPage] = useState(0)
   // Agrupación de la lista. 'asset' por defecto (reduce ruido). Persistido en
-  // localStorage para respetar la preferencia del user entre sesiones.
+  // localStorage para respetar la preferencia del user entre sesiones. El feed
+  // no tiene control de agrupado: va siempre por día.
   const [groupBy, setGroupBy] = useState(() => localStorage.getItem('rendi_movements_group') || 'asset')
   useEffect(() => { localStorage.setItem('rendi_movements_group', groupBy) }, [groupBy])
   // Grupos expandidos (Set de keys). Mismo patrón que expandedTickers en
@@ -1100,7 +995,6 @@ function MovementsView({ onChanged }) {
   const [deletingId, setDeletingId] = useState(null)
   const [busyGroup, setBusyGroup] = useState({})
   const toast = useToast()
-
   // Borrar TODO el historial de un activo desde acá, sin tener que entrar al activo.
   // Mismo endpoint (y misma cascada) que el tacho de grupo de "Solo P/L".
   async function delGroup(g) {
@@ -1164,7 +1058,14 @@ function MovementsView({ onChanged }) {
     const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta' }[m.type] || 'movimiento'
     const isTrade = m.type === 'BUY' || m.type === 'SELL'
     const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
-    const monto = m.amount_usd ? ` (${fmtUsd(m.amount_usd)})` : ''
+    // Al FX de SU fecha, el MISMO que muestra la fila que se está por borrar. Si
+    // el diálogo dijera un número y la fila otro, el usuario no sabría cuál está
+    // borrando. Lo tenía el feed y se perdió al unificar los dos handlers; la
+    // tabla venía con `fmtUsd` (dólar de hoy), o sea contradecía a sus propias
+    // filas desde antes. Ahora las dos ramas dicen lo mismo que su fila.
+    const monto = m.amount_usd
+      ? ` (${histMoney.fmtMoneyAt(m.amount_usd, { stampedFx: m.fx_to_usd, rowCurrency: m.currency, dateIso: m.date, decimals: 2 })})`
+      : ''
     // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
     // posición con su costo original. Si le decimos "borrar" el usuario cree que
     // pierde el activo — es exactamente al revés.
@@ -1263,13 +1164,15 @@ function MovementsView({ onChanged }) {
     return [...set].sort().reverse()
   }, [movements])
 
-  const grouped = groupBy !== 'none'
+  // El feed va siempre por día; la tabla respeta su pill "Agrupar".
+  const groupByEfectivo = isMobile ? 'day' : groupBy
+  const grouped = groupByEfectivo !== 'none'
 
-  // Grupos por activo / mes (sobre lo YA filtrado — filtramos y después
+  // Grupos por día / activo / mes (sobre lo YA filtrado — filtramos y después
   // agrupamos, como pide el spec). Vacío en modo 'none'.
   const groups = useMemo(
-    () => (grouped ? buildGroups(filtered, groupBy) : []),
-    [filtered, groupBy, grouped]
+    () => (grouped ? buildGroups(filtered, groupByEfectivo) : []),
+    [filtered, groupByEfectivo, grouped]
   )
 
   // DECISIÓN PAGINACIÓN: la paginación con MOV_PAGE_SIZE aplica SOLO en modo
@@ -1293,144 +1196,131 @@ function MovementsView({ onChanged }) {
   return (
     <>
       {/* KPI strip adaptativo */}
-      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap mb-4">
-        {kpis.map((k, i) => (
-          <KpiCell key={k.label} first={i === 0} label={k.label} value={k.value} sub={k.sub} tone={k.tone} />
-        ))}
-      </div>
-
-      {/* Selector de tipo (pills) — escaneable */}
-      <div className="flex items-center gap-1.5 flex-wrap mb-3">
-        {MOVEMENT_TYPES.map(t => {
-          const Icon = t.icon
-          const count = t.id === 'all' ? movements.length : movements.filter(m => m.type === t.id).length
-          if (t.id !== 'all' && count === 0) return null
-          const active = filterType === t.id
-          return (
-            <button
-              key={t.id}
-              onClick={() => setFilterType(t.id)}
-              className={`inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-sm border transition-colors ${
-                active
-                  ? 'border-data-violet/40 bg-data-violet/10 text-data-violet'
-                  : 'border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3'
-              }`}
-            >
-              <Icon size={11} strokeWidth={2} aria-hidden="true" />
-              {t.label}
-              <span className="ml-1 tabular text-[10px] opacity-70">{count}</span>
-            </button>
-          )
-        })}
-      </div>
-
-      {/* Filtros secundarios (broker, año) + pill Agrupar */}
-      <div className="flex items-center gap-2 flex-wrap mb-3">
-        {brokersAvailable.length > 1 && (
-          <select
-            value={filterBroker}
-            onChange={e => setFilterBroker(e.target.value)}
-            className="text-[12.5px] bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2 font-medium"
-          >
-            <option value="all">Todos los brokers</option>
-            {brokersAvailable.map(b => <option key={b} value={b}>{b}</option>)}
-          </select>
-        )}
-        {yearsAvailable.length > 1 && (
-          <select
-            value={filterYear}
-            onChange={e => setFilterYear(e.target.value)}
-            className="text-[12.5px] bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2 font-medium"
-          >
-            <option value="all">Todos los años</option>
-            {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
-          </select>
-        )}
-        <FilterPill label="Agrupar" value={groupBy} onChange={setGroupBy} options={GROUP_OPTIONS} />
-        <span className="text-[11px] text-ink-3 font-mono">
-          {filtered.length === movements.length
-            ? `${movements.length} movimientos`
-            : `${filtered.length} de ${movements.length}`}
-        </span>
-      </div>
-
-      {/* Tabla */}
-      {filtered.length === 0 ? (
-        <EmptyState
-          icon={<Repeat size={18} />}
-          title="No hay movimientos"
-          description="No se encontraron movimientos con los filtros aplicados."
-        />
-      ) : (
-        <div className="border border-line rounded-xl overflow-x-auto bg-bg-1">
-          <table className="w-full text-sm">
-            <thead className="bg-bg-2 text-ink-3 text-[12px] font-medium">
-              <tr>
-                <th className="text-left px-3 py-2">Fecha</th>
-                <th className="text-left px-3 py-2">Tipo</th>
-                <th className="text-left px-3 py-2">Broker</th>
-                <th className="text-left px-3 py-2">Activo</th>
-                <th className="text-right px-3 py-2">Cant.</th>
-                <th className="text-right px-3 py-2">Precio</th>
-                <th className="text-right px-3 py-2">Monto {money.currency}</th>
-                <th className="text-left px-3 py-2">Notas</th>
-                <th className="px-3 py-2 w-8" aria-label="Acciones"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {!grouped && pageRows.map(m => (
-                <MovementRow key={m.id} m={m} onDelete={handleDelete} deleting={deletingId === m.id} />
-              ))}
-              {grouped && groups.map(g => {
-                const isOpen = expandedGroups.has(g.key)
-                return (
-                  <Fragment key={g.key}>
-                    <MovementGroupRow
-                      group={g}
-                      groupBy={groupBy}
-                      isOpen={isOpen}
-                      onToggle={() => toggleGroup(g.key)}
-                      histMoney={histMoney}
-                      onDeleteGroup={groupBy === 'asset' ? delGroup : null}
-                      deleting={!!busyGroup[g.key]}
-                    />
-                    {isOpen && g.rows.map(m => (
-                      <MovementRow key={m.id} m={m} indent onDelete={handleDelete} deleting={deletingId === m.id} />
-                    ))}
-                  </Fragment>
-                )
-              })}
-            </tbody>
-          </table>
+      {!isMobile && (
+        <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap mb-4">
+          {kpis.map((k, i) => (
+            <KpiCell key={k.label} first={i === 0} label={k.label} value={k.value} sub={k.sub} tone={k.tone} />
+          ))}
         </div>
       )}
 
-      {/* Pagination — solo en modo lista plana (ver DECISIÓN PAGINACIÓN). */}
-      {!grouped && totalPages > 1 && (
-        <div className="flex items-center justify-between mt-3 text-xs text-ink-3">
-          <span className="font-mono tabular">Página {currentPage + 1} de {totalPages}</span>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setPage(p => Math.max(0, p - 1))}
-              disabled={currentPage === 0}
-              className="p-1.5 rounded-sm border border-line bg-bg-2 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <ChevronLeft size={12} />
-            </button>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-              disabled={currentPage >= totalPages - 1}
-              className="p-1.5 rounded-sm border border-line bg-bg-2 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <ChevronRight size={12} />
-            </button>
-          </div>
+      {/* Selector de tipo (pills) — escaneable */}
+      {!isMobile && (
+        <div className="flex items-center gap-1.5 flex-wrap mb-3">
+          {MOVEMENT_TYPES.map(t => {
+            const Icon = t.icon
+            const count = t.id === 'all' ? movements.length : movements.filter(m => m.type === t.id).length
+            if (t.id !== 'all' && count === 0) return null
+            const active = filterType === t.id
+            return (
+              <button
+                key={t.id}
+                onClick={() => setFilterType(t.id)}
+                className={`inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-sm border transition-colors ${
+                  active
+                    ? 'border-data-violet/40 bg-data-violet/10 text-data-violet'
+                    : 'border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3'
+                }`}
+              >
+                <Icon size={11} strokeWidth={2} aria-hidden="true" />
+                {t.label}
+                <span className="ml-1 tabular text-[10px] opacity-70">{count}</span>
+              </button>
+            )
+          })}
         </div>
+      )}
+
+      {/* Filtros secundarios (broker, año) + pill Agrupar */}
+      {!isMobile && (
+        <div className="flex items-center gap-2 flex-wrap mb-3">
+          {brokersAvailable.length > 1 && (
+            <select
+              value={filterBroker}
+              onChange={e => setFilterBroker(e.target.value)}
+              className="text-[12.5px] bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2 font-medium"
+            >
+              <option value="all">Todos los brokers</option>
+              {brokersAvailable.map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
+          )}
+          {yearsAvailable.length > 1 && (
+            <select
+              value={filterYear}
+              onChange={e => setFilterYear(e.target.value)}
+              className="text-[12.5px] bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2 font-medium"
+            >
+              <option value="all">Todos los años</option>
+              {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          )}
+          <FilterPill label="Agrupar" value={groupBy} onChange={setGroupBy} options={GROUP_OPTIONS} />
+          <span className="text-[11px] text-ink-3 font-mono">
+            {filtered.length === movements.length
+              ? `${movements.length} movimientos`
+              : `${filtered.length} de ${movements.length}`}
+          </span>
+        </div>
+      )}
+
+      {!isMobile && (
+        <MovementsTable
+          movements={movements}
+          filtered={filtered}
+          pageRows={pageRows}
+          groups={groups}
+          grouped={grouped}
+          groupBy={groupByEfectivo}
+          histMoney={histMoney}
+          currency={money.currency}
+          expandedGroups={expandedGroups}
+          onToggleGroup={toggleGroup}
+          onDelete={handleDelete}
+          onDeleteGroup={delGroup}
+          deletingId={deletingId}
+          busyGroup={busyGroup}
+          page={currentPage}
+          totalPages={totalPages}
+          onPage={setPage}
+        />
+      )}
+
+      {/* El guard mira `groups`, no `movements`: la rama angosta no renderiza los
+          filtros de esta vista, así que un filtro puesto en la tabla (tipo /
+          broker / año) llega hasta acá. Mirando `movements` el feed pintaba un
+          <ul> vacío, sin decir por qué. */}
+      {isMobile && movements.length === 0 && (
+        <div className="px-4 py-10">
+          <EmptyState title="Sin movimientos" description="Acá van tus depósitos, retiros, dividendos, intereses y comisiones." />
+        </div>
+      )}
+      {isMobile && movements.length > 0 && filtered.length < movements.length && (
+        <div className="flex items-center justify-between gap-2 px-4 py-2 text-[12.5px] text-ink-3 border-b border-line/30">
+          <span className="tabular">{filtered.length} de {movements.length} movimientos</span>
+          <button
+            onClick={() => { setFilterType('all'); setFilterBroker('all'); setFilterYear('all') }}
+            className="text-data-blue hover:text-rendi-accent font-medium"
+          >
+            Limpiar filtros
+          </button>
+        </div>
+      )}
+      {isMobile && movements.length > 0 && groups.length === 0 && (
+        <div className="px-4 py-10">
+          <EmptyState title="No hay movimientos" description="No se encontraron movimientos con los filtros aplicados." />
+        </div>
+      )}
+      {isMobile && groups.length > 0 && (
+        <MovementsFeed
+          groups={groups}
+          histMoney={histMoney}
+          onDelete={handleDelete}
+          deletingId={deletingId}
+        />
       )}
     </>
   )
 }
-
 // Compute KPI strip dinámico. Cada filtro de tipo tiene su set propio de
 // métricas relevantes.
 //
@@ -1496,166 +1386,4 @@ function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
     { label: 'Cobrado',    value: fmtUsd(dividendos), tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
     { label: 'Comisiones', value: fmtUsd(comisiones), tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales (incl. embebidas)' },
   ]
-}
-
-// indent: cuando la fila es detalle de un grupo (modo agrupado), la atenuamos
-// e indentamos la primera celda con un marquito "└" — mismo recurso visual que
-// los lotes en Positions.
-// Tipos borrables: cash-flows + trades (compras/ventas rutean al motor de cascada
-// del backend). El backend bloquea con mensaje claro lo que aún no soporta
-// (manuales en pesos, bonos, compras ya vendidas, activos con data manual mezclada).
-const DELETABLE_MOVEMENT_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO', 'BUY', 'SELL']
-
-function MovementRow({ m, indent = false, onDelete, deleting = false }) {
-  // Phase C (audit fix H1): cada movimiento usa SU PROPIO FX histórico para
-  // la conversión a ARS. m.fx_to_usd (si stampeado) > lookup por m.date >
-  // tcBlue actual. Esto evita que un retiro de $1000 USD en 2024 (blue era
-  // 1100) se muestre hoy como $1.466.000 ARS (al blue actual ~1466) cuando
-  // en realidad fueron ~$1.100.000 ARS al tipo de cambio del momento.
-  const histMoney = useHistoricalMoney()
-  // decimals:2 para que la columna sea coherente: el header del grupo muestra
-  // centavos, así que las filas que despliega tienen que mostrarlos también
-  // (si no, el total "no cierra" con la suma visible de sus filas).
-  const fmtUsd = (v) => histMoney.fmtMoneyAt(v, {
-    stampedFx: m.fx_to_usd,
-    rowCurrency: m.currency,
-    dateIso: m.date,
-    signed: false,
-    decimals: 2,
-  })
-  const meta = TYPE_META[m.type] || { label: m.type, Icon: Repeat, color: 'text-ink-3' }
-  const { Icon } = meta
-  const isPositive = ['DEPOSIT', 'DIVIDEND', 'INTEREST'].includes(m.type)
-  const isNegative = ['WITHDRAW', 'FEE'].includes(m.type)
-  const amountClass = isPositive ? 'text-rendi-pos' : isNegative ? 'text-rendi-neg' : 'text-ink-1'
-  return (
-    <tr className={`border-t border-line/60 hover:bg-bg-2/40 ${indent ? 'bg-bg-2/15' : ''}`}>
-      <td className={`px-3 py-2 text-ink-2 tabular text-xs ${indent ? 'pl-6 opacity-75' : ''}`}>
-        {indent && <span className="text-ink-3 font-mono select-none mr-1" title="Detalle">└</span>}
-        {m.date || '—'}
-        {m.approx_date && <span className="ml-1 text-[9px] text-ink-3" title="Fecha aproximada (agregado mensual)">~</span>}
-      </td>
-      <td className="px-3 py-2">
-        <span className={`inline-flex items-center gap-1 text-xs ${meta.color}`}>
-          <Icon size={11} strokeWidth={2} aria-hidden="true" />
-          {meta.label}
-        </span>
-      </td>
-      <td className="px-3 py-2 text-ink-3 text-xs">{m.broker || '—'}</td>
-      <td className="px-3 py-2 font-medium text-ink-0 text-xs">{m.asset || '—'}</td>
-      <td className="px-3 py-2 text-right font-mono text-ink-2 tabular text-xs">
-        {m.quantity != null ? Number(m.quantity).toLocaleString('es-AR', { maximumFractionDigits: 4 }) : '—'}
-      </td>
-      <td className="px-3 py-2 text-right font-mono text-ink-2 tabular text-xs">
-        {m.unit_price != null ? Number(m.unit_price).toLocaleString('es-AR', { maximumFractionDigits: 2 }) : '—'}
-      </td>
-      <td className={`px-3 py-2 text-right font-mono font-medium tabular ${amountClass}`}>
-        {fmtUsd(m.amount_usd || 0)}
-      </td>
-      <td className="px-3 py-2 text-ink-3 text-xs max-w-xs truncate" title={m.notes}>
-        {m.notes || (m.source === 'monthly' ? 'Agregado mensual' : m.source === 'import' ? 'Desde import CSV' : '')}
-      </td>
-      <td className="px-2 py-2 text-right">
-        {onDelete && DELETABLE_MOVEMENT_TYPES.includes(m.type) && (
-          <button
-            type="button"
-            onClick={() => onDelete(m)}
-            disabled={deleting}
-            title={m.transfer_out ? `Reabrir ${m.asset || 'la posición'}` : 'Borrar movimiento'}
-            aria-label={m.transfer_out ? `Reabrir ${m.asset || 'la posición'}` : 'Borrar movimiento'}
-            className={`p-1 rounded-sm text-ink-3 disabled:opacity-40 disabled:cursor-wait ${
-              m.transfer_out ? 'hover:text-rendi-pos hover:bg-rendi-pos/10'
-                             : 'hover:text-rendi-neg hover:bg-rendi-neg/10'}`}
-          >
-            {/* Un cierre a costo NO se "borra": se DESHACE y la posición vuelve. El
-                ícono de deshacer evita que el tacho asuste (borrar ≠ recuperar). */}
-            {m.transfer_out
-              ? <RotateCcw size={13} strokeWidth={1.75} aria-hidden="true" />
-              : <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />}
-          </button>
-        )}
-      </td>
-    </tr>
-  )
-}
-
-// Fila-resumen de un grupo (modo agrupado por activo o por mes). Click → toggle
-// del despliegue de sus movimientos. Muestra: etiqueta del grupo (ticker o mes)
-// · broker(s) · # de movimientos · P&L realizado total con flecha ↗/↘.
-//
-// ⚠️ CONVERT-THEN-SUM, igual que TradeGroupRow (ver el comentario largo allá):
-// cada fila se convierte con SU FX histórico y recién ahí se suma, para que el
-// total coincida con las filas que despliega.
-function MovementGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
-  const { label, count, brokers } = group
-  // El tacho de "borrar todo el historial" solo aplica a un ACTIVO de verdad: no a
-  // "Sin activo" (depósitos/retiros sueltos) ni a los grupos de puro efectivo, que no
-  // tienen compras ni ventas que borrar.
-  const canDeleteGroup = !!onDeleteGroup && group.key !== '__no_asset__'
-    && group.rows.some(r => r.type === 'BUY' || r.type === 'SELL')
-  // Ver TradeGroupRow: signo/color/flecha sobre el número que se muestra.
-  const pnl = histMoney.sumConvertedAt(group.rows, r => movPnl(r))
-  const pnlDisp = pnl
-  const Chevron = isOpen ? ChevronUp : ChevronDown
-  const hasPnl = pnl !== 0
-  const Arrow = pnl > 0 ? ArrowUpRight : pnl < 0 ? ArrowDownRight : null
-  const brokersLabel = brokers.length === 0
-    ? '—'
-    : brokers.length <= 2
-    ? brokers.join(' · ')
-    : `${brokers.length} brokers`
-  return (
-    <tr
-      className="border-t border-line/60 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors"
-      onClick={onToggle}
-    >
-      {/* Etiqueta del grupo + chevron — ocupa Fecha + Tipo */}
-      <td className="px-3 py-2.5" colSpan={2}>
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onToggle() }}
-          className="inline-flex items-center gap-1.5 text-ink-0 font-semibold text-sm"
-          aria-expanded={isOpen}
-        >
-          <Chevron size={13} strokeWidth={2} className="text-ink-3" aria-hidden="true" />
-          {label}
-        </button>
-      </td>
-      {/* Broker(s) */}
-      <td className="px-3 py-2.5 text-ink-3 text-xs">
-        {groupBy === 'asset' ? brokersLabel : '—'}
-      </td>
-      {/* # movimientos — bajo "Activo" */}
-      <td className="px-3 py-2.5 text-ink-2 text-xs" colSpan={3}>
-        <span className="text-[12.5px] font-medium">
-          {count} {count === 1 ? 'movimiento' : 'movimientos'}
-        </span>
-      </td>
-      {/* P&L realizado total con flecha — bajo "Monto" */}
-      <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular ${colorClass(hasPnl ? pnl : null)}`}>
-        <span className="inline-flex items-center gap-1 justify-end">
-          {Arrow && <Arrow size={13} strokeWidth={2.25} aria-hidden="true" />}
-          {hasPnl ? fmtConvertedRaw(pnlDisp, histMoney.currency, { signed: true, decimals: 2 }) : '—'}
-        </span>
-      </td>
-      {/* Notas — hint del P&L + tacho del activo entero */}
-      <td className="px-3 py-2.5 text-ink-3 text-[12px] font-medium">
-        <div className="inline-flex items-center gap-2 justify-end w-full">
-          {hasPnl ? 'P&L realizado' : ''}
-          {canDeleteGroup && (
-            <button
-              type="button"
-              disabled={deleting}
-              onClick={(e) => { e.stopPropagation(); onDeleteGroup(group) }}
-              aria-label={`Borrar todo el historial de ${label}`}
-              title={`Borrar todo el historial de ${label}`}
-              className="p-1 text-ink-3 hover:text-rendi-neg transition-colors disabled:opacity-40 disabled:pointer-events-none"
-            >
-              <Trash2 size={14} strokeWidth={1.75} aria-hidden="true" />
-            </button>
-          )}
-        </div>
-      </td>
-    </tr>
-  )
 }

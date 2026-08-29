@@ -3,11 +3,11 @@
 // POR QUÉ ESTE TEST
 // ─────────────────
 // Rendi tuvo dos generaciones de sistema visual y el clean pass de julio 2026
-// migró la mayor parte del producto — pero no llegó parejo. Las tres pantallas
-// que están bifurcadas por viewport (Cartera, Movimientos, Home tienen un
-// archivo *Mobile.jsx aparte) se quedaron con la generación vieja: el commit
-// que rediseñó Posiciones lo dice en su propio mensaje, "Mobile
-// (PositionsMobile) no se toca".
+// migró la mayor parte del producto — pero no llegó parejo. Las pantallas que
+// están bifurcadas por viewport (Cartera y Home tienen un archivo *Mobile.jsx
+// aparte) se quedaron con la generación vieja: el commit que rediseñó Posiciones
+// lo dice en su propio mensaje, "Mobile (PositionsMobile) no se toca".
+// Movimientos era la tercera: su fork murió en la Fase 3.
 //
 // Eso no pasó por falta de sistema — el sistema estaba escrito. Pasó porque
 // nada lo verificaba. Este test es lo que faltaba: congela la deuda actual y
@@ -69,7 +69,14 @@ const medicion = medir()
 describe('contrato de diseño — el walker mide lo que dice medir', () => {
   it('escanea el árbol de fuentes y excluye los tests', () => {
     const fuentes = listarFuentes()
-    expect(fuentes.length).toBe(BASELINE._archivosEscaneados)
+    // NO se asertea `fuentes.length === BASELINE._archivosEscaneados`. Era una
+    // igualdad exacta sobre el conteo de archivos: CUALQUIER .js nuevo bajo src/
+    // rompía la suite y obligaba a regenerar el baseline, con un diff pelado
+    // ("287 !== 286") y sin el mensaje de "QUÉ HACER" que sí traen las
+    // categorías. Fricción sin señal: un archivo nuevo CON violaciones ya lo
+    // cazan los mapas por categoría, que iteran el ÁRBOL y no el mapa (ruta
+    // ausente = 0). `_archivosEscaneados` sigue en el JSON como dato
+    // informativo — el generador lo escribe, nadie lo verifica.
     expect(fuentes.some((f) => f.includes('.test.'))).toBe(false)
     expect(fuentes.some((f) => f.includes('node_modules'))).toBe(false)
     expect(fuentes.every((f) => f.startsWith('src/'))).toBe(true)
@@ -146,14 +153,17 @@ describe('contrato de diseño — la deuda no crece', () => {
 })
 
 describe('contrato de diseño — R6, no se bifurca por viewport', () => {
-  // Tres aserciones y no una: el patrón literal caza los 3 forks que existen,
+  // Tres aserciones y no una: el patrón literal caza los forks que existen,
   // el ternario caza la variante que todavía no existe, y el glob caza el fork
   // que alguien escriba SIN la línea canónica.
-  it('los 3 forks siguen siendo exactamente Home, Operations y Positions', () => {
+  //
+  // Eran 3. Operations murió en la Fase 3: un dueño de datos y dos ramas
+  // `{isMobile && …}` / `{!isMobile && …}` sobre renderers compartidos en
+  // components/operations/.
+  it('los 2 forks siguen siendo exactamente Home y Positions', () => {
     const conFork = Object.keys(medicion.porCategoria.fork_viewport).sort()
     expect(conFork).toEqual([
       'src/pages/Home.jsx',
-      'src/pages/Operations.jsx',
       'src/pages/Positions.jsx',
     ])
   })
@@ -162,7 +172,6 @@ describe('contrato de diseño — R6, no se bifurca por viewport', () => {
     const mobiles = listarFuentes().filter((f) => /^src\/pages\/[^/]+Mobile\.jsx$/.test(f)).sort()
     expect(mobiles).toEqual([
       'src/pages/HomeMobile.jsx',
-      'src/pages/OperationsMobile.jsx',
       'src/pages/PositionDetailMobile.jsx',
       'src/pages/PositionsMobile.jsx',
     ])

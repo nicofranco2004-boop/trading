@@ -1,6 +1,6 @@
 {
   "_leeme": "Baseline del contrato de diseño. NO editar a mano: regenerar con `node scripts/gen-design-baseline.mjs --write` y sólo cuando la deuda BAJÓ. Unidad: ocurrencias (salvo mono_uppercase, que es coocurrencia por línea, y paginas_mobile, que cuenta archivos). Ruta ausente en un mapa = 0. El contrato está en frontend/CLAUDE.md; los patrones en scripts/design-patterns.mjs.",
-  "_archivosEscaneados": 287,
+  "_archivosEscaneados": 291,
   "totales": {
     "mono_clase": 317,
     "mono_inline": 22,
@@ -10,11 +10,11 @@
     "rounded_md": 307,
     "rounded_2xl_3xl": 19,
     "upper_inline": 10,
-    "fork_viewport": 3,
+    "fork_viewport": 2,
     "fork_ternario": 0,
     "comentarios_fosiles": 0,
     "mono_css": 3,
-    "paginas_mobile": 4
+    "paginas_mobile": 3
   },
   "porArchivo": {
     "mono_clase": {
@@ -52,6 +52,8 @@
       "src/components/landing/KeywordLanding.jsx": 1,
       "src/components/mobile/MobileTopBar.jsx": 1,
       "src/components/onboarding/PositionStep.jsx": 2,
+      "src/components/operations/MovementsTable.jsx": 6,
+      "src/components/operations/TradesTable.jsx": 8,
       "src/components/profile/AllocationBars.jsx": 1,
       "src/components/profile/ConcentrationDonut.jsx": 1,
       "src/components/profile/ReturnGauge.jsx": 2,
@@ -75,7 +77,7 @@
       "src/pages/Landing.jsx": 58,
       "src/pages/MobileSearch.jsx": 1,
       "src/pages/News.jsx": 2,
-      "src/pages/Operations.jsx": 18,
+      "src/pages/Operations.jsx": 4,
       "src/pages/Planes.jsx": 6,
       "src/pages/Positions.jsx": 25,
       "src/pages/PositionsMobile.jsx": 1,
@@ -189,7 +191,6 @@
     },
     "fork_viewport": {
       "src/pages/Home.jsx": 1,
-      "src/pages/Operations.jsx": 1,
       "src/pages/Positions.jsx": 1
     },
     "fork_ternario": {},

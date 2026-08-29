@@ -17,10 +17,14 @@ la generación nueva son las páginas del Plan Asesor — `pages/Advisor*.jsx` y
 `components/advisor/` — que tienen 0 usos de `font-mono` en sus 2.297 líneas de página.
 Cuando dudes de cómo se ve algo nuevo, mirá ahí.
 
-Lo que quedó atrás son las **tres pantallas bifurcadas por viewport** (Cartera, Movimientos,
-Home): tienen un archivo `*Mobile.jsx` aparte que los rediseños estructurales no tocaron. El
-commit que rediseñó Posiciones lo dice en su propio mensaje: `Mobile (PositionsMobile) no se toca.`
+Lo que quedó atrás son las **pantallas bifurcadas por viewport** (Cartera y Home): tienen un
+archivo `*Mobile.jsx` aparte que los rediseños estructurales no tocaron. El commit que rediseñó
+Posiciones lo dice en su propio mensaje: `Mobile (PositionsMobile) no se toca.`
 Ese es el problema que este contrato existe para no repetir.
+
+**Movimientos era la tercera y ya no lo es.** Su fork murió en la Fase 3: `Operations.jsx` pasó a
+tener un dueño de datos y dos ramas de render sobre renderers compartidos en
+`components/operations/`. Es el modelo a copiar para las dos que quedan.
 
 ---
 
@@ -214,8 +218,8 @@ archivo nuevo con 40 `font-mono` falla aunque nadie lo haya agregado al JSON.
 | `rounded_2xl_3xl` | R5 | 19 | curvas grandes, mayormente sheets mobile |
 | `rounded_arbitrario` | R5 | 9 | los `rounded-[2px]`, migrables a `rounded-xs` |
 | `upper_inline` | R2 | 10 | los de `ReportPublic.jsx`, contenidos a propósito |
-| `fork_viewport` | R6 | 3 | Home · Operations · Positions |
-| `paginas_mobile` | R6 | 4 | los 3 gemelos + `PositionDetailMobile` (ruta propia) |
+| `fork_viewport` | R6 | 2 | Home · Positions (Operations murió en la Fase 3) |
+| `paginas_mobile` | R6 | 3 | los 2 gemelos + `PositionDetailMobile` (ruta propia) |
 | `clase_renombrada` | R7 | 0 | congelada: el nombre viejo no vuelve |
 | `comentarios_fosiles` | R7 | 0 | congelada: los 7 fósiles conocidos, muertos |
 | `fork_ternario` | R6 | 0 | congelada: la variante que todavía no existe |
