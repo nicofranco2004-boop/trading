@@ -17522,6 +17522,52 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
              if c["publica_numero"] and (c.get("contradiccion_borde_vs_cadena") or 0) >= 3],
             key=lambda c: c["contradiccion_borde_vs_cadena"], reverse=True)[:25]
 
+        # ── Lo que el CLAMP silencia ─────────────────────────────────────────
+        # La alerta de drawdown del libro (`advisor_book`) ya no publica cuando el
+        # pico es implausible contra la cartera de hoy. Silenciar sin registrar
+        # sería esconder el problema, así que la cuenta cae acá: son datos rotos
+        # que alguien tiene que mirar, no ruido que se tira.
+        #
+        # Se recalcula la MISMA condición con la MISMA función que corre en la
+        # alerta (`_pico_es_plausible`) — un diagnóstico que reimplemente el
+        # criterio mide otra cosa que la que corre. Y sobre TODOS los usuarios con
+        # snapshots, no sobre `activos`: la alerta puede dispararse para cualquier
+        # cliente de un libro, tenga o no `monthly_entries`.
+        picos_implausibles = []
+        try:
+            _ult = {r["user_id"]: r for r in conn.execute(
+                """SELECT s.user_id, s.date, s.total_value, s.net_deposited
+                     FROM snapshots s
+                    WHERE s.date = (SELECT MAX(s2.date) FROM snapshots s2
+                                     WHERE s2.user_id = s.user_id)""").fetchall()}
+            _pico = {r["user_id"]: float(r["adj_mx"] or 0) for r in conn.execute(
+                """SELECT user_id, MAX(total_value - COALESCE(net_deposited, 0)) adj_mx
+                     FROM snapshots_medibles GROUP BY user_id""").fetchall()}
+            for _cid, _s in _ult.items():
+                _amx = _pico.get(_cid)
+                _tv = float(_s["total_value"] or 0)
+                # Las tres condiciones de la alerta, en el mismo orden.
+                if _amx is None or _amx < 500:
+                    continue
+                _dd = (_tv - float(_s["net_deposited"] or 0) - _amx) / _amx * 100
+                if _dd > -15 or _pico_es_plausible(_amx, _tv):
+                    continue
+                picos_implausibles.append({
+                    "user_id": _cid,
+                    "pico_usd": round(_amx, 2),
+                    "cartera_hoy_usd": round(_tv, 2),
+                    "veces": (round(_amx / _tv, 1) if _tv > 0 else None),
+                    "drawdown_que_habria_publicado_pct": round(_dd, 1),
+                    "ultimo_snapshot": str(_s["date"]),
+                })
+            picos_implausibles.sort(
+                key=lambda c: (c["veces"] is not None, -(c["veces"] or 0)))
+            picos_implausibles = picos_implausibles[:50]
+        except sqlite3.Error:
+            # Sin la vista `snapshots_medibles` (deploy a medio migrar) el
+            # diagnóstico se saltea; la alerta ya falla sola en ese caso.
+            picos_implausibles = []
+
         return {
             "mes_en_curso": period_start,
             "cuentas_evaluadas": total,
@@ -17534,6 +17580,9 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
             "cuentas_con_brecha_cadena_vs_mercado": con_brecha,
             "publicando_numeros_extremos": publicando_extremos,
             "borde_contradice_la_cadena": borde_contradictorio,
+            "picos_implausibles": picos_implausibles,
+            "picos_implausibles_total": len(picos_implausibles),
+            "pico_max_veces_la_cartera": PICO_MAX_VECES_LA_CARTERA,
             "como_leerlo": (
                 "pct_conserva = cuánta gente conserva su número con el guard puesto. "
                 "BAJO significa que el cron no está dejando cierres medidos. "
@@ -17543,7 +17592,13 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
                 "el guard NO tapa: el borde ES una medición, así que el número se "
                 "publica, pero no cuadra con la cadena para la MISMA fecha. Leelas "
                 "mirando `ve_delta_pct` contra `deposits_mes`: si el delta es enorme y "
-                "no hay flujos que lo expliquen, es fantasma con el signo al revés."
+                "no hay flujos que lo expliquen, es fantasma con el signo al revés. "
+                "`picos_implausibles` = LA COLA DE REVISIÓN del clamp: cuentas cuya "
+                "alerta de drawdown NO se emite porque el pico no es posible contra la "
+                "cartera de hoy (más de `pico_max_veces_la_cartera` veces, o cartera en "
+                "cero). El dato sigue guardado tal cual: el clamp decide qué se "
+                "publica, no qué está escrito. Cada fila trae el pico, la cartera de "
+                "hoy y el % que se habría mandado por mail."
             ),
         }
     finally:
@@ -35297,6 +35352,58 @@ def _advisor_client_ids(conn, uid: int) -> list:
     ).fetchall()]
 
 
+# ⚠️ LA PREGUNTA QUE FALTABA. Todo lo anterior pregunta CON QUÉ REGLA se midió un
+# número —`_es_base_de_mercado`, la clase del borde, `apto`—. Nunca preguntó si el
+# resultado es POSIBLE. Una fila puede estar impecablemente etiquetada
+# (`source='cron'`, clase MEDICION, `base='mercado'`, `apto=1`) y aun así decir que
+# una cartera de US$108,96 valió US$16.229.949. No está mal etiquetada: está mal el
+# dato. Y como el pico sólo sube, esa fila envenena el drawdown para siempre.
+#
+# EL NÚMERO, MEDIDO sobre la copia de producción estampada (822 usuarios con
+# snapshots, 95 alertas de drawdown vivas):
+#
+#     pico / cartera de hoy      alertas
+#     ------------------------   -------
+#     > 4,2x                      24      <- todas éstas están fabricadas
+#     > 8x                        24         (el corte no mueve ni una)
+#     > 10,2x                     24
+#     entre 4,2x y 10,2x           0      <- LA BANDA VACÍA
+#
+# Los ratios reales, ordenados, saltan de 4,2x directo a 10,2x: no hay UN SOLO
+# usuario en el medio. El umbral no lo elige el criterio de nadie, lo dicta la forma
+# de los datos; lo único que se elige es dónde pararse dentro del hueco. 8x deja
+# 1,9x de aire sobre el usuario plausible más extremo (4,2x) y 1,28x por debajo del
+# dato roto más suave (10,2x) — margen para los dos lados, y del lado seguro:
+# silenciar de más le apaga al asesor la herramienta que sí funciona.
+#
+# ES LA SEGUNDA COTA DE CORDURA DEL ARCHIVO, no un concepto nuevo: al lado vive
+# `adj_mx >= 500` ("no gritar drawdown sobre resultados chiquitos") y más arriba
+# `/api/admin/diagnose-flujo-implausible` usa `factor=20` para el mismo tipo de
+# pregunta sobre los flujos.
+#
+# ⚠️ MIDE UNA RELACIÓN, NO UN VALOR. "Más de un millón" no sirve: hay carteras de un
+# millón. Lo imposible es que el pico sea 148.953 veces lo que la cartera vale hoy.
+PICO_MAX_VECES_LA_CARTERA = 8.0
+
+
+def _pico_es_plausible(adj_mx: float, total_value: float) -> bool:
+    """¿El mejor resultado histórico es posible contra lo que la cartera vale hoy?
+
+    `adj_mx` es el pico ajustado por flujos (el denominador del drawdown) y
+    `total_value` el valor de mercado del último snapshot. Se divide por el VALOR y
+    no por el resultado de hoy (`total_value - net_deposited`) a propósito: el
+    resultado de hoy puede ser cero o negativo —uid 756 lo tiene en −507— y ahí el
+    cociente no significa nada o cambia de signo. El valor de cartera siempre es
+    >= 0 y es la respuesta natural a "¿cuánto tiene hoy esta persona?".
+
+    Cartera en cero con un pico de US$500+ es el caso extremo (6 usuarios en
+    producción): ratio infinito, implausible.
+    """
+    if total_value is None or total_value <= 0:
+        return False
+    return (float(adj_mx) / float(total_value)) <= PICO_MAX_VECES_LA_CARTERA
+
+
 def _es_base_de_mercado(row) -> bool:
     """¿Este snapshot sirve como PUNTA de una resta contra otra punta a mercado?
 
@@ -35715,7 +35822,14 @@ def advisor_book(uid: int = Depends(get_current_user)):
             if tv is not None and snap is not None and ms and ms["adj_mx"] >= 500:
                 adj_now = tv - float(snap["net_deposited"] or 0)
                 dd = (adj_now - ms["adj_mx"]) / ms["adj_mx"] * 100
-                if dd <= -15:
+                # ⚠️ Y ADEMÁS EL PICO TIENE QUE SER POSIBLE. El guard de arriba exige
+                # que el borde sea una MEDICION, pero no que sea plausible: con un
+                # pico fabricado el mail sale igual, y dice "su ganancia cayó
+                # 492.864% desde el mejor momento". Un asesor no puede accionar sobre
+                # eso, y verlo le hace desconfiar de las otras 71 alertas, que están
+                # bien. Lo silenciado NO se esconde: `/api/admin/diagnose-reportes-basis`
+                # lo lista en `picos_implausibles` con los números al lado.
+                if dd <= -15 and _pico_es_plausible(ms["adj_mx"], tv):
                     reasons.append({"kind": "drawdown",
                                     "detail": f"Su ganancia cayó {abs(dd):.0f}% desde el mejor momento — conviene que lo llames"})
             # 3. Cash ARS ocioso > 15% del portfolio

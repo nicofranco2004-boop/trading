@@ -4,6 +4,7 @@
 - detectors: cada uno gatilla y no gatilla en los casos esperados
 - timeline: composición month → weeks
 """
+import calendar
 import os
 import sys
 import unittest
@@ -166,10 +167,16 @@ class BuilderMetricsTest(unittest.TestCase):
             (self.uid, today.year, today.month),
         )
         self.conn.commit()
+        # ⚠️ EL ÚLTIMO DÍA DEL MES, NO EL 28. `is_period_current` es
+        # `start <= today <= end`: con el fin clavado en el 28, el período quedaba
+        # CERRADO los días 29, 30 y 31, `live_value` se ignoraba por diseño y el
+        # test fallaba tres días por mes. No era un bug del código: era el test
+        # midiendo un período que ya había terminado.
+        ultimo_dia = calendar.monthrange(today.year, today.month)[1]
         m, _ = builder.compute_metrics_for_period(
             self.conn, self.uid, "month",
             f"{today.year:04d}-{today.month:02d}-01",
-            f"{today.year:04d}-{today.month:02d}-28",
+            f"{today.year:04d}-{today.month:02d}-{ultimo_dia:02d}",
             broker_filter="global", bench=None, live_value=15000,
         )
         self.assertEqual(m.end_value, 15000)
