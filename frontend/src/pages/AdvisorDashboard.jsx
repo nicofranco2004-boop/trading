@@ -23,6 +23,7 @@ import { whatsappUrl } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { usd as usdFmt, ars as arsFmt } from '../utils/format'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
+import BookComposition from '../components/advisor/BookComposition'
 
 // El libro calcula en USD; la MONEDA DE DISPLAY sigue la elección del asesor
 // en Config → Tipos de cambio (mismo CurrencyContext que el resto de la app;
@@ -42,6 +43,8 @@ export default function AdvisorDashboard() {
   const [history, setHistory] = useState(null)  // serie AUM (evolución del libro)
   const [historyError, setHistoryError] = useState(false)
   const [error, setError] = useState(false)
+  const [composition, setComposition] = useState(null)   // en qué está el libro
+  const [compositionError, setCompositionError] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
 
   const load = useCallback(async () => {
@@ -62,6 +65,15 @@ export default function AdvisorDashboard() {
       // vas a ver la curva" ante un fallo de red (audit).
       setHistory(prev => prev ?? [])
       setHistoryError(true)
+    }
+    // La composición también: valúa TODAS las posiciones de TODOS los clientes,
+    // así que es la request más pesada del libro. Que falle no puede llevarse
+    // el resto de la pantalla.
+    try {
+      setComposition(await api.get('/advisor/book/composition'))
+      setCompositionError(false)
+    } catch {
+      setCompositionError(true)
     }
   }, [])
 
@@ -126,11 +138,16 @@ export default function AdvisorDashboard() {
           <BookEvolution series={history} error={historyError} />
           {book.queues?.length > 0 && <CallQueue queues={book.queues} onOpen={openClient} />}
           {(book.star || book.distribution) && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
               {book.star && <StarSection star={book.star} />}
               {book.distribution && <DistributionCard dist={book.distribution} />}
             </div>
           )}
+          {/* Las tres tortas: en qué instrumentos, en qué papeles y a qué
+              sectores está expuesto el libro entero. Ojo con el vocabulario:
+              `book.distribution` de arriba es OTRA cosa (cuántos clientes en
+              verde/rojo) — por eso esto es "composition". */}
+          <BookComposition data={composition} error={compositionError} />
         </>
       )}
     </div>

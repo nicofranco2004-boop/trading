@@ -697,6 +697,155 @@ def render_profile_summary_prompt(tier: str = "pro") -> str:
     )
 
 
+def render_distribution_type_prompt(tier: str = "pro") -> str:
+    view = "Distribución por tipo de activo (torta del Dashboard / Análisis)"
+    pkt = (
+        "porciones por clase de instrumento (CEDEARs, acciones AR, acciones US, "
+        "ETFs, bonos y letras, FCI, plazo fijo, cripto, efectivo) con peso %, "
+        "valor USD y RESULTADO por porción (monto y tasa), los activos de cada "
+        "una, rankings de las que más y las que menos rinden por tasa, y de quién más aporta en plata, "
+        "concentración y qué porcentaje no tiene rendimiento medible."
+    )
+    free = _maybe_free("portfolio.distribution_type", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Separar PESO de RESULTADO: la porción más grande casi nunca es la que más rindió, y confundirlas es el error de lectura más común en esta vista.",
+            "Qué dice el mix de instrumentos sobre el perfil real: cuánto riesgo de renta variable vs renta fija vs liquidez, y si eso es coherente entre sí.",
+            "El caso argentino: CEDEARs y acciones AR son riesgos distintos aunque coticen en el mismo mercado — uno es riesgo del subyacente extranjero más el spread cambiario, el otro es riesgo-país directo.",
+            "El efectivo y el plazo fijo como decisión: cuánta cartera está sin exposición y qué costo de oportunidad tiene.",
+        ],
+        insight_examples=[
+            "Que los CEDEARs sean la porción más grande no dice mucho por sí solo: lo que importa es si su resultado viene del subyacente o del movimiento del dólar implícito, porque eso cambia qué lo puede revertir.",
+            "Una porción chica con la mejor tasa no mueve la aguja en plata; conviene decirlo explícitamente para que no se lea como la señal principal.",
+        ],
+        pitfalls=[
+            "NUNCA sumar los porcentajes de resultado entre porciones: son tasas sobre bases distintas.",
+            "`menos_rinden` es la cola del ranking, NO una lista de pérdidas: si su resultado es positivo, decirlo como 'rinde menos que el resto', nunca como 'está perdiendo'.",
+            "Si `sin_rendimiento_medible_pct` es alto, decirlo antes de comentar cualquier tasa — el rendimiento no cubre toda la cartera.",
+            "Si una porción no trae `resultado_pct`, no estimarlo ni deducirlo del monto: falta el costo, no el dato.",
+            "No recomendar rebalanceos concretos ni porcentajes objetivo. Describir la exposición, no prescribir la cartera.",
+        ],
+    )
+
+
+def render_distribution_sector_prompt(tier: str = "pro") -> str:
+    view = "Distribución por sector económico (torta del Dashboard / Análisis)"
+    pkt = (
+        "porciones por sector (tecnología, semiconductores, energía, financiero, "
+        "salud, materiales, servicios públicos, renta fija, cripto, efectivo…) "
+        "con peso %, valor USD y RESULTADO por sector (monto y tasa), los "
+        "activos de cada uno, rankings de las que más y las que menos rinden por "
+        "tasa, y de quién más aporta en plata, concentración y qué porcentaje no "
+        "tiene rendimiento medible."
+    )
+    free = _maybe_free("portfolio.distribution_sector", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Qué sectores están traccionando el resultado y cuáles lo están restando, con el matiz de cuánto pesa cada uno — un sector que rinde mucho con peso chico explica poco del total.",
+            "Concentración sectorial real: si dos o tres sectores explican la mayoría, qué escenario macro los golpearía juntos.",
+            "Correlación escondida: sectores que parecen distintos pero responden al mismo factor (semiconductores y tecnología; energía y materiales en un ciclo de commodities).",
+            "Que un CEDEAR cuenta en el sector de su empresa subyacente — la exposición sectorial no depende de en qué mercado lo compraste.",
+        ],
+        insight_examples=[
+            "Tecnología y semiconductores separados pueden dar sensación de diversificación que no existe: en un shock de tasas o de ciclo de capex se mueven juntos, así que conviene leerlos como una sola apuesta.",
+            "Un sector que rinde bien pero pesa poco no está sosteniendo la cartera; el que la sostiene es el que combina peso y tasa, y suele ser menos vistoso.",
+        ],
+        pitfalls=[
+            "NUNCA sumar los porcentajes de resultado entre sectores: son tasas sobre bases distintas.",
+            "`menos_rinden` es la cola del ranking, NO una lista de pérdidas: si su resultado es positivo, decirlo como 'rinde menos que el resto', nunca como 'está perdiendo'.",
+            "Renta fija, FCI, plazo fijo, cripto y efectivo NO son sectores económicos — son su propia porción porque no tienen sector. No compararlos como si fueran industrias.",
+            "Si `sin_clasificar_pct` o `sin_rendimiento_medible_pct` son altos, aclararlo antes de sacar conclusiones sectoriales.",
+            "No proyectar el rendimiento sectorial pasado hacia adelante ni sugerir rotar de sector.",
+        ],
+    )
+
+
+
+# ─── Libro del asesor: composición (primeros topics de asesor) ──────────────
+# El objeto medido NO es una cartera, es el libro entero. Los prompts del
+# retail hablan en segunda persona sobre "tu cartera" y "tus decisiones";
+# acá el que lee es un profesional mirando plata de OTROS, y el consejo que
+# necesita es distinto: no "qué hacer con esto" sino "qué explicar, a quién y
+# por qué". El tier 'advisor' cae en la rama Pro (is_descriptive_tier solo es
+# True para free/plus), así que no hay variante descriptiva.
+
+_BOOK_COMPOSITION_PITFALLS = [
+    "El objeto es el LIBRO, no una cartera: hablar de 'tus clientes' y del conjunto, nunca en segunda persona como si el asesor fuera el dueño de la plata.",
+    "El resultado de cada porción es AGRUPADO (resultado total sobre capital total), NO el promedio de lo que le fue a cada cliente. Si `mas_dispersos` muestra que un activo va de un cliente en rojo a otro muy arriba, el número agrupado no describe a nadie en particular y hay que decirlo.",
+    "NUNCA sumar los porcentajes de resultado entre porciones: son tasas sobre bases distintas.",
+    "El peso es POR VALOR: un cliente grande pesa más que uno chico. Una porción grande puede ser la decisión de UNA sola cartera, no una postura del libro — si `mas_difundidos` no la respalda, decirlo.",
+    "`menos_rinden` es la cola del ranking, NO una lista de pérdidas: si su resultado es positivo, decirlo como 'rinde menos que el resto'.",
+    "Si `sin_rendimiento_medible_pct` o `sin_clasificar_pct` son altos, aclararlo antes de comentar cualquier tasa.",
+    "No recomendar rebalanceos, porcentajes objetivo ni rotaciones. El asesor decide la cartera de cada cliente; acá se describe la exposición agregada.",
+    "No sugerir operar a partir de esto, ni tratar el libro como si fuera una cartera única que se puede rebalancear de una.",
+]
+
+
+def render_book_composition_type_prompt(tier: str = "advisor") -> str:
+    view = "Composición del libro por tipo de activo (torta del Dashboard del asesor)"
+    pkt = (
+        "el libro completo del asesor (la suma de las carteras que administra) "
+        "repartido por clase de instrumento (CEDEARs, acciones AR, acciones US, "
+        "ETFs, bonos y letras, FCI, plazo fijo, cripto, efectivo) con peso %, "
+        "valor USD y RESULTADO por porción (monto y tasa), los activos de cada "
+        "una, rankings de las que más y las que menos rinden, concentración, "
+        "sobre cuántos clientes está medido y qué activos están en más carteras."
+    )
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Qué dice el mix agregado sobre cómo está posicionado el libro: cuánta renta variable vs renta fija vs liquidez, y si eso es coherente con administrar plata de terceros.",
+            "Concentración con la lente correcta: una porción grande puede venir de MUCHAS carteras (una postura del asesor) o de UNA sola grande (un caso). `mas_difundidos` y `clientes` son lo que distingue una cosa de la otra, y cambia por completo qué conversación hay que tener.",
+            "El caso argentino: CEDEARs y acciones AR son riesgos distintos aunque compartan mercado — uno es riesgo del subyacente extranjero más el spread cambiario, el otro es riesgo-país directo. En un libro, cuánto pesa cada uno es una postura macro implícita.",
+            "El efectivo y el plazo fijo como decisión: plata sin exposición dentro de un libro administrado es una posición, no un descuido, y conviene poder explicarla.",
+            "La dispersión (`mas_dispersos`) como cola de llamados: un activo cuyo resultado agrupado es bueno pero donde el peor cliente está en rojo es exactamente la conversación que conviene tener antes de que la pida el cliente.",
+        ],
+        insight_examples=[
+            "Si los CEDEARs son la porción más grande pero están en pocas carteras, no es una postura del libro sino la cartera de un cliente grande dominando el promedio ponderado — y eso cambia a quién hay que llamar.",
+            "Una porción chica con la mejor tasa no mueve la aguja del libro; decirlo explícitamente evita que se lea como la señal principal cuando se arma el mensaje al cliente.",
+        ],
+        pitfalls=_BOOK_COMPOSITION_PITFALLS,
+    )
+
+
+def render_book_composition_sector_prompt(tier: str = "advisor") -> str:
+    view = "Composición del libro por sector económico (torta del Dashboard del asesor)"
+    pkt = (
+        "el libro completo del asesor repartido por sector (tecnología, "
+        "semiconductores, energía, financiero, salud, materiales, servicios "
+        "públicos, renta fija, cripto, efectivo…) con peso %, valor USD y "
+        "RESULTADO por sector, los activos de cada uno, rankings, "
+        "concentración, sobre cuántos clientes está medido y qué activos están "
+        "en más carteras."
+    )
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Riesgo COMÚN: en un libro, la concentración sectorial es el riesgo que golpearía a muchos clientes el mismo día. Ese es el riesgo que un asesor tiene que poder ver antes de que pase, porque es el que le genera muchas llamadas a la vez.",
+            "Correlación escondida: sectores que parecen distintos pero responden al mismo factor (semiconductores y tecnología; energía y materiales en un ciclo de commodities). Separados dan una sensación de diversificación del libro que no existe.",
+            "Qué sectores traccionan el resultado y cuáles lo restan, con el matiz del peso — un sector que rinde mucho con peso chico explica poco del total del libro.",
+            "Que un CEDEAR cuenta en el sector de su empresa subyacente: la exposición sectorial no depende de en qué mercado se compró.",
+        ],
+        insight_examples=[
+            "Si tecnología y semiconductores juntos explican la mayoría del libro, conviene leerlos como una sola apuesta: en un shock de tasas o de ciclo de capex se mueven juntos y el teléfono suena de todas las carteras a la vez.",
+            "Un sector con peso alto que aparece en pocas carteras no es exposición del libro: es una posición concentrada de alguien, y el riesgo es de ese cliente, no del conjunto.",
+        ],
+        pitfalls=_BOOK_COMPOSITION_PITFALLS + [
+            "Renta fija, FCI, plazo fijo, cripto y efectivo NO son sectores económicos — son su propia porción porque no tienen sector. No compararlos como si fueran industrias.",
+        ],
+    )
+
+
 def render_dashboard_composition_prompt(tier: str = "pro") -> str:
     view = "Composición del portfolio (sub-componente Dashboard)"
     pkt = (

@@ -25,6 +25,10 @@ from .builders.dashboard_composition import build as build_dashboard_composition
 from .builders.dashboard_evolution import build as build_dashboard_evolution
 from .builders.dashboard_top_holdings import build as build_dashboard_top_holdings
 from .builders.dashboard_brokers import build as build_dashboard_brokers
+from .builders.distribution import build_type as build_distribution_type
+from .builders.distribution import build_sector as build_distribution_sector
+from .builders.book_composition import build_type as build_book_composition_type
+from .builders.book_composition import build_sector as build_book_composition_sector
 from .builders.dashboard_events import build as build_dashboard_events
 from .builders.behavioral import build as build_behavioral
 from .builders.behavioral_card import build as build_behavioral_card
@@ -62,6 +66,10 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "dashboard.evolution": (build_dashboard_evolution, prompts.render_dashboard_evolution_prompt),
     "dashboard.top_holdings": (build_dashboard_top_holdings, prompts.render_dashboard_top_holdings_prompt),
     "dashboard.brokers": (build_dashboard_brokers, prompts.render_dashboard_brokers_prompt),
+    # Tortas de distribución. Comparten builder (un eje cada uno) y el packet
+    # lo manda el frontend — ver la cabecera de builders/distribution.py.
+    "portfolio.distribution_type": (build_distribution_type, prompts.render_distribution_type_prompt),
+    "portfolio.distribution_sector": (build_distribution_sector, prompts.render_distribution_sector_prompt),
     "dashboard.upcoming_events": (build_dashboard_events, prompts.render_dashboard_events_prompt),
     "behavioral": (build_behavioral, prompts.render_behavioral_prompt),
     "behavioral.card": (build_behavioral_card, prompts.render_behavioral_card_prompt),
@@ -93,6 +101,15 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "operations.trade": (build_operation_trade, prompts.render_operation_trade_prompt),
     # Calidad de cartera — análisis curado de UNA dimensión fundamental de una acción.
     "fundamentals.category": (build_fundamentals_category, prompts.render_fundamentals_category_prompt),
+    # ── Libro del asesor ────────────────────────────────────────────────────
+    # Los primeros topics que NO miran una cuenta sino el conjunto de las
+    # carteras administradas. Se llaman `composition` y no `distribution`
+    # porque `book.distribution` ya significa otra cosa del lado asesor (la
+    # distribución de PERFORMANCE: cuántos clientes en verde y cuántos en
+    # rojo) y el prompt del libro ya se la describe al modelo con ese sentido.
+    # El packet lo manda el frontend — ver builders/book_composition.py.
+    "book.composition_type": (build_book_composition_type, prompts.render_book_composition_type_prompt),
+    "book.composition_sector": (build_book_composition_sector, prompts.render_book_composition_sector_prompt),
 }
 
 

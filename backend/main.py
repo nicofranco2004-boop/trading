@@ -34106,19 +34106,7 @@ def _advisor_book_chat_context(uid: int) -> dict:
         if not ids:
             return {**base, "clients": [], "exposure": []}
 
-        fx = conn.execute(
-            "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
-        # MEP: la fila MÁS NUEVA puede venir solo-blue (el cron nocturno no
-        # trae mep) → buscamos la última fila CON mep (audit: si no, el libro
-        # entero se valuaba al blue ~5% abajo un fin de semana cualquiera).
-        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else None
-        if tc_mep is None:
-            _fxm = conn.execute(
-                "SELECT mep_venta FROM fx_rates_daily WHERE mep_venta IS NOT NULL "
-                "ORDER BY date DESC LIMIT 1").fetchone()
-            tc_mep = float(_fxm["mep_venta"]) if _fxm else tc_blue
+        tc_blue, tc_mep = _advisor_book_fx(conn)
 
         valued, skipped = _advisor_positions_valued(conn, ids, tc_blue, tc_mep)
         latest = _latest_snapshots(conn, ids)
@@ -34598,19 +34586,7 @@ def advisor_reports_generate(data: AdvisorReportIn, request: Request,
                         WHERE ac.advisor_uid=? AND ac.status='active'""", (uid,)).fetchall()}
         targets = (data.client_uids if data.client_uids else list(links))
         branding = _advisor_branding(conn, uid)
-        fx = conn.execute(
-            "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
-        # MEP: la fila MÁS NUEVA puede venir solo-blue (el cron nocturno no
-        # trae mep) → buscamos la última fila CON mep (audit: si no, el libro
-        # entero se valuaba al blue ~5% abajo un fin de semana cualquiera).
-        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else None
-        if tc_mep is None:
-            _fxm = conn.execute(
-                "SELECT mep_venta FROM fx_rates_daily WHERE mep_venta IS NOT NULL "
-                "ORDER BY date DESC LIMIT 1").fetchone()
-            tc_mep = float(_fxm["mep_venta"]) if _fxm else tc_blue
+        tc_blue, tc_mep = _advisor_book_fx(conn)
 
         out, skipped = [], []
         for cid in targets[:200]:
@@ -35469,15 +35445,52 @@ def _snapshots_asof(conn, ids: list, cutoff: str) -> dict:
     ).fetchall()}
 
 
-def _advisor_positions_valued(conn, ids: list, tc_blue: float, tc_mep: float):
+def _advisor_book_fx(conn):
+    """(tc_blue, tc_mep) del día para valuar el libro. Tabla global, sin red.
+
+    Estaba copiado VERBATIM en tres endpoints del asesor (libro, informes,
+    contexto de la IA). Los tres tienen que valuar con el MISMO dólar: dos
+    pantallas del asesor mostrando el mismo libro a tipos de cambio distintos
+    es el bug clásico de esta app. Una sola copia = no puede pasar.
+    """
+    fx = conn.execute(
+        "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
+    # MEP: la fila MÁS NUEVA puede venir solo-blue (el cron nocturno no
+    # trae mep) → buscamos la última fila CON mep (audit: si no, el libro
+    # entero se valuaba al blue ~5% abajo un fin de semana cualquiera).
+    tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else None
+    if tc_mep is None:
+        _fxm = conn.execute(
+            "SELECT mep_venta FROM fx_rates_daily WHERE mep_venta IS NOT NULL "
+            "ORDER BY date DESC LIMIT 1").fetchone()
+        tc_mep = float(_fxm["mep_venta"]) if _fxm else tc_blue
+    return tc_blue, tc_mep
+
+
+def _advisor_positions_valued(conn, ids: list, tc_blue: float, tc_mep: float,
+                              stats: dict = None):
     """Valúa TODAS las posiciones abiertas (no-cash) de los clientes con el
     motor canónico del snapshot. Extraído del motor estrella de advisor_book
     para que el contexto de la IA del libro use LA MISMA valuación (un solo
     lugar donde vive esta lógica).
 
-    Devuelve (rows, skipped): rows = [{client_uid, asset, broker, value_usd,
-    invested_usd, pnl_usd}] y skipped = posiciones excluidas (sin precio
-    conocido o con broker huérfano — sin precio ≠ P&L 0)."""
+    Devuelve (rows, skipped): rows = [{client_uid, asset, broker, asset_type,
+    is_ar_market, value_usd, invested_usd, pnl_usd}] y skipped = posiciones
+    excluidas (sin precio conocido o con broker huérfano — sin precio ≠ P&L 0).
+
+    `is_ar_market`: ¿la posición cotiza en BYMA? Se resuelve ACÁ porque acá
+    están los brokers de TODOS los clientes con su parent_broker_id — el
+    clasificador del frontend (utils/assetClass.js) lo saca de un registro
+    global que solo conoce los brokers de la cuenta abierta, así que sobre
+    carteras ajenas devolvería cualquier cosa. Mismo criterio que la
+    valuación usa para decidir si el precio va por `.BA`: ars_names ∪
+    ar_usd_names (parent-aware), más el hint CEDEAR del importador.
+
+    `stats`: dict opcional que se rellena con el desglose de lo excluido
+    ({'no_price', 'orphan_broker'}). El total sigue viniendo por el return
+    para no romper a los 4 callers que desempaquetan (rows, skipped)."""
     from snapshots_job import (
         compute_broker_value_usd, build_price_symbols, read_last_prices,
         _broker_name_sets, position_price_key,
@@ -35525,11 +35538,15 @@ def _advisor_positions_valued(conn, ids: list, tc_blue: float, tc_mep: float):
                 # dólares y fabricaría pérdidas gigantes. Mismo guard que
                 # _valuate_positions_for_chat.
                 skipped += 1
+                if stats is not None:
+                    stats["orphan_broker"] = stats.get("orphan_broker", 0) + 1
                 continue
             has_price = (p.get("price_override") is not None or
                          prices.get(position_price_key(p, ars_names, ar_usd_names)) is not None)
             if not has_price:
                 skipped += 1
+                if stats is not None:
+                    stats["no_price"] = stats.get("no_price", 0) + 1
                 continue  # sin precio ≠ P&L 0 — se excluye
             try:
                 r = compute_broker_value_usd(
@@ -35541,6 +35558,14 @@ def _advisor_positions_valued(conn, ids: list, tc_blue: float, tc_mep: float):
                 continue
             rows.append({
                 "client_uid": cid, "asset": p["asset"], "broker": p["broker"],
+                # asset_type e is_ar_market ya se leían en el SELECT y se
+                # tiraban acá: son lo que el clasificador del frontend
+                # necesita para decidir qué ES el ticker.
+                "asset_type": p.get("asset_type"),
+                "is_ar_market": (
+                    (p.get("asset_type") or "").upper() == "CEDEAR"
+                    or p["broker"] in ars_names or p["broker"] in ar_usd_names
+                ),
                 "value_usd": value, "invested_usd": invested,
                 "pnl_usd": value - invested,
             })
@@ -35583,19 +35608,7 @@ def advisor_book(uid: int = Depends(get_current_user)):
                     "star": None, "queues": []}
 
         # FX del día (tabla global, sin red). MEP para convertir cash ARS.
-        fx = conn.execute(
-            "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
-        # MEP: la fila MÁS NUEVA puede venir solo-blue (el cron nocturno no
-        # trae mep) → buscamos la última fila CON mep (audit: si no, el libro
-        # entero se valuaba al blue ~5% abajo un fin de semana cualquiera).
-        tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else None
-        if tc_mep is None:
-            _fxm = conn.execute(
-                "SELECT mep_venta FROM fx_rates_daily WHERE mep_venta IS NOT NULL "
-                "ORDER BY date DESC LIMIT 1").fetchone()
-            tc_mep = float(_fxm["mep_venta"]) if _fxm else tc_blue
+        tc_blue, tc_mep = _advisor_book_fx(conn)
 
         # Fecha "hoy" en ART (UTC-3): los snapshots se estampan con fecha ART
         # (cron 23:59 ART) — cortar en UTC corría el mes 3 horas antes (audit).
@@ -35868,6 +35881,629 @@ def advisor_book(uid: int = Depends(get_current_user)):
             "star": star,
             "queues": queues,
         }
+    finally:
+        conn.close()
+
+
+# ─── Composición del libro (GET /api/advisor/book/composition) ───────────────
+# El backend VALÚA Y AGREGA. El frontend CLASIFICA, con el mismo código que el
+# retail (utils/assetClass.js + utils/assetSector.js).
+#
+# ── Por qué el backend tiene que valuar ────────────────────────────────────
+# /api/prices tiene un cap DURO de 60 símbolos y TRUNCA EN SILENCIO
+# (sym_list[:MAX_SYMBOLS]) — un libro de 100 clientes toca ~486 tickers, así
+# que valuar desde el navegador no daría un error, daría una torta incompleta
+# con pinta de correcta. Acá se resuelve sin red: asset_last_price + el motor
+# canónico del snapshot (compute_broker_value_usd).
+#
+# ── Por qué el frontend tiene que clasificar ───────────────────────────────
+# Portar assetClass/assetSector a Python sería una SEGUNDA implementación de
+# la misma regla, y el día que diverjan la torta del asesor y la del cliente
+# muestran números distintos para la misma cartera. No es hipotético: el
+# clasificador Python que ya existe del lado asesor (advisor_groups.classify)
+# manda 9,4% de las posiciones reales a "otro", dice us_stock para un AAPL en
+# broker ARS y "otro" para AL30. El repo además tiene dos precedentes malos de
+# portar listas a Python (ai/trade_tickers.py perdió 29% de los CEDEARs;
+# importing/tickers_cd.py recibió su test de paridad tres días tarde, en un
+# commit de fix por un bug de producción).
+#
+# ── Por qué mandar filas no revienta el payload ────────────────────────────
+# Medido contra el dump real de prod: las posiciones CRUDAS de 500 clientes
+# son 8,0 MB (ADVISOR_MAX_CLIENTS=500). AGREGADAS por (activo, asset_type,
+# mercado) son 115 KB. Lo que no escalaba era mandar sin agregar.
+#
+# ── `is_ar_market` ─────────────────────────────────────────────────────────
+# Es la ÚNICA señal que el clasificador saca hoy de la lista de brokers. Al
+# resolverla acá (parent-aware, con los brokers de todos los clientes) el
+# clasificador corre sobre el libro sin necesitar los brokers de nadie.
+
+def _advisor_cash_usd(conn, ids: list, tc_mep: float):
+    """Efectivo por cliente y por moneda de broker, en USD.
+
+    _advisor_positions_valued excluye el cash POR SQL (`AND COALESCE(is_cash,0)=0`).
+    Una torta armada solo sobre eso no cierra contra el patrimonio, y el hueco
+    ya causó un bug documentado en la IA del libro: un cliente con 80% cash
+    veía su única posición como el 100% de la cartera y el modelo
+    sobreestimaba la concentración sistemáticamente.
+
+    Conversión: espejo de cashForComposition del Dashboard retail — el cash de
+    un broker ARS va al MEP, el de cualquier otro (incluido el sub-broker
+    "· USD" de un padre argentino) ya está en dólares.
+
+    Devuelve (rows, orphan_count): rows = [{client_uid, asset, value_usd}].
+    """
+    if not ids:
+        return [], 0
+    ph = ",".join("?" * len(ids))
+    rows, orphan = [], 0
+    for r in conn.execute(
+        f"""SELECT p.user_id, p.asset, p.broker, p.invested, b.currency ccy
+            FROM positions p
+            LEFT JOIN brokers b ON b.user_id = p.user_id AND b.name = p.broker
+            WHERE p.user_id IN ({ph}) AND p.is_cash = 1""", ids,
+    ).fetchall():
+        v = float(r["invested"] or 0)
+        if v <= 0:
+            continue
+        if r["ccy"] is None:
+            # Broker huérfano: contar un saldo en pesos como dólares 1:1
+            # fabricaría patrimonio ×1400. Mismo guard que el motor.
+            orphan += 1
+            continue
+        rows.append({
+            "client_uid": r["user_id"],
+            "asset": (r["asset"] or "USD"),
+            "value_usd": v / tc_mep if (r["ccy"] or "").upper() == "ARS" else v,
+        })
+    return rows, orphan
+
+
+def _advisor_pf_usd(conn, ids: list, tc_mep: float):
+    """Plazos fijos abiertos del libro, valuados a hoy y sumados en USD.
+
+    Los PF no son posiciones (viven en su propia tabla) y NO están ni en el
+    snapshot nocturno ni en el motor de valuación — `grep plazo snapshots_job.py`
+    no devuelve nada. La torta retail los mete como porción sintética; sin
+    esto, un cliente con la mitad del patrimonio en plazo fijo aparece con esa
+    mitad invisible.
+
+    Valuación: _pf_value, que ya existe y es el espejo declarado de computePf
+    del frontend — no una segunda implementación.
+
+    ⚠️ ARS → USD al MEP, NO al blue. El frontend hace `pfUsd(totals, tcBlue)` y
+    el nombre engaña: `tcBlue` del CurrencyContext TIENE EL VALOR DEL MEP
+    (cascada mep→ccl→blue), y está escrito así en su cabecera —
+    "la variable se sigue llamando tcBlue pero TIENE EL VALOR DEL MEP".
+    Usar el blue de verdad hacía valer el mismo plazo fijo ~25% distinto en el
+    libro que en el Dashboard del cliente, y encima mezclaba dos dólares dentro
+    del mismo total (el cash y los holdings de este endpoint ya iban al MEP).
+
+    Devuelve {'value_usd', 'invested_usd', 'count', 'clients'} — `clients` es el
+    set de client_uid con algún PF abierto: sin eso, un cliente cuyo patrimonio
+    está íntegramente en plazos fijos suma al total y desaparece del conteo.
+    """
+    if not ids:
+        return {"value_usd": 0.0, "invested_usd": 0.0, "count": 0, "clients": set()}
+    ph = ",".join("?" * len(ids))
+    value = invested = 0.0
+    n = 0
+    clients = set()
+    for r in conn.execute(
+        f"""SELECT * FROM plazos_fijos
+            WHERE user_id IN ({ph}) AND closed_at IS NULL""", ids,
+    ).fetchall():
+        try:
+            v = _pf_value(r)["valor_hoy"]
+        except Exception:
+            continue
+        cap = float(r["capital"] or 0)
+        if (r["moneda"] or "ARS").upper() == "ARS":
+            v, cap = v / tc_mep, cap / tc_mep
+        value += v
+        invested += cap
+        n += 1
+        clients.add(r["user_id"])
+    return {"value_usd": value, "invested_usd": invested, "count": n,
+            "clients": clients}
+
+
+def _strip_accents(s: str) -> str:
+    """'CUPÓN' → 'CUPON'. Espejo del .normalize('NFD') de assetPnl.js."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", s)
+                   if not unicodedata.combining(c))
+
+
+MAX_PNL_TO_COST = 10   # espejo de assetPnl.js — ver _rate_pct
+
+
+def _rate_pct(total: float, cost: float, incomplete: bool):
+    """La tasa, o None cuando no hay tasa que valga. Espejo de ratePct()
+    (frontend/src/utils/assetPnl.js), MISMA constante.
+
+    Tres motivos para no publicarla: no hay costo, el costo está incompleto
+    (alguna venta no trajo con qué despejarlo), o el costo es tan chico contra
+    el resultado que el cociente dejó de ser un rendimiento — un bono que
+    amortizó casi todo sigue sumando años de cupones contra un costo residual
+    (GD35: US$15 de posición, US$1.463 de renta ⇒ +9.804%).
+    """
+    if incomplete or not cost or cost <= 0:
+        return None
+    if abs(total) > cost * MAX_PNL_TO_COST:
+        return None
+    return (total / cost) * 100
+
+
+def _advisor_realized_raw(conn, ids: list) -> dict:
+    """Lo cerrado y la renta POR CLIENTE: {(uid, ASSET, is_ar): bucket}.
+
+    Es la materia prima de dos cosas: el agregado cross-cliente que consume la
+    torta (_advisor_realized_by_asset) y el rango de retorno entre clientes
+    (_advisor_return_spread). Una sola pasada por `operations`.
+
+    Por qué agregado y no crudo: `operations` tiene media de 195 filas por
+    usuario y máximo 6.415 — mandar las filas de 500 clientes al navegador es
+    justamente lo que el diseño de este endpoint evita. Acá se suma y viajan
+    ~decenas de filas.
+
+    Por qué hace falta: una torta que solo mire posiciones abiertas cuenta el
+    rendimiento a medias. Medido contra la base de dev, los dividendos suman
+    US$10.972 y los intereses US$9.695 contra US$2.652 de ventas realizadas —
+    un bono que pagó renta toda su vida tiene su rendimiento EN LOS CUPONES.
+
+    ⚠️ `pnl_usd` NO se lee crudo: pasa por realized_pnl.realized_usd_sql(). La
+    columna se llama así pero en las cobranzas de renta fija guarda el monto en
+    la MONEDA DEL BROKER (`bond_cashflow` inserta net_amount tal cual), así que
+    un cupón de $125.000 sumado crudo cuenta 125.000 dólares. Ese módulo existe
+    justamente porque el criterio estaba copiado a mano en 4 lugares y divergió:
+    el síntoma en producción fue un cupón que el dashboard mostraba como US$100
+    y la IA, en el MISMO request, contaba como US$125.000. Este lector es el
+    quinto — no puede tener su propia versión de la regla.
+
+    El costo se despeja del par (pnl_usd, pnl_pct), igual que en el frontend:
+    `cost_basis_consumed` está 100% NULL en las filas reales y
+    `entry_price × quantity` está en la moneda nativa de la operación (hay un
+    bug abierto con entry y exit en monedas distintas en la misma fila, que
+    mezclado con USD da errores de ~1400×). Las dos puntas del par ya están
+    normalizadas a USD y son mutuamente consistentes.
+
+    Si a alguna venta le falta el % no se inventa el costo: se marca
+    `cost_incomplete` y el frontend oculta la tasa de esa porción en vez de
+    publicar una inflada.
+
+    `asset_type` sale de la posición abierta del mismo (broker, activo) —
+    mismo hint que usa computePnlByKey en retail: sin él, la venta de un
+    CEDEAR en una cuenta dólar se clasificaría como acción US y la ganancia
+    caería en la porción equivocada.
+    """
+    if not ids:
+        return []
+    from snapshots_job import _broker_name_sets
+    ph = ",".join("?" * len(ids))
+
+    brokers_by_uid = {}
+    for r in conn.execute(
+        f"SELECT id, user_id, name, currency, parent_broker_id FROM brokers WHERE user_id IN ({ph})", ids
+    ).fetchall():
+        brokers_by_uid.setdefault(r["user_id"], []).append(dict(r))
+
+    hints = {}
+    for r in conn.execute(
+        f"""SELECT user_id, broker, asset, asset_type FROM positions
+            WHERE user_id IN ({ph}) AND asset_type IS NOT NULL""", ids
+    ).fetchall():
+        hints[(r["user_id"], r["broker"], (r["asset"] or "").upper())] = r["asset_type"]
+
+    agg = {}
+    for r in conn.execute(
+        f"""SELECT user_id, broker, asset, op_type,
+                   {realized_pnl.realized_usd_sql()} AS pnl_usd,
+                   pnl_pct
+            FROM operations WHERE user_id IN ({ph}) AND pnl_usd IS NOT NULL""", ids
+    ).fetchall():
+        pnl = float(r["pnl_usd"] or 0)
+        if pnl == 0:
+            continue
+        asset = (r["asset"] or "").strip()
+        # Sin acentos, igual que assetPnl.js: la app escribe op_type='Cupón' y
+        # 'CUPÓN'.upper() no contiene 'CUPON' — los cupones se contaban como
+        # venta y le borraban el rendimiento % a la porción de bonos.
+        tipo = _strip_accents((r["op_type"] or "").upper())
+        # Espejo de isRealAssetOp: las conversiones de moneda (ARS→USDT) no son
+        # un activo y ensuciarían la porción "Sin clasificar".
+        if not asset or "\u2192" in asset or tipo.startswith("CONVERSION"):
+            continue
+
+        ars_names, ar_usd_names = _broker_name_sets(brokers_by_uid.get(r["user_id"], []))
+        atype = hints.get((r["user_id"], r["broker"], asset.upper()))
+        is_ar = ((atype or "").upper() == "CEDEAR"
+                 or r["broker"] in ars_names or r["broker"] in ar_usd_names)
+
+        k = (r["user_id"], asset.upper(), bool(is_ar))
+        b = agg.get(k)
+        if b is None:
+            b = agg[k] = {"asset": asset.upper(), "asset_type": atype,
+                          "is_ar_market": bool(is_ar), "realized_usd": 0.0,
+                          "income_usd": 0.0, "cost_usd": 0.0, "cost_incomplete": False}
+        elif atype and not b["asset_type"]:
+            b["asset_type"] = atype
+
+        if "DIVIDENDO" in tipo or "INTER" in tipo or "CUPON" in tipo:
+            # La renta suma al resultado pero NO al capital invertido: no
+            # invertiste para cobrar el cupón, el capital ya está contado.
+            b["income_usd"] += pnl
+            continue
+
+        b["realized_usd"] += pnl
+        pct = r["pnl_pct"]
+        cost = (pnl / (float(pct) / 100)) if (pct is not None and float(pct) != 0) else None
+        if cost is not None and cost == cost and cost > 0 and cost != float("inf"):
+            b["cost_usd"] += cost
+        else:
+            b["cost_incomplete"] = True
+
+    return agg
+
+
+def _advisor_realized_by_asset(conn, ids: list, raw: dict = None):
+    """El pliegue cross-cliente de _advisor_realized_raw: una fila por
+    (activo, mercado), que es lo que la torta necesita."""
+    raw = _advisor_realized_raw(conn, ids) if raw is None else raw
+    folded = {}
+    for (_uid, asset, is_ar), b in raw.items():
+        k = (asset, is_ar)
+        f = folded.get(k)
+        if f is None:
+            f = folded[k] = {"asset": asset, "asset_type": b["asset_type"],
+                             "is_ar_market": is_ar, "realized_usd": 0.0,
+                             "income_usd": 0.0, "cost_usd": 0.0,
+                             "cost_incomplete": False}
+        elif b["asset_type"] and not f["asset_type"]:
+            f["asset_type"] = b["asset_type"]
+        f["realized_usd"] += b["realized_usd"]
+        f["income_usd"] += b["income_usd"]
+        f["cost_usd"] += b["cost_usd"]
+        f["cost_incomplete"] = f["cost_incomplete"] or b["cost_incomplete"]
+
+    out = []
+    for b in folded.values():
+        # Ojo con el `or`: dos clientes que vendieron +500 y −500 dan un neto de
+        # 0, pero el capital que estuvo en juego SÍ va al denominador del
+        # rendimiento. Tirar la fila perdía esos US$10.000 de costo y la porción
+        # publicaba un % 6× más alto que el real.
+        if (b["realized_usd"] == 0 and b["income_usd"] == 0
+                and not (b["cost_usd"] > 0)):
+            continue
+        out.append({
+            "asset": b["asset"], "asset_type": b["asset_type"],
+            "is_ar_market": b["is_ar_market"],
+            "realized_usd": round(b["realized_usd"], 2),
+            "income_usd": round(b["income_usd"], 2),
+            "cost_usd": round(b["cost_usd"], 2),
+            "cost_incomplete": b["cost_incomplete"],
+        })
+    out.sort(key=lambda r: -(abs(r["realized_usd"]) + abs(r["income_usd"])))
+    return out
+
+
+def _norm_ticker(asset) -> str:
+    """'amd.ba' -> 'AMD'. Espejo de normalizeTicker (utils/assetClass.js).
+
+    Rendi guarda el activo SIN sufijo de mercado, pero no todos los
+    importadores respetan la convención. El frontend normaliza antes de
+    matchear, así que si acá agrupamos por el símbolo crudo el mismo papel sale
+    en dos filas y una le pisa el rango a la otra en el Map del cliente.
+    """
+    t = str(asset or "").upper().strip()
+    return t[:-3] if t.endswith(".BA") else t
+
+
+def _advisor_return_spread(valued_rows: list, realized_raw: dict):
+    """El rango de retorno ENTRE CLIENTES para cada activo.
+
+    El % que muestra la torta es AGRUPADO: Σresultado ÷ Σcosto de todo lo que
+    cae en la porción. Es el número correcto para el titular — es el retorno de
+    la plata efectivamente puesta ahí, y es el único que se reconcilia con los
+    montos de la pantalla. Pero en un libro esconde algo que al asesor le
+    importa más: "AAPL +9,8%" puede ser un cliente en −20% y otro en +40%. El
+    libro se ve bien y hay alguien enojado.
+
+    Así que al lado del agrupado va el rango. Se calcula POR CLIENTE con las
+    MISMAS tres patas y el mismo guard de tasa que el agrupado (_rate_pct).
+
+    ⚠️ El rango contiene al agrupado SOLO si `clients == clients_total`. El
+    agrupado es Σtotal/Σcost, o sea un promedio ponderado de los retornos
+    individuales, y un promedio ponderado siempre cae entre el mínimo y el
+    máximo... de los clientes que entraron en la cuenta. Un cliente cuya tasa
+    no es publicable (denominador evaporado) queda AFUERA del rango pero su
+    plata sigue en el promedio, y entonces los dos números se separan: el caso
+    GD35 daba "+18,3%" arriba y "de +5,0% a +5,0%" abajo. Por eso viajan los
+    dos conteos y la UI escribe "2 de 3 carteras" cuando difieren.
+
+    ⚠️ El rango es POR MERCADO, no por ticker. El mismo papel comprado como
+    CEDEAR y como acción del exterior cae en porciones DISTINTAS de la torta
+    por tipo (una en "CEDEARs", otra en "Acciones US"), cada una con su propio
+    %. Un rango que juntara los dos mercados describiría una población que no
+    es la de la porción donde se muestra, y ahí el rango vuelve a no contener
+    al número de al lado — medido en el libro demo: la fila de NU en "Acciones
+    US" decía +6,8% con un rango de +14,8% a +41,5%, que era el de los dos
+    mercados juntos.
+
+    Devuelve [{asset, is_ar_market, clients, clients_total, clients_red,
+    min_pct, max_pct}] solo para los pares (activo, mercado) con al menos DOS
+    clientes con retorno medible: con uno no hay dispersión que contar.
+    """
+    # Clave: (cliente, TICKER NORMALIZADO). Los dos mercados del mismo papel se
+    # suman ANTES de sacar el porcentaje, no después. Un cliente que tiene AAPL
+    # como CEDEAR y como acción del exterior es UN cliente con una exposición a
+    # Apple, no dos: agrupando después, ese cliente aparecía dos veces en el
+    # rango y el propio guard de "menos de dos clientes no es dispersión" no lo
+    # frenaba (el libro decía clients:1 y el rango clients:2, en la misma
+    # respuesta).
+    per = {}   # (uid, TICKER, is_ar) -> [total, cost, incomplete]
+
+    for vr in valued_rows:
+        k = (vr["client_uid"], _norm_ticker(vr["asset"]), bool(vr.get("is_ar_market")))
+        acc = per.setdefault(k, [0.0, 0.0, False])
+        acc[0] += vr["pnl_usd"]
+        acc[1] += vr["invested_usd"]
+
+    for (uid, asset, is_ar), b in (realized_raw or {}).items():
+        k = (uid, _norm_ticker(asset), bool(is_ar))
+        acc = per.setdefault(k, [0.0, 0.0, False])
+        acc[0] += b["realized_usd"] + b["income_usd"]
+        acc[1] += b["cost_usd"]
+        acc[2] = acc[2] or b["cost_incomplete"]
+
+    # `clients` cuenta a los MEDIBLES; `clients_total`, a todos los que tienen
+    # el activo. Cuando difieren, el rango NO cubre a todo el mundo y la UI lo
+    # dice ("2 de 3 carteras"): el % que está justo arriba sí incluye al que
+    # falta, así que sin ese rótulo los dos números se contradicen sin
+    # explicación. Es exactamente el caso GD35 — un cliente con el denominador
+    # evaporado queda afuera del rango pero su plata sigue en el promedio.
+    by_asset = {}
+    for (_uid, asset, is_ar), (total, cost, incomplete) in per.items():
+        d = by_asset.setdefault((asset, is_ar), {"pcts": [], "total": 0})
+        d["total"] += 1
+        pct = _rate_pct(total, cost, incomplete)
+        if pct is not None:
+            d["pcts"].append(pct)
+
+    out = []
+    for (asset, is_ar), d in by_asset.items():
+        pcts = d["pcts"]
+        if len(pcts) < 2:
+            continue
+        # `clients_red` es lo que la UI muestra: la pregunta del asesor no es
+        # "cuál es el rango" sino "¿hay alguien perdiendo con esto?", que es la
+        # que le hace agarrar el teléfono. El rango completo igual viaja, para
+        # el hover y para el packet de la IA.
+        out.append({"asset": asset, "is_ar_market": is_ar,
+                    "clients": len(pcts), "clients_total": d["total"],
+                    "clients_red": sum(1 for p in pcts if p < 0),
+                    "min_pct": round(min(pcts), 1), "max_pct": round(max(pcts), 1)})
+    out.sort(key=lambda r: -(r["max_pct"] - r["min_pct"]))
+    return out
+
+
+@app.get("/api/advisor/book/composition")
+def advisor_book_composition(uid: int = Depends(get_current_user)):
+    """Composición del libro: filas ya valuadas y AGREGADAS por (activo,
+    asset_type, mercado), listas para que el frontend las clasifique con el
+    clasificador del retail.
+
+    Bajo /api/advisor/ a propósito: ese prefijo está en CLIENT_CTX_EXEMPT_PREFIXES,
+    así que el endpoint es inmune al header X-Rendi-Client-Id y `uid` es
+    siempre el asesor real. Montarlo afuera lo haría heredar el contexto de
+    cliente (el propio código marca eso como fail-open).
+
+    La lista de clientes se DERIVA de la DB con _advisor_client_ids — nunca se
+    acepta por HTTP.
+    """
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        ids = _advisor_client_ids(conn, uid)
+        empty = {
+            "total_usd": 0.0, "clients": 0, "as_of": None, "rows": [],
+            "realized_by_asset": [], "return_spread": [],
+            "included": {"positions_usd": 0.0, "cash_usd": 0.0,
+                         "plazos_fijos_usd": 0.0, "plazos_fijos_count": 0},
+            "excluded": {"no_price": 0, "orphan_broker": 0},
+        }
+        if not ids:
+            return empty
+
+        tc_blue, tc_mep = _advisor_book_fx(conn)
+
+        # ── Las tres fuentes del patrimonio ──────────────────────────────
+        # (1) posiciones no-cash, (2) cash, (3) plazos fijos. El motor solo
+        # cubre la primera; sin las otras dos la torta no cierra contra nada.
+        stats = {"no_price": 0, "orphan_broker": 0}
+        valued, _skipped = _advisor_positions_valued(conn, ids, tc_blue, tc_mep, stats)
+        _realized_raw = _advisor_realized_raw(conn, ids)
+        cash_rows, cash_orphan = _advisor_cash_usd(conn, ids, tc_mep)
+        stats["orphan_broker"] += cash_orphan
+        pf = _advisor_pf_usd(conn, ids, tc_mep)
+
+        # ── Agregación ───────────────────────────────────────────────────
+        # Clave = (activo, asset_type, mercado). asset_type y mercado entran en
+        # la clave porque son EXACTAMENTE lo que el clasificador mira: el mismo
+        # AAPL es un CEDEAR en BYMA y la acción en el exterior, y colapsarlos
+        # mezclaría dos cosas distintas en una porción.
+        agg: dict = {}
+
+        def _bucket(asset, asset_type, is_ar, is_cash):
+            k = (asset, asset_type or "", bool(is_ar), bool(is_cash))
+            if k not in agg:
+                agg[k] = {
+                    "asset": asset, "asset_type": asset_type,
+                    "is_ar_market": bool(is_ar), "is_cash": bool(is_cash),
+                    "value_usd": 0.0, "invested_usd": 0.0, "_clients": set(),
+                }
+            return agg[k]
+
+        for vr in valued:
+            b = _bucket(vr["asset"], vr.get("asset_type"), vr.get("is_ar_market"), False)
+            b["value_usd"] += vr["value_usd"]
+            b["invested_usd"] += vr["invested_usd"]
+            b["_clients"].add(vr["client_uid"])
+        for cr in cash_rows:
+            # El cash no tiene mercado ni tipo: el clasificador lo corta en
+            # is_cash antes de mirar nada más.
+            b = _bucket(cr["asset"], None, False, True)
+            b["value_usd"] += cr["value_usd"]
+            b["invested_usd"] += cr["value_usd"]   # el efectivo no tiene P&L
+            b["_clients"].add(cr["client_uid"])
+
+        rows = []
+        for b in agg.values():
+            if b["value_usd"] <= 0:
+                continue
+            rows.append({
+                "asset": b["asset"],
+                "asset_type": b["asset_type"],
+                "is_ar_market": b["is_ar_market"],
+                "is_cash": b["is_cash"],
+                "value_usd": round(b["value_usd"], 2),
+                "invested_usd": round(b["invested_usd"], 2),
+                "pnl_usd": round(b["value_usd"] - b["invested_usd"], 2),
+                "clients": len(b["_clients"]),
+            })
+        rows.sort(key=lambda r: -r["value_usd"])
+
+        positions_usd = sum(r["value_usd"] for r in rows if not r["is_cash"])
+        cash_usd = sum(r["value_usd"] for r in rows if r["is_cash"])
+        total = positions_usd + cash_usd + pf["value_usd"]
+
+        # Cuántos clientes aportan algo a la torta (≠ clientes del roster).
+        # Los plazos fijos cuentan: entran como porción sintética en las TRES
+        # tortas, así que un cliente que pasó todo a plazo fijo aporta plata y
+        # no puede faltar en el conteo que va debajo del monto.
+        contributing = ({vr["client_uid"] for vr in valued}
+                        | {cr["client_uid"] for cr in cash_rows}
+                        | pf["clients"])
+
+        # as_of: el precio más nuevo que entró en esta valuación. NO es la
+        # fecha del snapshot del hero — son dos fuentes distintas y la UI
+        # tiene que poder decirlo (ver el pie de la card).
+        _as_of = conn.execute(
+            "SELECT MAX(updated_at) d FROM asset_last_price").fetchone()
+        as_of = (str(_as_of["d"])[:10] if _as_of and _as_of["d"] else None)
+
+        return {
+            "total_usd": round(total, 2),
+            "clients": len(contributing),
+            "as_of": as_of,
+            "rows": rows,
+            # Lo cerrado + la renta, para que la torta muestre RESULTADO y no
+            # solo peso. Va aparte de `rows` porque una venta ya no es una
+            # posición: el activo puede no estar más en ninguna cartera.
+            "realized_by_asset": _advisor_realized_by_asset(conn, ids, _realized_raw),
+            # El rango de retorno entre clientes por activo: el % agrupado de
+            # la torta esconde que un cliente puede estar en −20% y otro en
+            # +40% con el mismo papel.
+            "return_spread": _advisor_return_spread(valued, _realized_raw),
+            "included": {
+                "positions_usd": round(positions_usd, 2),
+                "cash_usd": round(cash_usd, 2),
+                "plazos_fijos_usd": round(pf["value_usd"], 2),
+                "plazos_fijos_invested_usd": round(pf["invested_usd"], 2),
+                "plazos_fijos_count": pf["count"],
+            },
+            "excluded": {
+                "no_price": stats["no_price"],
+                "orphan_broker": stats["orphan_broker"],
+            },
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/book/asset-clients")
+def advisor_book_asset_clients(asset: str, is_ar_market: bool = None,
+                               uid: int = Depends(get_current_user)):
+    """Quién tiene ESTE activo, y cómo le fue a cada uno.
+
+    El detalle que hay detrás de "2 de 6 clientes en rojo". Existe porque la
+    fila de la torta muestra dos números en unidades distintas — un rendimiento
+    ponderado POR PLATA (+1,0%) y un conteo de GENTE (2 de 6) — y puestos uno
+    al lado del otro parecen contradecirse. No se contradicen: el promedio lo
+    manda quien más tiene. La única forma de que eso se entienda es poder ver
+    los seis.
+
+    Se sirve APARTE y a pedido, no dentro de /composition: per-cliente
+    per-activo son ~32.000 filas para un libro de 500 clientes, que es
+    exactamente lo que el diseño de ese endpoint evita mandar. Acá el tope
+    natural es la cantidad de clientes que tienen ese activo.
+
+    Mismo motor y mismo criterio que la torta (_advisor_positions_valued +
+    _advisor_realized_raw + _rate_pct), así que el % de cada cliente es el
+    mismo que alimentó el rango: si acá dijera otra cosa, sería peor que no
+    tenerlo.
+    """
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        ids = _advisor_client_ids(conn, uid)
+        ticker = _norm_ticker(asset)
+        if not ids or not ticker:
+            return {"asset": ticker, "clients": []}
+
+        tc_blue, tc_mep = _advisor_book_fx(conn)
+        valued, _sk = _advisor_positions_valued(conn, ids, tc_blue, tc_mep)
+        realized_raw = _advisor_realized_raw(conn, ids)
+
+        # Mismo pliegue que _advisor_return_spread: (cliente, ticker, mercado).
+        # `is_ar_market` viene de la fila que el usuario tocó — sin él,
+        # mezclaríamos el CEDEAR con la acción del exterior, que en la torta
+        # son porciones distintas.
+        per = {}
+        for vr in valued:
+            if _norm_ticker(vr["asset"]) != ticker:
+                continue
+            if is_ar_market is not None and bool(vr.get("is_ar_market")) != is_ar_market:
+                continue
+            acc = per.setdefault(vr["client_uid"], [0.0, 0.0, False, 0.0])
+            acc[0] += vr["pnl_usd"]
+            acc[1] += vr["invested_usd"]
+            acc[3] += vr["value_usd"]
+        for (cid, a, is_ar), b in realized_raw.items():
+            if _norm_ticker(a) != ticker:
+                continue
+            if is_ar_market is not None and bool(is_ar) != is_ar_market:
+                continue
+            acc = per.setdefault(cid, [0.0, 0.0, False, 0.0])
+            acc[0] += b["realized_usd"] + b["income_usd"]
+            acc[1] += b["cost_usd"]
+            acc[2] = acc[2] or b["cost_incomplete"]
+
+        if not per:
+            return {"asset": ticker, "clients": []}
+
+        ph = ",".join("?" * len(per))
+        labels = {r["client_uid"]: (r["label"] or r["name"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      f"""SELECT ac.client_uid, ac.label, u.name
+                          FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
+                          WHERE ac.advisor_uid=? AND ac.client_uid IN ({ph})""",
+                      (uid, *per.keys())).fetchall()}
+
+        out = []
+        for cid, (total, cost, incomplete, value) in per.items():
+            out.append({
+                "client_uid": cid,
+                "label": labels.get(cid, f"Cliente {cid}"),
+                "value_usd": round(value, 2),
+                "pnl_usd": round(total, 2),
+                # None cuando la tasa no es publicable — mismo guard que el
+                # resto. La UI muestra el monto igual y la tasa como "—".
+                "pct": (lambda p: round(p, 1) if p is not None else None)(
+                    _rate_pct(total, cost, incomplete)),
+            })
+        # Peor primero: el que abre esto quiere saber a quién llamar.
+        out.sort(key=lambda r: (r["pct"] is None, r["pct"] if r["pct"] is not None else 0))
+        return {"asset": ticker, "clients": out}
     finally:
         conn.close()
 
