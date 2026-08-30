@@ -1168,3 +1168,31 @@ describe("purchase sin precio: el valor y el costo-display van al dólar de HOY"
     expect(r.pnlUsd).toBeCloseTo(0, 9)
   })
 })
+
+describe('setBrokersRegistry([]) — el registro se puede limpiar', () => {
+  // Es estado de MÓDULO y no se limpiaba nunca. Como el login es navegación SPA
+  // (sin reload), en una máquina compartida el usuario B valuaba con los brokers
+  // del usuario A. AuthContext ahora lo limpia en login y en logout.
+  const subDelUsuarioA = { id: 2, name: 'Mi cuenta dólar', currency: 'USD', parent_broker_id: 1 }
+  const regA = [{ id: 1, name: 'Balanz', currency: 'ARS' }, subDelUsuarioA]
+
+  it('limpiarlo devuelve isArUsdBroker al fallback por nombre', () => {
+    setBrokersRegistry(regA)
+    expect(isArUsdBroker('Mi cuenta dólar')).toBe(true)      // reconocido por parent_broker_id
+
+    setBrokersRegistry([])
+    // Ya no queda nada del usuario A: cae al fallback por NOMBRE, que no matchea.
+    expect(isArUsdBroker('Mi cuenta dólar')).toBe(false)
+    // Y el fallback sigue funcionando para la convención del backend.
+    expect(isArUsdBroker('Balanz · USD')).toBe(true)
+  })
+
+  it('un lote del usuario B deja de heredar el ruteo del usuario A', () => {
+    const lote = { asset: 'YPFD', quantity: 100, invested: 1000, is_cash: false,
+                   broker: 'Mi cuenta dólar', currency: 'USD' }
+    setBrokersRegistry(regA)
+    expect(valuationPriceKey(lote, false)).toBe('YPFD.BA')   // ruteo heredado de A
+    setBrokersRegistry([])
+    expect(valuationPriceKey(lote, false)).toBe('YPFD')      // sin herencia
+  })
+})

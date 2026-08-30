@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { api, clearClientContext } from '../utils/api'
+import { setBrokersRegistry } from '../utils/valuation'
 import { isDemoMode, enableDemoMode, disableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
@@ -128,6 +129,12 @@ export function AuthProvider({ children }) {
     // "Volver" en la misma pestaña SPA), el header stale rompería TODOS los
     // requests del user nuevo con 403. Identity change = contexto afuera.
     clearClientContext()
+    // `_brokersByName`/`_brokersById` de utils/valuation son estado de MÓDULO y
+    // no se limpiaban NUNCA: no había un solo setBrokersRegistry([]) en el árbol.
+    // Como el login es navegación SPA (sin reload), en una máquina compartida el
+    // usuario B podía valuar con los brokers del usuario A hasta que alguna
+    // pantalla repoblara el registro. Cambio de identidad = registro afuera.
+    setBrokersRegistry([])
     const u = { name, ...extra }
     localStorage.setItem('rendi_user', JSON.stringify(u))
     setUser(u)
@@ -207,6 +214,12 @@ export function AuthProvider({ children }) {
     // pero la variable módulo-level de api.js seguiría inyectando el header
     // el resto de la sesión SPA — limpiar el mirror en memoria también.
     clearClientContext()
+    // `_brokersByName`/`_brokersById` de utils/valuation son estado de MÓDULO y
+    // no se limpiaban NUNCA: no había un solo setBrokersRegistry([]) en el árbol.
+    // Como el login es navegación SPA (sin reload), en una máquina compartida el
+    // usuario B podía valuar con los brokers del usuario A hasta que alguna
+    // pantalla repoblara el registro. Cambio de identidad = registro afuera.
+    setBrokersRegistry([])
     if (user?.demo) {
       track('demo_mode_exited')
       disableDemoMode()
