@@ -29,8 +29,11 @@ class CagrFromSnapshotsTest(unittest.TestCase):
 
     def _snap(self, date, val, dep):
         self.conn.execute(
-            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
-            "VALUES (?,?,?,?,?)", (self.uid, date, val, dep, dep))
+            # `source='cron'` = lo que estampa el snapshot diario real. Sin eso la
+            # fila es indistinguible de las que fabrica el import copiando la cadena
+            # contable, y `twr.clasificar_fila` la descarta con razón.
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+            "VALUES (?,?,?,?,?,'cron')", (self.uid, date, val, dep, dep))
 
     def _monthly(self, y, mo, ci, cf, dep=0):
         self.conn.execute(
@@ -67,21 +70,35 @@ class CagrFromSnapshotsTest(unittest.TestCase):
         r = main._historical_cagr_global(self.conn, self.uid)
         self.assertGreater(r["cagr"], 50)      # refleja la suba real, no el 0% del monthly
 
-    def test_fallback_to_monthly_without_snapshots(self):
+    def test_fallback_to_monthly_NO_publica_un_cagr(self):
+        """⚠️ RONDA 11 · ESTE TEST AFIRMABA EL DEFECTO. `monthly_entries` de meses
+        cerrados está AL COSTO (pnl_unrealized forzado a 0) — lo dice el docstring
+        de `_cagr_from_monthly_rows`—, así que este fallback publicaba la cadena
+        contable como si fuera el rendimiento de mercado. Medido: −78,34% anual el
+        mismo día en que `twr.curva_indexada` medía 0,0% para esa cuenta.
+
+        El número contable NO se tira: viaja con nombre propio (`cagr_contable_pct`)
+        y con `basis`, para que nadie lo publique creyendo que es de mercado.
+        """
         self._monthly(2024, 8, 1000, 1100)
         self._monthly(2024, 9, 1100, 1210)
         self.conn.commit()
         r = main._historical_cagr_global(self.conn, self.uid)
-        self.assertIsNotNone(r["cagr"])
-        self.assertGreater(r["cagr"], 0)
+        self.assertIsNone(r["cagr"])
+        self.assertEqual(r.get("basis"), "contable")
+        self.assertTrue(r.get("reason"))
+        self.assertIsNotNone(r.get("cagr_contable_pct"))
+        self.assertGreater(r["cagr_contable_pct"], 0)
 
     def test_one_snapshot_falls_back(self):
+        """Con una sola medición se cae al mismo fallback, y tampoco publica."""
         self._snap("2024-08-31", 1000, 1000)   # 1 solo fin de mes → fallback
         self._monthly(2024, 8, 1000, 1100)
         self._monthly(2024, 9, 1100, 1210)
         self.conn.commit()
         r = main._historical_cagr_global(self.conn, self.uid)
-        self.assertIsNotNone(r["cagr"])        # usó el fallback de monthly
+        self.assertIsNone(r["cagr"])           # el fallback ya no publica (ronda 11)
+        self.assertEqual(r.get("basis"), "contable")
 
     def test_month_end_reduction(self):
         # Varios snapshots en un mes → solo cuenta el último (fin de mes).

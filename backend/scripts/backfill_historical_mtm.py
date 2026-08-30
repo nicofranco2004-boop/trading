@@ -26,8 +26,12 @@ FX histórico: BLUE de fx_rates_daily (último ≤ fin de mes, sin fuga al futur
 blue-proxy (Fase 1, sin schema nuevo; para cuentas en USD el FX ni se usa). Regla
 cardinal: si falta precio/FX/historia o hay split → AL COSTO (jamás infla).
 
-NO toca: positions, operations, cash, import_normalized_tx. Solo
-monthly_entries.capital_final (UPDATE) + snapshots (UPSERT vía el helper de import).
+NO toca: positions, operations, cash, import_normalized_tx NI monthly_entries. La
+reconstruccion se persiste SOLO en `snapshots`, con `source='mtm_backfill'` y la
+cobertura del mes estampada (`mtm_coverage`), por UPSERT que respeta las mediciones
+reales del cron. Escribir en monthly_entries.capital_final era inutil: para todo mes
+cerrado `_repair_monthly_chain` (main.py:9314-9318) lo recomputa al costo y se
+dispara desde ~20 lugares de main.py, asi que el ancla se borraba sola.
 Saltea cuentas sin import confirmado (manuales → no reconstruibles). El mes
 calendario EN CURSO no se toca (lo maneja el flujo live).
 
@@ -57,7 +61,6 @@ if BACKEND not in sys.path:
 
 import main                                              # noqa: E402
 import snapshots_job as sj                               # noqa: E402
-from importing.persister import _backfill_snapshots_from_monthly  # noqa: E402
 from importing.recompute_backfill import _clone_db                 # noqa: E402
 
 
@@ -66,18 +69,28 @@ _HIST_CACHE: dict = {}
 
 def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     """{YYYY-MM: close} para un price_key ('AAPL', 'GGAL.BA', 'BTC'), desde start a
-    hoy. {} (→ costo) para lo que no tiene historia confiable en yfinance: FCI, bonos
-    AR (data912 es live-only), CEDEAR cotizado en USD (BAC, necesita CCL histórico)."""
+    hoy. {} (→ costo) sólo para lo que NO tiene historia confiable en yfinance: los
+    FCI y los bonos/ONs de data912, que es live-only.
+
+    Los CEDEARs y las acciones AR (.BA) SÍ tienen serie: medido, 24 de 24 meses
+    para AAPL.BA, KO.BA, MELI.BA, GGAL.BA e YPFD.BA. El que cotiza en dólares se
+    valúa por su subyacente — ver `_precio_por_subyacente`."""
     ck = (price_key, start_iso)
     if ck in _HIST_CACHE:
         return _HIST_CACHE[ck]
     base = price_key[:-3] if price_key.endswith(".BA") else price_key
     out: dict = {}
+    # ⚠️ EL CEDEAR COTIZADO EN USD YA NO SE SALTEA.
+    # Se saltea lo que NO tiene serie histórica confiable: FCI y los bonos/ONs de
+    # data912 (que es live-only). El CEDEAR en dólares estaba acá por otra razón —
+    # el código intentaba el camino largo (precio local ÷ CCL histórico)— y no hace
+    # falta: con el ratio, 100 CEDEARs de ratio 4 son 25 acciones equivalentes, y
+    # la acción SÍ tiene precio en dólares. Lo resuelve `_precio_por_subyacente`.
+    # (Y `CEDEAR_USD_RATIOS` tiene exactamente un ticker: BAC.)
     skip = (
         price_key.startswith("FCI:")
         or base in getattr(main, "AR_BONDS_DATA912", set())
-        or main._is_data912_bond(base)   # cualquier bono/ON de data912 → costo histórico (data912 es live-only)
-        or (price_key.endswith(".BA") and base in getattr(main, "CEDEAR_USD_RATIOS", {}))
+        or main._is_data912_bond(base)   # data912 es live-only → costo histórico
     )
     if not skip:
         yf_sym = main.CRYPTO_YF.get(base, price_key) if base in main.CRYPTO_SYMBOLS else price_key
@@ -98,6 +111,33 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     return out
 
 
+def _precio_por_subyacente(asset: str, ym: str, start_iso: str):
+    """Precio en USD de UN CEDEAR que cotiza en dólares, vía su SUBYACENTE.
+
+    Un CEDEAR con ratio 4 es 1/4 de acción: 100 CEDEARs = 25 acciones
+    equivalentes. La acción tiene precio histórico en dólares, así que no hace
+    falta ni el precio local ni el CCL histórico — que es el camino largo por el
+    que este caso terminaba salteado y valuado al costo.
+
+    None si el activo no es un CEDEAR-USD o si el subyacente no tiene precio.
+    """
+    ratios = getattr(main, "CEDEAR_USD_RATIOS", {}) or {}
+    base = asset[:-3] if str(asset).endswith(".BA") else str(asset)
+    ratio = ratios.get(base)
+    if not ratio:
+        return None
+    try:
+        px = _fetch_monthly_close(base, start_iso).get(ym)
+    except Exception:
+        return None
+    if px is None:
+        return None
+    try:
+        return float(px) / float(ratio)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
 # ─── FX histórico — BLUE de fx_rates_daily (último ≤ fin de mes) ──────────────
 def _hist_blue(conn, month_end_iso: str, fallback: float) -> float:
     row = conn.execute(
@@ -109,6 +149,116 @@ def _hist_blue(conn, month_end_iso: str, fallback: float) -> float:
         return v if (v and v > 0) else fallback
     except (TypeError, ValueError):
         return fallback
+
+
+# ─── Lo que el reconstructor NO ve ───────────────────────────────────────────
+def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
+    """(costo_usd, afirmable) de la tenencia NO-CASH a `date_iso` que
+    `_holdings_asof` no puede ver.
+
+    `_holdings_asof` sólo mira `import_normalized_tx` de batches confirmados. Todo
+    lo cargado A MANO —y cualquier mes anterior a la primera compra importada—
+    queda invisible. El problema no es que falte: es que el silencio se leía como
+    "no había nada que valuar" y de ahí salía cobertura 1,0. El código NO PUEDE
+    DISTINGUIR "no había nada" de "no vi lo que había", así que tiene que
+    preguntarlo en otro lado antes de dar el veredicto optimista.
+
+    `vistos` es {(broker, asset): cantidad} de lo que el reconstructor SÍ valuó.
+
+    ⚠️ TRES AGUJEROS QUE ESTA VERSIÓN CIERRA, todos medidos:
+      · `entry_date IS NOT NULL` hacía desaparecer la tenencia sin bajar
+        `afirmable`. Y NULL no es teórico: la columna se agregó por ALTER TABLE
+        (main.py:892) y el alta manual de Operaciones no la estampa. La foto
+        contable volvía a salir con cobertura 1,0 y a fijar el pico.
+      · comparaba SÓLO el nombre del activo. Alcanzaba con que el import viera UNA
+        unidad de AAPL en IBKR para declarar "ya vistas" 500 unidades de AAPL
+        cargadas a mano en Cocos. Los homónimos cross-broker son la norma acá:
+        el mismo AL30/GGAL vive en Cocos, Balanz e IOL a la vez.
+      · la moneda. `val_mkt`/`val_costo` están en USD; acá se sumaba
+        `positions.invested` CRUDO (está en la moneda nativa del lote, main.py:903)
+        y `q*pe*fx` MULTIPLICANDO por el TC cuando la convención del repo es
+        `usd = nativa / fx_to_usd` (main.py:10026). Error de fx² = 1.562.500×:
+        una sola venta en pesos abierta cruzando fin de mes hundía la cobertura
+        de 99,68% a 0,02% y borraba el mes entero de la serie.
+    """
+    costo = 0.0
+    afirmable = True
+
+    def _a_usd(monto, moneda, fx=None):
+        """`invested`/`entry_price` vienen en la moneda NATIVA del lote."""
+        m = (moneda or "").strip().upper()
+        if not m or m in ("USD", "USDT", "USDC"):
+            return monto
+        try:
+            tc = float(fx) if fx else None
+        except (TypeError, ValueError):
+            tc = None
+        if not tc or tc <= 0:
+            try:
+                import main as _m
+                tc = float(_m._user_tc_blue(conn, uid))
+            except Exception:
+                tc = None
+        if not tc or tc <= 0:
+            return None                    # no se puede afirmar el costo en USD
+        return monto / tc
+
+    try:
+        for r in conn.execute(
+            """SELECT broker, asset, invested, quantity, currency, entry_date
+                 FROM positions
+                WHERE user_id=? AND COALESCE(is_cash,0)=0""",
+            (uid,),
+        ).fetchall():
+            # Sin entry_date NO se puede afirmar que no estuviera: se cuenta.
+            if r["entry_date"] and str(r["entry_date"])[:10] > date_iso:
+                continue
+            qty_vista = vistos.get((r["broker"], r["asset"]))
+            qty = float(r["quantity"] or 0)
+            if qty_vista is not None and qty > 0 and qty_vista >= qty - 1e-9:
+                continue                   # el import ya valuó al menos esta cantidad
+            inv = float(r["invested"] or 0)
+            if qty_vista is not None and qty > 0:
+                # visto PARCIAL: sólo la fracción no vista queda al costo.
+                inv = inv * max(0.0, (qty - qty_vista)) / qty
+            usd = _a_usd(inv, r["currency"]) if inv > 0 else 0.0
+            if usd is None:
+                afirmable = False
+            elif usd > 0:
+                costo += usd
+            elif not r["entry_date"]:
+                afirmable = False          # hay algo, sin fecha y sin costo
+    except Exception:
+        afirmable = False
+    try:
+        for r in conn.execute(
+            """SELECT broker, asset, quantity, entry_price, fx_to_usd, currency,
+                      entry_date, date
+                 FROM operations WHERE user_id=?""",
+            (uid,),
+        ).fetchall():
+            ed = str(r["entry_date"])[:10] if r["entry_date"] else None
+            sd = str(r["date"])[:10] if r["date"] else None
+            if ed and ed > date_iso:
+                continue                   # se abrió después
+            if sd and sd <= date_iso:
+                continue                   # ya estaba cerrada
+            if not ed and not sd:
+                continue
+            if (r["broker"], r["asset"]) in vistos:
+                continue
+            q = float(r["quantity"] or 0)
+            pe = float(r["entry_price"] or 0)
+            usd = _a_usd(q * pe, r["currency"], r["fx_to_usd"]) if (q and pe) else 0.0
+            if usd is None:
+                afirmable = False
+            elif usd > 0:
+                costo += usd
+            else:
+                afirmable = False
+    except Exception:
+        afirmable = False
+    return costo, afirmable
 
 
 # ─── Tenencias a fin de mes (net BUY−SELL + costo promedio) ───────────────────
@@ -159,12 +309,134 @@ def _month_end(year: int, month: int) -> str:
     return _date(year, month, calendar.monthrange(year, month)[1]).isoformat()
 
 
+# ─── Persistencia: el snapshot RECONSTRUIDO ──────────────────────────────────
+#
+# Por que el backfill NO escribe mas en `monthly_entries.capital_final`:
+# `_repair_monthly_chain` (main.py:9314-9318) recomputa, para TODO mes cerrado,
+#     capital_final = capital_inicio + deposits - withdrawals + pnl_realized
+# o sea EL COSTO, y se dispara desde ~20 lugares de main.py (cualquier alta,
+# edicion o borrado de una operacion). El MtM que este script dejaba ahi se
+# borraba solo en la siguiente pasada: el ancla se autodestruia. Ahora el
+# resultado vive donde nadie lo recalcula al costo — en `snapshots`, con su
+# propio `source` — y `monthly_entries` queda intacto (sigue siendo la
+# contabilidad, que es lo que tiene que ser).
+MTM_SOURCE = "mtm_backfill"
+
+# ⚠️ YA NO HAY PISO DE COBERTURA. La cobertura se estampa y SE MUESTRA; no filtra
+# nada. Un piso —fuera 0,70 o 0,995— esconde la curva entera al que no llega, que
+# es exactamente lo contrario de lo que hace falta: ver el número y saber qué parte
+# es estimada. Se deja la constante sólo porque hay tests que la referencian como
+# valor de ejemplo.
+COBERTURA_REFERENCIA = 0.70
+
+
+def _twr_base_apto(coverage):
+    """(base, apto) de una foto reconstruida con ESA cobertura. Una sola fuente:
+    `twr.base_y_apto_para`, la misma que usan los otros tres escritores y la
+    migración. Si acá se escribiera la regla a mano, habría dos."""
+    import twr as _twr
+    return _twr.base_y_apto_para(_twr.RECONSTRUIDO, coverage)
+
+
+def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
+    """UPSERT de las fotos reconstruidas. Devuelve cuantas escribio.
+
+    Dos defectos del camino viejo que esto cierra:
+      · `_backfill_snapshots_from_monthly` estampa source='import'
+        (persister.py:1290) → el trabajo a mercado salia disfrazado de contable
+        y cualquier filtro que se escriba despues lo descarta.
+      · usaba `ON CONFLICT DO NOTHING` (persister.py:1291) → no pisaba ni
+        siquiera la fila sintetica que el propio import habia dejado antes, asi
+        que reconstruir no cambiaba nada de lo que el grafico ya mostraba.
+
+    Lo que SI se respeta: una MEDICION real del cron nunca se pisa. El criterio
+    no se re-escribe aca, se le pregunta a `twr.clasificar_fila` — si dos
+    modulos deciden distinto que fila es una medicion, uno de los dos esta mal.
+    """
+    if not por_mes:
+        return 0
+    import json as _json
+    from twr import clasificar_serie, MEDICION
+
+    # ⚠️ MISMA CONVENCION QUE EL CRON, o la resta entre dos fotos miente.
+    # El cron estampa `compute_net_deposited()` = BASELINE (`capital_inicio` de la
+    # primera fila) + flujos (snapshots_job.py:385-386). Acá se estampaba sólo el
+    # acumulado de flujos, SIN baseline. Como `bordes_mercado_periodo` y
+    # `curva_indexada` sacan el flujo de la ventana restando estas dos columnas,
+    # en cuanto un borde era del cron y el otro de acá la resta devolvía EL
+    # BASELINE ENTERO como si fuera un aporte de ese mes: un mes real de +US$2.000
+    # se publicaba como "Mes difícil −61,2% · Aportaste US$100.000 de capital
+    # nuevo". Y justo en la población que el backfill existe para servir (fotos
+    # reconstruidas viejas + cron nuevo).
+    filas_me = conn.execute(
+        "SELECT year, month, capital_inicio, deposits, withdrawals FROM monthly_entries "
+        "WHERE user_id=? AND broker='global' ORDER BY year, month", (uid,)).fetchall()
+    baseline = float(filas_me[0]["capital_inicio"] or 0) if filas_me else 0.0
+    cum = 0.0
+    net_dep_por_mes: dict = {}
+    for r in filas_me:
+        cum += (r["deposits"] or 0) - (r["withdrawals"] or 0)
+        net_dep_por_mes[f"{r['year']}-{r['month']:02d}"] = baseline + cum
+
+    # ⚠️ El flag va POR FECHA, igual que en twr. Con "¿tiene posiciones HOY?" este
+    # módulo y `twr` clasificaban distinto la misma fila: una foto REAL del cron de
+    # cuando la persona estaba 100% cash (fx sí, holdings NULL) es MEDICION para
+    # twr e INTRADIA acá — y entraba al UPSERT, reemplazando la medición de mercado
+    # por la cadena contable, con source='mtm_backfill'. Destructivo y no
+    # reversible, y rompía la promesa escrita en el docstring de esta función.
+    from twr import primera_fecha_con_posiciones
+    primera_pos = primera_fecha_con_posiciones(conn, uid)
+    # ⚠️ `clasificar_serie`, NO fila por fila. Éste era el QUINTO lector, y el
+    # test de contrato lo encontró: mirando una fila legacy sola no se distingue
+    # una foto del cron de una del browser, así que este UPSERT pisaba mediciones
+    # reales que los otros cuatro lectores ya veían como tales.
+    _filas = conn.execute(
+        "SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage "
+        "FROM snapshots WHERE user_id=? ORDER BY date", (uid,)).fetchall()
+    _clases = clasificar_serie(_filas, primera_pos)
+    existentes = {r["date"]: c for r, c in zip(_filas, _clases)}
+
+    escritos = 0
+    for ym, info in sorted(por_mes.items()):
+        d = info["date"]
+        if existentes.get(d) == MEDICION:
+            continue                      # foto real del cron: manda ella
+        net_dep = net_dep_por_mes.get(ym, 0.0)
+        # ⚠️ EL ESTAMPO SALE DE LA COBERTURA DE **ESTA** FOTO (ronda 11). El
+        # reconstructor es el único que sabe qué fracción del valor de ESE mes se
+        # pudo valuar a precio real, así que es el que tiene que decidir la base —
+        # una vez, cuando escribe. Deducirla después, en lectura, es lo que hizo que
+        # la misma fila recibiera respuestas distintas según quién preguntaba y
+        # cuándo. Con cobertura baja el `total_value` de la foto ES el costo (lo que
+        # no se pudo precear entra con unrealized 0): base contable, y nunca apta.
+        _base, _apto = _twr_base_apto(info["coverage"])
+        conn.execute(
+            """INSERT INTO snapshots
+                 (user_id, date, total_value, total_invested, net_deposited,
+                  holdings_json, source, mtm_coverage, base, apto)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 total_value   = excluded.total_value,
+                 net_deposited = excluded.net_deposited,
+                 holdings_json = excluded.holdings_json,
+                 source        = excluded.source,
+                 mtm_coverage  = excluded.mtm_coverage,
+                 base          = excluded.base,
+                 apto          = excluded.apto""",
+            (uid, d, info["value"], info["cost"], net_dep,
+             _json.dumps(info["holdings"]) if info["holdings"] else None,
+             MTM_SOURCE, info["coverage"], _base, _apto),
+        )
+        escritos += 1
+    return escritos
+
+
 # ─── Backfill de un usuario ───────────────────────────────────────────────────
 def backfill_user(conn, uid: int, today: _date) -> dict:
     """Devuelve {uid, skipped, reason, months:[{ym, before, after}], cost_fallbacks,
     cash_warning}. NO commitea (lo hace el caller). Idempotente."""
     res = {"uid": uid, "skipped": False, "reason": None, "months": [],
-           "cost_fallbacks": 0, "cash_warning": False}
+           "cost_fallbacks": 0, "cash_warning": False, "snapshots_escritos": 0}
 
     # Cuenta reconstruible solo si hay import confirmado.
     has_import = conn.execute(
@@ -197,6 +469,7 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
     except Exception:
         pass
 
+    por_mes: dict = {}                         # {ym: foto reconstruida}
     cur_ym = (today.year, today.month)         # mes en curso → NO tocar
     start_iso = _month_end(me_rows[0]["year"], me_rows[0]["month"])[:8] + "01"
 
@@ -215,7 +488,13 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
         mep = blue                              # Fase 1: MEP = blue-proxy
 
         # Unrealized por broker (valor_mercado − costo), con guardas → costo.
+        # `val_mkt`/`val_costo` miden la COBERTURA del mes: cuanto del valor
+        # no-cash salio de un precio real y cuanto cayo al costo. Sin ese numero
+        # un mes casi enteramente al costo se publicaria como medido.
         unreal_by_broker: dict = {}
+        val_mkt = val_costo = 0.0
+        by_asset: dict = {}
+        assets_al_costo: set = set()
         for h in hold:
             b = h["broker"]
             btype = bcur.get(b, "USDT")
@@ -224,14 +503,24 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
                 ars_names, ar_usd_names)
             # precio histórico del mes (None si no hay / split → costo)
             price = None
+            _px_sub = None
             if h["asset"] not in split_assets:
-                hist = _fetch_monthly_close(pkey, start_iso)
-                price = hist.get(ym)
-            prices = {pkey: price} if price is not None else {}
-            r = sj.compute_broker_value_usd(
-                [h], prices, btype, blue, broker_name=b, cedear_rate=mep)
-            val = r.get("value", 0) or 0
-            inv = r.get("invested", 0) or 0
+                # Primero el camino corto: si es un CEDEAR que cotiza en dólares,
+                # se valúa por su subyacente y no hace falta el CCL histórico.
+                _px_sub = _precio_por_subyacente(h["asset"], ym, start_iso)
+                if _px_sub is None:
+                    hist = _fetch_monthly_close(pkey, start_iso)
+                    price = hist.get(ym)
+            if _px_sub is not None:
+                val = _px_sub * float(h["quantity"] or 0)
+                inv = float(h["invested"] or 0)
+                price = _px_sub                 # hubo precio real: no es fallback
+            else:
+                prices = {pkey: price} if price is not None else {}
+                r = sj.compute_broker_value_usd(
+                    [h], prices, btype, blue, broker_name=b, cedear_rate=mep)
+                val = r.get("value", 0) or 0
+                inv = r.get("invested", 0) or 0
             u = val - inv
             # ── Guard anti-distorsión (espejo de trustMktValue del front) ─────────
             # Si el valor a mercado se va absurdamente lejos del costo, NO lo
@@ -254,16 +543,57 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
             if not trusted:
                 u = 0.0                         # precio no confiable → costo
             unreal_by_broker[b] = unreal_by_broker.get(b, 0.0) + u
+            # Valor EFECTIVO del holding en la foto: a mercado si el precio se
+            # pudo usar, al costo si degrado (ahi u quedo en 0).
+            efectivo = inv + u
+            by_asset[h["asset"]] = by_asset.get(h["asset"], 0.0) + efectivo
             if price is None or not trusted:
                 res["cost_fallbacks"] += 1
+                val_costo += efectivo
+                # Por NOMBRE, no sólo el conteo: un porcentaje pelado no le dice al
+                # usuario qué hacer; "tus FCI" sí.
+                assets_al_costo.add(h["asset"])
+            else:
+                val_mkt += efectivo
 
         total_unreal = sum(unreal_by_broker.values())
 
-        # Escribir capital_final = costo(recomputado) + unrealized, por-broker + global.
+        # ⚠️ LA TENENCIA QUE EL RECONSTRUCTOR NO VE CUENTA COMO COSTO, NO DESAPARECE.
+        #
+        # Antes, `base_cob == 0` se leia como "cartera 100% cash → la foto es
+        # exacta → cobertura 1,0". El razonamiento vale para una cartera de verdad
+        # toda en cash, pero el codigo no podia distinguir ESE caso de "no vi lo
+        # que habia", y elegia el veredicto optimista. Resultado medido: un import
+        # que solo traia un DEPOSIT (la tenencia real vivia en `positions`)
+        # persistia 3 fotos con `mtm_coverage=1,0` y CERO precios consultados,
+        # etiquetadas 'mtm_backfill' — o sea la cadena contable, que es lo que este
+        # trabajo viene a sacar de la curva, ahora con etiqueta de mercado.
+        # Antes mentia CON la etiqueta puesta (source='import') y todos los filtros
+        # la descartaban; asi era estrictamente peor.
+        _vistos = {(h["broker"], h["asset"]): float(h["quantity"] or 0) for h in hold}
+        _no_visto, _afirmable = _tenencia_no_vista(conn, uid, d, _vistos)
+        val_costo += _no_visto
+        if _no_visto > 0:
+            res["cost_fallbacks"] += 1
+        base_cob = val_mkt + val_costo
+        if not _afirmable:
+            cobertura = None          # hay tenencia que no veo y no se cuanto vale
+        elif base_cob > 0:
+            cobertura = val_mkt / base_cob
+        else:
+            # Cero base Y nada invisible: se puede AFIRMAR que no habia nada
+            # no-cash que valuar. Recien ahi 1,0 es un hecho y no un supuesto.
+            cobertura = 1.0
+
+        # Valor de la foto = costo(recomputado de columnas estables) + unrealized.
+        # Se calcula SOLO para el global y NO se escribe en monthly_entries: ver el
+        # comentario de MTM_SOURCE — `_repair_monthly_chain` lo recomputaria al costo.
         rows = conn.execute(
             "SELECT broker, capital_inicio, deposits, withdrawals, pnl_realized, capital_final "
-            "FROM monthly_entries WHERE user_id=? AND year=? AND month=?", (uid, y, m)).fetchall()
+            "FROM monthly_entries WHERE user_id=? AND year=? AND month=? AND broker='global'",
+            (uid, y, m)).fetchall()
         before_global = after_global = 0.0
+        cost_global = 0.0
         for row in rows:
             b = row["broker"]
             cost = ((row["capital_inicio"] or 0) + (row["deposits"] or 0)
@@ -281,16 +611,28 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
             # Los corruptos siguen rotos: el costo en sí está mal → es otro fix.
             if new_cf < 0:
                 new_cf = max(cost, new_cf)
-            conn.execute(
-                "UPDATE monthly_entries SET capital_final=? WHERE user_id=? AND broker=? AND year=? AND month=?",
-                (new_cf, uid, b, y, m))
             if b == "global":
-                before_global = row["capital_final"] or 0
+                # "Antes" es lo que la curva MOSTRABA: la foto que ya estaba, y
+                # solo si no habia ninguna, la cadena contable.
+                prev_snap = conn.execute(
+                    "SELECT total_value FROM snapshots WHERE user_id=? AND date=?",
+                    (uid, d)).fetchone()
+                before_global = (prev_snap["total_value"] if prev_snap is not None
+                                 else (row["capital_final"] or 0))
                 after_global = new_cf
-        res["months"].append({"ym": ym, "before": before_global, "after": after_global})
+                cost_global = cost
+        _cob = round(cobertura, 4) if cobertura is not None else None
+        res["months"].append({"ym": ym, "before": before_global, "after": after_global,
+                              "coverage": _cob})
+        por_mes[ym] = {"date": d, "value": after_global, "cost": cost_global,
+                       "coverage": _cob,
+                       "holdings": [{"asset": a, "value_usd": round(v, 2),
+                                     "al_costo": a in assets_al_costo}
+                                    for a, v in by_asset.items()]}
 
-    # Re-derivar snapshots desde global.capital_final (lo que lee el chart).
-    _backfill_snapshots_from_monthly(conn, uid)
+    # La reconstruccion se persiste como foto propia (source='mtm_backfill'), no
+    # como una fila 'import' derivada de la cadena contable.
+    res["snapshots_escritos"] = _persist_mtm_snapshots(conn, uid, por_mes)
     return res
 
 

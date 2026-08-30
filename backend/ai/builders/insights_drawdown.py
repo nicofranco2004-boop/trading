@@ -42,11 +42,31 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     today = date.today()
     cutoff = today - timedelta(days=window_days)
 
-    rows = conn.execute(
-        "SELECT date, total_value FROM snapshots WHERE user_id=? ORDER BY date ASC",
-        (user_id,),
-    ).fetchall()
-    snaps = [dict(r) for r in rows]
+    # ⚠️ NO se leen los snapshots crudos. La tabla mezcla mediciones reales del
+    # cron con fotos que el import FABRICA copiando la cadena contable
+    # (persister.py:1289-1292): esas no bajan con el mercado, asi que fijan
+    # picos que nunca existieron y el drawdown sale de la brecha entre dos
+    # formas de medir. `twr.serie_medible` deja solo lo que esta en base de
+    # mercado (medido por el cron o reconstruido a precio real).
+    import twr as _twr
+    _serie = _twr.serie_medible(conn, user_id)
+    # ⚠️ Y TAMPOCO se aplana la serie ignorando los TRAMOS. `serie_medible` la
+    # parte donde hubo más de `max_hueco_dias` de silencio; aplanando los puntos,
+    # el pico sale de un tramo y el fondo del otro, o sea el packet le afirma al
+    # modelo el derrumbe que ocurrió ADENTRO del hueco — el mismo que
+    # `curva_indexada` se niega a publicar por escrito y que la pantalla muestra
+    # como "—". Se usa SÓLO el tramo que produjo retorno; si hay más de uno, no
+    # hay drawdown afirmable.
+    _tramos_con_legs = [t for t in _twr.curva_indexada(conn, user_id)["tramos_detalle"]
+                        if t["legs"] > 0]
+    if len(_tramos_con_legs) == 1:
+        _d0, _d1 = _tramos_con_legs[0]["desde"], _tramos_con_legs[0]["hasta"]
+        _serie = dict(_serie, medibles=[p for p in _serie["medibles"]
+                                       if _d0 <= p["date"] <= _d1])
+    elif len(_tramos_con_legs) != 0:
+        _serie = dict(_serie, medibles=[],
+                     motivo_texto=_twr.MOTIVO_TEXTO.get("serie_partida"))
+    snaps = [{"date": p["date"], "total_value": p["value"]} for p in _serie["medibles"]]
     window = [
         s for s in snaps
         if _parse_date(s["date"]) and _parse_date(s["date"]) >= cutoff
@@ -54,17 +74,24 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     ]
 
     if len(window) < 2:
+        # ⚠️ None, NO 0.0. Un 0,0% con `recovered: True` le afirma al LLM "nunca
+        # caíste, estás en tu máximo" sobre una cuenta que fue de 150.000 a 60.000
+        # y de la que simplemente no hay mediciones suficientes. Es el mismo
+        # defecto que el frontend ya cierra mostrando "—".
         return {
             "screen": "insights.drawdown",
             "window_days": window_days,
-            "current_pct": 0.0,
-            "max_pct": 0.0,
+            "current_pct": None,
+            "max_pct": None,
             "days_since_peak": None,
             "peak_value": None,
             "trough_value": None,
             "dd_events": [],
             "events_count": 0,
-            "recovered": True,
+            "recovered": None,
+            "insufficient_data": True,
+            "reason": (_serie.get("motivo_texto")
+                       or "No hay mediciones a mercado suficientes para medir el drawdown."),
         }
 
     values = [(s["date"], float(s["total_value"] or 0)) for s in window]

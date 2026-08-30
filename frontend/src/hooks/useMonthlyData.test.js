@@ -199,7 +199,18 @@ describe('buildMonthlyReports', () => {
   })
 
   // ─── YTD live: año en curso usa snapshot reciente como endUsd ────────────
-  it('año en curso: usa el último snapshot como endUsd (alineado al Dashboard)', () => {
+  //
+  // ⚠️ ESTE TEST AFIRMABA EL BUG. Pedía `ytdUsd = 7200 − 5000 − 100`, donde
+  // 7200 es un snapshot (MERCADO) y 5000 es `capital_inicio` (la cadena
+  // CONTABLE). Esa resta no mide el año: mide la brecha entre dos formas de
+  // medir, y es la misma que en producción publica −65,82% para el uid 452.
+  // El backend ya se negaba a hacerla (`_ytd_delta`, main.py:31908-31914:
+  // sin cierre MEDIDO al arranque del año devuelve None); el frontend seguía
+  // haciéndola. Ahora coinciden.
+  //
+  // Se parte en dos casos para que el test PUEDA fallar en las dos direcciones:
+  // uno donde el guard tiene que morder y otro donde NO tiene que morder.
+  it('año en curso: endUsd es el live, pero sin cierre medido al arranque no hay YTD', () => {
     const todayYear = new Date().getFullYear()
     const out = buildMonthlyReports(
       [{ year: todayYear, month: 1, broker: 'global', capital_inicio: 5000, capital_final: 5500, deposits: 100 }],
@@ -208,16 +219,47 @@ describe('buildMonthlyReports', () => {
       [{ date: `${todayYear}-12-15`, total_value: 7200 }]
     )
     const yr = out.years[0]
+    // El VALOR sigue siendo el live: es un dato honesto y se muestra.
     expect(yr.endSource).toBe('live')
     expect(yr.endUsd).toBe(7200)
-    // YTD = endUsd - startUsd - flows = 7200 - 5000 - 100 = 2100
-    expect(yr.ytdUsd).toBe(2100)
-    // ytdPct ahora es TWRR (chain-link de meses). Con 1 mes en el año, el TWRR
-    // anual coincide con el deltaPct mensual Modified Dietz:
-    //   avgCap = 5000 + 0.5*100 = 5050  →  2100 / 5050 ≈ 41.58%
-    // Antes dividíamos 2100 / 5000 (= 42%), pero inflar el % por flujos de
-    // mid-period es el bug que motivó esta migración.
-    expect(yr.ytdPct).toBeCloseTo((2100 / 5050) * 100, 1)
+    // El RENDIMIENTO no: no hay con qué medirlo sin mezclar bases.
+    expect(yr.ytdUsd).toBeNull()
+    expect(yr.ytdSinBaseMedida).toBe(true)
+    // Y el % derivado tampoco puede salir 0 por la puerta de atrás.
+    expect(yr.ytdPctOverContrib).toBeNull()
+  })
+
+  it('año en curso: CON cierre medido antes del 1-ene el YTD sí se publica', () => {
+    const todayYear = new Date().getFullYear()
+    const out = buildMonthlyReports(
+      [{ year: todayYear, month: 1, broker: 'global', capital_inicio: 5000, capital_final: 5500, deposits: 100 }],
+      [],
+      [
+        // Cierre MEDIDO del 31-dic del año anterior → base legítima a mercado.
+        { date: `${todayYear - 1}-12-31`, total_value: 4800, apto: true, clase: 'medicion' },
+        { date: `${todayYear}-12-15`, total_value: 7200, apto: true, clase: 'medicion' },
+      ]
+    )
+    const yr = out.years[0]
+    expect(yr.ytdSinBaseMedida).toBe(false)
+    // Las dos puntas a mercado: 7200 − 4800 − 100 de aportes = 2300.
+    expect(yr.ytdUsd).toBeCloseTo(2300, 1)
+  })
+
+  it('onboarding: la cadena contable SÍ sirve de base cuando el período es casi todo dinero nuevo', () => {
+    // La tolerancia que el backend ya se había dado (`_UNMEASURED_BASE_TOL`):
+    // con base contable chica y aportes grandes, los flujos son hechos
+    // registrados y el error que puede meter la cadena está acotado. Sacar esta
+    // concesión le borraría el número al usuario que recién arranca.
+    const todayYear = new Date().getFullYear()
+    const out = buildMonthlyReports(
+      [{ year: todayYear, month: 1, broker: 'global', capital_inicio: 100, capital_final: 5500, deposits: 5000 }],
+      [],
+      [{ date: `${todayYear}-12-15`, total_value: 7200 }]
+    )
+    const yr = out.years[0]
+    expect(yr.ytdSinBaseMedida).toBe(false)
+    expect(yr.ytdUsd).toBeCloseTo(7200 - 100 - 5000, 1)
   })
 
   it('año pasado: usa último capital_final manual como endUsd, no snapshot live', () => {
@@ -236,10 +278,56 @@ describe('buildMonthlyReports', () => {
     expect(yr.endUsd).toBe(6100)
   })
 
-  it('CONSISTENCIA: suma de deltaUsd por mes === ytdUsd del año en curso', () => {
-    // Bug reportado: el Hero usaba liveValue pero el último mes mostraba
-    // capital_final cerrado. La suma visual no daba el YTD. Fix: el último
-    // mes manual del año en curso se actualiza con liveValue como endUsd.
+  it('CONSISTENCIA: con TODOS los meses medidos, la suma de deltas === ytdUsd', () => {
+    // ⚠️ EL INVARIANTE ORIGINAL, RESTAURADO CON SU ALCANCE REAL.
+    // El test viejo afirmaba `sum(deltaUsd) === ytdUsd` SIEMPRE, y esa promesa ya
+    // no se puede sostener: desde que un mes puede negarse a publicar
+    // (`deltaUsd = null`), sumar una serie CON HUECOS no puede dar la diferencia
+    // punta a punta. Afirmarlo igual sería pedirle al código que rellene los
+    // huecos, que es exactamente el bug que este trabajo saca.
+    //
+    // Lo que SÍ sigue siendo cierto —y es lo que hay que proteger— es el caso sin
+    // huecos: cuando cada mes tiene su cierre medido, la suma tiene que cerrar.
+    // Si mañana alguien vuelve a mezclar bases en un solo mes, esto se pone rojo.
+    const todayYear = new Date().getFullYear()
+    const out = buildMonthlyReports(
+      [
+        // ⚠️ La cadena contable COINCIDE con los cierres medidos de abajo, y eso
+        // es parte de lo que se prueba: el invariante sólo puede valer cuando las
+        // dos formas de medir dicen lo mismo. Con `capital_final` divergiendo de
+        // su snapshot (5.450 contra 5.480) la suma NO cierra — y esa diferencia es
+        // un dato real, no un fallo del test: son los meses cerrados leyendo la
+        // contabilidad mientras el año lee mediciones.
+        { year: todayYear, month: 1, broker: 'global', capital_inicio: 5000, capital_final: 5300, deposits: 100 },
+        { year: todayYear, month: 2, broker: 'global', capital_inicio: 5300, capital_final: 5480, deposits: 0 },
+        { year: todayYear, month: 3, broker: 'global', capital_inicio: 5480, capital_final: 5600, deposits: 50 },
+      ],
+      [],
+      [
+        // Un cierre MEDIDO pegado al arranque de cada mes (el piso son 5 días).
+        { date: `${todayYear - 1}-12-31`, total_value: 5000, apto: true, clase: 'medicion' },
+        { date: `${todayYear}-01-31`, total_value: 5300, apto: true, clase: 'medicion' },
+        { date: `${todayYear}-02-28`, total_value: 5480, apto: true, clase: 'medicion' },
+        { date: `${todayYear}-03-15`, total_value: 5700, apto: true, clase: 'medicion' },
+      ]
+    )
+    const yr = out.years[0]
+    expect(yr.ytdSinBaseMedida).toBe(false)
+    const sumDeltas = yr.months.reduce((s, m) => s + (m.deltaUsd || 0), 0)
+    // Ningún mes puede quedar sin número en este fixture: si alguno queda null,
+    // el invariante no se estaría probando y el test tiene que avisarlo.
+    expect(yr.months.every(m => m.deltaUsd != null)).toBe(true)
+    expect(sumDeltas).toBeCloseTo(yr.ytdUsd, 1)
+  })
+
+  it('el mes live se mide contra su CIERRE MEDIDO, no contra capital_inicio', () => {
+    // Bug reportado en su momento: el Hero usaba liveValue pero el último mes
+    // mostraba capital_final cerrado, y la suma visual no daba el YTD. El fix de
+    // entonces igualó los dos… restando `liveValue − startUsd`, o sea mercado
+    // menos contabilidad. Arreglaba la suma y publicaba un fantasma.
+    //
+    // Con un cierre MEDIDO al 30-abr la base existe y el número se publica: el
+    // mes se mide contra 6.950 (mercado), no contra 6.998,31 (cadena contable).
     const todayYear = new Date().getFullYear()
     const out = buildMonthlyReports(
       [
@@ -249,18 +337,49 @@ describe('buildMonthlyReports', () => {
         { year: todayYear, month: 5, broker: 'global', capital_inicio: 6998.31, capital_final: 8299.38, deposits: 112 },
       ],
       [],
-      // Live snapshot está $240.57 por encima del último capital_final
-      [{ date: `${todayYear}-05-11`, total_value: 8539.95 }]
+      [
+        { date: `${todayYear}-04-30`, total_value: 6950, apto: true, clase: 'medicion' },
+        // Live snapshot por encima del último capital_final
+        { date: `${todayYear}-05-11`, total_value: 8539.95, apto: true, clase: 'medicion' },
+      ]
     )
     const yr = out.years[0]
-    const sumOfDeltas = yr.months.reduce((s, m) => s + m.deltaUsd, 0)
-    expect(sumOfDeltas).toBeCloseTo(yr.ytdUsd, 1)
-    // El último mes (Mayo) debe estar marcado isLive y reflejar el gap
     const mayo = yr.months.find(m => m.month === 5)
     expect(mayo.isLive).toBe(true)
     expect(mayo.endUsd).toBe(8539.95)
-    // delta de mayo = 8539.95 - 6998.31 - 112 = 1429.64
-    expect(mayo.deltaUsd).toBeCloseTo(1429.64, 1)
+    // delta de mayo = 8539.95 − 6950 (CIERRE MEDIDO) − 112 = 1477.95
+    expect(mayo.deltaUsd).toBeCloseTo(1477.95, 1)
+    expect(mayo.sinBaseMedida).toBeUndefined()
+  })
+
+  it('el mes live SIN cierre medido antes no publica delta (el caso 452)', () => {
+    // La forma exacta de la serie real del uid 452 en la copia de producción:
+    // meses de cadena contable que suben, y de golpe una medición del cron muy
+    // por debajo. La caída no es del mercado — es el escalón entre dos reglas.
+    const todayYear = new Date().getFullYear()
+    const out = buildMonthlyReports(
+      [
+        { year: todayYear, month: 4, broker: 'global', capital_inicio: 186968.06, capital_final: 192650.50 },
+        { year: todayYear, month: 5, broker: 'global', capital_inicio: 192650.50, capital_final: 196631.56 },
+      ],
+      [],
+      [
+        // La foto que el import FABRICA: etiquetada, al costo.
+        { date: `${todayYear}-04-30`, total_value: 196631.56, apto: false, clase: 'sintetico_costo' },
+        // La primera medición de verdad.
+        { date: `${todayYear}-05-11`, total_value: 67214.75, apto: true, clase: 'medicion' },
+      ]
+    )
+    const yr = out.years[0]
+    const mayo = yr.months.find(m => m.month === 5)
+    expect(mayo.isLive).toBe(true)
+    // El valor live se muestra…
+    expect(mayo.endUsd).toBe(67214.75)
+    // …pero el −65% NO se publica.
+    expect(mayo.deltaUsd).toBeNull()
+    expect(mayo.deltaPct).toBeNull()
+    expect(mayo.sinBaseMedida).toBe(true)
+    expect(yr.ytdUsd).toBeNull()
   })
 
   it('isLive solo se aplica al año en curso, no a años pasados', () => {
@@ -535,6 +654,28 @@ describe('buildMonthlyReports', () => {
     )
     const yr = out.years[0]
     // flowsYear = 500 + 0 - 0 - 200 = 300 (deposits − withdrawals neto)
+    expect(yr.flowsYear).toBe(300)
+    // El descuento de flujos sigue siendo el correcto, pero la resta necesita
+    // una base MEDIDA: acá el 5000 es `capital_inicio` (cadena contable) contra
+    // un 6500 de mercado. Sin cierre medido al arranque del año, no hay YTD.
+    expect(yr.ytdUsd).toBeNull()
+    expect(yr.ytdSinBaseMedida).toBe(true)
+  })
+
+  it('flows del año descontados del YTD cuando la base ESTÁ medida', () => {
+    const todayYear = new Date().getFullYear()
+    const out = buildMonthlyReports(
+      [
+        { year: todayYear, month: 1, broker: 'global', capital_inicio: 5000, capital_final: 5200, deposits: 500, withdrawals: 0 },
+        { year: todayYear, month: 2, broker: 'global', capital_inicio: 5700, capital_final: 5900, deposits: 0,   withdrawals: 200 },
+      ],
+      [],
+      [
+        { date: `${todayYear - 1}-12-31`, total_value: 5000, apto: true, clase: 'medicion' },
+        { date: `${todayYear}-03-15`, total_value: 6500, apto: true, clase: 'medicion' },
+      ]
+    )
+    const yr = out.years[0]
     expect(yr.flowsYear).toBe(300)
     // YTD = 6500 - 5000 - 300 = 1200 (rendimiento puro, sin contar aportes)
     expect(yr.ytdUsd).toBe(1200)

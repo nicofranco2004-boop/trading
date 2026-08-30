@@ -11,11 +11,14 @@ Reusa lógica existente del backend:
 from __future__ import annotations
 
 import json
+import logging
 import math
 from datetime import date as date_cls, datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
 from realized_pnl import realized_usd_sql
+
+log = logging.getLogger(__name__)
 
 from .schema import (
     PeriodReport, PeriodMetrics, Insight, Highlight, AssetContribution,
@@ -139,6 +142,23 @@ def fetch_snapshots_in_range(conn, uid: int, start: str, end: str) -> List[Dict[
     return [dict(r) for r in rows]
 
 
+def _tiene_columna(conn, tabla: str, col: str) -> bool:
+    """¿La migración de esa columna ya corrió en esta base? Cacheado por conexión."""
+    cache = getattr(conn, "_cols_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            conn._cols_cache = cache
+        except AttributeError:
+            pass
+    if tabla not in cache:
+        try:
+            cache[tabla] = {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")}
+        except Exception:
+            return False
+    return col in cache[tabla]
+
+
 def _user_has_positions(conn, uid: int) -> bool:
     """¿Tiene (o tuvo) algo no-cash para valuar? `twr.clasificar_fila` lo necesita:
     en una cartera 100% cash el cron deja `holdings_json` NULL con razón, y esa
@@ -160,7 +180,8 @@ _BORDER_MAX_LAG_DAYS = 5
 
 def fetch_snapshot_at_or_before(conn, uid: int, when: str,
                                 mtm_only: bool = False,
-                                accept: Optional[tuple] = None) -> Optional[Dict[str, Any]]:
+                                accept: Optional[tuple] = None,
+                                require_positive: bool = True) -> Optional[Dict[str, Any]]:
     """Último snapshot con date <= when. Útil para encontrar el "valor de
     arranque" de un período cuando no hay snapshot exacto en el primer día.
 
@@ -193,21 +214,106 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
         ).fetchone()
         return dict(row) if row else None
 
-    from twr import clasificar_fila, MEDICION
+    from twr import (clasificar_serie, primera_fecha_con_posiciones, MEDICION,
+                     bases_de_serie, BASE_MERCADO, VALUADO_A_MERCADO)
     allowed = accept if accept is not None else (MEDICION,)
-    tenia_pos = _user_has_positions(conn, uid)
+    # `mtm_coverage` es la columna más nueva. Pedirla a secas ata este lector a que
+    # la migración de startup ya haya corrido — y un deploy donde el código llega
+    # antes que su columna es exactamente cómo se cayó producción el 2026-08-02.
+    # Sin la columna el clasificador degrada las fotos reconstruidas a contable,
+    # que es el lado seguro del error.
+    _cov = "mtm_coverage" if _tiene_columna(conn, "snapshots", "mtm_coverage") else "NULL AS mtm_coverage"
+    # `base`/`apto` estampados (ronda 11). Misma defensa que `mtm_coverage`: si la
+    # migración todavía no corrió, se piden como NULL y el clasificador deduce.
+    _bse = "base" if _tiene_columna(conn, "snapshots", "base") else "NULL AS base"
+    _apt = "apto" if _tiene_columna(conn, "snapshots", "apto") else "NULL AS apto"
+    # ⚠️ `total_value > 0` TIENE SENTIDO EN LA APERTURA Y NO EN EL CIERRE.
+    # Como borde de ARRANQUE, un 0 no sirve: es el denominador del período y
+    # dividir por él no da un porcentaje. Pero como borde de CIERRE, una cartera
+    # legítimamente vacía NO es "no hay medición": es una medición DE CERO.
+    # El usuario que vendió todo tiene un cierre válido en 0 y se lo estábamos
+    # salteando, y el guard seguía retrocediendo hasta encontrar una fila con
+    # valor — hasta 57 días atrás.
+    # Medido en la copia del 16/08: el uid 330 tiene sus últimas 6 filas
+    # `source='cron'`, clase `medicion`, `total_value = 0,00` y
+    # `net_deposited = 35.712,01` (vendió todo), y el lector saltaba a junio y
+    # publicaba "+8,76%" entre el 25 y el 30 de junio como "variación del último
+    # cierre". Son 160 usuarios cuya última fila medida quedaba descartada.
+    _pos = " AND total_value > 0" if require_positive else ""
     rows = conn.execute(
-        """SELECT date, total_value, total_invested, net_deposited,
-                  fx_to_usd_blue, holdings_json, source
-             FROM snapshots
-            WHERE user_id = ? AND date <= ? AND total_value > 0
-            ORDER BY date DESC LIMIT ?""",
+        f"""SELECT date, total_value, total_invested, net_deposited,
+                   fx_to_usd_blue, holdings_json, source, {_cov}, {_bse}, {_apt}
+              FROM snapshots
+             WHERE user_id = ? AND date <= ?{_pos}
+             ORDER BY date DESC LIMIT ?""",
         (uid, when, _BORDER_SCAN_LIMIT),
     ).fetchall()
-    for r in rows:
-        if clasificar_fila(r, tenia_pos) in allowed:
+    # ⚠️ POR SERIE, igual que `twr.serie_medible`. Con `clasificar_fila` fila por
+    # fila, los dos módulos decidían DISTINTO sobre la misma fila legacy: la
+    # cadencia diaria —lo único que distingue una foto vieja del cron de una del
+    # browser— no se ve mirando una fila sola. `serie_medible` la ascendía a
+    # MEDICION y este lector la seguía viendo INTRADIA, con lo cual un usuario
+    # anterior a julio-2026 no conseguía NINGÚN borde de período. Si dos módulos
+    # deciden distinto qué fila es una medición, uno de los dos está mal.
+    primera = primera_fecha_con_posiciones(conn, uid)
+    clases = clasificar_serie(rows, primera, orden_desc=True)
+    # ⚠️ LA CLASE NO ALCANZA — HACE FALTA LA BASE. Éste era EL bug original, vivo
+    # en la pantalla del reclamo original después de nueve rondas: `c in allowed`
+    # acepta cualquier fila de clase RECONSTRUIDO, incluida una cuya cobertura es
+    # 0,05 — o sea una foto cuyo `total_value` ES EL COSTO. Con esa fila de borde de
+    # apertura, Reportes publicaba (medido, jul-2026):
+    #     HEADLINE "Mes difícil — -47.3%" · basis='mercado' · incomparable=False
+    #     "En jul 2026 perdiste US$ 65.967 (-47.3%)..."
+    # sobre una cartera cuya cadena contable se había movido +0,1%. El −47,3% era
+    # la brecha entre las dos formas de medir, no el mes.
+    #
+    # ⚠️ EL GUARD ES ESTRECHO A PROPÓSITO, NO ES `es_apto`. Lo que se rechaza es la
+    # fila cuya CLASE dice mercado y cuya BASE es costo — contabilidad con etiqueta
+    # de mercado. Las clases que el caller aceptó EXPLÍCITAMENTE sabiendo que no son
+    # mercado (INDETERMINADO en el chip de variación a 1/7/30 días, main.py:31707)
+    # siguen bajo su criterio: para eso existe `accept`, y endurecerlas acá le
+    # borraría el chip a los usuarios legacy — que es el error que este mismo
+    # docstring advierte cuatro párrafos más arriba.
+    bases = bases_de_serie(rows, clases)
+    for r, c, b in zip(rows, clases, bases):
+        if c in allowed and not (c in BASE_MERCADO and b != VALUADO_A_MERCADO):
             return dict(r)
     return None
+
+
+def fetch_latest_measured_snapshot(conn, uid: int,
+                                   accept: Optional[tuple] = None) -> Optional[Dict[str, Any]]:
+    """El último snapshot que puede servir de BORDE DE CIERRE.
+
+    ⚠️ EL ESPEJO QUE FALTABA, Y ES EL HALLAZGO ESTRUCTURAL DE TODO ESTE TRABAJO.
+    `fetch_snapshot_at_or_before` protege el borde de APERTURA, y once rondas lo
+    fueron enchufando lector por lector con mucho cuidado. NINGUNA miró el borde de
+    CIERRE — y la punta también puede ser una fila al costo: el día que el usuario
+    importa, la foto que el import fabrica es la más nueva y gana cualquier
+    `ORDER BY date DESC LIMIT 1`.
+
+    Cuando eso pasa la resta sale INVERTIDA: en vez del −65% fantasma que todos
+    fueron a buscar, publica un +96% fantasma. Mismo defecto, signo opuesto, y por
+    eso sobrevivió — nadie va a auditar un número que da bien.
+
+    Medido sobre la copia de producción del 16/08: 180 de 822 usuarios (22%) tienen
+    la última fila al costo. De ésos, 178 no tienen NINGUNA medición, así que para
+    ellos la respuesta correcta es None — no hay número — y el llamador tiene que
+    saber mostrarlo como un vacío explicado y no como un 0.
+
+    Delega en `fetch_snapshot_at_or_before` con una fecha tope que ninguna fila
+    alcanza, a propósito: si el criterio de "esta fila es una medición" viviera
+    escrito dos veces, sería exactamente el defecto que este trabajo vino a sacar.
+
+    ⚠️ `require_positive=False` — y ésa es la ÚNICA diferencia legítima entre los
+    dos bordes. Una cartera vacía no es "no hay medición": es una medición de cero.
+    Ver el comentario en `fetch_snapshot_at_or_before` (el caso del uid 330, que
+    vendió todo y publicaba la variación de dos días de junio como si fuera la del
+    último cierre).
+    """
+    return fetch_snapshot_at_or_before(conn, uid, "9999-12-31",
+                                       mtm_only=(accept is None), accept=accept,
+                                       require_positive=False)
 
 
 # Cuánto de la base del período puede venir de capital contable SIN medir antes
@@ -249,6 +355,147 @@ def _border_is_fresh(snap_date: Optional[str], period_start: str,
     except (ValueError, TypeError):
         return False
     return 0 <= lag <= max_lag_days
+
+
+def _ventana_cubre(medido_desde: Optional[str], medido_hasta: Optional[str],
+                   period_start: str, period_end: str, es_actual: bool,
+                   tol_dias: int = _BORDER_MAX_LAG_DAYS) -> bool:
+    """¿La ventana efectivamente medida cubre el período que se va a publicar?
+
+    Un % calculado sobre julio-a-hoy no puede presentarse como "el año": va al lado
+    de un monto que sí es del año entero y el lector no tiene forma de saber que
+    describen ventanas distintas.
+
+    Para el período EN CURSO el cierre esperado es HOY, no el 31/12 — exigir el
+    fin del año calendario apagaría el número para todo el mundo, todo el año.
+    """
+    if not medido_desde or not medido_hasta:
+        return False
+    try:
+        _fmt = "%Y-%m-%d"
+        d0 = datetime.strptime(str(medido_desde)[:10], _fmt)
+        d1 = datetime.strptime(str(medido_hasta)[:10], _fmt)
+        p0 = datetime.strptime(period_start[:10], _fmt)
+        p1 = datetime.strptime(period_end[:10], _fmt)
+    except (ValueError, TypeError):
+        return False
+    if es_actual:
+        hoy = datetime.strptime(_hoy_iso(), _fmt)
+        if hoy < p1:
+            p1 = hoy
+    # El arranque medido no puede empezar DESPUÉS del período (más allá de la
+    # tolerancia), y el cierre medido no puede terminar ANTES.
+    return ((d0 - p0).days <= tol_dias) and ((p1 - d1).days <= tol_dias)
+
+
+def _fin_de_mes_iso(y: int, m: int) -> str:
+    import calendar as _cal
+    return f"{y:04d}-{m:02d}-{_cal.monthrange(y, m)[1]:02d}"
+
+
+def _hoy_iso() -> str:
+    return datetime.utcnow().date().isoformat()
+
+
+def _dia_anterior(iso: str):
+    """El día anterior a una fecha ISO. None si la fecha no parsea."""
+    try:
+        return (datetime.strptime(iso[:10], "%Y-%m-%d") - timedelta(days=1)).date().isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
+def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
+                           broker_filter: str):
+    """Las dos puntas de un período CERRADO, medidas a mercado. None si no se puede.
+
+    Por qué hace falta: para un mes cerrado, `start` y `end` salen de la MISMA fila
+    de `monthly_entries` (builder.py:386-387), y `_repair_monthly_chain`
+    (main.py:9316-9318) garantiza para todo mes cerrado
+        capital_final = capital_inicio + deposits − withdrawals + pnl_realized
+    con lo cual `end − start − flows` es, algebraicamente, `pnl_realized` y nada
+    más. El número no sabe nada del mercado: una cuenta que vendió con ganancia y
+    después se derrumbó a mercado igual publica un año positivo.
+
+    Se exige que las DOS puntas sean base de mercado. Una sola no sirve: mezclar
+    bases es exactamente lo que fabrica el fantasma. Y sólo aplica a 'global':
+    los snapshots son por usuario, no por broker, así que con un filtro de broker
+    activo esta pregunta no se puede responder y se sigue con la contabilidad.
+    """
+    if broker_filter != "global":
+        return None
+    # BORDE_PERIODO, no BASE_MERCADO: cerrar un período contra el valor de hoy es
+    # la pregunta exigente. Una foto intradía sirve para sostener una serie, no
+    # para ser la punta de una resta contra un live.
+    from twr import BORDE_PERIODO as acepta
+
+    # ⚠️ EL BORDE DE APERTURA VA ESTRICTAMENTE ANTES DEL PERÍODO.
+    #
+    # Con `<= period_start` y el cron sano, el borde elegido era la foto del
+    # PROPIO día 1 — que ya tiene adentro el depósito de ese día. Y como
+    # `deposits` seguía saliendo del MES CALENDARIO COMPLETO de monthly_entries,
+    # el aporte se restaba dos veces. Medido en un mes plano con un depósito de
+    # US$10.000 el 1 de mayo y cron diario completo:
+    #     start 110.000 · end 110.000 · dep 10.000 → delta −US$10.000 / −8,7%
+    # cuando lo real era 0. No hacía falta haber importado nada: le pegaba a todo
+    # el padrón sano. El borde correcto es el CIERRE DEL PERÍODO ANTERIOR.
+    _prev = _dia_anterior(period_start)
+    if _prev is None:
+        return None
+    ini = fetch_snapshot_at_or_before(conn, uid, _prev, accept=acepta)
+    if not ini or not (float(ini.get("total_value") or 0) > 0):
+        return None
+    # ⚠️ UN SOLO DÍA DE TOLERANCIA, no cinco.
+    # Con 5, si al cron le faltaba UN día el borde retrocedía a antes de un
+    # depósito que igual se cuenta entero como flujo del período. Medido: abril
+    # plano en 100.000, depósito de 10.000 el 30/4, mayo plano en 110.000 con CERO
+    # aportes → con el cron muriendo el 30/4 daba 0,00%, y muriendo el 29/4 daba
+    # +10,00% inventado. El único parámetro que cambiaba era qué día se cortó el
+    # cron, y los huecos del cron son el caso ESPERADO en Railway
+    # (memoria del repo: `project_cron_infra`). Un mes cerrado no se autocura.
+    # Sin borde se cae a la cadena contable, que en ese mismo caso da 0,00: caer a
+    # contable es mejor que inventar.
+    if not _border_is_fresh(ini.get("date"), period_start, 1):
+        return None
+    if str(ini.get("date"))[:10] >= period_start:
+        return None                     # defensa: nunca dentro del período
+
+    fin = fetch_snapshot_at_or_before(conn, uid, period_end, accept=acepta)
+    if not fin or not (float(fin.get("total_value") or 0) > 0):
+        return None
+    # El cierre tiene que caer DENTRO del período y cerca del final: un cierre de
+    # mitad de mes deja fuera media rueda de mercado.
+    if not (period_start <= str(fin.get("date"))[:10] <= period_end):
+        return None
+    # Idem del lado del cierre, y por el mismo motivo: un cierre 5 días temprano
+    # deja fuera el movimiento de mercado de esos días pero cuenta igual los
+    # aportes del mes entero. Es la misma asimetría, con el signo dado vuelta.
+    if not _border_is_fresh(fin.get("date"), period_end, 1):
+        return None
+    if str(fin.get("date"))[:10] <= str(ini.get("date"))[:10]:
+        return None                     # sin dos bordes distintos no hay tramo
+
+    # Los flujos tienen que ser los de la VENTANA ENTRE LOS DOS BORDES, no los del
+    # mes calendario: si el cierre quedó rezagado (cron caído los últimos días),
+    # los aportes posteriores al borde no ocurrieron dentro de lo medido. El
+    # `net_deposited` estampado en cada foto es la fuente con granularidad diaria;
+    # es el mismo criterio que ya usa la rama del mes en curso (builder.py:492-498).
+    # ⚠️ ACÁ NO SE CALCULA NINGÚN FLUJO, Y ESO ES EL ARREGLO.
+    #
+    # Antes se restaban las dos estampas de `net_deposited`. Esa columna no es un
+    # hecho del día: es una MEDICIÓN que el escritor hizo sobre `monthly_entries`
+    # EN EL MOMENTO de escribir la fila. Un import reescribe `monthly_entries`
+    # hacia atrás y NO re-estampa las fotos viejas, así que la resta medía cuánto
+    # cambió la contabilidad entre dos momentos, no el flujo del período. Medido:
+    # julio plano, cero aportes, un import el 16/7 → "−US$50.000 / −37,04%", y un
+    # mes cerrado no se autocura nunca.
+    #
+    # El flujo correcto ya lo tiene el caller: los `deposits`/`withdrawals` del
+    # propio período. Y son EXACTAMENTE la ventana, porque el borde de apertura es
+    # el cierre del período ANTERIOR — de eso se encarga `_dia_anterior` arriba.
+    # Alinear las puntas hace innecesario calcular el flujo, que es mejor que
+    # calcularlo bien.
+    return float(ini["total_value"]), float(fin["total_value"])
 
 
 def fetch_monthly_entry(conn, uid: int, year: int, month: int,
@@ -376,6 +623,7 @@ def compute_metrics_for_period(
     # durante toda la vida de la cuenta. Cuando eso pasa no publicamos NI el %
     # NI el monto — un número inventado con autoridad es peor que un "—".
     basis_incomparable = False
+    _basis = "contable"     # en qué base quedaron las dos puntas
     _start_is_mtm = False   # start_value salió de un cierre real a mercado
     _live_month_unmeasured = False  # (año) el mes vivo no tiene borde medido
 
@@ -388,7 +636,26 @@ def compute_metrics_for_period(
             deposits = float(me.get("deposits") or 0)
             withdrawals = float(me.get("withdrawals") or 0)
             unrealized = float(me.get("pnl_unrealized") or 0)
-        month_is_current = live_value is not None and is_period_current(period_type, period_start, period_end)
+        # ⚠️ DOS PREGUNTAS DISTINTAS, Y ACÁ LAS DECIDÍA UN SOLO `and`.
+        #
+        #   ¿el período es el ACTUAL?   → un hecho del calendario. No depende de
+        #                                 que tengamos con qué medirlo.
+        #   ¿hay valor de CIERRE?       → un hecho de los datos.
+        #
+        # Mezcladas, un `live_value=None` hacía que el mes EN CURSO se tratara como
+        # un mes CERRADO y se calculara con `capital_inicio`/`capital_final` de
+        # `monthly_entries` — la cadena contable. Y eso no dejaba el número en
+        # blanco: lo REEMPLAZABA por una afirmación falsa. Medido sobre la copia de
+        # producción del 16/08, en los 196 usuarios con valor real y sin ningún
+        # cierre medible:
+        #     195 × "Mes sin grandes movimientos."   ← afirma que no pasó nada
+        #       1 × "Mes mixto — +2,5%."             ← publica un %
+        # cuando lo cierto es que no lo sabemos. El mes en curso sigue siendo el mes
+        # en curso aunque no haya con qué medirlo, y ahí lo que corresponde es
+        # decirlo (`basis_incomparable` → "Mes sin base para medir el rendimiento",
+        # que el generador de headline evalúa PRIMERO, builder.py:1236).
+        _period_is_current = is_period_current(period_type, period_start, period_end)
+        month_is_current = _period_is_current and live_value is not None
         if month_is_current:
             end_value = float(live_value)
             # AUDIT C-3: sin fila del mes (el rollover lazy solo corre al visitar
@@ -414,7 +681,17 @@ def compute_metrics_for_period(
             # el import fabricó al costo entraba como si fuera mercado y el parche
             # C-2 quedaba sin efecto justo en las cuentas que más lo necesitaban.
             if broker_filter == "global":
-                _snap_prev = fetch_snapshot_at_or_before(conn, uid, period_start, mtm_only=True)
+                # ⚠️ `_dia_anterior`, igual que el período cerrado. Con
+                # `<= period_start` el borde elegido era la foto del PROPIO día 1,
+                # que ya tiene adentro el depósito de ese día, mientras `deposits`
+                # seguía siendo el del mes calendario: el aporte se restaba dos
+                # veces. Es el defecto que `bordes_mercado_periodo` documenta, y
+                # había quedado vivo justo en la rama más mirada — la del mes en
+                # curso. Medido: julio cierra 110.000, el 1/8 entra un aporte de
+                # 10.000, la cartera queda plana en 120.000 → "Mes difícil −8,0%".
+                _prev_d = _dia_anterior(period_start)
+                _snap_prev = (fetch_snapshot_at_or_before(
+                    conn, uid, _prev_d, mtm_only=True) if _prev_d else None)
                 if (_snap_prev and float(_snap_prev.get("total_value") or 0) > 0
                         and _border_is_fresh(_snap_prev.get("date"), period_start)):
                     start_value = float(_snap_prev["total_value"])
@@ -450,6 +727,47 @@ def compute_metrics_for_period(
             if start_value <= 0 and end_value > 0 and (deposits - withdrawals) <= 0:
                 dw_incomplete = True
                 start_value = end_value
+        elif _period_is_current:
+            # MES EN CURSO SIN CIERRE MEDIDO. No es un mes cerrado y no se puede
+            # tratar como tal: no hay con qué cerrarlo. Cae acá el usuario cuyas
+            # únicas filas las fabricó el import — 178 de los 822 de producción no
+            # tienen NINGUNA medición.
+            #
+            # Esto NO es una regresión de cobertura: el número que se deja de
+            # publicar nunca midió nada. Lo que cambia es que ahora se dice, en vez
+            # de dejar que la cadena contable conteste por su cuenta.
+            #
+            # ⚠️ SÓLO SI HAY ALGO QUE MEDIR. "No se puede medir" y "no hay nada"
+            # son dos cosas distintas, y confundirlas le pone al usuario RECIÉN
+            # REGISTRADO un "Mes sin base para medir el rendimiento" sobre una
+            # cuenta vacía — le contesta una pregunta que no hizo. Además
+            # `basis_incomparable` vuelve el mes RELEVANTE en la timeline
+            # (`is_relevant`), así que sin este chequeo la cuenta vacía empezaba a
+            # ocupar lugar en una pantalla donde antes, correctamente, no aparecía.
+            # (Lo cazó `test_empty_user_returns_n_months_with_no_relevant`.)
+            _hay_algo = bool(
+                me or start_value or end_value or deposits or withdrawals or ops
+                or conn.execute(
+                    "SELECT 1 FROM snapshots WHERE user_id = ? LIMIT 1", (uid,)
+                ).fetchone()
+            )
+            if _hay_algo:
+                basis_incomparable = True
+        else:
+            # Mes CERRADO: si hay dos cierres medidos, el período se mide a
+            # mercado. Si no, queda la contabilidad — igual que antes, sin
+            # regresión, pero ahora ETIQUETADA como tal.
+            _b = bordes_mercado_periodo(conn, uid, period_start, period_end, broker_filter)
+            if _b:
+                # Las dos puntas a mercado; los flujos siguen siendo los del
+                # propio período (`deposits`/`withdrawals` de monthly_entries), que
+                # es la MISMA ventana porque el borde de apertura es el cierre del
+                # período anterior. Los brutos NO se tocan: son lo que la app
+                # PUBLICA (MonthCard.jsx:223-224), cifras que el usuario contrasta
+                # contra el resumen de su broker.
+                start_value, end_value = _b
+                _basis = "mercado"
+                _start_is_mtm = True
     elif period_type == "year":
         # Sumamos los monthly_entries del año. start = capital_inicio del primer
         # mes con data; end = capital_final del último mes con data (o live
@@ -476,7 +794,15 @@ def compute_metrics_for_period(
             # fabricaba el unrealized histórico como "P&L del año". Start desde el
             # snapshot MtM del cierre del año pasado (solo global).
             if broker_filter == "global":
-                _snap_y = fetch_snapshot_at_or_before(conn, uid, period_start, mtm_only=True)
+                # `_dia_anterior`: el borde de apertura del año es el cierre del
+                # 31/12 ANTERIOR. Con `<= period_start` agarraba la foto del propio
+                # 1/1 —que ya tiene adentro el aporte de ese día— mientras
+                # `deposits` seguía siendo el del año entero: el aporte se restaba
+                # dos veces. Mismo defecto que ya se cerró en el período cerrado y
+                # en el mes en curso; faltaba acá.
+                _prev_y = _dia_anterior(period_start)
+                _snap_y = (fetch_snapshot_at_or_before(conn, uid, _prev_y, mtm_only=True)
+                           if _prev_y else None)
                 if (_snap_y and float(_snap_y.get("total_value") or 0) > 0
                         and _border_is_fresh(_snap_y.get("date"), period_start)):
                     start_value = float(_snap_y["total_value"])
@@ -485,11 +811,112 @@ def compute_metrics_for_period(
             # año resta cadena contra mercado.
             if _basis_is_incomparable(_start_is_mtm, start_value, deposits, withdrawals):
                 basis_incomparable = True
+        else:
+            # Año CERRADO: mismas dos puntas medidas que pide el mes.
+            _b = bordes_mercado_periodo(conn, uid, period_start, period_end, broker_filter)
+            if _b:
+                # Las dos puntas a mercado; los flujos siguen siendo los del
+                # propio período (`deposits`/`withdrawals` de monthly_entries), que
+                # es la MISMA ventana porque el borde de apertura es el cierre del
+                # período anterior. Los brutos NO se tocan: son lo que la app
+                # PUBLICA (MonthCard.jsx:223-224), cifras que el usuario contrasta
+                # contra el resumen de su broker.
+                start_value, end_value = _b
+                _basis = "mercado"
+                _start_is_mtm = True
+        # El TWR del año, DESDE EL MISMO MOTOR que la sección Diagnóstico. Si los
+        # dos números salieran de motores distintos volverían a contradecirse para
+        # el mismo período — que es el defecto que este trabajo viene a cerrar.
+        # `twr.curva_indexada` sólo encadena bordes en base de mercado; si no
+        # alcanzan, devuelve None y abajo queda la composición contable de siempre.
+        if broker_filter == "global":
+            try:
+                import twr as _twr
+                # ⚠️ El borde de APERTURA del año cae ANTES de period_start (el
+                # cierre del 31/12 anterior). Arrancar la ventana justo en
+                # period_start lo dejaba afuera y el año se quedaba con un solo
+                # punto → sin TWR, y volvía silenciosamente a la composición
+                # contable. Se abre la ventana hacia atrás la misma tolerancia
+                # que ya usa `_border_is_fresh` para aceptar un borde.
+                # ⚠️ Abrir la ventana en `period_start − 5` no basta: `serie_medible`
+                # toma TODOS los puntos que caen ahí y `curva_indexada` encadena
+                # desde el más viejo, así que el % del año incorporaba los últimos
+                # 4 días del año anterior. Con cron diario sano eso publicaba
+                # −6,30% al lado de +US$20.315 de ganancia. El arranque tiene que
+                # ser EXACTAMENTE el borde de cierre del período anterior — el
+                # mismo que usa `bordes_mercado_periodo` para `delta_usd`, para
+                # que el % y el monto describan la misma ventana.
+                # ⚠️ Y EL BORDE TIENE QUE SER FRESCO. `fetch_snapshot_at_or_before`
+                # camina hacia atrás hasta encontrar uno aceptable, así que cuando el
+                # cierre del período anterior NO sirve —por ejemplo una foto
+                # reconstruida mayormente al costo, que el guard de base rechaza— se
+                # trae el anterior, que puede estar un mes antes. Medido: con el
+                # cierre del 31/12 rechazado, el año 2026 arrancaba su TWR el 30/11
+                # y publicaba "Año difícil — −26,4%" con delta_usd = US$0 y start ==
+                # end: el porcentaje describía 13 meses y el monto 12. Es la misma
+                # asimetría que `bordes_mercado_periodo` ya cierra con
+                # `_border_is_fresh` 350 líneas más arriba; acá faltaba.
+                _prev_dia = _dia_anterior(period_start)
+                _snap_ini = (fetch_snapshot_at_or_before(
+                    conn, uid, _prev_dia, accept=_twr.BORDE_PERIODO)
+                    if _prev_dia else None)
+                if _snap_ini is not None and not _border_is_fresh(
+                        _snap_ini.get("date"), period_start, 1):
+                    _snap_ini = None
+                _desde = (str(_snap_ini["date"])[:10] if _snap_ini
+                          else (datetime.strptime(period_start[:10], "%Y-%m-%d")
+                                - timedelta(days=_BORDER_MAX_LAG_DAYS)).date().isoformat())
+                _c = _twr.curva_indexada(
+                    conn, uid, _desde, period_end,
+                    valor_live=(float(live_value) if year_is_current and live_value else None))
+                # ⚠️ EL TWR TIENE QUE CUBRIR EL PERÍODO QUE SE ESTÁ PUBLICANDO.
+                #
+                # Sin esta guarda, un usuario con mediciones sólo desde julio
+                # recibía el +10,0% de julio-a-hoy junto al −US$7.000 del año
+                # entero, los dos en el mismo hero (MonthCard.jsx:118 y :121), y
+                # `basis_incomparable` no lo tapaba porque el año en curso ya
+                # tenía su propio guard para otra cosa. El % y el monto tienen que
+                # describir LA MISMA VENTANA o el % no se publica.
+                # ⚠️ `ventana_desde/hasta`, NO `medido_desde/hasta`. Los segundos
+                # son el primer y el último punto APTO de TODA la serie; el TWR
+                # sólo cubre el tramo publicado. Con una foto medida suelta al
+                # arranque del año —el último cierre del cron de diciembre antes
+                # de que se cortara, forma común— el guard daba por cubierto el
+                # año y publicaba el % de dos meses al lado del monto de doce.
+                if (_c.get("twr") is not None
+                        and _ventana_cubre(_c.get("ventana_desde"), _c.get("ventana_hasta"),
+                                           period_start, period_end, year_is_current)):
+                    year_twr_pct = round(_c["twr"] * 100, 2)
+                    _basis = "mercado"
+            except Exception:
+                log.exception("year_twr desde twr.curva_indexada fallo uid=%s", uid)
         # AUDIT B1: el retorno del año = composición GEOMÉTRICA de los retornos
         # mensuales (TWR encadenado), no un Modified Dietz único anual. Así el
         # anual coincide con lo que sugieren los meses y no depende del timing
         # de los aportes. El último mes del año en curso usa live como cierre.
-        if rows:
+        #
+        # ⚠️ CON AGUJEROS EN EL MEDIO LA COMPOSICIÓN NO SE PUBLICA. Si a
+        # `monthly_entries` le faltan meses entre el primero y el último, la
+        # composición los saltea — o sea los cuenta como +0% — y el % termina
+        # describiendo una ventana MÁS CORTA que `delta_usd`, que sí va de punta
+        # a punta. Los dos van juntos en el mismo hero (MonthCard.jsx:118 y :121).
+        # Medido: un año con filas sólo en enero y en el mes en curso publicaba
+        # "+8,11%" al lado de "−US$7.000". Sin composición confiable queda el
+        # Modified Dietz único del año, que cubre exactamente la misma ventana que
+        # el monto. (Este agujero es anterior a este trabajo: origin/main da el
+        # mismo 8,11 en el mismo escenario.)
+        # El fallback contable corre JUSTO cuando la serie medida está rota, así
+        # que también tiene que probar cobertura: no alcanza con que los meses sean
+        # contiguos, tienen que ALINEAR con el período. Si la primera fila es de
+        # julio, la composición describe medio año y `delta_usd` el año entero.
+        _meses_con_fila = sorted(int(r["month"]) for r in rows) if rows else []
+        _hay_agujero = bool(_meses_con_fila) and (
+            len(_meses_con_fila) != (_meses_con_fila[-1] - _meses_con_fila[0] + 1))
+        _cubre_el_periodo = bool(_meses_con_fila) and _ventana_cubre(
+            f"{y:04d}-{_meses_con_fila[0]:02d}-01",
+            _fin_de_mes_iso(y, _meses_con_fila[-1]),
+            period_start, period_end, year_is_current)
+        if rows and not _hay_agujero and _cubre_el_periodo:
             comp = 1.0
             have_comp = False
             for i, r in enumerate(rows):
@@ -507,7 +934,10 @@ def compute_metrics_for_period(
                     _ci_is_mtm = False
                     if broker_filter == "global":
                         _ms = f"{y:04d}-{int(r['month']):02d}-01"
-                        _snap_m = fetch_snapshot_at_or_before(conn, uid, _ms, mtm_only=True)
+                        # Idem: el cierre del mes ANTERIOR, no la foto del día 1.
+                        _msp = _dia_anterior(_ms)
+                        _snap_m = (fetch_snapshot_at_or_before(conn, uid, _msp, mtm_only=True)
+                                   if _msp else None)
                         if (_snap_m and float(_snap_m.get("total_value") or 0) > 0
                                 and _border_is_fresh(_snap_m.get("date"), _ms)):
                             ci = float(_snap_m["total_value"])
@@ -524,7 +954,12 @@ def compute_metrics_for_period(
                 if mp is not None:
                     comp *= (1 + mp / 100.0)
                     have_comp = True
-            if have_comp:
+            # La composición mensual sale de monthly_entries: es CONTABLE. Si las
+            # dos puntas del año ya quedaron en base de mercado, dejarla ganar
+            # volvería a publicar lo realizado sobre costo (el "+3,6% anual" de
+            # una cuenta derrumbada). Ahí manda el Dietz punta a punta de los
+            # bordes medidos, que es `delta_pct_val`.
+            if have_comp and year_twr_pct is None and _basis != "mercado":
                 year_twr_pct = round((comp - 1) * 100, 2)
     elif broker_filter != "global":
         # AUDIT H-8 — day/week con filtro de broker: los snapshots son GLOBALES,
@@ -686,6 +1121,7 @@ def compute_metrics_for_period(
         sp500_return_pct=round(sp500_ret, 2) if sp500_ret is not None else None,
         inflation_pct=round(inflation_ret, 2) if inflation_ret is not None else None,
         basis_incomparable=basis_incomparable,
+        basis=_basis,
     )
     return metrics, ops
 
@@ -1029,11 +1465,26 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
         )
 
     # Oración 5: comparativa vs S&P 500 (solo si hay dato).
+    #
+    # ⚠️ FASE 2 · LA COMPARACIÓN SE PUBLICA, PERO CON EL SESGO DECLARADO.
+    # Comparar dos RETORNOS no es el crimen de la Fase 1 —ahí se restaban dos
+    # VALUACIONES medidas con reglas distintas—: acá cada retorno se calcula entero
+    # bajo su propia regla y recién después se contrastan. Por eso la frase queda.
+    #
+    # Lo que NO puede quedar es callado: con `basis='contable'` el retorno del
+    # usuario NO incluye lo no realizado (`pnl_unrealized = 0` en toda la cadena),
+    # así que una cartera que se duplicó sin vender nada entra a la comparación
+    # como ~0%. El sesgo es sistemático y va SIEMPRE para el mismo lado —en contra
+    # del usuario—, y sin decirlo la frase es engañosa aunque cada mitad esté bien
+    # calculada.
     if metrics.vs_sp500_pct is not None and abs(metrics.vs_sp500_pct) >= 0.5:
         sign = "encima" if metrics.vs_sp500_pct > 0 else "debajo"
-        parts.append(
-            f"Quedaste {abs(metrics.vs_sp500_pct):.1f} puntos por {sign} del S&P 500."
-        )
+        _frase = f"Quedaste {abs(metrics.vs_sp500_pct):.1f} puntos por {sign} del S&P 500."
+        if getattr(metrics, "basis", None) == "contable":
+            _frase += (" Ojo: tu número está reconstruido de tu contabilidad y no "
+                       "cuenta las ganancias que todavía no vendiste, así que la "
+                       "comparación te juega en contra.")
+        parts.append(_frase)
 
     return " ".join(parts) if parts else None
 

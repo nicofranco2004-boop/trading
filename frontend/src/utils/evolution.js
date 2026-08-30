@@ -1,5 +1,122 @@
 import { lookupHistoricalDolar } from './fx'
 
+// ⚠️ DOS PREGUNTAS DISTINTAS, DOS PREDICADOS DISTINTOS. Colapsarlas es el error
+// que hizo volver este bug once veces, y las dos direcciones del error ya se
+// vivieron: separarlas POR FILA hizo polvo la curva (ronda 9), unificarlas POR
+// SERIE devolvió el pico fabricado (ronda 10).
+//
+//   ¿se puede DIBUJAR?     → por SERIE (continuidad). Una foto intradía está
+//                            valuada a mercado (posiciones × precio): sostiene
+//                            la línea. Lo único que nunca entra es la fila que
+//                            el import FABRICA copiando la cadena contable.
+//   ¿puede ser PICO o      → por FILA (hecho de medición). Una intradía NO es un
+//     DENOMINADOR?           cierre: sostiene la línea pero no fija un máximo ni
+//                            sirve de base de un período.
+//
+// Es el mismo contrato que el backend ya escribió en twr.py (BASE_MERCADO vs
+// ACEPTA_LINEA) y que /api/snapshots ya manda por fila: `clase`, `base`, `apto`.
+// Acá sólo se LEE — si estos predicados y twr.py dicen cosas distintas sobre la
+// misma fila, uno de los dos está mal.
+const ACEPTA_LINEA = ['medicion', 'reconstruido', 'intradia']
+
+/**
+ * esApto — ¿esta fila puede ser PICO, BORDE o DENOMINADOR?
+ *
+ * ⚠️ NO USAR `sintetico` PARA DECIDIR SI DIBUJAR. `/api/snapshots` lo define
+ * como `sintetico = not apto` (main.py:5020), o sea colapsa las dos preguntas:
+ * una foto INTRADIA sale `sintetico=true` sin ser fabricada — está medida a
+ * mercado. `sintetico` sólo sobrevive como fallback para un backend viejo que
+ * todavía no manda `apto`.
+ */
+export function esApto(s) {
+  if (!s) return false
+  return s.apto !== undefined ? !!s.apto : !s.sintetico
+}
+
+/**
+ * esDibujable — ¿este punto entra a la línea?
+ *
+ * Con `clase` (backend actual) la respuesta es la lista de continuidad. Sin
+ * `clase` (backend anterior a este cambio) el único dato disponible es `apto`,
+ * y ahí se degrada al lado conservador: dibuja menos, nunca de más.
+ */
+export function esDibujable(s) {
+  if (!s) return false
+  if (s.clase !== undefined && s.clase !== null) return ACEPTA_LINEA.includes(s.clase)
+  return esApto(s)
+}
+
+// Cuánto de la base de un período puede venir de capital CONTABLE sin medir
+// antes de que el resultado deje de ser publicable.
+//
+// ⚠️ NO ES UN NÚMERO NUEVO: es el mismo `_UNMEASURED_BASE_TOL` de
+// `backend/reporting/builder.py`, con la misma fórmula. Se porta en vez de
+// inventar un criterio nuevo justamente porque el defecto de fondo de todo esto
+// fue tener la misma regla escrita distinto en cada lector. Si estos dos valores
+// se separan, uno de los dos está mal.
+const _TOL_BASE_SIN_MEDIR = 0.10
+
+/**
+ * baseIncomparable — ¿la resta `fin(mercado) − inicio` mide el período, o mide
+ * la brecha entre dos formas de medir?
+ *
+ * Incomparable cuando el inicio NO salió de un cierre medido Y ADEMÁS pesa lo
+ * suficiente como para torcer el resultado.
+ *
+ * La tolerancia existe por el ONBOARDING y sacarla sería un error: el primer
+ * período de un usuario arranca en la cadena contable y su número es correcto
+ * igual, porque cuando el período está dominado por dinero NUEVO los flujos son
+ * hechos registrados, no estimaciones, y el error que puede meter la cadena está
+ * acotado. Lo que el guard caza es el otro caso: el 452, donde la base contable
+ * es el 99% de todo y la resta publica −65,82% con cero operaciones.
+ */
+/**
+ * diagnosticoSinMedicion — POR QUÉ no hay número, con las palabras del caso.
+ *
+ * ⚠️ EXISTE PORQUE `null` NO ALCANZA. `computeReturnDelta` devuelve `null` por dos
+ * motivos que para el usuario son opuestos: "todavía no cargaste nada" y "cargaste
+ * 57 fotos pero ninguna es una medición a precio real". La UI las mostraba igual
+ * —una card que desaparece, un "—" pelado, o peor: *"Cargá tus snapshots diarios"*,
+ * que le pide a alguien con 57 snapshots que haga lo que ya hizo—.
+ *
+ * Medido en la copia de producción del 16/08: 174 usuarios se quedaban sin
+ * sparkline y 168 de ellos TENÍAN ≥2 snapshots.
+ *
+ * Devuelve `null` cuando sí se puede medir (o cuando no hay nada y el vacío de
+ * siempre es el correcto). Si no, devuelve el material para escribir la frase.
+ */
+export function diagnosticoSinMedicion(snapshots) {
+  const filas = (snapshots || []).filter(s => s && s.date)
+  if (filas.length === 0) return null          // cuenta vacía: el vacío de siempre
+  const medidas = filas.filter(esApto)
+  if (medidas.length >= 2) return null         // hay con qué medir
+  const fechas = medidas.map(s => String(s.date).slice(0, 10)).sort()
+  return {
+    filas: filas.length,
+    medidas: medidas.length,
+    primeraMedicion: fechas[0] || null,
+  }
+}
+
+/**
+ * textoSinMedicion — la frase única. Un solo lugar donde se elige cómo se dice,
+ * para que el Dashboard, el home mobile y Reportes no inventen tres versiones.
+ */
+export function textoSinMedicion(diag) {
+  if (!diag) return null
+  if (diag.medidas === 0) {
+    return `Todavía no medimos tu cartera a precio de mercado. Las ${diag.filas} fotos que tenemos salen de tu import —son tu contabilidad, no una medición—, y compararlas contra el valor de hoy no da tu rendimiento.`
+  }
+  return `Tenemos una sola medición a precio de mercado (${diag.primeraMedicion}). Para calcular un rendimiento hacen falta dos cierres medidos.`
+}
+
+export function baseIncomparable(inicioEsMedido, inicioValor, depositos = 0, retiros = 0) {
+  if (inicioEsMedido || !(inicioValor > 0)) return false
+  const baseTotal = inicioValor + Math.max(0, (depositos || 0) - (retiros || 0))
+  if (!(baseTotal > 0)) return true
+  return (inicioValor / baseTotal) > _TOL_BASE_SIN_MEDIR
+}
+
 /**
  * buildPortfolioValueSeries
  * ─────────────────────────
@@ -54,7 +171,22 @@ export function convertSeriesToArs(series, getFxForDate) {
 }
 
 export function buildPortfolioValueSeries(snapshots, days = null, liveValue = null, liveNet = null, liveFx = null) {
-  const sorted = [...(snapshots || [])].sort((a, b) => a.date < b.date ? -1 : 1)
+  // ⚠️ FILTRAR ACÁ ES LO QUE ARREGLA EL EJE Y, EL CHIP Y EL ANCLA — los tres
+  // consumidores a dos saltos que no nombran `snapshots` en ninguna línea.
+  // Medido sobre la serie real del 452: sin este filtro el punto más alto de la
+  // curva de 30 días es una fila `source='import'` de 197.297,51 que fija el
+  // techo del eje (`Dashboard.jsx:1018`), el chip pegado al gráfico publica
+  // −65,93% (`Dashboard.jsx:551`) y el home mobile rotula literalmente
+  // "Hace 30d · US$196.631" contra "Hoy · US$67.214". Nadie perdió ese dinero:
+  // es el escalón entre medir al costo y medir a mercado.
+  //
+  // Y VA ANTES DEL RECORTE POR VENTANA, no después: el ancla del período
+  // (más abajo) hace PREPEND del último punto anterior al corte, así que con el
+  // filtro puesto después, la fila al costo se re-inyectaba igual aunque
+  // quedara fuera de los 30 días. Acortar la ventana no la saca; sacarla del
+  // universo, sí.
+  const dibujables = (snapshots || []).filter(esDibujable)
+  const sorted = [...dibujables].sort((a, b) => a.date < b.date ? -1 : 1)
   const points = sorted.map(s => ({
     date: s.date,
     label: s.date.slice(5), // MM-DD
@@ -120,7 +252,21 @@ export function buildPortfolioValueSeries(snapshots, days = null, liveValue = nu
  * que buildPortfolioValueSeries / buildEvolutionFromSnapshots.
  */
 function netDepositedOf(s) {
-  return (s.net_deposited && s.net_deposited > 0) ? s.net_deposited : (s.total_invested || 0)
+  // ⚠️ AUSENTE ≠ NEGATIVO. El `> 0` de antes leía un `net_deposited` NEGATIVO
+  // —retiros netos por encima de los aportes, un dato perfectamente legítimo—
+  // como si fuera un hueco, y caía a `total_invested`, que es COSTO. O sea
+  // volvía a meter la base contable por la ventana, dentro del helper que
+  // justamente existe para no mezclarlas.
+  //
+  // Medido en la copia de producción del 16/08: 4.744 filas (11,7%) en 192
+  // usuarios tienen `net_deposited < 0`. En el 452 son las DOS puntas
+  // (−1.789,39 y −5.726,38), así que el fallback disparaba de los dos lados.
+  //
+  // La columna es `NOT NULL DEFAULT 0`, así que el hueco real —las filas
+  // anteriores a Phase 6— se escribe exactamente como 0. Ése es el único valor
+  // que significa "no lo tengo"; cualquier otro, signo incluido, es un dato.
+  const nd = s?.net_deposited
+  return (nd != null && nd !== 0) ? nd : (s?.total_invested || 0)
 }
 
 /**
@@ -159,10 +305,24 @@ function netDepositedOf(s) {
 export function computeReturnDelta(snapshots, { liveValue = null, liveNetDeposited = null, sinceDate = null } = {}) {
   if (!snapshots?.length) return null
   const today = new Date().toISOString().slice(0, 10)
-  // Orden DESC por fecha — [0] = más reciente.
-  const desc = [...snapshots].sort((a, b) => (a.date < b.date ? 1 : -1))
+  // ⚠️ LAS DOS PUNTAS, NO UNA. Éste es EL hallazgo estructural: los guards de las
+  // rondas anteriores filtran el borde de APERTURA y ninguno filtra el de CIERRE.
+  // Cuando la punta es la foto del import, el número sale INVERTIDO —un +96%
+  // fantasma en vez de un −65% fantasma—, mismo crimen y signo opuesto, y por eso
+  // nadie lo fue a buscar. Medido en producción: 180 usuarios (22%) tienen la
+  // última fila al costo.
+  //
+  // Acá se filtra por `esApto` y NO por `esDibujable`: este helper no dibuja
+  // nada, produce un DELTA y un PORCENTAJE. Sus dos extremos son bordes de
+  // período, y una foto intradía no cierra un período.
+  const aptos = [...snapshots].filter(esApto).sort((a, b) => (a.date < b.date ? 1 : -1))
+  if (!aptos.length) return null
+  const desc = aptos
 
   // "Hoy": preferimos el valor live (refleja la cartera ahora). Fallback al snap más reciente.
+  // El live NO necesita filtro: es la cartera valuada a precio de mercado ahora
+  // mismo, que es justamente la regla que queremos en las dos puntas. Lo que sí
+  // se filtra es el `net_deposited` de respaldo, que sale de una fila.
   let todayValue, todayNetDep
   if (liveValue != null) {
     todayValue = +liveValue
@@ -185,7 +345,20 @@ export function computeReturnDelta(snapshots, { liveValue = null, liveNetDeposit
   } else {
     prev = desc[1]  // modo diario sin live: penúltimo snapshot
   }
-  if (!prev || !prev.total_value) return null
+  // ⚠️ `!prev.total_value` NO ALCANZA: deja pasar un `total_value` NEGATIVO
+  // (truthy). Con base negativa, el `prevValue > 0 ? ... : 0` de más abajo cae al
+  // CERO, y el resultado es lo peor de los dos mundos: un monto en dólares que se
+  // publica junto a un "0,00%" que parece medido. Un cero falso es peor que un
+  // vacío — el vacío se lee como "no lo sabemos" y el cero como "no se movió".
+  // Medido en la copia del 16/08: 7 usuarios publicaban un monto contra 0,00%
+  // (uid 1: +US$2.026,35 · 0,00% sobre una base de −11,92).
+  // No hay porcentaje contra una base ≤ 0: no es 0, es indefinido.
+  if (!prev || !(prev.total_value > 0)) return null
+  // Sin `liveValue`, las dos puntas salen de filas y tienen que ser DISTINTAS:
+  // con una sola fila apta, `desc[0]` y el fallback `desc[desc.length-1]` son la
+  // misma, y el helper publicaba un 0,00% que se lee como "el mes estuvo plano"
+  // cuando lo cierto es que no hay con qué medirlo.
+  if (liveValue == null && prev === desc[0]) return null
 
   const usd = (todayValue - todayNetDep) - ((prev.total_value || 0) - netDepositedOf(prev))
   const prevValue = prev.total_value || 0
@@ -233,6 +406,43 @@ export function computeDailyPnl(snapshots, opts = {}) {
  */
 export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcBlue) {
   if (!snapshots || snapshots.length < 2) return null
+  // ⚠️ Sólo puntos en BASE DE MERCADO. `snapshots` mezcla mediciones del cron con
+  // fotos que el import FABRICA copiando la cadena contable
+  // (backend/importing/persister.py:1289-1292): no bajan con el mercado y dan más
+  // alto que el valor real, así que encadenarlas contra una medición de verdad
+  // fabrica un desplome que el usuario nunca vivió. La clase la decide el backend
+  // con `twr.clasificar_fila` y viaja en `apto` (/api/snapshots); `sintetico` es
+  // el mismo dato con el nombre viejo, para snapshots servidos por un backend
+  // anterior a este cambio.
+  // ⚠️ `esApto`, Y NO `esDibujable` — AUNQUE EL RESULTADO SE DIBUJE.
+  //
+  // ESTE ES EL LUGAR DONDE EL PRÓXIMO LECTOR VA A QUERER "CORREGIRLO". Yo mismo lo
+  // hice: el nombre dice `buildEvolution...`, el consumidor es un gráfico
+  // (`Insights.jsx:481`), y de ahí saqué que era una serie dibujada y le puse el
+  // predicado flojo. **El nombre y el consumidor mienten: el CUERPO mide.**
+  //
+  // Mirá 40 líneas más abajo antes de tocar esto. Cada punto que entra acá es:
+  //   · DENOMINADOR de un período  → `period_return = pnl_t / (value_t-1 + 0.5·flows_t)`
+  //   · candidato a PICO           → `if (value > peakValueUsd) peakValueUsd = value`
+  // Son exactamente las dos cosas que `esApto` protege, y son las dos que el
+  // contrato de `twr.py` le prohíbe a una foto INTRADIA.
+  //
+  // Y ésta NO es `curva_indexada`. El contrato de `ACEPTA_LINEA` dice que INTRADIA
+  // entra a la línea "y `curva_indexada` se encarga de que nunca sea pico ni
+  // denominador". Acá NO HAY QUIEN SE ENCARGUE: el punto entra derecho al
+  // encadenado. Aflojar el filtro sin construir ese mecanismo no es dibujar mejor,
+  // es contaminar el cálculo.
+  //
+  // Medido con las 822 series reales de la copia del 16/08: de los 99 usuarios con
+  // filas INTRADIA, a 84 les cambiaba el rendimiento acumulado. Con UNA sola fila
+  // intradía, el uid 93 pasaba de +7,82% a −33,44%; el 519 de +5,82% a −39,53%;
+  // el 427 de −4,32% a +42,43%.
+  //
+  // Si algún día se quiere la continuidad visual de los puntos INTRADIA, hace falta
+  // el equivalente de `curva_indexada` —dibujar el punto SIN que participe del
+  // encadenado ni del pico—. No se resuelve metiéndolo al chain-link.
+  snapshots = snapshots.filter(esApto)
+  if (snapshots.length < 2) return null
 
   // Pre-compute cumulative pnl_realized by YYYY-MM
   const cumRealizedByMonth = new Map()
@@ -284,7 +494,18 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
   let peakValueArs = 0
 
   for (const s of sorted) {
-    const baselineUsd = (s.net_deposited && s.net_deposited > 0) ? s.net_deposited : s.total_invested
+    // ⚠️ LA MISMA REGLA, NO UNA COPIA. Acá vivía un segundo
+    // `(s.net_deposited > 0) ? ... : s.total_invested` — el mismo `> 0` de §4.4 que
+    // se arregló en `netDepositedOf` y que quedó vivo en esta línea, adentro de la
+    // función que encadena. Leía un `net_deposited` NEGATIVO (retiros netos por
+    // encima de los aportes, un dato legítimo) como si fuera un hueco y caía a
+    // `total_invested`, que es COSTO: la base contable volvía a entrar por la
+    // ventana, y de ahí salen los `flows` del chain-link de abajo.
+    // Son 4.744 filas (11,7%) en 192 usuarios con `net_deposited < 0`.
+    //
+    // Dos copias de la misma regla en un archivo es el defecto de fondo de este
+    // proyecto, así que ahora hay UNA sola y es la de arriba.
+    const baselineUsd = netDepositedOf(s)
     const value = s.total_value || 0
     const netDep = baselineUsd || 0
     if (value > peakValueUsd) peakValueUsd = value
@@ -314,7 +535,13 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
       const isBigWithdraw = flows < 0 && flowRatio > 0.3
       const avgCap = isBigWithdraw ? prevValueUsd : (prevValueUsd + 0.5 * flows)
       const rRaw = avgCap > 0 ? pnl / avgCap : 0
-      const r = Math.min(Math.max(rRaw, -0.99), 0.5)
+      // SIN TECHO. El `Math.min(..., 0.5)` que estaba acá limitaba las subidas de la
+      // CARTERA a +50% por mes y NO le aplicaba nada al BENCHMARK: el sesgo iba
+      // sistematicamente en contra del usuario y se componia mes a mes. Un +80% en
+      // cripto o post-devaluacion es perfectamente posible. El piso de -99% si
+      // queda: no se puede perder mas que todo. Mismo criterio que `twr.dietz`
+      // (backend/twr.py:215), cuyo docstring explica por que.
+      const r = Math.max(rRaw, -0.99)
       cumUsd *= (1 + r)
     }
 
@@ -347,7 +574,13 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
       const isBigWithdrawArs = flowsArs < 0 && flowRatioArs > 0.3
       const avgArs = isBigWithdrawArs ? prevValueArs : (prevValueArs + 0.5 * flowsArs)
       const rRawArs = avgArs > 0 ? pnlArs / avgArs : 0
-      const rArs = Math.min(Math.max(rRawArs, -0.99), 0.5)
+      // SIN TECHO. El `Math.min(..., 0.5)` que estaba acá limitaba las subidas de la
+      // CARTERA a +50% por mes y NO le aplicaba nada al BENCHMARK: el sesgo iba
+      // sistematicamente en contra del usuario y se componia mes a mes. Un +80% en
+      // cripto o post-devaluacion es perfectamente posible. El piso de -99% si
+      // queda: no se puede perder mas que todo. Mismo criterio que `twr.dietz`
+      // (backend/twr.py:215), cuyo docstring explica por que.
+      const rArs = Math.max(rRawArs, -0.99)
       cumArs *= (1 + rArs)
     }
     const denomRealizedArs = Math.max(baselineArs, peakValueArs * 0.8)

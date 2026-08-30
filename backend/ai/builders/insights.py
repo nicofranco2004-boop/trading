@@ -135,7 +135,10 @@ def _compute_drawdown(values: List[float]) -> Dict[str, Any]:
     """Drawdown sobre serie de valores. No es TWRR — solo MV/peak, suficiente
     para la narrativa. Devuelve current_pct, max_pct, days_since_peak."""
     if not values or len(values) < 2:
-        return {"current_pct": 0.0, "max_pct": 0.0, "days_since_peak": None}
+        # None, NO 0.0: "no se pudo medir" no es "no caíste". Ver el comentario
+        # equivalente en insights_drawdown.py.
+        return {"current_pct": None, "max_pct": None, "days_since_peak": None,
+                "insufficient_data": True}
 
     peak = values[0]
     peak_idx = 0
@@ -184,13 +187,30 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     today = date.today()
 
     # ── 1. Snapshots para TWR + drawdown ─────────────────────────────────────
-    rows = conn.execute(
-        """SELECT date, total_value, net_deposited
-             FROM snapshots
-            WHERE user_id = ? ORDER BY date ASC""",
-        (user_id,),
-    ).fetchall()
-    snaps = [dict(r) for r in rows]
+    # ⚠️ NO se leen los snapshots crudos: la tabla mezcla mediciones reales del
+    # cron con fotos que el import FABRICA copiando la cadena contable
+    # (persister.py:1289-1292). Encadenadas contra una medición de verdad fijan
+    # picos que nunca existieron — es el "−45% de drawdown" que reportó el user.
+    import twr as _twr
+    _serie = _twr.serie_medible(conn, user_id)
+    # ⚠️ Y TAMPOCO se aplana la serie ignorando los TRAMOS. `serie_medible` la
+    # parte donde hubo más de `max_hueco_dias` de silencio; aplanando los puntos,
+    # el pico sale de un tramo y el fondo del otro, o sea el packet le afirma al
+    # modelo el derrumbe que ocurrió ADENTRO del hueco — el mismo que
+    # `curva_indexada` se niega a publicar por escrito y que la pantalla muestra
+    # como "—". Se usa SÓLO el tramo que produjo retorno; si hay más de uno, no
+    # hay drawdown afirmable.
+    _tramos_con_legs = [t for t in _twr.curva_indexada(conn, user_id)["tramos_detalle"]
+                        if t["legs"] > 0]
+    if len(_tramos_con_legs) == 1:
+        _d0, _d1 = _tramos_con_legs[0]["desde"], _tramos_con_legs[0]["hasta"]
+        _serie = dict(_serie, medibles=[p for p in _serie["medibles"]
+                                       if _d0 <= p["date"] <= _d1])
+    elif len(_tramos_con_legs) != 0:
+        _serie = dict(_serie, medibles=[],
+                     motivo_texto=_twr.MOTIVO_TEXTO.get("serie_partida"))
+    snaps = [{"date": p["date"], "total_value": p["value"],
+              "net_deposited": p["net_deposited"]} for p in _serie["medibles"]]
     # Filtrar al window
     cutoff = today.toordinal() - window_days
     window_snaps = [

@@ -36,9 +36,18 @@ def _base_db():
             is_cash INTEGER DEFAULT 0,
             entry_date TEXT
         );
+        -- 🔴 MISMA FAMILIA QUE EL FIXTURE DE `snapshots`, OTRA TABLA.
+        -- Le faltaban `id` y `parent_broker_id`, y `analysis_prep.py:89` hace
+        -- `SELECT id, name, currency, parent_broker_id FROM brokers` — así que los
+        -- 7 tests de este archivo morían con
+        --     sqlite3.OperationalError: no such column: id
+        -- `parent_broker_id` es la que decide la valuación de un CEDEAR por su
+        -- broker PADRE, o sea que este fixture no podía ejercitar esa rama.
         CREATE TABLE brokers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER, name TEXT, currency TEXT,
-            PRIMARY KEY (user_id, name)
+            parent_broker_id INTEGER,
+            UNIQUE (user_id, name)
         );
         CREATE TABLE config (
             user_id INTEGER, key TEXT, value TEXT,
@@ -62,8 +71,26 @@ def _base_db():
             -- (builder.py) las pide desde que existen los movers → el test fallaba
             -- con "no such column: holdings_json" en main, antes de AUDIT D-1.
             fx_to_usd_blue REAL, holdings_json TEXT, source TEXT,
+            -- Idem `mtm_coverage`: sin ella `twr.clasificar_fila` degrada toda foto
+            -- reconstruida a contable y el lector de bordes rompe.
+            mtm_coverage REAL,
+            base TEXT, apto INTEGER,
             PRIMARY KEY (user_id, date)
         );
+        -- ⚠️ RONDA 11 · el estampo de la base y la vista que lo expone. Sin esto el
+        -- fixture no refleja el schema real y los lectores que usan la vista
+        -- —home.py, dashboard.py, goal.py— rompen con "no such table".
+        CREATE VIEW snapshots_medibles AS
+        SELECT * FROM snapshots
+         WHERE CASE
+                 WHEN apto IS NOT NULL THEN apto
+                 WHEN source = 'import'  THEN 0
+                 WHEN source = 'browser' THEN 0
+                 WHEN source = 'mtm_backfill'
+                      THEN (CASE WHEN COALESCE(mtm_coverage, -1) >= 0.90 THEN 1 ELSE 0 END)
+                 ELSE 1
+               END = 1;
+
         CREATE TABLE monthly_entries (
             id INTEGER PRIMARY KEY,
             user_id INTEGER, year INTEGER, month INTEGER, broker TEXT,

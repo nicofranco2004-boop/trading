@@ -343,3 +343,81 @@ def _db_por_modulo(request):
             os.unlink(p)
         except OSError:
             pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LA RED DE SEGURIDAD: que una falla NUEVA se note sola.
+#
+# ⚠️ POR QUÉ ESTO EXISTE. Durante siete rondas se dio por hecho que la suite
+# completa "moría al 23-28%" y toda la verificación se hizo sobre ~44 archivos
+# elegidos a mano. Era falso: `pytest` a secas colectaba `backend/scripts/`, donde
+# hay tres archivos `test_*.py` que NO son tests (uno manda mails de verdad). Con
+# eso resuelto (ver `pytest.ini`) la suite corre entera en ~52 s.
+#
+# Pero correr no alcanza: quedan fallas preexistentes, y con 29 rojos de fondo una
+# regresión nueva se pierde en el ruido. Comparar CONTEOS no sirve —la suite varía
+# entre entornos y un número no distingue "se arregló una y se rompió otra"—, así
+# que esto compara CONJUNTOS DE NOMBRES contra `fallas_conocidas.txt`.
+#
+# Las dos direcciones importan:
+#   · NUEVAS  → algo se rompió en esta corrida. Es lo que hay que ver.
+#   · las que ya no fallan → alguien las arregló y la lista quedó vieja.
+#
+# ⚠️ SÓLO GRITA POR LAS NUEVAS, Y SÓLO SI CORRIÓ LA SUITE ENTERA. Con un subconjunto
+# (`pytest tests/test_x.py`) las que faltan no están arregladas: no se ejecutaron.
+# Confundir esas dos cosas convertiría el guard en ruido, y un guard ruidoso se
+# termina ignorando — que es exactamente cómo estas 29 se volvieron invisibles.
+_FALLAS_ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "fallas_conocidas.txt")
+_fallas_vistas = set()
+_tests_corridos = set()
+
+
+def _fallas_conocidas():
+    try:
+        with open(_FALLAS_ARCHIVO, encoding="utf-8") as fh:
+            return {l.strip() for l in fh
+                    if l.strip() and not l.lstrip().startswith("#")}
+    except FileNotFoundError:
+        return set()
+
+
+def pytest_runtest_logreport(report):
+    """Anota qué corrió y qué falló. `nodeid` es el mismo id que escribe `-rfE`."""
+    if report.when == "call" or (report.when == "setup" and report.outcome != "passed"):
+        _tests_corridos.add(report.nodeid)
+    if report.failed and report.when in ("setup", "call", "teardown"):
+        _fallas_vistas.add(report.nodeid)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    conocidas = _fallas_conocidas()
+    if not conocidas:
+        return
+    nuevas = sorted(_fallas_vistas - conocidas)
+    # Una conocida sólo cuenta como "arreglada" si de verdad se ejecutó.
+    arregladas = sorted((conocidas & _tests_corridos) - _fallas_vistas)
+    tw = getattr(session.config, "get_terminal_writer", lambda: None)()
+    def _decir(msg, **kw):
+        if tw is not None:
+            tw.line(msg, **kw)
+        else:
+            print(msg)
+    if nuevas:
+        _decir("")
+        _decir("=" * 72, red=True, bold=True)
+        _decir(f"🔴 {len(nuevas)} FALLA(S) NUEVA(S) — no están en fallas_conocidas.txt",
+               red=True, bold=True)
+        for n in nuevas:
+            _decir(f"    {n}", red=True)
+        _decir("Si es esperado, agregalas al archivo CON EL MOTIVO. Si no, rompiste algo.",
+               red=True)
+        _decir("=" * 72, red=True, bold=True)
+        # No se toca `exitstatus`: pytest ya sale != 0 cuando algo falla, y
+        # pisarlo escondería el código real de salida.
+    if arregladas:
+        _decir("")
+        _decir(f"✅ {len(arregladas)} falla(s) conocida(s) ya no fallan — sacalas de "
+               f"fallas_conocidas.txt:", green=True)
+        for n in arregladas:
+            _decir(f"    {n}", green=True)

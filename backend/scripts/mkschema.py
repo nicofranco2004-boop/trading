@@ -159,6 +159,44 @@ for t in tablas:
             f"REFERENCES {q(tabla_ref)}({q(hacia or 'id')}){acc};")
 
     ddl.append(f"CREATE TABLE IF NOT EXISTS {q(t)} (\n" + ",\n".join(piezas) + "\n);")
+
+    # ── El CAMINO DE UPGRADE, que el CREATE de arriba no cubre ────────────────
+    #
+    # ⚠️ ESTO NO EXISTÍA Y ES POR QUÉ EL ARCHIVO SE DESACTUALIZABA SOLO.
+    # `CREATE TABLE IF NOT EXISTS` es un NO-OP sobre una base que YA tiene la
+    # tabla — o sea en TODO deploy que no sea el primero. Una columna agregada
+    # después no aparecía nunca en Postgres, y cualquier índice o vista que la
+    # nombrara fallaba con `column "X" does not exist`. Es la forma del outage
+    # del 2026-08-02 (índice antes que su columna), salvo que acá la columna no
+    # llega nunca.
+    #
+    # Medido: así se habían perdido 6 columnas (4 de `users`, todo el
+    # free-trial) más las 3 de `snapshots` que agregó la ronda 11 — y el
+    # preflight de `copiar_a_postgres` las nombra y ABORTA el pasaje entero.
+    # Arreglarlo a mano en `schema_pg.sql` no sirve: `mkschema.py` reescribe el
+    # archivo en el lugar (línea de abajo) y se lleva puesta la edición.
+    #
+    # Se emite el tipo y el DEFAULT, pero NO el `NOT NULL`: agregar una columna
+    # NOT NULL sin default a una tabla con filas falla, y para la tabla nueva el
+    # CREATE de arriba ya lleva la definición completa. La columna identidad se
+    # saltea: no se puede agregar después, y si la tabla existe ya la tiene.
+    for cid, nombre, decl, notnull, default, pk in cols:
+        if auto and pk == 1:
+            continue
+        t_pg = tipo_pg(decl, False)
+        a = f"ALTER TABLE {q(t)} ADD COLUMN IF NOT EXISTS {q(nombre)} {t_pg}"
+        if default is not None:
+            d = str(default)
+            du = d.upper().replace(" ", "")
+            if du == "CURRENT_TIMESTAMP" or du.startswith("DATETIME('NOW'"):
+                d = "to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS')"
+            elif du.startswith("DATE('NOW'"):
+                d = "to_char(now() at time zone 'utc', 'YYYY-MM-DD')"
+            elif du == "CURRENT_DATE":
+                d = "to_char(now() at time zone 'utc', 'YYYY-MM-DD')"
+            a += f" DEFAULT {d}"
+        ddl.append(a + ";")
+
     if "WITHOUT ROWID" in sql_orig.upper():
         notas.append(f"{t}: era WITHOUT ROWID (en Postgres no aplica, se ignora)")
 
@@ -170,8 +208,36 @@ for nombre, sql in conn.execute(
     s = re.sub(r"CREATE\s+(UNIQUE\s+)?INDEX", lambda m: f"CREATE {m.group(1) or ''}INDEX IF NOT EXISTS", s, flags=re.I)
     ddl.append(s + ";")
 
+# Vistas — DESPUÉS de tablas e índices.
+#
+# ⚠️ ESTE BLOQUE NO EXISTÍA, y ésa era la razón de fondo: el script enumeraba
+# `type='table'` y `type='index'` de `sqlite_master` y nada más, así que
+# `snapshots_medibles` NUNCA iba a salir en `schema_pg.sql` por más veces que se
+# re-corriera. No era un archivo desactualizado: era un generador que no podía
+# generarla. Un lector que dice `FROM snapshots_medibles` —y el repo empuja a que
+# los lectores nuevos digan justamente eso— explotaba en Postgres.
+#
+# `CREATE OR REPLACE` porque `_init_db_postgres()` re-aplica el archivo en CADA
+# arranque: `CREATE VIEW` a secas levantaría DuplicateObject en el segundo boot.
+for nombre, sql in conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='view' AND sql IS NOT NULL "
+        "ORDER BY name"):
+    s = sql.strip().rstrip(";")
+    s = re.sub(r"\bIF NOT EXISTS\b", "", s, flags=re.I)
+    s = re.sub(r"CREATE\s+VIEW", "CREATE OR REPLACE VIEW", s, flags=re.I)
+    ddl.append(s + ";")
+    notas.append(f"{nombre}: vista emitida como CREATE OR REPLACE")
+
 salida = "\n\n".join(ddl + fks)
+# ⚠️ ESCRIBE EL ARCHIVO EN EL LUGAR, sin flag ni confirmación: correr este script
+# se lleva puesta cualquier edición a mano de `schema_pg.sql`. Por eso todo lo que
+# el archivo tiene que decir se emite DESDE ACÁ (las tablas, los ALTER del camino
+# de upgrade, los índices, las vistas y las FKs) — un arreglo hecho a mano allá
+# sobrevive hasta la próxima regeneración y no más.
 open(os.path.join(BACKEND, "schema_pg.sql"), "w").write(salida + "\n")
-print(f"{len(tablas)} tablas + {len(ddl)-len(tablas)} índices + {len(fks)} FKs → schema_pg.sql")
+_n_alter = sum(1 for d in ddl if d.startswith("ALTER TABLE"))
+_n_idx = len(ddl) - len(tablas) - _n_alter
+print(f"{len(tablas)} tablas + {_n_alter} ALTER de upgrade + {_n_idx} índices/vistas "
+      f"+ {len(fks)} FKs → schema_pg.sql")
 for n in notas:
     print("  nota:", n)

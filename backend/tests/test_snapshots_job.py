@@ -328,10 +328,44 @@ class TestSnapshotEndToEnd(unittest.TestCase):
                 date TEXT NOT NULL,
                 total_value REAL NOT NULL,
                 total_invested REAL NOT NULL,
+                -- 🔴 `source` FALTABA, Y ES LA COLUMNA QUE EL PROPIO CRON ESCRIBE.
+                -- `snapshots_job.py:758` la NOMBRA en su INSERT desde el 2026-08-06,
+                -- así que sin ella el cron no podía escribir en su propio test:
+                --     sqlite3.OperationalError: table snapshots has no column named source
+                -- Son los 10 tests de este archivo, fallando desde agosto. Nadie lo
+                -- vio porque `pytest` a secas no terminaba (colectaba
+                -- `scripts/test_*.py`, que no son tests) y la verificación se hacía
+                -- sobre un subconjunto elegido a mano que dejaba este archivo rojo
+                -- como "falla conocida".
+                --
+                -- ⚠️ Y ES LA TERCERA VEZ DE LA MISMA FAMILIA en este repo: un
+                -- esquema paralelo que no recibe las columnas nuevas (las otras dos
+                -- fueron `schema_pg.sql` y la migración de SQLite). El ⚠️ de abajo
+                -- se escribió en la ronda 11 para agregar `base`/`apto` — y en esa
+                -- misma pasada `source`, que ya existía hacía dos meses, siguió sin
+                -- estar. Por eso ahora hay un test que compara este fixture contra
+                -- el esquema real (`test_fixtures_reflejan_el_schema.py`).
+                source TEXT,
                 net_deposited REAL NOT NULL DEFAULT 0,
                 fx_to_usd_blue REAL, holdings_json TEXT,
+                mtm_coverage REAL,
+                base TEXT, apto INTEGER,
                 UNIQUE(user_id, date)
             );
+        -- ⚠️ RONDA 11 · el estampo de la base y la vista que lo expone. Sin esto el
+        -- fixture no refleja el schema real y los lectores que usan la vista
+        -- —home.py, dashboard.py, goal.py— rompen con "no such table".
+        CREATE VIEW snapshots_medibles AS
+        SELECT * FROM snapshots
+         WHERE CASE
+                 WHEN apto IS NOT NULL THEN apto
+                 WHEN source = 'import'  THEN 0
+                 WHEN source = 'browser' THEN 0
+                 WHEN source = 'mtm_backfill'
+                      THEN (CASE WHEN COALESCE(mtm_coverage, -1) >= 0.90 THEN 1 ELSE 0 END)
+                 ELSE 1
+               END = 1;
+
             CREATE TABLE fx_rates_daily (
                 date TEXT PRIMARY KEY,
                 blue_venta REAL NOT NULL,
@@ -489,6 +523,10 @@ class TestRunDailySnapshotFxPersistence(unittest.TestCase):
                 total_value REAL NOT NULL, total_invested REAL NOT NULL,
                 net_deposited REAL NOT NULL DEFAULT 0,
                 fx_to_usd_blue REAL, holdings_json TEXT,
+                -- Mismas columnas que el esquema real: el cron NOMBRA `source` en su
+                -- INSERT (snapshots_job.py:758) y los lectores piden `mtm_coverage`,
+                -- `base` y `apto`. Ver el comentario largo del primer fixture.
+                source TEXT, mtm_coverage REAL, base TEXT, apto INTEGER,
                 UNIQUE(user_id, date)
             );
             CREATE TABLE fx_rates_daily (
@@ -620,7 +658,12 @@ class TestSnapshotCoverageGate(unittest.TestCase):
             CREATE TABLE snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, date TEXT,
                 total_value REAL NOT NULL, total_invested REAL NOT NULL, net_deposited REAL DEFAULT 0,
-                fx_to_usd_blue REAL, holdings_json TEXT, UNIQUE(user_id, date)
+                fx_to_usd_blue REAL, holdings_json TEXT,
+                -- Mismas columnas que el esquema real: el cron NOMBRA `source` en su
+                -- INSERT (snapshots_job.py:758) y los lectores piden `mtm_coverage`,
+                -- `base` y `apto`. Ver el comentario largo del primer fixture.
+                source TEXT, mtm_coverage REAL, base TEXT, apto INTEGER,
+                UNIQUE(user_id, date)
             );
             CREATE TABLE asset_last_price (
                 symbol TEXT PRIMARY KEY, price REAL NOT NULL, updated_at TEXT NOT NULL
@@ -755,7 +798,12 @@ class TestSnapshotCedearValuationE2E(unittest.TestCase):
             CREATE TABLE snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, date TEXT,
                 total_value REAL NOT NULL, total_invested REAL NOT NULL, net_deposited REAL DEFAULT 0,
-                fx_to_usd_blue REAL, holdings_json TEXT, UNIQUE(user_id, date)
+                fx_to_usd_blue REAL, holdings_json TEXT,
+                -- Mismas columnas que el esquema real: el cron NOMBRA `source` en su
+                -- INSERT (snapshots_job.py:758) y los lectores piden `mtm_coverage`,
+                -- `base` y `apto`. Ver el comentario largo del primer fixture.
+                source TEXT, mtm_coverage REAL, base TEXT, apto INTEGER,
+                UNIQUE(user_id, date)
             );
             CREATE TABLE asset_last_price (symbol TEXT PRIMARY KEY, price REAL NOT NULL, updated_at TEXT NOT NULL);
             CREATE TABLE config (user_id INTEGER, key TEXT, value REAL);

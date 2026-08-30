@@ -1,0 +1,302 @@
+"""FASE 2 — la serie canónica: `twr.serie_medible` / `twr.curva_indexada`.
+
+El caso que da nombre a todo esto es `test_452_*`: un usuario real al que la app
+le publicaba "Drawdown actual −45,0%" porque encadenaba una foto FABRICADA por el
+import (139.570,56, la cadena contable) contra una medición real a mercado
+(73.604,02). El usuario lo diagnosticó solo: "yo nunca llegué tan arriba".
+Tenía razón — ese pico lo puso el sistema.
+"""
+import os
+import tempfile
+import unittest
+
+os.environ.setdefault("DB_PATH", tempfile.NamedTemporaryFile(suffix=".db", delete=False).name)
+
+import main
+import twr
+
+
+
+def _todos(s):
+    """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
+
+    ⚠️ VIVE EN LOS TESTS A PROPÓSITO. `serie_medible` dejó de devolver una lista
+    mezclada justamente para que producción no pueda recorrerla sin decidir; un
+    test sí puede mirar todo, pero tiene que nombrarlo.
+    """
+    return sorted(list(s["medibles"]) + list(s["no_medibles"]), key=lambda p: p["date"])
+
+class _Base(unittest.TestCase):
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("snapshots", "positions", "operations", "monthly_entries", "users"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            ("twrserie@t", "x")).lastrowid
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def snap(self, date, value, source, *, net_dep=0.0, cov=None, fx=None, hold=None):
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, source, mtm_coverage, fx_to_usd_blue, holdings_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (self.uid, date, value, value, net_dep, source, cov, fx, hold))
+        self.conn.commit()
+
+    def pos(self, entry_date, asset="AAPL"):
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, quantity, "
+            "invested, entry_date) VALUES (?,?,?,0,1,100,?)",
+            (self.uid, "IBKR", asset, entry_date))
+        self.conn.commit()
+
+
+class Regresion452Test(_Base):
+    """Los números duros de /api/admin/diagnose-reportes-basis?user_id=452."""
+    CI_CADENA = 139570.56       # capital_inicio_cadena — FABRICADO por el import
+    DEPOSITS = 130.80
+    ULTIMA = 73604.02           # ultima_medicion (24-ago) — medición real
+
+    def test_el_motor_viejo_daba_menos_45(self):
+        """Primero se reproduce el defecto: sin filtrar la base, la aritmética da
+        el −45/−47% que el usuario vio. Si este número dejara de salir, el test de
+        abajo estaría pasando por la razón equivocada."""
+        r = twr.dietz(self.CI_CADENA, self.ULTIMA, self.DEPOSITS)
+        self.assertLess(r, -0.45)
+
+    def test_452_no_publica_el_drawdown_falso(self):
+        self.pos("2025-01-15")
+        self.snap("2026-07-31", self.CI_CADENA, "import", net_dep=0.0)
+        self.snap("2026-08-24", self.ULTIMA, "cron",
+                  net_dep=self.DEPOSITS, fx=1400.0, hold="[]")
+        c = twr.curva_indexada(self.conn, self.uid)
+        # La foto contable NO entra: queda una sola medición → no hay período.
+        self.assertEqual(len(_todos(c)), 1)
+        self.assertIsNone(c["twr"])
+        # ⚠️ None, NO 0.0. Este assert decía `== 0.0` y BLINDABA el defecto como si
+        # fuera el resultado correcto: el 452 iba a leer "Drawdown actual 0,0% ·
+        # peak histórico 0,0%" en el mismo lugar donde leía −45%, con
+        # `drawdown_maximo_fecha` en None — un máximo sin fecha ni pico, que se
+        # contradice solo. Y el frontend gatea con `!= null`, y en JS `0.0 != null`
+        # es true, así que pasaba derecho hasta el perfil del inversor y la IA.
+        self.assertIsNone(c["drawdown_maximo"])
+        self.assertIsNone(c["drawdown_actual"])
+        self.assertIsNone(c["drawdown_maximo_fecha"])
+        self.assertEqual(c["motivo"], "una_sola_medicion")
+        self.assertTrue(c["motivo_texto"])
+        # Y lo descartado no se tira: queda para la banda contable — bajo
+        # `value_no_medible`, que es como se llama el número crudo de algo que no
+        # mide (ronda 11): `["value"]` ahí levanta KeyError a propósito.
+        self.assertEqual(len(c["contable"]), 1)
+        self.assertNotIn("value", c["contable"][0])
+        self.assertAlmostEqual(c["contable"][0]["value_no_medible"], self.CI_CADENA, places=2)
+
+    def test_452_reconstruido_a_mercado_recupera_la_historia(self):
+        """El objetivo de negocio: si el mes de julio se RECONSTRUYE a precio real
+        (no la cadena contable), el usuario recupera su historia y el drawdown pasa
+        a medir el mercado, no la brecha entre dos bases."""
+        self.pos("2025-01-15")
+        self.snap("2026-07-31", 74000.0, "mtm_backfill", net_dep=0.0, cov=1.0)
+        self.snap("2026-08-24", self.ULTIMA, "cron",
+                  net_dep=self.DEPOSITS, fx=1400.0, hold="[]")
+        c = twr.curva_indexada(self.conn, self.uid)
+        self.assertEqual(len(_todos(c)), 2)
+        self.assertGreater(c["drawdown_actual"], -0.05)   # ~0, no −45%
+        self.assertGreater(c["twr"], -0.05)
+
+
+class ClaseYCoberturaTest(_Base):
+    def test_una_reconstruccion_parcial_ENTRA_pero_no_mide(self):
+        """Las dos preguntas separadas: entra a la línea (el usuario ve su curva)
+        y no puede ser pico ni denominador (con cobertura baja su `total_value`
+        ES el costo). Mismo contrato que INTRADIA."""
+        self.pos("2025-01-15")
+        self.snap("2026-06-30", 100.0, "mtm_backfill", cov=0.20)
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertEqual(len(_todos(s)), 1)
+        self.assertEqual(_todos(s)[0]["clase"], twr.RECONSTRUIDO)
+        self.assertFalse(_todos(s)[0]["apto"])
+        self.assertAlmostEqual(_todos(s)[0]["cobertura"], 0.20, places=3)
+
+    def test_por_encima_del_piso_de_medicion_SI_mide(self):
+        self.pos("2025-01-15")
+        self.snap("2026-06-30", 100.0, "mtm_backfill", cov=0.95)
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertTrue(_todos(s)[0]["apto"])
+
+    def test_reconstruido_sin_cobertura_estampada_no_se_confia(self):
+        self.pos("2025-01-15")
+        self.snap("2026-06-30", 100.0, "mtm_backfill", cov=None)
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertEqual(_todos(s), [])
+
+    def test_reconstruido_valuado_a_precio_real_es_base_de_mercado(self):
+        """La línea divisoria NO es "foto del cron vs reconstrucción": la
+        reconstrucción de un CEDEAR o una acción es EXACTA, no una estimación. Es
+        "valuado a precio real vs valuado al costo"."""
+        self.pos("2025-01-15")
+        self.snap("2026-06-30", 100.0, "mtm_backfill", cov=1.0)
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertEqual(len(_todos(s)), 1)
+        self.assertEqual(_todos(s)[0]["clase"], twr.RECONSTRUIDO)
+        self.assertTrue(_todos(s)[0]["apto"])
+        self.assertAlmostEqual(s["cobertura_reconstruccion"], 1.0, places=3)
+
+
+class CaveatPosicionesPorFechaTest(_Base):
+    def test_el_que_vendio_todo_no_asciende_sus_filas_viejas(self):
+        """⚠️ EL CAVEAT. `_usuarios_con_posiciones` mira las posiciones de HOY. Un
+        usuario que vendió todo da tenia_posiciones=False, y con ese False sus filas
+        VIEJAS de browser (fx sin holdings) dejaban de ser INTRADIA y ASCENDÍAN a
+        MEDICION — pasaban a habilitar bordes que nunca fueron una medición."""
+        # Vendió todo: no queda NADA en positions, sólo la operación cerrada.
+        self.conn.execute(
+            "INSERT INTO operations (user_id, date, broker, asset, op_type, quantity, "
+            "entry_date) VALUES (?,?,?,?,?,?,?)",
+            (self.uid, "2026-05-10", "IBKR", "AAPL", "sell", 1, "2025-02-01"))
+        self.conn.commit()
+        self.assertEqual(twr.primera_fecha_con_posiciones(self.conn, self.uid), "2025-02-01")
+        # Fila de browser de 2026: fx sin holdings, POSTERIOR a que tuviera cartera.
+        self.snap("2026-03-31", 5000.0, None, fx=1200.0)
+        s = twr.serie_medible(self.conn, self.uid)
+        # Queda INTRADIA: una foto de media rueda SÍ es valor de mercado y puede
+        # sostener una serie, pero NO asciende a MEDICION, que es lo que la
+        # habilitaría como BORDE de período contra un valor live.
+        self.assertEqual(s["por_clase"][twr.INTRADIA], 1)
+        self.assertEqual(s["por_clase"][twr.MEDICION], 0)
+        self.assertNotIn(twr.INTRADIA, twr.BORDE_PERIODO)
+        s_borde = twr.serie_medible(self.conn, self.uid, aceptar=twr.BORDE_PERIODO)
+        self.assertEqual(_todos(s_borde), [])    # NO ascendió
+
+    def test_el_100_por_ciento_cash_sigue_siendo_medicion(self):
+        """El otro lado: sin posiciones NUNCA, el cron deja holdings NULL con razón
+        y esa fila SÍ es una medición válida. El fix no puede castigarlo."""
+        self.assertIsNone(twr.primera_fecha_con_posiciones(self.conn, self.uid))
+        self.snap("2026-03-31", 5000.0, None, fx=1200.0)
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertEqual(len(_todos(s)), 1)
+        self.assertEqual(_todos(s)[0]["clase"], twr.MEDICION)
+
+
+class HuecosTest(_Base):
+    def test_un_hueco_largo_parte_la_serie_y_no_se_rellena(self):
+        self.pos("2025-01-15")
+        for d, v in (("2026-01-31", 100.0), ("2026-02-28", 110.0),
+                     ("2026-08-31", 120.0)):
+            self.snap(d, v, "cron", fx=1200.0, hold="[]")
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertEqual(len(s["tramos"]), 2)
+        self.assertEqual(len(s["tramos"][0]), 2)
+        self.assertEqual(len(s["tramos"][1]), 1)
+        # No se inventó ningún punto en el medio.
+        self.assertEqual(len(_todos(s)), 3)
+
+    def test_el_tramo_nuevo_no_encadena_contra_el_viejo(self):
+        self.pos("2025-01-15")
+        self.snap("2026-01-31", 100.0, "cron", fx=1200.0, hold="[]")
+        self.snap("2026-08-31", 500.0, "cron", fx=1200.0, hold="[]")
+        c = twr.curva_indexada(self.conn, self.uid)
+        # El salto ×5 cruza el hueco: no puede convertirse en un +400% de retorno.
+        self.assertIsNone(c["curva"][1]["ret"])
+
+
+class IndeterminadoTest(_Base):
+    """La regla explícita: puede sostener UNA LÍNEA, nunca un pico ni un denominador."""
+    def _flojo(self):
+        return twr.BASE_MERCADO + (twr.INDETERMINADO,)
+
+    def test_indeterminado_no_entra_en_el_nivel_estricto(self):
+        self.pos("2025-01-15")
+        self.snap("2026-03-15", 100.0, None)      # sin fx, sin holdings, no fin de mes
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertEqual(s["por_clase"][twr.INDETERMINADO], 1)
+        self.assertEqual(_todos(s), [])
+
+    def test_indeterminado_sostiene_linea_pero_no_es_denominador(self):
+        """⚠️ RONDA 9 · ESTE TEST MIRABA LA ETIQUETA Y NO EL DIBUJO.
+
+        Medido sobre el código de la ronda 8: la línea dibujaba +100,00% —de 1,0000
+        a 2,0000— uniendo un punto que NO SE PUEDE AFIRMAR con una medición a
+        mercado. El test pasaba igual, porque lo único que chequeaba del punto
+        dibujado era `estimado`, y ése salía True por un motivo que no tenía nada
+        que ver: `ret is None and i > 0`. Es el caso 452 con el signo dado vuelta.
+
+        Lo que se afirma ahora es lo que el test quería afirmar: el segmento no
+        existe. El `estimado` del punto del cron pasa a False A PROPÓSITO — es una
+        medición real, y la etiqueta es del SEGMENTO, no del punto: que el tramo
+        anterior no midiera no convierte la foto del cron en una estimación.
+        """
+        self.pos("2025-01-15")
+        self.snap("2026-03-15", 1000.0, None)                       # INDETERMINADO
+        self.snap("2026-03-20", 2000.0, "cron", fx=1200.0, hold="[]")
+        c = twr.curva_indexada(self.conn, self.uid, aceptar=self._flojo())
+        self.assertEqual(len(_todos(c)), 2)                  # sigue en la serie
+        self.assertFalse(_todos(c)[0]["apto"])
+        # ⚠️ RONDA 11 · LOS DOS SE DIBUJAN, PERO NO SE TOCAN. La ronda 10 sacaba de
+        # la curva el punto que no se puede afirmar; eso le borraba la historia al
+        # que no tiene mediciones y fue una pérdida peor que el problema. Se dibujan
+        # los dos, cada uno en SU segmento, y el frontend no puentea entre bases.
+        self.assertEqual([q["date"] for q in c["curva"]], ["2026-03-15", "2026-03-20"])
+        self.assertNotEqual(c["curva"][0]["segmento"], c["curva"][1]["segmento"])
+        self.assertEqual(c["curva"][0]["base"], twr.VALUADO_AL_COSTO)
+        self.assertEqual(c["curva"][1]["base"], twr.VALUADO_A_MERCADO)
+        # cada base arranca en 1,0: el ×2 NO se dibuja como un salto
+        self.assertAlmostEqual(c["curva"][0]["index"], 1.0, places=6)
+        self.assertAlmostEqual(c["curva"][1]["index"], 1.0, places=6)
+        # El ×2 NO se publica como retorno: su v0 no es base de mercado.
+        self.assertIsNone(c["curva"][1]["ret"])
+        self.assertIsNone(c["twr"])
+        self.assertFalse(c["curva"][1]["estimado"])   # es una medición, no una estimación
+        # y el punto que no se puede afirmar sigue también en la banda
+        self.assertEqual([q["date"] for q in c["contable"]], ["2026-03-15"])
+
+    def test_indeterminado_no_puede_ser_pico(self):
+        self.pos("2025-01-15")
+        self.snap("2026-03-01", 100.0, "cron", fx=1200.0, hold="[]")
+        self.snap("2026-03-10", 99999.0, None)                       # pico falso
+        self.snap("2026-03-20", 90.0, "cron", fx=1200.0, hold="[]")
+        c = twr.curva_indexada(self.conn, self.uid, aceptar=self._flojo())
+        # Si el punto no-apto hubiera fijado el pico, el drawdown sería catastrófico.
+        self.assertGreater(c["drawdown_maximo"], -0.5)
+
+
+class SinClampAsimetricoTest(_Base):
+    def test_un_mes_de_mas_80_por_ciento_no_se_trunca(self):
+        """`Insights.jsx:683` y `evolution.js:317` hacen Math.min(..., 0.5): truncan
+        la CARTERA a +50% mensual y no le aplican nada al BENCHMARK. El sesgo va
+        siempre en contra del usuario y se compone mes a mes."""
+        self.pos("2025-01-15")
+        self.snap("2026-01-31", 100.0, "cron", fx=1200.0, hold="[]")
+        self.snap("2026-02-28", 180.0, "cron", fx=1200.0, hold="[]")
+        c = twr.curva_indexada(self.conn, self.uid)
+        self.assertAlmostEqual(c["curva"][1]["ret"], 0.80, places=6)
+        self.assertAlmostEqual(c["twr"], 0.80, places=6)
+
+    def test_el_piso_de_menos_100_sigue(self):
+        self.assertEqual(twr.dietz(100.0, -500.0, 0.0), -1.0)
+
+
+class SinDatosTest(_Base):
+    def test_estado_vacio_trae_el_motivo_redactado(self):
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertEqual(_todos(s), [])
+        self.assertEqual(s["motivo"], "sin_historia")
+        self.assertEqual(s["motivo_texto"], twr.MOTIVO_TEXTO["sin_historia"])
+
+    def test_importado_sin_mediciones_dice_por_que(self):
+        self.pos("2025-01-15")
+        self.snap("2026-06-30", 100.0, "import")
+        s = twr.serie_medible(self.conn, self.uid)
+        self.assertEqual(s["motivo"], "importado_sin_mediciones")
+        self.assertIn("contables", s["motivo_texto"])
+
+
+if __name__ == "__main__":
+    unittest.main()

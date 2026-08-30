@@ -36,7 +36,7 @@ import { usePrivacy } from '../contexts/PrivacyContext'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
-import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries } from '../utils/evolution'
+import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
@@ -171,6 +171,9 @@ export default function HomeMobile() {
   }, [snapshots, compareValue, aportado])
 
   // KPIs: P&L mes (month-to-date desde snapshots) + delta vs día anterior
+  // ¿Por qué no hay número? Se arma sólo cuando efectivamente falta la medición,
+  // para que la sparkline y los KpiCell digan lo mismo y con las mismas palabras.
+  const sinMedicion = useMemo(() => diagnosticoSinMedicion(snapshots), [snapshots])
   const kpis = useMemo(() => {
     // P&L Mes = Δ(Total Return) desde el cierre del mes pasado, MtM y ajustado
     // por flujos — MISMO cálculo que "Este mes" del Dashboard (computeReturnDelta
@@ -370,8 +373,21 @@ export default function HomeMobile() {
             </div>
           </Panel>
         ) : (
-          <Panel padding="sm" className="text-center text-[11px] text-ink-3">
-            Cargá tus snapshots diarios para ver la evolución 30d.
+          /* ⚠️ ESTE MENSAJE ERA FALSO PARA CASI TODOS LOS QUE LO VEÍAN. Decía
+             "Cargá tus snapshots diarios" — o sea le pedía al usuario que hiciera
+             algo que YA HIZO: medido en la copia de producción del 16/08, de los
+             174 que se quedaban sin sparkline, 168 TENÍAN ≥2 snapshots (el uid 107
+             tiene 57). Lo que les falta no son snapshots: es que los que tienen
+             sean MEDICIONES a precio de mercado y no la contabilidad que copió el
+             import. Pedirle al usuario que repita lo que ya hizo es peor que no
+             decirle nada. */
+          <Panel padding="sm" className="text-[11px] text-ink-3 leading-snug">
+            {sinMedicion
+              ? <>
+                  <span className="text-ink-2 font-medium">Todavía no podemos medir tu evolución.</span>{' '}
+                  {textoSinMedicion(sinMedicion)}
+                </>
+              : 'Cargá tus snapshots diarios para ver la evolución 30d.'}
           </Panel>
         )}
       </section>
@@ -381,16 +397,18 @@ export default function HomeMobile() {
         <Panel padding="none" className="grid grid-cols-2 overflow-hidden">
           <KpiCell
             label={kpis.pnlDayMeta && kpis.pnlDayMeta.dayDiff > 1 ? `P&L ${kpis.pnlDayMeta.dayDiff}d` : 'P&L Día'}
-            value={hidden ? '••••••' : (kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlDay * tcBlue : kpis.pnlDay))}` : '—')}
-            sub={kpis.pnlDay != null && kpis.pnlDayMeta ? pctSigned(kpis.pnlDayMeta.pct) : null}
+            value={hidden ? '••••••' : (kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlDay * tcBlue : kpis.pnlDay))}` : (sinMedicion ? 'Sin medir' : '—'))}
+            sub={kpis.pnlDay != null && kpis.pnlDayMeta ? pctSigned(kpis.pnlDayMeta.pct)
+                 : (sinMedicion ? 'todavía no medimos tu cartera' : null)}
             subTone={kpis.pnlDay != null ? (kpis.pnlDay >= 0 ? 'pos' : 'neg') : null}
             tone={kpis.pnlDay != null ? (kpis.pnlDay >= 0 ? 'pos' : 'neg') : null}
             bordered
           />
           <KpiCell
             label="P&L Mes"
-            value={hidden ? '••••••' : (kpis.pnlMonth != null ? `${kpis.pnlMonth >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlMonth * tcBlue : kpis.pnlMonth))}` : '—')}
-            sub={kpis.pnlMonth != null && kpis.pnlMonthMeta ? pctSigned(kpis.pnlMonthMeta.pct) : null}
+            value={hidden ? '••••••' : (kpis.pnlMonth != null ? `${kpis.pnlMonth >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlMonth * tcBlue : kpis.pnlMonth))}` : (sinMedicion ? 'Sin medir' : '—'))}
+            sub={kpis.pnlMonth != null && kpis.pnlMonthMeta ? pctSigned(kpis.pnlMonthMeta.pct)
+                 : (sinMedicion ? 'todavía no medimos tu cartera' : null)}
             subTone={kpis.pnlMonth != null ? (kpis.pnlMonth >= 0 ? 'pos' : 'neg') : null}
             tone={kpis.pnlMonth != null ? (kpis.pnlMonth >= 0 ? 'pos' : 'neg') : null}
             bordered

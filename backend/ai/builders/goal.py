@@ -35,11 +35,23 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     monthly_contribution = float(g.get("monthly_contribution") or 0)
     expected_return_pct = float(g.get("expected_return_pct") or 0)
 
-    # Capital actual del user (snapshot más reciente)
+    # Capital actual del user (snapshot más reciente MEDIDO).
+    # ⚠️ `snapshots_medibles` primero: si la fila más nueva es una foto valuada al
+    # COSTO —la cadena que fabrica el import, o una reconstrucción que no se pudo
+    # precear— el "capital actual" sale más alto que el real, el gap contra el
+    # objetivo sale más chico y la meta parece más cerca de lo que está. Se cae a la
+    # tabla cruda sólo si no hay ninguna medición: ahí un valor aproximado es mejor
+    # que un cero, y es un VALOR mostrado, no una resta entre dos bases.
     snap = conn.execute(
-        "SELECT total_value FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
+        "SELECT total_value FROM snapshots_medibles WHERE user_id=? "
+        "ORDER BY date DESC LIMIT 1",
         (user_id,),
     ).fetchone()
+    if snap is None:
+        snap = conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
     current_capital_usd = float(snap["total_value"]) if snap and snap["total_value"] else 0.0
 
     # Progreso simple

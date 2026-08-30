@@ -44,6 +44,12 @@ import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
 import {
   buildCumulativeReturnSeries,
+  drawdownFromPerf,
+  cortarPorTramo,
+  totalDePunto,
+  partirMedidoYEstimado,
+  rellenarTimestamps,
+  resolucionDeSerie,
   computeDrawdownOnReturns,
   computeBestWorstMonth,
   computeAssetContribution,
@@ -57,6 +63,7 @@ import {
   netCapitalContributed,
   monthlyReturnArs,
   applyMtmToMonthly,
+  acumuladoDeVentana,
 } from '../utils/insightsModel'
 import {
   simulateSp500,
@@ -117,6 +124,23 @@ function ctaForCategory(cat) {
   // Fallback genérico en lugar de null — preferible que TODAS las cards
   // tengan CTA visible para mantener la simetría visual del audit.
   return map[cat] || { label: 'Ver detalle', href: '#diagnostico' }
+}
+
+const MES_CORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+
+/**
+ * DotSolo — dibuja un punto SÓLO cuando quedó solo en su segmento.
+ *
+ * ⚠️ POR QUÉ EXISTE. Recharts necesita dos puntos para trazar un path, así que un
+ * segmento de UN punto con `dot={false}` no dibuja ni un píxel. Al usuario del caso
+ * 452 —cuya única medición a mercado es un punto— el gráfico le quedaba vacío: la
+ * ronda 9 le devolvió la historia a la banda y le sacó de la vista el único dato
+ * que sí midió. El resto de los puntos siguen sin dot (con cientos, el dot tapa la
+ * línea); devolvemos r=0 en vez de null porque Recharts espera un elemento SVG.
+ */
+function DotSolo({ cx, cy, payload, fill, opacity = 1 }) {
+  const visible = !!payload?.solo && cx != null && cy != null
+  return <circle cx={cx} cy={cy} r={visible ? 3.5 : 0} fill={fill} fillOpacity={opacity} />
 }
 
 export default function Insights({ _embeddedTab }) {
@@ -202,6 +226,11 @@ function InsightsDesktop({ _embeddedTab }) {
     try { localStorage.setItem('rendi_insights_bench_ars', benchArs) } catch {}
   }, [benchArs])
   const selectedBench = currency === 'USD' ? benchUsd : benchArs
+  // El selector usa nombres de producto; el backend, los de la fuente de datos.
+  const BENCH_API_KEY = {
+    sp500: 'sp500', tbill: 'shv', gold: 'gld',
+    inflation: 'inflation_ar', merval: 'merval', plazo_fijo: 'plazo_fijo',
+  }
   const setSelectedBench = (key) => currency === 'USD' ? setBenchUsd(key) : setBenchArs(key)
   const [loading, setLoading] = useState(true)
   // Investor profile — perfil del test (7 preguntas). Lo usamos para cruzarlo
@@ -213,12 +242,51 @@ function InsightsDesktop({ _embeddedTab }) {
   // de import_normalized_tx (con conversión ARS→USD). No usamos op.commissions
   // del operations table porque queda contaminado por imports viejos con bugs.
   const [commissionsApi, setCommissionsApi] = useState(null)
+  // ── LA fuente de Performance (FASE 4) ──────────────────────────────────────
+  // `/insights/performance` sirve la curva del usuario Y el benchmark recortado
+  // al MISMO rango, calculados en Python sobre `twr.serie_medible`. Esta página
+  // ya NO arma esos números: había tres motores propios produciendo el mismo
+  // acantilado (`insightsModel.js:106`, el `benchSeries` de acá abajo y
+  // `evolution.js:234/:317`), y ninguno miraba en qué BASE estaba cada punta.
+  // Mientras el cálculo viva en JS sobre la cadena contable, cualquier guard
+  // nuevo en Python se queda corto — que es literalmente lo que ya pasó.
+  const [perf, setPerf] = useState(null)
+  // ⚠️ §7.2 · EN ESTIMADO ESA SERIE **NO ES UN TOTAL**, Y EL ARREGLO ES DE RÓTULO.
+  //
+  // La cadena contable fuerza `pnl_unrealized = 0` en todos sus meses — verificado
+  // en la cuenta demo: Σ realizado = +2.640 y Σ no realizado = 0 en los 12 meses de
+  // `monthly_entries`, mientras la cartera arrastra ~54 mil de pérdida NO realizada
+  // que la cadena no ve. O sea: en modo estimado la línea rotulada "P/L total" es
+  // realizado con otro nombre, y el usuario lee "total" sobre un número al que le
+  // falta justamente lo que más pesa.
+  //
+  // ⚠️ NO se arregla sumando el no-realizado: ese dato NO EXISTE hacia atrás (en
+  // producción sólo 84 de 34.032 filas lo tienen, y las 84 son del mes en curso).
+  // Reconstruirlo es Fase 3 + Fase 4. Inventarlo sería exactamente el bug que las
+  // once rondas anteriores vinieron a matar.
+  const _perfContable = perf?.base_del_twr === 'contable'
+  // CERTERO (default) vs ESTIMADO. La línea divisoria no es "foto del cron vs
+  // reconstrucción" —reconstruir un CEDEAR o una acción es EXACTO— sino
+  // "valuado a precio real vs valuado al costo".
+  const [modoPerf, setModoPerf] = useState('certero')
 
   useEffect(() => { loadAll() }, [])
 
+  // El benchmark se recorta al rango del usuario EN EL BACKEND, así que cambiar
+  // el selector es una consulta nueva — no un re-slice de una serie ya traída.
+  useEffect(() => {
+    const k = BENCH_API_KEY[selectedBench]
+    if (!k) return
+    let vivo = true
+    api.get(`/insights/performance?bench=${k}&modo=${modoPerf}`)
+      .then(r => { if (vivo) setPerf(r) })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [selectedBench, modoPerf])
+
   async function loadAll() {
     try {
-      const [mon, pos, bkrs, b, snaps, dol, ops, comm, prof] = await Promise.all([
+      const [mon, pos, bkrs, b, snaps, dol, ops, comm, prof, pf] = await Promise.all([
         api.get('/monthly'),
         api.get('/positions'),
         api.get('/brokers'),
@@ -231,8 +299,9 @@ function InsightsDesktop({ _embeddedTab }) {
         api.get('/operations').catch(() => []),
         api.get('/insights/commissions').catch(() => null),
         api.get('/auth/investor-profile').catch(() => ({})),
+        api.get('/insights/performance').catch(() => null),
       ])
-      setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops); setCommissionsApi(comm); setInvestorProfile(prof || {})
+      setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops); setCommissionsApi(comm); setInvestorProfile(prof || {}); setPerf(pf)
 
       const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
       // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
@@ -537,7 +606,13 @@ function InsightsDesktop({ _embeddedTab }) {
       const isBigWithdraw = net < 0 && flowRatio > 0.3
       const avgCap = isImportInitial ? net : (isBigWithdraw ? ci : ci + 0.5 * net)
       const rRaw = avgCap > 0 ? (cf - ci - net) / avgCap : 0
-      const r = Math.min(Math.max(rRaw, -0.99), 0.5)
+      // SIN TECHO. El `Math.min(..., 0.5)` que estaba acá limitaba las subidas de la
+      // CARTERA a +50% por mes y NO le aplicaba nada al BENCHMARK: el sesgo iba
+      // sistematicamente en contra del usuario y se componia mes a mes. Un +80% en
+      // cripto o post-devaluacion es perfectamente posible. El piso de -99% si
+      // queda: no se puede perder mas que todo. Mismo criterio que `twr.dietz`
+      // (backend/twr.py:215), cuyo docstring explica por que.
+      const r = Math.max(rRaw, -0.99)
       cumIdx *= (1 + r)
 
       const totalPct = +((cumIdx - 1) * 100).toFixed(2)
@@ -661,68 +736,90 @@ function InsightsDesktop({ _embeddedTab }) {
     return found ? bench.dolar_blue[found] : null
   }
 
-  // benchSeriesUsd — portfolio total en USD (globalMonthly) en % TIME-WEIGHTED
-  // (Modified Dietz, chain-linked). Misma fórmula EXACTA que seriesUsd del gráfico
-  // principal, para que ambas líneas coincidan y sean comparables contra el
-  // benchmark de índice simple (también time-weighted). Antes usaba MWR
-  // (gain/invested), que mezclaba metodologías con el benchmark.
+  // benchSeriesUsd — LA LÍNEA DEL PORTFOLIO EN USD, ahora servida por el backend.
+  //
+  // Acá vivía el segundo de los tres motores que fabricaban el acantilado: armaba
+  // el índice con Modified Dietz sobre `capital_inicio`/`capital_final` de
+  // `monthly_entries` —la cadena CONTABLE— y lo cerraba con `totalPortfolio`, que
+  // es valor de MERCADO. Las dos puntas en bases distintas: la caída vertical del
+  // final no era del mercado, era la brecha entre dos formas de medir. Encima
+  // truncaba las subidas a +50% mensual sin aplicarle nada al benchmark.
+  //
+  // Ahora los puntos salen de `twr.curva_indexada`, que sólo encadena bordes que
+  // están en base de mercado (medidos por el cron o reconstruidos a precio real
+  // con cobertura suficiente) y no deja que un punto no medido fije un pico.
+  //
+  // El efecto lateral que importa: como la serie ahora arranca en la primera
+  // MEDICIÓN, la ventana del chart arranca ahí, y el rebase de `chartData`
+  // ancla el benchmark en ese mismo punto. La cartera y el S&P pasan a arrancar
+  // en la misma fecha sin tocar el pipeline del gráfico.
+  //
+  // `realized` sigue siendo contable a propósito: "cuánto de lo ganado ya está
+  // realizado" ES una pregunta contable. Se mapea por mes sobre las fechas de la
+  // curva medida, sin mezclarse nunca con el índice.
   const benchSeriesUsd = (() => {
-    if (globalMonthly.length === 0) return []
-    const out = []
-    let cumRealized = 0, cumNetDeposits = 0
-    let cumIdx = 1.0
-    const baseline = globalMonthly[0].capital_inicio || 0
-    let peakNetDeposits = baseline
+    const curva = perf?.curva || []
+    if (curva.length === 0) return []
+
+    let cum = 0
+    const realizedByMonth = new Map()
+    let cumNet = 0, peakNet = globalMonthly[0]?.capital_inicio || 0
+    const netByMonth = new Map()
+    for (const m of globalMonthly) {
+      cum += (m.pnl_realized || 0)
+      cumNet += (m.deposits || 0) - (m.withdrawals || 0)
+      if (cumNet > peakNet) peakNet = cumNet
+      const k = monthKey(m.year, m.month).slice(0, 7)
+      realizedByMonth.set(k, cum)
+      netByMonth.set(k, { net: cumNet, peak: peakNet })
+    }
+    const mesesOrd = [...realizedByMonth.keys()].sort()
+    const alMes = (map, mk) => {
+      if (map.has(mk)) return map.get(mk)
+      let found = null
+      for (const k of mesesOrd) { if (k <= mk) found = k; else break }
+      return found ? map.get(found) : null
+    }
     const safeDenom = (netDep, peakDep) =>
       netDep >= peakDep * 0.6 && netDep > 1000 ? netDep : peakDep
 
-    const firstMk = monthKey(globalMonthly[0].year, globalMonthly[0].month)
-    out.push({ key: firstMk, label: benchLabel(firstMk), total: 0, realized: 0 })
-    for (let i = 0; i < globalMonthly.length; i++) {
-      const m = globalMonthly[i]
-      const isFirst = i === 0
-      const ci = m.capital_inicio || 0
-      const cf = m.capital_final || 0
-      const net = (m.deposits || 0) - (m.withdrawals || 0)
-      cumRealized += (m.pnl_realized || 0)
-      cumNetDeposits += net
-      if (cumNetDeposits > peakNetDeposits) peakNetDeposits = cumNetDeposits
-
-      // Modified Dietz con heurística big-withdrawal (idéntica al chart principal).
-      const isImportInitial = isFirst && ci === 0 && net > 0
-      const flowRatio = ci > 0 ? Math.abs(net) / ci : 0
-      const isBigWithdraw = net < 0 && flowRatio > 0.3
-      const avgCap = isImportInitial ? net : (isBigWithdraw ? ci : ci + 0.5 * net)
-      const rRaw = avgCap > 0 ? (cf - ci - net) / avgCap : 0
-      const r = Math.min(Math.max(rRaw, -0.99), 0.5)
-      // El mes-1 es el ANCLA del gráfico de comparación (0%): su retorno intra-mes
-      // NO se cuenta, igual que el benchmark, que ancla en price[mes-1] (también 0%).
-      // Sin este guard, cumIdx arrastraba r1 mientras el punto base mostraba 0% →
-      // la cartera quedaba 1 mes de capitalización adelantada respecto del benchmark.
-      if (!isFirst) cumIdx *= (1 + r)
-
-      const totalPct = +((cumIdx - 1) * 100).toFixed(2)
-      const denom = safeDenom(cumNetDeposits, peakNetDeposits)
-      const realPct = denom > 0 ? +((cumRealized / denom) * 100).toFixed(2) : 0
-      const k = monthKey(m.year, m.month)
-      out.push({ key: k, label: benchLabel(k), total: totalPct, realized: realPct })
-    }
-    // Punto "Hoy" — extiende el último mes con el live portfolio (igual al chart).
-    if (totalPortfolio > 0) {
-      const lastM = globalMonthly[globalMonthly.length - 1]
-      const lastCf = lastM.capital_final || 0
-      if (lastCf > 0) {
-        const rLive = (totalPortfolio - lastCf) / lastCf
-        cumIdx *= (1 + Math.max(rLive, -0.99))
-      }
-      const totalLive = +((cumIdx - 1) * 100).toFixed(2)
-      const denomLive = safeDenom(cumNetDeposits, peakNetDeposits)
-      const realLive = denomLive > 0 ? +((cumRealized / denomLive) * 100).toFixed(2) : 0
-      out.push({ key: 'today', label: 'Hoy', total: totalLive, realized: realLive })
-    }
-    // Deduplicar por key (el primer mes aparece 2 veces: punto base + primera iteración del loop)
-    const seen = new Set()
-    return out.filter(p => { if (seen.has(p.key)) return false; seen.add(p.key); return true })
+    // Cada punto viaja con SU TRAMO. El corte de la línea NO se inserta acá: si se
+    // mete un punto sintético antes del resampleo mensual, su clave ('corte-…')
+    // cae en el bucket 'corte-2' de `s.key.slice(0,7)` y después ordena AL FINAL
+    // (porque 'c' > '2' comparando strings), con lo cual los dos tramos terminan
+    // dibujados pegados — exactamente lo que el corte venía a impedir. Se inserta
+    // después de resamplear, sobre `windowSeries`.
+    const out = []
+    curva.forEach((pt, i) => {
+      const esHoy = pt.date === 'hoy'
+      const mk = esHoy ? (mesesOrd[mesesOrd.length - 1] || '') : pt.date.slice(0, 7)
+      const nd = alMes(netByMonth, mk)
+      const rz = alMes(realizedByMonth, mk) || 0
+      const denom = nd ? safeDenom(nd.net, nd.peak) : 0
+      out.push({
+        key: esHoy ? 'today' : pt.date,
+        label: esHoy ? 'Hoy' : benchLabel(pt.date.slice(0, 7)),
+        // ⚠️ Con la serie ya diaria, una etiqueta mes/año repite: el eje mostraba
+        // «Jul '26 · Jul '26 · Jul '26 · … · Ago '26 · Ago '26», nueve repetidas de
+        // once. Ningún número está mal, pero es lo primero que se ve.
+        labelDia: esHoy ? 'Hoy' : `${pt.date.slice(8, 10)}/${pt.date.slice(5, 7)}`,
+        // Todos los puntos se dibujan; los no medidos, punteados. Ver
+        // `totalDePunto` y `partirMedidoYEstimado` (insightsModel.js).
+        total: totalDePunto(pt),
+        estimado: !!pt.estimado,
+        realized: denom > 0 ? +((rz / denom) * 100).toFixed(2) : 0,
+        tramo: pt.tramo,
+        // El SEGMENTO DIBUJADO: más fino que el tramo, porque también se parte
+        // donde cambia la base de valuación. Es por acá que se corta la línea.
+        segmento: pt.segmento,
+        // Con qué REGLA está valuado el punto. Viaja para que `resolucionChart`
+        // pueda distinguir la parte que también existe en certero (mercado) de la
+        // que sólo aparece en estimado (la cadena contable). Ver el comentario de
+        // `resolucionChart` más abajo.
+        base: pt.base,
+      })
+    })
+    return out
   })()
 
   // benchSeriesArs — solo brokers ARS, capital en pesos (USD × blue del mes) en % acumulado MWR.
@@ -793,8 +890,29 @@ function InsightsDesktop({ _embeddedTab }) {
     const arsLiveUsd = brokers
       .filter(b => arsBrokerNames.has(b.name))
       .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis).value, 0)
-    if (arsLiveUsd > 0) {
-      const lastM = arsMonthly[arsMonthly.length - 1]
+    // ⚠️ EL TRAMO FINAL COMPARABA MERCADO CONTRA CONTABILIDAD. `valueNowArs`
+    // sale de `computeBrokerValue` (posiciones × precio: MERCADO) y `lastCfArs`
+    // de `lastM.capital_final`, que en la rama ARS es la CADENA CONTABLE pelada:
+    // `arsMonthly` se arma leyendo `monthly` crudo y NUNCA pasa por
+    // `applyMtmToMonthly`, que es el único lugar del frontend que re-ancla la
+    // cadena a los snapshots. O sea: la línea USD se arregló y la ARS quedó al
+    // costo, y este último tramo publicaba la brecha entre las dos reglas como
+    // si fuera el rendimiento de los últimos días. Va derecho al veredicto
+    // "¿le ganaste a la inflación?" (`portfolioReturnArsPct`, :2224).
+    //
+    // El marcador es el que `applyMtmToMonthly` ya estampa: `mtm: 'ambos'` o
+    // `'inicio'` en las filas que sí re-ancló. Sin él, el cierre del último mes
+    // no está medido y no se puede extender la serie sin mezclar. La condición
+    // se escribe por el HECHO y no por "la rama ARS nunca se ancla", así que el
+    // día que existan snapshots por broker esto se prende solo.
+    //
+    // No se puede arreglar aplicando `applyMtmToMonthly` acá: esa función
+    // re-ancla contra los snapshots GLOBALES y `arsMonthly` es un SUBCONJUNTO
+    // (sólo brokers ARS). Los snapshots no se desagregan por broker.
+    const _lastArs = arsMonthly[arsMonthly.length - 1]
+    const _cierreArsMedido = !!(_lastArs && _lastArs.mtm)
+    if (arsLiveUsd > 0 && _cierreArsMedido) {
+      const lastM = _lastArs
       // El punto "Hoy" tenía el MISMO bug que el loop: los dos lados al mismo
       // tcBlue ⇒ el FX se cancelaba y el tramo final tampoco veía la devaluación.
       // El cierre del último mes vale a SU FX; el valor de hoy, al de hoy.
@@ -821,6 +939,162 @@ function InsightsDesktop({ _embeddedTab }) {
     const seen = new Set()
     return out.filter(p => { if (seen.has(p.key)) return false; seen.add(p.key); return true })
   })()
+
+  // ── FASE 5 · UI de la calidad del dato ─────────────────────────────────────
+  // Chip permanente sobre el gráfico. No es una advertencia de error: es el
+  // encabezado honesto de qué período está efectivamente medido. El usuario del
+  // caso 452 dedujo solo que el arranque era falso ("yo nunca llegué tan
+  // arriba"); esto se lo dice antes de que tenga que deducirlo.
+  const fmtFecha = (iso) => {
+    if (!iso) return ''
+    const [y, m, d] = String(iso).split('-')
+    return `${d}/${m}/${y}`
+  }
+  const ChipMedido = () => {
+    if (!perf) return null
+    const cob = perf.cobertura_reconstruccion
+    const partida = !!perf.serie_partida
+    const alCosto = perf.instrumentos_al_costo || []
+
+    // ── FASE 2 · el chip del modo ESTIMADO ───────────────────────────────────
+    // El modo estimado publica un número que el certero no puede dar, y a cambio
+    // tiene un sesgo que hay que declarar EN PANTALLA, no en un tooltip escondido:
+    // la cadena contable fuerza `pnl_unrealized = 0`, así que NO cuenta lo que
+    // todavía no vendiste. Una cartera que se duplicó sin vender nada sale ~0%.
+    // El sesgo va SIEMPRE para el mismo lado (en contra del usuario), y por eso la
+    // frase tiene que estar junto al número y no en la letra chica: el usuario está
+    // por comparar esto contra el S&P.
+    // ⚠️ SÓLO SI HAY NÚMERO. `base_del_twr` dice con qué regla se calculó, y vale
+    // 'contable' en modo estimado AUNQUE no haya nada que publicar (152 de los 822
+    // no tienen una sola fila de snapshot). Sin este chequeo, esos usuarios leerían
+    // "Recreado de tu contabilidad" sobre un gráfico vacío: un cartel que describe
+    // un número que no existe. Ésos caen al estado vacío de abajo, que es el suyo.
+    if (perf.base_del_twr === 'contable' && perf.twr != null) {
+      return (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/30 whitespace-nowrap">
+            Recreado de tu contabilidad
+            {perf.ventana_desde ? ` · desde ${fmtFecha(perf.ventana_desde)}` : ''}
+            {perf.excluye_no_realizado ? ' · sólo se mueve cuando vendés' : ''}
+          </span>
+          <InfoTooltip>
+            <p className="font-semibold text-ink-0">Qué estás viendo</p>
+            <p>La historia completa reconstruida de tu contabilidad: aportes, retiros
+               y lo que ya vendiste. Llega más atrás que la medición a precio real,
+               y a cambio es aproximada.</p>
+            <div className="border-t border-line/60 my-1.5" />
+            <p className="font-semibold text-ink-0">Por qué esta línea puede no parecerse a la del modo Certero</p>
+            <p className="text-ink-3"><strong>Sólo se mueve cuando vendés</strong>: no refleja
+               lo que pasa con lo que todavía tenés. Si tus posiciones abiertas
+               suben o caen, esta línea no se entera — se queda quieta hasta que
+               realizás. Por eso puede mostrar una recta donde el modo Certero
+               muestra un pozo.</p>
+            <p className="text-ink-3">Ojo: <strong>sí baja</strong> cuando vendés con pérdida.
+               No es una línea que sólo sube.</p>
+            <div className="border-t border-line/60 my-1.5" />
+            <p className="font-semibold text-ink-0">Por qué acá no hay drawdown ni pico</p>
+            <p className="text-ink-3">Una caída desde el máximo necesita el CAMINO de
+               los precios, y la contabilidad es un saldo mensual, no un recorrido.
+               Su máximo nunca fue un precio: nadie te pagó eso. Para eso está el
+               modo <strong>Certero</strong>.</p>
+          </InfoTooltip>
+        </div>
+      )
+    }
+    // ⚠️ SIN `medido_desde` el chip TAMBIÉN se muestra. Antes devolvía null, así
+    // que el cartel que explicaría por qué no hay curva desaparecía junto con la
+    // curva: quedaba un gráfico en blanco y un toggle sin ninguna pista de que
+    // ahí está la respuesta.
+    if (!perf.medido_desde) {
+      return (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-2 text-ink-2 border border-line">
+            Sin mediciones todavía
+          </span>
+          <InfoTooltip>
+            <p className="font-semibold text-ink-0">Por qué no hay curva</p>
+            <p>{perf.motivo_texto || 'Todavía no hay mediciones a mercado de esta cuenta.'}</p>
+            {modoPerf === 'certero' && (
+              <p className="text-ink-3">Probá el modo <strong>Estimado</strong>: incluye
+                 tu historia contable, que es aproximada pero te deja ver la forma.</p>
+            )}
+          </InfoTooltip>
+        </div>
+      )
+    }
+    return (
+      <div className="flex items-center gap-1.5">
+        <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-2 text-ink-2 border border-line whitespace-nowrap">
+          Medido desde {fmtFecha(perf.medido_desde)}
+          {/* La cobertura, VISIBLE — no escondida en el tooltip. Era el punto:
+              mostrar la curva y declarar qué parte es estimada. */}
+          {cob != null && cob < 0.999 && ` · ${(cob * 100).toFixed(0)}% a precio real`}
+          {partida && ' · con un hueco'}
+        </span>
+        <InfoTooltip>
+          <p className="font-semibold text-ink-0">Desde cuándo esto es una medición</p>
+          <p>Antes de esa fecha no hay fotos de mercado de tu cartera: lo que existe
+             es la reconstrucción contable (aportes + lo ya vendido), que no baja
+             cuando baja el mercado y por eso da más alto que el valor real.</p>
+          <p>Se dibuja aparte, en gris, y nunca cuenta como un máximo.</p>
+          {cob != null && (
+            <>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Cuánto está valuado a precio real</p>
+              <p className="text-ink-3">
+                {(cob * 100).toFixed(0)}% de tu cartera valuada a precio real
+                {alCosto.length > 0
+                  ? ` · el resto (${alCosto.slice(0, 4).join(', ')}${alCosto.length > 4 ? '…' : ''}) va al costo`
+                  : ''}.
+              </p>
+              <p className="text-ink-3">Los bonos y los FCI no tienen serie histórica
+                 confiable, así que se valúan al costo. Los CEDEARs y las acciones sí:
+                 para ésos la reconstrucción es exacta, no una estimación.</p>
+            </>
+          )}
+          {partida && (
+            <>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Hay un hueco en el medio</p>
+              <p className="text-ink-3">Cada tramo se mide solo y la línea se corta
+                 donde falta la medición. No se encadenan: no se sabe qué pasó en el
+                 medio, y suponerlo sería inventarlo. Por eso el acumulado y el
+                 drawdown de punta a punta aparecen como "—".</p>
+            </>
+          )}
+        </InfoTooltip>
+      </div>
+    )
+  }
+  // Estado vacío explicado. El copy vive en el backend (`twr.MOTIVO_TEXTO`) para
+  // que el asesor y el usuario final lean exactamente lo mismo.
+  const SinMediciones = () => (
+    <div className="text-center py-10 text-ink-3 text-sm">
+      <Activity size={20} className="mx-auto mb-2 opacity-50" />
+      <p className="max-w-md mx-auto">{perf?.motivo_texto ||
+        'Todavía no hay mediciones a mercado de esta cuenta.'}</p>
+      <p className="mt-1 text-xs text-ink-3/80">
+        En cuanto haya dos fotos de mercado, la curva aparece sola.
+      </p>
+    </div>
+  )
+
+  // ── La banda gris: la RECONSTRUCCIÓN CONTABLE ─────────────────────────────
+  // El usuario importó esta historia y tiene derecho a verla — pero va en su
+  // propio panel, con su propio eje y en dólares crudos, NUNCA como continuación
+  // de la línea medida ni dentro del índice. Es la parte que no baja cuando baja
+  // el mercado: si se la deja tocar el índice, vuelve a poner un pico que nadie
+  // alcanzó, que es exactamente lo que el usuario del caso reportó.
+  // ⚠️ `value_no_medible`, no `value`. El backend renombró la clave a propósito
+  // (ronda 11): la banda es la colección de lo que NO mide, y mientras el número
+  // crudo se llamara `value` el error seguía siendo escribible justo ahí —
+  // `contable[-1].value / medibles[-1].value - 1` daba el −47,26% del caso 452 sin
+  // un solo error. Se deja el fallback a `value` para no romper con un backend viejo.
+  const contableSeries = (perf?.contable || []).map(p => ({
+    key: p.date,
+    label: `${MES_CORTO[+p.date.slice(5, 7) - 1] || ''} '${p.date.slice(2, 4)}`,
+    usd: +Number(p.value_no_medible ?? p.value ?? 0).toFixed(2),
+  }))
 
   // Selector de serie del portfolio (USD vs ARS) y label del benchmark.
   const activeSeries = currency === 'USD' ? benchSeriesUsd : benchSeriesArs
@@ -870,9 +1144,78 @@ function InsightsDesktop({ _embeddedTab }) {
   //
   // Resampleo: para cada mes conservamos el ÚLTIMO punto del mes (el más
   // reciente), que representa el cierre mensual. "today" se mantiene aparte.
+  // La resolución la decide lo MEDIDO, no el botón de rango: ver
+  // `resolucionDeSerie` (insightsModel.js). Con 45 días de datos, agrupar por mes
+  // tira el 95% de la información y convierte el gráfico en una recta.
+  // ⚠️ EL SPAN SE MIDE SOBRE LA PARTE MEDIDA, NO SOBRE LA SERIE ENTERA.
+  //
+  // EL INVARIANTE: el estimado tiene que ser un SUPERCONJUNTO del certero. Si un
+  // dato está en el certero tiene que estar en el estimado, porque el estimado es
+  // lo que se sabe MÁS lo que se puede estimar. No puede faltarle nada.
+  //
+  // Se rompía acá, y es el patrón de las once rondas otra vez: la decisión de la
+  // línea de abajo ("la resolución la decide lo MEDIDO, no el botón de rango") era
+  // CORRECTA mientras la serie FUERA la parte medida. La Fase 2 le agregó la
+  // cadena contable por delante y estiró el span de 45 días a 329 — y
+  // `resolucionDeSerie`, que mira el span completo, dependía de esa propiedad.
+  // El arreglo cambió una propiedad de la que dependía otro consumidor.
+  //
+  // Medido en la cuenta demo (45 medidos + 11 contables), antes → después:
+  //     1M   estimado    1 pt (mensual) → 29 pts (diaria)   faltaban 27 del certero
+  //     3M   estimado    3 pts          → 48 pts            faltaban 44
+  //     1A   estimado   12 pts          → 56 pts            faltaban 44
+  //     MAX  estimado   12 pts          → 56 pts            faltaban 44
+  // El pozo del 07/08 (−8,3%) existía en certero y en estimado no.
+  //
+  // ⚠️ EL FILTRO ES POR `base`, NO POR `apto`. Lo que hay que excluir del span es
+  // "lo que SÓLO existe en estimado" = la cadena contable. Con `apto` se caerían
+  // también las fotos INTRADIA, que en certero SÍ están: eso movería el span del
+  // certero y rompería la propiedad que este archivo tiene que preservar intacta.
+  // Como en certero no hay ni un punto `base='costo'`, este filtro es un no-op ahí
+  // — el modo certero queda idéntico POR CONSTRUCCIÓN, no por suerte.
+  //
+  // La serie queda MIXTA a propósito: la parte contable es mensual porque no
+  // existe nada más fino (son cierres de mes) y la medida es diaria. Forzar una
+  // sola resolución sobre las dos tira información real de un lado sin poder
+  // inventarla del otro.
+  //
+  // ⚠️ Y SI NO HAY NADA MEDIDO, NO FILTRES. Sacar la cadena contable de una serie
+  // que es 100% contable deja la lista VACÍA, y una lista vacía también resuelve
+  // 'diaria' — pero por ausencia de datos, no porque haya días. Ese camino cambia
+  // el recorte de los rangos (de "los últimos N puntos mensuales" a "los últimos
+  // N meses por fecha") en 177 usuarios de producción que no tienen ni un punto
+  // medido: 243 combinaciones usuario×rango perdían puntos, hasta 18 en el peor
+  // caso. Esos usuarios no tienen certero, así que el invariante ni los toca:
+  // era radio de explosión gratis. Con la guarda, sólo cambian las series MIXTAS
+  // — que son exactamente las que tenían el bug.
+  const clavesMedidas = activeSeries
+    .filter(s => s.key !== 'today' && s.base !== 'costo')
+    .map(s => s.key)
+  const resolucionChart = resolucionDeSerie(
+    clavesMedidas.length
+      ? clavesMedidas
+      : activeSeries.filter(s => s.key !== 'today').map(s => s.key))
+
+  // El texto de una marca del eje X. Antes lo ponía el eje de categoría tomando
+  // `labelDia`/`label` de la fila; con el eje en tiempo las marcas ya no caen
+  // necesariamente sobre una fila, así que el texto se arma del instante. Mismos
+  // dos formatos de siempre: día/mes cuando se dibuja por día, mes/año cuando no.
+  const fmtMarcaEje = (t) => {
+    const d = new Date(t)
+    if (Number.isNaN(d.getTime())) return ''
+    if (resolucionChart === 'diaria') {
+      return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`
+    }
+    const MON = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+    return `${MON[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`
+  }
+
   const activeSeriesMonthly = (() => {
     const historical = activeSeries.filter(s => s.key !== 'today')
     const today = activeSeries.find(s => s.key === 'today')
+    if (resolucionChart === 'diaria') {
+      return today ? [...historical, today] : historical
+    }
     // Agrupar por mes (YYYY-MM) y quedarse con el último punto de cada mes.
     const byMonth = {}
     for (const s of historical) {
@@ -892,9 +1235,44 @@ function InsightsDesktop({ _embeddedTab }) {
     if (!effectiveRange || activeSeriesMonthly.length === 0) return activeSeriesMonthly
     const historical = activeSeriesMonthly.filter(s => s.key !== 'today')
     const today = activeSeriesMonthly.find(s => s.key === 'today')
-    const sliced = historical.slice(-effectiveRange)
+    let sliced
+    if (resolucionChart === 'diaria') {
+      // Con puntos diarios, `slice(-N)` daría N DÍAS donde N son meses.
+      const corte = new Date()
+      corte.setMonth(corte.getMonth() - effectiveRange)
+      const iso = corte.toISOString().slice(0, 10)
+      sliced = historical.filter(s => s.key >= iso)
+      if (sliced.length < 2) sliced = historical
+    } else {
+      sliced = historical.slice(-effectiveRange)
+    }
     return today ? [...sliced, today] : sliced
   })()
+
+  // ⚠️ EL CORTE ENTRE TRAMOS VA ACÁ: después de resamplear y ordenar.
+  // El índice se reinicia en cada tramo (twr.py) porque el derrumbe que pasó
+  // dentro del hueco no se puede componer. Dibujados seguido, el salto de +20% a
+  // 0% se lee como "volví a break-even" cuando la cartera se partió al medio. Un
+  // punto en null hace que Recharts deje el hueco a la vista, que es la verdad.
+  // Insertado acá el punto ya no pasa por el bucketing mensual, así que aterriza
+  // EN SU FECHA y no al final del gráfico.
+  // ⚠️ POR `segmento`, NO POR `tramo`. El tramo sólo conoce el hueco; el segmento
+  // conoce además el CAMBIO DE BASE. Sin esto la línea unía las fotos al costo con
+  // la primera medición a mercado y dibujaba la caída del 47% que el header se
+  // niega a publicar — el usuario veía el desplome igual, en el gráfico.
+  // ⚠️ B-5 · UN SEGMENTO DE UN PUNTO DIBUJA CERO PÍXELES. Una `<Line dot={false}>`
+  // necesita dos puntos para trazar un path, así que el usuario del caso 452 —cuya
+  // única medición a mercado es un punto— abría el gráfico y no veía NADA. Se marca
+  // el punto solitario para dibujarle un punto de verdad; el resto sigue sin dots.
+  const windowSeriesSolo = (() => {
+    const cuenta = new Map()
+    for (const s of windowSeries) {
+      if (s?.segmento == null) continue
+      cuenta.set(s.segmento, (cuenta.get(s.segmento) || 0) + 1)
+    }
+    return windowSeries.map(s => ({ ...s, solo: s?.segmento != null && cuenta.get(s.segmento) === 1 }))
+  })()
+  const windowSeriesCortada = cortarPorTramo(windowSeriesSolo, undefined, 'segmento')
 
   // Construir chartData rebased: ambas líneas arrancan en 0% en el primer
   // punto de la ventana — permite comparación justa en cualquier sub-período.
@@ -904,6 +1282,11 @@ function InsightsDesktop({ _embeddedTab }) {
   // NOTA: cuando hay snapshots, las keys de la serie son "YYYY-MM-DD" (diarias),
   // pero bench.sp500 y bench.inflation_ar son mensuales ("YYYY-MM").
   // Normalizamos siempre con monthKeyOf(key) = key.slice(0,7) para el lookup.
+  // El nombre de la serie principal ES su rótulo en la leyenda del chart (Recharts
+  // usa el `dataKey`), así que cambiarlo acá cambia lo que el usuario lee.
+  const claveCartera = _perfContable
+    ? `${userName} P/L vendido`
+    : `${userName} P/L total`
   const chartData = (() => {
     const monthKeyOf = k => (k === 'today' ? k : k.slice(0, 7))
 
@@ -1135,8 +1518,15 @@ function InsightsDesktop({ _embeddedTab }) {
     // benchmark para dibujar, usamos un skeleton de meses y dejamos la línea
     // del portfolio en null — así inflación/Merval/S&P siguen apareciendo en
     // vez de colapsar el gráfico al empty-state.
-    let series = windowSeries
+    let series = windowSeriesCortada
     if (series.length === 0) {
+      // ⚠️ Si SABEMOS por qué falta la línea del usuario, no se dibuja el
+      // benchmark solo. El skeleton existe para el caso "el portfolio en pesos no
+      // se pudo armar", no para tapar un motivo conocido: a una cuenta recién
+      // importada le dibujaba el S&P solo, sin la cartera y sin ninguna
+      // explicación, y si el benchmark tampoco cargaba el copy le echaba la culpa
+      // al benchmark. El usuario tiene que leer POR QUÉ falta su línea.
+      if (perf?.motivo) return []
       if (shadowPctByMonth.size === 0) return []
       series = buildBenchOnlySkeleton()
     }
@@ -1144,7 +1534,14 @@ function InsightsDesktop({ _embeddedTab }) {
 
     const withBench = series.map(s => {
       let benchPct = null
-      if (shadowPctByMonth.size > 0) {
+      // ⚠️ B-6 · EL PUNTO DE CORTE NO TIENE MES. Su clave es `corte-2026-08-24`, y
+      // `monthKeyOf` la recorta a 'corte-2'; como 'c' > '2', el fallback `k <= mk`
+      // matchea TODOS los meses y se queda con el ÚLTIMO — así que en cada corte el
+      // benchmark saltaba a su valor más reciente y volvía. La fila de corte existe
+      // para dejar un hueco: tiene que estar vacía en TODAS las series, no sólo en
+      // la del portfolio.
+      const esCorte = typeof s.key === 'string' && s.key.startsWith('corte-')
+      if (!esCorte && shadowPctByMonth.size > 0) {
         const mk = monthKeyOf(s.key)
         if (shadowPctByMonth.has(mk)) {
           benchPct = shadowPctByMonth.get(mk)
@@ -1166,7 +1563,7 @@ function InsightsDesktop({ _embeddedTab }) {
     const baseRealized = first.realized ?? 0
     const baseBench = first.benchPct ?? 0
 
-    return withBench.map(s => {
+    const filas = withBench.map(s => {
       const rebaseTotal = s.total != null
         ? +((((100 + s.total) / (100 + baseTotal)) - 1) * 100).toFixed(2) : null
       const rebaseRealized = s.realized != null
@@ -1180,11 +1577,31 @@ function InsightsDesktop({ _embeddedTab }) {
         ? +((((100 + s.benchPct) / (100 + baseBench)) - 1) * 100).toFixed(2) : null
       return {
         label: s.label,
-        [`${userName} P/L total`]: rebaseTotal,
+        labelDia: s.labelDia ?? s.label,
+        // La CLAVE viaja para que `rellenarTimestamps` pueda ubicar la fila en el
+        // tiempo. `label`/`labelDia` son texto de presentación: `labelDia` ni
+        // siquiera lleva año, así que en una vista multi-año '30/09' se repite y
+        // no alcanza para ordenar nada. Aditivo: nadie más las lee.
+        key: s.key,
+        estimado: !!s.estimado,
+        solo: !!s.solo,
+        // El acumulado CRUDO del punto —`(index − 1)·100`, ya relativo al arranque
+        // de SU segmento—. Viaja además del rebaseado porque `acumuladoDeVentana`
+        // lo necesita: el rebase es contra el borde de la ventana, y el número que
+        // el KPI tiene que publicar es el del segmento, que es el único que no
+        // cruza un cambio de regla de valuación. Ningún consumidor del chart lo
+        // lee (Recharts usa las claves con nombre), así que es aditivo.
+        total: s.total ?? null,
+        [claveCartera]: rebaseTotal,
         [`${userName} P/L realizado`]: rebaseRealized,
         [benchmarkKey]: rebaseBench,
       }
     })
+    // La parte no medida va en su propia clave, para dibujarla punteada.
+    // `rellenarTimestamps` va ANTES de partir: necesita la serie entera y en
+    // orden para poder poner los cortes en el punto medio de sus vecinas.
+    return partirMedidoYEstimado(
+      rellenarTimestamps(filas), claveCartera, `${userName} estimado`)
   })()
 
   // ── Insight: Mejor / Peor mes ──
@@ -1197,14 +1614,28 @@ function InsightsDesktop({ _embeddedTab }) {
   // grandes como caídas y depósitos como recuperaciones falsas.
   // Ahora el drawdown refleja únicamente movimientos de mercado.
   const returnSeries = buildCumulativeReturnSeries(globalMonthly, totalPortfolio > 0 ? totalPortfolio : null)
-  const drawdownTwrr = computeDrawdownOnReturns(returnSeries)
-  // Mantenemos la forma del objeto para compatibilidad con código que ya
-  // lo lee (alertas D2, AICoach snapshot). max y current siguen siendo % negativos.
+  // ⚠️ EL DRAWDOWN YA NO SE CALCULA ACÁ. Salía de `buildCumulativeReturnSeries`,
+  // que en `insightsModel.js:106` hace
+  //     capFinal = (isLast && liveValue > 0) ? liveValue : m.capital_final
+  // sin mirar `m.mtm` — o sea cierra el último mes a valor de MERCADO contra un
+  // arranque que puede venir de la cadena CONTABLE. Trece líneas más arriba, el
+  // guard de `applyMtmToMonthly` (:592-597, :621, :653) dice textual que las dos
+  // puntas tienen que estar en la misma base; esa línea lo desarmaba entero.
+  // Medido con los datos del user 452: −47,3% donde lo real era ~0.
+  // Ahora manda `twr.curva_indexada`, que descarta lo que no es base de mercado
+  // y NUNCA deja que un punto no medido fije un pico.
+  // La tira de KPIs (`InsightsKpiStrip`) espera {currentPct, maxPct}: es EL lugar
+  // donde el usuario leyó "Drawdown actual −45,0% / peak histórico −85,0%". Se le
+  // da la misma forma, con los números del backend.
+  // El gate vive en `drawdownFromPerf` (insightsModel.js) para que esté cubierto
+  // por test: exige los DOS campos no-null. El `|| 0` que estaba acá re-fabricaba
+  // del lado del cliente el 0,0% que el backend acababa de dejar de publicar.
+  const drawdownTwrr = drawdownFromPerf(perf)
   const drawdown = drawdownTwrr ? {
     max: drawdownTwrr.maxPct,
     current: drawdownTwrr.currentPct,
-    peakReturnPct: drawdownTwrr.peakReturnPct,
-    troughReturnPct: drawdownTwrr.troughReturnPct,
+    peakReturnPct: null,
+    troughReturnPct: null,
   } : null
 
   // Card 3 del perfil del inversor — requiere el drawdown ya computado.
@@ -1517,7 +1948,21 @@ function InsightsDesktop({ _embeddedTab }) {
   // Consistencia mensual — % meses positivos + std dev del retorno mensual.
   const consistency = computeMonthlyConsistency(returnSeries)
   // Drawdown como serie temporal (para chart underwater).
-  const drawdownSeries = buildDrawdownTimeSeries(returnSeries)
+  // Curva de drawdown: los puntos que el backend marcó como base de mercado. Un
+  // punto no-apto no aparece — no puede ser el fondo de una caída que nadie midió.
+  // El mismo corte que la línea principal: sin él, el primer punto del tramo 2
+  // vale 0% de drawdown y pegado al tramo 1 se lee como "recuperé todo".
+  const drawdownSeries = cortarPorTramo(
+    (perf?.curva || [])
+      .filter(p => p.apto && p.drawdown != null)
+      .map(p => ({
+        key: p.date,
+        tramo: p.tramo,
+        label: p.date === 'hoy' ? 'Hoy'
+          : `${MES_CORTO[+p.date.slice(5, 7) - 1] || ''} '${p.date.slice(2, 4)}`,
+        ddPct: +(p.drawdown * 100).toFixed(2),
+      })),
+    { ddPct: null })
   // Concentración por broker — pieData ya está calculado arriba.
   const brokerConcentration = computeBrokerConcentration(pieData)
   // Distribución por tipo de activo: combinamos posiciones abiertas + cash.
@@ -2061,7 +2506,21 @@ function InsightsDesktop({ _embeddedTab }) {
   const verdictNode = verdictVisible ? <ArAlternativesVerdict items={verdictItems} /> : null
   // El motor también decide si la curva de drawdown se muestra (se suprime sin
   // ≥2 meses de serie, en vez de un placeholder "necesitás 2 meses").
+  // ⚠️ FASE 2 · EN MODO ESTIMADO NO HAY CARD DE DRAWDOWN.
+  //
+  // El KPI de arriba ya dice "—" porque el backend devuelve `drawdown_maximo:
+  // null` en estimado, pero la CARD seguía dibujándose: `drawdownSeries` se arma
+  // de `perf.curva` filtrando `p.apto`, así que en estimado quedaba una curva
+  // hecha sólo con el pedacito medido, colgada de un chip que dice "Recreado de tu
+  // contabilidad". El usuario leía "Drawdown actual —" y tres cards más abajo una
+  // curva de drawdown que baja a −12%: la pantalla contradiciéndose sola.
+  //
+  // Y es la mitad que importa del guard: publicar el acumulado contable SIN sacar
+  // el drawdown es exactamente cómo vuelve "Su ganancia cayó 167% desde el mejor
+  // momento". El drawdown vive en el modo Certero, que es donde hay camino de
+  // precios para medirlo.
   const showDrawdown = diagLayout.slots.includes('drawdown')
+    && perf?.base_del_twr !== 'contable'
 
   // Params para la lectura IA — le pasamos lo que el frontend YA muestra
   // (archetype + findings + verdicts) para que no contradiga la pantalla.
@@ -2141,7 +2600,28 @@ function InsightsDesktop({ _embeddedTab }) {
       {/* ── KPI strip overview (V2) ─────────────────────────────────────────── */}
       {(() => {
         const lastRow = chartData[chartData.length - 1] || {}
-        const cumulativeReturnPct = lastRow[`${userName} P/L total`] ?? null
+        // ── FASE 2 · el KPI del modo ESTIMADO ────────────────────────────────
+        //
+        // `partirMedidoYEstimado` reparte la serie en DOS claves para dibujar lo no
+        // medido punteado. Para un usuario 100% contable TODOS los puntos caen en
+        // la clave estimada y NINGUNO en la medida, así que este KPI leía `null` y
+        // publicaba "—" **al lado de su propia curva dibujada**.
+        //
+        // ⚠️ EL MODO CERTERO NO SE TOCA, Y ES A PROPÓSITO. Sigue siendo
+        // literalmente la misma expresión de antes. Medido sobre los 822: con la
+        // regla nueva aplicada a certero, 6 usuarios PERDÍAN su número (los que
+        // tienen una sola fila, donde el viejo publicaba "0,0%") y 2 lo GANABAN
+        // (los que terminan en un punto no medido, que es justo lo que el certero
+        // no debe publicar). Las dos diferencias son discutibles y ninguna es de
+        // esta ronda: el certero queda congelado y se verifica usuario por usuario.
+        const _kTotal = claveCartera
+        const _kEstimado = `${userName} estimado`
+        const _modoEstimado = perf?.base_del_twr === 'contable'
+        const _acum = _modoEstimado
+          ? acumuladoDeVentana(chartData, _kTotal, _kEstimado) : null
+        const cumulativeReturnPct = _modoEstimado
+          ? (_acum ? _acum.pct : null)
+          : (lastRow[_kTotal] ?? null)
         const benchmarkReturnPct = lastRow[benchmarkKey] ?? null
         // Label dinámico = el mismo nombre del benchmark seleccionado (chart legend).
         // Antes estaba hardcodeado a S&P 500 / Inflación AR e ignoraba la selección.
@@ -2157,6 +2637,14 @@ function InsightsDesktop({ _embeddedTab }) {
             benchmarkLabel={benchmarkLabel}
             ventanaMeses={effectiveRange}
             currency={currency}
+            /* Un +16,9% reconstruido no puede verse igual que uno medido: el chip
+               del gráfico ya dice "Recreado de tu contabilidad", y el KPI tiene que
+               ser coherente con eso en vez de quedar mudo. `parcial` avisa cuando
+               el número arranca DESPUÉS del borde de la ventana, que es lo que pasa
+               cuando hay un corte de regla en el medio. */
+            acumuladoEstimado={_modoEstimado && _acum ? {
+              parcial: _acum.parcial, desde: _acum.desde,
+            } : null}
           />
         )
       })()}
@@ -2287,17 +2775,77 @@ function InsightsDesktop({ _embeddedTab }) {
       >
       <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
         <div className="flex items-start justify-between mb-3 flex-wrap gap-3">
-          <div className="flex items-center gap-1.5">
+          {/* ⚠️ EL CHIP VA EN SU PROPIO RENGLÓN, Y NO ES COSMÉTICO.
+              Antes el título, el chip y el toggle compartían UNA fila flex, así que
+              el ancho del chip —que cambia con el modo— empujaba al toggle.
+              Medido en el browser a 840px de ancho, en esta misma cuenta:
+                CERTERO   chip 153px → borde derecho del toggle en 744  (dentro)
+                ESTIMADO  chip 385px → borde derecho del toggle en 918  (la tarjeta
+                                        termina en 786: se salía 132px)
+              O sea: el control se corría 174px al tocarlo, y en estimado quedaba
+              fuera de su propia tarjeta. Un control que se mueve solo cuando lo
+              usás es peor que uno feo.
+              Con el chip abajo, la posición del toggle depende sólo del título,
+              que es idéntico en los dos modos. */}
+          <div className="min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <h2 className="font-semibold text-ink-0">
               {currency === 'USD' ? `Cartera vs ${benchmarkKey} (USD)` : `Cartera vs ${benchmarkKey} (ARS)`}
             </h2>
+            {currency === 'USD' && (
+              <div className="flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-0.5 ml-1">
+                {[
+                  // El toggle es la decisión del usuario, así que los títulos dicen
+                  // qué GANA y qué PIERDE en cada posición — no cómo está
+                  // implementado. "Menos historial pero el número está bien" vs
+                  // "más historial con riesgo de error" es literalmente el trade-off
+                  // que el modo ofrece.
+                  { k: 'certero', t: 'Certero',
+                    h: 'Menos historial, número exacto: sólo lo valuado a precio real. Incluye drawdown y pico.' },
+                  { k: 'estimado', t: 'Estimado',
+                    h: 'Más historial, aproximado: reconstruido de tu contabilidad. Sólo se mueve cuando vendés — no refleja lo que pasa con lo que todavía tenés. No puede dar drawdown ni pico.' },
+                ].map(({ k, t, h }) => (
+                  <button
+                    key={k}
+                    title={h}
+                    onClick={() => setModoPerf(k)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                      modoPerf === k
+                        ? 'bg-blue-600 text-white'
+                        : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
             <InfoTooltip>
+              {/* §5.2 · La explicación del dueño, arriba de todo: es mejor que
+                  cualquier cosa que hubiera en pantalla, y contesta la pregunta que
+                  el usuario se hace al ver el toggle ("¿cuál de los dos me creo?").
+                  ⚠️ Y deja dicho que el benchmark es EXACTO en los dos modos: es lo
+                  único de esta pantalla que se sabe entero, y es el ancla fija
+                  contra la cual leer el cambio de modo. */}
+              {currency === 'USD' && (
+                <>
+                  <p className="font-semibold text-ink-0">Los dos modos</p>
+                  <p>Tu rendimiento lo puedo medir de dos maneras: una de la que estoy
+                     seguro pero con menos historial, y otra que te da más meses pero
+                     es aproximada. El benchmark es el mismo y es exacto en las dos.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                </>
+              )}
               <p className="font-semibold text-ink-0">Qué mostramos</p>
               <p>Tu cartera comparada contra un benchmark, ambos en % desde el inicio del rango visible (las 3 líneas arrancan en 0%).</p>
               <div className="border-t border-line/60 my-1.5" />
-              <p className="font-semibold text-ink-0">Las 3 líneas</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#21D07A'}}/><strong>Verde sólido</strong>: tu cartera total (lo cerrado + lo abierto).</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#E8B14A'}}/><strong>Amarillo punteado</strong>: solo lo cobrado (ventas + dividendos + intereses). Sin la plusvalía abierta.</p>
+              <p className="font-semibold text-ink-0">{_perfContable ? 'Las 2 líneas' : 'Las 3 líneas'}</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#21D07A'}}/><strong>Verde sólido</strong>: {_perfContable
+                ? 'lo que ya vendiste, reconstruido de tu contabilidad. NO incluye la ganancia o pérdida de lo que todavía tenés abierto — ese dato no existe hacia atrás.'
+                : 'tu cartera total (lo cerrado + lo abierto).'}</p>
+              {!_perfContable && (
+                <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#E8B14A'}}/><strong>Amarillo punteado</strong>: solo lo cobrado (ventas + dividendos + intereses). Sin la plusvalía abierta.</p>
+              )}
               <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? '#46C6E0' : '#8B7DFF'}}/><strong>{benchmarkKey}</strong>: {currency === 'USD' ? `cómo iría el ${benchmarkKey} si hubiera recibido tus mismos depósitos y retiros en las mismas fechas.` : 'inflación acumulada del período — para ver si tu cartera mantiene poder de compra en pesos.'}</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-semibold text-ink-1">Puede no coincidir con el Dashboard</p>
@@ -2311,11 +2859,21 @@ function InsightsDesktop({ _embeddedTab }) {
               )}
             </InfoTooltip>
           </div>
+          {/* El chip, en su propio renglón: puede crecer todo lo que necesite sin
+              mover un control. */}
+          {currency === 'USD' && (
+            <div className="mt-1.5"><ChipMedido /></div>
+          )}
+          </div>
 
           {/* Range tabs — solo en USD; ARS es siempre 12 meses */}
           {currency === 'USD' && (
             <div className="flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-1">
               {[
+                // 1M y 3M existen para el que recién empieza a medirse: con 45
+                // días de historia, "1A" y "MAX" son la misma recta.
+                { label: '1M', months: 1 },
+                { label: '3M', months: 3 },
                 { label: '1A', months: 12 },
                 { label: '2A', months: 24 },
                 { label: '5A', months: 60 },
@@ -2367,13 +2925,37 @@ function InsightsDesktop({ _embeddedTab }) {
           ))}
         </div>
 
-        {chartData.length === 0 ? (
-          <div className="text-center py-10 text-ink-3 text-sm mt-4">
-            <Info size={20} className="mx-auto mb-2 opacity-50" />
-            {globalMonthly.length === 0
-              ? 'Cargá al menos un mes en Resumen Mensual para visualizar la evolución.'
-              : 'Cargando la comparativa… si no aparece, los datos del benchmark no están disponibles por ahora.'}
+        {/* ⚠️ EL HUECO TIENE QUE VERSE, NO SÓLO EXISTIR. Con la serie partida el
+            header publica "—" y la línea, resampleada a meses, se lee continua: el
+            usuario no tiene forma de saber por qué no hay número. Son 167 usuarios
+            reales del padrón. El texto sale de `twr.MOTIVO_TEXTO`, o sea el mismo
+            que lee el asesor — no una redacción paralela. */}
+        {perf?.serie_partida && chartData.length > 0 && (
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-line bg-bg-2/60 px-3 py-2">
+            <Info size={14} className="mt-0.5 shrink-0 text-ink-3" />
+            <p className="text-[12px] leading-snug text-ink-2">
+              <span className="font-semibold text-ink-0">La medición tiene un hueco.</span>{' '}
+              {perf.motivo_texto || 'Los tramos de cada lado se miden solos, pero no se pueden encadenar.'}{' '}
+              <span className="text-ink-3">Por eso el porcentaje del período no se publica
+              y la línea aparece cortada.</span>
+            </p>
           </div>
+        )}
+
+        {chartData.length === 0 ? (
+          perf?.motivo_texto ? (
+            // El motivo REAL, del backend (`twr.MOTIVO_TEXTO`). Antes este lugar
+            // decía "los datos del benchmark no están disponibles" — le echaba la
+            // culpa al benchmark cuando lo que falta es la medición del usuario.
+            <SinMediciones />
+          ) : (
+            <div className="text-center py-10 text-ink-3 text-sm mt-4">
+              <Info size={20} className="mx-auto mb-2 opacity-50" />
+              {globalMonthly.length === 0
+                ? 'Cargá al menos un mes en Resumen Mensual para visualizar la evolución.'
+                : 'Cargando la comparativa… si no aparece, los datos del benchmark no están disponibles por ahora.'}
+            </div>
+          )
         ) : (
           <ResponsiveContainer width="100%" height={320}>
             {/* Clean pass 2026-07: área con gradiente bajo la línea principal,
@@ -2387,23 +2969,103 @@ function InsightsDesktop({ _embeddedTab }) {
                 </linearGradient>
               </defs>
               <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+              {/* ⚠️ EJE DE TIEMPO, NO DE CATEGORÍA. Un eje de categoría reparte los
+                  puntos en partes iguales por índice y no mira la fecha: mientras la
+                  serie tuvo una sola densidad no se notaba, pero desde que conviven
+                  la cadena contable (un punto por cierre de mes) y las mediciones
+                  (uno por día), diez meses de historia entraban en la quinta parte
+                  del ancho — medido acá: 17,6 veces más apretado del lado izquierdo
+                  que del derecho. La parte contable se leía como un pico casi
+                  vertical que nunca ocurrió.
+                  El instante de cada fila lo pone `rellenarTimestamps` (`ts`), que
+                  también le da lugar a las filas de CORTE — las que van vacías para
+                  que quede el hueco a la vista donde cambia la regla de valuación. */}
+              <XAxis dataKey="ts" type="number" scale="time" domain={['dataMin', 'dataMax']}
+                     tickFormatter={fmtMarcaEje}
+                     tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
               <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} width={44} />
               <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.5} strokeDasharray="2 4" />
               <Tooltip
                 contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px', boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
                 labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
                 formatter={(v) => [v != null ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : '—', '']}
+                // Con el eje en tiempo el `label` que recibe el tooltip es el
+                // timestamp. El encabezado sigue siendo el rótulo de la fila —el
+                // mismo texto que mostraba antes—, no el número.
+                labelFormatter={(t, payload) => {
+                  const row = payload && payload[0] && payload[0].payload
+                  if (row) return (resolucionChart === 'diaria' ? row.labelDia : row.label) ?? fmtMarcaEje(t)
+                  return fmtMarcaEje(t)
+                }}
               />
               <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }} />
-              <Area type="monotone" dataKey={`${userName} P/L total`} stroke="#21D07A" strokeWidth={2.5} fill="url(#portGrad)" dot={false} activeDot={{ r: 4 }} />
-              <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="#E8B14A" strokeWidth={1.5} strokeDasharray="2 5" dot={false} />
+              <Area type="monotone" dataKey={claveCartera} stroke="#21D07A" strokeWidth={2.5} fill="url(#portGrad)" dot={<DotSolo fill="#21D07A" />} activeDot={{ r: 4 }} />
+              {/* Lo NO medido: misma curva, punteada y en un tono apagado. Es lo
+                  que comunica "esta parte es estimada" sin esconderla. */}
+              <Line type="monotone" dataKey={`${userName} estimado`} stroke="#21D07A" strokeOpacity={0.55} strokeWidth={2} strokeDasharray="3 4" dot={<DotSolo fill="#21D07A" opacity={0.55} />} />
+              {/* ⚠️ EN ESTIMADO ESTA SEGUNDA LÍNEA SE OCULTA, y es la respuesta a
+                  "¿sigue teniendo sentido o es redundante?".
+                  En CERTERO las dos dicen cosas distintas: la verde es la cartera
+                  TOTAL (lo cerrado + lo abierto) y la amarilla sólo lo COBRADO.
+                  En ESTIMADO la verde ya no tiene "lo abierto" —`pnl_unrealized = 0`
+                  en toda la cadena—, así que las dos son realizado, y quedaban en
+                  la leyenda como "P/L vendido" y "P/L realizado": dos sinónimos,
+                  que es una versión chica del mismo problema de rótulo.
+                  Medí que numéricamente NO son idénticas (difieren hasta 69px en el
+                  trazado, porque una encadena Modified Dietz y la otra es un
+                  cociente sobre el capital) — pero esa diferencia es metodológica,
+                  no información sobre la plata del usuario. Dos curvas casi iguales
+                  con nombres sinónimos confunden más de lo que aportan. */}
+              {!_perfContable && (
+                <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="#E8B14A" strokeWidth={1.5} strokeDasharray="2 5" dot={false} />
+              )}
               <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#46C6E0' : '#8B7DFF'} strokeWidth={1.75} strokeDasharray="5 5" dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
         )}
       </div>
       </AskAIAbout>
+
+      {currency === 'USD' && contableSeries.length >= 2 && (
+        <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5 mt-6">
+          <div className="flex items-center gap-1.5 mb-1">
+            <h2 className="font-semibold text-ink-0">Reconstrucción contable</h2>
+            <InfoTooltip>
+              <p className="font-semibold text-ink-0">Qué es esta banda</p>
+              <p>La parte de tu historia que no tiene precio de mercado: se arma con
+                 lo que aportaste más lo que ya vendiste. No es necesariamente el
+                 principio — puede haber tramos así en el medio, cuando el precio de
+                 esos días no se pudo reconstruir.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Por qué va aparte</p>
+              <p>No baja cuando baja el mercado, así que da más alto que el valor
+                 real. Mezclarla con la línea medida ponía un máximo que nunca
+                 existió, y todo lo que viniera después parecía una caída.</p>
+              <p className="text-ink-3">Por eso se dibuja en su propio eje, en
+                 dólares, y nunca cuenta como pico ni entra en el % acumulado.</p>
+            </InfoTooltip>
+          </div>
+          <p className="text-xs text-ink-3 mb-4">
+            Los tramos de tu historia sin precio de mercado. Es contabilidad, no
+            mercado — mirala como referencia, no como rendimiento.
+          </p>
+          <ResponsiveContainer width="100%" height={160}>
+            <ComposedChart data={contableSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+              <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} width={56}
+                     tickFormatter={v => `US$${Math.round(v / 1000)}k`} />
+              <Tooltip
+                contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px' }}
+                labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
+                formatter={(v) => [`US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
+              />
+              <Line type="monotone" dataKey="usd" name="Reconstrucción contable"
+                    stroke="#7C8698" strokeWidth={1.75} strokeDasharray="4 4" dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
 
       {/* Drawdown curve (underwater chart) — visualiza la profundidad
           y duración de las caídas sobre el rendimiento ajustado por flujos.
@@ -2418,6 +3080,7 @@ function InsightsDesktop({ _embeddedTab }) {
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
+            <ChipMedido />
             <InfoTooltip>
               <p className="font-semibold text-ink-0">Qué es</p>
               <p>Cuánto bajaste desde tu mejor momento histórico. Si llegaste a +20% y ahora estás en +10%, tu drawdown es −10%.</p>
@@ -2430,19 +3093,16 @@ function InsightsDesktop({ _embeddedTab }) {
               <p className="text-ink-3">Calculado sobre el rendimiento ajustado por flujos (TWRR) — depósitos y retiros no se cuentan como subida/bajada de la cartera.</p>
             </InfoTooltip>
           </div>
-          {drawdownTwrr && (
+          {drawdown && (
             <div className="flex gap-3 text-xs">
-              <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdownTwrr.currentPct < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{drawdownTwrr.currentPct.toFixed(1)}%</span></span>
-              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg">{drawdownTwrr.maxPct.toFixed(1)}%</span></span>
+              <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdown.current < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{drawdown.current.toFixed(1)}%</span></span>
+              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg">{drawdown.max.toFixed(1)}%</span></span>
             </div>
           )}
         </div>
         <p className="text-xs text-ink-3 mb-4">Profundidad y duración de las caídas. El área negativa representa los períodos por debajo del máximo histórico.</p>
         {drawdownSeries.length < 2 ? (
-          <div className="text-center py-10 text-ink-3 text-sm">
-            <Activity size={20} className="mx-auto mb-2 opacity-50" />
-            Se requieren al menos 2 meses de historial para construir la curva.
-          </div>
+          <SinMediciones />
         ) : (
           <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={drawdownSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>

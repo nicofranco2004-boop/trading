@@ -96,8 +96,14 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
         "ORDER BY year, month",
         (user_id,)
     ).fetchall()]
+    # ⚠️ `snapshots_medibles`. De acá salen `twr_30d_pct` y la anomalía
+    # `drawdown_30d_high`, o sea dos NÚMEROS PUBLICADOS que se restan entre los
+    # bordes de la ventana. La query cruda ni siquiera traía `source`/`base`/`apto`:
+    # era estructuralmente ciega a en qué base estaba cada punta. Medido con la
+    # cartera del caso 452 dentro de la ventana: `twr_30d_pct = -47,26%`,
+    # `delta_30d_usd = -65.967` y la anomalía disparada, con la pantalla en "—".
     snapshots = [dict(r) for r in conn.execute(
-        "SELECT date, total_value FROM snapshots WHERE user_id=? "
+        "SELECT date, total_value FROM snapshots_medibles WHERE user_id=? "
         "ORDER BY date DESC LIMIT 90",
         (user_id,)
     ).fetchall()]

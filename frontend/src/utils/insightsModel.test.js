@@ -1,9 +1,17 @@
 import { describe, it, expect } from 'vitest'
 import {
+  partirMedidoYEstimado,
+  resolucionDeSerie,
+  totalDePunto,
+  cortarPorTramo,
+  tsDeClave,
+  rellenarTimestamps,
+  drawdownFromPerf,
   netCapitalContributed,
   buildCumulativeReturnSeries,
   computeDrawdownOnReturns,
   computeBestWorstMonth,
+  acumuladoDeVentana,
   computeAssetContribution,
   computeBestWorstClosedOp,
   computeProfitFactor,
@@ -504,5 +512,395 @@ describe('computeAssetTypeBreakdown', () => {
     const r = computeAssetTypeBreakdown(positions, brokers)
     expect(r).toHaveLength(1)
     expect(r[0].value).toBe(1000)
+  })
+})
+
+
+// ── El gate del drawdown ──────────────────────────────────────────────────────
+// "No se pudo medir" NO puede convertirse en "0,0%". El backend devuelve null
+// cuando no hay tramo medible; el `|| 0` que había acá lo re-fabricaba del lado
+// del cliente y el usuario del caso 452 iba a leer "Drawdown actual 0,0% · peak
+// histórico 0,0%" exactamente donde antes leía −45%.
+describe('drawdownFromPerf', () => {
+  it('null cuando no hay ninguna medición (una sola foto)', () => {
+    expect(drawdownFromPerf({ drawdown_maximo: null, drawdown_actual: null })).toBe(null)
+  })
+
+  it('null si falta cualquiera de los dos campos', () => {
+    expect(drawdownFromPerf({ drawdown_maximo: -0.2, drawdown_actual: null })).toBe(null)
+    expect(drawdownFromPerf({ drawdown_maximo: null, drawdown_actual: -0.2 })).toBe(null)
+  })
+
+  it('null con perf ausente (el endpoint todavía no volvió)', () => {
+    expect(drawdownFromPerf(null)).toBe(null)
+    expect(drawdownFromPerf(undefined)).toBe(null)
+  })
+
+  it('un drawdown REAL de 0% sí se publica (no es lo mismo que no medido)', () => {
+    const d = drawdownFromPerf({ drawdown_maximo: 0, drawdown_actual: 0 })
+    expect(d).not.toBe(null)
+    expect(d.maxPct).toBe(0)
+  })
+
+  it('convierte a puntos porcentuales', () => {
+    const d = drawdownFromPerf({ drawdown_maximo: -0.45, drawdown_actual: -0.12 })
+    expect(d.maxPct).toBeCloseTo(-45, 6)
+    expect(d.currentPct).toBeCloseTo(-12, 6)
+  })
+})
+
+
+// ── El corte entre tramos ─────────────────────────────────────────────────────
+// El índice y el pico se reinician en cada tramo, así que el primer punto del
+// tramo 2 vale 0% — dibujado pegado al tramo 1 se lee como "recuperé todo" con la
+// cartera 60% abajo. En la curva de drawdown es peor: el encabezado está gateado
+// y muestra "—", así que el gráfico queda solo, sin nada que lo contradiga.
+describe('cortarPorTramo', () => {
+  const serie = [
+    { key: '2026-01-31', tramo: 0, total: 0 },
+    { key: '2026-02-28', tramo: 0, total: 50 },
+    { key: '2026-03-31', tramo: 0, total: 40 },
+    { key: '2026-08-18', tramo: 1, total: 0 },
+    { key: '2026-08-19', tramo: 1, total: 3 },
+  ]
+
+  it('corta EN LA FRONTERA, no al final', () => {
+    const r = cortarPorTramo(serie)
+    const i = r.findIndex(p => String(p.key).startsWith('corte-'))
+    expect(i).toBe(3)                                   // entre 03-31 y 08-18
+    expect(r[i - 1].key).toBe('2026-03-31')
+    expect(r[i + 1].key).toBe('2026-08-18')
+    expect(r[r.length - 1].key).toBe('2026-08-19')      // NO al final
+  })
+
+  it('el punto de corte va en null para que Recharts deje el hueco', () => {
+    const r = cortarPorTramo(serie)
+    const corte = r.find(p => String(p.key).startsWith('corte-'))
+    expect(corte.total).toBe(null)
+    expect(corte.realized).toBe(null)
+    expect(corte.label).toBe('')
+  })
+
+  it('con tres tramos hay DOS cortes, no uno', () => {
+    const tres = [...serie, { key: '2027-02-01', tramo: 2, total: 0 }]
+    const r = cortarPorTramo(tres)
+    expect(r.filter(p => String(p.key).startsWith('corte-'))).toHaveLength(2)
+  })
+
+  it('una serie de un solo tramo no se toca', () => {
+    const uno = serie.filter(p => p.tramo === 0)
+    expect(cortarPorTramo(uno)).toHaveLength(uno.length)
+  })
+
+  it('sin `tramo` (backend viejo) no corta nada', () => {
+    const sinTramo = serie.map(({ tramo, ...r }) => r)
+    expect(cortarPorTramo(sinTramo)).toHaveLength(serie.length)
+  })
+
+  // ── RONDA 9 · el corte por CAMBIO DE BASE ────────────────────────────────
+  // La línea principal no se parte sólo donde hay un hueco: también donde cambia
+  // la BASE de valuación. Un segmento que une una foto al costo con una medición a
+  // mercado dibuja el escalón entre dos reglas — medido, −47,26% en el caso 452,
+  // con el header diciendo "—" justo al lado.
+  it('corta por `segmento` cuando se lo pide, no por `tramo`', () => {
+    const conBase = [
+      { key: '2026-04-30', tramo: 0, segmento: 0, total: 0 },   // costo
+      { key: '2026-07-31', tramo: 0, segmento: 0, total: 0 },   // costo
+      { key: '2026-08-24', tramo: 0, segmento: 1, total: 0 },   // mercado
+    ]
+    // Por `tramo` los tres son uno solo: el corte no existiría.
+    expect(cortarPorTramo(conBase)).toHaveLength(3)
+    const r = cortarPorTramo(conBase, undefined, 'segmento')
+    const i = r.findIndex(p => String(p.key).startsWith('corte-'))
+    expect(i).toBe(2)
+    expect(r[i - 1].key).toBe('2026-07-31')
+    expect(r[i + 1].key).toBe('2026-08-24')
+  })
+
+  it('una serie sin `segmento` (la de ARS) no corta nunca', () => {
+    const ars = [{ key: '2026-01', total: 0 }, { key: '2026-02', total: 5 }]
+    expect(cortarPorTramo(ars, undefined, 'segmento')).toHaveLength(2)
+  })
+
+  it('acepta campos vacíos propios (la curva de drawdown usa ddPct)', () => {
+    const r = cortarPorTramo(serie, { ddPct: null })
+    const corte = r.find(p => String(p.key).startsWith('corte-'))
+    expect(corte.ddPct).toBe(null)
+  })
+
+  it('vacío y null no rompen', () => {
+    expect(cortarPorTramo([])).toEqual([])
+    expect(cortarPorTramo(null)).toEqual([])
+  })
+})
+
+
+// ── Un punto no-apto no se dibuja ─────────────────────────────────────────────
+// En los no-aptos el índice NO avanzó: el `index` que traen es el arrastrado del
+// último punto medido. Dibujarlos los muestra en 0,00% — el bug original con el
+// signo dado vuelta, y encima se lee tranquilizador.
+describe('totalDePunto', () => {
+  it('un punto apto se dibuja', () => {
+    expect(totalDePunto({ apto: true, index: 1.2 })).toBeCloseTo(20, 6)
+  })
+
+  it('una foto no apta SÍ se dibuja — con su posición real', () => {
+    // El backend le calcula un índice propio (no el arrastrado), así que
+    // esconderla le borraba la curva al que tiene la cartera al costo.
+    expect(totalDePunto({ apto: false, index: 1.15 })).toBeCloseTo(15, 6)
+  })
+
+  it('la parte no medida va en su propia clave, para dibujarla punteada', () => {
+    const filas = [
+      { k: 'a', estimado: true, T: 0 },
+      { k: 'b', estimado: true, T: 10 },
+      { k: 'c', estimado: false, T: 12 },
+      { k: 'd', estimado: false, T: 15 },
+    ]
+    const r = partirMedidoYEstimado(filas, 'T', 'E')
+    // El punto frontera aparece en las DOS, para que las líneas se toquen.
+    expect(r.map(x => x.T)).toEqual([null, 10, 12, 15])
+    expect(r.map(x => x.E)).toEqual([0, 10, 12, null])
+  })
+
+  it('null/undefined no rompen', () => {
+    expect(totalDePunto(null)).toBe(null)
+    expect(totalDePunto({ apto: true })).toBe(null)
+  })
+})
+
+
+// ── La resolución sigue a lo MEDIDO ───────────────────────────────────────────
+// Con 46 mediciones diarias repartidas en dos meses, el resampleo mensual dibuja
+// DOS PUNTOS —una recta— y se come una caída real del 8,31%. En la misma pantalla
+// la curva de drawdown dice «Máx histórico −8,3%».
+describe('resolucionDeSerie', () => {
+  const dias = (desde, n) => {
+    const out = []
+    const d = new Date(desde)
+    for (let i = 0; i < n; i++) {
+      out.push(new Date(d.getTime() + i * 86400000).toISOString().slice(0, 10))
+    }
+    return out
+  }
+
+  it('46 días medidos → diaria (si no, es una recta)', () => {
+    expect(resolucionDeSerie(dias('2026-07-11', 46))).toBe('diaria')
+  })
+
+  it('dos años medidos → mensual', () => {
+    expect(resolucionDeSerie(['2024-01-01', '2026-01-01'])).toBe('mensual')
+  })
+
+  it('el umbral está en ~3 meses', () => {
+    expect(resolucionDeSerie(['2026-01-01', '2026-03-15'])).toBe('diaria')   // 73 d
+    expect(resolucionDeSerie(['2026-01-01', '2026-06-01'])).toBe('mensual')  // 151 d
+  })
+
+  it('ignora "today", que no es una fecha', () => {
+    expect(resolucionDeSerie(['2026-07-11', '2026-07-20', 'today'])).toBe('diaria')
+  })
+
+  it('con menos de dos puntos no agrupa', () => {
+    expect(resolucionDeSerie([])).toBe('diaria')
+    expect(resolucionDeSerie(['2026-07-11'])).toBe('diaria')
+    expect(resolucionDeSerie(null)).toBe('diaria')
+  })
+
+  it('el resampleo mensual perdería la caída; el diario no', () => {
+    // 2 meses de datos con una caída dentro de agosto.
+    const puntos = [
+      { key: '2026-07-15', total: 0 },
+      { key: '2026-07-31', total: 2 },
+      { key: '2026-08-10', total: 3 },
+      { key: '2026-08-14', total: -5.4 },   // la caída del 8,3%
+      { key: '2026-08-29', total: 1 },
+    ]
+    expect(resolucionDeSerie(puntos.map(p => p.key))).toBe('diaria')
+    // Lo que hacía el resampleo mensual: un punto por mes → la caída desaparece.
+    const porMes = {}
+    for (const p of puntos) porMes[p.key.slice(0, 7)] = p
+    expect(Object.values(porMes).map(p => p.total)).toEqual([2, 1])
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FASE 2 · RONDA 2 — el KPI que decía "—" al lado de su propia curva.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('acumuladoDeVentana', () => {
+  const KM = 'Demo P/L total'
+  const KE = 'Demo estimado'
+  // Filas con la forma que deja `partirMedidoYEstimado`: el valor vive en UNA de
+  // las dos claves (o en las dos, si es punto frontera).
+  // ⚠️ CON `total`: es el camino real. `total` es el acumulado crudo del punto,
+  // ya relativo al arranque de SU segmento — que es de donde sale el número.
+  const med = (label, v) => ({ label, estimado: false, total: v, [KM]: v, [KE]: null })
+  const est = (label, v) => ({ label, estimado: true, total: v, [KM]: null, [KE]: v })
+  const corte = () => ({ label: '', total: null, [KM]: null, [KE]: null })
+
+  it('usuario 100% contable: publica el acumulado en vez de "—"', () => {
+    // ⚠️ EL CASO QUE DA NOMBRE A LA RONDA. Todos los puntos caen en la clave
+    // ESTIMADA, así que la regla vieja (`ultimaFila[claveMedida]`) devolvía null y
+    // el KPI mostraba "—" con la curva dibujada al lado. Son los 331 usuarios que
+    // el modo Estimado vino a servir.
+    const f = [est('Sep', 0), est('Oct', 5), est('Nov', 10)]
+    expect(f[f.length - 1][KM]).toBeNull()      // el fixture exhibe el bug
+    const r = acumuladoDeVentana(f, KM, KE)
+    expect(r).not.toBeNull()
+    // (100+10)/(100+0) − 1 = +10%
+    expect(r.pct).toBeCloseTo(10, 6)
+    expect(r.estimado).toBe(true)
+    expect(r.parcial).toBe(false)
+  })
+
+  it('NO encadena a través de un corte de regla: usa la última corrida', () => {
+    // ⚠️ ES LA REGLA DE LA FASE 1 APLICADA ACÁ. El índice del backend se REINICIA
+    // en cada cambio de base, así que dividir el último punto (mercado) por el
+    // primero (contable) mezcla dos reglas. El fixture lo hace imposible de no
+    // ver: la corrida contable va +50% y la de mercado +2%.
+    const f = [est('Ene', 0), est('Feb', 50), corte(), med('Mar', 0), med('Abr', 2)]
+    const r = acumuladoDeVentana(f, KM, KE)
+    expect(r.pct).toBeCloseTo(2, 6)     // el +2% del segmento medido, NO 2-vs-50
+    expect(r.parcial).toBe(true)        // empieza después del borde de la ventana
+    expect(r.estimado).toBe(false)      // la última corrida es medida
+  })
+
+  it('una sola punta después de un corte NO es un acumulado', () => {
+    // Los 25 usuarios reales: el último segmento tiene UN punto, cuyo valor
+    // rebaseado es 0 porque el índice acaba de reiniciarse. La regla vieja
+    // publicaba "0,0%" — que se lee "tu cartera no se movió" — sobre un artefacto
+    // del reinicio. No hay número: hay una punta.
+    const f = [est('Ene', 0), est('Feb', 150), corte(), med('Ago', 0)]
+    expect(f[f.length - 1][KM]).toBe(0)  // el fixture exhibe el "0,0%" viejo
+    expect(acumuladoDeVentana(f, KM, KE)).toBeNull()
+  })
+
+  it('el número NO depende de la resolución del gráfico', () => {
+    // ⚠️ LO ENCONTRÉ MIDIENDO, NO LEYENDO. El resampleo mensual colapsa un
+    // segmento entero en UNA fila; con el cociente primera-vs-última el mismo
+    // usuario daba −0,52% en resolución diaria y "—" en mensual. Como `total` ya
+    // es el acumulado del segmento, la fila sola alcanza.
+    const diaria  = [est('E', 0), est('F', 50), corte(), med('M1', 0), med('M2', -0.3), med('M3', -0.52)]
+    const mensual = [est('E', 0), est('F', 50), corte(), med('M3', -0.52)]
+    expect(acumuladoDeVentana(diaria, KM, KE).pct).toBeCloseTo(-0.52, 6)
+    expect(acumuladoDeVentana(mensual, KM, KE).pct).toBeCloseTo(-0.52, 6)
+  })
+
+  it('una cartera de verdad PLANA sí publica 0,0%', () => {
+    // ⚠️ EL ERROR OPUESTO, y hay que no cometerlo: suprimir todo `total === 0`
+    // le borraría el número a quien estuvo genuinamente plano. Lo que distingue al
+    // artefacto es que sea UNA sola fila (el arranque del segmento, sin nada
+    // después); varias filas en 0 son una cartera que no se movió.
+    const f = [med('Ene', 0), med('Feb', 0), med('Mar', 0)]
+    const r = acumuladoDeVentana(f, KM, KE)
+    expect(r).not.toBeNull()
+    expect(r.pct).toBe(0)
+  })
+
+  it('ventana sin ningún punto → null (ahí el "—" es lo correcto)', () => {
+    expect(acumuladoDeVentana([], KM, KE)).toBeNull()
+    expect(acumuladoDeVentana([corte(), corte()], KM, KE)).toBeNull()
+    expect(acumuladoDeVentana(null, KM, KE)).toBeNull()
+  })
+
+  it('la corrida con un punto estimado en el medio queda marcada estimada', () => {
+    // Un tramo con UN punto reconstruido ya no es una medición limpia, y el KPI
+    // tiene que decirlo aunque las puntas sean medidas.
+    const f = [med('Ene', 0), { label: 'Feb', estimado: true, total: 4, [KM]: 4, [KE]: 4 }, med('Mar', 8)]
+    const r = acumuladoDeVentana(f, KM, KE)
+    expect(r.pct).toBeCloseTo(8, 6)
+    expect(r.estimado).toBe(true)
+  })
+})
+
+// ─── El eje X tiene que medir tiempo ────────────────────────────────────────
+describe('tsDeClave / rellenarTimestamps', () => {
+  const dia = (y, m, d) => new Date(y, m - 1, d).getTime()
+  const KM = 'Demo P/L total'
+
+  it('una fecha cae en su día, a medianoche LOCAL', () => {
+    // Local y no UTC: las marcas de una escala de tiempo caen en límites de día
+    // locales. Con medianoche UTC, en Argentina cada punto quedaría 3 h corrido
+    // respecto de su propia marca.
+    expect(tsDeClave('2026-08-25')).toBe(dia(2026, 8, 25))
+    expect(new Date(tsDeClave('2026-08-25')).getDate()).toBe(25)
+  })
+
+  it('una clave mensual cae en el ÚLTIMO día del mes, no en el primero', () => {
+    // Las series contables son CIERRES de mes. Ponerlas el día 1 las adelantaría
+    // un mes entero sobre el eje.
+    expect(tsDeClave('2026-02')).toBe(dia(2026, 2, 28))
+    expect(tsDeClave('2024-02')).toBe(dia(2024, 2, 29)) // bisiesto
+    expect(tsDeClave('2026-12')).toBe(dia(2026, 12, 31))
+  })
+
+  it("'today' es ahora, y se puede inyectar para testear", () => {
+    expect(tsDeClave('today', 12345)).toBe(12345)
+  })
+
+  it('lo que no es fecha no inventa un instante', () => {
+    expect(tsDeClave('corte-2026-08-01')).toBeNull()
+    expect(tsDeClave('')).toBeNull()
+    expect(tsDeClave(null)).toBeNull()
+  })
+
+  it('el CORTE va al punto medio de sus vecinos', () => {
+    // El corte marca dónde cambia la regla de valuación. El punto medio es el
+    // único lugar que no estira ni el tramo que termina ni el que empieza.
+    const filas = [
+      { key: '2026-07-30' },
+      { key: 'corte-2026-08-01' },
+      { key: '2026-08-01' },
+    ]
+    const r = rellenarTimestamps(filas)
+    expect(r[0].ts).toBe(dia(2026, 7, 30))
+    expect(r[2].ts).toBe(dia(2026, 8, 1))
+    expect(r[1].ts).toBe((r[0].ts + r[2].ts) / 2)
+    expect(r[1].ts).toBeGreaterThan(r[0].ts)
+    expect(r[1].ts).toBeLessThan(r[2].ts)
+  })
+
+  it('dos cortes seguidos que aíslan un punto siguen ordenados', () => {
+    // El caso real de la cuenta demo: el 31/07 es una foto contable en medio del
+    // tramo medido, y queda encerrado entre dos cortes.
+    const filas = [
+      { key: '2026-07-30' }, { key: 'corte-2026-07-31' }, { key: '2026-07-31' },
+      { key: 'corte-2026-08-01' }, { key: '2026-08-01' },
+    ]
+    const ts = rellenarTimestamps(filas).map(r => r.ts)
+    for (let i = 1; i < ts.length; i++) expect(ts[i]).toBeGreaterThan(ts[i - 1])
+  })
+
+  it('siempre devuelve números: un eje numérico no ubica un null', () => {
+    const r = rellenarTimestamps([{ key: 'raro' }, { key: '2026-08-01' }, { key: 'otro' }])
+    r.forEach(x => expect(typeof x.ts).toBe('number'))
+    expect(Number.isNaN(r[0].ts)).toBe(false)
+  })
+
+  it('sin una sola clave legible quedan equiespaciadas — el eje viejo', () => {
+    const r = rellenarTimestamps([{ key: 'a' }, { key: 'b' }, { key: 'c' }])
+    expect(r[1].ts - r[0].ts).toBe(r[2].ts - r[1].ts)
+  })
+
+  it('es aditivo: no toca ningún otro campo', () => {
+    const filas = [{ key: '2026-08-01', label: 'Ago', total: 3, [KM]: 1 }]
+    const r = rellenarTimestamps(filas)
+    expect(r[0].label).toBe('Ago')
+    expect(r[0].total).toBe(3)
+    expect(r[0][KM]).toBe(1)
+    expect(filas[0].ts).toBeUndefined() // no muta la entrada
+  })
+
+  it('la serie mixta reparte el ancho por TIEMPO, no por posición', () => {
+    // El bug de esta ronda en una línea: 10 meses contables + unos días medidos.
+    // Con posiciones, los 10 meses ocupaban 10/13 del ancho; con tiempo, lo suyo.
+    const filas = [
+      { key: '2025-09' }, { key: '2025-10' }, { key: '2025-11' },
+      { key: '2026-07-11' }, { key: '2026-07-12' }, { key: '2026-07-13' },
+    ]
+    const ts = rellenarTimestamps(filas).map(r => r.ts)
+    const dias = (a, b) => (b - a) / 86400000
+    expect(dias(ts[0], ts[2])).toBeCloseTo(61, 0)   // sep→nov: dos meses
+    expect(dias(ts[3], ts[5])).toBeCloseTo(2, 6)    // tres días medidos: dos días
   })
 })

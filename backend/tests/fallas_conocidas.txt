@@ -1,0 +1,38 @@
+# Fallas CONOCIDAS de la suite — una por línea, id de pytest.
+# Generado el 2026-08-28. Lo lee tests/conftest.py (pytest_sessionfinish).
+#
+# ⚠️ ESTO NO ES UNA LISTA DE PERDÓN. Es la línea de base: lo que ya estaba
+# roto antes de esta ronda. Si aparece un nombre que NO está acá, la corrida
+# grita — que es lo único que faltaba para que una regresión no pase de largo.
+# Cuando arregles una, borrala de acá: si sigue listada y ya pasa, el hook
+# también lo dice.
+#
+tests/test_backfill_recompute.py::SafeClassifyTest::test_clean_amortization_is_safe
+tests/test_balanz_tenencia.py::BalanzTenenciaParse::test_fci_precio_sub1_en_pesos
+tests/test_balanz_tenencia.py::BalanzTenenciaParse::test_holdings_count_y_tipos
+tests/test_billing.py::BillingCancelTest::test_cancel_marks_subscription_cancelled
+tests/test_billing.py::BillingSubscribeTest::test_subscribe_creates_preapproval_and_saves_to_db
+tests/test_billing.py::BillingSubscribeTest::test_subscribe_reuses_pending_subscription
+tests/test_billing_lifecycle.py::FullLifecycleJobTest::test_runs_all_three_steps_and_returns_counts
+tests/test_bond_conduit.py::BondConduitTest::test_dual_currency_genuine_amortizes_proportionally
+tests/test_bond_conduit.py::BondConduitTest::test_genuine_bond_no_conduit_still_amortizes
+tests/test_bond_conduit.py::BondConduitTest::test_genuine_bond_plus_conduit_amortizes_genuine_only
+tests/test_cedear_usd_price.py::SnapshotsJobCedearTest::test_snapshot_converts_bac
+tests/test_events.py::EventsPortfolioTest::test_details_parsed_as_dict
+tests/test_events.py::EventsPortfolioTest::test_excludes_cash_positions
+tests/test_events.py::EventsPortfolioTest::test_filters_by_window_days
+tests/test_events.py::EventsPortfolioTest::test_returns_events_for_portfolio_tickers
+tests/test_events.py::PopularEventsTest::test_ar_adr_ticker_included
+tests/test_events.py::PopularEventsTest::test_days_window_filters_events
+tests/test_events.py::PopularEventsTest::test_in_portfolio_flag_when_user_owns_ticker
+tests/test_events.py::PopularEventsTest::test_includes_popular_ticker_earnings
+tests/test_events.py::PopularEventsTest::test_response_includes_macro_and_ticker_counts
+tests/test_importer.py::PipelineE2ETest::test_reimport_after_revert_does_not_duplicate
+tests/test_importer.py::RobustnessImprovementsTest::test_new_aliases_distribution_pil_whtax_airdrop
+tests/test_news.py::EnsureNewsBatchParallelTest::test_respects_max_workers_cap
+tests/test_news.py::MarketNewsEndpointTest::test_market_news_ordered_by_recency
+tests/test_news.py::MarketNewsEndpointTest::test_market_news_returns_items
+tests/test_news.py::MarketRelevanceFilterTest::test_case_insensitive
+tests/test_news.py::MarketRelevanceFilterTest::test_passes_clear_market_news
+tests/test_news.py::MarketRelevanceFilterTest::test_passes_when_summary_has_keyword_but_title_doesnt
+tests/test_news.py::RefreshNewsQueryFilterTest::test_macro_category_also_filters

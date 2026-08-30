@@ -32,8 +32,23 @@ def _create_test_db():
             total_invested REAL NOT NULL DEFAULT 0,
             net_deposited REAL NOT NULL DEFAULT 0,
             fx_to_usd_blue REAL,
+            base TEXT, apto INTEGER,
             UNIQUE(user_id, date)
         );
+        -- ⚠️ RONDA 11 · el estampo de la base y la vista que lo expone. Sin esto el
+        -- fixture no refleja el schema real y los lectores que usan la vista
+        -- —home.py, dashboard.py, goal.py— rompen con "no such table".
+        CREATE VIEW snapshots_medibles AS
+        SELECT * FROM snapshots
+         WHERE CASE
+                 WHEN apto IS NOT NULL THEN apto
+                 WHEN source = 'import'  THEN 0
+                 WHEN source = 'browser' THEN 0
+                 WHEN source = 'mtm_backfill'
+                      THEN (CASE WHEN COALESCE(mtm_coverage, -1) >= 0.90 THEN 1 ELSE 0 END)
+                 ELSE 1
+               END = 1;
+
     """)
     conn.commit()
     return conn, tmp.name
