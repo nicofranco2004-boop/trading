@@ -291,11 +291,19 @@ export function lotMissingPurchaseRate(p, costBasis = 'today', isArsBroker = fal
 }
 
 export function pesoLotUsd(p, prices, tcCedear, costBasis = 'today') {
-  const investedUsd = ((p.invested || 0) + (p.commissions || 0)) / costBasisRate(p, tcCedear, costBasis)
+  const realCost = (p.invested || 0) + (p.commissions || 0)
+  const investedUsd = realCost / costBasisRate(p, tcCedear, costBasis)
+  // El costo al dólar de HOY. Es el fallback de valor y el que expone la función
+  // para que el consumidor pueda alinear el costo-display cuando no hay precio.
+  const investedUsdToday = realCost / tcCedear
   const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
-  // el VALOR siempre va a HOY (tcCedear) en ambos modos — no aplicar costBasisRate acá
-  const valueUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : investedUsd
-  return { investedUsd, valueUsd, priceUsd: priceArs != null ? priceArs / tcCedear : null }
+  // el VALOR siempre va a HOY (tcCedear) en ambos modos — no aplicar costBasisRate acá.
+  // SIN PRECIO también: antes el fallback era `investedUsd`, que en modo 'purchase'
+  // ya venía dividido por tc_compra — o sea publicaba costo/tc_compra como valor de
+  // MERCADO. El propio comentario de arriba decía lo contrario de lo que hacía la
+  // línea. El modo 'purchase' no aplica sobre algo que no cotiza.
+  const valueUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : investedUsdToday
+  return { investedUsd, investedUsdToday, valueUsd, priceUsd: priceArs != null ? priceArs / tcCedear : null }
 }
 
 /** isFciSym — ¿es un símbolo de FCI del catálogo ('FCI:<slug>')? Su precio es el
@@ -370,7 +378,7 @@ export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue, c
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
     investedUsd = invested / costBasisRate(p, cedearRate, costBasis)
     guardCost = invested / cedearRate
-    valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : investedUsd
+    valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : null
   } else if (costInUsd(p) && isAR) {
     // Espejo: lote de costo USD en un broker ARS (bono/ON/FCI-USD, CEDEAR-MEP) →
     // costo YA en USD (sin ÷MEP), valor por tipo (usdLotValue). Sin esto, la rama
@@ -384,7 +392,7 @@ export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue, c
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
     investedUsd = invested / costBasisRate(p, tcBlue, costBasis)
     guardCost = invested / tcBlue
-    valueUsd = priceArs != null ? (priceArs * qty) / tcBlue : investedUsd
+    valueUsd = priceArs != null ? (priceArs * qty) / tcBlue : null
   } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null) {
     // .BA÷MEP decidido por el PADRE (isArUsdBroker/currency), NO por isArStock: una
     // acción AR en un broker USD extranjero real (Schwab) es su ADR NYSE en USD, no
@@ -392,15 +400,22 @@ export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue, c
     const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
     investedUsd = invested   // costo ya en USD (broker USD) → el modo no aplica
     guardCost = invested
-    valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : invested
+    valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : null
   } else {
     const priceUsd = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)]
     investedUsd = invested
     guardCost = invested
-    valueUsd = priceUsd != null ? priceUsd * qty : invested
+    valueUsd = priceUsd != null ? priceUsd * qty : null
   }
-  if (!trustMktValue(valueUsd, guardCost, p.asset_type, p.price_override != null)) {
-    valueUsd = investedUsd
+  // SIN PRECIO CONFIABLE — falta cotización, o el guard anti-distorsión la rechaza —
+  // el valor Y el costo-display van los DOS al dólar de HOY (guardCost) y el P&L
+  // queda exactamente 0. Antes caían a `investedUsd`, que en modo 'purchase' está
+  // dividido por tc_compra: publicaba costo/tc_compra como valor de mercado.
+  // El modo 'purchase' no aplica sobre algo que no cotiza. En 'today'
+  // guardCost === investedUsd, así que no cambia nada.
+  if (valueUsd == null || !trustMktValue(valueUsd, guardCost, p.asset_type, p.price_override != null)) {
+    valueUsd = guardCost
+    investedUsd = guardCost
   }
   return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd }
 }
@@ -557,14 +572,18 @@ export function valuePositionLot(p, ctx = {}) {
   // de confianza comparaba USD vs pesos (rechazaba el precio e inflaba el valor).
   if (!p.is_cash && !isAR && costInPesos(p)) {
     const invUsd = realCost / costBasisRate(p, cedearRate, costBasis)
+    const invUsdHoy = realCost / cedearRate
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
     const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
     const trustArs = mktArs != null &&
       trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
+    // Sin precio confiable el modo 'purchase' NO aplica: el valor y el costo
+    // van los dos al dólar de HOY y el P&L queda exactamente 0. Antes los dos
+    // iban al tc_compra, o sea publicaba costo/tc_compra como valor de mercado.
     return salida({
-      investedUsd: invUsd,
+      investedUsd: trustArs ? invUsd : invUsdHoy,
       invArs: realCost,
-      valueUsd: trustArs ? mktArs / cedearRate : invUsd,
+      valueUsd: trustArs ? mktArs / cedearRate : invUsdHoy,
       valueArs: trustArs ? mktArs : realCost,
       guardCost: realCost,
       priceLocal: priceArs ?? null,
@@ -629,6 +648,7 @@ export function valuePositionLot(p, ctx = {}) {
     // 'purchase' el COSTO va al tc_compra del lote (dólares reales invertidos);
     // el valor sigue a cedearRate → el P&L absorbe la devaluación.
     const invUsd = realCost / costBasisRate(p, cedearRate, costBasis)
+    const invUsdHoy = realCost / cedearRate
     // Sin asset_type a propósito: con isARS=true `priceSymbol` ignora el tipo
     // (FCI: sale as-is y todo lo demás recibe .BA), así que la key es la MISMA
     // que pide el fetch. Verificado leyendo priceSymbol rama por rama.
@@ -636,11 +656,13 @@ export function valuePositionLot(p, ctx = {}) {
     const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
     const trustArs = mktArs != null &&
       trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
+    // Sin precio confiable el modo 'purchase' NO aplica: el valor y el costo
+    // van los dos al dólar de HOY y el P&L queda exactamente 0. Antes los dos
+    // iban al tc_compra, o sea publicaba costo/tc_compra como valor de mercado.
     return salida({
-      investedUsd: invUsd,
+      investedUsd: trustArs ? invUsd : invUsdHoy,
       invArs: realCost,
-      // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
-      valueUsd: trustArs ? mktArs / cedearRate : invUsd,
+      valueUsd: trustArs ? mktArs / cedearRate : invUsdHoy,
       valueArs: trustArs ? mktArs : realCost,
       guardCost: realCost,
       priceLocal: priceArs ?? null,

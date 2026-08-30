@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker, valuePositionLot } from './valuation.js'
 import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
@@ -841,9 +841,18 @@ describe('valueEquityLot — el guard NO se afloja en purchase (bono per-100, tc
     expect(p.valueUsd).toBeCloseTo(p.investedUsd)
     expect(p.pnlUsd).toBeCloseTo(0)
   })
-  it('el invertido display refleja el tc_compra (dólares reales), no el de hoy', () => {
-    expect(p.investedUsd).toBeCloseTo(100_000 / 30)
+  // CAMBIO DE CONTRATO (parte II): cuando el guard RECHAZA el precio, el costo
+  // display ya NO se queda en el tc_compra. Antes esta aserción pedía 100.000/30
+  // = 3.333 USD como valor de una posición cuyo costo a hoy son 100 USD: un ×33
+  // fantasma en el hero, publicado como valor de MERCADO de algo que no cotiza.
+  // El modo 'purchase' no aplica sobre algo que no cotiza. Lo que este describe
+  // protege — que el guard NO se afloje por tc_compra — sigue intacto: es lo que
+  // asertan los dos `it` de arriba, y el denominador del guard sigue siendo el
+  // costo de HOY.
+  it('sin precio confiable el costo display cae al dólar de HOY, en los dos modos', () => {
+    expect(p.investedUsd).toBeCloseTo(100_000 / TCB)
     expect(t.investedUsd).toBeCloseTo(100_000 / TCB)
+    expect(p.investedUsd).toBeCloseTo(t.investedUsd)   // el modo deja de importar
   })
 })
 
@@ -1082,5 +1091,80 @@ describe('valueEquityLot: las comisiones integran el costo, como en el resto de 
     const rOtra = valueEquityLot(enUsdBrokerUsd, brokerUsd, {}, 1466, 1412, 'today')
     expect(rUsd.investedUsd).toBeCloseTo(1007, 6)
     expect(rOtra.investedUsd).toBeCloseTo(1007, 6)   // antes daba 1000
+  })
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// Modo 'purchase' SIN precio confiable: el valor va al dólar de HOY.
+// El bug: `pesoLotUsd` tenía un comentario que decía "el VALOR siempre va a HOY
+// en ambos modos" y la línea de abajo hacía lo contrario — publicaba
+// costo/tc_compra como valor de MERCADO. Misma fuga en valueEquityLot y en
+// valuePositionLot. 'purchase' es el DEFAULT del contexto, así que pegaba solo.
+// ════════════════════════════════════════════════════════════════════════════
+describe("purchase sin precio: el valor y el costo-display van al dólar de HOY", () => {
+  const HOY = 1500, COMPRA = 1000
+  const brokerArs = { name: 'Cocos', currency: 'ARS' }
+  // El ejemplo del brief: 1.500.000 con tc_compra 1000 y dólar de hoy 1500.
+  const lote = { broker: 'Cocos', asset: 'ZZZ', currency: 'ARS', is_cash: false,
+                 invested: 1_500_000, quantity: 10, tc_compra: COMPRA }
+  const ctx = (costBasis, prices = {}) => ({
+    broker: brokerArs, prices, tcBlue: HOY, tcCedear: HOY, tcCripto: null, costBasis,
+  })
+
+  it('CONTROL: con tc_compra el escenario mueve algo — si no, el resto no prueba nada', () => {
+    // Obligatorio. Sin este control, "probé los dos modos" es falso: si el lote no
+    // tuviera tc_compra, costBasisRate cae al rate de hoy y los dos modos coinciden.
+    const conPrecio = { 'ZZZ.BA': 200_000 }
+    const hoy = valuePositionLot(lote, ctx('today', conPrecio))
+    const compra = valuePositionLot(lote, ctx('purchase', conPrecio))
+    expect(compra.investedUsd).not.toBeCloseTo(hoy.investedUsd)
+    expect(compra.investedUsd).toBeCloseTo(1_500_000 / COMPRA)   // 1500
+    expect(hoy.investedUsd).toBeCloseTo(1_500_000 / HOY)         // 1000
+  })
+
+  it('sin precio: valor y costo al dólar de HOY, y P&L exactamente 0', () => {
+    const r = valuePositionLot(lote, ctx('purchase'))
+    expect(r.valueUsd).toBeCloseTo(1_000, 6)              // no 1.500 (costo/tc_compra)
+    expect(r.investedUsdDisplay).toBeCloseTo(1_000, 6)
+    expect(r.guardCost).toBeCloseTo(1_500_000, 6)         // el guard compara en PESOS
+    expect(r.pnlUsd).toBeCloseTo(0, 9)
+  })
+
+  it('con un precio que el GUARD rechaza, lo mismo (bono per-100)', () => {
+    const bono = { ...lote, asset: 'AL30', asset_type: 'BOND', quantity: 100 }
+    // per-100 leído per-1: infla ×100 → trustMktValue lo rechaza (renta fija, [0.02×, 4×])
+    const r = valuePositionLot(bono, ctx('purchase', { 'AL30.BA': 150_000 }))
+    expect(r.priceTrusted).toBe(false)
+    expect(r.valueUsd).toBeCloseTo(1_000, 6)
+    expect(r.pnlUsd).toBeCloseTo(0, 9)
+  })
+
+  it("en modo 'today' no cambia nada: los dos caminos ya eran idénticos", () => {
+    const r = valuePositionLot(lote, ctx('today'))
+    expect(r.valueUsd).toBeCloseTo(1_000, 6)
+    expect(r.pnlUsd).toBeCloseTo(0, 9)
+  })
+
+  it('el hero lo hereda: computeBrokerValue suma el valor a HOY', () => {
+    const antes = 1_500_000 / COMPRA   // lo que publicaba el bug
+    const r = computeBrokerValue([lote], {}, brokerArs, HOY, HOY, null, 'purchase')
+    expect(r.value).toBeCloseTo(1_000, 6)
+    expect(r.value / antes).toBeCloseTo(2 / 3, 6)   // −33,3% en la fila
+    expect(r.pnlUsd).toBeCloseTo(0, 9)
+  })
+
+  it('pesoLotUsd: el fallback sin precio ya no arrastra el tc_compra', () => {
+    const enCuentaUsd = { ...lote, broker: 'Schwab' }
+    const u = pesoLotUsd(enCuentaUsd, {}, HOY, 'purchase')
+    expect(u.valueUsd).toBeCloseTo(1_000, 6)          // antes: 1.500
+    expect(u.investedUsd).toBeCloseTo(1_500, 6)       // el costo del MODO no cambia
+    expect(u.investedUsdToday).toBeCloseTo(1_000, 6)
+  })
+
+  it('valueEquityLot: idem, y el P&L queda 0', () => {
+    const r = valueEquityLot(lote, brokerArs, {}, HOY, HOY, 'purchase')
+    expect(r.valueUsd).toBeCloseTo(1_000, 6)
+    expect(r.investedUsd).toBeCloseTo(1_000, 6)
+    expect(r.pnlUsd).toBeCloseTo(0, 9)
   })
 })
