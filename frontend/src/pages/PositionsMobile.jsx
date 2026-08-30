@@ -16,7 +16,7 @@
 
 import { useEffect, useMemo, useState, useRef, useCallback, lazy, Suspense, memo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown, ChevronUp, ArrowRight, Layers as LayersIcon } from 'lucide-react'
+import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, TrendingUp, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown, ChevronUp, ArrowRight, Layers as LayersIcon } from 'lucide-react'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
@@ -593,6 +593,15 @@ export default function PositionsMobile() {
         valueUsd = isAR ? cashInvested / tcBlue : cashInvested
         return {
           ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null,
+          // El efectivo TIENE costo, y es su propio valor. La casa lo dice
+          // explícito en valuation.js (`investedUsd: cashUsd` con el comentario
+          // "cash en pesos: invested USD = value USD (no FX gain)"), pero esta
+          // rama no devolvía el campo: quedaba `undefined`. Mientras nadie lo
+          // sumaba no se notaba; al agregar el pie TOTAL por broker, el efectivo
+          // aportaba su valor y CERO costo, y el P&L del broker salía inflado
+          // exactamente en el saldo en efectivo — medido: +$1.250 en Schwab,
+          // que es su caja al dólar.
+          investedUsd: valueUsd, investedUsdToday: valueUsd,
           pnlLocal: null, dayVarLocal: null, dayVarUsd: null, dayVarPct: null, isAR,
         }
       } else if (isAR && costInUsd(p)) {
@@ -911,8 +920,43 @@ export default function PositionsMobile() {
     return flattenMobile(agg)
   }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcBlue])
 
+  // Totales del pie para la vista filtrada (que es un solo broker). Mismo
+  // filtro anti-doble-conteo que BrokerSection: la fila agregada Y sus lotes
+  // conviven en la lista cuando el ticker está expandido.
+  const pieFiltrado = useMemo(() => {
+    if (!flatList) return null
+    const filas = flatList.filter(p => !p._isLot)
+    const valorUsd = filas.reduce((s, p) => s + (p.valueUsd || 0), 0)
+    const enPesos = currency === 'ARS'
+    const invertidoUsd = filas.reduce(
+      (s, p) => s + (enPesos ? (p.investedUsdToday ?? p.investedUsd ?? 0) : (p.investedUsd || 0)), 0)
+    return {
+      valorUsd, invertidoUsd,
+      pnlUsd: valorUsd - invertidoUsd,
+      pnlPct: invertidoUsd > 0 ? (valorUsd - invertidoUsd) / invertidoUsd : 0,
+    }
+  }, [flatList, currency])
+
   const total = enriched.reduce((s, p) => s + (p.valueUsd || 0), 0)
   const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcBlue  // PF → USD para el total
+  const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcBlue
+
+  // ─── El P&L no realizado del hero ───────────────────────────────────────
+  // Espejo del desktop (Positions.jsx:1377-1398). Se deriva SUMANDO lo mismo
+  // que publica cada fila —`investedUsd` / `investedUsdToday`— en vez de
+  // recalcularlo por otro camino: así el número de arriba cierra con lo que se
+  // lee abajo. Sumar `enriched` (no `grouped`) es a propósito: incluye la renta
+  // fija, que vive en su propia zona, igual que el total.
+  const invertidoUsd = enriched.reduce((s, p) => s + (p.investedUsd || 0), 0) + pfInvestedUsd
+  const invertidoHoyUsd = enriched.reduce((s, p) => s + (p.investedUsdToday ?? p.investedUsd ?? 0), 0) + pfInvestedUsd
+  // En pesos las cifras son mode-INDEPENDENT, como en el desktop: el peso no
+  // tiene "dólar de compra", así que el invertido y el P&L en ARS no cambian
+  // con el modo de costo. Es la misma regla que ya aplica la fila
+  // (`pnlUsdToday × tcBlue`), y por eso el hero cierra con la suma de las filas.
+  const heroInvertido = currency === 'ARS' ? invertidoHoyUsd * tcBlue : invertidoUsd
+  const heroValor = currency === 'ARS' ? (total + pfValueUsd) * tcBlue : (total + pfValueUsd)
+  const heroPnl = heroValor - heroInvertido
+  const heroPct = heroInvertido > 0 ? heroPnl / heroInvertido : 0
   // Contador de posiciones reales (lotes), independiente de la vista
   // agregada/expandida — `flatList`/`grouped` ahora tienen filas sintéticas y
   // de lote que harían fluctuar el número al expandir/colapsar.
@@ -993,6 +1037,27 @@ export default function PositionsMobile() {
               ))}
             </div>
           </div>
+        </div>
+
+        {/* El P&L NO REALIZADO, que el desktop tiene en su hero y acá faltaba: el
+            número por el que se entra a la pantalla no decía si vas ganando.
+            Mismo par de chips que el desktop (Positions.jsx:1528-1545), en una
+            línea de 12px para no devolverle cromo a un header del que venimos
+            sacando. */}
+        <div className="flex items-center gap-1.5 flex-wrap mb-2.5 text-[12px]">
+          <span
+            className={`inline-flex items-center gap-1 font-medium tabular rounded-full px-2 py-0.5 ${heroPnl >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}
+            title="P&L no realizado"
+          >
+            {heroPnl >= 0
+              ? <TrendingUp size={12} strokeWidth={1.75} aria-hidden="true" />
+              : <TrendingDown size={12} strokeWidth={1.75} aria-hidden="true" />}
+            {montoCard(heroPnl, currency, { signed: true })}
+            <span className="opacity-80">· {pctSigned(heroPct)}</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 bg-bg-2 text-ink-2 tabular">
+            <span className="text-ink-3">Invertido</span>{montoCard(heroInvertido, currency)}
+          </span>
         </div>
 
         {/* Fila 2 — búsqueda + los dos accesos. "Ver y ordenar" abre el sheet con
@@ -1112,7 +1177,11 @@ export default function PositionsMobile() {
       ) : (
         // Vista filtrada — lista plana del broker seleccionado
         <>
-          <PositionsTable conPista={pistaScrollVisible} onDeslizar={marcarScrollDescubierto}>
+          <PositionsTable
+            conPista={pistaScrollVisible}
+            onDeslizar={marcarScrollDescubierto}
+            pie={pieFiltrado && <PieDelBroker {...pieFiltrado} moneda={currency} tcBlue={tcBlue} />}
+          >
             {flatList?.map(p => (
               <PositionRow
                 key={p._isLot
@@ -1578,6 +1647,22 @@ const BrokerSection = memo(function BrokerSection({
   // cada sección tiene identidad visual clara: avatar circular con la
   // inicial, nombre en text-sm semibold, currency chip coloreado, y bg
   // sutil del color del broker.
+  // ─── Los totales del pie ────────────────────────────────────────────────
+  // ⚠️ Se suma SÓLO sobre las filas que NO son lote. `flattenMobile` mete la
+  // fila AGREGADA de un ticker y, si está expandida, además cada uno de sus
+  // lotes: sumar `positions` entero contaría dos veces lo mismo y el total
+  // cambiaría al abrir y cerrar los lotes. Con este filtro hay exactamente una
+  // entrada por ticker, expandido o no.
+  const filasQueSuman = positions.filter(p => !p._isLot)
+  const totValorUsd = filasQueSuman.reduce((s, p) => s + (p.valueUsd || 0), 0)
+  // Igual que la fila y que el hero: en dólares el invertido refleja el modo de
+  // costo; en pesos va el de HOY, porque el peso no tiene "dólar de compra".
+  const enPesos = displayCurrency === 'ARS'
+  const totInvertidoUsd = filasQueSuman.reduce(
+    (s, p) => s + (enPesos ? (p.investedUsdToday ?? p.investedUsd ?? 0) : (p.investedUsd || 0)), 0)
+  const totPnlUsd = totValorUsd - totInvertidoUsd
+  const totPnlPct = totInvertidoUsd > 0 ? totPnlUsd / totInvertidoUsd : 0
+
   const color = brokerColor(broker.name)
   const initial = (broker.name || '?').charAt(0).toUpperCase()
 
@@ -1629,7 +1714,20 @@ const BrokerSection = memo(function BrokerSection({
           </button>
         </div>
       </div>
-      <PositionsTable conPista={conPista} onDeslizar={onDeslizar}>
+      <PositionsTable
+        conPista={conPista}
+        onDeslizar={onDeslizar}
+        pie={
+          <PieDelBroker
+            valorUsd={totValorUsd}
+            invertidoUsd={totInvertidoUsd}
+            pnlUsd={totPnlUsd}
+            pnlPct={totPnlPct}
+            moneda={displayCurrency}
+            tcBlue={tcBlue}
+          />
+        }
+      >
         {positions.map(p => (
           <PositionRow
             key={p._isLot
@@ -1733,6 +1831,44 @@ function PistaDeScroll() {
   )
 }
 
+// ─── El pie TOTAL de cada broker ──────────────────────────────────────────
+// Lo que el desktop pone en su <tfoot> (Positions.jsx:2020-2046) más los chips
+// del encabezado del broker: invertido, valor y P&L en monto Y porcentaje.
+//
+// NO es una fila de la tabla, y eso fue una corrección: primero lo hice con la
+// geometría de las columnas, y en pesos "Invertido $27.330.405" se pasaba 5px
+// del ancla de 118px. Un número recortado es un número que miente. Acá va a lo
+// ancho de la pantalla, fuera del scroller, así que se lee entero y sin
+// deslizar — que es justo el problema que este pie viene a resolver.
+//
+// Dos renglones para que entre en 375px con cifras en pesos de 8 dígitos.
+function PieDelBroker({ valorUsd, invertidoUsd, pnlUsd, pnlPct, moneda, tcBlue }) {
+  const aMoneda = n => (n == null ? null : moneda === 'ARS' ? n * tcBlue : n)
+  const pnl = aMoneda(pnlUsd)
+  return (
+    <div className="px-4 py-2.5 bg-bg-1 border-t border-line-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-semibold text-ink-2 tracking-wide">TOTAL</span>
+        <span
+          className={`inline-flex items-baseline gap-1.5 font-medium tabular rounded-full px-2 py-0.5 text-[12.5px] ${pnl >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}
+          title="P&L no realizado"
+        >
+          {montoCard(pnl, moneda, { signed: true })}
+          <span className="text-[11px] opacity-80">{pctSigned(pnlPct)}</span>
+        </span>
+      </div>
+      <div className="flex items-baseline gap-3 mt-1 text-[11.5px] tabular">
+        <span className="text-ink-3">
+          Invertido <span className="text-ink-1">{montoCard(aMoneda(invertidoUsd), moneda)}</span>
+        </span>
+        <span className="text-ink-3">
+          Valor <span className="text-ink-1">{montoCard(aMoneda(valorUsd), moneda)}</span>
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // `conPista` la enciende sólo el primer scroller de la pantalla; `onDeslizar`
 // avisa al padre que el gesto ya se descubrió. El umbral de 4px es para que un
 // sub-píxel del rebote de `scroll-snap` no cuente como haber deslizado.
@@ -1765,7 +1901,7 @@ function usaDesbordeHorizontal(ref, activo) {
   return desborda
 }
 
-function PositionsTable({ children, conPista = false, onDeslizar }) {
+function PositionsTable({ children, pie = null, conPista = false, onDeslizar }) {
   const scroller = useRef(null)
   const hayColumnasEscondidas = usaDesbordeHorizontal(scroller, conPista)
   return (
@@ -1804,6 +1940,7 @@ function PositionsTable({ children, conPista = false, onDeslizar }) {
       </div>
     </div>
     {conPista && hayColumnasEscondidas && <PistaDeScroll />}
+    {pie}
     </>
   )
 }
