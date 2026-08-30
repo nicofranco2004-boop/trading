@@ -522,7 +522,13 @@ export default function PositionsMobile() {
     return positions.map(p => {
       const isAR = arsBrokerSet.has(p.broker)
       const qty = p.quantity || 0
-      const invested = p.invested || 0
+      const cashInvested = p.invested || 0
+      // Costo económico = lo pagado + comisiones de compra. Es la definición de la
+      // casa (computeBrokerValue, las filas del desktop, usdLotValue, pesoLotUsd y
+      // el backend en persister.py:747); este archivo era el último que no la
+      // seguía, y por eso la MISMA posición mostraba distinto P&L% en el celular
+      // que en la computadora. El CASH no lleva comisión: usa `cashInvested`.
+      const invested = cashInvested + (p.commissions || 0)
       // Costo en USD por moneda del LOTE, no de la cuenta: lote de COSTO EN DÓLARES
       // (currency='USD') EN BROKER ARS → tal cual, sin ÷blue (bono/ON/FCI-USD, CEDEAR-
       // MEP de Balanz); ARS broker → blue; lote en PESOS (currency='ARS') alojado en
@@ -544,7 +550,7 @@ export default function PositionsMobile() {
       // Gatea la Var.día de abajo: si el valor cayó a costo, no emitimos variación.
       let priceTrusted = false
       if (p.is_cash) {
-        valueUsd = isAR ? invested / tcBlue : invested
+        valueUsd = isAR ? cashInvested / tcBlue : cashInvested
         return {
           ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null,
           pnlLocal: null, dayVarLocal: null, dayVarUsd: null, dayVarPct: null, isAR,
@@ -563,8 +569,8 @@ export default function PositionsMobile() {
         // usdLotValue ya clampea: si no confía en el precio, valueUsd cae a su
         // investedUsd (con commissions). priceTrusted = hubo precio Y no fue clampeado.
         priceTrusted = u.priceUsd != null && u.valueUsd !== u.investedUsd
-        // Value del helper; costo = investedUsd local (sin commissions, igual que las
-        // otras ramas de este archivo) → si no hay precio confiable, P&L exacto 0.
+        // Value del helper; costo = investedUsd local (que ahora YA incluye las
+        // comisiones, igual que usdLotValue) → sin precio confiable, P&L exacto 0.
         valueUsd = priceTrusted ? u.valueUsd : investedUsd
       } else if (isAR) {
         priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
@@ -595,8 +601,8 @@ export default function PositionsMobile() {
         // por el ticker US. El costo (investedUsd) ya quedó en MEP arriba. f=1.
         const u = pesoLotUsd(p, prices, tcCedear)
         priceLocal = u.priceUsd
-        // Sin precio → fallback al investedUsd local (sin commissions, igual que las
-        // demás ramas de este archivo) para que el P&L quede exactamente 0.
+        // Sin precio → fallback al investedUsd local (con comisiones, igual que
+        // pesoLotUsd) para que el P&L quede exactamente 0.
         // Guard: pesoLotUsd no clampea; envolvemos su salida acá (mkt vs invested USD).
         priceTrusted = u.priceUsd != null
           && trustMktValue(u.valueUsd, investedUsd, p.asset_type, p.price_override != null)

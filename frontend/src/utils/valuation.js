@@ -351,7 +351,12 @@ export function usdLotValue(p, prices, cedearRate) {
  */
 export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue, costBasis = 'today') {
   const qty = p.quantity || 0
-  const invested = p.invested || 0
+  // Costo económico = lo pagado + comisiones de compra, igual que
+  // computeBrokerValue/valuePositionLot. Antes era `p.invested` pelado y esta
+  // función quedaba incoherente CONSIGO MISMA: su rama costInUsd delega en
+  // usdLotValue, que SÍ las suma, y las otras cuatro no. (No hay rama de cash
+  // acá: valueEquityLot es sólo para equity/CEDEAR.)
+  const invested = (p.invested || 0) + (p.commissions || 0)
   const isAR = broker?.currency === 'ARS'
   // investedUsd = costo DISPLAY (puede ir al tc_compra en modo 'purchase').
   // guardCost   = costo SIEMPRE a hoy (mode-independent): es el denominador del

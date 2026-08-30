@@ -1046,3 +1046,41 @@ describe('setBrokersRegistry: sin él, un sub-broker renombrado se rutea mal', (
     expect(isArUsdBroker('Balanz USD')).toBe(false)     // sin punto medio: NO
   })
 })
+
+describe('valueEquityLot: las comisiones integran el costo, como en el resto de la casa', () => {
+  const brokerUsd = { name: 'Schwab', currency: 'USD' }
+  const brokerArs = { name: 'Balanz', currency: 'ARS' }
+
+  it('broker USD: el costo suma la comisión y el P&L la descuenta', () => {
+    const p = { asset: 'AAPL', quantity: 10, invested: 1000, commissions: 5, currency: 'USD' }
+    const r = valueEquityLot(p, brokerUsd, { AAPL: 110 }, 1466, 1412, 'today')
+    expect(r.investedUsd).toBeCloseTo(1005, 6)
+    expect(r.valueUsd).toBeCloseTo(1100, 6)     // el valor NO se toca
+    expect(r.pnlUsd).toBeCloseTo(95, 6)         // no 100
+  })
+
+  it('broker ARS: idem, dividido por el dólar', () => {
+    const p = { asset: 'GGAL', quantity: 100, invested: 100_000, commissions: 2_000, currency: 'ARS' }
+    const r = valueEquityLot(p, brokerArs, { 'GGAL.BA': 1200 }, 1200, 1200, 'today')
+    expect(r.investedUsd).toBeCloseTo(102_000 / 1200, 6)
+    expect(r.pnlUsd).toBeCloseTo(120_000 / 1200 - 102_000 / 1200, 6)
+  })
+
+  it('sin commissions se comporta igual que antes (no-breaking)', () => {
+    const p = { asset: 'AAPL', quantity: 10, invested: 1000, currency: 'USD' }
+    const r = valueEquityLot(p, brokerUsd, { AAPL: 110 }, 1466, 1412, 'today')
+    expect(r.investedUsd).toBeCloseTo(1000, 6)
+    expect(r.pnlUsd).toBeCloseTo(100, 6)
+  })
+
+  it('ya no se contradice a sí misma: la rama costInUsd y las demás cuentan igual', () => {
+    // La rama costInUsd delega en usdLotValue, que SIEMPRE sumó comisiones. Antes
+    // las otras cuatro no → el mismo lote valía distinto según por dónde entraba.
+    const enUsd = { asset: 'AL30', quantity: 100, invested: 1000, commissions: 7, currency: 'USD', asset_type: 'BOND' }
+    const rUsd = valueEquityLot(enUsd, brokerArs, {}, 1466, 1412, 'today')
+    const enUsdBrokerUsd = { ...enUsd, currency: 'USD' }
+    const rOtra = valueEquityLot(enUsdBrokerUsd, brokerUsd, {}, 1466, 1412, 'today')
+    expect(rUsd.investedUsd).toBeCloseTo(1007, 6)
+    expect(rOtra.investedUsd).toBeCloseTo(1007, 6)   // antes daba 1000
+  })
+})

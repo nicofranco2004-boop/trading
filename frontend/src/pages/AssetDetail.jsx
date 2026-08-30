@@ -35,11 +35,16 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto, costBasis = 
   const broker = brokers.find(b => b.name === p.broker)
   const isAR = broker?.currency === 'ARS'
   const qty = p.quantity || 0
-  const invested = p.invested || 0
+  const cashInvested = p.invested || 0
   if (p.is_cash) {
-    const v = isAR ? invested / tcBlue : invested
+    const v = isAR ? cashInvested / tcBlue : cashInvested
     return { valueUsd: v, investedUsd: v, pnlUsd: 0, priceLocal: null }
   }
+  // Costo económico del lote = lo pagado + las comisiones de compra. Es la
+  // definición de la casa: la usan computeBrokerValue (valuation.js:486), las
+  // filas del desktop, usdLotValue, pesoLotUsd y el backend
+  // (persister.py:747). El CASH no lleva comisión y por eso sigue con `invested`.
+  const invested = cashInvested + (p.commissions || 0)
   // Lote en PESOS (currency='ARS') en una cuenta USD → estilo-ARS por el MEP
   // (tcCedear): costo Y valor a USD por el mismo rate, no el costo en pesos como dólares.
   if (costInPesos(p) && !isAR) {
