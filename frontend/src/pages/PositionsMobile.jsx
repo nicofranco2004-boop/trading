@@ -14,9 +14,9 @@
 // Filtro: tap en chip "Cocos" filtra a ese broker. "Todos" muestra todo.
 // Botón "+" violeta abre modal de agregar broker (mismo flow que desktop).
 
-import { useEffect, useMemo, useState, useRef, lazy, Suspense, memo } from 'react'
+import { useEffect, useMemo, useState, useRef, useCallback, lazy, Suspense, memo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown, ChevronUp, Layers as LayersIcon } from 'lucide-react'
+import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown, ChevronUp, ArrowRight, Layers as LayersIcon } from 'lucide-react'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
@@ -78,6 +78,26 @@ function brokerColor(name) {
   return BROKER_PALETTE[Math.abs(h) % BROKER_PALETTE.length]
 }
 
+// Flag "este browser ya sabe que las columnas de la cartera se deslizan".
+// Mismo patrón que utils/positionsDiscovered (`rendi_positions_discovered`) y
+// que `rendi_ai_discovered`: valor '1', lectura defensiva porque en navegación
+// privada `localStorage` puede tirar al leerlo, no sólo al escribirlo.
+//
+// ⚠️ AuthContext borra TODOS los `rendi_*` al logout salvo su PRESERVE list
+// (hoy: `rendi_theme` y `rendi_ai_discovered`). Esta clave NO está ahí a
+// propósito: si vuelve el aviso después de un logout+login, el costo es una
+// línea de texto que se apaga al primer deslizamiento. Se decidió no tocar la
+// lista de una decisión de seguridad por algo tan barato.
+const PISTA_SCROLL_KEY = 'rendi_cartera_scroll_descubierto'
+
+function yaDescubrioElScrollLateral() {
+  try {
+    return localStorage.getItem(PISTA_SCROLL_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 export default function PositionsMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
   const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
@@ -118,6 +138,20 @@ export default function PositionsMobile() {
       return n
     })
   }
+  // ¿Ya descubrió que las columnas se deslizan? Ver PistaDeScroll para el
+  // porqué. Vive acá arriba y no en la tabla porque el aviso lo muestra UNA
+  // sola (la primera) y lo apaga CUALQUIERA: si el estado viviera en cada
+  // scroller, deslizar el de Balanz no apagaría el aviso del de Cocos.
+  const [pistaScrollVisible, setPistaScrollVisible] = useState(() => !yaDescubrioElScrollLateral())
+  // El ref corta las escrituras repetidas: `onScroll` dispara decenas de veces
+  // por gesto y sin esto cada una pegaría en localStorage.
+  const scrollYaDescubierto = useRef(false)
+  const marcarScrollDescubierto = useCallback(() => {
+    if (scrollYaDescubierto.current) return
+    scrollYaDescubierto.current = true
+    try { localStorage.setItem(PISTA_SCROLL_KEY, '1') } catch { /* navegación privada */ }
+    setPistaScrollVisible(false)
+  }, [])
   // Sheet "Ver y ordenar": se lleva el sort, el filtro por broker y "Ver lotes".
   // El toggle "Detalle USD" ya no está: cantidad y precio promedio, que era lo
   // que revelaba, ahora son columnas fijas de la tabla. El equivalente en USD
@@ -1044,9 +1078,11 @@ export default function PositionsMobile() {
         // Vista agrupada por broker
         <>
           <div className="divide-y divide-line/20">
-            {grouped?.map(g => (
+            {grouped?.map((g, i) => (
               <BrokerSection
                 key={g.broker.name}
+                conPista={i === 0 && pistaScrollVisible}
+                onDeslizar={marcarScrollDescubierto}
                 broker={g.broker}
                 positions={g.positions}
                 totalUsd={g.totalUsd}
@@ -1076,7 +1112,7 @@ export default function PositionsMobile() {
       ) : (
         // Vista filtrada — lista plana del broker seleccionado
         <>
-          <PositionsTable>
+          <PositionsTable conPista={pistaScrollVisible} onDeslizar={marcarScrollDescubierto}>
             {flatList?.map(p => (
               <PositionRow
                 key={p._isLot
@@ -1533,7 +1569,7 @@ function FilaToggle({ label, hint, active, onToggle }) {
 // Debajo, las positions del broker (cash siempre al final).
 
 const BrokerSection = memo(function BrokerSection({
-  broker, positions, totalUsd, displayCurrency = 'USD', tcBlue = 1,
+  broker, positions, totalUsd, displayCurrency = 'USD', tcBlue = 1, conPista = false, onDeslizar,
   onEdit, onDelete,
   onSellPosition, onCashFlowPosition, onEditPosition, onDeletePosition, onToggleTicker,
 }) {
@@ -1593,7 +1629,7 @@ const BrokerSection = memo(function BrokerSection({
           </button>
         </div>
       </div>
-      <PositionsTable>
+      <PositionsTable conPista={conPista} onDeslizar={onDeslizar}>
         {positions.map(p => (
           <PositionRow
             key={p._isLot
@@ -1630,6 +1666,10 @@ const BrokerSection = memo(function BrokerSection({
 // al máximo el ancla pasa de quedarse en 0px a irse a −396px, o sea se va
 // entera de pantalla. Por eso las filas ya NO van envueltas en SwipeRow y las
 // acciones se abren con pulsación larga (ver PositionRow).
+//
+// Que las columnas escondidas se DESCUBRAN no es gratis: lo resuelve
+// `PistaDeScroll`, un aviso de una sola vez debajo del primer scroller. Ver
+// ahí por qué no alcanza con dejar asomar la próxima columna.
 const ANCHO_ANCLA = 118
 const ANCHO_COL = 108
 
@@ -1665,11 +1705,78 @@ function Vacio() {
   return <div className={`${LINEA_1} text-ink-3`}>—</div>
 }
 
-function PositionsTable({ children }) {
+// La pista de descubrimiento. A 375px se ven el ancla + Valor + P&L, y quedan
+// escondidas Hoy, Cantidad y Precio prom. — 307px de tabla a la derecha.
+//
+// POR QUÉ HACE FALTA UNA PISTA EXPLÍCITA. El recurso normal para anunciar un
+// scroll horizontal es dejar asomar la punta de la próxima columna: la de
+// Netflix, la del App Store, la del propio Schwab. Acá NO sirve, y se midió:
+// de la columna "Hoy" asoman 17px, pero como las celdas van alineadas a la
+// DERECHA el contenido se apoya contra el borde lejano y quedan 0px de texto
+// visibles en las 5 filas medidas. O sea que el asomo existe y está vacío: se
+// lee como "la tabla termina acá", que es exactamente lo contrario de lo que
+// tendría que sugerir. La sombra del ancla tampoco alcanza sola sobre #07090C.
+//
+// Se muestra UNA VEZ y en el PRIMER scroller nada más (hay uno por broker;
+// repetirlo ~10 veces sería volver a llenar de cromo la pantalla que venimos
+// despejando). Se apaga apenas el usuario desliza CUALQUIER tabla, y no vuelve.
+//
+// Y sólo si HAY algo escondido de verdad — ver `usaDesbordeHorizontal`: los
+// 307px de arriba son a 375px, pero esta pantalla llega hasta 767px y ahí la
+// tabla entra entera.
+function PistaDeScroll() {
   return (
+    <p className="flex items-center justify-end gap-1.5 px-4 pt-2 text-[11px] text-ink-3">
+      Deslizá para ver más columnas
+      <ArrowRight size={12} strokeWidth={1.75} aria-hidden="true" />
+    </p>
+  )
+}
+
+// `conPista` la enciende sólo el primer scroller de la pantalla; `onDeslizar`
+// avisa al padre que el gesto ya se descubrió. El umbral de 4px es para que un
+// sub-píxel del rebote de `scroll-snap` no cuente como haber deslizado.
+const PX_PARA_CONTAR_COMO_DESLIZADO = 4
+
+// EL MISMO umbral decide si la pista se MUESTRA. No es simetría cosmética: es
+// lo que vuelve inalcanzable el estado "pista indestructible". `useIsMobile`
+// corta en 767px, pero la tabla mide fijo 658px, así que arriba de ~690px de
+// viewport ya no desborda — y ahí el aviso decía "deslizá" con las cinco
+// columnas a la vista, `onScroll` no podía dispararse nunca, el flag no se
+// escribía y volvía en cada recarga, para siempre. Medido en la app a 744px
+// (iPad mini vertical, y un Plus/Galaxy en horizontal anda por 736-740):
+// clientWidth 712 = scrollWidth 712, scrollLeft máximo alcanzable 0.
+// Atando las dos condiciones a la misma medida, si no se puede apagar tampoco
+// se muestra.
+function usaDesbordeHorizontal(ref, activo) {
+  const [desborda, setDesborda] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!activo || !el) { setDesborda(false); return }
+    const medir = () => setDesborda(el.scrollWidth - el.clientWidth > PX_PARA_CONTAR_COMO_DESLIZADO)
+    medir()
+    // Rotar el teléfono o achicar la ventana cambia la respuesta. Sin
+    // ResizeObserver (jsdom en los tests) queda la medición del montaje.
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(medir)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [ref, activo])
+  return desborda
+}
+
+function PositionsTable({ children, conPista = false, onDeslizar }) {
+  const scroller = useRef(null)
+  const hayColumnasEscondidas = usaDesbordeHorizontal(scroller, conPista)
+  return (
+    <>
     <div
+      ref={scroller}
       className="overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       style={{ scrollSnapType: 'x proximity', WebkitOverflowScrolling: 'touch' }}
+      onScroll={e => {
+        if (e.currentTarget.scrollLeft > PX_PARA_CONTAR_COMO_DESLIZADO) onDeslizar?.()
+      }}
     >
       <div className="w-max min-w-full">
         {/* Encabezado: scrollea CON el contenido, como en Schwab. Fijarlo arriba
@@ -1696,6 +1803,8 @@ function PositionsTable({ children }) {
         {children}
       </div>
     </div>
+    {conPista && hayColumnasEscondidas && <PistaDeScroll />}
+    </>
   )
 }
 
