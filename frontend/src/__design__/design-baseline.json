@@ -7,7 +7,7 @@
     "mono_uppercase": 65,
     "clase_renombrada": 0,
     "rounded_arbitrario": 9,
-    "rounded_md": 307,
+    "rounded_md": 301,
     "rounded_2xl_3xl": 19,
     "upper_inline": 10,
     "fork_viewport": 2,
@@ -164,7 +164,7 @@
       "src/pages/Operations.jsx": 2,
       "src/pages/Planes.jsx": 2,
       "src/pages/Positions.jsx": 24,
-      "src/pages/PositionsMobile.jsx": 9,
+      "src/pages/PositionsMobile.jsx": 3,
       "src/pages/Reports.jsx": 1,
       "src/pages/Wrapped.jsx": 1
     },

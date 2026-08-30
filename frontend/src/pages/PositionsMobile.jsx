@@ -22,6 +22,7 @@ import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
 import EmptyState from '../components/EmptyState'
 import SwipeRow from '../components/mobile/SwipeRow'
+import BottomSheet from '../components/mobile/BottomSheet'
 import Modal from '../components/Modal'
 import UpgradeModal from '../components/plan/UpgradeModal'
 // AddPositionFlow es un chunk pesado (~600 tickers de CRYPTO/STOCKS_US/CEDEARs/
@@ -120,6 +121,11 @@ export default function PositionsMobile() {
   // "Detalle" (paridad con desktop): en brokers ARS revela el equivalente en
   // USD de la variación diaria y del P&L, que por defecto van en pesos.
   const [showDetail, setShowDetail] = useState(false)
+  // Sheet "Ver y ordenar": se lleva el sort, el filtro por broker, "Ver lotes"
+  // y "Detalle USD". Antes eran cuatro controles pegados al header y sumaban
+  // 235px de cromo pegajoso antes de la primera posición. Mismo patrón que el
+  // sheet de filtros de Movimientos.
+  const [viewSheet, setViewSheet] = useState(false)
   // Bottom sheet con las 4 acciones rápidas: Registrar compra, Registrar
   // venta, Cash, Exportar CSV. Antes el botón "+ Nueva" solo abría el
   // add-flow; ahora pone parity con el desktop que tiene los 4 atajos.
@@ -703,6 +709,10 @@ export default function PositionsMobile() {
         // cifras en pesos al re-agregar por ticker.
         ...p, valueUsd, investedUsd: investedUsdDisplay, investedUsdToday: investedUsd,
         priceLocal, pnlUsd, pnlUsdToday, pnlPct, pnlLocal,
+        // priceTrusted sube a la fila: sin cotización el valor ES el costo y el
+        // P&L es 0 por construcción. La card lo dice ("al costo" / "sin
+        // cotización") en vez de publicar un 0 que se lee como "no ganaste".
+        priceTrusted,
         dayVarLocal, dayVarUsd, dayVarPct, isAR,
       }
     })
@@ -795,6 +805,10 @@ export default function PositionsMobile() {
         buy_price: totalQty > 0 ? totalInv / totalQty : null,
         price_override: null,
         valueUsd, investedUsd, investedUsdToday, pnlUsd, pnlUsdToday, pnlPct, pnlLocal,
+        // El agregado se marca "sin cotización" sólo si NINGÚN lote tiene precio.
+        // Con 2 de 3 lotes priceados el total es mayormente de mercado y decir
+        // "sin cotización" mentiría al revés.
+        priceTrusted: lots.some(x => x.priceTrusted),
         dayVarLocal, dayVarUsd, dayVarPct,
         _isAgg: true, _lotCount: lots.length, _lots: lots,
       })
@@ -857,15 +871,29 @@ export default function PositionsMobile() {
   // agregada/expandida — `flatList`/`grouped` ahora tienen filas sintéticas y
   // de lote que harían fluctuar el número al expandir/colapsar.
   const visibleCount = filteredByBroker.length
+
+  // Los defaults de la vista, en UN solo lugar: el contador del botón y el
+  // "Restablecer" del sheet se derivan de acá, no de literales sueltos.
+  const VISTA_INICIAL = { sortBy: 'value', brokerFilter: ALL_FILTER, showAllLots: false, showDetail: false }
+  const vistaActual = { sortBy, brokerFilter, showAllLots, showDetail }
+  const ajustesActivos = Object.keys(VISTA_INICIAL)
+    .filter(k => vistaActual[k] !== VISTA_INICIAL[k]).length
+  // El hero baja un escalón de tipografía cuando el número no entra: 48px sirve
+  // para "$41.417" pero no para "$58.977.218". Se mide por largo del string, que
+  // es lo que determina el ancho con dígitos tabulares.
+  const heroTexto = '$' + Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcBlue : (total + pfValueUsd))
+    .toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')
+  const heroClass = heroTexto.length >= 13 ? 'text-3xl' : heroTexto.length >= 10 ? 'text-4xl' : 'text-5xl'
+
+  function restablecerVista() {
+    setSortBy(VISTA_INICIAL.sortBy)
+    setBrokerFilter(VISTA_INICIAL.brokerFilter)
+    setShowAllLots(VISTA_INICIAL.showAllLots)
+    setShowDetail(VISTA_INICIAL.showDetail)
+  }
   // El toggle "Detalle" solo aporta en brokers ARS (revela el equivalente USD).
   // Si el user no tiene ningún broker en pesos, no mostramos el botón.
   const hasArs = brokers.some(b => b.currency === 'ARS')
-  // Moneda del broker seleccionado (encabezado de columnas en vista filtrada).
-  // En "Todos", cada sección define la suya.
-  const selectedCurrency = brokerFilter === ALL_FILTER
-    ? null
-    : (brokers.find(b => b.name === brokerFilter)?.currency || 'USDT')
-
   if (loading) {
     // Skeleton mínimo en lugar de texto plano — el user ve inmediatamente
     // que la página está cargando contenido (perceived performance), no
@@ -886,31 +914,18 @@ export default function PositionsMobile() {
   return (
     <div className="pb-8">
       {/* Header con total + sort */}
-      <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-2">
-        <div className="flex items-baseline justify-between mb-2 gap-2">
-          <div className="min-w-0">
-            <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
-              Cartera total
-            </div>
-            <div className="text-xl font-medium tabular text-ink-0 leading-none">
-              <FlashValue value={total + pfValueUsd}>${Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcBlue : (total + pfValueUsd)).toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')}</FlashValue>
-              <button
-                onClick={toggleCurrency}
-                className="text-xs text-ink-3 ml-1 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"
-                title={`Cambiar a ${currency === 'USD' ? 'ARS' : 'USD'}`}
-              >
-                {currency}
-              </button>
-            </div>
+      <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 py-3">
+        {/* Fila 1 — el número por el que se entra a la pantalla, con su toggle al
+            lado. Estaba en text-xl (el tamaño de un título de sección) y el
+            toggle era el código de moneda en text-ink-3, sin borde: el dueño lo
+            reportó como "falta el toggle", o sea que como control era invisible.
+            El tamaño baja un escalón cuando el número es largo — en pesos son 8
+            dígitos y a 48px no entran en 375px. */}
+        <div className="flex items-center gap-3 mb-2.5">
+          <div className={`${heroClass} font-medium tabular text-ink-0 leading-none tracking-tight min-w-0 truncate`}>
+            <FlashValue value={total + pfValueUsd}>{heroTexto}</FlashValue>
           </div>
-          {/* Acciones derechas: count + botón rápido para agregar posición.
-              El FAB central del MobileTabBar sigue funcionando, pero tener un
-              entry point DENTRO de Cartera baja la fricción para el user que
-              ya está en esta página. */}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {/* Mientras yfinance responde, mostramos un dot pulsante que
-                indica que los valores se van a actualizar — el user entiende
-                que lo que ve ahora es cost basis y los % live están llegando. */}
+          <div className="ml-auto flex items-center gap-2 flex-shrink-0">
             {pricesLoading && (
               <span
                 className="w-1.5 h-1.5 rounded-full bg-data-violet animate-pulse"
@@ -918,112 +933,59 @@ export default function PositionsMobile() {
                 aria-label="Actualizando precios"
               />
             )}
-            <span className="text-[12.5px] text-ink-2 font-medium">
-              {visibleCount} pos
-            </span>
-            <button
-              type="button"
-              onClick={() => setActionsSheet(true)}
-              className="inline-flex items-center gap-1 text-xs font-medium bg-data-violet hover:bg-data-violet/90 text-white rounded-md px-3 py-2 transition-colors whitespace-nowrap shadow-sm press"
-              aria-label="Acciones rápidas"
-            >
-              <Plus size={13} strokeWidth={2.5} />
-              Acciones
-              <ChevronDown size={11} strokeWidth={2} aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-
-        {/* Search input compacto. Padding interno aumentado de py-1.5 → py-2.5
-            para no sentir el input apretado contra los chips de abajo. */}
-        <div className="relative mb-3.5">
-          <Search size={13} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar ticker o broker…"
-            className="w-full bg-bg-2 border border-line/40 rounded-md pl-8 pr-3 py-2.5 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40"
-          />
-        </div>
-
-        {/* Filtro de broker — chips horizontales scrollables. Margen extra
-            inferior para separar del sort segmented. */}
-        <div className="-mx-4 px-4 mb-3.5 overflow-x-auto no-scrollbar">
-          <div className="inline-flex gap-2 pb-0.5">
-            <BrokerFilterChip
-              active={brokerFilter === ALL_FILTER}
-              onClick={() => setBrokerFilter(ALL_FILTER)}
-              label="Todos"
-            />
-            {brokers.map(b => (
-              <BrokerFilterChip
-                key={b.id}
-                active={brokerFilter === b.name}
-                onClick={() => setBrokerFilter(b.name)}
-                label={b.name}
-                currency={b.currency}
-              />
-            ))}
-            <button
-              type="button"
-              onClick={() => setShowAddBroker(true)}
-              className="inline-flex items-center gap-1 text-[11px] font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-dashed border-data-violet/40 rounded-md px-3 py-2 whitespace-nowrap transition-colors"
-            >
-              <Plus size={11} strokeWidth={2} />
-              Agregar broker
-            </button>
-          </div>
-        </div>
-
-        {/* Sort segmented + toggle "Detalle" (este último solo si hay broker
-            ARS, que es donde aporta: revela el equivalente USD de var. día y P&L). */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <ArrowDownUp size={12} strokeWidth={1.75} className="text-ink-3" />
-            <div className="inline-flex bg-bg-2 p-1 rounded-md">
-              {SORT_OPTIONS.map(o => (
+            <div className="inline-flex bg-bg-2 border border-line/60 rounded p-0.5" role="group" aria-label="Moneda">
+              {['USD', 'ARS'].map(c => (
                 <button
-                  key={o.id}
-                  onClick={() => setSortBy(o.id)}
-                  className={`px-2.5 py-1 text-[10px] rounded transition-colors ${
-                    sortBy === o.id ? 'bg-bg-3 text-ink-0' : 'text-ink-3 hover:text-ink-1'
+                  key={c}
+                  type="button"
+                  onClick={() => { if (currency !== c) toggleCurrency() }}
+                  aria-pressed={currency === c}
+                  className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                    currency === c ? 'bg-bg-3 text-ink-0' : 'text-ink-3 hover:text-ink-1'
                   }`}
                 >
-                  {o.label}
+                  {c}
                 </button>
               ))}
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {/* Toggle global agregado ↔ lotes. Por defecto se ve 1 card por
-                ticker (agregado); este botón despliega TODOS los lotes de una. */}
-            <button
-              type="button"
-              onClick={() => setShowAllLots(v => !v)}
-              aria-pressed={showAllLots}
-              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-[10px] rounded-md transition-colors ${
-                showAllLots ? 'bg-bg-3 text-ink-0' : 'bg-bg-2 text-ink-3 hover:text-ink-1'
-              }`}
-              title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
-            >
-              <LayersIcon size={11} strokeWidth={1.75} aria-hidden="true" />
-              {showAllLots ? 'Ver agregado' : 'Ver lotes'}
-            </button>
-            {hasArs && (
-              <button
-                type="button"
-                onClick={() => setShowDetail(v => !v)}
-                aria-pressed={showDetail}
-                className={`px-2.5 py-1.5 text-[10px] rounded-md transition-colors ${
-                  showDetail ? 'bg-bg-3 text-ink-0' : 'bg-bg-2 text-ink-3 hover:text-ink-1'
-                }`}
-                title="Mostrar el equivalente en USD de la variación diaria y el P&L en brokers ARS"
-              >
-                Detalle USD
-              </button>
-            )}
+        </div>
+
+        {/* Fila 2 — búsqueda + los dos accesos. "Ver y ordenar" abre el sheet con
+            el sort, el filtro por broker y los toggles; antes eran cuatro
+            controles pegados al header. */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 min-w-0">
+            <Search size={13} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Buscar…"
+              className="w-full bg-bg-2 border border-line/40 rounded pl-8 pr-3 py-2 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40"
+            />
           </div>
+          <button
+            type="button"
+            onClick={() => setViewSheet(true)}
+            aria-label="Ver y ordenar"
+            className="relative flex-shrink-0 inline-flex items-center justify-center w-9 h-9 rounded bg-bg-2 border border-line/60 text-ink-2 hover:text-ink-0 hover:bg-bg-3 transition-colors"
+          >
+            <ArrowDownUp size={14} strokeWidth={1.75} />
+            {ajustesActivos > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-rendi-accent text-bg-0 text-[9px] font-semibold tabular flex items-center justify-center">
+                {ajustesActivos}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setActionsSheet(true)}
+            aria-label="Acciones rápidas"
+            className="flex-shrink-0 inline-flex items-center justify-center w-9 h-9 rounded bg-data-violet hover:bg-data-violet/90 text-white transition-colors shadow-sm press"
+          >
+            <Plus size={16} strokeWidth={2.5} />
+          </button>
         </div>
       </header>
 
@@ -1031,6 +993,29 @@ export default function PositionsMobile() {
       <div className="px-4 pt-3">
         <SplitRatioBanner onAdjusted={loadAll} />
       </div>
+
+      {/* Los ajustes de vista viven en un sheet, así que la lista tiene que
+          DECIR cuáles están puestos y ofrecer la salida sin volver a abrirlo —
+          mismo requisito que se aplicó en Movimientos. */}
+      {ajustesActivos > 0 && (
+        <div className="mx-4 mt-3 flex items-center justify-between gap-2 rounded border border-line/60 bg-bg-1 px-3 py-2">
+          <span className="text-[12.5px] text-ink-2 min-w-0 truncate">
+            {[
+              brokerFilter !== ALL_FILTER && brokerFilter,
+              sortBy !== 'value' && `orden: ${SORT_OPTIONS.find(o => o.id === sortBy)?.label}`,
+              showAllLots && 'por lote',
+              showDetail && 'detalle USD',
+            ].filter(Boolean).join(' · ')}
+          </span>
+          <button
+            type="button"
+            onClick={restablecerVista}
+            className="flex-shrink-0 text-[12.5px] text-data-blue hover:text-rendi-accent font-medium"
+          >
+            Quitar
+          </button>
+        </div>
+      )}
 
       {/* Lista */}
       {visibleCount === 0 ? (
@@ -1083,8 +1068,7 @@ export default function PositionsMobile() {
       ) : (
         // Vista filtrada — lista plana del broker seleccionado
         <>
-          <ColumnHeader currency={selectedCurrency} totalCurrency={currency} />
-          <ul className="divide-y divide-line/30">
+          <ul className="px-4 py-3 space-y-2.5">
             {flatList?.map(p => (
               <PositionRow
                 key={p._isLot
@@ -1353,6 +1337,63 @@ export default function PositionsMobile() {
             2. Dispara su handler (open* o export)
           Para venta/cash, los handlers usan el selector inline del modal
           existente cuando hay múltiples opciones disponibles. */}
+      {/* Sheet "Ver y ordenar" — se lleva el sort, el filtro por broker y los
+          dos toggles. Antes vivían pegados al header y eran la mitad del cromo. */}
+      <BottomSheet
+        open={viewSheet}
+        onClose={() => setViewSheet(false)}
+        eyebrow="Cartera"
+        title="Ver y ordenar"
+      >
+        <div className="p-4 space-y-5">
+          <OpcionesVista
+            label="Ordenar por"
+            options={SORT_OPTIONS}
+            value={sortBy}
+            onChange={setSortBy}
+          />
+          <OpcionesVista
+            label="Broker"
+            options={[{ id: ALL_FILTER, label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]}
+            value={brokerFilter}
+            onChange={setBrokerFilter}
+          />
+          <div>
+            <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Detalle</div>
+            <div className="space-y-2">
+              <FilaToggle
+                label="Ver lotes"
+                hint="Desglosa cada compra en vez de una card por ticker."
+                active={showAllLots}
+                onToggle={() => setShowAllLots(v => !v)}
+              />
+              {hasArs && (
+                <FilaToggle
+                  label="Detalle USD"
+                  hint="Muestra el equivalente en dólares en los brokers en pesos."
+                  active={showDetail}
+                  onToggle={() => setShowDetail(v => !v)}
+                />
+              )}
+            </div>
+          </div>
+          <div className="pt-2 flex items-center gap-2">
+            <button
+              onClick={restablecerVista}
+              className="flex-1 text-xs text-ink-2 hover:text-ink-0 border border-line/60 hover:bg-bg-2/60 rounded py-2.5 transition-colors font-medium"
+            >
+              Restablecer
+            </button>
+            <button
+              onClick={() => setViewSheet(false)}
+              className="flex-1 text-xs bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 rounded py-2.5 transition-colors font-medium"
+            >
+              Listo
+            </button>
+          </div>
+        </div>
+      </BottomSheet>
+
       {actionsSheet && (
         <ActionsSheet
           onClose={() => setActionsSheet(false)}
@@ -1442,22 +1483,49 @@ function BrokerFilterChip({ active, onClick, label, currency }) {
   )
 }
 
-// ─── ColumnHeader ────────────────────────────────────────────────────────────
-// Fila de rótulos para que cada columna "diga" qué muestra (antes no había
-// labels y no se entendía qué era cada número). Currency-aware: en ARS la
-// var. día y el P&L van en pesos; el total respeta el toggle global ARS/USD.
-// El grid-template debe coincidir EXACTO con el de PositionRow para alinear.
-function ColumnHeader({ currency, totalCurrency = 'USD' }) {
-  const code = String(currency || '').toUpperCase() === 'ARS' ? 'ARS' : 'USD'
-  const totalCode = String(totalCurrency || '').toUpperCase() === 'ARS' ? 'ARS' : 'USD'
-  const numCls = 'flex flex-col items-end text-[12.5px] text-ink-3 leading-tight font-medium'
+// ─── Controles del sheet "Ver y ordenar" ────────────────────────────────────
+
+function OpcionesVista({ label, options, value, onChange }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_56px_64px_76px] gap-1.5 items-end px-3 py-1.5 bg-bg-1/50 border-b border-line/20">
-      <span className="text-[12.5px] text-ink-3 self-end font-medium">Activo</span>
-      <span className={numCls}><span>Var. día</span><span className="text-ink-3/60">{code}</span></span>
-      <span className={numCls}><span>{'P&L'}</span><span className="text-ink-3/60">{code}</span></span>
-      <span className={numCls}><span>Total</span><span className="text-ink-3/60">{totalCode}</span></span>
+    <div>
+      <div className="text-[12.5px] text-ink-2 mb-2 font-medium">{label}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map(o => (
+          <button
+            key={o.id}
+            onClick={() => onChange(o.id)}
+            className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+              value === o.id
+                ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40'
+                : 'bg-bg-2 text-ink-2 border-line/60 hover:bg-bg-3 hover:text-ink-0'
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
     </div>
+  )
+}
+
+function FilaToggle({ label, hint, active, onToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={active}
+      className={`w-full flex items-center justify-between gap-3 text-left rounded border px-3 py-2.5 transition-colors ${
+        active ? 'bg-rendi-accent/10 border-rendi-accent/40' : 'bg-bg-2 border-line/60 hover:bg-bg-3'
+      }`}
+    >
+      <span className="min-w-0">
+        <span className={`block text-xs font-medium ${active ? 'text-rendi-accent' : 'text-ink-1'}`}>{label}</span>
+        <span className="block text-[11px] text-ink-3 mt-0.5 leading-snug">{hint}</span>
+      </span>
+      <span className={`flex-shrink-0 w-9 h-5 rounded-full p-0.5 transition-colors ${active ? 'bg-rendi-accent/40' : 'bg-bg-3'}`}>
+        <span className={`block w-4 h-4 rounded-full bg-ink-0 transition-transform ${active ? 'translate-x-4' : ''}`} />
+      </span>
+    </button>
   )
 }
 
@@ -1484,7 +1552,9 @@ const BrokerSection = memo(function BrokerSection({
           (es caro en mobile durante scroll). Usamos bg-bg-1 sólido (elevated
           surface) + border-y del color del broker para que el tinte venga
           del borde, el avatar y el texto — no del background semi-trans. */}
-      <div className={`sticky top-[252px] z-10 px-3 py-2.5 flex items-center justify-between gap-2 bg-bg-1 border-y ${color.border}`}>
+      {/* Separador, ya no sticky. Con la card por posición, dos capas pegadas
+          (header + broker) se comían 285px de los 812 de un iPhone. */}
+      <div className={`px-4 py-2.5 flex items-center justify-between gap-2 border-b ${color.border}`}>
         <div className="flex items-center gap-2.5 min-w-0">
           {/* Avatar circular con la inicial del broker */}
           <span
@@ -1504,10 +1574,7 @@ const BrokerSection = memo(function BrokerSection({
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-sm font-semibold tabular text-ink-0">
-            {compactValue(displayCurrency === 'ARS' ? totalUsd * tcBlue : totalUsd, displayCurrency)}
-            <span className="text-[12.5px] text-ink-3 ml-1 font-medium">
-              {displayCurrency}
-            </span>
+            {montoCard(displayCurrency === 'ARS' ? totalUsd * tcBlue : totalUsd, displayCurrency)}
           </span>
           <button
             type="button"
@@ -1527,8 +1594,7 @@ const BrokerSection = memo(function BrokerSection({
           </button>
         </div>
       </div>
-      <ColumnHeader currency={broker.currency} totalCurrency={displayCurrency} />
-      <ul className="divide-y divide-line/20">
+      <ul className="px-4 py-3 space-y-2.5">
         {positions.map(p => (
           <PositionRow
             key={p._isLot
@@ -1570,6 +1636,13 @@ const BrokerSection = memo(function BrokerSection({
 
 const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
   const cur = p.isAR ? 'ARS' : 'USD'
+  // El MONTO del P&L sigue al toggle global, como el desktop
+  // (Positions.jsx:979: `const basePnl = isARS ? c.pnlArs : c.pnl`). Antes iba
+  // en la moneda del BROKER (`pnlLocal`), así que con el toggle en pesos un
+  // broker USD seguía mostrando dólares.
+  // El PORCENTAJE no se toca: sigue siendo `p.pnlPct`, el retorno NOMINAL EN
+  // PESOS para posiciones ARS, igual que el desktop. Es decisión del dueño.
+  const pnlDisplay = displayCurrency === 'ARS' ? p.pnlUsdToday * tcBlue : p.pnlUsd
   const [aiOpen, setAiOpen] = useState(false)
   // Propio: `navigate` vive en PositionsMobile y este componente es hermano,
   // no hijo — sin este hook, tocar la fila tiraba ReferenceError y el detalle
@@ -1711,85 +1784,85 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
       rowId={p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || ''}`}
     >
       <div
-        className={`grid grid-cols-[minmax(0,1fr)_56px_64px_76px] gap-1.5 items-center px-3 py-3 hover:bg-bg-2/30 active:bg-bg-3 transition-colors cursor-pointer${p._isLot ? ' pl-4 opacity-75' : ''}`}
+        className={`bg-bg-1 border border-line rounded-xl p-4 active:bg-bg-2/40 transition-colors cursor-pointer${p._isLot ? ' ml-4 border-line/50' : ''}`}
       >
-      {/* Col 1 — Activo: logo + ticker + (cantidad · moneda). Los lotes van
-          indentados y atenuados con un marquito "└" para distinguirlos del
-          agregado que los contiene. */}
-      <div className="flex items-center gap-2 min-w-0">
+      {/* Identidad: logo + ticker + la línea de contexto (cantidad · moneda ·
+          lotes). La CANTIDAD EXACTA y el desglose de lotes viven en
+          /posiciones/:id — acá va lo que ubica la posición de un vistazo. */}
+      <div className="flex items-center gap-2.5 min-w-0">
         {p._isLot && (
           <span className="text-[11px] font-mono text-ink-3/60 leading-none -mr-1 flex-shrink-0" aria-hidden="true">└</span>
         )}
-        <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={p._isLot ? 22 : 28} />
+        <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={p._isLot ? 24 : 32} />
         <div className="min-w-0">
-          <div className="text-[13px] font-semibold text-ink-0 leading-none truncate">
+          <div className="text-[15px] font-semibold text-ink-0 leading-tight truncate">
             {/* cashAssetLabel: el efectivo del sub-broker dólar de un broker AR se
                 guarda como 'USDT' (centinela interno) pero son dólares reales. */}
             {p.is_cash ? cashAssetLabel(p) : fciLabel(p.asset)}
           </div>
-          <div className="text-[10px] tabular text-ink-3 leading-none mt-1 truncate flex items-center gap-1">
+          <div className="text-[12.5px] tabular text-ink-3 leading-tight mt-0.5 truncate">
             {p.is_cash
-              ? 'Cash'
+              ? 'Efectivo'
               : p._isAgg
-                ? `${formatQty(p.quantity)} · ${cur} · ${p._lotCount} lotes`
-                : `${formatQty(p.quantity)} · ${cur}`}
+                ? `${formatQty(p.quantity)} unidades · ${p._lotCount} lotes`
+                : `${formatQty(p.quantity)} unidades · ${cur}`}
           </div>
         </div>
       </div>
 
-      {/* Col 2 — Var. día: variación de mercado (precio hoy vs cierre anterior) */}
-      <div className="text-right min-w-0">
-        {p.is_cash || p.dayVarLocal == null ? (
-          <span className="text-[11px] text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
-        ) : (
-          <>
-            <div className={`text-[13px] font-medium tabular leading-none ${colorClass(p.dayVarLocal)}`}>
-              {compactAmount(p.dayVarLocal, cur)}
-            </div>
-            <div className={`text-[10px] tabular leading-none mt-1 ${colorClass(p.dayVarPct)}`}>
-              {pctSigned(p.dayVarPct)}
-            </div>
-            {showDetail && p.isAR && p.dayVarUsd != null && (
-              <div className="text-[9px] tabular leading-none mt-1 text-ink-3">
-                {compactAmount(p.dayVarUsd, 'USD')}
-              </div>
-            )}
-          </>
+      {/* El valor, grande y SIN abreviar. `compactValue` existía porque la celda
+          de 76px no daba; en una card de 343px sí da. */}
+      <div className="mt-3 text-[26px] font-medium tabular text-ink-0 leading-none tracking-tight">
+        <FlashValue value={p.valueUsd}>
+          {montoCard(displayCurrency === 'ARS' ? p.valueUsd * tcBlue : p.valueUsd, displayCurrency)}
+        </FlashValue>
+        <span className="ml-1.5 text-[13px] text-ink-3 font-normal align-baseline">{displayCurrency}</span>
+        {!p.is_cash && !p.priceTrusted && (
+          <span className="ml-2 text-[12.5px] text-ink-3 font-normal align-middle">al costo</span>
         )}
       </div>
 
-      {/* Col 3 — P&L total (moneda del broker; USD revelado con "Detalle") */}
-      <div className="text-right min-w-0">
-        {p.is_cash || p.pnlLocal == null ? (
-          <span className="text-[11px] text-ink-3">—</span>
-        ) : (
-          <>
-            <div className={`text-[13px] font-medium tabular leading-none ${colorClass(p.pnlLocal)}`}>
-              {compactAmount(p.pnlLocal, cur)}
-            </div>
-            <div className={`text-[10px] tabular leading-none mt-1 ${colorClass(p.pnlPct)}`}>
-              {pctSigned(p.pnlPct)}
-            </div>
-            {showDetail && p.isAR && p.pnlUsd != null && (
-              <div className="text-[9px] tabular leading-none mt-1 text-ink-3">
-                {compactAmount(p.pnlUsd, 'USD')}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Col 4 — Total: valor actual; respeta el toggle global USD/ARS.
-          En ARS los montos son grandes — usamos compactValue (k/M) para
-          que no se rompa la columna. */}
-      <div className="text-right min-w-0">
-        <div className="text-[13px] font-medium tabular text-ink-0 leading-none">
-          <FlashValue value={p.valueUsd}>{compactValue(displayCurrency === 'ARS' ? p.valueUsd * tcBlue : p.valueUsd, displayCurrency)}</FlashValue>
+      {/* Chips: P&L total IZQUIERDA, variación del día DERECHA — el orden del
+          desktop (Valor · P&L · Var. día). La grilla vieja los tenía al revés. */}
+      {!p.is_cash && (
+        <div className="mt-3 flex items-center gap-2">
+          {!p.priceTrusted ? (
+            /* Sin cotización el valor ES el costo y el P&L es 0 por construcción.
+               Publicar "+0,0%" se lee como "no ganaste" cuando lo que pasa es
+               "no sé cuánto vale". Un chip apagado lo dice. */
+            <span className="inline-flex items-center gap-1.5 rounded bg-bg-2 border border-line/60 px-2.5 py-1.5 text-[12.5px] text-ink-3">
+              Sin cotización
+            </span>
+          ) : (
+            <>
+              {/* El monto y el % se colorean por SEPARADO, como en la grilla vieja.
+                  No es cosmético: para una posición ARS el % es el retorno
+                  NOMINAL EN PESOS y el monto sigue al toggle, así que pueden
+                  tener signos distintos (AL30: −$44 en USD, +0,4% en pesos).
+                  Pintarlos del mismo color haría pasar uno de los dos por lo
+                  que no es. */}
+              <span className="inline-flex items-baseline gap-1.5 rounded bg-bg-2 border border-line/60 px-2.5 py-1.5 min-w-0">
+                <span className="text-[11px] text-ink-3 flex-shrink-0">P&L</span>
+                <span className={`text-[13px] font-medium tabular truncate ${colorClass(pnlDisplay)}`}>
+                  {montoCard(pnlDisplay, displayCurrency, { signed: true })}
+                </span>
+                <span className={`text-[12px] tabular flex-shrink-0 ${colorClass(p.pnlPct)}`}>{pctSigned(p.pnlPct)}</span>
+              </span>
+              {p.dayVarPct != null && (
+                <span className={`ml-auto inline-flex items-baseline gap-1.5 rounded bg-bg-2 border border-line/60 px-2.5 py-1.5 flex-shrink-0 ${colorClass(p.dayVarPct)}`}>
+                  <span className="text-[11px] text-ink-3">hoy</span>
+                  <span className="text-[13px] font-medium tabular">{pctSigned(p.dayVarPct)}</span>
+                </span>
+              )}
+            </>
+          )}
+          {showDetail && p.isAR && p.priceTrusted && p.pnlUsd != null && (
+            <span className="ml-auto text-[11px] tabular text-ink-3 flex-shrink-0">
+              {montoCard(p.pnlUsd, 'USD', { signed: true })} USD
+            </span>
+          )}
         </div>
-        <div className="text-[12.5px] text-ink-2 leading-none mt-1 font-medium">
-          {displayCurrency}
-        </div>
-      </div>
+      )}
       </div>
     </SwipeRow>
     {aiOpen && (
@@ -1806,6 +1879,18 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
   )
 })
 
+// Monto de card: sin abreviar y SIN el código de moneda. El código lo dice el
+// segmentado del header y la línea del valor; repetirlo en cada chip es lo que
+// hacía que "+$1.794.240 ARS" no entrara y se cortara en "+$1.794.240 A…".
+function montoCard(n, currency, { signed = false } = {}) {
+  if (n == null || isNaN(n)) return '—'
+  const isArs = String(currency).toUpperCase() === 'ARS'
+  const abs = Math.abs(n)
+  const body = abs.toLocaleString(isArs ? 'es-AR' : 'en-US', { maximumFractionDigits: 0 })
+  const sign = signed ? (n > 0 ? '+' : n < 0 ? '−' : '') : (n < 0 ? '−' : '')
+  return `${sign}$${body}`
+}
+
 function formatQty(q) {
   if (q == null || isNaN(q)) return '—'
   if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('en-US')
@@ -1813,40 +1898,6 @@ function formatQty(q) {
   return q.toFixed(4)
 }
 
-// Monto compacto para las celdas estrechas de la tabla mobile. En ARS los
-// montos son grandes (6-7 dígitos) y romperían el layout → se abrevian (k/M) y
-// van SIN símbolo (en AR "$" se lee como pesos, ambiguo acá; la columna ya está
-// rotulada "ARS"). USD va con "$" y separador de miles. Signo pegado al número.
-function compactAmount(n, currency) {
-  if (n == null || isNaN(n)) return '—'
-  const sign = n > 0 ? '+' : n < 0 ? '−' : ''
-  const abs = Math.abs(n)
-  if (String(currency).toUpperCase() === 'ARS') {
-    let body
-    if (abs >= 1e6) body = (abs / 1e6).toFixed(abs >= 1e7 ? 0 : 1) + 'M'
-    else if (abs >= 1e4) body = Math.round(abs / 1e3) + 'k'
-    else if (abs >= 1e3) body = (abs / 1e3).toFixed(1) + 'k'
-    else body = Math.round(abs).toLocaleString('es-AR')
-    return `${sign}${body}`
-  }
-  return `${sign}$${Math.round(abs).toLocaleString('en-US')}`
-}
-
-// Total compacto (sin signo, siempre positivo) para la columna Total que es
-// la más angosta. Misma lógica de abreviación que compactAmount pero sin
-// prefijo y SIN '+'/'−'. Usado por Cartera total y por la columna Total de
-// cada PositionRow cuando el toggle global está en ARS.
-function compactValue(n, currency) {
-  if (n == null || isNaN(n)) return '—'
-  const abs = Math.abs(Math.round(n))
-  if (String(currency).toUpperCase() === 'ARS') {
-    if (abs >= 1e6) return '$' + (abs / 1e6).toFixed(abs >= 1e7 ? 0 : 1) + 'M'
-    if (abs >= 1e4) return '$' + Math.round(abs / 1e3) + 'k'
-    if (abs >= 1e3) return '$' + (abs / 1e3).toFixed(1) + 'k'
-    return '$' + abs.toLocaleString('es-AR')
-  }
-  return '$' + abs.toLocaleString('en-US')
-}
 
 
 // ─── ActionsSheet ───────────────────────────────────────────────────────────
