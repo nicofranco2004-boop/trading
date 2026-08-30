@@ -21,7 +21,6 @@ import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
 import EmptyState from '../components/EmptyState'
-import SwipeRow from '../components/mobile/SwipeRow'
 import BottomSheet from '../components/mobile/BottomSheet'
 import Modal from '../components/Modal'
 import UpgradeModal from '../components/plan/UpgradeModal'
@@ -38,7 +37,8 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit } from '../utils/valuation'
+import { isBondPosition } from '../utils/tickers'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -118,11 +118,11 @@ export default function PositionsMobile() {
       return n
     })
   }
-  // "Detalle" (paridad con desktop): en brokers ARS revela el equivalente en
-  // USD de la variación diaria y del P&L, que por defecto van en pesos.
-  const [showDetail, setShowDetail] = useState(false)
-  // Sheet "Ver y ordenar": se lleva el sort, el filtro por broker, "Ver lotes"
-  // y "Detalle USD". Antes eran cuatro controles pegados al header y sumaban
+  // Sheet "Ver y ordenar": se lleva el sort, el filtro por broker y "Ver lotes".
+  // El toggle "Detalle USD" ya no está: cantidad y precio promedio, que era lo
+  // que revelaba, ahora son columnas fijas de la tabla. El equivalente en USD
+  // del P&L lo da el toggle global USD|ARS del header. Antes eran cuatro
+  // controles pegados al header y sumaban
   // 235px de cromo pegajoso antes de la primera posición. Mismo patrón que el
   // sheet de filtros de Movimientos.
   const [viewSheet, setViewSheet] = useState(false)
@@ -714,6 +714,14 @@ export default function PositionsMobile() {
         // cotización") en vez de publicar un 0 que se lee como "no ganaste".
         priceTrusted,
         dayVarLocal, dayVarUsd, dayVarPct, isAR,
+        // Columna "Precio prom.": ESPEJO del desktop, no una segunda definición.
+        // Positions.jsx:1864 (broker ARS) y :2106-2109 (broker USD) rutean por
+        // `avgCostUsdPerUnit`, que respeta el tc_compra del lote en modo
+        // 'purchase'. La rama USD conserva el atajo `buy_price` cuando NINGÚN
+        // lote tiene el costo en pesos — ahí el promedio ya está en dólares y
+        // rutearlo no cambia nada; con costo en pesos, en cambio, tomar
+        // `buy_price` crudo lo inflaría ~1500×.
+        avgPriceUsd: avgPriceUsdDe(p, isAR, tcBlue, tcCedear, costBasis),
       }
     })
   }, [positions, prices, prevClose, arsBrokerSet, exchangeBrokerSet, tcBlue, tcCedear, tcCripto, costBasis])
@@ -811,6 +819,10 @@ export default function PositionsMobile() {
         priceTrusted: lots.some(x => x.priceTrusted),
         dayVarLocal, dayVarUsd, dayVarPct,
         _isAgg: true, _lotCount: lots.length, _lots: lots,
+        // El promedio del AGREGADO se recalcula sobre todos los lotes. El
+        // `...lots[0]` de arriba traía el del primer lote, que es el precio de
+        // una sola compra y no el promedio del ticker.
+        avgPriceUsd: avgPriceUsdDe({ ...lots[0], quantity: totalQty, _lots: lots }, isAR, tcBlue, tcCedear, costBasis),
       })
     }
     return [...out, ...cash]
@@ -874,8 +886,8 @@ export default function PositionsMobile() {
 
   // Los defaults de la vista, en UN solo lugar: el contador del botón y el
   // "Restablecer" del sheet se derivan de acá, no de literales sueltos.
-  const VISTA_INICIAL = { sortBy: 'value', brokerFilter: ALL_FILTER, showAllLots: false, showDetail: false }
-  const vistaActual = { sortBy, brokerFilter, showAllLots, showDetail }
+  const VISTA_INICIAL = { sortBy: 'value', brokerFilter: ALL_FILTER, showAllLots: false }
+  const vistaActual = { sortBy, brokerFilter, showAllLots }
   const ajustesActivos = Object.keys(VISTA_INICIAL)
     .filter(k => vistaActual[k] !== VISTA_INICIAL[k]).length
   // El hero baja un escalón de tipografía cuando el número no entra: 48px sirve
@@ -889,11 +901,9 @@ export default function PositionsMobile() {
     setSortBy(VISTA_INICIAL.sortBy)
     setBrokerFilter(VISTA_INICIAL.brokerFilter)
     setShowAllLots(VISTA_INICIAL.showAllLots)
-    setShowDetail(VISTA_INICIAL.showDetail)
   }
   // El toggle "Detalle" solo aporta en brokers ARS (revela el equivalente USD).
   // Si el user no tiene ningún broker en pesos, no mostramos el botón.
-  const hasArs = brokers.some(b => b.currency === 'ARS')
   if (loading) {
     // Skeleton mínimo en lugar de texto plano — el user ve inmediatamente
     // que la página está cargando contenido (perceived performance), no
@@ -1004,7 +1014,6 @@ export default function PositionsMobile() {
               brokerFilter !== ALL_FILTER && brokerFilter,
               sortBy !== 'value' && `orden: ${SORT_OPTIONS.find(o => o.id === sortBy)?.label}`,
               showAllLots && 'por lote',
-              showDetail && 'detalle USD',
             ].filter(Boolean).join(' · ')}
           </span>
           <button
@@ -1041,7 +1050,6 @@ export default function PositionsMobile() {
                 broker={g.broker}
                 positions={g.positions}
                 totalUsd={g.totalUsd}
-                showDetail={showDetail}
                 displayCurrency={currency}
                 tcBlue={tcBlue}
                 onEdit={() => setEditingBroker({ ...g.broker })}
@@ -1068,14 +1076,13 @@ export default function PositionsMobile() {
       ) : (
         // Vista filtrada — lista plana del broker seleccionado
         <>
-          <ul className="px-4 py-3 space-y-2.5">
+          <PositionsTable>
             {flatList?.map(p => (
               <PositionRow
                 key={p._isLot
                   ? `${p.broker}:${p.asset}:${p.id}`
                   : (p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || p.entry_date}`)}
                 p={p}
-                showDetail={showDetail}
                 displayCurrency={currency}
                 tcBlue={tcBlue}
                 onSell={openSell}
@@ -1085,7 +1092,7 @@ export default function PositionsMobile() {
                 onToggleTicker={toggleTicker}
               />
             ))}
-          </ul>
+          </PositionsTable>
         </>
       )}
 
@@ -1367,14 +1374,6 @@ export default function PositionsMobile() {
                 active={showAllLots}
                 onToggle={() => setShowAllLots(v => !v)}
               />
-              {hasArs && (
-                <FilaToggle
-                  label="Detalle USD"
-                  hint="Muestra el equivalente en dólares en los brokers en pesos."
-                  active={showDetail}
-                  onToggle={() => setShowDetail(v => !v)}
-                />
-              )}
             </div>
           </div>
           <div className="pt-2 flex items-center gap-2">
@@ -1534,7 +1533,7 @@ function FilaToggle({ label, hint, active, onToggle }) {
 // Debajo, las positions del broker (cash siempre al final).
 
 const BrokerSection = memo(function BrokerSection({
-  broker, positions, totalUsd, showDetail, displayCurrency = 'USD', tcBlue = 1,
+  broker, positions, totalUsd, displayCurrency = 'USD', tcBlue = 1,
   onEdit, onDelete,
   onSellPosition, onCashFlowPosition, onEditPosition, onDeletePosition, onToggleTicker,
 }) {
@@ -1594,14 +1593,13 @@ const BrokerSection = memo(function BrokerSection({
           </button>
         </div>
       </div>
-      <ul className="px-4 py-3 space-y-2.5">
+      <PositionsTable>
         {positions.map(p => (
           <PositionRow
             key={p._isLot
               ? `${p.broker}:${p.asset}:${p.id}`
               : (p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || p.entry_date}`)}
             p={p}
-            showDetail={showDetail}
             displayCurrency={displayCurrency}
             tcBlue={tcBlue}
             onSell={onSellPosition}
@@ -1611,31 +1609,122 @@ const BrokerSection = memo(function BrokerSection({
             onToggleTicker={onToggleTicker}
           />
         ))}
-      </ul>
+      </PositionsTable>
     </section>
   )
 })
 
+// ─── Geometría de la tabla ────────────────────────────────────────────────
+// Patrón Schwab: el símbolo queda ANCLADO a la izquierda y las columnas de
+// valores se deslizan por debajo.
+//
+// ⚠️ FLEX, NO GRID. Con `display:grid` el bloque contenedor de un grid item es
+// su PROPIA CELDA, así que `position:sticky` sólo puede pegarse dentro de esos
+// 118px y después el ancla se va con el scroll. Con flex el bloque contenedor
+// es la fila entera y el ancla se queda de punta a punta.
+//
+// ⚠️ Y NINGÚN ancestro de la fila puede tener `overflow:hidden` ni `transform`:
+// cualquiera de los dos crea un nuevo bloque contenedor y el ancla vuelve a
+// escaparse. MEDIDO en el prototipo: envolviendo la fila como lo hacía
+// `SwipeRow` (un `overflow-hidden` + un `translateX`), con la tabla scrolleada
+// al máximo el ancla pasa de quedarse en 0px a irse a −396px, o sea se va
+// entera de pantalla. Por eso las filas ya NO van envueltas en SwipeRow y las
+// acciones se abren con pulsación larga (ver PositionRow).
+const ANCHO_ANCLA = 118
+const ANCHO_COL = 108
+
+// El orden es el del desktop (Valor · P&L · Var. día) y después lo que hasta
+// ahora escondía el toggle "Detalle USD", que por eso desaparece del sheet.
+const COLUMNAS = [
+  { id: 'value', label: 'Valor' },
+  { id: 'pnl', label: 'P&L' },
+  { id: 'day', label: 'Hoy' },
+  { id: 'qty', label: 'Cantidad' },
+  { id: 'avg', label: 'Precio prom.' },
+]
+
+// Celda de valores: 108px, alineada a la derecha, hasta dos renglones (monto
+// arriba, % abajo). A 108px los montos entran SIN abreviar — ése era el único
+// motivo de existir de `compactAmount`/`compactValue`, que ya no están.
+function Celda({ children }) {
+  return (
+    <div
+      className="flex-none flex flex-col justify-center items-end px-2.5 text-right"
+      style={{ width: ANCHO_COL, scrollSnapAlign: 'end' }}
+    >
+      {children}
+    </div>
+  )
+}
+
+const LINEA_1 = 'text-[14px] font-medium tabular leading-[1.15]'
+const LINEA_2 = 'text-[11px] tabular leading-[1.15] mt-[3px]'
+
+// Un guión cuando la columna no aplica (efectivo, o sin cotización previa).
+function Vacio() {
+  return <div className={`${LINEA_1} text-ink-3`}>—</div>
+}
+
+function PositionsTable({ children }) {
+  return (
+    <div
+      className="overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      style={{ scrollSnapType: 'x proximity', WebkitOverflowScrolling: 'touch' }}
+    >
+      <div className="w-max min-w-full">
+        {/* Encabezado: scrollea CON el contenido, como en Schwab. Fijarlo arriba
+            sumaría otra capa sticky a una pantalla de la que venimos sacando
+            cromo. */}
+        <div className="flex items-stretch w-max border-b border-line-2">
+          <div
+            className="sticky left-0 z-[2] flex-none bg-bg-0 flex items-end gap-2 pb-1.5 pr-2 text-[9.5px] text-ink-3"
+            style={{ width: ANCHO_ANCLA }}
+          >
+            <span className="w-[3px] flex-none" aria-hidden="true" />
+            <span>Activo</span>
+          </div>
+          {COLUMNAS.map(c => (
+            <div
+              key={c.id}
+              className="flex-none flex items-end justify-end px-2.5 pb-1.5 text-[9.5px] text-ink-3"
+              style={{ width: ANCHO_COL, scrollSnapAlign: 'end' }}
+            >
+              {c.label}
+            </div>
+          ))}
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 // ─── Row ──────────────────────────────────────────────────────────────────
-// Layout en 3 columnas para aprovechar el ancho:
-//   [avatar]  TICKER · broker        P/L USD       $value USD
-//             qty · CUR              +X.X%         USD
-// Cash: NO muestra P/L (no tiene sentido la variación %). Solo value.
+// Una fila de 72px: el ancla de 118px (barrita de color + logo + ticker +
+// "broker · N lotes") y las cinco columnas de 108px que se deslizan.
 //
-// Swipe izquierda revela acciones contextuales:
-//   • No-cash: Analizar / Vender (FIFO) / Editar / Eliminar
-//   • Cash:    Depositar / Retirar / Editar / Eliminar
+// 72px es el intermedio: entran 7 posiciones en pantalla con el ticker a 13,5px
+// y su contexto a 10px. La card anterior medía 164px y entraban dos.
 //
-// Las acciones gatillan callbacks del padre — el padre maneja los modales
-// (SellModal, CashFlowModal, PositionFormModal). Esto evita que la fila
-// arme su propio state y mantiene un único punto de truth.
+// La barrita de color es la dirección del DÍA — verde, roja, o apagada cuando
+// no hay cotización. Se lee sin leer.
+//
+// ACCIONES: antes se revelaban swipeando a la izquierda (SwipeRow). El swipe
+// horizontal ahora es del scroll de columnas, y además el wrapper de SwipeRow
+// rompía el `position:sticky` del ancla (ver la nota de geometría arriba). Las
+// mismas acciones, sin perder ninguna, se abren con PULSACIÓN LARGA sobre la
+// fila. El tap corto sigue navegando al detalle, como antes.
 //
 // Componente MEMOIZADO — props (p + callbacks) son estables entre renders
 // porque los callbacks se definen en el padre con closure sobre el state.
-// Esto corta los re-render de la fila cada vez que prices cambia.
 
-const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
-  const cur = p.isAR ? 'ARS' : 'USD'
+// Pulsación larga que no pelea con el scroll: si el dedo se mueve más de 8px
+// (está deslizando columnas) o se levanta antes, no dispara.
+const MS_PULSACION = 450
+const TOLERANCIA_PX = 8
+
+const PositionRow = memo(function PositionRow({ p, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
+
   // El MONTO del P&L sigue al toggle global, como el desktop
   // (Positions.jsx:979: `const basePnl = isARS ? c.pnlArs : c.pnl`). Antes iba
   // en la moneda del BROKER (`pnlLocal`), así que con el toggle en pesos un
@@ -1644,6 +1733,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
   // PESOS para posiciones ARS, igual que el desktop. Es decisión del dueño.
   const pnlDisplay = displayCurrency === 'ARS' ? p.pnlUsdToday * tcBlue : p.pnlUsd
   const [aiOpen, setAiOpen] = useState(false)
+  const [accionesAbiertas, setAccionesAbiertas] = useState(false)
   // Propio: `navigate` vive en PositionsMobile y este componente es hermano,
   // no hijo — sin este hook, tocar la fila tiraba ReferenceError y el detalle
   // mobile era inalcanzable.
@@ -1654,14 +1744,14 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
         // Fila agregada (resumen multi-lote, sintética): Analizar + Vender +
         // "Editar lotes". Editar/Eliminar son POR LOTE (operan sobre una
         // posición real); "Editar lotes" despliega los lotes de este ticker
-        // para que cada uno se edite/elimine desde su propio swipe.
+        // para que cada uno se edite/elimine desde su propia pulsación.
         {
           id: 'ai',
           label: 'Analizar',
           icon: Sparkles,
           tone: 'accent',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'analyze', asset: p.asset })
+            track('mobile_row_action', { code: 'analyze', asset: p.asset })
             setAiOpen(true)
           },
         },
@@ -1671,7 +1761,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           icon: TrendingDown,
           tone: 'neg',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'sell', asset: p.asset })
+            track('mobile_row_action', { code: 'sell', asset: p.asset })
             onSell(p)
           },
         },
@@ -1681,7 +1771,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           icon: p._expanded ? ChevronUp : Pencil,
           tone: 'accent',
           onClick: () => {
-            track('mobile_swipe_action', { code: p._expanded ? 'collapse_lots' : 'edit_expand', asset: p.asset })
+            track('mobile_row_action', { code: p._expanded ? 'collapse_lots' : 'edit_expand', asset: p.asset })
             onToggleTicker(`t:${p.broker}:${p.asset}`)
           },
         },
@@ -1695,7 +1785,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           icon: ArrowDownLeft,
           tone: 'pos',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'cash_deposit', broker: p.broker })
+            track('mobile_row_action', { code: 'cash_deposit', broker: p.broker })
             onCashFlow(p, 'deposit')
           },
         },
@@ -1705,7 +1795,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           icon: ArrowUpRight,
           tone: 'warn',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'cash_withdraw', broker: p.broker })
+            track('mobile_row_action', { code: 'cash_withdraw', broker: p.broker })
             onCashFlow(p, 'withdraw')
           },
         },
@@ -1715,7 +1805,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           icon: Pencil,
           tone: 'accent',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'edit_cash', broker: p.broker })
+            track('mobile_row_action', { code: 'edit_cash', broker: p.broker })
             onEditPos(p)
           },
         },
@@ -1725,20 +1815,19 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           icon: Trash2,
           tone: 'neg',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'delete_cash', broker: p.broker })
+            track('mobile_row_action', { code: 'delete_cash', broker: p.broker })
             onDeletePos(p)
           },
         },
       ].filter(Boolean)
     : [
-        // Posición normal (acción / bono / cripto) → analizar / vender / editar / eliminar
         {
           id: 'ai',
           label: 'Analizar',
           icon: Sparkles,
           tone: 'accent',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'analyze', asset: p.asset })
+            track('mobile_row_action', { code: 'analyze', asset: p.asset })
             setAiOpen(true)
           },
         },
@@ -1748,7 +1837,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           icon: TrendingDown,
           tone: 'neg',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'sell', asset: p.asset })
+            track('mobile_row_action', { code: 'sell', asset: p.asset })
             onSell(p)
           },
         },
@@ -1758,7 +1847,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           icon: Pencil,
           tone: 'accent',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'edit', asset: p.asset })
+            track('mobile_row_action', { code: 'edit', asset: p.asset })
             onEditPos(p)
           },
         },
@@ -1768,103 +1857,192 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           icon: Trash2,
           tone: 'neg',
           onClick: () => {
-            track('mobile_swipe_action', { code: 'delete', asset: p.asset })
+            track('mobile_row_action', { code: 'delete', asset: p.asset })
             onDeletePos(p)
           },
         },
       ].filter(Boolean)
 
+  const irAlDetalle = (p._isLot || p.is_cash)
+    ? () => navigate(p.id ? `/posiciones/${p.id}` : '/posiciones')
+    : () => navigate(`/activo/${encodeURIComponent(p.asset)}`)
+
+  // — Pulsación larga —
+  const temporizador = useRef(null)
+  const origen = useRef([0, 0])
+  const yaDisparo = useRef(false)
+  function cancelar() {
+    if (temporizador.current) { clearTimeout(temporizador.current); temporizador.current = null }
+  }
+  function alPresionar(e) {
+    if (!actions.length) return
+    yaDisparo.current = false
+    origen.current = [e.clientX, e.clientY]
+    cancelar()
+    temporizador.current = setTimeout(() => {
+      yaDisparo.current = true
+      setAccionesAbiertas(true)
+    }, MS_PULSACION)
+  }
+  function alMover(e) {
+    // Si el dedo se movió, está deslizando las columnas (o scrolleando la
+    // lista): no es una pulsación.
+    if (Math.abs(e.clientX - origen.current[0]) > TOLERANCIA_PX
+      || Math.abs(e.clientY - origen.current[1]) > TOLERANCIA_PX) cancelar()
+  }
+  function alSoltar() { cancelar() }
+  function alTocar() {
+    // El click que sigue a una pulsación larga NO debe navegar además de abrir
+    // las acciones.
+    if (yaDisparo.current) { yaDisparo.current = false; return }
+    irAlDetalle()
+  }
+
+  // La barrita: dirección del día. Apagada si no hay cotización (o es efectivo),
+  // que es distinto de "no se movió".
+  const barra = (p.is_cash || p.dayVarPct == null) ? 'bg-line-2'
+    : p.dayVarPct > 0 ? 'bg-rendi-pos'
+    : p.dayVarPct < 0 ? 'bg-rendi-neg'
+    : 'bg-line-2'
+
+  const valorDisp = displayCurrency === 'ARS' ? p.valueUsd * tcBlue : p.valueUsd
+  const dayDisp = p.dayVarUsd == null ? null
+    : displayCurrency === 'ARS' ? p.dayVarUsd * tcBlue : p.dayVarUsd
+  const avgDisp = p.avgPriceUsd == null ? null
+    : displayCurrency === 'ARS' ? p.avgPriceUsd * tcBlue : p.avgPriceUsd
+
+  // La línea de contexto del ancla. Para un LOTE va la fecha de compra, que es
+  // lo único que lo distingue de sus hermanos. Se corta la fecha a mano en vez
+  // de parsearla: `entry_date` llega a veces con 'T' y a veces con espacio.
+  const fecha = String(p.entry_date || '').slice(0, 10).split('-').reverse().join('/')
+  const contexto = p.is_cash ? 'Efectivo'
+    : p._isAgg ? `${p.broker} · ${p._lotCount} lotes`
+    : p._isLot ? `${p.broker} · ${fecha || 'lote'}`
+    : p.broker
+
   return (
     <>
-    <SwipeRow
-      actions={actions}
-      onTap={(p._isLot || p.is_cash)
-        ? () => navigate(p.id ? `/posiciones/${p.id}` : '/posiciones')
-        : () => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
-      rowId={p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || ''}`}
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={alTocar}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); irAlDetalle() } }}
+      onPointerDown={alPresionar}
+      onPointerMove={alMover}
+      onPointerUp={alSoltar}
+      onPointerCancel={alSoltar}
+      onContextMenu={e => e.preventDefault()}
+      className={`group flex items-stretch w-max min-h-[72px] border-b border-line/70 cursor-pointer active:bg-bg-1 ${p._isLot ? 'opacity-80' : ''}`}
+      style={{ touchAction: 'pan-x pan-y' }}
     >
+      {/* El ancla. `bg-bg-0` OPACO a propósito: es lo que tapa las columnas que
+          pasan por debajo. La sombra del borde derecho es la señal de que hay
+          contenido escondido. */}
       <div
-        className={`bg-bg-1 border border-line rounded-xl p-4 active:bg-bg-2/40 transition-colors cursor-pointer${p._isLot ? ' ml-4 border-line/50' : ''}`}
+        className="sticky left-0 z-[2] flex-none bg-bg-0 group-active:bg-bg-1 flex items-center gap-2 pr-2 [box-shadow:8px_0_10px_-8px_rgba(0,0,0,0.85)]"
+        style={{ width: ANCHO_ANCLA }}
       >
-      {/* Identidad: logo + ticker + la línea de contexto (cantidad · moneda ·
-          lotes). La CANTIDAD EXACTA y el desglose de lotes viven en
-          /posiciones/:id — acá va lo que ubica la posición de un vistazo. */}
-      <div className="flex items-center gap-2.5 min-w-0">
-        {p._isLot && (
-          <span className="text-[11px] font-mono text-ink-3/60 leading-none -mr-1 flex-shrink-0" aria-hidden="true">└</span>
-        )}
-        <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={p._isLot ? 24 : 32} />
+        <span className={`w-[3px] self-stretch flex-none rounded-r ${barra}`} aria-hidden="true" />
+        <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={p._isLot ? 22 : 26} />
         <div className="min-w-0">
-          <div className="text-[15px] font-semibold text-ink-0 leading-tight truncate">
+          <div className="text-[13.5px] font-semibold text-ink-0 leading-[1.15] truncate">
             {/* cashAssetLabel: el efectivo del sub-broker dólar de un broker AR se
                 guarda como 'USDT' (centinela interno) pero son dólares reales. */}
             {p.is_cash ? cashAssetLabel(p) : fciLabel(p.asset)}
           </div>
-          <div className="text-[12.5px] tabular text-ink-3 leading-tight mt-0.5 truncate">
-            {p.is_cash
-              ? 'Efectivo'
-              : p._isAgg
-                ? `${formatQty(p.quantity)} unidades · ${p._lotCount} lotes`
-                : `${formatQty(p.quantity)} unidades · ${cur}`}
-          </div>
+          <div className="text-[10px] text-ink-3 leading-[1.15] mt-[2px] truncate">{contexto}</div>
         </div>
       </div>
 
-      {/* El valor, grande y SIN abreviar. `compactValue` existía porque la celda
-          de 76px no daba; en una card de 343px sí da. */}
-      <div className="mt-3 text-[26px] font-medium tabular text-ink-0 leading-none tracking-tight">
-        <FlashValue value={p.valueUsd}>
-          {montoCard(displayCurrency === 'ARS' ? p.valueUsd * tcBlue : p.valueUsd, displayCurrency)}
-        </FlashValue>
-        <span className="ml-1.5 text-[13px] text-ink-3 font-normal align-baseline">{displayCurrency}</span>
+      {/* Valor */}
+      <Celda>
+        <div className={`${LINEA_1} text-ink-0`}>
+          <FlashValue value={p.valueUsd}>{montoCard(valorDisp, displayCurrency)}</FlashValue>
+        </div>
         {!p.is_cash && !p.priceTrusted && (
-          <span className="ml-2 text-[12.5px] text-ink-3 font-normal align-middle">al costo</span>
+          <div className={`${LINEA_2} text-ink-3`}>al costo</div>
         )}
-      </div>
+      </Celda>
 
-      {/* Chips: P&L total IZQUIERDA, variación del día DERECHA — el orden del
-          desktop (Valor · P&L · Var. día). La grilla vieja los tenía al revés. */}
-      {!p.is_cash && (
-        <div className="mt-3 flex items-center gap-2">
-          {!p.priceTrusted ? (
-            /* Sin cotización el valor ES el costo y el P&L es 0 por construcción.
-               Publicar "+0,0%" se lee como "no ganaste" cuando lo que pasa es
-               "no sé cuánto vale". Un chip apagado lo dice. */
-            <span className="inline-flex items-center gap-1.5 rounded bg-bg-2 border border-line/60 px-2.5 py-1.5 text-[12.5px] text-ink-3">
-              Sin cotización
-            </span>
-          ) : (
-            <>
-              {/* El monto y el % se colorean por SEPARADO, como en la grilla vieja.
-                  No es cosmético: para una posición ARS el % es el retorno
-                  NOMINAL EN PESOS y el monto sigue al toggle, así que pueden
-                  tener signos distintos (AL30: −$44 en USD, +0,4% en pesos).
-                  Pintarlos del mismo color haría pasar uno de los dos por lo
-                  que no es. */}
-              <span className="inline-flex items-baseline gap-1.5 rounded bg-bg-2 border border-line/60 px-2.5 py-1.5 min-w-0">
-                <span className="text-[11px] text-ink-3 flex-shrink-0">P&L</span>
-                <span className={`text-[13px] font-medium tabular truncate ${colorClass(pnlDisplay)}`}>
-                  {montoCard(pnlDisplay, displayCurrency, { signed: true })}
-                </span>
-                <span className={`text-[12px] tabular flex-shrink-0 ${colorClass(p.pnlPct)}`}>{pctSigned(p.pnlPct)}</span>
-              </span>
-              {p.dayVarPct != null && (
-                <span className={`ml-auto inline-flex items-baseline gap-1.5 rounded bg-bg-2 border border-line/60 px-2.5 py-1.5 flex-shrink-0 ${colorClass(p.dayVarPct)}`}>
-                  <span className="text-[11px] text-ink-3">hoy</span>
-                  <span className="text-[13px] font-medium tabular">{pctSigned(p.dayVarPct)}</span>
-                </span>
-              )}
-            </>
-          )}
-          {showDetail && p.isAR && p.priceTrusted && p.pnlUsd != null && (
-            <span className="ml-auto text-[11px] tabular text-ink-3 flex-shrink-0">
-              {montoCard(p.pnlUsd, 'USD', { signed: true })} USD
-            </span>
-          )}
+      {/* P&L — el monto y el % se colorean por SEPARADO. No es cosmético: para
+          una posición ARS el % es el retorno NOMINAL EN PESOS y el monto sigue
+          al toggle, así que pueden tener signos distintos (AL30: −$44 en USD,
+          +0,4% en pesos). Pintarlos del mismo color haría pasar uno de los dos
+          por lo que no es. */}
+      <Celda>
+        {p.is_cash ? <Vacio /> : !p.priceTrusted ? (
+          /* Sin cotización el valor ES el costo y el P&L es 0 por construcción.
+             Publicar "+0,0%" se lee como "no ganaste" cuando lo que pasa es
+             "no sé cuánto vale". */
+          <div className={`${LINEA_2} text-ink-3`}>sin cotización</div>
+        ) : (
+          <>
+            <div className={`${LINEA_1} ${colorClass(pnlDisplay)}`}>
+              {montoCard(pnlDisplay, displayCurrency, { signed: true })}
+            </div>
+            <div className={`${LINEA_2} ${colorClass(p.pnlPct)}`}>{pctSigned(p.pnlPct)}</div>
+          </>
+        )}
+      </Celda>
+
+      {/* Hoy */}
+      <Celda>
+        {(p.is_cash || p.dayVarPct == null || dayDisp == null) ? <Vacio /> : (
+          <>
+            <div className={`${LINEA_1} ${colorClass(dayDisp)}`}>
+              {montoCard(dayDisp, displayCurrency, { signed: true })}
+            </div>
+            <div className={`${LINEA_2} ${colorClass(p.dayVarPct)}`}>{pctSigned(p.dayVarPct)}</div>
+          </>
+        )}
+      </Celda>
+
+      {/* Cantidad */}
+      <Celda>
+        {p.is_cash ? <Vacio /> : (
+          <>
+            <div className={`${LINEA_1} text-ink-0`}>{formatQty(p.quantity)}</div>
+            <div className={`${LINEA_2} text-ink-3`}>{unidadDe(p)}</div>
+          </>
+        )}
+      </Celda>
+
+      {/* Precio prom. */}
+      <Celda>
+        {(p.is_cash || avgDisp == null) ? <Vacio /> : (
+          <div className={`${LINEA_1} text-ink-0`}>{precioCard(avgDisp, displayCurrency)}</div>
+        )}
+      </Celda>
+    </div>
+
+    {/* Las acciones de la fila, por pulsación larga. Son las MISMAS que revelaba
+        el swipe: no se perdió ninguna. */}
+    {accionesAbiertas && (
+      <BottomSheet
+        open
+        onClose={() => setAccionesAbiertas(false)}
+        title={p.is_cash ? cashAssetLabel(p) : fciLabel(p.asset)}
+        eyebrow={contexto}
+      >
+        <div className="px-4 pb-4 space-y-1">
+          {actions.map(a => {
+            const Icon = a.icon
+            return (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => { setAccionesAbiertas(false); a.onClick() }}
+                className={`w-full flex items-center gap-3 px-3 py-3 rounded text-[15px] font-medium text-left active:bg-bg-2 transition-colors ${TONO_ACCION[a.tone] || 'text-ink-0'}`}
+              >
+                {Icon && <Icon size={17} strokeWidth={1.75} />}
+                {a.label}
+              </button>
+            )
+          })}
         </div>
-      )}
-      </div>
-    </SwipeRow>
+      </BottomSheet>
+    )}
+
     {aiOpen && (
       <AnalysisDrawer
         open
@@ -1878,6 +2056,16 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
     </>
   )
 })
+
+// El tono ya no pinta un botón de fondo entero (como en el swipe) sino el texto
+// y el ícono de una fila del sheet.
+const TONO_ACCION = {
+  pos: 'text-rendi-pos',
+  neg: 'text-rendi-neg',
+  warn: 'text-rendi-warn',
+  accent: 'text-ink-0',
+  neutral: 'text-ink-0',
+}
 
 // Monto de card: sin abreviar y SIN el código de moneda. El código lo dice el
 // segmentado del header y la línea del valor; repetirlo en cada chip es lo que
@@ -1896,6 +2084,40 @@ function formatQty(q) {
   if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('en-US')
   if (Math.abs(q) >= 1) return q.toFixed(2).replace(/\.00$/, '')
   return q.toFixed(4)
+}
+
+// El PRECIO sí lleva decimales: `montoCard` redondea a entero (sirve para un
+// valor de cartera, no para un precio unitario — un CEDEAR a US$14,37 se
+// mostraría "US$14").
+function precioCard(n, currency) {
+  if (n == null || isNaN(n)) return '—'
+  const isArs = String(currency).toUpperCase() === 'ARS'
+  const abs = Math.abs(n)
+  // Precios chicos (cripto, un bono per-1) necesitan más resolución que una
+  // acción; sin esto una posición a US$0,0043 se lee "$0,00".
+  const dec = abs >= 1000 ? 0 : abs >= 1 ? 2 : 4
+  const body = abs.toLocaleString(isArs ? 'es-AR' : 'en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec })
+  return `${n < 0 ? '−' : ''}$${body}`
+}
+
+// La unidad en la que se cuenta la posición. Un FCI tiene cuotapartes y un bono
+// valor nominal; llamarlos "unidades" a los tres es lo que hacía la fila vieja.
+function unidadDe(p) {
+  if (isFciSym(p.asset)) return 'cuotapartes'
+  if (isBondPosition(p)) return 'nominales'
+  return 'unidades'
+}
+
+// Precio promedio en USD — ESPEJO del desktop (Positions.jsx:1864 y :2106-2109).
+// Vive a nivel de módulo porque lo necesitan DOS lugares con el mismo criterio:
+// el memo por-lote y la fila agregada por ticker (que promedia sobre `_lots`,
+// no sobre el primer lote).
+function avgPriceUsdDe(p, isAR, tcBlue, tcCedear, costBasis) {
+  if (!p || p.is_cash || !(p.quantity > 0)) return null
+  if (isAR) return avgCostUsdPerUnit(p, tcBlue, costBasis, true)
+  const lotes = (p._lots && p._lots.length) ? p._lots : [p]
+  if (lotes.some(l => costInPesos(l))) return avgCostUsdPerUnit(p, tcCedear, costBasis, false)
+  return p.buy_price ?? (p.invested ? p.invested / p.quantity : null)
 }
 
 
