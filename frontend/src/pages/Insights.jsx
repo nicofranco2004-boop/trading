@@ -1033,9 +1033,26 @@ function InsightsDesktop({ _embeddedTab }) {
           <InfoTooltip>
             <p className="font-semibold text-ink-0">Por qué no hay curva</p>
             <p>{perf.motivo_texto || 'Todavía no hay mediciones a mercado de esta cuenta.'}</p>
-            {modoPerf === 'certero' && (
+            {/* ⚠️ NO ACONSEJAR UN MODO QUE NO SE PUEDE USAR. `modoPerf === 'certero'`
+                solo era SIEMPRE VERDADERO en pesos: ahí el modo es certero de fábrica
+                y el toggle está deshabilitado, así que el usuario leía "Probá el modo
+                Estimado" con el botón Estimado en gris y `cursor-not-allowed` a diez
+                píxeles. Son 184 usuarios —los que tienen broker en pesos Y ninguna
+                fila apta—, uno de cada cinco.
+                Lo destapó la ronda anterior: antes el toggle en pesos no se dibujaba,
+                así que el consejo apuntaba a un control invisible. Hacerlo visible
+                volvió visible la contradicción. Lo que sobra es el consejo, no el
+                gate: en ARS el estimado no se puede construir hoy. */}
+            {modoPerf === 'certero' && !togglePerfDeshabilitado && (
               <p className="text-ink-3">Probá el modo <strong>Estimado</strong>: incluye
                  tu historia contable, que es aproximada pero te deja ver la forma.</p>
+            )}
+            {/* Y el de pesos no se queda con el cartel mudo: sin esto le quedaba
+                "Sin mediciones todavía", el motivo, y ninguna salida. */}
+            {togglePerfDeshabilitado && (
+              <p className="text-ink-3">El modo <strong>Estimado</strong> —la alternativa
+                 cuando todavía no hay mediciones— por ahora sólo funciona en dólares.
+                 Podés cambiar la moneda desde <strong>Configuración</strong>.</p>
             )}
           </InfoTooltip>
         </div>
