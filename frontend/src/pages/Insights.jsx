@@ -128,6 +128,11 @@ function ctaForCategory(cat) {
 
 const MES_CORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
 
+// Por qué el toggle Certero/Estimado está apagado en pesos. Dice qué falta, no cómo
+// está implementado: al usuario no le sirve "arsMonthly no pasa por applyMtmToMonthly".
+const MOTIVO_TOGGLE_ARS =
+  'Sólo disponible en dólares — en pesos todavía no se puede reconstruir la historia estimada'
+
 /**
  * DotSolo — dibuja un punto SÓLO cuando quedó solo en su segmento.
  *
@@ -269,6 +274,10 @@ function InsightsDesktop({ _embeddedTab }) {
   // reconstrucción" —reconstruir un CEDEAR o una acción es EXACTO— sino
   // "valuado a precio real vs valuado al costo".
   const [modoPerf, setModoPerf] = useState('certero')
+  // En pesos el toggle se DIBUJA pero no se puede usar (ver el comentario largo en
+  // el control). El motivo viaja en el `title` para que el usuario se entere de que
+  // el modo existe y de qué le falta para usarlo.
+  const togglePerfDeshabilitado = currency !== 'USD'
 
   useEffect(() => { loadAll() }, [])
 
@@ -947,7 +956,10 @@ function InsightsDesktop({ _embeddedTab }) {
     const [y, m, d] = String(iso).split('-')
     return `${d}/${m}/${y}`
   }
-  const ChipMedido = () => {
+  // `explica` agrega, al lado del chip, la frase que evita la conclusión equivocada
+  // ("perdí mi historial"). Va sólo en la tarjeta de Performance: en el encabezado
+  // de la curva de drawdown la misma frase, en la misma pantalla, sería ruido.
+  const ChipMedido = ({ explica = false }) => {
     if (!perf) return null
     const cob = perf.cobertura_reconstruccion
     const partida = !!perf.serie_partida
@@ -1020,7 +1032,7 @@ function InsightsDesktop({ _embeddedTab }) {
       )
     }
     return (
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-2 text-ink-2 border border-line whitespace-nowrap">
           Medido desde {fmtFecha(perf.medido_desde)}
           {/* La cobertura, VISIBLE — no escondida en el tooltip. Era el punto:
@@ -1028,12 +1040,33 @@ function InsightsDesktop({ _embeddedTab }) {
           {cob != null && cob < 0.999 && ` · ${(cob * 100).toFixed(0)}% a precio real`}
           {partida && ' · con un hueco'}
         </span>
+        {/* ⚠️ LA FECHA SOLA NO ALCANZA. "Medido desde 29/06/2026" es cierto y deja al
+            usuario concluyendo que perdió su historia — le pasó al dueño, que escribió
+            el producto. Y no es su cuenta: NINGUNO de los 649 usuarios con historial
+            tiene más de tres meses medidos, porque el cron recién empezó a estampar
+            los campos que el clasificador necesita. La feature no está mal hecha,
+            nació hace poco.
+            ⚠️ NO VA NINGUNA FECHA NI PLAZO ACÁ. La única fecha que se muestra es
+            `perf.medido_desde`, que es de este usuario; escribir "desde mayo" sería
+            pasarle la fecha de OTRO, y "dos años" salió de una expectativa, no de una
+            medición. La frase explica el MECANISMO, que es verdad para siempre y no
+            envejece. */}
+        {explica && (
+          <span className="text-[11px] text-ink-3 leading-snug">
+            No perdiste historial — antes de esa fecha no hay precios guardados con qué
+            medir, y la ventana crece todos los días.
+          </span>
+        )}
         <InfoTooltip>
           <p className="font-semibold text-ink-0">Desde cuándo esto es una medición</p>
           <p>Antes de esa fecha no hay fotos de mercado de tu cartera: lo que existe
              es la reconstrucción contable (aportes + lo ya vendido), que no baja
              cuando baja el mercado y por eso da más alto que el valor real.</p>
           <p>Se dibuja aparte, en gris, y nunca cuenta como un máximo.</p>
+          <p className="text-ink-3">Que esta ventana sea corta no significa que falte
+             nada tuyo: tus operaciones y tus aportes están todos. Lo que empieza en
+             esa fecha es el registro de PRECIOS con el que se puede medir, y suma un
+             día por día.</p>
           {cob != null && (
             <>
               <div className="border-t border-line/60 my-1.5" />
@@ -2789,34 +2822,48 @@ function InsightsDesktop({ _embeddedTab }) {
             <h2 className="font-semibold text-ink-0">
               {currency === 'USD' ? `Cartera vs ${benchmarkKey} (USD)` : `Cartera vs ${benchmarkKey} (ARS)`}
             </h2>
-            {currency === 'USD' && (
-              <div className="flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-0.5 ml-1">
-                {[
-                  // El toggle es la decisión del usuario, así que los títulos dicen
-                  // qué GANA y qué PIERDE en cada posición — no cómo está
-                  // implementado. "Menos historial pero el número está bien" vs
-                  // "más historial con riesgo de error" es literalmente el trade-off
-                  // que el modo ofrece.
-                  { k: 'certero', t: 'Certero',
-                    h: 'Menos historial, número exacto: sólo lo valuado a precio real. Incluye drawdown y pico.' },
-                  { k: 'estimado', t: 'Estimado',
-                    h: 'Más historial, aproximado: reconstruido de tu contabilidad. Sólo se mueve cuando vendés — no refleja lo que pasa con lo que todavía tenés. No puede dar drawdown ni pico.' },
-                ].map(({ k, t, h }) => (
-                  <button
-                    key={k}
-                    title={h}
-                    onClick={() => setModoPerf(k)}
-                    className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${
-                      modoPerf === k
+            {/* ⚠️ EN PESOS SE VE DESHABILITADO, NO DESAPARECE. Antes esto estaba
+                envuelto en `currency === 'USD' &&`: en ARS el control no se dibujaba
+                y el usuario no tenía forma de enterarse de que el otro modo existe.
+                Un control ausente se lee como una app incompleta; uno deshabilitado
+                con el motivo se lee como una app honesta. Y son 758 de 854 usuarios
+                (89%) los que tienen al menos un broker en pesos.
+                El GATE NO SE SACA: en ARS el modo estimado no se puede construir hoy
+                —`arsMonthly` no pasa por `applyMtmToMonthly`, y el re-anclaje usa
+                snapshots GLOBALES mientras la serie en pesos es un subconjunto—, y
+                eso necesita snapshots por broker, que es un cambio de modelo de datos.
+                ⚠️ En USD el markup tiene que quedar IDÉNTICO: con `deshabilitado`
+                en false, el ternario devuelve exactamente las clases de antes y
+                `disabled={false}` no emite atributo. */}
+            <div className="flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-0.5 ml-1">
+              {[
+                // El toggle es la decisión del usuario, así que los títulos dicen
+                // qué GANA y qué PIERDE en cada posición — no cómo está
+                // implementado. "Menos historial pero el número está bien" vs
+                // "más historial con riesgo de error" es literalmente el trade-off
+                // que el modo ofrece.
+                { k: 'certero', t: 'Certero',
+                  h: 'Menos historial, número exacto: sólo lo valuado a precio real. Incluye drawdown y pico.' },
+                { k: 'estimado', t: 'Estimado',
+                  h: 'Más historial, aproximado: reconstruido de tu contabilidad. Sólo se mueve cuando vendés — no refleja lo que pasa con lo que todavía tenés. No puede dar drawdown ni pico.' },
+              ].map(({ k, t, h }) => (
+                <button
+                  key={k}
+                  title={togglePerfDeshabilitado ? MOTIVO_TOGGLE_ARS : h}
+                  disabled={togglePerfDeshabilitado}
+                  onClick={() => setModoPerf(k)}
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${
+                    togglePerfDeshabilitado
+                      ? 'text-ink-3/50 cursor-not-allowed'
+                      : modoPerf === k
                         ? 'bg-blue-600 text-white'
                         : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
-                    }`}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-            )}
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
             <InfoTooltip>
               {/* §5.2 · La explicación del dueño, arriba de todo: es mejor que
                   cualquier cosa que hubiera en pantalla, y contesta la pregunta que
@@ -2830,6 +2877,20 @@ function InsightsDesktop({ _embeddedTab }) {
                   <p>Tu rendimiento lo puedo medir de dos maneras: una de la que estoy
                      seguro pero con menos historial, y otra que te da más meses pero
                      es aproximada. El benchmark es el mismo y es exacto en las dos.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                </>
+              )}
+              {/* En pesos el toggle se ve pero está apagado: acá va el porqué, para
+                  que el control deshabilitado no sea otro vacío sin explicación. */}
+              {togglePerfDeshabilitado && (
+                <>
+                  <p className="font-semibold text-ink-0">Por qué el toggle está apagado</p>
+                  <p>El modo <strong>Estimado</strong> reconstruye tu historia con lo que
+                     aportaste y lo que ya vendiste, y hoy eso sólo se puede armar sobre
+                     la cartera entera, en dólares. En pesos falta el dato para hacerlo
+                     por broker, así que preferimos no mostrarlo antes que mostrarlo mal.</p>
+                  <p className="text-ink-3">Lo que estás viendo acá es la medición a
+                     precio real, que sí es exacta.</p>
                   <div className="border-t border-line/60 my-1.5" />
                 </>
               )}
@@ -2859,7 +2920,7 @@ function InsightsDesktop({ _embeddedTab }) {
           {/* El chip, en su propio renglón: puede crecer todo lo que necesite sin
               mover un control. */}
           {currency === 'USD' && (
-            <div className="mt-1.5"><ChipMedido /></div>
+            <div className="mt-1.5"><ChipMedido explica /></div>
           )}
           </div>
 
