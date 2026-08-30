@@ -278,6 +278,16 @@ function InsightsDesktop({ _embeddedTab }) {
   // el control). El motivo viaja en el `title` para que el usuario se entere de que
   // el modo existe y de qué le falta para usarlo.
   const togglePerfDeshabilitado = currency !== 'USD'
+  // ⚠️ QUIÉN LLEVA LA EXPLICACIÓN DEL CHIP. Hay dos chips "Medido desde": el de la
+  // tarjeta de Performance y el del encabezado de la curva de drawdown. La frase va
+  // UNA sola vez por pantalla — dos veces sería ruido.
+  // El de Performance sólo se dibuja en USD, porque describe la serie de Performance
+  // y en pesos esa serie no existe. Eso dejaba a los usuarios de ARS —758 de 854,
+  // el 89%— con el chip del drawdown SOLO en pantalla y sin explicar nada: la fecha
+  // pelada que hace pensar que se perdió el historial, que es justo lo que la frase
+  // vino a evitar.
+  // Por eso la condición no es "en qué tarjeta estoy" sino "¿soy el único chip?".
+  const chipPerfVisible = currency === 'USD'
 
   useEffect(() => { loadAll() }, [])
 
@@ -2854,7 +2864,18 @@ function InsightsDesktop({ _embeddedTab }) {
                   onClick={() => setModoPerf(k)}
                   className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${
                     togglePerfDeshabilitado
-                      ? 'text-ink-3/50 cursor-not-allowed'
+                      // ⚠️ `text-ink-3` PELADO, NO `/50`. Con media opacidad sobre un
+                      // token que ya arranca bajo, el control apagado se dibujaba a
+                      // 1,67:1 —rgb(52,59,72) sobre rgb(14,18,24), en 11px—: la MITAD
+                      // del contraste del estado habilitado más tenue (3,16:1). Un
+                      // control que nadie ve es el vacío de antes con más HTML, y el
+                      // objetivo de la ronda era justamente que el usuario se entere
+                      // de que el modo existe. Sin el /50 queda en 3,16:1, el mismo
+                      // que el botón no seleccionado en dólares.
+                      // Sigue leyéndose como apagado porque lo que comunica el estado
+                      // es el `cursor-not-allowed` y la ausencia de la píldora azul,
+                      // no la opacidad.
+                      ? 'text-ink-3 cursor-not-allowed'
                       : modoPerf === k
                         ? 'bg-blue-600 text-white'
                         : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
@@ -2919,7 +2940,7 @@ function InsightsDesktop({ _embeddedTab }) {
           </div>
           {/* El chip, en su propio renglón: puede crecer todo lo que necesite sin
               mover un control. */}
-          {currency === 'USD' && (
+          {chipPerfVisible && (
             <div className="mt-1.5"><ChipMedido explica /></div>
           )}
           </div>
@@ -3138,7 +3159,9 @@ function InsightsDesktop({ _embeddedTab }) {
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
-            <ChipMedido />
+            {/* Explica sólo cuando el de Performance no está — en pesos, donde éste
+                es el único chip de la pantalla. En USD son dos y la frase va arriba. */}
+            <ChipMedido explica={!chipPerfVisible} />
             <InfoTooltip>
               <p className="font-semibold text-ink-0">Qué es</p>
               <p>Cuánto bajaste desde tu mejor momento histórico. Si llegaste a +20% y ahora estás en +10%, tu drawdown es −10%.</p>
