@@ -135,15 +135,14 @@ function Hero() {
         <div className="flex items-center justify-center gap-3 flex-wrap mb-4">
           <Link
             to="/login?mode=register"
-            className="group inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgba(139,125,255,0.6)]"
+            className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgba(139,125,255,0.6)]"
           >
             Crear mi cuenta gratis
-            <ArrowRight size={14} strokeWidth={2} className="group-hover:translate-x-0.5 transition-transform" />
           </Link>
           <button
             type="button"
             onClick={() => { window.location.href = '/?demo=1' }}
-            className="inline-flex items-center gap-2 border border-line-3 hover:border-ink-2 hover:bg-bg-2/50 text-ink-0 font-medium rounded-sm px-5 py-2.5 transition-colors"
+            className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgba(139,125,255,0.6)]"
           >
             <Sparkles size={14} strokeWidth={2} />
             Ver demo sin registrarme
