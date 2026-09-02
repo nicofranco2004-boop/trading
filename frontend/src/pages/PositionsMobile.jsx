@@ -2189,7 +2189,7 @@ const PositionRow = memo(function PositionRow({ p, displayCurrency = 'USD', tcBl
         style={{ width: ANCHO_ANCLA }}
       >
         <span className={`w-[3px] self-stretch flex-none rounded-r ${barra}`} aria-hidden="true" />
-        <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={p._isLot ? 22 : 26} />
+        <AssetLogo asset={cashAssetLabel(p)} isCash={!!p.is_cash} size={p._isLot ? 22 : 26} />
         <div className="min-w-0">
           <div className="text-[13.5px] font-semibold text-ink-0 leading-[1.15] truncate">
             {/* cashAssetLabel: el efectivo del sub-broker dólar de un broker AR se
