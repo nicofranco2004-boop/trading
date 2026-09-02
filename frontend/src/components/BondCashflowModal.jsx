@@ -88,7 +88,13 @@ export default function BondCashflowModal({
   // como chip. La serie está cacheada a nivel módulo: si Cartera ya la trajo,
   // esto no dispara otro fetch.
   const fxHist = useFxHistory()
-  const [date, setDate] = useState(estimate?.date || today())
+  // La fecha del cronograma es el PRÓXIMO pago, o sea el futuro. Un cobro se registra
+  // cuando se cobró: sembrar 09/01/2027 hacía que el usuario confirmara cupones con esa
+  // fecha (25 seguidos en una cuenta real) y el backend ahora los rechaza. El pendiente
+  // del inbox trae una fecha pasada y sí se respeta.
+  const [date, setDate] = useState(
+    estimate?.date && estimate.date <= today() ? estimate.date : today()
+  )
   // La sugerencia sigue a la fecha DEL FORMULARIO, no a la del cronograma: si el
   // usuario corrige la fecha porque el broker le acreditó dos días después, el
   // dólar tiene que ser el de ESE día.

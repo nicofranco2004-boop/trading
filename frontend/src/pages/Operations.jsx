@@ -34,6 +34,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { useToast } from '../components/Toast'
 import { computeTradeStats } from '../utils/tradeStats'
+import { opPnlUsd } from '../utils/assetPnl'
 import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
 import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
@@ -129,7 +130,15 @@ export default function Operations() {
   }, [])
 
   async function load() {
-    try { setOps(await api.get('/operations')) }
+    try {
+      // `pnl_usd` de un cupón/amortización en un broker en pesos guarda PESOS (ver
+      // utils/assetPnl.js). Se normaliza acá, en el borde, y no en el endpoint: el
+      // formulario de edición vuelve a escribir `pnl_usd`, así que conserva el nativo
+      // en `pnl_usd_native`. Sin esto un cupón de $370.524 era el "Mejor trade
+      // US$370.524" (medido, usuario real 2026-08).
+      const rows = await api.get('/operations')
+      setOps((rows || []).map(o => ({ ...o, pnl_usd_native: o.pnl_usd, pnl_usd: opPnlUsd(o) })))
+    }
     finally { setLoadingOps(false) }
   }
   function openAdd() {
@@ -144,7 +153,7 @@ export default function Operations() {
       entry_price: op.entry_price ?? '',
       exit_price: op.exit_price ?? '',
       quantity: op.quantity ?? '',
-      pnl_usd: op.pnl_usd ?? '',
+      pnl_usd: (op.pnl_usd_native ?? op.pnl_usd) ?? '',
       pnl_pct: op.pnl_pct ?? '',
       commissions: op.commissions ?? '',
       // El backend decide por la foto de reverso guardada en el alta, no por
