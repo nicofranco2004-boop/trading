@@ -13,7 +13,6 @@ import AIDiscoveryBanner from '../components/ai/AIDiscoveryBanner'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
-import CurrencyToggle from '../components/CurrencyToggle'
 import { DashboardSkeleton } from '../components/Skeleton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import BenchmarksLine from '../components/BenchmarksLine'
@@ -730,10 +729,10 @@ function PersonalDashboard() {
               source="dashboard_header"
               variant="compact"
             />
-            {/* El toggle de divisa (USD/ARS) se movió a la fila de tabs de
-                Cartera.jsx — vive a nivel página para estar disponible en las
-                3 tabs, no solo en Evolución. State global compartido con mobile
-                (HomeMobile, PositionsMobile) y persistido en localStorage. */}
+            {/* El selector de moneda salió de acá: es global y vive en el
+                shell (sidebar en escritorio, barra superior en mobile), así
+                está en el mismo lugar en todas las páginas. State compartido y
+                persistido en localStorage — ver CurrencySwitcher.jsx. */}
           </div>
         }
       />
@@ -788,10 +787,6 @@ function PersonalDashboard() {
                 : 'Para brokers ARS, la conversión a USD se hace al blue actual.'}
             </p>
           </InfoTooltip>
-          {/* Mismo toggle que Cartera (estado global compartido): el Dashboard ya
-              respetaba la preferencia de moneda en todos sus números, pero no
-              tenía cómo cambiarla — había que ir hasta Cartera y volver. */}
-          <CurrencyToggle className="ml-auto" />
         </div>
         <div className="text-[30px] sm:text-[34px] leading-none font-semibold text-ink-0 tabular">
           <PrivacyMask><FlashValue value={portfolioTotal}><AnimatedNumber value={portfolioTotal} format={fmt} /></FlashValue></PrivacyMask>

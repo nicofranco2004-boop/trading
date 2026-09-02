@@ -112,9 +112,11 @@ export default function Analisis() {
           })}
         </div>
       </div>
-      {/* El selector de moneda de valuación (riel USD MEP / CCL / Pesos) se
-          unificó en Configuración → Tipos de cambio. Acá sólo se muestran los
-          valores en la moneda elegida; para cambiarla, el user va a /config. */}
+      {/* La moneda de valuación (USD MEP / USD CCL / Pesos) se cambia desde el
+          selector global del shell, fijo en todas las páginas — antes en esta
+          pantalla no había forma de cambiarla aunque el Diagnóstico sí la
+          respeta. Comportamiento y el detalle de Reportes todavía no: sus
+          cifras llegan formateadas en USD desde el backend. */}
 
       {/* Tab content — lazy boundary por tab (cada uno es un chunk separado) */}
       <Suspense fallback={<div className="text-center py-20 text-ink-3 text-sm">Cargando…</div>}>

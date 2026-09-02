@@ -26,7 +26,6 @@ import { nextPaymentForPosition } from '../utils/bondSchedule'
 import BondDetailRow from '../components/BondDetail'
 import ReturnFxHint from '../components/ReturnFxHint'
 import StalePricesNotice from '../components/StalePricesNotice'
-import CurrencyToggle from '../components/CurrencyToggle'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api, errorMessage } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel } from '../utils/valuation'
@@ -93,7 +92,7 @@ export default function Positions() {
 function PositionsDesktop() {
   // Fase A: currency global compartido — Positions desktop respeta el toggle
   // global USD/ARS (mismo state que Dashboard, HomeMobile, PositionsMobile).
-  const { currency: displayCurrency, setCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
+  const { currency: displayCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
   const { hidden, toggle: togglePrivacy } = usePrivacy()
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
@@ -1595,10 +1594,6 @@ function PositionsDesktop() {
           options={[{ id: 'all', label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]}
         />
         <FilterPill label="Ordenar" value={sortBy} onChange={setSortBy} options={SORT_OPTIONS} />
-        {/* Toggle global de moneda (USD | ARS) — componente compartido con el
-            Dashboard. Mismo state global (localStorage 'rendi_display_currency'),
-            así que da igual desde dónde lo toques. */}
-        <CurrencyToggle />
         <button
           type="button"
           onClick={() => setShowAllLots(v => !v)}

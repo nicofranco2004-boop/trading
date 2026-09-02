@@ -105,10 +105,8 @@ export default function Cartera() {
           + dentro de Posiciones con botones de acción competía por atención).
           Solución: pills más grandes (text-sm font-semibold, padding amplio) +
           violet/15 + borde violet/40 en la activa para que sea inconfundible.
-          A la derecha de la fila va el toggle de divisa (USD/ARS): vive a nivel
-          Cartera para que esté disponible en las 3 tabs (Posiciones / Evolución
-          / Objetivos) y no solo en una. Es global —cambiarlo acá lo cambia en
-          toda la app— pero la opción tiene que estar donde el user está. */}
+          La moneda NO se elige acá: el selector es global y vive en el shell
+          (sidebar / barra superior), ver components/CurrencySwitcher.jsx. */}
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <div className="inline-flex flex-wrap gap-2">
           {TABS.map(t => {
@@ -132,9 +130,9 @@ export default function Cartera() {
           })}
         </div>
       </div>
-      {/* El selector de moneda de valuación (riel USD MEP / CCL / Pesos) se
-          unificó en Configuración → Tipos de cambio. Acá sólo se muestran los
-          valores en la moneda elegida; para cambiarla, el user va a /config. */}
+      {/* La moneda de valuación (USD MEP / USD CCL / Pesos) se cambia desde el
+          selector global del shell, fijo en todas las páginas. Acá sólo se
+          muestran los valores en la moneda elegida. */}
 
       <Suspense fallback={
         <div className="space-y-4 py-6" aria-busy="true">

@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Search, RefreshCcw, Sparkles } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
+import CurrencySwitcher from '../CurrencySwitcher'
 import { api } from '../../utils/api'
 import { usePullToRefresh } from '../../hooks/usePullToRefresh'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
@@ -78,6 +79,11 @@ export default function MobileTopBar({ onRefresh }) {
             <span className="text-lg font-semibold text-ink-0 tracking-tight">rendi</span>
           </Link>
           <div className="flex items-center gap-1">
+            {/* Moneda — el mismo control que la sidebar de escritorio, acá fijo
+                en la barra: la preferencia es global y se cambia desde donde
+                estés, sin ir a buscarla a la pantalla que la tenga. Alineado a
+                la derecha para que el panel no se salga del viewport. */}
+            <CurrencySwitcher variant="chip" align="right" className="mr-1" />
             {/* Coach IA — botón siempre visible para abrir el drawer global */}
             <button
               type="button"

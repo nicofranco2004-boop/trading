@@ -1,4 +1,4 @@
-import { useCurrency } from '../contexts/CurrencyContext'
+import { useCurrencyChoice } from '../hooks/useCurrencyChoice'
 
 // CurrencyRail — selector de moneda de valuación en formato "riel" segmentado
 // (3 opciones a lo ancho): USD MEP · USD CCL · Pesos. Reemplaza al toggle
@@ -6,49 +6,17 @@ import { useCurrency } from '../contexts/CurrencyContext'
 //
 // Cada opción muestra su cotización actual debajo del label (USD MEP → $1.424,
 // USD CCL → $1.432; Pesos → "ARS"), tomada del /dolar que ya publica el
-// CurrencyContext. Mapea los DOS ejes de preferencia a una sola selección:
-//   - USD MEP → currency=USD, valuationDollar=mep   (dólar local, default)
-//   - USD CCL → currency=USD, valuationDollar=ccl   (dólar implícito del CEDEAR)
-//   - Pesos   → currency=ARS                          (todo en ARS)
+// CurrencyContext. El mapeo a los dos ejes del contexto (currency +
+// valuationDollar) vive en `hooks/useCurrencyChoice` — compartido con el
+// CurrencySwitcher global del shell, para que el mismo click haga lo mismo
+// desde cualquiera de los dos controles.
 //
-// Al elegir "Pesos" NO se pisa valuationDollar: se conserva para que al volver
-// a USD el user recupere su elección MEP/CCL (round-trip). State global
-// (localStorage, per-device) → cambiarlo acá lo cambia en toda la app.
-
-// Formatea una cotización ARS/USD para el subtítulo ("$1.424"). Devuelve null
-// si todavía no llegó el /dolar (el caller deja el espacio con un &nbsp).
-function fmtRate(v) {
-  const n = Number(v)
-  if (v == null || !Number.isFinite(n) || n <= 0) return null
-  return '$' + n.toLocaleString('es-AR', { maximumFractionDigits: 0 })
-}
-
-const OPTS = [
-  { key: 'mep', label: 'USD MEP' },
-  { key: 'ccl', label: 'USD CCL' },
-  { key: 'ars', label: 'Pesos' },
-]
+// Esta es la versión ANCHA, para la página de Configuración (donde hay lugar
+// para explicar y mostrar las tres cotizaciones a la vez). El control de todos
+// los días es el CurrencySwitcher, fijo en la sidebar / barra superior.
 
 export default function CurrencyRail({ className = '' }) {
-  const { currency, valuationDollar, setCurrency, setValuationDollar, dolar } = useCurrency()
-  const active = currency === 'ARS' ? 'ars' : (valuationDollar === 'ccl' ? 'ccl' : 'mep')
-
-  // El selector muestra el MEDIO — el mismo dólar con el que se valúa la cartera
-  // (no la punta de venta), para que la tasa de abajo coincida con el total.
-  const subFor = {
-    mep: fmtRate(dolar?.mep?.medio ?? dolar?.mep?.venta),
-    ccl: fmtRate(dolar?.ccl?.medio ?? dolar?.ccl?.venta),
-    ars: 'ARS',
-  }
-
-  function pick(key) {
-    if (key === 'ars') {
-      setCurrency('ARS')
-    } else {
-      setCurrency('USD')
-      setValuationDollar(key)
-    }
-  }
+  const { options, active, rates, pick } = useCurrencyChoice()
 
   return (
     <div
@@ -56,9 +24,9 @@ export default function CurrencyRail({ className = '' }) {
       aria-label="Moneda de valuación"
       className={`flex w-full items-stretch gap-1 rounded-full border border-line bg-bg-0 p-1.5 ${className}`}
     >
-      {OPTS.map(o => {
+      {options.map(o => {
         const on = active === o.key
-        const sub = subFor[o.key]
+        const sub = rates[o.key]
         return (
           <button
             key={o.key}
@@ -73,7 +41,7 @@ export default function CurrencyRail({ className = '' }) {
           >
             <span className="block text-[15px] font-medium leading-tight">{o.label}</span>
             <span className={`block mt-0.5 text-[11px] leading-tight tabular-nums ${on ? 'text-data-violet/70' : 'text-ink-3'}`}>
-              {sub || ' '}
+              {sub || ' '}
             </span>
           </button>
         )

@@ -22,6 +22,7 @@ import {
   Sun, Moon, LogOut, Menu, ChevronRight, LayoutDashboard, UserRound, Users,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
+import CurrencySwitcher from './CurrencySwitcher'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
@@ -155,6 +156,15 @@ export default function Sidebar() {
         >
           <Menu size={15} strokeWidth={1.75} aria-hidden="true" />
         </button>
+      </div>
+
+      {/* Moneda — fija acá arriba, fuera del <nav> scrolleable: es la misma
+          decisión en todas las páginas, así que el control tiene que estar
+          siempre en el mismo lugar y no adentro de la pantalla de turno.
+          Antes vivía repartido (toolbar de Cartera, hero del Dashboard,
+          /config) y en Métricas no estaba, aunque sus números sí la respetan. */}
+      <div className={`flex-shrink-0 border-b border-line ${collapsed ? 'px-2 py-2 flex justify-center' : 'px-2.5 py-2.5'}`}>
+        <CurrencySwitcher variant={collapsed ? 'mini' : 'row'} />
       </div>
 
       {/* Navegación */}

@@ -201,8 +201,10 @@ describe('contrato de diseño — R6, no se bifurca por viewport', () => {
     // afirmar cero habría hecho que la suite naciera en rojo y que el arreglo
     // obvio fuera bajar la aserción.
     const CONOCIDOS = [
-      'src/components/ActionMenu.jsx',  // clamp de posición de popup, no breakpoint
-      'src/hooks/useIsMobile.js',       // el dueño legítimo del breakpoint
+      'src/components/ActionMenu.jsx',       // clamp de posición de popup, no breakpoint
+      'src/components/CurrencySwitcher.jsx', // ídem: el panel del selector global se
+                                             // clampea al viewport (mismo patrón que ActionMenu)
+      'src/hooks/useIsMobile.js',            // el dueño legítimo del breakpoint
     ]
     const conAncho = listarFuentes().filter((f) => {
       const t = leer(f)
