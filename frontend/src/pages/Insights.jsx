@@ -3167,12 +3167,14 @@ function InsightsDesktop({ _embeddedTab }) {
           // mira dónde está el corte. Y una foto dudosa no es un hueco: el titular
           // también lo distingue.
           const corteEnVentana = chartData.some(r => String(r?.key || '').startsWith('corte-'))
-          const dudosa = perf.motivo === 'medicion_dudosa'
+          const titular = perf.motivo === 'medicion_dudosa' ? 'Hay una foto que no cierra.'
+            : perf.motivo === 'cadena_implausible' ? 'Tu contabilidad no coincide con lo medido.'
+            : 'La medición tiene un hueco.'
           return (
           <div className="mt-3 flex items-start gap-2 rounded-lg border border-line bg-bg-2/60 px-3 py-2">
             <Info size={14} className="mt-0.5 shrink-0 text-ink-3" />
             <p className="text-[12px] leading-snug text-ink-2">
-              <span className="font-semibold text-ink-0">{dudosa ? 'Hay una foto que no cierra.' : 'La medición tiene un hueco.'}</span>{' '}
+              <span className="font-semibold text-ink-0">{titular}</span>{' '}
               {perf.motivo_texto || 'Los tramos de cada lado se miden solos, pero no se pueden encadenar.'}{' '}
               <span className="text-ink-3">{corteEnVentana
                 ? 'Por eso el porcentaje de punta a punta no se publica y la línea aparece cortada.'

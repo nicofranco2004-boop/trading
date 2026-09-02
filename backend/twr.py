@@ -539,6 +539,10 @@ MOTIVO_TEXTO = {
     "medicion_dudosa": "Entre dos fotos seguidas el valor saltó más de lo que explican "
                        "tus aportes y retiros. Hasta que se revise esa foto, los tramos "
                        "de cada lado se miden solos y no se encadenan.",
+    "cadena_implausible": "Tu contabilidad reconstruida no coincide con la primera medición "
+                          "a precio real: difieren más de tres veces, y tus aportes no lo "
+                          "explican. Hasta que se revise, la parte contable no se encadena "
+                          "con la medida.",
 }
 
 
@@ -607,6 +611,13 @@ def dietz(v0: float, v1: float, flow: float):
 # tratarlo (o desbordar, y ese caso lo cubre `desborde`).
 SALTO_MAX_VECES = 3.0
 SALTO_FLUJO_TOL = 0.10
+# ⚠️ EL DESBORDE TAMBIÉN ES HACIA ARRIBA. `dietz` divide por v0 + flujo/2: con un
+# retiro cercano al capital ese denominador se achica hasta casi cero y el cociente
+# explota para el lado positivo (uid 50 en producción: 401 → 335 con un retiro de
+# 770 → denominador US$16 → +4.439 % en un leg). El piso de −1 no lo ve. Si la base
+# del Dietz queda por debajo de esta fracción del capital de arranque, el leg no
+# mide: es el mismo "flujo que desborda el denominador", con el signo al revés.
+DENOM_MIN_FRACCION = 0.25
 
 
 def leg_dudoso(v0: float, v1: float, flow: float):
@@ -623,6 +634,11 @@ def leg_dudoso(v0: float, v1: float, flow: float):
         return None
     r = dietz(v0, v1, flow)
     if r is not None and r <= -1.0 + 1e-12:
+        return "desborde"
+    # Relativo a v0, el capital de ARRANQUE: es el flujo el que achica la base. Un
+    # salto de valor sin flujo (v0 chico, v1 grande) no es desborde: es 'salto'.
+    denom = v0 + 0.5 * flow
+    if v0 > 0 and (denom <= 0 or denom < DENOM_MIN_FRACCION * v0):
         return "desborde"
     if v0 > 0 and v1 > 0 and abs(flow) < SALTO_FLUJO_TOL * max(v0, v1):
         ratio = v1 / v0
@@ -1206,6 +1222,35 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # siguen en la banda gris `contable`; no entran a la línea ni al número.
     _primer_apto = next((str(r["date"])[:10] for r, a in zip(filas, aptos) if a), None)
     contable_superado = 0
+    # ⚠️ EN ESTIMADO EL VALOR CONTABLE SALE DE LA CADENA, NO DE LA FOTO.
+    #
+    # La foto SINTETICO_COSTO es una COPIA de `capital_final` hecha por el import
+    # en su momento (`_backfill_snapshots_from_monthly`), y la cadena se reescribe
+    # después —el migrador de tipo de cambio la pasó a otro TC en cientos de
+    # cuentas— sin re-estampar las fotos (`persister.py`: DO NOTHING). Los
+    # APORTES, en cambio, salen de la cadena ACTUAL (`netdep_canonico`). Valor de
+    # un momento contra flujos de otro: el Dietz lee la diferencia como pérdida.
+    # Medido en la copia de producción del 2026-08-16: 6.402 de 10.348 fotos
+    # contables difieren >1 % del `capital_final` de su propio mes (367 usuarios;
+    # 5.133 >5 %; 3.236 >15 %), y 5.420 de las 6.402 están POR DEBAJO — o sea
+    # pérdidas fabricadas. En la cuenta del dueño: fotos 334/574/824 contra una
+    # cadena de 391/689/1.031 → −10,1 % y −16,8 % en dos meses cuyo realizado
+    # real era +10,87 y −36,66 (+2,0 % y −4,2 %). El gráfico abría con −25 %.
+    #
+    # La cadena contable ES `monthly_entries`; la foto es su caché. Con el valor
+    # de la cadena, el leg contable vuelve a ser exactamente
+    # realizado_M / (capital_inicio_M + flujo_M/2): lo que "recreado de tu
+    # contabilidad" promete. La foto vieja queda registrada como `valor_foto`.
+    _cf_mes = {}
+    if modo == MODO_ESTIMADO:
+        for m in conn.execute(
+                "SELECT year, month, capital_final FROM monthly_entries "
+                "WHERE user_id=? AND broker='global'", (uid,)):
+            try:
+                _cf_mes[f"{int(m['year']):04d}-{int(m['month']):02d}"] = float(m["capital_final"] or 0)
+            except (TypeError, ValueError):
+                pass
+    contable_realineado = 0
     puntos, contable, conteo = [], [], {c: 0 for c in CLASES}
     for r, c, _base, _apto in zip(filas, clases, bases, aptos):
         conteo[c] += 1
@@ -1216,6 +1261,13 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                      and _primer_apto is not None and d >= _primer_apto)
         if _superada:
             contable_superado += 1
+        _val = float(r["total_value"])
+        _valor_foto = None
+        if (modo == MODO_ESTIMADO and c == SINTETICO_COSTO and _base == VALUADO_AL_COSTO
+                and _es_fin_de_mes(d) and _cf_mes.get(d[:7], 0) > 0
+                and abs(_cf_mes[d[:7]] - _val) > 1e-6):
+            _valor_foto, _val = _val, _cf_mes[d[:7]]
+            contable_realineado += 1
         if c in aceptar and not _superada:
             # TODO ENTRA A LA LÍNEA — el usuario ve su curva. Lo que se decide acá
             # es OTRA cosa: quién puede ser pico y denominador. Mismo contrato que
@@ -1225,10 +1277,11 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
             # costo levanta KeyError, así que el uso inseguro NO SE PUEDE ESCRIBIR
             # por descuido. Nueve rondas arreglaron lector por lector porque el
             # dato dejaba, y `apto`/`base` eran campos ignorables.
-            _val = float(r["total_value"])
             puntos.append({
                 "date": d,
                 ("value" if _apto else "value_no_medible"): _val,
+                # La foto vieja, cuando el valor se tomó de la cadena (diagnóstico).
+                "valor_foto": _valor_foto,
                 "net_deposited": _nd(r),
                 "clase": c, "apto": _apto, "cobertura": _cob,
                 # Con qué regla se valuó. `curva_indexada` NO encadena un segmento
@@ -1255,7 +1308,8 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
             # `.get("value")` devolvía el valor contable sin romper nada: el error
             # quedaba perfectamente escribible justo en la colección que existe
             # PARA lo que no mide.
-            contable.append({"date": d, "value_no_medible": float(r["total_value"]),
+            # Mismo valor que la línea: si se realineó a la cadena, la banda también.
+            contable.append({"date": d, "value_no_medible": _val,
                              "clase": c, "base": _base})
 
     # Partir donde el silencio es demasiado largo — y donde el flujo DESBORDA el
@@ -1307,6 +1361,28 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                  else max_hueco_dias)
         if actual and _dias(actual[-1]["date"], p["date"]) > _tope:
             corta = True
+        elif (actual and p["apto"] and ultimo_apto is None and modo == MODO_ESTIMADO
+              and actual[-1]["base"] == VALUADO_AL_COSTO):
+            # ⚠️ EL TRASPASO CONTABLE→MERCADO TIENE QUE CERRAR. No se mide un retorno
+            # a través del cambio de regla, pero SÍ se puede preguntar si la
+            # contabilidad se parece a la realidad el día que ésta aparece: el
+            # último saldo contable más los flujos contra la primera medición. Medido
+            # en producción (361 traspasos): mediana 1,000 — la cadena realineada
+            # coincide con lo medido — y 37 fuera de [1/3, 3]: uid 118 decía
+            # US$1,85 M de contabilidad contra US$55 k medidos, y encadenar esa
+            # cadena publicaba +17.517 %. Una cadena que se separa ×3 de la
+            # realidad no es "aproximada": está rota, y no se encadena.
+            _c = actual[-1]
+            _flow = p["net_deposited"] - _c["net_deposited"]
+            _base_c = valor_para_dibujar(_c) + _flow
+            _ratio = (valor_para_dibujar(p) / _base_c) if _base_c > 0 else None
+            if _ratio is None or _ratio > SALTO_MAX_VECES or _ratio < 1.0 / SALTO_MAX_VECES:
+                corta = True
+                motivo_corte = "cadena_implausible"
+                cortes_dudosos.append({
+                    "desde": _c["date"], "hasta": p["date"], "motivo": motivo_corte,
+                    "v0": valor_para_dibujar(_c), "v1": valor_para_dibujar(p),
+                    "flujo": _flow, "cadena": "traspaso"})
         elif actual and p["apto"] and ultimo_apto is not None:
             if _dias(ultimo_apto["date"], p["date"]) > max_hueco_dias:
                 corta = True
@@ -1382,6 +1458,9 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         # Filas contables fechadas en o después de la primera medición real, que
         # en estimado quedan fuera de la línea (siguen en `contable`).
         "contable_superado": contable_superado,
+        # Fotos contables cuyo valor se tomó de la cadena porque la foto estaba
+        # desactualizada (ver el comentario de `_cf_mes`).
+        "contable_realineado": contable_realineado,
         "medido_desde": (aptos[0]["date"] if aptos else None),
         "medido_hasta": (aptos[-1]["date"] if aptos else None),
         "motivo": _motivo(conteo, len(aptos)),
@@ -1644,6 +1723,9 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                      # apto, por producto); el KPI tiene que leer ESA, no la del
                      # certero, para decir lo mismo que el chip.
                      "index_publicado": round(idx_est if modo == MODO_ESTIMADO else idx, 6),
+                     # Diagnóstico: la foto vieja cuando el valor contable se
+                     # tomó de la cadena (ver `_cf_mes` en `serie_medible`).
+                     "valor_foto": p.get("valor_foto"),
                      # Misma disciplina que en `serie_medible`: el número crudo de
                      # un punto que no mide no se llama `value`.
                      ("value" if p["apto"] else "value_no_medible"):
@@ -1914,7 +1996,10 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
 
     _motivo = s["motivo"]
     if not _motivo:
-        if partida and s.get("cortes_dudosos"):
+        if partida and any(c.get("motivo") == "cadena_implausible"
+                           for c in (s.get("cortes_dudosos") or [])):
+            _motivo = "cadena_implausible"
+        elif partida and s.get("cortes_dudosos"):
             _motivo = "medicion_dudosa"
         elif partida:
             _motivo = "serie_partida"

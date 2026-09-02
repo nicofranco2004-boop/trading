@@ -185,6 +185,18 @@ class LegDudosoTest(_Base):
         ult = r["tramos_detalle"][-1]
         self.assertAlmostEqual(ult["twr"], 112.0 / 109.0 - 1, places=5)
 
+    def test_un_retiro_casi_igual_al_capital_no_explota_hacia_arriba(self):
+        """uid 50: 401 → 335 con un retiro de 770 → denominador US$16 → +4.439 %."""
+        self.assertEqual(twr.leg_dudoso(401.0, 335.0, -770.3), "desborde")
+        self.snap("2025-08-31", 401.0, source="import", nd=1000.0)
+        self.snap("2025-10-31", 335.0, source="import", nd=229.7)
+        self.snap("2025-11-30", 340.0, source="import", nd=229.7)
+        r = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_ESTIMADO)
+        self.assertEqual(r["cortes_dudosos"][0]["motivo"], "desborde")
+        self.assertLess(r["twr"], 1.0)                 # publica el último tramo, no el +4.439 %
+        # un retiro moderado (la mitad del capital) sigue midiendo
+        self.assertIsNone(twr.leg_dudoso(1000.0, 520.0, -500.0))
+
     def test_estimado_la_cadena_contable_no_queda_en_menos_100(self):
         """uid 193: 18,9 → 52,2 con un flujo de 327 → dietz = −1 → idx_est = 0."""
         self.snap("2020-11-30", 18.9, source="import", nd=269.7)
@@ -321,6 +333,97 @@ class HoyConIntradiaAlFinalTest(_Base):
         self.assertAlmostEqual(hoy["index"], 1.05 * 1.05 * 0.9, places=4)
         self.assertAlmostEqual(hoy["index_publicado"], 1 + r["twr"], places=4)
         self.assertAlmostEqual(r["twr"], 1.05 * 1.05 * 0.9 - 1, places=4)
+
+
+class FotoContableDesactualizadaTest(_Base):
+    """La cuenta del dueño: fotos al TC viejo, cadena al TC nuevo → −25 % fabricado."""
+
+    def _mes(self, y, m, ci, cf, dep, real):
+        self.conn.execute(
+            "INSERT INTO monthly_entries (user_id,broker,year,month,capital_inicio,"
+            "capital_final,deposits,withdrawals,pnl_realized,pnl_unrealized) "
+            "VALUES (?,'global',?,?,?,?,?,0,?,0)", (self.uid, y, m, ci, cf, dep, real))
+        self.conn.commit()
+
+    def _fixture(self):
+        # cadena ACTUAL (TC nuevo)
+        self._mes(2024, 10, 0.0, 390.65, 390.65, 0.0)
+        self._mes(2024, 11, 390.65, 689.37, 287.85, 10.87)
+        self._mes(2024, 12, 689.37, 1031.03, 378.32, -36.66)
+        # fotos del import, al TC VIEJO (≈ ×0,85)
+        self.snap("2024-10-31", 334.28, source="import", nd=390.65)
+        self.snap("2024-11-30", 573.85, source="import", nd=678.50)
+        self.snap("2024-12-31", 824.12, source="import", nd=1056.82)
+
+    def test_estimado_lee_el_valor_de_la_cadena_y_reproduce_su_realizado(self):
+        self._fixture()
+        r = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_ESTIMADO)
+        self.assertEqual(r["contable_realineado"], 3)
+        idx = {p["date"]: p["index"] for p in r["curva"]}
+        # nov: 10,87 / (390,65 + 287,85/2) = +2,03 % · dic: −36,66 / (689,37 + 378,32/2) = −4,17 %
+        self.assertAlmostEqual(idx["2024-11-30"], 1 + 10.87 / (390.65 + 287.85 / 2), places=4)
+        self.assertAlmostEqual(idx["2024-12-31"],
+                               (1 + 10.87 / (390.65 + 287.85 / 2)) * (1 - 36.66 / (689.37 + 378.32 / 2)),
+                               places=4)
+        self.assertGreater(r["twr"], -0.05)           # no −25 %
+        # la banda contable también lleva el valor de la cadena
+        self.assertAlmostEqual(r["contable"][-1]["value_no_medible"], 1031.03, places=2)
+        # y el punto recuerda la foto vieja
+        self.assertAlmostEqual(
+            [p for p in r["curva"] if p["date"] == "2024-12-31"][0].get("valor_foto") or 0, 824.12, places=2)
+
+    def test_sin_realinear_daba_la_perdida_fabricada(self):
+        """El mismo fixture SIN filas mensuales: no hay cadena, queda la foto y el
+        aportado estampado — y aparece el −25 %. Documenta el antes."""
+        self.snap("2024-10-31", 334.28, source="import", nd=390.65)
+        self.snap("2024-11-30", 573.85, source="import", nd=678.50)
+        self.snap("2024-12-31", 824.12, source="import", nd=1056.82)
+        r = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_ESTIMADO)
+        self.assertEqual(r["contable_realineado"], 0)
+        self.assertLess(r["twr"], -0.2)
+
+    def test_certero_no_cambia(self):
+        self._fixture()
+        self.snap("2026-07-01", 1000.0); self.snap("2026-07-02", 1010.0)
+        r = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_CERTERO)
+        self.assertAlmostEqual(r["twr"], 0.01, places=6)
+        self.assertEqual(r["contable_realineado"], 0)
+
+
+class TraspasoImplausibleTest(_Base):
+    def _mes(self, y, m, ci, cf, dep, real):
+        self.conn.execute(
+            "INSERT INTO monthly_entries (user_id,broker,year,month,capital_inicio,"
+            "capital_final,deposits,withdrawals,pnl_realized,pnl_unrealized) "
+            "VALUES (?,'global',?,?,?,?,?,0,?,0)", (self.uid, y, m, ci, cf, dep, real))
+        self.conn.commit()
+
+    def test_una_cadena_que_no_cierra_con_la_primera_medicion_no_se_encadena(self):
+        """uid 118: contabilidad 1,85 M contra 55 k medidos → +17.517 % fabricado."""
+        self._mes(2026, 5, 1000000.0, 1800000.0, 0.0, 800000.0)
+        self._mes(2026, 6, 1800000.0, 1852178.0, 0.0, 52178.0)
+        self.snap("2026-05-31", 1800000.0, source="import", nd=1000000.0)
+        self.snap("2026-06-30", 1852178.0, source="import", nd=1000000.0)
+        self.snap("2026-07-07", 55188.0, nd=1000000.0)        # primera medición real
+        self.snap("2026-07-08", 55500.0, nd=1000000.0)
+        r = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_ESTIMADO)
+        self.assertEqual(r["motivo"], "cadena_implausible")
+        self.assertEqual(r["cortes_dudosos"][0]["cadena"], "traspaso")
+        # el número es el del último tramo (el medido), no el producto con la cadena rota
+        self.assertAlmostEqual(r["twr"], 55500.0 / 55188.0 - 1, places=5)
+        self.assertEqual(len({p["segmento"] for p in r["curva"]}), 2)   # la línea se corta ahí
+
+    def test_una_cadena_que_cierra_se_encadena(self):
+        self._mes(2026, 5, 1000.0, 1050.0, 0.0, 50.0)
+        self._mes(2026, 6, 1050.0, 1100.0, 0.0, 50.0)
+        self.snap("2026-05-31", 1050.0, source="import", nd=1000.0)
+        self.snap("2026-06-30", 1100.0, source="import", nd=1000.0)
+        self.snap("2026-07-07", 1120.0, nd=1000.0)
+        self.snap("2026-07-08", 1130.0, nd=1000.0)
+        r = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_ESTIMADO)
+        self.assertIsNone(r["motivo"])
+        self.assertEqual(r["cortes_dudosos"], [])
+        self.assertAlmostEqual(r["twr"], (1100.0 / 1050.0) * (1130.0 / 1120.0) - 1, places=5)
 
 
 class YfinanceReintentoTest(unittest.TestCase):

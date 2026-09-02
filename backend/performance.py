@@ -235,4 +235,5 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
         # Los legs que no se encadenaron por no ser creíbles (`twr.leg_dudoso`).
         "cortes_dudosos": c.get("cortes_dudosos", []),
         "contable_superado": c.get("contable_superado", 0),
+        "contable_realineado": c.get("contable_realineado", 0),
     }
