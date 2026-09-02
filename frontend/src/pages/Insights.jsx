@@ -256,7 +256,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // `evolution.js:234/:317`), y ninguno miraba en qué BASE estaba cada punta.
   // Mientras el cálculo viva en JS sobre la cadena contable, cualquier guard
   // nuevo en Python se queda corto — que es literalmente lo que ya pasó.
-  const [perf, setPerf] = useState(null)
+  const [perfRaw, setPerf] = useState(null)
   // ⚠️ §7.2 · EN ESTIMADO ESA SERIE **NO ES UN TOTAL**, Y EL ARREGLO ES DE RÓTULO.
   //
   // La cadena contable fuerza `pnl_unrealized = 0` en todos sus meses — verificado
@@ -270,6 +270,23 @@ function InsightsDesktop({ _embeddedTab }) {
   // producción sólo 84 de 34.032 filas lo tienen, y las 84 son del mes en curso).
   // Reconstruirlo es Fase 3 + Fase 4. Inventarlo sería exactamente el bug que las
   // once rondas anteriores vinieron a matar.
+  // ⚠️ LA RESPUESTA TIENE MONEDA, Y HASTA QUE LLEGA LA NUEVA LA VIEJA MIENTE.
+  // Al cambiar el selector, `currency` cambia en el acto y el fetch de la moneda
+  // nueva tarda lo que tarde el backend. En el medio, `perfRaw` sigue siendo el de
+  // la moneda anterior: la pantalla dibujaba la curva de DÓLARES con el título, el
+  // KPI y el eje en PESOS. Reproducido con 900 ms de latencia (la de Railway):
+  // durante ese lapso el KPI decía "Acumulado 1A · ARS −8,2 % · vs S&P 500 +1,3 %"
+  // cuando en pesos eran −8,16 % y +1,4 % — y en una cuenta con 37 % de
+  // devaluación acumulada la brecha es de decenas de puntos.
+  // El backend estampa `moneda` en la respuesta, así que el frontend puede
+  // preguntarlo en vez de asumirlo: mientras no coincida, no hay `perf`.
+  const _monedaVista = currency === 'ARS' ? 'ars' : 'usd'
+  const _perfEsDeLaVista = !!perfRaw && (perfRaw.moneda || 'usd') === _monedaVista
+  const perf = _perfEsDeLaVista ? perfRaw : null
+  // Cambió la moneda y la respuesta nueva todavía no llegó. No es "no hay datos":
+  // es "los que tengo son de la otra moneda", y el gráfico lo dice en vez de
+  // dibujar la serie vieja del motor de respaldo, que además tiene otra forma.
+  const perfRecalculando = !!perfRaw && !_perfEsDeLaVista
   const _perfContable = perf?.base_del_twr === 'contable'
   // CERTERO (default) vs ESTIMADO. La línea divisoria no es "foto del cron vs
   // reconstrucción" —reconstruir un CEDEAR o una acción es EXACTO— sino
@@ -350,7 +367,7 @@ function InsightsDesktop({ _embeddedTab }) {
         api.get('/operations').catch(() => []),
         api.get('/insights/commissions').catch(() => null),
         api.get('/auth/investor-profile').catch(() => ({})),
-        api.get('/insights/performance').catch(() => null),
+        api.get(`/insights/performance${currency === 'ARS' ? '?moneda=ars' : ''}`).catch(() => null),
       ])
       setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops); setCommissionsApi(comm); setInvestorProfile(prof || {}); setPerf(pf)
 
@@ -3226,7 +3243,12 @@ function InsightsDesktop({ _embeddedTab }) {
           )
         })()}
 
-        {chartData.length === 0 ? (
+        {perfRecalculando ? (
+          <div className="text-center py-10 text-ink-3 text-sm mt-4" aria-live="polite">
+            <Activity size={20} className="mx-auto mb-2 opacity-50 animate-pulse" />
+            Midiendo tu cartera en {currency === 'ARS' ? 'pesos' : 'dólares'}…
+          </div>
+        ) : chartData.length === 0 ? (
           perf?.motivo_texto ? (
             // El motivo REAL, del backend (`twr.MOTIVO_TEXTO`). Antes este lugar
             // decía "los datos del benchmark no están disponibles" — le echaba la
