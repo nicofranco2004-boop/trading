@@ -2086,6 +2086,36 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_advisor_claim_token ON advisor_claim_tokens(token);
             CREATE INDEX IF NOT EXISTS idx_advisor_claim_user ON advisor_claim_tokens(user_id, used_at);
 
+            -- Pedido de ACCESO a una cuenta que YA EXISTE. El claim de arriba
+            -- sirve para una ficha shadow (nadie la usa todavía): el cliente le
+            -- pone contraseña y se queda con ELLA. Pero si el email que el
+            -- asesor invita ya tiene un Rendi propio, esa cuenta no se puede
+            -- reclamar ni pisar — es del cliente, con su cartera adentro. Ahí
+            -- el asesor PIDE acceso y el dueño decide: el vínculo
+            -- (link_type='linked') nace recién con el sí.
+            --   shadow_uid = la ficha managed que el asesor había armado; si el
+            --   cliente acepta, queda archivada (si no, el libro contaría la
+            --   misma persona dos veces: la ficha y su cuenta real).
+            CREATE TABLE IF NOT EXISTS advisor_link_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                advisor_uid INTEGER NOT NULL,
+                client_uid INTEGER NOT NULL,       -- la cuenta REAL a la que se pide acceso
+                shadow_uid INTEGER,                -- ficha managed a archivar si acepta
+                permission TEXT NOT NULL DEFAULT 'read_write',
+                token TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',  -- pending|accepted|rejected|cancelled
+                expires_at TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_advisor_linkreq_token
+                ON advisor_link_requests(token);
+            CREATE INDEX IF NOT EXISTS idx_advisor_linkreq_client
+                ON advisor_link_requests(client_uid, status);
+            CREATE INDEX IF NOT EXISTS idx_advisor_linkreq_advisor
+                ON advisor_link_requests(advisor_uid, status);
+
             -- Informe del período (Plan Asesor): el payload queda CONGELADO al
             -- generarse (lo que se le mandó al cliente no cambia aunque cambien
             -- los datos o el branding después — rendición de cuentas).
@@ -3823,6 +3853,13 @@ def delete_my_account(response: Response, uid: int = Depends(get_effective_user)
                 if _n:
                     deleted["advisor_reports"] = deleted.get("advisor_reports", 0) + _n
                 conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
+                # Pedidos de acceso: no tienen columna user_id, así que el
+                # barrido genérico no los toca. Un pendiente hacia una cuenta
+                # borrada es un link vivo apuntando a la nada.
+                conn.execute(
+                    """DELETE FROM advisor_link_requests
+                       WHERE advisor_uid=? OR client_uid=? OR shadow_uid=?""",
+                    (_sid, _sid, _sid))
             conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (uid,))
             # Estas tablas usan advisor_uid, así que el barrido genérico por
             # user_id no las toca: sin esto sobrevivían los nombres privados de
@@ -19998,6 +20035,9 @@ def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
                     conn.execute("DELETE FROM advisor_reports WHERE advisor_uid=? OR client_uid=?",
                                  (_sid, _sid))
                     conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
+                    conn.execute("""DELETE FROM advisor_link_requests
+                                    WHERE advisor_uid=? OR client_uid=? OR shadow_uid=?""",
+                                 (_sid, _sid, _sid))
                 conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (user_id,))
                 for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
                            "advisor_alert_events", "advisor_brief_log"):
@@ -34032,6 +34072,17 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
         _now_iso = datetime.utcnow().isoformat()
         invited_ids = {u for u, r in invites.items()
                        if r["used_at"] is None and r["expires_at"] > _now_iso}
+        # Pedidos de acceso a una cuenta que ya existía (el email invitado ya
+        # tenía Rendi propio). Cuelgan de la ficha desde la que se pidieron:
+        # el asesor quiere ver ahí que está esperando un sí, o que le dijeron
+        # que no — si no, la ficha parece invitada y nunca pasa nada.
+        linkreqs = {}
+        for r in conn.execute(
+                f"""SELECT shadow_uid, email, status, expires_at, created_at
+                    FROM advisor_link_requests
+                    WHERE advisor_uid=? AND shadow_uid IN ({ph})
+                    ORDER BY created_at ASC""", [uid] + ids).fetchall():
+            linkreqs[r["shadow_uid"]] = r   # el más nuevo pisa (orden ASC)
         # Último snapshot por cliente (AUM + fecha)
         snaps = {r["user_id"]: r for r in conn.execute(
             f"""SELECT s.user_id, s.date, s.total_value
@@ -34067,6 +34118,13 @@ def advisor_list_clients(uid: int = Depends(get_current_user)):
                 "invited_email": (invites[cid]["email"] if cid in invites else None),
                 "invite_expired": bool(cid in invites and invites[cid]["used_at"] is None
                                        and invites[cid]["expires_at"] <= _now_iso),
+                "link_request": ({
+                    "status": ("expired" if (linkreqs[cid]["status"] == "pending"
+                                             and linkreqs[cid]["expires_at"] <= _now_iso)
+                               else linkreqs[cid]["status"]),
+                    "email": linkreqs[cid]["email"],
+                    "created_at": linkreqs[cid]["created_at"],
+                } if cid in linkreqs else None),
                 "created_at": r["created_at"],
                 "claim_status": claim_status,
                 "aum_usd": (float(snap["total_value"]) if snap and snap["total_value"] is not None else None),
@@ -34144,6 +34202,14 @@ def advisor_revoke_client(client_uid: int, uid: int = Depends(get_current_user))
                 """UPDATE advisor_claim_tokens SET used_at=datetime('now')
                    WHERE user_id=? AND advisor_uid=? AND used_at IS NULL""",
                 (client_uid, uid))
+            # Idem para un pedido de acceso salido de esta ficha: el asesor
+            # acaba de cortar la relación, no puede quedar dando vueltas un
+            # link que si el cliente lo acepta se la devuelve.
+            conn.execute(
+                """UPDATE advisor_link_requests
+                   SET status='cancelled', resolved_at=datetime('now')
+                   WHERE advisor_uid=? AND shadow_uid=? AND status='pending'""",
+                (uid, client_uid))
         return {"ok": True}
     finally:
         conn.close()
@@ -34156,10 +34222,43 @@ def advisor_revoke_client(client_uid: int, uid: int = Depends(get_current_user))
 # token URL-safe 256-bit, un solo token vivo por user, invalidado al usarse.
 
 ADVISOR_CLAIM_TTL_DAYS = 7
+# El pedido de acceso a una cuenta EXISTENTE vive más que el claim: del otro
+# lado hay alguien que ya tiene su Rendi, y para aceptar tiene que loguearse
+# (puede no acordarse la contraseña y necesitar el reseteo en el medio).
+ADVISOR_LINK_TTL_DAYS = 14
+# Tope de pedidos por (asesor, cuenta) por día. El email de claim va a un
+# desconocido que el asesor dice tener de cliente; ESTE va a la casilla de
+# alguien que YA es usuario de Rendi — si le decimos que no, que no le llegue
+# el mismo pedido diez veces.
+ADVISOR_LINK_MAX_PER_DAY = 3
+# Y un "no" tiene que valer algo. Sin esto el tope diario deja reenviar 3 por
+# día para siempre: la persona rechaza y le sigue llegando el mismo pedido desde
+# una cuenta de Rendi. Después de este plazo se puede volver a pedir (la gente
+# cambia de idea y de asesor), pero no al otro día.
+ADVISOR_LINK_REJECT_COOLDOWN_DAYS = 30
+
+
+def _mask_email(email: str) -> str:
+    """n***s@gmail.com — confirma de qué cuenta hablamos sin publicar el email
+    entero en una pantalla que abre cualquiera con el link."""
+    e = (email or "").strip()
+    if "@" not in e:
+        return "tu cuenta"
+    local, _, dom = e.partition("@")
+    if len(local) <= 2:
+        vis = local[:1] or "*"
+        return f"{vis}***@{dom}"
+    return f"{local[0]}***{local[-1]}@{dom}"
 
 
 class AdvisorInviteIn(BaseModel):
     email: str = Field(..., max_length=254)
+    # 'claim' (default) = el flujo de siempre: la ficha shadow pasa a ser del
+    # cliente cuando pone contraseña. 'link_request' = el email YA tiene cuenta
+    # propia y el asesor confirmó, sabiendo lo que implica, que quiere pedirle
+    # acceso a ESA cuenta (el 409 de abajo es lo que se lo cuenta).
+    mode: Optional[str] = Field(None, max_length=20)
+    permission: Optional[str] = Field(None, max_length=16)
 
 
 @app.post("/api/advisor/clients/{client_uid}/invite")
@@ -34180,13 +34279,18 @@ def advisor_invite_client(
             raise HTTPException(404, "Cliente no encontrado")
         if client["approved"]:
             raise HTTPException(400, "Este cliente ya tiene su cuenta activa.")
-        # El email no puede pertenecer a OTRA cuenta ya existente (evita que
-        # el claim pise/tome una cuenta ajena).
+        # El email no puede pertenecer a OTRA cuenta ya existente: el claim
+        # setea contraseña sobre la ficha, y si el email ya es de alguien más
+        # esa cuenta quedaría con dos dueños. Pero "ya existe" NO es un callejón
+        # sin salida — es el caso normal del cliente que ya usa Rendi. Ahí no
+        # hay nada que reclamar: hay que PEDIRLE ACCESO a su cuenta y que él
+        # decida (ver _advisor_link_request).
         clash = conn.execute(
-            "SELECT 1 FROM users WHERE email=? AND id != ?", (email_norm, client_uid)
+            "SELECT id, name, email, approved, managed_by FROM users WHERE email=? AND id != ?",
+            (email_norm, client_uid),
         ).fetchone()
         if clash:
-            raise HTTPException(400, "Ya existe una cuenta de Rendi con ese email.")
+            return _advisor_link_request(conn, uid, client_uid, clash, data)
         advisor = conn.execute("SELECT name, email FROM users WHERE id=?", (uid,)).fetchone()
         advisor_name = (advisor["name"] or advisor["email"].split("@")[0]) if advisor else "Tu asesor"
         link = conn.execute(
@@ -34213,6 +34317,15 @@ def advisor_invite_client(
             conn.execute(
                 """UPDATE advisor_claim_tokens SET used_at=datetime('now')
                    WHERE user_id=? AND used_at IS NULL""", (client_uid,))
+            # Y cierra cualquier pedido de acceso salido de ESTA ficha: la ficha
+            # va a terminar siendo de quien reclame, no puede quedar viva al
+            # mismo tiempo la promesa de archivarla por otra persona (si no, un
+            # sí tardío le sacaba el asesor al que acababa de reclamarla).
+            conn.execute(
+                """UPDATE advisor_link_requests
+                   SET status='cancelled', resolved_at=datetime('now')
+                   WHERE advisor_uid=? AND shadow_uid=? AND status='pending'""",
+                (uid, client_uid))
             conn.execute(
                 """INSERT INTO advisor_claim_tokens
                        (user_id, advisor_uid, token, email, expires_at)
@@ -34234,6 +34347,286 @@ def advisor_invite_client(
         if not sent and _resend_key():
             raise HTTPException(502, "No pudimos mandar el email. Probá de nuevo en unos minutos.")
         return {"ok": True, "email": email_norm}
+    finally:
+        conn.close()
+
+
+# ─── Pedido de acceso a una cuenta que YA EXISTE ────────────────────────────
+# El caso que el claim no cubre: el asesor invita a alguien que ya es usuario
+# de Rendi. Esa cuenta no se reclama — tiene dueño, contraseña y cartera. Lo
+# único honesto es pedirle acceso y que él acepte o rechace.
+
+def _advisor_link_request(conn, uid: int, shadow_uid: int, target, data: AdvisorInviteIn):
+    """Rama de invite() cuando el email ya tiene cuenta propia.
+
+    Dos pasos a propósito: el primer POST (sin `mode`) devuelve 409 contando
+    qué implica —el asesor cree que está invitando y en realidad está pidiendo
+    permiso, y la ficha que venía cargando se archiva— y recién el segundo, con
+    mode='link_request', manda el pedido. Sin ese paso el asesor mandaría mails
+    a terceros sin enterarse de que cambió el trato."""
+    target_uid = target["id"]
+    email_norm = (target["email"] or "").strip().lower()
+    if target_uid == uid:
+        raise HTTPException(400, "Ese es tu propio email — no podés agregarte como cliente.")
+    # Cuenta que NO puede consentir: una ficha shadow de otro asesor (approved=0)
+    # o una cuenta todavía administrada. Del otro lado no hay nadie a quien
+    # preguntarle, así que sigue siendo el error de antes.
+    if not target["approved"] or target["managed_by"]:
+        raise HTTPException(400, "Ya existe una cuenta de Rendi con ese email.")
+    ya = conn.execute(
+        """SELECT status FROM advisor_clients
+           WHERE advisor_uid=? AND client_uid=? AND status='active'""",
+        (uid, target_uid)).fetchone()
+    if ya:
+        raise HTTPException(400, f"Ya tenés acceso a la cuenta de {_mask_email(email_norm)}. "
+                                 "Buscala en tu lista de clientes.")
+    permission = (data.permission or "read_write").strip()
+    if permission not in ("read", "read_write"):
+        raise HTTPException(400, "Permiso inválido")
+
+    if (data.mode or "").strip() != "link_request":
+        # 409 = "esto no es lo que pensabas que era". El frontend lo usa para
+        # cambiar el modal de "mandar invitación" a "pedirle acceso".
+        n_pos = conn.execute(
+            "SELECT COUNT(*) c FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0",
+            (shadow_uid,)).fetchone()["c"]
+        raise HTTPException(409, {
+            "code": "existing_account",
+            "message": "Ese email ya tiene una cuenta de Rendi.",
+            "email": email_norm,
+            "shadow_positions": int(n_pos),
+        })
+
+    # Si ya dijo que no, no se le vuelve a preguntar mañana.
+    rechazo = conn.execute(
+        """SELECT resolved_at FROM advisor_link_requests
+           WHERE advisor_uid=? AND client_uid=? AND status='rejected'
+             AND resolved_at > datetime('now', ?)
+           ORDER BY resolved_at DESC LIMIT 1""",
+        (uid, target_uid, f"-{ADVISOR_LINK_REJECT_COOLDOWN_DAYS} day")).fetchone()
+    if rechazo:
+        raise HTTPException(429, "Esa persona rechazó tu pedido. Hablalo con ella — "
+                                 "vas a poder volver a pedírselo más adelante.")
+
+    # Tope diario por (asesor, cuenta): del otro lado hay una persona real que
+    # todavía no contestó.
+    recientes = conn.execute(
+        """SELECT COUNT(*) c FROM advisor_link_requests
+           WHERE advisor_uid=? AND client_uid=? AND created_at > datetime('now', '-1 day')""",
+        (uid, target_uid)).fetchone()["c"]
+    if recientes >= ADVISOR_LINK_MAX_PER_DAY:
+        raise HTTPException(429, "Ya le mandaste varios pedidos a esa cuenta hoy. "
+                                 "Esperá a que te conteste o escribile por otro lado.")
+
+    advisor = conn.execute("SELECT name, email FROM users WHERE id=?", (uid,)).fetchone()
+    advisor_name = (advisor["name"] or advisor["email"].split("@")[0]) if advisor else "Tu asesor"
+    prof = conn.execute(
+        "SELECT display_name, cnv_matricula FROM advisor_profile WHERE advisor_uid=?",
+        (uid,)).fetchone()
+    if prof and prof["display_name"]:
+        advisor_name = prof["display_name"]
+
+    token = _gen_reset_token()
+    expires = (datetime.utcnow() + timedelta(days=ADVISOR_LINK_TTL_DAYS)).isoformat()
+    with conn:
+        # Un solo pedido vivo por (asesor, cuenta): reenviar mata el link viejo.
+        conn.execute(
+            """UPDATE advisor_link_requests
+               SET status='cancelled', resolved_at=datetime('now')
+               WHERE advisor_uid=? AND client_uid=? AND status='pending'""",
+            (uid, target_uid))
+        conn.execute(
+            """INSERT INTO advisor_link_requests
+                   (advisor_uid, client_uid, shadow_uid, permission, token, email, expires_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (uid, target_uid, shadow_uid, permission, token, email_norm, expires))
+    url = f"{_frontend_url()}/acceso?token={token}"
+    sent = False
+    try:
+        from billing import emails
+        sent = emails.send_advisor_access_request(
+            to=email_norm, advisor_name=advisor_name,
+            advisor_matricula=(prof["cnv_matricula"] if prof else None),
+            permission=permission, url=url, expires_days=ADVISOR_LINK_TTL_DAYS)
+    except Exception as ex:
+        log.error("Advisor link request email failed uid=%s target=%s: %s", uid, target_uid, ex)
+    from billing.emails import _api_key as _resend_key
+    if not sent and _resend_key():
+        raise HTTPException(502, "No pudimos mandar el pedido. Probá de nuevo en unos minutos.")
+    return {"ok": True, "mode": "link_request", "email": email_norm,
+            "expires_days": ADVISOR_LINK_TTL_DAYS, "permission": permission}
+
+
+def _link_request_state(req) -> str:
+    """pending | expired | accepted | rejected | cancelled."""
+    if req["status"] != "pending":
+        return req["status"]
+    try:
+        if datetime.fromisoformat(req["expires_at"]) < datetime.utcnow():
+            return "expired"
+    except (ValueError, TypeError):
+        return "expired"
+    return "pending"
+
+
+def _apply_link_request(conn, req, accept: bool) -> dict:
+    """Cierra el pedido. Con el sí nace el vínculo 'linked' sobre la cuenta REAL
+    y la ficha managed que el asesor había armado sale del libro: si quedaran
+    las dos, la misma persona contaría dos veces en el AUM (y el asesor vería
+    dos carteras distintas con el mismo nombre)."""
+    if _link_request_state(req) != "pending":
+        raise HTTPException(400, "Ese pedido ya no está pendiente.")
+    advisor_uid, client_uid, shadow_uid = req["advisor_uid"], req["client_uid"], req["shadow_uid"]
+    # ¿La ficha SIGUE siendo una ficha? shadow_uid quedó congelado al crear el
+    # pedido, hace hasta 14 días. Si en el medio la reclamó otra persona (claim:
+    # approved=1, managed_by=NULL) dejó de ser una ficha vacía — es la cuenta de
+    # alguien, con su contraseña y su cartera adentro. Archivarla ahí le sacaría
+    # el asesor a un tercero que nunca dijo una palabra.
+    sh = conn.execute("SELECT approved, managed_by FROM users WHERE id=?",
+                      (shadow_uid,)).fetchone() if shadow_uid else None
+    archivar = bool(sh and not sh["approved"] and sh["managed_by"] == advisor_uid)
+    shadow_activa = bool(archivar and conn.execute(
+        """SELECT 1 FROM advisor_clients
+           WHERE advisor_uid=? AND client_uid=? AND status='active'""",
+        (advisor_uid, shadow_uid)).fetchone())
+    if accept:
+        # El cap del plan se chequea al ACEPTAR, no al pedir: entre el pedido y
+        # el sí pueden haber pasado dos semanas y un libro entero. Solo descuenta
+        # la ficha si de verdad va a salir del libro.
+        n_active = conn.execute(
+            "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
+            (advisor_uid,)).fetchone()["c"]
+        if n_active - (1 if shadow_activa else 0) >= ADVISOR_MAX_CLIENTS:
+            raise HTTPException(400, "Tu asesor llegó al máximo de clientes de su plan. "
+                                     "Pedile que te vuelva a invitar.")
+    with conn:
+        cur = conn.execute(
+            """UPDATE advisor_link_requests SET status=?, resolved_at=datetime('now')
+               WHERE id=? AND status='pending'""",
+            ("accepted" if accept else "rejected", req["id"]))
+        if cur.rowcount != 1:
+            # Dos clicks al mismo tiempo (el mail y la pantalla de Configuración):
+            # gana el primero, el segundo no re-escribe nada.
+            raise HTTPException(400, "Ese pedido ya no está pendiente.")
+        if accept:
+            shadow_link = conn.execute(
+                """SELECT label, notes, phone FROM advisor_clients
+                   WHERE advisor_uid=? AND client_uid=?""",
+                (advisor_uid, shadow_uid)).fetchone() if shadow_uid else None
+            u = conn.execute("SELECT name, email FROM users WHERE id=?", (client_uid,)).fetchone()
+            label = ((shadow_link["label"] if shadow_link else None)
+                     or (u["name"] if u else None)
+                     or ((u["email"].split("@")[0]) if u else f"Cliente {client_uid}"))
+            conn.execute(
+                """INSERT INTO advisor_clients
+                       (advisor_uid, client_uid, link_type, permission, status,
+                        label, notes, phone, consent_ref)
+                   VALUES (?,?,'linked',?,'active',?,?,?,?)
+                   ON CONFLICT(advisor_uid, client_uid) DO UPDATE SET
+                       link_type='linked',
+                       permission=excluded.permission,
+                       status='active',
+                       revoked_at=NULL,
+                       label=excluded.label,
+                       notes=COALESCE(excluded.notes, advisor_clients.notes),
+                       phone=COALESCE(excluded.phone, advisor_clients.phone),
+                       consent_ref=excluded.consent_ref""",
+                (advisor_uid, client_uid, req["permission"], label,
+                 (shadow_link["notes"] if shadow_link else None),
+                 (shadow_link["phone"] if shadow_link else None),
+                 f"link-request:{req['id']}:{datetime.utcnow().isoformat()}"))
+            if archivar:
+                conn.execute(
+                    """UPDATE advisor_clients SET status='revoked', revoked_at=datetime('now')
+                       WHERE advisor_uid=? AND client_uid=?""",
+                    (advisor_uid, shadow_uid))
+                conn.execute(
+                    """UPDATE advisor_claim_tokens SET used_at=datetime('now')
+                       WHERE user_id=? AND used_at IS NULL""", (shadow_uid,))
+    return {"ok": True, "accepted": bool(accept)}
+
+
+def _optional_uid(request: Request) -> Optional[int]:
+    """uid del logueado, o None. Para pantallas públicas que ADEMÁS quieren
+    saber si el que mira es el dueño de la cuenta.
+
+    El Authorization se parsea a mano: get_current_user lo recibe normalmente
+    del Depends(bearer), que acá no corre porque el endpoint es público. Sin
+    esto, un cliente que autentica por header (no por cookie) se vería como
+    deslogueado y no podría aceptar nunca."""
+    creds = None
+    auth = request.headers.get("Authorization") or ""
+    if auth[:7].lower() == "bearer ":
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth[7:].strip())
+    try:
+        return get_current_user(request, creds)
+    except HTTPException:
+        return None
+
+
+@app.get("/api/auth/link-request/preview")
+def link_request_preview(token: str, request: Request):
+    """Quién pide acceso y a qué — sin autenticar, para que la pantalla diga
+    algo antes del login. Nada sensible: nombre y matrícula del asesor (los
+    publica él) y el email destino ENMASCARADO."""
+    _check_rate_limit(request, max_calls=20, window_seconds=300, suffix="linkreq_preview_ip")
+    conn = get_db()
+    try:
+        req = conn.execute(
+            "SELECT * FROM advisor_link_requests WHERE token=?", (token,)).fetchone()
+        if not req:
+            raise HTTPException(400, "Link inválido.")
+        adv = conn.execute("SELECT name, email FROM users WHERE id=?",
+                           (req["advisor_uid"],)).fetchone()
+        prof = conn.execute(
+            "SELECT display_name, cnv_matricula, logo_data FROM advisor_profile WHERE advisor_uid=?",
+            (req["advisor_uid"],)).fetchone()
+        me = _optional_uid(request)
+        return {
+            "state": _link_request_state(req),
+            "advisor_name": ((prof["display_name"] if prof and prof["display_name"] else None)
+                             or (adv["name"] if adv else None)
+                             or (adv["email"].split("@")[0] if adv else "Un asesor")),
+            "advisor_matricula": (prof["cnv_matricula"] if prof else None),
+            "advisor_logo": (prof["logo_data"] if prof else None),
+            "permission": req["permission"],
+            "email_masked": _mask_email(req["email"]),
+            # ¿el que está mirando es el dueño de esa cuenta? Decide si la
+            # pantalla muestra los botones o el "iniciá sesión".
+            "is_owner": bool(me is not None and me == req["client_uid"]),
+            "logged_in": me is not None,
+        }
+    finally:
+        conn.close()
+
+
+class LinkRequestRespondIn(BaseModel):
+    token: str = Field(..., min_length=20, max_length=128)
+    accept: bool
+
+
+@app.post("/api/auth/link-request/respond")
+def link_request_respond(data: LinkRequestRespondIn, request: Request):
+    """Acepta o rechaza desde el link del email.
+
+    Aceptar EXIGE estar logueado con esa cuenta: le estamos dando a un tercero
+    la cartera entera de alguien, y el que reenvía un mail no puede regalarla.
+    Rechazar alcanza con el token — cortar nunca puede ser peor que no cortar."""
+    _check_rate_limit(request, max_calls=15, window_seconds=300, suffix="linkreq_respond_ip")
+    conn = get_db()
+    try:
+        req = conn.execute(
+            "SELECT * FROM advisor_link_requests WHERE token=?", (data.token,)).fetchone()
+        if not req:
+            raise HTTPException(400, "Link inválido.")
+        if data.accept:
+            me = _optional_uid(request)
+            if me is None:
+                raise HTTPException(401, "Iniciá sesión para aceptar el pedido.")
+            if me != req["client_uid"]:
+                raise HTTPException(403, "Ese pedido es para otra cuenta de Rendi. "
+                                         "Entrá con la cuenta a la que le mandaron el email.")
+        return _apply_link_request(conn, req, data.accept)
     finally:
         conn.close()
 
@@ -34367,12 +34760,54 @@ def my_advisor_links(uid: int = Depends(get_current_user)):
                ORDER BY ac.created_at ASC""",
             (uid,),
         ).fetchall()
+        # Pedidos de acceso PENDIENTES a esta cuenta. Van acá y no solo en el
+        # email: si el mail se pierde en promociones, el cliente igual ve en
+        # Configuración que alguien le está pidiendo la cartera.
+        pend = conn.execute(
+            """SELECT lr.id, lr.advisor_uid, lr.permission, lr.created_at, lr.expires_at,
+                      u.name, u.email, ap.display_name, ap.cnv_matricula
+               FROM advisor_link_requests lr
+               JOIN users u ON u.id = lr.advisor_uid
+               LEFT JOIN advisor_profile ap ON ap.advisor_uid = lr.advisor_uid
+               WHERE lr.client_uid=? AND lr.status='pending'
+                 AND lr.expires_at > ?
+               ORDER BY lr.created_at DESC""",
+            (uid, datetime.utcnow().isoformat()),
+        ).fetchall()
         return {"advisors": [{
             "advisor_uid": r["advisor_uid"],
             "name": r["name"] or r["email"].split("@")[0],
             "permission": r["permission"],
             "since": r["created_at"],
-        } for r in rows]}
+        } for r in rows], "requests": [{
+            "id": r["id"],
+            "advisor_uid": r["advisor_uid"],
+            "name": r["display_name"] or r["name"] or r["email"].split("@")[0],
+            "matricula": r["cnv_matricula"],
+            "permission": r["permission"],
+            "created_at": r["created_at"],
+        } for r in pend]}
+    finally:
+        conn.close()
+
+
+class MyLinkRespondIn(BaseModel):
+    accept: bool
+
+
+@app.post("/api/me/advisor/requests/{req_id}/respond")
+def respond_my_link_request(req_id: int, data: MyLinkRespondIn,
+                            uid: int = Depends(get_current_user)):
+    """Mismo sí/no que el link del email, desde adentro de la app (Configuración
+    › Tu asesor). Acá el dueño ya está logueado: no hace falta el token."""
+    conn = get_db()
+    try:
+        req = conn.execute(
+            "SELECT * FROM advisor_link_requests WHERE id=? AND client_uid=?",
+            (req_id, uid)).fetchone()
+        if not req:
+            raise HTTPException(404, "No encontramos ese pedido.")
+        return _apply_link_request(conn, req, data.accept)
     finally:
         conn.close()
 

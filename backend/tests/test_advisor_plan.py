@@ -76,6 +76,7 @@ class AdvisorBase(unittest.TestCase):
                 (self.advisor,))
             conn.execute("DELETE FROM advisor_op_batches WHERE advisor_uid=?", (self.advisor,))
             conn.execute("DELETE FROM advisor_claim_tokens WHERE advisor_uid=?", (self.advisor,))
+            conn.execute("DELETE FROM advisor_link_requests WHERE advisor_uid=?", (self.advisor,))
             conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=?", (self.advisor,))
             conn.commit()
         finally:
@@ -838,14 +839,16 @@ class ClaimFlowTest(AdvisorBase):
         r = self._invite(uid=otro)
         self.assertEqual(r.status_code, 404)
 
-    def test_invite_email_ya_usado_por_otra_cuenta(self):
-        r = self._invite(email=f"asesor-{uuid.uuid4().hex[:6]}@rendi.test")  # email de self.advisor no, uno cualquiera existente
-        # probamos contra el email real del stranger (ya existe)
+    def test_invite_email_de_otra_cuenta_ofrece_pedir_acceso(self):
+        # Ya NO es un callejón sin salida: el email de alguien que ya usa Rendi
+        # deriva al pedido de acceso (409 + code), no a un 400 seco.
+        # Ver LinkRequestTest para el flujo completo.
         conn = main.get_db()
         stranger_email = conn.execute("SELECT email FROM users WHERE id=?", (self.stranger,)).fetchone()["email"]
         conn.close()
-        r2 = self._invite(email=stranger_email)
-        self.assertEqual(r2.status_code, 400)
+        r = self._invite(email=stranger_email)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertEqual(r.json()["detail"]["code"], "existing_account")
 
     def test_invite_ok_crea_token_y_manda_mail(self):
         r = self._invite()
@@ -3620,3 +3623,338 @@ class AdvisorGroupsTest(AdvisorBase):
             self.assertEqual(len(ag.evaluate(conn, otro_adv, rules)), 0)
         finally:
             conn.close()
+
+
+# ─── Pedido de acceso a una cuenta que YA existe ─────────────────────────────
+# El caso que el claim no cubría: el asesor invita a alguien que ya usa Rendi.
+# Ahí no hay ficha que reclamar — hay una cuenta con dueño, y hay que pedirle
+# permiso. Estos tests cubren el consentimiento (quién puede decir que sí) y
+# la contabilidad del libro (que la persona no quede contada dos veces).
+
+class LinkRequestTest(AdvisorBase):
+
+    def setUp(self):
+        super().setUp()
+        for k in ("linkreq_preview_ip", "linkreq_respond_ip", "claim_ip"):
+            main._rate_store.pop(f"testclient|{k}", None)
+        conn = main.get_db()
+        # El cliente que YA tiene Rendi propio: approved=1, sin managed_by.
+        self.real_email = f"ya.tiene.rendi.{uuid.uuid4().hex[:10]}@example.com"
+        self.real_uid = _new_user(conn, self.real_email)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM advisor_link_requests WHERE advisor_uid=?", (self.advisor,))
+            conn.commit()
+        finally:
+            conn.close()
+        super().tearDown()
+
+    def _invite(self, email=None, mode=None, permission=None, uid=None, client_uid=None):
+        body = {"email": email or self.real_email}
+        if mode:
+            body["mode"] = mode
+        if permission:
+            body["permission"] = permission
+        return self.http.post(
+            f"/api/advisor/clients/{client_uid or self.client_uid}/invite",
+            json=body, headers=self._hdr(uid or self.advisor))
+
+    def _pedido(self):
+        conn = main.get_db()
+        row = conn.execute(
+            """SELECT * FROM advisor_link_requests
+               WHERE advisor_uid=? ORDER BY id DESC LIMIT 1""", (self.advisor,)).fetchone()
+        conn.close()
+        return row
+
+    def _responder(self, token, accept, uid=None):
+        headers = self._hdr(uid) if uid else {}
+        r = self.http.post("/api/auth/link-request/respond",
+                           json={"token": token, "accept": accept}, headers=headers)
+        self.http.cookies.clear()
+        return r
+
+    # ── Paso 1: el 409 que le cuenta al asesor que cambió el trato ──────────
+
+    def test_email_existente_devuelve_409_y_no_manda_nada(self):
+        r = self._invite()
+        self.assertEqual(r.status_code, 409, r.text)
+        d = r.json()["detail"]
+        self.assertEqual(d["code"], "existing_account")
+        self.assertEqual(d["email"], self.real_email)
+        # Sin la confirmación explícita del asesor no salió ningún pedido.
+        self.assertIsNone(self._pedido())
+
+    def test_409_cuenta_cuantas_posiciones_quedan_en_la_ficha(self):
+        conn = main.get_db()
+        conn.execute("""INSERT INTO positions (user_id, broker, asset, quantity, buy_price, is_cash)
+                        VALUES (?,'Cocos','GGAL',5,1000,0)""", (self.client_uid,))
+        conn.commit(); conn.close()
+        self.assertEqual(self._invite().json()["detail"]["shadow_positions"], 1)
+
+    def test_shadow_de_otro_asesor_sigue_siendo_400(self):
+        # approved=0 = nadie del otro lado a quien preguntarle.
+        conn = main.get_db()
+        email = f"shadow.ajeno.{uuid.uuid4().hex[:8]}@example.com"
+        _new_user(conn, email, approved=0)
+        conn.commit(); conn.close()
+        self.assertEqual(self._invite(email=email).status_code, 400)
+
+    def test_no_puede_pedirse_acceso_a_si_mismo(self):
+        conn = main.get_db()
+        mail_asesor = conn.execute("SELECT email FROM users WHERE id=?",
+                                   (self.advisor,)).fetchone()["email"]
+        conn.close()
+        r = self._invite(email=mail_asesor, mode="link_request")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("tu propio email", r.json()["detail"])
+
+    def test_ya_vinculado_no_vuelve_a_pedir(self):
+        conn = main.get_db()
+        _link(conn, self.advisor, self.real_uid, link_type="linked")
+        conn.commit(); conn.close()
+        r = self._invite(mode="link_request")
+        self.assertEqual(r.status_code, 400)
+        self.assertIsNone(self._pedido())
+
+    def test_permiso_invalido_400(self):
+        self.assertEqual(self._invite(mode="link_request", permission="root").status_code, 400)
+
+    # ── Paso 2: el pedido ───────────────────────────────────────────────────
+
+    def test_mode_link_request_crea_el_pedido_pendiente(self):
+        r = self._invite(mode="link_request")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["mode"], "link_request")
+        p = self._pedido()
+        self.assertEqual(p["status"], "pending")
+        self.assertEqual(p["client_uid"], self.real_uid)
+        self.assertEqual(p["shadow_uid"], self.client_uid)
+        self.assertEqual(p["permission"], "read_write")
+
+    def test_reenviar_cancela_el_pedido_anterior(self):
+        self._invite(mode="link_request")
+        viejo = self._pedido()["token"]
+        self._invite(mode="link_request")
+        conn = main.get_db()
+        st = conn.execute("SELECT status FROM advisor_link_requests WHERE token=?",
+                          (viejo,)).fetchone()["status"]
+        conn.close()
+        self.assertEqual(st, "cancelled")
+
+    def test_tope_diario_de_pedidos_a_la_misma_cuenta(self):
+        for _ in range(main.ADVISOR_LINK_MAX_PER_DAY):
+            self.assertEqual(self._invite(mode="link_request").status_code, 200)
+        self.assertEqual(self._invite(mode="link_request").status_code, 429)
+
+    def test_el_roster_muestra_que_hay_un_pedido_esperando(self):
+        self._invite(mode="link_request")
+        r = self.http.get("/api/advisor/clients", headers=self._hdr(self.advisor))
+        ficha = [c for c in r.json()["clients"] if c["client_uid"] == self.client_uid][0]
+        self.assertEqual(ficha["link_request"]["status"], "pending")
+
+    # ── Paso 3: el consentimiento ───────────────────────────────────────────
+
+    def test_preview_no_publica_el_email_entero(self):
+        self._invite(mode="link_request")
+        r = self.http.get(f"/api/auth/link-request/preview?token={self._pedido()['token']}")
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+        self.assertEqual(d["state"], "pending")
+        self.assertNotIn(self.real_email, d["email_masked"])
+        self.assertIn("@example.com", d["email_masked"])
+        self.assertFalse(d["is_owner"])
+
+    def test_aceptar_sin_sesion_401(self):
+        self._invite(mode="link_request")
+        r = self._responder(self._pedido()["token"], True)
+        self.assertEqual(r.status_code, 401)
+        self.assertIsNone(self._vinculo_linked())
+
+    def test_aceptar_con_otra_cuenta_403(self):
+        self._invite(mode="link_request")
+        r = self._responder(self._pedido()["token"], True, uid=self.stranger)
+        self.assertEqual(r.status_code, 403)
+        self.assertIsNone(self._vinculo_linked())
+
+    def _vinculo_linked(self):
+        conn = main.get_db()
+        row = conn.execute(
+            """SELECT * FROM advisor_clients
+               WHERE advisor_uid=? AND client_uid=? AND status='active'""",
+            (self.advisor, self.real_uid)).fetchone()
+        conn.close()
+        return row
+
+    def test_aceptar_crea_el_vinculo_y_archiva_la_ficha(self):
+        self._invite(mode="link_request")
+        r = self._responder(self._pedido()["token"], True, uid=self.real_uid)
+        self.assertEqual(r.status_code, 200, r.text)
+        v = self._vinculo_linked()
+        self.assertIsNotNone(v)
+        self.assertEqual(v["link_type"], "linked")
+        self.assertEqual(v["permission"], "read_write")
+        self.assertEqual(v["label"], "Juan P")     # se hereda de la ficha
+        # La ficha sale del libro: si no, el asesor contaría dos veces a la
+        # misma persona (la ficha que cargó y su cuenta real).
+        conn = main.get_db()
+        ficha = conn.execute(
+            "SELECT status FROM advisor_clients WHERE advisor_uid=? AND client_uid=?",
+            (self.advisor, self.client_uid)).fetchone()
+        conn.close()
+        self.assertEqual(ficha["status"], "revoked")
+        self.assertEqual(self._pedido()["status"], "accepted")
+
+    def test_aceptado_el_asesor_ve_la_cuenta_real(self):
+        conn = main.get_db()
+        conn.execute("""INSERT INTO positions (user_id, broker, asset, quantity, buy_price, is_cash)
+                        VALUES (?,'Cocos','YPFD',3,100,0)""", (self.real_uid,))
+        conn.commit(); conn.close()
+        self._invite(mode="link_request")
+        self._responder(self._pedido()["token"], True, uid=self.real_uid)
+        r = self.http.get("/api/positions",
+                          headers=self._hdr(self.advisor, client_ctx=self.real_uid))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([p["asset"] for p in r.json() if not p.get("is_cash")], ["YPFD"])
+
+    def test_permiso_de_solo_lectura_no_deja_escribir(self):
+        self._invite(mode="link_request", permission="read")
+        self._responder(self._pedido()["token"], True, uid=self.real_uid)
+        self.assertEqual(self._vinculo_linked()["permission"], "read")
+        r = self.http.post("/api/positions",
+                           json={"broker": "Cocos", "asset": "AL30", "quantity": 1, "buy_price": 1},
+                           headers=self._hdr(self.advisor, client_ctx=self.real_uid))
+        self.assertEqual(r.status_code, 403)
+
+    def test_rechazar_no_necesita_sesion_y_no_crea_vinculo(self):
+        self._invite(mode="link_request")
+        r = self._responder(self._pedido()["token"], False)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIsNone(self._vinculo_linked())
+        self.assertEqual(self._pedido()["status"], "rejected")
+
+    def test_no_se_responde_dos_veces(self):
+        self._invite(mode="link_request")
+        token = self._pedido()["token"]
+        self.assertEqual(self._responder(token, False).status_code, 200)
+        r = self._responder(token, True, uid=self.real_uid)
+        self.assertEqual(r.status_code, 400)
+
+    def test_pedido_vencido_no_se_puede_aceptar(self):
+        self._invite(mode="link_request")
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_link_requests SET expires_at='2000-01-01T00:00:00' WHERE id=?",
+                     (self._pedido()["id"],))
+        conn.commit(); conn.close()
+        r = self._responder(self._pedido()["token"], True, uid=self.real_uid)
+        self.assertEqual(r.status_code, 400)
+        self.assertIsNone(self._vinculo_linked())
+
+    def test_token_inventado_400(self):
+        r = self._responder("x" * 40, True, uid=self.real_uid)
+        self.assertEqual(r.status_code, 400)
+
+    # ── El mismo sí/no desde adentro de la app ──────────────────────────────
+
+    def test_me_advisor_lista_el_pendiente_y_lo_resuelve(self):
+        self._invite(mode="link_request")
+        r = self.http.get("/api/me/advisor", headers=self._hdr(self.real_uid))
+        self.assertEqual(r.status_code, 200, r.text)
+        pend = r.json()["requests"]
+        self.assertEqual(len(pend), 1)
+        self.assertEqual(pend[0]["permission"], "read_write")
+        rid = pend[0]["id"]
+        ok = self.http.post(f"/api/me/advisor/requests/{rid}/respond",
+                            json={"accept": True}, headers=self._hdr(self.real_uid))
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertIsNotNone(self._vinculo_linked())
+
+    def test_el_pedido_de_otro_no_se_puede_responder(self):
+        self._invite(mode="link_request")
+        rid = self._pedido()["id"]
+        r = self.http.post(f"/api/me/advisor/requests/{rid}/respond",
+                           json={"accept": True}, headers=self._hdr(self.stranger))
+        self.assertEqual(r.status_code, 404)
+        self.assertIsNone(self._vinculo_linked())
+
+    def test_sacar_la_ficha_del_roster_mata_el_pedido(self):
+        self._invite(mode="link_request")
+        self.http.post(f"/api/advisor/clients/{self.client_uid}/revoke",
+                       headers=self._hdr(self.advisor))
+        self.assertEqual(self._pedido()["status"], "cancelled")
+        r = self._responder(self._pedido()["token"], True, uid=self.real_uid)
+        self.assertEqual(r.status_code, 400)
+        self.assertIsNone(self._vinculo_linked())
+
+    def test_borrar_la_cuenta_del_cliente_se_lleva_el_pedido(self):
+        self._invite(mode="link_request")
+        r = self.http.delete("/api/me", headers=self._hdr(self.real_uid))
+        self.http.cookies.clear()
+        self.assertIn(r.status_code, (200, 204), r.text)
+        self.assertIsNone(self._pedido())
+
+    # ── Lo que encontró la revisión adversarial pre-deploy ──────────────────
+
+    def test_no_archiva_una_ficha_que_mientras_tanto_reclamaron(self):
+        """La secuencia exacta: el claim sale ANTES que el pedido de acceso.
+
+        (1) el asesor invita juan@ a la ficha S por el flujo claim normal;
+        (2) desde la misma ficha invita a alguien que ya tiene Rendi -> pedido;
+        (3) Juan reclama S: deja de ser una ficha, es SU cuenta con su cartera;
+        (4) dos semanas después el otro acepta el mail viejo.
+        Sin el guard, ese sí tardío le sacaba el asesor a Juan en silencio.
+        """
+        juan_email = f"juan.{uuid.uuid4().hex[:8]}@example.com"
+        self.assertEqual(self._invite(email=juan_email).status_code, 200)
+        self._invite(mode="link_request")
+        token = self._pedido()["token"]
+        # Juan reclama de verdad, por el endpoint público.
+        conn = main.get_db()
+        claim_tok = conn.execute(
+            "SELECT token FROM advisor_claim_tokens WHERE user_id=? AND used_at IS NULL",
+            (self.client_uid,)).fetchone()["token"]
+        conn.close()
+        rc = self.http.post("/api/auth/claim",
+                            json={"token": claim_tok, "new_password": "unaClaveLarga1"})
+        self.http.cookies.clear()
+        self.assertEqual(rc.status_code, 200, rc.text)
+
+        r = self._responder(token, True, uid=self.real_uid)
+        self.assertEqual(r.status_code, 200, r.text)
+        conn = main.get_db()
+        ficha = conn.execute(
+            "SELECT status FROM advisor_clients WHERE advisor_uid=? AND client_uid=?",
+            (self.advisor, self.client_uid)).fetchone()
+        conn.close()
+        self.assertEqual(ficha["status"], "active")   # Juan conserva su asesor
+        self.assertIsNotNone(self._vinculo_linked())  # y el vínculo nuevo igual nace
+
+    def test_mandar_un_claim_desde_la_ficha_cancela_el_pedido(self):
+        """La ficha no puede estar prometida a dos personas a la vez."""
+        self._invite(mode="link_request")
+        token = self._pedido()["token"]
+        r = self._invite(email=f"otro.{uuid.uuid4().hex[:8]}@example.com")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._pedido()["status"], "cancelled")
+        self.assertEqual(self._responder(token, True, uid=self.real_uid).status_code, 400)
+
+    def test_un_no_se_respeta_y_no_se_puede_reenviar_al_dia_siguiente(self):
+        self._invite(mode="link_request")
+        self._responder(self._pedido()["token"], False)
+        r = self._invite(mode="link_request")
+        self.assertEqual(r.status_code, 429, r.text)
+        self.assertIn("rechazó", r.json()["detail"])
+
+    def test_pasado_el_plazo_se_puede_volver_a_pedir(self):
+        self._invite(mode="link_request")
+        self._responder(self._pedido()["token"], False)
+        conn = main.get_db()
+        conn.execute(
+            "UPDATE advisor_link_requests SET resolved_at=datetime('now','-90 day') WHERE id=?",
+            (self._pedido()["id"],))
+        conn.commit(); conn.close()
+        self.assertEqual(self._invite(mode="link_request").status_code, 200)

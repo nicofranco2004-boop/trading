@@ -1190,6 +1190,73 @@ def send_advisor_claim(*, to: str, advisor_name: str, client_label: str,
                  from_addr=_from_support())
 
 
+def send_advisor_access_request(*, to: str, advisor_name: str, url: str,
+                                permission: str = "read_write",
+                                advisor_matricula: Optional[str] = None,
+                                expires_days: int = 14) -> bool:
+    """Un asesor le pide acceso a la cartera de alguien que YA usa Rendi.
+
+    Distinto del claim de arriba: ahí la cuenta no existía y el mail invitaba a
+    crearla. Acá la cuenta es del que lee, con su cartera adentro — el mail no
+    invita, PREGUNTA. Por eso no hay un botón que acepte de una: el link lleva a
+    la pantalla del pedido, donde tiene que estar logueado para decir que sí.
+
+    SECURITY: advisor_name/matricula son texto que carga la cuenta ASESOR —
+    html.escape antes de interpolar (mismo patrón que send_advisor_claim)."""
+    advisor_name = (advisor_name or "").strip() or "Un asesor"
+    safe_advisor = html.escape(advisor_name)
+    puede_editar = (permission == "read_write")
+    que_puede = ("ver tu cartera y registrar operaciones por vos" if puede_editar
+                 else "ver tu cartera")
+    safe_que_puede = html.escape(que_puede)
+    matricula_html = ""
+    if advisor_matricula:
+        matricula_html = (f'<p style="font-size:12px;color:#6b7280;margin:-8px 0 16px;">'
+                          f'Matrícula CNV N° {html.escape(str(advisor_matricula))} '
+                          f'(declarada por el asesor).</p>')
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{safe_advisor} te pide acceso a tu cartera</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        <b>{safe_advisor}</b> quiere <b>{safe_que_puede}</b> en Rendi. Tu cuenta sigue
+        siendo tuya: esto no le da tu contraseña ni lo deja entrar como vos.
+      </p>
+      {matricula_html}
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 24px;">
+        Hasta que vos digas que sí, no ve nada. Y si aceptás, le podés cortar el
+        acceso cuando quieras desde Configuración.
+      </p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="{url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
+          Ver el pedido
+        </a>
+      </div>
+      <p style="font-size:13px;color:#6b7280;line-height:1.6;margin:0 0 8px;">
+        O copiá y pegá este link en tu navegador:
+      </p>
+      <p style="font-size:11px;color:#8B7BFF;word-break:break-all;font-family:monospace;background:#f9fafb;padding:10px;border-radius:4px;margin:0 0 20px;">
+        {url}
+      </p>
+      <p style="font-size:13px;color:#6b7280;line-height:1.6;">
+        El pedido vence en <b>{expires_days} días</b>. Si no sabés quién es
+        {safe_advisor}, ignorá este email o entrá y rechazalo: sin tu sí, nadie
+        ve tu cartera.
+      </p>
+    """
+    text = (
+        f"{advisor_name} te pide acceso a tu cartera en Rendi\n\n"
+        f"{advisor_name} quiere {que_puede}. Tu cuenta sigue siendo tuya: esto no le "
+        f"da tu contraseña ni lo deja entrar como vos, y hasta que digas que sí no ve nada.\n\n"
+        + (f"Matrícula CNV N° {advisor_matricula} (declarada por el asesor).\n\n"
+           if advisor_matricula else "")
+        + f"Para aceptar o rechazar, abrí este link:\n{url}\n\n"
+        f"El pedido vence en {expires_days} días. Si no sabés quién es, ignoralo o rechazalo.\n\n"
+        f"— Rendi"
+    )
+    return _send(to, f"{advisor_name} te pide acceso a tu cartera en Rendi",
+                 _wrap_html(body_html), text,
+                 from_addr=_from_support())
+
+
 def send_new_login_alert(*, to: str, user_name: str, device: str,
                          ip: str, when: str) -> bool:
     """Avisa al usuario que se detectó un inicio de sesión desde un
