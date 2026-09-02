@@ -647,6 +647,22 @@ def leg_dudoso(v0: float, v1: float, flow: float):
     return None
 
 
+def _factor_fx(p0, p1) -> float:
+    """Cuánto se movió el TIPO DE CAMBIO entre dos puntos (1,0 en dólares).
+
+    Se usa donde la cadena SALTA sin medir retorno —el traspaso de la contabilidad
+    a la primera medición—: el retorno de ese hueco no se puede afirmar, pero la
+    devaluación sí ocurrió y una curva en pesos que se la coma queda por debajo de
+    su propia versión en dólares convertida.
+    """
+    if not isinstance(p0, dict) or not isinstance(p1, dict):
+        return 1.0
+    f0, f1 = p0.get("fx"), p1.get("fx")
+    if not f0 or not f1:
+        return 1.0
+    return f1 / f0
+
+
 def _leg_en_moneda(p0, p1, v0: float, v1: float):
     """Las dos puntas y el flujo de un leg, en la moneda de la serie.
 
@@ -657,6 +673,21 @@ def _leg_en_moneda(p0, p1, v0: float, v1: float):
     el retorno "en pesos" es el de dólares) y el FLUJO al TC medio geométrico del
     tramo, que es la convención del 0,5 de Modified Dietz llevada al FX: el aporte
     se pondera como si hubiera entrado a mitad de camino.
+
+    ⚠️ SE PROBÓ ACUMULAR CADA APORTE A SU TC HISTÓRICO Y ES PEOR. Suena más exacto
+    —"cuántos pesos puse de verdad"— pero aleja el resultado de la única propiedad
+    que la pantalla necesita: que la cartera y el benchmark se conviertan con el
+    MISMO factor, porque si no, quien gana en dólares puede aparecer perdiendo en
+    pesos (que es el bug que reportó el dueño). Medido sobre la copia de
+    producción, distancia a `usd compuesto con la devaluación`:
+        TC medio geométrico : >1 % en 50 usuarios · p90 0,003 · máx 0,19
+        aporte a su TC      : >1 % en 246        · p90 0,054 · máx 2,03
+    El residuo que queda es INTRÍNSECO a Modified Dietz: con el flujo ponderado a
+    mitad de período, `1+r_ars = (1+r_usd)·(f1/f0)` exigiría que el flujo entrara
+    convertido a `f1` en el numerador y a `f0` en el denominador a la vez. No hay
+    un solo valor que lo cumpla; la media geométrica es el que menos se aparta.
+    Con la serie diaria de mercado el residuo es cero: sólo aparece en los legs
+    contables, que son mensuales.
 
     ⚠️ EL FLUJO SE CONVIERTE, EL STOCK NO. `net_deposited` es un acumulado; pasarlo
     a pesos a cada punta y restar daría `nd·(fx1−fx0)`, o sea la revaluación de
@@ -1684,7 +1715,9 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         idx_por_base = {}     # base -> índice dibujado DE ESA BASE
         seg_por_base = {}     # base -> id del segmento dibujado
         ultimo_idx_dib = 1.0  # el último índice dibujado del tramo, de cualquier base
+        ultimo_p_dib = None   # el último punto dibujado, para el TC del traspaso
         idx_dib_ultimo_apto = 1.0   # el índice dibujado en el último punto APTO del tramo
+        ultimo_p_est = None   # el último punto que encadenó en la cadena del ESTIMADO
         # ── FASE 2 · la cadena del modo ESTIMADO ────────────────────────────
         # ⚠️ ES UN TERCER ÍNDICE, Y HAY QUE SABER POR QUÉ NO ALCANZABA CON LOS DOS.
         #   `idx`     — el número del modo CERTERO: sólo apto→apto.
@@ -1775,7 +1808,20 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                     # en +16 % y la medición arrancando en 0 % con un hueco entre
                     # las dos, y el número del chip no aparecía en ningún lado.
                     seg_por_base[_b] = segmento
-                    idx_por_base[_b] = ultimo_idx_dib
+                    # ⚠️ EL TRASPASO NO MIDE RETORNO, PERO SÍ ARRASTRA LA DEVALUACIÓN.
+                    #
+                    # Entre el último saldo contable y la primera medición hay un
+                    # hueco cuyo RETORNO no se puede medir (cruza el cambio de
+                    # regla, que es lo que la Fase 1 cerró). Pero el TIPO DE CAMBIO
+                    # de ese hueco sí se conoce: pasó, y no depende de con qué regla
+                    # esté valuada la cartera. Sin arrastrarlo, la curva en pesos se
+                    # come esa devaluación y queda por debajo de la de dólares
+                    # convertida — medido en la cuenta del dueño: la cartera se
+                    # convertía a ×1,3019 donde la devaluación real del período era
+                    # ×1,3688, y el S&P (que sí la lleva entera) le pasaba por
+                    # arriba aunque en dólares el usuario le ganaba. En dólares el
+                    # factor es 1 y esto no cambia nada.
+                    idx_por_base[_b] = ultimo_idx_dib * _factor_fx(ultimo_p_dib, p)
                 else:
                     segmento += 1
                     seg_por_base[_b] = segmento
@@ -1813,7 +1859,15 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                     if _re is not None:
                         idx_est *= (1.0 + _re)
                         legs_est += 1
+                elif ancla_est:
+                    # Traspaso a una base nueva: el retorno del hueco no se mide,
+                    # la devaluación sí (mismo motivo que en el dibujo, arriba).
+                    _ffx = _factor_fx(ultimo_p_est, p)
+                    if _ffx != 1.0:
+                        idx_est *= _ffx
+                        legs_est += 1
                 ancla_est[_b] = p
+                ultimo_p_est = p
             ancla_por_base[_b] = p
             idx_dib = idx_por_base[_b]
             if p["apto"]:
@@ -1823,6 +1877,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 legs_t += 1
             idx_dibujo = idx_dib
             ultimo_idx_dib = idx_dib
+            ultimo_p_dib = p
             if p["apto"]:
                 idx_dib_ultimo_apto = idx_dib
             punto = {"date": p["date"], "index": round(idx_dibujo, 6),
@@ -1998,7 +2053,8 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             _flujo_live = 0.0
         # El "hoy" también va al TC de hoy (el punto sintético lleva el último
         # TC disponible, que es lo que `serie_fx` devuelve para "hoy").
-        _p_hoy = {"fx": (ultimo_apto.get("fx") and serie_fx(conn, None, None)[0]("hoy")),
+        _fx_hoy = (serie_fx(conn, None, None)[0]("hoy")) if ultimo_apto.get("fx") else None
+        _p_hoy = {"fx": _fx_hoy,
                   "net_deposited": float(ultimo_apto["net_deposited"] or 0) + _flujo_live}
         _vl0, _vl1, _fl = _leg_en_moneda(ultimo_apto, _p_hoy,
                                          ultimo_apto["value"], float(valor_live))

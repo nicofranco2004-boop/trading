@@ -519,6 +519,51 @@ class ModoPesosTest(_Base):
         self.assertAlmostEqual(idx["2026-07-11"], 1.0, places=6)     # el sábado vale el viernes
         self.assertAlmostEqual(idx["2026-07-13"], 1.1, places=6)
 
+    def test_el_traspaso_contable_mercado_arrastra_la_devaluacion(self):
+        """El bug que reportó el dueño: en dólares le ganaba al S&P y en pesos el
+        S&P le ganaba. El traspaso de la contabilidad a la primera medición hereda
+        el índice pero se comía la devaluación de ESE hueco, así que la cartera se
+        convertía con un factor menor que el benchmark."""
+        self._fx([("2026-05-31", 1000.0), ("2026-06-29", 1100.0),
+                  ("2026-06-30", 1100.0), ("2026-07-31", 1100.0)])
+        for d, v in (("2026-05-31", 1000.0),):
+            self.snap(d, v, source="import", nd=0.0)
+        self.conn.execute(
+            "INSERT INTO monthly_entries (user_id,broker,year,month,capital_inicio,"
+            "capital_final,deposits,withdrawals,pnl_realized,pnl_unrealized) "
+            "VALUES (?,'global',2026,5,900.0,1000.0,0,0,100.0,0)", (self.uid,))
+        self.conn.commit()
+        self.snap("2026-06-29", 1000.0)      # primera medición: mismo valor USD
+        self.snap("2026-07-31", 1000.0)      # y queda quieta
+        u = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_ESTIMADO)
+        a = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_ESTIMADO,
+                             moneda=twr.MONEDA_ARS)
+        # en dólares la cartera no se movió en el tramo medido
+        iu = {p["date"]: p["index"] for p in u["curva"]}
+        ia = {p["date"]: p["index"] for p in a["curva"]}
+        self.assertAlmostEqual(iu["2026-07-31"], iu["2026-05-31"], places=6)
+        # en pesos tiene que llevar la devaluación ENTERA del período (1000 → 1100)
+        self.assertAlmostEqual(ia["2026-07-31"] / ia["2026-05-31"], 1.1, places=4)
+
+    def test_quien_gana_en_dolares_gana_en_pesos(self):
+        """La propiedad que el dueño usó para detectar el bug: la devaluación
+        multiplica a la cartera y al benchmark por igual, así que el orden se
+        preserva entre monedas."""
+        self._fx([("2026-07-01", 1000.0), ("2026-07-31", 1500.0)])
+        self.snap("2026-07-01", 1000.0)
+        self.snap("2026-07-31", 1100.0)                  # cartera +10 %
+        SP = {"2026-07-01": 100.0, "2026-07-31": 105.0}  # S&P +5 %
+        u = perf.performance(self.conn, self.uid, {"sp500_d": SP}, "sp500")
+        a = perf.performance(self.conn, self.uid, {"sp500_d": SP}, "sp500",
+                             moneda=twr.MONEDA_ARS)
+        gana_usd = (1 + u["twr"]) > u["benchmark"][-1]["index"]
+        gana_ars = (1 + a["twr"]) > a["benchmark"][-1]["index"]
+        self.assertTrue(gana_usd)
+        self.assertEqual(gana_usd, gana_ars)
+        # y la ventaja en puntos es la misma escalada por la devaluación
+        self.assertAlmostEqual((1 + a["twr"]) / a["benchmark"][-1]["index"],
+                               (1 + u["twr"]) / u["benchmark"][-1]["index"], places=4)
+
     def test_certero_en_pesos_existe_donde_antes_el_toggle_estaba_apagado(self):
         self._fx([("2026-07-01", 1000.0), ("2026-07-31", 1100.0)])
         self.snap("2026-07-01", 1000.0)
