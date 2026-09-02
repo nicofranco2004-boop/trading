@@ -11675,6 +11675,7 @@ def insights_performance(
     valor_live: float = None,
     incluir_indeterminado: bool = False,
     modo: str = "certero",
+    moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
     """LA fuente de la sección Performance: curva del usuario + benchmark RECORTADO
@@ -11703,10 +11704,15 @@ def insights_performance(
                 data = {}
         import twr as _twr
         _modo = _twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO
+        # `moneda=ars` mide la MISMA cartera en pesos: cada punta al TC de su
+        # fecha, el flujo al TC medio del tramo. Antes la sección en pesos la
+        # armaba el frontend sobre la cadena contable de los brokers ARS
+        # únicamente, sin modo certero (el toggle se dibujaba apagado).
+        _moneda = _twr.MONEDA_ARS if str(moneda).lower() == "ars" else _twr.MONEDA_USD
         return perf.performance(conn, uid, data, bench_key=bench, desde=desde,
                                 hasta=hasta, valor_live=valor_live,
                                 incluir_indeterminado=bool(incluir_indeterminado),
-                                modo=_modo)
+                                modo=_modo, moneda=_moneda)
     finally:
         conn.close()
 

@@ -132,7 +132,7 @@ const MES_CORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','
 // Por qué el toggle Certero/Estimado está apagado en pesos. Dice qué falta, no cómo
 // está implementado: al usuario no le sirve "arsMonthly no pasa por applyMtmToMonthly".
 const MOTIVO_TOGGLE_ARS =
-  'Sólo disponible en dólares — en pesos todavía no se puede reconstruir la historia estimada'
+  'Todavía no hay una serie medida de esta cuenta para reconstruir los dos modos'
 
 /**
  * DotSolo — dibuja un punto SÓLO cuando quedó solo en su segmento.
@@ -278,7 +278,13 @@ function InsightsDesktop({ _embeddedTab }) {
   // En pesos el toggle se DIBUJA pero no se puede usar (ver el comentario largo en
   // el control). El motivo viaja en el `title` para que el usuario se entere de que
   // el modo existe y de qué le falta para usarlo.
-  const togglePerfDeshabilitado = currency !== 'USD'
+  // ⚠️ EN PESOS EL TOGGLE YA FUNCIONA. Estuvo apagado mientras la línea en pesos
+  // la armaba el frontend sobre la cadena contable de los brokers ARS (sin modo
+  // certero posible: `arsMonthly` nunca pasaba por `applyMtmToMonthly` y el
+  // re-anclaje necesita snapshots por broker). Ahora la serie sale del mismo
+  // motor que en dólares, medida en pesos, así que los dos modos existen. Sólo
+  // queda apagado si el motor no devolvió curva para esta cuenta.
+  const togglePerfDeshabilitado = currency !== 'USD' && !(perf?.curva || []).length
   // ⚠️ QUIÉN LLEVA LA EXPLICACIÓN DEL CHIP. Hay dos chips "Medido desde": el de la
   // tarjeta de Performance y el del encabezado de la curva de drawdown. La frase va
   // UNA sola vez por pantalla — dos veces sería ruido.
@@ -288,7 +294,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // pelada que hace pensar que se perdió el historial, que es justo lo que la frase
   // vino a evitar.
   // Por eso la condición no es "en qué tarjeta estoy" sino "¿soy el único chip?".
-  const chipPerfVisible = currency === 'USD'
+  const chipPerfVisible = currency === 'USD' || (perf?.curva || []).length > 0
 
   useEffect(() => { loadAll() }, [])
 
@@ -318,11 +324,16 @@ function InsightsDesktop({ _embeddedTab }) {
     if (!k) return
     let vivo = true
     const live = liveKeyPerf > 0 ? `&valor_live=${liveKeyPerf}` : ''
-    api.get(`/insights/performance?bench=${k}&modo=${modoPerf}${live}`)
+    // ⚠️ LA MONEDA VIAJA AL MOTOR. En pesos NO alcanza con dividir la curva de
+    // dólares: el retorno en pesos incluye la devaluación, y si el TC se aplica a
+    // las dos puntas por igual se cancela y publica el retorno en dólares con
+    // otro rótulo. El backend mide cada punta al TC de SU fecha.
+    const mon = currency === 'ARS' ? '&moneda=ars' : ''
+    api.get(`/insights/performance?bench=${k}&modo=${modoPerf}${live}${mon}`)
       .then(r => { if (vivo) setPerf(r) })
       .catch(() => {})
     return () => { vivo = false }
-  }, [selectedBench, modoPerf, liveKeyPerf])
+  }, [selectedBench, modoPerf, liveKeyPerf, currency])
 
   async function loadAll() {
     try {
@@ -1200,8 +1211,17 @@ function InsightsDesktop({ _embeddedTab }) {
     usd: +Number(p.value_no_medible ?? p.value ?? 0).toFixed(2),
   }))
 
-  // Selector de serie del portfolio (USD vs ARS) y label del benchmark.
-  const activeSeries = currency === 'USD' ? benchSeriesUsd : benchSeriesArs
+  // Selector de serie del portfolio y label del benchmark.
+  // ⚠️ EN PESOS LA SERIE ES LA MISMA QUE EN DÓLARES, MEDIDA EN PESOS. `benchSeriesUsd`
+  // se arma sobre `perf.curva`, y `perf` ya viene en la moneda de la vista (el
+  // fetch manda `moneda=ars`), así que sirve para las dos. `benchSeriesArs` —el
+  // motor viejo, sólo brokers ARS sobre la cadena contable— queda de RESPALDO para
+  // las cuentas a las que el motor no les puede dar curva: son 196 de los 758
+  // usuarios con broker en pesos, y perderla sería cambiarles un gráfico por nada.
+  // Medido en producción: con la serie del motor, 445 usuarios ganan el modo
+  // certero en pesos, que hoy no existe para nadie.
+  const usaPerfEnPesos = currency !== 'USD' && benchSeriesUsd.length > 0
+  const activeSeries = currency === 'USD' || usaPerfEnPesos ? benchSeriesUsd : benchSeriesArs
 
   // Labels visibles del benchmark seleccionado (para legend del chart).
   const BENCHMARK_LABELS = {
@@ -1330,9 +1350,10 @@ function InsightsDesktop({ _embeddedTab }) {
     return today ? [...sortedMonthly, today] : sortedMonthly
   })()
 
-  // ARS always capped at 12 months (más atrás = inflación histórica hace el gráfico inútil).
-  // USD: el usuario elige el rango con los tabs.
-  const effectiveRange = currency === 'ARS' ? 12 : chartRange
+  // ARS con el motor viejo sigue clavado en 12 meses (más atrás, la inflación
+  // histórica hacía el gráfico inútil). Con la serie del motor el usuario elige,
+  // igual que en dólares: la curva ya está medida y cortada donde corresponde.
+  const effectiveRange = (currency === 'ARS' && !usaPerfEnPesos) ? 12 : chartRange
 
   // Filtrar al rango — ahora slice(-N) sobre datos mensuales = N meses correctos.
   const windowSeries = (() => {
@@ -1654,7 +1675,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // el signo dado vuelta; y como se resolvía por los meses de `monthly_entries`,
       // 348 usuarios con huecos en la cadena mensual veían el ancla en otro mes
       // ("S&P +35%" donde hizo +3,8%).
-      if (!esCorte && !isArs && !skeleton) {
+      if (!esCorte && (!isArs || usaPerfEnPesos) && !skeleton) {
         benchPct = (typeof s.bench === 'number') ? +((s.bench - 1) * 100).toFixed(4) : null
       } else if (!esCorte && shadowPctByMonth.size > 0) {
         const mk = monthKeyOf(s.key)
@@ -2237,7 +2258,11 @@ function InsightsDesktop({ _embeddedTab }) {
   // recién en este punto. Mismo criterio de moneda que el diagnóstico de
   // inflación: retorno-pesos vs inflación-pesos (NUNCA mezclar con USD).
   const returnExpectationCard = (() => {
-    const ret = portfolioReturnArsPctRaw
+    // Con la serie del motor, el retorno en pesos es el que publica el motor
+    // (`perf.twr`), no el del armado viejo: si no, el veredicto compara contra la
+    // inflación un número que el gráfico de arriba no muestra.
+    const ret = (usaPerfEnPesos && perf?.twr != null)
+      ? perf.twr * 100 : portfolioReturnArsPctRaw
     const infl = inflationCumArsWindow?.cumPct
     const realReturnPct = (ret != null && isFinite(ret) && infl != null)
       ? ((1 + ret / 100) / (1 + infl / 100) - 1) * 100
@@ -2764,7 +2789,7 @@ function InsightsDesktop({ _embeddedTab }) {
         // tramos). `acumuladoPublicado` rebasea `index_publicado` entre el primer y
         // el último punto APTO de la ventana, y da null si hay un corte en el medio.
         // En ARS la serie no sale de `perf.curva` y no trae `ip`: cae al de antes.
-        const _pub = (!_modoEstimado && currency === 'USD')
+        const _pub = (!_modoEstimado && (currency === 'USD' || usaPerfEnPesos))
           ? acumuladoPublicado(chartData, benchmarkKey) : null
         const cumulativeReturnPct = _modoEstimado
           ? (_acum ? _acum.pct : null)
@@ -3013,17 +3038,34 @@ function InsightsDesktop({ _embeddedTab }) {
                   <div className="border-t border-line/60 my-1.5" />
                 </>
               )}
+              {/* Medir en pesos NO es dividir el número de dólares: incluye la
+                  devaluación, que es justamente lo que separa las dos monedas.
+                  Sin decirlo, el usuario ve dos números distintos para la misma
+                  cartera y no sabe cuál creer — los dos son correctos, contestan
+                  preguntas distintas. */}
+              {currency === 'ARS' && !togglePerfDeshabilitado && (
+                <>
+                  <p className="font-semibold text-ink-0">Estás viendo en pesos</p>
+                  <p>Es la <strong>misma cartera</strong> que en dólares, medida en pesos:
+                     cada punta al tipo de cambio de su fecha. Por eso este número
+                     <strong> incluye la devaluación</strong> y no coincide con el de
+                     dólares — las dos cosas son ciertas y contestan preguntas
+                     distintas: cuántos dólares más tenés, y cuántos pesos más tenés.</p>
+                  <p className="text-ink-3">El benchmark también se mide en pesos: al S&P
+                     se le aplica el mismo tipo de cambio, así que la comparación es
+                     pareja. La inflación y el Merval ya están en pesos.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                </>
+              )}
               {/* En pesos el toggle se ve pero está apagado: acá va el porqué, para
                   que el control deshabilitado no sea otro vacío sin explicación. */}
               {togglePerfDeshabilitado && (
                 <>
                   <p className="font-semibold text-ink-0">Por qué el toggle está apagado</p>
-                  <p>El modo <strong>Estimado</strong> reconstruye tu historia con lo que
-                     aportaste y lo que ya vendiste, y hoy eso sólo se puede armar sobre
-                     la cartera entera, en dólares. En pesos falta el dato para hacerlo
-                     por broker, así que preferimos no mostrarlo antes que mostrarlo mal.</p>
-                  <p className="text-ink-3">Lo que estás viendo acá es la medición a
-                     precio real, que sí es exacta.</p>
+                  <p>Los dos modos necesitan una serie de tu cartera, y esta cuenta
+                     todavía no tiene ninguna: ni fotos a precio real ni contabilidad
+                     suficiente para reconstruirla. En cuanto haya, el toggle se
+                     enciende solo.</p>
                   <div className="border-t border-line/60 my-1.5" />
                 </>
               )}
@@ -3058,7 +3100,7 @@ function InsightsDesktop({ _embeddedTab }) {
           </div>
 
           {/* Range tabs — solo en USD; ARS es siempre 12 meses */}
-          {currency === 'USD' && (() => {
+          {(currency === 'USD' || usaPerfEnPesos) && (() => {
             const RANGOS = [
               // 1M y 3M existen para el que recién empieza a medirse: con 45
               // días de historia, "1A" y "MAX" son la misma recta.
@@ -3119,7 +3161,7 @@ function InsightsDesktop({ _embeddedTab }) {
             </div>
             )
           })()}
-          {currency === 'ARS' && (
+          {currency === 'ARS' && !usaPerfEnPesos && (
             <span className="text-xs text-ink-3 bg-bg-2 dark:bg-bg-1/60 px-2.5 py-1 rounded-lg">
               Últimos 12 meses
             </span>

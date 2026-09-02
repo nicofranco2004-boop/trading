@@ -426,6 +426,109 @@ class TraspasoImplausibleTest(_Base):
         self.assertAlmostEqual(r["twr"], (1100.0 / 1050.0) * (1130.0 / 1120.0) - 1, places=5)
 
 
+class ModoPesosTest(_Base):
+    """La MISMA cartera medida en pesos: cada punta al TC de su fecha."""
+
+    def _fx(self, pares):
+        # `blue_venta` es NOT NULL en el esquema: el cron siempre escribe blue y
+        # `mep_venta` es la columna que se agregó después (puede faltar). Por eso
+        # `serie_fx` prefiere MEP y cae a blue, no al revés.
+        for d, v in pares:
+            self.conn.execute(
+                "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+                "VALUES (?,?,?,'test') ON CONFLICT(date) DO UPDATE SET "
+                "blue_venta=excluded.blue_venta, mep_venta=excluded.mep_venta", (d, v, v))
+        self.conn.commit()
+
+    def setUp(self):
+        super().setUp()
+        try:
+            self.conn.execute("DELETE FROM fx_rates_daily")
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def test_cartera_quieta_en_dolares_rinde_la_devaluacion_en_pesos(self):
+        self._fx([("2026-07-01", 1000.0), ("2026-07-31", 1500.0)])
+        self.snap("2026-07-01", 1000.0)
+        self.snap("2026-07-31", 1000.0)          # 0 % en dólares
+        u = perf.performance(self.conn, self.uid, {}, "sp500")
+        a = perf.performance(self.conn, self.uid, {}, "sp500", moneda=twr.MONEDA_ARS)
+        self.assertAlmostEqual(u["twr"], 0.0, places=9)
+        self.assertAlmostEqual(a["twr"], 0.5, places=9)      # +50 %: la devaluación
+        self.assertEqual(a["moneda"], "ars")
+        self.assertEqual(u["moneda"], "usd")
+
+    def test_el_fx_no_se_cancela_arriba_y_abajo(self):
+        """Si el TC se aplicara a las dos puntas por igual, el retorno en pesos
+        sería el de dólares — que es como estaba el motor viejo antes del fix."""
+        self._fx([("2026-07-01", 1000.0), ("2026-07-31", 1200.0)])
+        self.snap("2026-07-01", 1000.0)
+        self.snap("2026-07-31", 1100.0)          # +10 % en dólares
+        u = perf.performance(self.conn, self.uid, {}, "sp500")
+        a = perf.performance(self.conn, self.uid, {}, "sp500", moneda=twr.MONEDA_ARS)
+        self.assertAlmostEqual(u["twr"], 0.10, places=9)
+        self.assertAlmostEqual(a["twr"], 1.10 * 1.20 - 1, places=9)   # +32 %
+        self.assertNotAlmostEqual(a["twr"], u["twr"], places=3)
+
+    def test_el_flujo_va_al_tc_medio_no_al_stock_acumulado(self):
+        """`net_deposited` es un STOCK: convertirlo a cada punta y restar inventa
+        un aporte del tamaño de la revaluación de todo lo aportado en la vida."""
+        self._fx([("2026-07-01", 1000.0), ("2026-07-31", 2000.0)])
+        # aportado histórico 10.000 USD (viejo), y en el tramo entran 0
+        self.snap("2026-07-01", 1000.0, nd=10000.0)
+        self.snap("2026-07-31", 1000.0, nd=10000.0)
+        a = perf.performance(self.conn, self.uid, {}, "sp500", moneda=twr.MONEDA_ARS)
+        # sin flujo real, el retorno en pesos es exactamente la devaluación
+        self.assertAlmostEqual(a["twr"], 1.0, places=9)
+
+    def test_un_aporte_en_el_medio_no_es_rendimiento(self):
+        self._fx([("2026-07-01", 1000.0), ("2026-07-31", 1000.0)])   # TC quieto
+        self.snap("2026-07-01", 1000.0, nd=0.0)
+        self.snap("2026-07-31", 2000.0, nd=1000.0)   # duplicó por un aporte
+        a = perf.performance(self.conn, self.uid, {}, "sp500", moneda=twr.MONEDA_ARS)
+        self.assertAlmostEqual(a["twr"], 0.0, places=6)
+
+    def test_el_benchmark_en_dolares_se_pasa_a_pesos_y_el_merval_no(self):
+        self._fx([("2026-07-01", 1000.0), ("2026-07-31", 1500.0)])
+        self.snap("2026-07-01", 1000.0)
+        self.snap("2026-07-31", 1000.0)
+        SP = {"2026-07-01": 100.0, "2026-07-31": 110.0}      # +10 % en USD
+        a = perf.performance(self.conn, self.uid, {"sp500_d": SP}, "sp500", moneda=twr.MONEDA_ARS)
+        self.assertAlmostEqual(a["benchmark"][-1]["index"], 1.10 * 1.5, places=5)
+        MERV = {"2026-07": 1000.0, "2026-08": 1200.0}        # ya en pesos
+        m = perf.performance(self.conn, self.uid, {"merval": MERV}, "merval", moneda=twr.MONEDA_ARS)
+        mu = perf.performance(self.conn, self.uid, {"merval": MERV}, "merval")
+        self.assertEqual([b["index"] for b in m["benchmark"]], [b["index"] for b in mu["benchmark"]])
+
+    def test_sin_tc_para_esa_fecha_el_punto_no_entra(self):
+        self._fx([("2026-07-15", 1000.0), ("2026-07-20", 1000.0), ("2026-07-25", 1000.0)])
+        self.snap("2026-07-01", 1000.0)
+        self.snap("2026-07-20", 1100.0)
+        self.snap("2026-07-25", 1200.0)
+        a = perf.performance(self.conn, self.uid, {}, "sp500", moneda=twr.MONEDA_ARS)
+        self.assertEqual([p["date"] for p in a["curva"]], ["2026-07-20", "2026-07-25"])
+
+    def test_el_fin_de_semana_arrastra_el_viernes(self):
+        self._fx([("2026-07-10", 1000.0), ("2026-07-13", 1100.0)])   # 11 y 12 = finde
+        self.snap("2026-07-10", 1000.0)
+        self.snap("2026-07-11", 1000.0)
+        self.snap("2026-07-13", 1000.0)
+        a = perf.performance(self.conn, self.uid, {}, "sp500", moneda=twr.MONEDA_ARS)
+        idx = {p["date"]: p["index"] for p in a["curva"]}
+        self.assertAlmostEqual(idx["2026-07-11"], 1.0, places=6)     # el sábado vale el viernes
+        self.assertAlmostEqual(idx["2026-07-13"], 1.1, places=6)
+
+    def test_certero_en_pesos_existe_donde_antes_el_toggle_estaba_apagado(self):
+        self._fx([("2026-07-01", 1000.0), ("2026-07-31", 1100.0)])
+        self.snap("2026-07-01", 1000.0)
+        self.snap("2026-07-31", 1050.0)
+        c = perf.performance(self.conn, self.uid, {}, "sp500",
+                             modo=twr.MODO_CERTERO, moneda=twr.MONEDA_ARS)
+        self.assertIsNotNone(c["twr"])
+        self.assertEqual(c["base_del_twr"], "mercado")
+
+
 class YfinanceReintentoTest(unittest.TestCase):
     """Si `history()` viene vacío o explota (caché de zonas horarias corrupto),
     se reapunta el caché UNA vez y se reintenta; si sigue mal, devuelve None."""

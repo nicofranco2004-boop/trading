@@ -19,6 +19,11 @@ import twr
 # Se componen; los otros se rebasean contra su primer valor del rango.
 BENCH_PORCENTUAL = ("inflation_ar", "plazo_fijo")
 
+# Benchmarks cuyo precio YA ESTÁ EN PESOS. Multiplicarlos por el TC los contaría
+# dos veces: el Merval cotiza en pesos y el UVA es un coeficiente en pesos. Sólo
+# los índices en dólares (S&P, T-Bills, oro) se convierten para la vista en pesos.
+BENCH_EN_ARS = ("merval", "uva", "plazo_fijo", "inflation_ar")
+
 
 def _ym(fecha: str) -> str:
     return str(fecha)[:7]
@@ -149,10 +154,36 @@ def benchmark_recortado(datos: dict, fechas: list, clave: str) -> list:
     return out
 
 
+def _en_pesos(bench: list, fx) -> list:
+    """El benchmark expresado en PESOS y re-anclado a 1,0 en su primera fecha.
+
+    Un índice en dólares comparado contra una cartera medida en pesos no es una
+    comparación: le falta la devaluación, que es justamente lo que separa las dos
+    monedas. El S&P en pesos es `precio × TC` — lo que valdría en pesos la misma
+    plata puesta en el índice.
+
+    Los benchmarks PORCENTUALES (inflación, plazo fijo UVA) no pasan por acá: ya
+    están en pesos por naturaleza.
+    """
+    out, base = [], None
+    for p in bench:
+        i = p.get("index")
+        f = fx(p["date"]) if fx is not None else None
+        if i is None or not f:
+            out.append({"date": p["date"], "index": None})
+            continue
+        v = float(i) * float(f)
+        if base is None:
+            base = v
+        out.append({"date": p["date"], "index": round(v / base, 6)})
+    return out
+
+
 def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
                 desde: str = None, hasta: str = None, valor_live: float = None,
                 incluir_indeterminado: bool = False,
-                modo: str = twr.MODO_CERTERO) -> dict:
+                modo: str = twr.MODO_CERTERO,
+                moneda: str = twr.MONEDA_USD) -> dict:
     """Todo lo que la sección Performance necesita, en una sola respuesta.
 
     `modo`:
@@ -166,7 +197,7 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
     # ACEPTA_LINEA, no BASE_MERCADO: la intradía sostiene la línea con apto=False.
     aceptar = twr.ACEPTA_LINEA + ((twr.INDETERMINADO,) if incluir_indeterminado else ())
     c = twr.curva_indexada(conn, uid, desde, hasta, modo=modo, aceptar=aceptar,
-                           valor_live=valor_live)
+                           valor_live=valor_live, moneda=moneda)
     fechas = [p["date"] for p in c["curva"]]
     # ⚠️ DIARIO PRIMERO. `<clave>_d` es la serie por fecha que llena
     # `_benchmarks_fetch_and_cache`; el mensual queda para los porcentuales y para
@@ -185,6 +216,11 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
     if not bench:
         serie_b = bd.get(bench_key) or {}
         bench = benchmark_recortado(serie_b, fechas, bench_key)
+    # En PESOS el índice de precio se pasa a pesos y se re-ancla; los porcentuales
+    # (inflación, plazo fijo) ya están en pesos y no se tocan.
+    if moneda == twr.MONEDA_ARS and bench and bench_key not in BENCH_EN_ARS:
+        _fx_b, _ = twr.serie_fx(conn, None, hasta)
+        bench = _en_pesos(bench, _fx_b)
 
     return {
         "curva": c["curva"],
@@ -193,9 +229,19 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
         # Con qué resolución viene `benchmark`: 'diaria' cuando cada punto es el
         # cierre de SU fecha; 'mensual' cuando es el cierre del mes.
         "benchmark_resolucion": resolucion,
+        # En qué MONEDA está medido todo lo de esta respuesta, y con qué riel de
+        # dólar se convirtió (mep/blue). El retorno en pesos incluye la
+        # devaluación; el de dólares, no. Son dos números distintos y correctos.
+        "moneda": c.get("moneda", moneda),
+        "riel_fx": c.get("riel_fx"),
         # La banda gris: la reconstrucción CONTABLE. Se dibuja aparte, fuera del
-        # índice y nunca como continuación de la línea medida.
-        "contable": c["contable"],
+        # índice y nunca como continuación de la línea medida. En pesos va en
+        # pesos: es un monto, y un eje en dólares al lado de una curva en pesos
+        # es la misma mezcla de unidades que este trabajo viene cerrando.
+        "contable": ([{**b, "value_no_medible": round(b["value_no_medible"] * _f, 2)}
+                      for b in c["contable"]
+                      for _f in [(twr.serie_fx(conn, None, hasta)[0](b["date"]) or 0)]
+                      if _f] if moneda == twr.MONEDA_ARS else c["contable"]),
         "medido_desde": c["medido_desde"],
         "medido_hasta": c["medido_hasta"],
         "cobertura": c["cobertura"],

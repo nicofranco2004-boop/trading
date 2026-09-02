@@ -647,6 +647,32 @@ def leg_dudoso(v0: float, v1: float, flow: float):
     return None
 
 
+def _leg_en_moneda(p0, p1, v0: float, v1: float):
+    """Las dos puntas y el flujo de un leg, en la moneda de la serie.
+
+    En dólares devuelve exactamente lo que recibió —sin una sola multiplicación—
+    para que el camino USD quede idéntico bit a bit.
+
+    En pesos cada PUNTA va al TC de SU fecha (si el FX se cancela arriba y abajo,
+    el retorno "en pesos" es el de dólares) y el FLUJO al TC medio geométrico del
+    tramo, que es la convención del 0,5 de Modified Dietz llevada al FX: el aporte
+    se pondera como si hubiera entrado a mitad de camino.
+
+    ⚠️ EL FLUJO SE CONVIERTE, EL STOCK NO. `net_deposited` es un acumulado; pasarlo
+    a pesos a cada punta y restar daría `nd·(fx1−fx0)`, o sea la revaluación de
+    TODO lo aportado en la vida leída como un aporte del período. Con 1.000 dólares
+    aportados hace un año y el TC de 500 a 1.500, eso inventa un "aporte" de un
+    millón de pesos en un tramo donde no entró nada. Se resta primero en dólares y
+    se convierte el flujo, que es lo que de verdad entró o salió.
+    """
+    f0 = p0.get("fx") if isinstance(p0, dict) else None
+    f1 = p1.get("fx") if isinstance(p1, dict) else None
+    flow = p1["net_deposited"] - p0["net_deposited"]
+    if not f0 or not f1:
+        return v0, v1, flow
+    return v0 * f0, v1 * f1, flow * ((f0 * f1) ** 0.5)
+
+
 def _fin_de_mes(mes: str) -> str:
     from datetime import date, timedelta
     y, m = (int(x) for x in mes.split("-"))
@@ -1156,11 +1182,78 @@ def estampar_base(conn, uids=None, solo_faltantes: bool = True) -> dict:
 MODO_CERTERO = "certero"
 MODO_ESTIMADO = "estimado"
 
+MONEDA_USD = "usd"
+MONEDA_ARS = "ars"
+
+
+def serie_fx(conn, desde: str = None, hasta: str = None):
+    """fecha → tipo de cambio del día, para medir la MISMA cartera en pesos.
+
+    ⚠️ POR QUÉ EL RENDIMIENTO EN PESOS NO ES EL DE DÓLARES. Son dos preguntas
+    distintas y las dos son válidas: en dólares, "¿cuánto más dólares tengo?"; en
+    pesos, "¿cuánto más pesos tengo?", que incluye la devaluación. Un año con la
+    cartera quieta en dólares y el peso devaluándose 60% es +60% en pesos — y para
+    alguien que gasta en pesos, ése es el número que le importa.
+    Si el FX se cancela arriba y abajo del cociente, el "retorno en pesos" es el de
+    dólares con otro rótulo. Por eso cada punta va al TC de SU fecha.
+
+    MEP con fallback a blue: el MEP es el dólar al que realmente salís de la
+    inversión (el mismo riel que usan `ledger_replay` y el informe del asesor).
+    Medido en la copia de producción del 2026-08-16: `mep_venta` tiene 2.847
+    fechas desde 2018-10-29 y CERO huecos de más de 4 días en los últimos dos
+    años; `blue_venta`, 5.704 desde 2011-01-03. Un fin de semana arrastra el
+    viernes, que es lo que vale: el mercado no cotizó.
+
+    Devuelve (fn, riel) donde `fn(fecha) -> float|None` y `riel` es 'mep',
+    'blue' o 'mixto'. None cuando la fecha es anterior a todo dato: ahí no se
+    puede convertir, y el punto no entra a la línea en pesos.
+    """
+    q = ["SELECT date, mep_venta, blue_venta FROM fx_rates_daily WHERE 1=1"]
+    args = []
+    # Se traen fechas ANTERIORES a `desde` a propósito: el arrastre necesita el
+    # último hábil previo (un lunes feriado toma el viernes anterior).
+    if hasta:
+        q.append("AND date <= ?"); args.append(hasta)
+    q.append("ORDER BY date")
+    fechas, vals, riel_por_fecha = [], [], []
+    try:
+        filas = conn.execute(" ".join(q), args).fetchall()
+    except Exception:
+        log.exception("serie_fx")
+        return (lambda d: None), None
+    for r in filas:
+        v = _col(r, "mep_venta")
+        riel = "mep"
+        if v is None or float(v or 0) <= 0:
+            v, riel = _col(r, "blue_venta"), "blue"
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        if v <= 0:
+            continue
+        fechas.append(str(r["date"])[:10]); vals.append(v); riel_por_fecha.append(riel)
+    if not fechas:
+        return (lambda d: None), None
+    import bisect
+    _hoy = fechas[-1]
+    rieles = set(riel_por_fecha)
+    riel = rieles.pop() if len(rieles) == 1 else "mixto"
+
+    def _en(fecha):
+        f = str(fecha)[:10]
+        if fecha == "hoy" or f > _hoy:
+            return vals[-1]
+        i = bisect.bisect_right(fechas, f)
+        return vals[i - 1] if i > 0 else None
+    return _en, riel
+
 
 def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                   modo: str = MODO_CERTERO,
                   aceptar: tuple = ACEPTA_LINEA,
-                  max_hueco_dias: int = MAX_HUECO_DIAS) -> dict:
+                  max_hueco_dias: int = MAX_HUECO_DIAS,
+                  moneda: str = MONEDA_USD) -> dict:
     """Los puntos de la serie que SE PUEDEN usar, partidos donde hay huecos.
 
     `aceptar` es el nivel de exigencia:
@@ -1212,6 +1305,10 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # fila, y que un mes nuevo no re-etiquete los viejos.
     bases = bases_de_serie(filas, clases)
     aptos = aptos_de_serie(filas, clases, bases)
+    # El TC por fecha, sólo si se mide en pesos. En dólares `_fx` es None y NADA
+    # del camino de abajo multiplica por nada: el modo USD queda idéntico bit a
+    # bit, que es la propiedad que sostiene seis A/B seguidos.
+    _fx, _riel_fx = (serie_fx(conn, desde, hasta) if moneda == MONEDA_ARS else (None, None))
     _nd = _aportado_por_punto(conn, uid, filas)
     # ⚠️ LA CONTABILIDAD SE APAGA EN LA PRIMERA MEDICIÓN REAL (sólo estimado). Desde
     # que hay un cierre a mercado, la reconstrucción contable de esa misma fecha
@@ -1277,9 +1374,16 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
             # costo levanta KeyError, así que el uso inseguro NO SE PUEDE ESCRIBIR
             # por descuido. Nueve rondas arreglaron lector por lector porque el
             # dato dejaba, y `apto`/`base` eran campos ignorables.
+            _fx_p = _fx(d) if _fx is not None else None
+            if _fx is not None and not _fx_p:
+                # Sin TC para esa fecha no se puede expresar el punto en pesos.
+                # Anterior a 2011: no entra a la línea, y la banda lo dice.
+                continue
             puntos.append({
                 "date": d,
                 ("value" if _apto else "value_no_medible"): _val,
+                # El TC del día (None en dólares). Cada punta va al de SU fecha.
+                "fx": _fx_p,
                 # La foto vieja, cuando el valor se tomó de la cadena (diagnóstico).
                 "valor_foto": _valor_foto,
                 "net_deposited": _nd(r),
@@ -1373,9 +1477,10 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
             # cadena publicaba +17.517 %. Una cadena que se separa ×3 de la
             # realidad no es "aproximada": está rota, y no se encadena.
             _c = actual[-1]
-            _flow = p["net_deposited"] - _c["net_deposited"]
-            _base_c = valor_para_dibujar(_c) + _flow
-            _ratio = (valor_para_dibujar(p) / _base_c) if _base_c > 0 else None
+            _v0, _v1, _flow = _leg_en_moneda(_c, p, valor_para_dibujar(_c),
+                                             valor_para_dibujar(p))
+            _base_c = _v0 + _flow
+            _ratio = (_v1 / _base_c) if _base_c > 0 else None
             if _ratio is None or _ratio > SALTO_MAX_VECES or _ratio < 1.0 / SALTO_MAX_VECES:
                 corta = True
                 motivo_corte = "cadena_implausible"
@@ -1387,8 +1492,9 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
             if _dias(ultimo_apto["date"], p["date"]) > max_hueco_dias:
                 corta = True
             else:
-                _flow = p["net_deposited"] - ultimo_apto["net_deposited"]
-                motivo_corte = leg_dudoso(ultimo_apto["value"], valor_para_dibujar(p), _flow)
+                _v0, _v1, _flow = _leg_en_moneda(ultimo_apto, p, ultimo_apto["value"],
+                                                 valor_para_dibujar(p))
+                motivo_corte = leg_dudoso(_v0, _v1, _flow)
                 if motivo_corte:
                     corta = True
                     cortes_dudosos.append({
@@ -1397,9 +1503,10 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                         "flujo": _flow, "cadena": "mercado"})
         elif (actual and modo == MODO_ESTIMADO and p["base"] == VALUADO_AL_COSTO
               and ultimo_costo is not None):
-            _flow = p["net_deposited"] - ultimo_costo["net_deposited"]
-            motivo_corte = leg_dudoso(valor_para_dibujar(ultimo_costo),
-                                      valor_para_dibujar(p), _flow)
+            _v0, _v1, _flow = _leg_en_moneda(ultimo_costo, p,
+                                             valor_para_dibujar(ultimo_costo),
+                                             valor_para_dibujar(p))
+            motivo_corte = leg_dudoso(_v0, _v1, _flow)
             if motivo_corte:
                 corta = True
                 cortes_dudosos.append({
@@ -1461,6 +1568,8 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         # Fotos contables cuyo valor se tomó de la cadena porque la foto estaba
         # desactualizada (ver el comentario de `_cf_mes`).
         "contable_realineado": contable_realineado,
+        "moneda": moneda,
+        "riel_fx": _riel_fx,
         "medido_desde": (aptos[0]["date"] if aptos else None),
         "medido_hasta": (aptos[-1]["date"] if aptos else None),
         "motivo": _motivo(conteo, len(aptos)),
@@ -1472,7 +1581,8 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                    modo: str = MODO_CERTERO,
                    aceptar: tuple = ACEPTA_LINEA,
                    max_hueco_dias: int = MAX_HUECO_DIAS,
-                   valor_live: float = None) -> dict:
+                   valor_live: float = None,
+                   moneda: str = MONEDA_USD) -> dict:
     """La curva indexada + drawdown + CAGR, encadenando `dietz` sobre `serie_medible`.
 
     SIN CLAMPS ASIMÉTRICOS. El techo de +50% por mes que aplica el lado retail
@@ -1490,7 +1600,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         arriba"): el pico lo había puesto el sistema.
     """
     s = serie_medible(conn, uid, desde, hasta, modo=modo, aceptar=aceptar,
-                      max_hueco_dias=max_hueco_dias)
+                      max_hueco_dias=max_hueco_dias, moneda=moneda)
     if not s["tramos"]:
         # La forma de la respuesta NO cambia cuando no hay datos: si faltaran
         # claves, cada consumidor tendría que adivinar — y el estado vacío es
@@ -1621,8 +1731,8 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 ret = None                       # arranque medible del tramo
                 _arranque_medible = True
             else:
-                flow = p["net_deposited"] - ancla["net_deposited"]
-                ret = dietz(ancla["value"], p["value"], flow)
+                _a, _b, flow = _leg_en_moneda(ancla, p, ancla["value"], p["value"])
+                ret = dietz(_a, _b, flow)
             # ⚠️ DOS ÍNDICES, PORQUE SON DOS PREGUNTAS.
             #   `idx_dib` — la FORMA de la historia: encadena TODOS los puntos, así
             #     el usuario ve su curva aunque ninguno sirva para medir. Sin esto,
@@ -1672,7 +1782,8 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                     idx_por_base[_b] = 1.0
             else:
                 _prev = ancla_por_base[_b]
-                _flow_dib = p["net_deposited"] - _prev["net_deposited"]
+                _v0d, _v1d, _flow_dib = _leg_en_moneda(
+                    _prev, p, valor_para_dibujar(_prev), valor_para_dibujar(p))
                 # ⚠️ LA LÍNEA TAMBIÉN TIENE COTA DE CORDURA. Un leg que no es creíble
                 # entre dos puntos de la misma base (típicamente una foto intradía
                 # rota: uid 745, US$3.329 → US$22.746 en un día sin flujo) no se
@@ -1680,12 +1791,12 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 # ahí. El NÚMERO no se toca — los legs que publican ya se cortaron
                 # en `serie_medible`; éste es sólo el dibujo, y era por acá que el
                 # KPI leía +642,9% donde el twr decía +6,6%.
-                if leg_dudoso(valor_para_dibujar(_prev), valor_para_dibujar(p), _flow_dib):
+                if leg_dudoso(_v0d, _v1d, _flow_dib):
                     segmento += 1
                     seg_por_base[_b] = segmento
                     idx_por_base[_b] = 1.0
                 else:
-                    _rp = dietz(valor_para_dibujar(_prev), valor_para_dibujar(p), _flow_dib)
+                    _rp = dietz(_v0d, _v1d, _flow_dib)
                     if _rp is not None:
                         idx_por_base[_b] *= (1.0 + _rp)
             # FASE 2 · la cadena del ESTIMADO. Entra el punto APTO (cierre a
@@ -1696,8 +1807,9 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             if modo == MODO_ESTIMADO and (p["apto"] or _b == VALUADO_AL_COSTO):
                 _prev_est = ancla_est.get(_b)
                 if _prev_est is not None:
-                    _re = dietz(valor_para_dibujar(_prev_est), valor_para_dibujar(p),
-                                p["net_deposited"] - _prev_est["net_deposited"])
+                    _v0e, _v1e, _fe = _leg_en_moneda(
+                        _prev_est, p, valor_para_dibujar(_prev_est), valor_para_dibujar(p))
+                    _re = dietz(_v0e, _v1e, _fe)
                     if _re is not None:
                         idx_est *= (1.0 + _re)
                         legs_est += 1
@@ -1726,6 +1838,8 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                      # Diagnóstico: la foto vieja cuando el valor contable se
                      # tomó de la cadena (ver `_cf_mes` en `serie_medible`).
                      "valor_foto": p.get("valor_foto"),
+                     # El TC del día (None en dólares).
+                     "fx": p.get("fx"),
                      # Misma disciplina que en `serie_medible`: el número crudo de
                      # un punto que no mide no se llama `value`.
                      ("value" if p["apto"] else "value_no_medible"):
@@ -1882,7 +1996,13 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         except Exception:
             log.exception("flujo live uid=%s", uid)
             _flujo_live = 0.0
-        r = dietz(ultimo_apto["value"], float(valor_live), _flujo_live)
+        # El "hoy" también va al TC de hoy (el punto sintético lleva el último
+        # TC disponible, que es lo que `serie_fx` devuelve para "hoy").
+        _p_hoy = {"fx": (ultimo_apto.get("fx") and serie_fx(conn, None, None)[0]("hoy")),
+                  "net_deposited": float(ultimo_apto["net_deposited"] or 0) + _flujo_live}
+        _vl0, _vl1, _fl = _leg_en_moneda(ultimo_apto, _p_hoy,
+                                         ultimo_apto["value"], float(valor_live))
+        r = dietz(_vl0, _vl1, _fl)
         if r is not None:
             idx *= (1.0 + r)
             # FASE 2 · la pata live también cierra la cadena del ESTIMADO. Es la
@@ -1916,6 +2036,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             _ip_hoy = (idx_est * (1.0 + r)) if modo == MODO_ESTIMADO else idx
             curva.append({"date": "hoy", "index": round(_idx_hoy, 6),
                           "index_publicado": round(_ip_hoy, 6),
+                          "fx": _p_hoy.get("fx"),
                           "value": float(valor_live), "clase": MEDICION,
                           "apto": True, "ret": r, "estimado": False,
                           "base": VALUADO_A_MERCADO,
