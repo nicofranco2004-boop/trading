@@ -692,6 +692,26 @@ def init_db():
                 last_sync_status TEXT,              -- 'ok' | 'error: ...'
                 UNIQUE(user_id, broker)
             );
+            -- IOL Lab (PLAN_iol_sync.md, Fase 0): corridas del probe read-only contra
+            -- la API de IOL. result_json va ANONIMIZADO (iol_api.mask). Nunca tokens.
+            CREATE TABLE IF NOT EXISTS iol_lab_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                started_at TEXT DEFAULT (datetime('now')),
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'running',   -- running | ok | error
+                summary TEXT,
+                result_json TEXT,
+                error TEXT
+            );
+            -- Bitácora de renovaciones del refresh token (mide cuánto vive). Sin tokens.
+            CREATE TABLE IF NOT EXISTS iol_lab_token_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                at TEXT DEFAULT (datetime('now')),
+                ok INTEGER NOT NULL,
+                detail TEXT
+            );
         """)
         conn.commit()
 
@@ -29049,6 +29069,7 @@ from importing import excel as _import_excel
 from importing import schema as _import_schema
 from importing.parsers.registry import get_parser as _get_parser
 import wallbit as _wallbit
+import iol_api as _iol
 
 # Namespace simple con los helpers que el persister consume.
 class _ImportHelpers:
@@ -30934,6 +30955,310 @@ def wallbit_disconnect(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+# ═══ IOL Lab — Fase 0 del sync IOL (PLAN_iol_sync.md) ═══════════════════════
+# El tester pone usuario y contraseña de IOL en /lab/iol; el backend hace el
+# login, corre el probe READ-ONLY de iol_api en un thread (tarda ~1 min; un
+# request sincrónico daría 502 del gateway) y guarda el resultado ANONIMIZADO en
+# iol_lab_runs + avisa por mail al admin. Opt-in: guardar SOLO el refresh token
+# (Fernet, misma tabla que Wallbit, broker='iol_lab') para medir cuánto vive,
+# renovándolo por cron externo (/api/iol/lab/run-cron). La contraseña no se
+# persiste nunca ni se loguea. Gate: allowlist IOL_LAB_EMAILS (o admin).
+
+_iol_lab_runs_lock = threading.Lock()
+_iol_lab_running: set = set()          # uids con probe en curso
+_IOL_LAB_PROBE_KW: dict = {}           # tests: {"pause": 0, "burst": 3, "year_from": 2024}
+
+
+def _iol_lab_gate(uid: int) -> str:
+    """Allowlist por email (IOL_LAB_EMAILS, separado por coma) o admin. Devuelve el email."""
+    allowed = {e.strip().lower() for e in (os.environ.get("IOL_LAB_EMAILS") or "").split(",") if e.strip()}
+    with db_abierta() as conn:
+        row = conn.execute("SELECT email, is_admin FROM users WHERE id=?", (uid,)).fetchone()
+    if not row:
+        raise HTTPException(401, "Token inválido")
+    email = (row["email"] or "").strip().lower()
+    if row["is_admin"]:
+        return email
+    if not allowed:
+        raise HTTPException(503, "IOL Lab no está habilitado.")
+    if email not in allowed:
+        raise HTTPException(403, "Tu cuenta no está habilitada para esta prueba.")
+    return email
+
+
+def _iol_lab_log(conn, uid: int, ok: bool, detail: str):
+    conn.execute("INSERT INTO iol_lab_token_log (user_id, ok, detail) VALUES (?,?,?)",
+                 (uid, 1 if ok else 0, (detail or "")[:300]))
+
+
+def _iol_lab_watch_info(conn, uid: int) -> dict:
+    from datetime import datetime as _dt
+    cred = conn.execute(
+        "SELECT created_at, last_sync_at, last_sync_status FROM user_broker_credentials "
+        "WHERE user_id=? AND broker='iol_lab'", (uid,)).fetchone()
+    logs = [dict(r) for r in conn.execute(
+        "SELECT at, ok, detail FROM iol_lab_token_log WHERE user_id=? ORDER BY id", (uid,)).fetchall()]
+    oks = [l for l in logs if l["ok"]]
+    fails = [l for l in logs if not l["ok"]]
+    hours = None
+    if logs and oks:
+        try:
+            hours = round((_dt.fromisoformat(str(oks[-1]["at"])) - _dt.fromisoformat(str(logs[0]["at"]))).total_seconds() / 3600, 1)
+        except Exception:
+            hours = None
+    return {
+        "active": bool(cred),
+        "status": (cred["last_sync_status"] if cred else (fails[-1]["detail"] if fails else None)),
+        "started_at": logs[0]["at"] if logs else None,
+        "last_ok_at": oks[-1]["at"] if oks else None,
+        "refresh_count": len(oks),
+        "hours_alive": hours,
+        "last_fail": fails[-1] if fails else None,
+        "log": logs[-40:],
+    }
+
+
+def _iol_lab_last_run(conn, uid: int) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT id, started_at, finished_at, status, summary, error FROM iol_lab_runs "
+        "WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
+    return dict(row) if row else None
+
+
+def _iol_lab_run_bg(run_id: int, uid: int, email: str, access_token: str):
+    import json as _json
+    try:
+        res = _iol.run_probe(access_token, **_IOL_LAB_PROBE_KW)
+        status, summary, err = "ok", res["summary"], None
+        result_json = _json.dumps(res["result"], ensure_ascii=False, default=str)
+    except Exception as e:  # noqa — un bug del probe no puede dejar la corrida en 'running'
+        status, summary, err, result_json = "error", None, f"{type(e).__name__}: {e}"[:500], None
+        print(f"[iol_lab] run {run_id} falló: {err}")
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE iol_lab_runs SET status=?, finished_at=datetime('now'), summary=?, result_json=?, error=? WHERE id=?",
+                (status, summary, result_json, err, run_id))
+    finally:
+        conn.close()
+    with _iol_lab_runs_lock:
+        _iol_lab_running.discard(uid)
+    try:
+        from billing import emails as _billing_emails
+        _billing_emails.send_iol_lab_report_admin(
+            to=ADMIN_NOTIFY_EMAIL, tester_email=email, run_id=run_id, status=status,
+            summary=summary or err or "")
+    except Exception as e:  # noqa
+        print(f"[iol_lab] mail admin falló: {e}")
+
+
+def _iol_lab_refresh_one(conn, uid: int) -> dict:
+    """Renueva el refresh token guardado de un usuario. HTTP 4xx = token muerto →
+    borra la credencial y deja la bitácora (esa es la medición). Error de red = transitorio."""
+    row = conn.execute(
+        "SELECT api_key_enc, last_sync_status FROM user_broker_credentials WHERE user_id=? AND broker='iol_lab'",
+        (uid,)).fetchone()
+    if not row:
+        return {"active": False}
+    try:
+        rt = _wallbit_decrypt(row["api_key_enc"])
+    except Exception:
+        with conn:
+            conn.execute("DELETE FROM user_broker_credentials WHERE user_id=? AND broker='iol_lab'", (uid,))
+            _iol_lab_log(conn, uid, False, "dead: no se pudo descifrar el token (SECRET_KEY cambió)")
+        return {"active": False, "ok": False, "dead": True}
+    st = str(row["last_sync_status"] or "")
+    n = int(st.split(":", 1)[1]) if st.startswith("watch:") and st.split(":", 1)[1].isdigit() else 0
+    try:
+        new = _iol.refresh(rt)
+    except _iol.IolError as e:
+        if e.status == 0:
+            with conn:
+                _iol_lab_log(conn, uid, False, f"net: {e.message}")
+            return {"active": True, "ok": False, "transient": True}
+        with conn:
+            conn.execute("DELETE FROM user_broker_credentials WHERE user_id=? AND broker='iol_lab'", (uid,))
+            _iol_lab_log(conn, uid, False, f"dead: HTTP {e.status} {e.message[:120]}")
+        return {"active": False, "ok": False, "dead": True, "status": e.status}
+    with conn:
+        conn.execute(
+            "UPDATE user_broker_credentials SET api_key_enc=?, last_sync_at=datetime('now'), last_sync_status=? "
+            "WHERE user_id=? AND broker='iol_lab'",
+            (_wallbit_encrypt(new.get("refresh_token") or rt), f"watch:{n + 1}", uid))
+        _iol_lab_log(conn, uid, True, f"refresh #{n + 1} expires_in={new.get('expires_in')} rota={'sí' if new.get('refresh_token') != rt else 'no'}")
+    return {"active": True, "ok": True, "count": n + 1}
+
+
+class IolLabProbeIn(BaseModel):
+    username: str = Field(..., min_length=1, max_length=120)
+    password: str = Field(..., min_length=1, max_length=200)
+    keep_token: bool = False
+
+
+@app.get("/api/iol/lab/status")
+def iol_lab_status(uid: int = Depends(get_current_user)):
+    try:
+        email = _iol_lab_gate(uid)
+    except HTTPException as e:
+        return {"enabled": False, "reason": e.detail}
+    conn = get_db()
+    try:
+        # Renovación oportunista: si la medición está activa y hace >55 min que no se
+        # renueva (cron dormido), lo hacemos ahora. Abrir la página = avanzar la medición.
+        stale = conn.execute(
+            "SELECT 1 FROM user_broker_credentials WHERE user_id=? AND broker='iol_lab' "
+            "AND last_sync_at <= datetime('now', '-55 minutes')", (uid,)).fetchone()
+        if stale:
+            try:
+                _iol_lab_refresh_one(conn, uid)
+            except Exception as e:  # noqa
+                print(f"[iol_lab] refresh oportunista falló: {e}")
+        with _iol_lab_runs_lock:
+            running = uid in _iol_lab_running
+        return {"enabled": True, "email": email, "running": running,
+                "run": _iol_lab_last_run(conn, uid), "watch": _iol_lab_watch_info(conn, uid)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/iol/lab/probe")
+def iol_lab_probe(data: IolLabProbeIn, request: Request, uid: int = Depends(get_current_user)):
+    email = _iol_lab_gate(uid)
+    _check_rate_limit(request, max_calls=5, window_seconds=600, suffix=f"iol_lab:{uid}")
+    with _iol_lab_runs_lock:
+        if uid in _iol_lab_running:
+            raise HTTPException(409, "Ya hay una prueba corriendo. Esperá a que termine.")
+    keep = bool(data.keep_token)
+    username = data.username.strip()
+    try:
+        tokens = _iol.login(username, data.password)
+    except _iol.IolError as e:
+        hint = (" ¿Pediste la activación de APIs por Mensajes en IOL y aceptaste los TyC en "
+                "Mi Cuenta › Personalización › APIs?" if e.status in (400, 401, 403) else "")
+        raise HTTPException(400, f"IOL rechazó el login (HTTP {e.status}).{hint}")
+    finally:
+        del data   # la contraseña no sigue viva en este frame
+    access, rt = tokens.get("access_token"), tokens.get("refresh_token")
+    conn = get_db()
+    try:
+        with conn:
+            if keep and rt:
+                conn.execute(
+                    """INSERT INTO user_broker_credentials (user_id, broker, api_key_enc, scope, last_sync_at, last_sync_status)
+                       VALUES (?, 'iol_lab', ?, 'read', datetime('now'), 'watch:0')
+                       ON CONFLICT(user_id, broker)
+                       DO UPDATE SET api_key_enc=excluded.api_key_enc, last_sync_at=datetime('now'), last_sync_status='watch:0'""",
+                    (uid, _wallbit_encrypt(rt)))
+                conn.execute("DELETE FROM iol_lab_token_log WHERE user_id=?", (uid,))
+                _iol_lab_log(conn, uid, True, f"login expires_in={tokens.get('expires_in')}")
+            cur = conn.execute("INSERT INTO iol_lab_runs (user_id, status) VALUES (?, 'running')", (uid,))
+            run_id = cur.lastrowid
+    finally:
+        conn.close()
+    with _iol_lab_runs_lock:
+        _iol_lab_running.add(uid)
+    threading.Thread(target=_iol_lab_run_bg, args=(run_id, uid, email, access), daemon=True).start()
+    return {"ok": True, "run_id": run_id, "status": "started",
+            "expires_in": tokens.get("expires_in"), "watch": bool(keep and rt)}
+
+
+@app.post("/api/iol/lab/refresh")
+def iol_lab_refresh(request: Request, uid: int = Depends(get_current_user)):
+    """Renovar el token AHORA (además del cron). Sirve para ver que la medición está viva."""
+    _iol_lab_gate(uid)
+    _check_rate_limit(request, max_calls=10, window_seconds=600, suffix=f"iol_lab_refresh:{uid}")
+    conn = get_db()
+    try:
+        res = _iol_lab_refresh_one(conn, uid)
+        return {"ok": True, **res, "watch": _iol_lab_watch_info(conn, uid)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/iol/lab/disconnect")
+def iol_lab_disconnect(uid: int = Depends(get_current_user)):
+    """Borra el refresh token guardado. La bitácora queda (no tiene secretos)."""
+    _iol_lab_gate(uid)
+    conn = get_db()
+    try:
+        with conn:
+            n = conn.execute("DELETE FROM user_broker_credentials WHERE user_id=? AND broker='iol_lab'", (uid,)).rowcount
+            if n:
+                _iol_lab_log(conn, uid, False, "desconectado por el usuario (token borrado)")
+        return {"ok": True, "deleted": bool(n)}
+    finally:
+        conn.close()
+
+
+@app.api_route("/api/iol/lab/run-cron", methods=["GET", "POST"])
+def iol_lab_run_cron(request: Request):
+    """Renueva el refresh token de TODOS los testers con medición activa. Lo pega
+    cron-job.org cada hora. Auth: X-Cron-Token o ?token= contra IOL_LAB_CRON_TOKEN.
+    Sin token configurado → 503. Sincrónico: son 1-3 cuentas, un POST cada una."""
+    expected = (os.environ.get("IOL_LAB_CRON_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(503, "IOL Lab cron no configurado (falta IOL_LAB_CRON_TOKEN).")
+    got = (request.headers.get("x-cron-token") or request.query_params.get("token") or "").strip()
+    if got != expected:
+        raise HTTPException(401, "Token inválido.")
+    return _iol_lab_refresh_all()
+
+
+def _iol_lab_refresh_all(*, min_age_minutes: int = 0) -> dict:
+    """Renueva el refresh token de todos los testers con medición activa. Lo llaman el
+    cron externo, el scheduler in-process (cada hora) y, oportunistamente, /status.
+    min_age_minutes: saltea las cuentas renovadas hace menos de eso (evita pisarse)."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT user_id FROM user_broker_credentials WHERE broker='iol_lab' "
+            "AND (last_sync_at IS NULL OR last_sync_at <= datetime('now', ?))",
+            (f"-{int(min_age_minutes)} minutes",)).fetchall()
+        out = {"ok": True, "checked": len(rows), "renewed": 0, "dead": 0, "transient": 0}
+        for r in rows:
+            res = _iol_lab_refresh_one(conn, r["user_id"])
+            if res.get("ok"):
+                out["renewed"] += 1
+            elif res.get("dead"):
+                out["dead"] += 1
+            elif res.get("transient"):
+                out["transient"] += 1
+        return out
+    finally:
+        conn.close()
+
+
+def _iol_lab_refresh_job():
+    """Job horario del scheduler in-process. Red de respaldo del cron externo: si el
+    proceso está despierto, la medición avanza aunque nadie configure cron-job.org."""
+    try:
+        res = _iol_lab_refresh_all(min_age_minutes=50)
+        if res.get("checked"):
+            print(f"[iol_lab] refresh job: {res}")
+    except Exception as e:  # noqa
+        print(f"[iol_lab] refresh job falló: {e}")
+
+
+@app.get("/api/admin/iol-lab/runs")
+def admin_iol_lab_runs(uid: int = Depends(get_admin_user)):
+    """Todas las corridas (resumen + JSON anonimizado) y el estado de medición por tester."""
+    conn = get_db()
+    try:
+        runs = [dict(r) for r in conn.execute(
+            "SELECT r.id, r.user_id, u.email, r.started_at, r.finished_at, r.status, r.summary, r.result_json, r.error "
+            "FROM iol_lab_runs r JOIN users u ON u.id=r.user_id ORDER BY r.id DESC LIMIT 50").fetchall()]
+        watches = []
+        for r in conn.execute(
+                "SELECT DISTINCT user_id FROM iol_lab_token_log").fetchall():
+            w = _iol_lab_watch_info(conn, r["user_id"])
+            w["user_id"] = r["user_id"]
+            watches.append(w)
+        return {"runs": runs, "watches": watches}
+    finally:
+        conn.close()
+
+
 @app.get("/api/imports")
 def import_list(uid: int = Depends(get_effective_user)):
     """Lista los batches confirmados / revertidos del usuario."""
@@ -31845,6 +32170,14 @@ def _start_scheduler():
         _run_daily_snapshot_job,
         CronTrigger(hour=2, minute=59),
         id='daily_snapshot',
+        replace_existing=True,
+    )
+    # Cada hora (minuto 7): renueva los refresh tokens del IOL Lab (PLAN_iol_sync.md).
+    # Respaldo del cron externo /api/iol/lab/run-cron; barato (0-3 cuentas).
+    _scheduler.add_job(
+        _iol_lab_refresh_job,
+        CronTrigger(minute=7),
+        id='iol_lab_refresh',
         replace_existing=True,
     )
     # 03:30 UTC todos los días — después del snapshot. Bajamos a Free los

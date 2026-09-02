@@ -49,6 +49,7 @@ const Insights = lazy(() => import('./pages/Insights'))
 const Admin = lazy(() => import('./pages/Admin'))
 const Goals = lazy(() => import('./pages/Goals'))
 const Imports = lazy(() => import('./pages/Imports'))
+const IolLab = lazy(() => import('./pages/IolLab'))   // escondida: /lab/iol (PLAN_iol_sync.md)
 const Alertas = lazy(() => import('./pages/Alertas'))
 const RendiAI = lazy(() => import('./pages/RendiAI'))
 const Reports = lazy(() => import('./pages/Reports'))
@@ -217,6 +218,7 @@ function AppRoutes() {
       {/* /objetivos sigue siendo redirect a /posiciones?tab=objetivos arriba */}
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />
+      <Route path="/lab/iol" element={<IolLab />} />
       <Route path="/alertas" element={<Alertas />} />
       <Route path="/ai" element={<RendiAI />} />
       {/* Back-compat: las alertas vivían en Config › Notificaciones */}

@@ -1588,3 +1588,22 @@ def send_trial_ended(*, to: str, user_name: str, stats: Optional[dict] = None) -
     )
     return _send(to, "Terminó tu prueba de Rendi", _wrap_html(body_html), text,
                  from_addr=_from_noreply())
+
+
+def send_iol_lab_report_admin(*, to: str, tester_email: str, run_id: int,
+                              status: str, summary: str) -> bool:
+    """Aviso INTERNO: terminó una corrida del IOL Lab (probe read-only contra la API
+    de IOL, PLAN_iol_sync.md). El summary viene ANONIMIZADO por iol_api.mask, pero
+    igual se escapa (es texto derivado de respuestas de un tercero)."""
+    safe_email = html.escape(tester_email or "")
+    safe_summary = html.escape(summary or "")[:20000]
+    subject = f"Rendi · IOL Lab run #{run_id} ({status}) — {tester_email}"
+    body_html = f"""
+      <h1 style="font-size:20px;font-weight:700;margin:0 0 12px;">IOL Lab · corrida #{run_id} · {html.escape(status)}</h1>
+      <p style="font-size:14px;color:#374151;margin:0 0 12px;">Tester: <b>{safe_email}</b>. El JSON anonimizado completo está en
+      <code>/api/admin/iol-lab/runs</code>.</p>
+      <pre style="font-size:12px;line-height:1.45;white-space:pre-wrap;background:#f3f4f6;padding:12px;border-radius:8px;">{safe_summary}</pre>
+    """
+    text = f"IOL Lab run #{run_id} ({status}) — tester {tester_email}\n\n{summary or ''}"
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_noreply(), append_footer=False)

@@ -1,0 +1,5144 @@
+{
+ "swagger": "2.0",
+ "info": {
+  "version": "v2",
+  "title": "Versi\u00f3n API 2.0"
+ },
+ "host": "api.invertironline.com",
+ "schemes": [
+  "https"
+ ],
+ "paths": {
+  "/api/v2/Asesor/Movimientos": {
+   "post": {
+    "tags": [
+     "Asesores"
+    ],
+    "operationId": "Asesores_MovimientosHistoricos",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "requestModel",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/MovementBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "object"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/asesores/operar/VenderEspecieD": {
+   "post": {
+    "tags": [
+     "AsesoresOperar"
+    ],
+    "operationId": "AsesoresOperar_VenderD",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "vm",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/AsesorVenderEspecieDBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/asesores/test-inversor": {
+   "get": {
+    "tags": [
+     "AsesoresTestInversor"
+    ],
+    "operationId": "AsesoresTestInversor_TestInversor",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/PreguntasAsesoresTestInversorResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   },
+   "post": {
+    "tags": [
+     "AsesoresTestInversor"
+    ],
+    "operationId": "AsesoresTestInversor_CalcularPerfilSinGuardar",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json"
+    ],
+    "parameters": [
+     {
+      "name": "respuestaInversor",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/RespuestasAsesorTestInversorBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/PerfilCalculadoResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/asesores/test-inversor/{idClienteAsesorado}": {
+   "post": {
+    "tags": [
+     "AsesoresTestInversor"
+    ],
+    "operationId": "AsesoresTestInversor_CalcularPerfil",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json"
+    ],
+    "parameters": [
+     {
+      "name": "idClienteAsesorado",
+      "in": "path",
+      "required": true,
+      "type": "integer",
+      "format": "int32"
+     },
+     {
+      "name": "respuestaInversor",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/RespuestasAsesorTestInversorBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/PerfilCalculadoResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/estadocuenta": {
+   "get": {
+    "tags": [
+     "MiCuenta"
+    ],
+    "operationId": "MiCuenta_EstadoCuenta",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/EstadoCuentaModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/portafolio/{pais}": {
+   "get": {
+    "tags": [
+     "MiCuenta"
+    ],
+    "operationId": "MiCuenta_Portafolio",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "pais",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/PortafolioModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operaciones/{numero}": {
+   "get": {
+    "tags": [
+     "MiCuenta"
+    ],
+    "operationId": "MiCuenta_Operaciones",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "numero",
+      "in": "path",
+      "required": true,
+      "type": "integer",
+      "format": "int32"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/OperacionDetalleModel"
+      }
+     }
+    },
+    "deprecated": false
+   },
+   "delete": {
+    "tags": [
+     "MiCuenta"
+    ],
+    "operationId": "MiCuenta_Cancelar",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "numero",
+      "in": "path",
+      "required": true,
+      "type": "integer",
+      "format": "int32"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operaciones": {
+   "get": {
+    "tags": [
+     "MiCuenta"
+    ],
+    "operationId": "MiCuenta_Operaciones",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "filtro.numero",
+      "in": "query",
+      "description": "Ejemplo: \r\n0,\r\n11122",
+      "required": false,
+      "type": "integer",
+      "format": "int32"
+     },
+     {
+      "name": "filtro.estado",
+      "in": "query",
+      "description": "Estados para filtrar, desagregados en el resultado final\r\nEjemplo:\r\nTodas,\r\nPendientes,\r\nTerminadas,\r\nCanceladas",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "todas",
+       "pendientes",
+       "terminadas",
+       "canceladas"
+      ]
+     },
+     {
+      "name": "filtro.fechaDesde",
+      "in": "query",
+      "description": "Ejemplo:\r\n2016-08-01 ,\r\n2016-01-23",
+      "required": false,
+      "type": "string",
+      "format": "date-time"
+     },
+     {
+      "name": "filtro.fechaHasta",
+      "in": "query",
+      "description": "Ejemplo 2016-10-15 23:00:00 ,\r\n2016-05-01",
+      "required": false,
+      "type": "string",
+      "format": "date-time"
+     },
+     {
+      "name": "filtro.pais",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/OperacionModel"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Notificacion": {
+   "get": {
+    "tags": [
+     "Notificacion"
+    ],
+    "operationId": "Notificacion_Index",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/NotificacionModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/CPD/PuedeOperar": {
+   "get": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_GetCPuedeOperar",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/CPDPuedeOperarModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/CPD/{estado}/{segmento}": {
+   "get": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_GetChequePagoDiferido",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "estado",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "segmento",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/CPDModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/CPD/Comisiones/{importe}/{plazo}/{tasa}": {
+   "get": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_CalcularComisionesChpd",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "importe",
+      "in": "path",
+      "required": true,
+      "type": "number",
+      "format": "double"
+     },
+     {
+      "name": "plazo",
+      "in": "path",
+      "required": true,
+      "type": "integer",
+      "format": "int32"
+     },
+     {
+      "name": "tasa",
+      "in": "path",
+      "required": true,
+      "type": "number",
+      "format": "double"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ComisionCPDDTO"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/CPD": {
+   "post": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_PostChequePagoDiferido",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "model",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/CPDBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/CPDTransaccionFinalModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/Token": {
+   "post": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_TokenGenerate",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "requestTokenDDJJ",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/RequestTokenDDJJDTO"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/JWTResultDTO"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/Vender": {
+   "post": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_Vender",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "vm",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/VenderBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/Comprar": {
+   "post": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_Comprar",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "vm",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/ComprarBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/rescate/fci": {
+   "post": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_RescateFCI",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "vm",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/RescateFCIBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/VenderEspecieD": {
+   "post": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_VenderD",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "vm",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/VenderDBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/ComprarEspecieD": {
+   "post": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_ComprarD",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "vm",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/ComprarBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/operar/suscripcion/fci": {
+   "post": {
+    "tags": [
+     "Operar"
+    ],
+    "operationId": "Operar_SuscripcionFci",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "vm",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/SuscripcionFCIBindingModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/OperatoriaSimplificada/MontosEstimados/{monto}": {
+   "get": {
+    "tags": [
+     "OperatoriaSimplificada"
+    ],
+    "operationId": "OperatoriaSimplificada_ObtenerMontosEstimados",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "monto",
+      "in": "path",
+      "required": true,
+      "type": "number",
+      "format": "double"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/MontosEstimadosDTO"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/OperatoriaSimplificada/{idTipoOperatoria}/Parametros": {
+   "get": {
+    "tags": [
+     "OperatoriaSimplificada"
+    ],
+    "operationId": "OperatoriaSimplificada_ObtenerParametrosOperatoriaSimplificada",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "idTipoOperatoria",
+      "in": "path",
+      "required": true,
+      "type": "integer",
+      "format": "int32"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ParametrosMepSimpleDTO"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/OperatoriaSimplificada/Validar/{monto}/{idTipoOperatoria}": {
+   "get": {
+    "tags": [
+     "OperatoriaSimplificada"
+    ],
+    "operationId": "OperatoriaSimplificada_ValidarOperatoriaSimplificada",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "monto",
+      "in": "path",
+      "required": true,
+      "type": "number",
+      "format": "double"
+     },
+     {
+      "name": "idTipoOperatoria",
+      "in": "path",
+      "required": true,
+      "type": "integer",
+      "format": "int32"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/OperatoriaSimplificada/VentaMepSimple/MontosEstimados/{monto}": {
+   "get": {
+    "tags": [
+     "OperatoriaSimplificada"
+    ],
+    "operationId": "OperatoriaSimplificada_ObtenerMontosEstimadosVentaMepSimple",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "monto",
+      "in": "path",
+      "required": true,
+      "type": "number",
+      "format": "double"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/MontosEstimadosVentaMepDTO"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Cotizaciones/MEP": {
+   "post": {
+    "tags": [
+     "OperatoriaSimplificada"
+    ],
+    "operationId": "OperatoriaSimplificada_ObtenerValorDeReferencia",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "cotizacionModel",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/CotizacionMepOperatoriaSimplificadaModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "format": "double",
+       "type": "number"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/OperatoriaSimplificada/Comprar": {
+   "post": {
+    "tags": [
+     "OperatoriaSimplificada"
+    ],
+    "operationId": "OperatoriaSimplificada_CrearCompraOperatoriaSimplificada",
+    "consumes": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml",
+     "application/x-www-form-urlencoded"
+    ],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "model",
+      "in": "body",
+      "required": true,
+      "schema": {
+       "$ref": "#/definitions/CompraOperatoriaSimplificadModel"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/ResponseModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/datos-perfil": {
+   "get": {
+    "tags": [
+     "Perfil"
+    ],
+    "operationId": "Perfil_DatosPerfil",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/PerfilClienteModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Titulos/FCI": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_ListadoFCI",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/TituloFCIModel"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Titulos/FCI/{simbolo}": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_FCI",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "simbolo",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/TituloFCIModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Titulos/FCI/TipoFondos": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_TipoFondos",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/TipoFondoFCIModel"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Cotizaciones/MEP/{simbolo}": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_ObtenerValorDeReferencia",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "simbolo",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "format": "double",
+       "type": "number"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Titulos/FCI/Administradoras": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_AdministradorasFCI",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/TipoFondoFCIModel"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/{mercado}/Titulos/{simbolo}": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_Titulos",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "mercado",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "bCBA",
+       "nYSE",
+       "nASDAQ",
+       "aMEX",
+       "bCS",
+       "rOFX"
+      ]
+     },
+     {
+      "name": "simbolo",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/TituloModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/{mercado}/Titulos/{simbolo}/Opciones": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_Opciones",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "mercado",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "bCBA",
+       "nYSE",
+       "nASDAQ",
+       "aMEX",
+       "bCS",
+       "rOFX"
+      ]
+     },
+     {
+      "name": "simbolo",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/OpcionModel"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/{pais}/Titulos/Cotizacion/Instrumentos": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_InstrumentoCotizacionPorPais",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "pais",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/InstrumentoCotizacionModel"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Cotizaciones/{Instrumento}/{Pais}/Todos": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_CotizacionesXInstrumento",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "Instrumento",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "Pais",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "cotizacionInstrumentoModel.instrumento",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "opciones",
+       "cedears",
+       "acciones",
+       "aDRs",
+       "titulosPublicos",
+       "cauciones",
+       "cHPD",
+       "futuros",
+       "obligacionesNegociables",
+       "letras"
+      ]
+     },
+     {
+      "name": "cotizacionInstrumentoModel.pais",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/InstrumentoModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Cotizaciones/{Instrumento}/{Panel}/{Pais}": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_PanelCotizaciones",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "Instrumento",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "Panel",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "Pais",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "panelCotizacion.instrumento",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "acciones",
+       "bonos",
+       "opciones",
+       "monedas",
+       "cauciones",
+       "cHPD",
+       "futuros",
+       "aDRs",
+       "obligacionesNegociables",
+       "letras"
+      ]
+     },
+     {
+      "name": "panelCotizacion.panel",
+      "in": "query",
+      "required": false,
+      "type": "string"
+     },
+     {
+      "name": "panelCotizacion.pais",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/PanelModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/{mercado}/Titulos/{simbolo}/CotizacionDetalle": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_CotizacionConSimbolo",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "mercado",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "bCBA",
+       "nYSE",
+       "nASDAQ",
+       "aMEX",
+       "bCS",
+       "rOFX"
+      ]
+     },
+     {
+      "name": "simbolo",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/CotizacionDetalleModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/cotizaciones-orleans/{Instrumento}/{Pais}/Todos": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_CotizacionesXInstrumento_Orleans",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "Instrumento",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "Pais",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "cotizacionInstrumentoModel.instrumento",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "opciones",
+       "cedears",
+       "acciones",
+       "aDRs",
+       "titulosPublicos",
+       "cauciones",
+       "cHPD",
+       "futuros",
+       "obligacionesNegociables",
+       "letras"
+      ]
+     },
+     {
+      "name": "cotizacionInstrumentoModel.pais",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/InstrumentoModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/{pais}/Titulos/Cotizacion/Paneles/{instrumento}": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_InstrumentoCotizacionPorPais",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "pais",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     },
+     {
+      "name": "instrumento",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/InstrumentoCotizacionModel"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/cotizaciones-orleans/{Instrumento}/{Pais}/Operables": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_CotizacionesXInstrumentoOperables",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "Instrumento",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "Pais",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "cotizacionInstrumentoModel.instrumento",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "opciones",
+       "cedears",
+       "acciones",
+       "aDRs",
+       "titulosPublicos",
+       "cauciones",
+       "cHPD",
+       "futuros",
+       "obligacionesNegociables",
+       "letras"
+      ]
+     },
+     {
+      "name": "cotizacionInstrumentoModel.pais",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/InstrumentoModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/{Mercado}/Titulos/{Simbolo}/Cotizacion": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_Cotizacion",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "mercado",
+      "in": "query",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "simbolo",
+      "in": "query",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "model.simbolo",
+      "in": "query",
+      "description": "Ejemplo: ALUA, APBR",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "model.mercado",
+      "in": "query",
+      "description": "Ejemplo:\r\nRofx,\r\nBCBA",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "bCBA",
+       "nYSE",
+       "nASDAQ",
+       "aMEX",
+       "bCS",
+       "rOFX"
+      ]
+     },
+     {
+      "name": "model.plazo",
+      "in": "query",
+      "description": "T0 = Inmediato\r\nT+1 = 24 Horas\r\nT+2 = 72 Horas",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "t0",
+       "t1",
+       "t2",
+       "t3"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/CotizacionModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/cotizaciones-orleans-panel/{Instrumento}/{Pais}/Todos": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_CotizacionesXInstrumento_OrleansPanel",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "Instrumento",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "Pais",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "cotizacionInstrumentoModel.instrumento",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "opciones",
+       "cedears",
+       "acciones",
+       "aDRs",
+       "titulosPublicos",
+       "cauciones",
+       "cHPD",
+       "futuros",
+       "obligacionesNegociables",
+       "letras"
+      ]
+     },
+     {
+      "name": "cotizacionInstrumentoModel.pais",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/InstrumentoModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Titulos/FCI/Administradoras/{administradora}/TipoFondos": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_AdministradorasTipoFondoFCI",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "administradora",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/AdministradoraTipoFondoFCI"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/cotizaciones-orleans-panel/{Instrumento}/{Pais}/Operables": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_CotizacionesXInstrumentoOperablesPanel",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "Instrumento",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "Pais",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "cotizacionInstrumentoModel.instrumento",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "opciones",
+       "cedears",
+       "acciones",
+       "aDRs",
+       "titulosPublicos",
+       "cauciones",
+       "cHPD",
+       "futuros",
+       "obligacionesNegociables",
+       "letras"
+      ]
+     },
+     {
+      "name": "cotizacionInstrumentoModel.pais",
+      "in": "query",
+      "required": false,
+      "type": "string",
+      "enum": [
+       "estados_Unidos",
+       "argentina"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/InstrumentoModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/{mercado}/Titulos/{simbolo}/CotizacionDetalleMobile/{plazo}": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_CotizacionConSimboloMobile",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "mercado",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "bCBA",
+       "nYSE",
+       "nASDAQ",
+       "aMEX",
+       "bCS",
+       "rOFX"
+      ]
+     },
+     {
+      "name": "simbolo",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "plazo",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "t0",
+       "t1",
+       "t2",
+       "t3"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "$ref": "#/definitions/CotizacionDetalleMobileModel"
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/Titulos/FCI/Administradoras/{administradora}/TipoFondos/{tipoFondo}": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_AdministradorasTipoFondoFCI",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "administradora",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "cONVEXITY",
+       "sUPERVIELLE"
+      ]
+     },
+     {
+      "name": "tipoFondo",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "plazo_fijo_pesos",
+       "plazo_fijo_dolares",
+       "renta_fija_pesos",
+       "renta_fija_dolares",
+       "renta_mixta_pesos",
+       "renta_mixta_dolares",
+       "renta_variable_pesos",
+       "renta_variable_dolares"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/TituloFCIModel"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  },
+  "/api/v2/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fechaDesde}/{fechaHasta}/{ajustada}": {
+   "get": {
+    "tags": [
+     "Titulos"
+    ],
+    "operationId": "Titulos_CotizacionSerieHistorica",
+    "consumes": [],
+    "produces": [
+     "application/json",
+     "text/json",
+     "application/xml",
+     "text/xml"
+    ],
+    "parameters": [
+     {
+      "name": "mercado",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "bCBA",
+       "nYSE",
+       "nASDAQ",
+       "aMEX",
+       "bCS",
+       "rOFX"
+      ]
+     },
+     {
+      "name": "simbolo",
+      "in": "path",
+      "required": true,
+      "type": "string"
+     },
+     {
+      "name": "fechaDesde",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "format": "date-time"
+     },
+     {
+      "name": "fechaHasta",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "format": "date-time"
+     },
+     {
+      "name": "ajustada",
+      "in": "path",
+      "required": true,
+      "type": "string",
+      "enum": [
+       "ajustada",
+       "sinAjustar"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "schema": {
+       "type": "array",
+       "items": {
+        "$ref": "#/definitions/CotizacionModel"
+       }
+      }
+     }
+    },
+    "deprecated": false
+   }
+  }
+ },
+ "definitions": {
+  "MovementBindingModel": {
+   "required": [
+    "from",
+    "to",
+    "dateType",
+    "status",
+    "country"
+   ],
+   "type": "object",
+   "properties": {
+    "clientes": {
+     "type": "array",
+     "items": {
+      "format": "int32",
+      "type": "integer"
+     }
+    },
+    "from": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "to": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "dateType": {
+     "type": "string"
+    },
+    "status": {
+     "type": "string"
+    },
+    "type": {
+     "type": "string"
+    },
+    "country": {
+     "type": "string"
+    },
+    "currency": {
+     "type": "string"
+    },
+    "cuentaComitente": {
+     "type": "string"
+    }
+   }
+  },
+  "AsesorVenderEspecieDBindingModel": {
+   "required": [
+    "mercado",
+    "simbolo",
+    "cantidad",
+    "precio",
+    "validez",
+    "idCuentaBancaria"
+   ],
+   "type": "object",
+   "properties": {
+    "idClienteAsesorado": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "fondosParaOperacion": {
+     "format": "double",
+     "maximum": 99999999,
+     "minimum": 0,
+     "type": "number"
+    },
+    "mercado": {
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "simbolo": {
+     "type": "string"
+    },
+    "cantidad": {
+     "format": "double",
+     "type": "number"
+    },
+    "precio": {
+     "format": "double",
+     "type": "number"
+    },
+    "validez": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "idCuentaBancaria": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "tipoOrden": {
+     "enum": [
+      "precioLimite",
+      "precioMercado"
+     ],
+     "type": "string"
+    },
+    "plazo": {
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "idFuente": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "ResponseModel": {
+   "type": "object",
+   "properties": {
+    "ok": {
+     "type": "boolean"
+    },
+    "messages": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/DetalleMensaje"
+     }
+    }
+   }
+  },
+  "DetalleMensaje": {
+   "type": "object",
+   "properties": {
+    "title": {
+     "type": "string"
+    },
+    "description": {
+     "type": "string"
+    }
+   }
+  },
+  "PreguntasAsesoresTestInversorResponseModel": {
+   "type": "object",
+   "properties": {
+    "instrumentosInvertidosAnteriormente": {
+     "$ref": "#/definitions/InstrumentosInvertidosAnteriormenteDTO"
+    },
+    "nivelesConocimientoInstrumentos": {
+     "$ref": "#/definitions/NivelesConocimientoInstrumentosDTO"
+    },
+    "plazosInversion": {
+     "$ref": "#/definitions/PlazosInversionDTO"
+    },
+    "edadesPosibles": {
+     "$ref": "#/definitions/EdadesPosiblesDTO"
+    },
+    "objetivosInversion": {
+     "$ref": "#/definitions/ObjetivosInversionDTO"
+    },
+    "polizasSeguro": {
+     "$ref": "#/definitions/PolizasSeguroDTO"
+    },
+    "capacidadesAhorro": {
+     "$ref": "#/definitions/CapacidadesAhorroDTO"
+    },
+    "porcentajesPatrimonioDedicado": {
+     "$ref": "#/definitions/PorcentajesPatrimonioDedicadoDTO"
+    }
+   }
+  },
+  "InstrumentosInvertidosAnteriormenteDTO": {
+   "type": "object",
+   "properties": {
+    "instrumentos": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/CheckBoxItemDTO"
+     }
+    },
+    "pregunta": {
+     "type": "string"
+    },
+    "order": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "NivelesConocimientoInstrumentosDTO": {
+   "type": "object",
+   "properties": {
+    "niveles": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/PreguntaOpcionMultipleDTO"
+     }
+    },
+    "pregunta": {
+     "type": "string"
+    },
+    "order": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "PlazosInversionDTO": {
+   "type": "object",
+   "properties": {
+    "plazos": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/OpcionDTO"
+     }
+    },
+    "pregunta": {
+     "type": "string"
+    },
+    "order": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "EdadesPosiblesDTO": {
+   "type": "object",
+   "properties": {
+    "edades": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/OpcionDTO"
+     }
+    },
+    "pregunta": {
+     "type": "string"
+    },
+    "order": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "ObjetivosInversionDTO": {
+   "type": "object",
+   "properties": {
+    "objetivos": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/OpcionDTO"
+     }
+    },
+    "pregunta": {
+     "type": "string"
+    },
+    "order": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "PolizasSeguroDTO": {
+   "type": "object",
+   "properties": {
+    "polizas": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/OpcionDTO"
+     }
+    },
+    "pregunta": {
+     "type": "string"
+    },
+    "order": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "CapacidadesAhorroDTO": {
+   "type": "object",
+   "properties": {
+    "capacidadesAhorro": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/OpcionDTO"
+     }
+    },
+    "pregunta": {
+     "type": "string"
+    },
+    "order": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "PorcentajesPatrimonioDedicadoDTO": {
+   "type": "object",
+   "properties": {
+    "porcentajesPatrimonioDedicado": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/OpcionDTO"
+     }
+    },
+    "pregunta": {
+     "type": "string"
+    },
+    "order": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "CheckBoxItemDTO": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "nombre": {
+     "type": "string"
+    }
+   }
+  },
+  "PreguntaOpcionMultipleDTO": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "nombre": {
+     "type": "string"
+    },
+    "opcionElegida": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "opciones": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/OpcionDTO"
+     }
+    }
+   }
+  },
+  "OpcionDTO": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "nombre": {
+     "type": "string"
+    }
+   }
+  },
+  "RespuestasAsesorTestInversorBindingModel": {
+   "required": [
+    "idPlazoElegido",
+    "idEdadElegida",
+    "idObjetivoInversionElegida",
+    "idPolizaElegida",
+    "idCapacidadAhorroElegida",
+    "idPorcentajePatrimonioDedicado"
+   ],
+   "type": "object",
+   "properties": {
+    "enviarEmailCliente": {
+     "type": "boolean"
+    },
+    "instrumentosInvertidosAnteriormente": {
+     "type": "array",
+     "items": {
+      "format": "int32",
+      "type": "integer"
+     }
+    },
+    "nivelesConocimientoInstrumentos": {
+     "type": "array",
+     "items": {
+      "format": "int32",
+      "type": "integer"
+     }
+    },
+    "idPlazoElegido": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "idEdadElegida": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "idObjetivoInversionElegida": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "idPolizaElegida": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "idCapacidadAhorroElegida": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "idPorcentajePatrimonioDedicado": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "PerfilCalculadoResponseModel": {
+   "type": "object",
+   "properties": {
+    "perfilSugerido": {
+     "$ref": "#/definitions/PerfilInversorSugeridoModel",
+     "readOnly": true
+    },
+    "ok": {
+     "type": "boolean"
+    },
+    "messages": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/DetalleMensaje"
+     }
+    }
+   }
+  },
+  "PerfilInversorSugeridoModel": {
+   "type": "object",
+   "properties": {
+    "nombre": {
+     "type": "string"
+    },
+    "detalle": {
+     "type": "string"
+    },
+    "perfilComposiciones": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/PerfilComposicionModel"
+     }
+    }
+   }
+  },
+  "PerfilComposicionModel": {
+   "type": "object",
+   "properties": {
+    "nombre": {
+     "type": "string"
+    },
+    "porcentaje": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "EstadoCuentaModel": {
+   "type": "object",
+   "properties": {
+    "cuentas": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/CuentaModel"
+     }
+    },
+    "estadisticas": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/EstadisticaModel"
+     }
+    },
+    "totalEnPesos": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "CuentaModel": {
+   "type": "object",
+   "properties": {
+    "numero": {
+     "type": "string"
+    },
+    "tipo": {
+     "enum": [
+      "inversion_Argentina_Pesos",
+      "inversion_Argentina_Dolares",
+      "inversion_Estados_Unidos_Dolares",
+      "administrada_Argentina_Pesos",
+      "administrada_Argentina_Dolares",
+      "administrada_Estados_Unidos_Dolares"
+     ],
+     "type": "string"
+    },
+    "moneda": {
+     "enum": [
+      "peso_Argentino",
+      "dolar_Estadounidense",
+      "real",
+      "peso_Mexicano",
+      "peso_Chileno",
+      "yen",
+      "libra",
+      "euro",
+      "peso_Peruano",
+      "peso_Colombiano",
+      "peso_Uruguayo"
+     ],
+     "type": "string"
+    },
+    "disponible": {
+     "format": "double",
+     "type": "number"
+    },
+    "comprometido": {
+     "format": "double",
+     "type": "number"
+    },
+    "saldo": {
+     "format": "double",
+     "type": "number"
+    },
+    "titulosValorizados": {
+     "format": "double",
+     "type": "number"
+    },
+    "total": {
+     "format": "double",
+     "type": "number"
+    },
+    "margenDescubierto": {
+     "format": "double",
+     "type": "number"
+    },
+    "saldos": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/SaldoModel"
+     }
+    },
+    "estado": {
+     "enum": [
+      "operable",
+      "cerrada",
+      "bloqueada"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "EstadisticaModel": {
+   "type": "object",
+   "properties": {
+    "descripcion": {
+     "type": "string"
+    },
+    "cantidad": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "volumen": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "SaldoModel": {
+   "type": "object",
+   "properties": {
+    "liquidacion": {
+     "enum": [
+      "inmediato",
+      "hrs24",
+      "hrs48",
+      "hrs72",
+      "otro",
+      "masHrs72"
+     ],
+     "type": "string"
+    },
+    "saldo": {
+     "format": "double",
+     "type": "number"
+    },
+    "comprometido": {
+     "format": "double",
+     "type": "number"
+    },
+    "disponible": {
+     "format": "double",
+     "type": "number"
+    },
+    "disponibleOperar": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "PortafolioModel": {
+   "type": "object",
+   "properties": {
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    },
+    "activos": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/PosicionModel"
+     }
+    }
+   }
+  },
+  "PosicionModel": {
+   "type": "object",
+   "properties": {
+    "cantidad": {
+     "format": "double",
+     "type": "number"
+    },
+    "comprometido": {
+     "format": "double",
+     "type": "number"
+    },
+    "puntosVariacion": {
+     "format": "double",
+     "type": "number"
+    },
+    "variacionDiaria": {
+     "format": "double",
+     "type": "number"
+    },
+    "ultimoPrecio": {
+     "format": "double",
+     "type": "number"
+    },
+    "ppc": {
+     "format": "double",
+     "type": "number"
+    },
+    "gananciaPorcentaje": {
+     "format": "double",
+     "type": "number"
+    },
+    "gananciaDinero": {
+     "format": "double",
+     "type": "number"
+    },
+    "valorizado": {
+     "format": "double",
+     "type": "number"
+    },
+    "titulo": {
+     "$ref": "#/definitions/TituloModel"
+    },
+    "parking": {
+     "$ref": "#/definitions/ParkingModel"
+    }
+   }
+  },
+  "TituloModel": {
+   "description": "",
+   "type": "object",
+   "properties": {
+    "simbolo": {
+     "type": "string"
+    },
+    "descripcion": {
+     "type": "string"
+    },
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    },
+    "mercado": {
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "tipo": {
+     "enum": [
+      "oPCIONES",
+      "cEDEARS",
+      "titulosPublicos",
+      "aCCIONES",
+      "cUPONESPRIVADOS",
+      "fONDOSDEINVERSION",
+      "aDR",
+      "iNDICES",
+      "bOCON",
+      "bONEX",
+      "cERTIFICADOSPAR",
+      "oBLIGACIONESNEGOCIABLES",
+      "oBLIGACIONESPYME",
+      "cUPONESOBL",
+      "lETRASDEPRECADO",
+      "lETES",
+      "tITULOSDEUDA",
+      "cUPONESEXTRANJEROS",
+      "cUPONESTPI",
+      "bONOS",
+      "dIVISAS",
+      "fONDOSCOTIZANTES",
+      "cAUCIONESPESOS",
+      "cAUCIONESDOLARES",
+      "cERTIFICADOSCREDITOFISCAL",
+      "cEDRO",
+      "bODEN",
+      "fONDOSRENTAFIJA",
+      "fideicomiso",
+      "rENTAFIJA",
+      "cHEQUEPAGODIFERIDO",
+      "componenteDEEtf",
+      "componenteDEEtf_Viejo",
+      "futuros",
+      "soja",
+      "maiz",
+      "trigo",
+      "oro",
+      "petroleo",
+      "fideicomisoFinanciero",
+      "obligacionesNegociables",
+      "letraNota",
+      "fondoComundeInversion",
+      "titulosPublicosSuscribibles",
+      "accionesSuscribibles",
+      "incrementoCapital",
+      "letesSuscribibles",
+      "letras",
+      "fondosMutuosUSA"
+     ],
+     "type": "string"
+    },
+    "plazo": {
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "moneda": {
+     "enum": [
+      "peso_Argentino",
+      "dolar_Estadounidense",
+      "real",
+      "peso_Mexicano",
+      "peso_Chileno",
+      "yen",
+      "libra",
+      "euro",
+      "peso_Peruano",
+      "peso_Colombiano",
+      "peso_Uruguayo"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "ParkingModel": {
+   "type": "object",
+   "properties": {
+    "disponibleInmediato": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "OperacionDetalleModel": {
+   "description": "",
+   "type": "object",
+   "properties": {
+    "numero": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "mercado": {
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "simbolo": {
+     "type": "string"
+    },
+    "moneda": {
+     "enum": [
+      "peso_Argentino",
+      "dolar_Estadounidense",
+      "real",
+      "peso_Mexicano",
+      "peso_Chileno",
+      "yen",
+      "libra",
+      "euro",
+      "peso_Peruano",
+      "peso_Colombiano",
+      "peso_Uruguayo",
+      "dolar_BNA",
+      "dolar_Bolsa"
+     ],
+     "type": "string"
+    },
+    "tipo": {
+     "enum": [
+      "compra",
+      "venta",
+      "caucion",
+      "suscripcion",
+      "rescate",
+      "suscripcionPrimaria",
+      "suscripcionFCI",
+      "rescateFCI"
+     ],
+     "type": "string"
+    },
+    "fechaAlta": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "validez": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "fechaOperado": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "estadoActual": {
+     "enum": [
+      "iniciada",
+      "en_Proceso",
+      "parcialmente_Terminada",
+      "terminada",
+      "cancelada",
+      "pendiente_Cancelacion",
+      "cancelada_Por_Vencimiento_Validez",
+      "parcialmente_Terminada_Con_Pedido_Cancelacion",
+      "en_Modificacion"
+     ],
+     "type": "string"
+    },
+    "estados": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/Estado"
+     }
+    },
+    "aranceles": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/Arancel"
+     }
+    },
+    "operaciones": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/Operacion"
+     }
+    },
+    "precio": {
+     "format": "double",
+     "type": "number"
+    },
+    "cantidad": {
+     "format": "double",
+     "type": "number"
+    },
+    "monto": {
+     "format": "double",
+     "type": "number"
+    },
+    "fondosParaOperacion": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoOperacion": {
+     "format": "double",
+     "type": "number"
+    },
+    "modalidad": {
+     "enum": [
+      "precio_Limite",
+      "precio_Mercado"
+     ],
+     "type": "string"
+    },
+    "arancelesARS": {
+     "format": "double",
+     "type": "number",
+     "readOnly": true
+    },
+    "arancelesUSD": {
+     "format": "double",
+     "type": "number",
+     "readOnly": true
+    },
+    "plazo": {
+     "enum": [
+      "sinValor",
+      "a72horas",
+      "a24horas",
+      "inmediata",
+      "a48horas"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "Estado": {
+   "type": "object",
+   "properties": {
+    "detalle": {
+     "type": "string"
+    },
+    "fecha": {
+     "format": "date-time",
+     "type": "string"
+    }
+   }
+  },
+  "Arancel": {
+   "type": "object",
+   "properties": {
+    "tipo": {
+     "type": "string"
+    },
+    "neto": {
+     "format": "double",
+     "type": "number"
+    },
+    "iva": {
+     "format": "double",
+     "type": "number"
+    },
+    "moneda": {
+     "type": "string"
+    }
+   }
+  },
+  "Operacion": {
+   "type": "object",
+   "properties": {
+    "fecha": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "cantidad": {
+     "format": "double",
+     "type": "number"
+    },
+    "precio": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "OperacionBindingModel": {
+   "type": "object",
+   "properties": {
+    "numero": {
+     "format": "int32",
+     "description": "Ejemplo: \r\n0,\r\n11122",
+     "type": "integer"
+    },
+    "estado": {
+     "description": "Estados para filtrar, desagregados en el resultado final\r\nEjemplo:\r\nTodas,\r\nPendientes,\r\nTerminadas,\r\nCanceladas",
+     "enum": [
+      "todas",
+      "pendientes",
+      "terminadas",
+      "canceladas"
+     ],
+     "type": "string"
+    },
+    "fechaDesde": {
+     "format": "date-time",
+     "description": "Ejemplo:\r\n2016-08-01 ,\r\n2016-01-23",
+     "type": "string"
+    },
+    "fechaHasta": {
+     "format": "date-time",
+     "description": "Ejemplo 2016-10-15 23:00:00 ,\r\n2016-05-01",
+     "type": "string"
+    },
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "OperacionModel": {
+   "type": "object",
+   "properties": {
+    "numero": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "fechaOrden": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "tipo": {
+     "type": "string"
+    },
+    "estado": {
+     "enum": [
+      "iniciada",
+      "en_Proceso",
+      "parcialmente_Terminada",
+      "terminada",
+      "cancelada",
+      "pendiente_Cancelacion",
+      "cancelada_Por_Vencimiento_Validez",
+      "parcialmente_Terminada_Con_Pedido_Cancelacion",
+      "en_Modificacion"
+     ],
+     "type": "string"
+    },
+    "mercado": {
+     "type": "string"
+    },
+    "simbolo": {
+     "type": "string"
+    },
+    "cantidad": {
+     "format": "double",
+     "type": "number"
+    },
+    "monto": {
+     "format": "double",
+     "type": "number"
+    },
+    "modalidad": {
+     "enum": [
+      "precio_Limite",
+      "precio_Mercado"
+     ],
+     "type": "string"
+    },
+    "precio": {
+     "format": "double",
+     "type": "number"
+    },
+    "fechaOperada": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "cantidadOperada": {
+     "format": "double",
+     "type": "number"
+    },
+    "precioOperado": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoOperado": {
+     "format": "double",
+     "type": "number"
+    },
+    "plazo": {
+     "enum": [
+      "sinValor",
+      "a72horas",
+      "a24horas",
+      "inmediata",
+      "a48horas"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "NotificacionModel": {
+   "type": "object",
+   "properties": {
+    "titulo": {
+     "type": "string"
+    },
+    "mensaje": {
+     "type": "string"
+    },
+    "link": {
+     "type": "string"
+    }
+   }
+  },
+  "CPDPuedeOperarModel": {
+   "type": "object",
+   "properties": {
+    "operatoriaHabilitada": {
+     "type": "boolean"
+    }
+   }
+  },
+  "CPDModel": {
+   "type": "object",
+   "properties": {
+    "fechaActualizacion": {
+     "type": "string"
+    },
+    "subasta": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/SubastaResponse"
+     }
+    }
+   }
+  },
+  "SubastaResponse": {
+   "type": "object",
+   "properties": {
+    "subasta": {
+     "type": "string"
+    },
+    "segmento": {
+     "type": "string"
+    },
+    "inicio": {
+     "type": "string"
+    },
+    "cierre": {
+     "type": "string"
+    },
+    "fechaPago": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "duracion": {
+     "type": "string"
+    },
+    "tasaCompra": {
+     "type": "string"
+    },
+    "tasaVenta": {
+     "type": "string"
+    },
+    "monto": {
+     "type": "string"
+    },
+    "cheques": {
+     "type": "string"
+    },
+    "concertacion": {
+     "type": "string"
+    },
+    "estado": {
+     "type": "string"
+    },
+    "sgr": {
+     "type": "string"
+    },
+    "librador": {
+     "type": "string"
+    },
+    "almacenadora": {
+     "type": "string"
+    },
+    "montoInvertir": {
+     "type": "string"
+    }
+   }
+  },
+  "ComisionCPDDTO": {
+   "type": "object",
+   "properties": {
+    "moneda": {
+     "type": "string"
+    },
+    "montoInversion": {
+     "type": "string"
+    },
+    "comision": {
+     "type": "string"
+    },
+    "derechoMercado": {
+     "type": "string"
+    },
+    "ivaComision": {
+     "type": "string"
+    },
+    "ivaDerechoMercado": {
+     "type": "string"
+    },
+    "montoTotalInversion": {
+     "type": "string"
+    }
+   }
+  },
+  "CPDBindingModel": {
+   "required": [
+    "idSubasta",
+    "tasa",
+    "fuente"
+   ],
+   "type": "object",
+   "properties": {
+    "idSubasta": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "tasa": {
+     "format": "double",
+     "type": "number"
+    },
+    "fuente": {
+     "enum": [
+      "compra_Venta_Por_Web",
+      "compra_Venta_Por_Celular",
+      "venta_De_Opciones_Por_Web_Lanzamiento",
+      "asesores_IOL",
+      "compra_Venta_Por_Web_V6",
+      "venta_De_Opciones_Por_Asesores_IOL_Lanzamiento",
+      "suscripcion_Cuenta_Facil",
+      "compra_Venta_Por_Mobile",
+      "asesores_IOL_Mobile",
+      "quick_Trade_Dock",
+      "asesores_Quick_Trade_Dock",
+      "aPI",
+      "cARGA_CHEQUE_IOLNET_Manual",
+      "cARGA_CHEQUE_IOLNET_EXCEL",
+      "cARGA_CHEQUE_IOLV6",
+      "cARGA_CHEQUE_IOLNET_TTR",
+      "operatoria_Android",
+      "operatoria_iOS",
+      "generada_Completadas_Manualmente_SENEBI",
+      "dolar_Bolsa",
+      "contado_Con_Liqui",
+      "asesores_IOL_API",
+      "aPP_MOBILE_ANDROID",
+      "aPP_MOBILE_IOS",
+      "b2B_GATEWAY",
+      "nUEVA_WEB"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "CPDTransaccionFinalModel": {
+   "type": "object",
+   "properties": {
+    "idTransaccion": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "RequestTokenDDJJDTO": {
+   "type": "object",
+   "properties": {
+    "mercado": {
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "simbolo": {
+     "type": "string"
+    },
+    "cantidad": {
+     "format": "double",
+     "type": "number"
+    },
+    "monto": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "JWTResultDTO": {
+   "type": "object",
+   "properties": {
+    "token": {
+     "type": "string"
+    },
+    "expiration": {
+     "format": "date-time",
+     "type": "string"
+    }
+   }
+  },
+  "VenderBindingModel": {
+   "description": "",
+   "required": [
+    "mercado",
+    "simbolo",
+    "cantidad",
+    "precio",
+    "validez"
+   ],
+   "type": "object",
+   "properties": {
+    "mercado": {
+     "description": "",
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "simbolo": {
+     "description": "",
+     "type": "string"
+    },
+    "cantidad": {
+     "format": "double",
+     "description": "",
+     "type": "number"
+    },
+    "precio": {
+     "format": "double",
+     "description": "",
+     "type": "number"
+    },
+    "validez": {
+     "format": "date-time",
+     "description": "",
+     "type": "string"
+    },
+    "tipoOrden": {
+     "enum": [
+      "precioLimite",
+      "precioMercado"
+     ],
+     "type": "string"
+    },
+    "plazo": {
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "idFuente": {
+     "format": "int32",
+     "description": "",
+     "type": "integer"
+    }
+   }
+  },
+  "ComprarBindingModel": {
+   "description": "",
+   "required": [
+    "mercado",
+    "simbolo",
+    "precio",
+    "plazo",
+    "validez"
+   ],
+   "type": "object",
+   "properties": {
+    "mercado": {
+     "description": "",
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "simbolo": {
+     "description": "",
+     "type": "string"
+    },
+    "cantidad": {
+     "format": "double",
+     "description": "",
+     "type": "number"
+    },
+    "precio": {
+     "format": "double",
+     "description": "",
+     "type": "number"
+    },
+    "plazo": {
+     "description": "",
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "validez": {
+     "format": "date-time",
+     "description": "",
+     "type": "string"
+    },
+    "tipoOrden": {
+     "enum": [
+      "precioLimite",
+      "precioMercado"
+     ],
+     "type": "string"
+    },
+    "monto": {
+     "format": "double",
+     "type": "number"
+    },
+    "idFuente": {
+     "format": "int32",
+     "description": "",
+     "type": "integer"
+    }
+   }
+  },
+  "RescateFCIBindingModel": {
+   "type": "object",
+   "properties": {
+    "simbolo": {
+     "type": "string"
+    },
+    "cantidad": {
+     "format": "double",
+     "type": "number"
+    },
+    "soloValidar": {
+     "type": "boolean"
+    }
+   }
+  },
+  "VenderDBindingModel": {
+   "required": [
+    "mercado",
+    "simbolo",
+    "cantidad",
+    "precio",
+    "validez",
+    "idCuentaBancaria"
+   ],
+   "type": "object",
+   "properties": {
+    "mercado": {
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "simbolo": {
+     "type": "string"
+    },
+    "cantidad": {
+     "format": "double",
+     "type": "number"
+    },
+    "precio": {
+     "format": "double",
+     "type": "number"
+    },
+    "validez": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "idCuentaBancaria": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "tipoOrden": {
+     "enum": [
+      "precioLimite",
+      "precioMercado"
+     ],
+     "type": "string"
+    },
+    "plazo": {
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "idFuente": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "SuscripcionFCIBindingModel": {
+   "type": "object",
+   "properties": {
+    "simbolo": {
+     "type": "string"
+    },
+    "monto": {
+     "format": "double",
+     "type": "number"
+    },
+    "soloValidar": {
+     "type": "boolean"
+    }
+   }
+  },
+  "MontosEstimadosDTO": {
+   "type": "object",
+   "properties": {
+    "montoDolar": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoBrutoPesos": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoNetoPesos": {
+     "format": "double",
+     "type": "number"
+    },
+    "comisionCompra": {
+     "format": "double",
+     "type": "number"
+    },
+    "comisionVenta": {
+     "format": "double",
+     "type": "number"
+    },
+    "comisionCompraIVA": {
+     "format": "double",
+     "type": "number"
+    },
+    "comisionVentaIVA": {
+     "format": "double",
+     "type": "number"
+    },
+    "derechoMercadoCompra": {
+     "format": "double",
+     "type": "number"
+    },
+    "derechoMercadoVenta": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "ParametrosMepSimpleDTO": {
+   "type": "object",
+   "properties": {
+    "horarioApertura": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "horarioCierre": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "esHorarioValido": {
+     "type": "boolean"
+    },
+    "idTipoOperacion": {
+     "enum": [
+      "mEP",
+      "cCL",
+      "mEP_Inverso",
+      "cCL_USD",
+      "venta_D",
+      "cCL_Inverso"
+     ],
+     "type": "string"
+    },
+    "idProducto": {
+     "enum": [
+      "sin_Producto",
+      "lanzamiento_Opciones_Cubiertas_Opciones",
+      "venta_Acciones_Cubiertas_Efectivo",
+      "lanzamiento_Opciones_Cubiertas_Efectivo",
+      "lanzamiento_Opciones_Cubiertas_Acciones",
+      "compra_Opciones",
+      "compra_APBR",
+      "suscripcion_ITTF",
+      "visualizacion_Puntas",
+      "suscripcion_IDEA",
+      "compra_Descubierto_Arg_EEUU",
+      "venta_Argentina_Descubierto",
+      "venta_EEUU_Descubierto",
+      "operatoria_Margen_Apalancamiento_Merval",
+      "cOMPRA_CHPD",
+      "vENTA_CHPD",
+      "money_Market",
+      "automatizacion_Estados_Unidos",
+      "cauci\u00f3n_Descubierto",
+      "menu_Flotante",
+      "cuenta_Margen_3",
+      "puntas_Profundidad",
+      "automatizacion_Argentina_2",
+      "operatoria_Contado_Inmediato",
+      "streaming_Quotes",
+      "iOL_Trade_Dock",
+      "suscripcion_Titulo_Publico",
+      "lanzamiento_Opciones_inmediato",
+      "aPIs",
+      "chequeBBVA",
+      "suscripcion_Acciones",
+      "app",
+      "incremento_Capital",
+      "operatoria",
+      "plan_Inversion",
+      "venta_Inmediato",
+      "compra_Venta_Divisas",
+      "impuesto_Cedular",
+      "cuenta_Bursatil",
+      "extraccion_Automatica",
+      "remuneracion_Pesos",
+      "remuneracion_Dolares",
+      "mep_Automatico",
+      "venta_Especie_C",
+      "cCL_Automatico",
+      "parking",
+      "informe_Deposito",
+      "mep_Automatico_Inverso",
+      "cCL_Automatico_Inverso",
+      "compra_Especie_C",
+      "caucion_Tomadora",
+      "eCheq",
+      "fondos_Mutuos",
+      "deposito_ECheq",
+      "dDJJ_Venta_Bono_Extranjero",
+      "nuevo_Modulo_Ayuda",
+      "portafolio_Simple",
+      "cCL_Automatico_Inverso_USD",
+      "cCL_Automatico_USD",
+      "portafolio_Valorizado",
+      "caucion_Colocadora_USD"
+     ],
+     "type": "string"
+    },
+    "nombre": {
+     "type": "string"
+    },
+    "descripcion": {
+     "type": "string"
+    },
+    "simboloTituloCompra": {
+     "type": "string"
+    },
+    "simboloTituloVenta": {
+     "type": "string"
+    },
+    "montoLimiteMinimo": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoLimiteMaximo": {
+     "format": "double",
+     "type": "number"
+    },
+    "monedaMontoLimite": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "tiempoExpiracionPreOrden": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "idPlazoOperatoriaCompra": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "idPlazoOperatoriaVenta": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "fechaConcertacionDolarMep": {
+     "format": "date-time",
+     "type": "string"
+    }
+   }
+  },
+  "MontosEstimadosVentaMepDTO": {
+   "type": "object",
+   "properties": {
+    "montoPesos": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoBrutoDolar": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoNetoDolar": {
+     "format": "double",
+     "type": "number"
+    },
+    "comisionCompra": {
+     "format": "double",
+     "type": "number"
+    },
+    "comisionVenta": {
+     "format": "double",
+     "type": "number"
+    },
+    "comisionCompraIVA": {
+     "format": "double",
+     "type": "number"
+    },
+    "comisionVentaIVA": {
+     "format": "double",
+     "type": "number"
+    },
+    "derechoMercadoCompra": {
+     "format": "double",
+     "type": "number"
+    },
+    "derechoMercadoVenta": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "CotizacionMepOperatoriaSimplificadaModel": {
+   "type": "object",
+   "properties": {
+    "simbolo": {
+     "type": "string"
+    },
+    "idPlazoOperatoriaCompra": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "idPlazoOperatoriaVenta": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "CompraOperatoriaSimplificadModel": {
+   "type": "object",
+   "properties": {
+    "monto": {
+     "format": "double",
+     "type": "number"
+    },
+    "idTipoOperatoriaSimplificada": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "idCuentaBancaria": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "PerfilClienteModel": {
+   "type": "object",
+   "properties": {
+    "nombre": {
+     "type": "string"
+    },
+    "apellido": {
+     "type": "string"
+    },
+    "numeroCuenta": {
+     "type": "string"
+    },
+    "dni": {
+     "type": "string"
+    },
+    "cuitCuil": {
+     "type": "string"
+    },
+    "sexo": {
+     "type": "string"
+    },
+    "perfilInversor": {
+     "type": "string"
+    },
+    "actualizarDDJJ": {
+     "type": "boolean"
+    },
+    "actualizarTestInversor": {
+     "type": "boolean"
+    },
+    "esBajaArrepentimiento": {
+     "type": "boolean"
+    },
+    "email": {
+     "type": "string"
+    },
+    "cuentaAbierta": {
+     "type": "boolean"
+    },
+    "actualizarTyC": {
+     "type": "boolean"
+    },
+    "actualizarTyCApp": {
+     "type": "boolean"
+    }
+   }
+  },
+  "TituloFCIModel": {
+   "type": "object",
+   "properties": {
+    "variacion": {
+     "format": "double",
+     "type": "number"
+    },
+    "ultimoOperado": {
+     "format": "double",
+     "type": "number"
+    },
+    "horizonteInversion": {
+     "type": "string"
+    },
+    "rescate": {
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "invierte": {
+     "type": "string"
+    },
+    "tipoFondo": {
+     "enum": [
+      "plazo_fijo_pesos",
+      "plazo_fijo_dolares",
+      "renta_fija_pesos",
+      "renta_fija_dolares",
+      "renta_mixta_pesos",
+      "renta_mixta_dolares",
+      "renta_variable_pesos",
+      "renta_variable_dolares"
+     ],
+     "type": "string"
+    },
+    "avisoHorarioEjecucion": {
+     "type": "string"
+    },
+    "tipoAdministradoraTituloFCI": {
+     "enum": [
+      "cONVEXITY",
+      "sUPERVIELLE",
+      "aLLARIA",
+      "aLLIANCE_BERNSTEIN",
+      "dRACMA",
+      "bULLMARKET",
+      "bAVSA",
+      "tANDEM",
+      "cONSULTATIO"
+     ],
+     "type": "string"
+    },
+    "fechaCorte": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "codigoBloomberg": {
+     "type": "string"
+    },
+    "perfilInversor": {
+     "type": "string"
+    },
+    "informeMensual": {
+     "type": "string"
+    },
+    "reglamentoGestion": {
+     "type": "string"
+    },
+    "variacionMensual": {
+     "format": "double",
+     "type": "number"
+    },
+    "variacionAnual": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoMinimo": {
+     "format": "double",
+     "type": "number"
+    },
+    "simbolo": {
+     "type": "string"
+    },
+    "descripcion": {
+     "type": "string"
+    },
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    },
+    "mercado": {
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "tipo": {
+     "enum": [
+      "oPCIONES",
+      "cEDEARS",
+      "titulosPublicos",
+      "aCCIONES",
+      "cUPONESPRIVADOS",
+      "fONDOSDEINVERSION",
+      "aDR",
+      "iNDICES",
+      "bOCON",
+      "bONEX",
+      "cERTIFICADOSPAR",
+      "oBLIGACIONESNEGOCIABLES",
+      "oBLIGACIONESPYME",
+      "cUPONESOBL",
+      "lETRASDEPRECADO",
+      "lETES",
+      "tITULOSDEUDA",
+      "cUPONESEXTRANJEROS",
+      "cUPONESTPI",
+      "bONOS",
+      "dIVISAS",
+      "fONDOSCOTIZANTES",
+      "cAUCIONESPESOS",
+      "cAUCIONESDOLARES",
+      "cERTIFICADOSCREDITOFISCAL",
+      "cEDRO",
+      "bODEN",
+      "fONDOSRENTAFIJA",
+      "fideicomiso",
+      "rENTAFIJA",
+      "cHEQUEPAGODIFERIDO",
+      "componenteDEEtf",
+      "componenteDEEtf_Viejo",
+      "futuros",
+      "soja",
+      "maiz",
+      "trigo",
+      "oro",
+      "petroleo",
+      "fideicomisoFinanciero",
+      "obligacionesNegociables",
+      "letraNota",
+      "fondoComundeInversion",
+      "titulosPublicosSuscribibles",
+      "accionesSuscribibles",
+      "incrementoCapital",
+      "letesSuscribibles",
+      "letras",
+      "fondosMutuosUSA"
+     ],
+     "type": "string"
+    },
+    "plazo": {
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "moneda": {
+     "enum": [
+      "peso_Argentino",
+      "dolar_Estadounidense",
+      "real",
+      "peso_Mexicano",
+      "peso_Chileno",
+      "yen",
+      "libra",
+      "euro",
+      "peso_Peruano",
+      "peso_Colombiano",
+      "peso_Uruguayo"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "TipoFondoFCIModel": {
+   "type": "object",
+   "properties": {
+    "identificador": {
+     "enum": [
+      "plazo_fijo_pesos",
+      "plazo_fijo_dolares",
+      "renta_fija_pesos",
+      "renta_fija_dolares",
+      "renta_mixta_pesos",
+      "renta_mixta_dolares",
+      "renta_variable_pesos",
+      "renta_variable_dolares"
+     ],
+     "type": "string"
+    },
+    "nombre": {
+     "type": "string"
+    }
+   }
+  },
+  "OpcionModel": {
+   "type": "object",
+   "properties": {
+    "simboloSubyacente": {
+     "type": "string"
+    },
+    "fechaVencimiento": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "tipoOpcion": {
+     "type": "string"
+    },
+    "simbolo": {
+     "type": "string"
+    },
+    "descripcion": {
+     "type": "string"
+    },
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    },
+    "mercado": {
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "tipo": {
+     "enum": [
+      "oPCIONES",
+      "cEDEARS",
+      "titulosPublicos",
+      "aCCIONES",
+      "cUPONESPRIVADOS",
+      "fONDOSDEINVERSION",
+      "aDR",
+      "iNDICES",
+      "bOCON",
+      "bONEX",
+      "cERTIFICADOSPAR",
+      "oBLIGACIONESNEGOCIABLES",
+      "oBLIGACIONESPYME",
+      "cUPONESOBL",
+      "lETRASDEPRECADO",
+      "lETES",
+      "tITULOSDEUDA",
+      "cUPONESEXTRANJEROS",
+      "cUPONESTPI",
+      "bONOS",
+      "dIVISAS",
+      "fONDOSCOTIZANTES",
+      "cAUCIONESPESOS",
+      "cAUCIONESDOLARES",
+      "cERTIFICADOSCREDITOFISCAL",
+      "cEDRO",
+      "bODEN",
+      "fONDOSRENTAFIJA",
+      "fideicomiso",
+      "rENTAFIJA",
+      "cHEQUEPAGODIFERIDO",
+      "componenteDEEtf",
+      "componenteDEEtf_Viejo",
+      "futuros",
+      "soja",
+      "maiz",
+      "trigo",
+      "oro",
+      "petroleo",
+      "fideicomisoFinanciero",
+      "obligacionesNegociables",
+      "letraNota",
+      "fondoComundeInversion",
+      "titulosPublicosSuscribibles",
+      "accionesSuscribibles",
+      "incrementoCapital",
+      "letesSuscribibles",
+      "letras",
+      "fondosMutuosUSA"
+     ],
+     "type": "string"
+    },
+    "plazo": {
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "moneda": {
+     "enum": [
+      "peso_Argentino",
+      "dolar_Estadounidense",
+      "real",
+      "peso_Mexicano",
+      "peso_Chileno",
+      "yen",
+      "libra",
+      "euro",
+      "peso_Peruano",
+      "peso_Colombiano",
+      "peso_Uruguayo"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "InstrumentoCotizacionModel": {
+   "type": "object",
+   "properties": {
+    "instrumento": {
+     "type": "string"
+    },
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "CotizacionInstrumentoModel": {
+   "type": "object",
+   "properties": {
+    "instrumento": {
+     "enum": [
+      "opciones",
+      "cedears",
+      "acciones",
+      "aDRs",
+      "titulosPublicos",
+      "cauciones",
+      "cHPD",
+      "futuros",
+      "obligacionesNegociables",
+      "letras"
+     ],
+     "type": "string"
+    },
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "InstrumentoModel": {
+   "type": "object",
+   "properties": {
+    "titulos": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/InstrumentoTituloModel"
+     }
+    }
+   }
+  },
+  "InstrumentoTituloModel": {
+   "type": "object",
+   "properties": {
+    "simbolo": {
+     "type": "string"
+    },
+    "puntas": {
+     "$ref": "#/definitions/PuntasModel"
+    },
+    "ultimoPrecio": {
+     "format": "double",
+     "type": "number"
+    },
+    "variacionPorcentual": {
+     "format": "double",
+     "type": "number"
+    },
+    "apertura": {
+     "format": "double",
+     "type": "number"
+    },
+    "maximo": {
+     "format": "double",
+     "type": "number"
+    },
+    "minimo": {
+     "format": "double",
+     "type": "number"
+    },
+    "ultimoCierre": {
+     "format": "double",
+     "type": "number"
+    },
+    "volumen": {
+     "format": "double",
+     "type": "number"
+    },
+    "cantidadOperaciones": {
+     "format": "double",
+     "type": "number"
+    },
+    "fecha": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "tipoOpcion": {
+     "type": "string"
+    },
+    "precioEjercicio": {
+     "format": "double",
+     "type": "number"
+    },
+    "fechaVencimiento": {
+     "type": "string"
+    },
+    "mercado": {
+     "type": "string"
+    },
+    "moneda": {
+     "type": "string"
+    },
+    "descripcion": {
+     "type": "string"
+    },
+    "plazo": {
+     "type": "string"
+    },
+    "laminaMinima": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "lote": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "PuntasModel": {
+   "type": "object",
+   "properties": {
+    "cantidadCompra": {
+     "format": "double",
+     "type": "number"
+    },
+    "precioCompra": {
+     "format": "double",
+     "type": "number"
+    },
+    "precioVenta": {
+     "format": "double",
+     "type": "number"
+    },
+    "cantidadVenta": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "PanelCotizacionBindingModel": {
+   "description": "",
+   "type": "object",
+   "properties": {
+    "instrumento": {
+     "enum": [
+      "acciones",
+      "bonos",
+      "opciones",
+      "monedas",
+      "cauciones",
+      "cHPD",
+      "futuros",
+      "aDRs",
+      "obligacionesNegociables",
+      "letras"
+     ],
+     "type": "string"
+    },
+    "panel": {
+     "type": "string"
+    },
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "PanelModel": {
+   "type": "object",
+   "properties": {
+    "titulos": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/PanelTituloModel"
+     }
+    }
+   }
+  },
+  "PanelTituloModel": {
+   "type": "object",
+   "properties": {
+    "simbolo": {
+     "type": "string"
+    },
+    "descripcion": {
+     "type": "string"
+    },
+    "puntas": {
+     "$ref": "#/definitions/PuntasModel"
+    },
+    "ultimoPrecio": {
+     "format": "double",
+     "type": "number"
+    },
+    "variacionPorcentual": {
+     "format": "double",
+     "type": "number"
+    },
+    "apertura": {
+     "format": "double",
+     "type": "number"
+    },
+    "maximo": {
+     "format": "double",
+     "type": "number"
+    },
+    "minimo": {
+     "format": "double",
+     "type": "number"
+    },
+    "ultimoCierre": {
+     "format": "double",
+     "type": "number"
+    },
+    "volumen": {
+     "format": "double",
+     "type": "number"
+    },
+    "cantidadOperaciones": {
+     "format": "double",
+     "type": "number"
+    },
+    "fecha": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "tipoOpcion": {
+     "type": "string"
+    },
+    "precioEjercicio": {
+     "format": "double",
+     "type": "number"
+    },
+    "fechaVencimiento": {
+     "type": "string"
+    },
+    "mercado": {
+     "type": "string"
+    },
+    "moneda": {
+     "type": "string"
+    }
+   }
+  },
+  "CotizacionDetalleModel": {
+   "type": "object",
+   "properties": {
+    "ultimoPrecio": {
+     "format": "double",
+     "type": "number"
+    },
+    "variacion": {
+     "format": "double",
+     "type": "number"
+    },
+    "apertura": {
+     "format": "double",
+     "type": "number"
+    },
+    "maximo": {
+     "format": "double",
+     "type": "number"
+    },
+    "minimo": {
+     "format": "double",
+     "type": "number"
+    },
+    "fechaHora": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "tendencia": {
+     "enum": [
+      "sube",
+      "baja",
+      "mantiene"
+     ],
+     "type": "string"
+    },
+    "cierreAnterior": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoOperado": {
+     "format": "double",
+     "type": "number"
+    },
+    "volumenNominal": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "precioPromedio": {
+     "format": "double",
+     "type": "number"
+    },
+    "moneda": {
+     "enum": [
+      "peso_Argentino",
+      "dolar_Estadounidense",
+      "real",
+      "peso_Mexicano",
+      "peso_Chileno",
+      "yen",
+      "libra",
+      "euro",
+      "peso_Peruano",
+      "peso_Colombiano",
+      "peso_Uruguayo"
+     ],
+     "type": "string"
+    },
+    "precioAjuste": {
+     "format": "double",
+     "type": "number"
+    },
+    "interesesAbiertos": {
+     "format": "double",
+     "type": "number"
+    },
+    "puntas": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/PuntasModel"
+     }
+    },
+    "cantidadOperaciones": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "simbolo": {
+     "type": "string"
+    },
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    },
+    "mercado": {
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "tipo": {
+     "enum": [
+      "oPCIONES",
+      "cEDEARS",
+      "titulosPublicos",
+      "aCCIONES",
+      "cUPONESPRIVADOS",
+      "fONDOSDEINVERSION",
+      "aDR",
+      "iNDICES",
+      "bOCON",
+      "bONEX",
+      "cERTIFICADOSPAR",
+      "oBLIGACIONESNEGOCIABLES",
+      "oBLIGACIONESPYME",
+      "cUPONESOBL",
+      "lETRASDEPRECADO",
+      "lETES",
+      "tITULOSDEUDA",
+      "cUPONESEXTRANJEROS",
+      "cUPONESTPI",
+      "bONOS",
+      "dIVISAS",
+      "fONDOSCOTIZANTES",
+      "cAUCIONESPESOS",
+      "cAUCIONESDOLARES",
+      "cERTIFICADOSCREDITOFISCAL",
+      "cEDRO",
+      "bODEN",
+      "fONDOSRENTAFIJA",
+      "fideicomiso",
+      "rENTAFIJA",
+      "cHEQUEPAGODIFERIDO",
+      "componenteDEEtf",
+      "componenteDEEtf_Viejo",
+      "futuros",
+      "soja",
+      "maiz",
+      "trigo",
+      "oro",
+      "petroleo",
+      "fideicomisoFinanciero",
+      "obligacionesNegociables",
+      "letraNota",
+      "fondoComundeInversion",
+      "titulosPublicosSuscribibles",
+      "accionesSuscribibles",
+      "incrementoCapital",
+      "letesSuscribibles",
+      "letras",
+      "fondosMutuosUSA"
+     ],
+     "type": "string"
+    },
+    "descripcionTitulo": {
+     "type": "string"
+    },
+    "plazo": {
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "laminaMinima": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "lote": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "cantidadMinima": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "puntosVariacion": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  },
+  "TituloCotizacionBindingModel": {
+   "description": "",
+   "required": [
+    "simbolo",
+    "mercado"
+   ],
+   "type": "object",
+   "properties": {
+    "simbolo": {
+     "description": "Ejemplo: ALUA, APBR",
+     "type": "string"
+    },
+    "mercado": {
+     "description": "Ejemplo:\r\nRofx,\r\nBCBA",
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "plazo": {
+     "description": "T0 = Inmediato\r\nT+1 = 24 Horas\r\nT+2 = 72 Horas",
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    }
+   }
+  },
+  "CotizacionModel": {
+   "type": "object",
+   "properties": {
+    "ultimoPrecio": {
+     "format": "double",
+     "type": "number"
+    },
+    "variacion": {
+     "format": "double",
+     "type": "number"
+    },
+    "apertura": {
+     "format": "double",
+     "type": "number"
+    },
+    "maximo": {
+     "format": "double",
+     "type": "number"
+    },
+    "minimo": {
+     "format": "double",
+     "type": "number"
+    },
+    "fechaHora": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "tendencia": {
+     "enum": [
+      "sube",
+      "baja",
+      "mantiene"
+     ],
+     "type": "string"
+    },
+    "cierreAnterior": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoOperado": {
+     "format": "double",
+     "type": "number"
+    },
+    "volumenNominal": {
+     "format": "double",
+     "type": "number"
+    },
+    "precioPromedio": {
+     "format": "double",
+     "type": "number"
+    },
+    "moneda": {
+     "enum": [
+      "peso_Argentino",
+      "dolar_Estadounidense",
+      "real",
+      "peso_Mexicano",
+      "peso_Chileno",
+      "yen",
+      "libra",
+      "euro",
+      "peso_Peruano",
+      "peso_Colombiano",
+      "peso_Uruguayo"
+     ],
+     "type": "string"
+    },
+    "precioAjuste": {
+     "format": "double",
+     "description": "Se Carga si es una Cotizaci\u00f3n de Futuro",
+     "type": "number"
+    },
+    "interesesAbiertos": {
+     "format": "double",
+     "description": "Se Carga si es una Cotizaci\u00f3n de Futuro",
+     "type": "number"
+    },
+    "puntas": {
+     "description": "Todas las puntas",
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/PuntasModel"
+     }
+    },
+    "cantidadOperaciones": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "descripcionTitulo": {
+     "type": "string"
+    },
+    "plazo": {
+     "type": "string"
+    },
+    "laminaMinima": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "lote": {
+     "format": "int32",
+     "type": "integer"
+    }
+   }
+  },
+  "AdministradoraTipoFondoFCI": {
+   "type": "object",
+   "properties": {
+    "administradora": {
+     "type": "string"
+    },
+    "identificadorTipoFondoFCI": {
+     "enum": [
+      "plazo_fijo_pesos",
+      "plazo_fijo_dolares",
+      "renta_fija_pesos",
+      "renta_fija_dolares",
+      "renta_mixta_pesos",
+      "renta_mixta_dolares",
+      "renta_variable_pesos",
+      "renta_variable_dolares"
+     ],
+     "type": "string"
+    },
+    "nombreTipoFondoFCI": {
+     "type": "string"
+    }
+   }
+  },
+  "CotizacionDetalleMobileModel": {
+   "type": "object",
+   "properties": {
+    "operableCompra": {
+     "type": "boolean"
+    },
+    "operableVenta": {
+     "type": "boolean"
+    },
+    "visible": {
+     "type": "boolean"
+    },
+    "ultimoPrecio": {
+     "format": "double",
+     "type": "number"
+    },
+    "variacion": {
+     "format": "double",
+     "type": "number"
+    },
+    "apertura": {
+     "format": "double",
+     "type": "number"
+    },
+    "maximo": {
+     "format": "double",
+     "type": "number"
+    },
+    "minimo": {
+     "format": "double",
+     "type": "number"
+    },
+    "fechaHora": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "tendencia": {
+     "enum": [
+      "sube",
+      "baja",
+      "mantiene"
+     ],
+     "type": "string"
+    },
+    "cierreAnterior": {
+     "format": "double",
+     "type": "number"
+    },
+    "montoOperado": {
+     "format": "double",
+     "type": "number"
+    },
+    "volumenNominal": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "precioPromedio": {
+     "format": "double",
+     "type": "number"
+    },
+    "moneda": {
+     "enum": [
+      "peso_Argentino",
+      "dolar_Estadounidense",
+      "real",
+      "peso_Mexicano",
+      "peso_Chileno",
+      "yen",
+      "libra",
+      "euro",
+      "peso_Peruano",
+      "peso_Colombiano",
+      "peso_Uruguayo"
+     ],
+     "type": "string"
+    },
+    "precioAjuste": {
+     "format": "double",
+     "type": "number"
+    },
+    "interesesAbiertos": {
+     "format": "double",
+     "type": "number"
+    },
+    "puntas": {
+     "type": "array",
+     "items": {
+      "$ref": "#/definitions/PuntasModel"
+     }
+    },
+    "cantidadOperaciones": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "simbolo": {
+     "type": "string"
+    },
+    "pais": {
+     "enum": [
+      "estados_Unidos",
+      "argentina"
+     ],
+     "type": "string"
+    },
+    "mercado": {
+     "enum": [
+      "bCBA",
+      "nYSE",
+      "nASDAQ",
+      "aMEX",
+      "bCS",
+      "rOFX"
+     ],
+     "type": "string"
+    },
+    "tipo": {
+     "enum": [
+      "oPCIONES",
+      "cEDEARS",
+      "titulosPublicos",
+      "aCCIONES",
+      "cUPONESPRIVADOS",
+      "fONDOSDEINVERSION",
+      "aDR",
+      "iNDICES",
+      "bOCON",
+      "bONEX",
+      "cERTIFICADOSPAR",
+      "oBLIGACIONESNEGOCIABLES",
+      "oBLIGACIONESPYME",
+      "cUPONESOBL",
+      "lETRASDEPRECADO",
+      "lETES",
+      "tITULOSDEUDA",
+      "cUPONESEXTRANJEROS",
+      "cUPONESTPI",
+      "bONOS",
+      "dIVISAS",
+      "fONDOSCOTIZANTES",
+      "cAUCIONESPESOS",
+      "cAUCIONESDOLARES",
+      "cERTIFICADOSCREDITOFISCAL",
+      "cEDRO",
+      "bODEN",
+      "fONDOSRENTAFIJA",
+      "fideicomiso",
+      "rENTAFIJA",
+      "cHEQUEPAGODIFERIDO",
+      "componenteDEEtf",
+      "componenteDEEtf_Viejo",
+      "futuros",
+      "soja",
+      "maiz",
+      "trigo",
+      "oro",
+      "petroleo",
+      "fideicomisoFinanciero",
+      "obligacionesNegociables",
+      "letraNota",
+      "fondoComundeInversion",
+      "titulosPublicosSuscribibles",
+      "accionesSuscribibles",
+      "incrementoCapital",
+      "letesSuscribibles",
+      "letras",
+      "fondosMutuosUSA"
+     ],
+     "type": "string"
+    },
+    "descripcionTitulo": {
+     "type": "string"
+    },
+    "plazo": {
+     "enum": [
+      "t0",
+      "t1",
+      "t2",
+      "t3"
+     ],
+     "type": "string"
+    },
+    "laminaMinima": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "lote": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "cantidadMinima": {
+     "format": "int32",
+     "type": "integer"
+    },
+    "puntosVariacion": {
+     "format": "double",
+     "type": "number"
+    }
+   }
+  }
+ }
+}
