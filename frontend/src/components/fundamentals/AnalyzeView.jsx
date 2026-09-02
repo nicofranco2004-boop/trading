@@ -17,6 +17,7 @@ import Pill from '../Pill'
 import EmptyState from '../EmptyState'
 import Skeleton from '../Skeleton'
 import AssetLogo from '../AssetLogo'
+import { cashAssetLabel } from '../../utils/valuation'
 import { api } from '../../utils/api'
 import { inferType } from '../../utils/tickers'
 import { track } from '../../utils/track'
@@ -187,7 +188,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
                       : 'border-line bg-bg-2 text-ink-1 hover:border-line-2'
                   }`}
                 >
-                  <AssetLogo asset={p.asset} isCash={p.is_cash} size={20} />
+                  <AssetLogo asset={cashAssetLabel(p)} isCash={p.is_cash} size={20} />
                   <span className="font-mono text-xs font-medium">{p.asset}</span>
                 </button>
               ))}

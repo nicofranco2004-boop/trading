@@ -955,3 +955,36 @@ class CashAssetForCurrencyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BondCashflowFechaFuturaTest(BondCashflowEndpointTest):
+    """Un cobro con fecha FUTURA no es un dato: el endpoint lo rechaza.
+
+    Caso real (usuario 3, 2026-08): 25 cupones de AL35 con fecha 09/01/2027 —la
+    fecha del PRÓXIMO pago que pre-llenaba el modal— en pesos y sin TC sellado.
+    """
+
+    def test_fecha_futura_rechazada(self):
+        from datetime import date, timedelta
+        manana = (date.today() + timedelta(days=1)).isoformat()
+        res = self._post({"broker": "Cocos", "asset": "AL35", "flow_type": "coupon",
+                          "amount": 197633.0, "date": manana})
+        self.assertEqual(res.status_code, 400, res.text)
+        self.assertIn("futura", res.json()["detail"])
+        conn = main.get_db()
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM operations WHERE user_id=?", (self.uid,)).fetchone()[0]
+            cash = conn.execute(
+                "SELECT COALESCE(SUM(invested),0) FROM positions WHERE user_id=? AND is_cash=1",
+                (self.uid,)).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0)
+        self.assertEqual(float(cash or 0), 0.0)
+
+    def test_hoy_se_acepta(self):
+        from datetime import date
+        res = self._post({"broker": "Cocos", "asset": "AL35", "flow_type": "coupon",
+                          "amount": 1000.0, "date": date.today().isoformat()})
+        self.assertEqual(res.status_code, 200, res.text)
+

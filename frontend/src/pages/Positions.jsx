@@ -1883,7 +1883,7 @@ function PositionsDesktop() {
                             title={p.is_cash ? undefined : `Ver detalle de ${p.asset} — operaciones, FIFO y gráfico`}
                           >
                               {isLot && <span className="text-ink-3 font-mono text-sm select-none -ml-3" title="Lote">└</span>}
-                              <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
+                              <AssetLogo asset={cashAssetLabel(p)} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                               <div className="min-w-0">
                                 <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
                                   {p.is_cash ? cashAssetLabel(p) : (
@@ -2123,7 +2123,7 @@ function PositionsDesktop() {
                             title={p.is_cash ? undefined : `Ver detalle de ${p.asset} — operaciones, FIFO y gráfico`}
                           >
                             {isLot && <span className="text-ink-3 font-mono text-sm select-none -ml-3" title="Lote">└</span>}
-                            <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
+                            <AssetLogo asset={cashAssetLabel(p)} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                             <div className="min-w-0">
                               <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
                                 {p.is_cash ? cashAssetLabel(p) : (

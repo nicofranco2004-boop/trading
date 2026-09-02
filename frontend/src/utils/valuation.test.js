@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker, valuePositionLot } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker, valuePositionLot, cashAssetLabel } from './valuation.js'
 import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
@@ -1194,5 +1194,22 @@ describe('setBrokersRegistry([]) — el registro se puede limpiar', () => {
     expect(valuationPriceKey(lote, false)).toBe('YPFD.BA')   // ruteo heredado de A
     setBrokersRegistry([])
     expect(valuationPriceKey(lote, false)).toBe('YPFD')      // sin herencia
+  })
+})
+
+// El logo del efectivo usa la MISMA etiqueta que el texto: sin esto, el cash del
+// sub-broker dolar de un broker AR mostraba el logo de Tether en lugar del dolar.
+describe('cashAssetLabel — el dolar del sub-broker AR no es Tether', () => {
+  it('USDT en un sub-broker "· USD" se muestra como USD', () => {
+    expect(cashAssetLabel({ is_cash: 1, asset: 'USDT', broker: 'Balanz · USD' })).toBe('USD')
+  })
+  it('USDT en un exchange cripto sigue siendo USDT', () => {
+    expect(cashAssetLabel({ is_cash: 1, asset: 'USDT', broker: 'Binance' })).toBe('USDT')
+  })
+  it('el cash en pesos no se toca', () => {
+    expect(cashAssetLabel({ is_cash: 1, asset: 'ARS', broker: 'IOL' })).toBe('ARS')
+  })
+  it('un activo normal pasa sin cambios (manda el logo real)', () => {
+    expect(cashAssetLabel({ is_cash: 0, asset: 'AAPL', broker: 'Schwab' })).toBe('AAPL')
   })
 })

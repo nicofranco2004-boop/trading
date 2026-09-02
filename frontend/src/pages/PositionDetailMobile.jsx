@@ -17,7 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey, cashAssetLabel } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -210,7 +210,7 @@ export default function PositionDetailMobile() {
         >
           <ArrowLeft size={18} strokeWidth={1.75} />
         </button>
-        <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={28} />
+        <AssetLogo asset={cashAssetLabel(p)} isCash={!!p.is_cash} size={28} />
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-ink-0 leading-none truncate">{fciLabel(p.asset)}</div>
           <div className="text-[12.5px] text-ink-2 leading-none mt-1 font-medium">

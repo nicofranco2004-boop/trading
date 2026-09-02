@@ -10257,6 +10257,17 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
         net_amount = data.amount - commissions
         if net_amount <= 0:
             raise HTTPException(400, "El monto neto (descontando comisiones) debe ser > 0")
+        # Un cobro se registra cuando se COBRÓ: una fecha futura no es un dato, es una
+        # estimación. Medido en producción (usuario 3, 2026-08): el modal pre-llenaba la
+        # fecha con el PRÓXIMO pago del cronograma (09/01/2027) y el usuario cargó 25
+        # cupones de AL35 con esa fecha, en pesos y sin TC sellado (no hay MEP de una
+        # fecha que no existió) → +US$3,9M de "P&L realizado", un mes 2027 en
+        # monthly_entries y el Dashboard con +US$500k. Se rechaza acá y no solo en el
+        # frontend: el chat de la IA y cualquier cliente viejo pasan por este endpoint.
+        if data.date[:10] > date.today().isoformat():
+            raise HTTPException(400,
+                "La fecha del cobro no puede ser futura. Los cupones se registran cuando "
+                "los cobrás; el próximo pago del cronograma es solo una estimación.")
 
         # Resolver currency + fx_to_usd con defaults sensatos.
         #
