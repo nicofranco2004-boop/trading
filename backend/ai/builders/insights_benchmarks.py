@@ -34,83 +34,112 @@ from typing import Dict, Any, Optional
 from datetime import date, timedelta
 
 
-def _compute_user_twr(conn, user_id: int, window_days: int) -> Optional[float]:
-    """TWR del user via monthly_entries (broker='global') — compoundea retornos
-    mensuales aislando flujos. Idéntico al del builder 'insights' general."""
-    today = date.today()
-    cutoff = today - timedelta(days=window_days)
-    rows = conn.execute(
-        """SELECT year, month, capital_inicio, capital_final, deposits, withdrawals
-             FROM monthly_entries
-            WHERE user_id=? AND broker='global'
-            ORDER BY year, month""",
-        (user_id,),
-    ).fetchall()
-    compound = 1.0
-    used = 0
-    for r in rows:
-        y, m = r["year"], r["month"]
-        try:
-            end_of_month = date(y, m + 1, 1) - timedelta(days=1) if m < 12 else date(y, 12, 31)
-        except ValueError:
-            continue
-        if end_of_month < cutoff:
-            continue
-        ci = float(r["capital_inicio"] or 0)
-        cf = float(r["capital_final"] or 0)
-        dep = float(r["deposits"] or 0)
-        wd = float(r["withdrawals"] or 0)
-        if ci <= 0:
-            continue
-        ret = ((cf - dep + wd) / ci) - 1
-        if ret < -0.95 or ret > 5:
-            continue
-        compound *= (1 + ret)
-        used += 1
-    if used == 0:
+def _bench_pct_entre(bench: list, curva: list, desde: str, hasta: str):
+    """Retorno del benchmark entre dos fechas de la curva (los puntos de
+    `perf.benchmark` van alineados uno a uno con `perf.curva`)."""
+    if not bench or not curva or not desde or not hasta:
         return None
-    return round((compound - 1) * 100, 2)
+    idx_por_fecha = {}
+    for p, b in zip(curva, bench):
+        if isinstance(b, dict) and b.get("index") is not None:
+            idx_por_fecha[str(p.get("date"))] = float(b["index"])
+    i0, i1 = idx_por_fecha.get(str(desde)), idx_por_fecha.get(str(hasta))
+    if i1 is None and "hoy" in idx_por_fecha and str(hasta) == "hoy":
+        i1 = idx_por_fecha["hoy"]
+    if not i0 or i1 is None:
+        return None
+    return round((i1 / i0 - 1) * 100, 2)
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
+    """⚠️ EL MISMO NÚMERO QUE LA PANTALLA. Este packet calculaba un TERCER
+    rendimiento: la cadena contable de `monthly_entries` con los meses fuera de
+    [−95 %, +500 %] descartados en silencio, contra el S&P desde el primer cierre
+    MENSUAL posterior al cutoff. Ni el Certero ni el Estimado de Métricas mostraban
+    ese número, así que el chat podía afirmar "le ganaste al S&P" con un dato que
+    ninguna posición del toggle publica (AUDIT_benchmark_2026-09-01 §2.6).
+
+    Ahora sale de `performance.performance`, la MISMA fuente que el gráfico: el
+    TWR publicado del modo Certero (si no hay medición, el del Estimado, y se
+    declara `basis='contable'`), y el S&P entre las MISMAS dos fechas que ese
+    número, del benchmark diario. `window_days` se conserva por compatibilidad
+    del packet, pero la ventana real es la que el motor declara
+    (`window_from`/`window_to`): un número medido sobre un período publicado
+    como si fuera de otro es exactamente el defecto de esta familia.
+    """
     window_days = int(kwargs.get("window_days", 365))
     today = date.today()
-    cutoff = today - timedelta(days=window_days)
-    cutoff_ym = cutoff.strftime("%Y-%m")
 
-    user_pct = _compute_user_twr(conn, user_id, window_days)
-
+    user_pct: Optional[float] = None
     sp500_pct: Optional[float] = None
     inflation_pct: Optional[float] = None
     dolar_pct: Optional[float] = None
+    basis: Optional[str] = None
+    window_from = window_to = None
+    excluye_no_realizado = False
+
+    data: Dict[str, Any] = {}
     try:
         import main as _m
         cache_bench = getattr(_m, "_bench_cache", {}) or {}
         data = cache_bench.get("data") or {}
+    except Exception:
+        data = {}
 
-        sp = data.get("sp500") or {}
-        infl = data.get("inflation_ar") or {}
-        # Dólar blue: en el bench cache aparece como serie {YYYY-MM-DD: precio}.
-        blue = data.get("dolar_blue") or {}
+    try:
+        import performance as _perf
+        import twr as _twr
+        perf = None
+        for modo in (_twr.MODO_CERTERO, _twr.MODO_ESTIMADO):
+            p = _perf.performance(conn, user_id, data, bench_key="sp500", modo=modo)
+            if p.get("twr") is not None:
+                perf = p
+                break
+        if perf is not None:
+            window_from, window_to = perf.get("ventana_desde"), perf.get("ventana_hasta")
+            # ⚠️ VENTANA MÍNIMA. Medido en la copia de producción: el fallback al
+            # Estimado devolvía ventanas de DOS DÍAS (2026-08-14 → 08-16, +0,09 %)
+            # y el modelo compararía eso contra el S&P como si fuera un período.
+            # Menos de 28 días no es una comparación: se publica la ventana y el
+            # motivo, no el número.
+            _d0 = str(window_from or "")[:10]
+            _d1 = (today.isoformat() if str(window_to) in ("hoy", "None", "")
+                   else str(window_to)[:10])
+            try:
+                _dias = (date.fromisoformat(_d1) - date.fromisoformat(_d0)).days
+            except ValueError:
+                _dias = 0
+            if _dias >= 28:
+                user_pct = round(float(perf["twr"]) * 100, 2)
+                basis = perf.get("base_del_twr")
+                excluye_no_realizado = bool(perf.get("excluye_no_realizado"))
+                sp500_pct = _bench_pct_entre(perf.get("benchmark"), perf.get("curva"),
+                                             window_from, window_to)
+            else:
+                basis = "ventana_corta"
+                window_from = window_to = None
+    except Exception:
+        perf = None
 
-        # S&P: % change desde primer close ≥ cutoff
-        sp_window = sorted([(k, v) for k, v in sp.items() if k >= cutoff_ym])
-        if len(sp_window) >= 2 and sp_window[0][1]:
-            sp500_pct = round((sp_window[-1][1] - sp_window[0][1]) / sp_window[0][1] * 100, 2)
-
-        # Inflación: compound de los % mensuales
-        infl_window = sorted([(k, v) for k, v in infl.items() if k >= cutoff_ym])
-        if infl_window:
-            comp = 1.0
-            for _, pct in infl_window:
-                comp *= (1 + pct / 100)
-            inflation_pct = round((comp - 1) * 100, 2)
-
-        # Dólar blue: % change desde primera fecha ≥ cutoff
-        cutoff_iso = cutoff.isoformat()
-        blue_window = sorted([(k, v) for k, v in blue.items() if k >= cutoff_iso])
-        if len(blue_window) >= 2 and blue_window[0][1]:
-            dolar_pct = round((blue_window[-1][1] - blue_window[0][1]) / blue_window[0][1] * 100, 2)
+    # Inflación y blue: sobre la MISMA ventana que el número del usuario. Sin
+    # ventana (sin número) no hay comparación que armar.
+    try:
+        if window_from:
+            cutoff_ym = str(window_from)[:7]
+            hasta_ym = (today.strftime("%Y-%m") if str(window_to) in ("hoy", "", "None")
+                        else str(window_to)[:7])
+            infl = data.get("inflation_ar") or {}
+            infl_window = sorted([(k, v) for k, v in infl.items() if cutoff_ym < k <= hasta_ym])
+            if infl_window:
+                comp = 1.0
+                for _, pct in infl_window:
+                    comp *= (1 + float(pct) / 100)
+                inflation_pct = round((comp - 1) * 100, 2)
+            blue = data.get("dolar_blue") or {}
+            k0 = max((k for k in blue if k <= cutoff_ym), default=None)
+            k1 = max((k for k in blue if k <= hasta_ym), default=None)
+            if k0 and k1 and blue.get(k0):
+                dolar_pct = round((float(blue[k1]) - float(blue[k0])) / float(blue[k0]) * 100, 2)
     except Exception:
         pass
 
@@ -131,6 +160,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     return {
         "screen": "insights.benchmarks",
         "window_days": window_days,
+        # La ventana REAL del número, la que el motor declara. Y con qué regla se
+        # midió: 'mercado' (Certero) o 'contable' (Estimado, que no cuenta lo no
+        # realizado — el modelo tiene que decirlo si compara contra el S&P).
+        "window_from": window_from,
+        "window_to": window_to,
+        "basis": basis,
+        "excluye_no_realizado": excluye_no_realizado,
         "user_return_pct": user_pct,
         "benchmarks": {
             "sp500_pct": sp500_pct,

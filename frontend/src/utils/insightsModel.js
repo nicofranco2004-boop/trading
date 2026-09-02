@@ -1030,3 +1030,58 @@ export function acumuladoDeVentana(filas, claveMedida, claveEstimada) {
     hasta: f[fin]?.label ?? null,
   }
 }
+
+// ─── El KPI de certero: el acumulado PUBLICADO de la ventana visible ─────────
+/**
+ * acumuladoPublicado
+ *
+ * El rendimiento acumulado de la ventana visible del gráfico en modo CERTERO,
+ * leído del índice PUBLICADO (`ip` = `index_publicado` del backend) entre el
+ * primer y el último punto APTO de la ventana — y el benchmark entre esas mismas
+ * dos fechas.
+ *
+ * ⚠️ POR QUÉ NO ES `ultimaFila[claveMedida]`, QUE ES LO QUE HABÍA. Ese valor es
+ * `(index − 1)·100` rebaseado, y `index` es la FORMA de la curva: encadena las
+ * fotos intradía (media rueda) y no tiene el guard del cero absorbente. Medido en
+ * producción: 20 de 480 usuarios leían acá un número >5 pp distinto del que el
+ * backend afirma (uid 745: +642,9% en el KPI, +6,6% en `perf.twr`; uid 865: −100%
+ * contra −7,5%), y 11 leían un número donde el backend publica None porque el
+ * rebase unía dos tramos separados por un corte.
+ *
+ * El índice publicado avanza sólo de punto apto a punto apto, así que el cociente
+ * entre dos aptos ES el TWR de ese tramo. Si entre los dos hay una fila de corte
+ * (`corte-…`: un hueco, un cambio de base o un leg dudoso), no hay número: los
+ * tramos no se encadenan.
+ *
+ * El benchmark sale de las mismas dos filas: `benchKey` ya viene rebaseado al
+ * inicio de la ventana, y el cociente de dos rebaseados cancela la base común.
+ *
+ * @param {Array} filas chartData (con `ip`, `apto`, `key` y `[benchKey]`)
+ * @param {string} benchKey nombre de la serie del benchmark
+ * @returns {null | {pct, benchPct, desde, hasta, puntos}}
+ */
+export function acumuladoPublicado(filas, benchKey, opts = {}) {
+  const f = Array.isArray(filas) ? filas : []
+  // En CERTERO sólo un punto apto es punta. En ESTIMADO también lo es un punto
+  // contable: la cadena publicada (`ip` = idx_est) los encadena a los dos, y es
+  // la MISMA que muestra el chip — así el KPI y el chip dicen lo mismo.
+  const puedeSerPunta = opts.contable
+    ? (r) => !!r && (r.apto === true || r.base === 'costo')
+    : (r) => !!r && r.apto === true
+  const esApto = (r) => puedeSerPunta(r) && typeof r.ip === 'number' && r.ip > 0
+  let ini = -1, fin = -1
+  for (let i = 0; i < f.length; i++) { if (esApto(f[i])) { ini = i; break } }
+  for (let i = f.length - 1; i >= 0; i--) { if (esApto(f[i])) { fin = i; break } }
+  if (ini < 0 || fin <= ini) return null
+  for (let i = ini + 1; i < fin; i++) {
+    const k = f[i] && f[i].key
+    if (typeof k === 'string' && k.startsWith('corte-')) return null
+  }
+  const a = f[ini], b = f[fin]
+  const pct = +((b.ip / a.ip - 1) * 100).toFixed(2)
+  let benchPct = null
+  if (benchKey && typeof a[benchKey] === 'number' && typeof b[benchKey] === 'number') {
+    benchPct = +((((100 + b[benchKey]) / (100 + a[benchKey])) - 1) * 100).toFixed(2)
+  }
+  return { pct, benchPct, desde: a.key, hasta: b.key, puntos: fin - ini + 1 }
+}

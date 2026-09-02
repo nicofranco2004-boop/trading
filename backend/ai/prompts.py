@@ -1177,8 +1177,13 @@ def render_insights_attribution_prompt(tier: str = "pro") -> str:
 def render_insights_benchmarks_prompt(tier: str = "pro") -> str:
     view = "Performance vs benchmarks (S&P 500 / inflación AR / dólar blue)"
     pkt = (
-        "user_return_pct + benchmarks {sp500_pct, inflation_ar_pct, "
-        "dolar_blue_pct} + deltas_pp (user - bench) + outperform flags."
+        "user_return_pct (el MISMO número que la pantalla de Métricas) + "
+        "window_from/window_to (la ventana real de ese número) + basis "
+        "('mercado' = medido a precio real; 'contable' = reconstruido de la "
+        "contabilidad, NO cuenta lo no realizado; 'ventana_corta' = menos de "
+        "28 días, sin número) + benchmarks {sp500_pct, inflation_ar_pct, "
+        "dolar_blue_pct} sobre esa MISMA ventana + deltas_pp (user - bench) + "
+        "outperform flags."
     )
     free = _maybe_free("insights.benchmarks", view, pkt, tier)
     if free:
@@ -1198,6 +1203,9 @@ def render_insights_benchmarks_prompt(tier: str = "pro") -> str:
         ],
         pitfalls=[
             "Si algún benchmark es None, decirlo explícitamente — sin inventar.",
+            "Nombrar SIEMPRE la ventana (window_from → window_to): es la del número, no 'el último año'.",
+            "Con basis='contable' el retorno NO incluye lo que todavía no se vendió: decirlo antes de compararlo con el SPY, y no afirmar outperform como si fuera un número de mercado.",
+            "Con basis='ventana_corta' o user_return_pct None: no hay comparación que hacer — decirlo.",
             "No proyectar SPY ni inflación futura.",
         ],
     )

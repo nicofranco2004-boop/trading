@@ -26,9 +26,11 @@ describe('lookupMonthly', () => {
     expect(lookupMonthly(m, '2025-04')).toBe(130)
   })
 
-  it('falls back to oldest if requested key is before all', () => {
+  it('antes del primer dato NO inventa un precio: null', () => {
+    // Antes devolvía el primer precio disponible (130): un aporte anterior a la
+    // serie "compraba" al precio del arranque y la card regalaba índice.
     const m = { '2025-03': 130, '2025-04': 140 }
-    expect(lookupMonthly(m, '2025-01')).toBe(130)
+    expect(lookupMonthly(m, '2025-01')).toBe(null)
   })
 
   it('null para mapa vacío', () => {

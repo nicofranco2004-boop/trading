@@ -12,6 +12,7 @@ import {
   computeDrawdownOnReturns,
   computeBestWorstMonth,
   acumuladoDeVentana,
+  acumuladoPublicado,
   computeAssetContribution,
   computeBestWorstClosedOp,
   computeProfitFactor,
@@ -902,5 +903,81 @@ describe('tsDeClave / rellenarTimestamps', () => {
     const dias = (a, b) => (b - a) / 86400000
     expect(dias(ts[0], ts[2])).toBeCloseTo(61, 0)   // sep→nov: dos meses
     expect(dias(ts[3], ts[5])).toBeCloseTo(2, 6)    // tres días medidos: dos días
+  })
+})
+
+
+describe('acumuladoPublicado', () => {
+  const B = 'S&P 500'
+  const fila = (key, ip, apto, bench, extra = {}) => ({ key, ip, apto, [B]: bench, ...extra })
+
+  it('rebasea el índice PUBLICADO entre el primer y el último punto apto', () => {
+    const r = acumuladoPublicado([
+      fila('2026-07-01', 1.0, true, 0),
+      fila('2026-07-02', 1.05, true, 1.0),
+      fila('2026-07-03', 1.10, true, 2.0),
+    ], B)
+    expect(r.pct).toBeCloseTo(10.0, 2)
+    expect(r.benchPct).toBeCloseTo(2.0, 2)
+    expect(r.desde).toBe('2026-07-01')
+    expect(r.hasta).toBe('2026-07-03')
+  })
+
+  it('ignora las fotos intradía: el número no depende de la FORMA', () => {
+    // uid 745: la intradía del 26/06 → 27/06 saltaba ×6,8 en el dibujo.
+    const r = acumuladoPublicado([
+      fila('2026-06-26', 1.0, false, 0),
+      fila('2026-06-27', 1.0, false, 0.5),
+      fila('2026-07-01', 1.0, true, 1.0),
+      fila('2026-08-16', 1.066, true, 4.0),
+    ], B)
+    expect(r.pct).toBeCloseTo(6.6, 2)
+    // y el benchmark es entre las MISMAS dos fechas: (104/101 − 1)
+    expect(r.benchPct).toBeCloseTo(((104 / 101) - 1) * 100, 2)
+  })
+
+  it('con un corte en el medio no hay número (los tramos no se encadenan)', () => {
+    const r = acumuladoPublicado([
+      fila('2026-06-26', 1.0, true, 0),
+      fila('2026-06-30', 1.28, true, 1.0),
+      { key: 'corte-2026-07-01', ip: null, apto: false, [B]: null },
+      fila('2026-07-01', 1.0, true, 1.2),
+      fila('2026-08-16', 3.17, true, 4.0),
+    ], B)
+    expect(r).toBeNull()
+  })
+
+  it('con menos de dos puntos aptos no hay número', () => {
+    expect(acumuladoPublicado([fila('2026-06-30', 1.0, true, 0)], B)).toBeNull()
+    expect(acumuladoPublicado([fila('2026-06-30', 1.0, false, 0), fila('2026-07-01', 1.1, false, 1)], B)).toBeNull()
+    expect(acumuladoPublicado([], B)).toBeNull()
+    expect(acumuladoPublicado(null, B)).toBeNull()
+  })
+
+  it('en estimado (opts.contable) los puntos contables también son punta', () => {
+    const r = acumuladoPublicado([
+      { key: '2026-05-31', ip: 1.0, apto: false, base: 'costo', [B]: 0 },
+      { key: '2026-06-30', ip: 1.05, apto: false, base: 'costo', [B]: 1.0 },
+      { key: '2026-07-11', ip: 1.05, apto: true, base: 'mercado', [B]: 1.5 },
+      { key: '2026-08-10', ip: 0.9975, apto: true, base: 'mercado', [B]: 3.0 },
+    ], B, { contable: true })
+    expect(r.pct).toBeCloseTo(-0.25, 2)
+    expect(r.desde).toBe('2026-05-31')
+    // sin la opción, los contables no cuentan: arranca en el primer apto
+    const c = acumuladoPublicado([
+      { key: '2026-05-31', ip: 1.0, apto: false, base: 'costo', [B]: 0 },
+      { key: '2026-07-11', ip: 1.05, apto: true, base: 'mercado', [B]: 1.5 },
+      { key: '2026-08-10', ip: 0.9975, apto: true, base: 'mercado', [B]: 3.0 },
+    ], B)
+    expect(c.desde).toBe('2026-07-11')
+  })
+
+  it('sin benchmark en alguna de las dos puntas, benchPct es null pero el acumulado sale', () => {
+    const r = acumuladoPublicado([
+      fila('2026-07-01', 1.0, true, null),
+      fila('2026-07-05', 1.02, true, 1.5),
+    ], B)
+    expect(r.pct).toBeCloseTo(2.0, 2)
+    expect(r.benchPct).toBeNull()
   })
 })

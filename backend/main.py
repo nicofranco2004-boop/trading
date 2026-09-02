@@ -5102,6 +5102,12 @@ def _benchmarks_fetch_and_cache():
     f_gld = _bench_fetch_executor.submit(_fetch_gld_monthly)
     f_merval = _bench_fetch_executor.submit(_fetch_merval_monthly)
     f_uva = _bench_fetch_executor.submit(_fetch_uva_monthly)
+    # Las series DIARIAS de los índices de precio (ver `_fetch_yf_daily`). Van con
+    # sufijo `_d`: el mensual sigue existiendo para las cards "Comparativa", el
+    # packet mensual de la IA y los benchmarks porcentuales.
+    f_sp_d = _bench_fetch_executor.submit(_fetch_sp500_daily)
+    f_shv_d = _bench_fetch_executor.submit(_fetch_yf_daily, "SHV")
+    f_gld_d = _bench_fetch_executor.submit(_fetch_yf_daily, "GLD")
 
     def _safe(future, key, default=None):
         """Resultado del future con fallback a stale cache si timeout/exception."""
@@ -5118,8 +5124,17 @@ def _benchmarks_fetch_and_cache():
         "gld":          _safe(f_gld, "gld"),
         "merval":       _safe(f_merval, "merval"),
         "uva":          _safe(f_uva, "uva"),
+        "sp500_d":      _safe(f_sp_d, "sp500_d"),
+        "shv_d":        _safe(f_shv_d, "shv_d"),
+        "gld_d":        _safe(f_gld_d, "gld_d"),
         "fetched_at":   datetime.utcnow().isoformat() + "Z",
     }
+    # Un caché que vuelve con el S&P VACÍO no es "sin novedades": es yfinance caído
+    # (o su caché de zonas horarias corrupto, que en local dio `disk I/O error`
+    # en silencio durante días). Se grita, para que se vea en los logs.
+    if not data.get("sp500") or not data.get("sp500_d"):
+        log.error("benchmarks: el S&P volvió vacío (mensual=%d, diario=%d) — yfinance caído o caché roto",
+                  len(data.get("sp500") or {}), len(data.get("sp500_d") or {}))
     _bench_cache["data"] = data
     _bench_cache["ts"] = time.time()
     return data
@@ -5142,6 +5157,50 @@ def _fetch_inflation_ar():
         return {}
 
 
+# Cuándo fue la última vez que se reapuntó el caché de yfinance (epoch). Se
+# reapunta a lo sumo una vez por hora: un fallo de red transitorio no tiene que
+# consumir el remedio del caché roto, y un caché roto no tiene que reapuntarse
+# en cada uno de los diez fetches del ciclo.
+_yf_cache_reset = {"ts": 0.0}
+
+
+def _yf_history(ticker: str, period: str, interval: str):
+    """`yf.Ticker(ticker).history(...)` con UN reintento sobre un caché de zonas
+    horarias nuevo cuando la respuesta viene vacía o con excepción.
+
+    ⚠️ POR QUÉ. El backend local estuvo días sirviendo `sp500: {}` — sin línea de
+    benchmark y con el botón "S&P 500" en gris — porque `/private/tmp/yf-cache/
+    tkr-tz.db` (el TzCache de yfinance, un SQLite) quedó corrupto: cada
+    `history()` moría con `OperationalError('disk I/O error')`, `_fetch_*` lo
+    tragaba y devolvía `{}`, y `_safe` caía al caché stale, que también era `{}`.
+    Desde una shell con el caché default el mismo fetch andaba en 0,7 s.
+    En producción el caché vive en `/tmp/yf-cache` (efímero por deploy): el mismo
+    modo de falla es posible entre deploys. Reapuntar a un directorio nuevo es el
+    remedio exacto y no tiene costo cuando el caché está sano.
+    """
+    err = None
+    try:
+        data = yf.Ticker(ticker).history(period=period, interval=interval)
+    except Exception as e:
+        data, err = None, e
+    if data is not None and not data.empty:
+        return data
+    if time.time() - _yf_cache_reset["ts"] < 3600:
+        return data
+    _yf_cache_reset["ts"] = time.time()
+    try:
+        import tempfile as _tf
+        nuevo = _tf.mkdtemp(prefix="yf-cache-")
+        yf.set_tz_cache_location(nuevo)
+        log.error("yfinance: %s %s/%s vino vacío%s — TzCache reapuntado a %s, reintento",
+                  ticker, period, interval, f" ({err!r})" if err else "", nuevo)
+        data = yf.Ticker(ticker).history(period=period, interval=interval)
+    except Exception as e2:
+        log.error("yfinance: reintento de %s falló: %r", ticker, e2)
+        return None
+    return data
+
+
 def _fetch_sp500_monthly():
     """S&P 500 month-end close from yfinance. Returns dict {YYYY-MM: close}.
 
@@ -5157,10 +5216,16 @@ def _fetch_sp500_monthly():
     Fallback a ^GSPC si ^SP500TR no devuelve data (algunos plans de yfinance
     no tienen el ticker TR, mejor degradar a price que devolver vacío).
     """
+    # ⚠️ `period="max"`, NO "5y". Las cards "Comparativa" simulan tus aportes al
+    # precio del mes en que entraron, y `lookupMonthly` devolvía el PRIMER precio
+    # disponible para todo lo anterior a la ventana: un aporte de 2015 compraba
+    # S&P al precio de 2021. Medido en producción: 56 de 673 usuarios tienen
+    # `monthly_entries` anteriores al arranque de la serie de 5 años. Con "max"
+    # el S&P total return llega a 1988 y la comparación deja de regalar años.
     for ticker in ("^SP500TR", "^GSPC"):
         try:
-            data = yf.Ticker(ticker).history(period="5y", interval="1mo")
-            if data.empty:
+            data = _yf_history(ticker, "max", "1mo")
+            if data is None or data.empty:
                 continue
             out = {}
             for idx, row in data.iterrows():
@@ -5201,8 +5266,10 @@ def _fetch_yf_monthly(ticker: str):
     que _fetch_sp500_monthly pero sin fallback (esos índices/ETFs son únicos).
     """
     try:
-        data = yf.Ticker(ticker).history(period="5y", interval="1mo")
-        if data.empty:
+        # "max" por la misma razón que en `_fetch_sp500_monthly`: los aportes
+        # viejos se simulan al precio de SU mes, no al del primero disponible.
+        data = _yf_history(ticker, "max", "1mo")
+        if data is None or data.empty:
             return {}
         out = {}
         for idx, row in data.iterrows():
@@ -5213,6 +5280,44 @@ def _fetch_yf_monthly(ticker: str):
         return out
     except Exception:
         return {}
+
+
+def _fetch_yf_daily(ticker: str, period: str = "5y"):
+    """Cierre DIARIO de un ticker yfinance. Returns {YYYY-MM-DD: close}.
+
+    ⚠️ POR QUÉ HAY UNA SERIE DIARIA AL LADO DE LA MENSUAL. La curva del usuario es
+    diaria (una foto del cron por rueda) y el benchmark del gráfico se resolvía por
+    MES: todos los días de un mes tenían el mismo cierre y el ancla era el fin del
+    primer mes visible. Medido en producción (AUDIT_benchmark_2026-09-01): 2 valores
+    distintos del S&P (mediana) sobre 44 filas, 64 usuarios con la línea plana en
+    0%, y contra el índice real entre las mismas fechas más de 1 pp de error en 220
+    de 484 usuarios, con el signo dado vuelta en 21. Con nadie midiendo más de tres
+    meses, un desfasaje de un mes en el ancla ES la comparación.
+    Mismo período que el mensual (5y) para que las dos series cubran lo mismo.
+    """
+    try:
+        data = _yf_history(ticker, period, "1d")
+        if data is None or data.empty:
+            return {}
+        out = {}
+        for idx, row in data.iterrows():
+            close = float(row["Close"]) if not math.isnan(row["Close"]) else None
+            if close:
+                out[idx.strftime("%Y-%m-%d")] = close
+        return out
+    except Exception:
+        return {}
+
+
+def _fetch_sp500_daily():
+    """S&P 500 total return DIARIO (^SP500TR, fallback ^GSPC). Ver `_fetch_yf_daily`."""
+    for ticker in ("^SP500TR", "^GSPC"):
+        out = _fetch_yf_daily(ticker)
+        if out:
+            if ticker == "^GSPC":
+                log.warning("SPY diario: ^SP500TR no disponible, usando ^GSPC (sin dividendos)")
+            return out
+    return {}
 
 
 def _fetch_shv_monthly():
@@ -5284,9 +5389,14 @@ def get_benchmarks(uid: int = Depends(get_effective_user)):
     cached_data = _bench_cache["data"]
     cache_age = now - _bench_cache["ts"]
 
+    def _sin_diarias(d):
+        """Las series `_d` las consume `/api/insights/performance` desde el caché;
+        al frontend no le sirven y pesan ~100 KB."""
+        return {k: v for k, v in (d or {}).items() if not str(k).endswith("_d")}
+
     # Cache fresco → return inmediato
     if cached_data and cache_age < BENCH_TTL:
-        return cached_data
+        return _sin_diarias(cached_data)
 
     # Cache stale pero existe → return stale + refresh bg (SWR).
     # Lock simple para evitar 10 refreshes paralelos si llegan 10 requests.
@@ -5301,11 +5411,11 @@ def get_benchmarks(uid: int = Depends(get_effective_user)):
                 finally:
                     _bench_refresh_inflight["flag"] = False
             _bench_fetch_executor.submit(_bg_refresh)
-        return cached_data
+        return _sin_diarias(cached_data)
 
     # Cold start (cache vacío) → bloquea fetcheando. Solo el primer request
     # post-restart paga este costo (~15-20s con paralelización interna).
-    return _benchmarks_fetch_and_cache()
+    return _sin_diarias(_benchmarks_fetch_and_cache())
 
 
 # ─── Bond indices (CER / UVA / A3500) ─────────────────────────────────────────
@@ -14999,9 +15109,11 @@ def _historical_cagr_global(conn, uid: int) -> dict:
     # anual con `twr.curva_indexada` devolviendo None por `serie_partida`. Que las
     # dos puntas estén a mercado no alcanza: si no se sabe qué pasó en el medio, el
     # tramo no se puede encadenar.
+    _motivo_curva = None
     try:
-        _con_legs = [t for t in _twr.curva_indexada(conn, uid)["tramos_detalle"]
-                     if t["legs"] > 0]
+        _curva = _twr.curva_indexada(conn, uid)
+        _con_legs = [t for t in _curva["tramos_detalle"] if t["legs"] > 0]
+        _motivo_curva = _curva.get("motivo_texto")
     except Exception:
         _con_legs = []
     if len(_con_legs) == 1:
@@ -15009,8 +15121,10 @@ def _historical_cagr_global(conn, uid: int) -> dict:
         _serie = dict(_serie, medibles=[p for p in _serie["medibles"]
                                         if _d0 <= p["date"] <= _d1])
     elif len(_con_legs) > 1:
+        # El motivo lo pone el motor: un hueco y una foto que no cierra
+        # (`medicion_dudosa`) parten la serie igual pero no se explican igual.
         return {"cagr": None, "months": 0, "basis": "medido",
-                "reason": _twr.MOTIVO_TEXTO.get("serie_partida")}
+                "reason": _motivo_curva or _twr.MOTIVO_TEXTO.get("serie_partida")}
     # Reducir a fin de mes: el ÚLTIMO punto de cada YYYY-MM (orden asc → pisa).
     by_month = {}
     for _p in _serie["medibles"]:
@@ -17568,6 +17682,31 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
             # diagnóstico se saltea; la alerta ya falla sola en ese caso.
             picos_implausibles = []
 
+        # ── Lo que la CURVA se niega a encadenar ─────────────────────────────
+        # `twr.leg_dudoso`: entre dos fotos seguidas el valor se multiplicó o
+        # dividió por más de `SALTO_MAX_VECES` sin flujo que lo explique, o el
+        # flujo desbordó el denominador. La curva corta el tramo ahí (no publica
+        # de punta a punta) y la cuenta cae acá para que alguien mire ESA foto.
+        # Se recalcula con la MISMA función que corre en la curva.
+        import twr as _twr
+        mediciones_dudosas = []
+        try:
+            _uids_snap = [r["user_id"] for r in conn.execute(
+                "SELECT DISTINCT user_id FROM snapshots WHERE total_value > 0").fetchall()]
+            for _cid in _uids_snap:
+                for _modo in (_twr.MODO_CERTERO, _twr.MODO_ESTIMADO):
+                    _s = _twr.serie_medible(conn, _cid, modo=_modo)
+                    for _c in _s.get("cortes_dudosos") or []:
+                        mediciones_dudosas.append({"user_id": _cid, "modo": _modo, **{
+                            k: (round(v, 2) if isinstance(v, float) else v)
+                            for k, v in _c.items()}})
+            mediciones_dudosas.sort(
+                key=lambda c: -abs((c["v1"] / c["v0"]) if c.get("v0") else 0))
+            mediciones_dudosas = mediciones_dudosas[:100]
+        except Exception:
+            log.exception("diagnose: mediciones_dudosas")
+            mediciones_dudosas = []
+
         return {
             "mes_en_curso": period_start,
             "cuentas_evaluadas": total,
@@ -17583,6 +17722,9 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
             "picos_implausibles": picos_implausibles,
             "picos_implausibles_total": len(picos_implausibles),
             "pico_max_veces_la_cartera": PICO_MAX_VECES_LA_CARTERA,
+            "mediciones_dudosas": mediciones_dudosas,
+            "mediciones_dudosas_total": len(mediciones_dudosas),
+            "salto_max_veces": _twr.SALTO_MAX_VECES,
             "como_leerlo": (
                 "pct_conserva = cuánta gente conserva su número con el guard puesto. "
                 "BAJO significa que el cron no está dejando cierres medidos. "
@@ -34280,7 +34422,8 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     # de base el informe FIRMADO publicaba (medido) "−47,26% · −US$65.966,54 de
     # mercado" para un mes sin una sola operación. Es la superficie donde un número
     # inventado hace más daño, porque sale del producto que el asesor firma.
-    _pts = _twr.serie_medible(conn, client_uid, None, end)["medibles"]
+    _serie_cli = _twr.serie_medible(conn, client_uid, None, end)
+    _pts = _serie_cli["medibles"]
     snaps = [{"date": p["date"], "total_value": p["value"],
               "net_deposited": p["net_deposited"]} for p in _pts]
     base_row = None   # último snapshot ANTERIOR al período (base de la descomposición)
@@ -34346,6 +34489,19 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
             dietz_base = v0 + flows_usd / 2.0
             if dietz_base > 100:
                 ret_pct = round(market_usd / dietz_base * 100, 2)
+            # ⚠️ NO SE COMPONE POR ENCIMA DE UNA FOTO QUE NO CIERRA. `medibles` es
+            # plano: trae los puntos de TODOS los tramos, y este informe restaba la
+            # base contra el fin aunque en el medio hubiera un leg que la curva se
+            # negó a encadenar. Medido sobre la copia de producción (agosto): tres
+            # cuentas publicaban +472,9 %, −100 % y −90,3 % en el informe que el
+            # asesor FIRMA, con un salto ×5 o un desborde entre la base y el fin.
+            # Si hay un corte dudoso adentro de la ventana, el resultado del período
+            # no se afirma; los aportes sí (son reales) y el valor de hoy también.
+            _cortes_adentro = [c for c in (_serie_cli.get("cortes_dudosos") or [])
+                               if (base_date or "") < str(c.get("hasta")) <= str(end_row["date"])]
+            if _cortes_adentro:
+                ret_pct = market_usd = None
+                base_note = "dudosa"
 
     # Referencia MEP — misma VENTANA que la cartera (base→as_of), no start→end:
     # comparar ventanas distintas no era like-for-like (audit).
@@ -34473,6 +34629,11 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
         "market_usd": market_usd,
         "flows_usd": flows_usd,
         "ret_pct": ret_pct,
+        # 'dudosa' = hubo una foto que no cierra entre la base y el fin: el
+        # resultado del período no se afirma (ver `_cortes_adentro`).
+        "medicion_dudosa": base_note == "dudosa",
+        "medicion_dudosa_texto": (_twr.MOTIVO_TEXTO.get("medicion_dudosa")
+                                  if base_note == "dudosa" else None),
         "mep_var_pct": mep_var_pct,
         "tc_mep": tc_mep_display,
         "series": series,

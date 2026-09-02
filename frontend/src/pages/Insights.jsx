@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
 import {
@@ -48,6 +48,7 @@ import {
   cortarPorTramo,
   totalDePunto,
   partirMedidoYEstimado,
+  acumuladoPublicado,
   rellenarTimestamps,
   resolucionDeSerie,
   computeDrawdownOnReturns,
@@ -291,17 +292,37 @@ function InsightsDesktop({ _embeddedTab }) {
 
   useEffect(() => { loadAll() }, [])
 
+  // El valor de HOY de la cartera, para que la curva cierre en "hoy" y el benchmark
+  // termine el MISMO día (`valor_live` en `/insights/performance`). Sin esto la
+  // curva terminaba en la foto de anoche y el S&P en el cierre de hoy: un día de
+  // desfasaje sistemático en la punta. Va ANTES del `if (loading) return` porque
+  // es un hook; se redondea para no refetchear por cada centavo que se mueve.
+  const liveUsdPerf = useMemo(() => {
+    try {
+      const tb = pickFinancialRate(dolar, valuationDollar) || 1415
+      const tcr = dolar?.cripto?.venta
+      return (brokers || []).reduce((s, b) =>
+        s + (computeBrokerValue(positions, prices, b, tb, tb, tcr, costBasis).value || 0), 0)
+    } catch { return 0 }
+  }, [brokers, positions, prices, dolar, valuationDollar, costBasis])
+  // ⚠️ RECIÉN CUANDO TERMINÓ DE CARGAR. Con `positions` ya en memoria y `prices`
+  // todavía vacío, la valuación cae al costo y mandaba un `valor_live` de otro
+  // orden (medido: 70.983 en una cartera de 16.595) durante un render, con su
+  // fetch y su curva mal cerrada hasta la respuesta siguiente.
+  const liveKeyPerf = loading ? 0 : Math.round(liveUsdPerf || 0)
+
   // El benchmark se recorta al rango del usuario EN EL BACKEND, así que cambiar
   // el selector es una consulta nueva — no un re-slice de una serie ya traída.
   useEffect(() => {
     const k = BENCH_API_KEY[selectedBench]
     if (!k) return
     let vivo = true
-    api.get(`/insights/performance?bench=${k}&modo=${modoPerf}`)
+    const live = liveKeyPerf > 0 ? `&valor_live=${liveKeyPerf}` : ''
+    api.get(`/insights/performance?bench=${k}&modo=${modoPerf}${live}`)
       .then(r => { if (vivo) setPerf(r) })
       .catch(() => {})
     return () => { vivo = false }
-  }, [selectedBench, modoPerf])
+  }, [selectedBench, modoPerf, liveKeyPerf])
 
   async function loadAll() {
     try {
@@ -808,10 +829,17 @@ function InsightsDesktop({ _embeddedTab }) {
     // (porque 'c' > '2' comparando strings), con lo cual los dos tramos terminan
     // dibujados pegados — exactamente lo que el corte venía a impedir. Se inserta
     // después de resamplear, sobre `windowSeries`.
+    // `perf.benchmark` trae UN punto por cada punto de `curva`, en el mismo orden,
+    // indexado a 1,0 en la primera fecha de la curva y resuelto POR FECHA (el
+    // cierre de ese día). Se alinea por posición, no por mes: es lo que hace que
+    // la línea del S&P deje de ser una escalera mensual sobre una curva diaria.
+    const benchPts = perf?.benchmark || []
     const out = []
     curva.forEach((pt, i) => {
       const esHoy = pt.date === 'hoy'
       const mk = esHoy ? (mesesOrd[mesesOrd.length - 1] || '') : pt.date.slice(0, 7)
+      const bp = benchPts[i]
+      const benchIdx = (bp && bp.date === pt.date && typeof bp.index === 'number') ? bp.index : null
       const nd = alMes(netByMonth, mk)
       const rz = alMes(realizedByMonth, mk) || 0
       const denom = nd ? safeDenom(nd.net, nd.peak) : 0
@@ -827,6 +855,13 @@ function InsightsDesktop({ _embeddedTab }) {
         total: totalDePunto(pt),
         estimado: !!pt.estimado,
         realized: denom > 0 ? +((rz / denom) * 100).toFixed(2) : 0,
+        // El benchmark de ESTA fecha (índice 1,0 = primera fecha de la curva), o
+        // null si el índice no tiene cierre todavía para esa fecha.
+        bench: benchIdx,
+        // ¿Puede ser punta de un número? Y el índice PUBLICADO (apto→apto), que es
+        // lo que el KPI rebasea: `total` es la FORMA (encadena la intradía).
+        apto: !!pt.apto,
+        ip: (typeof pt.index_publicado === 'number') ? pt.index_publicado : null,
         tramo: pt.tramo,
         // El SEGMENTO DIBUJADO: más fino que el tramo, porque también se parte
         // donde cambia la base de valuación. Es por acá que se corta la línea.
@@ -995,9 +1030,16 @@ function InsightsDesktop({ _embeddedTab }) {
       return (
         <div className="flex items-center gap-1.5">
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/30 whitespace-nowrap">
+            {/* Con mediciones reales la línea tiene DOS partes y el chip lo dice: la
+                contable (punteada) hasta la primera foto del cron, la medida
+                (llena) desde ahí. "Sólo se mueve cuando vendés" describe la
+                primera; decirlo sobre una línea que sigue con mediciones diarias
+                era falso para la mitad del gráfico. */}
             Recreado de tu contabilidad
             {perf.ventana_desde ? ` · desde ${fmtFecha(perf.ventana_desde)}` : ''}
-            {perf.excluye_no_realizado ? ' · sólo se mueve cuando vendés' : ''}
+            {perf.medido_desde
+              ? ` · medido a mercado desde ${fmtFecha(perf.medido_desde)}`
+              : (perf.excluye_no_realizado ? ' · sólo se mueve cuando vendés' : '')}
           </span>
           <InfoTooltip>
             <p className="font-semibold text-ink-0">Qué estás viendo</p>
@@ -1006,11 +1048,13 @@ function InsightsDesktop({ _embeddedTab }) {
                y a cambio es aproximada.</p>
             <div className="border-t border-line/60 my-1.5" />
             <p className="font-semibold text-ink-0">Por qué esta línea puede no parecerse a la del modo Certero</p>
-            <p className="text-ink-3"><strong>Sólo se mueve cuando vendés</strong>: no refleja
-               lo que pasa con lo que todavía tenés. Si tus posiciones abiertas
-               suben o caen, esta línea no se entera — se queda quieta hasta que
-               realizás. Por eso puede mostrar una recta donde el modo Certero
-               muestra un pozo.</p>
+            <p className="text-ink-3">La parte <strong>punteada</strong> es la contabilidad y
+               <strong> sólo se mueve cuando vendés</strong>: no refleja lo que pasa con lo
+               que todavía tenés. Si tus posiciones abiertas suben o caen, esa parte
+               no se entera — se queda quieta hasta que realizás. Por eso puede
+               mostrar una recta donde el modo Certero muestra un pozo. Desde la
+               primera medición a mercado, la línea sigue <strong>llena</strong> con
+               las mismas mediciones del Certero, encadenadas a lo anterior.</p>
             <p className="text-ink-3">Ojo: <strong>sí baja</strong> cuando vendés con pérdida.
                No es una línea que sólo sube.</p>
             <div className="border-t border-line/60 my-1.5" />
@@ -1579,6 +1623,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // del portfolio en null — así inflación/Merval/S&P siguen apareciendo en
     // vez de colapsar el gráfico al empty-state.
     let series = windowSeriesCortada
+    let skeleton = false
     if (series.length === 0) {
       // ⚠️ Si SABEMOS por qué falta la línea del usuario, no se dibuja el
       // benchmark solo. El skeleton existe para el caso "el portfolio en pesos no
@@ -1589,6 +1634,7 @@ function InsightsDesktop({ _embeddedTab }) {
       if (perf?.motivo) return []
       if (shadowPctByMonth.size === 0) return []
       series = buildBenchOnlySkeleton()
+      skeleton = true
     }
     if (series.length === 0) return []
 
@@ -1601,7 +1647,16 @@ function InsightsDesktop({ _embeddedTab }) {
       // para dejar un hueco: tiene que estar vacía en TODAS las series, no sólo en
       // la del portfolio.
       const esCorte = typeof s.key === 'string' && s.key.startsWith('corte-')
-      if (!esCorte && shadowPctByMonth.size > 0) {
+      // ⚠️ EN USD EL BENCHMARK ES EL DEL BACKEND, POR FECHA. El shadow mensual de
+      // abajo queda para ARS (donde la línea del usuario no sale de `perf.curva`) y
+      // para el esqueleto sin cartera. Medido en producción: con el shadow mensual
+      // la línea del S&P tenía 2 valores distintos sobre 44 filas y en 21 usuarios
+      // el signo dado vuelta; y como se resolvía por los meses de `monthly_entries`,
+      // 348 usuarios con huecos en la cadena mensual veían el ancla en otro mes
+      // ("S&P +35%" donde hizo +3,8%).
+      if (!esCorte && !isArs && !skeleton) {
+        benchPct = (typeof s.bench === 'number') ? +((s.bench - 1) * 100).toFixed(4) : null
+      } else if (!esCorte && shadowPctByMonth.size > 0) {
         const mk = monthKeyOf(s.key)
         if (shadowPctByMonth.has(mk)) {
           benchPct = shadowPctByMonth.get(mk)
@@ -1621,7 +1676,12 @@ function InsightsDesktop({ _embeddedTab }) {
     const first = withBench[0]
     const baseTotal = first.total ?? 0
     const baseRealized = first.realized ?? 0
-    const baseBench = first.benchPct ?? 0
+    // ⚠️ EL ANCLA DEL BENCHMARK ES LA PRIMERA FILA QUE TIENE DATO, no la primera a
+    // secas. Con `first.benchPct ?? 0`, 11 usuarios de producción cuya primera fila
+    // caía antes del primer cierre disponible veían el S&P dibujado relativo a un 0
+    // que no era su valor (plano en 0% toda la ventana).
+    const _primeraConBench = withBench.find(s => s.benchPct != null)
+    const baseBench = _primeraConBench ? _primeraConBench.benchPct : 0
 
     const filas = withBench.map(s => {
       const rebaseTotal = s.total != null
@@ -1652,6 +1712,11 @@ function InsightsDesktop({ _embeddedTab }) {
         // cruza un cambio de regla de valuación. Ningún consumidor del chart lo
         // lee (Recharts usa las claves con nombre), así que es aditivo.
         total: s.total ?? null,
+        // Para el KPI: el índice PUBLICADO, si el punto puede ser punta, y su base
+        // (en estimado un punto contable también es punta de la cadena publicada).
+        ip: (typeof s.ip === 'number') ? s.ip : null,
+        apto: !!s.apto,
+        base: s.base ?? null,
         [claveCartera]: rebaseTotal,
         [`${userName} P/L realizado`]: rebaseRealized,
         [benchmarkKey]: rebaseBench,
@@ -2677,12 +2742,38 @@ function InsightsDesktop({ _embeddedTab }) {
         const _kTotal = claveCartera
         const _kEstimado = `${userName} estimado`
         const _modoEstimado = perf?.base_del_twr === 'contable'
+        // ⚠️ EN ESTIMADO EL KPI TAMBIÉN LEE LA CADENA PUBLICADA (`ip` = idx_est,
+        // la del chip), entre la primera y la última punta de la ventana —
+        // contable o medida—. Antes leía `total` (la FORMA), que además encadena
+        // la intradía: medido, 85 de 655 usuarios tenían el fin de la línea ≠ el
+        // chip. Si la ventana cruza un corte, cae al de antes (la última corrida
+        // homogénea, con "parcial").
+        const _pubEst = _modoEstimado
+          ? acumuladoPublicado(chartData, benchmarkKey, { contable: true }) : null
         const _acum = _modoEstimado
-          ? acumuladoDeVentana(chartData, _kTotal, _kEstimado) : null
+          ? (_pubEst
+              ? { pct: _pubEst.pct, parcial: false, desde: _pubEst.desde }
+              : acumuladoDeVentana(chartData, _kTotal, _kEstimado))
+          : null
+        // ⚠️ EN CERTERO EL KPI LEE EL ÍNDICE PUBLICADO, NO EL DIBUJADO. `lastRow[_kTotal]`
+        // es `(index − 1)·100` rebaseado, y `index` es la FORMA: encadena las fotos
+        // intradía y no tiene el guard del cero absorbente. Medido en producción:
+        // 20 de 480 usuarios veían acá un número >5 pp distinto del `perf.twr` que
+        // el backend afirma (uid 745: +642,9% contra +6,6%), y 11 veían un número
+        // donde el backend publica None (serie partida: el rebase unía los dos
+        // tramos). `acumuladoPublicado` rebasea `index_publicado` entre el primer y
+        // el último punto APTO de la ventana, y da null si hay un corte en el medio.
+        // En ARS la serie no sale de `perf.curva` y no trae `ip`: cae al de antes.
+        const _pub = (!_modoEstimado && currency === 'USD')
+          ? acumuladoPublicado(chartData, benchmarkKey) : null
         const cumulativeReturnPct = _modoEstimado
           ? (_acum ? _acum.pct : null)
-          : (lastRow[_kTotal] ?? null)
-        const benchmarkReturnPct = lastRow[benchmarkKey] ?? null
+          : (currency === 'USD' ? (_pub ? _pub.pct : null) : (lastRow[_kTotal] ?? null))
+        // El benchmark del KPI, entre LAS MISMAS DOS FECHAS que el acumulado — es
+        // lo que "mismo período" tiene que significar.
+        const benchmarkReturnPct = (_pub && _pub.benchPct != null)
+          ? _pub.benchPct
+          : (_pub ? null : (lastRow[benchmarkKey] ?? null))
         // Label dinámico = el mismo nombre del benchmark seleccionado (chart legend).
         // Antes estaba hardcodeado a S&P 500 / Inflación AR e ignoraba la selección.
         const benchmarkLabel = benchmarkKey
@@ -2704,6 +2795,7 @@ function InsightsDesktop({ _embeddedTab }) {
                cuando hay un corte de regla en el medio. */
             acumuladoEstimado={_modoEstimado && _acum ? {
               parcial: _acum.parcial, desde: _acum.desde,
+              medidoDesde: perf?.medido_desde || null,
             } : null}
           />
         )
@@ -2966,32 +3058,67 @@ function InsightsDesktop({ _embeddedTab }) {
           </div>
 
           {/* Range tabs — solo en USD; ARS es siempre 12 meses */}
-          {currency === 'USD' && (
-            <div className="flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-1">
-              {[
-                // 1M y 3M existen para el que recién empieza a medirse: con 45
-                // días de historia, "1A" y "MAX" son la misma recta.
-                { label: '1M', months: 1 },
-                { label: '3M', months: 3 },
-                { label: '1A', months: 12 },
-                { label: '2A', months: 24 },
-                { label: '5A', months: 60 },
-                { label: 'MAX', months: null },
-              ].map(({ label, months }) => (
-                <button
-                  key={label}
-                  onClick={() => setChartRange(months)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                    chartRange === months
-                      ? 'bg-blue-600 text-white'
-                      : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+          {currency === 'USD' && (() => {
+            const RANGOS = [
+              // 1M y 3M existen para el que recién empieza a medirse: con 45
+              // días de historia, "1A" y "MAX" son la misma recta.
+              { label: '1M', months: 1 },
+              { label: '3M', months: 3 },
+              { label: '1A', months: 12 },
+              { label: '2A', months: 24 },
+              { label: '5A', months: 60 },
+              { label: 'MAX', months: null },
+            ]
+            // ⚠️ EL RANGO ES UN TOPE, NO UN ESTIRAMIENTO. Con 11 meses de historia,
+            // 1A ya muestra todo y 2A/5A/MAX dibujan exactamente lo mismo; sin
+            // decirlo, el usuario cambia de tab, no ve nada distinto y piensa que
+            // el gráfico está roto (pasó). Se calcula el rango más chico que ya
+            // contiene la primera fecha de la serie, y desde ahí se avisa.
+            const _keys = activeSeries.filter(s => s?.key && s.key !== 'today').map(s => s.key).sort()
+            const primerFechaSerie = _keys[0] || null
+            const cutoffIso = (months) => {
+              if (!months) return null
+              const c = new Date(); c.setMonth(c.getMonth() - months)
+              return c.toISOString().slice(0, 10)
+            }
+            const rangoCompleto = primerFechaSerie
+              ? RANGOS.find(r => r.months == null || cutoffIso(r.months) <= primerFechaSerie) : null
+            const rangoActual = RANGOS.find(r => r.months === chartRange) || null
+            const muestraTodo = !!(rangoCompleto && rangoActual && (rangoActual.months == null
+              || (rangoCompleto.months != null && rangoActual.months >= rangoCompleto.months)))
+            const esRedundante = (r) => !!(rangoCompleto && r.months !== rangoCompleto.months
+              && (r.months == null || (rangoCompleto.months != null && r.months > rangoCompleto.months)))
+            const desde = primerFechaSerie ? fmtFecha(primerFechaSerie) : ''
+            return (
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-1">
+                {RANGOS.map(({ label, months }) => (
+                  <button
+                    key={label}
+                    onClick={() => setChartRange(months)}
+                    title={esRedundante({ label, months })
+                      ? `Muestra lo mismo que ${rangoCompleto.label}: tu historial empieza el ${desde}`
+                      : undefined}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                      chartRange === months
+                        ? 'bg-blue-600 text-white'
+                        : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {muestraTodo && (
+                <span className="text-[11px] text-ink-3" data-testid="rango-completo">
+                  {rangoActual.months === rangoCompleto.months
+                    ? `${rangoActual.label} ya muestra todo tu historial · desde ${desde}`
+                    : `Igual que ${rangoCompleto.label}: tu historial empieza el ${desde}`}
+                </span>
+              )}
             </div>
-          )}
+            )
+          })()}
           {currency === 'ARS' && (
             <span className="text-xs text-ink-3 bg-bg-2 dark:bg-bg-1/60 px-2.5 py-1 rounded-lg">
               Últimos 12 meses
@@ -3029,17 +3156,31 @@ function InsightsDesktop({ _embeddedTab }) {
             usuario no tiene forma de saber por qué no hay número. Son 167 usuarios
             reales del padrón. El texto sale de `twr.MOTIVO_TEXTO`, o sea el mismo
             que lee el asesor — no una redacción paralela. */}
-        {perf?.serie_partida && chartData.length > 0 && (
+        {perf?.serie_partida && chartData.length > 0 && (() => {
+          // ⚠️ EL AVISO ES DE LA SERIE; EL KPI, DE LA VENTANA. `serie_partida` dice que
+          // en ALGÚN lado la serie tiene un corte (un hueco de 45 días, un cambio de
+          // regla o una foto que no cierra). Si ese corte cae fuera del rango visible
+          // —1M después de una foto rota del mes anterior—, el acumulado de ESTA
+          // ventana sí se mide (`acumuladoPublicado`, entre dos puntos aptos del mismo
+          // tramo) y el KPI lo publica. Un aviso que diga "no se publica" al lado de
+          // un KPI con número es una contradicción en pantalla, así que la frase
+          // mira dónde está el corte. Y una foto dudosa no es un hueco: el titular
+          // también lo distingue.
+          const corteEnVentana = chartData.some(r => String(r?.key || '').startsWith('corte-'))
+          const dudosa = perf.motivo === 'medicion_dudosa'
+          return (
           <div className="mt-3 flex items-start gap-2 rounded-lg border border-line bg-bg-2/60 px-3 py-2">
             <Info size={14} className="mt-0.5 shrink-0 text-ink-3" />
             <p className="text-[12px] leading-snug text-ink-2">
-              <span className="font-semibold text-ink-0">La medición tiene un hueco.</span>{' '}
+              <span className="font-semibold text-ink-0">{dudosa ? 'Hay una foto que no cierra.' : 'La medición tiene un hueco.'}</span>{' '}
               {perf.motivo_texto || 'Los tramos de cada lado se miden solos, pero no se pueden encadenar.'}{' '}
-              <span className="text-ink-3">Por eso el porcentaje del período no se publica
-              y la línea aparece cortada.</span>
+              <span className="text-ink-3">{corteEnVentana
+                ? 'Por eso el porcentaje de punta a punta no se publica y la línea aparece cortada.'
+                : 'En el rango que estás viendo no cae ningún corte: el acumulado de esta ventana sí se mide. El de punta a punta, no.'}</span>
             </p>
           </div>
-        )}
+          )
+        })()}
 
         {chartData.length === 0 ? (
           perf?.motivo_texto ? (
@@ -3097,7 +3238,11 @@ function InsightsDesktop({ _embeddedTab }) {
                   return fmtMarcaEje(t)
                 }}
               />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }} />
+              {/* Las dos series de la cartera comparten color; el ícono de la
+                  leyenda es el mismo punto verde para las dos. El texto dice cuál
+                  es la punteada, que es lo único que las distingue a simple vista. */}
+              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }}
+                      formatter={(v) => v === `${userName} estimado` ? `${v} (línea punteada)` : v} />
               <Area type="monotone" dataKey={claveCartera} stroke="#21D07A" strokeWidth={2.5} fill="url(#portGrad)" dot={<DotSolo fill="#21D07A" />} activeDot={{ r: 4 }} />
               {/* Lo NO medido: misma curva, punteada y en un tono apagado. Es lo
                   que comunica "esta parte es estimada" sin esconderla. */}

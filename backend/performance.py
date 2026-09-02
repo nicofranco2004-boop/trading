@@ -24,11 +24,69 @@ def _ym(fecha: str) -> str:
     return str(fecha)[:7]
 
 
+def _es_diario(datos: dict) -> bool:
+    """¿Las claves son fechas (YYYY-MM-DD) y no meses (YYYY-MM)?"""
+    for k in datos:
+        return len(str(k)) == 10
+    return False
+
+
+def _benchmark_diario(datos: dict, fechas: list) -> list:
+    """El benchmark a resolución DIARIA, indexado a 1.0 en la primera fecha de la
+    curva que tenga cierre.
+
+    ⚠️ POR QUÉ EXISTE. Medido en producción (AUDIT_benchmark_2026-09-01): con el
+    mapa MENSUAL, la línea del S&P sobre una curva diaria tenía 2 valores distintos
+    (mediana) en 44 filas, 64 usuarios la veían plana en 0%, y contra el índice
+    real entre las mismas fechas el número difería más de 1 pp en 220 de 484 —
+    con el SIGNO dado vuelta en 21. El ancla era el cierre de FIN del primer mes,
+    así que lo que el S&P hacía entre el primer día medido y ese fin de mes
+    desaparecía de la comparación. Y nadie tiene más de tres meses medidos: un
+    desfasaje de hasta un mes en el ancla ES la comparación.
+
+    Para cada fecha: el cierre de ese día o del último hábil anterior (un fin de
+    semana arrastra el viernes: eso no inventa nada). "hoy" toma el último cierre.
+    Antes del primer cierre disponible el punto va con `index: None` — la línea
+    no se dibuja ahí, en vez de dibujarse relativa a un valor que no es suyo.
+    """
+    import bisect
+    claves = sorted(k for k, v in datos.items() if v is not None)
+    if not claves:
+        return []
+    ultima = claves[-1]
+
+    def _cierre(f):
+        if f == "hoy":
+            return float(datos[ultima])
+        f = str(f)[:10]
+        i = bisect.bisect_right(claves, f)
+        if i == 0:
+            return None
+        try:
+            v = float(datos[claves[i - 1]])
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
+
+    out, base = [], None
+    for f in fechas:
+        c = _cierre(f)
+        if c is None:
+            out.append({"date": f, "index": None})
+            continue
+        if base is None:
+            base = c
+        out.append({"date": f, "index": round(c / base, 6)})
+    return out
+
+
 def benchmark_recortado(datos: dict, fechas: list, clave: str) -> list:
     """El benchmark indexado a 1.0 en la MISMA fecha en que arranca el usuario.
 
     `datos` es {YYYY-MM: valor} (nivel de precio, o % mensual si `clave` está en
-    BENCH_PORCENTUAL). `fechas` son las fechas de la curva del usuario, en orden.
+    BENCH_PORCENTUAL) — o, para los índices de precio, {YYYY-MM-DD: cierre}, en
+    cuyo caso resuelve por FECHA (ver `_benchmark_diario`). `fechas` son las
+    fechas de la curva del usuario, en orden.
 
     Devuelve un punto por cada fecha del usuario — misma longitud, mismo arranque,
     mismo final. Si para un mes no hay dato del benchmark se arrastra el último
@@ -37,6 +95,8 @@ def benchmark_recortado(datos: dict, fechas: list, clave: str) -> list:
     """
     if not datos or not fechas:
         return []
+    if clave not in BENCH_PORCENTUAL and _es_diario(datos):
+        return _benchmark_diario(datos, fechas)
     meses = sorted(datos)
     base_ym = _ym(fechas[0])
 
@@ -108,13 +168,31 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
     c = twr.curva_indexada(conn, uid, desde, hasta, modo=modo, aceptar=aceptar,
                            valor_live=valor_live)
     fechas = [p["date"] for p in c["curva"]]
-    serie_b = (bench_data or {}).get(bench_key) or {}
-    bench = benchmark_recortado(serie_b, fechas, bench_key)
+    # ⚠️ DIARIO PRIMERO. `<clave>_d` es la serie por fecha que llena
+    # `_benchmarks_fetch_and_cache`; el mensual queda para los porcentuales y para
+    # cuando el diario no cubre ninguna fecha de la curva (historia más vieja que
+    # la ventana bajada): ahí el mensual tampoco la cubre, pero se mantiene el
+    # comportamiento anterior en vez de devolver una lista de None.
+    bd = bench_data or {}
+    bench, resolucion = [], "mensual"
+    serie_d = bd.get(f"{bench_key}_d") or {}
+    if serie_d and bench_key not in BENCH_PORCENTUAL and _es_diario(serie_d):
+        bench = benchmark_recortado(serie_d, fechas, bench_key)
+        if any(p.get("index") is not None for p in bench):
+            resolucion = "diaria"
+        else:
+            bench = []
+    if not bench:
+        serie_b = bd.get(bench_key) or {}
+        bench = benchmark_recortado(serie_b, fechas, bench_key)
 
     return {
         "curva": c["curva"],
         "benchmark": bench,
         "benchmark_key": bench_key,
+        # Con qué resolución viene `benchmark`: 'diaria' cuando cada punto es el
+        # cierre de SU fecha; 'mensual' cuando es el cierre del mes.
+        "benchmark_resolucion": resolucion,
         # La banda gris: la reconstrucción CONTABLE. Se dibuja aparte, fuera del
         # índice y nunca como continuación de la línea medida.
         "contable": c["contable"],
@@ -154,4 +232,7 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
         "drawdown_maximo_pico": c["drawdown_maximo_pico"],
         "motivo": c["motivo"],
         "motivo_texto": c["motivo_texto"],
+        # Los legs que no se encadenaron por no ser creíbles (`twr.leg_dudoso`).
+        "cortes_dudosos": c.get("cortes_dudosos", []),
+        "contable_superado": c.get("contable_superado", 0),
     }

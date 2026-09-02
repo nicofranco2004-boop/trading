@@ -98,15 +98,20 @@ def twr_por_cliente(conn, advisor_uid: int, sellar_primero: bool = True) -> dict
         r = twr.twr_de(conn, cid)
         meses = r.get("meses", 0)
         publicable = r["twr"] is not None and meses >= MESES_MINIMOS
+        # ⚠️ EL MOTIVO DEL MOTOR MANDA. Con `"pocos_meses" if meses else motivo`, un
+        # cliente con 6 meses sellados y uno dudoso (twr None, motivo
+        # 'medicion_dudosa') salía como "pocos_meses": el aviso equivocado.
         out.append({
             "client_uid": cid, "label": label,
             "twr": r["twr"] if publicable else None,
             "meses": meses,
             "desde": r.get("desde"), "hasta": r.get("hasta"),
-            "motivo": None if publicable else (
-                "pocos_meses" if meses else r.get("motivo")),
+            "motivo": None if publicable else (r.get("motivo") or "pocos_meses"),
+            "motivo_texto": (None if publicable else
+                             twr.MOTIVO_TEXTO.get(r.get("motivo") or "")),
             "meses_revisados": r.get("meses_revisados", []),
             "meses_degradados": r.get("meses_degradados", []),
+            "meses_dudosos": r.get("meses_dudosos", []),
         })
 
     return {

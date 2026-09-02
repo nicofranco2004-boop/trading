@@ -536,6 +536,9 @@ MOTIVO_TEXTO = {
     "serie_partida": "La medición tiene un hueco en el medio. Los tramos de cada lado "
                      "se miden solos, pero no se pueden encadenar: no se sabe qué pasó "
                      "en el medio y suponerlo sería inventarlo.",
+    "medicion_dudosa": "Entre dos fotos seguidas el valor saltó más de lo que explican "
+                       "tus aportes y retiros. Hasta que se revise esa foto, los tramos "
+                       "de cada lado se miden solos y no se encadenan.",
 }
 
 
@@ -567,6 +570,65 @@ def dietz(v0: float, v1: float, flow: float):
     if denom <= 0:
         return None
     return max((v1 - v0 - flow) / denom, -1.0)
+
+
+# ─── La cota de cordura de UN leg ────────────────────────────────────────────
+#
+# Medido sobre la copia de producción del 2026-08-16 (AUDIT_benchmark_2026-09-01):
+# de los 480 usuarios que publicaban en CERTERO, 46 tenían UN leg diario entre dos
+# cierres del cron con ratio ×>2 o ×<0,5 y el aportado quieto — y ese conjunto
+# contenía EXACTAMENTE a los 6 de más de +100% (uid 282: +25.757%) y a los 31 de
+# menos de −50% (uid 513: 16 millones → 109 → −100% absorbente). Una cartera no
+# se quintuplica ni se divide por cinco en una rueda sin que entre o salga plata:
+# lo que hay ahí es UNA FOTO MALA (la primera del cron sin posiciones valuadas, o
+# un precio roto), no un rendimiento.
+#
+# Es la misma idea que el dueño ya decidió para la alerta del asesor
+# (`PICO_MAX_VECES_LA_CARTERA`, main.py): fuera de la cota no se publica, y la
+# cuenta va a la cola de revisión. Acá se aplica al LEG: si el flujo no lo explica
+# y el ratio se sale de [1/X, X], ese leg no se encadena. Igual que el hueco de 45
+# días y el desborde del denominador, corta el tramo — no arregla el dato.
+#
+# ⚠️ X = 3, NO 5, Y EL NÚMERO SALIÓ DE MEDIR. Con ×5 (la cota del asesor) quedaban
+# publicados en CERTERO dos usuarios con +367% y +316% (uid 821, 1147: legs de ×3
+# a ×4 en una rueda, sin flujo) y siete por debajo de −50%. Sensibilidad sobre los
+# 480 que publicaban (AUDIT_benchmark_2026-09-01, port del pipeline):
+#     ×2 → corta 46 · quedan con twr>+100%: 0 · con twr<−50%: 0
+#     ×3 → corta 39 · 0 · 2
+#     ×4 → corta 34 · 0 · 6
+#     ×5 → corta 31 · 2 · 7
+# Un ×3 en una rueda sin plata que entre o salga tampoco es una cartera: es una
+# foto. ×2 cortaría también legs que una cartera cripto concentrada sí puede dar
+# en un día malo; ×3 es el primer valor que no deja pasar ninguna ganancia
+# fantasma y casi ninguna pérdida fantasma.
+#
+# `SALTO_FLUJO_TOL`: un aporte del 10% del valor no explica un ×3. Por encima de
+# eso el leg puede ser un depósito grande de verdad, y el Modified Dietz ya sabe
+# tratarlo (o desbordar, y ese caso lo cubre `desborde`).
+SALTO_MAX_VECES = 3.0
+SALTO_FLUJO_TOL = 0.10
+
+
+def leg_dudoso(v0: float, v1: float, flow: float):
+    """Por qué NO se puede encadenar este leg, o None si se puede.
+
+      'desborde' — el flujo supera el doble del capital: `dietz` toca su piso de
+                   −1,0 y el índice queda en CERO para siempre (el cero absorbente).
+      'salto'    — sin flujo que lo explique, el valor se multiplicó o dividió
+                   por más de `SALTO_MAX_VECES` entre dos fotos seguidas.
+    """
+    try:
+        v0, v1, flow = float(v0), float(v1), float(flow or 0.0)
+    except (TypeError, ValueError):
+        return None
+    r = dietz(v0, v1, flow)
+    if r is not None and r <= -1.0 + 1e-12:
+        return "desborde"
+    if v0 > 0 and v1 > 0 and abs(flow) < SALTO_FLUJO_TOL * max(v0, v1):
+        ratio = v1 / v0
+        if ratio > SALTO_MAX_VECES or ratio < 1.0 / SALTO_MAX_VECES:
+            return "salto"
+    return None
 
 
 def _fin_de_mes(mes: str) -> str:
@@ -634,7 +696,16 @@ def tramos(conn, uid: int, hasta_mes: str = None) -> list:
         if r is None:
             continue
         calidad = "ok"
-        if v0 > 0 and abs(flow) > v0 * FLUJO_SOSPECHOSO:
+        # ⚠️ LA MISMA COTA DE CORDURA QUE LA CURVA (`leg_dudoso`), en el motor del
+        # asesor. Medido sobre la copia de producción: 34 meses sellables en 33
+        # clientes tenían un leg con ratio fuera de ×3 y el aportado quieto — uid 282
+        # pasaba de US$4,6 a US$1.133 entre dos cierres (+24.323 % en un mes, calidad
+        # 'ok') y `twr_de` lo componía en el TWR del libro, que es el número que
+        # justifica el fee. Un mes así no se compone: se marca, `twr_de` no publica
+        # mientras esté en la cadena, y la cuenta va a la cola de revisión.
+        if leg_dudoso(v0, v1, flow):
+            calidad = "dudoso"
+        elif v0 > 0 and abs(flow) > v0 * FLUJO_SOSPECHOSO:
             calidad = "flujo_sospechoso"
         elif abs(v1 - v0) <= abs(v0) * PLANO_TOL and abs(flow) <= abs(v0) * PLANO_TOL:
             calidad = "plano"
@@ -648,7 +719,9 @@ def tramos(conn, uid: int, hasta_mes: str = None) -> list:
     return out
 
 
-_CAMPOS_SELLO = ("period_start", "period_end", "v0_usd", "v1_usd", "flow_usd")
+# `quality` también: un mes que pasó de 'ok' a 'dudoso' (o al revés, si se
+# corrigió la foto) cambió de sentido, y eso se registra como revisión nueva.
+_CAMPOS_SELLO = ("period_start", "period_end", "v0_usd", "v1_usd", "flow_usd", "quality")
 
 
 def sellar(conn, uid: int, hasta_mes: str = None) -> dict:
@@ -713,12 +786,30 @@ def twr_de(conn, uid: int, desde_mes: str = None, hasta_mes: str = None) -> dict
     if not filas:
         return {"twr": None, "meses": 0, "motivo": "sin_periodos_sellados"}
 
+    revisados = [f["month"] for f in filas if int(f["revision"]) > 1]
+    degradados = [f["month"] for f in filas if f["quality"] != "ok"]
+    dudosos = [f["month"] for f in filas if f["quality"] == "dudoso"]
+    if dudosos:
+        # ⚠️ NO SE COMPONE POR ENCIMA DE UN MES DUDOSO. Componer un ×243 "y avisar
+        # en `meses_degradados`" publica igual el +24.323 %: la etiqueta no le
+        # saca el número al informe. Sin número, con el motivo — igual que la
+        # curva. Los meses siguen sellados: cuando la foto se corrija, `sellar`
+        # los revisa y el número vuelve solo.
+        return {
+            "twr": None,
+            "meses": len(filas),
+            "desde": filas[0]["month"],
+            "hasta": filas[-1]["month"],
+            "meses_revisados": revisados,
+            "meses_degradados": degradados,
+            "meses_dudosos": dudosos,
+            "motivo": "medicion_dudosa",
+        }
+
     idx = 1.0
     for f in filas:
         idx *= (1.0 + float(f["ret"]))
 
-    revisados = [f["month"] for f in filas if int(f["revision"]) > 1]
-    degradados = [f["month"] for f in filas if f["quality"] != "ok"]
     return {
         "twr": idx - 1.0,
         "meses": len(filas),
@@ -726,6 +817,7 @@ def twr_de(conn, uid: int, desde_mes: str = None, hasta_mes: str = None) -> dict
         "hasta": filas[-1]["month"],
         "meses_revisados": revisados,     # a estos les cambió la historia
         "meses_degradados": degradados,
+        "meses_dudosos": [],
         "motivo": None,
     }
 
@@ -745,6 +837,21 @@ def twr_de(conn, uid: int, desde_mes: str = None, hasta_mes: str = None) -> dict
 # Cuántos días de silencio parten la serie en dos tramos. Más que esto y unir los
 # dos puntos con una recta es inventar el recorrido del medio.
 MAX_HUECO_DIAS = 45
+# ⚠️ EL HUECO CONTABLE NO ES SILENCIO DE MERCADO. La cadena contable es un SALDO
+# MENSUAL: sus puntos están a ~31 días entre sí por construcción, y un mes que
+# falta en `monthly_entries` deja un leg de 59 días que la regla de los 45 partía
+# como si fueran dos meses sin medir el mercado. Medido en producción (modo
+# estimado): 10.295 legs contable→contable, mediana 31 días, 744 por encima de 45
+# —meses faltantes, no huecos—, y con eso 535 de 670 usuarios veían su estimado
+# partido en dos o más pedazos y 300 en tres o más. El mercado, en cambio, no
+# tiene un solo hueco (19.203 legs mercado→mercado, máximo 14 días).
+#
+# Los flujos de esos meses se conocen igual (el aportado canónico sale de
+# `monthly_entries`), así que el Dietz entre dos saldos contables separados por un
+# mes faltante mide lo mismo que entre dos consecutivos: el modo ya se declara
+# aproximado. Lo que sí sigue partiendo es un año entero perdido: pasado este
+# tope, la recta ya no es una aproximación, es una invención.
+MAX_HUECO_CONTABLE_DIAS = 400
 
 
 def _dias(a: str, b: str) -> int:
@@ -1090,13 +1197,26 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     bases = bases_de_serie(filas, clases)
     aptos = aptos_de_serie(filas, clases, bases)
     _nd = _aportado_por_punto(conn, uid, filas)
+    # ⚠️ LA CONTABILIDAD SE APAGA EN LA PRIMERA MEDICIÓN REAL (sólo estimado). Desde
+    # que hay un cierre a mercado, la reconstrucción contable de esa misma fecha
+    # es información estrictamente peor, y encadenarla en paralelo contaba el
+    # mismo mes dos veces (medido: 12 usuarios con fotos contables fechadas
+    # después de su primera medición; en la cuenta demo, la del 31/07 en medio de
+    # las mediciones diarias de julio, que partía la línea en tres). Esas filas
+    # siguen en la banda gris `contable`; no entran a la línea ni al número.
+    _primer_apto = next((str(r["date"])[:10] for r, a in zip(filas, aptos) if a), None)
+    contable_superado = 0
     puntos, contable, conteo = [], [], {c: 0 for c in CLASES}
     for r, c, _base, _apto in zip(filas, clases, bases, aptos):
         conteo[c] += 1
         d = str(r["date"])[:10]
         _cob = (float(r["mtm_coverage"])
                 if r["mtm_coverage"] is not None else None)
-        if c in aceptar:
+        _superada = (modo == MODO_ESTIMADO and _base == VALUADO_AL_COSTO
+                     and _primer_apto is not None and d >= _primer_apto)
+        if _superada:
+            contable_superado += 1
+        if c in aceptar and not _superada:
             # TODO ENTRA A LA LÍNEA — el usuario ve su curva. Lo que se decide acá
             # es OTRA cosa: quién puede ser pico y denominador. Mismo contrato que
             # INTRADIA, que entra pero no mide.
@@ -1166,24 +1286,57 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     #
     # El desborde del denominador sí se mide entre puntos APTOS, que es por donde
     # corre la cadena.
+    # ⚠️ Y DONDE UN LEG NO ES CREÍBLE (`leg_dudoso`): el desborde de antes, más el
+    # salto sin flujo que lo explique. Se mide por donde corre cada cadena que
+    # PUBLICA un número: apto→apto (el certero) y, en ESTIMADO, contable→contable
+    # (la cadena del `idx_est`, que encadena las filas al costo entre sí). La cadena
+    # de DIBUJO no corta el tramo: parte el segmento, en `curva_indexada`.
     tramos, actual, ultimo_apto = [], [], None
+    ultimo_costo = None            # última fila CONTABLE del tramo (cadena del estimado)
+    cortes_dudosos = []
     for p in puntos:
         corta = False
-        if actual and _dias(actual[-1]["date"], p["date"]) > max_hueco_dias:
+        motivo_corte = None
+        # Entre dos saldos contables el tope es el contable (ver
+        # MAX_HUECO_CONTABLE_DIAS); en cualquier otro par —mercado→mercado, o el
+        # traspaso contable→mercado, donde no se puede medir el medio— rige el de
+        # mercado.
+        _tope = (MAX_HUECO_CONTABLE_DIAS
+                 if (actual and actual[-1]["base"] == VALUADO_AL_COSTO
+                     and p["base"] == VALUADO_AL_COSTO)
+                 else max_hueco_dias)
+        if actual and _dias(actual[-1]["date"], p["date"]) > _tope:
             corta = True
         elif actual and p["apto"] and ultimo_apto is not None:
             if _dias(ultimo_apto["date"], p["date"]) > max_hueco_dias:
                 corta = True
             else:
-                _r = dietz(ultimo_apto["value"], valor_para_dibujar(p),
-                           p["net_deposited"] - ultimo_apto["net_deposited"])
-                if _r is not None and _r <= -1.0 + 1e-12:
-                    corta = True       # el flujo desbordó el denominador
+                _flow = p["net_deposited"] - ultimo_apto["net_deposited"]
+                motivo_corte = leg_dudoso(ultimo_apto["value"], valor_para_dibujar(p), _flow)
+                if motivo_corte:
+                    corta = True
+                    cortes_dudosos.append({
+                        "desde": ultimo_apto["date"], "hasta": p["date"], "motivo": motivo_corte,
+                        "v0": ultimo_apto["value"], "v1": valor_para_dibujar(p),
+                        "flujo": _flow, "cadena": "mercado"})
+        elif (actual and modo == MODO_ESTIMADO and p["base"] == VALUADO_AL_COSTO
+              and ultimo_costo is not None):
+            _flow = p["net_deposited"] - ultimo_costo["net_deposited"]
+            motivo_corte = leg_dudoso(valor_para_dibujar(ultimo_costo),
+                                      valor_para_dibujar(p), _flow)
+            if motivo_corte:
+                corta = True
+                cortes_dudosos.append({
+                    "desde": ultimo_costo["date"], "hasta": p["date"], "motivo": motivo_corte,
+                    "v0": valor_para_dibujar(ultimo_costo), "v1": valor_para_dibujar(p),
+                    "flujo": _flow, "cadena": "contable"})
         if corta:
-            tramos.append(actual); actual = []; ultimo_apto = None
+            tramos.append(actual); actual = []; ultimo_apto = None; ultimo_costo = None
         actual.append(p)
         if p["apto"]:
             ultimo_apto = p
+        if p["base"] == VALUADO_AL_COSTO:
+            ultimo_costo = p
     if actual:
         tramos.append(actual)
 
@@ -1223,6 +1376,12 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         # le dice al usuario qué hacer; "tus FCI" sí.
         "instrumentos_al_costo": al_costo,
         "modo": modo,
+        # Los legs que NO se encadenaron por no ser creíbles (`leg_dudoso`). Cada
+        # uno parte la serie en dos tramos; la cola de revisión del admin los lee.
+        "cortes_dudosos": cortes_dudosos,
+        # Filas contables fechadas en o después de la primera medición real, que
+        # en estimado quedan fuera de la línea (siguen en `contable`).
+        "contable_superado": contable_superado,
         "medido_desde": (aptos[0]["date"] if aptos else None),
         "medido_hasta": (aptos[-1]["date"] if aptos else None),
         "motivo": _motivo(conteo, len(aptos)),
@@ -1335,6 +1494,8 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         ancla_por_base = {}   # base -> último punto DE ESA BASE
         idx_por_base = {}     # base -> índice dibujado DE ESA BASE
         seg_por_base = {}     # base -> id del segmento dibujado
+        ultimo_idx_dib = 1.0  # el último índice dibujado del tramo, de cualquier base
+        idx_dib_ultimo_apto = 1.0   # el índice dibujado en el último punto APTO del tramo
         # ── FASE 2 · la cadena del modo ESTIMADO ────────────────────────────
         # ⚠️ ES UN TERCER ÍNDICE, Y HAY QUE SABER POR QUÉ NO ALCANZABA CON LOS DOS.
         #   `idx`     — el número del modo CERTERO: sólo apto→apto.
@@ -1414,15 +1575,40 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             # lo de otra base no la corta, la saltea.
             _b = p["base"]
             if _b not in seg_por_base:
-                segmento += 1
-                seg_por_base[_b] = segmento
-                idx_por_base[_b] = 1.0
+                if modo == MODO_ESTIMADO and seg_por_base:
+                    # ⚠️ EN ESTIMADO EL CAMBIO DE REGLA NO CORTA LA LÍNEA: LA ENCADENA.
+                    # El crimen de la Fase 1 era RESTAR dos valuaciones de reglas
+                    # distintas (139.571 al costo contra 73.604 a mercado = −47 %).
+                    # Acá no se resta nada: la cadena nueva arranca donde quedó el
+                    # índice de la anterior y multiplica sólo sus propios legs — el
+                    # mismo producto que `idx_est` ya publica como `twr`. Con el
+                    # reinicio a 1,0 el gráfico mostraba la contabilidad terminando
+                    # en +16 % y la medición arrancando en 0 % con un hueco entre
+                    # las dos, y el número del chip no aparecía en ningún lado.
+                    seg_por_base[_b] = segmento
+                    idx_por_base[_b] = ultimo_idx_dib
+                else:
+                    segmento += 1
+                    seg_por_base[_b] = segmento
+                    idx_por_base[_b] = 1.0
             else:
                 _prev = ancla_por_base[_b]
-                _rp = dietz(valor_para_dibujar(_prev), valor_para_dibujar(p),
-                            p["net_deposited"] - _prev["net_deposited"])
-                if _rp is not None:
-                    idx_por_base[_b] *= (1.0 + _rp)
+                _flow_dib = p["net_deposited"] - _prev["net_deposited"]
+                # ⚠️ LA LÍNEA TAMBIÉN TIENE COTA DE CORDURA. Un leg que no es creíble
+                # entre dos puntos de la misma base (típicamente una foto intradía
+                # rota: uid 745, US$3.329 → US$22.746 en un día sin flujo) no se
+                # dibuja como movimiento: abre un segmento nuevo y la línea se corta
+                # ahí. El NÚMERO no se toca — los legs que publican ya se cortaron
+                # en `serie_medible`; éste es sólo el dibujo, y era por acá que el
+                # KPI leía +642,9% donde el twr decía +6,6%.
+                if leg_dudoso(valor_para_dibujar(_prev), valor_para_dibujar(p), _flow_dib):
+                    segmento += 1
+                    seg_por_base[_b] = segmento
+                    idx_por_base[_b] = 1.0
+                else:
+                    _rp = dietz(valor_para_dibujar(_prev), valor_para_dibujar(p), _flow_dib)
+                    if _rp is not None:
+                        idx_por_base[_b] *= (1.0 + _rp)
             # FASE 2 · la cadena del ESTIMADO. Entra el punto APTO (cierre a
             # mercado) y el punto de la cadena CONTABLE. NO entra la intradía ni el
             # INDETERMINADO: son los dos que no se pueden afirmar ni siquiera como
@@ -1445,7 +1631,19 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 idx *= (1.0 + ret)
                 legs_t += 1
             idx_dibujo = idx_dib
+            ultimo_idx_dib = idx_dib
+            if p["apto"]:
+                idx_dib_ultimo_apto = idx_dib
             punto = {"date": p["date"], "index": round(idx_dibujo, 6),
+                     # ⚠️ EL ÍNDICE PUBLICADO, POR PUNTO. `index` es la FORMA (encadena
+                     # todo, incluida la intradía); `idx` es el número que este módulo
+                     # afirma (apto→apto). El KPI "Acumulado" leía `index` y publicaba
+                     # +642,9% donde `twr` decía +6,6% (uid 745). Con esto el lector
+                     # puede rebasear entre dos puntos aptos SIN pasar por el dibujo.
+                     # En ESTIMADO la cadena que publica es `idx_est` (contable +
+                     # apto, por producto); el KPI tiene que leer ESA, no la del
+                     # certero, para decir lo mismo que el chip.
+                     "index_publicado": round(idx_est if modo == MODO_ESTIMADO else idx, 6),
                      # Misma disciplina que en `serie_medible`: el número crudo de
                      # un punto que no mide no se llama `value`.
                      ("value" if p["apto"] else "value_no_medible"):
@@ -1573,10 +1771,22 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
     # estimado. Se inicializa acá para que el bloque de más abajo no dependa de que
     # el `if` de la pata live haya entrado.
     _r_live_est = None
-    if publicable:
-        ultimo_apto = next((p for p in reversed(s["tramos"][0]) if p["apto"]), None)
-    if (publicable and valor_live and valor_live > 0
-            and ultimo_apto is not None and curva and s["tramos"][-1][-1]["apto"]):
+    # ⚠️ UNA FOTO INTRADÍA AL FINAL NO APAGA EL CIERRE LIVE. Antes se exigía que el
+    # ÚLTIMO punto del tramo fuera apto; pero el Dashboard escribe una foto de
+    # media rueda cada vez que se abre, así que durante el día TODO usuario activo
+    # termina en una intradía y el "hoy" no se agregaba: el número se quedaba en
+    # el cierre de anoche mientras la línea seguía hasta la foto de hoy (medido en
+    # la demo: chip y KPI +14,9 % con la línea terminando en +5,5 %). La pata
+    # live va del último punto APTO al valor de hoy, y la intradía del medio no
+    # participa: es dibujo, no número.
+    _tramo_hoy = s["tramos"][-1]
+    _hoy_ok = publicable
+    if modo == MODO_ESTIMADO and tramos_info and (tramos_info[-1].get("legs_est") or 0) > 0:
+        _hoy_ok = True            # el estimado publica el último tramo con legs
+    if _hoy_ok:
+        ultimo_apto = next((p for p in reversed(_tramo_hoy) if p["apto"]), None)
+    if (_hoy_ok and valor_live and valor_live > 0
+            and ultimo_apto is not None and curva):
         # ⚠️ EL FLUJO NO ES CERO. Todo lo que entró o salió DESPUÉS del último
         # snapshot medido —el depósito de hoy, antes de que el cron nocturno
         # escriba la foto— se computaba entero como rendimiento: un usuario con el
@@ -1611,7 +1821,19 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             # un punto de mercado (el cierre live sólo corre si la serie es
             # publicable y su último punto es apto), pero que el invariante valga
             # por suerte y no por construcción es cómo empezaron las nueve rondas.
-            curva.append({"date": "hoy", "index": round(idx, 6),
+            # ⚠️ EN ESTIMADO EL "HOY" CONTINÚA LA LÍNEA. `idx` es la cadena del
+            # certero (arranca en 1,0 en la primera medición); pegarle ese índice
+            # al último punto de una línea que venía encadenada desde la
+            # contabilidad dibujaba un escalón al final (medido en la demo:
+            # 1,149 → 0,913 en un día con el mercado −8 %). El punto "hoy" es un
+            # leg más de la cadena dibujada, y su publicado es el de `idx_est`.
+            # `idx_dib_ultimo_apto`, no `curva[-1]["index"]`: si el último punto es
+            # una intradía, su índice ya trae el leg apto→intradía y multiplicarlo
+            # por (1+r) contaría la caída de hoy dos veces.
+            _idx_hoy = (idx_dib_ultimo_apto * (1.0 + r)) if modo == MODO_ESTIMADO else idx
+            _ip_hoy = (idx_est * (1.0 + r)) if modo == MODO_ESTIMADO else idx
+            curva.append({"date": "hoy", "index": round(_idx_hoy, 6),
+                          "index_publicado": round(_ip_hoy, 6),
                           "value": float(valor_live), "clase": MEDICION,
                           "apto": True, "ret": r, "estimado": False,
                           "base": VALUADO_A_MERCADO,
@@ -1692,7 +1914,9 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
 
     _motivo = s["motivo"]
     if not _motivo:
-        if partida:
+        if partida and s.get("cortes_dudosos"):
+            _motivo = "medicion_dudosa"
+        elif partida:
             _motivo = "serie_partida"
         elif legs == 0:
             _motivo = "sin_tramo_continuo"

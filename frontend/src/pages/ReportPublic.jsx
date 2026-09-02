@@ -137,7 +137,12 @@ export default function ReportPublic() {
                 <div style={{ fontSize: 10.5, color: P.ink2, marginTop: 6 }}>
                   {r.base_note === 'onboarding'
                     ? `Medido desde el alta de la cuenta en Rendi${r.base_date ? ` (${r.base_date})` : ''}.`
-                    : `Comparado contra los últimos datos disponibles al ${r.base_date}.`}
+                    : r.base_note === 'dudosa'
+                      // Una foto que no cierra entre la base y el fin: el resultado
+                      // del período no se afirma. El texto es el del motor
+                      // (`twr.MOTIVO_TEXTO`), el mismo que lee el cliente en la app.
+                      ? (r.medicion_dudosa_texto || 'Entre dos fotos seguidas el valor saltó más de lo que explican tus aportes y retiros; el resultado del período no se afirma hasta revisarla.')
+                      : `Comparado contra los últimos datos disponibles al ${r.base_date}.`}
                 </div>
               )}
             </div>

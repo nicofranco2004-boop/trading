@@ -17,6 +17,11 @@ const SEV_TONE = {
   info:     'text-ink-3',
 }
 
+function fmtFechaCorta(iso) {
+  const s = String(iso || '')
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : s
+}
+
 function fmtPctShort(p, opts = {}) {
   if (p == null || Number.isNaN(p)) return '—'
   const sign = p >= 0 && opts.showPlus ? '+' : ''
@@ -125,7 +130,11 @@ export default function InsightsKpiStrip({
                    que la fecha sería inventada. Lo que SÍ sabemos es que hay un
                    corte de regla antes y que el número es de después de ese corte. */
                 ? 'de tu contabilidad · desde el último corte de la serie'
-                : 'de tu contabilidad · sólo se mueve cuando vendés')
+                : (acumuladoEstimado.medidoDesde
+                    /* La línea es contable hasta la primera medición y medida
+                       después; el número es el producto de las dos partes. */
+                    ? `contable hasta ${fmtFechaCorta(acumuladoEstimado.medidoDesde)} · medido después`
+                    : 'de tu contabilidad · sólo se mueve cuando vendés'))
             : benchmarkReturnPct != null
             ? `vs ${benchmarkLabel}: ${fmtPctShort(benchmarkReturnPct, { decimals: 1, showPlus: true })}% · mismo período`
             : 'TWRR ajustado · sin anualizar'

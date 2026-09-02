@@ -200,15 +200,18 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # `curva_indexada` se niega a publicar por escrito y que la pantalla muestra
     # como "—". Se usa SÓLO el tramo que produjo retorno; si hay más de uno, no
     # hay drawdown afirmable.
-    _tramos_con_legs = [t for t in _twr.curva_indexada(conn, user_id)["tramos_detalle"]
-                        if t["legs"] > 0]
+    _curva = _twr.curva_indexada(conn, user_id)
+    _tramos_con_legs = [t for t in _curva["tramos_detalle"] if t["legs"] > 0]
     if len(_tramos_con_legs) == 1:
         _d0, _d1 = _tramos_con_legs[0]["desde"], _tramos_con_legs[0]["hasta"]
         _serie = dict(_serie, medibles=[p for p in _serie["medibles"]
                                        if _d0 <= p["date"] <= _d1])
     elif len(_tramos_con_legs) != 0:
+        # El motivo lo pone el motor: un hueco y una foto que no cierra
+        # (`medicion_dudosa`) parten la serie igual pero no se explican igual.
         _serie = dict(_serie, medibles=[],
-                     motivo_texto=_twr.MOTIVO_TEXTO.get("serie_partida"))
+                     motivo_texto=(_curva.get("motivo_texto")
+                                   or _twr.MOTIVO_TEXTO.get("serie_partida")))
     snaps = [{"date": p["date"], "total_value": p["value"],
               "net_deposited": p["net_deposited"]} for p in _serie["medibles"]]
     # Filtrar al window

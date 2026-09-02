@@ -48,7 +48,16 @@ export function lookupMonthly(map, key) {
     if (k <= key) found = k
     else break
   }
-  return found ? map[found] : map[sorted[0]]
+  // ⚠️ ANTES DEL PRIMER DATO NO HAY PRECIO. Acá se devolvía `map[sorted[0]]`: el
+  // primer precio disponible para cualquier mes anterior. Con la serie de 5 años
+  // del backend, un aporte de 2015 "compraba" S&P al precio de septiembre de
+  // 2021 y la card "Comparativa" le regalaba seis años de índice al usuario —
+  // 56 de 673 usuarios de producción tienen `monthly_entries` anteriores al
+  // arranque de esa serie. Sin dato, null: `simulateBenchmark` devuelve null y
+  // la card dice "Datos insuficientes", que es la verdad. (El backend pasó a
+  // bajar la historia completa, así que el caso quedó raro; pero raro no es
+  // imposible, y un precio inventado sigue siendo un precio inventado.)
+  return found ? map[found] : null
 }
 
 // ─── Simulador genérico ─────────────────────────────────────────────────────
