@@ -11,6 +11,23 @@ import PageMeta from '../components/PageMeta'
 
 export default function Login() {
   const [searchParams] = useSearchParams()
+  // ?next=/ruta — a dónde volver después de entrar. Solo rutas internas: un
+  // "next" que salga del origen convertiría al login en un redirector abierto
+  // para phishing (la víctima ve el login REAL de Rendi, entra de verdad, y
+  // termina en el clon que le pide "reconfirmar" la contraseña).
+  // Se valida con el PARSER, no con prefijos de string: `/\evil.com` empieza
+  // con "/" y no con "//", pero el browser normaliza la barra invertida y lo
+  // resuelve a //evil.com. Comparar orígenes es lo único que no se puede
+  // esquivar con una codificación creativa.
+  const destinoPostLogin = () => {
+    const next = searchParams.get('next') || ''
+    if (!next.startsWith('/')) return '/'
+    try {
+      const u = new URL(next, window.location.origin)
+      if (u.origin !== window.location.origin) return '/'
+      return u.pathname + u.search + u.hash
+    } catch { return '/' }
+  }
   // Los CTAs de la landing apuntan a /login?mode=register. Sin leer el param,
   // el visitante con intención de crear cuenta caía en la pestaña de LOGIN
   // (form inutilizable, sin cuenta) — fricción directa en el punto de conversión.
@@ -206,7 +223,7 @@ export default function Login() {
       // /auth/me. Esperarlo antes de navegar evita que un asesor aterrice en
       // la vista de usuario y recién después salte a su libro.
       await login(data.token, data.name, { is_admin: !!data.is_admin, email: data.email || cleanEmail })
-      navigate('/')
+      navigate(destinoPostLogin())
     } catch (err) {
       setError(err.message)
     } finally {

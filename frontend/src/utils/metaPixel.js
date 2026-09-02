@@ -112,6 +112,6 @@ export function trackMetaPageView() {
   // completa a Facebook — el guard del index.html solo cubría la carga
   // inicial, no la navegación SPA (audit de seguridad).
   const p = window.location.pathname
-  if (p.startsWith('/i/') || p.startsWith('/claim')) return
+  if (p.startsWith('/i/') || p.startsWith('/claim') || p.startsWith('/acceso')) return
   trackMetaEvent('PageView')
 }

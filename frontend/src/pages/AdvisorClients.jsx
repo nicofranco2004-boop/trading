@@ -283,10 +283,27 @@ function mesDe(iso) {
   return MESES[Number(m) - 1] ? `${MESES[Number(m) - 1]} ${y}` : iso
 }
 
+// Estado del pedido de acceso a una cuenta que ya existía. Pisa al badge de
+// invitación porque cuenta algo distinto: acá la pelota no está en el asesor.
+const LINKREQ_BADGE = {
+  pending: { label: 'Acceso pedido', cls: 'text-data-violet bg-data-violet/10' },
+  rejected: { label: 'Acceso rechazado', cls: 'text-rendi-neg bg-rendi-neg/10' },
+  expired: { label: 'Pedido vencido', cls: 'text-rendi-warn bg-rendi-warn/10' },
+}
+
 function ClientCard({ c, salud, onOpen, onNotes, onInvite, onRevoke, menuOpen, onToggleMenu }) {
-  const badge = c.invite_expired && c.claim_status !== 'claimed'
-    ? { label: 'Invitación vencida', cls: 'bg-rendi-warn/10 text-rendi-warn' }
-    : CLAIM_BADGE[c.claim_status]
+  // Orden de precedencia. Un pedido PENDIENTE manda: la pelota está del lado
+  // del cliente y es lo único que el asesor tiene que saber. Pero uno ya
+  // resuelto (rechazado/vencido) NO puede tapar lo que pasó DESPUÉS: si el
+  // asesor se dio cuenta de que erró el email y mandó una invitación de claim
+  // nueva, la ficha está esperando una contraseña, no un permiso — y la card
+  // decía "Acceso rechazado" en rojo sobre una ficha perfectamente viva.
+  const lr = c.link_request
+  const badge = (lr?.status === 'pending' ? LINKREQ_BADGE.pending : null)
+    || (c.invite_expired && c.claim_status !== 'claimed'
+      ? { label: 'Invitación vencida', cls: 'bg-rendi-warn/10 text-rendi-warn' }
+      : CLAIM_BADGE[c.claim_status])
+    || (lr ? LINKREQ_BADGE[lr.status] : null)
   // Chip del semáforo. Cuando NO se puede medir decimos el motivo, nunca un
   // número: es más barato no decir nada que decir algo que después hay que
   // salir a explicar.
@@ -347,7 +364,9 @@ function ClientCard({ c, salud, onOpen, onNotes, onInvite, onRevoke, menuOpen, o
               <button type="button" onClick={onInvite}
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-ink-1 hover:bg-bg-2 transition-colors text-left">
                 <Mail size={12} strokeWidth={1.75} />
-                {c.claim_status === 'invited' ? 'Reenviar invitación' : 'Invitar a esta cuenta'}
+                {c.link_request?.status === 'pending' ? 'Reenviar el pedido de acceso'
+                  : c.link_request ? 'Pedirle acceso de nuevo'
+                  : c.claim_status === 'invited' ? 'Reenviar invitación' : 'Invitar a esta cuenta'}
               </button>
             )}
             <button type="button" onClick={onNotes}
@@ -529,29 +548,121 @@ function NotesModal({ client, onClose, onSaved }) {
 // ─── Invitar a reclamar la cuenta (F4a) ──────────────────────────────────────
 // El asesor pone el email REAL del cliente → le llega un link para poner
 // contraseña y entrar a ver LO MISMO que el asesor le cargó (misma cuenta).
+//
+// Salvo que ese email YA tenga cuenta de Rendi (el cliente que se hizo la
+// cuenta solo, o el que la usaba de antes). Ahí no hay nada que reclamar: esa
+// cuenta tiene dueño y cartera propia. El backend responde 409 y el modal pasa
+// al segundo paso — pedirle ACCESO a su cuenta, que él acepta o rechaza.
 
 function InviteModal({ client, onClose, onSent }) {
   const toast = useToast()
-  const [email, setEmail] = useState(client.invited_email || '')
+  const [email, setEmail] = useState(client.link_request?.email || client.invited_email || '')
   const [sending, setSending] = useState(false)
   const [err, setErr] = useState(null)
+  // Payload del 409: { email, shadow_positions }. Null = estamos en el paso 1
+  // (invitación normal). Si de esta ficha YA salió un pedido de acceso,
+  // arrancamos directo en el paso 2 y con el email puesto: el menú promete
+  // "reenviar el pedido" y abrir un formulario en blanco obligaba al asesor a
+  // acordarse de memoria a quién se lo había mandado.
+  const [existente, setExistente] = useState(() => (
+    client.link_request
+      ? { email: client.link_request.email, shadow_positions: client.positions_count || 0 }
+      : null
+  ))
+  const [permission, setPermission] = useState('read_write')
   const alreadyInvited = client.claim_status === 'invited'
 
-  const submit = async (e) => {
-    e.preventDefault()
-    if (!email.trim() || sending) return
+  const enviar = async (body, okMsg) => {
     setSending(true)
     setErr(null)
     try {
-      await api.post(`/advisor/clients/${client.client_uid}/invite`, { email: email.trim() })
-      toast.push(`Invitación enviada a ${email.trim()}`)
+      await api.post(`/advisor/clients/${client.client_uid}/invite`, body)
+      toast.push(okMsg)
       onSent()
     } catch (ex) {
-      setErr(ex.message || 'No se pudo enviar la invitación')
+      const detalle = ex?.payload?.detail
+      if (ex?.status === 409 && detalle?.code === 'existing_account') {
+        setExistente(detalle)   // no es un error: es el otro flujo
+      } else {
+        setErr(ex.message || 'No se pudo enviar')
+      }
       setSending(false)
     }
   }
 
+  const submit = (e) => {
+    e.preventDefault()
+    if (!email.trim() || sending) return
+    enviar({ email: email.trim() }, `Invitación enviada a ${email.trim()}`)
+  }
+
+  const pedirAcceso = () => {
+    if (sending) return
+    enviar(
+      { email: existente.email, mode: 'link_request', permission },
+      `Le mandamos el pedido a ${existente.email}`,
+    )
+  }
+
+  // ── Paso 2: ese email ya tiene cuenta ──────────────────────────────────────
+  if (existente) {
+    const conDatos = (existente.shadow_positions || 0) > 0
+    return (
+      <Modal title="Esa persona ya tiene Rendi" onClose={onClose}>
+        <div className="space-y-3">
+          <p className="text-xs text-ink-2 leading-relaxed">
+            <span className="text-ink-0 font-medium">{existente.email}</span> ya tiene
+            su cuenta de Rendi, con su propia cartera adentro. No podemos crearle otra
+            ni pisar la que tiene — pero sí <span className="text-ink-0">pedirle acceso</span>:
+            le llega un email y él acepta o rechaza.
+          </p>
+          <div className="space-y-1.5">
+            <p className="text-xs text-ink-2">Si acepta, vas a poder:</p>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="perm" className="mt-0.5 accent-data-violet"
+                     checked={permission === 'read_write'}
+                     onChange={() => setPermission('read_write')} />
+              <span className="text-xs text-ink-0">Ver su cartera y registrar operaciones
+                <span className="block text-[11px] text-ink-3">Lo que necesitás para la operación grupal</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="perm" className="mt-0.5 accent-data-violet"
+                     checked={permission === 'read'}
+                     onChange={() => setPermission('read')} />
+              <span className="text-xs text-ink-0">Solo ver su cartera
+                <span className="block text-[11px] text-ink-3">No podés cargar ni editar nada</span>
+              </span>
+            </label>
+          </div>
+          <div className="flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2">
+            <AlertTriangle size={13} strokeWidth={1.75} className="text-amber-500 mt-0.5 flex-shrink-0" />
+            <p className="text-[11px] text-ink-2 leading-relaxed">
+              Si acepta, vas a ver <span className="text-ink-0">la cartera de SU cuenta</span> y
+              esta ficha ({client.label}) sale de tu lista.
+              {conDatos && <> Lo que cargaste acá —{existente.shadow_positions} {existente.shadow_positions === 1 ? 'posición' : 'posiciones'}— no se copia a su cuenta.</>}
+            </p>
+          </div>
+          {err && <p className="text-xs text-rendi-neg">{err}</p>}
+          {/* La salida del "me equivoqué de mail": sin esto el paso 2 queda
+              clavado en la dirección que disparó el 409. */}
+          <button type="button" onClick={() => { setExistente(null); setErr(null) }}
+                  className="text-[11px] text-data-violet hover:underline">
+            Usar otro email
+          </button>
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} className="text-xs text-ink-2 hover:text-ink-0 px-3 py-2 transition-colors">Cancelar</button>
+            <button type="button" onClick={pedirAcceso} disabled={sending} className={btnPrimary}>
+              <Mail size={12} strokeWidth={1.75} />
+              {sending ? 'Enviando…' : 'Pedirle acceso'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    )
+  }
+
+  // ── Paso 1: invitación normal ──────────────────────────────────────────────
   return (
     <Modal title={`Invitar a ${client.label}`} onClose={onClose}>
       <form onSubmit={submit} className="space-y-3">

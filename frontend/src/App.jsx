@@ -32,6 +32,7 @@ import Landing from './pages/Landing'
 import VerifyEmail from './pages/VerifyEmail'
 import ResetPassword from './pages/ResetPassword'
 import ClaimAccount from './pages/ClaimAccount'
+import AdvisorAccessRequest from './pages/AdvisorAccessRequest'
 import ReportPublic from './pages/ReportPublic'
 
 // ─── Lazy imports: páginas del flujo autenticado ──────────────────────────────
@@ -196,6 +197,10 @@ function AppRoutes() {
           sesión activa — un cliente logueado (o el propio asesor tocando
           "Abrir") caía al catch-all y aterrizaba en Home (audit). */}
       <Route path="/i/:token" element={<ReportPublic />} />
+      {/* Pedido de acceso del asesor: aceptar exige sesión, así que la ruta
+          tiene que resolver TAMBIÉN acá — si no, el que vuelve del login cae
+          al catch-all y aterriza en Home sin haber respondido nada. */}
+      <Route path="/acceso" element={<AdvisorAccessRequest />} />
       <Route path="/dashboard"       element={<Dashboard />} />
       <Route path="/objetivos"       element={<Navigate to="/posiciones?tab=objetivos"   replace />} />
       <Route path="/insights"        element={<Navigate to="/analisis?tab=diagnostico"   replace />} />
@@ -281,6 +286,9 @@ function Layout() {
           {/* Plan Asesor: link de invitación — el cliente reclama la cuenta
               que su asesor cargó, poniendo su propia contraseña. */}
           <Route path="/claim" element={<ClaimAccount />} />
+          {/* Plan Asesor: pedido de acceso a una cuenta que YA existe. Acá no
+              se reclama nada — el dueño acepta o rechaza. */}
+          <Route path="/acceso" element={<AdvisorAccessRequest />} />
           {/* Informe del período (Plan Asesor): el link que el asesor le
               manda a su cliente — público, contenido congelado al generar. */}
           <Route path="/i/:token" element={<ReportPublic />} />

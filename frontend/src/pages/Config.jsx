@@ -101,19 +101,49 @@ function FxCell({ first, label, sub, value, compra, venta }) {
 
 // ─── Plan Asesor: quién administra ESTA cuenta (F4a) ─────────────────────────
 // Solo la ve una cuenta que RECLAMÓ su acceso (fue managed, ahora loguea sola)
-// y que sigue teniendo un asesor vinculado. GET devuelve lista vacía para el
-// 99% de las cuentas → no renderiza nada (no ensucia Config para nadie más).
+// o a la que un asesor le PIDIÓ acceso. GET devuelve listas vacías para el 99%
+// de las cuentas → no renderiza nada (no ensucia Config para nadie más).
+//
+// Los pedidos pendientes viven acá y no solo en el email: si el mail cae en
+// promociones, el cliente igual tiene dónde ver que alguien le está pidiendo
+// la cartera — y dónde decir que no.
 
 function AdvisorAccessPanel() {
   const toast = useToast()
   const [advisors, setAdvisors] = useState(null)  // null = cargando; [] = sin asesor
+  const [requests, setRequests] = useState([])
   const [revokingId, setRevokingId] = useState(null)
+  const [respondingId, setRespondingId] = useState(null)
 
   useEffect(() => {
-    api.get('/me/advisor').then((d) => setAdvisors(d.advisors || [])).catch(() => setAdvisors([]))
+    api.get('/me/advisor')
+      .then((d) => { setAdvisors(d.advisors || []); setRequests(d.requests || []) })
+      .catch(() => setAdvisors([]))
   }, [])
 
-  if (!advisors || advisors.length === 0) return null
+  const responder = async (req, accept) => {
+    if (!accept && !window.confirm(`¿Rechazar el pedido de ${req.name}? No va a ver nada de tu cartera.`)) return
+    setRespondingId(req.id)
+    try {
+      await api.post(`/me/advisor/requests/${req.id}/respond`, { accept })
+      setRequests((rs) => rs.filter((r) => r.id !== req.id))
+      if (accept) {
+        setAdvisors((as) => [...(as || []), {
+          advisor_uid: req.advisor_uid, name: req.name,
+          permission: req.permission, since: new Date().toISOString(),
+        }])
+        toast.push(`${req.name} ya puede ver tu cartera`)
+      } else {
+        toast.push('Pedido rechazado')
+      }
+    } catch (e) {
+      toast.push(e.message || 'No se pudo registrar tu respuesta', { type: 'error' })
+    } finally {
+      setRespondingId(null)
+    }
+  }
+
+  if (!advisors || (advisors.length === 0 && requests.length === 0)) return null
 
   const revoke = async (advisorUid, name) => {
     if (!window.confirm(`¿Quitarle acceso a ${name}? Va a dejar de ver y editar tu cartera.`)) return
@@ -133,8 +163,47 @@ function AdvisorAccessPanel() {
     <Panel padding="none">
       <header className="px-4 py-3 border-b border-line">
         <h2 className="text-sm font-medium text-ink-0">Tu asesor</h2>
-        <p className="text-xs text-ink-3 mt-0.5">Quién puede ver y administrar tu cartera</p>
+        <p className="text-xs text-ink-3 mt-0.5">
+          {advisors.length === 0
+            ? 'Un asesor te pidió acceso a tu cartera'
+            : 'Quién puede ver y administrar tu cartera'}
+        </p>
       </header>
+      {requests.length > 0 && (
+        <div className="bg-data-violet/[0.05] border-b border-line">
+          {requests.map((r) => (
+            <div key={r.id} className="px-4 py-3 space-y-2">
+              <div>
+                <p className="text-sm text-ink-0 font-medium">{r.name} te pide acceso</p>
+                <p className="text-xs text-ink-3 mt-0.5">
+                  {r.permission === 'read_write'
+                    ? 'Podría ver tu cartera y registrar operaciones por vos'
+                    : 'Solo podría ver tu cartera'}
+                  {r.matricula ? ` · Matrícula CNV N° ${r.matricula}` : ''}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => responder(r, true)}
+                  disabled={respondingId === r.id}
+                  className="text-xs font-medium text-white bg-data-violet hover:bg-data-violet/85 rounded px-3 py-1.5 transition-colors disabled:opacity-50"
+                >
+                  {respondingId === r.id ? 'Guardando…' : 'Darle acceso'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => responder(r, false)}
+                  disabled={respondingId === r.id}
+                  className="text-xs font-medium text-ink-2 hover:text-ink-0 border border-line rounded px-3 py-1.5 transition-colors disabled:opacity-50"
+                >
+                  Rechazar
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <div>
         {advisors.map((a, i) => (
           <div key={a.advisor_uid}

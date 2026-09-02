@@ -90,7 +90,7 @@ export function initAnalytics() {
 // cuenta; token del informe público = la cartera del cliente). NUNCA se
 // reportan a analytics: GA guardaba la URL completa y cualquiera con acceso
 // a la propiedad (o Google mismo) leía el token (audit de seguridad).
-const isSensitivePath = (p) => typeof p === 'string' && (p.startsWith('/i/') || p.startsWith('/claim'))
+const isSensitivePath = (p) => typeof p === 'string' && (p.startsWith('/i/') || p.startsWith('/claim') || p.startsWith('/acceso'))
 
 export function trackPageView(path, title) {
   if (!initialized || !window.gtag) return
