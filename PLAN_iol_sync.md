@@ -91,6 +91,25 @@ la pieza que hace cerrar el cash. Es exactamente el mecanismo de Wallbit (`_wall
 
 ### Fase 1: "Conectá tu IOL" en sesión (1-2 semanas). Shippea valor sola.
 
+**✅ CONSTRUIDA 2026-09-02 (nocturno) en `feat/iol-lab`, SIN deployar.** Diseño distinto al planeado, más barato y más seguro:
+la API se traduce al MISMO CSV que exporta IOL ("Movimientos históricos") y entra por `parsers/iol.py` +
+`run_preview(parser_format='iol')` + el `ImportWizard` con `initialPreview`. Cero mapeo nuevo IOL→Rendi:
+sufijo D/C, FCI, moneda, dedup por fingerprint y confirm son los de siempre.
+- `iol_api.py`: `to_movimientos_csv()`, `fetch_operaciones()` (ventanas anuales), `fetch_historial()` (+1 pedido por
+  operación para moneda/aranceles, capeado 800, `_TokenBox` renueva el bearer en memoria si vence a mitad del fetch).
+- `main.py`: tabla `iol_lab_imports`; `POST /api/iol/lab/import-start` (login → thread) + `GET /api/iol/lab/import-status`
+  (devuelve el preview con `session_id`); el confirm es el normal `/api/imports/confirm`.
+- `IolLab.jsx`: botón "Traer mi historial para importar (beta)" + sección 4 + wizard en paso preview.
+- Tests (`test_iol_lab.py`, 13): adaptador parsea con `IolParser` real, e2e import-start → preview → confirm → GGAL=130
+  (120 pesos + 10 pata dólar), segunda vuelta = 5 duplicadas omitidas, renovación en 401.
+- ⚠️ 5 supuestos a validar con el historial real del tester (comentario `A1..A5` en `iol_api.py`): casing de `tipo`,
+  `montoOperado` bruto vs neto (heurística 1 %), moneda por detalle, cauciones/no-terminadas salteadas, conducto MEP
+  sin residual (las dos patas entran como trades y las netea el rebuild cross-currency).
+- Pendiente de esta fase: foto (`portafolio` + `estadocuenta`) para reconciliar, card en el wizard de Importar
+  (hoy vive en `/lab/iol`), copy de producto. Se hace después de ver datos reales.
+
+Plan original de la fase (referencia):
+
 Sin custodia de nada. Reemplaza el bajar-el-.xls por ingresar user/pass una vez por import.
 
 - `backend/iol_api.py`: cliente httpx. **Solo métodos GET. No existe `comprar`, `vender`, `suscribir`, `rescatar`, `extraer` en el archivo.** Allowlist dura de paths permitidos; cualquier otro path levanta excepción. Test que lo verifica.

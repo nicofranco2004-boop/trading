@@ -104,12 +104,12 @@ class EsquemaSeReaplicaTest(unittest.TestCase):
                 f"Arreglo: que salgan con `ADD CONSTRAINT <nombre>` desde "
                 f"scripts/mkschema.py, que es quien genera este archivo.\n{detalle}")
 
-    def test_las_14_FK_tienen_nombre_propio_y_distinto(self):
+    def test_las_15_FK_tienen_nombre_propio_y_distinto(self):
         """Un nombre repetido haría fallar el arranque LIMPIO, que es peor."""
         nombres = re.findall(r"ADD CONSTRAINT (\S+) FOREIGN KEY", "\n".join(sentencias()))
-        # 14 desde IOL Lab (iol_lab_runs + iol_lab_token_log → users). Si cambia, mirá
+        # 15 desde IOL Lab (iol_lab_runs + iol_lab_token_log + iol_lab_imports → users). Si cambia, mirá
         # que la FK nueva tenga nombre propio (el generador lo pone solo).
-        self.assertEqual(len(nombres), 14, f"cambió la cantidad de FKs: {len(nombres)}")
+        self.assertEqual(len(nombres), 15, f"cambió la cantidad de FKs: {len(nombres)}")
         self.assertEqual(len(set(nombres)), len(nombres),
                          f"hay nombres de FK repetidos: {nombres}")
 

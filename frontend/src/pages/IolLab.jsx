@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { FlaskConical, Loader2, RefreshCw, Trash2, ShieldCheck, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { FlaskConical, Loader2, RefreshCw, Trash2, ShieldCheck, AlertTriangle, CheckCircle2, Upload } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
+import ImportWizard from '../components/import/ImportWizard'
 import { api } from '../utils/api'
 
 // IolLab — /lab/iol. Página ESCONDIDA (sin ítem de nav) para que un tester pruebe
@@ -21,6 +22,33 @@ export default function IolLab() {
   const [busy, setBusy] = useState('')            // '' | 'probe' | 'refresh' | 'disconnect'
   const [msg, setMsg] = useState(null)            // {type:'ok'|'err', text}
   const pollRef = useRef(null)
+  const [imp, setImp] = useState(null)            // último import por API {status, stats, preview}
+  const [showWizard, setShowWizard] = useState(false)
+  const impPollRef = useRef(null)
+
+  async function loadImport() {
+    try { const r = await api.get('/iol/lab/import-status'); setImp(r.import) } catch { /* gate: lo muestra status */ }
+  }
+  useEffect(() => { loadImport() }, [])
+  useEffect(() => {
+    const running = imp?.status === 'running'
+    if (running && !impPollRef.current) impPollRef.current = setInterval(loadImport, 3000)
+    else if (!running && impPollRef.current) { clearInterval(impPollRef.current); impPollRef.current = null }
+    return () => { if (impPollRef.current) { clearInterval(impPollRef.current); impPollRef.current = null } }
+  }, [imp?.status])
+
+  async function importStart() {
+    if (!username.trim() || !password) { setMsg({ type: 'err', text: 'Completá usuario y contraseña de IOL.' }); return }
+    setBusy('import'); setMsg(null)
+    try {
+      await api.post('/iol/lab/import-start', { username: username.trim(), password })
+      setPassword('')
+      setMsg({ type: 'ok', text: 'Trayendo tu historial de IOL. Tarda un par de minutos (un pedido por operación).' })
+      await loadImport()
+    } catch (err) {
+      setMsg({ type: 'err', text: err?.message || 'No se pudo iniciar la importación.' })
+    } finally { setBusy('') }
+  }
 
   async function load() {
     try { setStatus(await api.get('/iol/lab/status')) }
@@ -147,6 +175,11 @@ export default function IolLab() {
               {busy === 'probe' || running ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
               {running ? 'Prueba en curso…' : 'Iniciar prueba de solo lectura'}
             </button>
+            <button type="button" onClick={importStart} disabled={!!busy || imp?.status === 'running'}
+                    className="ml-2 inline-flex items-center gap-2 rounded-lg border border-line text-sm px-4 py-2 text-ink-2 disabled:opacity-50">
+              {busy === 'import' || imp?.status === 'running' ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+              Traer mi historial para importar (beta)
+            </button>
           </div>
         </form>
       </Panel>
@@ -209,6 +242,49 @@ export default function IolLab() {
           </details>
         )}
       </Panel>
+
+      <Panel className="mt-4">
+        <h2 className="text-sm font-medium text-ink-1 mb-1">4. Importar mi historial por API (beta)</h2>
+        <p className="text-xs text-ink-3 mb-2">
+          Trae tus operaciones de IOL por API y las convierte al mismo formato que el archivo de Movimientos,
+          así entran por el importador de siempre: ves el preview y confirmás vos. Dividendos, depósitos y
+          retiros no vienen por API (limitación de IOL); esos siguen entrando por el archivo.
+        </p>
+        {!imp && <p className="text-xs text-ink-3">Todavía no trajiste tu historial.</p>}
+        {imp && imp.status === 'running' && (
+          <p className="text-xs text-ink-2 inline-flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Trayendo operaciones… (empezó {fmt(imp.started_at)})</p>
+        )}
+        {imp && imp.status === 'error' && <p className="text-xs text-signal-red">Falló: {imp.error}</p>}
+        {imp && imp.status === 'empty' && <p className="text-xs text-ink-2">IOL no devolvió operaciones importables. Salteadas: {imp.stats?.skipped?.length ?? 0}.</p>}
+        {imp && imp.status === 'ok' && (
+          <div className="text-xs text-ink-2 space-y-1">
+            <p>
+              {imp.stats?.ops ?? 0} operaciones en IOL · {imp.stats?.rows ?? 0} importables · {imp.stats?.skipped?.length ?? 0} salteadas
+              {imp.stats?.details_capped ? ' · detalle de comisiones capeado' : ''}
+            </p>
+            {imp.preview && (
+              <p>Preview: {imp.preview.summary?.valid_rows ?? imp.preview.valid_rows ?? '?'} filas válidas
+                {(imp.preview.summary?.invalid_rows ?? imp.preview.invalid_rows) ? ` · ${imp.preview.summary?.invalid_rows ?? imp.preview.invalid_rows} con error` : ''}
+                {imp.preview.duplicate_row_indices?.length ? ` · ${imp.preview.duplicate_row_indices.length} ya importadas (se omiten)` : ''}</p>
+            )}
+            {imp.stats?.assumptions?.length > 0 && (
+              <p className="text-ink-3">Supuestos aplicados: {imp.stats.assumptions.join(' · ')}</p>
+            )}
+            <button onClick={() => setShowWizard(true)} disabled={!imp.preview?.session_id}
+                    className="mt-2 inline-flex items-center gap-2 rounded-lg bg-data-violet text-white text-sm px-4 py-2 disabled:opacity-50">
+              <CheckCircle2 size={14} /> Revisar y confirmar la importación
+            </button>
+          </div>
+        )}
+      </Panel>
+
+      {showWizard && imp?.preview && (
+        <ImportWizard
+          initialPreview={imp.preview}
+          onClose={() => { setShowWizard(false); loadImport() }}
+          onConfirmed={() => { setShowWizard(false); setMsg({ type: 'ok', text: 'Importación confirmada. Mirá tu Cartera.' }); loadImport() }}
+        />
+      )}
     </div>
   )
 }

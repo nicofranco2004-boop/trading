@@ -712,6 +712,20 @@ def init_db():
                 ok INTEGER NOT NULL,
                 detail TEXT
             );
+            -- Fase 1: import del historial por API (API → CSV 'Movimientos' → parser IOL →
+            -- preview). preview_json = el payload de run_preview (session_id incluido);
+            -- el confirm es el normal (/api/imports/confirm). Sin tokens.
+            CREATE TABLE IF NOT EXISTS iol_lab_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                started_at TEXT DEFAULT (datetime('now')),
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'running',   -- running | ok | empty | error
+                session_id TEXT,
+                stats_json TEXT,
+                preview_json TEXT,
+                error TEXT
+            );
         """)
         conn.commit()
 
@@ -31096,6 +31110,110 @@ def _iol_lab_refresh_job():
             print(f"[iol_lab] refresh job: {res}")
     except Exception as e:  # noqa
         print(f"[iol_lab] refresh job falló: {e}")
+
+
+# ─── Fase 1: "Conectá tu IOL" en sesión (historial por API → preview → wizard) ──
+_IOL_LAB_IMPORT_KW: dict = {}          # tests: {"pause": 0, "year_from": 2024}
+_iol_lab_import_running: set = set()
+
+
+def _iol_lab_import_bg(imp_id: int, uid: int, tokens: dict):
+    """Thread: baja el historial (tarda: 1 pedido por año + 1 por operación para
+    moneda/aranceles), lo traduce al CSV de IOL y corre el preview REAL del pipeline.
+    Los tokens viven solo en este frame; al terminar se descartan."""
+    import json as _json
+    status, err, session_id, preview, stats = "ok", None, None, None, {}
+    try:
+        hist = _iol.fetch_historial(tokens, **_IOL_LAB_IMPORT_KW)
+        stats = {k: hist.get(k) for k in ("ops", "rows", "details", "detail_errors",
+                                          "details_capped", "assumptions")}
+        stats["skipped"] = hist.get("skipped") or []
+        if not hist.get("rows"):
+            status = "empty"
+        else:
+            conn = get_db()
+            try:
+                with conn:
+                    preview = _import_pipeline.run_preview(
+                        conn, uid=uid, file_bytes=hist["csv"].encode("utf-8"),
+                        file_name="IOL (API).csv", broker_hint="IOL", parser_format="iol")
+            finally:
+                conn.close()
+            if preview.get("error"):
+                status, err = "error", str(preview.get("error"))[:500]
+            else:
+                session_id = preview.get("session_id")
+    except Exception as e:  # noqa
+        status, err = "error", f"{type(e).__name__}: {e}"[:500]
+        print(f"[iol_lab] import {imp_id} falló: {err}")
+    finally:
+        tokens.clear()
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE iol_lab_imports SET status=?, finished_at=datetime('now'), session_id=?, "
+                "stats_json=?, preview_json=?, error=? WHERE id=?",
+                (status, session_id, _json.dumps(stats, ensure_ascii=False, default=str),
+                 _json.dumps(preview, ensure_ascii=False, default=str) if preview else None, err, imp_id))
+    finally:
+        conn.close()
+    with _iol_lab_runs_lock:
+        _iol_lab_import_running.discard(uid)
+
+
+class IolLabImportIn(BaseModel):
+    username: str = Field(..., min_length=1, max_length=120)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+@app.post("/api/iol/lab/import-start")
+def iol_lab_import_start(data: IolLabImportIn, request: Request, uid: int = Depends(get_current_user)):
+    _iol_lab_gate(uid)
+    _check_rate_limit(request, max_calls=5, window_seconds=600, suffix=f"iol_lab_imp:{uid}")
+    with _iol_lab_runs_lock:
+        if uid in _iol_lab_import_running:
+            raise HTTPException(409, "Ya hay una importación en curso. Esperá a que termine.")
+    username = data.username.strip()
+    try:
+        tokens = _iol.login(username, data.password)
+    except _iol.IolError as e:
+        hint = (" ¿Pediste la activación de APIs por Mensajes en IOL y aceptaste los TyC en "
+                "Mi Cuenta › Personalización › APIs?" if e.status in (400, 401, 403) else "")
+        raise HTTPException(400, f"IOL rechazó el login (HTTP {e.status}).{hint}")
+    finally:
+        del data
+    conn = get_db()
+    try:
+        with conn:
+            imp_id = conn.execute("INSERT INTO iol_lab_imports (user_id, status) VALUES (?, 'running')",
+                                  (uid,)).lastrowid
+    finally:
+        conn.close()
+    with _iol_lab_runs_lock:
+        _iol_lab_import_running.add(uid)
+    threading.Thread(target=_iol_lab_import_bg, args=(imp_id, uid, dict(tokens)), daemon=True).start()
+    return {"ok": True, "import_id": imp_id, "status": "started"}
+
+
+@app.get("/api/iol/lab/import-status")
+def iol_lab_import_status(uid: int = Depends(get_current_user)):
+    import json as _json
+    _iol_lab_gate(uid)
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, started_at, finished_at, status, session_id, stats_json, preview_json, error "
+            "FROM iol_lab_imports WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
+        if not row:
+            return {"import": None}
+        d = dict(row)
+        d["stats"] = _json.loads(d.pop("stats_json") or "{}")
+        pj = d.pop("preview_json")
+        d["preview"] = _json.loads(pj) if pj else None
+        return {"import": d}
+    finally:
+        conn.close()
 
 
 @app.get("/api/admin/iol-lab/runs")

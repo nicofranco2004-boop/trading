@@ -45,12 +45,26 @@ class FakeIol:
     def __init__(self):
         self.dead = False
         self.calls = []
+        # Historia AUTO-CONSISTENTE (sabemos la verdad):
+        #   GGAL: compra 100@1500 + compra 50@1600 − venta 30@1900 = 120 en pesos
+        #   GGALD (pata dólar, sin conducto): compra 10@8.2 → 10 GGAL en la sub-cuenta USD
+        #   PRREMIB: suscripción FCI 1000@1.5
+        #   AL30: compra CANCELADA (no entra) · Caución (no entra)
+        def op(n, tipo, sim, qty, px, fecha, estado="terminada"):
+            return {"numero": n, "fechaOrden": fecha + "T11:00:00", "tipo": tipo, "estado": estado,
+                    "mercado": "bCBA", "simbolo": sim, "cantidad": qty, "monto": qty * px, "precio": px,
+                    "fechaOperada": fecha + "T11:05:00", "cantidadOperada": qty if estado == "terminada" else 0,
+                    "precioOperado": px, "montoOperado": qty * px, "plazo": "a48horas"}
         self.ops = [
-            {"numero": 100 + i, "fechaOrden": f"2024-0{1 + i % 9}-1{i % 9}T11:00:00",
-             "tipo": ["Compra", "Venta", "Suscripción FCI"][i % 3], "estado": "terminada", "mercado": "bCBA",
-             "simbolo": ["GGAL", "AL30", "PRREMIB"][i % 3], "cantidad": 10 + i, "monto": 1000.5 * i,
-             "precio": 100.0, "fechaOperada": "2024-01-10T11:00:00", "cantidadOperada": 10 + i,
-             "precioOperado": 100.0, "montoOperado": 1000.5 * i, "plazo": "a48horas"} for i in range(12)]
+            op(100, "Compra", "GGAL", 100, 1500.0, "2024-01-10"),
+            op(101, "Compra", "GGAL", 50, 1600.0, "2024-02-15"),
+            op(102, "Venta", "GGAL", 30, 1900.0, "2024-03-20"),
+            op(103, "Suscripción FCI", "PRREMIB", 1000, 1.5, "2024-04-01"),
+            op(104, "Compra", "GGALD", 10, 8.2, "2024-05-05"),
+            op(105, "Compra", "AL30", 100, 50000.0, "2024-06-01", estado="cancelada"),
+            op(106, "Caución", "CAUCION", 1, 100000.0, "2024-06-10"),
+        ]
+        self.moneda_by_numero = {104: "dolar_Estadounidense"}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         p = request.url.path
@@ -91,7 +105,9 @@ class FakeIol:
             d1 = request.url.params.get("filtro.fechaHasta", "2100")[:10]
             return httpx.Response(200, json=[o for o in self.ops if d0 <= o["fechaOrden"][:10] <= d1])
         if p.startswith("/api/v2/operaciones/"):
-            return httpx.Response(200, json={"numero": int(p.rsplit("/", 1)[1]), "tipo": "compra", "moneda": "peso_Argentino",
+            n = int(p.rsplit("/", 1)[1])
+            return httpx.Response(200, json={"numero": n, "tipo": "compra",
+                                             "moneda": self.moneda_by_numero.get(n, "peso_Argentino"),
                                              "aranceles": [{"tipo": "comision", "monto": 12.5}], "arancelesARS": 15.1,
                                              "arancelesUSD": 0, "estados": [{"estado": "terminada"}],
                                              "operaciones": [{"fecha": "2024-01-10", "cantidad": 10, "precio": 100}]})
@@ -103,6 +119,7 @@ class FakeIol:
 FAKE = FakeIol()
 I._transport = httpx.MockTransport(FAKE.handler)
 main._IOL_LAB_PROBE_KW.update({"pause": 0, "burst": 3, "year_from": 2024})
+main._IOL_LAB_IMPORT_KW.update({"pause": 0, "year_from": 2024})
 
 
 def _mk_user(email, admin=0):
@@ -153,15 +170,15 @@ class GuardTest(unittest.TestCase):
         body, _, _ = I.get("/api/v2/operaciones", "AT1", **{"filtro.estado": "todas",
                                                             "filtro.fechaDesde": "2024-01-01",
                                                             "filtro.fechaHasta": "2024-12-31"})
-        self.assertEqual(len(body), 12)
+        self.assertEqual(len(body), 7)
 
 
 class ProbeTest(unittest.TestCase):
     def test_probe_summary_and_masking(self):
         res = I.run_probe("AT1", pause=0, burst=3, year_from=2024)
         s = res["summary"]
-        self.assertIn("tipos: {'Compra': 4, 'Venta': 4, 'Suscripción FCI': 4}", s)
-        self.assertIn("S6 tope: año 2024 anual=12 vs suma mensual=12 (IGUAL", s)
+        self.assertIn("tipos: {'Compra': 4, 'Venta': 1, 'Suscripción FCI': 1, 'Caución': 1}", s)
+        self.assertIn("S6 tope: año 2024 anual=7 vs suma mensual=7 (IGUAL", s)
         self.assertIn("HTTP 403", s)                       # Asesor/Movimientos
         self.assertIn("aranceles=[{'tipo': 'comision'", s)
         dumped = json.dumps(res["result"], ensure_ascii=False)
@@ -170,7 +187,7 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(res["result"]["datos_perfil"]["nombre"], "***")
         self.assertEqual(res["result"]["estadocuenta"]["cuentas"][0]["numero"], "***")
         self.assertEqual(res["result"]["operaciones_todas"][0]["numero"], 100)   # int = nro de operación, se conserva
-        self.assertEqual(res["stats"]["ops"], 12)
+        self.assertEqual(res["stats"]["ops"], 7)
 
 
 class LabEndpointsTest(unittest.TestCase):
@@ -277,6 +294,104 @@ class LabEndpointsTest(unittest.TestCase):
     def test_cron_without_config_is_503(self):
         os.environ["IOL_LAB_CRON_TOKEN"] = ""
         self.assertEqual(TestClient(main.app).get("/api/iol/lab/run-cron").status_code, 503)
+
+
+class AdapterTest(unittest.TestCase):
+    """API → CSV 'Movimientos históricos' → parser IOL real."""
+
+    def test_csv_parses_with_iol_parser(self):
+        from importing.parsers.iol import IolParser
+        det = {104: {"moneda": "dolar_Estadounidense", "arancelesUSD": 0.5, "aranceles": []},
+               100: {"moneda": "peso_Argentino", "arancelesARS": 1500.0, "aranceles": []}}
+        conv = I.to_movimientos_csv(FAKE.ops, det)
+        self.assertEqual(conv["rows"], 5)
+        motivos = {sk["numero"]: sk["motivo"] for sk in conv["skipped"]}
+        self.assertIn("no operada", motivos[105]); self.assertIn("caución", motivos[106])
+        pr = IolParser().parse(conv["csv"])
+        self.assertEqual(pr.parse_errors, [])
+        by = {r.data["notas"].split(" · ")[1]: r.data for r in pr.raw_rows}   # 'Boleto N'
+        self.assertEqual(by["Boleto 100"]["tipo"], "COMPRA"); self.assertEqual(by["Boleto 100"]["activo"], "GGAL")
+        self.assertEqual(by["Boleto 100"]["moneda"], "ARS")
+        # A2: monto bruto + aranceles = neto 151500 → precio derivado 1515
+        self.assertAlmostEqual(float(by["Boleto 100"]["monto"]), 151500.0)
+        self.assertAlmostEqual(float(by["Boleto 100"]["precio"]), 1515.0)
+        self.assertEqual(by["Boleto 104"]["moneda"], "USD"); self.assertEqual(by["Boleto 104"]["activo"], "GGAL")
+        self.assertEqual(by["Boleto 103"]["tipo"], "COMPRA")
+        self.assertEqual(pr.raw_rows[[i for i, r in enumerate(pr.raw_rows) if "Boleto 103" in r.data["notas"]][0]].data.get("asset_type"), "FUND")
+        self.assertEqual(by["Boleto 102"]["tipo"], "VENTA")
+        self.assertIn("A2", " ".join(conv["assumptions"]))
+
+    def test_moneda_inferida_sin_detalle(self):
+        conv = I.to_movimientos_csv(FAKE.ops, {})
+        self.assertIn("Compra(GGALD)", conv["csv"])
+        line = [l for l in conv["csv"].splitlines() if "Compra(GGALD)" in l][0]
+        self.assertTrue(line.endswith("Cuenta Dólares"))
+        self.assertTrue(any(a.startswith("A3") for a in conv["assumptions"]))
+
+    def test_fetch_historial_refreshes_on_401(self):
+        # bearer vencido a mitad del fetch → _TokenBox renueva con el refresh y sigue
+        calls = {"n": 0}
+        orig = FAKE.handler
+        def flaky(request):
+            if request.url.path == "/api/v2/operaciones" and calls["n"] == 0:
+                calls["n"] += 1
+                return httpx.Response(401, json={})
+            return orig(request)
+        I._transport = httpx.MockTransport(flaky)
+        try:
+            hist = I.fetch_historial({"access_token": "AT1", "refresh_token": "RT1"}, pause=0, year_from=2024)
+        finally:
+            I._transport = httpx.MockTransport(FAKE.handler)
+        self.assertEqual(hist["ops"], 7); self.assertEqual(hist["rows"], 5); self.assertEqual(hist["details"], 5)
+
+
+class ImportE2ETest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tester = _mk_user("importer@rendi.test")
+        os.environ["IOL_LAB_EMAILS"] = "tester@rendi.test,importer@rendi.test"
+
+    def test_import_start_preview_confirm(self):
+        c = _client(self.tester)
+        r = c.post("/api/iol/lab/import-start", json={"username": "juan", "password": "secret"})
+        self.assertEqual(r.status_code, 200, r.text)
+        imp = None
+        for _ in range(75):
+            imp = c.get("/api/iol/lab/import-status").json()["import"]
+            if imp and imp["status"] != "running":
+                break
+            time.sleep(0.2)
+        self.assertEqual(imp["status"], "ok", imp)
+        self.assertEqual(imp["stats"]["rows"], 5); self.assertEqual(len(imp["stats"]["skipped"]), 2)
+        pv = imp["preview"]
+        self.assertTrue(pv["session_id"])
+        # confirm por el endpoint NORMAL del wizard
+        r = c.post("/api/imports/confirm", json={"session_id": pv["session_id"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        conn = main.get_db()
+        try:
+            q = conn.execute("SELECT SUM(quantity) FROM positions WHERE user_id=? AND asset='GGAL' AND is_cash=0",
+                             (self.tester,)).fetchone()[0]
+            self.assertAlmostEqual(q or 0, 130.0, places=4)   # 120 en pesos + 10 pata dólar
+            self.assertIsNotNone(conn.execute(
+                "SELECT 1 FROM brokers WHERE user_id=? AND name='IOL' AND currency='ARS'", (self.tester,)).fetchone())
+        finally:
+            conn.close()
+        # segunda vuelta: mismo historial → el dedup por fingerprint no duplica nada
+        r = c.post("/api/iol/lab/import-start", json={"username": "juan", "password": "secret"})
+        self.assertEqual(r.status_code, 200)
+        for _ in range(75):
+            imp = c.get("/api/iol/lab/import-status").json()["import"]
+            if imp and imp["status"] != "running":
+                break
+            time.sleep(0.2)
+        self.assertEqual(imp["status"], "ok", imp)
+        self.assertEqual(len(imp["preview"].get("duplicate_row_indices") or []), 5)
+
+    def test_bad_login_no_import_row(self):
+        c = _client(self.tester)
+        r = c.post("/api/iol/lab/import-start", json={"username": "juan", "password": "nope"})
+        self.assertEqual(r.status_code, 400)
 
 
 if __name__ == "__main__":
