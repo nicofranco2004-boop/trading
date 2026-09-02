@@ -47,21 +47,11 @@ describe('fmtRate', () => {
 })
 
 describe('CURRENCY_CHOICES', () => {
-  it('son 3, en orden de riel, con las piezas que consumen los controles', () => {
+  it('son 3, en orden de riel, con label y ayuda', () => {
     expect(CURRENCY_CHOICES.map(o => o.key)).toEqual(['mep', 'ccl', 'ars'])
     for (const o of CURRENCY_CHOICES) {
       expect(o.label).toBeTruthy()
       expect(o.hint).toBeTruthy()
-      // symbol + tag arman la pastilla compacta ("US$ MEP") y la variante mini.
-      expect(o.symbol).toBeTruthy()
-      expect(o.tag).toBeTruthy()
     }
-  })
-
-  it('el símbolo distingue dólar de peso', () => {
-    const bySym = Object.fromEntries(CURRENCY_CHOICES.map(o => [o.key, o.symbol]))
-    expect(bySym.mep).toBe('US$')
-    expect(bySym.ccl).toBe('US$')
-    expect(bySym.ars).toBe('$')
   })
 })

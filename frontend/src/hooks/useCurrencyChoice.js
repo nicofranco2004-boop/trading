@@ -1,26 +1,25 @@
 // useCurrencyChoice — la elección de moneda de la app, en un solo lugar.
 // ═══════════════════════════════════════════════════════════════════════════
 // El `CurrencyContext` guarda DOS ejes independientes (`currency` USD/ARS y
-// `valuationDollar` mep/ccl) pero para el usuario es UNA sola decisión de tres
-// opciones: USD MEP · USD CCL · Pesos. Ese mapeo vivía adentro del CurrencyRail
-// (el control ancho de /config). Cuando el selector pasó a ser global —fijo en
-// el shell, disponible en todas las páginas— hubo que montarlo en dos lugares
-// más, así que el mapeo se extrajo acá: si hay dos copias, se desincronizan y
-// el mismo click hace cosas distintas según desde dónde lo toques.
+// `valuationDollar` mep/ccl). El riel de Configuración los presenta como UNA
+// decisión de tres opciones (USD MEP · USD CCL · Pesos); este módulo es ese
+// mapeo, sacado del componente para poder testearlo sin DOM y para que
+// `fmtRate` no quede duplicado en el selector global del shell.
+//
+// El reparto de responsabilidades entre los dos controles:
+//   • CurrencySwitcher (shell, todas las páginas) → SÓLO la moneda: USD | Pesos.
+//   • CurrencyRail (/config → Tipos de cambio)    → además, CON QUÉ DÓLAR se
+//     valúa (MEP / CCL). Preferencia que se toca una vez, no todos los días.
 //
 // No renderiza nada — sólo el modelo (opciones + activa + pick + cotizaciones).
-// Consumidores: components/CurrencyRail.jsx (Config) y
-// components/CurrencySwitcher.jsx (sidebar desktop + barra superior mobile).
 
 import { useCurrency } from '../contexts/CurrencyContext'
 
-// Las 3 opciones, en orden de riel. `symbol` + `tag` son las piezas cortas que
-// usa el control global: juntas en la pastilla de la barra mobile ("US$ MEP") y
-// apiladas en la sidebar colapsada, donde el ancho útil son 40px.
+// Las 3 opciones, en orden de riel.
 export const CURRENCY_CHOICES = [
-  { key: 'mep', label: 'USD MEP', symbol: 'US$', tag: 'MEP', hint: 'Dólar local (default)' },
-  { key: 'ccl', label: 'USD CCL', symbol: 'US$', tag: 'CCL', hint: 'El dólar implícito del CEDEAR' },
-  { key: 'ars', label: 'Pesos',   symbol: '$',   tag: 'ARS', hint: 'Todos tus valores en pesos' },
+  { key: 'mep', label: 'USD MEP', hint: 'Dólar local (default)' },
+  { key: 'ccl', label: 'USD CCL', hint: 'El dólar implícito del CEDEAR' },
+  { key: 'ars', label: 'Pesos',   hint: 'Todos tus valores en pesos' },
 ]
 
 /**

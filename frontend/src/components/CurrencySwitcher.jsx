@@ -1,7 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { Check, ChevronDown, Coins } from 'lucide-react'
-import { useCurrencyChoice } from '../hooks/useCurrencyChoice'
+import { Link } from 'react-router-dom'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import { fmtRate } from '../hooks/useCurrencyChoice'
 
 /**
  * CurrencySwitcher — el selector de moneda GLOBAL, fijo en el chrome de la app.
@@ -17,17 +16,17 @@ import { useCurrencyChoice } from '../hooks/useCurrencyChoice'
  * pantalla, en todas las páginas. Vive en el shell (sidebar en escritorio, barra
  * superior en mobile), nunca dentro de una página.
  *
- * Muestra las 3 opciones del riel (USD MEP · USD CCL · Pesos) con su cotización,
- * usando el mismo modelo que el CurrencyRail de Config (`useCurrencyChoice`).
+ * DOS OPCIONES, NO TRES. El primer intento puso acá el riel completo (USD MEP ·
+ * USD CCL · Pesos) en un popover. Se cambió a un toggle `USD | Pesos` a secas:
+ * elegir la moneda es la decisión de todos los días, elegir CON QUÉ DÓLAR se
+ * valúa es una preferencia que se toca una vez. El switcher USA el dólar que ya
+ * está configurado (`valuationDollar`) y lo MUESTRA debajo ("Dólar MEP ·
+ * $1.424"), con link a /config?tab=fx para cambiarlo. Nunca lo pisa.
  *
- * Variantes (`variant`) — cambia el DISPARADOR, el panel es el mismo:
- *   • 'row'  → fila ancha de la sidebar expandida (label + cotización + chevron)
- *   • 'chip' → pastilla compacta de la barra superior mobile ("US$ MEP")
- *   • 'mini' → sidebar colapsada: símbolo y tag apilados en 40px de ancho útil
- *
- * El panel se abre en un PORTAL con position:fixed y z alto: la sidebar es
- * `fixed` con `overflow-y-auto` en la nav y la topbar mobile es sticky — un
- * panel absolute quedaría clipeado o por debajo del contenido.
+ * Variantes (`variant`) — cambia el envoltorio, el toggle es el mismo:
+ *   • 'row'  → sidebar expandida: segmentado ancho + la línea del dólar debajo
+ *   • 'chip' → barra superior mobile: segmentado compacto
+ *   • 'mini' → sidebar colapsada: segmentado VERTICAL en 40px de ancho útil
  *
  * ⚠️ QUÉ PANTALLAS LA RESPETAN — verificado a mano en demo, moneda = Pesos:
  *   • SÍ: Cartera, Dashboard, Movimientos, Métricas → Diagnóstico, las vistas
@@ -45,150 +44,79 @@ import { useCurrencyChoice } from '../hooks/useCurrencyChoice'
  * a resolver.
  */
 
-const PANEL_W = 244
+const OPTS = [
+  { key: 'USD', label: 'USD',   short: 'USD' },
+  { key: 'ARS', label: 'Pesos', short: 'ARS' },
+]
 
-export default function CurrencySwitcher({ variant = 'row', align = 'left', className = '' }) {
-  const { options, active, activeOption, rates, pick } = useCurrencyChoice()
-  const [open, setOpen] = useState(false)
-  const [pos, setPos] = useState(null)
-  const btnRef = useRef(null)
-  const panelRef = useRef(null)
+export default function CurrencySwitcher({ variant = 'row', className = '' }) {
+  const { currency, setCurrency, valuationDollar, dolar } = useCurrency()
+  const isArs = currency === 'ARS'
 
-  // Posiciona el panel debajo del botón, clampeado al viewport (mismo patrón
-  // que ActionMenu: reposicionar en scroll es más frágil que cerrar).
-  const place = () => {
-    const b = btnRef.current?.getBoundingClientRect()
-    if (!b) return
-    const raw = align === 'right' ? b.right - PANEL_W : b.left
-    const left = Math.min(Math.max(8, raw), window.innerWidth - PANEL_W - 8)
-    setPos({ top: Math.round(b.bottom + 6), left: Math.round(left) })
-  }
+  // El dólar que YA eligió el usuario en Configuración — acá sólo se informa.
+  // Se deriva con el mismo `pickFinancialRate` del contexto (y no con `tcBlue`)
+  // para no mostrar el default 1415 durante el vuelo del primer /dolar.
+  const dollarName = valuationDollar === 'ccl' ? 'CCL' : 'MEP'
+  const rate = fmtRate(pickFinancialRate(dolar, valuationDollar))
 
-  useLayoutEffect(() => { if (open) place() }, [open])
+  const title = isArs
+    ? `Estás viendo todo en pesos${rate ? ` (dólar ${dollarName} ${rate})` : ''}`
+    : `Estás viendo todo en dólares${rate ? ` (${dollarName} ${rate})` : ''}`
 
-  useEffect(() => {
-    if (!open) return
-    function onDown(e) {
-      if (btnRef.current?.contains(e.target)) return
-      if (panelRef.current?.contains(e.target)) return
-      setOpen(false)
-    }
-    function onKey(e) { if (e.key === 'Escape') setOpen(false) }
-    function onScrollResize() { setOpen(false) }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('touchstart', onDown)
-    document.addEventListener('keydown', onKey)
-    window.addEventListener('scroll', onScrollResize, true)
-    window.addEventListener('resize', onScrollResize)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('touchstart', onDown)
-      document.removeEventListener('keydown', onKey)
-      window.removeEventListener('scroll', onScrollResize, true)
-      window.removeEventListener('resize', onScrollResize)
-    }
-  }, [open])
-
-  const rate = rates[active]
-  const title = `Moneda: ${activeOption.label}${rate && active !== 'ars' ? ` · ${rate}` : ''}`
-
-  // Props comunes de los 3 disparadores: el ref y el aria son iguales, sólo
-  // cambia el contenido. Escritos una vez para que no se desincronicen.
-  const btnProps = {
-    ref: btnRef,
-    type: 'button',
-    onClick: () => setOpen(o => !o),
-    title,
-    'aria-label': `Moneda de valuación: ${activeOption.label}`,
-    'aria-haspopup': 'listbox',
-    'aria-expanded': open,
-  }
-  const onCls = 'border-data-violet/40 bg-data-violet/15 text-data-violet'
-  const offCls = 'border-line-2 bg-bg-2 text-ink-1 hover:text-ink-0 hover:border-line-3'
-
-  function renderTrigger() {
-    if (variant === 'chip') {
-      return (
-        <button {...btnProps}
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1.5 text-[11.5px] font-medium select-none transition-colors ${open ? onCls : offCls} ${className}`}
-        >
-          <span className="tabular">{activeOption.symbol} {activeOption.tag}</span>
-          <ChevronDown size={12} strokeWidth={2} aria-hidden="true"
-            className={`transition-transform ${open ? 'rotate-180' : ''}`} />
-        </button>
-      )
-    }
-    if (variant === 'mini') {
-      return (
-        <button {...btnProps}
-          className={`flex flex-col items-center justify-center rounded-lg border px-1.5 py-1 leading-none select-none transition-colors ${open ? onCls : offCls} ${className}`}
-        >
-          <span className="text-[11px] font-semibold tabular">{activeOption.symbol}</span>
-          <span className="mt-0.5 text-[8.5px] tracking-wide opacity-70">{activeOption.tag}</span>
-        </button>
-      )
-    }
+  // Un segmento del toggle. `vertical` sólo cambia el ancho: el estilo activo
+  // (pastilla violeta) es el mismo en las tres variantes.
+  function Seg({ opt, text, pad }) {
+    const on = (opt.key === 'ARS') === isArs
     return (
-      <button {...btnProps}
-        className={`w-full flex items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left select-none transition-colors ${
-          open
-            ? 'border-data-violet/40 bg-data-violet/10'
-            : 'border-line bg-bg-1 hover:border-line-2 hover:bg-bg-2'
-        } ${className}`}
+      <button
+        type="button"
+        onClick={() => setCurrency(opt.key)}
+        aria-pressed={on}
+        title={opt.key === 'ARS' ? 'Mostrar los importes en pesos' : 'Mostrar los importes en dólares'}
+        className={`flex-1 rounded-full ${pad} text-center font-medium select-none transition-colors ${
+          on ? 'bg-data-violet/15 text-data-violet' : 'text-ink-2 hover:text-ink-0'
+        }`}
       >
-        <Coins size={16} strokeWidth={1.75} aria-hidden="true" className="text-data-violet flex-shrink-0" />
-        <span className="flex-1 min-w-0">
-          <span className="block text-[13px] font-medium text-ink-0 leading-tight">{activeOption.label}</span>
-          <span className="block text-[11px] text-ink-3 leading-tight tabular">{rate || ' '}</span>
-        </span>
-        <ChevronDown size={14} strokeWidth={2} aria-hidden="true"
-          className={`text-ink-3 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+        {text}
       </button>
     )
   }
 
+  const groupCls = 'flex items-center rounded-full border border-line-2 bg-bg-2 p-0.5'
+
+  if (variant === 'chip') {
+    return (
+      <div role="group" aria-label="Moneda de visualización" title={title}
+        className={`${groupCls} ${className}`}>
+        {OPTS.map(o => <Seg key={o.key} opt={o} text={o.label} pad="px-2.5 py-1 text-[11.5px]" />)}
+      </div>
+    )
+  }
+
+  if (variant === 'mini') {
+    return (
+      <div role="group" aria-label="Moneda de visualización" title={title}
+        className={`${groupCls} flex-col w-full ${className}`}>
+        {OPTS.map(o => <Seg key={o.key} opt={o} text={o.short} pad="px-1 py-1 text-[10px]" />)}
+      </div>
+    )
+  }
+
   return (
-    <>
-      {renderTrigger()}
-      {open && pos && createPortal(
-        <div
-          ref={panelRef}
-          role="listbox"
-          aria-label="Moneda de valuación"
-          className="fixed z-[200] rounded-xl border border-line-2 bg-bg-2 shadow-lg p-1.5"
-          style={{ top: pos.top, left: pos.left, width: PANEL_W }}
-        >
-          <p className="px-2 pt-1 pb-1.5 text-[11px] text-ink-3">
-            En qué moneda ves toda la app
-          </p>
-          {options.map(o => {
-            const on = active === o.key
-            return (
-              <button
-                key={o.key}
-                type="button"
-                role="option"
-                aria-selected={on}
-                onClick={() => { pick(o.key); setOpen(false) }}
-                className={`w-full flex items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors ${
-                  on ? 'bg-data-violet/15 text-data-violet' : 'text-ink-1 hover:bg-bg-3 hover:text-ink-0'
-                }`}
-              >
-                <Check size={14} strokeWidth={2.25} aria-hidden="true"
-                  className={on ? 'flex-shrink-0' : 'flex-shrink-0 opacity-0'} />
-                <span className="flex-1 min-w-0">
-                  <span className="block text-[13px] font-medium leading-tight">{o.label}</span>
-                  <span className={`block text-[11px] leading-tight ${on ? 'text-data-violet/70' : 'text-ink-3'}`}>{o.hint}</span>
-                </span>
-                <span className={`text-[11.5px] tabular flex-shrink-0 ${on ? 'text-data-violet/80' : 'text-ink-3'}`}>
-                  {rates[o.key] || ''}
-                </span>
-              </button>
-            )
-          })}
-        </div>,
-        document.body,
-      )}
-    </>
+    <div className={className}>
+      <div role="group" aria-label="Moneda de visualización" className={`${groupCls} w-full`}>
+        {OPTS.map(o => <Seg key={o.key} opt={o} text={o.label} pad="px-3 py-1.5 text-[13px]" />)}
+      </div>
+      {/* El dólar de valuación: se informa, no se elige acá. El link lleva
+          derecho a la sección donde sí se cambia. */}
+      <Link
+        to="/config?tab=fx"
+        title="Cambiar el dólar de valuación (MEP / CCL)"
+        className="mt-1.5 flex items-center justify-center gap-1 text-[10.5px] text-ink-3 hover:text-ink-1 transition-colors"
+      >
+        <span>Dólar {dollarName}</span>
+        {rate && <span className="tabular">· {rate}</span>}
+      </Link>
+    </div>
   )
 }
