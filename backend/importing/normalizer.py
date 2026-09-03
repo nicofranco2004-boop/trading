@@ -73,6 +73,65 @@ def _validate_ymd(y: str, mo: str, d: str) -> Optional[str]:
 _NUM_RE = re.compile(r"^-?[\d\.,]+(?:[eE][+-]?\d+)?$")
 
 
+# Un punto con EXACTAMENTE 3 dígitos detrás y 1-3 dígitos delante que no arrancan
+# en 0: la forma que es indistinguible entre separador de miles es-AR ("150.000"
+# = ciento cincuenta mil) y decimal en-US ("150.000" = 150,0). Se excluye el
+# arranque en 0 porque una agrupación de miles nunca empieza en cero: "0.715" es
+# un precio de bono por VN y es decimal con certeza. Con más de 3 dígitos delante
+# tampoco hay ambigüedad: es-AR habría escrito "1.234.567".
+_MILES_AMBIGUO_RE = re.compile(r"^-?[1-9]\d{0,2}\.\d{3}$")
+
+
+def _es_ambiguo_miles(raw) -> bool:
+    return bool(_MILES_AMBIGUO_RE.match(str(raw).strip())) if raw not in (None, "") else False
+
+
+def _desambiguar_por_triangulo(q, p, m, ambiguos=("cantidad", "precio", "monto")):
+    """Decide si un "150.000" era ciento cincuenta mil, usando la aritmética.
+
+    `parse_number` ve un valor por vez y no puede saberlo. Pero acá tenemos los
+    tres lados: precio × cantidad = monto. Si multiplicar por 1000 el campo
+    ambiguo CIERRA el triángulo y dejarlo como está NO lo cierra, entonces está
+    probado — no es una heurística.
+
+    Devuelve (q, p, m, veredicto) donde veredicto es:
+      - "ya_cerraba": la lectura decimal YA satisface el triángulo → está PROBADO
+        que era decimal. No se toca y no se avisa. (Ej: 7 × 142,857 = 1000, el
+        precio por VN de un GD30 — ambiguo de forma, decidido por la aritmética.)
+      - "<campo>": multiplicar ese campo por mil cierra la cuenta y dejarlo no →
+        está probado que era separador de miles. Se corrige.
+      - None: no alcanza para decidir (falta un lado, o hay ceros). El caller
+        avisa en vez de elegir.
+
+    Los dos primeros son PRUEBAS, no heurísticas. Distinguir "ya cerraba" de "no
+    sé" es esencial: colapsarlos hacía avisar sobre filas perfectamente sanas.
+    """
+    if q is None or p is None or m is None:
+        return q, p, m, None
+    if q == 0 or p == 0 or m == 0:
+        return q, p, m, None
+
+    def cierra(_q, _p, _m):
+        # 1% de tolerancia: absorbe comisiones embebidas y redondeos del broker.
+        return abs(_q * _p - _m) <= 0.01 * abs(_m)
+
+    if cierra(q, p, m):
+        # PROBADO que era decimal: la cuenta ya da. No es "no sé".
+        return q, p, m, "ya_cerraba"
+    # Sólo se prueba corregir los campos que DE VERDAD son ambiguos. Probar los
+    # tres encontraba una corrección que cerraba la cuenta en el campo
+    # equivocado: con precio "150.000" y cantidad 10, multiplicar la CANTIDAD por
+    # mil también cierra, y quedaba 10.000 unidades en vez del precio arreglado.
+    for campo, cand in (("cantidad", (q * 1000, p, m)),
+                        ("precio",   (q, p * 1000, m)),
+                        ("monto",    (q, p, m * 1000))):
+        if campo not in ambiguos:
+            continue
+        if cierra(*cand):
+            return cand[0], cand[1], cand[2], campo
+    return q, p, m, None
+
+
 def parse_number(s: str) -> Optional[float]:
     """Acepta '1.234,56' (es-AR), '1,234.56' (en-US), '1234.56', '1234,56', '1234'.
     Devuelve None si está vacío o no parsea."""
@@ -288,6 +347,30 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
         usd_amount = _num("monto_usd")
         tc = _num("tc")
         fees = _num("comisiones") or 0.0
+
+        # ── Separador de miles es-AR: "150.000" ──────────────────────────────
+        # `parse_number` ve un valor por vez y, con un solo punto, asume decimal:
+        # "150.000" → 150,0 y "1.500" → 1,5. Un costo mil veces más chico, sin un
+        # solo error, con la fila figurando como válida en el preview.
+        # No se puede arreglar adivinando: `reconciled_unit_price` ya documenta
+        # que un "660.400" mal parseado tiene la misma firma que un FCI legítimo,
+        # y convertir un "0.715" de bono en 715 es igual de caro al revés.
+        # Lo que sí se puede es PROBARLO con el triángulo precio×cantidad=monto.
+        _amb = [f for f in ("cantidad", "precio", "monto") if _es_ambiguo_miles(d.get(f, ""))]
+        if _amb:
+            quantity, unit_price, gross_amount, _fix = _desambiguar_por_triangulo(
+                quantity, unit_price, gross_amount, tuple(_amb))
+            if _fix is None:      # ni "ya_cerraba" ni un campo corregido
+                # El triángulo no alcanzó para decidir. Antes se elegía "decimal"
+                # en silencio; ahora se avisa. Es una fila con un número ambiguo,
+                # y el usuario es el único que sabe cuál quiso escribir.
+                for f in _amb:
+                    row_errors.append(RowError(
+                        ridx, f, "NUMERO_AMBIGUO_MILES",
+                        f"'{d.get(f)}' en '{f}' es ambiguo: puede ser "
+                        f"{str(d.get(f)).replace('.', '')} (punto de miles) o "
+                        f"{d.get(f)} (decimal). Escribilo sin el punto, o con coma "
+                        f"decimal, y volvé a subirlo."))
 
         if row_errors:
             errors.extend(row_errors)
