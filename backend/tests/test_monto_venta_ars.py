@@ -106,5 +106,103 @@ class MontoDeVentaEnPesos(unittest.TestCase):
         self.assertAlmostEqual(self._fila("TX26")["amount_usd"], BRUTO_ARS, places=4)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# La pata COMPRA de una venta: el mismo bug, con otro dólar.
+#
+# REPORTE REAL (2026-09-03), verificado contra el Excel del usuario: AUSO en
+# Movimientos mostraba la compra de 485 a $67 (32.495 pesos de 2021) como
+# "US$32.495" — el número más grande de la pantalla para la compra más chica
+# del activo. La compra pasó en 2021 y la venta en 2022: cada una vale su
+# propio dólar, y el de la compra sale de `fx_for_date(entry_date)`, que es la
+# misma función con la que se rellena `positions.tc_compra`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+TC_COMPRA_2021 = 161.33   # el dólar del 03-jun-2021
+TC_VENTA_2022 = 269.39    # el dólar del 12-sep-2022
+AUSO_QTY = 485.0
+AUSO_COMPRA = 67.0
+AUSO_VENTA = 283.43
+
+
+class PataCompraDeUnaVenta(unittest.TestCase):
+    def setUp(self):
+        self.client = _cliente()
+        conn = main.get_db()
+        self.uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?, 'x', 1)",
+            (f"compra-{uuid.uuid4().hex[:10]}@rendi.test",),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO brokers (user_id, name, currency) VALUES (?,'Default','ARS')",
+            (self.uid,),
+        )
+        for fecha, tc in (("2021-06-03", TC_COMPRA_2021), ("2022-09-12", TC_VENTA_2022)):
+            conn.execute(
+                "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta) "
+                "VALUES (?,?,?)", (fecha, tc, tc))
+        conn.execute(
+            """INSERT INTO operations
+                 (user_id, date, broker, asset, op_type, entry_date, entry_price,
+                  exit_price, quantity, pnl_usd, pnl_pct, currency, fx_to_usd)
+               VALUES (?,'2022-09-12','Default','AUSO','Venta','2021-06-03',?,?,?,
+                       388.81,NULL,'ARS',?)""",
+            (self.uid, AUSO_COMPRA, AUSO_VENTA, AUSO_QTY, TC_VENTA_2022),
+        )
+        conn.commit()
+        conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+
+    def _filas(self):
+        r = self.client.get("/api/movements", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        por_tipo = {m["type"]: m for m in r.json() if m.get("asset") == "AUSO"}
+        self.assertIn("BUY", por_tipo)
+        self.assertIn("SELL", por_tipo)
+        return por_tipo
+
+    def test_la_compra_vale_el_dolar_de_su_propia_fecha(self):
+        """485 a $67 en 2021 son ~US$201, no US$32.495."""
+        esperado = (AUSO_QTY * AUSO_COMPRA) / TC_COMPRA_2021
+        monto = self._filas()["BUY"]["amount_usd"]
+        self.assertAlmostEqual(
+            monto, esperado, places=2,
+            msg=f"la compra debería valer ~US${esperado:,.2f}, no US${monto:,.2f}")
+
+    def test_la_compra_no_usa_el_dolar_de_la_venta(self):
+        """El error sutil: convertir las dos patas con el TC de la venta.
+
+        Daría US$120 en vez de US$201 — plausible a simple vista, y encima
+        borraría la ganancia en dólares del activo.
+        """
+        monto = self._filas()["BUY"]["amount_usd"]
+        con_tc_de_venta = (AUSO_QTY * AUSO_COMPRA) / TC_VENTA_2022
+        self.assertNotAlmostEqual(monto, con_tc_de_venta, places=2)
+
+    def test_cada_pata_con_su_dolar(self):
+        """La venta sigue con el suyo: las dos conviven en la misma fila."""
+        filas = self._filas()
+        self.assertAlmostEqual(
+            filas["SELL"]["amount_usd"],
+            (AUSO_QTY * AUSO_VENTA) / TC_VENTA_2022, places=2)
+
+    def test_una_compra_en_dolares_no_se_toca(self):
+        """Sin ARS de por medio, la pata compra queda como está."""
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO operations
+                 (user_id, date, broker, asset, op_type, entry_date, entry_price,
+                  exit_price, quantity, pnl_usd, pnl_pct, currency, fx_to_usd)
+               VALUES (?,'2022-09-12','Default','NVDA','Venta','2021-06-03',
+                       100.0,150.0,10.0,500.0,NULL,'USD',NULL)""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+        r = self.client.get("/api/movements", headers=self.h)
+        buy = [m for m in r.json()
+               if m.get("asset") == "NVDA" and m["type"] == "BUY"][0]
+        self.assertAlmostEqual(buy["amount_usd"], 1000.0, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

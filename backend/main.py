@@ -12407,6 +12407,19 @@ def get_movements(uid: int = Depends(get_effective_user)):
         # ── TC blue para conversión ARS→USD ─────────────────────────────────
         tc_blue = _user_tc_blue(conn, uid)
 
+        # TC de una fecha, memoizado. La pata BUY de cada venta necesita el
+        # dólar del día de la COMPRA, y muchas comparten fecha: sin el memo
+        # esto sería una query por fila.
+        _fx_por_fecha = {}
+
+        def _tc_en(fecha):
+            if not fecha:
+                return None
+            k = str(fecha)[:10]
+            if k not in _fx_por_fecha:
+                _fx_por_fecha[k] = _fx.fx_for_date(conn, k)
+            return _fx_por_fecha[k]
+
         # ── 1) Operations (manual trades) ───────────────────────────────────
         op_rows = conn.execute(
             """SELECT o.* FROM operations o
@@ -12442,7 +12455,26 @@ def get_movements(uid: int = Depends(get_effective_user)):
             # el user vea ambos en la timeline, generamos 2 rows: una con
             # entry_date como BUY (si hay), una con date como SELL.
             if d.get("entry_date"):
+                # Mismo problema que el bruto de la venta, con otro dólar: la
+                # COMPRA pasó en `entry_date`, así que se convierte al TC de ESA
+                # fecha, no al de la venta. Es el criterio que ya usa la rama de
+                # posiciones abiertas (`positions.tc_compra`), y `fx_for_date` es
+                # justamente la función con la que se rellena esa columna.
+                #
+                # Sin esto, una compra de 485 AUSO a $67 (32.495 pesos de 2021)
+                # figuraba como "US$32.495" — el número más grande de la pantalla
+                # para la compra más chica del activo.
+                #
+                # Sólo se convierte con la operación marcada ARS. Queda un borde
+                # conocido: si el LOTE era USD y la venta ARS (soportado, raro),
+                # `entry_price` viene en dólares y esto lo dividiría de más. La
+                # fila no guarda la moneda del lote — para cerrarlo hay que
+                # sellarla al vender.
                 amount_buy = (entry_p or 0) * (qty or 0) if entry_p and qty else 0
+                if amount_buy and op_ccy == "ARS":
+                    tc_compra = _tc_en(d["entry_date"]) or op_fx or tc_blue
+                    if tc_compra and tc_compra > 0:
+                        amount_buy = amount_buy / tc_compra
                 movements.append({
                     "id": f"op-{d['id']}-buy",
                     "kind": "movement",
@@ -12472,11 +12504,8 @@ def get_movements(uid: int = Depends(get_effective_user)):
             # fx > 0. Las filas viejas sin FX sellado quedan como estaban — no se
             # les infiere un TC a posteriori.
             #
-            # La pata BUY (amount_buy) queda SIN convertir a propósito:
-            # `entry_price` está en la moneda del LOTE, que puede no ser la de la
-            # venta (un lote USD vendido en ARS es un caso soportado), y la fila
-            # no guarda cuál era. Dividirla arreglaría el caso común y rompería
-            # ése. Necesita sellar la moneda del lote al vender.
+            # (La pata BUY se convierte arriba, pero con el TC de `entry_date`:
+            # son dos eventos en fechas distintas y cada uno vale su propio dólar.)
             gross_fx = op_fx if (op_ccy == "ARS" and op_fx > 0) else 1.0
             if exit_p and qty:
                 amount_sell = (exit_p * qty) / gross_fx
