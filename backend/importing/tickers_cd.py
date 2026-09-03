@@ -41,6 +41,20 @@ KNOWN_CD_TICKERS = {
     "INTC", "JD", "KLAC", "LCID", "LQD", "LTC", "MATIC", "MCD", "MPC", "NOC",
     "LAC", "PDD", "SAND", "SCHD", "SID", "SSEC", "TSMC", "USDC", "WBD", "WFC",
     "WLD", "XLC", "YPFD", "ZEC",
+    # ── Renta en dólares y REITs (2026-09-03) ────────────────────────────────
+    # Estos NO están en tickers.js —no son activos que la app deje agregar a
+    # mano— pero SÍ entran por import: son lo que compra una cuenta del exterior
+    # (Balanz Internacional, Schwab, IBKR). Hoy se salvan de milagro, porque el
+    # normalizador no los clasifica como STOCK y `consolidate_cd` gatea por
+    # asset_type. El día que alguien mejore esa clasificación —que es lo
+    # CORRECTO— truncan todos. El peor es SPYD→SPY: se fusionaría con el ticker
+    # más tenido de la base, en el mismo ledger FIFO.
+    "AGNC",   # AGNC Investment  → AGN (Allergan, delisted)
+    "ARCC",   # Ares Capital     → ARC
+    "EPD",    # Enterprise Prod. → EP
+    "LAD",    # Lithia Motors    → LA
+    "PLD",    # Prologis         → PL
+    "QYLD", "RYLD", "SPYD", "XYLD",   # ETFs de covered call / dividendos
 }
 # LAC (Lithium Americas) entró a la allowlist de CEDEARs en f60502d y lo cazó
 # `test_tickers_cd_sync` — el mismo guard que se escribió para SID. Termina en "C", así

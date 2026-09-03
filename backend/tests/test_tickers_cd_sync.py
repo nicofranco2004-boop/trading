@@ -100,3 +100,33 @@ class AllowlistSincronizadaTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TickersDelExteriorNoSeTruncan(unittest.TestCase):
+    """Los tickers que entran por IMPORT desde una cuenta del exterior.
+
+    No están en tickers.js —la app no los deja agregar a mano— así que el test
+    de sincronía de arriba no los mira. Pero sí llegan por Balanz Internacional,
+    Schwab e IBKR, y terminan en C/D.
+
+    Hoy se salvan de milagro: `consolidate_cd` gatea por `asset_type` y el
+    normalizador no los clasifica como STOCK. El día que alguien mejore esa
+    clasificación —que es lo correcto— truncarían todos. El peor es SPYD→SPY:
+    se fusionaría con el ticker más tenido de la base, en el mismo ledger FIFO,
+    y el usuario vería una sola posición con el costo de las dos.
+    """
+
+    def test_no_se_truncan_ni_con_el_gate_abierto(self):
+        from importing.tickers_cd import consolidate_cd
+        for t in ("SPYD", "AGNC", "QYLD", "XYLD", "RYLD", "PLD", "LAD", "ARCC", "EPD"):
+            for tipo in ("STOCK", "CEDEAR", "BOND"):
+                self.assertEqual(consolidate_cd(t, tipo), t,
+                                 f"{t} se truncó con asset_type={tipo}")
+
+    def test_la_pata_dolar_argentina_SIGUE_truncando(self):
+        """El espejo. Si el fix se pasara de protector, AL30D dejaría de
+        consolidar con AL30 y quedarían dos ledgers FIFO para el mismo bono —
+        que es justo el bug de los activos fantasma."""
+        from importing.tickers_cd import consolidate_cd
+        for pata, base in (("AL30D", "AL30"), ("GD30D", "GD30"), ("BA37D", "BA37")):
+            self.assertEqual(consolidate_cd(pata, "BOND"), base)
