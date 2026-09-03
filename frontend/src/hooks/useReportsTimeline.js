@@ -10,6 +10,8 @@ import { api } from '../utils/api'
 /**
  * @param {string} broker        broker_filter: 'global' | nombre del broker
  * @param {number} months        cantidad de meses a mostrar (default 12)
+ * @param {string} modo          'certero' | 'estimado' — el mismo control que Métricas
+ * @param {string} moneda        'usd' | 'ars' — sigue al selector global de moneda
  * @returns {{
  *   loading: boolean,
  *   error: string | null,
@@ -18,7 +20,8 @@ import { api } from '../utils/api'
  *   reload: () => void,
  * }}
  */
-export default function useReportsTimeline(broker = 'global', months = 12) {
+export default function useReportsTimeline(broker = 'global', months = 12,
+                                          modo = 'certero', moneda = 'usd') {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [reports, setReports] = useState([])
@@ -28,7 +31,8 @@ export default function useReportsTimeline(broker = 'global', months = 12) {
     let cancelled = false
     setLoading(true)
     setError(null)
-    api.get(`/reports/timeline?broker=${encodeURIComponent(broker)}&months=${months}`)
+    api.get(`/reports/timeline?broker=${encodeURIComponent(broker)}&months=${months}`
+            + `&modo=${encodeURIComponent(modo)}&moneda=${encodeURIComponent(moneda)}`)
       .then(data => {
         if (cancelled) return
         setReports(data?.reports || [])
@@ -39,7 +43,7 @@ export default function useReportsTimeline(broker = 'global', months = 12) {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [broker, months, trigger])
+  }, [broker, months, modo, moneda, trigger])
 
   // Group por año (cronológico descendente — año en curso arriba).
   // Memoizado: sin memo se crea una referencia nueva en cada render y

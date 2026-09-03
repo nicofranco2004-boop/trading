@@ -1,3 +1,4 @@
+import ModoRendimiento from '../components/ModoRendimiento'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
@@ -39,7 +40,6 @@ import { computeSectorBreakdown } from '../utils/assetSector'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
-import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
 import { applyMtmToMonthly } from '../utils/insightsModel'
 
 const REFRESH_MS = 90_000
@@ -70,6 +70,11 @@ function PersonalDashboard() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [range, setRange] = useState('1M')
+  // El rendimiento histórico sale del MOTOR CANÓNICO (`/goals/cagr`, que es
+  // `twr.curva_indexada`), no de un cálculo propio del Dashboard. Y con los mismos
+  // dos modos que la tarjeta de Performance de Métricas.
+  const [modoRend, setModoRend] = useState('certero')
+  const [rendHist, setRendHist] = useState(null)
   // Fase A (2026-05-31): toggle currency global compartido entre Dashboard,
   // HomeMobile, PositionsMobile via CurrencyContext. Antes era local state
   // por página → inconsistencias entre desktop y mobile.
@@ -114,6 +119,20 @@ function PersonalDashboard() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // ⚠️ EL RENDIMIENTO HISTÓRICO YA NO SE CALCULA ACÁ. Abajo vivía un cuarto motor
+  // (`computeMonthlyReturns` + `computeCAGR` sobre la cadena mensual) que
+  // anualizaba lo que hubiera: con 3 meses elevaba a la cuarta. El backend
+  // (`/goals/cagr`) es `twr.curva_indexada` — mismos cortes, misma cota de
+  // plausibilidad y el mismo piso de medio año para anualizar — así que el número
+  // de acá y el de Métricas dejan de poder contradecirse.
+  useEffect(() => {
+    let vivo = true
+    api.get(`/goals/cagr?modo=${modoRend}&moneda=${currency === 'ARS' ? 'ars' : 'usd'}`)
+      .then(r => { if (vivo) setRendHist(r) })
+      .catch(() => { if (vivo) setRendHist(null) })
+    return () => { vivo = false }
+  }, [modoRend, currency])
 
   async function loadAll() {
     try {
@@ -655,20 +674,25 @@ function PersonalDashboard() {
   // Guard: <3 meses de historial no se muestra (anualizar un período corto
   // amplifica ruido; ver doc de computeCAGR).
   const cagrVar = useMemo(() => {
-    // La cadena mensual a COSTO no mide mercado: en los meses cerrados el
-    // backend fuerza pnl_unrealized = 0, así que (cf − ci − net) ≡ pnl_realized.
-    // Sin esto, "Anual" era el realizado encadenado — medido en una cuenta real,
-    // +33% donde el retorno de verdad era +2,99%. Y peor: Insights ya lee la
-    // cadena a mercado, así que las dos pantallas se contradecían.
-    // `totalValuePositions` y NO `totalValue`: los snapshots no incluyen el plazo
-    // fijo, y cerrar el mes en curso con una base distinta a la del arranque es
-    // exactamente lo que fabrica retorno.
-    const mr = computeMonthlyReturns(applyMtmToMonthly(
-      monthly.filter(m => m.broker === 'global'), snapshots, undefined, totalValuePositions))
-    if (mr.length < 3) return null
-    const c = computeCAGR(mr)
-    return c ? { pct: c.cagr, months: c.months } : null
-  }, [monthly, snapshots, totalValuePositions])
+    // El motor manda. `cagr` sólo viene cuando la ventana llega a medio año; si no,
+    // se muestra el ACUMULADO del período con la ventana al lado, que es verdadero.
+    if (rendHist) {
+      // ⚠️ `/100`: el endpoint devuelve PORCENTAJE (16.66 = +16,66 %) y `VarCell`
+      // pinta con `pctSigned`, que multiplica por 100 — o sea espera FRACCIÓN.
+      // Sin esto la card mostraba "−52,0 %" donde el dato era −0,52 %.
+      if (rendHist.cagr != null) {
+        return { pct: rendHist.cagr / 100, months: rendHist.months, anual: true }
+      }
+      if (rendHist.total_return_pct != null) {
+        return { pct: rendHist.total_return_pct / 100, months: rendHist.months,
+                 dias: rendHist.dias, anual: false }
+      }
+      return null
+    }
+    return null
+  }, [rendHist])
+
+
 
   if (loading) return <DashboardSkeleton />
 
@@ -941,6 +965,7 @@ function PersonalDashboard() {
         <div className="mb-4">
           <div className="flex items-center gap-1 mb-3">
             <h3 className="text-[15px] font-semibold text-ink-0 leading-tight">Rendimiento</h3>
+            <ModoRendimiento valor={modoRend} onChange={setModoRend} className="ml-1" />
             <InfoTooltip size={11} align="left">
               <p className="font-medium text-ink-0">Variación de tus posiciones, sin contar aportes/retiros.</p>
               <p className="text-ink-2 mt-1"><strong className="text-ink-1">Hoy</strong>: vs cierre 23:59 ART. <strong className="text-ink-1">Este mes</strong>: vs cierre del mes anterior. <strong className="text-ink-1">Anual</strong>: CAGR.</p>
@@ -965,10 +990,15 @@ function PersonalDashboard() {
               },
               cagrVar && {
                 key: 'a',
-                label: 'Anual',
+                // ⚠️ EL RÓTULO SIGUE AL NÚMERO. Decir "Anual" sobre un acumulado de
+                // 44 días es la misma mentira que anualizarlo: el usuario compara
+                // ese número contra un plazo fijo anual.
+                label: cagrVar.anual ? 'Anual' : 'Desde que medimos',
                 data: cagrVar,
                 pctHero: true,
-                note: cagrVar.months < 12 ? `${cagrVar.months}m · anualizado` : `${cagrVar.months} meses`,
+                note: cagrVar.anual
+                  ? (cagrVar.months < 12 ? `${cagrVar.months}m · anualizado` : `${cagrVar.months} meses`)
+                  : `${cagrVar.dias} días · sin anualizar`,
               },
             ].filter(Boolean).map((c) => (
               <VarCell

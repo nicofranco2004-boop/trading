@@ -126,12 +126,32 @@ class A1_ReportesTest(_Base):
         r = builder.build_period_report(self.conn, self.uid, "month", "2026-07",
                                         today=_d.date(2026, 8, 26))
         m = r.metrics
-        self.assertNotEqual(m.basis, "mercado")
+        # ⚠️ EL MES YA NO CAE A LA CONTABILIDAD CUANDO SE PUEDE MEDIR.
+        #
+        # Este test nació cuando el mes sólo tenía dos caminos: los dos bordes a
+        # mercado (`bordes_mercado_periodo`, que exige una foto medida pegada al día
+        # anterior) o la cadena contable. Con la apertura al costo, el primero es
+        # imposible, y lo que protegía era que NO se mezclara esa apertura con el
+        # cierre a mercado — la mezcla es el −47,26 % del reclamo original.
+        #
+        # Ahora hay un tercer camino, y no mezcla nada: `curva_indexada` sobre la
+        # ventana del período usa SÓLO los puntos de adentro — las 31 fotos del cron
+        # de julio, todas base mercado. La apertura al costo del 30/06 no participa.
+        # Medido: `bordes_mercado_periodo` conseguía las dos puntas en 12 de 670
+        # usuarios de producción, así que 242 de los 254 meses publicados salían de
+        # la contabilidad, y 31 de ellos se publicaban PLANOS sobre meses que a
+        # mercado se habían movido más de 5 %.
+        #
+        # Lo que este test protege sigue intacto y se verifica abajo: el −47 % no
+        # aparece, y el número publicado no sale de mezclar dos reglas.
         self.assertNotIn("-47", r.headline)
         self.assertNotIn("-47", (r.narrative or ""))
-        # el número que queda es el de la contabilidad, que es lo que de verdad
-        # se movió: +0,1%
-        self.assertAlmostEqual(m.delta_pct, 0.1, places=1)
+        # La cartera estuvo PLANA en julio (31 fotos del cron, todas en MERCADO):
+        # el mes se mide con ésas y da 0,0 %, no el +0,1 % del realizado contable.
+        self.assertAlmostEqual(m.delta_pct, 0.0, places=2)
+        # Y el monto describe la MISMA ventana que el %, no la cadena contable.
+        self.assertAlmostEqual(m.delta_usd, 0.0, places=2)
+        self.assertEqual((m.medido_desde, m.medido_hasta), ("2026-07-01", "2026-07-31"))
 
     def test_no_hay_bordes_de_mercado_si_la_apertura_es_contable(self):
         self._cartera_del_reclamo()

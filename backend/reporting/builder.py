@@ -406,7 +406,7 @@ def _dia_anterior(iso: str):
 
 
 def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
-                           broker_filter: str):
+                           broker_filter: str, *, con_fechas: bool = False):
     """Las dos puntas de un período CERRADO, medidas a mercado. None si no se puede.
 
     Por qué hace falta: para un mes cerrado, `start` y `end` salen de la MISMA fila
@@ -495,7 +495,52 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
     # el cierre del período ANTERIOR — de eso se encarga `_dia_anterior` arriba.
     # Alinear las puntas hace innecesario calcular el flujo, que es mejor que
     # calcularlo bien.
+    # `con_fechas` devuelve además QUÉ DÍA es cada punta. Lo necesita el modo
+    # pesos: cada punta va al TC de SU fecha, y sin la fecha no hay TC. Por
+    # defecto sigue devolviendo el par de siempre, así que los llamadores viejos
+    # y sus tests no cambian.
+    if con_fechas:
+        return (float(ini["total_value"]), float(fin["total_value"]),
+                str(ini["date"])[:10], str(fin["date"])[:10])
     return float(ini["total_value"]), float(fin["total_value"])
+
+
+def _pct_en_pesos(conn, d0: str, d1: str, v0: float, v1: float,
+                  deposits: float, withdrawals: float):
+    """El MISMO tramo medido a mercado, pero contestando la pregunta en pesos.
+
+    ⚠️ POR QUÉ HACE FALTA. `bordes_mercado_periodo` devuelve dólares. Sin esto,
+    con el selector global en Pesos el calendario mezclaba las dos monedas en la
+    misma grilla y las componía como si fueran la misma unidad: los meses que mide
+    esa rama seguían en dólares y sólo el que pasa por el motor canónico salía en
+    pesos. Visto en pantalla: ENE–JUN idénticos a los de USD, AGO +1,34 % → +2,84 %,
+    y el total del año sumando ambos.
+
+    Convierte SÓLO EL PORCENTAJE. Los montos publicados siguen en dólares a
+    propósito: Reportes los pasa por `useMoneyFormat`, que ya hace USD→ARS en el
+    frontend — convertirlos acá los convertiría dos veces. Es la misma división de
+    tareas que ya usa la rama del motor entre `month_twr_pct` y `month_twr_usd`.
+
+    La cuenta la hace `_leg_en_moneda`, la MISMA función del motor: cada punta al
+    TC de su fecha, el flujo al TC medio geométrico del tramo. Reimplementar esas
+    dos líneas acá es exactamente cómo se desincronizan dos motores.
+    """
+    try:
+        import twr as _twr_fx
+        _fxfn, _ = _twr_fx.serie_fx(conn, d0, d1)
+        f0, f1 = _fxfn(d0), _fxfn(d1)
+        if not f0 or not f1:
+            return None
+        p0 = {"fx": f0, "net_deposited": 0.0}
+        sv, ev, dep = _twr_fx._leg_en_moneda(
+            p0, {"fx": f1, "net_deposited": float(deposits or 0)}, v0, v1)
+        _, _, wd = _twr_fx._leg_en_moneda(
+            p0, {"fx": f1, "net_deposited": float(withdrawals or 0)}, v0, v1)
+        pct = _modified_dietz_pct(sv, ev, dep - wd)
+        return round(pct, 2) if pct is not None else None
+    except Exception:
+        log.exception("_pct_en_pesos %s..%s", d0, d1)
+        return None
 
 
 def fetch_monthly_entry(conn, uid: int, year: int, month: int,
@@ -579,10 +624,41 @@ def _modified_dietz_pct(start_value: float, end_value: float, flows: float) -> O
     return (pnl / avg) * 100
 
 
+# ⚠️ NO TODO "el motor no publicó" ES LO MISMO, Y CONFUNDIRLO ES UNA REGRESIÓN.
+#
+#   · 'sin_historia', 'importado_sin_mediciones', 'una_sola_medicion',
+#     'sin_mediciones', 'serie_partida', 'sin_tramo_continuo' → NO HAY con qué
+#     medir a mercado. Ahí la contabilidad es la mejor información disponible y
+#     Reportes la publica etiquetada `basis='contable'`, como siempre hizo.
+#   · 'medicion_dudosa', 'cadena_implausible' → el dato está ROTO: una foto que
+#     salta ×3 sin flujo, o una contabilidad que no cierra con la primera
+#     medición. Eso NO se arregla cambiando de fuente — la cadena contable del
+#     uid 35 es justamente la que dice US$956 → US$1.076.715 en un mes.
+#
+# Un primer intento cortó con los dos grupos juntos y le sacó el número a todo
+# usuario sin snapshots (lo cazaron 6 tests: `delta_usd` pasaba a 0 en cuentas
+# donde la contabilidad daba un monto legítimo). Sólo el segundo grupo corta.
+MOTIVOS_DATO_ROTO = ("medicion_dudosa", "cadena_implausible")
+
+_MOTIVO_MES_DUDOSO = (
+    "Uno de los meses de tu contabilidad cambia de valor más de lo que explican tus "
+    "aportes y retiros. Como el retorno del año se compone mes a mes, ese mes se "
+    "llevaría puesto el número entero: hasta que se revise, el año no se publica."
+)
+
+_MOTIVO_PUNTAS_DUDOSAS = (
+    "Entre el principio y el final del período tu cartera cambia de valor mucho más "
+    "de lo que explican tus aportes y retiros. El porcentaje que saldría de ahí no "
+    "sería tu rendimiento, sino el agujero de la contabilidad: no se publica."
+)
+
+
 def compute_metrics_for_period(
     conn, uid: int, period_type: str, period_start: str, period_end: str,
     broker_filter: str, bench: Optional[Dict[str, Any]],
     live_value: Optional[float] = None,
+    modo: str = "certero", moneda: str = "usd",
+    today: Optional[date_cls] = None,
 ) -> Tuple[PeriodMetrics, List[Dict[str, Any]]]:
     """Computa métricas + devuelve operaciones del período (para drivers/highlights).
 
@@ -624,6 +700,16 @@ def compute_metrics_for_period(
     # NI el monto — un número inventado con autoridad es peor que un "—".
     basis_incomparable = False
     _basis = "contable"     # en qué base quedaron las dos puntas
+    # Por qué el motor canónico se negó a publicar (None = no se negó). Se propaga
+    # a la respuesta para que la pantalla diga lo MISMO que Métricas.
+    _motor_nego = None
+    _motor_nego_texto = None
+    _motor_publico = False
+    _mes_dudoso = False     # algún mes de la composición contable no es creíble
+    _pct_puntas_ars = None  # el % punta-a-punta ya convertido a pesos, si aplica
+    month_twr_pct = None
+    month_twr_usd = None
+    _ventana_medida = (None, None)
     _start_is_mtm = False   # start_value salió de un cierre real a mercado
     _live_month_unmeasured = False  # (año) el mes vivo no tiene borde medido
 
@@ -654,7 +740,7 @@ def compute_metrics_for_period(
         # en curso aunque no haya con qué medirlo, y ahí lo que corresponde es
         # decirlo (`basis_incomparable` → "Mes sin base para medir el rendimiento",
         # que el generador de headline evalúa PRIMERO, builder.py:1236).
-        _period_is_current = is_period_current(period_type, period_start, period_end)
+        _period_is_current = is_period_current(period_type, period_start, period_end, today=today)
         month_is_current = _period_is_current and live_value is not None
         if month_is_current:
             end_value = float(live_value)
@@ -757,7 +843,8 @@ def compute_metrics_for_period(
             # Mes CERRADO: si hay dos cierres medidos, el período se mide a
             # mercado. Si no, queda la contabilidad — igual que antes, sin
             # regresión, pero ahora ETIQUETADA como tal.
-            _b = bordes_mercado_periodo(conn, uid, period_start, period_end, broker_filter)
+            _b = bordes_mercado_periodo(conn, uid, period_start, period_end,
+                                        broker_filter, con_fechas=True)
             if _b:
                 # Las dos puntas a mercado; los flujos siguen siendo los del
                 # propio período (`deposits`/`withdrawals` de monthly_entries), que
@@ -765,9 +852,67 @@ def compute_metrics_for_period(
                 # período anterior. Los brutos NO se tocan: son lo que la app
                 # PUBLICA (MonthCard.jsx:223-224), cifras que el usuario contrasta
                 # contra el resumen de su broker.
-                start_value, end_value = _b
+                start_value, end_value, _bd0, _bd1 = _b
                 _basis = "mercado"
                 _start_is_mtm = True
+                if str(moneda).lower() == "ars":
+                    _pct_puntas_ars = _pct_en_pesos(
+                        conn, _bd0, _bd1, start_value, end_value,
+                        deposits, withdrawals)
+            elif broker_filter == "global":
+                # ⚠️ SIN LOS DOS BORDES, EL MOTOR CANÓNICO IGUAL SABE MEDIR EL MES.
+                #
+                # `bordes_mercado_periodo` exige una foto MEDIDA pegada al día
+                # anterior al período (`_border_is_fresh(..., 1)`). Es un criterio
+                # correcto pero durísimo: medido sobre la copia de producción del
+                # 2026-08-16 para julio, lo consigue en **12 de 670 usuarios** — 652
+                # fallan por "sin borde inicial medido". El resto cae a la
+                # contabilidad, que para un mes cerrado cumple
+                # `capital_final = capital_inicio + flujos + pnl_realized`: el
+                # número es el realizado sobre el costo y no sabe nada del mercado.
+                # Resultado medido: 242 de los 254 meses publicados salían de ahí, y
+                # **31 meses se publicaban como PLANOS (<0,5 %) cuando a mercado se
+                # habían movido más de 5 %** — el peor, uid 878, decía −0,00 % sobre
+                # un mes que a mercado hizo +133,58 %.
+                #
+                # `curva_indexada` mide la ventana con los puntos que HAY adentro,
+                # sin exigir un borde el día exacto anterior, y trae los guards
+                # nuevos (`leg_dudoso`, 'cadena_implausible'). Sobre la misma ventana
+                # mide para 441 usuarios. La ventana que el número cubre viaja en
+                # `ventana_desde`/`ventana_hasta` para que la pantalla la declare:
+                # es "del 3 al 31 de julio", no "julio entero", y eso se dice.
+                try:
+                    import twr as _twr_m
+                    _cm = _twr_m.curva_indexada(
+                        conn, uid, period_start, period_end,
+                        modo=(_twr_m.MODO_ESTIMADO if modo == "estimado" else _twr_m.MODO_CERTERO),
+                        moneda=(_twr_m.MONEDA_ARS if str(moneda).lower() == "ars"
+                                else _twr_m.MONEDA_USD))
+                    if _cm.get("twr") is not None:
+                        month_twr_pct = round(_cm["twr"] * 100, 2)
+                        _basis = ("mercado" if _cm.get("base_del_twr") != "contable"
+                                  else "contable")
+                        _motor_publico = True
+                        _ventana_medida = (_cm.get("ventana_desde"), _cm.get("ventana_hasta"))
+                        # ⚠️ EL MONTO TIENE QUE DESCRIBIR LA MISMA VENTANA QUE EL %.
+                        # Sin esto el % salía del mercado de julio y el `delta_usd`
+                        # seguía siendo el de la cadena contable: en el caso del
+                        # reclamo original daba "0,0 %" al lado de "+US$139,57", que
+                        # es la misma mezcla de mundos que este trabajo viene
+                        # cerrando, sólo que en la misma tarjeta.
+                        _aptos = [q for q in _cm.get("curva") or []
+                                  if q.get("apto") and q.get("date") != "hoy"]
+                        if len(_aptos) >= 2:
+                            _v0, _v1 = _aptos[0], _aptos[-1]
+                            _flujo_v = (float(_v1.get("net_deposited") or 0)
+                                        - float(_v0.get("net_deposited") or 0))
+                            month_twr_usd = round(
+                                (float(_v1["value"]) - float(_v0["value"])) - _flujo_v, 2)
+                    else:
+                        _motor_nego = _cm.get("motivo")
+                        _motor_nego_texto = _cm.get("motivo_texto")
+                except Exception:
+                    log.exception("month_twr desde twr.curva_indexada uid=%s", uid)
     elif period_type == "year":
         # Sumamos los monthly_entries del año. start = capital_inicio del primer
         # mes con data; end = capital_final del último mes con data (o live
@@ -787,7 +932,8 @@ def compute_metrics_for_period(
             deposits = sum(float(r["deposits"] or 0) for r in rows)
             withdrawals = sum(float(r["withdrawals"] or 0) for r in rows)
             unrealized = float(rows[-1]["pnl_unrealized"] or 0)
-        year_is_current = live_value is not None and is_period_current(period_type, period_start, period_end)
+        year_is_current = live_value is not None and is_period_current(
+            period_type, period_start, period_end, today=today)
         if year_is_current:
             end_value = float(live_value)
             # AUDIT C-2 (patch pre-C1): end MtM (live) vs capital_inicio A COSTO
@@ -813,7 +959,8 @@ def compute_metrics_for_period(
                 basis_incomparable = True
         else:
             # Año CERRADO: mismas dos puntas medidas que pide el mes.
-            _b = bordes_mercado_periodo(conn, uid, period_start, period_end, broker_filter)
+            _b = bordes_mercado_periodo(conn, uid, period_start, period_end,
+                                        broker_filter, con_fechas=True)
             if _b:
                 # Las dos puntas a mercado; los flujos siguen siendo los del
                 # propio período (`deposits`/`withdrawals` de monthly_entries), que
@@ -821,9 +968,13 @@ def compute_metrics_for_period(
                 # período anterior. Los brutos NO se tocan: son lo que la app
                 # PUBLICA (MonthCard.jsx:223-224), cifras que el usuario contrasta
                 # contra el resumen de su broker.
-                start_value, end_value = _b
+                start_value, end_value, _bd0, _bd1 = _b
                 _basis = "mercado"
                 _start_is_mtm = True
+                if str(moneda).lower() == "ars":
+                    _pct_puntas_ars = _pct_en_pesos(
+                        conn, _bd0, _bd1, start_value, end_value,
+                        deposits, withdrawals)
         # El TWR del año, DESDE EL MISMO MOTOR que la sección Diagnóstico. Si los
         # dos números salieran de motores distintos volverían a contradecirse para
         # el mismo período — que es el defecto que este trabajo viene a cerrar.
@@ -866,8 +1017,11 @@ def compute_metrics_for_period(
                 _desde = (str(_snap_ini["date"])[:10] if _snap_ini
                           else (datetime.strptime(period_start[:10], "%Y-%m-%d")
                                 - timedelta(days=_BORDER_MAX_LAG_DAYS)).date().isoformat())
+                _modo_twr = (_twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO)
+                _moneda_twr = (_twr.MONEDA_ARS if str(moneda).lower() == "ars"
+                               else _twr.MONEDA_USD)
                 _c = _twr.curva_indexada(
-                    conn, uid, _desde, period_end,
+                    conn, uid, _desde, period_end, modo=_modo_twr, moneda=_moneda_twr,
                     valor_live=(float(live_value) if year_is_current and live_value else None))
                 # ⚠️ EL TWR TIENE QUE CUBRIR EL PERÍODO QUE SE ESTÁ PUBLICANDO.
                 #
@@ -887,7 +1041,28 @@ def compute_metrics_for_period(
                         and _ventana_cubre(_c.get("ventana_desde"), _c.get("ventana_hasta"),
                                            period_start, period_end, year_is_current)):
                     year_twr_pct = round(_c["twr"] * 100, 2)
-                    _basis = "mercado"
+                    _basis = "mercado" if _c.get("base_del_twr") != "contable" else "contable"
+                    _motor_publico = True
+                    _ventana_medida = (_c.get("ventana_desde"), _c.get("ventana_hasta"))
+                # ⚠️ EL MOTOR SE NEGÓ, Y ESO NO ES "NO HAY DATO": ES UNA DECISIÓN.
+                #
+                # `curva_indexada` devuelve twr=None exactamente cuando uno de sus
+                # guards cortó — `leg_dudoso` (un salto ×3 sin flujo que lo explique),
+                # 'cadena_implausible' (la contabilidad no cierra con la primera
+                # medición), o un hueco de más de 45 días. Abajo, en el fallback de la
+                # composición mensual, `year_twr_pct is None` se leía como "todavía no
+                # tengo número" y se publicaba el contable igual: el guard no apagaba
+                # el número, lo derivaba a la otra fuente.
+                #
+                # Medido sobre la copia de producción del 2026-08-16, año 2026: el
+                # motor se niega para 37 usuarios y 12 de ellos recibían igual un
+                # porcentaje del año en Reportes — uid 453 con +9.443,72 %, uid 441 con
+                # +4.194,64 %, uid 329 con −200,12 % — mientras el Dashboard y Métricas
+                # les muestran "—" con el motivo. La misma cuenta, dos pantallas, dos
+                # respuestas incompatibles.
+                elif _c.get("twr") is None:
+                    _motor_nego = _c.get("motivo")
+                    _motor_nego_texto = _c.get("motivo_texto")
             except Exception:
                 log.exception("year_twr desde twr.curva_indexada fallo uid=%s", uid)
         # AUDIT B1: el retorno del año = composición GEOMÉTRICA de los retornos
@@ -950,7 +1125,27 @@ def compute_metrics_for_period(
                     if not _ci_is_mtm and ci > 0:
                         _live_month_unmeasured = True
                         continue
-                mp = _modified_dietz_pct(ci, cf, float(r["deposits"] or 0) - float(r["withdrawals"] or 0))
+                _flujo_mes = float(r["deposits"] or 0) - float(r["withdrawals"] or 0)
+                # ⚠️ LA COMPOSICIÓN CONTABLE HEREDA LA COTA DE CORDURA DEL MOTOR.
+                #
+                # Este bucle multiplica los Dietz mensuales de `monthly_entries` sin
+                # mirar si cada mes es creíble. Medido sobre la copia de producción
+                # del 2026-08-16, año 2026: **33 usuarios recibían más de ±100 %** y
+                # 7 más de ±1.000 %; el peor, uid 35, leía **+138.029 %** — su cadena
+                # pasa de US$956 a US$1.076.715 en febrero con US$246 de depósitos.
+                # El motor canónico corta ese leg (`leg_dudoso` → 'medicion_dudosa')
+                # y no publica; acá se componía igual, porque el fallback nunca fue
+                # revisado con el mismo criterio.
+                #
+                # Se usa la MISMA función, no una copia: si el umbral cambia, cambia
+                # en los dos lados a la vez.
+                try:
+                    import twr as _twr_c
+                    if _twr_c.leg_dudoso(ci, cf, _flujo_mes):
+                        _mes_dudoso = True
+                except Exception:
+                    pass
+                mp = _modified_dietz_pct(ci, cf, _flujo_mes)
                 if mp is not None:
                     comp *= (1 + mp / 100.0)
                     have_comp = True
@@ -959,7 +1154,22 @@ def compute_metrics_for_period(
             # volvería a publicar lo realizado sobre costo (el "+3,6% anual" de
             # una cuenta derrumbada). Ahí manda el Dietz punta a punta de los
             # bordes medidos, que es `delta_pct_val`.
-            if have_comp and year_twr_pct is None and _basis != "mercado":
+            # ⚠️ Y NO SE PUBLICA CUANDO EL MOTOR SE NEGÓ (ver arriba). La
+            # composición mensual sale de `monthly_entries`, que para un mes cerrado
+            # cumple `capital_final = capital_inicio + flujos + pnl_realized`: no sabe
+            # nada del mercado, y menos que nada sabe de la foto rota que hizo cortar
+            # al motor. Publicarla ahí es exactamente el número que las once rondas
+            # anteriores vinieron a cerrar, entrando por la puerta de al lado.
+            # Un solo mes que no se puede creer invalida el producto entero: la
+            # composición es multiplicativa, así que el mes malo se propaga a todo
+            # el año. Igual que en el motor, no se publica y se dice por qué.
+            if _mes_dudoso and year_twr_pct is None:
+                # Pisa por lo mismo que el guard de las puntas, más abajo: un
+                # motivo de falta de datos no debe tapar a uno de datos rotos.
+                _motor_nego = "medicion_dudosa"
+                _motor_nego_texto = _MOTIVO_MES_DUDOSO
+            if (have_comp and year_twr_pct is None and _basis != "mercado"
+                    and _motor_nego not in MOTIVOS_DATO_ROTO and not _mes_dudoso):
                 year_twr_pct = round((comp - 1) * 100, 2)
     elif broker_filter != "global":
         # AUDIT H-8 — day/week con filtro de broker: los snapshots son GLOBALES,
@@ -992,7 +1202,8 @@ def compute_metrics_for_period(
                 basis_incomparable = True
         snap_end = fetch_snapshot_at_or_before(conn, uid, period_end)
         start_value = float(snap_start["total_value"]) if snap_start else 0.0
-        _dw_current = live_value is not None and is_period_current(period_type, period_start, period_end)
+        _dw_current = live_value is not None and is_period_current(
+            period_type, period_start, period_end, today=today)
         if _dw_current:
             end_value = float(live_value)
         else:
@@ -1031,12 +1242,48 @@ def compute_metrics_for_period(
     delta_usd = end_value - start_value - flows
     delta_pct_val = _modified_dietz_pct(start_value, end_value, flows)
     delta_pct = round(delta_pct_val, 2) if delta_pct_val is not None else None
+    # ⚠️ Y LA CADENA CONTABLE TAMBIÉN, QUE ES LA VÍA MAYORITARIA.
+    #
+    # Arriba se convirtieron las ramas que miden a mercado, pero
+    # `bordes_mercado_periodo` sólo consigue las dos puntas en 12 de 670 usuarios:
+    # casi todos los meses publicados salen del Dietz punta a punta de
+    # `monthly_entries`, en dólares. Con sólo aquello arreglado, el calendario en
+    # Pesos seguía mostrando ENE–JUN idénticos a los de dólares y AGO convertido —
+    # el mismo defecto, una vía más adentro.
+    #
+    # Las fechas de un leg contable son las del propio período: `capital_inicio` es
+    # el cierre del mes anterior y `capital_final` el del último día. Es el mismo
+    # par de puntas que el motor usa para sus legs contables, que también son
+    # mensuales.
+    # `end_value > 0` alcanza como condición: con `start_value` en 0 la conversión
+    # es igual de válida (0 × TC sigue siendo 0) y exigir un arranque positivo
+    # dejaba a esos usuarios viendo EL MISMO número en pesos y en dólares — que es
+    # exactamente el defecto que este bloque viene a cerrar.
+    if (_pct_puntas_ars is None and str(moneda).lower() == "ars"
+            and period_type in ("month", "year")
+            and (start_value > 0 or end_value > 0)):
+        _d0c = _dia_anterior(period_start)
+        if _d0c:
+            _pct_puntas_ars = _pct_en_pesos(
+                conn, _d0c, period_end, start_value, end_value,
+                deposits, withdrawals)
+    # El punta-a-punta en pesos. Va ACÁ y no más abajo a propósito: si el motor o
+    # la composición tienen un número mejor, ésos pisan igual — ya vienen en la
+    # moneda pedida.
+    if _pct_puntas_ars is not None:
+        delta_pct = _pct_puntas_ars
     # AUDIT B1: el año usa la composición geométrica de meses (si está disponible),
     # no el Modified Dietz único anual (que diverge cuando hay aportes).
     # AUDIT D-1: `year_twr_pct` compone los meses del año, pero si el mes vivo se
     # salteó por falta de borde medido, esa composición es de un año INCOMPLETO
     # presentada como la del año. Con el borde del año sí medido, el Dietz punta
     # a punta es el número honesto — caemos a él en vez de publicar el parcial.
+    # El mes medido por el motor canónico gana sobre el Dietz de la contabilidad:
+    # es el MISMO número que muestra Métricas para esa ventana.
+    if period_type == "month" and month_twr_pct is not None:
+        delta_pct = month_twr_pct
+        if month_twr_usd is not None:
+            delta_usd = month_twr_usd
     if period_type == "year" and year_twr_pct is not None and not _live_month_unmeasured:
         delta_pct = year_twr_pct
     # AUDIT B4/B10 + C-3/H-8: período sin base confiable (día/semana con huecos,
@@ -1074,6 +1321,77 @@ def compute_metrics_for_period(
     # (lo postea el navegador en /api/monthly/sync-unrealized), no la variación
     # del período. Sin base comparable lo honesto es no publicar el número, no
     # publicar otro. El frontend muestra "—" y explica por qué.
+    # ⚠️ Y EL MISMO TRATO CUANDO EL MOTOR SE NEGÓ. `basis_incomparable` cubre una
+    # sola forma de no poder medir (las dos puntas en bases distintas). Cuando lo
+    # que corta es un guard del motor —una foto que salta ×3 sin flujo, una
+    # contabilidad que no cierra con la primera medición—, el `delta_pct` del año
+    # seguía saliendo por la otra puerta: el Dietz punta a punta de la cadena
+    # contable, que en el uid 35 de producción daba **+138.029 %** (su cadena pasa
+    # de US$1 a US$1.583.492 en el año, con un salto de US$956 a US$1.076.715 en
+    # febrero contra US$246 de depósitos). Bloquear sólo `year_twr_pct` no
+    # alcanzaba: el número entraba igual.
+    #
+    # Va en el MISMO lugar que `basis_incomparable` y por el mismo motivo: al
+    # final, cuando ya no queda nada que derivar de él.
+    # ⚠️ LA MISMA COTA, TAMBIÉN EN LAS PUNTAS.
+    #
+    # El bloque de arriba corta cuando la COMPOSICIÓN mes a mes encontró un mes
+    # increíble. Pero esa composición vive dentro de `if rows and not
+    # _hay_agujero and _cubre_el_periodo`: al usuario cuya contabilidad tiene un
+    # hueco no se le compone nada, `year_twr_pct` queda en None — y entonces
+    # publica el Dietz punta a punta, que nadie revisó. Medido sobre la copia de
+    # producción del 2026-08-16: el uid 659 leía **+70.683 %** con
+    # `start_value = 0`, US$113,87 de flujo neto y US$40.359 de valor final. El
+    # 707× no es rendimiento: es el cociente contra el medio-flujo de Dietz.
+    #
+    # Con v0 = 0 `leg_dudoso` no puede medir un ratio (no hay contra qué), así que
+    # acá el capital de arranque es el flujo mismo: si el valor final lo supera
+    # por más de `SALTO_MAX_VECES`, el dinero apareció de un lugar que la
+    # contabilidad no registra. Mismo umbral que el motor, importado de él y no
+    # copiado, para que siga habiendo una sola cota.
+    if (delta_pct is not None and not _motor_publico
+            and period_type in ("month", "year") and _basis != "mercado"):
+        try:
+            import twr as _twr_p
+            # `leg_dudoso` PRIMERO Y SIEMPRE, también con v0 = 0: su chequeo de
+            # 'desborde' (el Dietz tocando su piso de −1) no necesita un v0
+            # positivo, y es el único que caza el caso contrario al salto. Medido:
+            # el uid 176 publicaba **−199,28 %** — imposible como retorno, el piso
+            # es −100 % — con v0 = 0, US$2.333.425 de depósitos y US$8.330 de valor
+            # final. Saltearlo cuando v0 = 0 dejaba pasar toda esa familia.
+            _punta_dudosa = _twr_p.leg_dudoso(start_value, end_value, flows)
+            if not _punta_dudosa and start_value <= 0 and end_value > 0:
+                # Y con v0 = 0 hace falta ADEMÁS el chequeo del salto, que
+                # `leg_dudoso` no puede hacer: sin capital de arranque no hay
+                # ratio, así que el capital de arranque es el flujo mismo.
+                _aportado = max(flows, 0.0)
+                if _aportado <= 0 or (end_value / _aportado) > _twr_p.SALTO_MAX_VECES:
+                    _punta_dudosa = "salto"
+            if _punta_dudosa:
+                # PISA, no cede el paso: `_motor_nego` puede venir con un motivo
+                # de FALTA de datos ("importado_sin_mediciones"), que no está en
+                # MOTIVOS_DATO_ROTO y por lo tanto no corta. Con un `or` acá, el
+                # uid 632 seguía publicando **+30.696 %** (US$0 → US$1.140.083
+                # con US$7.380 de aportes) sólo porque ya tenía escrito otro
+                # motivo, más benigno. Datos ROTOS mandan sobre datos AUSENTES:
+                # el primero decide que no se publica.
+                _motor_nego = "medicion_dudosa"
+                _motor_nego_texto = _MOTIVO_PUNTAS_DUDOSAS
+        except Exception:
+            pass
+    if (_motor_nego in MOTIVOS_DATO_ROTO) and not _motor_publico:
+        delta_pct = None
+        delta_usd = 0.0
+        delta_pct_over_contrib = None
+        # ⚠️ Y SE ENCIENDE `basis_incomparable`, que es el interruptor que el
+        # FRONTEND ya sabe leer. Sin esto el guard se anulaba a sí mismo por el
+        # camino que el propio AUDIT D-1 documenta doce líneas más abajo:
+        # `delta_usd = 0` + sin trades = `isFlat` en MonthCard → el período que no
+        # se puede medir se publicaba como "Sin movimientos", que afirma que no
+        # pasó nada. Es el mismo estado ("no hay resultado publicable") y merece
+        # la misma UI; lo que cambia es el POR QUÉ, y ese viaja en
+        # `motor_motivo_texto`, que el headline usa en lugar del genérico.
+        basis_incomparable = True
     if basis_incomparable:
         delta_pct = None
         delta_usd = 0.0
@@ -1122,6 +1440,12 @@ def compute_metrics_for_period(
         inflation_pct=round(inflation_ret, 2) if inflation_ret is not None else None,
         basis_incomparable=basis_incomparable,
         basis=_basis,
+        motor_motivo=_motor_nego,
+        motor_motivo_texto=_motor_nego_texto,
+        medido_desde=_ventana_medida[0],
+        medido_hasta=_ventana_medida[1],
+        modo=("estimado" if modo == "estimado" else "certero"),
+        moneda=("ars" if str(moneda).lower() == "ars" else "usd"),
     )
     return metrics, ops
 
@@ -1301,9 +1625,15 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
     # el flujo de abajo caía en "sin grandes movimientos", que afirma que no pasó
     # nada cuando lo cierto es que no lo sabemos.
     if getattr(metrics, "basis_incomparable", False):
+        # El subtítulo dice la causa REAL. "Falta el cierre a mercado del
+        # arranque" es cierto para la base incomparable clásica, pero falso para
+        # el período que cortó un guard del motor: ahí no falta un cierre, sobra
+        # un salto que la contabilidad no explica. Decir la causa equivocada
+        # manda al usuario a buscar donde no está.
+        _mot = getattr(metrics, "motor_motivo_texto", None)
         return (
             f"{period_word} sin base para medir el rendimiento.",
-            "Falta el cierre a mercado del arranque del período.",
+            _mot or "Falta el cierre a mercado del arranque del período.",
         )
 
     # Caso especial: cerraste operaciones ganadoras pero el portfolio total bajó
@@ -1380,7 +1710,10 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
     # que nada hubiera medido esos US$201.119 a mercado. Contamos lo que SÍ es
     # medible (lo realizado y los flujos) y decimos por qué falta el resto.
     if getattr(metrics, "basis_incomparable", False):
+        _mot_n = getattr(metrics, "motor_motivo_texto", None)
         parts: List[str] = [
+            f"No podemos calcular cuánto rindió {period_label_str.lower()}. {_mot_n}"
+            if _mot_n else
             f"No podemos calcular cuánto rindió {period_label_str.lower()}: falta el "
             f"cierre a mercado del arranque del período, así que compararlo contra el "
             f"valor de hoy daría una diferencia que no es tu resultado."
@@ -1497,6 +1830,7 @@ def build_period_report(
     bench: Optional[Dict[str, Any]] = None,
     live_value: Optional[float] = None,
     today: Optional[date_cls] = None,
+    modo: str = "certero", moneda: str = "usd",
 ) -> PeriodReport:
     """Builder principal — recibe un período, devuelve el PeriodReport completo
     (sin children. Children se anidan en `timeline.py`)."""
@@ -1504,9 +1838,18 @@ def build_period_report(
     label = period_label(period_type, period_key, start)
     is_current = is_period_current(period_type, start, end, today=today)
 
+    # ⚠️ `today` VIAJA. `build_period_report` ya lo recibía y lo usaba para su
+    # propio `is_current`, pero no se lo pasaba a las métricas: adentro,
+    # `is_period_current` caía en `utcnow()`. En producción da igual (la fecha es
+    # la misma de los dos lados), pero deja los guards del período EN CURSO sin
+    # forma determinista de testearse: `test_sin_cierre_medido_...` fija
+    # `today=2026-08-16` y empezó a fallar solo el 1 de septiembre, cuando el
+    # calendario real dejó a agosto atrás. Un guard que caduca con el reloj no es
+    # un guard.
     metrics, ops = compute_metrics_for_period(
         conn, uid, period_type, start, end, broker_filter,
-        bench=bench, live_value=live_value,
+        bench=bench, live_value=live_value, today=today,
+        modo=modo, moneda=moneda,
     )
     drivers = compute_drivers(ops)
     highlights = compute_highlights(ops)

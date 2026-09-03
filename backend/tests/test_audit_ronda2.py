@@ -100,7 +100,11 @@ class CriterioDeAceptacionTest(_Base):
     def test_su_cagr_sigue_siendo_el_de_su_historia(self):
         self._usuario_sano_con_historia_legacy()
         r = main._historical_cagr_global(self.conn, self.uid)
-        self.assertEqual(r["months"], 19)
+        # ⚠️ `months` es el SPAN EN MESES de la ventana (días/30,44), no el conteo
+        # de pares de cierres que hacía el motor viejo: 599 días son 19,7 → 20.
+        # La propiedad que este test protege —que el usuario sano conserve su
+        # historia y su número, y no caiga a "−56,9 % en 1 mes"— sigue igual.
+        self.assertEqual(r["months"], 20)
         self.assertGreater(r["cagr"], 15)
 
     def test_intradia_sostiene_la_linea_pero_no_es_pico_ni_denominador(self):
@@ -344,8 +348,12 @@ class CagrDenominadorTest(_Base):
         self.snap("2025-01-31", 100000.0)
         self.snap("2026-08-31", 120000.0)     # 19 meses, +20%
         r = main._historical_cagr_global(self.conn, self.uid)
-        self.assertEqual(r["months"], 19)
-        self.assertAlmostEqual(r["cagr"], 12.2, places=1)   # NO 791,61%
+        # Ver `test_dos_mediciones_muy_separadas_no_explotan_el_cagr`: el motor
+        # canónico no encadena a través de 19 meses de silencio. Lo que este test
+        # fija —que NO se anualiza por PARES de puntos, que era el 791,61 %— sigue
+        # valiendo, y el span de la historia se reporta igual.
+        self.assertIsNone(r["cagr"])
+        self.assertEqual(r["historia_meses"], 19)
 
 
 class FormaDeLaRespuestaTest(_Base):

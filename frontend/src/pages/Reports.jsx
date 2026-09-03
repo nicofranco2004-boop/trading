@@ -23,6 +23,8 @@ import LockedSection from '../components/plan/LockedSection'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { api } from '../utils/api'
+import ModoRendimiento from '../components/ModoRendimiento'
+import { useCurrency } from '../contexts/CurrencyContext'
 
 // ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
@@ -82,7 +84,7 @@ function addMonths(monthK, n) {
 //   - day:   fetches puntuales a /api/reports/period/day/{key} (últimos 7 días)
 //   - year:  fetches puntuales a /api/reports/period/year/{key} (años visibles)
 
-function usePeriodItems(tab, broker, timelineData) {
+function usePeriodItems(tab, broker, timelineData, modo, moneda) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -118,7 +120,8 @@ function usePeriodItems(tab, broker, timelineData) {
       setLoading(true)
       try {
         const result = await api.get(
-          `${endpoint}?broker=${encodeURIComponent(broker)}`,
+          `${endpoint}?broker=${encodeURIComponent(broker)}`
+          + `&modo=${encodeURIComponent(modo)}&moneda=${encodeURIComponent(moneda)}`,
           { signal: controller.signal },
         )
         if (cancelled) return
@@ -135,7 +138,7 @@ function usePeriodItems(tab, broker, timelineData) {
     }
     load()
     return () => { cancelled = true; controller.abort() }
-  }, [tab, broker, timelineData.yearGroups])
+  }, [tab, broker, modo, moneda, timelineData.yearGroups])
 
   return { items, loading, error }
 }
@@ -144,12 +147,19 @@ function usePeriodItems(tab, broker, timelineData) {
 
 export default function Reports() {
   const [broker, setBroker] = useState('global')
-  const timelineData = useReportsTimeline(broker, 12)
+  // El MISMO par de controles que Métricas y Dashboard, con el mismo motor
+  // detrás: la moneda la manda el selector global (vive en el shell) y el modo
+  // es local a la pantalla, igual que en Dashboard.
+  const { currency } = useCurrency()
+  const moneda = currency === 'ARS' ? 'ars' : 'usd'
+  const [modoRend, setModoRend] = useState('certero')
+  const timelineData = useReportsTimeline(broker, 12, modoRend, moneda)
   const [tab, setTab] = useState('month')
   const [expandedKey, setExpandedKey] = useState(null)
   const plan = usePlanFeatures()
 
-  const { items, loading: loadingItems, error: itemsError } = usePeriodItems(tab, broker, timelineData)
+  const { items, loading: loadingItems, error: itemsError } =
+    usePeriodItems(tab, broker, timelineData, modoRend, moneda)
 
   // Reset expanded key cuando cambia el tab
   useEffect(() => { setExpandedKey(null) }, [tab])
@@ -167,6 +177,7 @@ export default function Reports() {
               subtitle={`Performance · ${LABELS[tab]}`}
             />
             <ExportCsvButton resource="monthly" label="Exportar mensual" source="reports_header" variant="compact" />
+            <ModoRendimiento valor={modoRend} onChange={setModoRend} />
             <BrokerSelector value={broker} onChange={setBroker} />
           </div>
         }
@@ -581,10 +592,16 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label: 'Capital aportado',
       value: `US$ ${fmtNum(snap.cum_deposited)}`,
-      sub: capitalNow != null
+      // ⚠️ NO CUANDO NO HAY BASE. Este cociente compara el capital de HOY contra
+      // lo aportado, así que da un "retorno" enorme cuando la cartera arrancó con
+      // posiciones que nunca entraron como aporte — justo lo que
+      // `basis_incomparable` señala. Se veía en la misma tarjeta que dice "Año sin
+      // base para medir el rendimiento": al lado del "—" del P&L, un
+      // "+1565.9%". Uno de los dos está mintiendo, y es éste.
+      sub: (capitalNow != null && !noBasis)
         ? `Retorno sobre aportes: ${capitalNow > snap.cum_deposited ? '+' : '−'}${(((capitalNow - snap.cum_deposited) / snap.cum_deposited) * 100).toFixed(1)}%`
         : 'depósitos netos',
-      tone: capitalNow != null
+      tone: (capitalNow != null && !noBasis)
         ? (capitalNow >= snap.cum_deposited ? 'pos' : 'neg')
         : undefined,
     })

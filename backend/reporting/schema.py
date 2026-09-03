@@ -93,6 +93,21 @@ class PeriodMetrics:
     # sabe nada del mercado. Eso es lo que producía "+3,6% anual" en una cuenta
     # que a mercado se había derrumbado, y "9 de 12 meses positivos" perdiendo plata.
     basis: str = "contable"
+    # ⚠️ POR QUÉ EL NÚMERO NO ESTÁ, CUANDO NO ESTÁ. `basis_incomparable` sólo cubre
+    # un caso (las dos puntas en bases distintas). Cuando el motor canónico corta
+    # por una foto que no cierra o por una contabilidad que no coincide con la
+    # primera medición, Reportes publicaba igual desde la cadena mensual: la misma
+    # cuenta leía "—" en Métricas y un porcentaje acá. Ahora el motivo viaja y la
+    # pantalla dice lo mismo que la otra.
+    motor_motivo: Optional[str] = None
+    motor_motivo_texto: Optional[str] = None
+    # La ventana que el % REALMENTE cubre cuando lo midió el motor (puede ser más
+    # corta que el período: "del 3 al 31 de julio", no "julio entero").
+    medido_desde: Optional[str] = None
+    medido_hasta: Optional[str] = None
+    # Con qué modo y en qué moneda se midió — los mismos dos controles que Métricas.
+    modo: str = "certero"
+    moneda: str = "usd"
 
 
 @dataclass

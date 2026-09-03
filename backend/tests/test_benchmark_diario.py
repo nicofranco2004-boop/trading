@@ -661,3 +661,64 @@ class MotorDelAsesorTest(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RendimientoAnualTest(_Base):
+    """`/api/goals/cagr` = el motor canónico. Antes era un cuarto motor que
+    anualizaba un mes: 417 usuarios de producción lo veían, el 100 % con 1 o 2
+    meses de historia (uno leía +16.841 % anual sobre 44 días)."""
+
+    def test_no_anualiza_un_mes(self):
+        import main as _m
+        self.snap("2026-07-03", 1000.0)
+        self.snap("2026-08-16", 1540.0)          # +54 % en 44 días
+        r = _m._historical_cagr_global(self.conn, self.uid)
+        self.assertIsNone(r["cagr"])                       # no se anualiza
+        self.assertAlmostEqual(r["total_return_pct"], 54.0, places=1)
+        self.assertEqual(r["dias"], 44)
+        self.assertIn("medio año", r["reason"])
+
+    def test_anualiza_cuando_hay_mas_de_medio_ano(self):
+        import main as _m
+        # cierres MENSUALES: un hueco > 45 días partiría la serie (MAX_HUECO_DIAS)
+        vals = [1000, 1010, 1020, 1030, 1040, 1050, 1060, 1070, 1080, 1090]
+        for i, v in enumerate(vals):
+            mes = 1 + i
+            self.snap(f"2025-{mes:02d}-{28 if mes == 2 else 30:02d}", float(v))
+        r = _m._historical_cagr_global(self.conn, self.uid)
+        self.assertIsNotNone(r["cagr"])
+        self.assertGreater(r["dias"], 180)
+        # el anualizado tiene que ser coherente con el acumulado y la ventana
+        años = r["dias"] / 365.25
+        esperado = ((1 + r["total_return_pct"] / 100) ** (1 / años) - 1) * 100
+        self.assertAlmostEqual(r["cagr"], esperado, places=1)
+
+    def test_el_modo_estimado_alarga_la_ventana(self):
+        import main as _m
+        # contabilidad mensual desde 2025-01, y la medición arranca a menos de 45
+        # días del último cierre contable (si no, el traspaso corta el tramo).
+        for i in range(12):
+            mes = 1 + i
+            self.snap(f"2025-{mes:02d}-{28 if mes == 2 else 30:02d}", 900.0 + i * 10,
+                      source="import", nd=0.0)
+        self.snap("2026-01-05", 1000.0)
+        self.snap("2026-02-16", 1100.0)
+        c = _m._historical_cagr_global(self.conn, self.uid, modo="certero")
+        e = _m._historical_cagr_global(self.conn, self.uid, modo="estimado")
+        self.assertIsNone(c["cagr"])                       # 44 días: no alcanza
+        self.assertIsNotNone(e["cagr"])                    # con la contabilidad, sí
+        self.assertGreater(e["dias"], c["dias"])
+        self.assertEqual(e["base_del_twr"], "contable")
+        self.assertEqual(c["base_del_twr"], "mercado")
+
+    def test_hereda_los_guards_del_motor(self):
+        """Una foto que no cierra corta el tramo, y el rendimiento anual tampoco
+        se publica de punta a punta — antes cada motor decidía por su cuenta."""
+        import main as _m
+        self.snap("2026-06-30", 4.6)
+        self.snap("2026-07-01", 1116.1)          # ×242 sin flujo
+        self.snap("2026-07-02", 1120.0)
+        r = _m._historical_cagr_global(self.conn, self.uid)
+        self.assertIsNone(r["cagr"])
+        self.assertIsNone(r["total_return_pct"])
+        self.assertIn("saltó", r["reason"])

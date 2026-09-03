@@ -46,8 +46,12 @@ class CagrFromSnapshotsTest(unittest.TestCase):
         self._snap("2024-09-30", 1100, 1000)   # +10% en un mes, sin flujos
         self.conn.commit()
         r = main._historical_cagr_global(self.conn, self.uid)
-        self.assertEqual(r["months"], 1)
-        self.assertAlmostEqual(r["cagr"], round((1.1 ** 12 - 1) * 100, 2), places=1)
+        # ⚠️ YA NO SE ANUALIZA UN MES. Este test fijaba `1,1 ** 12` — el retorno de
+        # un mes elevado a la doceava potencia—, que es justo lo que producía
+        # "+16.841 % anual" en producción. El motor canónico no anualiza bajo medio
+        # año; lo que se publica es el ACUMULADO del período, con su ventana.
+        self.assertIsNone(r["cagr"])
+        self.assertAlmostEqual(r["total_return_pct"], 10.0, places=1)
 
     def test_flows_do_not_distort(self):
         # Depósito de 1000 entre meses NO debe inflar el retorno (TWRR ajusta por flujo).
@@ -56,8 +60,9 @@ class CagrFromSnapshotsTest(unittest.TestCase):
         self.conn.commit()
         r = main._historical_cagr_global(self.conn, self.uid)
         # r_mes = (2100-1000-1000)/(1000+0.5*1000) = 100/1500 = 6.67% → no +110%
-        self.assertLess(r["cagr"], 200)        # NO el disparate de value/dep
-        self.assertGreater(r["cagr"], 0)
+        self.assertIsNone(r["cagr"])           # < medio año: no se anualiza
+        self.assertLess(r["total_return_pct"], 200)   # NO el disparate de value/dep
+        self.assertGreater(r["total_return_pct"], 0)
 
     def test_durable_ignores_cost_based_monthly(self):
         # Snapshots a MERCADO (suben) pero monthly al COSTO (plano) → el CAGR usa snapshots.
@@ -68,7 +73,9 @@ class CagrFromSnapshotsTest(unittest.TestCase):
             self._monthly(y, mo, 1000, 1000)   # cost-based: 0% retorno
         self.conn.commit()
         r = main._historical_cagr_global(self.conn, self.uid)
-        self.assertGreater(r["cagr"], 50)      # refleja la suba real, no el 0% del monthly
+        # refleja la suba real (no el 0 % de la cadena al costo), sin anualizar:
+        # 1000 → 1500 con el aportado quieto es exactamente +50 %.
+        self.assertAlmostEqual(r["total_return_pct"], 50.0, places=6)
 
     def test_fallback_to_monthly_NO_publica_un_cagr(self):
         """⚠️ RONDA 11 · ESTE TEST AFIRMABA EL DEFECTO. `monthly_entries` de meses
@@ -77,7 +84,8 @@ class CagrFromSnapshotsTest(unittest.TestCase):
         contable como si fuera el rendimiento de mercado. Medido: −78,34% anual el
         mismo día en que `twr.curva_indexada` medía 0,0% para esa cuenta.
 
-        El número contable NO se tira: viaja con nombre propio (`cagr_contable_pct`)
+        (El fallback a `monthly_entries` ya no existe: la historia contable se ve
+        con el modo ESTIMADO del mismo motor, no con un campo aparte.)
         y con `basis`, para que nadie lo publique creyendo que es de mercado.
         """
         self._monthly(2024, 8, 1000, 1100)
@@ -85,10 +93,17 @@ class CagrFromSnapshotsTest(unittest.TestCase):
         self.conn.commit()
         r = main._historical_cagr_global(self.conn, self.uid)
         self.assertIsNone(r["cagr"])
-        self.assertEqual(r.get("basis"), "contable")
+        # `basis` desapareció: el motor ya no cae a `monthly_entries`, y el campo
+        # con la regla ahora se llama `base_del_twr` (mercado|contable).
+        self.assertIsNone(r.get("total_return_pct"))
         self.assertTrue(r.get("reason"))
-        self.assertIsNotNone(r.get("cagr_contable_pct"))
-        self.assertGreater(r["cagr_contable_pct"], 0)
+        # `cagr_contable_pct` era del fallback a `monthly_entries`, que ya no existe:
+        # la historia contable se expone por el modo ESTIMADO, no por un campo
+        # aparte. Lo que este test protege —que el CERTERO no publique un número
+        # sacado de la contabilidad— sigue valiendo.
+        self.assertIsNone(r.get("total_return_pct"))
+        self.assertEqual(r.get("base_del_twr"), "mercado")
+        self.assertTrue(r.get("reason"))
 
     def test_one_snapshot_falls_back(self):
         """Con una sola medición se cae al mismo fallback, y tampoco publica."""
@@ -98,7 +113,9 @@ class CagrFromSnapshotsTest(unittest.TestCase):
         self.conn.commit()
         r = main._historical_cagr_global(self.conn, self.uid)
         self.assertIsNone(r["cagr"])           # el fallback ya no publica (ronda 11)
-        self.assertEqual(r.get("basis"), "contable")
+        # `basis` desapareció: el motor ya no cae a `monthly_entries`, y el campo
+        # con la regla ahora se llama `base_del_twr` (mercado|contable).
+        self.assertIsNone(r.get("total_return_pct"))
 
     def test_month_end_reduction(self):
         # Varios snapshots en un mes → solo cuenta el último (fin de mes).
@@ -107,7 +124,12 @@ class CagrFromSnapshotsTest(unittest.TestCase):
         self._snap("2024-09-30", 1100, 1000)
         self.conn.commit()
         r = main._historical_cagr_global(self.conn, self.uid)
-        self.assertEqual(r["months"], 1)       # ago→sep = 1 período (no 2)
+        # ⚠️ YA NO SE REDUCE A FIN DE MES. El motor canónico usa TODOS los puntos
+        # medidos (la serie es diaria), así que la ventana arranca el 15/08 y no el
+        # 31/08: 46 días ≈ 2 meses. Reducir a fin de mes era una limitación del
+        # motor viejo, no una decisión — tiraba mediciones reales.
+        self.assertEqual(r["months"], 2)
+        self.assertEqual(r["desde"], "2024-08-15")
 
 
 if __name__ == "__main__":

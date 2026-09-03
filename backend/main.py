@@ -15156,134 +15156,90 @@ def _cagr_from_monthly_rows(rows) -> dict:
             "total_return": round(prod - 1, 6), "reason": None}
 
 
-def _historical_cagr_global(conn, uid: int) -> dict:
-    """CAGR histórico TWR del user, leído de los SNAPSHOTS (durables, valuados a
-    MERCADO vía el cron diario y/o el backfill histórico MTM), reducidos a fin de mes,
-    con el MISMO encadenado TWRR que el chart "Evolución". Así el CAGR queda
-    CONSISTENTE con la curva y NO se revierte cuando _repair_monthly_chain re-deriva
-    monthly al costo (los meses cerrados de monthly tienen pnl_unrealized=0).
+def _historical_cagr_global(conn, uid: int, modo: str = None, moneda: str = None) -> dict:
+    """El rendimiento histórico del usuario, DEL MOTOR CANÓNICO (`twr.curva_indexada`).
 
-    Cae a monthly_entries si hay <2 fines de mes en snapshots (cuenta sin snapshots
-    todavía) — preserva el comportamiento previo para cuentas nuevas."""
-    # ⚠️ NO se leen los snapshots crudos: la tabla mezcla mediciones del cron con
-    # fotos que el import FABRICA copiando la cadena contable
-    # (persister.py:1289-1292). Encadenar esas fabricaba un CAGR que no era del
-    # mercado. `twr.serie_medible` deja sólo lo que está en base de mercado.
+    ⚠️ ACÁ VIVÍA UN CUARTO MOTOR, Y ANUALIZABA UN MES.
+
+    Esta función reimplementaba Modified Dietz (con su propia heurística de retiro
+    grande) sobre los cierres de mes, y después hacía:
+
+        meses_span = max(1, ...)          # ← 1 cuando hay dos cierres consecutivos
+        cagr = cum ** (12 / meses_span) - 1
+
+    o sea elevaba el retorno de UN mes a la doceava potencia. Medido sobre la copia
+    de producción del 2026-08-16: publicaba para 417 usuarios y **el 100 % de ellos
+    tenía 1 o 2 meses de historia medida** (mediana 1). 39 veían más de +100 %
+    anual, 10 más de +300 % y 2 más de +1.000 %: el uid 966 leía **+16.841 % anual**
+    donde el motor canónico mide +54,0 % sobre 44 días. Y `Goals.jsx` lo propone
+    como `expected_return_pct` por defecto — o sea que alguien proyectaba su meta a
+    dieciséis mil por ciento anual.
+
+    `curva_indexada` ya resuelve las dos cosas: encadena con el mismo Dietz que el
+    resto de la app y **sólo anualiza cuando la ventana llega a medio año**
+    ("bajo medio año, anualizar es propaganda"). Cuando no llega, esta respuesta
+    trae el ACUMULADO con su ventana declarada, que es verdadero y accionable:
+    "+54 % desde el 3 de julio" en vez de un anualizado inventado.
+    """
     import twr as _twr
-    # ⚠️ `medibles`, NO la serie entera. Aplanando todos los puntos, este CAGR
-    # encadenaba fotos al COSTO contra mediciones a mercado: medido, −92,27% anual
-    # para una cuenta y un día en que la pantalla publicaba 0,0%. El dato ya no deja
-    # hacerlo —los no medibles no traen `value`— pero el motivo va escrito igual:
-    # un CAGR es un número publicado, y un número publicado sale sólo de lo medido.
-    _serie = _twr.serie_medible(conn, uid)
-    # ⚠️ Y TAMPOCO SE APLANA LA SERIE IGNORANDO LOS TRAMOS — el mismo criterio que
-    # ya usan los builders de IA (`insights_drawdown.py`). `serie_medible` la parte
-    # donde hubo demasiado silencio; encadenando por encima del hueco, este CAGR
-    # publicaba un derrumbe que la pantalla se niega a publicar. Medido: −45,82%
-    # anual con `twr.curva_indexada` devolviendo None por `serie_partida`. Que las
-    # dos puntas estén a mercado no alcanza: si no se sabe qué pasó en el medio, el
-    # tramo no se puede encadenar.
-    _motivo_curva = None
+    _modo = _twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO
+    _moneda = _twr.MONEDA_ARS if str(moneda or "").lower() == "ars" else _twr.MONEDA_USD
     try:
-        _curva = _twr.curva_indexada(conn, uid)
-        _con_legs = [t for t in _curva["tramos_detalle"] if t["legs"] > 0]
-        _motivo_curva = _curva.get("motivo_texto")
+        c = _twr.curva_indexada(conn, uid, modo=_modo, moneda=_moneda)
     except Exception:
-        _con_legs = []
-    if len(_con_legs) == 1:
-        _d0, _d1 = _con_legs[0]["desde"], _con_legs[0]["hasta"]
-        _serie = dict(_serie, medibles=[p for p in _serie["medibles"]
-                                        if _d0 <= p["date"] <= _d1])
-    elif len(_con_legs) > 1:
-        # El motivo lo pone el motor: un hueco y una foto que no cierra
-        # (`medicion_dudosa`) parten la serie igual pero no se explican igual.
-        return {"cagr": None, "months": 0, "basis": "medido",
-                "reason": _motivo_curva or _twr.MOTIVO_TEXTO.get("serie_partida")}
-    # Reducir a fin de mes: el ÚLTIMO punto de cada YYYY-MM (orden asc → pisa).
-    by_month = {}
-    for _p in _serie["medibles"]:
-        by_month[_p["date"][:7]] = {"date": _p["date"], "total_value": _p["value"],
-                                    "net_deposited": _p["net_deposited"]}
-    months = [by_month[k] for k in sorted(by_month)]
-    if len(months) < 2:
-        # ⚠️ EL FALLBACK NO PUBLICA UN PORCENTAJE. Acá se caía a `monthly_entries`
-        # sin ningún filtro, y `monthly_entries` de meses cerrados ESTÁ AL COSTO
-        # (pnl_unrealized forzado a 0) — lo dice el propio docstring de
-        # `_cagr_from_monthly_rows`. Medido: /api/goals/cagr devolvía −78,34% anual
-        # el mismo día en que `twr.curva_indexada` medía 0,0% para esa cuenta. Que
-        # el camino principal se arreglara no alcanzaba: el defecto vivía en la
-        # rama a la que se cae justo cuando NO hay nada medido, que es exactamente
-        # cuando más tienta inventar un número.
-        #
-        # El número contable no se tira —hay quien lo quiere— pero viaja con nombre
-        # propio y NO como `cagr`, para que nadie lo publique creyendo que es de
-        # mercado.
-        rows = conn.execute(
-            """SELECT deposits, withdrawals, capital_inicio, capital_final
-               FROM monthly_entries WHERE user_id=? AND broker='global'
-               ORDER BY year ASC, month ASC""", (uid,)).fetchall()
-        _contable = _cagr_from_monthly_rows(rows)
-        return {"cagr": None,
-                "months": _contable.get("months", 0),
-                "cagr_contable_pct": _contable.get("cagr"),
-                "basis": "contable",
-                "reason": (_contable.get("reason")
-                           or "Todavía no hay dos cierres medidos a mercado: lo único "
-                              "que hay es la contabilidad, que no mide el mercado.")}
-    # TWRR chain-linked (espejo de buildEvolutionFromSnapshots): el 1er fin de mes es
-    # baseline (cum=1); cada período acumula su retorno ajustado por flujos.
-    cum = 1.0
-    prev_val = prev_dep = None
-    n = 0
-    for s in months:
-        val = s["total_value"] or 0
-        dep = s["net_deposited"] or 0
-        if prev_val is not None and prev_val > 0:
-            flows = dep - prev_dep
-            pnl = (val - prev_val) - flows
-            flow_ratio = abs(flows) / prev_val if prev_val > 0 else 0
-            big_wd = flows < 0 and flow_ratio > 0.3        # retiro grande → avg = prev_val
-            avg = prev_val if big_wd else (prev_val + 0.5 * flows)
-            r = (pnl / avg) if avg > 0 else 0
-            # SIN TECHO. El `min(0.5, r)` que estaba acá truncaba los meses buenos
-            # de la CARTERA y no se le aplicaba al benchmark → el CAGR salía
-            # sistemáticamente bajo. Mismo criterio que `twr.dietz`.
-            r = max(-0.99, r)
-            cum *= (1 + r)
-            n += 1
-        prev_val, prev_dep = val, dep
-    if n == 0:
-        return {"cagr": None, "months": len(months), "total_return": None, "reason": "Datos insuficientes."}
-    # ⚠️ SE ANUALIZA POR TIEMPO TRANSCURRIDO, no por cantidad de pares.
-    # `n` cuenta TRAMOS encadenados y `12/n` asume que cada tramo es un mes. Con
-    # los snapshots crudos eso era casi cierto (el import fabrica una foto por
-    # mes); con la serie filtrada a base de mercado deja de serlo, y cada hueco de
-    # meses se anualiza como si fuera uno solo: dos mediciones separadas 19 meses
-    # con +20% entre ellas publicaban 791,61% de CAGR. Ese número sale por
-    # /api/goals/cagr y viaja a la IA. Los meses de calendario entre la primera y
-    # la última medición son el denominador honesto.
-    def _ym(x):
-        y, m = (int(v) for v in str(x["date"])[:7].split("-"))
-        return y * 12 + m
-    #
-    # NO se agrega acá un piso de "mínimo un trimestre para anualizar", aunque
-    # anualizar un solo mes sea discutible: eso es una decisión de producto que
-    # cambia un número que hoy se publica, y `tests/test_cagr_snapshots.py:50`
-    # fija el comportamiento actual a propósito. Lo que sí era un defecto —y es lo
-    # que se corrige— es el DENOMINADOR.
-    meses_span = max(1, _ym(months[-1]) - _ym(months[0]))
-    cagr = cum ** (12 / meses_span) - 1
-    return {"cagr": round(cagr * 100, 2), "months": meses_span,
-            "total_return": round(cum - 1, 6), "reason": None}
+        log.exception("cagr uid=%s", uid)
+        return {"cagr": None, "months": 0, "reason": "No se pudo calcular."}
+
+    d0, d1 = c.get("ventana_desde"), c.get("ventana_hasta")
+    dias = _twr._dias(d0, d1) if (d0 and d1) else 0
+    meses = round(dias / 30.44) if dias else 0
+    # ⚠️ EL SPAN DE LA HISTORIA SE REPORTA AUNQUE NO HAYA NÚMERO. Cuando el motor
+    # no publica —serie partida, foto dudosa— la ventana viene vacía, y devolver
+    # "0 meses" borra un dato que el usuario tiene: cuánta historia medida hay.
+    # La pantalla lo usa para decir "19 meses de historia, pero con un hueco en el
+    # medio" en vez de "0 meses", que suena a cuenta nueva.
+    md0, md1 = c.get("medido_desde"), c.get("medido_hasta")
+    dias_hist = _twr._dias(md0, md1) if (md0 and md1) else 0
+    base = {
+        "modo": _modo,
+        "moneda": c.get("moneda", "usd"),
+        # Con qué REGLA se midió: 'mercado' (precio real) o 'contable'.
+        # ⚠️ NO se llama `basis`: ese nombre tenía otra semántica en el motor viejo
+        # ("caí al fallback de monthly_entries") y reusarlo confundiría a cualquier
+        # lector que lo recuerde.
+        "base_del_twr": c.get("base_del_twr"),
+        "desde": d0, "hasta": d1,
+        "dias": dias,
+        "months": meses,
+        # La historia MEDIDA de punta a punta, publique o no.
+        "historia_desde": md0, "historia_hasta": md1,
+        "historia_meses": (round(dias_hist / 30.44) if dias_hist else 0),
+        # El acumulado del período medido. Es el número honesto cuando no se puede
+        # anualizar, y el frontend lo muestra CON la ventana al lado.
+        "total_return": (round(c["twr"], 6) if c.get("twr") is not None else None),
+        "total_return_pct": (round(c["twr"] * 100, 2) if c.get("twr") is not None else None),
+    }
+    if c.get("twr") is None:
+        return {**base, "cagr": None,
+                "reason": c.get("motivo_texto") or "Todavía no hay dos cierres medidos a mercado."}
+    if c.get("cagr") is None:
+        return {**base, "cagr": None,
+                "reason": ("El período medido es más corto que medio año: anualizarlo "
+                           "amplificaría el ruido hasta un número que no significa nada. "
+                           "Te mostramos lo que rindió en el período, que sí es exacto.")}
+    return {**base, "cagr": round(c["cagr"] * 100, 2), "reason": None}
 
 
 @app.get("/api/goals/cagr")
-def historical_cagr(uid: int = Depends(get_effective_user)):
-    """CAGR histórico TWR. Lee de snapshots (durables, MTM) → consistente con el chart
-    y no se revierte con el recompute mensual. Fallback a monthly_entries sin snapshots."""
+def historical_cagr(modo: str = "certero", moneda: str = "usd",
+                    uid: int = Depends(get_effective_user)):
+    """El rendimiento histórico, del MISMO motor que la sección Performance
+    (`twr.curva_indexada`): mismos cortes, misma cota de plausibilidad, mismo piso
+    para anualizar. `modo` (certero|estimado) y `moneda` (usd|ars) son los mismos
+    dos controles que la pantalla de Métricas."""
     conn = get_db()
     try:
-        return _historical_cagr_global(conn, uid)
+        return _historical_cagr_global(conn, uid, modo=modo, moneda=moneda)
     finally:
         conn.close()
 
@@ -32659,6 +32615,8 @@ def _live_valuation_rate(conn, uid: int) -> float:
 def reports_timeline(
     broker: str = "global",
     months: int = 12,
+    modo: str = "certero",
+    moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
     """Timeline cronológica condensada — últimos N meses, con semanas anidadas.
@@ -32704,11 +32662,13 @@ def reports_timeline(
         timeline = build_timeline(
             conn, uid, broker_filter=broker, months=months,
             bench=bench_data, live_value=live_value,
-            prices={}, tc_blue=tc_blue,
+            prices={}, tc_blue=tc_blue, modo=modo, moneda=moneda,
         )
         return {
             "broker": broker,
             "months_requested": months,
+            "modo": modo,
+            "moneda": moneda,
             "reports": [report_to_dict(r) for r in timeline],
         }
     finally:
@@ -32719,6 +32679,8 @@ def reports_timeline(
 def reports_period_detail(
     period_type: str, period_key: str,
     broker: str = "global",
+    modo: str = "certero",
+    moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
     """Detalle de un período específico — útil para deep-link o expandir un
@@ -32764,6 +32726,7 @@ def reports_period_detail(
             report = build_period_report(
                 conn, uid, period_type, period_key,
                 broker_filter=broker, bench=bench_data, live_value=live_value,
+                modo=modo, moneda=moneda,
             )
         except ValueError as ex:
             raise HTTPException(400, str(ex))

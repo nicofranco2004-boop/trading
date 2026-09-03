@@ -1,3 +1,4 @@
+import ModoRendimiento from '../components/ModoRendimiento'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Target, Plus, Pencil, Trash2, TrendingUp, Calendar, DollarSign, CheckCircle2, AlertTriangle, Compass, Zap, ArrowRight } from 'lucide-react'
@@ -31,6 +32,9 @@ const addYears = (years) => {
 export default function Goals() {
   const [goals, setGoals] = useState([])
   const [cagr, setCagr] = useState(null)
+  // El mismo control que la tarjeta de Performance de Métricas: el rendimiento
+  // que se muestra acá sale del MISMO motor, así que tiene los mismos dos modos.
+  const [modoRend, setModoRend] = useState('certero')
   const [currentValue, setCurrentValue] = useState(0)
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState(null) // 'add' | 'edit' | null
@@ -39,14 +43,14 @@ export default function Goals() {
   const toast = useToast()
 
   // valuationDollar en deps: al cambiar MEP/CCL, recomputar valor actual + proyecciones.
-  useEffect(() => { loadAll() }, [valuationDollar])
+  useEffect(() => { loadAll() }, [valuationDollar, modoRend])
 
   async function loadAll() {
     setLoading(true)
     try {
       const [gs, c, positions, brokers, dolar, prices] = await Promise.all([
         api.get('/goals'),
-        api.get('/goals/cagr').catch(() => null),
+        api.get(`/goals/cagr?modo=${modoRend}`).catch(() => null),
         api.get('/positions'),
         api.get('/brokers'),
         api.get('/dolar').catch(() => null),
@@ -167,15 +171,34 @@ export default function Goals() {
               Con <span className="font-medium">TWR</span> (rendimiento ajustado por flujos) — neutraliza el efecto de tus aportes y retiros para que solo veas la performance pura del mercado sobre tu capital.
             </p>
           </InfoTooltip>
+          <ModoRendimiento valor={modoRend} onChange={setModoRend} className="ml-auto" />
         </div>
+        {/* ⚠️ EL ANUALIZADO SÓLO SI HAY MEDIO AÑO. Acá se publicaba un CAGR que
+            elevaba el retorno de UN mes a la doceava potencia: medido en producción,
+            417 usuarios lo veían y el 100 % tenía 1 o 2 meses de historia (uno leía
+            +16.841 % anual sobre 44 días) — y ese número se proponía como
+            `expected_return_pct` por defecto para proyectar la meta. Ahora el motor
+            no anualiza bajo medio año, y en su lugar va el ACUMULADO del período
+            con la ventana al lado, que es verdadero. */}
         {cagr?.cagr != null ? (
           <p className="text-sm text-ink-2">
-            Basado en {cagr.months} {cagr.months === 1 ? 'mes' : 'meses'} cargados:
+            Basado en {cagr.months} {cagr.months === 1 ? 'mes' : 'meses'} medidos:
             <span className={`ml-2 text-2xl font-bold ${cagr.cagr >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
               {cagr.cagr >= 0 ? '+' : ''}{cagr.cagr.toFixed(2)}%
             </span>
             <span className="text-xs text-ink-3 ml-2">anualizado (TWR)</span>
           </p>
+        ) : cagr?.total_return_pct != null ? (
+          <>
+            <p className="text-sm text-ink-2">
+              En los {cagr.dias} días medidos:
+              <span className={`ml-2 text-2xl font-bold ${cagr.total_return_pct >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                {cagr.total_return_pct >= 0 ? '+' : ''}{cagr.total_return_pct.toFixed(2)}%
+              </span>
+              <span className="text-xs text-ink-3 ml-2">acumulado (TWR)</span>
+            </p>
+            <p className="text-xs text-ink-3 mt-1">{cagr.reason}</p>
+          </>
         ) : (
           <p className="text-sm text-ink-3">
             {cagr?.reason || 'Cargá al menos 2 meses en el Resumen Mensual para calcular tu CAGR real.'}

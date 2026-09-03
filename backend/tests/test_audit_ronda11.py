@@ -304,9 +304,13 @@ class NingunLectorPublicaLaBrechaTest(_Base):
         self._cartera_del_reclamo()
         r = builder.build_period_report(self.conn, self.uid, "month", "2026-07",
                                         today=_d.date(2026, 8, 26))
-        self.assertNotEqual(r.metrics.basis, "mercado")
+        # Ver la nota en test_audit_ronda10.py::A1_ReportesTest: el mes ahora se
+        # mide con los puntos de ADENTRO de la ventana (que son de mercado), sin
+        # mezclar la apertura al costo. Lo que este test protege —que la brecha
+        # entre dos reglas no se publique— se verifica abajo.
         self.assertNotIn("-47", r.headline)
         self.assertNotIn("-47", (r.narrative or ""))
+        self.assertAlmostEqual(r.metrics.delta_pct, 0.0, places=2)
 
     def test_reportes_el_anio(self):
         for d in ("2025-10-31", "2025-11-30"):
@@ -354,7 +358,9 @@ class NingunLectorPublicaLaBrechaTest(_Base):
         r = main._historical_cagr_global(self.conn, self.uid)
         self.assertIsNone(r.get("cagr"))
         self.assertTrue(r.get("reason"))
-        self.assertEqual(r.get("basis"), "contable")
+        # `basis` desapareció: el motor ya no cae a `monthly_entries`, y el campo
+        # con la regla ahora se llama `base_del_twr` (mercado|contable).
+        self.assertIsNone(r.get("total_return_pct"))
 
     def test_el_primer_pantallazo_home(self):
         """home.py restaba los dos últimos snapshots y publicaba −47,26% "HOY"."""

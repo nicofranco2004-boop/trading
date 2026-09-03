@@ -141,6 +141,7 @@ def build_timeline(
     live_value: Optional[float] = None,
     prices: Optional[Dict[str, Any]] = None,
     tc_blue: float = 1415.0,
+    modo: str = "certero", moneda: str = "usd",
 ) -> List[PeriodReport]:
     """Devuelve los últimos N meses con sus semanas como children.
 
@@ -165,6 +166,7 @@ def build_timeline(
         month_rpt = build_period_report(
             conn, uid, "month", mk,
             broker_filter=broker_filter, bench=bench, live_value=live_value,
+            modo=modo, moneda=moneda,
         )
 
         # 2. Operaciones del mes — para DIVIDEND_HEAVY y otros
@@ -181,6 +183,7 @@ def build_timeline(
                 conn, uid, "week", wk,
                 broker_filter=broker_filter, bench=bench,
                 live_value=live_value if wrpt_is_current_check(wk) else None,
+                modo=modo, moneda=moneda,
             )
             # Detectores en semanas: contexto reducido (no STREAK, no aggregate-level)
             wrpt.insights = run_detectors(

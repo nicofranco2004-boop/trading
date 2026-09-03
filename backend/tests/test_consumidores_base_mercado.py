@@ -52,18 +52,31 @@ class CagrObjetivosTest(_Base):
                      ("2025-06-30", 1250.0), ("2025-07-31", 1300.0)):
             self.snap(d, v)
         r = main._historical_cagr_global(self.conn, self.uid)
-        self.assertIsNotNone(r["cagr"])
-        self.assertGreater(r["cagr"], 0)          # subió: 1000 → 1300
-        # El span va de la PRIMERA a la ÚLTIMA medición: feb→jul = 5 meses. La
-        # foto fabricada de enero no entra (si entrara, el arranque sería 999.999).
+        # La propiedad que este test protege es que la foto FABRICADA no entre: si
+        # entrara, el arranque sería 999.999 y el retorno se hundiría. Sigue valiendo,
+        # y ahora se verifica sobre el acumulado y la ventana, porque con 5 meses el
+        # motor no anualiza (piso de medio año).
+        self.assertIsNone(r["cagr"])
+        self.assertGreater(r["total_return_pct"], 0)      # subió: 1000 → 1300
+        self.assertEqual(r["desde"], "2025-02-28")        # arranca en la MEDICIÓN
         self.assertEqual(r["months"], 5)
 
     def test_dos_mediciones_muy_separadas_no_explotan_el_cagr(self):
         self.snap("2025-01-31", 100000.0)
         self.snap("2026-08-31", 120000.0)         # 19 meses, +20%
         r = main._historical_cagr_global(self.conn, self.uid)
-        self.assertEqual(r["months"], 19)
-        self.assertAlmostEqual(r["cagr"], 12.2, places=1)   # no 791,61%
+        # ⚠️ DECISIÓN, Y ES UNA PÉRDIDA CONSCIENTE. Antes esto publicaba +12,2 %
+        # anual. El motor canónico corta un tramo con más de 45 días de silencio y
+        # no publica de punta a punta: dos mediciones separadas 19 meses no se
+        # encadenan, y los flujos del medio no se pueden ubicar en el tiempo (el
+        # Modified Dietz sobre 19 meses es una aproximación gruesa). Lo importante
+        # es que sigue sin publicar el 791,61 % del motor pre-ronda-2, y que ahora
+        # dice lo MISMO que la pantalla de Métricas — que es lo que se pidió.
+        self.assertIsNone(r["cagr"])
+        self.assertIsNone(r["total_return_pct"])
+        self.assertTrue(r["reason"])
+        # el span de la historia medida NO se pierde: son 19 meses, no "0"
+        self.assertEqual(r["historia_meses"], 19)
 
     def test_sin_clamp_asimetrico_un_mes_de_mas_80_no_se_trunca(self):
         self.snap("2025-01-31", 100.0)
