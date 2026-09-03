@@ -350,27 +350,23 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
 
         # ── Separador de miles es-AR: "150.000" ──────────────────────────────
         # `parse_number` ve un valor por vez y, con un solo punto, asume decimal:
-        # "150.000" → 150,0 y "1.500" → 1,5. Un costo mil veces más chico, sin un
-        # solo error, con la fila figurando como válida en el preview.
-        # No se puede arreglar adivinando: `reconciled_unit_price` ya documenta
-        # que un "660.400" mal parseado tiene la misma firma que un FCI legítimo,
-        # y convertir un "0.715" de bono en 715 es igual de caro al revés.
-        # Lo que sí se puede es PROBARLO con el triángulo precio×cantidad=monto.
-        _amb = [f for f in ("cantidad", "precio", "monto") if _es_ambiguo_miles(d.get(f, ""))]
-        if _amb:
-            quantity, unit_price, gross_amount, _fix = _desambiguar_por_triangulo(
-                quantity, unit_price, gross_amount, tuple(_amb))
-            if _fix is None:      # ni "ya_cerraba" ni un campo corregido
-                # El triángulo no alcanzó para decidir. Antes se elegía "decimal"
-                # en silencio; ahora se avisa. Es una fila con un número ambiguo,
-                # y el usuario es el único que sabe cuál quiso escribir.
-                for f in _amb:
-                    row_errors.append(RowError(
-                        ridx, f, "NUMERO_AMBIGUO_MILES",
-                        f"'{d.get(f)}' en '{f}' es ambiguo: puede ser "
-                        f"{str(d.get(f)).replace('.', '')} (punto de miles) o "
-                        f"{d.get(f)} (decimal). Escribilo sin el punto, o con coma "
-                        f"decimal, y volvé a subirlo."))
+        # "150.000" → 150,0. Cuando el triángulo precio×cantidad=monto PRUEBA que
+        # era separador de miles, se corrige. Eso es aritmética, no adivinanza.
+        #
+        # Cuando NO se puede probar, se deja como está y NO se rechaza la fila.
+        # Rechazarla fue un error caro: `normalize_rows` es el embudo de los 18
+        # parsers, no del CSV manual, y hay familias enteras de filas que POR
+        # CONSTRUCCIÓN no tienen los tres lados —depósitos, retiros, dividendos,
+        # comisiones, retiros de cripto con precio 0—. Para todas ésas el triángulo
+        # nunca cierra, así que el rechazo era garantizado apenas el número cayera
+        # en la forma: rompía imports de Binance, Balanz e IEB que entraban bien.
+        # Encima el mensaje citaba números que el usuario nunca escribió (los
+        # genera `round(cost, 4)` de un parser), o sea inaccionable.
+        if any(_es_ambiguo_miles(d.get(f, "")) for f in ("cantidad", "precio", "monto")):
+            _amb = tuple(f for f in ("cantidad", "precio", "monto")
+                         if _es_ambiguo_miles(d.get(f, "")))
+            quantity, unit_price, gross_amount, _ = _desambiguar_por_triangulo(
+                quantity, unit_price, gross_amount, _amb)
 
         if row_errors:
             errors.extend(row_errors)

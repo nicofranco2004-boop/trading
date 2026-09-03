@@ -113,13 +113,37 @@ def test_e2e_el_precio_con_punto_de_miles_entra_bien():
     assert txs[0].unit_price == 150_000.0
 
 
-def test_e2e_lo_indecidible_avisa_en_vez_de_elegir():
-    """LA garantía. Antes esto entraba como 150,0 sin decir nada y el usuario se
-    enteraba meses después mirando una cartera mil veces más chica."""
+def test_lo_indecidible_se_deja_como_esta_y_NO_rechaza_la_fila():
+    """LA lección cara del día. Antes esto RECHAZABA la fila, y estuvo deployado.
+
+    `normalize_rows` es el embudo de los 18 parsers, no del CSV manual. Hay
+    familias enteras de filas que POR CONSTRUCCIÓN no tienen los tres lados del
+    triángulo, así que para ellas el veredicto es "no sé" SIEMPRE — y el rechazo
+    era garantizado apenas el número cayera en la forma N.NNN. Rompía imports de
+    Binance, Balanz e IEB que venían entrando bien.
+
+    Se deja el valor como lo leyó `parse_number` (la conducta de siempre) y se
+    corrige SÓLO cuando el triángulo lo prueba. Nunca se rechaza.
+    """
     txs, errs = normalize_rows([_fila(cantidad="10", precio="150.000")])
-    assert errs, "tenía que avisar"
-    assert errs[0].code == "NUMERO_AMBIGUO_MILES"
-    assert "150000" in errs[0].message and "150.000" in errs[0].message
+    assert not errs, f"no puede rechazar: {errs}"
+    assert txs and txs[0].unit_price == 150.0, "y deja el valor como estaba"
+
+
+def test_las_filas_sin_los_tres_lados_entran_igual():
+    """Las cuatro familias que se rompieron en producción."""
+    casos = [
+        ("depósito",        dict(tipo="DEPOSITO", monto="105.375")),
+        ("retiro cripto",   dict(tipo="VENTA", activo="SOL", cantidad="12.345",
+                                 precio="0", monto="0")),
+        ("dividendo",       dict(tipo="DIVIDENDO", activo="AAPL", monto="1.500")),
+        ("compra sin monto", dict(tipo="COMPRA", activo="BND", cantidad="7",
+                                  precio="142.857")),
+    ]
+    for nombre, data in casos:
+        txs, errs = normalize_rows([_fila(**data)])
+        assert not errs, f"{nombre} se rechazó: {errs}"
+        assert txs, f"{nombre} no produjo transacción"
 
 
 def test_e2e_el_bono_a_0_715_sigue_entrando_sin_ruido():

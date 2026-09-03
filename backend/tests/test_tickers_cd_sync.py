@@ -118,10 +118,27 @@ class TickersDelExteriorNoSeTruncan(unittest.TestCase):
 
     def test_no_se_truncan_ni_con_el_gate_abierto(self):
         from importing.tickers_cd import consolidate_cd
-        for t in ("SPYD", "AGNC", "QYLD", "XYLD", "RYLD", "PLD", "LAD", "ARCC", "EPD"):
+        for t in ("AGNC", "QYLD", "XYLD", "RYLD", "PLD", "LAD", "ARCC", "EPD"):
             for tipo in ("STOCK", "CEDEAR", "BOND"):
                 self.assertEqual(consolidate_cd(t, tipo), t,
                                  f"{t} se truncó con asset_type={tipo}")
+
+    def test_SPYD_NO_va_en_la_allowlist(self):
+        """La lección: SPYD es un ETF real de Schwab, PERO en el mercado argentino
+        es la PATA DÓLAR-MEP del CEDEAR de SPY. Protegerlo partía el ledger FIFO en
+        dos —la compra en SPY, la venta en SPYD— y le dejaba al usuario una
+        posición FANTASMA abierta más una venta con P&L 0.
+
+        El chequeo que lo delata es la coherencia con sus hermanas: si AAPLD→AAPL y
+        QQQD→QQQ consolidan, y hasta SPYC→SPY consolida, entonces SPYD tiene que
+        consolidar también. Una allowlist GLOBAL de símbolos no puede distinguir
+        "ETF de Schwab" de "pata dólar de BYMA": haría falta scopear por mercado.
+        """
+        from importing.tickers_cd import strip_cd_suffix
+        self.assertEqual(strip_cd_suffix("SPYD"), "SPY")
+        for pata, base in (("AAPLD", "AAPL"), ("QQQD", "QQQ"), ("SPYC", "SPY")):
+            self.assertEqual(strip_cd_suffix(pata), base,
+                             f"{pata} es la referencia de coherencia para SPYD")
 
     def test_la_pata_dolar_argentina_SIGUE_truncando(self):
         """El espejo. Si el fix se pasara de protector, AL30D dejaría de

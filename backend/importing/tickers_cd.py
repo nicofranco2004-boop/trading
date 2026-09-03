@@ -54,7 +54,15 @@ KNOWN_CD_TICKERS = {
     "EPD",    # Enterprise Prod. → EP
     "LAD",    # Lithia Motors    → LA
     "PLD",    # Prologis         → PL
-    "QYLD", "RYLD", "SPYD", "XYLD",   # ETFs de covered call / dividendos
+    "QYLD", "RYLD", "XYLD",   # ETFs de covered call / dividendos
+    # SPYD NO va acá, aunque sea un ETF real de Schwab: en el mercado argentino
+    # "SPYD" es la PATA DÓLAR-MEP del CEDEAR de SPY (data912 la lista junto a SPY
+    # y SPYC, y el MEP implícito SPY/SPYD ≈ AAPL/AAPLD ≈ QQQ/QQQD). Protegerla
+    # rompe la consolidación: la compra queda en SPY y la venta en SPYD, o sea
+    # dos ledgers FIFO para la misma tenencia → una posición FANTASMA abierta y
+    # una venta con P&L 0. Es exactamente el bug que este módulo existe para
+    # evitar. Una allowlist GLOBAL de símbolos no puede resolver este caso: haría
+    # falta scopear por broker/mercado.
 }
 # LAC (Lithium Americas) entró a la allowlist de CEDEARs en f60502d y lo cazó
 # `test_tickers_cd_sync` — el mismo guard que se escribió para SID. Termina en "C", así
