@@ -406,6 +406,37 @@ def _snap_cash(x, eps: float = 1.0) -> float:
     return 0.0 if abs(r) < eps else r
 
 
+# Moneda BASE de cada formato de import — usada para anclar la moneda del broker
+# que el import auto-crea. A nivel de modulo para que los tests puedan verificar
+# que NINGUN parser nuevo quede sin ancla (ver tests/test_format_base_currency.py).
+FORMAT_BASE_CURRENCY = {
+    'cocos': 'ARS', 'bullmarket': 'ARS', 'balanz': 'ARS', 'iol': 'ARS',
+    # Variantes/otros parsers AR: el export de "Resultados" de Balanz y el de IEB
+    # también son brokers ARS. Sin esto, fmt_base=None → no ancla la moneda del
+    # padre → un broker auto-creado puede inferirse USD/USDT por mayoría de filas
+    # dólar-MEP (un export AR trae muchas filas USD por las compras MEP).
+    'balanz_resultados': 'ARS', 'ieb': 'ARS', 'ppi': 'ARS',
+    # `balanz_movimientos` es el export que el wizard RECOMIENDA hoy, y quedó
+    # fuera de esta tabla cuando se sumó el parser: su format_id no es 'balanz'.
+    # Sin ancla, un export de Balanz —que trae muchas filas USD por las compras
+    # MEP— hacía que el broker padre se auto-creara en USD, y las posiciones y el
+    # cash EN PESOS quedaban adentro de una cuenta marcada en dólares. Es el bug
+    # que reportaron los usuarios: medido en la base, 231 posiciones en pesos de
+    # 23 usuarios con "Balanz" marcado USD. Mismo caso inviu (no tenía entrada).
+    'balanz_movimientos': 'ARS', 'inviu': 'ARS',
+    # Las dos variantes de Binance: mismo ancla que 'binance'. Sus format_id son
+    # distintos ('binance_transaction_history', 'binance_futures_trade_history'),
+    # así que tampoco matcheaban.
+    'binance_transaction_history': 'USDT',
+    'binance_futures_trade_history': 'USDT',
+    # Balanz INTERNACIONAL: cuenta exterior en DÓLARES (acciones US reales, no
+    # CEDEARs) → el broker 'Balanz Internacional' es USD. Explícito para que NO
+    # se infiera ARS por el nombre (contiene 'balanz') ni quede ambiguo por filas.
+    'balanz_internacional': 'USD',
+    'binance': 'USDT', 'schwab': 'USD', 'ibkr': 'USD',
+}
+
+
 def run_preview(
     conn,
     *,
@@ -502,19 +533,6 @@ def run_preview(
     # sobre cualquier inferencia por mayoría de filas (un export de Cocos trae más
     # filas USD por las compras dólar-MEP, pero el broker es ARS). Solo aplica a
     # parsers específicos; el genérico ('rendi_generic') no está y sigue por fila.
-    FORMAT_BASE_CURRENCY = {
-        'cocos': 'ARS', 'bullmarket': 'ARS', 'balanz': 'ARS', 'iol': 'ARS',
-        # Variantes/otros parsers AR: el export de "Resultados" de Balanz y el de IEB
-        # también son brokers ARS. Sin esto, fmt_base=None → no ancla la moneda del
-        # padre → un broker auto-creado puede inferirse USD/USDT por mayoría de filas
-        # dólar-MEP (un export AR trae muchas filas USD por las compras MEP).
-        'balanz_resultados': 'ARS', 'ieb': 'ARS', 'ppi': 'ARS',
-        # Balanz INTERNACIONAL: cuenta exterior en DÓLARES (acciones US reales, no
-        # CEDEARs) → el broker 'Balanz Internacional' es USD. Explícito para que NO
-        # se infiera ARS por el nombre (contiene 'balanz') ni quede ambiguo por filas.
-        'balanz_internacional': 'USD',
-        'binance': 'USDT', 'schwab': 'USD', 'ibkr': 'USD',
-    }
     fmt_base = FORMAT_BASE_CURRENCY.get(parser.format_id)
 
     # Auto-heal: si el broker destino YA existe con una moneda distinta a la base
