@@ -524,6 +524,55 @@ def _run_with_lock_retry(fn, *, attempts: int = 4, base_delay: float = 0.3):
             raise
 
 
+def reintentar_si_trabada(fn):
+    """Decorador: reintenta el HANDLER entero ante 'database is locked'.
+
+    POR QUÉ. Sobre SQLite (un solo escritor para toda la base) los writes de los
+    ~40 hilos del threadpool se encolan; cuando el que tiene el lock tarda más que
+    el `busy_timeout`, TODOS los demás mueren con `database is locked` — se ve como
+    "cualquier acción (compra, venta, editar) falla". Reintentar con backoff hace
+    que el write ESPERE y entre cuando el lock se libera, en vez de tirarle el error
+    crudo al usuario.
+
+    SEGURO para handlers cuyo write vive en un `with conn:` (transacción atómica):
+    un lock hace fallar el commit ANTES de aplicar nada, así que re-correr NO
+    duplica — mismo invariante que `_run_with_lock_retry`, de donde sale el backoff.
+    ⚠️ NO lo pongas en endpoints que hacen un efecto externo NO idempotente (mandar
+    mail, cobrar, llamar una API) ANTES del write: eso sí se repetiría.
+
+    Por qué decorador y no envolver cada cuerpo: es UNA línea por endpoint en vez de
+    reescribir cada handler de la ruta del dinero. `functools.wraps` deja `__wrapped__`,
+    y FastAPI introspecciona la firma con `inspect.signature` (que sigue `__wrapped__`)
+    → las dependencias (Depends, body models) se inyectan igual que sin decorador.
+
+    OJO: sólo ayuda si el handler deja PROPAGAR el `OperationalError` crudo (como
+    hace, p.ej., register). Si el handler ya lo captura y lo convierte en
+    HTTPException(500), el decorador nunca ve el lock y no reintenta (tampoco rompe).
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        # attempts=2 (UN reintento) a propósito: cada intento ya espera el
+        # busy_timeout (15s) adentro, así que 2 intentos = hasta ~30s de hold del
+        # hilo. Subirlo cubriría locks más largos PERO cada hilo colgado es 1 de
+        # los ~40 del threadpool: con un lock CLAVADO (no transitorio) muchos
+        # reintentos saturan el pool y tiran también las LECTURAS. 1 reintento
+        # captura la contención transitoria (un import/checkpoint que suelta en
+        # 15-30s) sin convertir un lock clavado en una caída total.
+        intentos = {"n": 0}
+
+        def _once():
+            if intentos["n"]:
+                log.warning("lock retry #%d en %s (database is locked)",
+                            intentos["n"], getattr(fn, "__name__", "?"))
+            intentos["n"] += 1
+            return fn(*args, **kwargs)
+
+        return _run_with_lock_retry(_once, attempts=2, base_delay=0.5)
+    return wrapper
+
+
 def _table_cols(conn, table: str) -> set:
     # Table name is always hardcoded in callers — never user-supplied
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
@@ -3043,6 +3092,7 @@ def _send_verification_email_async(email: str, name: Optional[str], code: str) -
 
 
 @app.post("/api/auth/register")
+@reintentar_si_trabada
 def register(data: RegisterIn, request: Request, response: Response,
              background_tasks: BackgroundTasks):
     is_admin_signup = _is_admin_email(data.email)
@@ -4001,6 +4051,7 @@ def get_brokers(uid: int = Depends(get_effective_user)):
 
 
 @app.post("/api/brokers")
+@reintentar_si_trabada
 def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
     from ai import plan
     with db_abierta() as conn:
@@ -4084,6 +4135,7 @@ NAME_KEYED_TABLES = (
 
 
 @app.put("/api/brokers/{bid}")
+@reintentar_si_trabada
 def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_user)):
     """Renombra (o cambia la moneda de) un broker, con cascade del nombre.
 
@@ -4283,6 +4335,7 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
 
 
 @app.delete("/api/brokers/{bid}")
+@reintentar_si_trabada
 def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effective_user)):
     """Borra el broker. Por defecto REFUSE si tiene data asociada
     (positions/operations/monthly_entries) — el caller debe pasar `?force=true`
@@ -8202,6 +8255,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
 
 
 @app.post("/api/positions")
+@reintentar_si_trabada
 def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
@@ -8381,6 +8435,7 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
 
 
 @app.patch("/api/positions/group")
+@reintentar_si_trabada
 def edit_position_group(p: PositionGroupEditIn, uid: int = Depends(get_effective_user)):
     """Editar la posición ENTERA (todos sus lotes) desde Cartera. Ver _edit_position_group."""
     with db_abierta() as conn:      # cierra pase lo que pase (ver db_abierta)
@@ -8469,6 +8524,7 @@ def position_group_context(broker: str, asset: str, currency: Optional[str] = No
 
 
 @app.put("/api/positions/{pid}")
+@reintentar_si_trabada
 def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     # tc_compra va con COALESCE: un null NO borra el TC que ya estaba. Antes lo
@@ -8513,6 +8569,7 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
 
 
 @app.delete("/api/positions/{pid}")
+@reintentar_si_trabada
 def delete_position(pid: int, uid: int = Depends(get_effective_user)):
     """Borra una posición desde Cartera.
 
@@ -11065,6 +11122,7 @@ class SellIn(BaseModel):
 
 
 @app.post("/api/positions/sell")
+@reintentar_si_trabada
 def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
     """Cierre FIFO: descuenta `quantity` empezando por la posición más vieja (entry_date asc).
     Crea una operación por cada posición tocada (cantidad parcial o total).
@@ -11896,6 +11954,7 @@ def get_monthly(uid: int = Depends(get_effective_user)):
 
 
 @app.post("/api/monthly")
+@reintentar_si_trabada
 def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         # Validar que el broker exista (excepto el especial 'global' que se usa para totales)
@@ -11927,6 +11986,7 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
 
 
 @app.put("/api/monthly/{eid}")
+@reintentar_si_trabada
 def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
@@ -11953,6 +12013,7 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user
 
 
 @app.delete("/api/monthly/{eid}")
+@reintentar_si_trabada
 def delete_monthly(eid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     # Capturar el broker ANTES del delete para poder repair la chain.
@@ -12962,6 +13023,7 @@ def _route_tx_delete(conn, uid: int, mid: str):
 
 
 @app.delete("/api/movements/{movement_id}")
+@reintentar_si_trabada
 def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
     """Borra UN movimiento individual (vista Operaciones) y recalcula la cascada:
     cash, monthly_entries, snapshots (capital aportado + Evolución), insights y el
@@ -13664,6 +13726,7 @@ def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional
 
 
 @app.post("/api/operations")
+@reintentar_si_trabada
 def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
     """Crea una operation manual.
 
@@ -13732,6 +13795,7 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
 
 
 @app.put("/api/operations/{oid}")
+@reintentar_si_trabada
 def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective_user)):
     """Update operation manual + sync cache pnl_realized (audit follow-up).
 
@@ -14562,6 +14626,7 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
 
 
 @app.delete("/api/operations/{oid}")
+@reintentar_si_trabada
 def delete_operation(oid: int, uid: int = Depends(get_effective_user)):
     """Borra una operación con cascada TOTAL (cash + FIFO/tenencia + monthly +
     snapshots) y sin resucitar en un re-import. Reversible vía POST .../undo.
@@ -15011,6 +15076,7 @@ def list_goals(uid: int = Depends(get_effective_user)):
 
 
 @app.post("/api/goals")
+@reintentar_si_trabada
 def create_goal(g: GoalIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
@@ -15028,6 +15094,7 @@ def create_goal(g: GoalIn, uid: int = Depends(get_effective_user)):
 
 
 @app.put("/api/goals/{gid}")
+@reintentar_si_trabada
 def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
@@ -15047,6 +15114,7 @@ def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_effective_user)):
 
 
 @app.delete("/api/goals/{gid}")
+@reintentar_si_trabada
 def delete_goal(gid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
