@@ -2244,7 +2244,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
               <li key={b.name} className="flex items-center gap-2">
                 <span className="font-semibold text-ink-0">{b.name}</span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-ink-1">
-                  {b.currency}
+                  {displayCur(b.currency, b.name)}
                 </span>
                 <span className="text-ink-3">· {b.rows} {b.rows === 1 ? 'fila' : 'filas'}</span>
               </li>
@@ -2262,7 +2262,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
             {breakdown.map(b => (
               <li key={b.broker} className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold text-ink-0">{b.broker}</span>
-                <span className="text-ink-3">({b.broker_currency})</span>
+                <span className="text-ink-3">({displayCur(b.broker_currency, b.broker)})</span>
                 <span className="text-ink-2">
                   · <span className="tabular">{b.ars_rows}</span> ARS{' '}
                   · <span className="tabular">{b.usd_rows}</span> USD

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { brokerCurrencyLabel } from '../utils/valuation'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Upload, RotateCcw, AlertTriangle, CheckCircle2, Trash2, ChevronLeft, Loader2, Edit3 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
@@ -597,7 +598,7 @@ export default function Imports() {
                         </span>
                         <span className="font-medium text-ink-0 truncate">{b.name}</span>
                       </span>
-                      <span className="text-[12px] text-ink-3 flex-shrink-0 font-medium">{b.currency}</span>
+                      <span className="text-[12px] text-ink-3 flex-shrink-0 font-medium">{brokerCurrencyLabel(b, wipeBrokers)}</span>
                     </button>
                   )
                 })}

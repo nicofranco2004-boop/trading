@@ -14,6 +14,7 @@
 // Pide sus PROPIOS precios: el subyacente de un futuro (BTC) puede no estar en
 // la cartera, así que no alcanza con los precios que ya trajo la página.
 import { useState, useEffect } from 'react'
+import { brokerCurrencyLabel } from '../utils/valuation'
 import { Plus, TrendingUp, TrendingDown, Trash2, X, ArrowLeft, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
 import { useToast } from './Toast'
@@ -293,7 +294,7 @@ function FuturoFlow({ brokers, onClose, onSaved }) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-ink-0 text-sm leading-tight truncate">{b.name}</h3>
-                  <p className="text-[12px] text-ink-3 mt-1 tracking-[0.12em] font-medium">{b.currency}</p>
+                  <p className="text-[12px] text-ink-3 mt-1 tracking-[0.12em] font-medium">{brokerCurrencyLabel(b, brokers)}</p>
                 </div>
               </div>
             </button>

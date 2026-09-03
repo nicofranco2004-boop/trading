@@ -1664,6 +1664,8 @@ const BrokerSection = memo(function BrokerSection({
   const totPnlPct = totInvertidoUsd > 0 ? totPnlUsd / totInvertidoUsd : 0
 
   const color = brokerColor(broker.name)
+  // 'USDT' en sub-broker '· USD' (padre ARS) = dólares reales, no Tether.
+  const curLabel = (broker.currency || '').toUpperCase() === 'USDT' && isArUsdBroker(broker.name) ? 'USD' : broker.currency
   const initial = (broker.name || '?').charAt(0).toUpperCase()
 
   return (
@@ -1688,7 +1690,7 @@ const BrokerSection = memo(function BrokerSection({
               {broker.name}
             </span>
             <span className={`text-[12.5px] px-1.5 py-0.5 rounded-sm ${color.bg} ${color.text} border ${color.border} flex-shrink-0 font-medium`}>
-              {broker.currency}
+              {curLabel}
             </span>
           </div>
         </div>

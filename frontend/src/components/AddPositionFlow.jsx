@@ -16,6 +16,7 @@
 //   • Mobile         → bottom sheet full-width con safe-area
 
 import { useState, useMemo, useRef, useEffect } from 'react'
+import { brokerCurrencyLabel } from '../utils/valuation'
 import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet, ChevronDown, ChevronUp, FileText, ArrowRight, CircleHelp } from 'lucide-react'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
@@ -337,7 +338,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-ink-0 text-sm leading-tight truncate">{b.name}</h3>
-                  <p className="text-[12px] text-ink-3 mt-1 tracking-[0.12em] font-medium">{b.currency}</p>
+                  <p className="text-[12px] text-ink-3 mt-1 tracking-[0.12em] font-medium">{brokerCurrencyLabel(b, brokers)}</p>
                 </div>
               </div>
             </button>

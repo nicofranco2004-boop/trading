@@ -18,6 +18,7 @@
 //   hidden      — modo privacidad (enmascara montos, no el %)
 
 import { useState } from 'react'
+import { isArUsdBroker } from '../utils/valuation'
 import { Plus, Pencil, Trash2, X } from 'lucide-react'
 import { api } from '../utils/api'
 import { track } from '../utils/track'
@@ -258,6 +259,8 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
 
 export function BrokerCard({ broker, totals, hidden, onEdit, onDelete }) {
   const isARS = broker.currency === 'ARS'
+  // 'USDT' en un sub-broker '· USD' (padre ARS) son dólares reales, no Tether.
+  const cur = (broker.currency || '').toUpperCase() === 'USDT' && isArUsdBroker(broker.name) ? 'USD' : broker.currency
   const value = totals ? (isARS ? totals.valueArs : totals.value) : null
   const inv = totals ? (isARS ? totals.invArs : totals.invested) : 0
   const pnl = totals ? (isARS ? totals.pnlArs : totals.pnlUsd) : null
@@ -268,7 +271,7 @@ export function BrokerCard({ broker, totals, hidden, onEdit, onDelete }) {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-sm font-semibold text-ink-0 truncate">{broker.name}</span>
-          <Pill tone={currencyTone(broker.currency)}>{broker.currency}</Pill>
+          <Pill tone={currencyTone(cur)}>{cur}</Pill>
         </div>
         {(onEdit || onDelete) && (
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
