@@ -12435,6 +12435,8 @@ def get_movements(uid: int = Depends(get_effective_user)):
             pnl = (realized_pnl.realized_usd(d)
                    if d.get("pnl_usd") is not None else 0)
             fees = _safe_float_or_none(d.get("commissions")) or 0
+            op_ccy = (d.get("currency") or "").upper()
+            op_fx = _safe_float_or_none(d.get("fx_to_usd")) or 0
 
             # Un trade cerrado son 2 eventos contables (BUY + SELL). Para que
             # el user vea ambos en la timeline, generamos 2 rows: una con
@@ -12457,7 +12459,32 @@ def get_movements(uid: int = Depends(get_effective_user)):
                     "source": "manual",
                     "ref_id": d["id"],
                 })
-            amount_sell = (exit_p or 0) * (qty or 0) if exit_p and qty else (pnl + (entry_p or 0) * (qty or 0) if entry_p and qty else pnl)
+            # El bruto de la venta (`exit_price × qty`) vive en la MONEDA DE LA
+            # VENTA: una venta ARS guarda 2.510 (pesos), no dólares. Y el frontend
+            # trata `amount_usd` como USD canónico — sólo MULTIPLICA por fx para
+            # mostrarlo en pesos, nunca divide (useHistoricalMoney.js:61). Sin
+            # dividir acá, 485 BPAT a $2.510 se veían como "US$1.217.350" con el
+            # toggle en dólares y ~$1.860M con el toggle en pesos. En una `Venta`
+            # el `fx_to_usd` sellado ES el tc_venta, o sea el TC exacto de ESA
+            # fecha: la conversión es exacta, no una inferencia.
+            #
+            # Mismo criterio que realized_usd: sólo se divide con currency ARS y
+            # fx > 0. Las filas viejas sin FX sellado quedan como estaban — no se
+            # les infiere un TC a posteriori.
+            #
+            # La pata BUY (amount_buy) queda SIN convertir a propósito:
+            # `entry_price` está en la moneda del LOTE, que puede no ser la de la
+            # venta (un lote USD vendido en ARS es un caso soportado), y la fila
+            # no guarda cuál era. Dividirla arreglaría el caso común y rompería
+            # ése. Necesita sellar la moneda del lote al vender.
+            gross_fx = op_fx if (op_ccy == "ARS" and op_fx > 0) else 1.0
+            if exit_p and qty:
+                amount_sell = (exit_p * qty) / gross_fx
+            elif entry_p and qty:
+                # `pnl` ya viene en USD (realized_usd) — no se divide.
+                amount_sell = pnl + (entry_p * qty)
+            else:
+                amount_sell = pnl
             movements.append({
                 "id": f"op-{d['id']}-sell",
                 "kind": "movement",
