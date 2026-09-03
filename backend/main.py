@@ -17533,6 +17533,38 @@ def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
         conn.close()
 
 
+@app.get("/api/admin/check-invariantes")
+def admin_check_invariantes(user_id: Optional[int] = None, limite: int = 200,
+                            uid: int = Depends(get_admin_user)):
+    """SOLO LECTURA. Le pregunta a los DATOS si se contradicen.
+
+    Nace de una observación incómoda: los tres bugs reales del 03/09/2026 —el
+    broker de Balanz naciendo en dólares, el CEDEAR tratado como bono, el
+    '150.000' leído como 150— terminaron el import SIN UN SOLO ERROR. Un
+    vigilante del log de errores no caza ninguno. Lo que sí los cazó fue
+    preguntarle a los datos si se contradicen entre sí.
+
+    Por eso acá no hay umbrales ni heurísticas: cada chequeo es una afirmación
+    que se cumple o no. La regla es CERO FALSOS POSITIVOS — un chequeo que marca
+    datos sanos deja de mirarse a la semana, y entonces no sirve de nada. Ante la
+    duda, un chequeo va como "aviso", no como "error".
+
+    Con `user_id` mira una cuenta (el uso natural después de un import). Sin
+    `user_id`, toda la base — para ver si algo se está filtrando.
+
+    Los totales de `errores`/`avisos` cuentan TODO; `violaciones` trae hasta
+    `limite` por chequeo y `no_listadas` dice cuántas quedaron afuera. Nunca al
+    revés: un tope que además achica el número reportado es peor que no tener el
+    chequeo.
+    """
+    conn = get_db()
+    try:
+        return _invariantes.correr(conn, user_id, limite_por_chequeo=limite)
+    finally:
+        conn.close()
+
+
+
 @app.get("/api/admin/diagnose-reportes-basis")
 def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
                                   limit_accounts: int = 500,
@@ -29143,6 +29175,7 @@ from importing import pipeline as _import_pipeline
 from importing import persister as _import_persister
 from importing import rebuild as _import_rebuild
 from importing import maturity as _import_maturity
+from importing import invariantes as _invariantes
 from importing import recompute_backfill as _import_recompute
 from importing import tenencia as _import_tenencia
 from importing import proyeccion as _import_proyeccion
