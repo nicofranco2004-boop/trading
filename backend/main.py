@@ -29795,7 +29795,15 @@ def import_tenencia_preview(
             # trae), así que una foto completa sí puede dar por vendido lo ausente
             # — antes una posición ya vendida se quedaba para siempre (reporte real).
             _warns_all = getattr(snap, "warnings", None)
-            _complete = True if is_balanz else (not _warns_all)
+            # Balanz ya NO es un "siempre completa" a mano: su parser ahora avisa
+            # cuando el PDF trae una sección y esa sección no rinde ni una fila
+            # (extracción fallida). Sólo ESA warning bloquea el override — las
+            # otras son notas por holding (aritmética del importe) y no dicen nada
+            # sobre completitud. Antes, una tabla que no extraía se convertía en
+            # posiciones cerradas como vendidas, y en silencio.
+            _sec_vacia = any(str(w).startswith(_import_tenencia._BAL_WARN_SECCION_VACIA)
+                             for w in (_warns_all or []))
+            _complete = (not _sec_vacia) if is_balanz else (not _warns_all)
             _all_snap_tk = {h.ticker for h in snap.holdings}   # todas las monedas
             # Qty AGREGADA de Rendi sobre TODO el par (ambas monedas) — para no SEEDEAR
             # de más un activo cross-currency: si la foto lo clasifica en la moneda X
@@ -29934,7 +29942,15 @@ def import_tenencia_preview(
             # siempre; IEB/BMB sólo si el parser NO dejó warnings de completitud; Cocos
             # NUNCA (su CSV plano no da señal de lectura parcial → sólo reduce, no borra).
             _warns = getattr(snap, "warnings", None)
-            _complete = True if is_balanz else (not _warns)
+            # Balanz ya NO es un "siempre completa" a mano: su parser ahora avisa
+            # cuando el PDF trae una sección y esa sección no rinde ni una fila
+            # (extracción fallida). Sólo ESA warning bloquea el override — las
+            # otras son notas por holding (aritmética del importe) y no dicen nada
+            # sobre completitud. Antes, una tabla que no extraía se convertía en
+            # posiciones cerradas como vendidas, y en silencio.
+            _sec_vacia = any(str(w).startswith(_import_tenencia._BAL_WARN_SECCION_VACIA)
+                             for w in (_warns or []))
+            _complete = (not _sec_vacia) if is_balanz else (not _warns)
             if is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol:
                 # La foto PISA (Balanz/IEB/Cocos/BMB) — mismo mecanismo (ventas
                 # transfer_out reversibles + guardas + cap 50%).

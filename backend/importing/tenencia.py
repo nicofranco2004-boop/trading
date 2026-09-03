@@ -1401,6 +1401,12 @@ def looks_like_balanz_tenencia(text: str) -> bool:
             and "especie descripcion cantidad garantia precio valor actual" in t)
 
 
+# Marcador de la warning de completitud de Balanz. main.py la busca por prefijo:
+# las OTRAS warnings de este parser son notas por holding (aritmética del importe)
+# y no deben bloquear el override.
+_BAL_WARN_SECCION_VACIA = "SECCION_SIN_FILAS"
+
+
 def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
     """Parsea el Resumen de Cuenta de Balanz (texto del PDF) a un TenenciaSnapshot.
     Todo cotiza en $ (pesos) → currency ARS para TODOS los holdings (incluido el FCI
@@ -1423,6 +1429,15 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
     cash_ars = 0.0
     cash_usd = 0.0
     has_cash = False
+    # Completitud. Balanz era el ÚNICO broker cuya foto se daba por completa a
+    # mano (`_complete = True if is_balanz` en main.py) sin NINGÚN chequeo detrás.
+    # Con complete=True el override cierra como vendido todo lo que la foto no
+    # lista, así que una tabla que no extrae se vuelve posiciones borradas, en
+    # silencio. La señal es ESTRUCTURAL, no numérica: si el título de una sección
+    # aparece en el PDF pero esa sección no rinde ni una fila, la extracción
+    # falló. No necesita tolerancias, y por eso no tiene falsos positivos.
+    secciones_vistas: set = set()
+    secciones_con_filas: set = set()
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
@@ -1454,6 +1469,7 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
         # línea-resumen "Acciones $ 1.108.291 …" es multi-palabra → no matchea.
         if n in _BAL_SECTION_TYPE and len(line.split()) == 1:
             cur_type = _BAL_SECTION_TYPE[n]
+            secciones_vistas.add((n, cur_type))   # el PDF SÍ trae esta sección
             continue
         if n.startswith("especie"):     # header de columnas
             continue
@@ -1488,6 +1504,7 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
         if key in seen:
             continue
         seen.add(key)
+        secciones_con_filas.add(cur_type)
         snap.holdings.append(Holding(
             ticker=tk, asset_type=cur_type, quantity=qty, value=value,
             currency="ARS", price_per1=value / qty, per100=per100,
@@ -1495,6 +1512,11 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
     if has_cash:
         snap.cash_ars = round(cash_ars, 2)
         snap.cash_usd = round(cash_usd, 2)
+    for _n, _tipo in sorted(secciones_vistas):
+        if _tipo not in secciones_con_filas:
+            snap.warnings.append(
+                f"{_BAL_WARN_SECCION_VACIA}: el Resumen trae la sección '{_n}' pero "
+                f"no pudimos leer ninguna fila de ahí. Puede faltar tenencia.")
     return snap
 
 

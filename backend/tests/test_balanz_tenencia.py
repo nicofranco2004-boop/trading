@@ -64,6 +64,13 @@ BMA BANCO MACRO 30,00 14.110,00 423.300,00
 """
 
 
+# El FCI se canonicaliza a FCI:<slug> al parsear (`_canon_fund_ticker`) para que
+# la foto matchee con lo que emiten los Movimientos. El test decía "BAHUSDA", que
+# era el ticker crudo de antes de esa canonicalización: quedó viejo y venía
+# fallando desde entonces, tapado entre las fallas conocidas.
+FCI_TK = "FCI:BALANZ-AHORRO-EN-DOLARES-A"
+
+
 class BalanzTenenciaParse(unittest.TestCase):
     def setUp(self):
         self.snap = tn.parse_balanz_tenencia(SAMPLE)
@@ -85,11 +92,11 @@ class BalanzTenenciaParse(unittest.TestCase):
         self.assertEqual(self.snap.cash_usd, 0.65)
 
     def test_holdings_count_y_tipos(self):
-        self.assertEqual(len(self.snap.holdings), 5)   # BMA, BYMA, AE38, AAPL, BAHUSDA
+        self.assertEqual(len(self.snap.holdings), 5)   # BMA, BYMA, AE38, AAPL, el FCI
         self.assertEqual(self.by["BMA"].asset_type, "STOCK")
         self.assertEqual(self.by["AE38"].asset_type, "BOND")
         self.assertEqual(self.by["AAPL"].asset_type, "CEDEAR")
-        self.assertEqual(self.by["BAHUSDA"].asset_type, "FUND")
+        self.assertEqual(self.by[FCI_TK].asset_type, "FUND")
 
     def test_todo_ars(self):
         self.assertTrue(all(h.currency == "ARS" for h in self.snap.holdings))
@@ -112,9 +119,9 @@ class BalanzTenenciaParse(unittest.TestCase):
 
     def test_fci_precio_sub1_en_pesos(self):
         # BAHUSDA: precio 1,42 y valor 407 en pesos (no inferir USD por el nombre).
-        self.assertEqual(self.by["BAHUSDA"].currency, "ARS")
-        self.assertAlmostEqual(self.by["BAHUSDA"].quantity, 287.27, places=2)
-        self.assertEqual(self.by["BAHUSDA"].value, 407)
+        self.assertEqual(self.by[FCI_TK].currency, "ARS")
+        self.assertAlmostEqual(self.by[FCI_TK].quantity, 287.27, places=2)
+        self.assertEqual(self.by[FCI_TK].value, 407)
 
     def test_sin_warnings(self):
         self.assertEqual(self.snap.warnings, [])
@@ -144,3 +151,31 @@ class BalanzTenenciaParse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BalanzCompletitud(unittest.TestCase):
+    """Balanz era el único broker con la foto dada por completa A MANO.
+
+    `main.py` tenía `_complete = True if is_balanz else (not warnings)`, y el
+    parser no traía NINGÚN chequeo de completitud detrás — su única warning es
+    una nota aritmética por holding. Con `complete=True` el override cierra como
+    vendido todo lo que la foto no lista, así que una tabla del PDF que no
+    extraiga se convierte en posiciones borradas, en silencio.
+
+    La señal es estructural y por eso no tiene falsos positivos: si el título de
+    una sección aparece en el PDF pero esa sección no rinde ni una fila, la
+    extracción de esa tabla falló.
+    """
+
+    def test_una_foto_bien_leida_no_avisa_nada(self):
+        snap = tn.parse_balanz_tenencia(SAMPLE)
+        self.assertEqual(snap.warnings, [], "una foto sana no puede bloquear el override")
+        self.assertEqual(len(snap.holdings), 5)
+
+    def test_una_seccion_que_no_extrae_avisa(self):
+        fila = next(l for l in SAMPLE.splitlines() if l.strip().startswith("AE38"))
+        snap = tn.parse_balanz_tenencia(SAMPLE.replace(fila + "\n", ""))
+        self.assertTrue(
+            any(str(w).startswith(tn._BAL_WARN_SECCION_VACIA) for w in snap.warnings),
+            f"la sección 'Bonos' quedó vacía y no avisó: {snap.warnings}")
+        self.assertNotIn("AE38", [h.ticker for h in snap.holdings])
