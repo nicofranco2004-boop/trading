@@ -262,12 +262,32 @@ def _safe_div_str(num_str: str, den_str: str) -> str:
 # Instrumentos que son bonos/ONs/letras (no acciones ni CEDEARs). Se usa para
 # acotar la detección de conduits dólar-MEP a papeles que SÍ se usan como
 # conducto de conversión (bonos), evitando falsos positivos con acciones.
-_BOND_INSTR_HINTS = ("bono", "on ", "oblig", "letra", "lt ", "lecap", "cer ",
+_BOND_INSTR_HINTS = ("bono", "oblig", "letra", "lecap",
                      "boncer", "bonar", "bopreal", "titulo")
+
+# Pistas de UNA PALABRA. Antes vivían en la tupla de arriba como "on ", "lt " y
+# "cer ": el espacio final era un intento de límite de palabra que fallaba cuando
+# la palabra terminaba antes de un espacio ("CORPORATION (").
+_BOND_WORD_RE = re.compile(r"\b(?:on|lt|cer)\b")
 
 
 def _is_bond_instrument(instrumento: str) -> bool:
     u = (instrumento or "").lower()
+    # Un CEDEAR NUNCA es un bono. El chequeo va PRIMERO porque las pistas de abajo
+    # son subcadenas y el formato real de Cocos ("CEDEAR NVIDIA CORPORATION (NVDA)")
+    # las dispara: "corporati|on |(" contiene "on ". Sin este guard, 6 de cada 12
+    # CEDEARs con nombre real entraban como bono al detector de conductos MEP, que
+    # BORRA las dos patas de la operación y las reemplaza por un retiro + depósito
+    # — al usuario le desaparecían la compra, la venta y el P&L. La foto de tenencia
+    # ya hacía este mismo chequeo (tenencia.py, rama `iu.startswith("CEDEAR")`);
+    # acá faltaba.
+    if u.startswith("cedear"):
+        return False
+    # Las pistas de una sola palabra ("on", "lt", "cer") se buscan por PALABRA
+    # COMPLETA. Escritas como "on " dependían de que la palabra no terminara justo
+    # antes de un espacio, que es exactamente el caso de "CORPORATION (".
+    if _BOND_WORD_RE.search(u):
+        return True
     return any(h in u for h in _BOND_INSTR_HINTS)
 
 

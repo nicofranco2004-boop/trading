@@ -70,3 +70,42 @@ class TestConduitCurrency(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BondHintCedearFalsePositive(unittest.TestCase):
+    """Un CEDEAR no es un bono, aunque su nombre contenga "on ".
+
+    El detector de conductos dólar-MEP sólo mira BONOS: cuando aparea una compra
+    en ARS con una venta MEP en USD del mismo papel, BORRA las dos operaciones y
+    las reemplaza por un retiro + un depósito. Eso es correcto para un bono usado
+    de puente; para un CEDEAR que el usuario tradeó de verdad le hace desaparecer
+    la compra, la venta y el P&L.
+
+    Las pistas de bono se buscaban por subcadena, y el formato real de Cocos es
+    "CEDEAR NVIDIA CORPORATION (NVDA)": el "on " de "corporati|on |(" las
+    disparaba. 6 de cada 12 CEDEARs con nombre real entraban como bono.
+    """
+
+    def test_los_cedears_reales_no_son_bonos(self):
+        from importing.parsers.cocos import _is_bond_instrument
+        for nombre in ("CEDEAR NVIDIA CORPORATION (NVDA)",
+                       "CEDEAR MICROSOFT CORPORATION (MSFT)",
+                       "CEDEAR INTEL CORPORATION (INTC)",
+                       "CEDEAR EXXON MOBIL CORP (XOM)",
+                       "CEDEAR ORACLE CORPORATION (ORCL)",
+                       "CEDEAR VERIZON COMM (VZ)",
+                       "CEDEAR APPLE INC. (AAPL)",
+                       "CEDEAR TESLA, INC. (TSLA)"):
+            self.assertFalse(_is_bond_instrument(nombre),
+                             f"{nombre} es un CEDEAR, no un bono")
+
+    def test_los_bonos_de_verdad_siguen_siendo_bonos(self):
+        """El espejo: si el fix se pasa de estricto, un conducto MEP real deja de
+        detectarse y el usuario termina con un bono fantasma en la cartera."""
+        from importing.parsers.cocos import _is_bond_instrument
+        for nombre in ("BONO AL30", "ON YPF 2029", "ON PAMPA",
+                       "Obligaciones Negociables YPF", "LETRA X16E4",
+                       "LECAP S31M4", "BONCER TX26", "BONAR AL35",
+                       "BOPREAL BPY26", "TITULO PUBLICO", "LT X18J5", "CER TX28"):
+            self.assertTrue(_is_bond_instrument(nombre),
+                            f"{nombre} SÍ es un bono y dejó de detectarse")
