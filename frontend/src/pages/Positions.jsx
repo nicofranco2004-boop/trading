@@ -2429,6 +2429,7 @@ function PositionsDesktop() {
           setForm={setSellForm}
           positions={positions}
           tcBlue={tcBlue}
+          fxHist={fxHist}
           onClose={() => setModal(null)}
           onConfirm={confirmSell}
         />
@@ -3133,7 +3134,7 @@ function buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy, openS
   ]
 }
 
-export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
+export function SellModal({ form, setForm, positions, tcBlue, fxHist, onClose, onConfirm }) {
   // Posiciones FIFO del par (broker, asset)
   const lots = positions
     .filter(p => p.broker === form.broker && p.asset === form.asset && !p.is_cash && (p.quantity || 0) > 0)
@@ -3147,6 +3148,28 @@ export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm
   const qtyNum = +form.quantity || 0
   const priceNum = +form.exit_price || 0
   const tcVenta = +form.tc_venta || tcBlue || 1
+
+  // TC de la venta = el que existía en la FECHA de la venta, no el de hoy.
+  // Mismo criterio que el aporte con fecha (MEP del día, blue de fallback; y
+  // para hoy/futuro el blue actual porque el MEP de hoy puede no estar aún).
+  // La sugerencia sigue a la fecha elegida hasta que el user edita el TC a
+  // mano — ahí dejamos de pisarlo.
+  const tcTouchedRef = useRef(false)
+  function tcForDate(v) {
+    const hoy = new Date().toISOString().slice(0, 10)
+    if (!v || v >= hoy) return tcBlue
+    return (fxHist?.getMepOrFallback?.(v)) || tcBlue
+  }
+  function handleSellDateChange(v) {
+    setForm(f => {
+      const next = { ...f, date: v }
+      if (isARS && !tcTouchedRef.current && v) {
+        const r = tcForDate(v)
+        if (r > 0) next.tc_venta = +r.toFixed(2)
+      }
+      return next
+    })
+  }
 
   // Preview FIFO — cost basis incluye buy commissions prorrateadas (mismo
   // criterio que el backend en /positions/sell).
@@ -3263,7 +3286,7 @@ export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs text-ink-3 mb-1">Fecha de venta</label>
-            <DateInput value={form.date} onChange={v => setForm(f => ({ ...f, date: v }))} />
+            <DateInput value={form.date} onChange={handleSellDateChange} />
           </div>
           <div>
             <label className="block text-xs text-ink-3 mb-1">
@@ -3287,9 +3310,12 @@ export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm
               type="number"
               step="any"
               value={form.tc_venta}
-              onChange={e => setForm(f => ({ ...f, tc_venta: e.target.value }))}
+              onChange={e => { tcTouchedRef.current = true; setForm(f => ({ ...f, tc_venta: e.target.value })) }}
               className={inputCls}
             />
+            <p className="text-[10px] text-ink-3 mt-1">
+              Se autocompleta con el dólar de la fecha de venta. Ajustá si tu operación usó otro TC.
+            </p>
           </div>
         )}
 
