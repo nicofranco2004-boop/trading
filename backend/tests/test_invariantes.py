@@ -21,6 +21,7 @@ if BACKEND not in sys.path:
 from importing.invariantes import (                                  # noqa: E402
     correr, check_moneda_posicion_vs_broker, check_broker_inexistente,
     check_costo_no_positivo, check_subbroker_usd_bien_formado, check_cash_moneda,
+    check_caja_concilia,
 )
 
 UID = 77
@@ -37,6 +38,10 @@ def db():
                                 asset TEXT, is_cash INT DEFAULT 0, buy_price REAL,
                                 quantity REAL, invested REAL, currency TEXT,
                                 asset_type TEXT);
+        CREATE TABLE import_batches (id TEXT PRIMARY KEY, user_id INT, status TEXT);
+        CREATE TABLE import_normalized_tx (id INTEGER PRIMARY KEY, batch_id TEXT,
+                                           broker TEXT, currency TEXT,
+                                           gross_amount REAL, notes TEXT);
     """)
     yield conn
     conn.close()
@@ -181,3 +186,59 @@ def test_un_chequeo_roto_no_tumba_a_los_demas(db):
         assert r["ok"] is False
     finally:
         inv.CHEQUEOS = orig
+
+
+# ── 6. la caja concilia contra el resumen ────────────────────────────────────
+
+def _batch(db, bid, status="confirmed"):
+    db.execute("INSERT INTO import_batches (id,user_id,status) VALUES (?,?,?)",
+               (bid, UID, status))
+
+
+def _tx(db, bid, broker, notes, amt=0.0, ccy="ARS"):
+    db.execute("""INSERT INTO import_normalized_tx (batch_id,broker,currency,gross_amount,notes)
+                  VALUES (?,?,?,?,?)""", (bid, broker, ccy, amt, notes))
+
+
+def test_ajuste_grande_con_movimientos_es_aviso(db):
+    """La plata que los movimientos no explicaron. Es el rastro que deja una fila
+    perdida en silencio: no hay error, pero el efectivo no cierra."""
+    _batch(db, "b1"); _tx(db, "b1", "Cocos", "Compra GGAL", 1000.0)
+    _batch(db, "b2"); _tx(db, "b2", "Cocos", "Ajuste de cash a Estado de Cuenta (ARS)", 3_000_000.0)
+    v = check_caja_concilia(db, UID)
+    assert len(v) == 1
+    assert v[0]["severidad"] == "aviso", "no puede ser error: un rango parcial lo explica igual"
+    assert v[0]["detalle"]["ajuste"] == 3_000_000.0
+
+
+def test_sin_movimientos_no_hay_nada_que_conciliar(db):
+    """Subir sólo la foto es un uso legítimo: no hay movimientos contra los cuales
+    la caja pudiera cerrar."""
+    _batch(db, "b1"); _tx(db, "b1", "Cocos", "Tenencia — apertura GGAL")
+    _tx(db, "b1", "Cocos", "Ajuste de cash a Estado de Cuenta (ARS)", 3_000_000.0)
+    assert check_caja_concilia(db, UID) == []
+
+
+def test_el_polvo_de_redondeo_no_avisa(db):
+    _batch(db, "b1"); _tx(db, "b1", "Cocos", "Compra GGAL", 1000.0)
+    _batch(db, "b2"); _tx(db, "b2", "Cocos", "Ajuste de cash a Estado de Cuenta (ARS)", 800.0)
+    _batch(db, "b3"); _tx(db, "b3", "Schwab", "Ajuste de cash a Estado de Cuenta (USD)", 12.0, "USD")
+    assert check_caja_concilia(db, UID) == []
+
+
+def test_un_batch_sin_confirmar_no_cuenta(db):
+    """Un preview que el usuario nunca confirmó no tocó los datos de nadie."""
+    _batch(db, "b1"); _tx(db, "b1", "Cocos", "Compra GGAL", 1000.0)
+    _batch(db, "b2", status="preview")
+    _tx(db, "b2", "Cocos", "Ajuste de cash a Estado de Cuenta (ARS)", 3_000_000.0)
+    assert check_caja_concilia(db, UID) == []
+
+
+def test_los_avisos_no_hacen_fallar_el_ok(db):
+    """`ok` es sobre ERRORES. Un aviso es "mirá esto", no "está roto" — si un
+    aviso tumbara el ok, el resultado dejaría de servir para decidir."""
+    _batch(db, "b1"); _tx(db, "b1", "Cocos", "Compra GGAL", 1000.0)
+    _batch(db, "b2"); _tx(db, "b2", "Cocos", "Ajuste de cash a Estado de Cuenta (ARS)", 3_000_000.0)
+    r = correr(db, UID)
+    assert r["avisos"] == 1 and r["errores"] == 0
+    assert r["ok"] is True

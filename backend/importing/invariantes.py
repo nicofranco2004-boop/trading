@@ -195,12 +195,86 @@ def check_cash_moneda(conn, uid: Optional[int] = None) -> List[Violacion]:
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. La caja contra el resumen del broker
+# ─────────────────────────────────────────────────────────────────────────────
+def check_caja_concilia(conn, uid: Optional[int] = None,
+                        piso_ars: float = 50_000.0,
+                        piso_usd: float = 50.0) -> List[Violacion]:
+    """Cuánto tuvo que corregir la foto el efectivo que calcularon los movimientos.
+
+    Cuando entra una foto de tenencia, el sistema compara el efectivo que
+    reconstruyó desde los movimientos contra el saldo que declara el resumen del
+    broker, y ajusta al valor de la foto con un DEPOSITO/RETIRO sintético
+    (`build_cash_trueup_txs`). Ese ajuste ES la discrepancia, y queda en la base.
+    Hasta ahora sólo se escribía en un log —el comentario del código dice
+    textualmente "para detección interna de bugs del parser"— y nadie lo leía.
+
+    POR QUÉ ESTO IMPORTA MÁS QUE VIGILAR ERRORES: una fila que el parser descarta
+    en silencio no deja ningún error, pero SÍ deja rastro acá, porque la plata no
+    aparece. Este chequeo caza pérdida silenciosa de filas sin importar la causa
+    —tipo de operación nuevo, export cambiado, `continue` pelado, signo dado
+    vuelta— y sin necesidad de saber de antemano qué buscar.
+
+    VA COMO AVISO, NO COMO ERROR, y es a propósito: un ajuste grande también se
+    explica si el usuario subió un rango de fechas parcial (los movimientos
+    arrancan después de que abrió la cuenta). Con los datos que hay no se puede
+    separar ese caso de un bug del parser, y un "error" con falsos positivos deja
+    de mirarse a la semana. Es una lista para revisar, ordenada por monto: arriba
+    de todo es donde viven los bugs.
+
+    Medido en la base: 215 ajustes de 129 usuarios en cuentas que SÍ tienen
+    movimientos, con un ajuste promedio de ARS 1,28 M.
+    """
+    filtro, params = _scope(uid, "b.user_id")
+    try:
+        filas = _rows(conn, f"""
+            SELECT b.user_id, n.broker, n.currency, n.gross_amount amt, b.id bid
+              FROM import_normalized_tx n
+              JOIN import_batches b ON b.id = n.batch_id
+             WHERE n.notes LIKE 'Ajuste de cash a Estado de Cuenta%'
+               AND b.status='confirmed'{filtro}
+             ORDER BY n.gross_amount DESC""", params)
+    except Exception:
+        return []      # base sin tablas de import (tests de otras áreas)
+    out = []
+    for r in filas:
+        ccy = (r["currency"] or "").upper()
+        piso = piso_ars if ccy == "ARS" else piso_usd
+        amt = float(r["amt"] or 0)
+        if amt < piso:
+            continue
+        # ¿La cuenta tiene movimientos propios, o el usuario subió sólo la foto?
+        # Sin movimientos NO hay nada que conciliar y el ajuste es esperable.
+        movs = conn.execute("""
+            SELECT COUNT(*) c FROM import_normalized_tx m
+              JOIN import_batches mb ON mb.id = m.batch_id
+             WHERE mb.user_id=? AND mb.status='confirmed' AND mb.id<>?
+               AND m.broker=?
+               AND COALESCE(m.notes,'') NOT LIKE 'Tenencia%'
+               AND COALESCE(m.notes,'') NOT LIKE 'Ajuste de cash%'""",
+            (r["user_id"], r["bid"], r["broker"])).fetchone()["c"]
+        if not movs:
+            continue
+        out.append(Violacion(
+            chequeo="caja_concilia", severidad="aviso", user_id=r["user_id"],
+            que_pasa=(f"En '{r['broker']}' la foto tuvo que corregir el efectivo en "
+                      f"{ccy} {amt:,.2f}. Los movimientos reconstruyeron un saldo y el "
+                      f"resumen del broker decía otro. Puede ser una fila que el parser "
+                      f"perdió en silencio, o que el rango de fechas subido no cubra "
+                      f"toda la vida de la cuenta — hay que mirarlo."),
+            detalle={"broker": r["broker"], "currency": ccy,
+                     "ajuste": round(amt, 2), "movimientos_en_la_cuenta": movs}))
+    return out
+
+
 CHEQUEOS = (
     check_moneda_posicion_vs_broker,
     check_broker_inexistente,
     check_costo_no_positivo,
     check_subbroker_usd_bien_formado,
     check_cash_moneda,
+    check_caja_concilia,
 )
 
 
