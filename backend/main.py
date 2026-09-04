@@ -17336,6 +17336,148 @@ def admin_cleanup_future_snapshots(apply: bool = False,
 
 
 
+@app.get("/api/admin/ventas-legacy-debug")
+def admin_ventas_legacy_debug(email: str = "", user_id: int = 0, limite: int = 200,
+                              uid: int = Depends(get_admin_user)):
+    """Informe READ-ONLY: qué pasaría si dedujéramos la moneda de las ventas viejas.
+
+    NO ESCRIBE NADA. Es el paso previo a activar la deducción.
+
+    El problema: las ventas registradas antes del 2026-08-15 no sellaron
+    `currency` ni `fx_to_usd`, así que Movimientos no puede convertirlas y muestra
+    el bruto en PESOS con cartel de dólares. El TC no es lo que falta (está en
+    `fx_rates_daily` desde 2011) — falta saber si la venta fue en pesos.
+
+    La deducción propuesta es la MISMA regla que el endpoint de venta ya aplica
+    cuando el cliente no manda moneda: la `currency` propia del broker de la
+    operación ('Cocos'→ARS, 'Cocos USD'→USD, 'Binance'→USD). Se mira la moneda
+    PROPIA, no la del padre: la del padre define el PRECIO (un CEDEAR en
+    'Balanz · USD' cotiza en pesos) pero no la moneda de la plata.
+
+    Devuelve, por operación: lo que se muestra HOY y lo que se mostraría, más los
+    casos que NO se podrían resolver (broker inexistente, sin TC para la fecha).
+    """
+    conn = get_db()
+    try:
+        if user_id:
+            au = int(user_id)
+        elif email:
+            r = conn.execute("SELECT id FROM users WHERE lower(email)=lower(?)",
+                             (email.strip(),)).fetchone()
+            if not r:
+                raise HTTPException(404, "usuario no encontrado")
+            au = r["id"]
+        else:
+            raise HTTPException(400, "pasá ?email= o ?user_id=")
+
+        ccy_por_broker = {}
+        for b in conn.execute(
+                "SELECT name, currency FROM brokers WHERE user_id=?", (au,)).fetchall():
+            ccy_por_broker[b["name"]] = (b["currency"] or "").strip().upper()
+
+        filas = conn.execute(
+            """SELECT id, date, entry_date, broker, asset, op_type, entry_price,
+                      exit_price, quantity, commissions, currency, fx_to_usd
+                 FROM operations
+                WHERE user_id=?
+                  AND (currency IS NULL OR TRIM(COALESCE(currency,''))=''
+                       OR fx_to_usd IS NULL OR fx_to_usd<=0)
+                ORDER BY date""", (au,)).fetchall()
+
+        _memo = {}
+        def _tc(f):
+            if not f:
+                return None
+            k = str(f)[:10]
+            if k not in _memo:
+                _memo[k] = _fx.fx_for_date(conn, k)
+            return _memo[k]
+
+        detalle, sin_resolver = [], []
+        n_cambian = 0
+        hoy_total = a_ser_total = 0.0
+        comi_hoy = comi_new = 0.0
+        por_broker = {}
+
+        for r in filas:
+            d = dict(r)
+            broker = d.get("broker") or ""
+            qty = _safe_float_or_none(d.get("quantity")) or 0
+            exit_p = _safe_float_or_none(d.get("exit_price")) or 0
+            entry_p = _safe_float_or_none(d.get("entry_price")) or 0
+            comi = _safe_float_or_none(d.get("commissions")) or 0
+            bruto_venta = exit_p * qty
+            bruto_compra = entry_p * qty
+
+            if broker not in ccy_por_broker:
+                sin_resolver.append({"id": d["id"], "broker": broker,
+                                     "asset": d.get("asset"), "date": d.get("date"),
+                                     "motivo": "broker no existe (¿renombrado o borrado?)"})
+                continue
+
+            deducida = "ARS" if ccy_por_broker[broker] == "ARS" else "USD"
+            if deducida != "ARS":
+                continue  # en dólares no se convierte nada: queda igual
+
+            tc_v = _tc(d.get("date"))
+            tc_c = _tc(d.get("entry_date")) if d.get("entry_date") else None
+            if not tc_v or tc_v <= 0:
+                sin_resolver.append({"id": d["id"], "broker": broker,
+                                     "asset": d.get("asset"), "date": d.get("date"),
+                                     "motivo": "sin TC para esa fecha"})
+                continue
+
+            n_cambian += 1
+            hoy_total += bruto_venta
+            a_ser_total += bruto_venta / tc_v
+            comi_hoy += comi
+            comi_new += comi / tc_v
+            agg = por_broker.setdefault(broker, {"n": 0, "hoy": 0.0, "nuevo": 0.0})
+            agg["n"] += 1
+            agg["hoy"] += bruto_venta
+            agg["nuevo"] += bruto_venta / tc_v
+
+            if len(detalle) < max(0, min(int(limite or 0), 1000)):
+                detalle.append({
+                    "id": d["id"], "fecha": d.get("date"), "broker": broker,
+                    "activo": d.get("asset"), "op": d.get("op_type"),
+                    "cantidad": qty, "precio": exit_p,
+                    "moneda_deducida": deducida,
+                    "tc_venta": round(tc_v, 2),
+                    "venta_hoy_muestra": round(bruto_venta, 2),
+                    "venta_pasaria_a": round(bruto_venta / tc_v, 2),
+                    "compra_hoy_muestra": round(bruto_compra, 2) if d.get("entry_date") else None,
+                    "compra_pasaria_a": (round(bruto_compra / tc_c, 2)
+                                         if (d.get("entry_date") and tc_c and tc_c > 0) else None),
+                    "tc_compra": round(tc_c, 2) if tc_c else None,
+                    "comision_hoy_muestra": round(comi, 2),
+                    "comision_pasaria_a": round(comi / tc_v, 2),
+                })
+
+        return {
+            "user_id": au,
+            "ESCRIBE_ALGO": False,
+            "regla": "moneda = currency propia del broker de la operación "
+                     "(la misma que usa /positions/sell cuando el cliente no la manda)",
+            "operaciones_sin_sellar": len(filas),
+            "cambiarian": n_cambian,
+            "no_se_pueden_resolver": len(sin_resolver),
+            "totales": {
+                "ventas_hoy_muestran_usd": round(hoy_total, 2),
+                "ventas_pasarian_a_usd": round(a_ser_total, 2),
+                "comisiones_hoy_muestran_usd": round(comi_hoy, 2),
+                "comisiones_pasarian_a_usd": round(comi_new, 2),
+            },
+            "por_broker": {k: {"n": v["n"], "hoy": round(v["hoy"], 2),
+                               "nuevo": round(v["nuevo"], 2)}
+                           for k, v in sorted(por_broker.items())},
+            "sin_resolver": sin_resolver[:100],
+            "detalle": detalle,
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/commissions-debug")
 def admin_commissions_debug(email: str = "", user_id: int = 0,
                             uid: int = Depends(get_admin_user)):
