@@ -28,7 +28,7 @@ import ReturnFxHint from '../components/ReturnFxHint'
 import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api, errorMessage } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -1220,6 +1220,33 @@ function PositionsDesktop() {
     return { valueArs, valueUsd, pnlArs, pnlUsd, pnlPct: realCostArs > 0 ? pnlArs / realCostArs : 0, priceArs, invUsd }
   }
 
+  // ── Valuación de una FILA de la tabla ────────────────────────────────────
+  // Una fila AGREGADA se valúa SUMANDO sus lotes, no re-valuando el agregado como
+  // si fuera una posición sola. `_buildAgg` aplana los campos que deciden CÓMO se
+  // valúa: `asset_type` sale de lots[0] (si un ticker tiene lotes CEDEAR y otros
+  // con asset_type NULL, toda la fila se precia con el criterio del primero) y
+  // `price_override` sobrevive solo si TODOS los lotes tienen el mismo. Además
+  // `trustMktValue` corría sobre el agregado en vez de lote por lote.
+  //
+  // Eso hacía que la suma de las filas NO diera el TOTAL del pie, que se calcula
+  // con computeBrokerValue sobre los lotes CRUDOS (bposRaw). Reportado con captura:
+  // 10 filas que sumaban USD 64.147,88 sobre un TOTAL de USD 56.582,51.
+  //
+  // Es el mismo ruteo por-lote vía `p._lots` que ya hacen routedInvUsd y
+  // avgCostUsdPerUnit para el COSTO; esto lo extiende al VALOR. Sin `_lots` (fila
+  // real, lote único) el comportamiento es idéntico al de antes.
+  function calcRowUSDT(p) {
+    const lots = p._lots
+    if (!lots || lots.length < 2) return calcUSDT(p)
+    return sumRowUSDT(lots.map(calcUSDT))
+  }
+
+  function calcRowARS(p) {
+    const lots = p._lots
+    if (!lots || lots.length < 2) return calcARS(p)
+    return sumRowARS(lots.map(calcARS))
+  }
+
   // Valuación unificada por posición (en USD) para la zona Renta Fija. Despacha a
   // calcARS/calcUSDT según la moneda del broker REAL de la posición (la sección es
   // cross-broker) — misma lógica que las tablas, sin duplicar valuación. Si no hay
@@ -1818,7 +1845,7 @@ function PositionsDesktop() {
                   <tbody>
                     {bposRows.map(({ key: rowKey, p, isAgg, isLot, lotCount }) => {
                       const tickerExpanded = showAllLots || expandedTickers.has(rowKey)
-                      const c = calcARS(p)
+                      const c = calcRowARS(p)
                       // P&L "con cupones": sumamos cobranzas (en ARS, misma moneda
                       // que el broker) al P&L mark-to-market. Es el "total return"
                       // del bono — captura tanto la variación de precio como los
@@ -2071,7 +2098,7 @@ function PositionsDesktop() {
                 <tbody>
                   {bposRows.map(({ key: rowKey, p, isAgg, isLot, lotCount }) => {
                     const tickerExpanded = showAllLots || expandedTickers.has(rowKey)
-                    const c = calcUSDT(p)
+                    const c = calcRowUSDT(p)
                     const isBond = isBondPosition(p) && !p.is_cash
                     const bondKey = `${p.broker}:${p.asset}`
                     const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null

@@ -879,3 +879,67 @@ export function avgCostUsdPerUnit(p, rate, costBasis = 'today', isArsBroker = fa
   }
   return cost > 0 ? cost / qty : null
 }
+
+/**
+ * sumRowUSDT / sumRowARS — valor de una fila AGREGADA a partir de sus lotes.
+ *
+ * Reciben el resultado de valuar CADA LOTE por separado y lo suman. Una fila
+ * agregada NO se puede re-valuar como si fuera una posición sola: `_buildAgg`
+ * (Positions.jsx) aplana los campos que deciden CÓMO se valúa —`asset_type` sale
+ * del primer lote y `price_override` sobrevive solo si TODOS los lotes tienen el
+ * mismo— así que re-valuar el agregado le aplica a toda la posición el criterio
+ * del primer lote, y `trustMktValue` corre sobre el total en vez de lote por lote.
+ *
+ * Por eso la suma de las filas no daba el TOTAL del pie, que se calcula con
+ * [computeBrokerValue] sobre los lotes CRUDOS. Es el mismo ruteo por-lote que ya
+ * hacen `routedInvUsd` y `avgCostUsdPerUnit` para el COSTO; esto lo extiende al VALOR.
+ *
+ * El precio unitario solo se devuelve si todos los lotes coinciden: si difieren
+ * (asset_type distinto entre lotes), mostrar uno solo mentiría sobre el resto.
+ */
+function _uniqueOrNull(values) {
+  const u = [...new Set(values.filter(x => x != null))]
+  return u.length === 1 ? u[0] : null
+}
+
+export function sumRowUSDT(cs) {
+  const investedUsd = cs.reduce((s, c) => s + (c.investedUsd || 0), 0)
+  const withValue = cs.filter(c => c.value != null)
+  if (withValue.length === 0) {
+    return { value: null, pnl: null, pnlPct: null, price: null, investedUsd }
+  }
+  const value = withValue.reduce((s, c) => s + c.value, 0)
+  const pnl = cs.every(c => c.pnl == null) ? null : cs.reduce((s, c) => s + (c.pnl || 0), 0)
+  // El % va sobre el costo de los lotes que SÍ tienen valor: mezclar el costo de
+  // un lote sin precio con el valor de otro daría un porcentaje inventado.
+  const costWithValue = withValue.reduce((s, c) => s + (c.investedUsd || 0), 0)
+  return {
+    value,
+    pnl,
+    pnlPct: costWithValue > 0 && pnl != null ? pnl / costWithValue : 0,
+    price: _uniqueOrNull(cs.map(c => c.price)),
+    investedUsd,
+  }
+}
+
+export function sumRowARS(cs) {
+  const invUsd = cs.reduce((s, c) => s + (c.invUsd || 0), 0)
+  const withValue = cs.filter(c => c.valueArs != null)
+  if (withValue.length === 0) {
+    return { valueArs: null, valueUsd: null, pnlArs: null, pnlUsd: null, pnlPct: null, priceArs: null, invUsd }
+  }
+  const valueArs = withValue.reduce((s, c) => s + c.valueArs, 0)
+  const valueUsd = withValue.reduce((s, c) => s + (c.valueUsd || 0), 0)
+  const pnlArs = cs.every(c => c.pnlArs == null) ? null : cs.reduce((s, c) => s + (c.pnlArs || 0), 0)
+  const pnlUsd = cs.every(c => c.pnlUsd == null) ? null : cs.reduce((s, c) => s + (c.pnlUsd || 0), 0)
+  const costArs = valueArs - (pnlArs || 0)
+  return {
+    valueArs,
+    valueUsd,
+    pnlArs,
+    pnlUsd,
+    pnlPct: costArs > 0 && pnlArs != null ? pnlArs / costArs : 0,
+    priceArs: _uniqueOrNull(cs.map(c => c.priceArs)),
+    invUsd,
+  }
+}
