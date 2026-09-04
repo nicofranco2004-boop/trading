@@ -12530,7 +12530,13 @@ def get_movements(uid: int = Depends(get_effective_user)):
                 # "Todos los movimientos", porque esta vista caía al lookup por
                 # fecha mientras la otra usaba el TC estampado.
                 "fx_to_usd": d.get("fx_to_usd"),
-                "fees_usd": fees,
+                # `commissions` se guarda en moneda NATIVA (la venta estampa
+                # `chunk_commission_native`), así que va por el mismo dólar que el
+                # bruto. El KPI "Comisiones" suma este campo de TODAS las filas
+                # (Operations.jsx:1160, las embebidas en trades), así que sin
+                # dividir acá una cartera con US$14.988 aportados declaraba
+                # US$24.718 de comisiones: más fees que plata puesta.
+                "fees_usd": fees / gross_fx,
                 "pnl_usd": pnl,
                 "notes": d.get("notes") or "",
                 "source": "manual",
@@ -12724,13 +12730,18 @@ def get_movements(uid: int = Depends(get_effective_user)):
             buy_p = _safe_float_or_none(d.get("buy_price"))
             invested = _safe_float_or_none(d.get("invested")) or 0
             cur = (d.get("currency") or "USD").upper()
+            fees_pos = _safe_float_or_none(d.get("commissions")) or 0
             amount_usd = invested
+            # La comisión va por el MISMO dólar que el invested de su propia fila:
+            # las dos están en la moneda de la posición. Antes sólo se convertía
+            # `invested` y la comisión salía en pesos rotulada en dólares, que es
+            # lo que inflaba el KPI "Comisiones".
             if cur == "ARS":
                 tc_compra = _safe_float_or_none(d.get("tc_compra"))
-                if tc_compra and tc_compra > 0:
-                    amount_usd = invested / tc_compra
-                elif tc_blue > 0:
-                    amount_usd = invested / tc_blue
+                div = tc_compra if (tc_compra and tc_compra > 0) else tc_blue
+                if div and div > 0:
+                    amount_usd = invested / div
+                    fees_pos = fees_pos / div
             movements.append({
                 "id": f"pos-{d['id']}",
                 "kind": "movement",
@@ -12742,7 +12753,7 @@ def get_movements(uid: int = Depends(get_effective_user)):
                 "unit_price": buy_p,
                 "amount_usd": amount_usd,
                 "currency": cur,
-                "fees_usd": _safe_float_or_none(d.get("commissions")) or 0,
+                "fees_usd": fees_pos,
                 "notes": d.get("notes") or "",
                 "source": "manual",
                 "ref_id": d["id"],

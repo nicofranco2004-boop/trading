@@ -204,5 +204,123 @@ class PataCompraDeUnaVenta(unittest.TestCase):
         self.assertAlmostEqual(buy["amount_usd"], 1000.0, places=6)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Las COMISIONES: el mismo bug, tercera superficie.
+#
+# REPORTE REAL (2026-09-04): el KPI de Movimientos decía "Comisiones US$24.718"
+# contra "Aportado neto US$14.988" — más fees que plata puesta. `commissions` se
+# guarda en moneda NATIVA (la venta estampa `chunk_commission_native`; la
+# posición, lo que se pagó al comprar), y el KPI suma `fees_usd` de TODAS las
+# filas (Operations.jsx:1160). Sin convertir, las comisiones en pesos entraban
+# como dólares.
+#
+# El detalle que lo delataba: en la fila de una posición abierta, `invested` YA
+# se convertía y la comisión de esa MISMA fila no.
+# ─────────────────────────────────────────────────────────────────────────────
+
+COMI_VENTA_ARS = 964.73    # AUSO 12-sep-2022, del Excel del usuario
+COMI_COMPRA_ARS = 4391.50  # AUSO 16-dic-2024
+TC_COMPRA_2024 = 1098.30
+
+
+class ComisionesEnPesos(unittest.TestCase):
+    def setUp(self):
+        self.client = _cliente()
+        conn = main.get_db()
+        self.uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?, 'x', 1)",
+            (f"comi-{uuid.uuid4().hex[:10]}@rendi.test",),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO brokers (user_id, name, currency) VALUES (?,'Default','ARS')",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+
+    def _movs(self):
+        r = self.client.get("/api/movements", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def _fila(self, asset, tipo):
+        f = [m for m in self._movs()
+             if m.get("asset") == asset and m.get("type") == tipo]
+        self.assertEqual(len(f), 1, f"esperaba 1 fila {tipo} de {asset}: {f}")
+        return f[0]
+
+    def test_la_comision_de_una_venta_en_pesos_vale_sus_dolares(self):
+        """$964,73 al TC de la venta son ~US$3,58 — no US$964,73."""
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO operations
+                 (user_id, date, broker, asset, op_type, entry_price, exit_price,
+                  quantity, pnl_usd, pnl_pct, commissions, currency, fx_to_usd)
+               VALUES (?,'2022-09-12','Default','AUSO','Venta',67.0,283.43,485.0,
+                       388.81,NULL,?,'ARS',?)""",
+            (self.uid, COMI_VENTA_ARS, TC_VENTA_2022),
+        )
+        conn.commit()
+        conn.close()
+        esperado = COMI_VENTA_ARS / TC_VENTA_2022
+        real = self._fila("AUSO", "SELL")["fees_usd"]
+        self.assertAlmostEqual(
+            real, esperado, places=4,
+            msg=f"la comisión debería ser ~US${esperado:,.2f}, no US${real:,.2f}")
+
+    def test_la_comision_de_una_posicion_abierta_tambien(self):
+        """La fila ya convertía `invested`; la comisión iba en pesos."""
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO positions
+                 (user_id, broker, asset, is_cash, buy_price, quantity, invested,
+                  tc_compra, entry_date, currency, commissions)
+               VALUES (?,'Default','AUSO',0,3525.0,1287.0,4536675.0,?,'2024-12-16','ARS',?)""",
+            (self.uid, TC_COMPRA_2024, COMI_COMPRA_ARS),
+        )
+        conn.commit()
+        conn.close()
+        fila = self._fila("AUSO", "BUY")
+        self.assertAlmostEqual(
+            fila["fees_usd"], COMI_COMPRA_ARS / TC_COMPRA_2024, places=4)
+        # La guarda que delataba el bug: las dos cifras de la fila, mismo dólar.
+        self.assertAlmostEqual(
+            fila["amount_usd"], 4536675.0 / TC_COMPRA_2024, places=4)
+
+    def test_las_comisiones_en_dolares_no_se_tocan(self):
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO operations
+                 (user_id, date, broker, asset, op_type, entry_price, exit_price,
+                  quantity, pnl_usd, pnl_pct, commissions, currency, fx_to_usd)
+               VALUES (?,'2022-09-12','Default','NVDA','Venta',100.0,150.0,10.0,
+                       500.0,NULL,7.5,'USD',NULL)""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+        self.assertAlmostEqual(self._fila("NVDA", "SELL")["fees_usd"], 7.5, places=6)
+
+    def test_las_comisiones_no_pueden_superar_lo_aportado(self):
+        """La forma del reporte: el total de fees tiene que ser plausible."""
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO operations
+                 (user_id, date, broker, asset, op_type, entry_price, exit_price,
+                  quantity, pnl_usd, pnl_pct, commissions, currency, fx_to_usd)
+               VALUES (?,'2022-09-12','Default','AUSO','Venta',67.0,283.43,485.0,
+                       388.81,NULL,?,'ARS',?)""",
+            (self.uid, COMI_VENTA_ARS, TC_VENTA_2022),
+        )
+        conn.commit()
+        conn.close()
+        total_fees = sum(m.get("fees_usd") or 0 for m in self._movs())
+        self.assertLess(
+            total_fees, 100.0,
+            f"US${total_fees:,.2f} de comisiones por una sola venta chica: "
+            f"está sumando pesos como dólares")
+
+
 if __name__ == "__main__":
     unittest.main()
