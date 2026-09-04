@@ -1173,9 +1173,17 @@ function PositionsDesktop() {
     return { value, pnl, pnlPct: realCost > 0 ? pnl / realCost : 0, price, investedUsd: realCost }
   }
 
+  // OJO CON EL TIPO DE CAMBIO: la conversión a USD va al dólar-MEP (tcCedear),
+  // NO al blue. El TOTAL del pie sale de computeBrokerValue → valuePositionLot,
+  // que en un broker ARS usa cedearRate para TODO (tenencias Y cash, ver el
+  // comentario de la rama 1 en valuation.js). Esta función usaba tcBlue, así que
+  // cada fila salía MEP/blue veces más grande que su aporte al total: con un MEP
+  // ~13% arriba del blue, 10 filas que sumaban USD 64.147,88 daban un TOTAL de
+  // USD 56.582,51. El ratio era uniforme —cash incluido— justamente porque era
+  // el tipo de cambio y no una fila puntual.
   function calcARS(p) {
     if (p.is_cash) {
-      return { valueArs: p.invested, valueUsd: p.invested / tcBlue, pnlArs: 0, pnlUsd: 0, pnlPct: 0, priceArs: null }
+      return { valueArs: p.invested, valueUsd: p.invested / tcCedear, pnlArs: 0, pnlUsd: 0, pnlPct: 0, priceArs: null }
     }
     // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
     // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz
@@ -1206,16 +1214,16 @@ function PositionsDesktop() {
     // Guardea con realCostArs (pesos NATIVOS, mode-independent) → el modo 'purchase'
     // nunca afloja el guard. La columna INV USD (invUsd) sí va al tc_compra.
     if (!trustMktValue(valueArs, realCostArs, p.asset_type, p.price_override != null)) {
-      const invUsd = routedInvUsd(p, tcBlue)
+      const invUsd = routedInvUsd(p, tcCedear)
       return { valueArs: realCostArs, valueUsd: invUsd, pnlArs: 0, pnlUsd: 0, pnlPct: 0, priceArs: null, invUsd }
     }
     const pnlArs = valueArs - realCostArs
-    const valueUsd = valueArs / tcBlue
+    const valueUsd = valueArs / tcCedear
     // Costo USD de la columna INV USD: en modo 'today' al blue actual (FX-neutral,
     // el default histórico); en 'purchase' al tc_compra del lote (los USD reales
     // invertidos → el P&L USD absorbe la devaluación). El valor sigue al blue de hoy.
     // Multi-lote: suma por-lote (routedInvUsd), no divide el costo sumado por un tc.
-    const invUsd = routedInvUsd(p, tcBlue)
+    const invUsd = routedInvUsd(p, tcCedear)
     const pnlUsd = valueUsd - invUsd
     return { valueArs, valueUsd, pnlArs, pnlUsd, pnlPct: realCostArs > 0 ? pnlArs / realCostArs : 0, priceArs, invUsd }
   }
