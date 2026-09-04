@@ -322,5 +322,92 @@ class ComisionesEnPesos(unittest.TestCase):
             f"está sumando pesos como dólares")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Métricas y Movimientos tienen que decir el MISMO total de comisiones.
+#
+# Había dos implementaciones: `/api/insights/commissions` corría su propia query
+# contra `import_normalized_tx` (sólo lo IMPORTADO, convertido al dólar de HOY),
+# y el KPI de Movimientos sumaba el universo completo fila por fila — con un
+# comentario que afirmaba "espeja /api/insights/commissions". Divergían en
+# silencio, y a quien carga a mano Métricas le mostraba ~0.
+#
+# Ahora los dos leen `_build_movements`. Estos tests fijan esa identidad.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _criterio_frontend(movs):
+    """El mismo cálculo que `commTotalUsd` en Operations.jsx:1155."""
+    sueltos = sum(float(m.get("amount_usd") or 0)
+                  for m in movs if m.get("type") == "FEE")
+    embebidas = sum(float(m.get("fees_usd") or 0)
+                    for m in movs if m.get("type") not in ("FEE", "IMPUESTO"))
+    return sueltos + embebidas
+
+
+class MetricasYMovimientosCoinciden(unittest.TestCase):
+    def setUp(self):
+        self.client = _cliente()
+        conn = main.get_db()
+        self.uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?, 'x', 1)",
+            (f"unif-{uuid.uuid4().hex[:10]}@rendi.test",),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO brokers (user_id, name, currency) VALUES (?,'Default','ARS')",
+            (self.uid,),
+        )
+        # Una venta manual en pesos con comisión — el caso que Métricas ignoraba.
+        conn.execute(
+            """INSERT INTO operations
+                 (user_id, date, broker, asset, op_type, entry_price, exit_price,
+                  quantity, pnl_usd, pnl_pct, commissions, currency, fx_to_usd)
+               VALUES (?,'2022-09-12','Default','AUSO','Venta',67.0,283.43,485.0,
+                       388.81,NULL,?,'ARS',?)""",
+            (self.uid, COMI_VENTA_ARS, TC_VENTA_2022),
+        )
+        # Y una posición abierta en pesos, también con comisión.
+        conn.execute(
+            """INSERT INTO positions
+                 (user_id, broker, asset, is_cash, buy_price, quantity, invested,
+                  tc_compra, entry_date, currency, commissions)
+               VALUES (?,'Default','AUSO',0,3525.0,1287.0,4536675.0,?,'2024-12-16','ARS',?)""",
+            (self.uid, TC_COMPRA_2024, COMI_COMPRA_ARS),
+        )
+        conn.commit()
+        conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+
+    def _api(self):
+        r = self.client.get("/api/insights/commissions", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def _movs(self):
+        r = self.client.get("/api/movements", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def test_los_dos_numeros_coinciden(self):
+        """La identidad que antes no existía."""
+        self.assertAlmostEqual(
+            self._api()["total_usd"], _criterio_frontend(self._movs()), places=4,
+            msg="Métricas y Movimientos tienen que dar el MISMO total")
+
+    def test_las_comisiones_manuales_ahora_cuentan(self):
+        """Antes este total era 0: no había ni un import en la cuenta."""
+        esperado = (COMI_VENTA_ARS / TC_VENTA_2022) + (COMI_COMPRA_ARS / TC_COMPRA_2024)
+        self.assertAlmostEqual(self._api()["total_usd"], esperado, places=4)
+
+    def test_el_total_sigue_siendo_plausible(self):
+        """Guarda de forma: dos comisiones chicas no son miles de dólares."""
+        total = self._api()["total_usd"]
+        self.assertLess(total, 100.0, f"US${total:,.2f} — está sumando pesos")
+        self.assertGreater(total, 0.0, "no puede ser cero: hay dos comisiones")
+
+    def test_los_impuestos_no_se_cuentan_como_comision(self):
+        """Retenciones (Ganancias/IIBB/BBPP) van aparte, como antes."""
+        self.assertEqual(self._api()["taxes_usd"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

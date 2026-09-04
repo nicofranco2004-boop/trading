@@ -12401,6 +12401,21 @@ def get_movements(uid: int = Depends(get_effective_user)):
     Ordenado por date DESC (más reciente primero). Los movimientos sin
     fecha (legacy) van al final.
     """
+    return _build_movements(uid)
+
+
+def _build_movements(uid: int):
+    """Las filas de /api/movements, sin el decorador HTTP.
+
+    Extraído para que el total de comisiones (`/api/insights/commissions`) se
+    calcule sobre ESTAS MISMAS filas, en vez de con una query paralela. Es la
+    única forma de que los dos números coincidan POR CONSTRUCCIÓN y no por
+    coincidencia: antes el KPI de Movimientos decía "espeja
+    /api/insights/commissions" en un comentario mientras sumaba un universo
+    distinto (incluía las comisiones manuales; el endpoint, sólo las
+    importadas). Mismo patrón que realized_pnl.py, que nació porque el criterio
+    de P&L copiado a mano en 4 lugares divergió.
+    """
     conn = get_db()
     movements: list[dict] = []
     try:
@@ -13138,77 +13153,65 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
 
 @app.get("/api/insights/commissions")
 def get_commissions_total(uid: int = Depends(get_effective_user)):
-    """Suma de las comisiones EXPLÍCITAS importadas (operation_type='FEE' en
-    import_normalized_tx). Convierte ARS→USD usando tc_blue. Ignora el campo
-    `commissions` de operations (que tiene basura de imports viejos con
-    parsers mal mapeados — fuente de inflados crónicos en la card).
+    """Total de comisiones e impuestos, sobre las MISMAS filas que Movimientos.
+
+    Antes esto corría una query propia contra `import_normalized_tx` y sólo
+    contaba lo IMPORTADO, ignorando `operations.commissions` a propósito (tenía
+    basura de parsers viejos). Dos consecuencias, las dos malas:
+
+      • A quien carga a mano, la card le mostraba ~0 comisiones — las suyas no
+        entraban por ningún lado.
+      • El KPI de Movimientos decía en un comentario que "espeja" este endpoint,
+        pero sumaba el universo completo (importado + manual). Dos números
+        distintos para el mismo concepto, divergiendo en silencio.
+
+    La razón para excluir lo manual quedó vieja: los imports linkean sus
+    operaciones (`import_op_links`) y `_build_movements` ya excluye las
+    linkeadas, así que lo que queda como "manual" es genuinamente manual.
+
+    Ahora los dos leen `_build_movements`, con el mismo criterio de conversión
+    (cada fila con el dólar de SU fecha, no el de hoy). Coinciden por
+    construcción.
+
+    Criterio del total, espejo de `commTotalUsd` en Operations.jsx:
+      comisiones = FEE sueltos (su `amount_usd`) + la comisión EMBEBIDA en cada
+      trade (`fees_usd` de las filas que no son FEE ni IMPUESTO).
+      impuestos  = las filas IMPUESTO (retenciones: Ganancias/IIBB/BBPP) — no
+      son comisión y van aparte.
     """
-    conn = get_db()
-    try:
-        tc_blue_row = conn.execute(
-            "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
-        ).fetchone()
-        try:
-            tc_blue = float(tc_blue_row["value"]) if tc_blue_row else 1415.0
-            if tc_blue <= 0:
-                tc_blue = 1415.0
-        except (TypeError, ValueError):
-            tc_blue = 1415.0
+    movimientos = _build_movements(uid)
 
-        # Comisiones = (a) FEE ops (fees sueltos: "gastos por operación", boleto
-        # sin precio, aranceles) por su gross_amount + (b) la comisión EMBEBIDA en
-        # cada trade (campo n.fees de BUY/SELL — Balanz la trae dentro del Importe;
-        # el parser la extrae como fees). IMPUESTO = retenciones (Ganancias/IIBB/
-        # BBPP), NO son comisión → total aparte. (Se usa n.fees del import normalizado,
-        # NO operations.commissions, que tenía basura de parsers viejos.)
-        rows = conn.execute(
-            """SELECT n.gross_amount AS amt, n.currency AS cur,
-                      n.operation_type AS op, n.fees AS fees
-                 FROM import_normalized_tx n
-                 JOIN import_batches b ON b.id = n.batch_id
-                WHERE b.user_id=?
-                  AND b.status='confirmed'
-                  AND n.excluded_at IS NULL
-                  AND (n.operation_type IN ('FEE','IMPUESTO')
-                       OR (n.fees IS NOT NULL AND n.fees > 0))""",
-            (uid,),
-        ).fetchall()
+    total_usd = 0.0
+    count = 0
+    taxes_usd = 0.0
+    taxes_count = 0
 
-        total_usd = 0.0
-        count = 0
-        taxes_usd = 0.0
-        taxes_count = 0
-        for r in rows:
-            cur = (r["cur"] or "").upper()
-            op = (r["op"] or "")
-            if op == "IMPUESTO":
-                amt = float(r["amt"] or 0)
-                if amt <= 0:
-                    continue
-                taxes_usd += amt / tc_blue if cur == "ARS" else amt
+    for m in movimientos:
+        tipo = m.get("type") or ""
+        if tipo == "IMPUESTO":
+            v = float(m.get("amount_usd") or 0)
+            if v > 0:
+                taxes_usd += v
                 taxes_count += 1
-            elif op == "FEE":
-                amt = float(r["amt"] or 0)
-                if amt <= 0:
-                    continue
-                total_usd += amt / tc_blue if cur == "ARS" else amt
+            continue
+        if tipo == "FEE":
+            v = float(m.get("amount_usd") or 0)
+            if v > 0:
+                total_usd += v
                 count += 1
-            else:
-                # Trade (BUY/SELL) con comisión embebida en n.fees.
-                fee = float(r["fees"] or 0)
-                if fee <= 0:
-                    continue
-                total_usd += fee / tc_blue if cur == "ARS" else fee
-                count += 1
+            continue
+        # Trade / flujo con comisión embebida.
+        fee = float(m.get("fees_usd") or 0)
+        if fee > 0:
+            total_usd += fee
+            count += 1
 
-        return {
-            "total_usd": round(total_usd, 4),
-            "count": count,
-            "taxes_usd": round(taxes_usd, 4),
-            "taxes_count": taxes_count,
-        }
-    finally:
-        conn.close()
+    return {
+        "total_usd": round(total_usd, 4),
+        "count": count,
+        "taxes_usd": round(taxes_usd, 4),
+        "taxes_count": taxes_count,
+    }
 
 
 # ─── CSV Export (Pro-only) ───────────────────────────────────────────────────

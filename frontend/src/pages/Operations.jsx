@@ -1150,7 +1150,18 @@ function MovementsView({ onChanged, isMobile }) {
   // clickear el chip COMISIONES no cambie el número): FEE explícitos (amount_usd)
   // + comisión EMBEBIDA en cada trade (fees_usd — Balanz la trae dentro del
   // Importe). Antes la card sumaba solo los FEE explícitos → subcontaba fuerte
-  // (santi veía US$24 en vez de ~US$527). Espeja /api/insights/commissions.
+  // (santi veía US$24 en vez de ~US$527).
+  //
+  // Espeja /api/insights/commissions — y desde 2026-09-04 eso es literal: aquel
+  // endpoint suma ESTAS MISMAS filas (`_build_movements`) con este criterio, en
+  // vez de correr su propia query. Antes el comentario lo afirmaba pero era
+  // falso: el endpoint sólo veía lo importado y a quien cargaba a mano le
+  // mostraba ~0 mientras esta card mostraba el total real.
+  //
+  // Se sigue sumando acá (y no se consume el endpoint) porque este número
+  // respeta los filtros de broker/año, que el endpoint no conoce. Si tocás el
+  // criterio, tocá los dos: hay un test que los compara
+  // (test_monto_venta_ars.py::MetricasYMovimientosCoinciden).
   const commTotalUsd = useMemo(() => {
     const scoped = movements.filter(m =>
       (filterBroker === 'all' || m.broker === filterBroker) &&
