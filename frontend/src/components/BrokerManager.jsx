@@ -18,6 +18,7 @@
 //   hidden      — modo privacidad (enmascara montos, no el %)
 
 import { useState } from 'react'
+import { groupBrokersIntoAccounts } from '../utils/brokerAccounts'
 import { isArUsdBroker } from '../utils/valuation'
 import { Plus, Pencil, Trash2, X } from 'lucide-react'
 import { api } from '../utils/api'
@@ -38,6 +39,20 @@ function currencyTone(c) {
 }
 
 export default function BrokerManager({ brokers, onChange, totals, hidden }) {
+  // Mismas cuentas y misma preferencia de separación que las tablas de Cartera:
+  // este bloque se dibuja en la MISMA pantalla, justo arriba, así que mostrar
+  // las cuentas separadas acá y unificadas abajo era la contradicción más
+  // visible que podía quedar.
+  const separadas = (() => {
+    try { return new Set(JSON.parse(localStorage.getItem('rendi_cuentas_separadas') || '[]')) }
+    catch { return new Set() }
+  })()
+  const cuentas = groupBrokersIntoAccounts(brokers).map(cuenta => ({
+    cuenta, junta: cuenta.isPair && !separadas.has(cuenta.key),
+  }))
+  // El sub-broker no es una cuenta que el usuario haya conectado — misma
+  // definición que usa la cuota del plan en el backend.
+  const nCuentas = cuentas.length
   const [showAdd, setShowAdd] = useState(false)
   const [editing, setEditing] = useState(null)
   const [brokerUpgrade, setBrokerUpgrade] = useState(null)
@@ -119,13 +134,41 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
         <div>
           <p className="eyebrow mb-0.5">Brokers</p>
           <h3 className="text-sm font-medium text-ink-1">
-            {brokers.length} {brokers.length === 1 ? 'cuenta conectada' : 'cuentas conectadas'}
+            {nCuentas} {nCuentas === 1 ? 'cuenta conectada' : 'cuentas conectadas'}
           </h3>
         </div>
       </header>
 
       <div className="flex flex-wrap gap-2.5">
-        {brokers.map(b => (
+        {cuentas.map(({ cuenta, junta }) => junta ? (
+          // Cuenta unificada: UNA card. Los totales se suman en USD porque
+          // `valueArs` no es aditivo entre patas (el motor lo deja en 0 para un
+          // broker USD), así que una cuenta con dos monedas se muestra en la
+          // moneda común. Editar y eliminar apuntan al PADRE: el backend rechaza
+          // renombrar un sibling y cascadea el nombre solo.
+          <BrokerCard
+            key={cuenta.key}
+            broker={cuenta.parent}
+            label={cuenta.label}
+            forzarUsd
+            monedasCuenta={cuenta.patas.map(b => {
+              const c = (b.currency || '').toUpperCase()
+              return c === 'USDT' ? 'USD' : (c || '?')
+            })}
+            totals={cuenta.patas.reduce((acc, b) => {
+              const t = totals?.[b.name]
+              if (!t) return acc
+              return {
+                value: (acc?.value || 0) + (t.value || 0),
+                invested: (acc?.invested || 0) + (t.invested || 0),
+                pnlUsd: (acc?.pnlUsd || 0) + (t.pnlUsd || 0),
+              }
+            }, null)}
+            hidden={hidden}
+            onEdit={() => setEditing({ ...cuenta.parent })}
+            onDelete={() => deleteBroker(cuenta.parent)}
+          />
+        ) : cuenta.patas.map(b => (
           <BrokerCard
             key={b.id}
             broker={b}
@@ -134,7 +177,7 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
             onEdit={() => setEditing({ ...b })}
             onDelete={() => deleteBroker(b)}
           />
-        ))}
+        )))}
         <button
           type="button"
           onClick={() => setShowAdd(true)}
@@ -257,10 +300,15 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
 // broker vacío) la card degrada a nombre + moneda. Exportada para que el
 // Dashboard use la MISMA pieza (sin acciones: onEdit/onDelete opcionales).
 
-export function BrokerCard({ broker, totals, hidden, onEdit, onDelete }) {
-  const isARS = broker.currency === 'ARS'
+export function BrokerCard({ broker, totals, hidden, onEdit, onDelete, label, forzarUsd = false, monedasCuenta }) {
+  // `forzarUsd`: la card representa una CUENTA con más de una moneda. No hay una
+  // moneda nativa que mostrar, y `valueArs` no se puede sumar entre patas, así
+  // que se muestra en dólares, que es donde las dos son comparables.
+  const isARS = !forzarUsd && broker.currency === 'ARS'
   // 'USDT' en un sub-broker '· USD' (padre ARS) son dólares reales, no Tether.
-  const cur = (broker.currency || '').toUpperCase() === 'USDT' && isArUsdBroker(broker.name) ? 'USD' : broker.currency
+  const cur = forzarUsd
+    ? (monedasCuenta || []).join(' + ')
+    : ((broker.currency || '').toUpperCase() === 'USDT' && isArUsdBroker(broker.name) ? 'USD' : broker.currency)
   const value = totals ? (isARS ? totals.valueArs : totals.value) : null
   const inv = totals ? (isARS ? totals.invArs : totals.invested) : 0
   const pnl = totals ? (isARS ? totals.pnlArs : totals.pnlUsd) : null
@@ -270,7 +318,7 @@ export function BrokerCard({ broker, totals, hidden, onEdit, onDelete }) {
     <div className="group bg-bg-1 border border-line/60 hover:border-line rounded-xl px-4 py-3 min-w-[180px] transition-colors">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm font-semibold text-ink-0 truncate">{broker.name}</span>
+          <span className="text-sm font-semibold text-ink-0 truncate">{label || broker.name}</span>
           <Pill tone={currencyTone(cur)}>{cur}</Pill>
         </div>
         {(onEdit || onDelete) && (

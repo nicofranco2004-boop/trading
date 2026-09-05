@@ -612,7 +612,14 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label: 'Posiciones',
       value: String(snap.positions_count),
-      sub: snap.brokers_count > 0 ? `en ${snap.brokers_count} broker${snap.brokers_count !== 1 ? 's' : ''}` : null,
+      // El "en N brokers" cuenta TODAS las cuentas del usuario, no las del
+      // reporte: la query del backend no aplica el filtro de broker a
+      // propósito (con filtro diría "en 1 broker" siempre — cierto e inútil).
+      // Así que sólo tiene sentido en la cartera global; con un broker
+      // elegido, el sub-label contradecía al filtro que está arriba.
+      sub: (broker === 'global' && snap.brokers_count > 0)
+        ? `en ${snap.brokers_count} broker${snap.brokers_count !== 1 ? 's' : ''}`
+        : null,
     })
   }
 
