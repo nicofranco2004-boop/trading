@@ -75,9 +75,9 @@ export default function Operations() {
   useEffect(() => { localStorage.setItem('rendi_operations_tab', tab) }, [tab])
   // P&L realizado con el toggle global ARS/USD, SIEMPRE a FX histórico:
   // cada trade se convierte con el suyo (op.fx_to_usd stampeado > lookup por
-  // op.date > tcBlue actual) y los agregados (KPIs, headers de grupo) suman los
+  // op.date > tcValuacion actual) y los agregados (KPIs, headers de grupo) suman los
   // valores YA convertidos — convert-then-sum, ver `sumConvertedAt`.
-  // Antes los agregados usaban tcBlue de HOY: un grupo de un solo trade mostraba
+  // Antes los agregados usaban tcValuacion de HOY: un grupo de un solo trade mostraba
   // un número distinto al de su propia fila (reporte real +$147.007 vs +$135.444).
   // `money` sigue para montos sin fecha propia (ej. header de columna).
   const money = useMoneyFormat()

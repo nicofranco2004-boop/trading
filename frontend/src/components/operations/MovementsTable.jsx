@@ -110,7 +110,7 @@ export default function MovementsTable({
 function MovementRow({ m, histMoney, indent = false, onDelete, deleting = false }) {
   // Phase C (audit fix H1): cada movimiento usa SU PROPIO FX histórico para
   // la conversión a ARS. m.fx_to_usd (si stampeado) > lookup por m.date >
-  // tcBlue actual. Esto evita que un retiro de $1000 USD en 2024 (blue era
+  // tcValuacion actual. Esto evita que un retiro de $1000 USD en 2024 (blue era
   // 1100) se muestre hoy como $1.466.000 ARS (al blue actual ~1466) cuando
   // en realidad fueron ~$1.100.000 ARS al tipo de cambio del momento.
   //

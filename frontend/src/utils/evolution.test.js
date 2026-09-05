@@ -206,7 +206,7 @@ describe('Robustness — bench null', () => {
   it('USD math unaffected by missing bench', () => {
     expect(r.seriesUsd[1].total).toBe(10)
   })
-  it('ARS uses tcBlue fallback (FX cancels in % anyway)', () => {
+  it('ARS uses tcValuacion fallback (FX cancels in % anyway)', () => {
     expect(r.seriesArs[1].total).toBe(10)
   })
 })

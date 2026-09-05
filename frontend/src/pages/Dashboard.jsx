@@ -80,7 +80,7 @@ function PersonalDashboard() {
   // por página → inconsistencias entre desktop y mobile.
   // Migración soft: si el user tenía 'rendi_dashboard_currency' viejo, lo
   // migra al nuevo storage key al primer load.
-  const { currency, setCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
+  const { currency, setCurrency, setTcValuacion: publishTcValuacion, valuationDollar, costBasis } = useCurrency()
   const { hidden, toggle: togglePrivacy } = usePrivacy()
   useEffect(() => {
     try {
@@ -189,26 +189,26 @@ function PersonalDashboard() {
     } catch {}
   }
 
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~5% sobre spot) p/ crypto en broker AR
 
-  // Fase B (2026-05-31): publicamos tcBlue al CurrencyContext para que
+  // Fase B (2026-05-31): publicamos tcValuacion al CurrencyContext para que
   // los components que solo necesitan formatear (Reports cards, charts)
   // no tengan que fetchear /dolar por su cuenta.
   useEffect(() => {
-    if (tcBlue > 0) publishTcBlue(tcBlue)
-  }, [tcBlue, publishTcBlue])
+    if (tcValuacion > 0) publishTcValuacion(tcValuacion)
+  }, [tcValuacion, publishTcValuacion])
 
   // Fase C (2026-05-31): historia de blue para conversión histórica del
   // chart. Cuando el toggle está en ARS, cada punto del chart usa SU
   // PROPIO blue (no el actual), reflejando la realidad histórica.
   // fxToUsdBlue stampeado en el snapshot tiene prioridad sobre el
   // lookup del hook (es el más auténtico al momento del snapshot).
-  const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcBlue)
-  const pf = pfUsd(usePfRollup(), tcBlue)   // plazos fijos → USD (valor + capital)
+  const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcValuacion)
+  const pf = pfUsd(usePfRollup(), tcValuacion)   // plazos fijos → USD (valor + capital)
 
-  const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis) }))
+  const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis) }))
   const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0) + pf.valueUsd
   const totalCostBasis = brokerTotals.reduce((s, b) => s + b.invested, 0) + pf.investedUsd
   const totalPnl = totalValue - totalCostBasis
@@ -257,9 +257,9 @@ function PersonalDashboard() {
         // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
         // → FX de ese momento. getHistoricalFx ya cae al blue actual si no hay serie.
         const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
-        return s + v * (getHistoricalFx(lastDay) || tcBlue)
+        return s + v * (getHistoricalFx(lastDay) || tcValuacion)
       }, 0)
-  }, [monthly, currency, tcBlue, getHistoricalFx, realizedPnl])
+  }, [monthly, currency, tcValuacion, getHistoricalFx, realizedPnl])
 
   // Total return = market value vs net deposited (so deposits aren't counted as performance)
   const totalReturnUsd = totalValue - netDeposited
@@ -324,9 +324,9 @@ function PersonalDashboard() {
           // Un bono per-100 leído per-1 → ×100 → cae a costo (value==invested, pnl 0).
           const mktArs = priceArs * (p.quantity || 0)
           const trust = trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
-          valueUsd = (trust ? mktArs : realCost) / tcBlue
+          valueUsd = (trust ? mktArs : realCost) / tcValuacion
           // FX-phantom fix: cost basis USD al blue actual (no al tc_compra)
-          const invUsd = realCost / tcBlue
+          const invUsd = realCost / tcValuacion
           pnlUsd = valueUsd - invUsd
         }
       } else if (costInPesos(p)) {
@@ -373,7 +373,7 @@ function PersonalDashboard() {
       // ÷blue, va antes que isARS (que sí divide por blue y colapsaría el denominador
       // del %). Gateado a broker ARS: una acción US genuina en broker USD cae al último
       // else → realCost * fForPct (fForPct=1 no-cripto) = realCost, ya en USD.
-      const invForPct = isARS && costInUsd(p) ? realCost : isARS ? realCost / tcBlue : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
+      const invForPct = isARS && costInUsd(p) ? realCost : isARS ? realCost / tcValuacion : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
       const pnlPct = pnlUsd != null && invForPct > 0 ? pnlUsd / invForPct : null
       return {
         asset: p.asset, value_usd: valueUsd, pnl_usd: pnlUsd, pnl_pct: pnlPct,
@@ -387,7 +387,7 @@ function PersonalDashboard() {
     // (value/pnl vs %) o huele a inflado — caza la clase GOOGL/bono automáticamente.
     auditPositions(rows, 'Dashboard.positionsForInsight')
     return rows
-  }, [positions, prices, tcBlue, arsBrokerNames, exchangeBrokers, tcCripto, tcCedear])
+  }, [positions, prices, tcValuacion, arsBrokerNames, exchangeBrokers, tcCripto, tcCedear])
 
   // Cash valuado, para la torta de distribución. Va aparte de positionsForInsight
   // a propósito: esa memo es la ruta auditada (auditPositions) y filtra el cash
@@ -427,7 +427,7 @@ function PersonalDashboard() {
   )
   // Los breakdowns siempre vienen en USD (moneda interna de la valuación); el
   // formateo respeta el toggle global, igual que AssetBreakdownBar.
-  const compFmt = (v) => (currency === 'ARS' ? fmtArs(v * tcBlue) : fmtUsd(v))
+  const compFmt = (v) => (currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v))
 
   const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, positions: positionsForInsight }), [totalValue, netDeposited, positionsForInsight])
 
@@ -442,7 +442,7 @@ function PersonalDashboard() {
     if (nonCash.length === 0) return 1
     // Sin blue válido no podemos valuar posiciones ARS → cobertura 0 (bloquea).
     const hasArs = nonCash.some(p => arsBrokerNames.has(p.broker))
-    if (hasArs && !(tcBlue > 0)) return 0
+    if (hasArs && !(tcValuacion > 0)) return 0
     // Cobertura contra la MISMA key que la valuación lee (valuationPriceKey).
     // El check viejo (prices[asset] || prices[asset.BA]) daba por "priceado" un
     // lote cuya key real no llegó → el guard dejaba pasar snapshots subvaluados.
@@ -450,13 +450,13 @@ function PersonalDashboard() {
       p.price_override != null || prices[valuationPriceKey(p, arsBrokerNames.has(p.broker))] != null
     const costUsd = (p) => {
       const c = (p.invested || 0) + (p.commissions || 0)
-      return arsBrokerNames.has(p.broker) ? c / tcBlue : c
+      return arsBrokerNames.has(p.broker) ? c / tcValuacion : c
     }
     const total = nonCash.reduce((s, p) => s + costUsd(p), 0)
     if (!(total > 0)) return 1
     const priced = nonCash.reduce((s, p) => s + (hasPrice(p) ? costUsd(p) : 0), 0)
     return priced / total
-  }, [positions, prices, arsBrokerNames, tcBlue])
+  }, [positions, prices, arsBrokerNames, tcValuacion])
 
   const PRICE_COVERAGE_MIN = 0.95  // ≥95% del portfolio con precio real (alineado con el cron)
 
@@ -513,7 +513,7 @@ function PersonalDashboard() {
           // o CEDEAR comprado en dólar-MEP → currency='USD') en un broker ARS. El
           // costo YA está en USD → su P&L es directo en USD (usdLotValue ya clampea),
           // NO entra a pnlArs (que se divide por el blue). Sin esto, el costo USD se
-          // trataba como pesos y /tcBlue lo colapsaba → el pnl_unrealized (y el
+          // trataba como pesos y /tcValuacion lo colapsaba → el pnl_unrealized (y el
           // capital_final del mes → el punto de la curva) quedaba mal.
           if (costInUsd(p)) {
             const { investedUsd, valueUsd } = usdLotValue(p, prices, tcCedear)
@@ -529,11 +529,11 @@ function PersonalDashboard() {
           const mktArs = priceArs * (p.quantity || 0)
           const valArs = trustMktValue(mktArs, costArs, p.asset_type, p.price_override != null) ? mktArs : costArs
           pnlArs += valArs - costArs
-          // FX-phantom fix: ambos lados al blue actual → P&L USD == P&L ARS / tcBlue
+          // FX-phantom fix: ambos lados al blue actual → P&L USD == P&L ARS / tcValuacion
           // Sin esto, los pesos quietos generaban "ganancia/pérdida fantasma" por
           // movimientos del blue aunque el activo no se hubiera movido.
         }
-        pnlForBroker = pnlArs / tcBlue + pnlUsdDirect
+        pnlForBroker = pnlArs / tcValuacion + pnlUsdDirect
         pnlForGlobal = pnlForBroker
       } else {
         for (const p of bpos) {
@@ -598,7 +598,7 @@ function PersonalDashboard() {
 
   // Audit fix C1 (2026-05-31): cuando el toggle global está en ARS,
   // convertimos CADA punto usando su FX histórico (stamped > lookup > current).
-  // Antes el Y-axis usaba tcBlue actual y el tooltip usaba FX histórico
+  // Antes el Y-axis usaba tcValuacion actual y el tooltip usaba FX histórico
   // → inconsistencia visible. Ahora la DATA está convertida ANTES de pasar
   // al chart, así axis + tooltip muestran el mismo número.
   // En USD view, pasamos el evoSeries tal cual (sin conversión).
@@ -699,19 +699,19 @@ function PersonalDashboard() {
   const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
 
   // Helper: convierte USD → moneda activa para mostrar.
-  // Para ARS multiplica por tcBlue actual (snapshot). No es histórico — los
+  // Para ARS multiplica por tcValuacion actual (snapshot). No es histórico — los
   // valores de snapshot se ven al FX de hoy. Lo aclaramos en el hero.
   const fmt = (usdValue) => {
     if (usdValue == null) return '—'
     return currency === 'ARS'
-      ? fmtArs(usdValue * tcBlue)
+      ? fmtArs(usdValue * tcValuacion)
       : fmtUsd(usdValue)
   }
   const sign = (v) => v == null ? '' : (v >= 0 ? '+' : '−')
   const fmtSigned = (usdValue) => {
     if (usdValue == null) return '—'
     return currency === 'ARS'
-      ? `${sign(usdValue)}ARS ${ars(Math.abs(usdValue * tcBlue))}`
+      ? `${sign(usdValue)}ARS ${ars(Math.abs(usdValue * tcValuacion))}`
       : `${sign(usdValue)}USD ${usd(Math.abs(usdValue))}`
   }
   // Igual que fmtSigned pero para valores que YA vienen en la moneda de display
@@ -807,8 +807,8 @@ function PersonalDashboard() {
             <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
             <p className="text-ink-3">
               {currency === 'ARS'
-                ? `Conversión USD → ARS al blue actual (${tcBlue}). Los valores históricos no se reconvierten.`
-                : 'Para brokers ARS, la conversión a USD se hace al blue actual.'}
+                ? `Conversión USD → ARS al dólar ${valuationDollar === 'ccl' ? 'CCL' : 'MEP'} (${tcValuacion}), el que elegiste para valuar. Los valores históricos no se reconvierten.`
+                : `Para brokers ARS, la conversión a USD se hace al dólar ${valuationDollar === 'ccl' ? 'CCL' : 'MEP'} que elegiste.`}
             </p>
           </InfoTooltip>
         </div>
@@ -825,8 +825,8 @@ function PersonalDashboard() {
           {!hidden && (
             <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
               {currency === 'ARS'
-                ? <>≈ {fmtUsd(portfolioTotal)}<span className="text-ink-3 ml-1">al blue {tcBlue}</span></>
-                : <>≈ {fmtArs(portfolioTotal * tcBlue)}<span className="text-ink-3 ml-1">al blue {tcBlue}</span></>}
+                ? <>≈ {fmtUsd(portfolioTotal)}<span className="text-ink-3 ml-1">al {valuationDollar === 'ccl' ? 'CCL' : 'MEP'} {tcValuacion}</span></>
+                : <>≈ {fmtArs(portfolioTotal * tcValuacion)}<span className="text-ink-3 ml-1">al {valuationDollar === 'ccl' ? 'CCL' : 'MEP'} {tcValuacion}</span></>}
             </span>
           )}
           {!hidden && (
@@ -1212,7 +1212,7 @@ function PersonalDashboard() {
               positions={positionsForInsight}
               totalValue={totalValue}
               currency={currency}
-              tcBlue={tcBlue}
+              tcValuacion={tcValuacion}
             />
           </AskAIAbout>
           <AskAIAbout
@@ -1223,7 +1223,7 @@ function PersonalDashboard() {
             <TopHoldingsPanel
               positions={positionsForInsight}
               currency={currency}
-              tcBlue={tcBlue}
+              tcValuacion={tcValuacion}
             />
           </AskAIAbout>
         </div>
@@ -1408,8 +1408,8 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right' }) {
 
 const ASSET_COLORS = ['#21D07A', '#46C6E0', '#4E83FF', '#E8B14A', '#8B7DFF', '#5A6478']
 
-function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcBlue = 1 }) {
-  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcBlue) : fmtUsd(v)
+function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcValuacion = 1 }) {
+  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
   const items = useMemo(() => {
     // Consolidar por asset (sumar value_usd)
     const byAsset = new Map()
@@ -1479,13 +1479,13 @@ function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcBlue = 1
 // ─── Top holdings panel ──────────────────────────────────────────────────────
 // Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy.
 
-function TopHoldingsPanel({ positions, currency = 'USD', tcBlue = 1 }) {
-  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcBlue) : fmtUsd(v)
+function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
+  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
   const fmtSigned = (v) => {
     if (v == null) return ''
     const s = v >= 0 ? '+' : '−'
     return currency === 'ARS'
-      ? `${s}${ars(Math.abs(v * tcBlue))}`
+      ? `${s}${ars(Math.abs(v * tcValuacion))}`
       : `${s}${usd(Math.abs(v))}`
   }
   const top = useMemo(() => {

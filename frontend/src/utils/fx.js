@@ -19,7 +19,7 @@
  * @param {Object|null} bench  bench.dolar_blue map, or null/undefined if unavailable
  * @param {number}      year   target year
  * @param {number}      month  1-12
- * @param {number}      liveTc current live tcBlue (used for current month + final fallback)
+ * @param {number}      liveTc current live tcValuacion (used for current month + final fallback)
  * @param {Date}        now    optional override for "today" — useful in tests
  * @returns {number}
  */

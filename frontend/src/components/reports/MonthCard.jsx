@@ -69,7 +69,7 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
   const positive = (deltaPct ?? 0) >= 0
   // Fase B: el delta_usd / valores monetarios respetan el toggle global
   // ARS/USD. El backend siempre devuelve USD; la conversión a ARS usa
-  // tcBlue ACTUAL (limitación MVP — Fase C trackeará TC histórico).
+  // tcValuacion ACTUAL (limitación MVP — Fase C trackeará TC histórico).
   const money = useMoneyFormat()
 
   // Caso minimal: período sin actividad y no en curso → colapsado a 1 línea sticky

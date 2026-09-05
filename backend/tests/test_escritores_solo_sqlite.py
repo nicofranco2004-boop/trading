@@ -44,6 +44,13 @@ PERMITIDOS = {
         "Clon del ensayo, con guard.",
     ("main.py", "admin_fx_migrate_batch"):
         "Clon del ensayo, con guard.",
+    ("scripts/seed_cuenta_unificada.py", "<module>"):
+        "Fixture de DESARROLLO LOCAL: siembra el usuario de prueba de la cuenta "
+        "unificada (padre ARS + sub-broker '· USD', con el mismo ticker en las dos "
+        "patas, que no existe en ninguna base real) para poder mirar la pantalla a "
+        "mano. Nunca corre en producción ni en CI: se invoca a mano contra "
+        "backend/trading.db. Si algún día hace falta en Postgres, tiene que pasar "
+        "por get_db() — los placeholders '?' tampoco sobrevivirían al cambio.",
     ("scripts/backup_db.py", "dump_sqlite_consistent"):
         "⚠️ PENDIENTE: es el backup nocturno y HOY es sólo-SQLite. Después del "
         "pasaje seguiría copiando el archivo congelado reportando éxito. Está "

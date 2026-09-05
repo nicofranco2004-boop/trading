@@ -197,7 +197,7 @@ function TradeRow({ op, histMoney, onEdit, onDelete, indent = false, deleting = 
 //
 // ⚠️ CONVERT-THEN-SUM (money-critical): el total se arma convirtiendo CADA fila
 // con SU FX histórico y sumando eso — NO sumando los USD y convirtiendo al FX de
-// hoy. Antes usaba `fmtPnl` (= tcBlue actual, que además es el MEP), mientras las
+// hoy. Antes usaba `fmtPnl` (= tcValuacion actual, que además es el MEP), mientras las
 // filas usan el FX de su fecha: un grupo de UN trade mostraba dos números
 // distintos (reporte real: header +$147.007 vs su única fila +$135.444, mismo
 // pnl_usd × dos dólares). El invariante que garantiza esto es `total === Σ filas`.

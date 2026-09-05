@@ -66,8 +66,8 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
     return () => { cancelled = true }
   }, [])
 
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = tcBlue
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = tcValuacion
   const tcCripto = dolar?.cripto?.venta || null
 
   useEffect(() => {
@@ -92,9 +92,9 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
   const totalValue = useMemo(() => {
     if (!brokers.length) return 0
     let v = 0
-    for (const b of brokers) v += computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto).value || 0
+    for (const b of brokers) v += computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto).value || 0
     return v
-  }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto])
+  }, [brokers, positions, prices, tcValuacion, tcCedear, tcCripto])
 
   const { holdings, heldBases, analizableValue, excludedCount } = useMemo(() => {
     const brokerByName = Object.fromEntries(brokers.map(b => [b.name, b]))
@@ -113,7 +113,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
       // por su ticker NYSE real. En broker US el ticker queda como está.
       const onBA = arsBrokers.has(p.broker) || isArUsdBroker(p.broker) || costInPesos(p)
       const base = onBA ? cedearEspecieBase(p.asset) : baseTicker(p.asset)
-      const { valueUsd, investedUsd } = valueEquityLot(p, brokerByName[p.broker], prices, tcBlue, tcCedear)
+      const { valueUsd, investedUsd } = valueEquityLot(p, brokerByName[p.broker], prices, tcValuacion, tcCedear)
       const h = map.get(base) || { base, valueUsd: 0, investedUsd: 0, brokers: new Set() }
       h.valueUsd += valueUsd || 0
       h.investedUsd += investedUsd || 0
@@ -132,7 +132,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
     })
     arr.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0))
     return { holdings: arr, heldBases: new Set(arr.map(h => h.base)), analizableValue: analizable, excludedCount: excluded }
-  }, [positions, brokers, prices, tcBlue, tcCedear, totalValue])
+  }, [positions, brokers, prices, tcValuacion, tcCedear, totalValue])
 
   // "Que seguís" = watchlist equity/CEDEAR que NO tenés (las que tenés ya están arriba).
   const followed = useMemo(() => {

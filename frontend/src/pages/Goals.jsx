@@ -63,9 +63,9 @@ export default function Goals() {
       // fuente de verdad), igual que Positions.jsx / Insights.jsx. Así CEDEARs y
       // sub-brokers "· USD" se valúan por su precio LOCAL .BA ÷ dólar-MEP, no por el
       // ticker US (que estaría órdenes de magnitud mal).
-      const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
+      const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
       // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
-      const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue
+      const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion
       const tcCripto = dolar?.cripto?.venta
       const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
       const usdtBrokers = new Set(brokers.filter(b => b.currency !== 'ARS').map(b => b.name))
@@ -79,7 +79,7 @@ export default function Goals() {
         try { pr = await api.get(`/prices?symbols=${all}`) } catch {}
       }
       const val = brokers.reduce(
-        (s, b) => s + computeBrokerValue(positions, pr, b, tcBlue, tcCedear, tcCripto).value,
+        (s, b) => s + computeBrokerValue(positions, pr, b, tcValuacion, tcCedear, tcCripto).value,
         0
       )
       setCurrentValue(val)

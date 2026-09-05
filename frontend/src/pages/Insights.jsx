@@ -401,14 +401,14 @@ function InsightsDesktop({ _embeddedTab }) {
   //                instrumento). Agrega posiciones del mismo asset entre brokers/lotes.
   //                Excluye cash. Esto es lo que un usuario espera ver al preguntarse
   //                "¿qué tan expuesto estoy a un único activo?".
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~5% sobre spot) p/ cripto en broker AR
   // Brokers que son exchange (Binance, Ripio…): la cripto se valúa a spot (factor 1).
   // En un broker AR (Cocos, Balanz…) la cripto se valúa al dólar cripto (MEP-like).
   const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
   const pieData = brokers
-    .map(b => ({ name: b.name, value: +computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis).value.toFixed(2) }))
+    .map(b => ({ name: b.name, value: +computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis).value.toFixed(2) }))
     .filter(x => x.value > 0)
   const totalPortfolio = pieData.reduce((s, x) => s + x.value, 0)
 
@@ -436,7 +436,7 @@ function InsightsDesktop({ _embeddedTab }) {
       const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
       const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
       return (mktArs != null && trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null))
-        ? mktArs / tcBlue : realCost / tcBlue
+        ? mktArs / tcValuacion : realCost / tcValuacion
     }
     if (costInPesos(p)) {
       // Mismo clamp anti-distorsión que el resto de las ramas: un bono/activo en
@@ -499,7 +499,7 @@ function InsightsDesktop({ _embeddedTab }) {
         // porque el cash se modeló como un saldo, no como N unidades).
         const broker = brokers.find(b => b.name === p.broker)
         const amount = p.invested || 0
-        const val = broker?.currency === 'ARS' ? amount / tcBlue : amount
+        const val = broker?.currency === 'ARS' ? amount / tcValuacion : amount
         return { ...p, value_usd: val }
       }
       const val = holdingValueUsd(p)   // clamp anti-distorsión incluido (fuente única)
@@ -523,7 +523,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
   const totalCostBasis = brokers.reduce((s, b) => {
-    return s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis).invested
+    return s + computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis).invested
   }, 0)
   const unrealizedPnl = totalPortfolio - totalCostBasis
 
@@ -576,7 +576,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // ── Phase 7 — Daily granularity from snapshots when available ──
   // ≥2 snapshots → daily evolution (Total Return %, realized step-matched
   // from monthly_entries). Else fallback al cómputo mensual de abajo.
-  const dailyEvo = buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcBlue)
+  const dailyEvo = buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcValuacion)
   if (dailyEvo) {
     seriesUsd.push(...dailyEvo.seriesUsd)
     seriesArs.push(...dailyEvo.seriesArs)
@@ -731,9 +731,9 @@ function InsightsDesktop({ _embeddedTab }) {
       seriesUsd.push({ key: 'today', label: 'Hoy', realized: realLive, total: totalLive })
 
       // ARS "Hoy" — el cierre del último mes vale a SU fx, el valor de hoy al de
-      // hoy. Los dos al mismo tcBlue (como estaba) hacía que el tramo final
+      // hoy. Los dos al mismo tcValuacion (como estaba) hacía que el tramo final
       // tampoco viera la devaluación.
-      // Los dos lados salen del mapa `dolar_blue`, NO de tcBlue: tcBlue es el MEP
+      // Los dos lados salen del mapa `dolar_blue`, NO de tcValuacion: tcValuacion es el MEP
       // (pickFinancialRate), y como lo que mueve el retorno es el cociente
       // fx_hoy/fx_últimoMes, mezclar rieles metería un salto espurio del tamaño
       // del cambio de la brecha blue-MEP.
@@ -971,7 +971,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // Punto "Hoy" — valor live de posiciones ARS al blue actual (extiende el TWR)
     const arsLiveUsd = brokers
       .filter(b => arsBrokerNames.has(b.name))
-      .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis).value, 0)
+      .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis).value, 0)
     // ⚠️ EL TRAMO FINAL COMPARABA MERCADO CONTRA CONTABILIDAD. `valueNowArs`
     // sale de `computeBrokerValue` (posiciones × precio: MERCADO) y `lastCfArs`
     // de `lastM.capital_final`, que en la rama ARS es la CADENA CONTABLE pelada:
@@ -996,10 +996,10 @@ function InsightsDesktop({ _embeddedTab }) {
     if (arsLiveUsd > 0 && _cierreArsMedido) {
       const lastM = _lastArs
       // El punto "Hoy" tenía el MISMO bug que el loop: los dos lados al mismo
-      // tcBlue ⇒ el FX se cancelaba y el tramo final tampoco veía la devaluación.
+      // tcValuacion ⇒ el FX se cancelaba y el tramo final tampoco veía la devaluación.
       // El cierre del último mes vale a SU FX; el valor de hoy, al de hoy.
       // Los dos salen del riel `dolar_blue` a propósito: lo que mueve el retorno
-      // es el cociente fx_hoy/fx_últimoMes, y mezclar rieles (tcBlue es MEP)
+      // es el cociente fx_hoy/fx_últimoMes, y mezclar rieles (tcValuacion es MEP)
       // metería un salto espurio del tamaño de la brecha.
       const fxHoy = blueKeys.length ? bench.dolar_blue[blueKeys[blueKeys.length - 1]] : null
       const lastCfArs = (lastM.capital_final || 0) * fxPrevArs
@@ -1538,7 +1538,7 @@ function InsightsDesktop({ _embeddedTab }) {
           const lastPrice = ps[ps.length - 1].price
           const todayIdx = (latestBenchPrice != null && latestBenchPrice > 0) ? latestBenchPrice : lastPrice
           if (todayIdx != null && todayIdx > 0) {
-            result.set('today', +((((todayIdx * tcBlue) / basePesos) - 1) * 100).toFixed(4))
+            result.set('today', +((((todayIdx * tcValuacion) / basePesos) - 1) * 100).toFixed(4))
           }
           return result
         }
@@ -1569,11 +1569,11 @@ function InsightsDesktop({ _embeddedTab }) {
       }
 
       // "Today": último valor del sim al blue ACTUAL — igual que el punto Hoy del
-      // portfolio (valor live × tcBlue), para que ambos reciban el mismo salto de FX.
+      // portfolio (valor live × tcValuacion), para que ambos reciban el mismo salto de FX.
       const last = simResult.series[simResult.series.length - 1]
       const investedNowPesos = baselinePesos + netFlowsPesos
       const denomP = stableInv(investedNowPesos, peakInvestedPesos)
-      const gainP = (last.value * tcBlue) - investedNowPesos
+      const gainP = (last.value * tcValuacion) - investedNowPesos
       const pct = denomP > 0 ? (gainP / denomP) * 100 : 0
       result.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))
       return result
@@ -1834,12 +1834,12 @@ function InsightsDesktop({ _embeddedTab }) {
   }
 
   // ── Cash ratio — % del portfolio en cash (todas las monedas convertidas a USD)
-  // Para ARS cash, computeBrokerValue ya hace la conversión vía tcBlue.
+  // Para ARS cash, computeBrokerValue ya hace la conversión vía tcValuacion.
   const cashUsd = brokers.reduce((s, b) => {
     const cashPositions = positions.filter(p => p.is_cash && p.broker === b.name)
     if (b.currency === 'ARS') {
-      // ARS cash: invested está en pesos → dividir por tcBlue para USD
-      return s + cashPositions.reduce((sum, p) => sum + (p.invested || 0) / tcBlue, 0)
+      // ARS cash: invested está en pesos → dividir por tcValuacion para USD
+      return s + cashPositions.reduce((sum, p) => sum + (p.invested || 0) / tcValuacion, 0)
     }
     return s + cashPositions.reduce((sum, p) => sum + (p.invested || 0), 0)
   }, 0)
@@ -2025,7 +2025,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // else → realCost, sincronizada con holdingValueUsd que también va al else USD).
       investedUsd = realCost
     } else if (isARS) {
-      investedUsd = realCost / tcBlue
+      investedUsd = realCost / tcValuacion
     } else if (costInPesos(p)) {
       investedUsd = pesoLotUsd(p, prices, tcCedear).investedUsd
     } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null && !isCrypto(p.asset)) {
@@ -2077,7 +2077,7 @@ function InsightsDesktop({ _embeddedTab }) {
     asset: p.asset,
     amount: p.invested,
     currency: brokers.find(b => b.name === p.broker)?.currency || 'USDT',
-    value_usd: arsBrokerSet.has(p.broker) ? +((p.invested || 0) / tcBlue).toFixed(2) : +(p.invested || 0).toFixed(2),
+    value_usd: arsBrokerSet.has(p.broker) ? +((p.invested || 0) / tcValuacion).toFixed(2) : +(p.invested || 0).toFixed(2),
   }))
 
   // ── Mejor activo total (realized + unrealized) ──
@@ -2144,7 +2144,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // Los dos ejes de la torta de distribución. MISMOS agregadores que el
   // Dashboard — el objetivo es que las dos pantallas no puedan dar números
   // distintos. El plazo fijo entra como porción sintética, igual que allá.
-  const pfRollup = pfUsd(pfTotals, tcBlue)
+  const pfRollup = pfUsd(pfTotals, tcValuacion)
   const pfSliceUsd = pfRollup.valueUsd
   const pfPnl = { total: pfRollup.pnlUsd, cost: pfRollup.investedUsd }
   const classBreakdown = computeClassBreakdown(
@@ -2331,7 +2331,7 @@ function InsightsDesktop({ _embeddedTab }) {
     openExtremes,
     positions,
     brokers,
-    tcBlue,
+    tcValuacion,
     // Variables nuevas para reglas de comportamiento, costos y consistencia.
     operations,           // todas las operaciones (trade + cash flow)
     tradeOps,             // solo trades cerrados (sell)
@@ -2462,7 +2462,7 @@ function InsightsDesktop({ _embeddedTab }) {
       concentration_top3_pct: concentration ? +concentration.sharePct.toFixed(2) : null,
       concentration_top3_assets: concentration ? concentration.top3.map(t => t.asset) : null,
       avg_hold_days: holdTime ? +holdTime.avg.toFixed(1) : null,
-      tc_blue_ars: tcBlue,
+      tc_blue_ars: tcValuacion,
       // Pro metrics (calculadas en frontend con TWRR Modified Dietz + CAPM).
       // El Coach puede usarlas para diagnósticos tipo "tu Sharpe bajó de 1.4 a
       // 0.8 los últimos 3 meses" o "tu Beta de 1.6 indica que sos más agresivo
@@ -2493,7 +2493,7 @@ function InsightsDesktop({ _embeddedTab }) {
       sp500_last_close: spKeys.length > 0 ? bench?.sp500[spKeys[spKeys.length - 1]] : null,
       inflation_ar_last_12m_pct: inflLast12,
       inflation_ar_last_month_pct: inflLastMonth,
-      dolar_blue_venta: tcBlue,
+      dolar_blue_venta: tcValuacion,
       // El MEP que la IA cita tiene que ser el mismo con el que la app valúa (el
       // medio), no la punta de compra — si no, sus números no cuadran con la tabla.
       dolar_mep_venta: (dolar?.mep?.medio ?? dolar?.mep?.venta) || null,
@@ -2518,7 +2518,7 @@ function InsightsDesktop({ _embeddedTab }) {
     const sign = opts.signed ? (usdValue >= 0 ? '+' : '-') : ''
     const abs = Math.abs(usdValue)
     if (currency === 'ARS') {
-      const arsValue = abs * tcBlue
+      const arsValue = abs * tcValuacion
       return `${sign}ARS ${arsValue.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
     }
     return `${sign}USD ${abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`

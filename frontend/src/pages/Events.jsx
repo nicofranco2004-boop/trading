@@ -146,16 +146,16 @@ export default function Events({ embedded = false }) {
   }
 
   // Valor total del portfolio en USD (para impact %)
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta
   const portfolioTotalUsd = useMemo(() => {
     return brokers.reduce((sum, broker) => {
       const bpos = positions.filter(p => p.broker === broker.name)
-      const v = computeBrokerValue(bpos, prices, broker, tcBlue, tcCedear, tcCripto)
+      const v = computeBrokerValue(bpos, prices, broker, tcValuacion, tcCedear, tcCripto)
       return sum + (v.value || 0)
     }, 0)
-  }, [positions, brokers, prices, tcBlue])
+  }, [positions, brokers, prices, tcValuacion])
 
   // Valor USD por ticker
   const tickerValueUsd = useMemo(() => {
@@ -164,13 +164,13 @@ export default function Events({ embedded = false }) {
       const bpos = positions.filter(p => p.broker === broker.name)
       for (const p of bpos) {
         if (p.is_cash) continue
-        const r = computeBrokerValue([p], prices, broker, tcBlue, tcCedear, tcCripto)
+        const r = computeBrokerValue([p], prices, broker, tcValuacion, tcCedear, tcCripto)
         const prev = map.get(p.asset) || 0
         map.set(p.asset, prev + (r.value || 0))
       }
     }
     return map
-  }, [positions, brokers, prices, tcBlue])
+  }, [positions, brokers, prices, tcValuacion])
 
   // Acciones (cantidad) por ticker — para "tenés N acc → cobrás $X".
   const tickerShares = useMemo(() => {

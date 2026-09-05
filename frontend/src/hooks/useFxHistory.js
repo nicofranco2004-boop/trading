@@ -6,9 +6,9 @@
 // el TC que existía en ESA fecha — no el actual.
 //
 // Fallbacks:
-//   • Si la API falla → devuelve un map vacío + fallbackTcBlue (el actual).
+//   • Si la API falla → devuelve un map vacío + fallbackTcValuacion (el actual).
 //   • Si una fecha no está en el map → busca el día anterior más cercano.
-//   • Si nada existe → fallbackTcBlue.
+//   • Si nada existe → fallbackTcValuacion.
 //
 // El hook es global-cache friendly: una sola instancia mantiene el map.
 // Re-renderizados no disparan nuevos fetches.
@@ -56,7 +56,7 @@ export function fetchFxHistory() {
   // Data válida cacheada → resolve directo
   if (_fxCacheData && _fxCacheData.length > 0) return Promise.resolve(_fxCacheData)
   // Error reciente → no reintentar hasta cooldown (devuelve cache vacío sin
-  // disparar más network calls; el caller usa fallback tcBlue automáticamente)
+  // disparar más network calls; el caller usa fallback tcValuacion automáticamente)
   if (_fxCacheError && Date.now() - _fxCacheErrorAt < RETRY_COOLDOWN_MS) {
     return Promise.resolve(_fxCacheData || [])
   }
@@ -94,17 +94,17 @@ export function _resetFxCacheForTesting() {
 /**
  * Hook que devuelve la historia de blue + un helper getRateForDate.
  *
- * @param {number} fallbackTcBlue — blue actual (del context o de un fetch local)
+ * @param {number} fallbackTcValuacion — blue actual (del context o de un fetch local)
  * @returns {{
  *   loaded: boolean,
  *   getRateForDate: (dateIso: string) => number | null,
  *   getRateOrFallback: (dateIso: string) => number,
  * }}
  */
-export function useFxHistory(fallbackTcBlue = 1415) {
+export function useFxHistory(fallbackTcValuacion = 1415) {
   const [data, setData] = useState(_fxCacheData)
-  const fallbackRef = useRef(fallbackTcBlue)
-  fallbackRef.current = fallbackTcBlue
+  const fallbackRef = useRef(fallbackTcValuacion)
+  fallbackRef.current = fallbackTcValuacion
 
   useEffect(() => {
     let cancelled = false

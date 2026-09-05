@@ -94,8 +94,8 @@ export default function PositionDetailMobile() {
 
   const p = position
   const isAR = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto p/ valuar crypto en broker AR
   const qty = p.quantity || 0
   const invested = p.invested || 0
@@ -110,7 +110,7 @@ export default function PositionDetailMobile() {
   // Compute current value + P/L
   let valueUsd = 0, priceLocal = null, pnlUsd = null, pnlPct = null
   if (p.is_cash) {
-    valueUsd = isAR ? invested / tcBlue : invested
+    valueUsd = isAR ? invested / tcValuacion : invested
   } else if (costInPesos(p) && !isAR) {
     // Lote en PESOS (currency='ARS') en una cuenta USD: costo Y valor a USD por el
     // dólar-MEP (.BA ÷ tcCedear), igual que un CEDEAR. NO contar los pesos como
@@ -139,14 +139,14 @@ export default function PositionDetailMobile() {
     pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
   } else if (isAR) {
     priceLocal = p.price_override ?? prices[priceKey]
-    const investedUsd = invested / tcBlue   // hoy
+    const investedUsd = invested / tcValuacion   // hoy
     // mkt y cost comparados en la MISMA moneda (ARS, nativo → mode-independent): un
     // bono per-100 (×100) o colisión de ticker cae a costo (P&L 0 para esta posición).
     const mktArs = priceLocal != null ? priceLocal * qty : null
     const trustArs = mktArs != null && trustMktValue(mktArs, invested, p.asset_type, p.price_override != null)
     // Costo DISPLAY del modo: solo con precio confiable. En 'today' === investedUsd.
-    const investedUsdDisplay = trustArs ? invested / costBasisRate(p, tcBlue, costBasis) : investedUsd
-    valueUsd = trustArs ? mktArs / tcBlue : investedUsdDisplay
+    const investedUsdDisplay = trustArs ? invested / costBasisRate(p, tcValuacion, costBasis) : investedUsd
+    valueUsd = trustArs ? mktArs / tcValuacion : investedUsdDisplay
     pnlUsd = valueUsd - investedUsdDisplay
     pnlPct = investedUsdDisplay > 0 ? pnlUsd / investedUsdDisplay : 0
   } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {

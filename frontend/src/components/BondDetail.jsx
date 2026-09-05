@@ -32,22 +32,22 @@ function diffDaysAbs(a, b) {
 export function BondDetailBody({
   p, summary, isARS, currentPrice, tcMep, cerSeries, cerStale,
   onAddCoupon, onAddAmortization, pendingDates = null,
-  isArsDisp = null, tcBlue = null,
+  isArsDisp = null, tcValuacion = null,
 }) {
   const meta = getBondMeta(p.asset)
   // La moneda de DISPLAY sigue el toggle global (isArsDisp) cuando viene —
   // igual que el resto de Cartera (toggle `932bebf`). Sin la prop, cae a la
   // moneda nativa del broker (isARS). Los montos del summary son NATIVOS del
   // broker → `toDisp` los lleva al riel elegido, prefiriendo la pata USD
-  // exacta del summary sobre re-dividir por tcBlue cuando está disponible.
+  // exacta del summary sobre re-dividir por tcValuacion cuando está disponible.
   const dispArs = isArsDisp == null ? isARS : isArsDisp
   const moneyLabel = dispArs ? 'ARS' : 'USD'
   const fmt = dispArs ? ars : usd
   const toDisp = (nativeAmt, usdAmt = null) => {
     if (nativeAmt == null) return nativeAmt
     if (isARS === dispArs) return nativeAmt
-    if (isARS && !dispArs) return usdAmt != null ? usdAmt : (tcBlue ? nativeAmt / tcBlue : nativeAmt)
-    return nativeAmt * (tcBlue || 1)  // broker USD, vista ARS
+    if (isARS && !dispArs) return usdAmt != null ? usdAmt : (tcValuacion ? nativeAmt / tcValuacion : nativeAmt)
+    return nativeAmt * (tcValuacion || 1)  // broker USD, vista ARS
   }
   const invested = p.invested || 0
   const coupons = summary?.coupons || 0
@@ -91,8 +91,8 @@ export function BondDetailBody({
   const schedToDisp = (amt) => {
     if (amt == null) return amt
     if (bondIsArs === dispArs) return amt
-    if (bondIsArs && !dispArs) return tcBlue ? amt / tcBlue : amt
-    return amt * (tcBlue || 1)
+    if (bondIsArs && !dispArs) return tcValuacion ? amt / tcValuacion : amt
+    return amt * (tcValuacion || 1)
   }
   let priceInBondCurrency = currentPrice
   let priceConversion = null

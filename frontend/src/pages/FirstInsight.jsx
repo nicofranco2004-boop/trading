@@ -81,15 +81,15 @@ export default function FirstInsight() {
     }).finally(() => setLoading(false))
   }, [])
 
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta
 
   const stats = useMemo(() => {
     if (!brokers.length || !positions.length) return null
     let value = 0, invested = 0
     for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis)
+      const r = computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis)
       value += r.value || 0
       invested += r.invested || 0
     }
@@ -123,8 +123,8 @@ export default function FirstInsight() {
           // Un ×100 (bono per-100 leído per-1) → cae a costo, P&L 0.
           const mktArs = priceArs * (p.quantity || 0)
           const trust = trustMktValue(mktArs, cost, p.asset_type, p.price_override != null)
-          valueUsd = (trust ? mktArs : cost) / tcBlue
-          pnlUsd = valueUsd - cost / tcBlue
+          valueUsd = (trust ? mktArs : cost) / tcValuacion
+          pnlUsd = valueUsd - cost / tcValuacion
         }
       } else if (costInPesos(p)) {
         // Lote en PESOS en cuenta USD → costo Y valor por el MEP (no peso como dólar).
@@ -173,7 +173,7 @@ export default function FirstInsight() {
     const brokerCount = brokers.length
 
     return { value, invested, pnl, pnlPct, best, worst, positionCount, brokerCount }
-  }, [positions, brokers, prices, tcBlue])
+  }, [positions, brokers, prices, tcValuacion])
 
   if (loading) {
     return (

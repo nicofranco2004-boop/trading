@@ -34,19 +34,3 @@ tests/test_news.py::MarketRelevanceFilterTest::test_case_insensitive
 tests/test_news.py::MarketRelevanceFilterTest::test_passes_clear_market_news
 tests/test_news.py::MarketRelevanceFilterTest::test_passes_when_summary_has_keyword_but_title_doesnt
 tests/test_news.py::RefreshNewsQueryFilterTest::test_macro_category_also_filters
-
-# ── Agregadas el 2026-09-04, con su motivo ───────────────────────────────────
-# Sacadas el mismo día: las 2 de test_balanz_tenencia, que ya pasan (0a694a15).
-#
-# DEPENDEN DEL RELOJ, no del código. Mezclan datetime.utcnow() con date.today():
-# después de las ~21h ART las dos funciones caen en días distintos y el corte de
-# ventana se va un día. Verificado: `TZ=UTC pytest tests/test_quota_window_corte.py`
-# pasa en verde. O sea que la suite da 27 fallas a la mañana y 29 a la noche.
-# El arreglo de fondo es que el test fije el reloj, no que se perdone acá.
-tests/test_quota_window_corte.py::DiaDieciseisTest::test_no_hace_falta_que_corra_ningun_cron
-tests/test_quota_window_corte.py::HelperDelPisoTest::test_gana_la_fuente_mas_nueva
-#
-# Preexistentes en la rama: fallan igual con el fix de reportes-por-par
-# COMPLETAMENTE revertido y también bajo TZ=UTC. No están diagnosticadas.
-tests/test_reports_variaciones_f4.py::VariacionesF4Test::test_b1_migracion_startup_no_rompe_delta_chips
-tests/test_reports_variaciones_f4.py::VariacionesF4Test::test_h7_delta_chips_netdep_con_baseline

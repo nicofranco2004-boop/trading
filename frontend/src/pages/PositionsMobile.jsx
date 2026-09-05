@@ -101,7 +101,7 @@ function yaDescubrioElScrollLateral() {
 
 export default function PositionsMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
-  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
+  const { currency, toggle: toggleCurrency, setTcValuacion: publishTcValuacion, valuationDollar, costBasis } = useCurrency()
   const navigate = useNavigate()
   const location = useLocation()
   const toast = useToast()
@@ -236,7 +236,7 @@ export default function PositionsMobile() {
     if (!p) return
     setExpandedTickers(prev => {
       const next = new Set(prev)
-      next.add(`t:${p.broker}:${p.asset}`)
+      next.add(tickerKey(p))
       return next
     })
   }
@@ -386,7 +386,7 @@ export default function PositionsMobile() {
         // depósito en pesos hecho desde el celular quedaba asentado a un dólar
         // inventado, y el aportado salía torcido en la proporción del desvío.
         // Desktop (Positions.jsx) siempre mandó el real; esto los empareja.
-        tc_blue: tcBlue,
+        tc_blue: tcValuacion,
       })
       track('cash_flow_recorded', {
         broker: cashFlowForm.broker,
@@ -423,6 +423,15 @@ export default function PositionsMobile() {
     setAddModal('edit')
   }
 
+  // Igual que `_numLoose` de desktop: acepta la COMA decimal, que en es-AR es lo
+  // que la gente escribe. Sin eso, "312,68" se convertía en NaN y el precio
+  // manual se descartaba en silencio.
+  function _numLooseMobile(v) {
+    if (v === '' || v == null) return null
+    const n = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'))
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+
   async function saveEditPosition() {
     const body = {
       ...addForm,
@@ -437,10 +446,7 @@ export default function PositionsMobile() {
       // `float_parsing: unable to parse string as a number`. Desktop lo pasa por
       // `_numLoose` (Positions.jsx). null = "cotizalo vos", que es el default
       // que el placeholder promete.
-      price_override: (addForm.price_override === '' || addForm.price_override == null)
-        ? null
-        : (Number.isFinite(+addForm.price_override) && +addForm.price_override > 0
-            ? +addForm.price_override : null),
+      price_override: _numLooseMobile(addForm.price_override),
       entry_date:  addForm.entry_date  || null,
     }
     try {
@@ -620,14 +626,14 @@ export default function PositionsMobile() {
     refreshPlanFeatures()
   }
 
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~spot+5%) p/ cripto en broker AR
 
-  // Fase B: publish tcBlue al CurrencyContext (mismo pattern que Dashboard/HomeMobile)
+  // Fase B: publish tcValuacion al CurrencyContext (mismo pattern que Dashboard/HomeMobile)
   useEffect(() => {
-    if (tcBlue > 0) publishTcBlue(tcBlue)
-  }, [tcBlue, publishTcBlue])
+    if (tcValuacion > 0) publishTcValuacion(tcValuacion)
+  }, [tcValuacion, publishTcValuacion])
 
   const arsBrokerSet = useMemo(
     () => new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name)),
@@ -666,7 +672,7 @@ export default function PositionsMobile() {
       // modo 'purchase' se calcula aparte abajo (investedUsdDisplay), solo para las
       // figuras en dólares. Así el modo nunca toca el valor ni las cifras en pesos.
       let investedUsd = isAR && costInUsd(p) ? invested
-        : isAR ? invested / tcBlue
+        : isAR ? invested / tcValuacion
         : costInPesos(p) ? invested / tcCedear
         : invested
       let valueUsd = 0
@@ -676,7 +682,7 @@ export default function PositionsMobile() {
       // Gatea la Var.día de abajo: si el valor cayó a costo, no emitimos variación.
       let priceTrusted = false
       if (p.is_cash) {
-        valueUsd = isAR ? cashInvested / tcBlue : cashInvested
+        valueUsd = isAR ? cashInvested / tcValuacion : cashInvested
         return {
           ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null,
           // El efectivo TIENE costo, y es su propio valor. La casa lo dice
@@ -712,7 +718,7 @@ export default function PositionsMobile() {
         // Guard anti-distorsión: un precio absurdo (p.ej. bono per-100 leído per-1
         // → ×100) cae a costo. mkt y cost comparados en las MISMAS unidades (USD).
         if (priceLocal) {
-          const mkt = (priceLocal * qty) / tcBlue
+          const mkt = (priceLocal * qty) / tcValuacion
           priceTrusted = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null)
           valueUsd = priceTrusted ? mkt : investedUsd
         }
@@ -773,7 +779,7 @@ export default function PositionsMobile() {
       // investedUsd. En 'today' investedUsdDisplay === investedUsd (byte-idéntico).
       const investedUsdDisplay = !priceTrusted ? investedUsd
         : (isAR && costInUsd(p)) ? invested * f
-        : isAR ? (invested / costBasisRate(p, tcBlue, costBasis)) * f
+        : isAR ? (invested / costBasisRate(p, tcValuacion, costBasis)) * f
         : costInPesos(p) ? (invested / costBasisRate(p, tcCedear, costBasis)) * f
         : invested * f
       // Regla del modo: las cifras en PESOS de un broker ARS son NATIVAS (el peso no
@@ -786,7 +792,7 @@ export default function PositionsMobile() {
         ? (investedUsd > 0 ? pnlUsdToday / investedUsd : 0)            // % en pesos, nativo
         : (investedUsdDisplay > 0 ? pnlUsd / investedUsdDisplay : 0)   // % en USD, refleja el modo
       // P&L en la moneda local del broker: ARS → P&L en pesos NATIVO; USD → P&L USD del modo.
-      const pnlLocal = isAR ? pnlUsdToday * tcBlue : pnlUsd
+      const pnlLocal = isAR ? pnlUsdToday * tcValuacion : pnlUsd
 
       // ─── Variación diaria de mercado (precio hoy vs cierre anterior) ────────
       // Montos en la MISMA moneda local que el precio: ARS para .BA, USD resto.
@@ -821,13 +827,13 @@ export default function PositionsMobile() {
           if (usdInArBroker) {
             // Lote USD en broker ARS: perUnit ya está en USD (priceLocal y prev en USD).
             // dayVarUsd en USD; dayVarLocal en ARS al MISMO rate que la agregación
-            // (curLocalValue = valueUsd × tcBlue) → el % agregado cierra aunque tcBlue y
+            // (curLocalValue = valueUsd × tcValuacion) → el % agregado cierra aunque tcValuacion y
             // tcCedear difirieran (hoy son el mismo pickFinancialRate, pero robusto).
             dayVarUsd = perUnit * qty
-            dayVarLocal = dayVarUsd * tcBlue
+            dayVarLocal = dayVarUsd * tcValuacion
           } else {
             dayVarLocal = perUnit * qty * f
-            dayVarUsd = isAR ? dayVarLocal / tcBlue : dayVarLocal
+            dayVarUsd = isAR ? dayVarLocal / tcValuacion : dayVarLocal
           }
           dayVarPct = perUnit / prev
         }
@@ -850,10 +856,10 @@ export default function PositionsMobile() {
         // lote tiene el costo en pesos — ahí el promedio ya está en dólares y
         // rutearlo no cambia nada; con costo en pesos, en cambio, tomar
         // `buy_price` crudo lo inflaría ~1500×.
-        avgPriceUsd: avgPriceUsdDe(p, isAR, tcBlue, tcCedear, costBasis),
+        avgPriceUsd: avgPriceUsdDe(p, isAR, tcValuacion, tcCedear, costBasis),
       }
     })
-  }, [positions, prices, prevClose, arsBrokerSet, exchangeBrokerSet, tcBlue, tcCedear, tcCripto, costBasis])
+  }, [positions, prices, prevClose, arsBrokerSet, exchangeBrokerSet, tcValuacion, tcCedear, tcCripto, costBasis])
 
   // Filtro de búsqueda libre (asset o broker name)
   const filteredBySearch = useMemo(() => {
@@ -937,7 +943,7 @@ export default function PositionsMobile() {
       const pnlPct = isAR
         ? (investedUsdToday > 0 ? pnlUsdToday / investedUsdToday : 0)
         : (investedUsd > 0 ? pnlUsd / investedUsd : 0)
-      const pnlLocal = isAR ? pnlUsdToday * tcBlue : pnlUsd
+      const pnlLocal = isAR ? pnlUsdToday * tcValuacion : pnlUsd
       // Var. día agregada: solo si algún lote la tiene (símbolo con cierre
       // anterior). Sumamos los montos de los lotes que la tienen; el % se
       // recalcula sobre el valor de mercado de ayer (valor hoy − var. día).
@@ -951,7 +957,7 @@ export default function PositionsMobile() {
       // queda en USD. Con una sola moneda se sigue sumando la nativa, exacto.
       const dayVarLocal = !hasDay ? null
         : (multiCcy ? dayVarUsd : lots.reduce((s, x) => s + (x.dayVarLocal || 0), 0))
-      const curLocalValue = isAR ? valueUsd * tcBlue : valueUsd
+      const curLocalValue = isAR ? valueUsd * tcValuacion : valueUsd
       const dayVarPct = (hasDay && curLocalValue - (dayVarLocal || 0) > 0)
         ? dayVarLocal / (curLocalValue - dayVarLocal)
         : null
@@ -980,7 +986,7 @@ export default function PositionsMobile() {
         // El promedio del AGREGADO se recalcula sobre todos los lotes. El
         // `...lots[0]` de arriba traía el del primer lote, que es el precio de
         // una sola compra y no el promedio del ticker.
-        avgPriceUsd: avgPriceUsdDe({ ...lots[0], quantity: totalQty, _lots: lots }, isAR, tcBlue, tcCedear, costBasis),
+        avgPriceUsd: avgPriceUsdDe({ ...lots[0], quantity: totalQty, _lots: lots }, isAR, tcValuacion, tcCedear, costBasis),
       })
     }
     return [...out, ...cash]
@@ -992,7 +998,7 @@ export default function PositionsMobile() {
   function flattenMobile(aggRows) {
     const out = []
     for (const p of aggRows) {
-      const exp = showAllLots || expandedTickers.has(`t:${p.broker}:${p.asset}`)
+      const exp = showAllLots || expandedTickers.has(tickerKey(p))
       out.push(p._isAgg ? { ...p, _expanded: exp } : p)
       // `_enFusion`: el lote vive dentro de una fila que junta las dos patas, así
       // que su moneda es lo que lo distingue de sus hermanos (más que el nombre
@@ -1068,7 +1074,7 @@ export default function PositionsMobile() {
     }
     groups.sort((a, b) => b.totalUsd - a.totalUsd)
     return groups
-  }, [filteredByBroker, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcBlue, cuentasSeparadas])
+  }, [filteredByBroker, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcValuacion, cuentasSeparadas])
 
   // Lista plana cuando hay filtro de broker activo
   const flatList = useMemo(() => {
@@ -1078,7 +1084,7 @@ export default function PositionsMobile() {
     const agg = aggregateMobile([...filteredByBroker], junta)
     agg.sort(comparePositions)
     return flattenMobile(agg)
-  }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcBlue, brokers, cuentasSeparadas])
+  }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcValuacion, brokers, cuentasSeparadas])
 
   // ¿La vista filtrada está mirando una cuenta unificada? Lo necesita el render
   // para decidir si cada fila lleva su chip de moneda.
@@ -1106,8 +1112,8 @@ export default function PositionsMobile() {
   }, [flatList, currency])
 
   const total = enriched.reduce((s, p) => s + (p.valueUsd || 0), 0)
-  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcBlue  // PF → USD para el total
-  const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcBlue
+  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcValuacion  // PF → USD para el total
+  const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcValuacion
 
   // ─── El P&L no realizado del hero ───────────────────────────────────────
   // Espejo del desktop (Positions.jsx:1377-1398). Se deriva SUMANDO lo mismo
@@ -1120,9 +1126,9 @@ export default function PositionsMobile() {
   // En pesos las cifras son mode-INDEPENDENT, como en el desktop: el peso no
   // tiene "dólar de compra", así que el invertido y el P&L en ARS no cambian
   // con el modo de costo. Es la misma regla que ya aplica la fila
-  // (`pnlUsdToday × tcBlue`), y por eso el hero cierra con la suma de las filas.
-  const heroInvertido = currency === 'ARS' ? invertidoHoyUsd * tcBlue : invertidoUsd
-  const heroValor = currency === 'ARS' ? (total + pfValueUsd) * tcBlue : (total + pfValueUsd)
+  // (`pnlUsdToday × tcValuacion`), y por eso el hero cierra con la suma de las filas.
+  const heroInvertido = currency === 'ARS' ? invertidoHoyUsd * tcValuacion : invertidoUsd
+  const heroValor = currency === 'ARS' ? (total + pfValueUsd) * tcValuacion : (total + pfValueUsd)
   const heroPnl = heroValor - heroInvertido
   const heroPct = heroInvertido > 0 ? heroPnl / heroInvertido : 0
   // Contador de posiciones reales (lotes), independiente de la vista
@@ -1144,7 +1150,7 @@ export default function PositionsMobile() {
   // El hero baja un escalón de tipografía cuando el número no entra: 48px sirve
   // para "$41.417" pero no para "$58.977.218". Se mide por largo del string, que
   // es lo que determina el ancho con dígitos tabulares.
-  const heroTexto = '$' + Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcBlue : (total + pfValueUsd))
+  const heroTexto = '$' + Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcValuacion : (total + pfValueUsd))
     .toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')
   const heroClass = heroTexto.length >= 13 ? 'text-3xl' : heroTexto.length >= 10 ? 'text-4xl' : 'text-5xl'
 
@@ -1334,7 +1340,7 @@ export default function PositionsMobile() {
                 positions={g.positions}
                 totalUsd={g.totalUsd}
                 displayCurrency={currency}
-                tcBlue={tcBlue}
+                tcValuacion={tcValuacion}
                 onEdit={() => setEditingBroker({ ...g.broker })}
                 onDelete={() => deleteBrokerAction(g.broker)}
                 onSellPosition={openSell}
@@ -1352,7 +1358,7 @@ export default function PositionsMobile() {
                 // total de sección; NO el % nativo en pesos (p.pnlPct) que en 'purchase'
                 // contradiría el $ USD. Espeja el desktop (valuePos re-computa pnlUsd/invUsd).
                 pnlPct: p.investedUsd > 0 ? p.pnlUsd / p.investedUsd : 0 })}
-              brokers={brokers} displayCurrency={currency} tcBlue={tcBlue} onChanged={loadAll} />
+              brokers={brokers} displayCurrency={currency} tcValuacion={tcValuacion} onChanged={loadAll} />
             <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
           </div>
         </>
@@ -1362,7 +1368,7 @@ export default function PositionsMobile() {
           <PositionsTable
             conPista={pistaScrollVisible}
             onDeslizar={marcarScrollDescubierto}
-            pie={pieFiltrado && <PieDelBroker {...pieFiltrado} moneda={currency} tcBlue={tcBlue} />}
+            pie={pieFiltrado && <PieDelBroker {...pieFiltrado} moneda={currency} tcValuacion={tcValuacion} />}
           >
             {flatList?.map(p => (
               <PositionRow
@@ -1372,7 +1378,7 @@ export default function PositionsMobile() {
                 p={p}
                 enCuentaUnificada={filtroEsCuentaUnificada}
                 displayCurrency={currency}
-                tcBlue={tcBlue}
+                tcValuacion={tcValuacion}
                 onSell={openSell}
                 onCashFlow={openCashFlow}
                 onEditPos={openEditPosition}
@@ -1608,7 +1614,7 @@ export default function PositionsMobile() {
           setForm={setAddForm}
           brokers={brokers}
           selectedBrokerCurrency={brokers.find(b => b.name === addForm.broker)?.currency ?? 'USDT'}
-          tcBlue={pickFinancialRate(dolar, valuationDollar) || 1415}
+          tcValuacion={pickFinancialRate(dolar, valuationDollar) || 1415}
           onClose={() => setAddModal(null)}
           onSave={saveNewPosition}
           onChangeAsset={() => {
@@ -1626,7 +1632,7 @@ export default function PositionsMobile() {
           setForm={setAddForm}
           brokers={brokers}
           selectedBrokerCurrency={brokers.find(b => b.name === addForm.broker)?.currency ?? 'USDT'}
-          tcBlue={pickFinancialRate(dolar, valuationDollar) || 1415}
+          tcValuacion={pickFinancialRate(dolar, valuationDollar) || 1415}
           onClose={() => setAddModal(null)}
           onSave={saveEditPosition}
         />
@@ -1638,7 +1644,7 @@ export default function PositionsMobile() {
           form={sellForm}
           setForm={setSellForm}
           positions={positions}
-          tcBlue={pickFinancialRate(dolar, valuationDollar) || 1415}
+          tcValuacion={pickFinancialRate(dolar, valuationDollar) || 1415}
           onClose={() => setAddModal(null)}
           onConfirm={confirmSell}
         />
@@ -1810,10 +1816,7 @@ export default function PositionsMobile() {
       commissions: addForm.commissions !== '' ? +addForm.commissions : 0,
       // Mismo arreglo que en saveEditPosition: sin esto el alta se rechazaba
       // entera con `float_parsing` porque el campo vacío viajaba como ''.
-      price_override: (addForm.price_override === '' || addForm.price_override == null)
-        ? null
-        : (Number.isFinite(+addForm.price_override) && +addForm.price_override > 0
-            ? +addForm.price_override : null),
+      price_override: _numLooseMobile(addForm.price_override),
       entry_date:  addForm.entry_date  || null,
     }
     try {
@@ -1905,7 +1908,7 @@ function FilaToggle({ label, hint, active, onToggle }) {
 // Debajo, las positions del broker (cash siempre al final).
 
 const BrokerSection = memo(function BrokerSection({
-  broker, positions, totalUsd, displayCurrency = 'USD', tcBlue = 1, conPista = false, onDeslizar,
+  broker, positions, totalUsd, displayCurrency = 'USD', tcValuacion = 1, conPista = false, onDeslizar,
   label, unified = false, puedeUnificarse = false, monedasCuenta = [], onToggleUnificar,
   onEdit, onDelete,
   onSellPosition, onCashFlowPosition, onEditPosition, onDeletePosition, onToggleTicker,
@@ -1982,7 +1985,7 @@ const BrokerSection = memo(function BrokerSection({
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-sm font-semibold tabular text-ink-0">
-            {montoCard(displayCurrency === 'ARS' ? totalUsd * tcBlue : totalUsd, displayCurrency)}
+            {montoCard(displayCurrency === 'ARS' ? totalUsd * tcValuacion : totalUsd, displayCurrency)}
           </span>
           <button
             type="button"
@@ -2012,7 +2015,7 @@ const BrokerSection = memo(function BrokerSection({
             pnlUsd={totPnlUsd}
             pnlPct={totPnlPct}
             moneda={displayCurrency}
-            tcBlue={tcBlue}
+            tcValuacion={tcValuacion}
           />
         }
       >
@@ -2024,7 +2027,7 @@ const BrokerSection = memo(function BrokerSection({
             p={p}
             enCuentaUnificada={unified}
             displayCurrency={displayCurrency}
-            tcBlue={tcBlue}
+            tcValuacion={tcValuacion}
             onSell={onSellPosition}
             onCashFlow={onCashFlowPosition}
             onEditPos={onEditPosition}
@@ -2057,6 +2060,17 @@ const BrokerSection = memo(function BrokerSection({
 // Que las columnas escondidas se DESCUBRAN no es gratis: lo resuelve
 // `PistaDeScroll`, un aviso de una sola vez debajo del primer scroller. Ver
 // ahí por qué no alcanza con dejar asomar la próxima columna.
+// La clave de expansión de un ticker. La fila que fusiona las dos patas tiene
+// `broker: null` a propósito, así que interpolarlo daba `t:null:AAPL` — la
+// MISMA cadena para toda cuenta unificada, y `expandedTickers` es un Set único
+// de la página: desplegar AAPL en Cocos lo desplegaba en cualquier otra cuenta
+// que también lo tuviera en sus dos patas. Se usa el scope de la fila (sus
+// brokers reales), que es lo mismo que hace desktop con `scopeKey`.
+function tickerKey(p) {
+  const scope = p?._brokers?.length ? p._brokers.join('+') : (p?.broker ?? '')
+  return `t:${scope}:${p?.asset}`
+}
+
 const ANCHO_ANCLA = 118
 const ANCHO_COL = 108
 
@@ -2131,8 +2145,8 @@ function PistaDeScroll() {
 // deslizar — que es justo el problema que este pie viene a resolver.
 //
 // Dos renglones para que entre en 375px con cifras en pesos de 8 dígitos.
-function PieDelBroker({ valorUsd, invertidoUsd, pnlUsd, pnlPct, moneda, tcBlue }) {
-  const aMoneda = n => (n == null ? null : moneda === 'ARS' ? n * tcBlue : n)
+function PieDelBroker({ valorUsd, invertidoUsd, pnlUsd, pnlPct, moneda, tcValuacion }) {
+  const aMoneda = n => (n == null ? null : moneda === 'ARS' ? n * tcValuacion : n)
   const pnl = aMoneda(pnlUsd)
   return (
     <div className="px-4 py-2.5 bg-bg-1 border-t border-line-2">
@@ -2198,7 +2212,14 @@ function PositionsTable({ children, pie = null, conPista = false, onDeslizar }) 
     <div
       ref={scroller}
       className="overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-      style={{ scrollSnapType: 'x proximity', WebkitOverflowScrolling: 'touch' }}
+      // scrollPaddingRight = el ancho del botón de acciones, que es `sticky
+      // right-0` y OPACO: cada punto de snap alinea el borde derecho de una
+      // columna con el del scrollport, que es exactamente donde vive el botón,
+      // así que tapaba los últimos 27px de la cifra recién traída a la vista —
+      // los dígitos menos significativos, en TODA posición de reposo y para
+      // toda fila, con par o sin par. Con el padding, el snap deja la columna
+      // completa a la vista.
+      style={{ scrollSnapType: 'x proximity', WebkitOverflowScrolling: 'touch', scrollPaddingRight: 37 }}
       onScroll={e => {
         if (e.currentTarget.scrollLeft > PX_PARA_CONTAR_COMO_DESLIZADO) onDeslizar?.()
       }}
@@ -2258,7 +2279,7 @@ function PositionsTable({ children, pie = null, conPista = false, onDeslizar }) 
 const MS_PULSACION = 450
 const TOLERANCIA_PX = 8
 
-const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
+const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, displayCurrency = 'USD', tcValuacion = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
 
   // El MONTO del P&L sigue al toggle global, como el desktop
   // (Positions.jsx:979: `const basePnl = isARS ? c.pnlArs : c.pnl`). Antes iba
@@ -2266,7 +2287,14 @@ const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, di
   // broker USD seguía mostrando dólares.
   // El PORCENTAJE no se toca: sigue siendo `p.pnlPct`, el retorno NOMINAL EN
   // PESOS para posiciones ARS, igual que el desktop. Es decisión del dueño.
-  const pnlDisplay = displayCurrency === 'ARS' ? p.pnlUsdToday * tcBlue : p.pnlUsd
+  // En la fila que fusiona las dos monedas, `aggregateMobile` fuerza isAR=false y
+  // manda el PORCENTAJE a la base display (pnlUsd/investedUsd, ruteada por
+  // tc_compra). Si el MONTO siguiera saliendo de `pnlUsdToday` (base HOY), en la
+  // misma celda quedarían un monto y un % que no se corresponden — y encima
+  // desktop dibuja el ruteado. Con una sola moneda no cambia nada.
+  const pnlDisplay = displayCurrency === 'ARS'
+    ? ((p._multiCcy ? p.pnlUsd : p.pnlUsdToday) * tcValuacion)
+    : p.pnlUsd
   const [aiOpen, setAiOpen] = useState(false)
   const [accionesAbiertas, setAccionesAbiertas] = useState(false)
   // Selector de pata para la fila que junta las dos monedas de la cuenta:
@@ -2334,7 +2362,7 @@ const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, di
           tone: 'accent',
           onClick: () => {
             track('mobile_row_action', { code: p._expanded ? 'collapse_lots' : 'edit_expand', asset: p.asset })
-            onToggleTicker(`t:${p.broker}:${p.asset}`)
+            onToggleTicker(tickerKey(p))
           },
         },
       ].filter(Boolean)
@@ -2467,11 +2495,11 @@ const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, di
     : p.dayVarPct < 0 ? 'bg-rendi-neg'
     : 'bg-line-2'
 
-  const valorDisp = displayCurrency === 'ARS' ? p.valueUsd * tcBlue : p.valueUsd
+  const valorDisp = displayCurrency === 'ARS' ? p.valueUsd * tcValuacion : p.valueUsd
   const dayDisp = p.dayVarUsd == null ? null
-    : displayCurrency === 'ARS' ? p.dayVarUsd * tcBlue : p.dayVarUsd
+    : displayCurrency === 'ARS' ? p.dayVarUsd * tcValuacion : p.dayVarUsd
   const avgDisp = p.avgPriceUsd == null ? null
-    : displayCurrency === 'ARS' ? p.avgPriceUsd * tcBlue : p.avgPriceUsd
+    : displayCurrency === 'ARS' ? p.avgPriceUsd * tcValuacion : p.avgPriceUsd
 
   // La línea de contexto del ancla. Para un LOTE va la fecha de compra, que es
   // lo único que lo distingue de sus hermanos. Se corta la fecha a mano en vez
@@ -2684,12 +2712,12 @@ const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, di
                       _lots: lots,
                     })
                   } else if (lots.length === 1) {
-                    onEdit?.(lots[0])
+                    onEditPos?.(lots[0])
                   } else {
                     // EDITAR sí se despliega: cada lote tiene su propio precio
                     // de compra y su fecha, y no hay una edición única que los
                     // cubra. Es el mismo criterio que la fila agregada normal.
-                    onToggleTicker?.(p)
+                    onToggleTicker?.(tickerKey(p))
                   }
                 }}
                 className="w-full flex items-center justify-between gap-3 px-3 py-3 rounded text-left active:bg-bg-2 transition-colors"
@@ -2779,9 +2807,9 @@ function unidadDe(p) {
 // Vive a nivel de módulo porque lo necesitan DOS lugares con el mismo criterio:
 // el memo por-lote y la fila agregada por ticker (que promedia sobre `_lots`,
 // no sobre el primer lote).
-function avgPriceUsdDe(p, isAR, tcBlue, tcCedear, costBasis) {
+function avgPriceUsdDe(p, isAR, tcValuacion, tcCedear, costBasis) {
   if (!p || p.is_cash || !(p.quantity > 0)) return null
-  if (isAR) return avgCostUsdPerUnit(p, tcBlue, costBasis, true)
+  if (isAR) return avgCostUsdPerUnit(p, tcValuacion, costBasis, true)
   const lotes = (p._lots && p._lots.length) ? p._lots : [p]
   if (lotes.some(l => costInPesos(l))) return avgCostUsdPerUnit(p, tcCedear, costBasis, false)
   return p.buy_price ?? (p.invested ? p.invested / p.quantity : null)

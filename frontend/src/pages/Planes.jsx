@@ -39,7 +39,7 @@ import {
 //   3. Cuando el blue suba significativamente (+15%), ajustamos manualmente
 //      con anuncio previo. Ver "Playbook de ajuste" en project_rebill_pricing.md
 //
-// Antes: pricing en USD con conversión arsPriceRounded(usd, tcBlue) → ARS.
+// Antes: pricing en USD con conversión arsPriceRounded(usd, tcValuacion) → ARS.
 // Ahora: ARS hardcoded como source of truth.
 export const PLUS_PRICE_ARS_MONTHLY = '5990'
 export const PRO_PRICE_ARS_MONTHLY = '13990'
@@ -126,12 +126,12 @@ export default function Planes({ embedded = false }) {
   const { user } = useAuth()
   const [billingPeriod, setBillingPeriod] = useState('monthly')  // 'monthly' | 'annual'
   const [subscribing, setSubscribing] = useState(false)
-  const [tcBlue, setTcBlue] = useState(1415)  // fallback
+  const [tcValuacion, setTcValuacion] = useState(1415)  // fallback
   const [changeModal, setChangeModal] = useState(null)  // null | { plan, period, preview, loading }
 
   useEffect(() => {
     api.get('/dolar')
-      .then(d => { if (d?.blue?.venta) setTcBlue(d.blue.venta) })
+      .then(d => { if (d?.blue?.venta) setTcValuacion(d.blue.venta) })
       .catch(() => {})
   }, [])
   // Single source of truth: access_mode viene del backend.

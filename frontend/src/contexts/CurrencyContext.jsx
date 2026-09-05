@@ -4,9 +4,11 @@ import { api } from '../utils/api'
 // Fase A — Toggle global ARS/USD (2026-05-31).
 // El user elige en qué moneda ver TODOS los números del Dashboard / Home /
 // Cartera. UNIFICACIÓN FX (2026-06): la conversión USD↔ARS usa el dólar MEP
-// (el mismo de la valuación de holdings), NO el blue. Por compatibilidad la
-// variable se sigue llamando `tcBlue` pero TIENE EL VALOR DEL MEP (cascada
-// mep→ccl→blue). La conversión usa el rate actual (live) — para data histórica
+// (el mismo de la valuación de holdings), NO el blue. La variable se llamaba
+// `tcBlue` sin contener el blue, lo que confundía a cualquiera que la leyera y
+// escondía bugs de FX; hoy se llama `tcValuacion` y cascadea mep→ccl→blue, así
+// que el blue queda sólo como último recurso si la fuente no trae ninguno de los
+// dos financieros. La conversión usa el rate actual (live) — para data histórica
 // (snapshots viejos) eso significa que la línea del chart en ARS view se
 // recalcula al TC actual, no al TC del momento de cada snapshot (limitación
 // conocida del MVP; Fase C agregará TC histórico tracking).
@@ -22,7 +24,7 @@ const CurrencyContext = createContext(null)
 const STORAGE_KEY = 'rendi_display_currency'
 const VAL_STORAGE_KEY = 'rendi_valuation_dollar'   // 'mep' | 'ccl'
 const CB_STORAGE_KEY = 'rendi_cost_basis'          // 'today' | 'purchase'
-const DEFAULT_TC_BLUE = 1415
+const DEFAULT_TC_VALUACION = 1415
 
 /**
  * pickFinancialRate — dólar "financiero" para valuar holdings y convertir ARS↔USD,
@@ -106,19 +108,19 @@ export function CurrencyProvider({ children }) {
     }
   })
 
-  // tcBlue compartido entre páginas — la primera que fetcha /dolar lo
-  // publica acá vía `setTcBlue`. Los components que solo necesitan
+  // tcValuacion compartido entre páginas — la primera que fetcha /dolar lo
+  // publica acá vía `setTcValuacion`. Los components que solo necesitan
   // convertir para display (Reports cards, charts) lo leen sin re-fetchear.
   // Default 1415 evita división-por-cero y NaN durante el primer render.
-  const [tcBlue, setTcBlueRaw] = useState(DEFAULT_TC_BLUE)
+  const [tcValuacion, setTcValuacionRaw] = useState(DEFAULT_TC_VALUACION)
 
   // Cotizaciones crudas del último /dolar ({mep,ccl,blue,cripto}.venta), para que
   // el selector de moneda (CurrencyRail) muestre la tasa de cada dólar debajo de
-  // cada opción sin tener que re-fetchear. Se publican en el mismo effect que tcBlue.
+  // cada opción sin tener que re-fetchear. Se publican en el mismo effect que tcValuacion.
   const [dolar, setDolar] = useState(null)
 
   // Audit fix H2 (2026-05-31): el Provider fetcha /dolar al mount para que
-  // el tcBlue real esté disponible desde el primer render — antes había una
+  // el tcValuacion real esté disponible desde el primer render — antes había una
   // ventana de ~500ms donde Reports cards / Operations renderizaban ARS con
   // el default 1415 hasta que Dashboard publicara su valor.
   // Refresh cada 5min para mantenerlo sincronizado con el resto de la app
@@ -133,7 +135,7 @@ export function CurrencyProvider({ children }) {
         // dólar financiero según preferencia (MEP default / CCL), cascada con
         // fallback al otro y al blue. Re-resuelve al cambiar valuationDollar.
         const rate = pickFinancialRate(d, valuationDollar)
-        if (rate > 0) setTcBlueRaw(Number(rate))
+        if (rate > 0) setTcValuacionRaw(Number(rate))
       }).catch(() => { /* silent — usa default + páginas publican lo que tengan */ })
     }
     fetchAndPublish()
@@ -163,22 +165,22 @@ export function CurrencyProvider({ children }) {
     setCurrency(currency === 'ARS' ? 'USD' : 'ARS')
   }
 
-  function setTcBlue(next) {
+  function setTcValuacion(next) {
     const n = Number(next)
     if (!Number.isFinite(n) || n <= 0) return
-    setTcBlueRaw(n)
+    setTcValuacionRaw(n)
   }
 
   const value = useMemo(
     () => ({
       currency, setCurrency, toggle,
       isArs: currency === 'ARS', isUsd: currency === 'USD',
-      tcBlue, setTcBlue,
+      tcValuacion, setTcValuacion,
       valuationDollar, setValuationDollar,
       costBasis, setCostBasis,
       dolar,
     }),
-    [currency, tcBlue, valuationDollar, costBasis, dolar],
+    [currency, tcValuacion, valuationDollar, costBasis, dolar],
   )
 
   return <CurrencyContext.Provider value={value}>{children}</CurrencyContext.Provider>
@@ -191,7 +193,7 @@ export const useCurrency = () => {
     return {
       currency: 'USD', setCurrency: () => {}, toggle: () => {},
       isArs: false, isUsd: true,
-      tcBlue: DEFAULT_TC_BLUE, setTcBlue: () => {},
+      tcValuacion: DEFAULT_TC_VALUACION, setTcValuacion: () => {},
       valuationDollar: 'mep', setValuationDollar: () => {},
       costBasis: 'purchase', setCostBasis: () => {},
       dolar: null,
@@ -202,18 +204,18 @@ export const useCurrency = () => {
 
 // ── Helpers de formato puros (testeables sin React) ──────────────────────────
 //
-// fmtMoneyRaw(usdValue, currency, tcBlue, opts) → string
-// fmtMoneyCompactRaw(usdValue, currency, tcBlue, opts) → string
+// fmtMoneyRaw(usdValue, currency, tcValuacion, opts) → string
+// fmtMoneyCompactRaw(usdValue, currency, tcValuacion, opts) → string
 //
 // Input siempre es USD canónico. Convierten a ARS si currency==='ARS' y
-// tcBlue>0; sino dejan en USD. Símbolos: '$' para ARS, 'US$' para USD.
+// tcValuacion>0; sino dejan en USD. Símbolos: '$' para ARS, 'US$' para USD.
 // Devuelven '—' para null / NaN.
 
-export function fmtMoneyRaw(usdValue, currency, tcBlue, opts = {}) {
+export function fmtMoneyRaw(usdValue, currency, tcValuacion, opts = {}) {
   if (usdValue == null || !Number.isFinite(usdValue)) return '—'
   const { signed = false, decimals = 0 } = opts
-  const isArs = currency === 'ARS' && tcBlue > 0
-  const v = isArs ? usdValue * tcBlue : usdValue
+  const isArs = currency === 'ARS' && tcValuacion > 0
+  const v = isArs ? usdValue * tcValuacion : usdValue
   const abs = Math.abs(v)
   const sign = signed ? (v < 0 ? '−' : '+') : (v < 0 ? '−' : '')
   const sym = isArs ? '$' : 'US$'
@@ -265,11 +267,11 @@ export function fmtConvertedCompactRaw(value, targetCurrency, opts = {}) {
   return `${sign}${sym}${body}`
 }
 
-export function fmtMoneyCompactRaw(usdValue, currency, tcBlue, opts = {}) {
+export function fmtMoneyCompactRaw(usdValue, currency, tcValuacion, opts = {}) {
   if (usdValue == null || !Number.isFinite(usdValue)) return '—'
   const { signed = false } = opts
-  const isArs = currency === 'ARS' && tcBlue > 0
-  const v = isArs ? usdValue * tcBlue : usdValue
+  const isArs = currency === 'ARS' && tcValuacion > 0
+  const v = isArs ? usdValue * tcValuacion : usdValue
   const abs = Math.abs(v)
   const sign = signed ? (v < 0 ? '−' : '+') : (v < 0 ? '−' : '')
   const sym = isArs ? '$' : 'US$'
@@ -293,31 +295,31 @@ export function fmtMoneyCompactRaw(usdValue, currency, tcBlue, opts = {}) {
 }
 
 // ── Hook reusable: formatter atado al toggle global ─────────────────────────
-// Devuelve helpers que ya saben sobre `currency` + `tcBlue` actuales:
+// Devuelve helpers que ya saben sobre `currency` + `tcValuacion` actuales:
 //   - fmtMoney(usdValue, { signed, decimals })
 //   - fmtMoneyCompact(usdValue, { signed }) → k / M / B abbreviation
 // El input siempre es USD canónico (lo que devuelve el backend).
-// La conversión a ARS usa tcBlue ACTUAL (Phase B) — para histórico usar
+// La conversión a ARS usa tcValuacion ACTUAL (Phase B) — para histórico usar
 // `useHistoricalMoneyFormat()` que combina FX stamped + lookup por fecha.
 export function useMoneyFormat() {
-  const { currency, tcBlue } = useCurrency()
+  const { currency, tcValuacion } = useCurrency()
   const isArs = currency === 'ARS'
 
   function convert(usdValue) {
     if (usdValue == null || !Number.isFinite(usdValue)) return null
-    return isArs ? usdValue * tcBlue : usdValue
+    return isArs ? usdValue * tcValuacion : usdValue
   }
 
   function fmtMoney(usdValue, opts) {
-    return fmtMoneyRaw(usdValue, currency, tcBlue, opts)
+    return fmtMoneyRaw(usdValue, currency, tcValuacion, opts)
   }
 
   function fmtMoneyCompact(usdValue, opts) {
-    return fmtMoneyCompactRaw(usdValue, currency, tcBlue, opts)
+    return fmtMoneyCompactRaw(usdValue, currency, tcValuacion, opts)
   }
 
   return {
-    currency, tcBlue, isArs,
+    currency, tcValuacion, isArs,
     convert, fmtMoney, fmtMoneyCompact,
   }
 }
@@ -330,23 +332,23 @@ export function useMoneyFormat() {
 /** Convierte un valor USD a la moneda de display.
  * @param {number} usdValue — valor en USD
  * @param {string} currency — 'USD' | 'ARS'
- * @param {number} tcBlue — rate ARS/USD actual
+ * @param {number} tcValuacion — rate ARS/USD actual
  * @returns {number} valor en la moneda elegida
  */
-export function fromUsd(usdValue, currency, tcBlue) {
+export function fromUsd(usdValue, currency, tcValuacion) {
   if (usdValue == null || isNaN(usdValue)) return usdValue
-  if (currency === 'ARS' && tcBlue > 0) return usdValue * tcBlue
+  if (currency === 'ARS' && tcValuacion > 0) return usdValue * tcValuacion
   return usdValue
 }
 
 /** Convierte un valor ARS a la moneda de display.
  * @param {number} arsValue — valor en ARS
  * @param {string} currency — 'USD' | 'ARS'
- * @param {number} tcBlue — rate ARS/USD actual
+ * @param {number} tcValuacion — rate ARS/USD actual
  * @returns {number} valor en la moneda elegida
  */
-export function fromArs(arsValue, currency, tcBlue) {
+export function fromArs(arsValue, currency, tcValuacion) {
   if (arsValue == null || isNaN(arsValue)) return arsValue
-  if (currency === 'USD' && tcBlue > 0) return arsValue / tcBlue
+  if (currency === 'USD' && tcValuacion > 0) return arsValue / tcValuacion
   return arsValue
 }

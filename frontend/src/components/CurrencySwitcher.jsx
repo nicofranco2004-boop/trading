@@ -54,7 +54,7 @@ export default function CurrencySwitcher({ variant = 'row', className = '' }) {
   const isArs = currency === 'ARS'
 
   // El dólar que YA eligió el usuario en Configuración — acá sólo se informa.
-  // Se deriva con el mismo `pickFinancialRate` del contexto (y no con `tcBlue`)
+  // Se deriva con el mismo `pickFinancialRate` del contexto (y no con `tcValuacion`)
   // para no mostrar el default 1415 durante el vuelo del primer /dolar.
   const dollarName = valuationDollar === 'ccl' ? 'CCL' : 'MEP'
   const rate = fmtRate(pickFinancialRate(dolar, valuationDollar))

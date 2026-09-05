@@ -31,8 +31,8 @@ export function usePfRollup(reloadKey) {
 
 // Convierte los totales por moneda a USD. valueUsd = capital + devengado;
 // investedUsd = capital (costo); pnlUsd = devengado.
-export function pfUsd(totals, tcBlue) {
-  const tc = tcBlue || 1415
+export function pfUsd(totals, tcValuacion) {
+  const tc = tcValuacion || 1415
   const valueUsd = (totals?.USD?.valor || 0) + (totals?.ARS?.valor || 0) / tc
   const investedUsd = (totals?.USD?.capital || 0) + (totals?.ARS?.capital || 0) / tc
   return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd }
