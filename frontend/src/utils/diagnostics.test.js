@@ -143,7 +143,7 @@ describe('fx_cash_ars_exposure', () => {
       positions: [{ is_cash: true, broker: 'Cocos', invested: 1_500_000 }],
       brokers: [{ name: 'Cocos', currency: 'ARS' }, { name: 'IB', currency: 'USDT' }],
       totalPortfolio: 10_000,  // 1.5M / 1500 = 1000 USD = 10%
-      tcBlue: 1500,
+      tcValuacion: 1500,
     })
     expect(out).toMatch(/cash ARS/)
     expect(out).toMatch(/10%/)
@@ -155,7 +155,7 @@ describe('fx_cash_ars_exposure', () => {
       positions: [{ is_cash: true, broker: 'Cocos', invested: 100_000 }],
       brokers: [{ name: 'Cocos', currency: 'ARS' }],
       totalPortfolio: 10_000,  // 100k / 1500 = 66 USD = 0.66%
-      tcBlue: 1500,
+      tcValuacion: 1500,
     })).toBe(null)
   })
 
@@ -164,16 +164,16 @@ describe('fx_cash_ars_exposure', () => {
       positions: [{ is_cash: true, broker: 'IB', invested: 5000 }],
       brokers: [{ name: 'IB', currency: 'USDT' }],
       totalPortfolio: 10_000,
-      tcBlue: 1500,
+      tcValuacion: 1500,
     })).toBe(null)
   })
 
-  it('no dispara sin tcBlue', () => {
+  it('no dispara sin tcValuacion', () => {
     expect(fire('fx_cash_ars_exposure', {
       positions: [{ is_cash: true, broker: 'Cocos', invested: 1_500_000 }],
       brokers: [{ name: 'Cocos', currency: 'ARS' }],
       totalPortfolio: 10_000,
-      tcBlue: null,
+      tcValuacion: null,
     })).toBe(null)
   })
 })
@@ -341,7 +341,7 @@ describe('fees_drag', () => {
     const out = fire('fees_drag', {
       positions: [{ commissions: 41809, broker: 'Cocos' }],
       brokers: [{ name: 'Cocos', currency: 'ARS' }],
-      tcBlue: 1415,
+      tcValuacion: 1415,
       totalPortfolio: 5757,
     })
     expect(out).toMatch(/USD 30/)              // 41809/1415 ≈ 29.55, fmtUsd redondea
@@ -361,7 +361,7 @@ describe('fees_drag', () => {
         { name: 'Cocos', currency: 'ARS' },
         { name: 'IBKR', currency: 'USDT' },
       ],
-      tcBlue: 1415,
+      tcValuacion: 1415,
       totalPortfolio: 10000,
     })
     // No debe ser USD 50,030 (la suma cruda sin conversión)

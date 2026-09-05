@@ -21,7 +21,7 @@ describe('fromUsd / fromArs helpers', () => {
     expect(fromUsd(100, 'USD', 1415)).toBe(100)
   })
 
-  it('fromUsd con ARS currency multiplica por tcBlue', () => {
+  it('fromUsd con ARS currency multiplica por tcValuacion', () => {
     expect(fromUsd(100, 'ARS', 1415)).toBe(141500)
   })
 
@@ -29,7 +29,7 @@ describe('fromUsd / fromArs helpers', () => {
     expect(fromArs(141500, 'ARS', 1415)).toBe(141500)
   })
 
-  it('fromArs con USD currency divide por tcBlue', () => {
+  it('fromArs con USD currency divide por tcValuacion', () => {
     expect(fromArs(141500, 'USD', 1415)).toBe(100)
   })
 
@@ -40,15 +40,15 @@ describe('fromUsd / fromArs helpers', () => {
     expect(fromArs(null, 'USD', 1415)).toBe(null)
   })
 
-  it('tcBlue=0 no rompe (devuelve valor original)', () => {
-    // Edge case: si tcBlue no está disponible (loading), no convertimos
+  it('tcValuacion=0 no rompe (devuelve valor original)', () => {
+    // Edge case: si tcValuacion no está disponible (loading), no convertimos
     // — devolvemos el valor USD as-is para que el render no muestre 0
     // ni Infinity.
     expect(fromUsd(100, 'ARS', 0)).toBe(100)
     expect(fromArs(100, 'USD', 0)).toBe(100)
   })
 
-  it('tcBlue negativo no convierte (defensa)', () => {
+  it('tcValuacion negativo no convierte (defensa)', () => {
     expect(fromUsd(100, 'ARS', -1)).toBe(100)
     expect(fromArs(100, 'USD', -1)).toBe(100)
   })
@@ -68,7 +68,7 @@ describe('fmtMoneyRaw (Phase B formatter)', () => {
     expect(fmtMoneyRaw(1234.56, 'USD', 1415)).toBe('US$1.235')
   })
 
-  it('ARS: convierte por tcBlue y usa símbolo $', () => {
+  it('ARS: convierte por tcValuacion y usa símbolo $', () => {
     // 100 * 1415 = 141500
     expect(fmtMoneyRaw(100, 'ARS', 1415)).toBe('$141.500')
   })
@@ -89,7 +89,7 @@ describe('fmtMoneyRaw (Phase B formatter)', () => {
     expect(fmtMoneyRaw(Infinity, 'USD', 1415)).toBe('—')
   })
 
-  it('ARS con tcBlue=0 cae a USD (defensa, no muestra $0)', () => {
+  it('ARS con tcValuacion=0 cae a USD (defensa, no muestra $0)', () => {
     expect(fmtMoneyRaw(100, 'ARS', 0)).toBe('US$100')
   })
 
@@ -164,7 +164,7 @@ describe('fmtConvertedRaw (helper sin conversión)', () => {
   })
 
   it('ARS: formato con $ + es-AR locale (input YA en ARS)', () => {
-    // Diferencia con fmtMoneyRaw: no multiplica por tcBlue. El caller pasa
+    // Diferencia con fmtMoneyRaw: no multiplica por tcValuacion. El caller pasa
     // 220000 que YA es ARS, devolvemos "$220.000" tal cual.
     expect(fmtConvertedRaw(220_000, 'ARS')).toBe('$220.000')
   })

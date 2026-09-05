@@ -57,7 +57,7 @@ const shortDate = (iso) => {
 }
 
 export default function RentaFijaSections({
-  positions = [], valuePos, brokers = [], displayCurrency = 'USD', tcBlue = 1,
+  positions = [], valuePos, brokers = [], displayCurrency = 'USD', tcValuacion = 1,
   onChanged, onEdit, onDelete, onEditGroup,
   // v2 — plumbing del detalle (opcionales: sin ellos la card degrada con gracia)
   bondCashflowsByKey = null, pendingDatesByKey = null, openBondCashflow = null,
@@ -114,7 +114,7 @@ export default function RentaFijaSections({
   if (keys.length === 0 && archived.length === 0) return null
 
   const fmtMoney = (usdVal) => {
-    const n = displayCurrency === 'ARS' ? usdVal * tcBlue : usdVal
+    const n = displayCurrency === 'ARS' ? usdVal * tcValuacion : usdVal
     const sym = displayCurrency === 'ARS' ? '$' : 'US$'
     return sym + Math.round(n).toLocaleString('es-AR')
   }
@@ -137,7 +137,7 @@ export default function RentaFijaSections({
         for (const o of summary.ops) {
           if ((o.date || '').startsWith(year)) {
             const amt = +o.pnl_usd || 0   // monto en moneda del broker
-            cobradoYearUsd += ccyArs ? amt / (tcBlue || 1) : amt
+            cobradoYearUsd += ccyArs ? amt / (tcValuacion || 1) : amt
           }
         }
       }
@@ -145,7 +145,7 @@ export default function RentaFijaSections({
       if (next && next.date <= in30) {
         proximos30Count += 1
         const meta = getBondMeta(p.asset)
-        proximos30Usd += (meta?.currency === 'ARS') ? next.total / (tcBlue || 1) : next.total
+        proximos30Usd += (meta?.currency === 'ARS') ? next.total / (tcValuacion || 1) : next.total
       }
     }
   }
@@ -240,7 +240,7 @@ export default function RentaFijaSections({
                 pendingDates={pendingDatesByKey?.get(`${p.broker}:${p.asset}`)}
                 isArs={isArsFor ? isArsFor(p) : false}
                 isArsDisp={displayCurrency === 'ARS'}
-                tcBlue={tcBlue}
+                tcValuacion={tcValuacion}
                 price={priceFor ? priceFor(p) : null}
                 pmeta={priceMeta ? priceMeta[p.asset] : null}
                 tcMep={tcMep} cerSeries={cerSeries} cerStale={cerStale}
@@ -279,7 +279,7 @@ export default function RentaFijaSections({
 // barra de capital recuperado + expansión al detalle completo.
 function BondCardRow({
   p, v, lots = null, isAgg = false,
-  fmtMoney, summary, pendingDates, isArs, isArsDisp, tcBlue, price, pmeta, tcMep, cerSeries, cerStale,
+  fmtMoney, summary, pendingDates, isArs, isArsDisp, tcValuacion, price, pmeta, tcMep, cerSeries, cerStale,
   expanded, onToggle, onEdit, onDelete, onEditGroup, openBondCashflow,
 }) {
   const meta = getBondMeta(p.asset)
@@ -390,7 +390,7 @@ function BondCardRow({
             const bondIsArs = (meta?.currency || 'USD') === 'ARS'
             const amt = bondIsArs === isArsDisp
               ? next.total
-              : bondIsArs ? (tcBlue ? next.total / tcBlue : next.total) : next.total * (tcBlue || 1)
+              : bondIsArs ? (tcValuacion ? next.total / tcValuacion : next.total) : next.total * (tcValuacion || 1)
             return (
               <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-data-cyan bg-data-cyan/10 rounded-full px-2.5 py-1 tabular">
                 Cobrás {shortDate(next.date)} ~{isArsDisp ? 'ARS' : 'USD'} {(isArsDisp ? ars : usd)(amt)}
@@ -499,7 +499,7 @@ function BondCardRow({
             summary={summary}
             isARS={isArs}
             isArsDisp={isArsDisp}
-            tcBlue={tcBlue}
+            tcValuacion={tcValuacion}
             currentPrice={price}
             tcMep={tcMep}
             cerSeries={cerSeries}

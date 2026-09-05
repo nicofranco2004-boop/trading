@@ -7,7 +7,7 @@
 // El objetivo es que el user "vea" la evidencia, no que la lea.
 //
 // Fase B (2026-05-31): los valores USD respetan el toggle global ARS/USD
-// via useMoneyFormat(). La conversión usa tcBlue actual — limitación MVP
+// via useMoneyFormat(). La conversión usa tcValuacion actual — limitación MVP
 // para data histórica (Fase C trackeará TC por fecha).
 
 import { useMoneyFormat } from '../../contexts/CurrencyContext'

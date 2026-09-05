@@ -195,7 +195,7 @@ export function buildPortfolioValueSeries(snapshots, days = null, liveValue = nu
     // Phase C: fx_to_usd_blue stampeado al momento del snapshot. Cuando
     // el toggle global está en ARS, el chart usa este FX (no el actual)
     // para mostrar la realidad histórica. NULL en filas legacy → frontend
-    // hace fallback al fx histórico de useFxHistory, después al tcBlue actual.
+    // hace fallback al fx histórico de useFxHistory, después al tcValuacion actual.
     fxToUsdBlue: s.fx_to_usd_blue != null ? +s.fx_to_usd_blue : null,
   }))
 
@@ -399,12 +399,12 @@ export function computeDailyPnl(snapshots, opts = {}) {
  * @param {Array}  snapshots     [{ date, total_value, total_invested, net_deposited }, ...]
  * @param {Array}  globalMonthly monthly_entries for broker='global', SORTED ASC by year/month
  * @param {Object} bench         bench.dolar_blue map (or null)
- * @param {number} tcBlue        live blue rate (used as fallback in lookupHistoricalDolar)
+ * @param {number} tcValuacion        live blue rate (used as fallback in lookupHistoricalDolar)
  *
  * @returns {{ seriesUsd: Array, seriesArs: Array } | null}
  *   null if there are <2 snapshots (caller should fall back to monthly logic).
  */
-export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcBlue) {
+export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcValuacion) {
   if (!snapshots || snapshots.length < 2) return null
   // ⚠️ Sólo puntos en BASE DE MERCADO. `snapshots` mezcla mediciones del cron con
   // fotos que el import FABRICA copiando la cadena contable
@@ -516,7 +516,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
       // Initialize ARS baselines too (snapshot por snapshot tiene su propio fx)
       const y0 = +s.date.slice(0, 4)
       const mo0 = +s.date.slice(5, 7)
-      const fx0 = lookupHistoricalDolar(bench, y0, mo0, tcBlue)
+      const fx0 = lookupHistoricalDolar(bench, y0, mo0, tcValuacion)
       prevBaselineArs = netDep * fx0
       prevValueArs = value * fx0
     } else {
@@ -562,7 +562,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
     // técnicamente el % se mantiene; sin embargo lo replicamos por simetría.
     const y = +s.date.slice(0, 4)
     const mo = +s.date.slice(5, 7)
-    const fx = lookupHistoricalDolar(bench, y, mo, tcBlue)
+    const fx = lookupHistoricalDolar(bench, y, mo, tcValuacion)
     const valueArs    = value * fx
     const baselineArs = netDep * fx
     if (valueArs > peakValueArs) peakValueArs = valueArs

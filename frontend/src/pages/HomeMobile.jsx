@@ -42,9 +42,9 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
 export default function HomeMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard.
-  // Fase B: además publicamos tcBlue al context para que Reports / charts
+  // Fase B: además publicamos tcValuacion al context para que Reports / charts
   // puedan leer sin re-fetchear /dolar.
-  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
+  const { currency, toggle: toggleCurrency, setTcValuacion: publishTcValuacion, valuationDollar, costBasis } = useCurrency()
   const { hidden, toggle: togglePrivacy } = usePrivacy()
   const [positions, setPositions] = useState([])
   const [monthly, setMonthly] = useState([])
@@ -96,25 +96,25 @@ export default function HomeMobile() {
     try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }
   }
 
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~spot+5%) p/ cripto en broker AR
-  const pf = pfUsd(usePfRollup(), tcBlue)  // plazos fijos → USD (suma al total mostrado)
+  const pf = pfUsd(usePfRollup(), tcValuacion)  // plazos fijos → USD (suma al total mostrado)
 
-  // Fase B: publicamos tcBlue al CurrencyContext (sin reemplazar el local;
-  // el componente sigue usando `tcBlue` para sus propios memos).
+  // Fase B: publicamos tcValuacion al CurrencyContext (sin reemplazar el local;
+  // el componente sigue usando `tcValuacion` para sus propios memos).
   useEffect(() => {
-    if (tcBlue > 0) publishTcBlue(tcBlue)
-  }, [tcBlue, publishTcBlue])
+    if (tcValuacion > 0) publishTcValuacion(tcValuacion)
+  }, [tcValuacion, publishTcValuacion])
 
   const totals = useMemo(() => {
-    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis) }))
+    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis) }))
     const totalValue = bt.reduce((s, b) => s + b.value, 0)
     const totalCost = bt.reduce((s, b) => s + b.invested, 0)
     const totalPnl = totalValue - totalCost
     const pct = totalCost > 0 ? totalPnl / totalCost : 0
     return { totalValue, totalCost, totalPnl, pct }
-  }, [positions, prices, brokers, tcBlue, tcCedear, tcCripto])
+  }, [positions, prices, brokers, tcValuacion, tcCedear, tcCripto])
 
   // Total valuado SIEMPRE al MEP, SOLO para comparar contra snapshots (P&L Día /
   // P&L Mes / sparkline). Los snapshots viven en MEP por diseño; si el riel del
@@ -122,7 +122,7 @@ export default function HomeMobile() {
   // CCL/MEP como "ganancia del día" fantasma. El riel gobierna solo el DISPLAY
   // (hero = totals); las comparaciones van ancladas al mismo sabor que la serie.
   // Con riel MEP (default) tcMep === tcCedear → mismo número, cero cambio.
-  const tcMep = pickFinancialRate(dolar, 'mep') || tcBlue
+  const tcMep = pickFinancialRate(dolar, 'mep') || tcValuacion
   const totalsMep = useMemo(() => {
     if (tcMep === tcCedear) return null  // riel MEP: reusar totals (evita doble cálculo)
     const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcMep, tcMep, tcCripto, costBasis) }))
@@ -328,7 +328,7 @@ export default function HomeMobile() {
             ? <span className="opacity-40 tracking-[0.2em] select-none">••••••</span>
             : <FlashValue value={totals.totalValue + pf.valueUsd}>
                 {currency === 'ARS'
-                  ? `$${fmtNumber((totals.totalValue + pf.valueUsd) * tcBlue)}`
+                  ? `$${fmtNumber((totals.totalValue + pf.valueUsd) * tcValuacion)}`
                   : `$${fmtNumber(totals.totalValue + pf.valueUsd)}`}
               </FlashValue>}
           <button
@@ -356,7 +356,7 @@ export default function HomeMobile() {
                 </span>
               </div>
               <span className={`text-xs tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {hidden ? '••••••' : `${series30d.positive ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcBlue : series30d.deltaUsd))}`}
+                {hidden ? '••••••' : `${series30d.positive ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcValuacion : series30d.deltaUsd))}`}
               </span>
             </div>
             <div className="h-12 -mx-1">
@@ -368,8 +368,8 @@ export default function HomeMobile() {
               />
             </div>
             <div className="flex items-baseline justify-between mt-1.5 text-[10px] text-ink-3">
-              <span className="tabular">Hace 30d · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.first * tcBlue : series30d.first)}`}</span>
-              <span className="tabular">Hoy · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.last * tcBlue : series30d.last)}`}</span>
+              <span className="tabular">Hace 30d · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.first * tcValuacion : series30d.first)}`}</span>
+              <span className="tabular">Hoy · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.last * tcValuacion : series30d.last)}`}</span>
             </div>
           </Panel>
         ) : (
@@ -397,7 +397,7 @@ export default function HomeMobile() {
         <Panel padding="none" className="grid grid-cols-2 overflow-hidden">
           <KpiCell
             label={kpis.pnlDayMeta && kpis.pnlDayMeta.dayDiff > 1 ? `P&L ${kpis.pnlDayMeta.dayDiff}d` : 'P&L Día'}
-            value={hidden ? '••••••' : (kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlDay * tcBlue : kpis.pnlDay))}` : (sinMedicion ? 'Sin medir' : '—'))}
+            value={hidden ? '••••••' : (kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlDay * tcValuacion : kpis.pnlDay))}` : (sinMedicion ? 'Sin medir' : '—'))}
             sub={kpis.pnlDay != null && kpis.pnlDayMeta ? pctSigned(kpis.pnlDayMeta.pct)
                  : (sinMedicion ? 'todavía no medimos tu cartera' : null)}
             subTone={kpis.pnlDay != null ? (kpis.pnlDay >= 0 ? 'pos' : 'neg') : null}
@@ -406,7 +406,7 @@ export default function HomeMobile() {
           />
           <KpiCell
             label="P&L Mes"
-            value={hidden ? '••••••' : (kpis.pnlMonth != null ? `${kpis.pnlMonth >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlMonth * tcBlue : kpis.pnlMonth))}` : (sinMedicion ? 'Sin medir' : '—'))}
+            value={hidden ? '••••••' : (kpis.pnlMonth != null ? `${kpis.pnlMonth >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlMonth * tcValuacion : kpis.pnlMonth))}` : (sinMedicion ? 'Sin medir' : '—'))}
             sub={kpis.pnlMonth != null && kpis.pnlMonthMeta ? pctSigned(kpis.pnlMonthMeta.pct)
                  : (sinMedicion ? 'todavía no medimos tu cartera' : null)}
             subTone={kpis.pnlMonth != null ? (kpis.pnlMonth >= 0 ? 'pos' : 'neg') : null}
@@ -416,7 +416,7 @@ export default function HomeMobile() {
           />
           <KpiCell
             label="Capital aportado"
-            value={hidden ? '••••••' : (kpis.aportado > 0 ? `$${fmtNumber(currency === 'ARS' ? kpis.aportado * tcBlue : kpis.aportado)}` : '—')}
+            value={hidden ? '••••••' : (kpis.aportado > 0 ? `$${fmtNumber(currency === 'ARS' ? kpis.aportado * tcValuacion : kpis.aportado)}` : '—')}
             sub={`${currency} neto`}
             topBorder
           />

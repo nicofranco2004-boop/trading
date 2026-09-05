@@ -49,7 +49,7 @@ export function isArStock(asset) {
  * @param {Array}  allPositions  Full positions array from GET /api/positions
  * @param {Object} prices        { [symbol]: number|null } — from GET /api/prices
  * @param {Object} broker        { name: string, currency: 'ARS'|'USDT' }
- * @param {number} tcBlue        Current ARS/USD blue-dollar rate
+ * @param {number} tcValuacion        Current ARS/USD blue-dollar rate
  *
  * @returns {{
  *   value:    number,   // Total USD value (open positions + cash).
@@ -64,7 +64,7 @@ export function isArStock(asset) {
  * ─────────────────────────────────────
  * • Global P&L contribution  → result.pnlUsd   (same for both ARS and USD brokers)
  * • Amount to store in monthly_entries.pnl_unrealized:
- *     ARS broker → result.pnlArs / tcBlue
+ *     ARS broker → result.pnlArs / tcValuacion
  *     USD broker → result.pnlUsd
  */
 /**
@@ -357,7 +357,7 @@ export function usdLotValue(p, prices, cedearRate) {
  * holding-first de "Calidad de cartera" valúe IGUAL que la ficha del activo.
  * Usar solo con posiciones equity/CEDEAR (la cripto/cash van por otra matriz).
  */
-export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue, costBasis = 'today') {
+export function valueEquityLot(p, broker, prices, tcValuacion, cedearRate = tcValuacion, costBasis = 'today') {
   const qty = p.quantity || 0
   // Costo económico = lo pagado + comisiones de compra, igual que
   // computeBrokerValue/valuePositionLot. Antes era `p.invested` pelado y esta
@@ -390,9 +390,9 @@ export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue, c
     valueUsd = u.valueUsd
   } else if (isAR) {
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
-    investedUsd = invested / costBasisRate(p, tcBlue, costBasis)
-    guardCost = invested / tcBlue
-    valueUsd = priceArs != null ? (priceArs * qty) / tcBlue : null
+    investedUsd = invested / costBasisRate(p, tcValuacion, costBasis)
+    guardCost = invested / tcValuacion
+    valueUsd = priceArs != null ? (priceArs * qty) / tcValuacion : null
   } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null) {
     // .BA÷MEP decidido por el PADRE (isArUsdBroker/currency), NO por isArStock: una
     // acción AR en un broker USD extranjero real (Schwab) es su ADR NYSE en USD, no
@@ -517,7 +517,7 @@ export function buildPriceSymbols(positions, brokers) {
  *   6. else                       — USD nativo (+ factor cripto)
  *
  * @param {object} p   posición (un lote)
- * @param {object} ctx { broker, prices, tcBlue, tcCedear, tcCripto, costBasis }
+ * @param {object} ctx { broker, prices, tcValuacion, tcCedear, tcCripto, costBasis }
  * @returns {{
  *   valueUsd: number, investedUsd: number, investedUsdDisplay: number,
  *   guardCost: number|null, priceLocal: number|null, priceTrusted: boolean|null,
@@ -541,8 +541,8 @@ export function buildPriceSymbols(positions, brokers) {
  *   `priceTrusted` es null cuando no hubo precio que juzgar (cash, o sin dato).
  */
 export function valuePositionLot(p, ctx = {}) {
-  const { broker, prices = {}, tcBlue, tcCedear, tcCripto = null, costBasis = 'today' } = ctx
-  const cedearRate = tcCedear ?? tcBlue
+  const { broker, prices = {}, tcValuacion, tcCedear, tcCripto = null, costBasis = 'today' } = ctx
+  const cedearRate = tcCedear ?? tcValuacion
   const isAR = broker?.currency === 'ARS'
   const arUsd = isArUsdBroker(broker?.name)
 
@@ -737,9 +737,9 @@ export function valuePositionLot(p, ctx = {}) {
  * computeBrokerValue — la SUMA de valuePositionLot sobre los lotes del broker.
  * Toda la lógica por lote vive en valuePositionLot; acá no queda ninguna rama.
  */
-export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue, tcCripto = null, costBasis = 'today') {
+export function computeBrokerValue(allPositions, prices, broker, tcValuacion, cedearRate = tcValuacion, tcCripto = null, costBasis = 'today') {
   const bpos = allPositions.filter(p => p.broker === broker.name)
-  const ctx = { broker, prices, tcBlue, tcCedear: cedearRate, tcCripto, costBasis }
+  const ctx = { broker, prices, tcValuacion, tcCedear: cedearRate, tcCripto, costBasis }
   let value = 0, invested = 0
   let valueArs = 0, invArs = 0
 

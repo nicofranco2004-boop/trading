@@ -92,7 +92,7 @@ export default function Positions() {
 function PositionsDesktop() {
   // Fase A: currency global compartido — Positions desktop respeta el toggle
   // global USD/ARS (mismo state que Dashboard, HomeMobile, PositionsMobile).
-  const { currency: displayCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
+  const { currency: displayCurrency, setTcValuacion: publishTcValuacion, valuationDollar, costBasis } = useCurrency()
   const { hidden, toggle: togglePrivacy } = usePrivacy()
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
@@ -203,16 +203,14 @@ function PositionsDesktop() {
   // con uno y el TOTAL del pie con el otro: caso real, filas al 1.341,71 (viejo) y
   // pie al 1.521,10 (el MEP), 13,4% de diferencia en la misma tabla.
   //
-  // `tcValuacion` es el dólar que ELIGE el usuario (MEP o CCL, ver
-  // pickFinancialRate). `tcBlue`/`tcMep` quedan como alias del MISMO número: el
-  // nombre `tcBlue` es histórico y NO contiene el blue — se conserva sólo porque
-  // lo leen ~39 archivos y renombrarlo es un cambio aparte.
+  // `tcValuacion` es el dólar que ELIGE el usuario: MEP o CCL, nunca el blue
+  // (ver pickFinancialRate). `tcMep` queda como alias del MISMO número para los
+  // consumidores que todavía lo nombran así.
   const tcValuacion = pickFinancialRate(dolar, valuationDollar) || config.tc_mep || config.tc_blue || 1415
-  const tcBlue = tcValuacion
   const tcMep = tcValuacion
   // Cotizaciones históricas: para mostrar a qué dólar se convierte un movimiento
   // con fecha pasada (el backend usa el mismo criterio para guardarlo).
-  const fxHist = useFxHistory(tcBlue)
+  const fxHist = useFxHistory(tcValuacion)
   // MEP ESTRICTO (no sigue el toggle MEP/CCL): para conversiones rotuladas
   // literalmente "MEP" (cross-currency de bonos) — así el badge no miente mostrando
   // un CCL/blue. Al MEDIO como el resto de la valuación (no a la punta de compra).
@@ -220,7 +218,7 @@ function PositionsDesktop() {
   // Dólar para valuar CEDEARs (sigue el toggle MEP/CCL del user). Se compran por
   // dólar financiero (plata local), así que valuamos a ese — es lo que muestra el
   // broker (Cocos). tcMep ya cascadea mep/ccl/blue vía pickFinancialRate.
-  const tcCedear = tcMep || tcBlue
+  const tcCedear = tcMep || tcValuacion
   // Dólar cripto (~spot + 5%). La cripto en un BROKER (Cocos/Balanz, no exchange)
   // se valúa al cripto-dólar para empatar lo que muestra el broker AR; en un
   // EXCHANGE (Binance/Ripio) queda a spot. cryptoBrokerFactor aplica esto.
@@ -232,11 +230,11 @@ function PositionsDesktop() {
     [brokers]
   )
 
-  // Fase B: publicamos tcBlue al CurrencyContext (mismo pattern que las
+  // Fase B: publicamos tcValuacion al CurrencyContext (mismo pattern que las
   // otras pages que ya fetchean /dolar — Reports / charts lo leen sin re-fetch).
   useEffect(() => {
-    if (tcBlue > 0) publishTcBlue(tcBlue)
-  }, [tcBlue, publishTcBlue])
+    if (tcValuacion > 0) publishTcValuacion(tcValuacion)
+  }, [tcValuacion, publishTcValuacion])
 
   // Carga la serie CER del backend (idempotente — sólo la primera llamada
   // dispara fetch real, las siguientes son cache hit en `cerSeries`).
@@ -493,7 +491,7 @@ function PositionsDesktop() {
       if (fx == null || fx <= 0) {
         entry.hasLegacyOps = true
         if (op.currency === 'ARS' || (op.currency == null && amt > 1000)) {
-          fx = tcBlue || 1
+          fx = tcValuacion || 1
         } else {
           fx = 1.0
         }
@@ -534,7 +532,7 @@ function PositionsDesktop() {
       v.ops.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
     }
     return map
-  }, [bondOps, tcBlue])
+  }, [bondOps, tcValuacion])
 
   async function fetchPrices(pos, cfg, bkrs) {
     // Símbolos por el helper canónico (espejo de computeBrokerValue) — misma
@@ -797,7 +795,7 @@ function PositionsDesktop() {
       currency: sellCcy,
       quantity: '',
       exit_price: suggested != null ? +suggested.toFixed(4) : '',
-      tc_venta: isARS ? +tcBlue.toFixed(2) : '',
+      tc_venta: isARS ? +tcValuacion.toFixed(2) : '',
       date: today(),
       commissions: '',
     })
@@ -907,7 +905,7 @@ function PositionsDesktop() {
       kind: 'MEP',
       ars_amount: '',
       usd_amount: '',
-      tc: tcBlue ? String(tcBlue) : '',
+      tc: tcValuacion ? String(tcValuacion) : '',
       date: today(),
     })
     setModal('convert')
@@ -966,7 +964,7 @@ function PositionsDesktop() {
         date: cashFlowForm.date,
         // El backend resuelve el dólar por la FECHA; esto queda de fallback para
         // cuando no hay cotización guardada de ese día.
-        tc_blue: tcBlue,
+        tc_blue: tcValuacion,
       })
       setModal(null)
       loadAll()
@@ -1188,7 +1186,7 @@ function PositionsDesktop() {
   // OJO CON EL TIPO DE CAMBIO: la conversión a USD va al dólar-MEP (tcCedear),
   // NO al blue. El TOTAL del pie sale de computeBrokerValue → valuePositionLot,
   // que en un broker ARS usa cedearRate para TODO (tenencias Y cash, ver el
-  // comentario de la rama 1 en valuation.js). Esta función usaba tcBlue, así que
+  // comentario de la rama 1 en valuation.js). Esta función usaba tcValuacion, así que
   // cada fila salía MEP/blue veces más grande que su aporte al total: con un MEP
   // ~13% arriba del blue, 10 filas que sumaban USD 64.147,88 daban un TOTAL de
   // USD 56.582,51. El ratio era uniforme —cash incluido— justamente porque era
@@ -1277,8 +1275,8 @@ function PositionsDesktop() {
       const c = calcARS(p)
       // Tomar el costo de calcARS (invUsd): para un lote costInUsd el costo YA está
       // en USD y NO debe dividirse por el blue (sino P&L% explota en Renta Fija). El
-      // fallback ÷tcBlue solo aplica a lotes ARS (calcARS omite invUsd sin precio).
-      const invUsd = c.invUsd ?? routedInvUsd(p, tcBlue)
+      // fallback ÷tcValuacion solo aplica a lotes ARS (calcARS omite invUsd sin precio).
+      const invUsd = c.invUsd ?? routedInvUsd(p, tcValuacion)
       const valueUsd = c.valueUsd != null ? c.valueUsd : invUsd
       const pnlUsd = valueUsd - invUsd
       return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }
@@ -1360,7 +1358,7 @@ function PositionsDesktop() {
     let value = 0, invested = 0
     const byBroker = {}
     for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis)
+      const r = computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis)
       byBroker[b.name] = r
       value += r.value || 0
       invested += r.invested || 0
@@ -1368,23 +1366,23 @@ function PositionsDesktop() {
     const pnl = value - invested
     const pct = invested > 0 ? pnl / invested : 0
     return { value, invested, pnl, pct, byBroker }
-  }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto, costBasis])
+  }, [brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 
   // Totales en modo 'today' (mode-independent) para el hero en display ARS: el peso
   // no tiene "dólar de compra", así que su Invertido/P&L no cambian con el toggle.
-  // Se calcula a 'today' y se convierte ×tcBlue → captura TODO el portfolio (incluidos
+  // Se calcula a 'today' y se convierte ×tcValuacion → captura TODO el portfolio (incluidos
   // los brokers USD, que en pesos van a USD×dólar-de-hoy). NO uso r.valueArs/r.invArs:
   // computeBrokerValue solo los acumula para brokers ARS (0 para USD) → dropearía las
   // tenencias en dólares. El hero en display USD usa `totals` (que sí refleja el modo).
   const totalsToday = useMemo(() => {
     let value = 0, invested = 0
     for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, 'today')
+      const r = computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, 'today')
       value += r.value || 0
       invested += r.invested || 0
     }
     return { value, invested }
-  }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto])
+  }, [brokers, positions, prices, tcValuacion, tcCedear, tcCripto])
 
   // Delta vs último snapshot guardado. Se llama "variación diaria" cuando
   // dayDiff === 1, pero si el usuario no abrió la app durante varios días
@@ -1419,8 +1417,8 @@ function PositionsDesktop() {
   // Plazos fijos → USD, coherente: valor (capital + devengado), capital
   // (invertido) y P&L (devengado). Suma al titular del patrimonio. No entra en
   // la variación diaria (los snapshots históricos no tienen PF).
-  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcBlue
-  const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcBlue
+  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcValuacion
+  const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcValuacion
   const heroValue = totals.value + pfValueUsd
   const heroInvested = totals.invested + pfInvestedUsd
   // ¿Hay tenencia fuera de las tarjetas por broker? La renta fija (bonos/letras/ONs/
@@ -1431,10 +1429,10 @@ function PositionsDesktop() {
   const heroPnl = heroValue - heroInvested
   const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
   // Hero en display ARS: cifras mode-INDEPENDENT (pesos nativos + tenencias USD al
-  // dólar de hoy), a partir del total 'today' ×tcBlue. Incluye PF. Así ARS-nativo
+  // dólar de hoy), a partir del total 'today' ×tcValuacion. Incluye PF. Así ARS-nativo
   // queda nativo y USD queda USD×hoy, sin filtrar el modo ni dropear brokers USD.
-  const heroValueArs = (totalsToday.value + pfValueUsd) * tcBlue
-  const heroInvestedArs = (totalsToday.invested + pfInvestedUsd) * tcBlue
+  const heroValueArs = (totalsToday.value + pfValueUsd) * tcValuacion
+  const heroInvestedArs = (totalsToday.invested + pfInvestedUsd) * tcValuacion
   const heroPnlArs = heroValueArs - heroInvestedArs
   const heroPctArs = heroInvestedArs > 0 ? heroPnlArs / heroInvestedArs : 0
   // Cifras del hero según el display: ARS → nativas (mode-independent); USD → reflejan
@@ -1731,7 +1729,7 @@ function PositionsDesktop() {
         const bposRows = flattenGroups(aggregateAndSort(bposRaw, isARS))
         const isSubBroker = broker.parent_broker_id != null
         const showDetail = detailBrokers.has(broker.name)
-        const r = computeBrokerValue(bposRaw, prices, broker, tcBlue, tcCedear, tcCripto, costBasis)
+        const r = computeBrokerValue(bposRaw, prices, broker, tcValuacion, tcCedear, tcCripto, costBasis)
 
         // Variación del día agregada del broker (suma de los Δ por posición con
         // cierre anterior disponible). En la moneda nativa del broker. `hasDay`
@@ -1762,14 +1760,14 @@ function PositionsDesktop() {
         // la valuación siguen dependiendo de `isARS` (moneda nativa del broker);
         // acá sólo convertimos el número a la moneda elegida. Para brokers ARS
         // tenemos ambas patas (r.valueArs/r.value); para brokers USD la pata ARS
-        // no se acumula (r.valueArs=0) → derivamos ×tcBlue. El signo/color/% no
-        // cambian con la conversión (tcBlue > 0).
-        const valueDisp = isArsDisp ? (isARS ? r.valueArs : r.value * tcBlue) : r.value
-        const investedDisp = isArsDisp ? (isARS ? r.invArs : r.invested * tcBlue) : r.invested
-        const pnlDisp = isArsDisp ? (isARS ? r.pnlArs : r.pnlUsd * tcBlue) : r.pnlUsd
+        // no se acumula (r.valueArs=0) → derivamos ×tcValuacion. El signo/color/% no
+        // cambian con la conversión (tcValuacion > 0).
+        const valueDisp = isArsDisp ? (isARS ? r.valueArs : r.value * tcValuacion) : r.value
+        const investedDisp = isArsDisp ? (isARS ? r.invArs : r.invested * tcValuacion) : r.invested
+        const pnlDisp = isArsDisp ? (isARS ? r.pnlArs : r.pnlUsd * tcValuacion) : r.pnlUsd
         // Pata de display del P&L para los COLORES del tfoot (el texto del monto/%
         // ya se ternariza con isArsDisp). El tfoot muestra r.pnlUsd crudo en vista
-        // USD (no ×tcBlue), así que footPnl usa r.pnlUsd para alinear color↔cifra.
+        // USD (no ×tcValuacion), así que footPnl usa r.pnlUsd para alinear color↔cifra.
         const footPnl = isArsDisp ? r.pnlArs : r.pnlUsd
         const Header = (
           <div className="flex flex-col gap-3 px-4 sm:px-5 py-4 border-b border-line">
@@ -1831,7 +1829,7 @@ function PositionsDesktop() {
               </span>
               {isArsDisp && (
                 <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-3">
-                  TC MEP <span className="text-ink-2">{tcBlue}</span>
+                  TC MEP <span className="text-ink-2">{tcValuacion}</span>
                 </span>
               )}
             </div>
@@ -1903,7 +1901,7 @@ function PositionsDesktop() {
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
                       // En vista USD el promedio se rutea por el modo (ver
                       // routedAvgPriceUsd); en 'today' da lo mismo que antes.
-                      const avgPriceUsdDisp = routedAvgPriceUsd(p, tcBlue, true)
+                      const avgPriceUsdDisp = routedAvgPriceUsd(p, tcValuacion, true)
                       const dvArs = dvFor(p, true)
                       const expanded = isBond && !isLot && expandedBonds.has(bondKey)
                       // colSpan del detalle de bono = total de columnas de la fila.
@@ -1996,7 +1994,7 @@ function PositionsDesktop() {
                           <td className={`${tdClass} text-ink-2 tabular`}>{isArsDisp
                             ? (avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—')
                             : (avgPriceUsdDisp != null ? `USD ${usd(avgPriceUsdDisp)}` : '—')}</td>
-                          <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{isArsDisp ? `ARS ${ars(c.priceArs)}` : `USD ${usd(c.priceArs / tcBlue)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                          <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{isArsDisp ? `ARS ${ars(c.priceArs)}` : `USD ${usd(c.priceArs / tcValuacion)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                           {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs(p.invested) : (c.invUsd != null ? fmtUsd(c.invUsd) : '—'))}</td>}
                           {showDetail && isArsDisp && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
                           {showDetail && isArsDisp && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? (hidden ? '••••••' : fmtUsd(c.invUsd)) : '—'}</td>}
@@ -2018,7 +2016,7 @@ function PositionsDesktop() {
                           <td className={`${tdClass} tabular`}>
                             {dvArs ? (
                               <div className="leading-tight">
-                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcBlue))}`}</div>
+                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcValuacion))}`}</div>
                                 <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
                               </div>
                             ) : (
@@ -2046,7 +2044,7 @@ function PositionsDesktop() {
                             pendingDates={pendingDatesByKey.get(bondKey)}
                             isARS={true}
                             isArsDisp={isArsDisp}
-                            tcBlue={tcBlue}
+                            tcValuacion={tcValuacion}
                             currentPrice={c.priceArs}
                             tcMep={tcMepStrict}
                             cerSeries={cerSeries}
@@ -2083,7 +2081,7 @@ function PositionsDesktop() {
                       {showDetail && isArsDisp && <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>}
                       <td className="px-3 py-2.5 text-xs font-bold tabular">
                         {brokerHasDay
-                          ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : (isArsDisp ? `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}` : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay / tcBlue))}`)}</span>
+                          ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : (isArsDisp ? `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}` : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay / tcValuacion))}`)}</span>
                           : <span className="text-ink-3">—</span>}
                       </td>
                       <td />
@@ -2129,8 +2127,8 @@ function PositionsDesktop() {
                       ? c.pnl + pnlContrib
                       : c.pnl
                     // P&L en la moneda de DISPLAY: calcUSDT sólo da USD → la pata ARS
-                    // se deriva ×tcBlue. El % (abajo) es adimensional, no se convierte.
-                    const adjPnlDisp = isArsDisp ? (adjPnl != null ? adjPnl * tcBlue : null) : adjPnl
+                    // se deriva ×tcValuacion. El % (abajo) es adimensional, no se convierte.
+                    const adjPnlDisp = isArsDisp ? (adjPnl != null ? adjPnl * tcValuacion : null) : adjPnl
                     // P&L% del bono sobre el costo en USD (c.investedUsd ya respeta
                     // la moneda del lote: un bono en pesos va ÷MEP, no se cuenta crudo).
                     const adjPnlCost = c.investedUsd ?? p.invested
@@ -2226,10 +2224,10 @@ function PositionsDesktop() {
                           )}
                         </td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
-                        <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? (isArsDisp ? fmtArs(avgPrice * tcBlue) : fmtUsd(avgPrice)) : '—'}</td>
-                        <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{isArsDisp ? fmtArs(c.price * tcBlue) : fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
-                        {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs((c.investedUsd ?? p.invested) * tcBlue) : fmtUsd(c.investedUsd ?? p.invested))}</td>}
-                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.value != null ? <FlashValue value={c.value}>{isArsDisp ? fmtArs(c.value * tcBlue) : fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? (isArsDisp ? fmtArs(avgPrice * tcValuacion) : fmtUsd(avgPrice)) : '—'}</td>
+                        <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{isArsDisp ? fmtArs(c.price * tcValuacion) : fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                        {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs((c.investedUsd ?? p.invested) * tcValuacion) : fmtUsd(c.investedUsd ?? p.invested))}</td>}
+                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.value != null ? <FlashValue value={c.value}>{isArsDisp ? fmtArs(c.value * tcValuacion) : fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
                         <td className={`${tdClass} tabular`} title={pnlTooltip}>
                           <span className="inline-flex items-center gap-1.5">
                             <span className={`font-semibold ${colorClass(adjPnlDisp)}`}>
@@ -2246,7 +2244,7 @@ function PositionsDesktop() {
                         <td className={`${tdClass} tabular`}>
                           {dvUsd ? (
                             <div className="leading-tight">
-                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcBlue))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</div>
+                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcValuacion))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</div>
                               <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
                             </div>
                           ) : (
@@ -2274,7 +2272,7 @@ function PositionsDesktop() {
                           pendingDates={pendingDatesByKey.get(bondKey)}
                           isARS={false}
                           isArsDisp={isArsDisp}
-                          tcBlue={tcBlue}
+                          tcValuacion={tcValuacion}
                           currentPrice={c.price}
                           tcMep={tcMepStrict}
                           cerSeries={cerSeries}
@@ -2291,11 +2289,11 @@ function PositionsDesktop() {
                   <tr className="border-t-2 border-line-2 bg-bg-2/30">
                     {/* Activo + 30D + Cantidad + Precio prom + Actual collapsed (colSpan=5) */}
                     <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2">TOTAL</td>
-                    {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : (isArsDisp ? fmtArs(r.invested * tcBlue) : fmtUsd(r.invested))}</td>}
-                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : (isArsDisp ? fmtArs(r.value * tcBlue) : fmtUsd(r.value))}</td>
+                    {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : (isArsDisp ? fmtArs(r.invested * tcValuacion) : fmtUsd(r.invested))}</td>}
+                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : (isArsDisp ? fmtArs(r.value * tcValuacion) : fmtUsd(r.value))}</td>
                     <td className="px-3 py-2.5 text-xs tabular">
                       <span className="inline-flex items-center gap-1.5">
-                        <span className={`font-bold ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : (isArsDisp ? `${r.pnlUsd >= 0 ? '+' : '-'}ARS ${ars(Math.abs(r.pnlUsd * tcBlue))}` : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`)}</span>
+                        <span className={`font-bold ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : (isArsDisp ? `${r.pnlUsd >= 0 ? '+' : '-'}ARS ${ars(Math.abs(r.pnlUsd * tcValuacion))}` : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`)}</span>
                         {r.invested > 0 && (
                           <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${r.pnlUsd >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(r.pnlUsd / r.invested)}</span>
                         )}
@@ -2303,7 +2301,7 @@ function PositionsDesktop() {
                     </td>
                     <td className="px-3 py-2.5 text-xs font-bold tabular">
                       {brokerHasDay
-                        ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : (isArsDisp ? `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay * tcBlue))}` : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`)}</span>
+                        ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : (isArsDisp ? `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay * tcValuacion))}` : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`)}</span>
                         : <span className="text-ink-3">—</span>}
                     </td>
                     <td />
@@ -2329,7 +2327,7 @@ function PositionsDesktop() {
 
       {/* Zona Renta Fija: bonos/letras/FCI agrupados cross-broker, con borrado/restore por sección */}
       <RentaFijaSections positions={positions} valuePos={valuePos} brokers={brokers}
-        displayCurrency={displayCurrency} tcBlue={tcBlue} onChanged={loadAll}
+        displayCurrency={displayCurrency} tcValuacion={tcValuacion} onChanged={loadAll}
         onEdit={openEdit} onDelete={del} onEditGroup={openEditGroup}
         bondCashflowsByKey={bondCashflowsByKey}
         pendingDatesByKey={pendingDatesByKey}
@@ -2370,7 +2368,7 @@ function PositionsDesktop() {
           setForm={setForm}
           brokers={brokers}
           selectedBrokerCurrency={selectedBrokerCurrency}
-          tcBlue={tcBlue}
+          tcValuacion={tcValuacion}
           onClose={() => setModal(null)}
           onSave={save}
           onChangeAsset={modal === 'add'
@@ -2436,7 +2434,7 @@ function PositionsDesktop() {
               const hoy = new Date().toISOString().slice(0, 10)
               const fecha = cashFlowForm.date || hoy
               const esHoy = fecha >= hoy
-              const tc = esHoy ? tcBlue : (fxHist.getMepOrFallback(fecha) || tcBlue)
+              const tc = esHoy ? tcValuacion : (fxHist.getMepOrFallback(fecha) || tcValuacion)
               return (
                 <p className="text-xs text-ink-3">
                   Equivalente en USD al dólar {esHoy ? 'de hoy' : `del ${fecha.split('-').reverse().join('/')}`} ({Math.round(tc)}):
@@ -2475,7 +2473,7 @@ function PositionsDesktop() {
           form={sellForm}
           setForm={setSellForm}
           positions={positions}
-          tcBlue={tcBlue}
+          tcValuacion={tcValuacion}
           fxHist={fxHist}
           onClose={() => setModal(null)}
           onConfirm={confirmSell}
@@ -2664,7 +2662,7 @@ function PositionsDesktop() {
         <ConvertModal
           form={convertForm}
           setForm={setConvertForm}
-          tcBlue={tcBlue}
+          tcValuacion={tcValuacion}
           onClose={() => setModal(null)}
           onConfirm={confirmConvert}
         />
@@ -2687,7 +2685,7 @@ function PositionsDesktop() {
   )
 }
 
-function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
+function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
   // Conversión interna ARS ↔ USD dentro de un mismo broker. La modal soporta
   // ambas direcciones; los campos cambian de etiqueta según `direction`.
   // Al confirmar, llama a POST /api/conversions que:
@@ -2805,11 +2803,11 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
             value={form.tc}
             onChange={e => setTc(e.target.value)}
             className={inputCls}
-            placeholder={String(tcBlue || 1500)}
+            placeholder={String(tcValuacion || 1500)}
           />
-          {tcNum > 0 && tcBlue > 0 && (
+          {tcNum > 0 && tcValuacion > 0 && (
             <p className="text-[10px] text-ink-3 mt-1">
-              Blue actual: {tcBlue} · {Math.abs((tcNum - tcBlue) / tcBlue * 100).toFixed(1)}% {tcNum > tcBlue ? 'por encima' : 'por debajo'}
+              Blue actual: {tcValuacion} · {Math.abs((tcNum - tcValuacion) / tcValuacion * 100).toFixed(1)}% {tcNum > tcValuacion ? 'por encima' : 'por debajo'}
             </p>
           )}
         </div>
@@ -3181,7 +3179,7 @@ function buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy, openS
   ]
 }
 
-export function SellModal({ form, setForm, positions, tcBlue, fxHist, onClose, onConfirm }) {
+export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClose, onConfirm }) {
   // Posiciones FIFO del par (broker, asset)
   const lots = positions
     .filter(p => p.broker === form.broker && p.asset === form.asset && !p.is_cash && (p.quantity || 0) > 0)
@@ -3194,7 +3192,7 @@ export function SellModal({ form, setForm, positions, tcBlue, fxHist, onClose, o
 
   const qtyNum = +form.quantity || 0
   const priceNum = +form.exit_price || 0
-  const tcVenta = +form.tc_venta || tcBlue || 1
+  const tcVenta = +form.tc_venta || tcValuacion || 1
 
   // TC de la venta = el que existía en la FECHA de la venta, no el de hoy.
   // Mismo criterio que el aporte con fecha (MEP del día, blue de fallback; y
@@ -3204,8 +3202,8 @@ export function SellModal({ form, setForm, positions, tcBlue, fxHist, onClose, o
   const tcTouchedRef = useRef(false)
   function tcForDate(v) {
     const hoy = new Date().toISOString().slice(0, 10)
-    if (!v || v >= hoy) return tcBlue
-    return (fxHist?.getMepOrFallback?.(v)) || tcBlue
+    if (!v || v >= hoy) return tcValuacion
+    return (fxHist?.getMepOrFallback?.(v)) || tcValuacion
   }
   function handleSellDateChange(v) {
     setForm(f => {
@@ -3468,7 +3466,7 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
 //  • Sin "Precio override" — quien quiera editar el precio actual lo hace
 //    directo en el campo principal.
 //  • Comisiones: campo opcional. Real cost = invertido + comisiones.
-export function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcBlue, onClose, onSave, onChangeAsset }) {
+export function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcValuacion, onClose, onSave, onChangeAsset }) {
   const isARS = selectedBrokerCurrency === 'ARS'
   // UX mejorada (user feedback): el form pedía 3 valores (precio + cantidad +
   // invertido) pero matemáticamente solo necesita 2. Trackeamos el orden de

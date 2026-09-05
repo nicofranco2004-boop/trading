@@ -383,14 +383,14 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'cash_heavy',
     category: 'Asignación',
     severity: 'warn',
-    generate: ({ positions, totalPortfolio, brokers, tcBlue }) => {
-      if (!positions || !totalPortfolio || !brokers || !tcBlue) return null
+    generate: ({ positions, totalPortfolio, brokers, tcValuacion }) => {
+      if (!positions || !totalPortfolio || !brokers || !tcValuacion) return null
       const arsBrokerSet = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
       // Convertimos cada cash a USD según la moneda de su broker (mismo patrón
-      // que fx_cash_ars_exposure): ARS → /tcBlue, el resto ya está en USD.
+      // que fx_cash_ars_exposure): ARS → /tcValuacion, el resto ya está en USD.
       const cashUsd = positions
         .filter(p => p.is_cash)
-        .reduce((s, p) => s + (arsBrokerSet.has(p.broker) ? (p.invested || 0) / tcBlue : (p.invested || 0)), 0)
+        .reduce((s, p) => s + (arsBrokerSet.has(p.broker) ? (p.invested || 0) / tcValuacion : (p.invested || 0)), 0)
       const sharePct = (cashUsd / totalPortfolio) * 100
       if (sharePct < 30) return null
       return `**${sharePct.toFixed(0)}%** del portfolio está en cash. Aporta liquidez para aprovechar correcciones del mercado, pero también limita el rendimiento si el mercado tiene una tendencia alcista sostenida.`
@@ -400,14 +400,14 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'cash_low',
     category: 'Asignación',
     severity: 'info',
-    generate: ({ positions, totalPortfolio, brokers, tcBlue }) => {
-      if (!positions || !totalPortfolio || !brokers || !tcBlue) return null
+    generate: ({ positions, totalPortfolio, brokers, tcValuacion }) => {
+      if (!positions || !totalPortfolio || !brokers || !tcValuacion) return null
       const arsBrokerSet = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
       // Convertimos cada cash a USD según la moneda de su broker; sin esto el
       // cash ARS (pesos) se sumaba crudo como si fuera USD e inflaba el % ~1400×.
       const cashUsd = positions
         .filter(p => p.is_cash)
-        .reduce((s, p) => s + (arsBrokerSet.has(p.broker) ? (p.invested || 0) / tcBlue : (p.invested || 0)), 0)
+        .reduce((s, p) => s + (arsBrokerSet.has(p.broker) ? (p.invested || 0) / tcValuacion : (p.invested || 0)), 0)
       const sharePct = (cashUsd / totalPortfolio) * 100
       if (sharePct >= 5 || sharePct < 0.5) return null
       return `Solo **${sharePct.toFixed(1)}%** del portfolio en cash. Una reserva mayor te permitiría aprovechar correcciones del mercado.`
@@ -466,14 +466,14 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'fx_cash_ars_exposure',
     category: 'Moneda',
     severity: 'info',
-    generate: ({ positions, totalPortfolio, brokers, tcBlue }) => {
-      if (!positions || !brokers || !totalPortfolio || !tcBlue) return null
+    generate: ({ positions, totalPortfolio, brokers, tcValuacion }) => {
+      if (!positions || !brokers || !totalPortfolio || !tcValuacion) return null
       const arsBrokerSet = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
       const cashArs = positions
         .filter(p => p.is_cash && arsBrokerSet.has(p.broker))
         .reduce((s, p) => s + (p.invested || 0), 0)
       if (cashArs <= 0) return null
-      const cashUsd = cashArs / tcBlue
+      const cashUsd = cashArs / tcValuacion
       const sharePct = (cashUsd / totalPortfolio) * 100
       if (sharePct < 5) return null
       // Sensibilidad a un movimiento del 10% del blue
@@ -618,7 +618,7 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'fees_drag',
     category: 'Performance',
     severity: 'warn',
-    generate: ({ positions, totalPortfolio, brokers, tcBlue }) => {
+    generate: ({ positions, totalPortfolio, brokers, tcValuacion }) => {
       if (!positions || !totalPortfolio) return null
       // FIX: las comisiones están en la moneda nativa del broker (ARS para
       // brokers AR, USD para resto). Antes las sumábamos sin convertir y
@@ -627,7 +627,7 @@ export const DIAGNOSTIC_GENERATORS = [
       const arsBrokers = new Set(
         (brokers || []).filter(b => b.currency === 'ARS').map(b => b.name)
       )
-      const tc = tcBlue || 1415
+      const tc = tcValuacion || 1415
       const totalCommissionsUsd = positions.reduce((s, p) => {
         const comm = p.commissions || 0
         if (!comm) return s
@@ -692,17 +692,17 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'geographic_concentration_ar',
     category: 'Moneda',
     severity: 'warn',
-    generate: ({ positions, totalPortfolio, brokers, prices, tcBlue }) => {
+    generate: ({ positions, totalPortfolio, brokers, prices, tcValuacion }) => {
       // Posiciones argentinas = activos en brokers ARS (cotizan en BCBA con sufijo .BA)
-      if (!positions || !brokers || !totalPortfolio || !tcBlue) return null
+      if (!positions || !brokers || !totalPortfolio || !tcValuacion) return null
       const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
       const arValue = positions
         .filter(p => arsBrokers.has(p.broker) && !p.is_cash)
         .reduce((s, p) => {
-          // Aproximación: usamos invested ARS / tcBlue. Si hay precio, igual sirve
+          // Aproximación: usamos invested ARS / tcValuacion. Si hay precio, igual sirve
           // para estimar exposición geográfica (no es valor live exacto).
           const arsAmt = (p.invested || 0) + (p.commissions || 0)
-          return s + arsAmt / tcBlue
+          return s + arsAmt / tcValuacion
         }, 0)
       const sharePct = (arValue / totalPortfolio) * 100
       if (sharePct < 50) return null
@@ -812,8 +812,8 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'broker_idle_cash',
     category: 'Liquidez',
     severity: 'info',
-    generate: ({ positions, brokers, tcBlue, totalPortfolio }) => {
-      if (!positions || !brokers || !tcBlue || !totalPortfolio) return null
+    generate: ({ positions, brokers, tcValuacion, totalPortfolio }) => {
+      if (!positions || !brokers || !tcValuacion || !totalPortfolio) return null
       // Detectamos brokers donde TODO el saldo está en cash (sin posiciones invertidas)
       const idleBrokers = []
       for (const b of brokers) {
@@ -825,7 +825,7 @@ export const DIAGNOSTIC_GENERATORS = [
         if (investPos.length > 0) continue  // tiene inversiones, no es idle
         const cashUsd = cashPos.reduce((s, p) => {
           const amt = p.invested || 0
-          return s + (b.currency === 'ARS' ? amt / tcBlue : amt)
+          return s + (b.currency === 'ARS' ? amt / tcValuacion : amt)
         }, 0)
         if (cashUsd < 100) continue  // umbral mínimo
         idleBrokers.push({ name: b.name, cashUsd, currency: b.currency })

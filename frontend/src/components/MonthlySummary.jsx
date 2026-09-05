@@ -57,7 +57,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   const [closingEntry, setClosingEntry] = useState(null)
   const [autoCalc, setAutoCalc] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [tcBlue, setTcBlue] = useState(1415)
+  const [tcValuacion, setTcValuacion] = useState(1415)
   const [bench, setBench] = useState(null)
   // Por default mostramos TODO el historial. Razón: tras un import grande,
   // la ventana de "últimos 6" puede caer entera en un período sin actividad
@@ -96,7 +96,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     const tcCedear = pickFinancialRate(dol, valuationDollar) || tc
     // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
     const tcCripto = dol?.cripto?.venta
-    setTcBlue(tc)
+    setTcValuacion(tc)
     setEntries(ents)
     setBench(bnch)
 
@@ -109,8 +109,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     // un repair duplicado en el frontend; lo sacamos para evitar races y
     // doble I/O.
 
-    // Pasamos brokers + tcBlue + tcCedear ya fetcheados — evita re-fetch redundante.
-    await syncUnrealizedForAll({ brokers: bkrs, tcBlue: tc, tcCedear, tcCripto })
+    // Pasamos brokers + tcValuacion + tcCedear ya fetcheados — evita re-fetch redundante.
+    await syncUnrealizedForAll({ brokers: bkrs, tcValuacion: tc, tcCedear, tcCripto })
 
     setEntries(await api.get('/monthly'))
   }
@@ -158,11 +158,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 
   // Phase 5 — for ARS tabs, convert stored USD-eq → display ARS using the
   // historical blue rate of (year, month). Closed months use bench.dolar_blue;
-  // current month uses live tcBlue. For USD/global tabs: passthrough.
+  // current month uses live tcValuacion. For USD/global tabs: passthrough.
   function valueAt(v, year, month) {
     if (v == null) return null
     if (!tabIsARS) return v
-    const rate = lookupHistoricalDolar(bench, year, month, tcBlue)
+    const rate = lookupHistoricalDolar(bench, year, month, tcValuacion)
     return v * rate
   }
 
@@ -239,15 +239,15 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   }
 
   async function syncUnrealizedForAll(prefetched = null) {
-    // Optimización: si init() ya fetcheó brokers/tcBlue, pasarlos via
+    // Optimización: si init() ya fetcheó brokers/tcValuacion, pasarlos via
     // `prefetched` evita 3 round-trips redundantes (brokers + dolar + config).
     // Ahorro: ~400ms al montar /mensual.
     // Save flow (línea ~300) llama sin prefetched → re-fetcha como antes.
     try {
       let pos, bkrs, tc, tcCedear, tcCripto
-      if (prefetched && prefetched.brokers && prefetched.tcBlue) {
+      if (prefetched && prefetched.brokers && prefetched.tcValuacion) {
         bkrs = prefetched.brokers
-        tc = prefetched.tcBlue
+        tc = prefetched.tcValuacion
         tcCedear = prefetched.tcCedear || tc
         tcCripto = prefetched.tcCripto
         pos = await api.get('/positions')
@@ -257,7 +257,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         bkrs = r[1]
         const dol = await api.get('/dolar').catch(() => null)
         const cfg = await api.get('/config').catch(() => null)
-        tc = pickFinancialRate(dol, valuationDollar) || cfg?.tc_blue || tcBlue
+        tc = pickFinancialRate(dol, valuationDollar) || cfg?.tc_blue || tcValuacion
         // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
         tcCedear = pickFinancialRate(dol, valuationDollar) || tc
         // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
@@ -282,7 +282,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       const persistMep = valuationDollar === 'mep'
       for (const b of bkrs) {
         const result = computeBrokerValue(pos, pricesData, b, tc, tcCedear, tcCripto)
-        // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcBlue for ARS display);
+        // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcValuacion for ARS display);
         //               USD stores pnlUsd directly.
         const pnlForBroker = b.currency === 'ARS' ? result.pnlArs / tc : result.pnlUsd
         // El GLOBAL suma lo mismo que se persiste por broker. Antes sumaba `pnlUsd`

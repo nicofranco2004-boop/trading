@@ -49,29 +49,29 @@ describe('resolveHistoricalFx — chain de prioridad', () => {
     expect(r).toBe(1100)
   })
 
-  it('ARS + dateIso sin match: fallback a tcBlue actual (prioridad 3)', () => {
+  it('ARS + dateIso sin match: fallback a tcValuacion actual (prioridad 3)', () => {
     const r = resolveHistoricalFx('ARS', TC_BLUE_ACTUAL, { dateIso: '2030-01-01' }, getRate)
     expect(r).toBe(TC_BLUE_ACTUAL)
   })
 
-  it('ARS + sin dateIso ni stamped: tcBlue actual', () => {
+  it('ARS + sin dateIso ni stamped: tcValuacion actual', () => {
     const r = resolveHistoricalFx('ARS', TC_BLUE_ACTUAL, {}, getRate)
     expect(r).toBe(TC_BLUE_ACTUAL)
   })
 
-  it('ARS + tcBlue inválido (0): último fallback es 1 (no rompe matemática)', () => {
-    // Edge: si por alguna razón tcBlue es 0 / negativo, no devolvemos 0
+  it('ARS + tcValuacion inválido (0): último fallback es 1 (no rompe matemática)', () => {
+    // Edge: si por alguna razón tcValuacion es 0 / negativo, no devolvemos 0
     // (rompería multiplicación). Devolvemos 1 → valor queda en USD nominal.
     expect(resolveHistoricalFx('ARS', 0, {}, getRate)).toBe(1)
     expect(resolveHistoricalFx('ARS', -100, {}, getRate)).toBe(1)
   })
 
-  it('ARS + getRateForDate no es función: cae a tcBlue', () => {
+  it('ARS + getRateForDate no es función: cae a tcValuacion', () => {
     const r = resolveHistoricalFx('ARS', TC_BLUE_ACTUAL, { dateIso: '2024-08-15' }, null)
     expect(r).toBe(TC_BLUE_ACTUAL)
   })
 
-  it('ARS + getRateForDate devuelve 0: cae a tcBlue', () => {
+  it('ARS + getRateForDate devuelve 0: cae a tcValuacion', () => {
     const r = resolveHistoricalFx('ARS', TC_BLUE_ACTUAL, { dateIso: '2024-08-15' }, () => 0)
     expect(r).toBe(TC_BLUE_ACTUAL)
   })
@@ -115,13 +115,13 @@ describe('resolveHistoricalFx — casos reales (audit fix H1)', () => {
 // (header +$147.007 vs su única fila +$135.444: mismo pnl_usd, dos dólares).
 
 // Réplica pura de `sumConvertedAt` del hook (el hook necesita CurrencyProvider).
-function sumConvertedAt(rows, getUsd, currency, tcBlue, getRateForDate) {
+function sumConvertedAt(rows, getUsd, currency, tcValuacion, getRateForDate) {
   let total = 0
   for (const r of (rows || [])) {
     const usd = getUsd(r)
     if (usd == null || !Number.isFinite(usd)) continue
     const fx = resolveHistoricalFx(
-      currency, tcBlue,
+      currency, tcValuacion,
       { stampedFx: r?.fx_to_usd, dateIso: r?.date, rowCurrency: r?.currency },
       getRateForDate,
     )

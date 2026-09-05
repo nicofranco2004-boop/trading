@@ -5,7 +5,7 @@
 // Prioridad de FX cuando currency==='ARS':
 //   1. `stampedFx` (preferido) — fx_to_usd stampeado en el row al guardar
 //   2. `lookupRate(history, dateIso)` — busca en /api/fx-rates por fecha
-//   3. `tcBlue` actual — último fallback
+//   3. `tcValuacion` actual — último fallback
 //
 // Cuando currency==='USD', no convierte (el valor canónico USD se formatea
 // directo).
@@ -22,12 +22,12 @@ import { useFxHistory } from './useFxHistory'
  * un valor USD. Pure function — testeable sin React.
  *
  * @param {string} currency — 'USD' | 'ARS' (toggle global)
- * @param {number} tcBlue — blue actual (fallback final)
+ * @param {number} tcValuacion — blue actual (fallback final)
  * @param {object} opts — { stampedFx?, dateIso? }
  * @param {(date: string) => number | null} getRateForDate — lookup histórico
  * @returns {number} FX para multiplicar. 1 si currency='USD' (no convertir).
  */
-export function resolveHistoricalFx(currency, tcBlue, opts, getRateForDate) {
+export function resolveHistoricalFx(currency, tcValuacion, opts, getRateForDate) {
   if (currency !== 'ARS') return 1
   const stamped = opts?.stampedFx
   // ⚠️ El stamp SOLO sirve si el evento ocurrió en PESOS: ahí `fx_to_usd` es el TC
@@ -44,15 +44,15 @@ export function resolveHistoricalFx(currency, tcBlue, opts, getRateForDate) {
     const r = getRateForDate(date)
     if (r && r > 0) return r
   }
-  return tcBlue > 0 ? tcBlue : 1
+  return tcValuacion > 0 ? tcValuacion : 1
 }
 
 export function useHistoricalMoney() {
-  const { currency, tcBlue } = useCurrency()
-  const { getRateOrFallback, fxKey } = useFxHistory(tcBlue)
+  const { currency, tcValuacion } = useCurrency()
+  const { getRateOrFallback, fxKey } = useFxHistory(tcValuacion)
 
   function resolveFx(opts) {
-    return resolveHistoricalFx(currency, tcBlue, opts, getRateOrFallback)
+    return resolveHistoricalFx(currency, tcValuacion, opts, getRateOrFallback)
   }
 
   function convertedValue(usdValue, opts) {

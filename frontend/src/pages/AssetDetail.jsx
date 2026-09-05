@@ -31,13 +31,13 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
 // Devuelve { valueUsd, investedUsd, pnlUsd, priceLocal } para UN lote.
-function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto, costBasis = 'today' }) {
+function valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis = 'today' }) {
   const broker = brokers.find(b => b.name === p.broker)
   const isAR = broker?.currency === 'ARS'
   const qty = p.quantity || 0
   const cashInvested = p.invested || 0
   if (p.is_cash) {
-    const v = isAR ? cashInvested / tcBlue : cashInvested
+    const v = isAR ? cashInvested / tcValuacion : cashInvested
     return { valueUsd: v, investedUsd: v, pnlUsd: 0, priceLocal: null }
   }
   // Costo económico del lote = lo pagado + las comisiones de compra. Es la
@@ -69,9 +69,9 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto, costBasis = 
   }
   if (isAR) {
     const priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
-    const investedUsd = invested / costBasisRate(p, tcBlue, costBasis)   // display (modo)
-    const guardCost = invested / tcBlue                                  // hoy (guard)
-    const mkt = priceLocal != null ? (priceLocal * qty) / tcBlue : investedUsd
+    const investedUsd = invested / costBasisRate(p, tcValuacion, costBasis)   // display (modo)
+    const guardCost = invested / tcValuacion                                  // hoy (guard)
+    const mkt = priceLocal != null ? (priceLocal * qty) / tcValuacion : investedUsd
     const valueUsd = trustMktValue(mkt, guardCost, p.asset_type, p.price_override != null) ? mkt : investedUsd
     return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
   }
@@ -148,8 +148,8 @@ export default function AssetDetail() {
     }
   }
 
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion
   const tcCripto = dolar?.cripto?.venta
 
   // ── Agregados ──────────────────────────────────────────────────────────
@@ -157,7 +157,7 @@ export default function AssetDetail() {
     const openLots = positions.filter(p => !p.is_cash)
     let valueUsd = 0, investedUsd = 0, qty = 0
     const lots = openLots.map(p => {
-      const v = valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto, costBasis })
+      const v = valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis })
       valueUsd += v.valueUsd; investedUsd += v.investedUsd; qty += (p.quantity || 0)
       return { ...p, ...v }
     }).sort((a, b) => (a.entry_date || '').localeCompare(b.entry_date || '')) // FIFO: viejo primero
@@ -180,7 +180,7 @@ export default function AssetDetail() {
       tradesCount: closed.length,
       brokerCount: new Set(openLots.map(p => p.broker)).size,
     }
-  }, [positions, operations, brokers, prices, tcBlue, tcCedear, tcCripto, costBasis])
+  }, [positions, operations, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 
   const type = inferType(asset)
   const hasFundamentals = type === 'stock_us' || type === 'cedear'

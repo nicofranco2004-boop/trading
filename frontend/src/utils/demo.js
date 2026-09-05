@@ -189,10 +189,10 @@ const PREV_CLOSE = (() => {
 // Total USD del portfolio computado desde POSITIONS × PRICES, con el mismo
 // algoritmo que `computeBrokerValue` del frontend (valuation.js):
 //   • USD broker → price × quantity en USD directo (o invested para cash).
-//   • ARS broker (Cocos) → precio[asset+'.BA'] × quantity en ARS, / tcBlue.
+//   • ARS broker (Cocos) → precio[asset+'.BA'] × quantity en ARS, / tcValuacion.
 //     Si no hay precio (ej. asset ya tiene '.BA' en el nombre y el lookup
-//     duplicaría el sufijo), fallback a cost basis (invested) / tcBlue.
-//   • Cash ARS → quantity / tcBlue; cash USD/USDT → invested.
+//     duplicaría el sufijo), fallback a cost basis (invested) / tcValuacion.
+//   • Cash ARS → quantity / tcValuacion; cash USD/USDT → invested.
 //
 // Este es el target al que MONTHLY tiene que converger en su último mes
 // para que el Dashboard no muestre un "Últimos 10 días" inflado.
@@ -201,9 +201,9 @@ const _DEMO_TC_BLUE = 1415  // matches /config en demo
 // Valor live POR BROKER (USD), con el mismo algoritmo que computeBrokerValue
 // del frontend (valuation.js):
 //   • USD broker → price × quantity (o invested para cash).
-//   • ARS broker (Cocos) → precio[asset+'.BA'] × quantity en ARS, / tcBlue;
-//     sin precio (ej. asset ya termina en '.BA') → cost basis (invested) / tcBlue.
-//   • Cash ARS → quantity / tcBlue; cash USD/USDT → invested.
+//   • ARS broker (Cocos) → precio[asset+'.BA'] × quantity en ARS, / tcValuacion;
+//     sin precio (ej. asset ya termina en '.BA') → cost basis (invested) / tcValuacion.
+//   • Cash ARS → quantity / tcValuacion; cash USD/USDT → invested.
 // Se usa para (a) el total del portfolio y (b) derivar los pesos por broker de
 // MONTHLY, así el último mes de cada broker ≈ su valor live y la serie de
 // Insights (cuyo punto "Hoy" sale del valor live) no pega un salto.
@@ -1698,9 +1698,9 @@ const BENCHMARKS = (() => {
     start.setMonth(start.getMonth() + 1)
   }
   // Continuidad del blue en "Hoy": la serie ARS de Insights valúa el punto "Hoy"
-  // al blue ACTUAL (tcBlue=_DEMO_TC_BLUE) y el último mes al blue de ese mes. Si
-  // el blue del fixture no termina en ~tcBlue, "Hoy" pega un salto de FX (~16%)
-  // en TODAS las líneas. Escalamos la serie para que su último mes = tcBlue. Los
+  // al blue ACTUAL (tcValuacion=_DEMO_TC_BLUE) y el último mes al blue de ese mes. Si
+  // el blue del fixture no termina en ~tcValuacion, "Hoy" pega un salto de FX (~16%)
+  // en TODAS las líneas. Escalamos la serie para que su último mes = tcValuacion. Los
   // % de retorno son invariantes al escalado uniforme del blue, así que esto solo
   // arregla la continuidad sin tocar ninguna comparación.
   const _bKeys = Object.keys(out.dolar_blue).sort()

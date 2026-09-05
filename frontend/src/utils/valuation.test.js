@@ -78,7 +78,7 @@ describe('holdingHasReliableFundamentals + alias de especie CEDEAR (SI/SID = CSN
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-const TCB = 1200   // tcBlue used throughout
+const TCB = 1200   // tcValuacion used throughout
 const TC1 = 1000   // tc_compra at buy time (historical)
 const TC2 = 800    // another historical tc_compra
 
@@ -214,11 +214,11 @@ describe('ARS broker — single equity with live ARS price (no FX phantom)', () 
   const r         = computeBrokerValue(positions, prices, arsBroker(), TCB)
 
   it('valueArs = price × qty',                          () => expect(r.valueArs).toBeCloseTo(120_000))
-  it('value    = valueArs / tcBlue',                    () => expect(r.value).toBeCloseTo(120_000 / TCB))
+  it('value    = valueArs / tcValuacion',                    () => expect(r.value).toBeCloseTo(120_000 / TCB))
   it('invArs   = invested (native ARS)',                () => expect(r.invArs).toBeCloseTo(80_000))
-  it('invested = invArs / tcBlue (current rate, no FX phantom)', () => expect(r.invested).toBeCloseTo(80_000 / TCB))
+  it('invested = invArs / tcValuacion (current rate, no FX phantom)', () => expect(r.invested).toBeCloseTo(80_000 / TCB))
   it('pnlArs   = valueArs − invArs',                    () => expect(r.pnlArs).toBeCloseTo(40_000))
-  it('pnlUsd   = pnlArs / tcBlue (asset return only)',  () => expect(r.pnlUsd).toBeCloseTo(40_000 / TCB))
+  it('pnlUsd   = pnlArs / tcValuacion (asset return only)',  () => expect(r.pnlUsd).toBeCloseTo(40_000 / TCB))
 })
 
 describe('ARS broker — FX phantom eliminated', () => {
@@ -229,7 +229,7 @@ describe('ARS broker — FX phantom eliminated', () => {
   const prices    = { 'GGAL.BA': 12_000 }
   const r         = computeBrokerValue(positions, prices, arsBroker(), TCB)
 
-  it('pnlUsd === pnlArs / tcBlue (basis aligned)', () => {
+  it('pnlUsd === pnlArs / tcValuacion (basis aligned)', () => {
     expect(r.pnlUsd).toBeCloseTo(r.pnlArs / TCB, 4)
   })
 
@@ -275,12 +275,12 @@ describe('ARS broker — no live price (fallback to cost basis)', () => {
   it('pnlUsd = 0',                               () => expect(r.pnlUsd).toBeCloseTo(0))
 })
 
-describe('ARS broker — no live price, no tc_compra (uses tcBlue)', () => {
+describe('ARS broker — no live price, no tc_compra (uses tcValuacion)', () => {
   const positions = [pos({ broker: 'Cocos', asset: 'GGAL', quantity: 10, invested: 90_000, tc_compra: null })]
   const prices    = {}
   const r         = computeBrokerValue(positions, prices, arsBroker(), TCB)
 
-  it('invested = invested / tcBlue',               () => expect(r.invested).toBeCloseTo(90_000 / TCB))
+  it('invested = invested / tcValuacion',               () => expect(r.invested).toBeCloseTo(90_000 / TCB))
   it('value = invested (no price, falls back)',    () => expect(r.value).toBeCloseTo(90_000 / TCB))
   it('pnlUsd = 0',                                () => expect(r.pnlUsd).toBeCloseTo(0))
 })
@@ -302,7 +302,7 @@ describe('ARS broker — cash position', () => {
   const r         = computeBrokerValue(positions, prices, arsBroker(), TCB)
 
   it('valueArs = invested',                   () => expect(r.valueArs).toBeCloseTo(120_000))
-  it('value    = invested / tcBlue',          () => expect(r.value).toBeCloseTo(120_000 / TCB))
+  it('value    = invested / tcValuacion',          () => expect(r.value).toBeCloseTo(120_000 / TCB))
   it('invArs   = invested',                   () => expect(r.invArs).toBeCloseTo(120_000))
   it('invested = cashUsd  (cost = value)',    () => expect(r.invested).toBeCloseTo(120_000 / TCB))
   it('pnlArs = 0 (cash has no gain)',         () => expect(r.pnlArs).toBeCloseTo(0))
@@ -318,7 +318,7 @@ describe('ARS broker — mixed: equity (with price) + cash', () => {
   const r      = computeBrokerValue(positions, prices, arsBroker(), TCB)
 
   it('valueArs = equity mkt + cash',        () => expect(r.valueArs).toBeCloseTo(144_000))
-  it('value    = valueArs / tcBlue-ish',    () => expect(r.value).toBeCloseTo(120_000 / TCB + 24_000 / TCB))
+  it('value    = valueArs / tcValuacion-ish',    () => expect(r.value).toBeCloseTo(120_000 / TCB + 24_000 / TCB))
   it('invArs   = equity + cash invested',   () => expect(r.invArs).toBeCloseTo(104_000))
   it('pnlArs   = only equity gain',         () => expect(r.pnlArs).toBeCloseTo(40_000))
 })
@@ -333,10 +333,10 @@ describe('ARS broker — multiple equities (tc_compra ignored, current blue used
 
   it('valueArs = sum of mkt values',        () => expect(r.valueArs).toBeCloseTo(155_000))
   it('invArs   = sum of ARS costs',         () => expect(r.invArs).toBeCloseTo(110_000))
-  it('invested = sum of costs / tcBlue',    () => expect(r.invested).toBeCloseTo(110_000 / TCB))
-  it('value    = sum / tcBlue',             () => expect(r.value).toBeCloseTo(155_000 / TCB))
+  it('invested = sum of costs / tcValuacion',    () => expect(r.invested).toBeCloseTo(110_000 / TCB))
+  it('value    = sum / tcValuacion',             () => expect(r.value).toBeCloseTo(155_000 / TCB))
   it('pnlArs   = total ARS gain',           () => expect(r.pnlArs).toBeCloseTo(45_000))
-  it('pnlUsd   = pnlArs / tcBlue',          () => expect(r.pnlUsd).toBeCloseTo(45_000 / TCB))
+  it('pnlUsd   = pnlArs / tcValuacion',          () => expect(r.pnlUsd).toBeCloseTo(45_000 / TCB))
 })
 
 // ─── isolation: only positions for this broker ───────────────────────────────
@@ -407,9 +407,9 @@ describe('Equity with price = 0 (distinct from "no price")', () => {
 
 // ─── MonthlySummary derived value contract ────────────────────────────────────
 
-describe('MonthlySummary contract: pnlArs / tcBlue == pnlUsd (no FX phantom)', () => {
-  // Post FX-phantom fix: ambos lados (value e invested) usan tcBlue actual,
-  // así que pnlUsd y pnlArs/tcBlue son iguales. Esto simplifica la sincronía
+describe('MonthlySummary contract: pnlArs / tcValuacion == pnlUsd (no FX phantom)', () => {
+  // Post FX-phantom fix: ambos lados (value e invested) usan tcValuacion actual,
+  // así que pnlUsd y pnlArs/tcValuacion son iguales. Esto simplifica la sincronía
   // entre el dashboard live y los snapshots mensuales.
   const positions = [pos({ broker: 'Cocos', asset: 'GGAL', quantity: 10, invested: 80_000, tc_compra: TC1 })]
   const prices    = { 'GGAL.BA': 12_000 }
@@ -417,7 +417,7 @@ describe('MonthlySummary contract: pnlArs / tcBlue == pnlUsd (no FX phantom)', (
 
   const storedValue = r.pnlArs / TCB
 
-  it('stored value = pnlArs / tcBlue',           () => expect(storedValue).toBeCloseTo(40_000 / TCB, 4))
+  it('stored value = pnlArs / tcValuacion',           () => expect(storedValue).toBeCloseTo(40_000 / TCB, 4))
   it('stored value === pnlUsd (basis aligned)',  () => expect(storedValue).toBeCloseTo(r.pnlUsd, 4))
   it('pnlUsd refleja solo rendimiento del activo', () => expect(r.pnlUsd).toBeCloseTo(40_000 / TCB, 4))
 })
@@ -452,7 +452,7 @@ describe('ARS broker — commissions integran cost basis (en pesos)', () => {
   const r = computeBrokerValue(positions, prices, arsBroker(), TCB)
 
   it('invArs incluye comisiones',              () => expect(r.invArs).toBeCloseTo(102_000))
-  it('invested USD = (invested+comm)/tcBlue',  () => expect(r.invested).toBeCloseTo(102_000 / TCB))
+  it('invested USD = (invested+comm)/tcValuacion',  () => expect(r.invested).toBeCloseTo(102_000 / TCB))
   it('valueArs no cambia',                     () => expect(r.valueArs).toBeCloseTo(120_000))
   it('pnlArs descuenta comisiones',            () => expect(r.pnlArs).toBeCloseTo(18_000))
 })
@@ -892,7 +892,7 @@ describe('lotMissingPurchaseRate — badge TC? (purchase + lote de costo peso si
 })
 
 describe('computeBrokerValue — valueArs/invArs son 0 para brokers USD (trampa del hero ARS)', () => {
-  // Documenta por qué el hero en display ARS se calcula con Σvalue×tcBlue (totalsToday),
+  // Documenta por qué el hero en display ARS se calcula con Σvalue×tcValuacion (totalsToday),
   // NO con Σ r.valueArs: un broker USD acumula value/invested pero deja valueArs/invArs
   // en 0 → sumar invArs dropearía toda la tenencia en dólares (fue un BLOCKER real).
   const usdPos = pos({ broker: 'Schwab', asset: 'AAPL', currency: 'USD', quantity: 10, invested: 2000 })
@@ -1108,7 +1108,7 @@ describe("purchase sin precio: el valor y el costo-display van al dólar de HOY"
   const lote = { broker: 'Cocos', asset: 'ZZZ', currency: 'ARS', is_cash: false,
                  invested: 1_500_000, quantity: 10, tc_compra: COMPRA }
   const ctx = (costBasis, prices = {}) => ({
-    broker: brokerArs, prices, tcBlue: HOY, tcCedear: HOY, tcCripto: null, costBasis,
+    broker: brokerArs, prices, tcValuacion: HOY, tcCedear: HOY, tcCripto: null, costBasis,
   })
 
   it('CONTROL: con tc_compra el escenario mueve algo — si no, el resto no prueba nada', () => {

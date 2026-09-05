@@ -48,7 +48,7 @@ describe('decimales — el default (0) queda idéntico a antes', () => {
     expect(fmtMoneyRaw(NaN, 'ARS', 1500, { decimals: 2 })).toBe('—')
   })
 
-  it('ARS sin tcBlue válido no convierte (queda en USD)', () => {
+  it('ARS sin tcValuacion válido no convierte (queda en USD)', () => {
     expect(fmtMoneyRaw(100, 'ARS', 0)).toBe('US$100')
   })
 })

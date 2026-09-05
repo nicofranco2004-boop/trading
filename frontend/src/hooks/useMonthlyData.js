@@ -151,7 +151,7 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
   const [brokers, setBrokers] = useState([])
-  const [tcBlue, setTcBlue] = useState(1415)
+  const [tcValuacion, setTcValuacion] = useState(1415)
   // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR "· USD" en USD.
   const [tcCedear, setTcCedear] = useState(1415)
   // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
@@ -186,7 +186,7 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         setBrokersRegistry(bkrs || [])   // parent-aware isArUsdBroker (robusto al rename)
         setBench(bnch)
         const tc = pickFinancialRate(dol, valuationDollar) || cfg?.tc_blue || 1415
-        setTcBlue(tc)
+        setTcValuacion(tc)
         setTcCedear(pickFinancialRate(dol, valuationDollar) || tc)
         setTcCripto(dol?.cripto?.venta ?? null)
         // Cargar precios para que el live value por broker sea exacto
@@ -226,9 +226,9 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
 
   const data = useMemo(
     () => buildMonthlyReports(monthly, operations, snapshots, broker, {
-      positions, prices, brokers, tcBlue, tcCedear, tcCripto, bench,
+      positions, prices, brokers, tcValuacion, tcCedear, tcCripto, bench,
     }),
-    [monthly, operations, snapshots, broker, positions, prices, brokers, tcBlue, tcCedear, tcCripto, bench]
+    [monthly, operations, snapshots, broker, positions, prices, brokers, tcValuacion, tcCedear, tcCripto, bench]
   )
 
   return { loading, error, ...data, availableBrokers }
@@ -487,7 +487,7 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
   // 8. Live value:
   //   • Broker 'global'   → snapshot más reciente (consistente con Dashboard)
   //   • Broker individual → computeBrokerValue del broker en USD
-  //                         (requiere positions + prices + tcBlue del context)
+  //                         (requiere positions + prices + tcValuacion del context)
   let liveValue = null
   let liveDate = null
   if (selectedBroker === 'global') {
@@ -502,11 +502,11 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       .sort((a, b) => b.date.localeCompare(a.date))[0]
     liveValue = latestSnap?.total_value ?? null
     liveDate = latestSnap?.date ?? null
-  } else if (context.positions && context.brokers && context.tcBlue) {
+  } else if (context.positions && context.brokers && context.tcValuacion) {
     const brokerObj = context.brokers.find(b => b.name === selectedBroker)
     if (brokerObj) {
       try {
-        const r = computeBrokerValue(context.positions, context.prices || {}, brokerObj, context.tcBlue, context.tcCedear || context.tcBlue, context.tcCripto ?? null)
+        const r = computeBrokerValue(context.positions, context.prices || {}, brokerObj, context.tcValuacion, context.tcCedear || context.tcValuacion, context.tcCripto ?? null)
         liveValue = r.value
         // No tenemos liveDate por broker (sería del momento del fetch),
         // así que lo dejamos null y la UI no muestra fecha en ese caso.
