@@ -16,7 +16,8 @@
 
 import { useEffect, useMemo, useState, useRef, useCallback, lazy, Suspense, memo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, TrendingUp, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown, ChevronUp, ArrowRight, Layers as LayersIcon } from 'lucide-react'
+import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, TrendingUp, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown, ChevronUp, ArrowRight, MoreVertical, Layers as LayersIcon } from 'lucide-react'
+import { groupBrokersIntoAccounts, brokerLegLabel } from '../utils/brokerAccounts'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
@@ -129,6 +130,25 @@ export default function PositionsMobile() {
   // por ticker (posición agregada de todos los lotes). Se puede expandir a los
   // lotes individuales por ticker (tap en la card → expandedTickers) o global
   // con el toggle "Ver lotes" (showAllLots).
+  // MISMA clave de localStorage que desktop, a propósito: si el usuario separó
+  // Cocos en la compu, el teléfono tiene que mostrarla separada también. Que las
+  // dos pantallas dijeran cosas distintas del mismo par es justo lo que este
+  // trabajo vino a cerrar.
+  const [cuentasSeparadas, setCuentasSeparadas] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('rendi_cuentas_separadas') || '[]')) }
+    catch { return new Set() }
+  })
+  function toggleCuentaSeparada(key) {
+    setCuentasSeparadas(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      try { localStorage.setItem('rendi_cuentas_separadas', JSON.stringify([...next])) } catch { /* no-op */ }
+      return next
+    })
+  }
+  // Selector de "¿qué vendo?" del botón + . Una entrada por (activo, pata).
+  const [sellPicker, setSellPicker] = useState(null)
+  const [sellQuery, setSellQuery] = useState('')
   const [expandedTickers, setExpandedTickers] = useState(() => new Set())
   const [showAllLots, setShowAllLots] = useState(false)
   function toggleTicker(key) {
@@ -211,6 +231,16 @@ export default function PositionsMobile() {
   // Handler reusable de "Registrar venta". Usado por el FAB (?action=sell) y el
   // ActionsSheet. 0 tenencias → aviso; 1 → abre el SellModal directo; varias →
   // la lista de abajo, con un hint para que el user toque la que quiere vender.
+  // Abre los lotes de una fila fusionada para que el usuario elija la pata.
+  function onToggleTickerRef(p) {
+    if (!p) return
+    setExpandedTickers(prev => {
+      const next = new Set(prev)
+      next.add(`t:${p.broker}:${p.asset}`)
+      return next
+    })
+  }
+
   function openSellFlow(source) {
     track('position_sell_started', { source: source || 'unknown' })
     const sellable = positions.filter(p => !p.is_cash)
@@ -222,7 +252,25 @@ export default function PositionsMobile() {
       openSell(sellable[0])
       return
     }
-    toast.push('Tocá la posición que querés vender en la lista.', { type: 'info' })
+    // Antes esto sólo mostraba un aviso ("tocá la posición en la lista") y el
+    // selector nunca existió en mobile, mientras desktop sí lo tenía. Se agrupa
+    // por (activo, broker): así un activo comprado en las dos monedas de la
+    // cuenta aparece como DOS opciones, que es la unidad sobre la que corre el
+    // FIFO y la que el usuario tiene que poder elegir.
+    const porPata = new Map()
+    for (const p of sellable) {
+      const k = `${p.asset}\u0000${p.broker}`
+      if (!porPata.has(k)) porPata.set(k, [])
+      porPata.get(k).push(p)
+    }
+    setSellQuery('')
+    setSellPicker([...porPata.values()].map(lots => ({
+      asset: lots[0].asset,
+      broker: lots[0].broker,
+      lots,
+      qty: lots.reduce((t, l) => t + (l.quantity || 0), 0),
+      valueUsd: lots.reduce((t, l) => t + (l.valueUsd || 0), 0),
+    })).sort((a, b) => b.valueUsd - a.valueUsd))
   }
 
   // ─── Handlers de acciones por posición ──────────────────────────────────
@@ -231,6 +279,15 @@ export default function PositionsMobile() {
 
   function openSell(p) {
     if (p.is_cash) return
+    // Fila que fusiona las dos patas de la cuenta: no hay UN broker al que
+    // mandar la escritura, y elegir el primer lote la metería en el ledger FIFO
+    // equivocado. Se abren los lotes — cada uno es su posición real, con su
+    // broker y su precio de compra.
+    if (p?._multiBroker || (p && !p.is_cash && p.broker == null)) {
+      onToggleTickerRef(p)
+      toast.push('Esta fila junta tus compras en pesos y en dólares. Elegí de cuál abajo.', { type: 'info' })
+      return
+    }
     const broker = brokers.find(b => b.name === p.broker)
     const isARS = broker?.currency === 'ARS'
     // CEDEAR / sub-broker "· USD" / lote costInPesos: el instrumento es de BYMA y
@@ -343,6 +400,15 @@ export default function PositionsMobile() {
   }
 
   function openEditPosition(p) {
+    // Fila que fusiona las dos patas de la cuenta: no hay UN broker al que
+    // mandar la escritura, y elegir el primer lote la metería en el ledger FIFO
+    // equivocado. Se abren los lotes — cada uno es su posición real, con su
+    // broker y su precio de compra.
+    if (p?._multiBroker || (p && !p.is_cash && p.broker == null)) {
+      onToggleTickerRef(p)
+      toast.push('Esta fila junta tus compras en pesos y en dólares. Elegí de cuál abajo.', { type: 'info' })
+      return
+    }
     setAddForm({
       ...p,
       is_cash: !!p.is_cash,
@@ -365,6 +431,16 @@ export default function PositionsMobile() {
       invested:    addForm.invested    !== '' ? +addForm.invested    : null,
       tc_compra:   addForm.tc_compra   !== '' ? +addForm.tc_compra   : null,
       commissions: addForm.commissions !== '' ? +addForm.commissions : 0,
+      // Faltaba, y el comentario de arriba ya prometía "misma normalización que
+      // desktop": el campo "Precio actual" arranca en '' y se mandaba tal cual,
+      // así que el backend rechazaba el alta entera con
+      // `float_parsing: unable to parse string as a number`. Desktop lo pasa por
+      // `_numLoose` (Positions.jsx). null = "cotizalo vos", que es el default
+      // que el placeholder promete.
+      price_override: (addForm.price_override === '' || addForm.price_override == null)
+        ? null
+        : (Number.isFinite(+addForm.price_override) && +addForm.price_override > 0
+            ? +addForm.price_override : null),
       entry_date:  addForm.entry_date  || null,
     }
     try {
@@ -378,6 +454,16 @@ export default function PositionsMobile() {
   }
 
   async function deletePosition(p) {
+    // Fila que fusiona las dos patas de la cuenta: no hay UN broker al que
+    // mandar la escritura, y elegir el primer lote la metería en el ledger FIFO
+    // equivocado. Se abren los lotes — cada uno es su posición real, con su
+    // broker y su precio de compra.
+    if (p?._multiBroker || (p && !p.is_cash && p.broker == null)) {
+      onToggleTickerRef(p)
+      toast.push('Esta fila junta tus compras en pesos y en dólares. Elegí de cuál abajo.', { type: 'info' })
+      return
+    }
+
     if (!confirm(`¿Eliminar la posición ${p.asset} en ${p.broker}? La acción no se puede deshacer.`)) return
     try {
       await api.delete(`/positions/${p.id}`)
@@ -529,7 +615,7 @@ export default function PositionsMobile() {
         return
       }
     }
-    if (brokerFilter === b.name) setBrokerFilter(ALL_FILTER)
+    if (brokerFilter === b.name || brokerFilter === String(b.id)) setBrokerFilter(ALL_FILTER)
     await loadAll()
     refreshPlanFeatures()
   }
@@ -782,8 +868,12 @@ export default function PositionsMobile() {
   // Filtro de broker (chip seleccionado)
   const filteredByBroker = useMemo(() => {
     if (brokerFilter === ALL_FILTER) return filteredBySearch
+    // El filtro guarda la clave de la CUENTA, no un nombre de broker: filtrar
+    // por "Cocos" escondía en silencio la mitad en dólares de la misma cuenta.
+    const cuenta = groupBrokersIntoAccounts(brokers).find(a => a.key === brokerFilter)
+    if (cuenta) return filteredBySearch.filter(p => cuenta.patasNames.has(p.broker))
     return filteredBySearch.filter(p => p.broker === brokerFilter)
-  }, [filteredBySearch, brokerFilter])
+  }, [filteredBySearch, brokerFilter, brokers])
 
   // Comparador interno por sort criterion (cash siempre al final)
   function comparePositions(a, b) {
@@ -806,12 +896,15 @@ export default function PositionsMobile() {
   // agrega (no tiene lotes ni P&L). El P&L no realizado de una posición abierta
   // = valor − costo, independiente del orden de lotes, así que sumar los lotes
   // abiertos da el costo correcto.
-  function aggregateMobile(rows) {
+  // `unified`: en una cuenta con dos patas (el broker en pesos + su sub-broker
+  // "· USD") se agrupa por TICKER solo, cruzando patas — un renglón por activo,
+  // como lo muestra el broker real. Misma regla que la tabla de desktop.
+  function aggregateMobile(rows, unified = false) {
     const cash = rows.filter(p => p.is_cash)
     const noCash = rows.filter(p => !p.is_cash)
     const byKey = new Map()
     for (const p of noCash) {
-      const key = `${p.broker}:${p.asset}`
+      const key = unified ? p.asset : `${p.broker}:${p.asset}`
       if (!byKey.has(key)) byKey.set(key, [])
       byKey.get(key).push(p)
     }
@@ -822,7 +915,14 @@ export default function PositionsMobile() {
         out.push(lots[0])
         continue
       }
-      const isAR = lots[0].isAR
+      // Con lotes de patas distintas no hay una moneda nativa de la fila: se
+      // trabaja en USD, que es la moneda común y en la que mobile ya calcula
+      // todo. `broker: null` porque no hay uno solo al que mandar una escritura
+      // — elegir lots[0] mandaría la venta al ledger FIFO equivocado.
+      const brokersDelGrupo = [...new Set(lots.map(x => x.broker))]
+      const multiBroker = brokersDelGrupo.length > 1
+      const multiCcy = new Set(lots.map(x => !!x.isAR)).size > 1
+      const isAR = multiCcy ? false : lots[0].isAR
       const totalQty = lots.reduce((s, x) => s + (x.quantity || 0), 0)
       const totalInv = lots.reduce((s, x) => s + (x.invested || 0), 0)
       const valueUsd = lots.reduce((s, x) => s + (x.valueUsd || 0), 0)
@@ -842,18 +942,33 @@ export default function PositionsMobile() {
       // anterior). Sumamos los montos de los lotes que la tienen; el % se
       // recalcula sobre el valor de mercado de ayer (valor hoy − var. día).
       const hasDay = lots.some(x => x.dayVarLocal != null)
-      const dayVarLocal = hasDay ? lots.reduce((s, x) => s + (x.dayVarLocal || 0), 0) : null
       const dayVarUsd = hasDay ? lots.reduce((s, x) => s + (x.dayVarUsd || 0), 0) : null
+      // ⚠️ `dayVarLocal` viene en la moneda NATIVA de cada lote: la pata en pesos
+      // en ARS y la pata dólar en USD. Sumarlos crudo da pesos+dólares, y encima
+      // el % los divide por un valor que está en USD (isAR es false acá). En una
+      // fila que cruza monedas la única suma con unidad es la de `dayVarUsd`,
+      // que ya es la moneda común — y coincide con `curLocalValue`, que también
+      // queda en USD. Con una sola moneda se sigue sumando la nativa, exacto.
+      const dayVarLocal = !hasDay ? null
+        : (multiCcy ? dayVarUsd : lots.reduce((s, x) => s + (x.dayVarLocal || 0), 0))
       const curLocalValue = isAR ? valueUsd * tcBlue : valueUsd
       const dayVarPct = (hasDay && curLocalValue - (dayVarLocal || 0) > 0)
         ? dayVarLocal / (curLocalValue - dayVarLocal)
         : null
       out.push({
         ...lots[0],
-        id: `agg:${lots[0].broker}:${lots[0].asset}`,
+        id: `agg:${brokersDelGrupo.join('+')}:${lots[0].asset}`,
+        broker: multiBroker ? null : lots[0].broker,
+        _multiBroker: multiBroker,
+        _multiCcy: multiCcy,
+        _brokers: brokersDelGrupo,
+        isAR,
         quantity: totalQty,
-        invested: totalInv,
-        buy_price: totalQty > 0 ? totalInv / totalQty : null,
+        // Sumar `invested` crudo cruzando monedas da un número sin unidad
+        // (pesos + dólares). El promedio con unidad es `avgPriceUsd`, que se
+        // calcula abajo sobre los lotes YA convertidos.
+        invested: multiCcy ? null : totalInv,
+        buy_price: (multiCcy || !(totalQty > 0)) ? null : totalInv / totalQty,
         price_override: null,
         valueUsd, investedUsd, investedUsdToday, pnlUsd, pnlUsdToday, pnlPct, pnlLocal,
         // El agregado se marca "sin cotización" sólo si NINGÚN lote tiene precio.
@@ -879,7 +994,10 @@ export default function PositionsMobile() {
     for (const p of aggRows) {
       const exp = showAllLots || expandedTickers.has(`t:${p.broker}:${p.asset}`)
       out.push(p._isAgg ? { ...p, _expanded: exp } : p)
-      if (p._isAgg && exp) for (const lot of p._lots) out.push({ ...lot, _isLot: true })
+      // `_enFusion`: el lote vive dentro de una fila que junta las dos patas, así
+      // que su moneda es lo que lo distingue de sus hermanos (más que el nombre
+      // del broker, donde el de pesos no declara la suya).
+      if (p._isAgg && exp) for (const lot of p._lots) out.push({ ...lot, _isLot: true, _enFusion: !!p._multiBroker })
     }
     return out
   }
@@ -888,14 +1006,54 @@ export default function PositionsMobile() {
   // Cada grupo: { broker: brokerObj, positions: [...], totalUsd }
   const grouped = useMemo(() => {
     if (brokerFilter !== ALL_FILTER) return null
+    // Se agrupa por CUENTA, no por broker: el par padre + "· USD" es una sola
+    // tarjeta salvo que el usuario la haya separado. Antes, además, al ordenar
+    // por valor las dos patas del mismo broker podían quedar separadas por otro
+    // broker en el medio, sin ninguna marca de que eran la misma cuenta.
+    const cuentas = groupBrokersIntoAccounts(brokers)
+    const seccionDe = new Map()   // nombre de broker → clave de sección
+    const metaDe = new Map()      // clave de sección → { label, patas, cuenta }
+    for (const a of cuentas) {
+      const junta = a.isPair && !cuentasSeparadas.has(a.key)
+      for (const pata of a.patas) {
+        const key = junta ? a.key : String(pata.id)
+        seccionDe.set(pata.name, key)
+        if (!metaDe.has(key)) {
+          metaDe.set(key, {
+            broker: junta ? a.parent : pata,
+            label: junta ? a.label : pata.name,
+            unified: junta,
+            accountKey: a.key,
+            puedeUnificarse: a.isPair,
+            monedasCuenta: a.patas.map(b => {
+              const c = (b.currency || '').toUpperCase()
+              return c === 'USDT' ? 'USD' : (c || '?')
+            }),
+          })
+        }
+      }
+    }
+
     const map = new Map()
     for (const p of filteredByBroker) {
       if (isFixedIncome(p)) continue   // renta fija → zona "Renta Fija" (abajo)
-      const b = brokers.find(x => x.name === p.broker)
-      if (!map.has(p.broker)) {
-        map.set(p.broker, { broker: b || { name: p.broker, currency: 'USDT' }, positions: [], totalUsd: 0 })
+      // Una posición de un broker que ya no está en `brokers` (huérfana de un
+      // rename viejo) cae en su propia sección, como antes.
+      const key = seccionDe.get(p.broker) || p.broker
+      if (!map.has(key)) {
+        const meta = metaDe.get(key)
+        map.set(key, {
+          key,   // única por SECCIÓN. Ver el comentario de la key de React abajo.
+          broker: meta?.broker || brokers.find(x => x.name === p.broker) || { name: p.broker, currency: 'USDT' },
+          label: meta?.label || p.broker,
+          unified: !!meta?.unified,
+          accountKey: meta?.accountKey || null,
+          puedeUnificarse: !!meta?.puedeUnificarse,
+          monedasCuenta: meta?.monedasCuenta || [],
+          positions: [], totalUsd: 0,
+        })
       }
-      const g = map.get(p.broker)
+      const g = map.get(key)
       g.positions.push(p)
       g.totalUsd += (p.valueUsd || 0)
     }
@@ -904,21 +1062,31 @@ export default function PositionsMobile() {
     // se computó sobre los lotes crudos, así que el total del broker no cambia.
     const groups = Array.from(map.values())
     for (const g of groups) {
-      const agg = aggregateMobile(g.positions)
+      const agg = aggregateMobile(g.positions, g.unified)
       agg.sort(comparePositions)
       g.positions = flattenMobile(agg)
     }
     groups.sort((a, b) => b.totalUsd - a.totalUsd)
     return groups
-  }, [filteredByBroker, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcBlue])
+  }, [filteredByBroker, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcBlue, cuentasSeparadas])
 
   // Lista plana cuando hay filtro de broker activo
   const flatList = useMemo(() => {
     if (brokerFilter === ALL_FILTER) return null
-    const agg = aggregateMobile([...filteredByBroker])
+    const cuenta = groupBrokersIntoAccounts(brokers).find(a => a.key === brokerFilter)
+    const junta = !!cuenta?.isPair && !cuentasSeparadas.has(cuenta.key)
+    const agg = aggregateMobile([...filteredByBroker], junta)
     agg.sort(comparePositions)
     return flattenMobile(agg)
-  }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcBlue])
+  }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcBlue, brokers, cuentasSeparadas])
+
+  // ¿La vista filtrada está mirando una cuenta unificada? Lo necesita el render
+  // para decidir si cada fila lleva su chip de moneda.
+  const filtroEsCuentaUnificada = (() => {
+    if (brokerFilter === ALL_FILTER) return false
+    const c = groupBrokersIntoAccounts(brokers).find(a => a.key === brokerFilter)
+    return !!c?.isPair && !cuentasSeparadas.has(c.key)
+  })()
 
   // Totales del pie para la vista filtrada (que es un solo broker). Mismo
   // filtro anti-doble-conteo que BrokerSection: la fila agregada Y sus lotes
@@ -966,6 +1134,11 @@ export default function PositionsMobile() {
   // "Restablecer" del sheet se derivan de acá, no de literales sueltos.
   const VISTA_INICIAL = { sortBy: 'value', brokerFilter: ALL_FILTER, showAllLots: false }
   const vistaActual = { sortBy, brokerFilter, showAllLots }
+  // El filtro guarda la KEY de la cuenta (un id), no el nombre: hay que resolver
+  // la etiqueta antes de imprimirla. El `|| brokerFilter` cubre la posición
+  // huérfana, donde la key ES el nombre del broker.
+  const brokerFilterLabel = brokerFilter === ALL_FILTER ? null
+    : (groupBrokersIntoAccounts(brokers).find(a => a.key === brokerFilter)?.label || brokerFilter)
   const ajustesActivos = Object.keys(VISTA_INICIAL)
     .filter(k => vistaActual[k] !== VISTA_INICIAL[k]).length
   // El hero baja un escalón de tipografía cuando el número no entra: 48px sirve
@@ -1110,7 +1283,7 @@ export default function PositionsMobile() {
         <div className="mx-4 mt-3 flex items-center justify-between gap-2 rounded border border-line/60 bg-bg-1 px-3 py-2">
           <span className="text-[12.5px] text-ink-2 min-w-0 truncate">
             {[
-              brokerFilter !== ALL_FILTER && brokerFilter,
+              brokerFilter !== ALL_FILTER && brokerFilterLabel,
               sortBy !== 'value' && `orden: ${SORT_OPTIONS.find(o => o.id === sortBy)?.label}`,
               showAllLots && 'por lote',
             ].filter(Boolean).join(' · ')}
@@ -1131,7 +1304,7 @@ export default function PositionsMobile() {
           <EmptyState
             icon={<Briefcase size={18} strokeWidth={1.5} />}
             eyebrow="Cartera vacía"
-            title={query ? 'Sin coincidencias' : (brokerFilter !== ALL_FILTER ? `Sin posiciones en ${brokerFilter}` : 'No tenés posiciones cargadas')}
+            title={query ? 'Sin coincidencias' : (brokerFilter !== ALL_FILTER ? `Sin posiciones en ${brokerFilterLabel}` : 'No tenés posiciones cargadas')}
             description={
               query
                 ? 'Probá con otro ticker, broker o limpiá la búsqueda.'
@@ -1143,12 +1316,21 @@ export default function PositionsMobile() {
         // Vista agrupada por broker
         <>
           <div className="divide-y divide-line/20">
+            {/* key = la de la SECCIÓN, no la de la cuenta: con la cuenta separada
+                las dos patas comparten accountKey, así que una key derivada de
+                ésta salía REPETIDA y React duplicaba secciones al togglear en
+                vez de reemplazarlas. */}
             {grouped?.map((g, i) => (
               <BrokerSection
-                key={g.broker.name}
+                key={g.key || g.broker.name}
                 conPista={i === 0 && pistaScrollVisible}
                 onDeslizar={marcarScrollDescubierto}
                 broker={g.broker}
+                label={g.label}
+                unified={g.unified}
+                puedeUnificarse={g.puedeUnificarse}
+                monedasCuenta={g.monedasCuenta}
+                onToggleUnificar={g.accountKey ? () => toggleCuentaSeparada(g.accountKey) : null}
                 positions={g.positions}
                 totalUsd={g.totalUsd}
                 displayCurrency={currency}
@@ -1188,6 +1370,7 @@ export default function PositionsMobile() {
                   ? `${p.broker}:${p.asset}:${p.id}`
                   : (p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || p.entry_date}`)}
                 p={p}
+                enCuentaUnificada={filtroEsCuentaUnificada}
                 displayCurrency={currency}
                 tcBlue={tcBlue}
                 onSell={openSell}
@@ -1313,6 +1496,83 @@ export default function PositionsMobile() {
           AddPositionFlow se lazy-loadea para no bloquear el primer render
           de /cartera con ~600 tickers parseados. Mientras carga el chunk,
           mostramos un placeholder neutro (no flicker). */}
+      {/* "¿Qué querés vender?" del botón + . Espeja el selector de desktop, con
+          una entrada por (activo, pata): un activo comprado en las dos monedas
+          de la cuenta aparece dos veces, porque el FIFO consume los lotes de una
+          pata sola y hay que poder elegir cuál. */}
+      {sellPicker && (
+        <BottomSheet open onClose={() => { setSellPicker(null); setSellQuery('') }} title="¿Qué querés vender?">
+          <div className="px-4 pb-4">
+            <div className="relative mb-2">
+              <Search size={14} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" />
+              <input
+                type="text"
+                value={sellQuery}
+                onChange={e => setSellQuery(e.target.value)}
+                placeholder="Buscar activo…"
+                className="w-full bg-bg-2 border border-line rounded-lg pl-9 pr-9 py-2.5 text-[15px] text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2"
+              />
+              {sellQuery && (
+                <button type="button" onClick={() => setSellQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-ink-3 active:text-ink-0"
+                  aria-label="Limpiar búsqueda">
+                  <X size={14} strokeWidth={1.75} />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="px-4 pb-4 space-y-1 max-h-[55vh] overflow-y-auto">
+            {sellPicker
+              // Por ticker, por nombre mostrado (los FCI se conocen por el largo)
+              // y por broker, que es lo que separa las dos patas del mismo activo.
+              .filter(({ asset, broker }) => {
+                const q = sellQuery.trim().toLowerCase()
+                return !q || `${asset} ${fciLabel(asset)} ${broker}`.toLowerCase().includes(q)
+              })
+              .map(({ asset, broker, lots, qty }) => {
+              const b = brokers.find(x => x.name === broker)
+              const esArs = (b?.currency || '').toUpperCase() === 'ARS'
+              return (
+                <button
+                  key={`${asset}:${broker}`}
+                  type="button"
+                  onClick={() => {
+                    setSellPicker(null)
+                    setTimeout(() => openSell(lots.length === 1 ? lots[0] : {
+                      ...lots[0],
+                      quantity: qty,
+                      _lots: lots,
+                    }), 0)
+                  }}
+                  className="w-full flex items-center gap-3 px-3 py-3 rounded text-left active:bg-bg-2 transition-colors"
+                >
+                  <AssetLogo asset={asset} size={26} />
+                  <span className="flex-1 min-w-0">
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-[15px] font-medium text-ink-0 truncate">{fciLabel(asset)}</span>
+                      <span className={`text-[9px] leading-none font-semibold px-1 py-[2px] rounded-sm flex-none ${esArs ? 'bg-rendi-warn/15 text-rendi-warn' : 'bg-data-cyan/15 text-data-cyan'}`}>
+                        {esArs ? 'ARS' : 'USD'}
+                      </span>
+                    </span>
+                    <span className="block text-[12.5px] text-ink-3 truncate">
+                      {brokerLegLabel(broker, brokers)} · {qty} unidades
+                      {lots.length > 1 ? ` · ${lots.length} lotes` : ''}
+                    </span>
+                  </span>
+                  <ArrowRight size={16} strokeWidth={1.75} className="text-ink-3 flex-none" />
+                </button>
+              )
+            })}
+            {sellQuery.trim() && !sellPicker.some(({ asset, broker }) =>
+              `${asset} ${fciLabel(asset)} ${broker}`.toLowerCase().includes(sellQuery.trim().toLowerCase())) && (
+              <p className="text-[13px] text-ink-3 py-8 text-center">
+                Ningún activo coincide con «{sellQuery.trim()}».
+              </p>
+            )}
+          </div>
+        </BottomSheet>
+      )}
+
       {addModal === 'add-flow' && (
         <Suspense fallback={
           <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center">
@@ -1466,7 +1726,8 @@ export default function PositionsMobile() {
           />
           <OpcionesVista
             label="Broker"
-            options={[{ id: ALL_FILTER, label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]}
+            options={[{ id: ALL_FILTER, label: 'Todos' },
+              ...groupBrokersIntoAccounts(brokers).map(a => ({ id: a.key, label: a.label }))]}
             value={brokerFilter}
             onChange={setBrokerFilter}
           />
@@ -1547,6 +1808,12 @@ export default function PositionsMobile() {
       invested:    addForm.invested    !== '' ? +addForm.invested    : null,
       tc_compra:   addForm.tc_compra   !== '' ? +addForm.tc_compra   : null,
       commissions: addForm.commissions !== '' ? +addForm.commissions : 0,
+      // Mismo arreglo que en saveEditPosition: sin esto el alta se rechazaba
+      // entera con `float_parsing` porque el campo vacío viajaba como ''.
+      price_override: (addForm.price_override === '' || addForm.price_override == null)
+        ? null
+        : (Number.isFinite(+addForm.price_override) && +addForm.price_override > 0
+            ? +addForm.price_override : null),
       entry_date:  addForm.entry_date  || null,
     }
     try {
@@ -1639,6 +1906,7 @@ function FilaToggle({ label, hint, active, onToggle }) {
 
 const BrokerSection = memo(function BrokerSection({
   broker, positions, totalUsd, displayCurrency = 'USD', tcBlue = 1, conPista = false, onDeslizar,
+  label, unified = false, puedeUnificarse = false, monedasCuenta = [], onToggleUnificar,
   onEdit, onDelete,
   onSellPosition, onCashFlowPosition, onEditPosition, onDeletePosition, onToggleTicker,
 }) {
@@ -1665,7 +1933,11 @@ const BrokerSection = memo(function BrokerSection({
 
   const color = brokerColor(broker.name)
   // 'USDT' en sub-broker '· USD' (padre ARS) = dólares reales, no Tether.
-  const curLabel = (broker.currency || '').toUpperCase() === 'USDT' && isArUsdBroker(broker.name) ? 'USD' : broker.currency
+  const nombre = label || broker.name
+  // Unificada: la cuenta no tiene UNA moneda nativa, opera en las dos.
+  const curLabel = unified
+    ? monedasCuenta.join(' + ')
+    : ((broker.currency || '').toUpperCase() === 'USDT' && isArUsdBroker(broker.name) ? 'USD' : broker.currency)
   const initial = (broker.name || '?').charAt(0).toUpperCase()
 
   return (
@@ -1687,12 +1959,26 @@ const BrokerSection = memo(function BrokerSection({
           </span>
           <div className="flex items-baseline gap-2 min-w-0">
             <span className={`text-sm font-semibold ${color.text} truncate`}>
-              {broker.name}
+              {nombre}
             </span>
             <span className={`text-[12.5px] px-1.5 py-0.5 rounded-sm ${color.bg} ${color.text} border ${color.border} flex-shrink-0 font-medium`}>
               {curLabel}
             </span>
           </div>
+          {/* Mismo control que en desktop y en el mismo lugar (pegado al nombre
+              de la cuenta), para que la pantalla chica no tenga otro modelo
+              mental que la grande. El estado se comparte por localStorage. */}
+          {puedeUnificarse && onToggleUnificar && (
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); onToggleUnificar() }}
+              className={`mt-1 text-[10.5px] font-medium rounded-full px-2 py-0.5 border transition ${unified
+                ? 'bg-data-violet/10 text-data-violet border-data-violet/30'
+                : 'bg-bg-2 text-ink-3 border-line'}`}
+            >
+              {unified ? 'separar' : 'unificar'} {monedasCuenta.join(' / ')}
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-sm font-semibold tabular text-ink-0">
@@ -1736,6 +2022,7 @@ const BrokerSection = memo(function BrokerSection({
               ? `${p.broker}:${p.asset}:${p.id}`
               : (p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || p.entry_date}`)}
             p={p}
+            enCuentaUnificada={unified}
             displayCurrency={displayCurrency}
             tcBlue={tcBlue}
             onSell={onSellPosition}
@@ -1922,7 +2209,7 @@ function PositionsTable({ children, pie = null, conPista = false, onDeslizar }) 
             cromo. */}
         <div className="flex items-stretch w-max border-b border-line-2">
           <div
-            className="sticky left-0 z-[2] flex-none bg-bg-0 flex items-end gap-2 pb-1.5 pr-2 text-[9.5px] text-ink-3"
+            className="sticky left-0 z-[2] flex-none bg-bg-0 flex items-end gap-2 pb-2 pr-2 text-[11.5px] font-medium tracking-wide text-ink-2"
             style={{ width: ANCHO_ANCLA }}
           >
             <span className="w-[3px] flex-none" aria-hidden="true" />
@@ -1931,7 +2218,7 @@ function PositionsTable({ children, pie = null, conPista = false, onDeslizar }) 
           {COLUMNAS.map(c => (
             <div
               key={c.id}
-              className="flex-none flex items-end justify-end px-2.5 pb-1.5 text-[9.5px] text-ink-3"
+              className="flex-none flex items-end justify-end px-2.5 pb-2 text-[11.5px] font-medium tracking-wide text-ink-2"
               style={{ width: ANCHO_COL, scrollSnapAlign: 'end' }}
             >
               {c.label}
@@ -1971,7 +2258,7 @@ function PositionsTable({ children, pie = null, conPista = false, onDeslizar }) 
 const MS_PULSACION = 450
 const TOLERANCIA_PX = 8
 
-const PositionRow = memo(function PositionRow({ p, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
+const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
 
   // El MONTO del P&L sigue al toggle global, como el desktop
   // (Positions.jsx:979: `const basePnl = isARS ? c.pnlArs : c.pnl`). Antes iba
@@ -1982,10 +2269,24 @@ const PositionRow = memo(function PositionRow({ p, displayCurrency = 'USD', tcBl
   const pnlDisplay = displayCurrency === 'ARS' ? p.pnlUsdToday * tcBlue : p.pnlUsd
   const [aiOpen, setAiOpen] = useState(false)
   const [accionesAbiertas, setAccionesAbiertas] = useState(false)
+  // Selector de pata para la fila que junta las dos monedas de la cuenta:
+  // 'sell' | 'edit' | null. Desktop abre un modal con lo mismo.
+  const [pataPara, setPataPara] = useState(null)
   // Propio: `navigate` vive en PositionsMobile y este componente es hermano,
   // no hijo — sin este hook, tocar la fila tiraba ReferenceError y el detalle
   // mobile era inalcanzable.
   const navigate = useNavigate()
+
+  // Las patas de una fila fusionada, agrupadas por broker.
+  const patasDeLaFila = (() => {
+    if (!p._multiBroker) return []
+    const m = new Map()
+    for (const l of (p._lots || [])) {
+      if (!m.has(l.broker)) m.set(l.broker, [])
+      m.get(l.broker).push(l)
+    }
+    return [...m.entries()].map(([broker, lots]) => ({ broker, lots }))
+  })()
 
   const actions = p._isAgg
     ? [
@@ -2010,8 +2311,21 @@ const PositionRow = memo(function PositionRow({ p, displayCurrency = 'USD', tcBl
           tone: 'neg',
           onClick: () => {
             track('mobile_row_action', { code: 'sell', asset: p.asset })
-            onSell(p)
+            // La fila fusionada no tiene UN broker al que mandar la venta:
+            // primero se elige la pata (el FIFO consume los lotes de ésa).
+            if (p._multiBroker) setPataPara('sell')
+            else onSell(p)
           },
+        },
+        // Fila que junta las dos monedas: además de los lotes, se ofrece elegir
+        // la PATA — que es la unidad que el usuario reconoce ("la parte en
+        // pesos" vs "la parte en dólares"), y es como funciona en desktop.
+        p._multiBroker && {
+          id: 'edit-pata',
+          label: 'Editar posición',
+          icon: Pencil,
+          tone: 'accent',
+          onClick: () => setPataPara('edit'),
         },
         onToggleTicker && {
           id: 'edit',
@@ -2163,10 +2477,17 @@ const PositionRow = memo(function PositionRow({ p, displayCurrency = 'USD', tcBl
   // lo único que lo distingue de sus hermanos. Se corta la fecha a mano en vez
   // de parsearla: `entry_date` llega a veces con 'T' y a veces con espacio.
   const fecha = String(p.entry_date || '').slice(0, 10).split('-').reverse().join('/')
+  const monedaDeLote = p.isAR ? 'ARS' : 'USD'
+  // Dentro de una cuenta unificada el broker es SIEMPRE el mismo, así que
+  // repetirlo en cada subtítulo no informa nada — y encima lo hacía de tres
+  // formas distintas ("Cocos · USD", "Cocos" a secas donde ARS había que
+  // deducirlo, y nada en las fusionadas). La moneda pasa a un chip en TODAS las
+  // filas, como en desktop, y el subtítulo se queda con lo que sí varía.
   const contexto = p.is_cash ? 'Efectivo'
-    : p._isAgg ? `${p.broker} · ${p._lotCount} lotes`
-    : p._isLot ? `${p.broker} · ${fecha || 'lote'}`
-    : p.broker
+    : p._multiBroker ? `${p._lotCount} lotes`
+    : p._isAgg ? (enCuentaUnificada ? `${p._lotCount} lotes` : `${p.broker} · ${p._lotCount} lotes`)
+    : p._isLot ? `${(enCuentaUnificada || p._enFusion) ? monedaDeLote : p.broker} · ${fecha || 'lote'}`
+    : (enCuentaUnificada ? (fecha || '') : p.broker)
 
   return (
     <>
@@ -2196,7 +2517,27 @@ const PositionRow = memo(function PositionRow({ p, displayCurrency = 'USD', tcBl
           <div className="text-[13.5px] font-semibold text-ink-0 leading-[1.15] truncate">
             {/* cashAssetLabel: el efectivo del sub-broker dólar de un broker AR se
                 guarda como 'USDT' (centinela interno) pero son dólares reales. */}
-            {p.is_cash ? cashAssetLabel(p) : fciLabel(p.asset)}
+            <span className="inline-flex items-center gap-1 min-w-0">
+              <span className="truncate">{p.is_cash ? cashAssetLabel(p) : fciLabel(p.asset)}</span>
+              {/* Las dos monedas, como chips de color: entran donde el texto
+                  "ARS + USD · N lotes" se cortaba, y el color las hace legibles
+                  de un vistazo sin leer. */}
+              {enCuentaUnificada && !p.is_cash && !p._isLot && (
+                p._multiBroker ? (
+                  // UN chip, no dos: el ancla mide 118px y tiene `truncate`, así
+                  // que el segundo quedaba cortado fuera de la vista y la fila
+                  // se leía como si tuviera una sola moneda — justo lo contrario
+                  // de lo que el chip viene a decir.
+                  <span className="text-[8.5px] leading-none font-semibold px-1 py-[2px] rounded-sm flex-none whitespace-nowrap bg-data-violet/15 text-data-violet">
+                    ARS+USD
+                  </span>
+                ) : (
+                  <span className={`text-[8.5px] leading-none font-semibold px-1 py-[2px] rounded-sm flex-none ${p.isAR ? 'bg-rendi-warn/15 text-rendi-warn' : 'bg-data-cyan/15 text-data-cyan'}`}>
+                    {p.isAR ? 'ARS' : 'USD'}
+                  </span>
+                )
+              )}
+            </span>
           </div>
           <div className="text-[10px] text-ink-3 leading-[1.15] mt-[2px] truncate">{contexto}</div>
         </div>
@@ -2261,6 +2602,24 @@ const PositionRow = memo(function PositionRow({ p, displayCurrency = 'USD', tcBl
           <div className={`${LINEA_1} text-ink-0`}>{precioCard(avgDisp, displayCurrency)}</div>
         )}
       </Celda>
+
+      {/* Acciones. La pulsación larga sigue funcionando y abre lo mismo, pero
+          nadie la descubre sola: sin un botón visible, editar y vender eran
+          invisibles en el teléfono. Va STICKY a la derecha —no al final de la
+          fila— porque las columnas scrollean y "el final" está fuera de
+          pantalla hasta deslizar. */}
+      {!!actions.length && (
+        <div className="sticky right-0 z-[2] flex-none flex items-center bg-bg-0 pl-1 pr-1">
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); setAccionesAbiertas(true) }}
+            className="p-2 -mr-1 rounded-full text-ink-3 active:bg-bg-2 active:text-ink-0 transition-colors"
+            aria-label={`Acciones de ${p.is_cash ? cashAssetLabel(p) : p.asset}`}
+          >
+            <MoreVertical size={17} strokeWidth={1.75} />
+          </button>
+        </div>
+      )}
     </div>
 
     {/* Las acciones de la fila, por pulsación larga. Son las MISMAS que revelaba
@@ -2284,6 +2643,66 @@ const PositionRow = memo(function PositionRow({ p, displayCurrency = 'USD', tcBl
               >
                 {Icon && <Icon size={17} strokeWidth={1.75} />}
                 {a.label}
+              </button>
+            )
+          })}
+        </div>
+      </BottomSheet>
+    )}
+
+    {pataPara && (
+      <BottomSheet
+        open
+        onClose={() => setPataPara(null)}
+        title={fciLabel(p.asset)}
+        eyebrow={pataPara === 'sell' ? '¿De cuál vendés?' : '¿Cuál editás?'}
+      >
+        <div className="px-4 pb-4 space-y-1">
+          <p className="text-[13px] text-ink-3 leading-relaxed pb-1">
+            Tenés este activo comprado en las dos monedas de la cuenta. Cada una
+            tiene su propio precio de compra y su tipo de cambio.
+          </p>
+          {patasDeLaFila.map(({ broker, lots }) => {
+            const qty = lots.reduce((t, l) => t + (l.quantity || 0), 0)
+            const esArs = !!lots[0]?.isAR
+            return (
+              <button
+                key={broker}
+                type="button"
+                onClick={() => {
+                  setPataPara(null)
+                  if (pataPara === 'sell') {
+                    // VENDER siempre abre el formulario, tenga la pata uno o
+                    // varios lotes: el FIFO consume los lotes de esa pata sola,
+                    // así que alcanza con un representante que lleve su broker.
+                    // Antes, con dos o más lotes, esto sólo desplegaba la lista
+                    // y el usuario se quedaba sin poder elegir cuánto ni a qué
+                    // precio — la venta simplemente no ocurría.
+                    onSell?.(lots.length === 1 ? lots[0] : {
+                      ...lots[0],
+                      quantity: lots.reduce((t, l) => t + (l.quantity || 0), 0),
+                      _lots: lots,
+                    })
+                  } else if (lots.length === 1) {
+                    onEdit?.(lots[0])
+                  } else {
+                    // EDITAR sí se despliega: cada lote tiene su propio precio
+                    // de compra y su fecha, y no hay una edición única que los
+                    // cubra. Es el mismo criterio que la fila agregada normal.
+                    onToggleTicker?.(p)
+                  }
+                }}
+                className="w-full flex items-center justify-between gap-3 px-3 py-3 rounded text-left active:bg-bg-2 transition-colors"
+              >
+                <span className="min-w-0">
+                  <span className="block text-[15px] font-medium text-ink-0">
+                    {esArs ? 'ARS' : 'USD'}
+                  </span>
+                  <span className="block text-[12.5px] text-ink-3">
+                    {qty} unidades · {lots.length} {lots.length === 1 ? 'lote' : 'lotes'}
+                  </span>
+                </span>
+                <ArrowRight size={16} strokeWidth={1.75} className="text-ink-3 flex-none" />
               </button>
             )
           })}
