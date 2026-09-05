@@ -108,8 +108,21 @@ def _fetch_positions_for_concentration(conn, uid: int, broker_filter: str,
             tc_cedear = tc_blue
     except Exception:
         tc_cedear = tc_blue
-    br_sql = "" if broker_filter == "global" else " AND p.broker = ?"
-    br_args = () if broker_filter == "global" else (broker_filter,)
+    # El PAR padre ↔ '<Padre> · USD' es UNA cuenta: sin la pata dólar, la
+    # concentración y el top holdings del reporte de "IOL" salían por debajo.
+    # SEGURO por construcción, y es el único lector de `positions` que ya
+    # estaba preparado: la valuación la hace `_position_value_usd` (abajo), que
+    # resuelve el doble eje de moneda por `_native_ccy` y rutea el CEDEAR del
+    # sub-broker '· USD' a su `.BA` — o sea que sumar la pata dólar acá NO
+    # mezcla monedas. El JOIN a `brokers` sigue matcheando: el sibling ES una
+    # fila de brokers.
+    if broker_filter == "global":
+        br_sql, br_args = "", ()
+    else:
+        from reporting.builder import brokers_del_filtro
+        _bs = brokers_del_filtro(conn, uid, broker_filter)
+        br_sql = " AND p.broker IN ({})".format(",".join("?" * len(_bs)))
+        br_args = tuple(_bs)
     rows = conn.execute(
         f"""SELECT p.asset, p.asset_type, p.broker, p.quantity, p.invested,
                    p.is_cash, p.price_override, br.currency
@@ -147,6 +160,27 @@ def build_timeline(
 
     Cada PeriodReport incluye sus insights ya computados.
     """
+    # El par padre ↔ '· USD' es el MISMO para los ~200 build_period_report que
+    # siguen (uno por mes + uno por semana). Sin el memo se resuelve 459 veces.
+    from .builder import pair_cache
+    with pair_cache():
+        return _build_timeline(
+            conn, uid, broker_filter=broker_filter, months=months, bench=bench,
+            live_value=live_value, prices=prices, tc_blue=tc_blue,
+            modo=modo, moneda=moneda,
+        )
+
+
+def _build_timeline(
+    conn, uid: int, *,
+    broker_filter: str = "global",
+    months: int = 12,
+    bench: Optional[Dict[str, Any]] = None,
+    live_value: Optional[float] = None,
+    prices: Optional[Dict[str, Any]] = None,
+    tc_blue: float = 1415.0,
+    modo: str = "certero", moneda: str = "usd",
+) -> List[PeriodReport]:
     # Pre-cómputo de contexto reusable entre detectores
     historical_wr = _compute_user_historical_win_rate(conn, uid)
     avg_trades = _compute_avg_trades_per_month(conn, uid)

@@ -626,8 +626,19 @@ def _trial_stats(conn, user_id: int) -> dict:
     dia = desde[:10]
     # Los brokers no tienen fecha de alta confiable → se informa el total, que
     # para "brokers conectados" es lo que el usuario entiende igual.
+    #
+    # Fuera del loop porque cuenta CUENTAS, no filas: el sub-broker "· USD" que
+    # crea el importador solo no es un broker que el usuario haya conectado, y
+    # éste es justo el mail que empuja a pagar. Decía "2 brokers" a quien
+    # conectó 1. Misma definición que la cuota del plan, a propósito.
+    try:
+        from ai import plan as _plan
+        n_brokers = _plan.count_broker_accounts(conn, user_id)
+        if n_brokers:
+            out["brokers"] = n_brokers
+    except Exception:
+        pass
     for key, sql, params in (
-        ("brokers", "SELECT COUNT(*) c FROM brokers WHERE user_id=?", (user_id,)),
         # Cuántas operaciones CARGÓ en la prueba, no cuántas OCURRIERON en esos
         # días. operations.date es la fecha de la operación (cuándo compró), así
         # que a quien importó sus 343 movimientos de los últimos tres años el

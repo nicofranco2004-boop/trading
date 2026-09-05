@@ -342,6 +342,21 @@ def compute_net_deposited_db(conn, uid: int, *,
 
     Devuelve float USD (snapshots conventions: todo lo de monthly_entries
     está en USD).
+
+    ⚠️ `broker_filter` es UN nombre, no una lista, y conviene que siga así. El
+    par padre ↔ "<Padre> · USD" se suma DESDE EL CALLER, con
+    `include_baseline=False`, llamando una vez por pata (ver
+    `reporting.builder.fetch_cum_deposits_until` y
+    `main._portfolio_snapshot_summary`). Con el baseline apagado la función es
+    una SUMA pura, así que suma-de-sumas ES exactamente la query con `IN`.
+    Con el baseline PRENDIDO no hay respuesta correcta para un par: el
+    `ORDER BY year, month LIMIT 1` de abajo elegiría una fila arbitraria, y
+    sumar per-broker daría DOS baselines (medido: 600 vs 1270 sobre el mismo
+    fixture, y los dos números están mal). "La baseline del par" no es ni la
+    suma ni una de las dos: es el capital del par en su PRIMER mes, que habría
+    que agregar por mes ANTES de elegir el primero. Ningún caller no-global
+    pide baseline hoy; si algún día hiciera falta, es eso lo que hay que
+    escribir — no un `IN` en el where.
     """
     where = "user_id = ? AND broker = ?"
     args = [uid, broker_filter]

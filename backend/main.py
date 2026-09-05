@@ -4354,8 +4354,10 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
       • Las normalized_tx asociadas siguen en disco pero no afectan cálculos
         porque el broker ya no existe.
 
-    Si el broker es padre de un sibling (parent_broker_id FK), el cascade
-    de SQLite borra el sibling también — el frontend debe alertar al user.
+    Si el broker es padre de sibling(s) (parent_broker_id FK), se borran
+    también — el frontend debe alertar al user. El borrado de los hijos es
+    EXPLÍCITO: el FK CASCADE sólo existe en bases creadas de cero (ver el
+    comentario largo abajo, en el bloque de DELETEs).
     """
     conn = get_db()
     try:
@@ -4373,12 +4375,15 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
         # borramos `WHERE broker=padre_name`, los del sibling quedan
         # HUÉRFANOS (audit follow-up 2026-05-30, finding #1).
         # Solución: extender el cleanup a `broker IN (padre, sibling)`.
-        sibling = conn.execute(
+        # fetchall y no fetchone: `POST /api/brokers` acepta un parent_broker_id
+        # arbitrario, así que un padre puede tener más de un hijo. Con fetchone
+        # el cleanup dejaba huérfanas las filas del segundo en adelante.
+        siblings = conn.execute(
             "SELECT id, name, currency FROM brokers WHERE user_id=? AND parent_broker_id=?",
             (uid, bid),
-        ).fetchone()
-        sibling_name = sibling["name"] if sibling else None
-        broker_names = [broker_name] + ([sibling_name] if sibling_name else [])
+        ).fetchall()
+        sibling_name = siblings[0]["name"] if siblings else None
+        broker_names = [broker_name] + [s["name"] for s in siblings]
 
         # ── Guard: contar data asociada (padre Y sibling si existe) ──────────
         placeholders = ",".join("?" * len(broker_names))
@@ -4411,7 +4416,10 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
                     "code": "broker_has_data",
                     "broker_name": broker_name,
                     "counts": counts,
-                    "sibling": dict(sibling) if sibling else None,
+                    # Singular a propósito: es la forma que consume el frontend
+                    # (`detail.sibling` en BrokerManager). Con más de un hijo se
+                    # informa el primero; el cleanup de abajo sí los borra a todos.
+                    "sibling": dict(siblings[0]) if siblings else None,
                     "message": (
                         f"El broker '{broker_name}' tiene data asociada. "
                         f"Pasá ?force=true para borrar todo (incluyendo "
@@ -4463,7 +4471,22 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
                      AND status IN ('confirmed','preview')""",
                 (uid, *broker_names),
             )
-            # DELETE del padre — el FK CASCADE elimina el row del sibling.
+            # DELETE explícito de los hijos ANTES del padre. NO alcanza con
+            # confiar en el FK CASCADE: el schema de `brokers` existe en DOS
+            # formas y sólo una lo tiene. El CREATE TABLE (main.py:728, bases
+            # nuevas) declara `parent_broker_id ... ON DELETE CASCADE`, pero la
+            # migración lo agrega por `ALTER TABLE ADD COLUMN` (main.py:774) y
+            # SQLite NO admite acción referencial en un ADD COLUMN → toda base
+            # preexistente, o sea PRODUCCIÓN, tiene la FK sin cascade.
+            # Con PRAGMA foreign_keys=ON (main.py:435) el DELETE del padre tiraba
+            # `FOREIGN KEY constraint failed`; y como todo esto corre dentro del
+            # mismo `with conn:`, el rollback deshacía también el cleanup de
+            # arriba → la cuenta quedaba INDELETEABLE, con un 500 genérico.
+            # Mismo patrón que ya usa _wipe_broker_data. Postgres no sufría el
+            # bug (schema_pg.sql declara el constraint aparte, que sí es válido).
+            conn.execute(
+                "DELETE FROM brokers WHERE user_id=? AND parent_broker_id=?", (uid, bid)
+            )
             conn.execute("DELETE FROM brokers WHERE id=? AND user_id=?", (bid, uid))
 
         # Recalc global aggregates (el broker 'global' sumaba el broker borrado)
@@ -32620,8 +32643,21 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     último snapshot — útil para reflejar precios live cuando el snapshot del
     día todavía no se generó por cron.
     """
-    br_clause = "" if broker_filter == "global" else " AND broker = ?"
-    br_args: tuple = () if broker_filter == "global" else (broker_filter,)
+    # El PAR padre ↔ '<Padre> · USD' es UNA cuenta. Un solo punto de cambio
+    # arregla a la vez `positions_count`, `last_op` y `top_holdings`: sin él, el
+    # reporte de "IOL" no contaba NINGUNA de las posiciones que viven en
+    # "IOL · USD" (los CEDEARs pagados por MEP y los ONs en dólares).
+    # `broker_pair` acepta N patas y con un huérfano —hijo cuyo padre se
+    # borró— devuelve [broker] solo, así que no hay caso degenerado.
+    #
+    # ⚠️ `cash_value` NO hereda esta cláusula, a propósito. Ver abajo.
+    from reporting.builder import brokers_del_filtro
+    if broker_filter == "global":
+        br_clause, br_args = "", ()
+    else:
+        _bs = brokers_del_filtro(conn, uid, broker_filter)
+        br_clause = " AND broker IN ({})".format(",".join("?" * len(_bs)))
+        br_args: tuple = tuple(_bs)
 
     # Último snapshot global (no se desagrega por broker)
     # ⚠️ ACÁ NACE LA ASIMETRÍA QUE NADIE VIO. Las cuatro métricas que salen de esta
@@ -32652,11 +32688,18 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     # Fase 3 (2026-05-30): delega en la SSoT `compute_net_deposited_db`.
     # Mantenemos include_baseline=False para preservar semántica histórica
     # de este endpoint (que nunca incluyó capital_inicio).
+    # El PAR se suma DESDE ACÁ (una llamada por broker) en vez de pasarle una
+    # lista a la SSoT: con `include_baseline=False` la función es una SUMA pura,
+    # así que suma-de-sumas ES exactamente la query con `IN`, y el campo minado
+    # del baseline (`ORDER BY year, month LIMIT 1`, que con dos filas elegiría
+    # una arbitraria) ni se ejecuta. Medido: el reporte de "IOL" publicaba 240
+    # donde la verdad de la cuenta real eran 400 — el mismo número que 'global'.
+    # (El ternario que estaba acá era un no-op: devolvía broker_filter en los
+    # dos brazos.)
     from snapshots_job import compute_net_deposited_db
-    cum_deposited = compute_net_deposited_db(
-        conn, uid,
-        broker_filter=(broker_filter if broker_filter != "global" else "global"),
-        include_baseline=False,
+    cum_deposited = sum(
+        compute_net_deposited_db(conn, uid, broker_filter=b, include_baseline=False)
+        for b in brokers_del_filtro(conn, uid, broker_filter)
     )
 
     # # posiciones no-cash abiertas (qty != 0)
@@ -32669,11 +32712,27 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     ).fetchone()
     positions_count = int(pos_row["cnt"] or 0) if pos_row else 0
 
-    # # brokers activos (con al menos 1 posición)
+    # # CUENTAS activas (con al menos 1 posición) — no # de filas en `brokers`.
+    #
+    # El sub-broker "<Padre> · USD" es plumbing: nace sin pasar por la cuota, el
+    # usuario nunca lo pidió, y la UI lo presenta como parte de la misma cuenta.
+    # Contarlo aparte hacía que un usuario con UN broker bimonetario leyera "en
+    # 2 brokers". Se colapsa al padre con `COALESCE(pb.name, br.name)`, que es
+    # la misma definición que `ai/plan.py:count_broker_accounts` (raíces +
+    # huérfanos) — la SSoT de "cuántas CUENTAS tiene el user", cuyos call sites
+    # tienen que dar todos el MISMO número. El LEFT JOIN re-emite al huérfano
+    # (hijo cuyo padre ya no existe) como cuenta propia, igual que la Cartera.
+    #
+    # Sigue SIN aplicar `br_clause`, a propósito: con el reporte filtrado por un
+    # broker el KPI diría "en 1 broker" siempre — cierto e inútil. El sub-label
+    # se esconde en el frontend cuando hay filtro (Reports.jsx).
     brk_row = conn.execute(
-        """SELECT COUNT(DISTINCT broker) AS cnt
-             FROM positions
-            WHERE user_id = ? AND COALESCE(quantity, 0) > 0""",
+        """SELECT COUNT(DISTINCT COALESCE(pb.name, br.name)) AS cnt
+             FROM positions p
+             JOIN brokers br ON br.user_id = p.user_id AND br.name = p.broker
+             LEFT JOIN brokers pb ON pb.id = br.parent_broker_id
+                                 AND pb.user_id = br.user_id
+            WHERE p.user_id = ? AND COALESCE(p.quantity, 0) > 0""",
         (uid,),
     ).fetchone()
     brokers_count = int(brk_row["cnt"] or 0) if brk_row else 0
@@ -32722,25 +32781,76 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
         }
 
     # Top 3 holdings por valor invertido — proxy útil de "qué tenés más"
+    #
+    # ⚠️ EL ORDEN VA EN USD. `positions.invested` está en la moneda NATIVA del
+    # broker: pesos en el padre ARS, dólares en el sibling "· USD". Desde que
+    # este top mira el PAR, un `ORDER BY invested` crudo compara pesos contra
+    # dólares y las filas del padre ganan siempre por ~1400× — el holding más
+    # grande de la cuenta, que es justo el que vive en la pata dólar, no podía
+    # entrar nunca al top 3. Normalizar por la moneda del broker es lo mismo que
+    # hace `behavioral._position_value_usd` con `_native_ccy`.
+    #
+    # El LEFT JOIN trata como USD a una posición cuyo broker no tiene fila en
+    # `brokers` (huérfana de un rename viejo): sin `currency` no hay con qué
+    # decidir, y asumir pesos la dividiría por el MEP inventando un número.
+    _mep_row = conn.execute(
+        "SELECT value FROM config WHERE key='tc_mep' AND user_id=?", (uid,),
+    ).fetchone()
+    try:
+        _mep = float(_mep_row["value"]) if _mep_row and _mep_row["value"] else 0.0
+    except (TypeError, ValueError):
+        _mep = 0.0
+    if not _mep > 0:
+        _mep = 1415.0                      # el mismo default que usa el resto
+    # El mismo filtro que br_clause pero calificado con el alias de la tabla,
+    # construido aparte en vez de parchear el string (un .replace sobre SQL se
+    # rompe en silencio el día que el clause cambie de forma).
+    _top_clause = ("" if not br_args
+                   else " AND p.broker IN ({})".format(",".join("?" * len(br_args))))
     top_rows = conn.execute(
-        f"""SELECT asset, broker, COALESCE(invested, 0) AS invested
-              FROM positions
-             WHERE user_id = ? AND COALESCE(is_cash, 0) = 0
-               AND COALESCE(quantity, 0) > 0{br_clause}
-             ORDER BY COALESCE(invested, 0) DESC LIMIT 3""",
-        (uid, *br_args),
+        f"""SELECT p.asset, p.broker, COALESCE(p.invested, 0) AS invested,
+                   COALESCE(p.invested, 0) / (
+                       CASE WHEN UPPER(COALESCE(br.currency, '')) = 'ARS'
+                            THEN ? ELSE 1 END) AS invested_usd
+              FROM positions p
+              LEFT JOIN brokers br
+                     ON br.user_id = p.user_id AND br.name = p.broker
+             WHERE p.user_id = ? AND COALESCE(p.is_cash, 0) = 0
+               AND COALESCE(p.quantity, 0) > 0{_top_clause}
+             ORDER BY invested_usd DESC LIMIT 3""",
+        (_mep, uid, *br_args),
     ).fetchall()
     top_holdings = [
-        {"asset": r["asset"], "broker": r["broker"], "invested": float(r["invested"] or 0)}
+        {"asset": r["asset"], "broker": r["broker"],
+         "invested": float(r["invested"] or 0),
+         # En USD y comparable entre patas — `invested` queda crudo (en la
+         # moneda del broker) para no cambiar lo que ya lee algún consumidor.
+         "invested_usd": float(r["invested_usd"] or 0)}
         for r in top_rows
     ]
 
     # Cash % del portfolio (sumando positions is_cash)
+    #
+    # ⚠️ ÚNICO LECTOR QUE SE DEJA CON EL BROKER SOLO, Y ES A PROPÓSITO. Suma
+    # `invested` de las filas de cash SIN convertir moneda: el cash del padre
+    # está en PESOS (`_persist_fx`/`_adjust_cash` escriben ars_amount tal cual)
+    # y el del sibling en USD. Hoy, en "IOL", ya devuelve pesos crudos rotulados
+    # como dólares — un defecto PREEXISTENTE. Extenderlo al par le sumaría
+    # encima los USD del sibling, o sea que sería el único sitio donde el par
+    # EMPEORA el número en vez de completarlo.
+    # Mitigante: nadie lo consume. `cash_value` no aparece en frontend/src/
+    # salvo en utils/demo.js:668, como literal de un fixture. Así que se deja
+    # exactamente como estaba (sin mejorar ni empeorar) en vez de escribir deuda
+    # nueva a propósito sobre una métrica muerta. Arreglarlo de verdad = valuar
+    # por `_native_ccy` como hace `behavioral._position_value_usd`, o borrar la
+    # clave del payload; las dos cosas son decisión del dueño, no de este fix.
+    _cash_clause = "" if broker_filter == "global" else " AND broker = ?"
+    _cash_args: tuple = () if broker_filter == "global" else (broker_filter,)
     cash_row = conn.execute(
         f"""SELECT COALESCE(SUM(invested), 0) AS cash
               FROM positions
-             WHERE user_id = ? AND COALESCE(is_cash, 0) = 1{br_clause}""",
-        (uid, *br_args),
+             WHERE user_id = ? AND COALESCE(is_cash, 0) = 1{_cash_clause}""",
+        (uid, *_cash_args),
     ).fetchone()
     cash_value = float(cash_row["cash"] or 0) if cash_row else 0.0
 
@@ -32848,6 +32958,25 @@ def _ytd_delta(conn, uid: int, latest_value: Optional[float],
     Devuelve None si no hay datos para el año en curso.
     """
     if latest_value is None or latest_date is None:
+        return None
+    # SÓLO 'global', y ahora dicho en voz alta en vez de por accidente.
+    #
+    # Hoy esto ya es un no-op MEDIDO: `_portfolio_snapshot_summary` fuerza
+    # `snap_value = None` cuando broker_filter != 'global', así que la función
+    # se muere en el `return None` de arriba y NADA de lo que sigue corre nunca
+    # con un broker. Se escribe igual porque abajo hay DOS trampas armadas para
+    # el día que alguien le enseñe a valuar por broker:
+    #   · el `ORDER BY month ASC LIMIT 1` elegiría una fila ARBITRARIA del par
+    #     padre/'· USD' → capital de arranque del YTD partido al medio (haría
+    #     falta `SUM(capital_inicio) … GROUP BY year, month` antes del LIMIT);
+    #   · y aunque eso se arreglara, el arranque MEDIDO de más abajo se saltea
+    #     para no-global, o sea que el YTD por broker restaría `capital_inicio`
+    #     (cadena CONTABLE) contra un latest a MERCADO — exactamente la resta
+    #     que AUDIT D-1 declaró impublicable. Arreglar sólo el GROUP BY lo
+    #     dejaría "correctamente mal".
+    # (El SUM de flujos netos del final sí es una suma pura y aguantaría un
+    # `IN` tal cual; pero numerador y denominador tienen que moverse juntos.)
+    if broker_filter != "global":
         return None
     year = int(latest_date[:4])
     row = conn.execute(
@@ -33051,33 +33180,38 @@ def reports_period_detail(
                         live_value = lv
                 except Exception:
                     pass  # fallback a snapshot latest
-        try:
-            report = build_period_report(
-                conn, uid, period_type, period_key,
-                broker_filter=broker, bench=bench_data, live_value=live_value,
-                modo=modo, moneda=moneda,
-            )
-        except ValueError as ex:
-            raise HTTPException(400, str(ex))
+        # Un solo memo para todo el request: el reporte, la concentración y el
+        # snapshot resuelven el MISMO par padre ↔ '· USD'. Se tira al salir del
+        # `with`, así que no hay staleness entre requests.
+        from reporting.builder import pair_cache
+        with pair_cache():
+            try:
+                report = build_period_report(
+                    conn, uid, period_type, period_key,
+                    broker_filter=broker, bench=bench_data, live_value=live_value,
+                    modo=modo, moneda=moneda,
+                )
+            except ValueError as ex:
+                raise HTTPException(400, str(ex))
 
-        # Detectores con contexto completo
-        positions = _fetch_positions_for_concentration(conn, uid, broker, {}, tc_blue)
-        report.insights = run_detectors(
-            report,
-            positions=positions,
-            avg_trades_per_period=_compute_avg_trades_per_month(conn, uid),
-            historical_win_rate=_compute_user_historical_win_rate(conn, uid),
-        )
-        out = report_to_dict(report)
-        # Enriquecemos con snapshot estático del portfolio — útil cuando el
-        # período en curso (día/semana) está flat y queremos mostrar igual
-        # capital actual, # posiciones, etc.
-        # Pasamos el live_value calculado para que delta_1d refleje el
-        # cambio real entre el cierre de ayer y los precios live de hoy.
-        out["portfolio_snapshot"] = _portfolio_snapshot_summary(
-            conn, uid, broker,
-            live_value_override=(live_value if is_current_period_for_live else None),
-        )
+            # Detectores con contexto completo
+            positions = _fetch_positions_for_concentration(conn, uid, broker, {}, tc_blue)
+            report.insights = run_detectors(
+                report,
+                positions=positions,
+                avg_trades_per_period=_compute_avg_trades_per_month(conn, uid),
+                historical_win_rate=_compute_user_historical_win_rate(conn, uid),
+            )
+            out = report_to_dict(report)
+            # Enriquecemos con snapshot estático del portfolio — útil cuando el
+            # período en curso (día/semana) está flat y queremos mostrar igual
+            # capital actual, # posiciones, etc.
+            # Pasamos el live_value calculado para que delta_1d refleje el
+            # cambio real entre el cierre de ayer y los precios live de hoy.
+            out["portfolio_snapshot"] = _portfolio_snapshot_summary(
+                conn, uid, broker,
+                live_value_override=(live_value if is_current_period_for_live else None),
+            )
         return out
     finally:
         conn.close()

@@ -4813,13 +4813,17 @@ class DeleteBrokerGuardTest(unittest.TestCase):
         self.assertEqual(n_br, 0)
 
     def test_delete_parent_broker_cleans_sibling_data(self):
-        """Audit follow-up (2026-05-30, finding #1): cuando se borra un broker
-        padre con sibling vía parent_broker_id FK, el CASCADE del FK destruye
-        el row del sibling. Pero positions/operations/monthly_entries del
-        sibling usan broker NAME (no FK) → si solo borramos
+        """Audit follow-up (2026-05-30, finding #1): positions/operations/
+        monthly_entries del sibling usan broker NAME (no FK) → si sólo borramos
         `WHERE broker=padre_name`, los del sibling quedan HUÉRFANOS.
         Test: crear padre+sibling con data en ambos, DELETE force del padre,
-        verificar que NO quedan rows huérfanas con sibling broker name."""
+        verificar que NO quedan rows huérfanas con sibling broker name.
+
+        OJO con lo que este test NO cubre: corre sobre la DB de `init_db()`, o
+        sea el CREATE TABLE con `ON DELETE CASCADE`. En producción la columna
+        llegó por ALTER TABLE y la FK quedó SIN cascade, así que el row del
+        sibling hay que borrarlo explícitamente. Ese caso —el que rompía— vive
+        en tests/test_broker_delete_prod_schema.py."""
         # Crear sibling vía parent_broker_id
         conn = main.get_db()
         with conn:
@@ -4875,7 +4879,7 @@ class DeleteBrokerGuardTest(unittest.TestCase):
         self.assertEqual(sibling_monthly, 0,
             "monthly_entries del sibling deben borrarse")
         self.assertEqual(sibling_broker, 0,
-            "El broker row del sibling debe borrarse via FK CASCADE")
+            "El broker row del sibling debe borrarse junto con el padre")
 
     def test_delete_parent_broker_409_includes_sibling_counts(self):
         """Audit follow-up (2026-05-30, finding #12): el 409 sin force debe

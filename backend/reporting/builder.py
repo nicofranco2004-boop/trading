@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
+from contextlib import contextmanager
 from datetime import date as date_cls, datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
@@ -97,23 +99,136 @@ def is_period_current(period_type: str, period_start: str, period_end: str,
 
 # ─── Queries primitives ──────────────────────────────────────────────────────
 
-def _broker_clause(broker_filter: str) -> Tuple[str, tuple]:
-    """SQL fragment para filtrar por broker. 'global' = sin filtro."""
+def brokers_del_filtro(conn, uid: int, broker_filter: str) -> List[str]:
+    """Los NOMBRES de broker que un reporte filtrado por `broker_filter` mira.
+
+    Un broker argentino bimonetario tiene DOS filas en `brokers`: el padre y el
+    sub-broker "<Padre> · USD" que crea `_ensure_usd_sibling`. Como
+    `positions`/`operations`/`monthly_entries` referencian al broker por NOMBRE
+    (no por FK), un `AND broker = ?` con el nombre del padre deja AFUERA todo lo
+    que vive en el sibling — los CEDEARs pagados por MEP y los ONs en dólares.
+    El reporte de "IOL" salía sistemáticamente por debajo y sin error visible.
+
+    La identidad del par la resuelve `broker_pair` por parent_broker_id, que es
+    la ÚNICA definición en el repo (21 call sites). No se parsea el sufijo
+    ' · USD': el nombre es el contrato de PRECIO (`isArUsdBroker` decide con él
+    si un CEDEAR cotiza por su `.BA` o por el ticker US, y ahí la diferencia es
+    de 15-100×), así que un renombre degradaría el parseo en silencio; la FK no.
+
+    'global' se corta ANTES de la query: `broker_pair('global')` devolvería
+    ['global'] igual, pero así el caso global no depende de que ningún usuario
+    tenga un broker llamado literalmente 'global'.
+    """
     if broker_filter == "global":
-        return "", ()
-    return " AND broker = ?", (broker_filter,)
+        return ["global"]
+    _c = getattr(_PAIR_CACHE, "d", None)
+    if _c is not None and (uid, broker_filter) in _c:
+        return _c[(uid, broker_filter)]
+    from importing.persister import broker_pair
+    pair = broker_pair(conn, uid, broker_filter)
+    if _c is not None:
+        _c[(uid, broker_filter)] = pair
+    return pair
 
 
-def _operations_clause(broker_filter: str) -> Tuple[str, tuple]:
-    if broker_filter == "global":
-        return "", ()
-    return " AND broker = ?", (broker_filter,)
+# ─── Memo del par, con alcance de UNA construcción ───────────────────────────
+# `broker_pair` hace 2 queries a `brokers` por llamada, y `build_timeline` llama
+# a `build_period_report` una vez por mes MÁS una por semana: medido, un
+# timeline de 36 meses resuelve el MISMO par 459 veces (~918 queries, el 47% de
+# las 1.960 que hace el request entero). En SQLite eso son 14 ms y no se nota;
+# en Postgres son ~900 round trips de red que no hacían falta.
+#
+# El memo vive SÓLO dentro de `pair_cache()` y se tira al salir, así que no hay
+# ventana de staleness entre requests: un broker creado o borrado no puede
+# quedar cacheado de una construcción anterior. Fuera del contexto no se cachea
+# NADA y cada caller conserva la semántica de hoy, exacta.
+# `threading.local` porque el dict no puede filtrarse entre requests paralelos.
+_PAIR_CACHE = threading.local()
+
+
+@contextmanager
+def pair_cache():
+    """Memoiza `brokers_del_filtro` mientras dure el bloque. Re-entrante."""
+    if getattr(_PAIR_CACHE, "d", None) is not None:
+        yield                      # ya hay uno activo más arriba: no lo pisamos
+        return
+    _PAIR_CACHE.d = {}
+    try:
+        yield
+    finally:
+        _PAIR_CACHE.d = None
+
+
+def _in_clause(brokers: List[str]) -> str:
+    """' AND broker IN (?,?)' — `broker_pair` acepta N patas, no asume dos."""
+    return " AND broker IN ({})".format(",".join("?" * len(brokers)))
+
+
+def capital_vigente(conn, uid: int, brokers: List[str],
+                    year: int, month: int) -> Optional[float]:
+    """El capital de cierre del par a fin de (year, month). None si ninguna pata
+    tuvo NUNCA una fila hasta esa fecha.
+
+    ─────────────────────────────────────────────────────────────────────────
+    POR QUÉ ESTO NO ES UN `SUM(capital_final)` DEL MES
+
+    `monthly_entries` es RALA por broker. `_recalc_pnl_realized_from_ops` tiene
+    un GC que borra toda fila con deposits = withdrawals = pnl = 0 SIN mirar
+    `capital_final`, y `_repair_monthly_chain` encadena por broker SALTEANDO los
+    huecos. O sea que cada pata tiene su propia cadena, con cobertura de meses
+    distinta: el sibling '· USD' sólo aparece en los meses donde vendió o cobró.
+
+    Un `SUM` agrega únicamente las filas que EXISTEN. Sumar dos cadenas ralas de
+    cobertura distinta NO da una cadena válida: el invariante intra-mes
+    (`cf = ci + dep − wit + pnl`) se conserva, pero el inter-mes
+    (`ci(m+1) = cf(m)`) NO. En un mes donde sólo el padre tiene fila, el `SUM`
+    publica el capital del padre solo y el del sibling se EVAPORA — mientras
+    `pnl_realized`, que sí mira el par entero, lo sigue contando. La misma
+    tarjeta se contradice: "Valor cierre US$2.200" al lado de "Realizado
+    +US$1.700" con no-realizado en cero.
+
+    El arreglo es arrastrar, por pata, su último cierre conocido: el capital de
+    una pata en un mes sin fila no es cero, es el que traía. Sumar cadenas
+    DENSIFICADAS sí es válido.
+
+    Con UNA sola pata (broker sin sibling, o 'global') devuelve exactamente lo
+    que devolvía el SELECT de antes cuando había fila — delta cero.
+    ─────────────────────────────────────────────────────────────────────────
+    """
+    total = 0.0
+    alguna = False
+    for b in brokers:
+        row = conn.execute(
+            """SELECT capital_final FROM monthly_entries
+                WHERE user_id = ? AND broker = ?
+                  AND (year < ? OR (year = ? AND month <= ?))
+                ORDER BY year DESC, month DESC LIMIT 1""",
+            (uid, b, year, year, month),
+        ).fetchone()
+        if row is not None:
+            total += float(row["capital_final"] or 0)
+            alguna = True
+    return total if alguna else None
+
+
+def _mes_anterior(year: int, month: int) -> tuple:
+    return (year - 1, 12) if month == 1 else (year, month - 1)
 
 
 def fetch_operations_in_range(conn, uid: int, start: str, end: str,
                               broker_filter: str = "global") -> List[Dict[str, Any]]:
-    """Operations cerradas (Venta, Dividendo, Interés, Futuros) en el rango."""
-    br_sql, br_args = _operations_clause(broker_filter)
+    """Operations cerradas (Venta, Dividendo, Interés, Futuros) en el rango.
+
+    Embudo de TODO el módulo: el realized del período, el win/loss, los
+    trades_count, los drivers y los highlights salen de acá. Con el par mira
+    las dos patas — sin agregación de por medio, porque acá las filas se LISTAN,
+    no se colapsan por una clave que el sibling duplique.
+    """
+    if broker_filter == "global":
+        br_sql, br_args = "", ()
+    else:
+        _bs = brokers_del_filtro(conn, uid, broker_filter)
+        br_sql, br_args = _in_clause(_bs), tuple(_bs)
     # `pnl_usd` se convierte a USD real acá, en el SELECT: en Cupón/Amortización
     # la columna guarda el monto en moneda del broker. Como TODO el módulo lee
     # las ops por esta función, con normalizarlo en el origen quedan bien el
@@ -545,14 +660,57 @@ def _pct_en_pesos(conn, d0: str, d1: str, v0: float, v1: float,
 
 def fetch_monthly_entry(conn, uid: int, year: int, month: int,
                        broker_filter: str = "global") -> Optional[Dict[str, Any]]:
+    """La fila mensual del período — con el PAR colapsado en una sola.
+
+    ⚠️ LOS FLUJOS SE SUMAN; LOS STOCKS NO. `deposits`, `withdrawals`,
+    `pnl_realized` y `pnl_unrealized` son flujos DEL MES: sumar las filas que
+    existen es exactamente lo que corresponde. Pero `capital_inicio` y
+    `capital_final` son STOCKS, y una pata sin fila este mes no tiene capital
+    cero: tiene el que traía. Por eso salen de `capital_vigente()`, que arrastra
+    el último cierre conocido de cada pata — ver el docstring de esa función
+    para el porqué largo (`monthly_entries` es rala por broker y sumar dos
+    cadenas de cobertura distinta rompe `ci(m+1) = cf(m)`).
+
+    ⚠️ EL `COUNT(*)` NO ES DECORACIÓN. Un SELECT con agregados y sin GROUP BY
+    devuelve SIEMPRE una fila —todo NULL— aunque no matchee nada, en SQLite y
+    en Postgres. Y ese `None` es carga útil: es el que dispara el fallback
+    AUDIT C-3 de más abajo (`if not me:` hereda el capital_final del mes
+    anterior) y el `_hay_algo` del mes en curso. Sin el COUNT, un mes sin fila
+    devolvería un dict de ceros —TRUTHY—, el mes en curso arrancaría en
+    start_value=0 y publicaría la cartera ENTERA como "P&L del mes" sobre un
+    capital inicial de US$0. Es exactamente el bug que C-3 vino a cerrar, y
+    `test_empty_user_returns_n_months_with_no_relevant` lo pinnea.
+    """
+    _bs = brokers_del_filtro(conn, uid, broker_filter)
     row = conn.execute(
-        """SELECT capital_inicio, capital_final, deposits, withdrawals,
-                  pnl_realized, pnl_unrealized
-             FROM monthly_entries
-            WHERE user_id = ? AND broker = ? AND year = ? AND month = ?""",
-        (uid, broker_filter, year, month),
+        f"""SELECT COUNT(*)                           AS n,
+                   COALESCE(SUM(capital_inicio), 0)   AS capital_inicio,
+                   COALESCE(SUM(capital_final), 0)    AS capital_final,
+                   COALESCE(SUM(deposits), 0)         AS deposits,
+                   COALESCE(SUM(withdrawals), 0)      AS withdrawals,
+                   COALESCE(SUM(pnl_realized), 0)     AS pnl_realized,
+                   COALESCE(SUM(pnl_unrealized), 0)   AS pnl_unrealized
+              FROM monthly_entries
+             WHERE user_id = ?{_in_clause(_bs)} AND year = ? AND month = ?""",
+        (uid, *_bs, year, month),
     ).fetchone()
-    return dict(row) if row else None
+    if not (row and row["n"]):
+        return None
+    out = dict(row)
+    # Los stocks se recomponen arrastrando el último cierre de CADA pata. El
+    # `n` de arriba sigue gobernando si el mes existe o no (C-3 intacto): esto
+    # sólo corrige el VALOR cuando el mes existe pero le falta alguna pata.
+    if len(_bs) > 1:
+        cierre = capital_vigente(conn, uid, _bs, year, month)
+        py, pm = _mes_anterior(year, month)
+        inicio = capital_vigente(conn, uid, _bs, py, pm)
+        if cierre is not None:
+            out["capital_final"] = cierre
+        # `inicio` None = ninguna pata tenía cierre previo → el mes es el primero
+        # del par y capital_inicio 0 es correcto; se deja el SUM.
+        if inicio is not None:
+            out["capital_inicio"] = inicio
+    return out
 
 
 def fetch_cum_deposits_until(conn, uid: int, end_date: str,
@@ -564,13 +722,25 @@ def fetch_cum_deposits_until(conn, uid: int, end_date: str,
     Fase 3 (2026-05-30): delega en la SSoT `compute_net_deposited_db`.
     Mantenemos `include_baseline=False` para preservar la semántica
     histórica del endpoint /reportes (que nunca incluyó capital_inicio).
+
+    El PAR se suma DESDE ACÁ, una llamada por broker, en vez de pasarle una
+    lista a la SSoT. Con `include_baseline=False` la función es una SUMA pura
+    (`SUM(deposits) − SUM(withdrawals)`), así que suma-de-sumas ES exactamente
+    la query con `IN`. Con el baseline PRENDIDO no habría respuesta correcta:
+    su `ORDER BY year, month LIMIT 1` elegiría una fila arbitraria del par, y
+    sumar per-broker daría DOS baselines. Como ningún caller no-global pide
+    baseline, se esquiva en vez de ampliarle la firma a un helper que hoy es
+    simple, correcto y tiene 8 callers más que sí lo usan.
     """
     from snapshots_job import compute_net_deposited_db
-    return compute_net_deposited_db(
-        conn, uid,
-        as_of_date=end_date,
-        broker_filter=broker_filter,
-        include_baseline=False,
+    return sum(
+        compute_net_deposited_db(
+            conn, uid,
+            as_of_date=end_date,
+            broker_filter=b,
+            include_baseline=False,
+        )
+        for b in brokers_del_filtro(conn, uid, broker_filter)
     )
 
 
@@ -748,15 +918,19 @@ def compute_metrics_for_period(
             # /mensual) start quedaba 0 → "P&L del mes" = la cartera ENTERA sobre
             # "capital inicial de US$ 0". Heredamos el cierre del mes anterior.
             if not me:
-                prev_row = conn.execute(
-                    """SELECT capital_final FROM monthly_entries
-                        WHERE user_id = ? AND broker = ?
-                          AND (year < ? OR (year = ? AND month < ?))
-                        ORDER BY year DESC, month DESC LIMIT 1""",
-                    (uid, broker_filter, y, y, m),
-                ).fetchone()
-                if prev_row and float(prev_row["capital_final"] or 0) > 0:
-                    start_value = float(prev_row["capital_final"])
+                # ⚠️ NO ALCANZA CON UN `GROUP BY … LIMIT 1`. Consolidar el último
+                # mes CON filas y quedarse con ése elige el último mes del PAR,
+                # que puede pertenecer a una sola pata: si el sibling vendió en
+                # noviembre y el padre no opera desde agosto, el arranque pasa a
+                # ser el capital del sibling SOLO (medido: 200 donde la verdad es
+                # 8.200 — peor que el LIMIT 1 pelado de antes, que al menos traía
+                # los 8.000 del padre). Cada pata tiene que aportar SU último
+                # cierre, aunque sea de un mes distinto.
+                _bs_prev = brokers_del_filtro(conn, uid, broker_filter)
+                py, pm = _mes_anterior(y, m)
+                prev_cap = capital_vigente(conn, uid, _bs_prev, py, pm)
+                if prev_cap is not None and prev_cap > 0:
+                    start_value = prev_cap
             # AUDIT C-2 (patch pre-C1): el mes EN CURSO cierra con end MtM (live),
             # pero capital_inicio viene de la cadena monthly A COSTO → costo-vs-
             # mercado fabricaba TODO el unrealized histórico como "P&L del mes"
@@ -918,13 +1092,35 @@ def compute_metrics_for_period(
         # mes con data; end = capital_final del último mes con data (o live
         # value si el año en curso). flows = suma de deposits/withdrawals.
         y = int(period_start[:4])
+        # ⚠️ `GROUP BY month` — NO un `IN` pelado. Con dos filas por mes el `IN`
+        # rompe en TRES lugares a la vez, y sólo uno se ve:
+        #   (a) `rows[0]`/`rows[-1]` agarran una pata arbitraria (el orden
+        #       intra-mes no está especificado, y la fila que queda última fue
+        #       la del SIBLING en SQLite y puede ser la otra en Postgres) → el
+        #       capital del año queda partido al medio;
+        #   (b) `_meses_con_fila` pasa a [1,1,2,2,…], `_hay_agujero` da True
+        #       SIEMPRE y la composición geométrica del año se APAGA EN
+        #       SILENCIO — el año cae al Dietz punta a punta sin escribir nada
+        #       en ninguna pantalla ni en ningún log;
+        #   (c) el bucle de composición itera 2 filas por mes y multiplica el
+        #       Dietz de cada mes DOS VECES.
+        # Con una fila por mes las tres se van juntas: el cuerpo de abajo
+        # recupera su invariante ("una fila por mes") sin tocar una línea.
+        # `pnl_realized` se cae del SELECT: se seleccionaba y no se leía nunca
+        # (el `realized` de esta rama sale de `ops`).
+        _bs_year = brokers_del_filtro(conn, uid, broker_filter)
         rows = conn.execute(
-            """SELECT month, capital_inicio, capital_final, deposits, withdrawals,
-                       pnl_realized, pnl_unrealized
+            f"""SELECT month,
+                       COALESCE(SUM(capital_inicio), 0)  AS capital_inicio,
+                       COALESCE(SUM(capital_final), 0)   AS capital_final,
+                       COALESCE(SUM(deposits), 0)        AS deposits,
+                       COALESCE(SUM(withdrawals), 0)     AS withdrawals,
+                       COALESCE(SUM(pnl_unrealized), 0)  AS pnl_unrealized
                  FROM monthly_entries
-                WHERE user_id = ? AND broker = ? AND year = ?
+                WHERE user_id = ?{_in_clause(_bs_year)} AND year = ?
+                GROUP BY month
                 ORDER BY month ASC""",
-            (uid, broker_filter, y),
+            (uid, *_bs_year, y),
         ).fetchall()
         if rows:
             start_value = float(rows[0]["capital_inicio"] or 0)
@@ -932,6 +1128,21 @@ def compute_metrics_for_period(
             deposits = sum(float(r["deposits"] or 0) for r in rows)
             withdrawals = sum(float(r["withdrawals"] or 0) for r in rows)
             unrealized = float(rows[-1]["pnl_unrealized"] or 0)
+            # Los STOCKS de las puntas se recomponen por pata. El GROUP BY de
+            # arriba consolida el mes, pero `rows[-1]` sigue siendo el último mes
+            # CON FILAS del par: si ese mes lo aportó una sola pata, el capital de
+            # la otra se evapora del cierre mientras `realized` (que mira el par
+            # entero) lo sigue contando — la tarjeta publicaría "Valor cierre
+            # US$2.200" junto a "Realizado +US$1.700" con no-realizado 0.
+            # Los FLUJOS de arriba sí se suman: son del mes, no arrastran.
+            if len(_bs_year) > 1:
+                _py, _pm = _mes_anterior(y, int(rows[0]["month"]))
+                _ini = capital_vigente(conn, uid, _bs_year, _py, _pm)
+                if _ini is not None:
+                    start_value = _ini
+                _fin = capital_vigente(conn, uid, _bs_year, y, int(rows[-1]["month"]))
+                if _fin is not None:
+                    end_value = _fin
         year_is_current = live_value is not None and is_period_current(
             period_type, period_start, period_end, today=today)
         if year_is_current:
@@ -1095,8 +1306,23 @@ def compute_metrics_for_period(
             comp = 1.0
             have_comp = False
             for i, r in enumerate(rows):
-                ci = float(r["capital_inicio"] or 0)
-                cf = float(r["capital_final"] or 0)
+                # Los STOCKS del mes se recomponen por pata, igual que en las
+                # puntas del año (arriba). El GROUP BY suma sólo las filas que
+                # EXISTEN, y `monthly_entries` es rala por broker: en todo mes en
+                # que una pata no tiene fila, su capital desaparecía del factor
+                # de ese mes y el Dietz mensual salía sobre una base incompleta.
+                # Este es el CUARTO lugar con el mismo defecto — los otros tres
+                # son fetch_monthly_entry, el fallback C-3 y las puntas del año.
+                _m = int(r["month"])
+                _py, _pm = _mes_anterior(y, _m)
+                ci = (capital_vigente(conn, uid, _bs_year, _py, _pm)
+                      if len(_bs_year) > 1 else None)
+                if ci is None:
+                    ci = float(r["capital_inicio"] or 0)
+                cf = (capital_vigente(conn, uid, _bs_year, y, _m)
+                      if len(_bs_year) > 1 else None)
+                if cf is None:
+                    cf = float(r["capital_final"] or 0)
                 if i == len(rows) - 1 and year_is_current:
                     cf = float(live_value)
                     # AUDIT C-2: el mes vivo componía ci A COSTO contra cf MtM →
@@ -1853,7 +2079,32 @@ def build_period_report(
     )
     drivers = compute_drivers(ops)
     highlights = compute_highlights(ops)
-    movers, movers_available = compute_movers(conn, uid, start, end)
+    # Los movers salen de `snapshots.holdings_json`, que NO guarda el broker por
+    # activo: no hay dato con qué desagregarlos. Con un filtro de broker eran la
+    # única fuga cross-broker que quedaba en el reporte — el de "IOL" publicaba
+    # "Mejor activo: NVDA" sobre un activo que el usuario tiene en Binance. Era
+    # ruido tolerable cuando el reporte entero estaba incompleto; al lado de
+    # `realized`, `positions_count` y `top_holdings` ya exactos al par, es una
+    # afirmación falsa. `movers_available=False` es el mecanismo que el propio
+    # builder ya usa para "no tengo con qué": la pantalla lo sabe manejar.
+    # El guard correcto no es "global vs no-global" sino "¿el filtro deja algún
+    # broker AFUERA?". Si el usuario tiene una sola cuenta —muy común, y es
+    # justo el caso del par padre + '· USD' que esta rama viene a unificar—,
+    # filtrar por ella cubre la cartera entera: el snapshot ES el de ese
+    # portfolio y los movers eran exactos. Apagarlos ahí borraba un dato bueno
+    # y encima mostraba en pantalla que "se empieza a medir desde hoy", que es
+    # falso: la foto por activo existe y la misma pantalla la usa en global.
+    if broker_filter == "global":
+        movers, movers_available = compute_movers(conn, uid, start, end)
+    else:
+        _total_brokers = conn.execute(
+            "SELECT COUNT(*) c FROM brokers WHERE user_id = ?", (uid,)).fetchone()
+        _cubre_todo = _total_brokers and int(_total_brokers["c"] or 0) == len(
+            brokers_del_filtro(conn, uid, broker_filter))
+        if _cubre_todo:
+            movers, movers_available = compute_movers(conn, uid, start, end)
+        else:
+            movers, movers_available = [], False
     headline, subheadline = generate_headline(metrics, drivers, period_type)
     narrative = generate_narrative(metrics, drivers, highlights, period_type, label)
 

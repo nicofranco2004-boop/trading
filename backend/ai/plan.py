@@ -148,6 +148,37 @@ def can_access(conn, user_id: int, feature_id: str) -> bool:
     return bool(limits["can_access"].get(feature_id, False))
 
 
+def count_broker_accounts(conn, user_id: int) -> int:
+    """Cuántas CUENTAS tiene el user — no cuántas filas hay en `brokers`.
+
+    Un broker argentino que opera en las dos monedas tiene DOS filas: el padre
+    y el sub-broker "<Padre> · USD" que crea `_ensure_usd_sibling`. El sibling
+    es plumbing: nace sin pasar por la cuota (INSERT directo), el usuario nunca
+    lo pidió, y la UI lo presenta como parte de la misma cuenta. Contarlo como
+    un broker más le come un cupo que pagó: un Plus (brokers_max=3) con 2
+    brokers reales contaba 4 y no podía crear el tercero.
+
+    Cuenta las RAÍCES (parent_broker_id IS NULL) más los HUÉRFANOS (apuntan a
+    un padre que ya no existe), que es exactamente el conjunto que la Cartera
+    dibuja como tarjetas — `sortBrokersForDisplay` re-emite al huérfano como
+    cuenta propia. Si contáramos sólo las raíces, un huérfano se vería en
+    pantalla sin ocupar cupo.
+
+    Único lugar donde vive esta definición: los tres call-sites (las dos cuotas
+    de acá y el mail de resumen de la prueba) tienen que dar el MISMO número.
+    """
+    row = conn.execute(
+        """SELECT COUNT(*) AS c FROM brokers b
+            WHERE b.user_id = ?
+              AND (b.parent_broker_id IS NULL
+                   OR NOT EXISTS (SELECT 1 FROM brokers p
+                                   WHERE p.id = b.parent_broker_id
+                                     AND p.user_id = b.user_id))""",
+        (user_id,),
+    ).fetchone()
+    return int(row["c"] or 0) if row else 0
+
+
 def check_broker_quota(conn, user_id: int) -> tuple[bool, dict]:
     """¿Puede el user crear un broker nuevo? Grandfather-aware.
 
@@ -164,10 +195,7 @@ def check_broker_quota(conn, user_id: int) -> tuple[bool, dict]:
     limits = PLAN_LIMITS.get(tier, PLAN_LIMITS["free"])
     limit = limits["brokers_max"]
 
-    row = conn.execute(
-        "SELECT COUNT(*) AS c FROM brokers WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    current = int(row["c"] or 0) if row else 0
+    current = count_broker_accounts(conn, user_id)
 
     if limit is None:
         return True, {
@@ -241,10 +269,7 @@ def get_plan_features(conn, user_id: int, tier_override: str | None = None) -> d
     tier = tier_override or quota.get_tier(conn, user_id)
     limits = PLAN_LIMITS.get(tier, PLAN_LIMITS["free"])
 
-    broker_row = conn.execute(
-        "SELECT COUNT(*) AS c FROM brokers WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    current_brokers = int(broker_row["c"] or 0) if broker_row else 0
+    current_brokers = count_broker_accounts(conn, user_id)
 
     brokers_max = limits["brokers_max"]
     brokers_can_create = brokers_max is None or current_brokers < brokers_max

@@ -31,7 +31,8 @@ def _make_db(*, n_brokers_user2: int = 0, n_brokers_user1: int = 0):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             name TEXT NOT NULL,
-            currency TEXT
+            currency TEXT,
+            parent_broker_id INTEGER REFERENCES brokers(id)
         );
     """)
     for i in range(n_brokers_user1):
@@ -203,4 +204,86 @@ def test_free_limits_stricter_than_pro():
     assert (
         pro["behavioral_tags_visible"] is None
         or pro["behavioral_tags_visible"] > free["behavioral_tags_visible"]
+    )
+
+
+# ── el sub-broker "· USD" no come cupo ───────────────────────────────────────
+# Regresión: `_ensure_usd_sibling` inserta el sibling directo, SIN pasar por la
+# cuota, y después el COUNT(*) pelado se lo cobraba al usuario. Un Plus con 2
+# brokers reales contaba 4 y no podía crear el tercero que pagó.
+
+def _add_sibling(conn, user_id: int, parent_name: str):
+    """Replica lo que hace `_ensure_usd_sibling`: fila propia, currency USDT,
+    parent_broker_id apuntando al padre."""
+    parent = conn.execute(
+        "SELECT id FROM brokers WHERE user_id=? AND name=?",
+        (user_id, parent_name),
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO brokers (user_id, name, currency, parent_broker_id) "
+        "VALUES (?, ?, 'USDT', ?)",
+        (user_id, f"{parent_name} · USD", parent["id"]),
+    )
+    conn.commit()
+
+
+def test_sibling_usd_no_consume_cupo():
+    """Free con 1 broker AR bimonetario sigue teniendo 1 cuenta, no 2."""
+    conn = _make_db(n_brokers_user2=1)
+    _add_sibling(conn, 2, "FreeBroker0")
+
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM brokers WHERE user_id=2"
+    ).fetchone()["c"] == 2, "precondición: hay 2 FILAS en brokers"
+
+    allowed, info = plan.check_broker_quota(conn, 2)
+    assert info["current_count"] == 1, "el sibling no es una cuenta aparte"
+    assert allowed is False, "1 broker real ya es el cap de free"
+    assert info["grandfather"] is False, (
+        "grandfather=True acá sería falso: no superó el cap, sólo tiene un sibling"
+    )
+
+
+def test_sibling_usd_no_bloquea_el_broker_que_el_plus_pago():
+    """El caso que rompía: 2 brokers reales + 2 siblings contra brokers_max=3.
+
+    Sin el filtro cuenta 4 y le rebota el alta del tercero."""
+    assert plan.PLAN_LIMITS["plus"]["brokers_max"] == 3, (
+        "el test asume el tope de Plus; si cambió, actualizá el caso"
+    )
+    conn = _make_db()
+    conn.execute("UPDATE users SET tier='plus' WHERE id=2")
+    for n in ("IOL", "Balanz"):
+        conn.execute(
+            "INSERT INTO brokers (user_id, name, currency) VALUES (2, ?, 'ARS')",
+            (n,),
+        )
+    conn.commit()
+    for n in ("IOL", "Balanz"):
+        _add_sibling(conn, 2, n)
+
+    allowed, info = plan.check_broker_quota(conn, 2)
+    assert info["current_count"] == 2, f"2 cuentas reales, no {info['current_count']}"
+    assert allowed is True, "tiene que poder crear el tercer broker"
+
+
+def test_get_plan_features_no_cuenta_el_sibling():
+    """El mismo número que ve el frontend en limits.brokers_current."""
+    conn = _make_db(n_brokers_user2=1)
+    _add_sibling(conn, 2, "FreeBroker0")
+    out = plan.get_plan_features(conn, 2)
+    assert out["limits"]["brokers_current"] == 1
+
+
+def test_huerfano_cuenta_como_cuenta_propia():
+    """Un sibling cuyo padre ya no existe se dibuja como tarjeta suelta en la
+    Cartera (`sortBrokersForDisplay` lo re-emite como standalone), así que
+    tiene que ocupar cupo: si no, se ve en pantalla y no se cobra."""
+    conn = _make_db(n_brokers_user2=1)
+    _add_sibling(conn, 2, "FreeBroker0")
+    conn.execute("DELETE FROM brokers WHERE user_id=2 AND name='FreeBroker0'")
+    conn.commit()
+
+    assert plan.count_broker_accounts(conn, 2) == 1, (
+        "el huérfano quedó solo: es 1 cuenta, no 0"
     )
