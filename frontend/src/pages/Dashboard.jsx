@@ -807,8 +807,8 @@ function PersonalDashboard() {
             <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
             <p className="text-ink-3">
               {currency === 'ARS'
-                ? `Conversión USD → ARS al blue actual (${tcBlue}). Los valores históricos no se reconvierten.`
-                : 'Para brokers ARS, la conversión a USD se hace al blue actual.'}
+                ? `Conversión USD → ARS al dólar ${valuationDollar === 'ccl' ? 'CCL' : 'MEP'} (${tcBlue}), el que elegiste para valuar. Los valores históricos no se reconvierten.`
+                : `Para brokers ARS, la conversión a USD se hace al dólar ${valuationDollar === 'ccl' ? 'CCL' : 'MEP'} que elegiste.`}
             </p>
           </InfoTooltip>
         </div>
@@ -825,8 +825,8 @@ function PersonalDashboard() {
           {!hidden && (
             <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
               {currency === 'ARS'
-                ? <>≈ {fmtUsd(portfolioTotal)}<span className="text-ink-3 ml-1">al blue {tcBlue}</span></>
-                : <>≈ {fmtArs(portfolioTotal * tcBlue)}<span className="text-ink-3 ml-1">al blue {tcBlue}</span></>}
+                ? <>≈ {fmtUsd(portfolioTotal)}<span className="text-ink-3 ml-1">al {valuationDollar === 'ccl' ? 'CCL' : 'MEP'} {tcBlue}</span></>
+                : <>≈ {fmtArs(portfolioTotal * tcBlue)}<span className="text-ink-3 ml-1">al {valuationDollar === 'ccl' ? 'CCL' : 'MEP'} {tcBlue}</span></>}
             </span>
           )}
           {!hidden && (

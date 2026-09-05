@@ -196,8 +196,20 @@ function PositionsDesktop() {
   // TC blue/MEP derivados — se declaran ACÁ (arriba de los useMemo que los
   // consumen vía closure/deps) para evitar ReferenceError por temporal dead
   // zone si JS evalúa el array de deps antes de la declaración de `const`.
-  const tcBlue = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
-  const tcMep = pickFinancialRate(dolar, valuationDollar) || config.tc_mep || 1415
+  // UN SOLO dólar de valuación para toda la pantalla. Antes eran dos expresiones
+  // idénticas salvo por el fallback (config.tc_blue vs config.tc_mep), así que
+  // mientras `dolar` no hubiera llegado —request asíncrona, y el backend se duerme
+  // en Hobby— cada una caía a un valor guardado DISTINTO. Las filas se convertían
+  // con uno y el TOTAL del pie con el otro: caso real, filas al 1.341,71 (viejo) y
+  // pie al 1.521,10 (el MEP), 13,4% de diferencia en la misma tabla.
+  //
+  // `tcValuacion` es el dólar que ELIGE el usuario (MEP o CCL, ver
+  // pickFinancialRate). `tcBlue`/`tcMep` quedan como alias del MISMO número: el
+  // nombre `tcBlue` es histórico y NO contiene el blue — se conserva sólo porque
+  // lo leen ~39 archivos y renombrarlo es un cambio aparte.
+  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || config.tc_mep || config.tc_blue || 1415
+  const tcBlue = tcValuacion
+  const tcMep = tcValuacion
   // Cotizaciones históricas: para mostrar a qué dólar se convierte un movimiento
   // con fecha pasada (el backend usa el mismo criterio para guardarlo).
   const fxHist = useFxHistory(tcBlue)
