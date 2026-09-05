@@ -586,6 +586,86 @@ def _table_cols(conn, table: str) -> set:
     return {r[1] for r in rows}
 
 
+def _fx_transfer_legs_for_period(conn, uid: int, broker: str, year_str: str,
+                                 month_str: str):
+    """(dep_usd, wit_usd) que aportan las CONVERSIONES de moneda al capital
+    aportado de `broker` en el período.
+
+    Una conversión ARS→USD (o al revés) NO es plata que entra ni sale de Rendi:
+    es la MISMA plata cambiando de broker. Por eso se contabiliza como una
+    TRANSFERENCIA INTERNA NETA CERO — el mismo monto en dólares sale de un lado
+    y entra del otro —, así el capital aportado GLOBAL no se mueve y sólo se
+    corrige a quién está atribuido.
+
+    ⚠️ POR QUÉ ESTO VIVE ACÁ Y NO EN EL PERSISTER. `_persist_fx` ya escribía
+    estos flujos (el bloque "FIX bug #1"), pero los escribía con `is_manual=False`
+    y `FX_*` no está en DEPOSIT/WITHDRAW: o sea que no quedaban ni en `manual_*`
+    ni en lo que el recalc recomputa desde los imports, y
+    `_recalc_pnl_realized_from_ops` —que corre en el confirm, justo después— los
+    pisaba con cero en sus ~12 call sites. El fix nació muerto: el recalc ya era
+    autoritativo (`e56140ae`, 3 semanas antes) y el confirm ya lo llamaba. Su
+    único test llamaba `persist_batch` directo y nunca llegaba al recalc, así que
+    certificaba en verde lo contrario de lo que pasaba en producción.
+
+    Medido sobre el backup de prod del 2026-08-16: **US$444.342 se fueron de ARS
+    a USD y US$217.932 volvieron, sin que ningún broker los acreditara**. El
+    síntoma visible es un capital aportado NEGATIVO por broker en 12 de 30
+    usuarios — plata que entró por conversión (sin contar) y salió por retiro
+    (contando). A nivel global el error casi se cancela, que es por qué esto
+    sobrevivió: sólo se ve en los reportes POR BROKER.
+
+    Y cubre las DOS direcciones. `_persist_fx` sólo escribía flujos en
+    `ars_to_usd`; en `usd_to_ars` no escribía ninguno, ni siquiera uno que el
+    recalc pudiera pisar.
+
+    La fila normalizada nombra SIEMPRE al broker que PAGA (`n.broker`): el padre
+    ARS en FX_ARS_TO_USD, el hijo USD en FX_USD_TO_ARS. El que cobra es su
+    contraparte por `parent_broker_id` (la misma que resuelve
+    `_ensure_usd_sibling`, de ahí el filtro `currency='USDT'`).
+
+    El monto sale de `gross_amount_usd`, que en una conversión NO es una
+    cotización: `stamp_tx_gross_usd` sella ahí la pata en dólares de la propia
+    operación (`abs(quantity)`) — el dólar que el usuario pagó de verdad, más
+    exacto que cualquier TC de referencia. `quantity` queda de respaldo para
+    filas viejas sin sellar.
+    """
+    # En 'global' las dos patas se cancelan por construcción. Devolver 0 acá (en
+    # vez de sumar payer y receiver) mantiene el neto en CERO aunque a un par le
+    # falte la contraparte —un broker borrado, por ejemplo—: el invariante no
+    # depende de que los dos lados sigan existiendo.
+    if broker == "global":
+        return 0.0, 0.0
+    _monto = "COALESCE(n.gross_amount_usd, ABS(n.quantity))"
+    _donde = ("""WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                   AND n.operation_type IN ('FX_ARS_TO_USD','FX_USD_TO_ARS')
+                   AND n.date IS NOT NULL AND n.date LIKE '____-__-__%'
+                   AND strftime('%Y', n.date)=? AND strftime('%m', n.date)=?""")
+    try:
+        paga = conn.execute(
+            f"""SELECT COALESCE(SUM({_monto}), 0) AS s
+                  FROM import_normalized_tx n
+                  JOIN import_batches b ON b.id = n.batch_id
+                {_donde} AND n.broker = ?""",
+            (uid, year_str, month_str, broker),
+        ).fetchone()
+        cobra = conn.execute(
+            f"""SELECT COALESCE(SUM({_monto}), 0) AS s
+                  FROM import_normalized_tx n
+                  JOIN import_batches b ON b.id = n.batch_id
+                  JOIN brokers bp ON bp.user_id = b.user_id AND bp.name = n.broker
+                  JOIN brokers bc ON bc.user_id = b.user_id AND bc.name = ?
+                   AND ((n.operation_type='FX_ARS_TO_USD'
+                         AND bc.parent_broker_id = bp.id AND bc.currency='USDT')
+                     OR (n.operation_type='FX_USD_TO_ARS'
+                         AND bc.id = bp.parent_broker_id))
+                {_donde}""",
+            (broker, uid, year_str, month_str),
+        ).fetchone()
+    except ERR_OPERACIONAL:
+        return 0.0, 0.0          # tablas de import aún no existen (DB fresca)
+    return float(cobra["s"] or 0), float(paga["s"] or 0)
+
+
 def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
                              month_str: str, tc_blue: float):
     """(imp_deposits_usd, imp_withdrawals_usd) — suma de DEPOSIT/WITHDRAW de batches
@@ -623,7 +703,13 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
             dep += float(f["s_usd"] or 0)
         else:
             wit += float(f["s_usd"] or 0)
-    return dep, wit
+    # Las conversiones de moneda entran como transferencia interna neta cero.
+    # Van ACÁ, en el helper compartido, y no sólo en el recalc: `_backfill_manual_flows`
+    # y `_derive_manual_flows` derivan lo MANUAL como `total − imports`, así que si
+    # los flujos de conversión no fueran "imports" para ellos, el form /mensual los
+    # re-clasificaría como manuales y el recalc los sumaría DOS veces.
+    fx_dep, fx_wit = _fx_transfer_legs_for_period(conn, uid, broker, year_str, month_str)
+    return dep + fx_dep, wit + fx_wit
 
 
 def _backfill_manual_flows(conn) -> None:
@@ -9473,6 +9559,33 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
                 WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW') AND n.date IS NOT NULL
                   AND n.date LIKE '____-__-__%'""",  # ver el LIKE de arriba
+            (uid,),
+        ).fetchall():
+            if r["y"] and r["b"]:
+                _seed.add((r["b"], r["y"], r["m"]))
+                _seed.add(("global", r["y"], r["m"]))
+    except ERR_OPERACIONAL:
+        pass          # tablas de import aún no existen (DB fresca)
+    # Los meses de las CONVERSIONES se siembran para las DOS patas del par: la
+    # fila nombra sólo al que paga, y sin sembrar al que cobra un mes cuyo único
+    # movimiento es una conversión no tendría fila que actualizar → el depósito
+    # del broker receptor se perdería igual que antes del fix.
+    try:
+        for r in conn.execute(
+            """SELECT DISTINCT bx.name AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
+                      CAST(strftime('%m', n.date) AS INT) AS m
+                 FROM import_normalized_tx n
+                 JOIN import_batches ib ON ib.id = n.batch_id
+                 JOIN brokers bp ON bp.user_id = ib.user_id AND bp.name = n.broker
+                 JOIN brokers bx ON bx.user_id = ib.user_id
+                  AND (bx.id = bp.id
+                    OR (n.operation_type='FX_ARS_TO_USD'
+                        AND bx.parent_broker_id = bp.id AND bx.currency='USDT')
+                    OR (n.operation_type='FX_USD_TO_ARS'
+                        AND bx.id = bp.parent_broker_id))
+                WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
+                  AND n.operation_type IN ('FX_ARS_TO_USD','FX_USD_TO_ARS')
+                  AND n.date IS NOT NULL AND n.date LIKE '____-__-__%'""",
             (uid,),
         ).fetchall():
             if r["y"] and r["b"]:
