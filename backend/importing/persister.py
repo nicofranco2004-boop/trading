@@ -1125,22 +1125,26 @@ def _persist_fx(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, *, d
         usd_broker = helpers._ensure_usd_sibling(conn, uid, ars_broker)
         _adjust_cash_permissive(conn, uid, ars_broker["name"], "ARS", -ars_amount)
         _adjust_cash_permissive(conn, uid, usd_broker["name"], "USDT", usd_amount, tc_for_basis=tc)
-        # Capital aportado (FIX bug #1 — el FX no escribía monthly_entries): el
-        # depósito en pesos se registró al blue (subvaluado vs el MEP al que el
-        # usuario realmente convirtió). Corregimos el libro de capital para que
-        # refleje los USD efectivamente obtenidos: sacamos la pata ARS a su valor
-        # BLUE (cancela lo que sumó el depósito) y metemos la pata USD a valor
-        # FACE. Sin esto el "Capital Aportado" queda subvaluado y el return sale
-        # fantasma (1M ARS→1000 USD daba capital 706,71 y un +41% irreal). El
-        # criterio: valuar el capital a la MISMA tasa que las tenencias (ARS→blue,
-        # USD→face), así una conversión no inventa ni P&L ni capital nuevo, solo
-        # re-ancla la base a la moneda en que ahora está la plata.
-        _y, _m = int(tx.date[:4]), int(tx.date[5:7])
-        _ars_as_usd = (ars_amount / tc_blue) if tc_blue else 0.0
-        helpers._update_monthly_flow(conn, uid, ars_broker["name"], _y, _m, "withdraw", _ars_as_usd)
-        helpers._update_monthly_flow(conn, uid, "global", _y, _m, "withdraw", _ars_as_usd)
-        helpers._update_monthly_flow(conn, uid, usd_broker["name"], _y, _m, "deposit", usd_amount)
-        helpers._update_monthly_flow(conn, uid, "global", _y, _m, "deposit", usd_amount)
+        # El capital aportado de una conversión NO se escribe acá: lo recompone
+        # `_fx_transfer_legs_for_period` (main.py) desde `import_normalized_tx`.
+        #
+        # Acá vivía el "FIX bug #1", que escribía cuatro `_update_monthly_flow`.
+        # Nunca funcionó un solo día en producción: iban con `is_manual=False` y
+        # `FX_ARS_TO_USD` no está en DEPOSIT/WITHDRAW, así que el recalc —que ya
+        # era autoritativo cuando el fix se escribió, y que el confirm llama justo
+        # después— los pisaba con cero. Su test llamaba `persist_batch` directo y
+        # nunca llegaba al recalc: verde certificando lo contrario de la realidad.
+        #
+        # Y su premisa caducó aparte. El comentario decía que el depósito en pesos
+        # "se registró al blue" de hoy, y por eso restaba la pata ARS a
+        # `ars/tc_blue`; desde `f76c7bdb` los flujos en pesos se sellan al TC de SU
+        # fecha, así que esa resta ya no cancelaba nada — restaba al dólar de hoy
+        # lo que el depósito había acreditado al dólar de su día.
+        #
+        # Ahora la conversión es una transferencia interna NETA CERO, recomputada
+        # desde la fuente en vez de acumulada acá: idempotente ante re-imports y
+        # correcta ante revert (los filtros `status='confirmed'` y `excluded_at`
+        # ya viven en esa query) sin que este archivo tenga que acordarse de nada.
         from_b, from_curr, to_curr = ars_broker["name"], "ARS", "USDT"
         op_pnl_usd = 0.0
         op_pnl_pct = None
