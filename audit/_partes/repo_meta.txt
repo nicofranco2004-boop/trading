@@ -1,0 +1,19 @@
+commit auditado: b74f450f2badf1a2b84e657551115a0595110e45 (2026-09-05)
+commits totales en origin/main: 1338
+primer commit: 2026-04-23
+ramas locales: 130 | mergeadas a origin/main: 102 | sin mergear: 27
+rama checkouteada: fix/fase0-broker-unificado (622 detras de origin/main, merge-base 2026-06-26)
+main local: 11 commits que origin/main no tiene, 151 detras
+--- commits por mes en origin/main ---
+   9 2026-04
+ 362 2026-05
+ 315 2026-06
+ 322 2026-07
+ 289 2026-08
+  41 2026-09
+--- autores ---
+  1292	nicolas pussetto
+    31	nicofranco2004-boop
+    13	Claude
+     1	Nicolas Pussetto
+     1	nico
