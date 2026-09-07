@@ -64,6 +64,12 @@ const CATEGORIES = [
   { id: 'otro',    label: 'Otro',          icon: CircleHelp, list: null,          hint: 'No está en la lista — lo cargás vos', freeText: true },
 ]
 
+// Normalizador de búsqueda: minúsculas y SIN acentos. Los nombres de la fuente
+// vienen acentuados ("Ualá", "Renta Dólares") y nadie escribe los acentos al
+// buscar: sin esto, tipear "uala" o "dolar" no encontraba nada.
+const norm = (v) => (v || '').toString().toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+
 export default function AddPositionFlow({ onClose, onAssetSelected, brokers = [], initialBroker = null, onPlazoFijo, onCreateBroker }) {
   // Secuencia de pasos. Si ya viene un broker preseleccionado (alta desde el
   // menú de un broker puntual, o "Cambiar" activo), salteamos el paso de broker.
@@ -404,7 +410,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
   // el click sobre una sugerencia).
   const [engaged, setEngaged] = useState(false)
   const inputRef = useRef(null)
-  const q = query.trim().toLowerCase()
+  const q = norm(query.trim())
   const searching = q.length > 0
 
   // Salir de la búsqueda: limpia el texto, colapsa las sugerencias y vuelve a la
@@ -421,7 +427,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
   const results = useMemo(() => {
     if (!q) return []
     return universe
-      .filter(t => t.s.toLowerCase().includes(q) || (t.n || '').toLowerCase().includes(q))
+      .filter(t => norm(t.s).includes(q) || norm(t.n).includes(q) || norm(t._sub).includes(q))
       .slice(0, RESULT_CAP)
   }, [q, universe])
 
@@ -580,10 +586,10 @@ function Step2TickerPicker({ category, onPick }) {
 
   // Filtrado por ticker (símbolo) o nombre, case-insensitive
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
+    const q = norm(query.trim())
     if (!q) return category.list
     return category.list.filter(t =>
-      t.s.toLowerCase().includes(q) || (t.n || '').toLowerCase().includes(q)
+      norm(t.s).includes(q) || norm(t.n).includes(q)
     )
   }, [query, category])
 
@@ -854,10 +860,10 @@ function StepFciPicker({ list, onPick }) {
   }, [list])
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
+    const q = norm(query.trim())
     if (!q) return groups
     return groups.filter(g =>
-      g.base.toLowerCase().includes(q) || (g.emisor || '').toLowerCase().includes(q)
+      norm(g.base).includes(q) || norm(g.emisor).includes(q)
     )
   }, [query, groups])
 

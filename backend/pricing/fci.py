@@ -89,6 +89,25 @@ BROKER_FCI_ALLOWLIST = [
     "IOL Cash Management",     # rentaFija ARS — VCP Clase A 11.746,19 (÷1000=11,75), patrimonio $89.270M
     "IOL Dólar Ahorro Plus",   # rentaFija USD — VCP Clase D 1.088,59 (÷1000=1,09), patrimonio $257M
     "IOL Portafolio Potenciado",  # rentaFija ARS — VCP Clase A 1.588,31 (÷1000=1,59), patrimonio $29.205M
+    # Ualá — reportado por user 2026-09-07. La razón por la que "no estaban":
+    # en CAFCI/ArgentinaDatos NO figuran como "Ualá" sino como "Ualintec" (la
+    # administradora es Ualintec Capital S.A.), así que ni buscándolos aparecían.
+    # Los 6 base-names cubren sus 18 clases (A/B/C). Verificados 2026-09-07 contra
+    # ArgentinaDatos: nombre exacto + clase + moneda + identidad vcp*ccp==patrimonio*1000.
+    "Ualintec Ahorro Pesos",         # mercadoDinero ARS — VCP Clase A 8.506,46 (÷1000=8,51), patrimonio $175.517M
+    "Ualintec Pesos Plus",           # rentaFija ARS — VCP Clase A 1.979,07 (÷1000=1,98), patrimonio $10.649M
+    "Ualintec Renta Fija Pesos",     # rentaFija ARS — VCP Clase A 13.206,08 (÷1000=13,21), patrimonio $3.918M
+    "Ualintec Cobertura",            # rentaFija ARS (dollar-linked: la cuotaparte es en $) — VCP Clase A 1.805,67, patrimonio $2.574M
+    "Ualintec Renta Dólares",        # rentaFija USD — VCP Clase A 1.214,53 (÷1000=US$1,21), patrimonio US$52M
+    "Ualintec Renta Variable Pesos", # rentaVariable ARS — VCP Clase A 2.197,47 (÷1000=2,20), patrimonio $1.252M
+]
+
+# Nombre COMERCIAL del emisor, cuando no se deduce del nombre del fondo. El
+# emisor es uno de los dos campos por los que se busca en el selector de fondos,
+# así que acá vive la traducción "como lo conoce el usuario" → "como lo llama
+# CAFCI". Match por prefijo del nombre-base, normalizado (sin acentos, lower).
+EMISOR_OVERRIDES = [
+    ("ualintec", "Ualá (Ualintec)"),
 ]
 
 
@@ -144,7 +163,12 @@ def _parse_moneda(name):
 def _parse_emisor(name):
     if (name or "").lower().startswith("fima"):
         return "Galicia (FIMA)"
-    return _base_name(name)
+    base = _base_name(name)
+    low = _strip_accents(base).lower()
+    for prefix, emisor in EMISOR_OVERRIDES:
+        if low.startswith(prefix):
+            return emisor
+    return base
 
 
 def _slug(name):
