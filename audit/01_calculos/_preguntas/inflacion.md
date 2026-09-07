@@ -1,0 +1,17 @@
+# Preguntas abiertas candidatas — inflacion
+
+11 preguntas del mapeo previo que matchean este tema por palabra clave.
+**Filtro automático, no curado:** puede traer ruido y puede faltar alguna.
+Elegí SOLO las que necesitás que el founder conteste para poder concluir.
+
+- _[API]_ P-051** | · menor | Endpoints (main.py 5500–8500): benchmark | ¿'UVA' y 'A3500' en la allowlist de /api/bond-indices son features planeadas o restos de un diseño que nunca se implementó? Hoy devuelven serie vacía con stale:true permanente. 
+- _[IA]_ P-162** | 🔴 bloquea | Facturación, suscripciones, trial y plan | El webhook MP (`POST /api/billing/webhook`, backend/main.py:27501) procesa eventos sin firma cuando `MP_WEBHOOK_SECRET` no está seteada. Si MP ya está desmantelado, ¿por qué sigue montado el endpoint en vez de devolver 410? ¿Y `MP_ACCESS_TOKEN` sigue cargado en Railway? 
+- _[IA]_ P-163** | 🔴 bloquea | Facturación, suscripciones, trial y plan | El precio que cobra Rebill (dashboard) ¿es 13.990 como dice Planes.jsx, o 12.100 como dice pricing.py? Cuando alguien cambia de plan, el prorrateo se calcula con USD 9,00 (credits.py) — ¿es el número correcto? 
+- _[IA]_ P-164** | 🔴 bloquea | Facturación, suscripciones, trial y plan | El aviso de 'tu crédito se acaba en 3 días' no le llega nunca a nadie que no tenga fila en `subscriptions` (o sea, a todos los regalados con grant-comp). ¿Es intencional o se perdió? 
+- _[IA]_ P-183** | · menor | Facturación, suscripciones, trial y plan | ¿Los usuarios que pagaron por Rebill recibieron alguna vez un email de bienvenida o un recibo? Si nadie se quejó, ¿es porque el volumen es bajo o porque nadie lo mira? (send_welcome_pro / send_receipt / send_payment_failed solo cuelgan del path MP) 
+- _[IA]_ P-184** | · menor | Facturación, suscripciones, trial y plan | ¿Se sabe que `grant-comp --plan=advisor` no dispara el aviso al admin y que a ese usuario `/api/billing/change-plan` le devuelve 500? ¿Cuántos asesores hay hoy con `credit_anchor_plan='advisor'`? 
+- _[IA]_ P-185** | · menor | Facturación, suscripciones, trial y plan | La política de reembolso publicada (10 días, Ley 24.240) no tiene ningún camino en el código. ¿Se procesa a mano desde Rebill? ¿Hay un registro de esas devoluciones en algún lado? 
+- _[IA]_ P-186** | · menor | Facturación, suscripciones, trial y plan | El cron de billing corre solo con APScheduler in-process a las 03:30 UTC. Dado el historial de que eso no es confiable en Railway, ¿hay un cron externo pegándole a algo? Si el cron no corre, `quota.get_tier` cubre el acceso pero NO salen los emails de trial ni los avisos de vencimiento. 
+- _[IA]_ P-187** | · menor | Facturación, suscripciones, trial y plan | `_sync_authorized_with_mp` no se llama desde el job. ¿Hace falta un equivalente para Rebill que reconcilie las subs `authorized` contra su API? Hoy un webhook perdido solo se recupera a mano desde `billing_events`. 
+- _[Motores de análisis]_ P-246** | 🔴 bloquea | Motores de análisis: reporting, behavior | ¿`vs_inflación` debería publicarse cuando la moneda es USD? Comparar un retorno en dólares contra la inflación en pesos no responde ninguna pregunta del usuario; o se gatea por moneda, o se declara la unidad. 
+- _[Flujos e2e]_ P-260** | 🔴 bloquea | Bonos: escala per-100, paridad, vencimie | ¿Mobile tiene que tener paridad de renta fija con desktop? Hoy en el celular no se ve la TIR, no se puede registrar un cupon, no existe el inbox de cobranzas y los CER van sin ajuste — todo por props que RentaFijaSections no recibe. 

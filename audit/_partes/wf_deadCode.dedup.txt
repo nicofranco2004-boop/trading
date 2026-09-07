@@ -1,0 +1,254 @@
+- backend/seed.py — DEPRECATED con sys.exit(1) a nivel de módulo (backend/seed.py:7-10). Nadie lo puede importar ni correr. backend/pgshim.py lo llama 'código muerto' en su docstring, y sus INSERT OR REPLACE quedaron sin convertir a propósito.
+- start.sh — el script entero es inútil salvo en el caso en que la base ya existe y tiene posiciones, porque su rama de bootstrap (start.sh:11-26) importa seed.py y muere. Con set -e (start.sh:2) el script termina ahí.
+- backend/billing/mercadopago.py — declarado LEGACY en backend/.env.example:71-74 ('DEPRECATED: migramos a Rebill… el código nuevo (billing/rebill.py) las ignora. Eliminar este bloque después de 30 días sin problemas en prod'). El archivo sigue en el árbol y sigue leyendo MP_ACCESS_TOKEN, MP_ENV, MP_WEBHOOK_SECRET, MP_TEST_PAYER_EMAIL, MP_BACK_URL_BASE. Nota: MP_FRONTEND_BASE_URL NO es muerta — la usa Rebill (backend/billing/rebill.py:80) con el nombre histórico.
+- backend/dberrors.py:34-39 — la rama `except ImportError` que asume 'sin psycopg (producción hoy): SQLite solo'. Con psycopg[binary]==3.2.13 en backend/requirements.txt:36 esa rama ya no se ejecuta en Railway, y su comentario (:14-16) afirma lo contrario de lo que dice requirements.txt.
+- AUDIT_REPORT_2026-05-25.md y ONBOARDING_REPORT_2026-05-26.md — bitácoras de sesión de mayo. Ningún archivo del repo las cita por nombre (grep de 'AUDIT_REPORT_2026-05-25' en backend/, frontend/ y .gitignore da cero).
+- El mecanismo VITE_GA_MEASUREMENT_ID descrito en frontend/src/utils/analytics.js:3,52 y frontend/src/main.jsx:12 — no existe: el ID está hardcodeado en frontend/src/utils/analytics.js:37. Ídem el pixel en frontend/src/utils/metaPixel.js:22 y frontend/index.html:204,214.
+- backend/main.py:3789 — el 'empezar de cero' está desactivado tras RENDI_RESET_DATA_ENABLED != '1'; el worker y el endpoint de status quedan inalcanzables salvo que alguien prenda la variable.
+- backend/seed.py — script entero muerto: `sys.exit(1)` a nivel de módulo (seed.py:10). Además sus `INSERT INTO config VALUES ('tc_mep','1415')` (seed.py:29-30) son inválidos: 2 valores para 3 columnas. El propio archivo lo documenta (seed.py:21-27).
+- backend/main.py:1562 — `futures_positions.liquidation_price`: se escribe en main.py:12254 y 12276, y NO tiene ningún lector (grep en todo el repo: sólo DDL, modelo Pydantic, los 2 writes y schema_pg.sql:875). Ni siquiera hay input en `frontend/src/components/FuturosGroup.jsx`.
+- backend/main.py:1528 — `plazos_fijos.renovacion_auto`: se guarda (main.py:9152, 9179) y se castea a bool en el GET (main.py:9114), pero ninguna lógica lo consulta. El único uso en frontend es el checkbox del propio formulario (PfFormModal.jsx:143, 201, 352). No existe renovación automática.
+- backend/main.py:1618 — `watchlist.asset_type`: se escribe (main.py:33307) y se devuelve en el JSON (main.py:33274), pero ningún componente lo lee (grep sin resultados en components/home/Watchlist.jsx, fundamentals/useWatchlist.js, fundamentals/StarToggle.jsx).
+- config key `display_currency` — leída en backend/ai/builders/metrics_pro_card.py:126-130 y escrita por NADIE. El frontend la guarda en localStorage (`rendi_display_currency`, frontend/src/contexts/CurrencyContext.jsx:24). La lectura siempre devuelve el default 'USD'.
+- backend/main.py:1203 — `operations.cost_basis_consumed`: escrita en un solo camino (main.py:10484) y declarada '100% NULL en las filas reales' por tres lugares del código: main.py:37436, frontend/src/utils/assetPnl.js:18, frontend/src/utils/bookComposition.js:210. Todos los lectores la descartan.
+- backend/main.py:1129 — `operations.pnl_pct`: casi-muerta. Se persiste en 3 caminos (main.py:10957, 11301, 13854) y el único lector es un diagnóstico admin de escala (main.py:11611, 11639-11654). Ningún componente de producción del frontend la usa.
+- backend/trading.db — `users.gift_plus_email_sent_at`: columna presente en la base de dev que NO existe en el código actual (el código usa `gift_plan_email_sent_at`, main.py:795-799). Residuo de una versión anterior.
+- backend/price_history.py (módulo completo) — sin ningún importador en producción: sólo lo importa backend/ledger_replay.py:213, que a su vez no lo importa nadie fuera de tests (las únicas menciones son comentarios en backend/twr.py:1232 y backend/importing/proyeccion.py:12)
+- backend/ledger_replay.py (módulo completo) — sin caller en producción; sólo backend/tests/test_advisor_plan.py
+- Tabla asset_price_history (backend/main.py:1788) — sin escritor ni lector conectado a ningún endpoint o cron
+- Tabla price_backfill_log (backend/main.py:1802) — ídem
+- advisor_clients.consent_ref (backend/main.py:854) — 3 escrituras (:34404, :34949, :34959), 0 lecturas en todo el repo
+- advisor_clients.revoked_at (backend/main.py:856) — 3 escrituras, 0 SELECT
+- advisor_op_batches.op_kind (backend/main.py:870) — constante 'buy' hardcodeada en el único INSERT (backend/main.py:36247), nunca leída
+- advisor_op_batch_items.status = 'error' (backend/main.py:879) — valor documentado en el DDL que nunca se escribe (sólo 'ok' y 'undone')
+- advisor_alert_events.kind = 'brief' (backend/main.py:1754) — valor documentado que nunca se escribe; el único INSERT usa 'client_move' (backend/advisor_alerts.py:309-313)
+- twr_periods.snap_id_start / snap_id_end (backend/main.py:1832-1833) — escritos en backend/twr.py:826-830, ningún SELECT los lee pese al comentario 'para poder auditar de dónde salió'
+- twr_periods.fx_basis (backend/main.py:1834) — constante 'mep_medio' hardcodeada (backend/twr.py:790) y nunca leída
+- twr_periods.sealed_at (backend/main.py:1836) — sólo aparece en el DDL
+- user_broker_credentials.scope (backend/main.py:738) — constante 'read' en los 3 INSERT, nunca leída ni comparada
+- asset_price_history.source y .fetched_at (backend/main.py:1791-1792) — escritas, ninguna query las lee o filtra
+- price_backfill_log.fetched_at (backend/main.py:1805) — escrita en cada upsert, nunca leída
+- advisor_alerts.updated_at / advisor_profile.updated_at / advisor_brief_log.sent_at / alert_symbol_state.updated_at / broadcast_send_log.sent_at — todas escritas, ninguna leída
+- backend/main.py:1258 — `news.image_url`: columna muerta, el único INSERT (backend/main.py:6678-6679) pasa NULL literal. 0 filas no nulas en la copia de dev.
+- backend/main.py:1262 — `news.tickers`: ídem, NULL literal en el único INSERT. 0 filas no nulas.
+- backend/main.py:1266 — `news.fetched_at`: se escribe y no se lee nunca (la frescura la decide _news_fetched_at en memoria, backend/main.py:6149).
+- backend/main.py:1317 — `financial_events.fetched_at`: se escribe y no se lee nunca (frescura en _events_fetched_at, backend/main.py:5708).
+- backend/main.py:1236 — `bond_indices_daily.source`: siempre 'argentinadatos', nadie lo filtra. Y `updated_at` (backend/main.py:1237) tampoco se lee: el stale se calcula contra _indices_fetched en memoria.
+- backend/main.py:5600 — `fetcher_map = {"CER": _fetch_cer_series}`: de los 3 índices que el esquema declara (CER|UVA|A3500) solo CER tiene fetcher; UVA y A3500 devuelven serie vacía para siempre.
+- backend/main.py:1480 — `fx_rates_daily.source`: se escribe con 4 valores distintos y ninguna query lo filtra.
+- backend/main.py:1636 — `push_subscriptions.user_agent`: se guarda y no se lee en ningún lado.
+- backend/main.py:1637 — `push_subscriptions.last_used_at`: solo se escribe al suscribir; _send_push_to_user (backend/main.py:34114-34163) no la toca. El nombre miente.
+- backend/main.py:1963-1964 — índice `idx_yfinance_cache_fetched`: ninguna consulta ordena ni filtra por fetched_at (las dos que hay usan la PK (ticker,kind)).
+- backend/main.py:2064-2065 — índice `idx_billing_events_user`: indexa una columna que nadie escribe (siempre NULL).
+- backend/main.py:2058 — `billing_events.user_id`: columna muerta de escritura; ningún INSERT ni UPDATE la setea.
+- backend/main.py:2028 — `subscriptions.amount_ars`: legacy de la era MercadoPago; se inserta siempre 0 pero los mails la siguen imprimiendo como plata.
+- backend/ai/cache.py:170-176 — `cleanup_expired()`: función sin ningún caller en todo el repo.
+- backend/pricing/fci.py:185 — `fci_catalog.activo`: nunca vale 0; no hay camino de baja para un fondo que desaparece de la fuente.
+- backend/pricing/fci.py:200 — `fci_prices.fetched_at`: se escribe y no se lee (el que se muestra en UI es as_of_date).
+- backend/main.py:2094-2103 y :2108-2117 — `email_verification_codes.created_at` y `password_reset_tokens.created_at`: se escriben por default y no los lee nadie.
+- import_incidents (solo en la base de dev, backend/trading.db) — tabla completa sin ningún lector ni escritor en el código de b74f450f; ausente también de backend/schema_pg.sql.
+- backend/main.py:2644 — `import_batches.override_info`: write-only por diseño declarado (se escribe en backend/main.py:30376 y no lo lee ningún SELECT). Está documentado como instrumento de medición, no como dead code accidental, pero hoy nadie lo consulta.
+- backend/scripts/verificar_copia.py:415-418 — comentario obsoleto: afirma que schema_pg.sql tiene 58 tablas y le faltan fci_catalog/fci_prices; hoy tiene 63 CREATE TABLE e incluye las dos (backend/schema_pg.sql:788 y :819).
+- backend/ai/quota.py:411-418 — `can_hub_query()`: sin call sites en backend/main.py (grep verificado)
+- backend/ai/quota.py:439-449 — `record_hub_query()`: sin call sites en backend/main.py
+- backend/ai/plan.py:33 y :52,72,89,109,125 — feature id `ai.hub`: no existe endpoint de Hub (grep de las 264 rutas: cero con 'hub') ni componente en frontend/src
+- backend/ai/plan.py:38 y :58,78,94,114,130 — feature id `tax.helper`: el propio comentario dice 'próximamente (no construido)'; sin endpoint ni UI
+- backend/ai/plan.py:35 — feature id `insights.distribucion_activo`: se sirve en /api/plan/features pero no lo lee nadie; en frontend/src solo aparece en utils/demo.js:2912, en un comentario de hooks/usePlanFeatures.js:10 y en textos de marketing (planCatalog.js, UpgradeModal.jsx, LockedSection.jsx)
+- backend/ai/plan.py:48,68 — `insights_diagnostic_visible`: se calcula y se devuelve, pero no hay ni un `limit('insights_diagnostic_visible')` en todo frontend/src
+- backend/ai/quota.py:453-465 — `record_chat()`: marcado LEGACY por el propio docstring ('pre B-9'), reemplazado por reserve_chat + record_chat_cost + refund_chat; se conserva solo para tests/scripts
+- backend/main.py:3209-3211 — columna `users.approved` como gate de login: el comentario dice que el gate se removió y que la columna 'se mantiene (todos en 1) por compat de esquema'. Sigue siendo semánticamente viva para las cuentas shadow (approved=0), pero muerta como control de acceso al login.
+- backend/main.py:2913 — EMAIL_CODE_RESEND_COOLDOWN_SECONDS = 60: definida y nunca usada en todo backend/ (el 60 está hardcodeado en el _check_rate_limit de resend-verification)
+- backend/main.py:3330-3331 — try/except HTTPException: raise en verify_email: envuelve todo el cuerpo del handler para re-lanzar exactamente lo que ya se lanzaría
+- backend/main.py:3759-3805 — POST /api/me/reset-data está detrás de RENDI_RESET_DATA_ENABLED != '1' y devuelve 503 fijo; con él quedan inalcanzables en prod _reset_data_worker (3671), _borrar_en_chunks (3649) y el GET /api/me/reset-data/status (3741)
+- backend/main.py:2721 — get_admin_user: no lo usa ningún endpoint de este tramo (sí fuera de él)
+- backend/main.py:3462 + 3465 — reset_password cierra la conexión dos veces (except + finally); mismo patrón redundante en change-password (3584/3591), update_config (4594/4597) y post_snapshot (5087/5090)
+- backend/main.py:8089-8092 — rama `elif not sym.endswith('.BA'): ... pass` en get_price_history: es la negación exacta del `elif sym.endswith('.BA')` inmediatamente anterior (backend/main.py:8087) y su cuerpo es `pass`. Nunca hace nada.
+- backend/main.py:5600-5606 — la infraestructura de fetch de índices sólo tiene mapeado CER; las ramas para 'UVA' y 'A3500' de la allowlist (backend/main.py:5646) llegan a `if not fetcher: return` y no ejecutan nada útil. El endpoint queda funcionalmente muerto para esos dos índices.
+- backend/main.py:6723 — `_ensure_news_for_query` no tiene ningún caller en el rango 5500-8500 (los dos endpoints de noticias usan `_ensure_news_batch_parallel`). No verifiqué el resto del archivo, así que puede estar usado desde otro lado o desde los tests.
+- backend/main.py:7359 — `_bond_price_per1` no lo llama ningún endpoint de este tramo; el docstring dice que lo usa 'la normalización de unidad de bonos', que vive fuera del rango.
+- backend/main.py:8111 — `except Exception as ex:` en get_price_history captura `ex` y nunca lo usa (el cuerpo es un comentario y `pass`, backend/main.py:8112-8113): la variable es código muerto y el error se pierde sin log.
+- backend/main.py:8647-8648 — `_ai_cache_invalidate(uid)` + `return {"ok": True}` al final de `delete_position`: inalcanzable, todas las ramas del `with` retornan o levantan (incluidos los dos `except` en 8642 y 8646).
+- backend/main.py:8768 — `_cached_ba_price` (23 líneas): ningún caller en todo `backend/` (verificado con grep recursivo; la única aparición es su propio `def`).
+- backend/main.py:8791 — `_splits_solo_excluidos_por_fecha` (9 líneas): ningún caller en todo `backend/`.
+- backend/main.py:8765 — `_SPLIT_PRICE_EVIDENCE_ENABLED = False`: constante que no se lee en ningún lado del código de producción (solo la menciona un comentario en backend/tests/test_importer.py:6475). Es el flag de la feature apagada de la que cuelgan los dos helpers muertos de arriba.
+- backend/main.py:9015 + 9030-9033 — `evidencia = "fecha"` es una constante: nunca se reasigna, y el campo `evidence` de la respuesta de `/split-check` documenta un valor `'precio'` que el código no puede producir.
+- backend/main.py:10184-10188 — el segundo parseo de fecha en `cash_flow` (`datetime.strptime` con `except ValueError: pass`): la rama de error es inalcanzable porque el `field_validator` de `CashFlowIn` (backend/main.py:9403) ya validó el formato con `_DATE_RE`.
+- backend/main.py:10664 — `_cash_asset_for_currency` está viva (la usa `bond_cashflow` en 10502) pero los dos call sites que más la necesitarían tienen el ternario copiado a mano: backend/main.py:10076 (reconcile-cash) y backend/main.py:10168 (cash_flow). Duplicación, no código muerto, pero del mismo origen.
+- backend/main.py:10987 — `conn.commit()` redundante dentro de un `with conn:` (abierto en 10893) que ya commitea al salir; además solo está en una de las ramas.
+- backend/main.py:9058 — `PlazoFijoIn.source_broker` es un campo del modelo que `PUT /api/plazos-fijos/{pid}` acepta y descarta por completo (el handler nunca lo mira).
+- backend/main.py:13084-13086 — la rama `if mid.startswith('op-') or mid.startswith('pos-'): raise HTTPException(400, _TRADE_BLOCK_MSG)` dentro de `_delete_one_movement` es INALCANZABLE desde HTTP: `delete_movement` intercepta esos prefijos antes (backend/main.py:13148, :13156) y la función sólo tiene 2 callers (backend/main.py:13126 y :13167).
+- backend/main.py:12473 — `op_type = (d.get('op_type') or '').upper()` en el loop de `operations` de `_build_movements`: variable local asignada y nunca leída (verificado con awk sobre 12468-12575).
+- backend/main.py:12263 — `PUT /api/futures/{fid}`: sin ningún consumidor en frontend/src (FuturosGroup.jsx usa GET/POST/DELETE/close, ningún api.put). Superficie de API viva que hoy nadie llama.
+- backend/main.py:12829 — `_TRADE_BLOCK_MSG` ('El borrado de compras/ventas llega pronto') está desactualizado: desde que existen `_delete_operation_cascade`/`_delete_position_cascade` sí se borran. Uno de sus dos usos es el código inalcanzable de :13086.
+- backend/main.py:13294 — el comentario '# BOM para que Excel español detecte UTF-8' documenta un comportamiento que el código no implementa: `_csv_response` no emite BOM.
+- backend/main.py:11038 — el docstring de `sync_unrealized` dice que 'Phase 8 moverá ese rollover al backend'; el rollover YA está en el backend (backend/main.py:11970) pero este endpoint sigue sin dispararlo, así que el TODO quedó a medias.
+- backend/main.py:15293 — `_cagr_from_monthly_rows`: sin ningún call site en el repo (único referente: su mención en el docstring de `_historical_cagr_global` en backend/main.py:15298 y un comentario en backend/tests/test_cagr_snapshots.py:83).
+- backend/main.py:13294-13299 — el comentario '# BOM para que Excel español detecte UTF-8' en `_csv_response` no corresponde a ningún código: el BOM nunca se escribe.
+- backend/main.py:13876-13877, 14357-14360, 15119-15126 — los `_update_monthly_pnl_realized` previos al recalc son hoy redundantes (inofensivos: el recalc pisa con SUM(operations)); el comentario que los justifica describe una versión de `_recalc_pnl_realized_from_ops` anterior al seeding de meses de backend/main.py:9452-9467.
+- backend/main.py:14311-14312 — el mensaje `_stale` duplicado inline, existiendo ya el helper `_stale_undo_msg()` en backend/main.py:14283.
+- backend/main.py:2518 — comentario del esquema `-- 'imported' | 'manual'` desactualizado: el código escribe cuatro `kind` distintos.
+- backend/main.py:16867 — string mostrado al admin con la referencia de línea 'main.py:10985' para una función que hoy está en backend/main.py:15623.
+- backend/main.py:16927 — `import shutil, tempfile` dentro de `admin_fx_migrate_user`: `shutil` no se usa en toda la función (el clon se hace con `sqlite3.Connection.backup`).
+- backend/main.py:17254 — `import shutil, tempfile` dentro de `admin_fx_migrate_batch`: mismo import muerto de `shutil`.
+- backend/main.py:17077 — `except dberrors.EnsayoPorClonNoDisponible: raise` en `admin_fx_migrate_candidates`, un endpoint que NUNCA clona la base. Rama inalcanzable, copy-paste de los que sí clonan.
+- backend/main.py:17827 — `_user_has_positions` se importa desde `reporting.builder` en `admin_diagnose_reportes_basis` y no se usa en ninguna parte del cuerpo.
+- backend/main.py:17828 — `MEDICION` se importa desde `twr` en el mismo endpoint y tampoco se usa (sólo aparece en comentarios y en strings de prosa).
+- backend/main.py:16752 + 16850 — `k_tipico` en `diagnose-scale` es código efectivamente muerto en su intención: `por_activo.setdefault(..., {"k_tipico": k})` fija el PRIMER k visto y nunca lo actualiza, pero se publica en el JSON como si fuera un valor típico del activo.
+- backend/main.py:18045 — el `except sqlite3.Error` que protege el bloque `picos_implausibles` es código muerto bajo Postgres: `backend/pgshim.py` no mapea excepciones de psycopg a `sqlite3.Error`, así que el caso que el comentario dice cubrir ('deploy a medio migrar') no queda cubierto.
+- backend/main.py:18532-18564 — todo `_db_internals()` de `/api/admin/disk-usage` es inalcanzable en Postgres: `PRAGMA page_size`/`page_count`/`freelist_count` y `dbstat` no están traducidos en pgshim, así que el bloque entero cae al `except Exception` y devuelve `{"error": ...}`.
+- backend/main.py:18485 — GET /api/admin/disk-usage: sin ningún caller en frontend/src. Herramienta de diagnóstico de un incidente de disco lleno que quedó publicada.
+- backend/main.py:18590 — POST /api/admin/delete-snapshot: sin caller en frontend/src.
+- backend/main.py:18718 — GET /api/admin/ai/tool-usage: sin caller en frontend/src, pese a estar completo y documentado.
+- backend/main.py:19551 — GET /api/admin/billing/inspect: sin caller en frontend/src (el panel sí llama a restore-tier y grant-comp, pero no a inspect).
+- backend/main.py:19985 — GET /api/admin/fci/probe: artefacto de 'Fase 0' de la integración de FCI; sin caller en frontend/src. La decisión de go/no-go ya se tomó (la integración existe: backend/pricing/fci.py).
+- backend/main.py:20098 — GET /api/admin/pf/probe: artefacto de 'Fase 0' de plazos fijos; sin caller en frontend/src, y reimplementa a mano el helper _probe de fci/probe.
+- backend/main.py:20273 — POST /api/admin/wipe-broker-data: sin caller en frontend/src y duplicado funcional de POST /api/imports/wipe-broker (backend/main.py:31740), que además está mejor protegido contra locks.
+- backend/main.py:18784 — línea del docstring de /api/admin/plan/conversion que documenta dos campos (distinct_users_blocked, distinct_users_clicked) que el endpoint no devuelve.
+- backend/main.py:19426 — línea del docstring de /api/admin/email/broadcast que afirma que no hay idempotencia, contradiciendo el content_hash que sí existe en 19509-19532.
+- backend/main.py:20391-20394 — bloque de comentario que documenta código YA ELIMINADO (/api/ai/insights legacy, AIInsightsIn, _AI_SYSTEM). Lápida útil hoy, ruido mañana.
+- backend/main.py:20075 — parámetro `uid` de fci_catalog: se resuelve con get_effective_user (con su decode de JWT + SELECT users + posible query a advisor_clients) y nunca se usa en el cuerpo.
+- backend/main.py:21034 — YF_CACHE_TTL_SECONDS existe solo como alias back-compat de YF_CACHE_TTL_DEFAULT_SECONDS 'para tests existentes'; ningun path de produccion del rango lo lee (todos usan YF_CACHE_TTL_BY_KIND.get(kind, YF_CACHE_TTL_DEFAULT_SECONDS) en backend/main.py:21125).
+- backend/ai/cache.py:52 — CACHE_TTL_SECONDS, mismo patron: alias back-compat que defaultea a Pro; el codigo vivo usa _ttl_for_tier (backend/ai/cache.py:57).
+- backend/main.py:21151-21154 — el comentario describe una sanitizacion ('solo cacheamos si no devuelve available:False por error transitorio') que el codigo no implementa. Es documentacion muerta que describe un guard inexistente, y ademas induce a error a quien lea.
+- backend/main.py:26014 y 26026 — la rama de upgrade del 429 es inalcanzable para el caso del asesor dentro de un cliente Free/Plus: el tier ya fue reescrito a 'pro' en 25942, asi que upgrade_available siempre da False en ese camino.
+- backend/main.py:21157-21162 — la rama else de 'fetcher devolvio non-dict' solo se alcanza si un fetcher retorna algo que no es dict; los 6 fetchers del rango (21340, 21441, 21529, 21798, 21873, 21943) retornan dict en todos sus paths, incluidos los de excepcion. Defensiva, no alcanzable hoy.
+- backend/main.py:25858-25860 — las descriptions '2 a 4 fortalezas' / '1 a 3 riesgos' de FundamentalsAISummary no tienen efecto de validacion (no hay min_items/max_items); son solo texto para el LLM.
+- backend/main.py:27476 — `GET /api/billing/status`: sin ningún caller en `frontend/src` (grep vacío). Los únicos consumidores son los tests (`backend/tests/test_billing.py:244`, `:259`). El docstring dice que lo usa /planes, pero `frontend/src/pages/Planes.jsx` no lo llama.
+- backend/main.py:28412 — la segunda cláusula del `or` (`uid != _lens_auth and quota.get_tier(conn, _lens_auth) == "advisor"`) es inalcanzable en la práctica: `conn` se cerró en `:28342` y `get_tier` devuelve 'free' ante excepción (`backend/ai/quota.py:219-221`), así que nunca es True.
+- backend/main.py:27501 — `POST /api/billing/webhook` (MercadoPago) es un camino legacy: la app cobra por Rebill (`backend/main.py:26522-26523`) y ningún flujo vivo genera preapprovals de MP. Sigue montado, con el fail-open descrito.
+- backend/main.py:27420 — `POST /api/billing/sync` consulta MercadoPago con ids que hoy son de Rebill; funcionalmente muerto pero SÍ lo llama `frontend/src/pages/BillingReturn.jsx` (o sea que es un 502 en la pantalla de retorno del checkout, no código sin llamar).
+- backend/main.py:28682 — `_reserved = True` es una asignación muerta: la variable nunca se lee fuera del `else` que la vuelve a asignar (`:28687`).
+- backend/main.py:26534 — `SELECT email, tier, is_admin` en `billing_subscribe`: `tier` e `is_admin` se leen y se descartan; solo se usa `email` (`:26538`).
+- backend/main.py:26750 — `track_event = "subscription_plan_changed"` se asigna solo para interpolarlo en un `log.info`; no hay tracking real detrás.
+- backend/main.py:27516 — `from billing import mercadopago` dentro de `billing_webhook`: el nombre nunca se usa en la función (los helpers lo re-importan en `:27590`).
+- backend/main.py:26716 — `note=f"User-initiated plan change from /api/billing/change-plan"`: f-string sin ninguna interpolación.
+- backend/main.py:30125-30170 — la rama `else` del path de foto de tenencia es INALCANZABLE: la condición de backend/main.py:29891 es `is_ppi or is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol or is_inviu` y la cascada de detección de formato (29694-29787) prende exactamente uno de esos siete flags o levanta HTTPException(400) en 29784-29787. Incluye el sub-`if` de 30162 y su `else` de gap-fill puro en 30169-30170 (el único camino sin override).
+- backend/main.py:30131-30137 — dentro de esa misma rama muerta, el SELECT que arma `current` es trabajo descartado: `current` se pisa entero en 30139 con `_qty_a_fecha(pair)`. Sólo `invested_by_asset` sobrevive.
+- backend/main.py:29437, 29453, 29459, 29467, 29499 — el parámetro `uid` de /api/imports/template, /parsers, /parsers/grouped, /inspect y /classify-tenencia nunca se usa en el cuerpo; el Depends está sólo para forzar el login.
+- backend/main.py:31665 — `GET /api/imports/mappings` (`import_mappings_list`): ruta inalcanzable, siempre la captura `GET /api/imports/{batch_id}` registrada 28 líneas antes (31637). La función existe y es correcta, pero nunca se ejecuta.
+- backend/main.py:32949 — `_ytd_delta`: no-op medido para todo `broker != "global"`. El propio comentario (32962-32979) dice que `_portfolio_snapshot_summary` fuerza `snap_value = None` con filtro por broker, así que la función muere en su primer `return None` y el cuerpo entero (el `ORDER BY month ASC LIMIT 1` y el arranque MEDIDO) nunca corre con un broker.
+- backend/main.py:32635 — la clave `cash_value` del payload de `_portfolio_snapshot_summary`: el comentario de 32833-32852 verifica que su único uso en `frontend/src/` es un literal de fixture en `utils/demo.js:668`. Se calcula (una query más por request) y no lo lee nadie.
+- backend/main.py:33236 / 33242 / 33250 — el parámetro `uid` de `home_indices`, `home_heatmap` y `home_movers`: se resuelve el JWT + SELECT users y después no se usa para nada; las tres respuestas salen de un caché de proceso global idéntico para todos los usuarios.
+- backend/main.py:33232 — `from home.briefing import build_personal_cards` importado en este tramo pero usado recién en 34210, fuera del rango.
+- backend/main.py:31719 — el `except Exception` de `import_recalc_pnl` (31733) atrapa también `HTTPException`; hoy el handler no levanta ninguna propia, así que la rama de traducción a 500 es inalcanzable para ese tipo — pero es el mismo patrón que en 31740 y 31890 sí necesitó un `except HTTPException: raise` explícito delante.
+- backend/main.py:36962-36965 — import de `compute_broker_value_usd, build_price_symbols, read_last_prices, _broker_name_sets, _user_tc_cedear, position_price_key` dentro de `advisor_book`: los seis símbolos quedaron sin uso después de que la valuación se mudara a `_advisor_positions_valued` (verificado con `awk NR>=36948 && NR<=37245 | grep`).
+- backend/main.py:36661-36662 — el `IndexError` del `except (ValueError, IndexError)` es inalcanzable: un slice de Python sobre un str corto no lo tira.
+- backend/main.py:37452 — el `return []` de `_advisor_realized_raw` (rama `if not ids`) es inalcanzable desde los tres endpoints que la llaman, porque todos guardan `if not ids` antes; si alguna vez se alcanzara, `_advisor_realized_by_asset` reventaría con AttributeError sobre una lista.
+- backend/main.py:36247 — `op_kind` está hardcodeado a `'buy'` y la columna existe en el schema (backend/main.py:870) con DEFAULT 'buy'; ningún código lee ni escribe otro valor, así que la columna y el badge `has_asset` que la acompañan (backend/main.py:36106) son andamiaje de una venta grupal que no existe.
+- backend/main.py:37873-37874 — lambda inline de un solo uso `(lambda p: round(p,1) if p is not None else None)(_rate_pct(...))`: no es código muerto pero es un `round` con guard escrito de la forma más indirecta posible.
+- backend/importing/parsers/balanz_resultados.py:211-364 — ~155 líneas inalcanzables: el `return result` incondicional de la línea 209 corta el flujo (todo el dispatch por Tipo Movimiento, cupones, dividendos, cauciones, lotes gratis por split/dividendo en acciones y el cierre `_corporate_close` por reducción de capital)
+- backend/importing/parsers/cocos.py:84 — `_OP_SKIP: set = set()` definido y sin ninguna referencia en el archivo
+- backend/importing/parsers/ppi.py:370 — la rama `elif kind in ("signed", "manual")`: `_classify` (backend/importing/parsers/ppi.py:143-176) nunca devuelve "manual"
+- backend/importing/parsers/binance_futures.py (archivo entero, 183 líneas) — `is_supported=False` (línea 79) lo hace inalcanzable por autodetect (registry.py:72), por el wizard (pipeline.py:1324-1327) y por selección explícita (pipeline.py:481-482)
+- backend/importing/pipeline.py:436 — entrada `'ibkr': 'USD'` en FORMAT_BASE_CURRENCY sin ningún parser con ese format_id
+- backend/importing/parsers/binance.py:20-25 — docstring que declara el 'Transaction History' como NO soportado, cuando backend/importing/parsers/binance_transaction.py existe y está registrado (registry.py:26)
+- backend/importing/parsers/binance_futures.py:19-20 — docstring que promete que las aperturas puras emiten monto=−Σfees, mientras el código las descarta (línea 157-158)
+- backend/ai/cache.py:170 — `cleanup_expired()`: 0 callers en todo el repo, ni siquiera en tests. El cache vencido nunca se borra de `ai_analyses_cache`.
+- backend/ai/quota.py:442 — `record_hub_query()`: 0 callers, ni tests.
+- backend/ai/quota.py:416 — `can_hub_query()`: solo `backend/tests/test_ai_quota.py:322`.
+- backend/ai/quota.py:537 — `can_diag_dismiss()`: solo tests (el endpoint real usa `reserve_diag_dismiss`).
+- backend/ai/quota.py:455 — `record_chat()`: legacy declarado; solo lo usa `backend/scripts/test_bot_profile_boundaries.py`.
+- backend/ai/quota.py:407 — `get_today_usage` (alias back-compat de `get_current_usage`): solo tests.
+- backend/ai/quota.py:329 — `_week_start` (alias de `_window_start`): solo tests.
+- backend/ai/cache.py:51 — `CACHE_TTL_SECONDS`: 0 callers.
+- backend/ai/prompts.py:253 — `_topic_block_free` (alias de `_topic_block_descriptive`): 0 callers.
+- backend/ai/prompts.py:96 — `SYSTEM_BASE_FREE` (alias): solo tests.
+- backend/ai/prompts.py:204 — `SYSTEM_BASE` (alias): solo tests.
+- backend/ai/builders/metrics_pro_card.py (142 líneas) + backend/ai/prompts.py:586 `render_metrics_pro_card_prompt` + backend/ai/registry.py:78 — topic `metrics_pro.card`: registrado y sin ningún consumidor en el frontend.
+- backend/ai/builders/insights_benchmarks.py (178 líneas) + backend/ai/prompts.py:1177 + backend/ai/registry.py:84 — topic `insights.benchmarks`: en el frontend solo aparece dentro del mock de `frontend/src/utils/demo.js:1337`.
+- backend/billing/pricing.py (145 líneas COMPLETAS) — su único consumidor es `mercadopago.create_preapproval`, que no tiene callers de producción. Ningún endpoint expone get_pricing/get_all_plans.
+- backend/billing/mercadopago.py:93-156 `create_preapproval` — cero callers fuera de tests (backend/tests/test_billing.py:43,77).
+- backend/billing/mercadopago.py:159-175 `cancel_preapproval` — cero callers fuera de tests (backend/tests/test_billing.py:135).
+- backend/billing/mercadopago.py:253-265 `parse_external_reference` — helper de back-compat; el único caller es `parse_external_reference_full` a través de sí mismo; ningún caller externo de producción.
+- backend/billing/subscriptions.py:556-598 `_sync_authorized_with_mp` — no se invoca desde `run_lifecycle_job` (backend/billing/subscriptions.py:31-95); solo desde backend/tests/test_billing_lifecycle.py:213,225,237. El contador `synced_from_mp` (backend/billing/subscriptions.py:38) queda en 0 para siempre.
+- backend/main.py:27420-27473 `POST /api/billing/sync` — el frontend ya no lo llama (frontend/src/pages/BillingReturn.jsx:18-19 lo declara muerto), pero sigue montado y accesible.
+- backend/main.py:27650-27682 `_maybe_send_welcome_email` y :27685-27747 `_process_payment_event` — alcanzables SOLO por el webhook MP, que ya no recibe eventos de altas nuevas. En la práctica, código muerto operativamente (por eso los emails 1/2/3 no salen).
+- backend/main.py:27588-27647 `_process_preapproval_event` — mismo caso: solo lo llaman el webhook MP y /api/billing/sync, ambos legacy.
+- Columna de estado `subscriptions.status = 'failed'` documentada en backend/main.py:2020 — ningún escritor en todo el repo.
+- backend/billing/emails.py:325-366 `send_welcome_pro`, :367-403 `send_receipt`, :404-444 `send_payment_failed` — vivos en el código pero inalcanzables con Rebill como procesador activo (solo los llama el path MP).
+- backend/main.py:2371-2400+ backfill de crédito 'pre-proration' que corre en CADA arranque — es idempotente (`credit_active_until IS NULL`) pero su población objetivo (usuarios anteriores al commit a09891a) ya debería estar vacía; duplica PLAN_PRICES_USD inline (backend/main.py:2392-2394).
+- frontend/src/pages/Planes.jsx:69-91 — bloque completo de constantes marcadas `@deprecated` (ARS_PLUS_MONTHLY, ARS_MONTHLY, arsPriceRounded y el mapeo USD→ARS de :85-91) que sobrevivió a la migración a precios ARS fijos.
+- backend/main.py:33698 — GET /api/advisor/twr: ningún componente del frontend lo llama (grep de '/advisor/twr' en frontend/src: cero hits). Además ESCRIBE: backend/advisor_twr.py:93-97 corre twr.sellar() por cada cliente antes de leer.
+- backend/advisor_twr.py:79-124 — `twr_por_cliente` y su constante MESES_MINIMOS: sólo tienen ese endpoint como caller (backend/main.py:33710) y tests. `salud_del_libro` sí se usa.
+- backend/main.py:866-872 — columna `advisor_op_batches.op_kind`: existe con DEFAULT 'buy' pero el único INSERT la hardcodea a 'buy' (backend/main.py:36247). Nunca toma otro valor.
+- backend/main.py:1750-1761 — `advisor_alert_events.kind`: el comentario del DDL declara dos valores ('client_move' | 'brief') pero el único INSERT escribe siempre 'client_move' (backend/main.py:36308-36313 → en realidad backend/advisor_alerts.py:308-313). El brief nunca genera un evento.
+- backend/main.py:874-884 — `advisor_op_batch_items.status`: el comentario declara 'ok' | 'undone' | 'error' pero 'error' no se escribe en ningún lado; el apply es todo-o-nada dentro de una transacción y las filas inválidas van a `skipped`, que no se persiste.
+- backend/schema_pg.sql:49 y :252 — advisor_alerts.advisor_uid y advisor_profile.advisor_uid como `GENERATED BY DEFAULT AS IDENTITY`: la secuencia de identidad nunca se usa (el código siempre inserta el uid explícito), es un artefacto de la traducción de mkschema.
+- backend/reporting/builder.py:248 — `fetch_snapshots_in_range`: cero callers en todo el repo (sólo su propia definición)
+- backend/reporting/builder.py:15 — `import math`: `math` no vuelve a aparecer en las 2141 líneas
+- backend/reporting/builder.py:26 — `Insight` importado y nunca usado (los insights los arma detectors.py; el builder los deja en `[]` en :2134)
+- backend/reporting/builder.py:1923 — parámetro `highlights` de `generate_narrative`: recibido y nunca leído en el cuerpo (:1925-2048)
+- backend/reporting/builder.py:1924 — parámetro `period_type` de `generate_narrative`: recibido y nunca leído
+- backend/home/market.py:214 — `_fetch_daily_quote`: cero callers; lo reemplazó `_fetch_batch_quotes`
+- backend/home/market.py:358 — `_invalidate_quote_cache`: cero callers
+- backend/wrapped.py:321 y :334-341 y :355-356 — rama `merval_ytd` de `_slide_vs_benchmark`: el endpoint sólo puebla `sp500_ytd` (backend/main.py:13725-13740) y el propio comentario lo reconoce (main.py:13723-13724)
+- backend/ai/builders/goal.py:35 y :128 — `monthly_contribution`: la tabla `goals` no tiene esa columna (schema SQLite y backend/schema_pg.sql:929-937), así que siempre publica 0
+- backend/ai/builders/monthly.py:116-127 y :198-199 — `_trade()` / `best_trade` / `worst_trade`: siempre None por el `isinstance(highlights, dict)` sobre una lista
+- frontend/src/App.jsx:224 — ruta `/wrapped`: sin ningún link entrante en la app (las únicas referencias son la ruta y routePrefetch.js:36)
+- backend/price_history.py — módulo entero sin caller de producción: guardar() solo lo invoca backfill(), y backfill()/simbolos_de()/cobertura() solo aparecen en backend/tests/test_advisor_plan.py. La tabla asset_price_history y price_backfill_log (backend/main.py:1788-1807) nunca se escriben en prod.
+- backend/ledger_replay.py — único consumidor de price_history, sin ningún caller propio: las menciones fuera de tests son solo comentarios en backend/twr.py:1232 y backend/importing/proyeccion.py:12.
+- backend/ai/builders/position_chart.py:26 — llama a main._fetch_price_history, que no existe; el except de :37-38 lo tapa y series queda siempre vacío. Camino roto, no muerto.
+- backend/main.py:7194 AR_BONDS_DATA912 — ya no es la allowlist de pricing (_resolve_ar_bond_price usa el universo completo de data912); solo sobrevive para excluir bonos del fetch de noticias en backend/main.py:6080 y :35321.
+- backend/main.py:4565-4597 PUT /api/config (campos tc_mep / tc_blue) — endpoint vivo sin ningún caller en el frontend (grep put('/config') vacío).
+- backend/main.py:13957 _config_tc_blue — duplicado exacto de _user_tc_blue (backend/main.py:33040): mismo SQL, mismo default 1415, misma validación.
+- backend/seed.py:29-30 — INSERT INTO config con 2 valores para 3 columnas; el propio comentario (backend/seed.py:25-28) reconoce que revienta. Script pre-multi-tenancy.
+- backend/snapshots_job.py:648-656 — la conversión a día ART de take_snapshot_for_user nunca se ejecuta: run_daily_snapshot siempre pasa target_date (línea 937, en UTC) y los tests siempre lo pasan explícito
+- backend/alerts_engine.py:152-165 — _recently_fired está definida con docstring y no la llama nadie; con ella queda muerta la columna alerts.cooldown_min (main.py:1673), que se valida y persiste pero no cambia el comportamiento
+- backend/scripts/escala_foto_bonos.py:26,30 — sys.path y ruta de DB absolutas a /Users/nicolaspussetto/rendi-worktrees/... y ~/Downloads/trading-2026-08-16.db: no corre desde una clonada limpia
+- backend/scripts/verificar_proyeccion.py:19,22 — mismo problema, rutas absolutas de la máquina del founder
+- backend/main.py:1955 — comentario que promete 'Cleanup: cron diario borra rows > 7 días' para yfinance_cache; ese cron no existe
+- backend/main.py:2093 — comentario que promete 'Cleanup en cron de codes > 30 días' para email_verification_codes; ese cron no existe
+- backend/main.py:34276 y backend/main.py:32001-32002 — documentan el horario viejo del snapshot (01:00 UTC) contra el real 02:59 UTC (main.py:32536)
+- backend/main.py:3760-3803 — el endpoint de reset de datos está desactivado por env (RENDI_RESET_DATA_ENABLED); el worker y el endpoint de status quedan intactos a propósito, pero hoy son código no alcanzable
+- backend/billing/subscriptions.py:556 — `_sync_authorized_with_mp` solo la llaman los tests (backend/tests/test_billing_lifecycle.py:213,225,237). `run_lifecycle_job` inicializa `synced_from_mp: 0` (backend/billing/subscriptions.py:38) y nunca la invoca, pero el docstring del cron promete el sync (backend/main.py:32079).
+- backend/billing/mercadopago.py:93 — `create_preapproval` no la llama ningún código de producción: `/api/billing/subscribe` (backend/main.py:26504) usa Rebill. El propio comentario dice 'MP queda muerto' (backend/main.py:26521-26523).
+- backend/billing/mercadopago.py:159 — `cancel_preapproval` sin callers en producción (`/api/billing/cancel` usa `rebill.cancel_subscription`, backend/main.py:27357).
+- backend/main.py:27420 — `POST /api/billing/sync` sigue registrado y le pregunta a MercadoPago por un `mp_subscription_id` que hoy guarda un ID de Rebill. El frontend ya no lo llama (frontend/src/pages/BillingReturn.jsx:18).
+- backend/main.py:27501 — `POST /api/billing/webhook` (MercadoPago) sigue montado como superficie pública aunque MP no cobra más.
+- backend/main.py:19985 — `GET /api/admin/fci/probe`: spike de Fase 0 ya resuelto (ganó ArgentinaDatos, implementado en backend/pricing/fci.py). Queda como diagnóstico admin.
+- backend/main.py:20098 — `GET /api/admin/pf/probe`: mismo caso, la Fase 0 de plazos fijos ya está implementada en `/api/pf/banks` (backend/main.py:9341).
+- backend/billing/rebill.py:206 — `verify_api_key()` (GET /v3/organizations/me) no la llama nadie; el startup usa `validate_config()`, que solo mira env vars sin pegarle a Rebill.
+- frontend/src/utils/track.js — el provider real es un no-op con stub comentado de PostHog (track.js:123-128); solo reenvía 4 eventos al backend propio y ~18 a GA4.
+- frontend/src/pages/Positions.jsx:461 — `GET /snapshots?days=30`: se fetchea y se guarda en state sólo para el memo `daily`, que no se renderiza en ningún lado
+- frontend/src/pages/Positions.jsx:1624-1645 — memo `daily` (variación vs último snapshot): computado en cada cambio de precios, nunca consumido; el banner que lo usaba está deshabilitado en :1908-1909
+- frontend/src/pages/Positions.jsx:30 — `pct` importado de utils/format y nunca usado
+- frontend/src/pages/Positions.jsx:16 — `flattenAccounts` importado de utils/brokerAccounts y nunca usado
+- frontend/src/pages/HomeMobile.jsx:40 — `fmtUsd`, `fmtArs` y `ars` importados de utils/format y nunca usados (el archivo usa su propio `fmtNumber` local en :527-530)
+- frontend/src/pages/HomeMobile.jsx:31 — componente `Eyebrow` importado y nunca renderizado
+- frontend/src/pages/Cartera.jsx:47 — `TAB_ALIASES = {}` vacío, consultado en :62 y :83 sin poder matchear nada
+- frontend/src/components/mobile/MobileTopBar.jsx:86 — prop `align="right"` pasada a `CurrencySwitcher`, que sólo acepta `variant` y `className` (CurrencySwitcher.jsx:52)
+- frontend/src/App.jsx:194-196 — comentario huérfano sobre el Dashboard flotando entre dos rutas que no son la suya
+- frontend/src/pages/Cartera.jsx:8-23 — comentario de cabecera que describe una arquitectura de 3-4 tabs (Posiciones/Evolución/Composición/Objetivos) que ya no existe
+- frontend/src/App.jsx:41 — comentario que dice 'Positions 2481L' cuando el archivo tiene 4.484 líneas
+- frontend/src/pages/Home.jsx:3-10 — el comentario numera 7 bloques y el render tiene 8 (el checklist se agregó como '0' en :46-49)
+- frontend/src/pages/Insights.jsx:3545 — BenchmarkCard, definida y nunca invocada
+- frontend/src/pages/Insights.jsx:3576 — InflationCard, definida y nunca invocada
+- frontend/src/pages/Insights.jsx:4143 — InsightCard, sólo la usan las Profile*Card muertas
+- frontend/src/pages/Insights.jsx:4245 — AccordionSection, definida y nunca invocada
+- frontend/src/pages/Insights.jsx:4293-4783 — ProfileAllocationCard, ProfileObjectiveCard, ProfileReturnExpectationCard, ProfileHorizonCard, ProfileDrawdownCard, ProfileConcentrationCard, ProfileStyleCard, ProfileLiquidityCard y AllocationRow: ~490 líneas reemplazadas por ProfileDashboard (Insights.jsx:4210)
+- frontend/src/pages/Insights.jsx:5,9,10,25,28,43,60,98 — imports/helpers sin usar: LineChart, Trophy, Stethoscope, BarChart3, PiggyBank, Wallet, CircleDollarSign, Building2, BarChart2, StatCard, CollapsibleSection, usd, fmtArs, pctSigned, colorClass, lookupHistoricalDolar, buildDrawdownTimeSeries, monthName
+- frontend/src/pages/Reports.jsx:45,49,53,59,70 — monthKey, yearKey, addDays, addWeeks, addMonths: cinco helpers de fecha sin un solo caller
+- frontend/src/pages/Reports.jsx:12 — Fragment importado y no usado
+- frontend/src/pages/Behavioral.jsx:19,27 — Panel y LockedSection importados y no usados
+- frontend/src/components/reports/PerformanceCalendar.jsx:67-73 — best/worst se calculan y se devuelven pero el KPI strip sólo dibuja 3 celdas
+- frontend/src/components/fundamentals/FavoritesView.jsx — componente entero sin ningún importador
+- frontend/src/utils/diagnosticoTemplate.js:43-62 — 9 de los 12 slots que calcula el motor no los consulta nadie; 'checklist' (:61) no tiene renderer en ningún archivo
+- backend/ai/plan.py:48,68 — el límite insights_diagnostic_visible ya no lo lee ninguna pantalla del frontend (Insights.jsx:3814-3816 dice que la grilla la ven todos los tiers)
+- frontend/src/App.jsx:209,224 — rutas /mensual y /wrapped sin ningún link entrante en toda la app
+- frontend/src/pages/Config.jsx:350-389 — función `resetData()` completa (doble confirm + POST /api/me/reset-data + bucle de polleo de /me/reset-data/status): ningún caller. El botón está disabled sin onClick en :591-598.
+- frontend/src/pages/Config.jsx:602-617 — el bloque de barra de progreso del reset (`resetState.loading`) es inalcanzable porque nada setea `loading: true`.
+- frontend/src/pages/Config.jsx:20 — imports `Mail`, `CalendarClock` y `Check` sin usar.
+- frontend/src/pages/Planes.jsx:129-136 — estado `tcValuacion` + su `GET /api/dolar`: se setea y nunca se lee.
+- frontend/src/pages/Planes.jsx:65-96 — exports deprecados PLUS_PRICE_USD, PRO_PRICE_USD, PLUS_PRICE_ANNUAL_USD, PRO_PRICE_ANNUAL_USD, ARS_PLUS_MONTHLY, ARS_PLUS_ANNUAL, ARS_PLUS_ANNUAL_MONTHLY_EQ, ARS_MONTHLY + la función arsPriceRounded() con TC 1466 hardcodeado.
+- frontend/src/pages/Planes.jsx:216 — ternario `planId === 'plus' ? billingPeriod : billingPeriod` (ambas ramas idénticas).
+- frontend/src/pages/Login.jsx:44 — estado `info` que nunca recibe un valor no vacío; el <p> de :440 no se puede mostrar jamás.
+- frontend/src/pages/More.jsx:75 — filtro `it.adminOnly` sobre una lista donde ningún ítem tiene esa propiedad.
+- frontend/src/pages/More.jsx:10-11 — imports `BarChart3` y `Target` sin usar.
+- frontend/src/pages/Landing.jsx:9 — import `Terminal` sin usar.
+- frontend/src/pages/Landing.jsx:20 — `import { api } from '../utils/api'` sin usar (el único fetch del archivo es crudo, :1251).
+- frontend/src/components/mobile/MobileTopBar.jsx:19 — constante `TICKER_KEYS` sin usar (sólo se usa TICKER_LABELS).
+- frontend/src/components/mobile/MobileTabBar.jsx:21 — import `Repeat` sin usar.
+- frontend/src/pages/BillingReturn.jsx:113-124 — rama `unauthenticated` prácticamente inalcanzable: /billing/* sólo existe en el árbol autenticado (App.jsx:260-262).
+- frontend/src/pages/Onboarding.jsx:68 — el comentario del guard menciona un caso 'admin/demo' que no está implementado (:69-73 sólo chequea !user).
+- backend/billing/pricing.py entero — sólo lo consume backend/billing/mercadopago.py:111-112, la vía de pago que backend/main.py:26522-26523 declara muerta tras la migración a Rebill.
+- ~20 endpoints /api/admin/* sin ninguna superficie en el frontend: wipe-broker-data (backend/main.py:20273), delete-snapshot (:18590), repair-comisiones (:17637), recompute-snapshots-netdep (:15598), snapshots/run-now (:34252), diagnose-negative-capital (:16007), diagnose-sell-fx (:16157), diagnose-scale (:16566), check-invariantes (:17771), diagnose-reportes-basis (:17803), diagnose-flujo-implausible (:18115), diagnose-costo-inconsistente (:18375), disk-usage (:18485), ai/tool-usage (:18718), billing/inspect (:19551), fci/probe (:19985), pf/probe (:20098), iol-lab/runs (:31608), pg-type-audit (:17600), ventas-legacy-debug (:17362), commissions-debug (:17504), diag/client-ip (:15980).
