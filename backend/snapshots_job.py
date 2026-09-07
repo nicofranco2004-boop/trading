@@ -102,6 +102,19 @@ def _crypto_symbol_set() -> set:
     return _CRYPTO_SET_CACHE
 
 
+def _cost_in_pesos(p: dict) -> bool:
+    """Port de frontend `costInPesos` (valuation.js). ¿El COSTO de este lote está
+    en pesos? La moneda del costo la decide el LOTE (positions.currency), no la
+    cuenta: un CEDEAR / acción AR comprado en PESOS queda currency='ARS' aunque
+    viva en una cuenta dólar (cargado a mano o mal ruteado). Su costo va a USD por
+    el dólar-MEP — NO se cuenta como dólares (eso inflaba el "Invertido" ~MEP×).
+
+    La cripto se excluye igual que en el frontend: se valúa SIEMPRE en USD/spot
+    (nunca por el MEP), aunque por error tenga currency='ARS'."""
+    return ((p.get('currency') or '').upper() == 'ARS'
+            and (p.get('asset') or '').upper() not in _crypto_symbol_set())
+
+
 def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     """Símbolo de precio que valúa esta posición: '<ASSET>.BA' (precio LOCAL ARS)
     si se valúa por su .BA — holdings en broker ARS, en sub-broker '· USD', o
@@ -122,8 +135,16 @@ def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     if asset in _crypto_symbol_set():
         return asset
     broker = p.get('broker')
+    # `_cost_in_pesos`: espejo de la rama `|| costInPesos(p)` de valuationPriceKey
+    # (valuation.js). Un lote comprado EN PESOS cotiza por su .BA aunque viva en un
+    # broker USD genuino (Schwab) — la moneda del COSTO la decide el lote, no la
+    # cuenta. Sin esto el snapshot pedía y valuaba el ADR de NYSE en vez de la acción
+    # local de BYMA: el guard no lo atrapa (el múltiplo cae dentro de la banda) y
+    # persiste el precio del instrumento EQUIVOCADO. Va DESPUÉS de los early-return
+    # de FCI y cripto, igual que el frontend (isCrypto se chequea antes que costInPesos).
     wants_ba = (broker in ars_names or broker in ar_usd_names
-                or (p.get('asset_type') or '').upper() == 'CEDEAR')
+                or (p.get('asset_type') or '').upper() == 'CEDEAR'
+                or _cost_in_pesos(p))
     return f"{asset}.BA" if wants_ba else asset
 
 
@@ -286,6 +307,37 @@ def compute_broker_value_usd(
                 v = p.get('invested') or 0
                 value += v
                 invested += v
+            elif _cost_in_pesos(p):
+                # Lote en PESOS (currency='ARS') alojado en una cuenta USD (CEDEAR /
+                # acción AR cargado en dólares o mal ruteado). Port de la RAMA 2 de
+                # valuation.js `valuePositionLot` (costInPesos(p) && !isAR): se valúa
+                # estilo-ARS — costo Y valor a USD por el dólar-MEP (cedear_rate),
+                # igual que en un broker AR.
+                #
+                # Sin esta rama el costo en pesos se contaba como DÓLARES (invertido
+                # inflado ~MEP×) y, peor, el guard comparaba el valor en USD contra un
+                # costo en PESOS: el múltiplo daba ~1/MEP, caía fuera de la banda y
+                # _trust_mkt_value RECHAZABA el precio real → el snapshot persistía el
+                # costo inflado como valor de mercado.
+                #
+                # El guard va en PESOS contra PESOS (mkt_ars vs real_cost), que es lo
+                # que hace el canónico: `trustMktValue(mktArs, realCost, ...)`.
+                # El backend no tiene modo 'purchase' (costBasis='today' siempre) →
+                # costBasisRate(p, cedear_rate, 'today') == cedear_rate, así que el
+                # invUsd y el invUsdHoy del canónico colapsan en el mismo número.
+                inv_usd = real_cost / cedear_rate if cedear_rate > 0 else 0
+                invested += inv_usd
+                # priceSymbol(asset, isARS=True, asset_type): FCI: as-is (su NAV en
+                # pesos), cualquier otro → '.BA'. Coincide con position_price_key para
+                # esta posición, así que lo que se PIDE es lo que se LEE.
+                asset = p.get('asset') or ''
+                sym = asset if asset.startswith('FCI:') else f"{asset}.BA"
+                price_ars = override if override is not None else prices.get(sym)
+                mkt_ars = price_ars * (p.get('quantity') or 0) if price_ars is not None else None
+                trust_ars = mkt_ars is not None and _trust_mkt_value(
+                    mkt_ars, real_cost, asset_type, has_override=override is not None)
+                # Sin precio confiable, valor = costo-USD → P&L exactamente 0.
+                value += (mkt_ars / cedear_rate if cedear_rate > 0 else 0) if trust_ars else inv_usd
             else:
                 # Premium cripto (1.0 para CEDEAR/acciones/exchange/sin-rate). Va al
                 # costo Y al valor para que el P&L% no cambie.

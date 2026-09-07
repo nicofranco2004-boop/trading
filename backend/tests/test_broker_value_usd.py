@@ -113,5 +113,88 @@ class AuditFixesTest(unittest.TestCase):
         self.assertTrue(_trust_mkt_value(60, 54, "BOND", has_override=True))   # mult 1.11
 
 
+class ArsCostInUsdBrokerTest(unittest.TestCase):
+    """Rama ESPEJO de la de arriba: lote de COSTO EN PESOS (currency='ARS') alojado en
+    una cuenta USD. Es la rama 2 del canónico valuation.js `valuePositionLot`
+    (costInPesos(p) && !isAR), que al backend le faltaba entera.
+
+    Hallazgos A-1 y A-2 de la auditoría (tanda 1A). Sin la rama:
+      · el costo en pesos se contaba como DÓLARES → invertido inflado ~MEP×, y
+      · el guard _trust_mkt_value comparaba el valor en USD contra un costo en PESOS
+        → múltiplo ~1/MEP, fuera de banda → RECHAZABA el precio real y persistía el
+        costo inflado como valor de mercado. El guard de cobertura del 95 % no lo ve
+        (hay precio) y encima pondera con el costo inflado.
+    Los números esperados salen de correr el motor canónico JS sobre los mismos lotes.
+    """
+
+    def test_a1_cedear_en_pesos_en_subbroker_usd(self):
+        # A-1 exacto: 100 MELI (CEDEAR) pagados ARS 1.500.000 en 'Cocos · USD'.
+        # Viejo: invested = value = 1.500.000 (×MEP). Canónico: 1.034,48 / 1.103,45.
+        pos = [_p(asset="MELI", asset_type="CEDEAR", currency="ARS",
+                  quantity=100, invested=1_500_000.0, broker="Cocos · USD")]
+        r = cbv(pos, {"MELI.BA": 16_000.0}, "USD", BLUE, "Cocos · USD", MEP)
+        self.assertAlmostEqual(r["invested"], 1_500_000.0 / MEP, places=4)
+        self.assertAlmostEqual(r["value"], 100 * 16_000.0 / MEP, places=4)
+
+    def test_guard_compara_pesos_contra_pesos(self):
+        # El corazón del bug: con el guard mal, el múltiplo daba ~1/MEP y el precio
+        # REAL se descartaba → value caía al costo. Acá el value DEBE ser el de mercado.
+        pos = [_p(asset="MELI", asset_type="CEDEAR", currency="ARS",
+                  quantity=100, invested=1_500_000.0, broker="Cocos · USD")]
+        r = cbv(pos, {"MELI.BA": 16_000.0}, "USD", BLUE, "Cocos · USD", MEP)
+        self.assertNotAlmostEqual(r["value"], 1_500_000.0, places=2)   # no cae al costo
+        self.assertGreater(r["value"], r["invested"])                  # el P&L real pasa
+
+    def test_a2_accion_ar_en_pesos_en_broker_usd_genuino(self):
+        # A-2: GGAL comprado en PESOS alojado en Schwab (USD genuino, sin padre AR).
+        # Viejo: pedía y valuaba 'GGAL' (ADR de NYSE). Canónico: 'GGAL.BA' (BYMA).
+        p = _p(asset="GGAL", currency="ARS", quantity=100,
+               invested=500_000.0, commissions=1_000.0, broker="Schwab")
+        self.assertEqual(position_price_key(p, set(), set()), "GGAL.BA")
+        r = cbv([p], {"GGAL.BA": 7_000.0, "GGAL": 45.0}, "USD", BLUE, "Schwab", MEP)
+        self.assertAlmostEqual(r["invested"], 501_000.0 / MEP, places=4)
+        self.assertAlmostEqual(r["value"], 100 * 7_000.0 / MEP, places=4)   # .BA, NO el ADR
+
+    def test_sin_precio_cae_a_costo_usd_pnl_cero(self):
+        # Sin precio confiable: valor = costo-USD (÷MEP) → P&L exactamente 0.
+        pos = [_p(asset="TXAR", currency="ARS", quantity=50,
+                  invested=300_000.0, broker="Schwab")]
+        r = cbv(pos, {}, "USD", BLUE, "Schwab", MEP)
+        self.assertAlmostEqual(r["invested"], 300_000.0 / MEP, places=4)
+        self.assertAlmostEqual(r["value"], 300_000.0 / MEP, places=4)
+
+    def test_price_override_en_pesos(self):
+        # El override es un precio LOCAL en pesos → también ÷MEP (mirror del canónico).
+        pos = [_p(asset="TSLA", asset_type="CEDEAR", currency="ARS", quantity=20,
+                  invested=400_000.0, price_override=25_000.0, broker="Cocos · USD")]
+        r = cbv(pos, {}, "USD", BLUE, "Cocos · USD", MEP)
+        self.assertAlmostEqual(r["invested"], 400_000.0 / MEP, places=4)
+        self.assertAlmostEqual(r["value"], 20 * 25_000.0 / MEP, places=4)
+
+    def test_renta_fija_en_pesos_en_cuenta_usd(self):
+        # Banda angosta (0,02..4) y aun así el guard debe confiar: compara ARS vs ARS.
+        pos = [_p(asset="AL30", asset_type="BONO", currency="ARS", quantity=100,
+                  invested=7_000_000.0, broker="Schwab")]
+        r = cbv(pos, {"AL30.BA": 82_000.0}, "USD", BLUE, "Schwab", MEP)
+        self.assertAlmostEqual(r["invested"], 7_000_000.0 / MEP, places=4)
+        self.assertAlmostEqual(r["value"], 100 * 82_000.0 / MEP, places=4)
+
+    def test_cripto_marcada_ars_no_se_rutea_al_ba(self):
+        # costInPesos excluye la cripto: se valúa SIEMPRE al spot USD, nunca por el MEP
+        # (y 'BTC.BA' no cotiza en ningún lado). Sin la exclusión, el costo se dividía
+        # por el MEP y el valor no → P&L invertido.
+        p = _p(asset="BTC", currency="ARS", quantity=1, invested=90_000.0,
+               broker="Cocos · USD")
+        self.assertEqual(position_price_key(p, set(), set()), "BTC")
+
+    def test_lote_usd_en_cuenta_usd_no_cambia(self):
+        # Regresión: sin currency='ARS' nada se toca (comportamiento USD de siempre).
+        pos = [_p(asset="AAPL", currency="USD", quantity=10,
+                  invested=2_000.0, commissions=5.0, broker="Schwab")]
+        r = cbv(pos, {"AAPL": 220.0}, "USD", BLUE, "Schwab", MEP)
+        self.assertAlmostEqual(r["invested"], 2_005.0, places=4)
+        self.assertAlmostEqual(r["value"], 2_200.0, places=4)
+
+
 if __name__ == "__main__":
     unittest.main()
