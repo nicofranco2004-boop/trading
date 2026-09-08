@@ -31339,6 +31339,15 @@ def _migrar_credenciales_a_credentials_key() -> None:
     """
     propia = _creds_clave_propia()
     if not propia:
+        # El silencio NO puede ser ambiguo: sin este log, "falta la variable" y
+        # "la migración corrió y no hizo nada" se ven igual desde afuera — o sea,
+        # se ven igual las dos mitades de la decisión de rotar SECRET_KEY.
+        # En dev que falte es lo normal (info); en prod significa que la rotación
+        # todavía no se puede hacer (warning).
+        _avisar = (log.warning if os.environ.get("RENDI_ENV", "").lower() == "prod"
+                   else log.info)
+        _avisar("credenciales: CREDENTIALS_KEY no está seteada — todo sigue cifrado "
+                "con SECRET_KEY, como antes. NO rotes SECRET_KEY.")
         return
     try:
         from cryptography.fernet import InvalidToken
@@ -31367,13 +31376,22 @@ def _migrar_credenciales_a_credentials_key() -> None:
                         (primaria.encrypt(plano.encode("utf-8")).decode("utf-8"),
                          f["user_id"], f["broker"]))
                 migradas += 1
-        veredicto = ("SEGURO rotar SECRET_KEY" if migradas == 0
-                     else "NO rotes SECRET_KEY todavía: redeployá y confirmá '0 migradas ahora'")
-        print(f"credenciales: {ya} ya bajo CREDENTIALS_KEY, {migradas} migradas ahora, "
-              f"{ilegibles} ilegibles. {veredicto}")
+        # Va por `log` y NO por print(): el start de nixpacks no usa `python -u` ni
+        # setea PYTHONUNBUFFERED, así que stdout queda con buffer de bloque y una
+        # línea suelta puede no aparecer nunca en los logs de Railway. Este renglón
+        # ES el gate de la rotación: si no se ve, el procedimiento no se puede hacer.
+        # (Mismo motivo por el que el warning de SECRET_KEY de main.py:113 tampoco
+        # se ve — está reportado aparte.)
+        if migradas:
+            log.warning("credenciales: %d ya bajo CREDENTIALS_KEY, %d migradas ahora, %d "
+                        "ilegibles. NO rotes SECRET_KEY todavía: redeployá y confirmá "
+                        "'0 migradas ahora'.", ya, migradas, ilegibles)
+        else:
+            log.info("credenciales: %d ya bajo CREDENTIALS_KEY, 0 migradas ahora, %d "
+                     "ilegibles. SEGURO rotar SECRET_KEY.", ya, ilegibles)
     except Exception as e:
-        print(f"⚠️  credenciales: la migración a CREDENTIALS_KEY falló ({e}). "
-              f"Siguen legibles con SECRET_KEY. NO rotes SECRET_KEY.")
+        log.warning("credenciales: la migración a CREDENTIALS_KEY falló (%s). Siguen "
+                    "legibles con SECRET_KEY. NO rotes SECRET_KEY.", e)
 
 
 _migrar_credenciales_a_credentials_key()

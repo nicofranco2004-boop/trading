@@ -171,5 +171,42 @@ class CredentialsKeyTest(unittest.TestCase):
             "esta-si-migra")
 
 
+    # ── el gate de la rotación tiene que VERSE ────────────────────────────────
+    # Estos dos existen porque la primera versión usaba print(): el start de
+    # nixpacks no fuerza salida sin buffer, así que la línea nunca apareció en
+    # los logs de Railway y el procedimiento de rotación quedó sin su semáforo.
+    # Un gate que no se ve no es un gate.
+
+    def test_el_gate_sale_por_el_logger_de_la_app(self):
+        self._guardar_cifrada_a_la_vieja("visible")
+        os.environ["CREDENTIALS_KEY"] = CLAVE_PROPIA
+        with self.assertLogs("main", level="INFO") as cap:
+            main._migrar_credenciales_a_credentials_key()
+        self.assertTrue(any("credenciales:" in m for m in cap.output),
+                        f"el gate no salió por logging: {cap.output}")
+
+    def test_sin_credentials_key_tambien_avisa(self):
+        """El silencio no puede ser ambiguo: sin este aviso, 'falta la variable' y
+        'la migración no hizo nada' se ven igual desde los logs."""
+        os.environ.pop("CREDENTIALS_KEY", None)
+        with self.assertLogs("main", level="INFO") as cap:
+            main._migrar_credenciales_a_credentials_key()
+        self.assertTrue(any("CREDENTIALS_KEY no está seteada" in m for m in cap.output),
+                        f"no avisó que falta la variable: {cap.output}")
+
+    def test_el_veredicto_cambia_cuando_ya_esta_todo_migrado(self):
+        """Primera pasada dice que NO rotes; la segunda, que es SEGURO."""
+        self._guardar_cifrada_a_la_vieja("dos-pasadas")
+        os.environ["CREDENTIALS_KEY"] = CLAVE_PROPIA
+        with self.assertLogs("main", level="INFO") as primera:
+            main._migrar_credenciales_a_credentials_key()
+        self.assertTrue(any("NO rotes SECRET_KEY todavía" in m for m in primera.output),
+                        primera.output)
+        with self.assertLogs("main", level="INFO") as segunda:
+            main._migrar_credenciales_a_credentials_key()
+        self.assertTrue(any("SEGURO rotar SECRET_KEY" in m for m in segunda.output),
+                        segunda.output)
+
+
 if __name__ == "__main__":
     unittest.main()
