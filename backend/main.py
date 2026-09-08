@@ -15559,33 +15559,6 @@ def goal_diagnostic(gid: int, uid: int = Depends(get_effective_user)):
     )
 
 
-def _cagr_from_monthly_rows(rows) -> dict:
-    """CAGR TWR mensual desde rows de monthly_entries (broker='global'): media
-    geométrica anualizada. Fallback cuando no hay snapshots (cuenta sin historia
-    valuada todavía). NOTA: monthly_entries de meses cerrados está al COSTO
-    (pnl_unrealized=0) → este path subestima el retorno; por eso el camino
-    principal lee de snapshots (ver _historical_cagr_global)."""
-    if len(rows) < 2:
-        return {"cagr": None, "months": len(rows), "reason": "Necesitás al menos 2 meses cargados."}
-    factors = []
-    for r in rows:
-        ci = r["capital_inicio"] or 0
-        cf = r["capital_final"] or 0
-        net = (r["deposits"] or 0) - (r["withdrawals"] or 0)
-        if ci <= 0:
-            continue
-        ret_m = max(-0.95, min(5.0, (cf - ci - net) / ci))
-        factors.append(1 + ret_m)
-    if not factors:
-        return {"cagr": None, "months": len(rows), "reason": "Datos insuficientes."}
-    prod = 1.0
-    for f in factors:
-        prod *= f
-    cagr = prod ** (12 / len(factors)) - 1
-    return {"cagr": round(cagr * 100, 2), "months": len(factors),
-            "total_return": round(prod - 1, 6), "reason": None}
-
-
 def _historical_cagr_global(conn, uid: int, modo: str = None, moneda: str = None) -> dict:
     """El rendimiento histórico del usuario, DEL MOTOR CANÓNICO (`twr.curva_indexada`).
 
