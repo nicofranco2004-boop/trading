@@ -21,6 +21,7 @@ en verde algo que la app no hace.
 
 Corre con: cd backend && python3 -m pytest tests/test_credentials_key.py
 """
+import logging
 import os
 import sys
 import tempfile
@@ -177,13 +178,43 @@ class CredentialsKeyTest(unittest.TestCase):
     # los logs de Railway y el procedimiento de rotación quedó sin su semáforo.
     # Un gate que no se ve no es un gate.
 
+    def _gate(self):
+        """Corre la migración y devuelve el LogRecord del gate.
+
+        `assertLogs` fuerza el nivel del logger, así que por sí solo NO prueba que
+        el mensaje se vea en producción: hay que mirar el levelno del record."""
+        with self.assertLogs("main", level="DEBUG") as cap:
+            main._migrar_credenciales_a_credentials_key()
+        gate = [r for r in cap.records if "credenciales:" in r.getMessage()]
+        self.assertTrue(gate, f"el gate no salió por logging: {cap.output}")
+        return gate[0]
+
     def test_el_gate_sale_por_el_logger_de_la_app(self):
         self._guardar_cifrada_a_la_vieja("visible")
         os.environ["CREDENTIALS_KEY"] = CLAVE_PROPIA
-        with self.assertLogs("main", level="INFO") as cap:
-            main._migrar_credenciales_a_credentials_key()
-        self.assertTrue(any("credenciales:" in m for m in cap.output),
-                        f"el gate no salió por logging: {cap.output}")
+        self.assertIn("credenciales:", self._gate().getMessage())
+
+    def test_el_gate_va_en_warning_en_las_tres_ramas(self):
+        """EL TEST QUE FALTABA. Esta función corre a nivel de módulo, ANTES del
+        `logging.basicConfig(level=INFO)` que está ~1000 líneas más abajo en
+        main.py. Con el root logger todavía en WARNING, un INFO se descarta en
+        silencio. Pasó en producción: la rama 'SEGURO rotar' era la única en INFO
+        y era justo la que había que leer para poder avanzar."""
+        # rama 1: sin la variable
+        os.environ.pop("CREDENTIALS_KEY", None)
+        self.assertGreaterEqual(self._gate().levelno, logging.WARNING,
+                                "la rama 'no está seteada' quedó por debajo de WARNING")
+        # rama 2: hay algo para migrar
+        self._guardar_cifrada_a_la_vieja("tres-ramas")
+        os.environ["CREDENTIALS_KEY"] = CLAVE_PROPIA
+        self.assertGreaterEqual(self._gate().levelno, logging.WARNING,
+                                "la rama 'NO rotes todavía' quedó por debajo de WARNING")
+        # rama 3: ya está todo migrado — la que se perdió
+        r = self._gate()
+        self.assertIn("SEGURO rotar SECRET_KEY", r.getMessage())
+        self.assertGreaterEqual(r.levelno, logging.WARNING,
+                                "la rama 'SEGURO rotar' quedó por debajo de WARNING: "
+                                "no se va a ver en los logs y el gate no sirve")
 
     def test_sin_credentials_key_tambien_avisa(self):
         """El silencio no puede ser ambiguo: sin este aviso, 'falta la variable' y
