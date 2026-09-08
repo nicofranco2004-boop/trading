@@ -11383,6 +11383,13 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 total_pnl_usd = 0.0          # "true USD" P&L → goes to monthly_entries global
                 total_pnl_ars_native = 0.0   # native ARS P&L → used for monthly_entries broker (ARS only)
                 total_proceeds_native = 0.0  # Phase 2 — ingreso en cash (moneda nativa del broker)
+                # TC con el que EFECTIVAMENTE se dividió el P&L de esta venta. No es
+                # `data.tc_venta`: el campo del formulario es opcional y, cuando el
+                # usuario lo deja vacío, el cálculo cae al TC de la fecha. Lo que se
+                # SELLA en la fila y lo que se BOOKEA en monthly_entries tienen que
+                # usar este mismo número; si no, la fila dice que se dividió por uno
+                # y el P&L está dividido por otro.
+                tc_venta_usado = None
 
                 # Comisión de venta — se prorratea entre los chunks FIFO según la cantidad
                 # vendida de cada lote, y reduce el P&L y el proceeds del cash.
@@ -11456,6 +11463,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                                 conn, op_date, fallback=_user_tc_blue(conn, uid)) or 1
                         else:
                             tc_venta = data.tc_venta or 1
+                        tc_venta_usado = tc_venta
                         pnl_ars_chunk = data.exit_price * take - (entry_invested or 0) - chunk_commission_native
                         pnl_usd = pnl_ars_chunk / tc_venta
                         invested_usd = (entry_invested or 0) / tc_venta if entry_invested else 0
@@ -11479,7 +11487,15 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                     # la del BROKER y puede ser 'USDT') → mismo vocabulario que los otros
                     # dos INSERT. Y NULL en ventas USD: estampar 1.0 haría que el front,
                     # que lee el campo como "ARS por USD", colapse el P&L en pesos 1:1.
-                    fx_stamp = (data.tc_venta or 1) if sell_ccy == "ARS" else None
+                    # El TC que se SELLA es el que se USÓ para dividir, no el que
+                    # mandó el cliente. Acá decía `(data.tc_venta or 1)`: si el
+                    # usuario dejaba vacío el campo opcional "TC de venta", el P&L se
+                    # dividía por `fx_for_date(op_date)` (~1.400) y la fila quedaba
+                    # estampada con `fx_to_usd = 1.0`. Todo lector que use ese campo
+                    # para reconstruir el nominal en pesos —Positions.jsx,
+                    # useHistoricalMoney— mostraba el número ~1.400× mal, y la fila
+                    # era indistinguible de una venta en dólares genuina.
+                    fx_stamp = tc_venta_usado if sell_ccy == "ARS" else None
                     cur = conn.execute(
                         """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
                            exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions,
@@ -11558,7 +11574,13 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 if currency == "ARS":
                     # Broker entry: store in USD-equivalent (same convention as sync_unrealized).
                     # Display in ARS tab = stored_value * tcBlue (current rate, approx).
-                    tc_v = data.tc_venta or 1
+                    # Mismo TC que se usó para dividir el P&L de cada chunk. Acá
+                    # decía `data.tc_venta or 1`: con el campo vacío, un P&L de
+                    # 1.400.000 ARS entraba a monthly_entries como US$1.400.000, y
+                    # de ahí a `capital_final` y al P&L realizado por broker de
+                    # Reportes y del Dashboard, propagado hacia adelante por
+                    # `_repair_monthly_chain`.
+                    tc_v = tc_venta_usado or data.tc_venta or 1
                     pnl_for_broker = total_pnl_ars_native / tc_v
                 else:
                     pnl_for_broker = total_pnl_usd
