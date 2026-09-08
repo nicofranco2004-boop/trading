@@ -84,7 +84,11 @@ export default function AssetMiniChart({ symbol }) {
           {loading ? (
             'cargando…'
           ) : err ? (
-            <span className="text-rendi-neg">{err}</span>
+            // Mensaje NUESTRO, no el del backend: el detail crudo ("Símbolo
+            // inválido: FCI:…") expone el símbolo interno y se lee como si la
+            // posición del usuario estuviera mal cargada, cuando lo que pasa es
+            // que ese activo no tiene serie de precios.
+            <span className="text-ink-3">Sin gráfico para este activo</span>
           ) : closes.length < 2 ? (
             'Sin historial disponible'
           ) : (

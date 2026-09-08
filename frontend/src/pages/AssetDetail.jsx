@@ -106,6 +106,10 @@ function symbolFor(p, brokers) {
   return valuationPriceKey(p, isAR)
 }
 
+// Un FCI no tiene serie de precios: se valúa por el NAV del día. Sirve para no
+// pedir un gráfico que la API no puede devolver.
+const esFci = (sym) => String(sym || '').toUpperCase().startsWith('FCI:')
+
 export default function AssetDetail() {
   const { ticker } = useParams()
   const navigate = useNavigate()
@@ -246,8 +250,14 @@ export default function AssetDetail() {
         </section>
       </AskAIAbout>
 
-      {/* Chart 30d */}
-      {agg.lots.length > 0 && (
+      {/* Chart 30d — solo para símbolos que la serie histórica sabe servir.
+          Los FCI se valúan por su NAV diario (tabla fci_prices, un valor por
+          fondo) y no tienen serie: yfinance no los cotiza y /api/prices/history
+          rechaza el símbolo por el gate _SYMBOL_RE (los dos puntos de 'FCI:').
+          Antes igual se pedía y la tarjeta mostraba el error crudo del backend
+          en rojo ("Símbolo inválido: …"), que además filtraba el símbolo interno
+          y le hacía creer al usuario que su fondo estaba mal cargado. */}
+      {agg.lots.length > 0 && !esFci(symbolFor(agg.lots[0], brokers)) && (
         <section className="mb-5">
           <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Precio · últimos 30 días</div>
           <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
