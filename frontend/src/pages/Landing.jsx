@@ -12,6 +12,7 @@ import {
   Building2, Bitcoin, TrendingUp, Landmark, Receipt,
 } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
+import PageMeta from '../components/PageMeta'
 import {
   fmtArs,
   FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES,
@@ -1542,6 +1543,17 @@ export default function Landing() {
 
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0 overflow-x-hidden">
+      {/* El canonical del home vive acá y NO en index.html: si estuviera en
+          los dos lados, cada ruta de la SPA quedaría con DOS <link
+          rel="canonical"> (el fijo del home + el de su PageMeta) y Google los
+          ignora a todos.
+
+          Va SOLO `canonical`, sin title ni description a propósito: PageMeta
+          deriva og:title/og:description de esos props, y los del index.html
+          están escritos más cortos a mano para que entren en el preview. Si
+          los pasáramos acá, los pisaríamos con la versión larga. Así, lo
+          único que agrega este PageMeta es el canonical. */}
+      <PageMeta canonical="/" />
       <NavBar />
       <Hero />
       <BrokerTicker />

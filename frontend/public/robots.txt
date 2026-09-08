@@ -27,12 +27,15 @@ Disallow: /verify-email
 Disallow: /reset-password
 Disallow: /dashboard
 Disallow: /posiciones
+Disallow: /activo/
 Disallow: /operaciones
 Disallow: /mensual
 Disallow: /reportes
 Disallow: /insights
 Disallow: /comportamiento
 Disallow: /novedades
+Disallow: /eventos
+Disallow: /noticias
 Disallow: /objetivos
 Disallow: /wrapped
 Disallow: /imports
@@ -42,6 +45,7 @@ Disallow: /admin
 Disallow: /mas
 Disallow: /buscar
 Disallow: /bienvenida
+Disallow: /onboarding
 Disallow: /billing/
 Disallow: /api/
 

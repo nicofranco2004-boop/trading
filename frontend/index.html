@@ -36,7 +36,13 @@
     <meta name="apple-mobile-web-app-title" content="Rendi" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="color-scheme" content="dark light" />
-    <link rel="canonical" href="https://rendi.finance/" />
+    <!-- OJO: acá NO va la etiqueta canonical. Vercel sirve este mismo
+         index.html para TODAS las rutas de la SPA, así que un canonical fijo
+         apuntaría cada landing, blog y guía al home. Y como PageMeta AGREGA el
+         suyo (no reemplaza al estático), quedaban DOS <link rel="canonical">
+         por página, el primero al home — Google los ignora a los dos.
+         Cada página pone el suyo con <PageMeta canonical="..." />; el home,
+         en src/pages/Landing.jsx. -->
 
     <!-- Hreflang — geo SEO. Rendi solo está en es-AR, así que el alternativo
          es-AR + x-default fallback. Si en el futuro abrimos a otros países
