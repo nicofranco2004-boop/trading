@@ -67,7 +67,11 @@ const MAX_PNL_TO_COST = 10
 // marcados ARS sin FX, ~125 son de bonos en dólares que YA están bien, y
 // convertirlos a todos los haría 1250× más chicos — un bug peor que el que
 // arregla.
-const NATIVE_CCY_OPS = ['Cupón', 'Amortización']
+// `Interés PF` entró a la lista junto con el backend: el endpoint que cobra un
+// plazo fijo escribe el interés en pesos con `currency='ARS'`, igual que un
+// cupón. Las filas viejas siguen cayendo al ELSE (nacieron sin `fx_to_usd`), así
+// que agregarlo no mueve nada de lo ya escrito.
+const NATIVE_CCY_OPS = ['Cupón', 'Amortización', 'Interés PF']
 
 /**
  * opPnlUsd — el `pnl_usd` de la fila, en USD de verdad.
