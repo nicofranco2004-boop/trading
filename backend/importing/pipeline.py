@@ -17,6 +17,7 @@ from .schema import (NormalizedTx, RawRow, RowError,
                      OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS)
 from .parsers.registry import get_parser, autodetect, list_parsers
 from .normalizer import normalize_rows
+from .fci_map import resolve_fci_by_name
 from .validator import validate
 from .preview import build_preview
 try:
@@ -514,6 +515,18 @@ def run_preview(
 
     # Normalizar
     normalized, norm_errors = normalize_rows(parse_result.raw_rows)
+
+    # FCI escrito por NOMBRE (plantilla manual): el normalizer resuelve tickers de
+    # broker contra un mapa curado, pero no tiene DB para mirar el catálogo. Acá sí
+    # hay conn, así que traducimos "Ualintec Renta Dolares - Clase A" al símbolo
+    # (FCI:UALINTEC-RENTA-DOLARES-A) ANTES de la preview: el usuario ve el símbolo
+    # bueno y la posición valúa con el VCP del día en vez de quedar al costo.
+    # Sin match (o ambiguo) no se toca — mismo criterio que el mapa curado.
+    for tx in normalized:
+        _sym = resolve_fci_by_name(conn, getattr(tx, "asset_symbol", None))
+        if _sym:
+            tx.asset_symbol = _sym
+            tx.asset_type = "FUND"
 
     # Normalizar nombres de broker: case-insensitive + trim. Evita que
     # "Cocos capital" y "Cocos Capital" (o "  cocos capital  ") se traten

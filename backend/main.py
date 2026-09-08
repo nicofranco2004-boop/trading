@@ -32418,6 +32418,31 @@ def _remap_fci_broker_tickers(conn) -> int:
     return total
 
 
+def _remap_fci_by_name(conn) -> int:
+    """Igual que el remap de tickers, pero para los fondos cargados por NOMBRE con
+    la plantilla manual ("UALINTEC-RENTA-DOLARES---CLASE-A" → FCI:UALINTEC-RENTA-
+    DOLARES-A). Esas posiciones quedaron al costo porque el normalizer resuelve
+    contra un mapa de tickers de broker y el usuario no escribió un ticker sino el
+    nombre del fondo tal como se lo muestra su app. Reportado 2026-09-08.
+
+    Recorre los activos DISTINTOS (no las filas) y solo toca los que el catálogo
+    resuelve de forma exacta y no ambigua. Idempotente: tras el remap el nombre
+    crudo ya no existe. NO commitea."""
+    from importing.fci_map import resolve_fci_by_name
+    crudos = [r[0] for r in conn.execute(
+        "SELECT DISTINCT asset FROM positions WHERE asset IS NOT NULL AND asset NOT LIKE 'FCI:%'"
+    ).fetchall()]
+    total = 0
+    for raw in crudos:
+        sym = resolve_fci_by_name(conn, raw)
+        if not sym:
+            continue
+        for tbl, col in (("positions", "asset"), ("operations", "asset"),
+                         ("import_normalized_tx", "asset_symbol")):
+            total += conn.execute(f"UPDATE {tbl} SET {col}=? WHERE {col}=?", (sym, raw)).rowcount
+    return total
+
+
 @app.on_event("startup")
 def _migrate_fci_ticker_remap():
     """Migración automática al deploy: aplica _remap_fci_broker_tickers. Sirve para que
@@ -32433,7 +32458,7 @@ def _migrate_fci_ticker_remap():
             _time.sleep(6)
             conn = get_db()
             try:
-                total = _remap_fci_broker_tickers(conn)
+                total = _remap_fci_broker_tickers(conn) + _remap_fci_by_name(conn)
                 if total:
                     conn.commit()
                     logging.getLogger(__name__).info(

@@ -36,7 +36,8 @@ agregá el ticker acá y su base-name en pricing.fci.BROKER_FCI_ALLOWLIST.
 from __future__ import annotations
 from typing import Optional
 
-from pricing.fci import FCI_PREFIX, _slug
+import re
+from pricing.fci import FCI_PREFIX, _slug, _strip_accents
 
 # ticker del broker (UPPER) → nombre EXACTO del fondo en ArgentinaDatos.
 # La clase va explícita: el ticker del broker es específico de la clase
@@ -99,3 +100,66 @@ def resolve_fci_symbol(ticker: Optional[str]) -> Optional[str]:
     """
     ad_name = BROKER_FCI_AD_NAME.get((ticker or "").strip().upper())
     return (FCI_PREFIX + _slug(ad_name)) if ad_name else None
+
+
+# ── Resolución por NOMBRE de fondo (plantilla manual de Rendi) ───────────────
+# El mapa de arriba resuelve el TICKER que emite un parser de broker. Pero por la
+# plantilla manual el usuario no tiene un ticker: escribe el NOMBRE del fondo tal
+# como se lo muestra su app ("Ualintec Renta Dolares - Clase A"). Eso entraba como
+# activo crudo y la posición quedaba al costo para siempre (reportado 2026-09-08).
+#
+# Peor: para cuando llega acá el nombre ya pasó por el `\s+`→`-` del normalizer,
+# así que lo que vemos es "UALINTEC-RENTA-DOLARES---CLASE-A" (tres guiones donde
+# iba " - "). `_name_key` colapsa las dos formas —la escrita y la mangleada— a la
+# MISMA clave que produce `_slug` sobre el nombre oficial de la fuente.
+_CLASE_SUFFIX_RE = re.compile(r"-CLASE-([A-Z0-9]+)$")
+
+
+def _name_key(s: Optional[str]) -> Optional[str]:
+    """Clave canónica de un nombre de fondo, tolerante a acentos, mayúsculas,
+    separadores repetidos y al sufijo de clase escrito largo.
+
+        'Ualintec Renta Dólares - Clase A'   → 'UALINTEC-RENTA-DOLARES-A'
+        'UALINTEC-RENTA-DOLARES---CLASE-A'   → 'UALINTEC-RENTA-DOLARES-A'
+        'ualintec renta dolares clase a'     → 'UALINTEC-RENTA-DOLARES-A'
+
+    Devuelve la MISMA forma que `_slug`, así la comparación es contra el símbolo
+    de catálogo sin necesidad de una tabla de alias.
+    """
+    if not s:
+        return None
+    base = re.sub(r"[^A-Z0-9]+", "-",
+                  _strip_accents(str(s)).upper()).strip("-")
+    if not base:
+        return None
+    return _CLASE_SUFFIX_RE.sub(r"-\1", base)
+
+
+def resolve_fci_by_name(conn, raw: Optional[str]) -> Optional[str]:
+    """Nombre de fondo escrito por el usuario → símbolo del catálogo, o None.
+
+    Reglas de seguridad (mismas que el mapa curado — errar de clase valúa ~100x
+    mal, ver el docstring de arriba):
+      • el match es EXACTO sobre la clave canónica, no por prefijo ni fuzzy;
+      • si la clave matchea más de un fondo activo, NO se resuelve (ambiguo);
+      • un símbolo que ya es 'FCI:' no se toca;
+      • sin catálogo (tabla vacía / DB sin seedear) devuelve None, nunca adivina.
+    """
+    if not raw or str(raw).strip().upper().startswith(FCI_PREFIX):
+        return None
+    key = _name_key(raw)
+    if not key or "-" not in key:
+        # Una sola palabra no es un nombre de fondo: sería un ticker suelto y
+        # abrir eso a match invita colisiones ('DELTA' vs 'Delta Pesos').
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT symbol FROM fci_catalog WHERE activo=1 AND symbol=?",
+            (FCI_PREFIX + key,),
+        ).fetchall()
+    except Exception:
+        return None  # sin tabla de catálogo → comportamiento previo (al costo)
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    return row["symbol"] if not isinstance(row, tuple) else row[0]
