@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 from collections import Counter
 
 from realized_pnl import realized_usd
+import twr as _twr
 
 
 # ── Helpers de cálculo ───────────────────────────────────────────────────────
@@ -47,25 +48,54 @@ def _monthly_for_year(monthly: List[dict], year: int, broker: str = 'global') ->
     return sorted(rows, key=lambda m: m.get('month') or 0)
 
 
-def _twr_for_period(rows: List[dict]) -> Optional[float]:
-    """Time-weighted return geométrico para una serie de meses."""
-    if not rows:
-        return None
-    prod = 1.0
-    valid = 0
+def _retornos_mensuales(rows: List[dict]) -> List[tuple]:
+    """[(row, retorno)] del mes, con el primitivo canónico `twr.dietz`.
+
+    ⚠️ ACÁ VIVÍAN DOS FÓRMULAS DISTINTAS PARA EL MISMO MES, Y NINGUNA ERA LA DEL
+    MOTOR. El slide del rendimiento dividía por `capital_inicio` a secas y los de
+    mejor/peor mes hacían `(pnl_realized + pnl_unrealized) / capital_inicio`, sin
+    restar los flujos. El numerador de las dos coincide mientras valga la
+    identidad contable de `monthly_entries`; el denominador no coincidía con nada.
+
+    El aporte del mes entró a mitad de mes, no el día 1: el denominador es
+    `ci + 0,5·flujo` (Modified Dietz). Con `/ci`, el mes del test canónico
+    (ci=1000, cf=2100, dep=1000) daba +10,0 % donde el motor mide +6,67 %, y
+    compuesto a doce meses **+213,8 % contra +116,9 %** — un número que sale de la
+    app como PNG. (El informe del audit publica +115,7 %: compone el mensual ya
+    redondeado a 6,67 %. La brecha es la misma.)
+
+    `twr.dietz` devuelve None cuando el denominador no da para medir y tiene piso
+    en −100 % (no se puede perder más que todo). Los meses que no se pueden medir
+    NO entran a la lista: acá se decide una sola vez, para los tres slides.
+    """
+    out = []
     for r in rows:
         ci = r.get('capital_inicio') or 0
         cf = r.get('capital_final') or 0
         net = (r.get('deposits') or 0) - (r.get('withdrawals') or 0)
-        if ci <= 0:
-            continue
-        ret = (cf - ci - net) / ci
-        # Clamp para evitar outliers locos arruinar el geom mean
-        ret = max(-0.95, min(5.0, ret))
-        prod *= (1 + ret)
-        valid += 1
-    if valid == 0:
+        ret = _twr.dietz(ci, cf, net)
+        if ret is not None:
+            out.append((r, ret))
+    return out
+
+
+def _twr_for_period(rows: List[dict]) -> Optional[float]:
+    """Retorno geométrico encadenado de una serie de meses.
+
+    ⚠️ NO es el TWR del motor, aunque el slide todavía lo llame así: encadena
+    `monthly_entries`, que en los meses cerrados tiene `pnl_unrealized` forzado a
+    0 — o sea la cadena CONTABLE, no el mercado. El método es time-weighted; la
+    base, no. Migrarlo a `twr.curva_indexada` (que mide sobre snapshots) es otra
+    tanda.
+    """
+    pares = _retornos_mensuales(rows)
+    if not pares:
         return None
+    prod = 1.0
+    for _r, ret in pares:
+        # Clamp para evitar que un outlier arruine el geom mean. Se conserva tal
+        # cual estaba: lo único que cambió es el denominador de `ret`.
+        prod *= (1 + max(-0.95, min(5.0, ret)))
     return prod - 1
 
 
@@ -159,13 +189,10 @@ def _slide_pnl(rows: List[dict], year: int) -> dict:
 
 
 def _slide_best_month(rows: List[dict]) -> Optional[dict]:
-    candidates = []
-    for r in rows:
-        ci = r.get('capital_inicio') or 0
-        if ci <= 0:
-            continue
-        ret = ((r.get('pnl_realized') or 0) + (r.get('pnl_unrealized') or 0)) / ci
-        candidates.append((ret, r))
+    # El MISMO retorno que publica el slide del rendimiento. Cuando cada slide
+    # derivaba el suyo, el "mejor mes" podía ser el mes en que entró un depósito
+    # grande y no el mes en que la cartera rindió.
+    candidates = [(ret, r) for r, ret in _retornos_mensuales(rows)]
     if not candidates:
         return None
     candidates.sort(key=lambda t: t[0], reverse=True)
@@ -184,13 +211,7 @@ def _slide_best_month(rows: List[dict]) -> Optional[dict]:
 
 
 def _slide_worst_month(rows: List[dict]) -> Optional[dict]:
-    candidates = []
-    for r in rows:
-        ci = r.get('capital_inicio') or 0
-        if ci <= 0:
-            continue
-        ret = ((r.get('pnl_realized') or 0) + (r.get('pnl_unrealized') or 0)) / ci
-        candidates.append((ret, r))
+    candidates = [(ret, r) for r, ret in _retornos_mensuales(rows)]
     if not candidates:
         return None
     candidates.sort(key=lambda t: t[0])

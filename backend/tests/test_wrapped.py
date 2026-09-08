@@ -114,12 +114,74 @@ def test_twr_excludes_capital_zero():
 
 
 def test_twr_neutralizes_deposits():
-    # Mes con depósito grande no debe inflar el rendimiento
+    # Mes con depósito grande no debe inflar el rendimiento.
+    #
+    # ⚠️ EL VALOR CAMBIÓ, LA INTENCIÓN NO. El test afirmaba +5,00% = 500/10.000,
+    # o sea el denominador VIEJO (`capital_inicio` a secas). El aporte entró a
+    # mitad del mes: el denominador de Modified Dietz es 10.000 + 0,5·1.000 =
+    # 10.500 y el retorno es 500/10.500 = +4,7619%. Lo que el test venía a fijar
+    # —que el depósito no se lea como ganancia (+15%)— sigue fijado.
     rows = [
-        make_monthly(2026, 1, ci=10000, cf=11500, dep=1000, pnl_r=500),  # +500/10000 = +5% (no +15%)
+        make_monthly(2026, 1, ci=10000, cf=11500, dep=1000, pnl_r=500),
     ]
     twr = _twr_for_period(rows)
-    assert twr == pytest.approx(0.05, abs=1e-4)
+    assert twr == pytest.approx(500 / 10500, abs=1e-6)
+    assert twr < 0.05        # y menos que el número viejo, no más
+
+
+def test_twr_usa_el_primitivo_canonico_y_no_su_propia_cuenta():
+    """El caso del audit, con los números medidos.
+
+    ci=1000, cf=2100, dep=1000. Dividiendo por `capital_inicio` el slide decía
+    +10,00%; el motor mide +6,67%. Compuesto a doce meses eso es +213,8% contra
+    +115,7% — y el slide sale de la app como PNG.
+    """
+    import twr as _twr
+    rows = [make_monthly(2026, 1, ci=1000, cf=2100, dep=1000, pnl_r=100)]
+    ret = _twr_for_period(rows)
+    assert ret == pytest.approx(0.0667, abs=1e-4)
+    assert ret == pytest.approx(_twr.dietz(1000, 2100, 1000), abs=1e-12)
+    # El número viejo, para que quede escrito de qué se está saliendo.
+    assert ret != pytest.approx(0.10, abs=1e-4)
+    # Y a doce meses, la brecha compuesta: el mismo mes doce veces da +116,9%
+    # con el primitivo y +213,8% con el denominador viejo (1,10**12 - 1). El
+    # informe redondea el mensual a 6,67% y publica +115,7%; acá se compone el
+    # valor exacto, que es lo que hace el código.
+    doce = [make_monthly(2026, m, ci=1000, cf=2100, dep=1000) for m in range(1, 13)]
+    assert _twr_for_period(doce) == pytest.approx((1 + 100 / 1500) ** 12 - 1, abs=1e-9)
+    assert _twr_for_period(doce) == pytest.approx(1.1694, abs=1e-3)
+    assert (1 + 100 / 1000) ** 12 - 1 == pytest.approx(2.1384, abs=1e-3)   # el viejo
+
+
+def test_mejor_y_peor_mes_usan_EL_MISMO_retorno_que_el_slide_de_rendimiento():
+    """Antes cada slide derivaba el suyo: el de rendimiento dividía por `ci` y
+    los de mejor/peor hacían `(pnl_realized + pnl_unrealized) / ci` sin restar
+    los flujos. Con un depósito grande, el "mejor mes" podía ser el mes en que
+    entró la plata y no el mes en que la cartera rindió."""
+    import twr as _twr
+    # Enero: +1.000 sobre 10.000 sin flujos           ⇒ +10,00% con las dos.
+    # Febrero: +1.050 pero con un depósito de 10.000  ⇒ la quinta fórmula lo
+    #   ponía en +10,50% (divide por el capital de inicio, ignora que la mitad
+    #   de la plata entró a mitad de mes); el primitivo lo pone en +7,00%.
+    # O sea: el mes del depósito le GANABA al mes que rindió.
+    rows = [
+        make_monthly(2026, 1, ci=10000, cf=11000, dep=0, pnl_r=1000, pnl_u=0),
+        make_monthly(2026, 2, ci=10000, cf=21050, dep=10000, pnl_r=1050, pnl_u=0),
+    ]
+    assert (1050 / 10000) > (1000 / 10000)          # lo que decía la quinta fórmula
+    assert _twr.dietz(10000, 21050, 10000) == pytest.approx(0.07, abs=1e-9)
+    best = _slide_best_month(rows)
+    assert best['metric']['label'] == 'ENERO'
+    assert best['metric']['value'] == '+10.00%'
+
+
+def test_un_mes_que_no_se_puede_medir_no_entra_a_ningun_slide():
+    """`dietz` devuelve None cuando el denominador no da (un retiro que se lleva
+    el capital). Se decide UNA vez, para los tres slides."""
+    rows = [make_monthly(2026, 1, ci=1000, cf=0, dep=0, wd=3000, pnl_r=0)]
+    assert _twr_for_period(rows) is None
+    assert _slide_best_month(rows) is None
+    assert _slide_worst_month(rows) is None
 
 
 def test_twr_returns_none_if_no_valid_rows():

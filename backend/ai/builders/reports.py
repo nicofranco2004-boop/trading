@@ -35,6 +35,7 @@ Shape (~900 bytes):
 from __future__ import annotations
 from typing import Dict, Any, List, Optional
 from datetime import date
+import twr as _twr
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -70,9 +71,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         cf = float(e.get("capital_final") or 0)
         dep = float(e.get("deposits") or 0)
         wd = float(e.get("withdrawals") or 0)
-        if ci <= 0:
+        # Mismo primitivo que el resto de la app: el denominador lleva el 0,5 del
+        # flujo (Modified Dietz). Con `/ci`, un mes con un aporte grande publicaba
+        # +10,0 % donde el motor mide +6,67 %. Ver `twr.dietz`.
+        ret = _twr.dietz(ci, cf, dep - wd)
+        if ret is None:
             continue
-        ret = ((cf - dep + wd) / ci) - 1
         if ret < -0.95 or ret > 5:
             continue
 

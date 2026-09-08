@@ -95,6 +95,7 @@ from datetime import date, datetime
 
 from behavioral import _native_ccy, _trust_mkt_value_usd
 import realized_pnl as _realized_pnl
+import twr as _twr
 
 
 _CRYPTO_HINT = {"BTC", "ETH", "USDT", "USDC", "AAVE", "SOL", "AVAX", "DOT", "DOGE", "ADA", "XRP", "LINK", "BNB"}
@@ -191,7 +192,6 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # cron con fotos que el import FABRICA copiando la cadena contable
     # (persister.py:1289-1292). Encadenadas contra una medición de verdad fijan
     # picos que nunca existieron — es el "−45% de drawdown" que reportó el user.
-    import twr as _twr
     _serie = _twr.serie_medible(conn, user_id)
     # ⚠️ Y TAMPOCO se aplana la serie ignorando los TRAMOS. `serie_medible` la
     # parte donde hubo más de `max_hueco_dias` de silencio; aplanando los puntos,
@@ -252,11 +252,16 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             cf = float(r["capital_final"] or 0)
             dep = float(r["deposits"] or 0)
             wd = float(r["withdrawals"] or 0)
-            # Retorno mensual aislando flujos: (cf - flow) / ci - 1
-            denom = ci
-            if denom <= 0:
+            # Retorno mensual aislando flujos, con el primitivo canónico.
+            # El denominador es `ci + 0,5·flujo` (Modified Dietz), no `ci`: el aporte
+            # entró a mitad del mes, no el día 1. Con `/ci` el mismo mes daba +10,0 %
+            # donde el motor mide +6,67 % — a doce meses, +213,8 % contra +116,9 %.
+            # `twr.dietz` es EL primitivo: si acá se vuelve a escribir la cuenta,
+            # vuelve a haber dos motores. Devuelve None cuando el denominador no da
+            # para medir (un retiro que se lleva casi todo el capital).
+            ret = _twr.dietz(ci, cf, dep - wd)
+            if ret is None:
                 continue
-            ret = ((cf - dep + wd) / denom) - 1
             # Cap defensivo a ±200% por mes — algo absurdo y rompería compound
             if ret < -0.95 or ret > 5:
                 continue

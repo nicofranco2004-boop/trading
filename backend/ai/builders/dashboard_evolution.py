@@ -26,6 +26,7 @@ Shape (~400 bytes):
 from __future__ import annotations
 from typing import Dict, Any, List
 from datetime import datetime
+import twr as _twr
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -38,7 +39,6 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # picos que nunca existieron y el drawdown sale de la brecha entre dos
     # formas de medir. `twr.serie_medible` deja solo lo que esta en base de
     # mercado (medido por el cron o reconstruido a precio real).
-    import twr as _twr
     _serie = _twr.serie_medible(conn, user_id)
     snapshots = [{"date": p["date"], "total_value": p["value"]} for p in _serie["medibles"]]
 
@@ -111,8 +111,11 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             ci = m.get("capital_inicio") or 0
             cf = m.get("capital_final") or 0
             net = (m.get("deposits") or 0) - (m.get("withdrawals") or 0)
-            if ci > 0:
-                ret = (cf - ci - net) / ci
+            # Mismo primitivo que el resto de la app (`twr.dietz`): el denominador
+            # lleva el 0,5 del flujo. Con `/ci` el "mejor mes" podía ser el mes en
+            # que entró un depósito grande, no el mes en que la cartera rindió.
+            ret = _twr.dietz(ci, cf, net)
+            if ret is not None:
                 ret = max(-0.95, min(5.0, ret))
                 scored.append((f"{m['year']}-{m['month']:02d}", ret))
         if scored:
