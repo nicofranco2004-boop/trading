@@ -136,9 +136,23 @@ def cost_usd_for_coverage(p: dict, broker_ccy: dict, tc_cedear: float) -> float:
     ponderan igual, y el criterio de moneda es el mismo que el de la valuación.
     """
     c = (p.get('invested') or 0) + (p.get('commissions') or 0)
-    if _cost_in_pesos(p) or (broker_ccy.get(p.get('broker')) or 'USD').upper() == 'ARS':
-        return (c / tc_cedear) if tc_cedear and tc_cedear > 0 else 0.0
-    return c
+    ccy = (p.get('currency') or '').upper()
+    es_ars = (broker_ccy.get(p.get('broker')) or 'USD').upper() == 'ARS'
+
+    if es_ars:
+        # Rama ARS de `compute_broker_value_usd`: todo va ÷MEP salvo el lote cuyo
+        # costo ya está en dólares (bono/ON/FCI-USD, CEDEAR comprado por MEP, y la
+        # cripto con lote en USD, que la rama de cripto trata igual).
+        en_dolares = ccy in ('USD', 'USDT')
+    else:
+        # Rama USD: sólo baja a pesos el lote comprado EN PESOS que vive en una
+        # cuenta dólar. `_cost_in_pesos` excluye la cripto, que se valúa siempre a
+        # spot aunque por error tenga currency='ARS' — igual que la valuación.
+        en_dolares = not _cost_in_pesos(p)
+
+    if en_dolares:
+        return c
+    return (c / tc_cedear) if tc_cedear and tc_cedear > 0 else 0.0
 
 
 def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:

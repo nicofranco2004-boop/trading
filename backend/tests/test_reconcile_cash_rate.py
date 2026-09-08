@@ -20,6 +20,7 @@ porque el modelo rechazaba `tc_blue: None`.
 Corre con: cd backend && python3 -m pytest tests/test_reconcile_cash_rate.py
 """
 import unittest
+from datetime import datetime
 
 import main
 from fastapi.testclient import TestClient
@@ -123,6 +124,62 @@ class ReconcileCashRateTest(unittest.TestCase):
         self._reconciliar(5000.0)
         self.assertAlmostEqual(float(self._fila()["deposits"]), 5000.0, places=2)
 
+
+
+class ReconcileSinHistoriaTest(unittest.TestCase):
+    """Un broker SIN historia previa bookea el ajuste en el mes EN CURSO, así que
+    el TC que corresponde es el de HOY — no el del día 1 de este mes.
+
+    Lo encontré auditando mi propio fix: la primera versión usaba
+    `f"{año}-{mes}-01"` en los dos casos. Con historia está bien (el ajuste
+    pertenece a un mes viejo); sin historia daba una cotización de hasta 27 días
+    atrás para un movimiento de hoy.
+    """
+    BROKER = "TestSinHist"
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "positions", "monthly_entries", "brokers",
+                  "fx_rates_daily", "config", "users"):
+            try:
+                conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.uid = conn.execute(
+            "INSERT INTO users (email,password_hash,approved,email_verified) "
+            "VALUES ('sinhist@rendi.test','x',1,1)").lastrowid
+        conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,'ARS')",
+                     (self.uid, self.BROKER))
+        hoy = datetime.utcnow()
+        self.anio, self.mes = hoy.year, hoy.month
+        # Dos cotizaciones: la del día 1 de este mes y la de hoy, bien separadas.
+        primero = f"{self.anio:04d}-{self.mes:02d}-01"
+        conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) "
+                     "VALUES (?,?,?)", (primero, 500.0, 500.0))
+        if hoy.strftime('%Y-%m-%d') != primero:
+            conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) "
+                         "VALUES (?,?,?)", (hoy.strftime('%Y-%m-%d'), 1000.0, 1000.0))
+            self.tc_hoy, self.hay_dos = 1000.0, True
+        else:
+            self.tc_hoy, self.hay_dos = 500.0, False
+        conn.commit()
+        conn.close()
+        self.client = TestClient(main.app)
+        self.hdr = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+
+    def test_usa_el_tc_de_hoy_y_no_el_del_dia_1(self):
+        r = self.client.post("/api/brokers/reconcile-cash", headers=self.hdr,
+                             json={"broker_name": self.BROKER, "target_cash": 1_000_000.0})
+        self.assertEqual(r.status_code, 200, r.text)
+        conn = main.get_db()
+        row = conn.execute(
+            "SELECT deposits FROM monthly_entries WHERE user_id=? AND broker=? "
+            "AND year=? AND month=?",
+            (self.uid, self.BROKER, self.anio, self.mes)).fetchone()
+        conn.close()
+        self.assertAlmostEqual(float(row["deposits"]), 1_000_000 / self.tc_hoy, places=2)
+        if self.hay_dos:   # el día 1 del mes el test no puede distinguir
+            self.assertNotAlmostEqual(float(row["deposits"]), 1_000_000 / 500.0, places=2)
 
 if __name__ == "__main__":
     unittest.main()

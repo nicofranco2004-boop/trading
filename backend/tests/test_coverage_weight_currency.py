@@ -81,5 +81,45 @@ class CoverageWeightCurrencyTest(unittest.TestCase):
         self.assertLess(cobertura, 0.95)
 
 
+
+class CoberturaVsValuacionTest(unittest.TestCase):
+    """La ponderación tiene que coincidir con el `invested` que produce el
+    valuador REAL, no con un criterio reescrito a mano.
+
+    Lo encontré auditando mi propio fix: la primera versión decía
+    `_cost_in_pesos(p) or broker es ARS`, y eso divide por el MEP a la CRIPTO con
+    lote en dólares dentro de un broker ARS — que el valuador NO divide (rama de
+    cripto, snapshots_job.py:282). Comparar contra la función de verdad, en vez de
+    contra el criterio que yo creía correcto, es lo que lo destapó.
+    """
+
+    CASOS = [
+        # (broker, moneda del broker, currency del lote, asset)
+        ("Cocos",       "ARS",  "ARS",  "MELI"),
+        ("Cocos",       "ARS",  "USD",  "MELI"),   # bono/CEDEAR comprado por MEP
+        ("Cocos",       "ARS",  None,   "MELI"),
+        ("Cocos",       "ARS",  "USD",  "BTC"),    # ← el caso que fallaba
+        ("Cocos",       "ARS",  "ARS",  "BTC"),
+        ("Cocos · USD", "USD",  "ARS",  "MELI"),   # A-1
+        ("Cocos · USD", "USD",  "USD",  "MELI"),
+        ("Cocos · USD", "USD",  "ARS",  "BTC"),    # cripto: nunca por el MEP
+        ("Schwab",      "USD",  "ARS",  "GGAL"),   # A-2
+        ("Schwab",      "USD",  "USD",  "AAPL"),
+    ]
+
+    def test_pondera_igual_que_el_valuador(self):
+        import snapshots_job as sj
+        mep = 1450.0
+        for broker, bccy, lccy, asset in self.CASOS:
+            with self.subTest(broker=broker, lote=lccy, asset=asset):
+                p = {"broker": broker, "currency": lccy, "asset": asset,
+                     "invested": 100_000, "commissions": 0, "is_cash": 0,
+                     "asset_type": None, "price_override": None, "quantity": 1}
+                # `invested` del valuador canónico, sin precios: sólo el costo.
+                real = sj.compute_broker_value_usd(
+                    [p], {}, bccy, mep, broker_name=broker, cedear_rate=mep)["invested"]
+                pond = sj.cost_usd_for_coverage(p, {broker: bccy}, mep)
+                self.assertAlmostEqual(pond, real, places=6)
+
 if __name__ == "__main__":
     unittest.main()

@@ -10241,12 +10241,14 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
                    WHERE user_id=? AND broker=? ORDER BY year, month LIMIT 1""",
                 (uid, data.broker_name),
             ).fetchone()
+            sin_historia = False
             if first:
                 target_year, target_month = first['year'], first['month']
             else:
                 # Sin historia previa — usar mes actual
                 now = datetime.utcnow()
                 target_year, target_month = now.year, now.month
+                sin_historia = True
 
             direction = 'deposit' if diff > 0 else 'withdraw'
             magnitude = abs(diff)
@@ -10266,7 +10268,13 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
             # acá tuerce el % de toda la cuenta, de forma permanente (el recalc
             # trata `manual_*` como autoritativo y no lo recomputa).
             if currency == 'ARS':
-                _ref_date = f"{target_year:04d}-{target_month:02d}-01"
+                # Fecha de referencia del TC. Con historia, el ajuste representa lo
+                # que pasó ANTES del CSV y se bookea en el mes más viejo del broker:
+                # el TC que corresponde es el de ese mes. Sin historia, el ajuste es
+                # de AHORA — usar el día 1 del mes en curso daría una cotización de
+                # hasta 27 días atrás.
+                _ref_date = (datetime.utcnow().strftime('%Y-%m-%d') if sin_historia
+                             else f"{target_year:04d}-{target_month:02d}-01")
                 _rate = _manual_flow_rate(conn, uid, _ref_date, data.tc_blue)
                 amount_usd = magnitude / _rate if _rate else magnitude
             else:
