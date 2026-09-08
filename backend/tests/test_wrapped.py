@@ -153,6 +153,15 @@ def test_twr_usa_el_primitivo_canonico_y_no_su_propia_cuenta():
     assert (1 + 100 / 1000) ** 12 - 1 == pytest.approx(2.1384, abs=1e-3)   # el viejo
 
 
+def test_el_slide_no_dice_TWR_sobre_la_cadena_contable():
+    """`monthly_entries` tiene `pnl_unrealized` forzado a 0 en los meses cerrados:
+    es la cadena CONTABLE. El método es time-weighted, la base no — el rótulo
+    afirmaba las dos cosas."""
+    slide = _slide_pnl([make_monthly(2026, 1)], 2026)
+    assert 'TWR' not in slide['subtitle']
+    assert slide['subtitle'] == 'Tu rendimiento de 2026'
+
+
 def test_mejor_y_peor_mes_usan_EL_MISMO_retorno_que_el_slide_de_rendimiento():
     """Antes cada slide derivaba el suyo: el de rendimiento dividía por `ci` y
     los de mejor/peor hacían `(pnl_realized + pnl_unrealized) / ci` sin restar

@@ -954,7 +954,7 @@ const WRAPPED = (year) => ({
     {
       code: 'pnl', kind: 'pnl',
       title: '+14.32%',
-      subtitle: `Tu rendimiento TWR de ${year}`,
+      subtitle: `Tu rendimiento de ${year}`,
       metric: { value: '+$4,287', label: 'P&L TOTAL' },
       stats: [
         { label: 'Capital inicio',  value: '$30,000' },

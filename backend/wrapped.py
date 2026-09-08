@@ -82,11 +82,11 @@ def _retornos_mensuales(rows: List[dict]) -> List[tuple]:
 def _twr_for_period(rows: List[dict]) -> Optional[float]:
     """Retorno geométrico encadenado de una serie de meses.
 
-    ⚠️ NO es el TWR del motor, aunque el slide todavía lo llame así: encadena
+    ⚠️ NO es el TWR del motor y el slide ya no lo llama así: encadena
     `monthly_entries`, que en los meses cerrados tiene `pnl_unrealized` forzado a
     0 — o sea la cadena CONTABLE, no el mercado. El método es time-weighted; la
     base, no. Migrarlo a `twr.curva_indexada` (que mide sobre snapshots) es otra
-    tanda.
+    tanda; lo que no podía seguir es decir «TWR» sobre esto.
     """
     pares = _retornos_mensuales(rows)
     if not pares:
@@ -177,7 +177,7 @@ def _slide_pnl(rows: List[dict], year: int) -> dict:
         'code': 'pnl',
         'kind': 'pnl',
         'title': f'{sign}{abs(twr) * 100:.2f}%',
-        'subtitle': f'Tu rendimiento TWR de {year}',
+        'subtitle': f'Tu rendimiento de {year}',
         'metric': {'value': f'{sign}${abs(pnl_usd):,.0f}', 'label': 'P&L TOTAL'},
         'stats': [
             {'label': 'Capital inicio', 'value': f'${capital_inicio:,.0f}'},
