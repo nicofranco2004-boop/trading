@@ -11646,20 +11646,33 @@ def _rollover_to_current_month(conn, uid: int, broker: str) -> int:
     now = datetime.utcnow()
     target_year, target_month = now.year, now.month
 
+    # La última fila EN O ANTES del mes actual, no la última en absoluto. Antes
+    # se tomaba el máximo (year, month) de la tabla y se cortaba con
+    # `>= (target_year, target_month)`: una sola operación mal fechada —un cupón
+    # con fecha 2030, un typo en el año— creaba una fila futura que hacía que el
+    # rollover devolviera 0 filas creadas PARA SIEMPRE. El usuario se quedaba sin
+    # la fila del mes en curso, que es la que `sync-unrealized` necesita para
+    # escribir el P&L no realizado: el calendario quedaba congelado hasta 2030.
+    #
+    # Filtrando por (year, month) <= actual, la fila futura queda donde está —es
+    # un dato del usuario y no nos toca borrarlo— pero deja de bloquear el
+    # calendario. Si ya existe la fila del mes en curso, este SELECT la devuelve
+    # y el corte de abajo sigue funcionando igual.
     last = conn.execute(
         """SELECT id, year, month, capital_inicio, capital_final, deposits,
                   withdrawals, pnl_realized, pnl_unrealized
              FROM monthly_entries
             WHERE user_id=? AND broker=?
+              AND (year < ? OR (year = ? AND month <= ?))
             ORDER BY year DESC, month DESC LIMIT 1""",
-        (uid, broker),
+        (uid, broker, target_year, target_year, target_month),
     ).fetchone()
     if not last:
-        return 0  # Sin historial — nada de qué rollover
+        return 0  # Sin historial previo al mes actual — nada de qué rollover
 
     last_year, last_month = int(last["year"]), int(last["month"])
     if (last_year, last_month) >= (target_year, target_month):
-        return 0  # Ya tiene row del current month (o futura)
+        return 0  # Ya tiene row del current month
 
     # Antes de avanzar, cerrar correctamente la última row: zero
     # pnl_unrealized + recalc cap_final con la fórmula canónica.
