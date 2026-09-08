@@ -9904,6 +9904,30 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
     )
 
 
+def _manual_flow_rate(conn, uid: int, date_iso, tc_hint: Optional[float] = None) -> float:
+    """Dólar con el que se dolariza un FLUJO MANUAL de caja en pesos antes de
+    entrar a `monthly_entries` (que vive en USD). Lo consumen los dos caminos que
+    escriben `manual_deposits`/`manual_withdrawals`: el botón Cash
+    (`POST /api/cash/flow`) y la reconciliación de caja del import
+    (`POST /api/brokers/reconcile-cash`).
+
+    Es el TC de la FECHA EN QUE SE BOOKEA el movimiento, no el de hoy: un
+    depósito de 2024 dolarizado al dólar de hoy deforma el capital aportado, que
+    es el denominador del rendimiento. `fx_for_date` prefiere el MEP de ese día y
+    cae al blue histórico si no hay MEP.
+
+    `tc_hint` es el rate que manda el navegador, y queda de ÚLTIMO recurso —
+    nunca de default. Vive en un helper porque los dos caminos escriben la misma
+    columna y tienen que dolarizar igual: cuando estaban separados, `cash/flow`
+    resolvía por fecha y `reconcile-cash` dividía por un `Field(1415)` literal que
+    su único caller no mandaba nunca."""
+    fallback = tc_hint or _user_tc_blue(conn, uid)
+    try:
+        return _fx.fx_for_date(conn, date_iso, fallback=fallback) or fallback
+    except Exception:
+        return fallback
+
+
 def _autodeposit_rate(conn, uid: int, date_iso) -> float:
     """Dólar con el que se dolariza un AUTODEPÓSITO (el aporte que Rendi registra
     cuando cargás una posición sin saldo). Es el MEP de la FECHA de la compra.
@@ -10130,7 +10154,12 @@ class BrokerReconcileCashIn(BaseModel):
     broker externo (ej.: lo que ves cuando abrís Schwab en la app)."""
     broker_name: str = Field(..., min_length=1, max_length=MAX_STR)
     target_cash: float = Field(..., ge=-1e12, le=1e12)  # cash real ahora — puede ser 0
-    tc_blue: float = Field(1415, gt=0, le=1_000_000)    # ARS→USD para monthly_entries global
+    # ARS→USD para monthly_entries. OPCIONAL y sin default numérico a propósito:
+    # antes era `Field(1415)` y el único caller (ImportWizard) no lo manda, así que
+    # en producción TODA reconciliación en pesos se dividía por 1415 sin que nada
+    # lo dijera. Ahora el servidor resuelve por fecha (`_manual_flow_rate`) y esto
+    # queda como pista de último recurso.
+    tc_blue: Optional[float] = Field(None, gt=0, le=1_000_000)
 
     @field_validator('broker_name')
     @classmethod
@@ -10209,8 +10238,27 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
 
             direction = 'deposit' if diff > 0 else 'withdraw'
             magnitude = abs(diff)
-            # Convertir a USD para monthly_entries (que vive en USD)
-            amount_usd = magnitude / data.tc_blue if currency == 'ARS' else magnitude
+            # Convertir a USD para monthly_entries (que vive en USD) al TC de la
+            # FECHA EN QUE SE BOOKEA, no al de hoy. Mismo patrón que /api/cash/flow.
+            #
+            # Acá vivía `magnitude / data.tc_blue`, con `tc_blue` declarado
+            # `Field(1415)`. El único caller (ImportWizard.jsx, el paso de
+            # reconciliación de caja) no manda ese campo, así que en producción
+            # SIEMPRE se dividía por 1415 — un dólar congelado en el código, no
+            # una cotización. Y el ajuste se bookea en el mes MÁS VIEJO del broker
+            # (representa historia pre-CSV), con lo cual ni siquiera el dólar de
+            # hoy sería el correcto: corresponde el de aquel mes.
+            #
+            # Este monto va a `deposits`/`manual_deposits`, o sea al CAPITAL
+            # APORTADO, que es el denominador del rendimiento: un dólar torcido
+            # acá tuerce el % de toda la cuenta, de forma permanente (el recalc
+            # trata `manual_*` como autoritativo y no lo recomputa).
+            if currency == 'ARS':
+                _ref_date = f"{target_year:04d}-{target_month:02d}-01"
+                _rate = _manual_flow_rate(conn, uid, _ref_date, data.tc_blue)
+                amount_usd = magnitude / _rate if _rate else magnitude
+            else:
+                amount_usd = magnitude
 
             _update_monthly_flow(conn, uid, data.broker_name, target_year, target_month,
                                  direction, amount_usd, is_manual=True, native_amount=magnitude)
@@ -10298,15 +10346,14 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                         _fy, _fm = _fd.year, _fd.month
                     except ValueError:
                         pass
-                # Dólar de la FECHA del movimiento, resuelto en el SERVIDOR. Antes se usaba
+                # Dólar de la FECHA del movimiento, resuelto en el SERVIDOR (ver
+                # `_manual_flow_rate`, compartido con reconcile-cash). Antes se usaba
                 # el `tc_blue` que mandaba el navegador, que es el de HOY: con el calendario
                 # nuevo, cargar un depósito de 2024 lo habría dolarizado al dólar de hoy y
                 # deformado el capital aportado — la misma pata que ya se arregló en el
-                # import (13 años de flujos sellados con un solo dólar). `fx_for_date`
-                # prefiere el MEP de ese día y cae al blue histórico solo si no hay MEP;
-                # el rate del cliente queda de último recurso.
+                # import (13 años de flujos sellados con un solo dólar).
                 if currency == 'ARS':
-                    _rate = _fx.fx_for_date(conn, data.date, fallback=data.tc_blue) or data.tc_blue
+                    _rate = _manual_flow_rate(conn, uid, data.date, data.tc_blue)
                     amount_usd = data.amount / _rate if _rate else data.amount
                 else:
                     amount_usd = data.amount
