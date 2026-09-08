@@ -9749,21 +9749,33 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     if not has_positions and not has_operations and not has_monthly:
         conn.execute("DELETE FROM snapshots WHERE user_id=?", (uid,))
 
-    # Para brokers que SÍ tienen actividad, resetear capital_inicio del primer
-    # mes a 0 (es la "baseline" y debería empezar en 0 si nada precede al
-    # primer movimiento; _repair_monthly_chain propaga forward desde ahí).
-    for b in brokers_touched:
-        first = conn.execute(
-            """SELECT id FROM monthly_entries
-               WHERE user_id=? AND broker=?
-               ORDER BY year ASC, month ASC LIMIT 1""",
-            (uid, b),
-        ).fetchone()
-        if first:
-            conn.execute(
-                "UPDATE monthly_entries SET capital_inicio=0 WHERE id=?",
-                (first["id"],),
-            )
+    # El `capital_inicio` del primer mes NO se toca. Acá vivía un reset a 0 de la
+    # primera fila de cada broker tocado, con la premisa de que "es la baseline y
+    # debería empezar en 0 si nada precede al primer movimiento".
+    #
+    # La premisa es falsa: SÍ hay algo que puede preceder al primer movimiento, y
+    # es lo que el usuario declara a mano en /mensual (`MonthlyIn.capital_inicio`,
+    # POST/PUT /api/monthly) para decir cuánto ya tenía antes de empezar a usar
+    # Rendi. Ese número no se deriva de ninguna fuente: si se borra, no se
+    # reconstruye con nada. Y se borraba sin deshacer, en el primer import, revert,
+    # borrado de broker o cierre de futuro — para TODOS los brokers tocados,
+    # 'global' incluido (`brokers_touched.add()` es incondicional).
+    #
+    # Y el reset sólo podía hacer daño: cuando la baseline ya es 0 es un no-op, así
+    # que la ÚNICA vez que hacía algo era cuando había un valor declarado. Un
+    # recalc que recompone desde operations/imports no tiene con qué recomputar un
+    # dato que no está en ninguna de esas dos fuentes; lo correcto es no tocarlo.
+    #
+    # El caso que el reset decía cubrir —una baseline stale heredada de un ciclo
+    # anterior cuya fila previa ya no existe— lo cubre el DELETE de filas
+    # todo-en-cero de acá arriba: una fila que sólo tiene capital_inicio no
+    # sobrevive a esa limpieza.
+    #
+    # ⚠️ EFECTO ESPERADO (D-2 del plan de remediación). Al dejar de borrar la
+    # baseline vuelve a verse la divergencia DIV-029: Dashboard y Reportes rotulan
+    # "Capital aportado" dos números distintos porque uno incluye la baseline y el
+    # otro no. Hoy coinciden sólo porque en las cuentas ya recalculadas no queda
+    # baseline que los separe. Unificar esos dos lectores es la tanda F6.
 
     # Re-reparar capital_final chain con los nuevos valores
     for b in brokers_touched:
