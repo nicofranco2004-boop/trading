@@ -28,3 +28,28 @@ backend/__pycache__/
 node_modules/
 frontend/dist/
 .DS_Store
+
+# ── design/ — el kit de generación de assets SÍ entra al repo (los scripts,
+# las fuentes, los renders finales pesan ~13 MB). Lo pesado NO.
+#
+# `design/video/` es el proyecto Remotion: ~120 MB de .mp4 fuente más su
+# node_modules. Git guarda cada versión de un binario ENTERA y para siempre —
+# un repo que se lleva los .mp4 no se puede volver a achicar sin reescribir la
+# historia. Los fuentes de video viven fuera del repo (copia en ~/rendi-rescate).
+design/video/
+
+# Video y audio en cualquier ruta, para que el próximo pesado no entre por
+# estar fuera de design/video/.
+*.mp4
+*.mov
+*.webm
+*.avi
+*.mkv
+*.wav
+*.mp3
+
+# Formatos de diseño que llegan con el material y pesan decenas de MB.
+*.psd
+*.ai
+*.sketch
+*.fig
