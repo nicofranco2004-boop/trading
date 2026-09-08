@@ -38,6 +38,25 @@ function archivosJsx(dir) {
   })
 }
 
+/**
+ * Fin de la etiqueta de apertura que empieza en `desde`.
+ *
+ * No sirve buscar el primer `>`: las props traen arrow functions
+ * (`onClose={() => ...}`) y el `>` de la flecha corta el bloque antes de tiempo,
+ * dejando invisible toda prop declarada después. Hay que contar llaves y aceptar
+ * el cierre sólo a profundidad 0.
+ */
+export function finDeEtiqueta(src, desde) {
+  let depth = 0
+  for (let i = desde; i < src.length; i++) {
+    const c = src[i]
+    if (c === '{') depth++
+    else if (c === '}') depth--
+    else if (depth === 0 && c === '>') return i + 1
+  }
+  return src.length
+}
+
 /** Cada `<SellModal ... />` del árbol, con su archivo y su bloque de props. */
 function renders() {
   const out = []
@@ -45,11 +64,10 @@ function renders() {
     const src = readFileSync(f, 'utf8')
     let i = src.indexOf('<SellModal')
     while (i !== -1) {
-      // El bloque de props va hasta el cierre de la etiqueta de apertura.
-      const fin = src.indexOf('/>', i) === -1
-        ? src.indexOf('>', i)
-        : Math.min(src.indexOf('/>', i), src.indexOf('>', i) === -1 ? Infinity : src.indexOf('>', i))
-      out.push({ archivo: f.slice(SRC.length + 1), props: src.slice(i, fin === -1 ? i + 800 : fin) })
+      out.push({
+        archivo: f.slice(SRC.length + 1),
+        props: src.slice(i, finDeEtiqueta(src, i)),
+      })
       i = src.indexOf('<SellModal', i + 1)
     }
   }
@@ -69,5 +87,14 @@ describe('SellModal — contrato de props', () => {
   it('TODOS los renderers pasan tcValuacion', () => {
     const sinTc = renders().filter(r => !/\btcValuacion\s*=/.test(r.props))
     expect(sinTc.map(r => r.archivo)).toEqual([])
+  })
+})
+
+describe('el extractor no se corta en las arrow functions', () => {
+  it('captura props declaradas DESPUÉS de onClose', () => {
+    // Sin balance de llaves, el `>` de `() =>` cortaba el bloque acá y toda prop
+    // posterior quedaba invisible: el test dependía del ORDEN de las props.
+    const src = '<SellModal onClose={() => x} fxHist={f} tcValuacion={t} />'
+    expect(finDeEtiqueta(src, 0)).toBe(src.length)
   })
 })
