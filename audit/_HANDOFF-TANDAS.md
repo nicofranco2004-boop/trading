@@ -1,104 +1,265 @@
-# Handoff — las tandas de fix que quedan
+# Handoff — auditoría de cálculo de Rendi y las tandas de fix que quedan
 
-**Arrancá por F2.** El resto del documento explica por qué, qué hay hecho y con qué método.
+**Arrancá por F2.** Todo lo demás está para que entiendas por qué, sin tener que reconstruirlo.
 
-**Commit de referencia:** `f9fea04e` (main al 2026-09-08, con F1 y parte de F4 ya deployados).
-Trabajá sobre `origin/main` actual, no sobre el commit de la auditoría — el código se movió.
-
----
-
-## En una pantalla
-
-Se auditó Rendi entera y salieron **222 hallazgos** con veredicto. Están agrupados por causa
-raíz y ordenados en 7 tandas de fix en **`audit/01-calculos.md`** — ese es el documento que
-tenés que leer, y es corto.
-
-De las 7 tandas: **F1 completa y deployada**, **F4 a medias**. Quedan **F2, F3, F5, F6, F7**
-más 3 ítems sueltos de F4.
-
-| dónde | qué hay |
-|---|---|
-| `audit/01-calculos.md` | **el plan**: causas raíz, dependencias entre fixes, las 7 tandas, el veredicto |
-| `audit/01_calculos/1a-*.md` | 8 informes de detalle — 94 divergencias con veredicto |
-| `audit/01_calculos/1b-*.md` | 6 informes transversales — 128 hallazgos |
-| `audit/01_calculos/1a-resumen.md` · `1b-resumen.md` | las dos tablas consolidadas |
-| `audit/01_calculos/1a-evidencia.md` | qué está MEDIDO y qué DEDUCIDO, hallazgo por hallazgo |
-| `audit/_fixes/F1-datos-a-limpiar.md` | los datos que quedaron mal y qué hacer con ellos |
-| `audit/00-mapa-sistema.md` | el mapa del sistema, 3,4 MB — **no lo leas entero**, grepealo |
+**Base:** `origin/main` actual. Trabajá siempre sobre eso, **no** sobre el commit del mapeo — el
+código se movió y la auditoría original se hizo sobre `b74f450f`, que ya no es producción.
 
 ---
 
-## Por qué F2 y no otra
+## 1. Qué es Rendi
 
-**F2 es lo que sale de la app.** Cuatro hallazgos, todos publicados hacia afuera o hacia el
-modelo de IA:
+App argentina de seguimiento y análisis de carteras de inversión **multi-broker**: tenencias,
+operaciones, P&L realizado y no realizado, rendimientos (incluido ajustado por inflación),
+objetivos y comparaciones contra benchmarks. Tiene planes de suscripción, período de prueba y un
+**plan para asesores** (B2B2C: un asesor ve el libro de sus clientes).
 
-1. **La IA recibe el P&L de por vida duplicado ×2 exacto.** `RendiAI.jsx:170` y
-   `AICoachDrawer.jsx:177` suman `pnl_realized` de todas las filas de `GET /api/monthly`, que
-   incluye la fila sintética `broker='global'` **más** las por-broker. `Dashboard.jsx:243` tiene
-   el `.filter(m => m.broker === 'global')` que falta, 70 líneas más arriba. Afecta también a
-   `deposits_lifetime` y `withdrawals_lifetime`, así que **cualquier ratio que el modelo derive
-   sale mal por partida doble**. Viaja en el contexto de CADA mensaje del chat.
+Dos cosas del dominio que explican la mitad de los bugs:
 
-2. **El prompt que rankea clientes recibe un retorno sin filtrar.** `main.py:35516` hace la
-   misma lectura que `main.py:37073` pero **sin `_es_base_de_mercado`**. El propio código
-   documenta el síntoma que ese filtro vino a matar («+39,6 % mientras su propia pantalla decía
-   "—"»): se aplicó en un call site y no en el otro. **Es un fix de una línea, con el arreglo ya
-   escrito en el mismo archivo.**
-
-3. **El slide del Wrapped dice literalmente «Tu rendimiento TWR»** sobre una fórmula que no es
-   TWR (le falta el `0,5·F` del denominador y va sobre base al costo). +10,0 % donde el motor
-   mide +6,67 %; compuesto a doce meses, **+213,8 % contra +115,7 %**. `shareCard.js` lo exporta
-   como PNG, o sea que **ese número sale de la app**. Si migrar el cálculo lleva tiempo, el
-   RÓTULO se puede cambiar hoy sin tocar nada más.
-
-4. **`Interés PF` se escapa de todos los filtros y de toda conversión.** No está en
-   `_NATIVE_CCY_OPS` (`realized_pnl.py:78`) y nace con `fx_to_usd = NULL` (`main.py:9315`). Un
-   plazo fijo de $10M a 30 días inyecta **US$328.767 falsos** en cinco pantallas y suma "una
-   operación ganada" a los seis win rates. ⚠️ **Verificá primero si hay filas**: el código lo
-   documenta como "hoy no muerde (0 filas)". Si sigue en 0, esto baja de urgente a estructural.
-
-Las razones para empezar acá: **son pocos, están acotados, dos son casi de una línea, y son lo
-único que se publica fuera de la app o alimenta al modelo.** Un número inflado en una pantalla
-lo ve un usuario; un número inflado en el prompt le tuerce el consejo a todos.
+- **Argentina tiene varios dólares** (blue, MEP, CCL, cripto, oficial) con brechas materiales.
+  Elegir mal la cotización, o usar la de hoy para una operación de 2021, desvía plata de verdad.
+- **Un mismo activo se puede tener en pesos y en dólares** en el mismo broker, y hay
+  sub-brokers (`Cocos · USD`) que son la pata dólar de un broker argentino. La moneda del
+  **lote** y la moneda de la **cuenta** no son lo mismo, y confundirlas es la causa raíz de
+  varios de los errores más grandes que encontramos.
 
 ---
 
-## Las tandas, en orden
+## 2. Qué se auditó, y cómo
 
-| tanda | nombre | estado |
+Antes de esto ya existía un **mapa del sistema** (`audit/00-mapa-sistema.md`, 28.586 líneas) que
+documentaba *qué hay*. Lo que se hizo después responde *qué está mal*.
+
+Se auditó en dos tandas, con agentes en paralelo, cada uno sobre una copia limpia de solo lectura
+del commit de producción:
+
+| tanda | qué cubrió | resultado |
 |---|---|---|
-| F1 | Que deje de escribir mal | ✅ **deployada** (`f9fea04e`) |
-| **F2** | **Que la IA y lo que sale de la app no mientan** | **← empezá acá** |
-| F3 | Un solo calendario | pendiente |
-| F4 | Los guards que ya existen, en todos los lectores | 🟡 3 de 6 hechos |
-| F5 | Una sola cotización, una sola política de faltantes | pendiente |
-| F6 | Terminar las migraciones abiertas | pendiente |
-| F7 | El modelo de datos | proyecto aparte, no es una tanda de fixes |
+| **1A** | 94 de las 166 "implementaciones divergentes" — casos donde el mismo concepto se calcula de más de una forma. Se eligió la **cadena del número que el usuario ve**: tenencia → costo/FIFO → valuación → P&L, capital aportado → rendimiento, con FX multiplicando todo | **85 de 94 dan números realmente distintos.** Sólo 9 eran cosméticas |
+| **1B** | 6 temas transversales: decimales y precisión, monedas y cotizaciones, fechas y zonas horarias, inflación/UVA/CER, benchmarks y objetivos, casos borde | **128 hallazgos.** Los últimos tres conceptos no estaban mapeados: se mapearon y auditaron a la vez |
 
-### Lo que quedó de F4, y por qué frené
+**Total: 222 hallazgos con veredicto.** De esos, **50 están MEDIDOS ejecutando código** (con la
+traza pegada en el informe); el resto es lectura verificada con grep. La distinción está hallazgo
+por hallazgo en `audit/01_calculos/1a-evidencia.md`, y **importa**: ninguna magnitud dice cuántos
+usuarios reales están afectados — eso todavía no se midió.
 
-Los tres los frené **a propósito**, no por falta de tiempo. En los tres el código contradecía al
-plan, o la decisión es de producto:
+### El veredicto general, sin suavizar
+
+**Los motores centrales están bien.** `backend/twr.py`, `backend/performance.py` y
+`frontend/src/utils/valuation.js::valuePositionLot` son correctos y están documentados con las
+mediciones que los justifican.
+
+**El problema es que el producto no los usa.** Cinco superficies publican rendimiento sin pasar
+por el motor de rendimiento; seis comparan contra benchmark sin pasar por el de benchmark; el
+valuador canónico admite en su propio docstring que todavía no lo consume nadie.
+
+No es un sistema mal pensado. Es **un sistema bien pensado cuyas correcciones nunca terminaron
+de propagarse** — por eso se ordena en tandas y no es una reescritura.
+
+### La causa raíz dominante
+
+De las 12 causas raíz identificadas, la más frecuente (**≥28 hallazgos**) es:
+**un fix correcto que se aplicó en un solo call site y no se propagó al resto.**
+
+El patrón se repite idéntico: alguien diagnostica bien, arregla bien, deja el comentario que lo
+explica — y el arreglo llega a un lugar de varios. Ejemplos verificados: el fix de `toISOString`
+está en 1 de 28 lugares; el del TC histórico en 2 de 3 motores de venta; las series diarias de
+benchmark se bajaron para los 3 del selector en dólares y no para los 2 en pesos.
+
+**Las dos reglas permanentes de `CLAUDE.md` salieron de acá.** Respetalas.
+
+### Dónde está todo
+
+| archivo | qué es |
+|---|---|
+| **`audit/01-calculos.md`** | **el plan.** 222 hallazgos por causa raíz, 7 dependencias entre fixes, las 7 tandas, el veredicto. **Leé este primero, es corto** |
+| `audit/01_calculos/1a-resumen.md` | tabla de las 94 divergencias con veredicto |
+| `audit/01_calculos/1b-resumen.md` | tabla de los 128 hallazgos transversales |
+| `audit/01_calculos/1a-*.md` (8) | los informes de detalle de 1A, uno por concepto |
+| `audit/01_calculos/1b-*.md` (6) | los informes de detalle de 1B, uno por tema |
+| `audit/01_calculos/1a-evidencia.md` | MEDIDO vs DEDUCIDO vs ESTRUCTURAL, hallazgo por hallazgo |
+| `audit/_fixes/F1-datos-a-limpiar.md` | los datos que quedaron mal, si son recalculables y el riesgo |
+| `audit/01_calculos/_grupos/*.md` | las 72 divergencias **sin** veredicto, partidas por concepto |
+| `audit/00-mapa-sistema.md` | el mapa, 3,4 MB — **no lo leas entero**, grepealo |
+
+⚠️ **El mapa es hipótesis, no verdad.** Se verificaron 290 de sus citas: **~53 tenían el número
+de línea corrido y 5 afirmaciones eran sustantivamente falsas.** Confirmá cada cita con grep
+antes de apoyarte en ella. Si el código contradice al mapa, **gana el código**.
+
+---
+
+## 3. F1 — hecha y deployada
+
+**«Que deje de escribir mal».** Criterio: sólo lo que **corrompe datos nuevos**. Un número mal
+mostrado se arregla el día que se corrige el código; un número mal **escrito** queda.
+
+13 commits, cada uno con un test que falla contra el código viejo:
+
+| qué estaba mal | efecto medido |
+|---|---|
+| El cron de snapshots contaba un costo en pesos como dólares en cuentas USD | **×1.450.** Y el guard de integridad reportaba cobertura 100 % porque medía con la función correcta y valuaba con la incorrecta |
+| El guard de cobertura del 95 % ponderaba por la moneda del **broker**, no del **lote** | dejaba ciego al guard: tapaba faltantes de precio reales |
+| Una conversión de moneda creaba capital de la nada | US$444.342 salieron y US$217.932 volvieron sin que ningún broker los acreditara. 41 usuarios, 12 con capital aportado **negativo** |
+| `reconcile-cash` dividía por un dólar **hardcodeado (1415)** | su único caller nunca manda el campo → +7,3 % de capital fantasma, permanente |
+| El recalc **borraba** el `capital_inicio` que el usuario tipeó | irrecuperable. Se disparaba con el primer import, revert, borrado de broker o cierre de futuro |
+| La venta sellaba un TC distinto del que usó para dividir el P&L | fila con `fx_to_usd = 1.0` y P&L dividido por ~1.400; el mensual del broker recibía pesos como dólares |
+| `SellModal` no recibía las cotizaciones históricas **en mobile** | una venta retroactiva desde el celular quedaba escrita al dólar de hoy |
+| Una operación con fecha futura **congelaba el calendario mensual** | el usuario se quedaba sin fila del mes en curso hasta 2030 |
+| El guard antidistorsión aceptaba valor **negativo y NaN** | la posición se publicaba valiendo menos que nada |
+| `PositionIn` no acotaba sus montos | `invested = 1e308` entraba y llegaba a `capital_final` |
+| Se podía cargar una posición contra un broker **inexistente** | fila huérfana → pérdida fantasma de −US$9.999 |
+
+**Efecto visible esperado, que NO es un bug:** al dejar de borrarse la baseline, "Capital
+aportado" muestra **dos números distintos** entre Dashboard y Reportes para quienes la habían
+cargado. Esa divergencia ya existía; estaba tapada porque el dato se borraba. Unificar esos dos
+lectores es **F6**.
+
+**Lo que F1 NO hace:** no repara los datos que ya están mal. Eso es la limpieza, y sigue
+pendiente de medir.
+
+---
+
+## 4. F2 — empezá acá
+
+**«Que la IA y lo que sale de la app no mientan».** Cuatro hallazgos, todos publicados hacia
+afuera o hacia el modelo. **Dos son casi de una línea.**
+
+**1 · La IA recibe el P&L de por vida duplicado ×2 exacto.**
+`RendiAI.jsx:170` y `AICoachDrawer.jsx:177` suman `pnl_realized` de todas las filas de
+`GET /api/monthly`, que incluye la fila sintética `broker='global'` **más** las por-broker.
+`Dashboard.jsx:243` tiene el `.filter(m => m.broker === 'global')` que falta, 70 líneas más
+arriba. Afecta también a `deposits_lifetime` y `withdrawals_lifetime`, así que **cualquier ratio
+que el modelo derive sale mal por partida doble**. Viaja en el contexto de **cada** mensaje del chat.
+
+**2 · El prompt que rankea clientes recibe un retorno sin filtrar.**
+`main.py:35516` hace la misma lectura que `main.py:37073` pero **sin `_es_base_de_mercado`**. El
+propio código documenta el síntoma que ese filtro vino a matar («+39,6 % mientras su propia
+pantalla decía "—"»). **Fix de una línea, con el arreglo ya escrito en el mismo archivo.**
+
+**3 · El Wrapped dice literalmente «Tu rendimiento TWR» sobre una fórmula que no es TWR.**
+Le falta el `0,5·F` del denominador y va sobre base al costo. +10,0 % donde el motor mide
++6,67 %; compuesto a doce meses, **+213,8 % contra +115,7 %**. `shareCard.js` lo exporta como
+**PNG**, o sea que ese número **sale de la app**. Si migrar el cálculo lleva tiempo, **el rótulo
+se puede cambiar hoy** sin tocar nada más. Los tres packets de IA arrastran la misma fórmula;
+`insights_benchmarks.py` ya fue migrado por este motivo **y lo documenta** — los otros quedaron.
+
+**4 · `Interés PF` se escapa de todos los filtros y de toda conversión.**
+No está en `_NATIVE_CCY_OPS` (`realized_pnl.py:78`) y nace con `fx_to_usd = NULL`
+(`main.py:9315`). Un plazo fijo de $10M a 30 días inyecta **US$328.767 falsos** en cinco
+pantallas y suma "una operación ganada" a los seis win rates.
+⚠️ **Verificá primero si hay filas.** El código lo documenta como "hoy no muerde (0 filas)". Si
+sigue en 0, esto baja de urgente a deuda estructural.
+
+**Por qué esta tanda primero:** son pocos, están acotados, y son **lo único que se publica fuera
+de la app o alimenta al modelo**. Un número inflado en una pantalla lo ve un usuario; un número
+inflado en el prompt le tuerce el consejo a todos.
+
+---
+
+## 5. Las tandas que siguen
+
+### F3 — «Un solo calendario» *(3–5 días)*
+
+Hay **tres calendarios corriendo a la vez**: ART (`utcnow() − 3h`), UTC (`utcnow()`) y hora local
+del proceso (`date.today()`), más UTC y hora local del navegador en el frontend. Ninguno está mal
+en sí; el problema es que **conviven dentro del mismo endpoint** y varios llevan comentarios que
+afirman estar alineados con otro cuando no lo están.
+
+- El cron sella cada snapshot con el día **UTC**, o sea un día ART adelante. Medido: el reporte
+  anual de 2026 cierra con la rueda del 30 de diciembre. La rama que convierte a ART existe,
+  está a 280 líneas y **nunca se ejecuta**.
+- **`_ytd_delta` va en el MISMO commit** — es obligatorio, ver abajo.
+- Los **27** `toISOString` restantes (hay 1 de 28 ya corregido, con el comentario que explica por qué).
+- Los **tres comentarios** que afirman "los snapshots se estampan con fecha ART" y construyen
+  lógica sobre esa premisa falsa. **Corregirlos es parte del fix.**
+- Unificar "este mes": llevar el piso de antigüedad del borde a `computeReturnDelta`. Medido: el
+  KPI del Dashboard publica **+35,24 %** donde el mes real fue **+2,90 %**.
+
+> ⚠️ **Dependencia obligatoria (D-1).** El borde de apertura de `_ytd_delta` está mal, pero **hoy
+> el error está tapado** por el bug de zona horaria: como la fila etiquetada `2026-01-01` es en
+> realidad el cierre ART del 31/12, el borde sale bien por accidente. **Arreglar la zona horaria
+> sin tocar `_ytd_delta` hace aparecer un bug que hoy nadie ve** (medido: publica −22,86 % sobre
+> una cartera que ganó US$1.000).
+
+### F4 — «Los guards que ya existen, en todos los lectores» — 🟡 3 de 6 hechos
+
+Es la tanda de mejor relación resultado/esfuerzo: **el código de los guards ya está escrito**,
+sólo no llegó a todos los lectores.
+
+**Hechos y deployados:** el guard con 0/negativos, `_FINITE_BOUND` en `PositionIn`, validación de
+broker existente en `positions`.
+
+**Los tres que quedan, frenados A PROPÓSITO** — en los tres el código contradecía al plan o la
+decisión es de producto. No los "arregles" sin decidirlos:
 
 - **Edad máxima del precio en `read_last_prices`.** El código dice textual: *"get_prices rellena
   huecos con el last-known SIN límite de edad (para valuar la cartera está bien; para escribir el
   costo de un lote 'de HOY' no)"*. La regla de 48 h existe a propósito sólo para escribir costos.
-  **Decidir a qué edad un precio viejo deja de ser mejor que el costo es una decisión del
-  founder**, no una propagación.
+  **A qué edad un precio viejo deja de ser mejor que el costo es decisión del founder.**
 - **Guard de denominador peak en el hero del Dashboard.** El guard canónico de `evolution.js` es
   para *realized %*, no para retorno total, y el Dashboard no tiene el peak a mano. Es diseño
   nuevo sobre el número titular de la app.
-- **Cota de plausibilidad en el P&L realizado.** Hoy no hay ninguna (medido: +188.566 % en una
-  fila). El umbral es una decisión de producto y cambia números publicados.
+- **Cota de plausibilidad en el P&L realizado.** Hoy no hay ninguna — medido **+188.566 %** en
+  una sola fila. El umbral es decisión de producto y cambia números publicados.
+
+**Y una validación que quedó asimétrica a propósito:** `/api/positions` rechaza un broker
+inexistente, `/api/operations` **no**. Ahí el contrato lo tolera deliberadamente y hay un test
+que lo fija (`test_currency_fallback_to_usd_if_broker_unknown`). Hay un test que congela la
+asimetría para que quien la toque tenga que decidirla en vez de romperla de refilón.
+
+### F5 — «Una sola cotización, una sola política de faltantes» *(4–6 días)*
+
+- **El cap de `/api/fx-rates` Y el fallback mudo (los dos, dependencia D-7).** El endpoint limita
+  por **filas, no por días**: el frontend pide 3.650 días, el backend responde
+  `ORDER BY date DESC LIMIT 3650`, y la serie tiene ~5.685 filas desde 2011 → **la ventana
+  arranca en 2016** y toda fecha anterior cae al **dólar de hoy sin avisar**. Medido: una venta
+  de 2013 se dibuja **160× mal**. Poner `WHERE date >= ?` arregla el síntoma; **el fallback mudo
+  es la causa** y sigue vivo para cualquier otro hueco.
+- **La serie CER está caída.** El endpoint devuelve **404** hoy, mientras `/inflacion` y `/uva`
+  del mismo host dan 200. Consecuencia: **todos los bonos CER ajustan con factor 1,00** cuando el
+  real es 7,72× o 37,44× según el bono. Nadie loguea, nadie alerta. Hay que reponerla **y agregar
+  detección**.
+- Unificar **punta venta vs. punta media** entre `fx_rates_daily` y la valuación viva (explica un
+  escalón sistemático de 0,74 %).
+- Decidir y aplicar **una** política de faltantes: precio ausente, TC ausente, índice no publicado.
+- **6 sitios restan inflación en pesos a retornos en dólares** — ninguno pasa la moneda. Y hay
+  que pasar `moneda` a los benchmarks: hoy `vs_sp500_pct` **cambia de signo** con sólo tocar el
+  selector de moneda.
+
+### F6 — «Terminar las migraciones abiertas» *(1–2 semanas)*
+
+**Acá es donde la causa raíz dominante deja de reproducirse.** Es la tanda que más cuesta y la
+que más cambia el futuro del código.
+
+- Migrar los **5 lectores** que faltan a `valuePositionLot` y **borrar** las matrices duplicadas.
+- Las **5 superficies** que publican retorno sin pasar por `twr.py`.
+- Los **6 lugares** que comparan contra benchmark sin pasar por `performance.py`.
+- Persistir `cost_basis_consumed` en la venta.
+- **Acá entra la divergencia de "Capital aportado"** que F1 destapó: unificar los dos lectores.
+
+**Estado al cerrar: un solo motor por concepto.**
+
+### F7 — «El modelo de datos» *(proyecto aparte, no es una tanda de fixes)*
+
+Es diseño, no arreglos:
+
+- **`operations.pnl_usd` es polimórfica**: guarda cuatro cosas distintas (resultado de venta,
+  cash de dividendo, cash bruto de amortización, ganancia cambiaria) **en dos monedas**.
+- **`_NOT_A_TRADE` es una lista de EXCLUSIÓN**, así que **todo `op_type` nuevo entra como "trade
+  cerrado ganado" por omisión**. Ya pasó con `Interés PF`; `Renta`, `Cupón` y `Amortización`
+  están en la misma situación, esperando. **Es la única causa que garantiza bugs futuros sin que
+  nadie escriba una línea nueva mal.**
+- Brokers linkeados por **nombre** (no por FK) en 6 tablas.
+- Plazos fijos que no escriben `monthly_entries`.
+- Objetivos sin aportes.
 
 ---
 
-## Las divergencias sin veredicto: 72
+## 6. Las 72 divergencias sin veredicto
 
 Los inputs están partidos por concepto en `audit/01_calculos/_grupos/<slug>.md`.
 
-**Auditables ya (29):** bonos (13), CEDEAR (8), comisiones (8). Son clases de activo o conceptos
+**Auditables ya (29):** bonos (13), CEDEAR (8), comisiones (8) — clases de activo o conceptos
 independientes de las tandas.
 
 **Conviene esperar (43):** snapshot (11), TIR (9), dividendos (9), caja (7), variación diaria (7).
@@ -106,75 +267,82 @@ Dependen de la cadena que las tandas modifican; auditarlas ahora produce veredic
 
 ---
 
-## Lo que está pendiente del founder, no del código
+## 7. Lo que depende del founder, no del código
 
-1. **Medir el alcance en producción.** Hay 13 consultas de SOLO LECTURA que devuelven únicamente
-   agregados, y un script autocontenido que las corre:
-   `audit/01_calculos/1a-medir-alcance.py`. Producción es **SQLite** — usá
-   `1a-alcance-produccion-sqlite.sql`, NO la versión Postgres (sus casts `::numeric` hacen fallar
-   8 de 13). La más importante es **Q2**: cuenta las baselines de `capital_inicio` que todavía
-   sobreviven, o sea lo único que se seguía perdiendo sin recuperación.
-2. **Decidir la limpieza de datos.** `audit/_fixes/F1-datos-a-limpiar.md` tiene los 7 grupos, si
-   son recalculables y el riesgo de cada uno. **Las baselines borradas no están en ninguna tabla:
-   sólo salen de un backup.**
-3. **Los tres ítems de F4** de arriba.
+1. **Medir el alcance en producción.** 13 consultas de SOLO LECTURA que devuelven únicamente
+   agregados, y un script autocontenido que las corre: `audit/01_calculos/1a-medir-alcance.py`.
+   Producción es **SQLite** → usá `1a-alcance-produccion-sqlite.sql`, **no** la versión Postgres
+   (sus casts `::numeric` hacen fallar 8 de 13, incluida Q2).
+   La más importante es **Q2**: cuenta las baselines de `capital_inicio` que **todavía
+   sobreviven** — lo único que se seguía perdiendo sin recuperación posible.
+2. **Decidir la limpieza de datos** (`audit/_fixes/F1-datos-a-limpiar.md`). Los snapshots se
+   reconstruyen re-corriendo el job; **las baselines borradas no están en ninguna tabla y sólo
+   salen de un backup.**
+3. **Los tres ítems frenados de F4.**
 4. **Las preguntas abiertas** que cada informe de 1B lista en su encabezado, sin contestar.
 
 ---
 
-## Método — lo que funcionó, y lo que no
-
-Las dos reglas permanentes del repo (`CLAUDE.md`) salieron de esta auditoría. Respetalas: **la
-causa raíz más frecuente del proyecto es un fix correcto aplicado en un solo call site.**
-
-Y estas, que salieron de trabajar:
+## 8. Método — lo que funcionó
 
 - **Un commit por causa raíz**, revertible solo. Nada de un commit por tanda.
 - **Cada fix trae un test que FALLA con el código viejo.** Verificalo de verdad: revertir el
-  commit entero también revierte el test, y entonces no probaste nada. Revertí sólo el archivo
-  de código, dejando el test nuevo.
+  commit entero también revierte el test, y entonces no probaste nada. Revertí **sólo el archivo
+  de código**, dejando el test nuevo.
 - **Baseline de fallos ANTES de tocar nada** (`pytest tests/ -q | grep ^FAILED | sort`) y
-  comparación al final. El objetivo es cero fallos NUEVOS, no cero fallos.
+  comparación al final. El objetivo es **cero fallos NUEVOS**, no cero fallos: hay 27
+  preexistentes (news/events/importer/billing).
 - **Antes de dar un fix por terminado, grep de todos los call sites del mismo patrón**, y decir
   cuáles arreglaste y cuáles no.
-- **El código gana sobre el mapa.** Se verificaron 290 citas: ~53 tenían la línea corrida y **5
-  afirmaciones eran falsas**. Confirmá cada cita con grep antes de apoyarte en ella.
-- **Un guard defensivo no es un parche.** Un `if qty == 0: return 0` puede ser exactamente lo
-  correcto. Y si hay un comentario que justifica algo, leelo antes de reportarlo como bug.
-- **Antes de una validación que RECHAZA, censo de callers Y de contratos.** No alcanza con los
-  callers de Python: puede haber un test que fija una tolerancia deliberada. Me pasó.
+- **Un guard defensivo no es un parche.** Y si hay un comentario que justifica algo, **leelo
+  antes de reportarlo como bug**: varias veces el código tenía razón y el plan no.
+- **Antes de una validación que RECHAZA: censo de callers Y de contratos.** No alcanza con los
+  callers de Python — puede haber un test que fija una tolerancia deliberada.
 
-### Dos trampas concretas que me costaron
+### Tres trampas concretas que costaron
 
-- **Ojo con dónde insertás una función en `main.py`.** Metí un helper entre el decorador
-  `@app.post(...)` y su función, y FastAPI registró el helper como endpoint. `/api/positions`
-  habría quedado roto en producción. **No lo cazó la suite**, lo cazó el test que estaba
-  escribiendo.
-- **No testees contra tu propio criterio: testeá contra el motor real.** Escribí una función de
-  ponderación comparándola con lo que yo creía correcto y estaba mal en un caso (cripto). Recién
-  al ejecutar `compute_broker_value_usd` de verdad sobre una matriz de casos apareció.
+- **Ojo con dónde insertás una función en `main.py`.** Un helper metido entre el decorador
+  `@app.post(...)` y su función hace que FastAPI registre **el helper** como endpoint.
+  `/api/positions` habría quedado roto en producción. **No lo cazó la suite**, lo cazó el test
+  que se estaba escribiendo en ese momento.
+- **No testees contra tu propio criterio: testeá contra el motor real.** Una función de
+  ponderación escrita comparándola con "lo que yo creía correcto" estaba mal en el caso de
+  cripto — 1450×, en la dirección contraria al bug que venía a arreglar. Apareció recién al
+  ejecutar `compute_broker_value_usd` de verdad sobre una matriz de casos.
+- **Un test viejo puede tener razón.** Un fix "obvio" al guard rompió dos tests que fijaban que
+  una posición con cantidad 0 vale 0. Tenían razón: el guard recibe un **valor** (precio ×
+  cantidad), no un precio, y no puede distinguir "precio absurdo" de "cantidad cero". El fix
+  correcto iba en la **fuente del precio**, no en el guard.
 
 ---
 
-## Coordinación — importante
+## 9. Coordinación — importante
 
 **El 2026-09-08 hubo dos sesiones tocando el mismo código.** La otra deployó a `main` los fixes
-de snapshots (A-1, A-2 y D-4) mientras esta rama los tenía sin mergear. Se detectó al chequear
-antes de mezclar: **mergear a ciegas habría pisado su solución con una peor**.
+de snapshots mientras esta rama los tenía sin mergear. Se detectó al chequear antes de mezclar:
+**mergear a ciegas habría pisado su solución con una peor.**
 
-Antes de mergear cualquier cosa: `git fetch && git log --oneline <tu-base>..origin/main`. Y si
-hay overlap, comparen las dos soluciones antes de resolver el conflicto — no asumas que la tuya
-es la buena.
+Antes de mergear cualquier cosa:
+
+```bash
+git fetch && git log --oneline <tu-base>..origin/main
+```
+
+Y si hay solapamiento, **comparen las dos soluciones antes de resolver el conflicto** — no
+asumas que la tuya es la buena.
 
 ---
 
-## Estado del repo
+## 10. Estado del repo
 
-- `main` = `f9fea04e`. F1 completa + 3 de F4, deployado.
-- `audit/mapa-sistema` — el mapa y los informes, pusheada.
-- `audit/trabajo-local-2026-09-07` — prompts e informes previos, pusheada.
+- **`main`** — F1 completa + 3 de 6 de F4, deployado y verificado (27 fallos de test, los mismos
+  que antes; frontend entero en verde).
+- `audit/mapa-sistema` — el mapa y los informes.
+- `audit/trabajo-local-2026-09-07` — prompts e informes previos.
 - `fix/f1-deje-de-escribir-mal` y `fix/f4-guards-en-todos-los-lectores` — **obsoletas**, ya
-  mergeadas vía `fix/auditoria-calculo`. No las uses de base.
+  mergeadas vía `fix/auditoria-calculo`. **No las uses de base.**
 - `worktree-f1/` — worktree local con un fixture de prueba (`backend/scripts/seed_f1.py`,
-  usuario `f1@rendi.test`). Sirve para probar F1 a mano; el `README` del fixture está en el
-  propio script.
+  usuario `f1@rendi.test`). Sirve para probar F1 a mano.
+
+**Deploy = push a `origin/main`.** No hay CI: Railway observa esa rama. Pushear una rama
+cualquiera no deploya.
