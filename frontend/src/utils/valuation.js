@@ -446,8 +446,20 @@ export function isFixedIncome(assetType) {
 //     un precio manual cargado en convención per-100 (97 en vez de 0,97) → valor
 //     ×100 (+9775%). Un bono no puede valer ~100× su costo → no lo confiamos.
 export function trustMktValue(mktValue, realCost, assetType, hasOverride = false) {
-  if (!(realCost > 0) || !(mktValue > 0)) return true  // sin costo no hay con qué comparar
   const fixed = isFixedIncome(assetType)
+  if (!(realCost > 0)) return true  // sin costo no hay con qué comparar
+  // NEGATIVO o no finito: no existe caso legítimo. Antes caían en la misma
+  // condición que el costo y devolvían true, así que la posición se publicaba
+  // valiendo MENOS QUE NADA (o NaN) sin que nada lo frenara.
+  if (mktValue == null || !Number.isFinite(mktValue) || mktValue < 0) return false
+  // CERO sí es legítimo y por eso NO se rechaza acá: lo que entra es un VALOR
+  // (precio × CANTIDAD), no un precio. Una posición con cantidad 0 vale 0 de
+  // verdad, y hacerla caer a costo publicaría un valor fantasma de algo que no
+  // se tiene; un `price_override = 0` es el usuario marcándola sin valor.
+  // El caso a atajar (precio 0 con cantidad > 0) no se distingue desde acá —
+  // llega multiplicado — y se rechaza en la fuente del precio.
+  // Espejo de snapshots_job._trust_mkt_value.
+  if (mktValue === 0) return true
   if (hasOverride && !fixed) return true  // override de NO-renta-fija: se respeta
   const mult = mktValue / realCost
   return fixed ? (mult <= 4 && mult >= 0.02) : (mult <= 50 && mult >= 0.002)

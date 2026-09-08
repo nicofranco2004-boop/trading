@@ -23,6 +23,7 @@ su as_of_date.
 from __future__ import annotations
 import json
 import logging
+import math
 import re
 import unicodedata
 import urllib.request
@@ -305,7 +306,17 @@ def refresh_prices(conn, funds=None):
         for row in cat:
             f = idx.get((row["ad_name"] or "").strip().lower())
             vcp = f.get("vcp") if f else None
-            if not isinstance(vcp, (int, float)):
+            # El VCP tiene que ser un número POSITIVO y FINITO. Acá decía sólo
+            # `isinstance(vcp, (int, float))`, que deja pasar tres cosas que no son
+            # un precio: el 0 (y `0` es un `int`, así que pasaba el chequeo de
+            # tipo), los negativos, y NaN/inf. Un precio 0 no explota: se guarda,
+            # la posición se valúa en 0 y el guard anti-distorsión no la atrapa
+            # porque un valor de mercado 0 es legítimo cuando la cantidad es 0 —
+            # no puede distinguir los dos casos. Por eso el precio malo se rechaza
+            # ACÁ, en la fuente, y no allá.
+            # `bool` se excluye aparte: en Python `True` es instancia de `int`.
+            if (isinstance(vcp, bool) or not isinstance(vcp, (int, float))
+                    or not math.isfinite(vcp) or vcp <= 0):
                 missing.append(row["symbol"])
                 continue
             price = round(vcp / 1000.0, 6)

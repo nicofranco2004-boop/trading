@@ -51,13 +51,16 @@ def _trust_mkt_value_usd(mkt_usd: float, cost_usd: float, asset_type) -> bool:
     priceado como la acción US), NO confiamos en el precio y caemos a costo.
     AMBOS montos deben venir en la MISMA moneda (USD). Solo capea divergencias
     ABSURDAS — el P&L real pasa. Sin esto, Análisis/IA mostraba ~100× distinto al
-    Dashboard y a la curva de snapshots para el mismo activo."""
-    if not (cost_usd and cost_usd > 0) or not (mkt_usd and mkt_usd > 0):
-        return True  # sin costo no hay con qué comparar
-    mult = mkt_usd / cost_usd
-    if (asset_type or '').upper() in _FIXED_INCOME_TYPES:
-        return 0.02 <= mult <= 4
-    return 0.002 <= mult <= 50
+    Dashboard y a la curva de snapshots para el mismo activo.
+
+    DELEGA en `snapshots_job._trust_mkt_value`. Acá vivía una tercera copia de la
+    misma regla (la primera es el frontend, la segunda snapshots_job), y las tres
+    tenían el mismo defecto: aceptaban un valor de mercado de CERO. Mientras sean
+    copias, arreglar una no arregla las otras — que es exactamente cómo se generó
+    esto. Import local para no atar el import de `behavioral` al de
+    `snapshots_job` (que a su vez importa `main` de forma diferida)."""
+    from snapshots_job import _trust_mkt_value
+    return _trust_mkt_value(mkt_usd, cost_usd, asset_type)
 
 
 def _is_trade(op: Dict[str, Any]) -> bool:
