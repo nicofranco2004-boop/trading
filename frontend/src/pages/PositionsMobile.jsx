@@ -46,6 +46,7 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
+import { useFxHistory } from '../hooks/useFxHistory'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
@@ -629,6 +630,10 @@ export default function PositionsMobile() {
   const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
   const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~spot+5%) p/ cripto en broker AR
+  // Cotizaciones históricas para el SellModal. Mismo hook que desktop
+  // (Positions.jsx:245): sin esto, `tcForDate` degrada en silencio al dólar de HOY
+  // y una venta con fecha pasada se registra al TC equivocado.
+  const fxHist = useFxHistory(tcValuacion)
 
   // Fase B: publish tcValuacion al CurrencyContext (mismo pattern que Dashboard/HomeMobile)
   useEffect(() => {
@@ -1644,7 +1649,12 @@ export default function PositionsMobile() {
           form={sellForm}
           setForm={setSellForm}
           positions={positions}
-          tcValuacion={pickFinancialRate(dolar, valuationDollar) || 1415}
+          tcValuacion={tcValuacion}
+          // Faltaba: el mismo modal en desktop (Positions.jsx:2942) sí la pasa.
+          // Sin `fxHist`, el TC por fecha degradaba al MEP de hoy y una venta
+          // retroactiva en pesos hecha desde el celular quedaba registrada —en
+          // `operations`, para siempre— con un P&L calculado al dólar equivocado.
+          fxHist={fxHist}
           onClose={() => setAddModal(null)}
           onConfirm={confirmSell}
         />
