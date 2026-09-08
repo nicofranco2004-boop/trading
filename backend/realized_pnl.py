@@ -58,14 +58,19 @@ No se tocan, y por eso siguen infladas también en el dashboard. Sin
 vienen en dólares (ver arriba). Necesita su propio trabajo: un criterio
 verificable para distinguirlas, o conseguir el TC de la fecha de cada una.
 
-── Pendiente #3 ──────────────────────────────────────────────────────────────
-`Interés PF` (interés de plazo fijo, main.py) guarda el monto en moneda nativa
-igual que un cupón y NO está excluido de `closed_filter_sql`, pero tampoco se
-convierte acá — porque el lector del dashboard tampoco lo convierte, y el
-objetivo de este módulo es que los 4 lectores digan el MISMO número. Hoy no
-muerde (0 filas en producción); el primer plazo fijo en pesos que alguien cobre
-entra inflado en los 4. Para arreglarlo hay que agregarlo a `_NATIVE_CCY_OPS`,
-lo que cambia el dashboard también — decisión de producto, no mecánica.
+── Pendiente #3: la MITAD de `Interés PF` que sigue abierta ──────────────────
+La moneda ya está: `Interés PF` entró a `_NATIVE_CCY_OPS` y el endpoint sella
+el MEP del día del cobro, así que el interés en pesos deja de leerse como
+dólares (era un PF de $10M a 30 días = US$328.767 falsos en 5 pantallas).
+Agregarlo no movió ninguna fila vieja: sin `fx_to_usd` sellado las dos ramas
+caen al crudo, exactamente como antes.
+
+Lo que NO se tocó es que `Interés PF` tampoco está en `_NOT_A_TRADE`, así que
+cada cobro sigue sumando "una operación ganada" a los 6 win rates de la lista de
+arriba — el usuario no decidió nada, le venció un plazo fijo. Eso es el mismo
+pendiente #1 y la misma causa: `_NOT_A_TRADE` es una lista de EXCLUSIÓN, o sea
+que todo `op_type` nuevo entra como trade cerrado ganado POR OMISIÓN. Cambiarlo
+le cambia el significado a la métrica — decisión de producto, no mecánica.
 """
 from __future__ import annotations
 
@@ -73,9 +78,16 @@ from __future__ import annotations
 # `''` cubre las filas con op_type vacío.
 _NOT_A_TRADE = ('Compra', 'Dividendo', 'Interés', '')
 
-# Cobranzas de renta fija: `pnl_usd` guarda el monto en MONEDA DEL BROKER.
+# Cobranzas en MONEDA NATIVA: `pnl_usd` guarda el monto en moneda del broker.
 # Éstas son las únicas que se convierten (ver docstring).
-_NATIVE_CCY_OPS = ('Cupón', 'Amortización')
+#
+# `Interés PF` entra acá por la MISMA razón que las otras dos: el endpoint lo
+# escribe en pesos con `currency='ARS'`. Agregarlo NO mueve ni una fila vieja —
+# las dos ramas de conversión (SQL y Python) exigen `fx_to_usd > 0` y las filas
+# de antes nacieron con NULL, así que caen al crudo igual que antes. Sólo tiene
+# efecto sobre lo que se escriba de ahora en más, que ya sella el MEP del día
+# del cobro (main.py, `cobrar_plazo_fijo`).
+_NATIVE_CCY_OPS = ('Cupón', 'Amortización', 'Interés PF')
 
 
 def _p(prefix: str) -> str:

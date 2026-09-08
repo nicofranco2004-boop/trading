@@ -199,5 +199,124 @@ class TestConsistenciaEntreLectores(unittest.TestCase):
             msg=f"los dos lectores de la IA discrepan: {tool} vs {suma_attr}")
 
 
+
+# ── `Interés PF`: el cuarto tipo que guarda pesos en `pnl_usd` ──────────────
+#
+# El caso del audit: un plazo fijo de $10.000.000 a 30 días al 40 % TNA paga
+# $328.767 de interés. Sin TC sellado y fuera de `_NATIVE_CCY_OPS`, ese número
+# entraba como US$328.767 en las 5 pantallas que leen P&L realizado.
+PF_CAPITAL = 10_000_000.0
+PF_TNA = 0.40
+PF_DIAS = 30
+PF_INTERES_ARS = PF_CAPITAL * PF_TNA * PF_DIAS / 365   # 328.767,12
+
+
+class TestInteresPFMoneda(unittest.TestCase):
+    """El interés de un PF en pesos no puede leerse como dólares."""
+
+    def test_con_fx_sellado_se_divide(self):
+        row = {"op_type": "Interés PF", "pnl_usd": PF_INTERES_ARS,
+               "currency": "ARS", "fx_to_usd": MEP}
+        self.assertAlmostEqual(realized_pnl.realized_usd(row),
+                               PF_INTERES_ARS / MEP, places=6)
+
+    def test_la_fila_vieja_sin_fx_NO_se_mueve(self):
+        """Agregarlo a `_NATIVE_CCY_OPS` no puede tocar lo ya escrito.
+
+        Las filas de antes nacieron con `fx_to_usd = NULL`; las dos ramas exigen
+        `fx > 0`, así que caen al crudo — exactamente el mismo número que antes
+        del cambio. Es lo que hace que el cambio sea seguro sin backfill.
+        """
+        row = {"op_type": "Interés PF", "pnl_usd": PF_INTERES_ARS,
+               "currency": "ARS", "fx_to_usd": None}
+        self.assertEqual(realized_pnl.realized_usd(row), PF_INTERES_ARS)
+
+    def test_en_dolares_no_se_toca(self):
+        row = {"op_type": "Interés PF", "pnl_usd": 500.0,
+               "currency": "USD", "fx_to_usd": 1.0}
+        self.assertEqual(realized_pnl.realized_usd(row), 500.0)
+
+    def test_sql_y_python_coinciden_tambien_para_pf(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE operations (op_type TEXT, pnl_usd REAL, "
+                     "currency TEXT, fx_to_usd REAL)")
+        casos = [
+            ("Interés PF", PF_INTERES_ARS, "ARS", MEP),
+            ("Interés PF", PF_INTERES_ARS, "ARS", None),
+            ("Interés PF", 500.0, "USD", 1.0),
+        ]
+        conn.executemany("INSERT INTO operations VALUES (?,?,?,?)", casos)
+        expr = realized_pnl.realized_usd_sql()
+        for row in conn.execute(f"SELECT *, {expr} AS calc FROM operations"):
+            self.assertAlmostEqual(row["calc"], realized_pnl.realized_usd(row),
+                                   places=6)
+        conn.close()
+
+    def test_sigue_contando_como_trade_cerrado(self):
+        """NO se tocó: `Interés PF` no está en `_NOT_A_TRADE`, así que suma una
+        'operación ganada' a los 6 win rates. Es decisión de producto (cambiarle
+        el significado a la métrica) y queda fijado acá para que quien la tome
+        tenga que venir a este test, en vez de romperlo de refilón."""
+        self.assertTrue(realized_pnl.is_closed_op("Interés PF"))
+
+
+class TestCobrarPFSellaElTC(unittest.TestCase):
+    """El write-path: la fila tiene que NACER con el TC del día del cobro."""
+
+    def setUp(self):
+        import datetime as _d
+        self.conn = main.get_db()
+        self.addCleanup(self.conn.close)
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            (f"pf-{id(self)}@rendi.test", "x"))
+        self.uid = cur.lastrowid
+        self.addCleanup(lambda: self._limpiar())
+        hoy = _d.date.today()
+        self.conn.execute(
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, 1400, ?, 'manual') ON CONFLICT (date) DO UPDATE SET "
+            "mep_venta=EXCLUDED.mep_venta", (hoy.isoformat(), MEP))
+        inicio = (hoy - _d.timedelta(days=PF_DIAS)).isoformat()
+        cur = self.conn.execute(
+            """INSERT INTO plazos_fijos (user_id, banco, capital, moneda, tasa,
+                                         rate_type, fecha_inicio, plazo_dias,
+                                         fecha_vencimiento)
+               VALUES (?, 'Galicia', ?, 'ARS', ?, 'TNA', ?, ?, ?)""",
+            (self.uid, PF_CAPITAL, PF_TNA, inicio, PF_DIAS, hoy.isoformat()))
+        self.pid = cur.lastrowid
+        self.conn.commit()
+
+    def _limpiar(self):
+        conn = main.get_db()
+        conn.execute("DELETE FROM operations WHERE user_id=?", (self.uid,))
+        conn.execute("DELETE FROM plazos_fijos WHERE user_id=?", (self.uid,))
+        conn.execute("DELETE FROM users WHERE id=?", (self.uid,))
+        conn.commit(); conn.close()
+
+    def _cobrar_y_leer(self):
+        main.cobrar_plazo_fijo(self.pid, main.CobrarIn(broker=None), uid=self.uid)
+        conn = main.get_db()
+        row = conn.execute(
+            "SELECT * FROM operations WHERE user_id=? AND op_type='Interés PF'",
+            (self.uid,)).fetchone()
+        conn.close()
+        return row
+
+    def test_la_fila_nace_con_el_mep_del_dia(self):
+        row = self._cobrar_y_leer()
+        self.assertIsNotNone(row, "el cobro tiene que registrar el interés")
+        self.assertEqual(row["currency"], "ARS")
+        self.assertEqual(row["fx_to_usd"], MEP)
+
+    def test_el_interes_en_pesos_deja_de_leerse_como_dolares(self):
+        row = self._cobrar_y_leer()
+        # $328.767 al MEP 1250 ⇒ US$263. Sin el fix la app leía US$328.767.
+        self.assertAlmostEqual(realized_pnl.realized_usd(row),
+                               PF_INTERES_ARS / MEP, delta=1.0)
+        self.assertLess(realized_pnl.realized_usd(row), 1000)
+
+
 if __name__ == "__main__":
     unittest.main()

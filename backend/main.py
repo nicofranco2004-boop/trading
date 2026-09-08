@@ -9456,12 +9456,21 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
         if interes > 0:
             from datetime import datetime as _dt_op
             moneda = (row["moneda"] or "ARS").upper()
-            fx = 1.0 if moneda in ("USD", "USDT") else None
+            _fecha_op = _dt_op.utcnow().strftime('%Y-%m-%d')
+            # ⚠️ EN PESOS ESTA FILA NACÍA CON `fx_to_usd = NULL`, y sin el TC
+            # sellado NINGÚN lector puede convertirla: `realized_usd` exige
+            # `fx > 0` y cae al valor crudo. O sea el interés en pesos se leía
+            # como dólares — un PF de $10M a 30 días entra como US$328.767.
+            # Se sella el MEP de la fecha del cobro, con el MISMO helper que usa
+            # el cupón (`_fx.fx_for_date_detail`, sin `fallback`: si no hay serie
+            # queda NULL y no un número inventado).
+            fx = (1.0 if moneda in ("USD", "USDT")
+                  else _fx.fx_for_date_detail(conn, _fecha_op)[0])
             conn.execute(
                 """INSERT INTO operations
                        (user_id, date, broker, asset, op_type, pnl_usd, currency, fx_to_usd, notes)
                    VALUES (?, ?, ?, ?, 'Interés PF', ?, ?, ?, ?)""",
-                (uid, _dt_op.utcnow().strftime('%Y-%m-%d'), data.broker or row["banco"],
+                (uid, _fecha_op, data.broker or row["banco"],
                  row["banco"], interes, moneda, fx, f"Interés plazo fijo · {row['banco']}"),
             )
         conn.execute(
