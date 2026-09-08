@@ -115,6 +115,32 @@ def _cost_in_pesos(p: dict) -> bool:
             and (p.get('asset') or '').upper() not in _crypto_symbol_set())
 
 
+def cost_usd_for_coverage(p: dict, broker_ccy: dict, tc_cedear: float) -> float:
+    """Costo de la posición en USD, para PONDERAR el guard de cobertura de precios.
+
+    La moneda del costo la decide el LOTE, no la cuenta — el mismo criterio que
+    `compute_broker_value_usd` usa para valuar (`_cost_in_pesos`). Antes esta
+    cuenta miraba sólo `brokers.currency`, así que un lote comprado EN PESOS
+    alojado en una cuenta dólar entraba a la ponderación con su monto en pesos
+    contado como dólares: pesaba ~MEP× de más.
+
+    Eso no hacía fallar el guard, lo hacía CIEGO. La cobertura es
+    `Σ(costo de lo que tiene precio) / Σ(costo total)`: una posición inflada
+    ~1.400× dentro de esa suma empuja el cociente hacia 1 y puede tapar que a
+    otras posiciones —de peso real— les falte precio. El guard existe justamente
+    para no persistir un snapshot subvaluado, y así reportaba cobertura alta
+    mientras el dato que iba a escribir estaba mal.
+
+    Vivía duplicada como closure en `run_daily_snapshot` y en
+    `compute_live_portfolio_value`, byte por byte. Ahora es una sola: las dos
+    ponderan igual, y el criterio de moneda es el mismo que el de la valuación.
+    """
+    c = (p.get('invested') or 0) + (p.get('commissions') or 0)
+    if _cost_in_pesos(p) or (broker_ccy.get(p.get('broker')) or 'USD').upper() == 'ARS':
+        return (c / tc_cedear) if tc_cedear and tc_cedear > 0 else 0.0
+    return c
+
+
 def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     """Símbolo de precio que valúa esta posición: '<ASSET>.BA' (precio LOCAL ARS)
     si se valúa por su .BA — holdings en broker ARS, en sub-broker '· USD', o
@@ -767,9 +793,9 @@ def take_snapshot_for_user(
     tc_cedear = tc_mep if (tc_mep and tc_mep > 0) else _user_tc_cedear(conn, uid, tc_blue)
 
     def _cost_usd(p):
-        c = (p.get('invested') or 0) + (p.get('commissions') or 0)
-        ccy = broker_ccy.get(p['broker'], 'USD')
-        return (c / tc_cedear) if (ccy == 'ARS' and tc_cedear > 0) else c
+        # SSoT compartida con compute_live_portfolio_value: la moneda del costo
+        # la decide el LOTE, igual que en la valuación.
+        return cost_usd_for_coverage(p, broker_ccy, tc_cedear)
 
     def _has_price(p):
         if p.get('price_override') is not None:
@@ -922,9 +948,9 @@ def compute_live_portfolio_value(
     _ars_names, _ar_usd_names = _broker_name_sets(brokers)
 
     def _cost_usd(p):
-        c = (p.get('invested') or 0) + (p.get('commissions') or 0)
-        ccy = broker_ccy.get(p['broker'], 'USD')
-        return (c / tc_cedear) if (ccy == 'ARS' and tc_cedear > 0) else c
+        # SSoT compartida con compute_live_portfolio_value: la moneda del costo
+        # la decide el LOTE, igual que en la valuación.
+        return cost_usd_for_coverage(p, broker_ccy, tc_cedear)
 
     def _has_price(p):
         if p.get('price_override') is not None:
