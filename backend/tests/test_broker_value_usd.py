@@ -10,7 +10,7 @@ Debe dar números idénticos al frontend (computeBrokerValue / usdLotValue).
 import unittest
 
 from snapshots_job import (compute_broker_value_usd as cbv,
-                           position_price_key, _trust_mkt_value)
+                           position_cost_usd, position_price_key, _trust_mkt_value)
 
 
 def _p(**kw):
@@ -194,6 +194,96 @@ class ArsCostInUsdBrokerTest(unittest.TestCase):
         r = cbv(pos, {"AAPL": 220.0}, "USD", BLUE, "Schwab", MEP)
         self.assertAlmostEqual(r["invested"], 2_005.0, places=4)
         self.assertAlmostEqual(r["value"], 2_200.0, places=4)
+
+
+class CoverageWeightTest(unittest.TestCase):
+    """`position_cost_usd` — el peso con el que cada lote entra en el guard de
+    cobertura del 95 %. Antes eran DOS closures duplicadas (snapshots_job.py:769 y
+    :924) que decidían por la moneda del BROKER en vez de la del LOTE, así que
+    ponderaban un número que la valuación ya no usaba.
+
+    El invariante que estos tests defienden: el peso del guard tiene que ser
+    EXACTAMENTE el `invested` que el motor va a registrar. Si divergen, el guard
+    decide si escribe o no mirando una cartera que no existe.
+    """
+
+    def _invested(self, pos, broker_ccy, broker_name, prices=None):
+        return cbv([pos], prices or {}, broker_ccy, BLUE,
+                   broker_name=broker_name, cedear_rate=MEP)["invested"]
+
+    def test_peso_igual_al_invested_registrado(self):
+        # EL invariante. Vale para las cuatro combinaciones de (moneda lote × moneda cuenta).
+        casos = [
+            (_p(asset="MELI", asset_type="CEDEAR", currency="ARS", quantity=100,
+                invested=1_500_000.0, broker="Cocos · USD"), "USD", "Cocos · USD"),
+            (_p(asset="GGAL", currency="ARS", quantity=100, invested=500_000.0,
+                commissions=1_000.0, broker="Schwab"), "USD", "Schwab"),
+            (_p(asset="RUCEO", asset_type="BOND", currency="USD", quantity=100,
+                invested=100.0, broker="Balanz"), "ARS", "Balanz"),
+            (_p(asset="MELI", asset_type="CEDEAR", currency="ARS", quantity=10,
+                invested=30_000.0, broker="Balanz"), "ARS", "Balanz"),
+            (_p(asset="AAPL", currency="USD", quantity=10, invested=2_000.0,
+                commissions=5.0, broker="Schwab"), "USD", "Schwab"),
+        ]
+        for pos, ccy, name in casos:
+            with self.subTest(asset=pos["asset"], lote=pos["currency"], cuenta=ccy):
+                self.assertAlmostEqual(position_cost_usd(pos, ccy, BLUE, MEP),
+                                       self._invested(pos, ccy, name), places=6)
+
+    def test_lote_en_pesos_en_cuenta_usd_no_pesa_por_mep(self):
+        # A-1: el costo en pesos NO se pondera como si fueran dólares.
+        # Viejo: 1.500.000 (broker USD → sin ÷MEP). Canónico: 1.500.000/MEP.
+        pos = _p(asset="MELI", asset_type="CEDEAR", currency="ARS", quantity=100,
+                 invested=1_500_000.0, broker="Cocos · USD")
+        self.assertAlmostEqual(position_cost_usd(pos, "USD", BLUE, MEP),
+                               1_500_000.0 / MEP, places=6)
+
+    def test_lote_en_dolares_en_broker_ars_no_se_divide(self):
+        # La dirección ESPEJO, rota por el mismo motivo: el viejo dividía por el MEP
+        # (broker ARS) un costo que ya estaba en dólares → casi no pesaba.
+        pos = _p(asset="RUCEO", asset_type="BOND", currency="USD",
+                 quantity=100, invested=100.0, broker="Balanz")
+        self.assertAlmostEqual(position_cost_usd(pos, "ARS", BLUE, MEP), 100.0, places=6)
+
+    def test_ponderacion_relativa_deja_de_estar_dominada(self):
+        # El efecto que importa: con el peso inflado, la posición PEOR valuada se
+        # comía el 99,9 % del guard. Con el fix pesa lo que realmente vale.
+        malo = _p(asset="MELI", asset_type="CEDEAR", currency="ARS", quantity=100,
+                  invested=1_500_000.0, broker="Cocos · USD")
+        sano = _p(asset="AAPL", currency="USD", quantity=10, invested=2_000.0,
+                  commissions=5.0, broker="Schwab")
+        w_malo = position_cost_usd(malo, "USD", BLUE, MEP)
+        w_sano = position_cost_usd(sano, "USD", BLUE, MEP)
+        self.assertLess(w_malo / (w_malo + w_sano), 0.50)   # viejo: 0.9987
+
+    def test_control_lote_ars_en_broker_ars_no_cambia(self):
+        # Regresión: el caso mayoritario (lote en pesos en broker ARS) sigue ÷MEP.
+        pos = _p(asset="MELI", asset_type="CEDEAR", currency="ARS",
+                 quantity=10, invested=30_000.0, broker="Balanz")
+        self.assertAlmostEqual(position_cost_usd(pos, "ARS", BLUE, MEP),
+                               30_000.0 / MEP, places=6)
+
+    def test_control_lote_usd_en_broker_usd_no_cambia(self):
+        pos = _p(asset="AAPL", currency="USD", quantity=10,
+                 invested=2_000.0, commissions=5.0, broker="Schwab")
+        self.assertAlmostEqual(position_cost_usd(pos, "USD", BLUE, MEP), 2_005.0, places=6)
+
+    def test_comisiones_entran_en_el_peso(self):
+        pos = _p(asset="AAPL", currency="USD", quantity=10,
+                 invested=2_000.0, commissions=5.0, broker="Schwab")
+        sin = _p(asset="AAPL", currency="USD", quantity=10,
+                 invested=2_000.0, commissions=0, broker="Schwab")
+        self.assertAlmostEqual(position_cost_usd(pos, "USD", BLUE, MEP)
+                               - position_cost_usd(sin, "USD", BLUE, MEP), 5.0, places=6)
+
+    def test_el_peso_no_depende_de_los_precios(self):
+        # position_cost_usd pasa prices={} a propósito: `invested` no lee precios en
+        # ninguna rama. Si algún día alguna lo hiciera, este test lo caza.
+        pos = _p(asset="MELI", asset_type="CEDEAR", currency="ARS", quantity=100,
+                 invested=1_500_000.0, broker="Cocos · USD")
+        self.assertAlmostEqual(
+            position_cost_usd(pos, "USD", BLUE, MEP),
+            self._invested(pos, "USD", "Cocos · USD", {"MELI.BA": 16_000.0}), places=6)
 
 
 if __name__ == "__main__":

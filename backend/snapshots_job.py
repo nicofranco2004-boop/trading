@@ -371,6 +371,33 @@ def compute_broker_value_usd(
     return {'value': value, 'invested': invested}
 
 
+def position_cost_usd(p: dict, broker_currency: str, tc_blue: float,
+                      cedear_rate: float) -> float:
+    """Cost basis en USD de UNA posición — el peso con el que entra en la
+    ponderación del guard de cobertura.
+
+    NO reimplementa la conversión: delega en `compute_broker_value_usd`, el MISMO
+    motor que después escribe el snapshot, así el guard pondera exactamente el
+    número que se va a registrar. Antes era una closure DUPLICADA en dos lugares
+    que decidía por la moneda del BROKER (`ccy == 'ARS'` → ÷MEP) y no por la del
+    LOTE, así que contradecía a la valuación en las dos ramas cruzadas del
+    canónico (valuation.js `valuePositionLot`):
+
+      · lote en PESOS en cuenta USD   → pesaba el costo en pesos como si fueran
+        dólares (×MEP): la posición PEOR valuada era la que MÁS pesaba, y encima
+        la cobertura daba 100 % porque el precio .BA sí estaba.
+      · lote en DÓLARES en broker ARS → lo dividía por el MEP (÷MEP): la tenencia
+        dólar casi no pesaba.
+
+    `prices={}` a propósito: `invested` no lee precios en NINGUNA rama del motor
+    (solo `value` los usa), así que para ponderar no hay nada que fetchear.
+    """
+    return compute_broker_value_usd(
+        [p], {}, broker_currency, tc_blue,
+        broker_name=p.get('broker') or '', cedear_rate=cedear_rate,
+    )['invested']
+
+
 # ─── Net deposited — Single Source of Truth ─────────────────────────────────
 # Fase 3 (2026-05-30): unificar las 3 implementaciones inline del audit en
 # UNA función canónica. Diferentes callers tienen necesidades distintas
@@ -767,9 +794,9 @@ def take_snapshot_for_user(
     tc_cedear = tc_mep if (tc_mep and tc_mep > 0) else _user_tc_cedear(conn, uid, tc_blue)
 
     def _cost_usd(p):
-        c = (p.get('invested') or 0) + (p.get('commissions') or 0)
-        ccy = broker_ccy.get(p['broker'], 'USD')
-        return (c / tc_cedear) if (ccy == 'ARS' and tc_cedear > 0) else c
+        # SSoT: el mismo motor que valúa. Ver position_cost_usd.
+        return position_cost_usd(p, broker_ccy.get(p['broker'], 'USD'),
+                                 tc_blue, tc_cedear)
 
     def _has_price(p):
         if p.get('price_override') is not None:
@@ -922,9 +949,9 @@ def compute_live_portfolio_value(
     _ars_names, _ar_usd_names = _broker_name_sets(brokers)
 
     def _cost_usd(p):
-        c = (p.get('invested') or 0) + (p.get('commissions') or 0)
-        ccy = broker_ccy.get(p['broker'], 'USD')
-        return (c / tc_cedear) if (ccy == 'ARS' and tc_cedear > 0) else c
+        # SSoT: el mismo motor que valúa. Ver position_cost_usd.
+        return position_cost_usd(p, broker_ccy.get(p['broker'], 'USD'),
+                                 tc_blue, tc_cedear)
 
     def _has_price(p):
         if p.get('price_override') is not None:
