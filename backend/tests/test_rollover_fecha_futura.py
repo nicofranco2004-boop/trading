@@ -109,6 +109,27 @@ class RolloverFechaFuturaTest(unittest.TestCase):
         self._rollover()
         self.assertEqual(self._rollover(), 0)
 
+    def test_historial_muy_viejo_llega_en_varias_llamadas(self):
+        """Limitación conocida, PREEXISTENTE: el walk tiene un tope de 36 meses
+        por llamada (`MAX_MONTHS`), así que un historial de más de 3 años tarda
+        varias llamadas en alcanzar el mes actual.
+
+        No es una regresión de este fix — el tope ya estaba. Lo que cambia es que
+        antes, con una fila futura, el rollover devolvía 0 PARA SIEMPRE y nunca
+        llegaba. Ahora avanza 36 meses por llamada y termina llegando. Se fija
+        acá para que quede explícito que la convergencia es gradual y no
+        instantánea."""
+        conn = main.get_db()
+        self._fila(conn, 2019, 1)
+        self._fila(conn, 2030, 6)
+        conn.commit()
+        conn.close()
+        for _ in range(6):
+            self._rollover()
+            if self._existe_mes_actual():
+                break
+        self.assertTrue(self._existe_mes_actual())
+
 
 if __name__ == "__main__":
     unittest.main()
