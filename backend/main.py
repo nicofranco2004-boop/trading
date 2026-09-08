@@ -35798,8 +35798,19 @@ def _advisor_book_chat_context(uid: int) -> dict:
             # la distribución del libro (audit: acá quedaba el nd actual → el
             # chat decía +20.000% donde el dashboard decía +20%).
             base_nd = max(_max_nd_chat.get(cid, 0.0), nd)
+            # ⚠️ Y LA PUNTA EN BASE DE MERCADO, igual que el hermano que publica
+            # el Mejor/Peor (`advisor_book`, donde el comentario de este filtro
+            # nombra a esta función por su nombre). `_latest_snapshots` elige por
+            # MAX(date) sin preguntar en qué base está la fila: si la última es la
+            # foto del import (valuada al COSTO), el cociente no mide un retorno,
+            # mide la brecha entre dos formas de medir. El síntoma que el filtro
+            # vino a matar está documentado allá: un cliente aparecía con "+39,6%"
+            # mientras su propia pantalla decía "—".
+            # Va sólo en `ret_pct`: el `aum_usd` de arriba SÍ usa la fila sin
+            # filtrar a propósito — una reconstrucción es la mejor valuación que
+            # hay de ese cliente (ver `_es_base_de_mercado`).
             ret = (round((float(snap["total_value"]) - nd) / base_nd * 100, 1)
-                   if snap and base_nd >= 100 else None)
+                   if snap and base_nd >= 100 and _es_base_de_mercado(snap) else None)
             agg = per_client.get(cid, {"tot": 0.0, "pos": []})
             top = sorted(agg["pos"], key=lambda r: -r["value_usd"])[:5]
             clients.append({
@@ -37355,6 +37366,11 @@ def advisor_book(uid: int = Depends(get_current_user)):
             # rankear clientes con él. Con `latest[i]` sin filtrar, un cliente cuya
             # última fila es la foto del import aparecía con "+39,6%" mientras su
             # propia pantalla decía "—": el mismo cliente, dos respuestas.
+            #
+            # LAS DOS LECTURAS YA LO TIENEN. Este filtro vivió acá solo un tiempo:
+            # el hermano hacía la MISMA lectura (`_latest_snapshots`, mismo
+            # denominador) y publicaba sin él, así que el síntoma seguía saliendo
+            # por el prompt. Si alguna vez hay una tercera, va con el filtro o no va.
             if not _es_base_de_mercado(r):
                 continue
             nd = float(r["net_deposited"] or 0)

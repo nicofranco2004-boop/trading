@@ -1227,6 +1227,48 @@ class BookChatContextTest(AdvisorBase):
         # Los agregados del libro viajan también (mismo motor del Dashboard)
         self.assertEqual(ctx["aum"]["total_usd"], 700.0)
 
+    def test_ret_pct_sale_cuando_la_ultima_fila_es_una_medicion(self):
+        # El fixture siembra source='cron': total_value 700 sobre net_deposited
+        # 500 ⇒ +40,0 %. Es la contraparte del test de abajo.
+        ctx = main._advisor_book_chat_context(self.advisor)
+        self.assertEqual(ctx["clients"][0]["ret_pct"], 40.0)
+
+    def test_ret_pct_no_sale_si_la_ultima_fila_es_la_foto_del_import(self):
+        """El prompt del libro le ORDENA al modelo rankear clientes con `ret_pct`.
+
+        La misma lectura que publica el Mejor/Peor (`advisor_book`) exige que las
+        puntas estén en base de mercado; ésta no lo hacía. Con la última fila
+        valuada al COSTO, el cociente no mide un retorno: mide la brecha entre dos
+        formas de medir, y el cliente aparecía con un % en el prompt mientras su
+        propia pantalla decía "—".
+        """
+        conn = main.get_db()
+        conn.execute("UPDATE snapshots SET source='import' WHERE user_id=?",
+                     (self.client_uid,))
+        conn.commit(); conn.close()
+        ctx = main._advisor_book_chat_context(self.advisor)
+        c = ctx["clients"][0]
+        self.assertIsNone(c["ret_pct"])
+        # El AUM SÍ sigue saliendo: para valuar la cuenta la fila sirve, para
+        # restar dos puntas no (ver `_es_base_de_mercado`).
+        self.assertEqual(c["aum_usd"], 700)
+
+    def test_las_dos_lecturas_del_libro_coinciden_en_el_mismo_cliente(self):
+        """El chat y la tarjeta Mejor/Peor leen el MISMO `_latest_snapshots`.
+
+        Con la foto del import como última fila, `advisor_book` ya descartaba al
+        cliente de la distribución y el chat lo seguía publicando: el mismo
+        cliente, el mismo día, dos respuestas.
+        """
+        conn = main.get_db()
+        conn.execute("UPDATE snapshots SET source='import' WHERE user_id=?",
+                     (self.client_uid,))
+        conn.commit(); conn.close()
+        book = main.advisor_book(uid=self.advisor)
+        chat = main._advisor_book_chat_context(self.advisor)
+        self.assertIsNone(book.get("distribution"))
+        self.assertIsNone(chat["clients"][0]["ret_pct"])
+
     def test_contexto_sin_clientes_no_rompe(self):
         conn = main.get_db()
         conn.execute("UPDATE advisor_clients SET status='revoked' WHERE advisor_uid=?",
