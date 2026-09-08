@@ -19,6 +19,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { api } from '../utils/api'
 import { clearChatSession } from '../utils/chatSession'
+import { buildAiSummary } from '../utils/aiSummary'
 
 // Book-mode: AICoach exige un snapshot truthy para habilitar el envío; el
 // backend lo IGNORA en este modo (arma el libro server-side). Ref estable
@@ -68,7 +69,7 @@ export default function RendiAI() {
         if (cancelled) return
         const opsCapped = Array.isArray(operations) ? operations.slice(0, 100) : []
         const snap = {
-          summary: buildSummary(positions, monthly),
+          summary: buildAiSummary(positions, monthly),
           positions: positions || [],
           operations: opsCapped,
           monthly: monthly || [],
@@ -156,28 +157,3 @@ export default function RendiAI() {
   )
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-// (Mismo resumen mínimo que armaba el drawer — el modelo deriva el resto.)
-
-function buildSummary(positions, monthly) {
-  const totalInvestedUsd = (positions || [])
-    .filter(p => !p.is_cash)
-    .reduce((acc, p) => acc + (p.invested || 0), 0)
-  const totalPositions = (positions || []).filter(p => !p.is_cash).length
-  const totalCashPositions = (positions || []).filter(p => p.is_cash).length
-
-  const monthsCount = (monthly || []).length
-  const sumPnlRealized = (monthly || []).reduce((acc, m) => acc + (m.pnl_realized || 0), 0)
-  const sumDeposits = (monthly || []).reduce((acc, m) => acc + (m.deposits || 0), 0)
-  const sumWithdrawals = (monthly || []).reduce((acc, m) => acc + (m.withdrawals || 0), 0)
-
-  return {
-    total_invested_usd: +totalInvestedUsd.toFixed(2),
-    open_positions_count: totalPositions,
-    cash_lines_count: totalCashPositions,
-    months_tracked: monthsCount,
-    realized_pnl_usd_lifetime: +sumPnlRealized.toFixed(2),
-    deposits_lifetime: +sumDeposits.toFixed(2),
-    withdrawals_lifetime: +sumWithdrawals.toFixed(2),
-  }
-}

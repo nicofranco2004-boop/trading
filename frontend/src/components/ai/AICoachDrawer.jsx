@@ -12,6 +12,7 @@ import { X, Loader2, AlertCircle } from 'lucide-react'
 import AICoach from '../AICoach'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
 import { api } from '../../utils/api'
+import { buildAiSummary } from '../../utils/aiSummary'
 
 export default function AICoachDrawer() {
   const { isOpen, close, initialQuestion } = useCoachDrawer()
@@ -57,7 +58,7 @@ export default function AICoachDrawer() {
         // (200KB hard cap del backend; user con 500+ ops cae sin esto).
         const opsCapped = Array.isArray(operations) ? operations.slice(0, 100) : []
         const snap = {
-          summary: buildSummary(positions, monthly),
+          summary: buildAiSummary(positions, monthly),
           positions: positions || [],
           operations: opsCapped,
           monthly: monthly || [],
@@ -162,29 +163,3 @@ export default function AICoachDrawer() {
   )
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function buildSummary(positions, monthly) {
-  // Resumen mínimo derivado de los datos crudos. No incluye drawdown ni
-  // win rate (el modelo los puede pedir via tools si los necesita).
-  const totalInvestedUsd = (positions || [])
-    .filter(p => !p.is_cash)
-    .reduce((acc, p) => acc + (p.invested || 0), 0)
-  const totalPositions = (positions || []).filter(p => !p.is_cash).length
-  const totalCashPositions = (positions || []).filter(p => p.is_cash).length
-
-  const monthsCount = (monthly || []).length
-  const sumPnlRealized = (monthly || []).reduce((acc, m) => acc + (m.pnl_realized || 0), 0)
-  const sumDeposits = (monthly || []).reduce((acc, m) => acc + (m.deposits || 0), 0)
-  const sumWithdrawals = (monthly || []).reduce((acc, m) => acc + (m.withdrawals || 0), 0)
-
-  return {
-    total_invested_usd: +totalInvestedUsd.toFixed(2),
-    open_positions_count: totalPositions,
-    cash_lines_count: totalCashPositions,
-    months_tracked: monthsCount,
-    realized_pnl_usd_lifetime: +sumPnlRealized.toFixed(2),
-    deposits_lifetime: +sumDeposits.toFixed(2),
-    withdrawals_lifetime: +sumWithdrawals.toFixed(2),
-  }
-}
