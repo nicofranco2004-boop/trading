@@ -45,9 +45,29 @@ def _trust_mkt_value(mkt_value: float, real_cost: float, asset_type, has_overrid
     cotizado ×100, CEDEAR priceado como acción US) y caemos a costo. Un override manual
     se respeta SALVO en renta fija, donde un override absurdo (ej. per-100: 97 en vez de
     0,97 → ×100) igual se clampea — mismo criterio que el frontend."""
-    if not (real_cost and real_cost > 0) or not (mkt_value and mkt_value > 0):
-        return True  # sin costo no hay con qué comparar
     fixed = (asset_type or '').upper() in _FIXED_INCOME_TYPES
+    if not (real_cost and real_cost > 0):
+        return True  # sin costo no hay con qué comparar
+
+    # NEGATIVO o no finito: no existe caso legítimo. Antes caían en la misma
+    # condición que el costo y devolvían True, así que la posición se publicaba
+    # valiendo MENOS QUE NADA (o NaN) sin que nada lo frenara.
+    if mkt_value is None or not math.isfinite(mkt_value) or mkt_value < 0:
+        return False
+
+    # CERO sí es legítimo, y por eso NO se rechaza acá. Lo que entra a esta
+    # función es un VALOR (precio × CANTIDAD), no un precio: una posición con
+    # cantidad 0 vale 0 de verdad, y hacerla caer a costo publicaría un valor
+    # fantasma de algo que no se tiene. Un `price_override = 0` es lo mismo —
+    # el usuario marcando el activo sin valor.
+    #
+    # El caso que sí hay que atajar (precio de mercado 0 con cantidad > 0) NO se
+    # puede distinguir desde acá, porque el producto llega multiplicado. Se
+    # rechaza en la FUENTE: ver `pricing/fci.py::refresh_prices`, que aceptaba
+    # `vcp = 0` porque sólo chequeaba el tipo.
+    if mkt_value == 0:
+        return True
+
     if has_override and not fixed:
         return True  # override de NO-renta-fija: se respeta (mirror valuation.js:302)
     mult = mkt_value / real_cost
