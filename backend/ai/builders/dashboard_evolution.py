@@ -111,6 +111,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             ci = m.get("capital_inicio") or 0
             cf = m.get("capital_final") or 0
             net = (m.get("deposits") or 0) - (m.get("withdrawals") or 0)
+            # ⚠️ EL MES DE ALTA NO SE MIDE. `capital_inicio = 0` con un depósito deja el
+            # denominador en 0,5·flujo, y ahí el 0,5 del Dietz INFLA el mes (el motor lo
+            # midió: 23,71 % reportado contra 20,10 % real, y por eso `twr.tramos`
+            # arranca recién en el primer mes calendario completo). Este guard ya
+            # estaba: se conserva, porque `dietz` sólo corta cuando el denominador es
+            # <= 0 y éste da positivo.
+            if ci <= 0:
+                continue
             # Mismo primitivo que el resto de la app (`twr.dietz`): el denominador
             # lleva el 0,5 del flujo. Con `/ci` el "mejor mes" podía ser el mes en
             # que entró un depósito grande, no el mes en que la cartera rindió.

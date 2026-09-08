@@ -39,6 +39,30 @@ ESPERADO_PCT = round(_twr.dietz(CI, CF, DEP) * 100, 2)      # 6.67
 VIEJO_PCT = round((CF - CI - DEP) / CI * 100, 2)            # 10.0
 
 
+class TestElMesDeAltaNoSeMide(unittest.TestCase):
+    """`capital_inicio = 0` no se mide, aunque `dietz` sepa dar un número.
+
+    Con ci=0 y un depósito, el denominador queda en 0,5·flujo y el 0,5 del Dietz
+    INFLA el mes: el motor lo midió en 23,71 % reportado contra 20,10 % real, y
+    por eso `twr.tramos` arranca recién en el primer mes calendario completo.
+
+    Los cinco lectores traían el guard `ci > 0` de antes. Al pasarlos al
+    primitivo era fácil dejarlo caer creyendo que `dietz` ya lo cubría —no lo
+    cubre: sólo corta cuando el denominador es <= 0, y 0,5·flujo da positivo.
+    """
+
+    def test_dietz_sí_mide_ese_mes_y_por_eso_hace_falta_el_guard(self):
+        self.assertIsNotNone(_twr.dietz(0, 1200, 1000))
+
+    def test_ningun_lector_publica_el_mes_de_alta(self):
+        import wrapped
+        alta = [{"year": 2026, "month": 1, "broker": "global",
+                 "capital_inicio": 0, "capital_final": 1200, "deposits": 1000,
+                 "withdrawals": 0, "pnl_realized": 200, "pnl_unrealized": 0}]
+        self.assertIsNone(wrapped._twr_for_period(alta))
+        self.assertIsNone(wrapped._slide_best_month(alta))
+
+
 class TestUnSoloDenominador(unittest.TestCase):
 
     def setUp(self):
