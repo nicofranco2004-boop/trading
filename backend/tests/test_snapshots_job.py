@@ -847,5 +847,94 @@ class TestSnapshotCedearValuationE2E(unittest.TestCase):
         conn.close()
 
 
+class TestSnapshotLoteEnPesosEnCuentaUsdE2E(unittest.TestCase):
+    """A-1 y A-2 end-to-end, por el camino de PRODUCCIÓN (take_snapshot_for_user).
+
+    Un lote comprado EN PESOS (positions.currency='ARS') alojado en un broker USD
+    GENUINO — Schwab: sin padre AR y sin '· USD' en el nombre. Es el caso que no
+    atrapa ningún guard: el múltiplo contra el ADR cae cómodo dentro de la banda.
+
+    Prueba el wiring completo, no la función suelta: el SELECT que trae `currency`,
+    build_price_symbols pidiendo el .BA, la cobertura mirando el .BA, la valuación
+    por el MEP y lo que finalmente queda PERSISTIDO en la fila.
+
+    Con el código viejo esto escribía total_invested=501.000 (los pesos contados
+    como dólares) y total_value=4.500 (el ADR de NYSE, instrumento equivocado).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.db_path = self.tmp.name
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript("""
+            CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
+            CREATE TABLE brokers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, currency TEXT, parent_broker_id INTEGER);
+            CREATE TABLE positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, broker TEXT, asset TEXT,
+                is_cash INTEGER DEFAULT 0, invested REAL, quantity REAL, commissions REAL DEFAULT 0, price_override REAL, asset_type TEXT, currency TEXT
+            );
+            CREATE TABLE monthly_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, year INTEGER, month INTEGER,
+                broker TEXT, capital_inicio REAL DEFAULT 0, deposits REAL DEFAULT 0, withdrawals REAL DEFAULT 0
+            );
+            CREATE TABLE snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, date TEXT,
+                total_value REAL NOT NULL, total_invested REAL NOT NULL, net_deposited REAL DEFAULT 0,
+                fx_to_usd_blue REAL, holdings_json TEXT,
+                source TEXT, mtm_coverage REAL, base TEXT, apto INTEGER,
+                UNIQUE(user_id, date)
+            );
+            CREATE TABLE asset_last_price (symbol TEXT PRIMARY KEY, price REAL NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE config (user_id INTEGER, key TEXT, value REAL);
+            INSERT INTO users (id, email) VALUES (1, 't@x.com');
+            -- broker USD GENUINO: sin parent_broker_id y sin '· USD' en el nombre
+            INSERT INTO brokers (user_id, name, currency) VALUES (1, 'Schwab', 'USD');
+            -- GGAL comprado EN PESOS (500.000 ARS) pero alojado en la cuenta dólar
+            INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity, currency)
+            VALUES (1, 'Schwab', 'GGAL', 0, 500000, 100, 'ARS');
+            INSERT INTO monthly_entries (user_id, year, month, broker, capital_inicio)
+            VALUES (1, 2026, 1, 'global', 345);
+            INSERT INTO config (user_id, key, value) VALUES (1, 'tc_mep', 1450), (1, 'tc_blue', 1500);
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_persiste_por_el_ba_y_con_el_costo_a_mep(self):
+        seen = {}
+
+        def fake_fetch(syms, cy):
+            seen["syms"] = list(syms)
+            # Los DOS precios existen — es justo lo que hace peligroso a A-2: el ADR
+            # de GGAL cotiza en NYSE, así que pedir el ticker equivocado NO deja
+            # hueco de cobertura ni dispara el guard. Devuelve un número creíble.
+            return {s: {"GGAL.BA": 7000.0, "GGAL": 45.0}.get(s) for s in syms}
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        with patch("snapshots_job.fetch_prices_for_symbols", side_effect=fake_fetch):
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, "2026-06-02")
+
+        # A-2: pidió la acción local de BYMA, no el ADR.
+        self.assertIn("GGAL.BA", seen["syms"])
+        self.assertNotIn("GGAL", seen["syms"])
+        self.assertTrue(r["ok"])
+
+        snap = conn.execute(
+            "SELECT total_value, total_invested FROM snapshots "
+            "WHERE user_id=1 AND date='2026-06-02'"
+        ).fetchone()
+        # A-1: el costo en pesos va a USD por el MEP (344,83), no se cuenta como
+        # 500.000 dólares.
+        self.assertAlmostEqual(snap["total_invested"], 500000 / 1450, places=4)
+        # A-2: valuado por el .BA ÷ MEP (482,76), no por el ADR (45 × 100 = 4.500).
+        self.assertAlmostEqual(snap["total_value"], 7000 * 100 / 1450, places=4)
+        conn.close()
+
+
 if __name__ == '__main__':
     unittest.main()
