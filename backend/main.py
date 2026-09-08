@@ -2938,6 +2938,23 @@ def is_exchange_broker(name) -> bool:
     return (name or '').strip().lower() in CRYPTO_BROKER_NAMES
 
 MAX_STR = 100   # max length for names/assets
+
+# Cota de sanidad para TODO monto/cantidad que entra por un modelo. Vivía 8.000
+# líneas más abajo, al lado de SellIn, y por eso los modelos declarados ANTES no
+# podían usarla — PositionIn entre ellos, que es la puerta por la que se carga una
+# posición a mano. Subirla acá es lo que permite que la apliquen todos.
+_FINITE_BOUND = 1e12  # bound razonable para detectar inf/NaN/garbage
+
+
+def _finite(v: Optional[float]) -> Optional[float]:
+    if v is None:
+        return None
+    if not math.isfinite(v):
+        raise ValueError('Valor numérico inválido (NaN/Inf)')
+    if abs(v) > _FINITE_BOUND:
+        raise ValueError('Valor numérico fuera de rango')
+    return v
+
 MAX_NOTES = 500
 
 
@@ -8225,12 +8242,16 @@ class PositionIn(BaseModel):
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
     asset: str = Field(..., min_length=1, max_length=MAX_STR)  # MAX_STR (100): FCI y nombres largos (compra y venta comparten límite)
     is_cash: bool = False
-    buy_price: Optional[float] = Field(None, ge=0)
-    quantity: Optional[float] = Field(None, ge=0)
-    invested: Optional[float] = Field(None, ge=0)
-    tc_compra: Optional[float] = Field(None, gt=0)  # > 0 para evitar div-by-zero silencioso
-    price_override: Optional[float] = Field(None, ge=0)
-    commissions: Optional[float] = Field(0, ge=0)
+    # `le=_FINITE_BOUND` en todos los montos: SellIn, OperationIn y MonthlyIn ya lo
+    # tenían y este modelo no, aunque es la puerta por la que se carga una posición
+    # a mano. Sin la cota, un `invested` de 1e308 entraba, se propagaba a
+    # `monthly_entries.capital_final` y salía por `compute_broker_value_usd`.
+    buy_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
+    quantity: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
+    invested: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
+    tc_compra: Optional[float] = Field(None, gt=0, le=_FINITE_BOUND)  # > 0 para evitar div-by-zero silencioso
+    price_override: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
+    commissions: Optional[float] = Field(0, ge=0, le=_FINITE_BOUND)
     notes: Optional[str] = Field(None, max_length=MAX_NOTES)
     entry_date: Optional[str] = Field(None, max_length=10)
     # Clasificación del activo (CEDEAR/STOCK/ETF/…). Para un CEDEAR comprado en USD
@@ -8240,6 +8261,14 @@ class PositionIn(BaseModel):
     # en pesos Y en dólares; sin moneda por lote, las dos patas se mezclan (FIFO
     # cruzado, P&L basura). None → el backend la infiere del broker.
     currency: Optional[str] = Field(None, max_length=8)
+
+    @field_validator('buy_price', 'quantity', 'invested', 'tc_compra',
+                     'price_override', 'commissions')
+    @classmethod
+    def finite_check(cls, v):
+        # `le=` en el Field no ataja NaN (ninguna comparación con NaN es True).
+        # Mismo validador que usan SellIn / OperationIn / MonthlyIn.
+        return _finite(v) if v is not None else v
 
     @field_validator('entry_date')
     @classmethod
@@ -11272,19 +11301,6 @@ def sync_unrealized(data: SyncUnrealizedIn, uid: int = Depends(get_effective_use
 
 
 # ─── Sell position (atomic) ──────────────────────────────────────────────────
-
-_FINITE_BOUND = 1e12  # bound razonable para detectar inf/NaN/garbage
-
-
-def _finite(v: Optional[float]) -> Optional[float]:
-    if v is None:
-        return None
-    if not math.isfinite(v):
-        raise ValueError('Valor numérico inválido (NaN/Inf)')
-    if abs(v) > _FINITE_BOUND:
-        raise ValueError('Valor numérico fuera de rango')
-    return v
-
 
 class SellIn(BaseModel):
     """Venta FIFO: cierra posiciones del par (broker, asset) en orden de entry_date asc."""
