@@ -158,7 +158,8 @@ No arrancaría por A: borrar es lo único de esta lista que no tiene vuelta atr�
   incertidumbre.
 - **Solo importan las fechas PASADAS.** La de hoy la reescribe el cron en su
   próxima corrida, ya con el fix — y que el cron pise al browser está documentado
-  como intencional (`snapshots_job.py:838-839`), así que no hay nada que hacer ahí.
+  como intencional (el `DO UPDATE` de `take_snapshot_for_user`: *"su cierre es la
+  medición buena del día"*), así que no hay nada que hacer ahí.
 - **Nada de esto es urgente en el sentido de "se sigue rompiendo".** Con el fix
   mergeado, deja de escribirse basura nueva. La limpieza es una decisión sobre el
   pasado, y se puede tomar con calma.

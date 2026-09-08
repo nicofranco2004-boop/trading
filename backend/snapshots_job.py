@@ -117,8 +117,10 @@ def _cost_in_pesos(p: dict) -> bool:
 
 def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     """Símbolo de precio que valúa esta posición: '<ASSET>.BA' (precio LOCAL ARS)
-    si se valúa por su .BA — holdings en broker ARS, en sub-broker '· USD', o
-    CEDEAR (asset_type) — si no, el ticker US. SSoT compartida por el armado de
+    si se valúa por su .BA — holdings en broker ARS, en sub-broker '· USD',
+    CEDEAR (asset_type), o de COSTO EN PESOS (positions.currency='ARS', aunque
+    viva en una cuenta dólar) — si no, el ticker US. Espejo de valuationPriceKey
+    (valuation.js), rama por rama. SSoT compartida por el armado de
     símbolos a fetchear, el chequeo de cobertura y la valuación, para que los tres
     nunca diverjan (raíz del bug C1: el snapshot pedía/valuaba el ticker US de un
     CEDEAR comprado por dólar-MEP → 15-100× inflado)."""
@@ -150,8 +152,10 @@ def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
 
 def build_price_symbols(positions: list, brokers: list) -> list:
     """Símbolos a fetchear para valuar (sin cash ni cash-USD). Usa
-    position_price_key, así un CEDEAR/instrumento BYMA en broker USD pide su
-    precio .BA (ARS), no el ticker US."""
+    position_price_key, así un CEDEAR/instrumento BYMA en broker USD —o un lote
+    de costo en PESOS alojado en una cuenta dólar— pide su precio .BA (ARS) y no
+    el ticker US. Pedir una key distinta de la que la valuación lee hace que la
+    posición caiga a costo EN SILENCIO, así que las tres pasan por la misma SSoT."""
     ars_names, ar_usd_names = _broker_name_sets(brokers)
     syms = set()
     for p in positions:
@@ -184,8 +188,12 @@ def compute_broker_value_usd(
     broker_name: str = '',
     cedear_rate: Optional[float] = None,
 ) -> dict:
-    """Equivalente Python de frontend `computeBrokerValue` (port fiel, incluida la
-    rama CEDEAR). Devuelve {value, invested} en USD. Maneja FX-phantom fix para
+    """Equivalente Python de frontend `computeBrokerValue` (port fiel de sus seis
+    ramas, en el mismo orden que `valuePositionLot`: cash · costo en PESOS en
+    cuenta USD · costo en USD en broker ARS · ARS nativo · CEDEAR/'· USD' por
+    .BA÷MEP · USD nativo). Las DOS ramas cruzadas las decide `positions.currency`
+    —la moneda del LOTE, no la de la cuenta—, así que este motor LEE ese campo.
+    Devuelve {value, invested} en USD. Maneja FX-phantom fix para
     brokers ARS (cost basis al blue actual, no al tc_compra histórico).
 
     Args:
