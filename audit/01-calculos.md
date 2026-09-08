@@ -83,8 +83,9 @@ Lo único que corrompe datos nuevos todas las noches. **Nada más entra acá.**
 - Fecha futura que congela el calendario mensual.
 **Estado al cerrar:** el sistema deja de escribir números falsos. Lo ya escrito sigue mal.
 
-### Tanda F2 — «Que la IA y lo que sale de la app no mientan» *(1–2 días)*
-Lo que se publica hacia afuera o hacia el modelo.
+### Tanda F2 — «Que la IA y lo que sale de la app no mientan» — ✅ HECHA (`fix/f2-que-no-mientan`, sin deployar)
+Lo que se publica hacia afuera o hacia el modelo. Detalle de lo hecho y de lo que quedó
+abierto a propósito: `audit/_HANDOFF-TANDAS.md` §4.
 - P&L de por vida duplicado ×2 en el contexto del chat **(B-3)**.
 - El `ret_pct` sin filtrar que va al prompt que **rankea clientes** **(B-2)**.
 - El slide del Wrapped rotulado «TWR» sobre una fórmula que no lo es **(B-1)** — el **rótulo** se puede cambiar hoy, sin tocar el cálculo.

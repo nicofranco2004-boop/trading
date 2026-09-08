@@ -1,6 +1,7 @@
 # Handoff — auditoría de cálculo de Rendi y las tandas de fix que quedan
 
-**Arrancá por F2.** Todo lo demás está para que entiendas por qué, sin tener que reconstruirlo.
+**F2 está hecha** (rama `fix/f2-que-no-mientan`, sin deployar — ver §4). **Arrancá por F3.**
+Todo lo demás está para que entiendas por qué, sin tener que reconstruirlo.
 
 **Base:** `origin/main` actual. Trabajá siempre sobre eso, **no** sobre el commit del mapeo — el
 código se movió y la auditoría original se hizo sobre `b74f450f`, que ya no es producción.
@@ -119,7 +120,46 @@ pendiente de medir.
 
 ---
 
-## 4. F2 — empezá acá
+## 4. F2 — ✅ HECHA, sin deployar
+
+Rama `fix/f2-que-no-mientan`, 7 commits sobre `origin/main` (`04a5736e`). Cada uno con un test
+que **falla contra el código viejo** — verificado revirtiendo sólo el archivo de código y
+dejando el test. Suite: los mismos 33 fallos preexistentes que el baseline, cero nuevos;
+frontend 1.470 en verde. `git merge-tree` contra `origin/main` da limpio (mientras tanto entraron
+dos commits de seguridad de otra sesión, que tocan `main.py` en otra zona).
+
+| # | qué era | dónde quedó |
+|---|---------|-------------|
+| B-3 | el ×2 en el contexto del chat | `frontend/src/utils/aiSummary.js` — las dos copias de `buildSummary` unificadas en una, con el filtro `global` |
+| B-2 | el `ret_pct` sin filtrar del prompt que rankea clientes | `_advisor_book_chat_context`, con `_es_base_de_mercado` |
+| B-1 | el «TWR» del Wrapped | rótulo + **el denominador de los 5 lectores** al primitivo `twr.dietz` |
+| B-4 | `Interés PF` sin conversión | TC sellado al escribir + `_NATIVE_CCY_OPS` (Python **y** el espejo JS) |
+
+**Lo que quedó abierto a propósito, y es del dueño:**
+
+- **Q7 no se pudo contestar desde acá** (¿cuántas filas `Interés PF` hay en producción?): las
+  copias locales están vacías. El fix de B-4 es seguro con 0 filas **y** con filas —no toca
+  ninguna fila vieja— pero la MAGNITUD del hallazgo sigue sin medir.
+- **`Interés PF` sigue contando como "operación ganada"** en los 6 win rates. Es `_NOT_A_TRADE`,
+  o sea F7: sacarlo le cambia el significado a la métrica. Hay un test que congela la asimetría.
+- **El Wrapped sigue midiendo sobre la cadena contable.** El rótulo ya no dice TWR y el
+  denominador ya es el del motor, pero la base son `monthly_entries` (con `pnl_unrealized`
+  forzado a 0 en los meses cerrados). Migrarlo a `twr.curva_indexada` es **F6**.
+
+**La trampa que costó, para que no se repita:** al pasar los 5 lectores a `twr.dietz` es natural
+dar por cubierto el guard `ci > 0` que traían. **No lo está**: `dietz` sólo corta cuando el
+denominador es `<= 0`, y con `capital_inicio = 0` más un depósito el denominador queda en
+`0,5·flujo`, que da positivo — o sea que el mes de alta empezaba a publicarse, inflado
+(23,71 % contra 20,10 % real, medido en `twr.tramos`). Los dos guards tienen que convivir.
+
+**Y un guard del repo cazó un fix a medias mío:** `assetPnl.js` mantiene a mano el espejo en JS
+de `_NATIVE_CCY_OPS`, y `test_advisor_composition.py` falla si las dos listas divergen. Agregué
+`Interés PF` del lado de Python y el test se puso en rojo. Es exactamente la causa raíz que la
+auditoría persigue, agarrada por un guard que ya existía.
+
+---
+
+### El hallazgo original (lo que decía este documento antes)
 
 **«Que la IA y lo que sale de la app no mientan».** Cuatro hallazgos, todos publicados hacia
 afuera o hacia el modelo. **Dos son casi de una línea.**
@@ -336,7 +376,10 @@ asumas que la tuya es la buena.
 ## 10. Estado del repo
 
 - **`main`** — F1 completa + 3 de 6 de F4, deployado y verificado (27 fallos de test, los mismos
-  que antes; frontend entero en verde).
+  que antes; frontend entero en verde). Ojo: el baseline de fallos **subió a 33** desde entonces
+  (`advisor_plan`, `bond_conduit`, `cedear_usd_price` se sumaron a news/events/importer/billing).
+  Medí el tuyo antes de tocar nada, no uses el número de este documento.
+- **`fix/f2-que-no-mientan`** — F2 completa, **sin deployar**. 7 commits. Ver §4.
 - `audit/mapa-sistema` — el mapa y los informes.
 - `audit/trabajo-local-2026-09-07` — prompts e informes previos.
 - `fix/f1-deje-de-escribir-mal` y `fix/f4-guards-en-todos-los-lectores` — **obsoletas**, ya
