@@ -31270,20 +31270,113 @@ import threading
 _wallbit_sync_locks = defaultdict(threading.Lock)
 
 
-def _wallbit_cipher():
-    """Fernet derivado de SECRET_KEY (32 bytes urlsafe-b64). SECRET_KEY es estable
-    en prod (env) → las keys cifradas sobreviven restarts. En dev es efímera →
-    una credencial guardada en dev no se puede descifrar tras reiniciar (aceptable)."""
+# ─── Cifrado de las credenciales de broker ───────────────────────────────────
+# En user_broker_credentials.api_key_enc viven la API key de Wallbit y el
+# refresh token de IOL, cifrados con Fernet.
+#
+# Hasta 2026-09 la clave de cifrado se derivaba de SECRET_KEY — la MISMA que
+# firma los JWT. Eso ataba dos cosas que no tienen por qué estarlo: rotar la
+# firma de sesiones dejaba TODAS las credenciales indescifrables, así que rotar
+# dolía y por lo tanto no se rotaba nunca. Ahora la clave de cifrado es propia
+# (CREDENTIALS_KEY) y SECRET_KEY queda sólo como clave de LECTURA de lo que se
+# cifró antes.
+#
+# MultiFernet: la PRIMERA clave cifra, TODAS descifran. Las filas viejas se
+# re-cifran solas en el arranque (_migrar_credenciales_a_credentials_key).
+#
+# ⚠️ ORDEN OBLIGATORIO PARA ROTAR SECRET_KEY. Si se saltea un paso, las
+# credenciales de los usuarios se pierden y hay que reconectar a mano:
+#   1. setear CREDENTIALS_KEY en Railway (independiente de SECRET_KEY)
+#   2. deployar
+#   3. confirmar en los logs: "credenciales: ... 0 migradas ahora"
+#   4. recién entonces rotar SECRET_KEY
+
+def _fernet_de(material: str):
+    """Fernet(sha256(material)) → 32 bytes urlsafe-b64. Es la derivación de
+    siempre: cambiarla haría ilegible todo lo ya guardado."""
     import base64
     from cryptography.fernet import Fernet
-    digest = hashlib.sha256((SECRET_KEY or "dev-insecure").encode("utf-8")).digest()
-    return Fernet(base64.urlsafe_b64encode(digest))
+    return Fernet(base64.urlsafe_b64encode(
+        hashlib.sha256(material.encode("utf-8")).digest()))
+
+
+def _creds_clave_propia() -> Optional[str]:
+    """CREDENTIALS_KEY, si está seteada. Sin ella el sistema se comporta
+    exactamente como antes (una sola clave, la derivada de SECRET_KEY): esto es
+    a propósito, para que dev y los tests no cambien de comportamiento."""
+    return (os.environ.get("CREDENTIALS_KEY") or "").strip() or None
+
+
+def _wallbit_cipher():
+    """MultiFernet [CREDENTIALS_KEY (cifra y descifra), SECRET_KEY (legacy, sólo
+    descifra)]. El nombre `_wallbit_` quedó de cuando Wallbit era el único
+    conector; hoy cifra también el refresh token de IOL."""
+    from cryptography.fernet import MultiFernet
+    claves = []
+    propia = _creds_clave_propia()
+    if propia:
+        claves.append(_fernet_de(propia))
+    claves.append(_fernet_de(SECRET_KEY or "dev-insecure"))
+    return MultiFernet(claves)
 
 def _wallbit_encrypt(plain: str) -> str:
     return _wallbit_cipher().encrypt(plain.encode("utf-8")).decode("utf-8")
 
 def _wallbit_decrypt(enc: str) -> str:
     return _wallbit_cipher().decrypt(enc.encode("utf-8")).decode("utf-8")
+
+
+def _migrar_credenciales_a_credentials_key() -> None:
+    """Re-cifra bajo CREDENTIALS_KEY lo que todavía esté bajo SECRET_KEY.
+
+    Corre en cada arranque. Idempotente y barata: la tabla tiene a lo sumo una
+    fila por usuario conectado. Es el paso 3 del orden de arriba, y corre acá
+    en vez de en un script porque la consola de Railway no siempre conecta: un
+    script que hay que acordarse de correr a mano es un paso que no se corre.
+
+    Sin CREDENTIALS_KEY no hace nada. Nunca tumba el arranque: si falla, las
+    credenciales siguen legibles con la clave legacy y el próximo boot reintenta.
+    """
+    propia = _creds_clave_propia()
+    if not propia:
+        return
+    try:
+        from cryptography.fernet import InvalidToken
+        primaria = _fernet_de(propia)
+        ya = migradas = ilegibles = 0
+        with db_abierta() as conn:
+            filas = conn.execute(
+                "SELECT user_id, broker, api_key_enc FROM user_broker_credentials"
+            ).fetchall()
+            for f in filas:
+                try:
+                    primaria.decrypt((f["api_key_enc"] or "").encode("utf-8"))
+                    ya += 1
+                    continue
+                except InvalidToken:
+                    pass
+                try:
+                    plano = _wallbit_decrypt(f["api_key_enc"])
+                except Exception:
+                    ilegibles += 1   # no abre con ninguna clave: ya estaba muerta
+                    continue
+                with conn:
+                    conn.execute(
+                        "UPDATE user_broker_credentials SET api_key_enc=? "
+                        "WHERE user_id=? AND broker=?",
+                        (primaria.encrypt(plano.encode("utf-8")).decode("utf-8"),
+                         f["user_id"], f["broker"]))
+                migradas += 1
+        veredicto = ("SEGURO rotar SECRET_KEY" if migradas == 0
+                     else "NO rotes SECRET_KEY todavía: redeployá y confirmá '0 migradas ahora'")
+        print(f"credenciales: {ya} ya bajo CREDENTIALS_KEY, {migradas} migradas ahora, "
+              f"{ilegibles} ilegibles. {veredicto}")
+    except Exception as e:
+        print(f"⚠️  credenciales: la migración a CREDENTIALS_KEY falló ({e}). "
+              f"Siguen legibles con SECRET_KEY. NO rotes SECRET_KEY.")
+
+
+_migrar_credenciales_a_credentials_key()
 
 
 def _wallbit_ensure_broker(conn, uid: int, broker: str = "Wallbit"):
