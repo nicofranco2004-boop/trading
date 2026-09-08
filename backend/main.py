@@ -8392,12 +8392,41 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     ).fetchone()
 
 
+def _exigir_broker_existente(conn, uid: int, broker: str) -> None:
+    """El broker tiene que existir antes de escribirle una posición.
+    `POST /api/monthly` ya lo validaba; `POST /api/positions` no.
+
+    ⚠️ ALCANCE: NO se aplica a `/api/operations`. Ahí el contrato TOLERA un broker
+    desconocido a propósito — `test_importer.py::test_currency_fallback_to_usd_if_
+    broker_unknown` lo fija por escrito ("raro pero posible si el frontend manda un
+    nombre libre", y cae a currency USD). Extenderlo ahí rompe ese contrato, y en
+    este repo una validación que RECHAZA no se agrega sin el censo completo de
+    callers. Queda como decisión pendiente, no como olvido.
+
+    Sin esto, una fila contra un broker inexistente entra igual y queda huérfana:
+    los brokers se linkean por NOMBRE (no hay FK), así que nada la ata a nada. La
+    auditoría midió el efecto — una pérdida fantasma de −US$9.999 (aportado
+    10.999 contra una valuación de 1.000) — porque el capital se registra pero la
+    tenencia no la valúa ningún broker.
+
+    'global' se exceptúa igual que en /api/monthly: es la fila sintética de
+    totales, no un broker real."""
+    if not broker or broker == 'global':
+        return
+    existe = conn.execute(
+        "SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)
+    ).fetchone()
+    if not existe:
+        raise HTTPException(400, f"Broker '{broker}' no existe. Agregalo en Config primero.")
+
+
 @app.post("/api/positions")
 @reintentar_si_trabada
 def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
             with conn:  # transacción atómica: insert + cash debit
+                _exigir_broker_existente(conn, uid, p.broker)
                 row = _insert_manual_position(conn, uid, p)
             _ai_cache_invalidate(uid)
             return dict(row)
