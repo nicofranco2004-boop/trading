@@ -472,6 +472,35 @@ Tres cosas, en orden de importancia:
    períodos: el reporte de septiembre deja de arrancar en el cierre del 30 de agosto y el anual
    deja de cerrar con la rueda del 30 de diciembre.
 
+#### ⚠️ Y una consecuencia que sólo apareció al auditar el propio fix
+
+**Mientras la historia siga corrida, el KPI «YTD» de Métricas queda con una rueda de más — y
+hoy, sin deployar, está exacto.** Medido corriendo `main._ytd_delta` real sobre la misma
+historia en las dos ramas:
+
+| | qué publica el YTD 2026 |
+|---|---|
+| `origin/main` (hoy) | **US$ 1.000** — exacto |
+| con F3 | **US$ 1.100** — el borde cae en el cierre del 30/12 en vez del 31/12 |
+
+El informe 1B lo tenía escrito en la letra chica (*"arreglar H-2 con H-1 vivo: se pierde una
+rueda más, pero el signo no se invierte"*) y aplica igual acá, porque el fix del cron sólo
+alcanza a las filas NUEVAS: las de diciembre de 2025 siguen con la etiqueta corrida.
+
+**Por qué se deploya igual, y no es un empate:**
+
+- Hoy el YTD acierta **por accidente**, y ese accidente depende de que el cron siga roto. El
+  1 de enero de 2027 la fila `2027-01-01` la escribe el cron nuevo —con el aporte del 1/1
+  adentro— y sin este fix el KPI publica **−22,86 %, con el signo invertido**. No arreglarlo
+  es dejar armada una bomba con fecha.
+- El desvío es de **una rueda de mercado**, no de signo, y se apaga solo: en cuanto la fila
+  `2026-12-31` la escriba el cron nuevo, el YTD 2027 arranca exacto.
+- **El fix hace que Métricas y Reportes coincidan.** Hoy divergen: Reportes ya usaba el
+  día-anterior y arrastraba esa rueda, Métricas no. Post-deploy los dos miden igual — que es
+  el punto de la tanda.
+
+Re-etiquetar la historia lo cierra de inmediato. Es el argumento más fuerte a favor de hacerlo.
+
 #### La decisión que es tuya
 
 **¿Se re-etiqueta la serie histórica de `snapshots`, restándole un día a todo lo anterior al
@@ -500,6 +529,22 @@ cazó un fix mal diseñado en §4-ter.
   semanas anidadas que no cubren el mes), **H-13** (las seis tolerancias distintas de arrastre),
   **H-14** (`_market_open_now` sin feriados ni DST de EE.UU.), **H-16** y **H-17**. Ninguno es
   "dos relojes en el mismo endpoint": son piezas propias, y cada una necesita su decisión.
+
+#### Lo que encontró auditar la propia tanda
+
+Antes de deployar se auditó F3 contra sí misma. Cuatro cosas, y **dos eran errores míos**:
+
+1. **Dos relojes que quedaron divergiendo por mi propio arreglo.** Al pasar
+   `is_period_current` al día argentino, sus dos gemelos de `reporting/timeline.py`
+   (`_months_back` y `wrpt_is_current_check`) siguieron en `date.today()`. Es exactamente la
+   causa raíz que la tanda persigue, cometida dentro de la tanda. ✅ `abfb1e31`.
+2. **El desvío del YTD** de acá arriba, que no estaba medido cuando se reportó la tanda.
+3. **Un helper que escribí y no usa nadie** (`hoyMasDias`). ✅ `309ed995`.
+4. **Trabajo de otra sesión que se coló en un commit mío** — ver §9.
+
+Y la comparación de suites se rehízo en **worktrees limpios**, porque el árbol principal tenía
+trabajo en curso de otra sesión: `origin/main` da **4.113 / 0** y F3 **4.132 / 0**, o sea +19,
+que son exactamente los tests nuevos. **Cero regresiones.**
 
 #### Los guards que quedaron, y qué leen
 
@@ -664,20 +709,37 @@ Dependen de la cadena que las tandas modifican; auditarlas ahora produce veredic
 
 ## 9. Coordinación — importante
 
-**El 2026-09-08 hubo dos sesiones tocando el mismo código.** La otra deployó a `main` los fixes
-de snapshots mientras esta rama los tenía sin mergear. Se detectó al chequear antes de mezclar:
-**mergear a ciegas habría pisado su solución con una peor.**
+El 2026-09-08 hubo dos sesiones tocando el mismo código. La otra deployó a `main` los fixes de
+snapshots mientras esta rama los tenía sin mergear. Se detectó al chequear antes de mezclar:
+mergear a ciegas habría pisado su solución con una peor.
 
-Antes de mergear cualquier cosa:
+**Antes de mergear cualquier cosa:**
 
-```bash
+```
 git fetch && git log --oneline <tu-base>..origin/main
 ```
 
-Y si hay solapamiento, **comparen las dos soluciones antes de resolver el conflicto** — no
-asumas que la tuya es la buena.
+Y si hay solapamiento, comparen las dos soluciones antes de resolver el conflicto — no asumas
+que la tuya es la buena.
 
----
+### ⚠️ Y volvió a pasar el 2026-09-09, de otra forma: `git add -A` se lleva lo ajeno
+
+Mientras corría F3, otra sesión editaba `backend/main.py` **en la misma carpeta**. Un
+`git add -A backend/` se llevó su fix de autorización de las alertas adentro de un commit
+cuyo mensaje hablaba de fechas — y **sin su test**, que estaba en otro archivo que no entró.
+Se detectó auditando el diff propio línea por línea, se revirtió (`6eaa6980`) y su trabajo
+volvió al árbol donde lo había dejado.
+
+Tres reglas que salen de eso:
+
+1. **`git add -A <dir>` no sirve cuando hay otra sesión viva en la carpeta.** Agregá archivo
+   por archivo, o revisá `git diff --cached` antes de commitear.
+2. **Leé tu propio diff buscando lo que NO escribiste.** El filtro que lo encontró fue mirar
+   las líneas de código que no mencionaban nada del tema de la tanda.
+3. **No midas la suite en un árbol con trabajo ajeno en curso.** Dos tests daban rojo y
+   parecían regresiones mías; eran de un cambio a medio hacer de la otra sesión
+   (`_borrar_en_chunks` con un parámetro nuevo y su test sin actualizar). La medición válida
+   se hizo en dos worktrees limpios, uno por rama.
 
 ## 10. Estado del repo
 
