@@ -55,6 +55,27 @@ class TestNoPuedeEscribir(unittest.TestCase):
             [("Qx", "t", "SELECT COUNT(*) FROM operations WHERE notes = 'update pendiente'")])
 
 
+class TestElParserNoSeComeFiltros(unittest.TestCase):
+    """El bug que publicó 679 usuarios donde había ~20: un `-- comentario` al
+    final de una línea se tragaba el resto de la sentencia al unir líneas."""
+
+    def test_un_comentario_inline_no_borra_lo_que_sigue(self):
+        sql = ("-- Q9 · prueba\n"
+               "SELECT COUNT(*) AS n FROM t\n"
+               "WHERE a = 1   -- el lote se pagó en pesos\n"
+               "  AND b = 2;  -- la cuenta es en dólares\n")
+        (_sid, _t, sentencia), = alc.secciones(sql)
+        self.assertIn("AND b = 2", sentencia)
+        self.assertNotIn("--", sentencia)
+
+    def test_Q1a_conserva_el_filtro_de_broker_en_dolares(self):
+        q1a = next(q for sid, _t, q in alc.secciones() if sid == "Q1a")
+        self.assertIn("IN ('USD','USDT')", q1a)
+        # Y NO escondido detrás de un comentario: con el parser viejo el texto
+        # seguía ahí, pero después de un `--`, o sea inerte.
+        self.assertNotIn("--", q1a)
+
+
 class TestNoFiltraDatosDeNadie(unittest.TestCase):
     """Las consultas devuelven agregados. Si alguien agrega una columna con un
     email o un user_id, esto se pone en rojo."""

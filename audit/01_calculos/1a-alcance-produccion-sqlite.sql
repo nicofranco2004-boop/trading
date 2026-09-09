@@ -332,7 +332,13 @@ SELECT
 FROM (
     SELECT
         t.batch_id,
-        COALESCE(t.quantity,0) - (COALESCE(t.gross_amount,0) / 1415.0) AS fantasma
+        -- El dólar MEP del día de la conversión (último publicado en o antes), no
+        -- un 1415 fijo: con el fijo, TODA conversión de otro día parecía dejar
+        -- plata fantasma y el botón publicó 1.424 de 1.616 conversiones "rotas".
+        COALESCE(t.quantity,0) - (COALESCE(t.gross_amount,0) /
+            COALESCE((SELECT f.mep_venta FROM fx_rates_daily f
+                       WHERE f.date <= substr(t.date,1,10) AND f.mep_venta IS NOT NULL
+                       ORDER BY f.date DESC LIMIT 1), 1415.0)) AS fantasma
     FROM import_normalized_tx t
     WHERE t.operation_type IN ('FX_ARS_TO_USD', 'FX_USD_TO_ARS')
       AND t.excluded_at IS NULL

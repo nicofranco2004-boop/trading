@@ -56,7 +56,13 @@ def secciones(sql: str = None):
             cerrar()
             actual, acc = (m.group(1), m.group(2).strip()), []
             continue
-        if linea.strip().startswith("--"):
+        # ⚠️ TAMBIÉN EL COMENTARIO AL FINAL DE LA LÍNEA. Las líneas se unen con
+        # espacios en una sola, y un `-- ...` inline se tragaba TODO lo que venía
+        # después. En Q1a eso borraba el filtro "la cuenta es en dólares" y el
+        # botón publicó 679 usuarios / 29.820 posiciones — eran todas las
+        # posiciones en pesos, no el hallazgo. El número real es ~20 usuarios.
+        linea = linea.split("--", 1)[0]
+        if not linea.strip():
             continue
         if actual is not None:
             acc.append(linea)
