@@ -5661,6 +5661,21 @@ def get_benchmarks(uid: int = Depends(get_effective_user)):
 _indices_fetched = {}  # { index_name: last_fetch_ts }
 INDICES_TTL = 4 * 3600  # 4 hours
 
+# ⚠️ EL AVISO DE FUENTE CAÍDA SE LIMITA, PERO EL REINTENTO NO.
+#
+# Son dos preguntas distintas y mezclarlas rompe cosas. El reintento queda como
+# estaba (el timestamp de éxito NO se toca cuando falla, así que un blip se
+# recupera en la request siguiente); lo único que se limita es cuántas veces se
+# escribe la línea. Un warning por cada carga de la página se vuelve invisible,
+# que es más o menos cómo esta caída sobrevivió meses.
+#
+# El primer intento de esto ANTEDATABA `_indices_fetched` para no reintentar, y
+# con eso el `stale` de la respuesta pasaba a decir "fresco" sobre una serie que
+# nunca se bajó: ese timestamp significa "última vez que TRAJE datos" y meterle
+# un fallo adentro lo convierte en mentira. Este dict sólo cuenta líneas de log.
+_indices_aviso = {}          # { index_name: último warning } — SÓLO para el log
+INDICES_AVISO_CADA = 15 * 60
+
 
 def _fetch_cer_series():
     """Trae la serie histórica diaria de CER desde argentinadatos.com.
@@ -5725,8 +5740,10 @@ def _ensure_index_cached(conn, index_name: str):
         # ningún lado: los bonos CER ajustaban con factor 1,00 —contra 7,72×
         # y 37,44× reales— y no había una sola línea de log que lo dijera.
         # No se toca el timestamp a propósito: se reintenta en la próxima.
-        log.warning("bond_indices: la fuente de %s no devolvió datos — "
-                    "el índice queda con lo que haya en cache", index_name)
+        if now - _indices_aviso.get(index_name, 0) >= INDICES_AVISO_CADA:
+            _indices_aviso[index_name] = now
+            log.warning("bond_indices: la fuente de %s no devolvió datos — "
+                        "el índice queda con lo que haya en cache", index_name)
         return
     iso_now = datetime.utcnow().isoformat() + "Z"
     with conn:

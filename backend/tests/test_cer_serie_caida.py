@@ -145,7 +145,9 @@ class TestLaCaidaDejaDeSerMuda(unittest.TestCase):
 
     def setUp(self):
         main._indices_fetched.clear()
+        main._indices_aviso.clear()
         self.addCleanup(main._indices_fetched.clear)
+        self.addCleanup(main._indices_aviso.clear)
 
     def test_una_fuente_vacia_loguea(self):
         conn = main.get_db()
@@ -155,6 +157,39 @@ class TestLaCaidaDejaDeSerMuda(unittest.TestCase):
                 main._ensure_index_cached(conn, "CER")
         self.assertTrue(any("CER" in m for m in cap.output),
                         "la fuente se cayó y no quedó ni una línea de log")
+
+    def test_pero_no_grita_en_cada_request(self):
+        """Un aviso que sale mil veces es ruido — así sobrevivió la caída.
+
+        Se limita el AVISO, no el reintento: la fuente se sigue consultando en
+        cada pasada (un blip se recupera enseguida), pero la línea sale una vez
+        por ventana.
+        """
+        conn = main.get_db()
+        self.addCleanup(conn.close)
+        llamadas = []
+
+        def _contando(url, **kw):
+            llamadas.append(url)
+            return _fuente(cer_ok=False)(url, **kw)
+
+        # `assertNoLogs` es 3.10+; acá se cuentan las llamadas, que además dice
+        # CUÁNTAS veces avisó y no sólo si avisó.
+        with patch.object(main.requests, "get", side_effect=_contando), \
+             patch.object(main.log, "warning") as avisos:
+            main._ensure_index_cached(conn, "CER")
+            self.assertEqual(avisos.call_count, 1)
+            n1 = len(llamadas)
+
+            # Segunda pasada: SÍ reintenta, NO vuelve a avisar.
+            main._ensure_index_cached(conn, "CER")
+            self.assertEqual(avisos.call_count, 1, "avisó dos veces seguidas")
+            self.assertGreater(len(llamadas), n1, "dejó de reintentar la fuente")
+
+            # Pasada la ventana del aviso, vuelve a avisar.
+            main._indices_aviso["CER"] = 0
+            main._ensure_index_cached(conn, "CER")
+            self.assertEqual(avisos.call_count, 2)
 
 
 class TestUnSoloFetchDeLaSerie(unittest.TestCase):
