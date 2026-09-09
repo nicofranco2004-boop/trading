@@ -442,6 +442,165 @@ FROM (
 
 
 -- ============================================================================
+-- CRIPTO — alcance de los hallazgos del 2026-09-09 (audit/08_cripto/PLAN.md)
+-- ============================================================================
+-- Las dos listas de abajo (símbolos de cripto y nombres de exchange) son COPIAS
+-- de `main.CRYPTO_SYMBOLS` y `main.CRYPTO_BROKER_NAMES`. No hay forma de leer
+-- una constante de Python desde SQL, así que la copia es inevitable — pero NO
+-- queda suelta: `tests/test_alcance_cripto.py` compara las dos listas de este
+-- archivo contra las del código y falla si alguien agrega un símbolo de un lado
+-- y no del otro. Es el mismo guard que ata CRYPTO_SYMBOLS entre backend y
+-- frontend (crypto.test.js).
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Q9 · A-2 — Retiros de cripto que quedaron registrados como pérdida total
+-- ────────────────────────────────────────────────────────────────────────────
+-- Sacar monedas a una billetera propia llega al importador como una VENTA a
+-- precio 0. `rebuild.py:456` la cierra a costo (resultado 0) sólo si el broker
+-- está en la lista de exchanges o si la fila trae la marca `transfer_out`. Si no,
+-- cae al else y computa `0 x cantidad - costo` = la pérdida completa del lote.
+-- Esta consulta busca el DAÑO YA OCURRIDO, no el riesgo: ventas de cripto a
+-- precio 0 con resultado negativo, en brokers que la lista no reconoce.
+--
+-- PREOCUPANTE SI: > 0 filas. Cada una es una pérdida que el usuario nunca tuvo,
+-- registrada en su historial y sumada a su resultado realizado.
+
+SELECT
+    COUNT(*)                                        AS retiros_como_perdida,
+    COUNT(DISTINCT o.user_id)                       AS usuarios_afectados,
+    ROUND(COALESCE(SUM(ABS(COALESCE(o.pnl_usd, 0))), 0), 2)
+                                                    AS perdida_fantasma_usd
+FROM operations o
+JOIN brokers b
+  ON b.user_id = o.user_id
+ AND b.name    = o.broker
+WHERE UPPER(TRIM(COALESCE(o.asset, ''))) IN (
+          '1INCH', 'AAVE', 'ADA', 'ALGO', 'ALT', 'APE', 'APT', 'ARB', 'ARKM', 'ATOM',
+          'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BONK', 'BTC', 'CFX',
+          'CHZ', 'COMP', 'CORE', 'CRV', 'CYBER', 'DEGEN', 'DOGE', 'DOT', 'DYDX', 'EGLD',
+          'ENJ', 'EOS', 'ETC', 'ETH', 'FIL', 'FLOKI', 'FLOW', 'FRAX', 'FTM', 'FXS',
+          'GALA', 'GMX', 'GRT', 'HBAR', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA',
+          'JTO', 'KAVA', 'LDO', 'LINK', 'LRC', 'LTC', 'MANA', 'MANTA', 'MATIC', 'MKR',
+          'NEAR', 'NEO', 'ONT', 'OP', 'ORDI', 'PENDLE', 'PEPE', 'POL', 'PYTH', 'QTUM',
+          'RDNT', 'REN', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL', 'SSV',
+          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TRX', 'UNI', 'VET',
+          'WAVES', 'WBTC', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC',
+          'ZIL', 'ZRX'
+      )
+  AND COALESCE(o.exit_price, 0) = 0
+  AND COALESCE(o.pnl_usd, 0) < 0
+  AND LOWER(TRIM(COALESCE(b.name, ''))) NOT IN (
+          'binance', 'bitget', 'buenbit', 'bybit', 'coinbase',
+          'crypto.com', 'fiwind', 'gemini', 'huobi', 'kraken',
+          'kucoin', 'okx', 'ripio', 'satoshitango'
+      )
+;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Q10 · B-1 — Cripto que vive en una cuenta EN PESOS
+-- ────────────────────────────────────────────────────────────────────────────
+-- Es el dominio exacto del costo que se divide dos veces por el dólar
+-- (`snapshots_job.py:288`: el `* cf` queda fuera del paréntesis y alcanza a la
+-- rama en pesos, que ya pasó a dólares). Medido en laboratorio: costo 700 en el
+-- motor de informes contra 725,68 en la foto diaria, con el signo del resultado
+-- invertido. Se dispara con o sin moneda anotada en la fila, así que el filtro
+-- va por la moneda del BROKER, que es la que decide la rama.
+--
+-- PREOCUPANTE SI: > 0 usuarios. Cada posición escribe todos los días una foto
+-- con el costo inflado por la brecha cripto/MEP (entre 2 y 4,5 % según el día).
+
+SELECT
+    COUNT(*)                                        AS posiciones_cripto_en_pesos,
+    COUNT(DISTINCT p.user_id)                       AS usuarios_afectados,
+    COUNT(DISTINCT p.broker)                        AS brokers_distintos,
+    ROUND(COALESCE(SUM(COALESCE(p.invested, 0) + COALESCE(p.commissions, 0)), 0), 2)
+                                                    AS costo_nominal_en_pesos
+FROM positions p
+JOIN brokers b
+  ON b.user_id = p.user_id
+ AND b.name    = p.broker
+WHERE COALESCE(p.is_cash, 0) = 0
+  AND UPPER(TRIM(COALESCE(b.currency, ''))) = 'ARS'
+  AND UPPER(TRIM(COALESCE(p.asset, ''))) IN (
+          '1INCH', 'AAVE', 'ADA', 'ALGO', 'ALT', 'APE', 'APT', 'ARB', 'ARKM', 'ATOM',
+          'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BONK', 'BTC', 'CFX',
+          'CHZ', 'COMP', 'CORE', 'CRV', 'CYBER', 'DEGEN', 'DOGE', 'DOT', 'DYDX', 'EGLD',
+          'ENJ', 'EOS', 'ETC', 'ETH', 'FIL', 'FLOKI', 'FLOW', 'FRAX', 'FTM', 'FXS',
+          'GALA', 'GMX', 'GRT', 'HBAR', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA',
+          'JTO', 'KAVA', 'LDO', 'LINK', 'LRC', 'LTC', 'MANA', 'MANTA', 'MATIC', 'MKR',
+          'NEAR', 'NEO', 'ONT', 'OP', 'ORDI', 'PENDLE', 'PEPE', 'POL', 'PYTH', 'QTUM',
+          'RDNT', 'REN', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL', 'SSV',
+          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TRX', 'UNI', 'VET',
+          'WAVES', 'WBTC', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC',
+          'ZIL', 'ZRX'
+      )
+;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Q11 · B-3 — Brokers que son exchange Y tienen la cuenta en pesos
+-- ────────────────────────────────────────────────────────────────────────────
+-- Las dos condiciones que hoy contestan la misma pregunta y no coinciden: la
+-- Cartera muestra 700,60 y la foto diaria 675,80 para la misma posición, porque
+-- una mira el precio en pesos (que ya trae el recargo) y la otra corta antes por
+-- ser exchange. Si acá da 0, sacar el flag del cálculo del recargo no le cambia
+-- el número a nadie y cierra la contradicción para siempre.
+--
+-- PREOCUPANTE SI: > 0. No por el tamaño del daño (3,67 %) sino porque mientras
+-- exista un solo caso la decisión de producto no se puede tomar a ciegas.
+
+SELECT
+    COUNT(*)                                        AS brokers_contradictorios,
+    COUNT(DISTINCT user_id)                         AS usuarios_afectados
+FROM brokers
+WHERE UPPER(TRIM(COALESCE(currency, ''))) = 'ARS'
+  AND LOWER(TRIM(COALESCE(name, ''))) IN (
+          'binance', 'bitget', 'buenbit', 'bybit', 'coinbase',
+          'crypto.com', 'fiwind', 'gemini', 'huobi', 'kraken',
+          'kucoin', 'okx', 'ripio', 'satoshitango'
+      )
+;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Q12 · C-1 — Tenencias con un símbolo que es cripto Y acción a la vez
+-- ────────────────────────────────────────────────────────────────────────────
+-- El precio se rutea por el símbolo contra CRYPTO_SYMBOLS, sin mirar el broker.
+-- Doce de esos símbolos son además tickers vivos en Estados Unidos: STX es
+-- Stacks y también Seagate (S&P 500); AXS es Axie y también Axis Capital; SOL es
+-- Solana y también Emeren. Ya se sacaron dos de la lista por esta misma razón
+-- (CVX y DASH), con el comentario que lo explica en main.py.
+-- Esta consulta acota a esos doce y excluye los exchanges, donde el símbolo SÍ
+-- es la cripto. Lo que quede hay que mirarlo caso por caso: puede ser cripto
+-- legítima en un broker argentino, o una acción preciada como moneda.
+--
+-- PREOCUPANTE SI: > 0 tenencias. No es prueba de daño, es la lista corta de
+-- casos a revisar a mano antes de tocar la lista de símbolos.
+
+SELECT
+    COUNT(*)                                        AS tenencias_simbolo_ambiguo,
+    COUNT(DISTINCT p.user_id)                       AS usuarios_afectados,
+    COUNT(DISTINCT UPPER(TRIM(p.asset)))            AS simbolos_distintos_en_uso
+FROM positions p
+JOIN brokers b
+  ON b.user_id = p.user_id
+ AND b.name    = p.broker
+WHERE COALESCE(p.is_cash, 0) = 0
+  AND UPPER(TRIM(COALESCE(p.asset, ''))) IN (
+          'STX', 'AXS', 'SOL', 'NEO', 'ATOM', 'COMP',
+          'VET', 'LINK', 'SAND', 'ALT', 'APT', 'QTUM'
+      )
+  AND LOWER(TRIM(COALESCE(b.name, ''))) NOT IN (
+          'binance', 'bitget', 'buenbit', 'bybit', 'coinbase',
+          'crypto.com', 'fiwind', 'gemini', 'huobi', 'kraken',
+          'kucoin', 'okx', 'ripio', 'satoshitango'
+      )
+;
+
+
+-- ============================================================================
 -- CHEQUEO DE SEGURIDAD DEL ARCHIVO
 -- ============================================================================
 -- Antes de correrlo, verificá que no haya escrituras:

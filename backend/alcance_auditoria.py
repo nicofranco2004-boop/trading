@@ -154,6 +154,32 @@ LECTURA = [
      lambda v: _OK,
      "No es un problema: es el tamaño del grupo donde más se notan los errores de "
      "rendimiento acumulado. Sirve para saber a quiénes conviene mirar primero."),
+
+    # ── Cripto (hallazgos del 2026-09-09, ver audit/08_cripto/PLAN.md) ──────
+    ("Q9", "retiros_como_perdida",
+     "¿Cuántos retiros de cripto quedaron registrados como una pérdida total?",
+     _mayor_a(0, _URGENTE),
+     "Sacar monedas a una billetera propia no es vender: no se gana ni se pierde nada. "
+     "Cuando el sistema no reconoce de dónde salieron, anota que se perdió todo el lote. "
+     "Queda en el historial del usuario y suma a su resultado."),
+    ("Q10", "usuarios_afectados",
+     "¿A cuántos usuarios se les guarda todos los días un costo de cripto inflado?",
+     _mayor_a(0, _URGENTE),
+     "La cripto comprada con pesos pasa a dólares dos veces en la foto diaria. El costo "
+     "sale entre 2 y 4,5 % más alto que el real, y eso alcanza para que una ganancia "
+     "chica se vea como pérdida."),
+    ("Q11", "brokers_contradictorios",
+     "¿Cuántas cuentas de exchange están marcadas en pesos?",
+     _mayor_a(0),
+     "Son los únicos casos donde la pantalla y la foto diaria muestran valores distintos "
+     "para la misma cripto. Si acá dice 0, se puede simplificar la regla sin cambiarle el "
+     "número a nadie."),
+    ("Q12", "tenencias_simbolo_ambiguo",
+     "¿Cuántas tenencias usan un código que es cripto y acción a la vez?",
+     _mayor_a(0),
+     "Doce códigos significan dos cosas distintas: STX es una moneda y también Seagate. "
+     "El precio se elige por el código, sin mirar dónde está la tenencia. No es prueba de "
+     "daño: es la lista corta de casos a revisar a mano."),
 ]
 
 

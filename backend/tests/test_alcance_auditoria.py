@@ -1,6 +1,6 @@
 """El botón que mide el alcance real de la auditoría en producción.
 
-Corre 13 consultas contra la base de PRODUCCIÓN. Los tests que importan no son
+Corre las consultas contra la base de PRODUCCIÓN. Los tests que importan no son
 los de "devuelve algo": son los de que **no puede escribir** y **no puede filtrar
 datos de nadie**.
 
@@ -28,9 +28,11 @@ class TestNoPuedeEscribir(unittest.TestCase):
     """Corre contra producción: el guard es lo único que separa una medición de
     un accidente."""
 
-    def test_las_13_consultas_son_select(self):
+    def test_todas_las_consultas_son_select(self):
         secs = alc.secciones()
-        self.assertEqual(len(secs), 14, "cambió la cantidad de consultas")
+        # El número exacto no importa por sí mismo; el candado es que agregar una
+        # consulta obligue a mirar este archivo. 14 originales + 4 de cripto.
+        self.assertEqual(len(secs), 18, "cambió la cantidad de consultas")
         alc._verificar_solo_lectura(secs)   # no tira
 
     def test_un_update_infiltrado_aborta_TODO(self):
@@ -209,3 +211,68 @@ class TestElEndpoint(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLasListasDeCriptoNoDriftean(unittest.TestCase):
+    """Q9-Q12 llevan COPIADAS en SQL dos constantes de Python: los símbolos de
+    cripto y los nombres de exchange. No hay forma de leer un `set` de Python
+    desde SQL, así que la copia es inevitable — pero una copia sin guard es
+    exactamente el defecto que esta auditoría persigue (el `.sql` y su copia
+    embebida ya habían divergido una vez, en un comentario, sin que nadie lo
+    notara). Estos tests son el guard: si alguien agrega un símbolo o un exchange
+    en `main.py` y no acá, esto se pone en rojo.
+
+    Ojo con el sentido de la falla: una consulta que quedó CORTA no explota, mide
+    de menos y publica un número tranquilizador. Es el peor modo de fallar para
+    algo cuyo trabajo es decir cuánta gente está afectada.
+    """
+
+    @staticmethod
+    def _listas_del_sql(sid):
+        """Todos los grupos `IN (...)`/`NOT IN (...)` de la consulta, separados
+        por forma: los de MINÚSCULA son nombres de broker, los de MAYÚSCULA son
+        símbolos. Se clasifican por contenido y no por posición a propósito: un
+        extractor que cuente paréntesis se rompe con el primer `COALESCE` nuevo,
+        y romperse acá significa dejar de vigilar el drift sin avisar.
+        """
+        sql = next(q for s_, _t, q in alc.secciones() if s_ == sid)
+        grupos = re.findall(r"\bIN\s*\(([^()]*)\)", sql, re.I)
+        minus, mayus = set(), set()
+        for g in grupos:
+            items = {x.strip().strip("'") for x in g.split(",") if x.strip()}
+            if not items or not all(x.startswith("'") is False for x in items):
+                continue
+            (mayus if all(x == x.upper() for x in items) else minus).update(items)
+        return {"brokers": minus, "simbolos": mayus}
+
+    def test_los_simbolos_de_cripto_del_sql_son_los_del_codigo(self):
+        self.assertEqual(self._listas_del_sql("Q10")["simbolos"],
+                         {s.upper() for s in main.CRYPTO_SYMBOLS},
+                         "Q10 y main.CRYPTO_SYMBOLS divergieron")
+
+    def test_los_exchanges_del_sql_son_los_del_codigo(self):
+        self.assertEqual(self._listas_del_sql("Q11")["brokers"],
+                         {b.lower() for b in main.CRYPTO_BROKER_NAMES},
+                         "Q11 y main.CRYPTO_BROKER_NAMES divergieron")
+
+    def test_las_tres_consultas_que_filtran_exchanges_usan_LA_MISMA_lista(self):
+        """Q9, Q11 y Q12 filtran por exchange cada una por su lado. Si una queda
+        corta, mide de más o de menos sin avisar."""
+        esperado = {b.lower() for b in main.CRYPTO_BROKER_NAMES}
+        for sid in ("Q9", "Q11", "Q12"):
+            self.assertEqual(self._listas_del_sql(sid)["brokers"], esperado, sid)
+
+    def test_los_simbolos_ambiguos_de_Q12_son_cripto_de_verdad(self):
+        """Q12 acota a los códigos que son cripto Y acción a la vez. Si uno deja
+        de estar en CRYPTO_SYMBOLS, la consulta mide algo que ya no existe."""
+        ambiguos = self._listas_del_sql("Q12")["simbolos"]
+        self.assertTrue(ambiguos, "Q12 se quedó sin lista de símbolos")
+        de_mas = ambiguos - {s.upper() for s in main.CRYPTO_SYMBOLS}
+        self.assertEqual(de_mas, set(),
+                         f"Q12 mide códigos que ya no son cripto: {de_mas}")
+
+    def test_Q9_filtra_por_simbolo_de_cripto_y_no_por_cualquier_venta(self):
+        """Sin la lista de símbolos, Q9 contaría TODA venta a precio 0 con
+        resultado negativo — incluido un cierre corporativo legítimo."""
+        self.assertEqual(self._listas_del_sql("Q9")["simbolos"],
+                         {s.upper() for s in main.CRYPTO_SYMBOLS})

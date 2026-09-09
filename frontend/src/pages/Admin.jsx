@@ -1839,7 +1839,7 @@ function AlcanceAuditoriaPanel({ toast }) {
         </button>
       </div>
       <p className="text-xs text-ink-3 leading-relaxed">
-        13 consultas de <b>solo lectura</b> contra la base de producción. No escriben nada y
+        Consultas de <b>solo lectura</b> contra la base de producción. No escriben nada y
         devuelven <b>sólo totales</b> — ningún email, ningún nombre, ninguna fila de nadie.
         Contestan cuántos usuarios reales tocó cada problema que arregló la auditoría.
         Podés apretarlo de nuevo dentro de un mes para ver si los números bajaron.
