@@ -120,7 +120,35 @@ pendiente de medir.
 
 ---
 
-## 4. F2 — ✅ HECHA, sin deployar
+## 4. F2 — ✅ HECHA, DEPLOYADA Y CERRADA (2026-09-09)
+
+**Estado final:** deployada en `529ee423` junto con el CER de F5. La rama
+`fix/f2-que-no-mientan` está a cero commits de diferencia con `origin/main` en
+las dos direcciones: no queda nada sin mergear.
+
+**Y lo que quedaba abierto ya se cerró**, en este orden:
+
+1. **Q7 se midió.** Era lo único de F2 que dependía de producción y no se podía
+   contestar desde el repo. El botón de alcance del panel de admin lo contestó:
+   **1 usuario, 2 filas, $121.095** en pesos que las pantallas publicaban como
+   US$121.095.
+2. **Y se reparó** (`0f1978ba`, otra sesión): sella el MEP del día del cobro y
+   **después** corre el recálculo que reescribe `monthly_entries`, porque sin ese
+   segundo paso el sello queda y el Dashboard sigue mostrando el número viejo.
+   Idempotente, en dos pasos en el panel, y sin MEP para la fecha la fila se
+   lista y no se toca.
+3. **Verificado**: la medición del 2026-09-09 devuelve `monto pesos leido como
+   usd: 0` sobre las mismas 2 filas. El hallazgo está cerrado hacia atrás y hacia
+   adelante.
+
+Lo que sigue abierto **no es F2**: `Interés PF` en los win rates es F7, el
+Wrapped sobre la cadena contable es F6, y DIV-087 (convertir en el endpoint y no
+en cada lector) es un hallazgo aparte que hay que hacer para Cupón, Amortización
+e Interés PF juntos porque cambia números en pantalla.
+
+---
+
+### Cómo se hizo (queda por el método)
 
 Rama `fix/f2-que-no-mientan`, 7 commits sobre `origin/main` (`04a5736e`). Cada uno con un test
 que **falla contra el código viejo** — verificado revirtiendo sólo el archivo de código y
