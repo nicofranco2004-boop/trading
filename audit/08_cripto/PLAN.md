@@ -209,18 +209,62 @@ Sin esos números, A-2, B-3 y C-1 se deciden a ciegas.
 
 ---
 
-# Orden recomendado
+# Resultados de la medición · 2026-09-09, producción
 
-1. Las cuatro mediciones.
-2. Paso 0, las pruebas en rojo.
-3. **A-1**, que es plata mal registrada a un toque de distancia y contradice a
-   la computadora.
-4. **A-2** si la medición dice que existe.
-5. **B-1 y B-2**, que son el mismo defecto de fondo: el recargo aplicado sobre
-   un número que ya lo tenía.
-6. **B-3** cuando esté decidido cuál de las dos condiciones manda.
-7. **C-1 a C-3**, deuda estructural, con chequeo automático en lugar de listas
-   curadas a mano.
+| pregunta | número | veredicto |
+|---|---|---|
+| Retiros de cripto registrados como pérdida total (A-2) | **0** | sin caso |
+| Usuarios con costo de cripto inflado (B-1) | **6** | 16 posiciones, 5 brokers |
+| Cuentas de exchange marcadas en pesos (B-3) | **4** | 4 usuarios |
+| Tenencias con código cripto-y-acción (C-1) | **6** | 2 usuarios, 2 códigos |
+
+**A-2 era teórico.** Cero retiros quedaron como pérdida. Baja de "lo más urgente
+de todo el plan" a guard preventivo: el mecanismo sigue estando, sólo que nadie
+lo pisó todavía. Vale cerrarlo cuando se toque la lista de exchanges (C-2), no
+antes y no solo.
+
+**B-1 es real pero chico en plata.** Con el costo nominal declarado de
+11.153.037,8 y la brecha de hoy, el costo fantasma ronda los 296 dólares
+repartidos en 6 personas, unos 49 cada una. Lo que lo mantiene arriba no es el
+monto: es que **da vuelta el signo** de una ganancia chica, y que se escribe en
+la foto diaria todos los días.
+
+⚠️ **Ese monto es una cota floja, y el defecto es de mi consulta**: Q10 suma
+`invested + commissions` de todas las posiciones del broker en pesos, y esas
+filas pueden estar en pesos o en dólares. El SUM mezcla monedas. Los números que
+sí son firmes son los tres conteos: 6 usuarios, 16 posiciones, 5 brokers.
+
+**B-3 NO es gratis.** Esperaba cero. Son 4 cuentas de 4 usuarios distintos. O
+sea que sacar el flag de exchange del cálculo les cambia el valor de la cripto
+hacia arriba un 3,67 %. Deja de ser una simplificación silenciosa y pasa a ser
+una decisión con consecuencia visible.
+
+**C-1 es revisable a mano.** Sólo 2 códigos distintos en 2 usuarios. Falta saber
+CUÁLES: Q12 devuelve el conteo pero no los códigos, porque se escribió para no
+publicar nada identificable. Un código de activo no identifica a nadie, así que
+se puede agregar una consulta que los liste.
+
+**Lo que quedó sin medir es A-1**, la venta desde el celular que se prefillea al
+precio de compra. Se puede: la firma es una venta de cripto cuyo precio de salida
+coincide exactamente con el de compra, en un broker en pesos. No es prueba
+concluyente —alguien pudo vender justo a ese precio— pero acota el universo.
+
+---
+
+# Orden recomendado · revisado con los números
+
+1. **A-1**, la venta desde el celular. Sigue primera: registra plata mal a un
+   toque de distancia y contradice a la computadora. Medirla en el mismo
+   movimiento (ventas de cripto con precio de salida igual al de compra).
+2. **B-1**, el costo duplicado. 6 usuarios con el signo del resultado dado
+   vuelta todos los días.
+3. **B-2**, el doble recargo en la variación del día. Es el que quedó a medias
+   del cambio de hoy y es una línea.
+4. **B-3**, cuando esté decidido cuál condición manda. Ya no es gratis: toca a 4
+   usuarios.
+5. **C-1**, primero listar los 2 códigos y mirarlos a mano.
+6. **C-2 y C-3**, la deuda de las listas, con chequeo automático. Ahí adentro se
+   cierra A-2 de paso.
 
 Sobre B-1: el arreglo mínimo es mover un paréntesis, y **no es el correcto**.
 Hay cuatro motores que valúan cripto y ninguno es el bueno al que volver. Los
