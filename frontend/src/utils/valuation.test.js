@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker, valuePositionLot, cashAssetLabel } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker, valuePositionLot, cashAssetLabel, sellPriceSuggestion, buildPriceSymbols } from './valuation.js'
 import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
@@ -1224,5 +1224,119 @@ describe('cashAssetLabel — el dolar del sub-broker AR no es Tether', () => {
   })
   it('un activo normal pasa sin cambios (manda el logo real)', () => {
     expect(cashAssetLabel({ is_cash: 0, asset: 'AAPL', broker: 'Schwab' })).toBe('AAPL')
+  })
+})
+
+
+// ─── sellPriceSuggestion — el precio que prefillea el modal de VENTA ─────────
+// El bug: mobile leía el precio con key propia (prices[p.asset]). Para una
+// cripto en un broker EN PESOS se pide 'BTC.BA' y ahí se leía 'BTC' → nunca
+// llegaba, el modal caía al PRECIO DE COMPRA y una venta confirmada sin editar
+// registraba P&L exactamente 0. Desktop la sugería bien: dos aparatos, dos
+// números para la misma venta.
+describe('sellPriceSuggestion — prefill del modal de venta', () => {
+  const MEP = 1529.4, CRIPTO = 1591.56, SPOT = 78110.70
+  const btc = (broker, extra) => pos({ broker, asset: 'BTC', quantity: 0.5, buy_price: 60000, ...extra })
+  // Comprado con PESOS: el buy_price está en pesos, como el precio que se sugiere.
+  const btcArs = (extra) => pos({ broker: 'Cocos', asset: 'BTC', currency: 'ARS',
+    quantity: 0.5, buy_price: 60000 * MEP, ...extra })
+  const opts = (enPesos, isExchange = false) =>
+    ({ enPesos, cedearRate: MEP, tcCripto: CRIPTO, isExchange })
+
+  it('cripto en una cuenta EN PESOS: devuelve el precio EN PESOS', () => {
+    // El backend sirve '<c>.BA' = spot × dólar-cripto, ya en pesos y con el
+    // premium adentro. El exit_price de un broker en pesos va en pesos.
+    const r = sellPriceSuggestion(btcArs(), { 'BTC.BA': SPOT * CRIPTO }, opts(true))
+    expect(r).toBeCloseTo(SPOT * CRIPTO, 2)
+  })
+
+  it('y NO devuelve el número en dólares, que es lo que destapaba arreglar sólo la key', () => {
+    // Con la key arreglada pero sin la conversión, esto habría dado ~78.110 para
+    // un bitcoin que en pesos vale ~124.000.000. El key mismatch lo venía tapando.
+    const r = sellPriceSuggestion(btcArs(), { 'BTC.BA': SPOT * CRIPTO }, opts(true))
+    expect(r).toBeGreaterThan(SPOT * 1000)
+  })
+
+  it('el bug viejo: con la key cruda el precio no llegaba nunca', () => {
+    // Reproduce el estado anterior: el objeto `prices` de un broker en pesos
+    // trae 'BTC.BA' y NO 'BTC'. Leer 'BTC' daba undefined → caía al buy_price.
+    const precios = { 'BTC.BA': SPOT * CRIPTO }
+    expect(precios['BTC']).toBeUndefined()
+    expect(sellPriceSuggestion(btcArs(), precios, opts(true))).not.toBeUndefined()
+  })
+
+  it('cripto en una cuenta EN DÓLARES: spot, sin recargo', () => {
+    expect(sellPriceSuggestion(btc('Cocos'), { BTC: SPOT }, opts(false)))
+      .toBeCloseTo(SPOT, 2)
+  })
+
+  it('cripto en un EXCHANGE: spot', () => {
+    expect(sellPriceSuggestion(btc('Binance'), { BTC: SPOT }, opts(false, true)))
+      .toBeCloseTo(SPOT, 2)
+  })
+
+  it('CEDEAR en una cuenta en dólares: su precio local ÷ MEP', () => {
+    const p = pos({ broker: 'Balanz · USD', asset: 'AAPL', asset_type: 'CEDEAR', buy_price: 10 })
+    expect(sellPriceSuggestion(p, { 'AAPL.BA': 15294 }, opts(false))).toBeCloseTo(10, 2)
+  })
+
+  it('CEDEAR en una cuenta en pesos: su precio local tal cual', () => {
+    const p = pos({ broker: 'Balanz', asset: 'AAPL', asset_type: 'CEDEAR', buy_price: 10000 })
+    expect(sellPriceSuggestion(p, { 'AAPL.BA': 15294 }, opts(true))).toBeCloseTo(15294, 2)
+  })
+
+  it('acción US en una cuenta en dólares: su precio, sin tocar', () => {
+    expect(sellPriceSuggestion(pos({ broker: 'Schwab', asset: 'AAPL' }), { AAPL: 230 }, opts(false)))
+      .toBeCloseTo(230, 2)
+  })
+
+  it('sin precio devuelve undefined — el caller decide caer al costo', () => {
+    expect(sellPriceSuggestion(btc('Cocos'), {}, opts(false))).toBeUndefined()
+  })
+
+  it('el efectivo no se vende: undefined', () => {
+    expect(sellPriceSuggestion(pos({ is_cash: true, asset: 'ARS' }), { ARS: 1 }, opts(true)))
+      .toBeUndefined()
+  })
+
+  it('un precio absurdo NO se sugiere: undefined, y el caller cae al costo', () => {
+    // Un ×100 (bono per-100 leído per-1, colisión de ticker) queda fuera de banda.
+    // Antes este guard vivía duplicado y distinto en cada pantalla.
+    const p = pos({ broker: 'Cocos', asset: 'XX', buy_price: 100, currency: 'ARS' })
+    expect(sellPriceSuggestion(p, { 'XX.BA': 10000 }, opts(true))).toBeUndefined()
+  })
+
+  it('sin precio de compra no hay con qué comparar, y se sugiere igual', () => {
+    const p = pos({ broker: 'Cocos', asset: 'XX', buy_price: null, currency: 'ARS' })
+    expect(sellPriceSuggestion(p, { 'XX.BA': 10000 }, opts(true))).toBeCloseTo(10000, 2)
+  })
+
+  // ── EL INVARIANTE ──────────────────────────────────────────────────────────
+  // Esto es lo que se rompió y lo que hay que impedir que vuelva a romperse: la
+  // key con la que se PIDEN los precios y la key con la que el prefill los LEE
+  // tienen que ser la misma. Si alguien vuelve a leer con una key propia, acá
+  // aparece un undefined.
+  it('lee con LA MISMA key con la que buildPriceSymbols los pide', () => {
+    const brokers = [
+      { name: 'Cocos', currency: 'ARS' },
+      { name: 'Binance', currency: 'USDT' },
+      { name: 'Balanz · USD', currency: 'USD' },
+      { name: 'Schwab', currency: 'USD' },
+    ]
+    const posiciones = [
+      pos({ broker: 'Cocos', asset: 'BTC', currency: 'ARS' }),
+      pos({ broker: 'Cocos', asset: 'AAPL', asset_type: 'CEDEAR' }),
+      pos({ broker: 'Cocos', asset: 'GGAL' }),
+      pos({ broker: 'Binance', asset: 'ETH' }),
+      pos({ broker: 'Balanz · USD', asset: 'AAPL', asset_type: 'CEDEAR' }),
+      pos({ broker: 'Schwab', asset: 'AAPL' }),
+    ]
+    // `prices` con EXACTAMENTE las keys que el fetch pide, ni una más.
+    const precios = Object.fromEntries(buildPriceSymbols(posiciones, brokers).map(k => [k, 100]))
+    const arsSet = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
+    for (const p of posiciones) {
+      const r = sellPriceSuggestion(p, precios, opts(arsSet.has(p.broker)))
+      expect(r, `${p.asset} en ${p.broker} no encontró su precio`).not.toBeUndefined()
+    }
   })
 })

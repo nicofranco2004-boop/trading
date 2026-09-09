@@ -20,7 +20,7 @@ Cada punto dice cómo lo comprobé:
 Va primero porque deja rastro permanente en el historial del usuario: se
 escribe una operación, no se muestra un número feo.
 
-## A-1 · Vender cripto desde el celular en una cuenta en pesos registra resultado cero
+## A-1 · Vender cripto desde el celular en una cuenta en pesos registra resultado cero — ✅ ARREGLADO
 
 **MEDIDO.** Para una cripto en un broker en pesos, el precio se pide con la
 clave `BTC.BA`; para un exchange se pide `BTC`. Lo corrí:
@@ -41,8 +41,26 @@ usa otro camino. La misma venta se sugiere distinta según el aparato.
 El comentario que documenta esa rama dice lo contrario de lo que pasa: afirma
 que la clave que ya no se pide es `BTC.BA`, cuando es justo la que sí se pide.
 
-**Arreglo**: que el prefill lea la misma clave que la valuación, no una fija.
-Hay una función que ya decide esa clave y es la que hay que usar.
+**✅ Arreglado.** El prefill dejó de tener lógica propia: las dos pantallas usan
+`sellPriceSuggestion` y `sellCurrency`, en `valuation.js`, al lado de la
+valuación.
+
+⚠️ **Arreglar sólo la clave no alcanzaba: destapaba un segundo error.** El
+precio de venta va en la moneda del broker, y la rama de cripto devolvía
+spot × recargo, que está en DÓLARES. Con la clave corregida, un broker en pesos
+habría prefilleado ~78.000 para un bitcoin que en pesos vale ~119.000.000. El
+mismatch de claves venía tapando eso. Por eso la conversión de moneda quedó
+adentro del helper y no en la pantalla.
+
+De paso se unificaron tres cosas que estaban duplicadas y distintas entre
+aparatos: la moneda en que se registra la venta (mobile miraba el broker,
+desktop el lote), el respeto al precio manual (sólo desktop) y el guard
+anti-distorsión (uno en cada pantalla, con comparaciones distintas).
+
+**Verificado por mutación**, tres veces: volver a la clave cruda pone 7 pruebas
+en rojo, sacar la conversión de moneda 1, y sacar el guard 1. Hay una prueba del
+invariante que se rompió: la clave con la que se PIDEN los precios y la que el
+prefill LEE tienen que ser la misma.
 
 ## A-2 · Un retiro de cripto puede quedar registrado como pérdida total
 

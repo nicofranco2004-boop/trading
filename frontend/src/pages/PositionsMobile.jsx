@@ -38,7 +38,7 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
 import { isBondPosition } from '../utils/tickers'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -290,37 +290,32 @@ export default function PositionsMobile() {
       return
     }
     const broker = brokers.find(b => b.name === p.broker)
-    const isARS = broker?.currency === 'ARS'
-    // CEDEAR / sub-broker "· USD" / lote costInPesos: el instrumento es de BYMA y
-    // se cotiza por su .BA (ARS). El exit_price va en la moneda del broker, así que
-    // para un broker USD se presetea el .BA ÷ dólar-MEP (USD), consistente con cómo
-    // se valúa. Para ARS se usa el .BA tal cual (ya está en pesos). La CRIPTO se
-    // excluye del ruteo .BA: se sugiere el spot (× premium dólar-cripto si es un
-    // broker AR no-exchange, igual que la valuación de la fila) — antes leía
-    // prices['BTC.BA'] (key que ya no se fetchea) → prefillaba el COSTO stale y
-    // una venta confirmada sin editar registraba P&L incorrecto.
-    const local = !isCrypto(p.asset) && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker) || costInPesos(p))
-    let price
-    if (local && !isARS) {
-      const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
-      price = priceArs != null ? priceArs / tcCedear : undefined
-    } else if (isCrypto(p.asset)) {
-      const spot = prices[p.asset]
-      const f = cryptoBrokerFactor(p.asset, exchangeBrokerSet.has(p.broker), false, tcCripto, tcCedear, isARS ? 'ARS' : 'USD')
-      price = spot != null ? spot * f : undefined
-    } else {
-      price = prices[priceSymbol(p.asset, isARS, p.asset_type)]
-    }
-    // Guard anti-distorsión: si el precio de mercado es absurdo (bono per-100
-    // leído per-1 → ×100) no lo sugerimos como precio de venta — caemos al costo
-    // (buy_price). price y buy_price están en la MISMA moneda (per-unidad) → el
-    // ratio que compara trustMktValue es válido.
-    const priceOk = price != null && trustMktValue(price, p.buy_price, p.asset_type, false)
-    const suggested = (priceOk ? price : p.buy_price) ?? p.buy_price ?? ''
+    // La moneda de la venta la decide el LOTE antes que el broker — `sellCurrency`,
+    // la misma que usa desktop. Antes acá se miraba sólo `broker.currency`, así que
+    // un lote en pesos alojado en una cuenta en dólares se registraba en una moneda
+    // distinta según el aparato desde el que se vendiera.
+    const sellCcy = sellCurrency(p, broker)
+    const isARS = sellCcy === 'ARS'
+    // El precio sugerido lo calcula `sellPriceSuggestion`, que vive al lado de la
+    // valuación: usa LA MISMA key que `buildPriceSymbols` pide y que la valuación
+    // lee, y devuelve el número en la moneda del broker. Antes esta pantalla leía
+    // `prices[p.asset]` con key propia y para una cripto en un broker EN PESOS eso
+    // no llegaba nunca → el modal caía al PRECIO DE COMPRA y una venta confirmada
+    // sin editar registraba P&L 0. El docstring de la función explica por qué la
+    // conversión de moneda tiene que ir adentro y no acá.
+    const price = sellPriceSuggestion(p, prices, {
+      enPesos: isARS,
+      cedearRate: tcCedear,
+      tcCripto,
+      isExchange: exchangeBrokerSet.has(p.broker),
+    })
+    // El guard anti-distorsión vive adentro del helper: si el precio de mercado es
+    // absurdo devuelve undefined y acá caemos al costo.
+    const suggested = price ?? p.buy_price ?? ''
     setSellForm({
       broker: p.broker,
       asset: p.asset,
-      currency: broker?.currency || 'USDT',
+      currency: sellCcy,
       quantity: '',
       exit_price: suggested ? +(+suggested).toFixed(4) : '',
       tc_venta: isARS ? +(pickFinancialRate(dolar, valuationDollar) || 1415).toFixed(2) : '',

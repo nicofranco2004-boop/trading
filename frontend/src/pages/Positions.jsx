@@ -29,7 +29,7 @@ import ReturnFxHint from '../components/ReturnFxHint'
 import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api, errorMessage } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { computeBrokerValue, sellPriceSuggestion, sellCurrency, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -837,14 +837,25 @@ function PositionsDesktop() {
     const broker = brokers.find(b => b.name === p.broker)
     // Moneda de la venta = la del LOTE (el mismo ticker se puede tener en ARS y
     // USD). Define qué lotes consume el FIFO y la sugerencia de precio/tc.
-    const posCcy = (p.currency || '').toUpperCase()
-    const sellCcy = posCcy === 'ARS' ? 'ARS'
-      : (posCcy === 'USD' || posCcy === 'USDT') ? 'USD'
-      : isArUsdBroker(p.broker) ? 'USD'
-      : (broker?.currency === 'ARS' ? 'ARS' : 'USD')
+    const sellCcy = sellCurrency(p, broker)
     const isARS = sellCcy === 'ARS'
-    const c = isARS ? calcARS(p) : calcUSDT(p)
-    const suggested = isARS ? c.priceArs : c.price
+    // El precio sugerido sale del MISMO helper que usa mobile. Antes cada pantalla
+    // lo derivaba de su propio motor de filas (acá calcARS/calcUSDT, allá una key
+    // escrita a mano) y por eso la misma venta se prefilleaba distinto según el
+    // aparato.
+    //
+    // NO es delta 0 exacto, y la diferencia está sólo en el BORDE del guard
+    // anti-distorsión: calcARS/calcUSDT comparaban valor contra costo total
+    // (`invested + commissions`) y el helper compara precio contra `buy_price`,
+    // los dos por unidad. Con comisiones grandes el ratio no da idéntico, así que
+    // un caso justo en el límite (×50) puede caer de un lado distinto. En todo lo
+    // demás el número es el mismo: las ramas están reproducidas una por una.
+    const suggested = sellPriceSuggestion(p, prices, {
+      enPesos: isARS,
+      cedearRate: tcCedear,
+      tcCripto,
+      isExchange: exchangeBrokers.has(p.broker),
+    })
     setSellForm({
       broker: p.broker,
       asset: p.asset,

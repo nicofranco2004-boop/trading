@@ -487,6 +487,88 @@ export function valuationPriceKey(p, isArsBroker) {
 }
 
 /**
+ * sellCurrency — en qué moneda se registra la venta de este lote.
+ *
+ * Manda la moneda del LOTE, no la del broker: el mismo ticker se puede tener
+ * comprado en pesos y en dólares, y eso define qué lotes consume el FIFO y con
+ * qué tipo de cambio se sella la operación. Sólo si el lote no la declara se
+ * mira el broker (y el sub-broker AR "· USD", que es una cuenta en dólares
+ * aunque su padre sea argentino).
+ *
+ * Estaba escrita sólo en el desktop; mobile mandaba la moneda del BROKER, así
+ * que un lote en pesos alojado en una cuenta en dólares se registraba en una
+ * moneda distinta según el aparato desde el que se vendiera.
+ */
+export function sellCurrency(p, broker) {
+  const posCcy = (p?.currency || '').toUpperCase()
+  if (posCcy === 'ARS') return 'ARS'
+  if (posCcy === 'USD' || posCcy === 'USDT') return 'USD'
+  if (isArUsdBroker(p?.broker)) return 'USD'
+  return (broker?.currency === 'ARS') ? 'ARS' : 'USD'
+}
+
+/**
+ * sellPriceSuggestion — el precio que el modal de VENTA prefillea, en la moneda
+ * del BROKER (que es la moneda en la que se guarda `exit_price`).
+ *
+ * POR QUÉ EXISTE: el prefill de mobile leía el precio con una key propia
+ * (`prices[p.asset]`) en vez de la que decide `valuationPriceKey`. Para una
+ * cripto en un broker EN PESOS se pide 'BTC.BA' y ahí se leía 'BTC', que en esa
+ * pantalla no llega nunca → el precio quedaba vacío y el modal caía al PRECIO DE
+ * COMPRA. Una venta confirmada sin editar registraba P&L exactamente 0, y en
+ * desktop la misma venta se sugería bien: dos aparatos, dos números.
+ *
+ * ⚠️ Arreglar sólo la key NO alcanzaba: destapaba un segundo error. La rama de
+ * cripto devolvía spot × premium, que está en DÓLARES, y en un broker en pesos
+ * eso habría prefilleado ~78.000 para un bitcoin que en pesos vale ~119.000.000.
+ * El key mismatch venía tapando ese otro. Por eso la conversión de moneda vive
+ * acá y no en el caller.
+ *
+ * Regla única, derivada de la key: '.BA' cotiza en PESOS, el resto en dólares.
+ *   · broker en pesos → la key ya es la que cotiza en pesos → tal cual.
+ *   · broker en USD   → '.BA' (CEDEAR / acción AR / lote en pesos) ÷ MEP; lo
+ *                       demás ya está en dólares (la cripto lleva su factor,
+ *                       que en una cuenta en dólares vale 1).
+ *
+ * SÍ aplica el guard anti-distorsión: un bono per-100 leído per-1 (×100) o una
+ * colisión de ticker no se sugieren como precio de venta — devuelve undefined y
+ * el caller cae al costo. El guard vivía DUPLICADO y distinto en cada pantalla:
+ * mobile comparaba precio contra buy_price y desktop lo tenía adentro de
+ * calcARS/calcUSDT comparando valor contra costo total. Acá queda uno solo, el
+ * de mobile (precio contra precio, los dos por unidad). Para desktop eso NO es
+ * delta 0 exacto: con comisiones grandes el ratio no da idéntico y un caso justo
+ * en el límite (×50) puede caer del otro lado. En todo lo demás, mismo número.
+ *
+ * `enPesos` NO es "el broker es ARS": es "esta venta se registra en pesos", que
+ * lo decide la moneda del LOTE antes que la del broker (un lote en pesos dentro
+ * de una cuenta en dólares se vende en pesos). Sale de `sellCurrency`.
+ *
+ * @returns {number|undefined} precio por unidad en la moneda de la venta
+ */
+export function sellPriceSuggestion(p, prices, { enPesos, cedearRate, tcCripto, isExchange } = {}) {
+  const isArsBroker = enPesos
+  if (!p || p.is_cash) return undefined
+  // Precio manual primero, igual que calcARS/calcUSDT: ya está en la moneda del
+  // broker (así se carga), así que no se convierte. Mobile no lo respetaba —
+  // otra forma de la misma divergencia entre aparatos.
+  if (p.price_override != null) return p.price_override
+  const key = valuationPriceKey(p, !!isArsBroker)
+  const raw = key ? (prices || {})[key] : undefined
+  if (raw == null) return undefined
+  let precio
+  if (isArsBroker) {
+    precio = raw
+  } else if (typeof key === 'string' && key.endsWith('.BA')) {
+    precio = cedearRate > 0 ? raw / cedearRate : undefined
+  } else {
+    precio = raw * cryptoBrokerFactor(p.asset, !!isExchange, false, tcCripto, cedearRate, 'USD')
+  }
+  if (precio == null || !Number.isFinite(precio)) return undefined
+  // precio y buy_price están en la misma moneda por unidad → el ratio es válido.
+  return trustMktValue(precio, p.buy_price, p.asset_type, false) ? precio : undefined
+}
+
+/**
  * buildPriceSymbols — lista canónica de símbolos a pedir a /prices para valuar
  * `positions`. ÚNICA fuente para armar el fetch: cada pantalla que lo
  * re-implementaba tenía un agujero distinto (Dashboard pedía tickers crudos →
