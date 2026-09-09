@@ -35750,9 +35750,7 @@ def _advisor_book_chat_context(uid: int) -> dict:
             denom[cid] = max(snap_tv, agg_tot) or 1.0
 
         _ph_nd = ",".join("?" * len(ids))
-        _max_nd_chat = {r["user_id"]: float(r["m"] or 0) for r in conn.execute(
-            f"SELECT user_id, MAX(net_deposited) m FROM snapshots WHERE user_id IN ({_ph_nd}) GROUP BY user_id",
-            ids).fetchall()}
+        _max_nd_chat = _max_net_deposited(conn, ids)
         # Cash por cliente en USD (audit: el chip "¿quién tiene plata sin invertir?"
         # y el ejemplo del prompt pedían un dato que el contexto NO tenía → el
         # modelo lo inventaba). ARS al MEP del día; USD directo.
@@ -35775,24 +35773,12 @@ def _advisor_book_chat_context(uid: int) -> dict:
         for cid in ids:
             snap = latest.get(cid)
             aum = round(float(snap["total_value"])) if snap and snap["total_value"] is not None else None
-            nd = float(snap["net_deposited"] or 0) if snap else 0.0
-            # Denominador = MAX(net_deposited) histórico, MISMA definición que
-            # la distribución del libro (audit: acá quedaba el nd actual → el
-            # chat decía +20.000% donde el dashboard decía +20%).
-            base_nd = max(_max_nd_chat.get(cid, 0.0), nd)
-            # ⚠️ Y LA PUNTA EN BASE DE MERCADO, igual que el hermano que publica
-            # el Mejor/Peor (`advisor_book`, donde el comentario de este filtro
-            # nombra a esta función por su nombre). `_latest_snapshots` elige por
-            # MAX(date) sin preguntar en qué base está la fila: si la última es la
-            # foto del import (valuada al COSTO), el cociente no mide un retorno,
-            # mide la brecha entre dos formas de medir. El síntoma que el filtro
-            # vino a matar está documentado allá: un cliente aparecía con "+39,6%"
-            # mientras su propia pantalla decía "—".
-            # Va sólo en `ret_pct`: el `aum_usd` de arriba SÍ usa la fila sin
-            # filtrar a propósito — una reconstrucción es la mejor valuación que
-            # hay de ese cliente (ver `_es_base_de_mercado`).
-            ret = (round((float(snap["total_value"]) - nd) / base_nd * 100, 1)
-                   if snap and base_nd >= 100 and _es_base_de_mercado(snap) else None)
+            # El MISMO número que publica la tarjeta Mejor/Peor del libro, del
+            # mismo helper. El `aum_usd` de arriba, en cambio, sale de la fila sin
+            # filtrar a propósito: para valuar la cuenta una reconstrucción es la
+            # mejor valuación que hay; lo que no se puede es RESTARLA.
+            _r = _retorno_vs_aportado(snap, _max_nd_chat.get(cid, 0.0))
+            ret = round(_r, 1) if _r is not None else None
             agg = per_client.get(cid, {"tot": 0.0, "pos": []})
             top = sorted(agg["pos"], key=lambda r: -r["value_usd"])[:5]
             clients.append({
@@ -37065,6 +37051,56 @@ def _es_base_de_mercado(row) -> bool:
     return src not in ("import", "mtm_backfill")
 
 
+# ⚠️ UN SOLO RETORNO POR CLIENTE, PARA LAS DOS SUPERFICIES QUE LO PUBLICAN.
+#
+# El mismo número lo muestran la tarjeta Mejor/Peor del libro (`advisor_book`) y
+# el contexto del chat (`_advisor_book_chat_context`), que se lo pasa al modelo
+# con la orden de RANKEAR clientes. Vivía escrito dos veces —misma query de
+# `MAX(net_deposited)`, mismo cociente, misma base mínima— y las dos copias no
+# decían lo mismo: a una le faltaba `_es_base_de_mercado`, así que un cliente
+# aparecía con "+39,6%" en el prompt mientras su propia pantalla decía "—".
+#
+# Hacer que las dos copias coincidan no cierra nada: la próxima vez que alguien
+# toque una, vuelven a divergir. Por eso hay una sola.
+
+def _max_net_deposited(conn, ids: list) -> dict:
+    """{uid: MAX(net_deposited) histórico} — el denominador del retorno.
+
+    El máximo y no el actual: un cliente que retiró casi todo deja `nd` chico y
+    el % explota (+1000% falso secuestrando el Mejor/Peor). El máximo histórico
+    es el capital que de verdad se puso a trabajar.
+    """
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    return {r["user_id"]: float(r["m"] or 0) for r in conn.execute(
+        f"SELECT user_id, MAX(net_deposited) m FROM snapshots "
+        f"WHERE user_id IN ({ph}) GROUP BY user_id", ids).fetchall()}
+
+
+def _retorno_vs_aportado(row, max_nd: float):
+    """El retorno total del cliente contra lo aportado, o None si no se afirma.
+
+    Tres condiciones, y las tres tienen que estar en las dos superficies:
+
+      · hay snapshot;
+      · la punta está EN BASE DE MERCADO (`_es_base_de_mercado`) — si la última
+        fila es la foto del import, valuada al COSTO, el cociente no mide un
+        retorno: mide la brecha entre dos formas de medir;
+      · el denominador llega a USD 100 — un `nd` residual de centavos explota el
+        % y secuestra el Mejor/Peor con retornos astronómicos falsos.
+
+    Devuelve el porcentaje SIN redondear: cada superficie redondea como muestra.
+    """
+    if row is None or not _es_base_de_mercado(row):
+        return None
+    nd = float(row["net_deposited"] or 0)
+    base_nd = max(float(max_nd or 0), nd)
+    if base_nd < 100:
+        return None
+    return (float(row["total_value"] or 0) - nd) / base_nd * 100
+
+
 def _latest_snapshots(conn, ids: list) -> dict:
     """{uid: row(date,total_value,net_deposited,source)} del ÚLTIMO snapshot por cliente."""
     if not ids:
@@ -37332,35 +37368,18 @@ def advisor_book(uid: int = Depends(get_current_user)):
         # ── Distribución de performance (total return vs aportado, del snapshot) ──
         dist = None
         perf = []
-        # Denominador = MÁXIMO net_deposited histórico, no el actual (audit:
-        # un cliente que retiró casi todo dejaba nd chico y el % explotaba —
-        # +1000% falso secuestrando el Mejor/Peor). El máximo histórico es el
-        # capital realmente puesto a trabajar.
-        _ph_d = ",".join("?" * len(ids))
-        _max_nd = {r["user_id"]: float(r["m"] or 0) for r in conn.execute(
-            f"SELECT user_id, MAX(net_deposited) m FROM snapshots WHERE user_id IN ({_ph_d}) GROUP BY user_id",
-            ids).fetchall()}
+        _max_nd = _max_net_deposited(conn, ids)
         for i, r in latest.items():
             # ⚠️ ESTO ES UN PORCENTAJE PUBLICADO, NO UN VALOR MOSTRADO. Sale por la
             # tarjeta Mejor/Peor del libro (AdvisorDashboard.jsx:702) y también entra
             # al prompt de la IA del libro como `ret_pct`
             # (`_advisor_book_chat_context`), donde el prompt le ORDENA al modelo
-            # rankear clientes con él. Con `latest[i]` sin filtrar, un cliente cuya
-            # última fila es la foto del import aparecía con "+39,6%" mientras su
-            # propia pantalla decía "—": el mismo cliente, dos respuestas.
-            #
-            # LAS DOS LECTURAS YA LO TIENEN. Este filtro vivió acá solo un tiempo:
-            # el hermano hacía la MISMA lectura (`_latest_snapshots`, mismo
-            # denominador) y publicaba sin él, así que el síntoma seguía saliendo
-            # por el prompt. Si alguna vez hay una tercera, va con el filtro o no va.
-            if not _es_base_de_mercado(r):
-                continue
-            nd = float(r["net_deposited"] or 0)
-            base_nd = max(_max_nd.get(i, 0.0), nd)
-            # Base mínima USD 100: un nd residual (~centavos) explota el %
-            # y secuestra el Mejor/Peor con retornos astronómicos falsos.
-            if base_nd >= 100:
-                perf.append((i, (float(r["total_value"] or 0) - nd) / base_nd * 100))
+            # rankear clientes con él. Las dos superficies leen el MISMO helper: la
+            # regla —base de mercado, denominador = máximo histórico, base mínima
+            # USD 100— vive en `_retorno_vs_aportado` y en ningún otro lado.
+            _r = _retorno_vs_aportado(r, _max_nd.get(i, 0.0))
+            if _r is not None:
+                perf.append((i, _r))
         if perf:
             greens = [p for p in perf if p[1] > 0.5]
             reds = [p for p in perf if p[1] < -0.5]

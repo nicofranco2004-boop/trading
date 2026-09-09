@@ -1294,6 +1294,35 @@ class BookChatContextTest(AdvisorBase):
         self.assertIn("register_trade y undo_last_trade NO EXISTEN", s)
 
 
+
+class RetornoPorClienteUnSoloLugarTest(unittest.TestCase):
+    """Sólo lee código fuente: no toca la DB ni crea usuarios.
+
+    Vivía dentro de `BookChatContextTest`, cuyo `setUp` siembra un asesor y un
+    cliente. La suite comparte UNA base temporal, así que sumar un test que
+    crea usuarios corre el contador y destapa tests de otros archivos que
+    dependen del orden. Un test que sólo hace `inspect.getsource` no tiene
+    por qué pagar ese costo.
+    """
+
+    def test_la_regla_del_retorno_vive_en_UN_solo_lugar(self):
+        """No alcanza con que las dos copias coincidan: tiene que haber una sola.
+
+        Las dos superficies que publican el retorno por cliente —la tarjeta
+        Mejor/Peor del libro y el contexto que va al prompt— leen
+        `_retorno_vs_aportado`. Si alguien vuelve a escribir el cociente en una de
+        las dos, vuelven a divergir; este test es el que se pone en rojo.
+        """
+        import inspect, re
+        for fn in (main._advisor_book_chat_context, main.advisor_book):
+            src = inspect.getsource(fn)
+            self.assertIn("_retorno_vs_aportado(", src,
+                          f"{fn.__name__} no usa el helper")
+            self.assertIsNone(re.search(r"net_deposited\)\s*/\s*base_nd", src),
+                              f"{fn.__name__} volvió a escribir el cociente")
+            self.assertNotIn("MAX(net_deposited)", src,
+                             f"{fn.__name__} duplica la query del denominador")
+
 class GroupOpChatTest(AdvisorBase):
     """F3.3: register_group_op (registro grupal por chat) — el write-path del
     book-mode. Se testea el HANDLER directo (sin LLM): armado del draft,
