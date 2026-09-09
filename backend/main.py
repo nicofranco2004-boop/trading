@@ -5589,24 +5589,14 @@ def _fetch_uva_monthly():
     serie histórica de TNA Minorista del BCRA — UVA es el mejor proxy
     disponible para el comportamiento del PF retail AR.
     """
-    try:
-        r = requests.get(
-            "https://api.argentinadatos.com/v1/finanzas/indices/uva",
-            timeout=8,
-        )
-        if r.status_code != 200:
-            return {}
-        # La API devuelve daily. Tomamos el último valor de cada mes
-        # (dict overwrite gana porque las entries vienen ordenadas por fecha).
-        out = {}
-        for item in r.json():
-            fecha = item.get("fecha", "")
-            valor = item.get("valor")
-            if fecha and valor is not None:
-                out[fecha[:7]] = float(valor)
-        return out
-    except Exception:
-        return {}
+    # La bajada vive en `_fetch_uva_series` (más abajo, con los índices de
+    # bonos): es la MISMA serie diaria y el mismo endpoint. Cuando estaban las
+    # dos, cualquier arreglo en una —un timeout, un formato, una URL que se
+    # mueve— tenía que acordarse de la otra.
+    out = {}
+    for fecha, valor in sorted(_fetch_uva_series().items()):
+        out[fecha[:7]] = valor    # último día de cada mes: el orden lo garantiza
+    return out
 
 
 @app.get("/api/benchmarks")
@@ -5694,19 +5684,50 @@ def _fetch_cer_series():
         return {}
 
 
+def _fetch_uva_series():
+    """Trae la serie histórica DIARIA de UVA desde argentinadatos.com.
+
+    Mismo formato y mismo host que el CER: [{ fecha, valor }] → {YYYY-MM-DD: v}.
+    Es la fuente de `_fetch_uva_monthly` (que sólo la baja a fin de mes) y el
+    reemplazo del CER cuando su endpoint no responde — ver `_serie_cer_o_uva`.
+    """
+    try:
+        r = requests.get("https://api.argentinadatos.com/v1/finanzas/indices/uva", timeout=10)
+        if r.status_code != 200:
+            log.warning("UVA: la fuente devolvió %s", r.status_code)
+            return {}
+        out = {}
+        for item in r.json():
+            fecha = item.get("fecha", "")
+            val = item.get("valor")
+            if fecha and val is not None and _DATE_RE.match(fecha):
+                out[fecha] = float(val)
+        return out
+    except Exception:
+        log.exception("UVA: no se pudo bajar la serie")
+        return {}
+
+
 def _ensure_index_cached(conn, index_name: str):
     """Refresca el cache de un índice si TTL expiró. No-op si fresh."""
     now = time.time()
     last = _indices_fetched.get(index_name, 0)
     if now - last < INDICES_TTL:
         return
-    fetcher_map = {"CER": _fetch_cer_series}
+    fetcher_map = {"CER": _fetch_cer_series, "UVA": _fetch_uva_series}
     fetcher = fetcher_map.get(index_name)
     if not fetcher:
         return
     series = fetcher()
     if not series:
-        return  # No actualizamos timestamp en caso de error
+        # ⚠️ ACÁ LA CAÍDA ERA MUDA, Y POR ESO DURÓ. El endpoint de CER lleva
+        # meses devolviendo 404 y el `return` pelado no dejaba rastro en
+        # ningún lado: los bonos CER ajustaban con factor 1,00 —contra 7,72×
+        # y 37,44× reales— y no había una sola línea de log que lo dijera.
+        # No se toca el timestamp a propósito: se reintenta en la próxima.
+        log.warning("bond_indices: la fuente de %s no devolvió datos — "
+                    "el índice queda con lo que haya en cache", index_name)
+        return
     iso_now = datetime.utcnow().isoformat() + "Z"
     with conn:
         for date, value in series.items():
@@ -5720,6 +5741,47 @@ def _ensure_index_cached(conn, index_name: str):
                 (index_name, date, value, 'argentinadatos', iso_now),
             )
     _indices_fetched[index_name] = now
+
+
+def _serie_cer_o_uva(conn, index_name: str) -> str:
+    """Con qué serie se ajusta DE VERDAD. Devuelve el `basis` a servir.
+
+    ⚠️ EL CER SE SIRVE CON UVA CUANDO SU FUENTE NO RESPONDE, Y SE DICE.
+
+    `api.argentinadatos.com/v1/finanzas/indices/cer` devuelve **404** (medido el
+    2026-09-08, con `/inflacion` y `/uva` del MISMO host en 200). Sin serie, todo
+    bono CER ajustaba su capital con factor **1,00** cuando el real es 7,72×
+    (TZX26/27/28) o 37,44× (TX26/TX28/T2X5).
+
+    UVA sirve porque acá NO se usa el NIVEL del índice: `bondSchedule.js` calcula
+    un RATIO, `serie[pago] / serie[emisión]`. El BCRA actualiza la UVA POR CER,
+    así que ese cociente es el mismo en las dos series — lo dice el propio
+    `_fetch_uva_monthly` ("UVA ajusta por inflación INDEC (CER)").
+
+    VERIFICADO, no deducido: contra los factores que la auditoría midió con la
+    serie CER real, el ratio UVA da 37,34× vs 37,44× y 7,70× vs 7,72× — 0,25 % de
+    desvío, y cualquier desfasaje de días lo EMPEORA (o sea que no hay un lag que
+    corregir; el residuo es el redondeo del informe).
+
+    Límite declarado: la UVA existe desde 2016-03-31. Un bono emitido antes no
+    tiene base — el más viejo del catálogo hoy es de 2020-08-04.
+
+    El resultado viaja en la respuesta como `basis` para que la pantalla diga con
+    qué se ajustó. Servir UVA en silencio bajo el rótulo "CER" sería cambiar un
+    número inventado por otro número inventado mejor.
+    """
+    def _hay(nombre):
+        return conn.execute(
+            "SELECT 1 FROM bond_indices_daily WHERE index_name=? LIMIT 1",
+            (nombre,)).fetchone() is not None
+
+    if index_name != "CER" or _hay("CER"):
+        return index_name
+    try:
+        _ensure_index_cached(conn, "UVA")
+    except Exception:
+        pass
+    return "UVA" if _hay("UVA") else "CER"
 
 
 @app.get("/api/bond-indices/{index_name}")
@@ -5766,8 +5828,10 @@ def get_bond_index_series(
         except Exception:
             pass
 
+        basis = _serie_cer_o_uva(conn, index_name)
+
         q = "SELECT date, value FROM bond_indices_daily WHERE index_name = ?"
-        params = [index_name]
+        params = [basis]
         if date_from:
             q += " AND date >= ?"
             params.append(date_from)
@@ -5778,13 +5842,17 @@ def get_bond_index_series(
         rows = conn.execute(q, params).fetchall()
         series = {r["date"]: r["value"] for r in rows}
 
-        # Stale check: si no se actualizó hace TTL+1h Y no hay data fresh
-        last_fetch = _indices_fetched.get(index_name, 0)
+        # Stale check: si no se actualizó hace TTL+1h Y no hay data fresh.
+        # Se mide sobre la serie que SE SIRVIÓ (`basis`), no sobre la pedida: con
+        # el CER muerto, `_indices_fetched['CER']` no se toca nunca y la respuesta
+        # salía `stale: true` aunque la UVA se hubiera bajado recién.
+        last_fetch = _indices_fetched.get(basis, 0)
         stale = (time.time() - last_fetch) > (INDICES_TTL + 3600)
 
         latest_date = rows[-1]["date"] if rows else None
         return {
             "index_name": index_name,
+            "basis": basis,          # con qué serie se ajusta de verdad
             "series": series,
             "count": len(series),
             "latest_date": latest_date,

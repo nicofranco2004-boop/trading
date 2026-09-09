@@ -155,16 +155,27 @@ class BondIndicesEndpointTest(unittest.TestCase):
     # ─── Cache / fetch behavior ──────────────────────────────────────────────
 
     def test_empty_cache_returns_empty_series_no_500(self):
-        """Sin data y sin BCRA → respuesta válida con series vacía, no error."""
-        # Mockeo el fetcher para que NO traiga nada (simula BCRA fallando).
+        """Sin data y sin fuente → respuesta válida con series vacía, no error.
+
+        ⚠️ AHORA HAY QUE MOCKEAR LAS DOS FUENTES, Y NO ES UN DETALLE DEL TEST.
+        El escenario que este test fija es "no hay de dónde sacar la serie", y
+        desde que el CER caído se sirve con UVA (`_serie_cer_o_uva`), eso son dos
+        endpoints y no uno. Mockeando sólo el CER, el test se iba a la red de
+        verdad a buscar la UVA — y pasaba en verde ANTES sólo porque la fuente
+        de CER está muerta en producción: estaba certificando la caída.
+        """
         main._indices_fetched.pop('CER', None)  # Reset TTL
-        with patch.object(main, '_fetch_cer_series', return_value={}):
+        main._indices_fetched.pop('UVA', None)
+        with patch.object(main, '_fetch_cer_series', return_value={}), \
+             patch.object(main, '_fetch_uva_series', return_value={}):
             res = self._get("/api/bond-indices/CER")
             self.assertEqual(res.status_code, 200)
             body = res.json()
             self.assertEqual(body["count"], 0)
             self.assertEqual(body["series"], {})
             self.assertIsNone(body["latest_date"])
+            # Y no miente diciendo que ajustó con algo que no tiene.
+            self.assertEqual(body["basis"], "CER")
 
     def test_fetcher_populates_cache_on_first_hit(self):
         """Cache miss → fetcher se invoca → datos se persisten en SQLite."""
