@@ -333,6 +333,7 @@ export default function Admin() {
 
       <CurrencyBackfillPanel toast={toast} />
 
+      <AlcanceAuditoriaPanel toast={toast} />
       <FciRefreshPanel toast={toast} />
       <MtmAuditPanel toast={toast} />
       <FxMigratePanel toast={toast} />
@@ -1641,6 +1642,103 @@ function FciRefreshPanel({ toast }) {
         <p className="text-xs text-emerald-500 tabular">
           {Object.entries(r).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ')}
         </p>
+      )}
+    </div>
+  )
+}
+
+
+// ─── AlcanceAuditoriaPanel — cuánto muerde de verdad cada hallazgo ──────────
+// La auditoría de cálculo dejó 222 hallazgos con su magnitud MEDIDA en casos de
+// laboratorio, pero ninguno decía a cuántos usuarios reales les pasa. Eso sólo
+// se contesta contra la base de producción.
+//
+// El camino documentado era `railway ssh` + pegar un archivo de 200 líneas: seis
+// pasos y una terminal. Railway NO tiene consola web para un servicio (su
+// dashboard sólo copia el comando SSH, que igual necesita la CLI instalada), así
+// que el equivalente "desde el navegador" es esto: el servidor que atiende este
+// panel es el que tiene la base abierta.
+//
+// Va como BOTÓN y no como link al endpoint por lo mismo que MtmAuditPanel:
+// abrir la URL del backend a mano no lleva la sesión.
+const VEREDICTO = {
+  urgente: { txt: 'Urgente',  cls: 'bg-rose-500/15 text-rose-500 border-rose-500/30' },
+  mirar:   { txt: 'Mirar',    cls: 'bg-amber-500/15 text-amber-500 border-amber-500/30' },
+  ok:      { txt: 'Sin caso', cls: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30' },
+  sin_dato:{ txt: 'Sin dato', cls: 'bg-ink-3/15 text-ink-3 border-ink-3/30' },
+}
+
+function AlcanceAuditoriaPanel({ toast }) {
+  const [data, setData] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function medir() {
+    setBusy(true)
+    try {
+      const out = await api.get('/admin/alcance-auditoria')
+      setData(out)
+      const u = out?.resumen?.urgentes ?? 0
+      toast.push(u > 0 ? `${u} hallazgo(s) urgente(s)` : 'Ningún hallazgo urgente',
+                 { type: u > 0 ? 'error' : 'success' })
+    } catch (e) {
+      toast.push('Error: ' + e.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Search size={16} className="text-cyan-500" />
+          <h2 className="font-semibold text-ink-0">Alcance real de la auditoría</h2>
+        </div>
+        <button onClick={medir} disabled={busy}
+          className="text-xs px-3 py-1.5 rounded bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-50">
+          {busy ? 'Midiendo…' : 'Medir alcance'}
+        </button>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        13 consultas de <b>solo lectura</b> contra la base de producción. No escriben nada y
+        devuelven <b>sólo totales</b> — ningún email, ningún nombre, ninguna fila de nadie.
+        Contestan cuántos usuarios reales tocó cada problema que arregló la auditoría.
+        Podés apretarlo de nuevo dentro de un mes para ver si los números bajaron.
+      </p>
+
+      {data && (
+        <div className="space-y-2 pt-1">
+          <p className="text-xs text-ink-2">
+            <b className="text-rose-500">{data.resumen.urgentes}</b> urgente(s) ·{' '}
+            <b className="text-amber-500">{data.resumen.a_mirar}</b> para mirar ·{' '}
+            <b className="text-emerald-500">{data.resumen.ok}</b> sin caso
+          </p>
+          {data.hallazgos.map(h => {
+            const v = VEREDICTO[h.veredicto] || VEREDICTO.sin_dato
+            return (
+              <div key={h.id} className="border border-line/60 rounded-lg p-3 flex gap-3 items-start">
+                <div className="text-2xl font-bold tabular text-ink-0 min-w-[3.5rem] text-right">
+                  {h.numero ?? '—'}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-[13px] text-ink-0 font-medium">{h.pregunta}</p>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 ${v.cls}`}>
+                      {v.txt}
+                    </span>
+                  </div>
+                  <p className="text-[11.5px] text-ink-3 mt-1 leading-relaxed">{h.que_significa}</p>
+                  {h.detalle && Object.keys(h.detalle).length > 0 && (
+                    <p className="text-[10.5px] text-ink-3/70 mt-1 tabular break-words">
+                      {Object.entries(h.detalle)
+                        .filter(([, val]) => val !== null && val !== undefined)
+                        .map(([k, val]) => `${k.replace(/_/g, ' ')}: ${val}`)
+                        .join(' · ')}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
       )}
     </div>
   )

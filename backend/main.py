@@ -18780,6 +18780,45 @@ def admin_diagnose_flujo_implausible(user_id: Optional[int] = None,
         conn.close()
 
 
+@app.get("/api/admin/alcance-auditoria")
+def admin_alcance_auditoria(uid: int = Depends(get_admin_user)):
+    """Cuánto muerde en producción cada hallazgo de la auditoría de cálculo.
+
+    SOLO LECTURA y SÓLO AGREGADOS: las 13 consultas están escritas para no
+    devolver un user_id, un email, un nombre de broker ni una fila individual —
+    lo máximo que sale es un COUNT DISTINCT y una suma. `alcance_auditoria`
+    verifica eso ANTES de ejecutar: si alguien mete un UPDATE en el .sql, se
+    niega a correr en vez de tocar producción.
+
+    ⚠️ POR QUÉ EXISTE ESTE ENDPOINT Y NO UN SCRIPT. El camino documentado era
+    `railway ssh` + pegar un archivo de 200 líneas: seis pasos, un login por
+    navegador y una terminal. Railway no tiene consola web para un servicio
+    (verificado en su documentación: el dashboard sólo COPIA el comando SSH para
+    que lo pegues en tu propia terminal, que necesita la CLI instalada). Este
+    endpoint es el mismo dato a un clic, desde el panel de admin que ya existe.
+
+    Devuelve cada número traducido a una pregunta en castellano con su veredicto
+    —`urgente` / `mirar` / `ok`— según el umbral que el propio .sql documenta en
+    su línea "PREOCUPANTE SI". El crudo viaja igual en `crudo` para quien quiera
+    los nombres de columna.
+    """
+    import alcance_auditoria as _alc
+    conn = get_db()
+    try:
+        return _alc.informe(conn)
+    except FileNotFoundError:
+        raise HTTPException(
+            500, "No encuentro el archivo de consultas "
+                 "(audit/01_calculos/1a-alcance-produccion-sqlite.sql). "
+                 "¿Se deployó el repo completo?")
+    except ValueError as e:
+        # El guard de solo-lectura. Es un 500 a propósito: significa que el .sql
+        # dejó de ser seguro y NO se ejecutó nada.
+        raise HTTPException(500, f"Las consultas no pasaron el control de solo lectura: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diagnose-costo-inconsistente")
 def admin_diagnose_costo_inconsistente(tol: float = 0.02, limite: int = 200,
                                        uid: int = Depends(get_admin_user)):
