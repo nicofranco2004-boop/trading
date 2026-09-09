@@ -306,9 +306,10 @@ devuelve 3.816 filas y factor **37,57×** para TX26 donde la app publicaba 1,00�
 
 - **Interés PF leído como dólares** — ✅ aplicada en prod el 2026-09-09: 1 fila, 1 usuario,
   $121.095 → US$ 78,88. El medidor la da por cerrada (0 / Sin caso).
-- **Caja reconciliada al 1.415 fijo** — herramienta lista (`/api/admin/repair-caja-1415`),
-  **pendiente de aplicar**. 43 meses (depósitos + retiros; la medición sólo miraba depósitos),
-  41 usuarios.
+- **Caja reconciliada al 1.415 fijo** — ✅ aplicada en prod el 2026-09-09: 42 meses, 40 usuarios,
+  capital aportado −US$ 62.115 (el 8 % de los US$ 779.200 medidos: 1.415 vs el dólar real de
+  junio–septiembre 2026, 1.508–1.548). Queda 1 mes sin lote de importación con qué fecharlo, sin
+  tocar. La segunda pasada del preview da 0: idempotente confirmado en prod.
 
 **⚠️ El error de F1 que destapó el preview.** La primera versión de la reparación dolarizaba al
 dólar del **mes anotado**, igual que dejó F1 en `reconcile-cash` (`9b03ebec`). El preview mostró
