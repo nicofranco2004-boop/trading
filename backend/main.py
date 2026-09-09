@@ -31399,6 +31399,35 @@ def _migrar_credenciales_a_credentials_key() -> None:
                     "legibles con SECRET_KEY. NO rotes SECRET_KEY.", e)
 
 
+def _log_config_arranque() -> None:
+    """Dice QUÉ recibió el proceso, sin revelar ningún valor.
+
+    ⚠️ TEMPORAL — sacar cuando termine la rotación de SECRET_KEY (2026-09).
+
+    Existe porque la pantalla de variables de Railway muestra todo enmascarado y
+    no hay forma de saber, desde afuera, si el valor que uno ve es el que el
+    proceso realmente tiene. Sin esto la única manera de averiguarlo es probar la
+    app y deducir hacia atrás, que es adivinar.
+
+    NO loguea valores ni hashes: sólo el largo y la forma. Con eso alcanza para
+    distinguir los tres casos que importan:
+      · una API key de Anthropic  → 108 caracteres, empieza con sk-ant-
+      · un token_urlsafe(64)      → ~86 caracteres, no empieza con sk-ant-
+      · ausente                   → 0
+    """
+    def _forma(nombre: str) -> str:
+        v = (os.environ.get(nombre) or "")
+        if not v:
+            return f"{nombre}=AUSENTE"
+        tipo = "parece-clave-de-anthropic" if v.startswith("sk-ant-") else "no-anthropic"
+        return f"{nombre}=[{len(v)} chars, {tipo}]"
+
+    log.warning("config al arrancar: %s | %s | %s | RENDI_ENV=%s",
+                _forma("SECRET_KEY"), _forma("ANTHROPIC_API_KEY"),
+                _forma("CREDENTIALS_KEY"), os.environ.get("RENDI_ENV") or "AUSENTE")
+
+
+_log_config_arranque()
 _migrar_credenciales_a_credentials_key()
 
 
