@@ -9,9 +9,10 @@ import { Plus, Landmark, Trash2, Clock, RotateCcw } from 'lucide-react'
 import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
+import { hoyISO } from '../utils/fecha'
 
 const pct = (x) => (x * 100).toFixed(2) + '%'
-const todayStr = () => new Date().toISOString().slice(0, 10)
+const todayStr = () => hoyISO()
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
 
 export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers = [], onChange }) {

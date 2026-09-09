@@ -15,6 +15,7 @@ import { api } from '../../utils/api'
 import { track } from '../../utils/track'
 import { usePlanFeatures } from '../../hooks/usePlanFeatures'
 import UpgradeModal from './UpgradeModal'
+import { hoyISO } from '../../utils/fecha'
 
 export default function ExportCsvButton({
   resource,
@@ -48,7 +49,7 @@ export default function ExportCsvButton({
         monthly: 'mensual',
         transactions: 'movimientos',
       }[resource] || resource
-      const filename = `rendi_${spanish}_${new Date().toISOString().slice(0, 10)}.csv`
+      const filename = `rendi_${spanish}_${hoyISO()}.csv`
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url

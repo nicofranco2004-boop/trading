@@ -39,6 +39,7 @@ import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
 import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
 import MovementsFeed from '../components/operations/MovementsFeed'
+import { hoyISO } from '../utils/fecha'
 import {
   MOVEMENT_TYPES, GROUP_OPTIONS, buildGroups, buildPeriodOptions, enPeriodo,
 } from '../components/operations/shared'
@@ -48,7 +49,7 @@ import {
 // rápido SÓLO con P&L (sin precios) y deja el campo en blanco, termina
 // guardando 0 sin darse cuenta porque el value=0 era el default y "parece
 // completado". Lo manejamos abajo en save(): vacío → null al backend.
-const EMPTY = { date: new Date().toISOString().slice(0, 10), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '' }
+const EMPTY = { date: hoyISO(), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '' }
 
 const RESULT_OPTIONS = [
   { id: 'all',    label: 'Todas' },

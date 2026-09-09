@@ -18,8 +18,9 @@ import { brokerCurrencyLabel } from '../utils/valuation'
 import { Plus, TrendingUp, TrendingDown, Trash2, X, ArrowLeft, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
 import { useToast } from './Toast'
+import { hoyISO } from '../utils/fecha'
 
-const hoy = () => new Date().toISOString().slice(0, 10)
+const hoy = () => hoyISO()
 const usd = (n) => (n < 0 ? '−' : '') + 'US$' + Math.abs(n).toLocaleString('es-AR',
   { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 

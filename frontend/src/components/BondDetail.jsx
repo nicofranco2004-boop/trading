@@ -17,6 +17,7 @@ import { useState } from 'react'
 import { Coins, Layers as LayersIcon, ChevronDown, ChevronUp } from 'lucide-react'
 import { usd, ars, pctSigned } from '../utils/format'
 import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
+import { hoyISO } from '../utils/fecha'
 import {
   generateSchedule, getRemainingPayments, estimateYieldDetailed, nextPaymentForPosition,
   cerOptsFor,
@@ -76,7 +77,7 @@ export function BondDetailBody({
   const amortRealizedGainDisp = pnlContributionDisp - couponsDisp
 
   // ── Schedule + TIR + próximo pago (misma lógica que la v1) ────────────────
-  const today = new Date().toISOString().slice(0, 10)
+  const today = hoyISO()
   const cerOpts = cerOptsFor(p, cerSeries)   // la regla vive en bondSchedule
   const fullSchedule = generateSchedule(p.asset, cerOpts)
   const remaining = fullSchedule ? getRemainingPayments(p.asset, today, cerOpts) : null

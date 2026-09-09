@@ -47,6 +47,7 @@ import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { useFxHistory } from '../hooks/useFxHistory'
+import { hoyISO } from '../utils/fecha'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
@@ -2850,7 +2851,7 @@ function ActionsSheet({ onClose, positions, brokers, onBuy, onSell, onCash }) {
     setExporting(true)
     try {
       const blob = await api.getBlob('/export/positions.csv')
-      const filename = `rendi_posiciones_${new Date().toISOString().slice(0, 10)}.csv`
+      const filename = `rendi_posiciones_${hoyISO()}.csv`
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url

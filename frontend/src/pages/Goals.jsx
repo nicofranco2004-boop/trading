@@ -15,6 +15,7 @@ import { priceSymbol, computeBrokerValue, isArUsdBroker } from '../utils/valuati
 import { api } from '../utils/api'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
 import AskAIAbout from '../components/ai/AskAIAbout'
+import { hoyISO } from '../utils/fecha'
 
 const PRESETS = [
   { label: 'Conservador', pct: 6, hint: 'Bonos y exposición pasiva al S&P' },
@@ -22,7 +23,7 @@ const PRESETS = [
   { label: 'Agresivo', pct: 15, hint: 'Acciones de crecimiento y cripto' },
 ]
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => hoyISO()
 const addYears = (years) => {
   const d = new Date()
   d.setFullYear(d.getFullYear() + years)

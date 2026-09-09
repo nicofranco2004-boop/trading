@@ -5,6 +5,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
+import { hoyISO } from '../utils/fecha'
 
 export function usePfRollup(reloadKey) {
   const [totals, setTotals] = useState({})
@@ -13,7 +14,7 @@ export function usePfRollup(reloadKey) {
     api.get('/plazos-fijos')
       .then(pfs => {
         if (!alive) return
-        const now = new Date().toISOString().slice(0, 10)
+        const now = hoyISO()
         const t = {}
         for (const pf of (pfs || [])) {
           const m = pf.moneda || 'ARS'

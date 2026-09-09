@@ -41,6 +41,7 @@ import { toDistributionAiParams } from '../utils/distributionAi'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { applyMtmToMonthly } from '../utils/insightsModel'
+import { hoyISO } from '../utils/fecha'
 
 const REFRESH_MS = 90_000
 
@@ -471,7 +472,7 @@ function PersonalDashboard() {
     if (valuationDollar !== 'mep') return
     // Comparación robusta: NaN/no-finito NO pasa (NaN < x es false → escribiría).
     if (!(priceCoverage >= PRICE_COVERAGE_MIN)) return  // precios a medio cargar → no snapshotear
-    const today = new Date().toISOString().slice(0, 10)
+    const today = hoyISO()
     const key = 'rendi_snapshot_date'
     if (localStorage.getItem(key) === today) return
     // Snapshots positions-only (sin PF) → la historia/gráfico/daily se mantienen

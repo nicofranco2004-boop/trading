@@ -24,6 +24,7 @@
 import { isBondTicker } from './tickers'
 import { generateSchedule, nextPaymentForPosition, cerOptsFor } from './bondSchedule'
 import { getBondMeta } from './bondMeta'
+import { hoyISO } from './fecha'
 
 // Tolerancia para matchear una operation con una fecha del prospecto.
 // 14 días cubre T+1/T+2 estándar + delays operativos + diferencias de huso
@@ -43,7 +44,7 @@ const MAX_BACKLOG_DAYS = 730
 const ENTRY_DATE_GRACE_DAYS = 7
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10)
+  return hoyISO()
 }
 
 function diffDaysAbs(a, b) {

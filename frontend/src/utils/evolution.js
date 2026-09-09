@@ -1,4 +1,5 @@
 import { lookupHistoricalDolar } from './fx'
+import { hoyISO } from './fecha'
 
 // ⚠️ DOS PREGUNTAS DISTINTAS, DOS PREDICADOS DISTINTOS. Colapsarlas es el error
 // que hizo volver este bug once veces, y las dos direcciones del error ya se
@@ -233,7 +234,7 @@ export function buildPortfolioValueSeries(snapshots, days = null, liveValue = nu
   }))
 
   // Append "today" if live value supplied and last snapshot isn't already today
-  const today = new Date().toISOString().slice(0, 10)
+  const today = hoyISO()
   if (liveValue != null && (points.length === 0 || points[points.length - 1].date !== today)) {
     points.push({
       date: today,
@@ -337,7 +338,7 @@ function netDepositedOf(s) {
  */
 export function computeReturnDelta(snapshots, { liveValue = null, liveNetDeposited = null, sinceDate = null } = {}) {
   if (!snapshots?.length) return null
-  const today = new Date().toISOString().slice(0, 10)
+  const today = hoyISO()
   // ⚠️ LAS DOS PUNTAS, NO UNA. Éste es EL hallazgo estructural: los guards de las
   // rondas anteriores filtran el borde de APERTURA y ninguno filtra el de CIERRE.
   // Cuando la punta es la foto del import, el número sale INVERTIDO —un +96%

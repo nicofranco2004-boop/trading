@@ -8,8 +8,9 @@ import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
 import DateField from './DateField'
+import { hoyISO } from '../utils/fecha'
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => hoyISO()
 const pct = (x) => (x * 100).toFixed(2) + '%'
 
 // Aritmética de fechas local (sin shift de timezone).

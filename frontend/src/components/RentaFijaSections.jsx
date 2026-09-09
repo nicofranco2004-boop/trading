@@ -18,8 +18,9 @@ import { getBondMeta } from '../utils/bondMeta'
 import { nextPaymentForPosition, estimateYieldDetailed, cerOptsFor } from '../utils/bondSchedule'
 import { usd, ars, pctSigned } from '../utils/format'
 import { BondDetailBody } from './BondDetail'
+import { hoyISO } from '../utils/fecha'
 
-const todayIso = () => new Date().toISOString().slice(0, 10)
+const todayIso = () => hoyISO()
 
 // Posición sintética que representa N lotes del mismo (broker, activo) —
 // espejo de `_buildAgg` de Positions.jsx para que la valuación sea idéntica a

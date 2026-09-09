@@ -30,8 +30,9 @@ import { getBondMeta, formatBondType } from '../utils/bondMeta'
 import { nextPaymentForPosition, cerOptsFor } from '../utils/bondSchedule'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { suggestBrokerAmount } from '../utils/bondCashflowFx'
+import { hoyISO } from '../utils/fecha'
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => hoyISO()
 
 export default function BondCashflowModal({
   flowType,     // 'coupon' | 'amortization'

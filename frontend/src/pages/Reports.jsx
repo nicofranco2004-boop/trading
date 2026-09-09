@@ -25,11 +25,12 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { api } from '../utils/api'
 import ModoRendimiento from '../components/ModoRendimiento'
 import { useCurrency } from '../contexts/CurrencyContext'
+import { hoyISO } from '../utils/fecha'
 
 // ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10)
+  return hoyISO()
 }
 
 function isoWeekKey(d = new Date()) {

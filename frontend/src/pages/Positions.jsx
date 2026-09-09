@@ -44,10 +44,11 @@ import AnimatedNumber from '../components/AnimatedNumber'
 import PositionsMobile from './PositionsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useCerSeries } from '../hooks/useCerSeries'
+import { hoyISO } from '../utils/fecha'
 
 const REFRESH_MS = 90_000
 
-export const today = () => new Date().toISOString().slice(0, 10)
+export const today = () => hoyISO()
 
 export const EMPTY_POS = {
   broker: '', asset: '', is_cash: false,
@@ -127,7 +128,7 @@ function PositionsDesktop() {
     // Fecha del movimiento, HOY por defecto. Antes no existía: todo depósito caía
     // en el mes en curso, así que uno viejo se registraba en el mes equivocado y
     // corría la curva de evolución.
-    date: new Date().toISOString().slice(0, 10) })
+    date: hoyISO() })
   // Cash menu (selector broker + direction) — pre-flow del cashflow tradicional.
   const [cashMenuForm, setCashMenuForm] = useState({ broker: '', direction: 'deposit' })
   const [convertForm, setConvertForm] = useState({
@@ -905,7 +906,7 @@ function PositionsDesktop() {
       direction,
       amount: '',
       available: p.invested || 0,
-      date: new Date().toISOString().slice(0, 10),
+      date: hoyISO(),
     })
     setModal('cashflow')
   }
@@ -957,7 +958,7 @@ function PositionsDesktop() {
       direction: cashMenuForm.direction,
       amount: '',
       available: cashPos?.invested || 0,
-      date: new Date().toISOString().slice(0, 10),
+      date: hoyISO(),
     })
     setModal('cashflow')
   }
@@ -1624,7 +1625,7 @@ function PositionsDesktop() {
   // que tome snapshot automático cada noche (tarea spawneada aparte).
   const daily = useMemo(() => {
     if (!totals.value || snapshots.length === 0) return null
-    const today = new Date().toISOString().slice(0, 10)
+    const today = hoyISO()
     const lastClose = snapshots.find(s => s.date < today)  // snapshots vienen DESC
     if (!lastClose || !lastClose.total_value) return null
     const delta = totals.value - lastClose.total_value
@@ -2874,7 +2875,7 @@ function PositionsDesktop() {
               <label className="block text-xs text-ink-3 mb-1">Fecha</label>
               <DateInput
                 value={cashFlowForm.date || ''}
-                max={new Date().toISOString().slice(0, 10)}
+                max={hoyISO()}
                 onChange={v => setCashFlowForm(f => ({ ...f, date: v || f.date }))}
               />
             </div>
@@ -2897,7 +2898,7 @@ function PositionsDesktop() {
               // Mostrarlo evita la caja negra: si el aporte se dolariza a un TC que no
               // es el de ese día, el capital aportado (denominador del rendimiento)
               // queda mal y no hay nada en pantalla que lo delate.
-              const hoy = new Date().toISOString().slice(0, 10)
+              const hoy = hoyISO()
               const fecha = cashFlowForm.date || hoy
               const esHoy = fecha >= hoy
               const tc = esHoy ? tcValuacion : (fxHist.getMepOrFallback(fecha) || tcValuacion)
@@ -3763,7 +3764,7 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
   // mano — ahí dejamos de pisarlo.
   const tcTouchedRef = useRef(false)
   function tcForDate(v) {
-    const hoy = new Date().toISOString().slice(0, 10)
+    const hoy = hoyISO()
     if (!v || v >= hoy) return tcValuacion
     return (fxHist?.getMepOrFallback?.(v)) || tcValuacion
   }

@@ -28,6 +28,7 @@
 // multiplicar por (quantity / 100).
 
 import { getBondMeta } from './bondMeta'
+import { hoyISO } from './fecha'
 import {
   dayCountFraction,
   computeAccrued,
@@ -272,7 +273,7 @@ export function generateSchedule(ticker, options = {}) {
 }
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10)
+  return hoyISO()
 }
 
 // Devuelve sólo los pagos futuros (date > from). Si from no se pasa, usa hoy.

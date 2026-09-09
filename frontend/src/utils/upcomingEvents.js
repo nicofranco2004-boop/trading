@@ -16,11 +16,12 @@
 import { generateSchedule, cerOptsFor } from './bondSchedule'
 import { getBondMeta } from './bondMeta'
 import { isBondTicker } from './tickers'
+import { hoyISO } from './fecha'
 
 const DEFAULT_WINDOW_DAYS = 90
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10)
+  return hoyISO()
 }
 
 function addDays(iso, days) {
@@ -225,7 +226,7 @@ export function eventCategoryLabel(eventType) {
 // Fecha relativa estilo Delta: "Hoy", "Mañana", "Mié 20 may", "Mié 20 may 2027".
 // El año sólo aparece si es distinto al actual.
 export function formatRelativeDate(iso, today) {
-  const todayIsoStr = today || new Date().toISOString().slice(0, 10)
+  const todayIsoStr = today || hoyISO()
   if (!iso) return ''
   const d = new Date(iso + 'T00:00:00')
   const t = new Date(todayIsoStr + 'T00:00:00')
