@@ -30,7 +30,7 @@ class TestNoPuedeEscribir(unittest.TestCase):
 
     def test_las_13_consultas_son_select(self):
         secs = alc.secciones()
-        self.assertEqual(len(secs), 13, "cambió la cantidad de consultas")
+        self.assertEqual(len(secs), 14, "cambió la cantidad de consultas")
         alc._verificar_solo_lectura(secs)   # no tira
 
     def test_un_update_infiltrado_aborta_TODO(self):
@@ -98,6 +98,8 @@ class TestNoFiltraDatosDeNadie(unittest.TestCase):
         self.addCleanup(conn.close)
         r = alc.informe(conn)
         for sid, filas in r["crudo"].items():
+            if sid == "Q6b":
+                continue   # agrupa por broker a propósito: una fila por broker, no por persona
             self.assertEqual(len(filas), por_seccion[sid],
                              f"{sid}: {len(filas)} filas para {por_seccion[sid]} consulta(s)")
 

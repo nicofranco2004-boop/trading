@@ -353,6 +353,40 @@ FROM (
 
 
 -- ────────────────────────────────────────────────────────────────────────────
+-- Q6b · A-9 — Qué guarda cada broker en una conversión (desglose por broker)
+-- ────────────────────────────────────────────────────────────────────────────
+-- Q6 supone que `gross_amount` está en pesos y `quantity` en dólares para TODOS
+-- los brokers. Con el MEP del día sigue marcando 1.161 de 1.624 conversiones
+-- como "fantasma": la suposición no vale parejo. Esta consulta no juzga nada —
+-- muestra, por broker, cuántas conversiones hay, en qué moneda dicen estar y
+-- cuánto da en promedio gross/quantity, que para pesos→dólares debería
+-- parecerse al dólar del día (≈1.000–1.600) y no a 1 ni a 0,0007.
+-- Agrupa por NOMBRE DE BROKER (Cocos, Balanz…), que no identifica a nadie.
+
+SELECT
+    t.broker,
+    t.operation_type,
+    COALESCE(t.currency,'')             AS currency,
+    COALESCE(t.settlement_currency,'')  AS settlement_currency,
+    COUNT(*)                            AS conversiones,
+    COUNT(DISTINCT t.batch_id)          AS batches,
+    ROUND(AVG(CASE WHEN COALESCE(t.quantity,0) <> 0
+               THEN COALESCE(t.gross_amount,0) / t.quantity END), 2)
+                                        AS gross_sobre_quantity_promedio,
+    SUM(CASE WHEN t.gross_amount_usd IS NOT NULL THEN 1 ELSE 0 END)
+                                        AS con_gross_usd,
+    SUM(CASE WHEN t.tc_compra IS NOT NULL THEN 1 ELSE 0 END)
+                                        AS con_tc_compra
+FROM import_normalized_tx t
+WHERE t.operation_type IN ('FX_ARS_TO_USD', 'FX_USD_TO_ARS')
+  AND t.excluded_at IS NULL
+  AND (t.created_operation_id IS NOT NULL OR t.created_position_id IS NOT NULL)
+GROUP BY t.broker, t.operation_type, currency, settlement_currency
+ORDER BY conversiones DESC
+;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
 -- Q7 · B-4 — Operaciones "Interés PF" y cuánto suman
 -- ────────────────────────────────────────────────────────────────────────────
 -- main.py:9315-9320 inserta con `pnl_usd` en MONEDA NATIVA y

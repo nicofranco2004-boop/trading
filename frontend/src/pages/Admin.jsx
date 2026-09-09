@@ -1781,6 +1781,25 @@ function AlcanceAuditoriaPanel({ toast }) {
             <b className="text-amber-500">{data.resumen.a_mirar}</b> para mirar ·{' '}
             <b className="text-emerald-500">{data.resumen.ok}</b> sin caso
           </p>
+          {data.crudo?.Q6b?.length > 0 && (
+            <details className="border border-line/60 rounded-lg p-3">
+              <summary className="text-[12px] text-ink-1 cursor-pointer">
+                Conversiones por broker (para entender el número de "plata fantasma")
+              </summary>
+              <div className="overflow-x-auto mt-2">
+                <table className="text-[11px] tabular w-full">
+                  <thead className="text-ink-3"><tr>
+                    {Object.keys(data.crudo.Q6b[0]).map(k => <th key={k} className="text-left pr-3 font-medium">{k.replace(/_/g, ' ')}</th>)}
+                  </tr></thead>
+                  <tbody>{data.crudo.Q6b.map((row, i) => (
+                    <tr key={i} className="border-t border-line/40">
+                      {Object.values(row).map((v, j) => <td key={j} className="pr-3 py-0.5 whitespace-nowrap">{v ?? '—'}</td>)}
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </details>
+          )}
           {data.hallazgos.map(h => {
             const v = VEREDICTO[h.veredicto] || VEREDICTO.sin_dato
             return (
