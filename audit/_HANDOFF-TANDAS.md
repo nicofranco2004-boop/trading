@@ -38,10 +38,10 @@ mide rendimiento arranca preguntando qué día es hoy.
 
 ### Lo único que hay que saber antes de empezar F3
 
-Los dos arreglos de F3 **van en el mismo commit, obligatoriamente**. El error del borde de
-apertura del año está mal, pero **hoy queda tapado** por el error de zona horaria: como la fila
-que dice 1 de enero es en realidad el cierre del 31 de diciembre en hora argentina, el borde
-sale bien por accidente. Arreglar la zona horaria sin tocar el otro **hace aparecer un error que
+Los dos arreglos de F3 **van en el mismo commit, obligatoriamente**. El borde de apertura del
+año está mal calculado, pero **hoy queda tapado** por el error de zona horaria: como la fila que
+dice 1 de enero es en realidad el cierre del 31 de diciembre en hora argentina, el borde sale
+bien por accidente. Arreglar la zona horaria sin tocar el otro **hace aparecer un error que
 hoy nadie ve**: medido, publica −22,86 % sobre una cartera que ganó mil dólares.
 
 ### Lo que corrió en paralelo y NO es una tanda
