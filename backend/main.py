@@ -18801,6 +18801,58 @@ def admin_diagnose_flujo_implausible(user_id: Optional[int] = None,
         conn.close()
 
 
+def _repair_interes_pf(conn, apply: bool) -> dict:
+    """Sella el TC en los `Interés PF` en pesos que nacieron sin él.
+
+    Con `fx_to_usd = NULL`, `realized_usd` cae al valor crudo y el interés en
+    pesos se lee como dólares (medido en prod: 1 usuario, 2 filas, $121.095
+    publicados como US$121.095). Se sella el MEP del día del cobro con el mismo
+    helper que usa el cupón, y después corre `_recalc_pnl_realized_from_ops`,
+    que es quien re-escribe `monthly_entries` desde las operaciones: sin eso el
+    sello queda pero el Dashboard sigue mostrando el número viejo.
+
+    Idempotente: sólo toca filas con `fx_to_usd IS NULL`. Sin MEP para esa fecha
+    la fila se lista como `sin_tc` y NO se toca — no se inventa un número.
+    """
+    filas = conn.execute(
+        """SELECT id, user_id, date, pnl_usd, currency FROM operations
+            WHERE op_type = 'Interés PF' AND fx_to_usd IS NULL
+              AND UPPER(COALESCE(currency,'')) NOT IN ('USD','USDT')
+            ORDER BY date""").fetchall()
+    cambios, sin_tc, usuarios = [], [], set()
+    for r in filas:
+        mep, fuente = _fx.fx_for_date_detail(conn, r["date"])
+        item = {"id": r["id"], "fecha": str(r["date"])[:10],
+                "monto_pesos": round(float(r["pnl_usd"] or 0), 2)}
+        if not mep:
+            sin_tc.append(item); continue
+        item.update(tc=mep, fuente=fuente,
+                    queda_en_usd=round(float(r["pnl_usd"] or 0) / mep, 2))
+        cambios.append(item); usuarios.add(r["user_id"])
+    if apply and cambios:
+        with conn:
+            for c in cambios:
+                conn.execute("UPDATE operations SET fx_to_usd=? WHERE id=? AND fx_to_usd IS NULL",
+                             (c["tc"], c["id"]))
+            for u in usuarios:
+                _recalc_pnl_realized_from_ops(conn, u)
+    return {"applied": bool(apply), "filas_a_sellar": cambios, "sin_tc": sin_tc,
+            "usuarios": len(usuarios),
+            "pesos_leidos_como_usd": round(sum(c["monto_pesos"] for c in cambios), 2),
+            "usd_reales": round(sum(c["queda_en_usd"] for c in cambios), 2)}
+
+
+@app.post("/api/admin/repair-interes-pf")
+def admin_repair_interes_pf(apply: bool = False, uid: int = Depends(get_admin_user)):
+    """Reparación del hallazgo B-4 sobre lo ya escrito. `apply=false` = sólo lista.
+    Ver `_repair_interes_pf`."""
+    conn = get_db()
+    try:
+        return _repair_interes_pf(conn, bool(apply))
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/alcance-auditoria")
 def admin_alcance_auditoria(uid: int = Depends(get_admin_user)):
     """Cuánto muerde en producción cada hallazgo de la auditoría de cálculo.

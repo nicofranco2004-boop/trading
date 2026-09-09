@@ -320,3 +320,60 @@ class TestCobrarPFSellaElTC(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRepararInteresPFViejo(unittest.TestCase):
+    """Las filas que nacieron sin TC: se sella el MEP de su fecha y el recálculo
+    las lleva a `monthly_entries`. Atraviesa el mismo camino que producción."""
+
+    def setUp(self):
+        import datetime as _d
+        self.conn = main.get_db(); self.addCleanup(self.conn.close)
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,'x',1)",
+            (f"pfrep-{id(self)}@rendi.test",))
+        self.uid = cur.lastrowid; self.addCleanup(self._limpiar)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Galicia", "ARS"))
+        self.conn.execute(
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) VALUES "
+            "('2026-08-01', 1400, ?, 'manual') ON CONFLICT (date) DO UPDATE SET mep_venta=EXCLUDED.mep_venta",
+            (MEP,))
+        self.conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd, currency, fx_to_usd)
+               VALUES (?, '2026-08-05', 'Galicia', 'Galicia', 'Interés PF', ?, 'ARS', NULL)""",
+            (self.uid, PF_INTERES_ARS))
+        self.conn.commit()
+
+    def _limpiar(self):
+        c = main.get_db()
+        for t in ("operations", "monthly_entries", "brokers"):
+            c.execute(f"DELETE FROM {t} WHERE user_id=?", (self.uid,))
+        c.execute("DELETE FROM users WHERE id=?", (self.uid,)); c.commit(); c.close()
+
+    def _fila(self):
+        return main.get_db().execute(
+            "SELECT fx_to_usd FROM operations WHERE user_id=? AND op_type='Interés PF'",
+            (self.uid,)).fetchone()["fx_to_usd"]
+
+    def test_preview_lista_sin_tocar(self):
+        r = main._repair_interes_pf(self.conn, apply=False)
+        mias = [c for c in r["filas_a_sellar"] if c["fecha"] == "2026-08-05"]
+        self.assertEqual(len(mias), 1)
+        self.assertEqual(mias[0]["tc"], MEP)
+        self.assertIsNone(self._fila(), "el preview escribió")
+
+    def test_aplicar_sella_y_el_recalculo_lo_lleva_al_mensual(self):
+        main._repair_interes_pf(self.conn, apply=True)
+        self.assertEqual(self._fila(), MEP)
+        # El escritor POSTERIOR: monthly_entries tiene que quedar en USD reales.
+        m = main.get_db().execute(
+            "SELECT pnl_realized FROM monthly_entries WHERE user_id=? AND broker='global' "
+            "AND year=2026 AND month=8", (self.uid,)).fetchone()
+        self.assertIsNotNone(m, "el recálculo no escribió el mes")
+        self.assertAlmostEqual(m["pnl_realized"], PF_INTERES_ARS / MEP, delta=1.0)
+
+    def test_segunda_pasada_no_toca_nada(self):
+        main._repair_interes_pf(self.conn, apply=True)
+        r = main._repair_interes_pf(self.conn, apply=True)
+        self.assertEqual([c for c in r["filas_a_sellar"] if c["fecha"] == "2026-08-05"], [])
