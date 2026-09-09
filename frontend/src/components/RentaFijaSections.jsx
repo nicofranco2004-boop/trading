@@ -61,7 +61,7 @@ export default function RentaFijaSections({
   onChanged, onEdit, onDelete, onEditGroup,
   // v2 — plumbing del detalle (opcionales: sin ellos la card degrada con gracia)
   bondCashflowsByKey = null, pendingDatesByKey = null, openBondCashflow = null,
-  tcMep = null, cerSeries = null, cerStale = false, isArsFor = null, priceFor = null,
+  tcMep = null, cerSeries = null, cerStale = false, cerBasis = 'CER', isArsFor = null, priceFor = null,
   priceMeta = null,
 }) {
   const toast = useToast()
@@ -243,7 +243,7 @@ export default function RentaFijaSections({
                 tcValuacion={tcValuacion}
                 price={priceFor ? priceFor(p) : null}
                 pmeta={priceMeta ? priceMeta[p.asset] : null}
-                tcMep={tcMep} cerSeries={cerSeries} cerStale={cerStale}
+                tcMep={tcMep} cerSeries={cerSeries} cerStale={cerStale} cerBasis={cerBasis}
                 expanded={!!expanded[p.id]}
                 onToggle={() => setExpanded(e => ({ ...e, [p.id]: !e[p.id] }))}
                 onEdit={onEdit} onDelete={onDelete} onEditGroup={onEditGroup}
@@ -279,7 +279,7 @@ export default function RentaFijaSections({
 // barra de capital recuperado + expansión al detalle completo.
 function BondCardRow({
   p, v, lots = null, isAgg = false,
-  fmtMoney, summary, pendingDates, isArs, isArsDisp, tcValuacion, price, pmeta, tcMep, cerSeries, cerStale,
+  fmtMoney, summary, pendingDates, isArs, isArsDisp, tcValuacion, price, pmeta, tcMep, cerSeries, cerStale, cerBasis = 'CER',
   expanded, onToggle, onEdit, onDelete, onEditGroup, openBondCashflow,
 }) {
   const meta = getBondMeta(p.asset)
@@ -504,6 +504,7 @@ function BondCardRow({
             tcMep={tcMep}
             cerSeries={cerSeries}
             cerStale={cerStale}
+            cerBasis={cerBasis}
             pendingDates={pendingDates}
             onAddCoupon={() => openBondCashflow && openBondCashflow(p, 'coupon')}
             onAddAmortization={() => openBondCashflow && openBondCashflow(p, 'amortization')}

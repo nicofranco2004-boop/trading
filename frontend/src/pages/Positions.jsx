@@ -219,6 +219,7 @@ function PositionsDesktop() {
   // null = no se intentó fetch; {} = se intentó pero vino vacío (graceful);
   // dict no-vacío = serie disponible.
   const [cerSeries, setCerSeries] = useState(null)
+  const [cerBasis, setCerBasis] = useState('CER')
   const [cerStale, setCerStale] = useState(false)
   // Phase 3E: skips de cobranzas teóricas (pagos del cronograma que el user
   // marcó como "no aplica"). Persistido en backend; lo cargamos al mount.
@@ -276,10 +277,15 @@ function PositionsDesktop() {
       const res = await api.get('/bond-indices/CER')
       setCerSeries(res.series || {})
       setCerStale(!!res.stale)
+      // Con qué serie ajustó el backend de verdad. La fuente de CER está caída
+      // (404) y se sirve UVA, que el BCRA actualiza POR CER: el ratio entre dos
+      // fechas es el mismo. La pantalla lo dice en vez de rotularlo "CER".
+      setCerBasis(res.basis || 'CER')
       return res.series || {}
     } catch {
       setCerSeries({})
       setCerStale(true)
+      setCerBasis('CER')
       return {}
     }
   }
@@ -2512,7 +2518,7 @@ function PositionsDesktop() {
                             tcValuacion={tcValuacion}
                             currentPrice={c.priceArs}
                             tcMep={tcMepStrict}
-                            cerSeries={cerSeries}
+                            cerSeries={cerSeries} cerBasis={cerBasis}
                             cerStale={cerStale}
                             onAddCoupon={() => openBondCashflow(p, 'coupon')}
                             onAddAmortization={() => openBondCashflow(p, 'amortization')}
@@ -2740,7 +2746,7 @@ function PositionsDesktop() {
                           tcValuacion={tcValuacion}
                           currentPrice={c.price}
                           tcMep={tcMepStrict}
-                          cerSeries={cerSeries}
+                          cerSeries={cerSeries} cerBasis={cerBasis}
                           cerStale={cerStale}
                           onAddCoupon={() => openBondCashflow(p, 'coupon')}
                           onAddAmortization={() => openBondCashflow(p, 'amortization')}
@@ -2797,7 +2803,7 @@ function PositionsDesktop() {
         bondCashflowsByKey={bondCashflowsByKey}
         pendingDatesByKey={pendingDatesByKey}
         openBondCashflow={openBondCashflow}
-        tcMep={tcMepStrict} cerSeries={cerSeries} cerStale={cerStale}
+        tcMep={tcMepStrict} cerSeries={cerSeries} cerStale={cerStale} cerBasis={cerBasis}
         isArsFor={(p) => brokers.find(b => b.name === p.broker)?.currency === 'ARS'}
         priceFor={(p) => (brokers.find(b => b.name === p.broker)?.currency === 'ARS') ? calcARS(p).priceArs : calcUSDT(p).price}
         priceMeta={prices?.__meta || null} />

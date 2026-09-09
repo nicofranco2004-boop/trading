@@ -30,7 +30,7 @@ function diffDaysAbs(a, b) {
 }
 
 export function BondDetailBody({
-  p, summary, isARS, currentPrice, tcMep, cerSeries, cerStale,
+  p, summary, isARS, currentPrice, tcMep, cerSeries, cerStale, cerBasis = 'CER',
   onAddCoupon, onAddAmortization, pendingDates = null,
   isArsDisp = null, tcValuacion = null,
 }) {
@@ -203,6 +203,11 @@ export function BondDetailBody({
                 cerFactorToday != null ? (
                   <p className="text-[10.5px] text-data-cyan pt-1">
                     Capital ajustado por CER · factor hoy ≈ {cerFactorToday.toFixed(3)}×
+                    {/* La fuente de CER está caída y el backend sirve UVA, que el
+                        BCRA actualiza POR CER: el ratio entre dos fechas es el
+                        mismo. Se dice cuál se usó en vez de rotularlo "CER" a
+                        secas — el número es el correcto, la serie es otra. */}
+                    {cerBasis === 'UVA' && <span className="text-ink-3"> (vía UVA)</span>}
                     {cerStale && <span className="text-rendi-warn"> (serie posiblemente desactualizada)</span>}
                   </p>
                 ) : cerSeries === null ? (
@@ -271,8 +276,16 @@ export function BondDetailBody({
             <>
               <p className="text-[21px] font-bold tabular leading-none text-data-violet">{pctSigned(yieldEstimate)}</p>
               <p className="text-[11px] text-ink-3 mt-1">
+                {/* ⚠️ EL RÓTULO NO PUEDE AFIRMAR UN AJUSTE QUE NO OCURRIÓ. Con la
+                    serie caída, la misma tarjeta decía arriba "Serie CER no
+                    disponible — flujos en nominal sin ajuste" y acá abajo
+                    rotulaba el número grande como "TIR real (sobre CER)… es lo
+                    que ganás POR ENCIMA de la inflación". Sin ajuste no es real:
+                    es nominal, y el usuario no tiene cómo darse cuenta. */}
                 {meta?.type === 'cer'
-                  ? <span className="border-b border-dotted border-ink-3/40 cursor-help" title="TIR REAL sobre la inflación: los flujos se descuentan al CER actual — es lo que ganás POR ENCIMA de la inflación.">TIR real (sobre CER) a precio de hoy</span>
+                  ? (cerFactorToday != null
+                      ? <span className="border-b border-dotted border-ink-3/40 cursor-help" title="TIR REAL sobre la inflación: los flujos se descuentan al CER actual — es lo que ganás POR ENCIMA de la inflación.">TIR real (sobre CER) a precio de hoy</span>
+                      : <span className="border-b border-dotted border-rendi-warn/40 cursor-help" title="Sin la serie de ajuste, los flujos van en nominal: esta TIR NO está por encima de la inflación.">TIR nominal — sin ajuste por CER</span>)
                   : 'TIR efectiva anual a precio de hoy'}
                 {!yieldDetail.converged && <span className="text-rendi-warn"> · aproximada</span>}
               </p>
