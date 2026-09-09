@@ -18842,6 +18842,79 @@ def _repair_interes_pf(conn, apply: bool) -> dict:
             "usd_reales": round(sum(c["queda_en_usd"] for c in cambios), 2)}
 
 
+def _repair_caja_1415(conn, apply: bool) -> dict:
+    """Re-dolariza los flujos manuales de caja que quedaron al 1.415 fijo.
+
+    `reconcile-cash` dividía los pesos por un `Field(1415)` literal que su único
+    caller nunca mandaba (A-6, arreglado en F1). Medido en prod: 22 meses, 21
+    usuarios, US$779.200 registrados con ese dólar — cada uno con ~7 % de capital
+    que nunca existió. Se detectan por la firma: `native / usd ≈ 1415.0`.
+
+    Se re-dolariza con `_manual_flow_rate` sobre el día 1 del mes — EXACTAMENTE lo
+    que hace hoy reconcile-cash, no un criterio nuevo — y después corre
+    `_recalc_pnl_realized_from_ops`, que es autoritativo: reconstruye
+    `deposits = importados + manual_deposits`, recompone la fila `global` como
+    Σ(por broker) y rehace la cadena de `capital_final`. Por eso se tocan sólo
+    las filas por broker: la global la rearma el recálculo.
+
+    Idempotente: después de corregir, la firma 1415 desaparece. Si el dólar real
+    del mes fuera 1415 (no pasa), la fila se lista como `ya_correcta` y no se toca.
+    """
+    filas = conn.execute(
+        """SELECT id, user_id, year, month, broker,
+                  manual_deposits, manual_deposits_native,
+                  manual_withdrawals, manual_withdrawals_native
+             FROM monthly_entries
+            WHERE broker != 'global'
+              AND ((COALESCE(manual_deposits,0) > 0 AND COALESCE(manual_deposits_native,0) > 0
+                    AND ABS(manual_deposits_native / manual_deposits - 1415.0) < 0.5)
+                OR (COALESCE(manual_withdrawals,0) > 0 AND COALESCE(manual_withdrawals_native,0) > 0
+                    AND ABS(manual_withdrawals_native / manual_withdrawals - 1415.0) < 0.5))
+            ORDER BY year, month""").fetchall()
+    cambios, ya_ok, usuarios = [], [], set()
+    for r in filas:
+        ref = f"{int(r['year']):04d}-{int(r['month']):02d}-01"
+        rate = _manual_flow_rate(conn, r["user_id"], ref)
+        item = {"id": r["id"], "mes": ref[:7], "broker": r["broker"], "tc_nuevo": round(rate, 2)}
+        if not rate or abs(rate - 1415.0) < 0.5:
+            ya_ok.append(item); continue
+        sets, args = [], []
+        for col, nat in (("manual_deposits", "manual_deposits_native"),
+                         ("manual_withdrawals", "manual_withdrawals_native")):
+            usd, pesos = float(r[col] or 0), float(r[nat] or 0)
+            if usd > 0 and pesos > 0 and abs(pesos / usd - 1415.0) < 0.5:
+                nuevo = round(pesos / rate, 2)
+                item[col] = {"pesos": round(pesos, 2), "usd_antes": round(usd, 2),
+                             "usd_despues": nuevo, "diferencia": round(nuevo - usd, 2)}
+                sets.append(f"{col}=?"); args.append(nuevo)
+        item["_sql"] = (sets, args)
+        cambios.append(item); usuarios.add(r["user_id"])
+    if apply and cambios:
+        with conn:
+            for c in cambios:
+                sets, args = c["_sql"]
+                conn.execute(f"UPDATE monthly_entries SET {', '.join(sets)} WHERE id=?",
+                             (*args, c["id"]))
+            for u in usuarios:
+                _recalc_pnl_realized_from_ops(conn, u)
+    for c in cambios:
+        c.pop("_sql", None)
+    dif = sum(v["diferencia"] for c in cambios for k, v in c.items()
+              if k in ("manual_deposits", "manual_withdrawals"))
+    return {"applied": bool(apply), "meses_a_corregir": cambios, "ya_correctas": ya_ok,
+            "usuarios": len(usuarios), "capital_fantasma_usd": round(-dif, 2)}
+
+
+@app.post("/api/admin/repair-caja-1415")
+def admin_repair_caja_1415(apply: bool = False, uid: int = Depends(get_admin_user)):
+    """Reparación del hallazgo A-6 sobre lo ya escrito. `apply=false` = sólo lista."""
+    conn = get_db()
+    try:
+        return _repair_caja_1415(conn, bool(apply))
+    finally:
+        conn.close()
+
+
 @app.post("/api/admin/repair-interes-pf")
 def admin_repair_interes_pf(apply: bool = False, uid: int = Depends(get_admin_user)):
     """Reparación del hallazgo B-4 sobre lo ya escrito. `apply=false` = sólo lista.

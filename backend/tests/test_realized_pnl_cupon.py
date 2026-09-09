@@ -377,3 +377,67 @@ class TestRepararInteresPFViejo(unittest.TestCase):
         main._repair_interes_pf(self.conn, apply=True)
         r = main._repair_interes_pf(self.conn, apply=True)
         self.assertEqual([c for c in r["filas_a_sellar"] if c["fecha"] == "2026-08-05"], [])
+
+
+class TestRepararCaja1415(unittest.TestCase):
+    """Los meses reconciliados al 1.415 fijo: se re-dolarizan con el MISMO
+    helper que usa hoy reconcile-cash, y el recálculo arrastra `deposits`,
+    la fila global y la cadena de capital."""
+
+    PESOS = 1_415_000.0          # dep manual en pesos
+    USD_VIEJO = 1000.0           # 1.415.000 / 1415 — la firma
+    MEP_REAL = 1250.0            # → 1.132,00 reales
+
+    def setUp(self):
+        self.conn = main.get_db(); self.addCleanup(self.conn.close)
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,'x',1)",
+            (f"caja1415-{id(self)}@rendi.test",))
+        self.uid = cur.lastrowid; self.addCleanup(self._limpiar)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Cocos", "ARS"))
+        self.conn.execute(
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) VALUES "
+            "('2026-03-01', 1400, ?, 'manual') ON CONFLICT (date) DO UPDATE SET mep_venta=EXCLUDED.mep_venta",
+            (self.MEP_REAL,))
+        for broker in ("Cocos", "global"):
+            self.conn.execute(
+                """INSERT INTO monthly_entries (user_id, year, month, broker, deposits, withdrawals,
+                       manual_deposits, manual_deposits_native, pnl_realized, pnl_unrealized,
+                       capital_inicio, capital_final)
+                   VALUES (?, 2026, 3, ?, ?, 0, ?, ?, 0, 0, 0, ?)""",
+                (self.uid, broker, self.USD_VIEJO, self.USD_VIEJO, self.PESOS, self.USD_VIEJO))
+        self.conn.commit()
+
+    def _limpiar(self):
+        c = main.get_db()
+        for t in ("monthly_entries", "brokers"):
+            c.execute(f"DELETE FROM {t} WHERE user_id=?", (self.uid,))
+        c.execute("DELETE FROM users WHERE id=?", (self.uid,)); c.commit(); c.close()
+
+    def _fila(self, broker):
+        return main.get_db().execute(
+            "SELECT manual_deposits, deposits FROM monthly_entries WHERE user_id=? AND broker=? "
+            "AND year=2026 AND month=3", (self.uid, broker)).fetchone()
+
+    def test_preview_lista_con_el_mismo_dolar_que_reconcile_cash(self):
+        r = main._repair_caja_1415(self.conn, apply=False)
+        mios = [c for c in r["meses_a_corregir"] if c["broker"] == "Cocos" and c["mes"] == "2026-03"]
+        self.assertEqual(len(mios), 1)
+        esperado = main._manual_flow_rate(self.conn, self.uid, "2026-03-01")
+        self.assertEqual(mios[0]["tc_nuevo"], round(esperado, 2))
+        self.assertAlmostEqual(mios[0]["manual_deposits"]["usd_despues"], self.PESOS / self.MEP_REAL, places=2)
+        self.assertEqual(self._fila("Cocos")["manual_deposits"], self.USD_VIEJO, "el preview escribió")
+
+    def test_aplicar_corrige_el_broker_y_el_recalculo_arrastra_deposits_y_global(self):
+        main._repair_caja_1415(self.conn, apply=True)
+        nuevo = round(self.PESOS / self.MEP_REAL, 2)
+        self.assertAlmostEqual(self._fila("Cocos")["manual_deposits"], nuevo, places=2)
+        # Los escritores POSTERIORES: `deposits` y la fila global salen del recálculo.
+        self.assertAlmostEqual(self._fila("Cocos")["deposits"], nuevo, places=2)
+        self.assertAlmostEqual(self._fila("global")["deposits"], nuevo, places=2)
+
+    def test_segunda_pasada_no_toca_nada(self):
+        main._repair_caja_1415(self.conn, apply=True)
+        r = main._repair_caja_1415(self.conn, apply=True)
+        self.assertEqual([c for c in r["meses_a_corregir"] if c["broker"] == "Cocos"], [])

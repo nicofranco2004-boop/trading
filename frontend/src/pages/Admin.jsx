@@ -335,6 +335,7 @@ export default function Admin() {
 
       <AlcanceAuditoriaPanel toast={toast} />
       <RepairInteresPfPanel toast={toast} />
+      <RepairCaja1415Panel toast={toast} />
       <FciRefreshPanel toast={toast} />
       <MtmAuditPanel toast={toast} />
       <FxMigratePanel toast={toast} />
@@ -1644,6 +1645,76 @@ function FciRefreshPanel({ toast }) {
           {Object.entries(r).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ')}
         </p>
       )}
+    </div>
+  )
+}
+
+
+// ─── RepairCaja1415Panel — re-dolariza la caja reconciliada al 1.415 fijo ────
+// Medido: 22 meses, 21 usuarios, US$779.200 con ese dólar (~7 % de capital que
+// nunca existió). Usa el MISMO dólar que hoy usa reconcile-cash (MEP del día 1
+// del mes) y deja que el recálculo mensual arrastre deposits, global y capital.
+function RepairCaja1415Panel({ toast }) {
+  const [prev, setPrev] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(null)
+
+  async function correr(apply) {
+    setBusy(true)
+    try {
+      const out = await api.post(`/admin/repair-caja-1415?apply=${apply}`)
+      if (apply) { setDone(out); setPrev(null); toast.push(`Corregidos ${out.meses_a_corregir.length} mes(es)`, { type: 'success' }) }
+      else setPrev(out)
+    } catch (e) {
+      toast.push('Error: ' + e.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const n = prev?.meses_a_corregir?.length ?? 0
+  const fmt = v => (v ?? 0).toLocaleString('es-AR')
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={16} className="text-amber-500" />
+          <h2 className="font-semibold text-ink-0">Caja reconciliada al dólar fijo 1.415</h2>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => correr(false)} disabled={busy}
+            className="text-xs px-3 py-1.5 rounded border border-line text-ink-1 hover:bg-bg-1 disabled:opacity-50">
+            {busy && !prev ? 'Mirando…' : '1 · Ver qué cambiaría'}
+          </button>
+          <button onClick={() => correr(true)} disabled={busy || !prev || n === 0}
+            className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40">
+            {busy && prev ? 'Aplicando…' : `2 · Aplicar${n ? ` (${n})` : ''}`}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Cuando un usuario reconciliaba su caja en pesos, el sistema dividía por un dólar de 1.415 escrito a
+        mano en el código, sin importar la fecha. Esto vuelve a dolarizar esos meses con el dólar MEP real
+        del mes (el mismo criterio que usa hoy) y recalcula el capital de cada usuario. <b>Sólo toca los
+        meses con esa firma</b>; apretarlo dos veces no hace nada la segunda. El paso 1 no modifica nada.
+      </p>
+      {prev && (
+        <div className="text-xs space-y-1">
+          <p className="text-ink-2">
+            <b>{n}</b> mes(es) de <b>{prev.usuarios}</b> usuario(s). Capital que desaparece porque nunca existió:{' '}
+            <b className="text-rose-500">US$ {fmt(prev.capital_fantasma_usd)}</b>.
+          </p>
+          {prev.meses_a_corregir.map(c => (
+            <p key={c.id} className="text-ink-3 tabular">
+              {c.mes} · {c.broker} · dólar del mes {fmt(c.tc_nuevo)}
+              {c.manual_deposits && <> · depósitos US$ {fmt(c.manual_deposits.usd_antes)} → {fmt(c.manual_deposits.usd_despues)}</>}
+              {c.manual_withdrawals && <> · retiros US$ {fmt(c.manual_withdrawals.usd_antes)} → {fmt(c.manual_withdrawals.usd_despues)}</>}
+            </p>
+          ))}
+          {prev.ya_correctas.length > 0 && (
+            <p className="text-ink-3">{prev.ya_correctas.length} mes(es) donde el dólar real era 1.415: no se tocan.</p>
+          )}
+        </div>
+      )}
+      {done && <p className="text-xs text-emerald-500">Listo: {done.meses_a_corregir.length} mes(es) corregidos y {done.usuarios} usuario(s) recalculado(s).</p>}
     </div>
   )
 }
