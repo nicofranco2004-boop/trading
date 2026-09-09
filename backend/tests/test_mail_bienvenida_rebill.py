@@ -180,5 +180,80 @@ class BienvenidaRebillTest(unittest.TestCase):
         self.assertIsNone(self._fila(sub_id)["welcome_email_sent_at"])
 
 
+class MarcaDeLosQueYaEstabanTest(unittest.TestCase):
+    """La marca de una sola vez que corre al arrancar (`_marcar_bienvenidas_previas`).
+
+    Los que se suscribieron por Rebill ANTES de este arreglo figuran como "nunca se
+    les avisó", y Rebill re-entrega eventos viejos: sin la marca, una re-entrega les
+    mandaría un "¡Bienvenido!" con fecha de hace meses."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app)
+
+    def setUp(self):
+        self.conn = main.get_db()
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, name) VALUES (?,?,1,'Nico')",
+            (f"marca-{uuid.uuid4().hex[:8]}@rendi.test", "x")).lastrowid
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _sub(self, sub_id, *, status="authorized", creada="2026-07-01 10:00:00", marca=None):
+        self.conn.execute(
+            """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,
+                                          period, status, amount_ars, created_at,
+                                          welcome_email_sent_at)
+               VALUES (?,?,?,'monthly',?,0,?,?)""",
+            (self.uid, sub_id, f"rendi-{self.uid}-pro-monthly", status, creada, marca))
+        self.conn.commit()
+
+    def _marca(self, sub_id):
+        return self.conn.execute(
+            "SELECT welcome_email_sent_at FROM subscriptions WHERE mp_subscription_id=?",
+            (sub_id,)).fetchone()["welcome_email_sent_at"]
+
+    def test_marca_a_los_que_ya_estaban(self):
+        self._sub("sub-vieja")
+        main._marcar_bienvenidas_previas(self.conn)
+        self.assertIsNotNone(self._marca("sub-vieja"))
+
+    def test_no_toca_a_los_nuevos(self):
+        """Una suscripción creada DESPUÉS del corte sí tiene que recibir su mail."""
+        self._sub("sub-nueva", creada="2026-09-20 10:00:00")
+        main._marcar_bienvenidas_previas(self.conn)
+        self.assertIsNone(self._marca("sub-nueva"))
+
+    def test_no_toca_las_que_no_llegaron_a_pagar(self):
+        """Una `pending` que active algún día merece su bienvenida."""
+        self._sub("sub-pendiente", status="pending")
+        main._marcar_bienvenidas_previas(self.conn)
+        self.assertIsNone(self._marca("sub-pendiente"))
+
+    def test_no_pisa_una_marca_que_ya_estaba(self):
+        self._sub("sub-ya-avisada", marca="2026-06-01 09:00:00")
+        main._marcar_bienvenidas_previas(self.conn)
+        self.assertEqual(self._marca("sub-ya-avisada"), "2026-06-01 09:00:00")
+
+    def test_correrla_dos_veces_no_hace_nada_la_segunda(self):
+        self._sub("sub-idem")
+        self.assertEqual(main._marcar_bienvenidas_previas(self.conn), 1)
+        self.assertEqual(main._marcar_bienvenidas_previas(self.conn), 0)
+
+    def test_una_reentrega_vieja_ya_no_manda_el_mail(self):
+        """El efecto que se busca, extremo a extremo: sub vieja + marca puesta +
+        Rebill repite el evento de alta → no le llega nada."""
+        self._sub("sub-reentrega")
+        main._marcar_bienvenidas_previas(self.conn)
+        with patch("billing.emails._send") as send:
+            send.return_value = True
+            r = self.client.post("/api/billing/rebill-webhook",
+                                 json=_payload(self.uid, "sub-reentrega"))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(send.called, "le mandó una bienvenida con fecha vieja")
+
+
 if __name__ == "__main__":
     unittest.main()

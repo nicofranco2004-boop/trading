@@ -781,6 +781,51 @@ def _init_db_postgres():
                 pass          # la FK ya existía (ADD FOREIGN KEY no tiene IF NOT EXISTS)
 
 
+# Fecha en que el mail de bienvenida empezó a salir por Rebill. Todo lo anterior
+# a esto es "ya estaba cuando el mail no salía".
+BIENVENIDA_REBILL_DESDE = "2026-09-09"
+
+
+def _marcar_bienvenidas_previas(conn) -> int:
+    """Marca como YA AVISADOS a los suscriptores que existían antes de que el mail
+    de bienvenida empezara a salir por Rebill. Devuelve cuántos marcó.
+
+    ⚠️ POR QUÉ HACE FALTA. Hasta ahora el mail sólo salía por el webhook de Mercado
+    Pago, así que todos los que se suscribieron por Rebill tienen
+    `welcome_email_sent_at` en NULL — o sea, figuran como "nunca se les avisó". Y
+    Rebill RE-ENTREGA eventos viejos: si mañana repite un `subscription.created` de
+    hace meses, a esa persona le llegaría un "¡Bienvenido!" con fecha vieja. La marca
+    cierra esa puerta sin mandar nada.
+
+    NO afecta a nadie nuevo: el corte es por `created_at`, así que una suscripción
+    creada de acá en adelante queda intacta y sí recibe su mail. Y no toca las
+    `pending` (las que empezaron a pagar y no terminaron): si esas activan algún día,
+    les corresponde la bienvenida.
+
+    Idempotente: la segunda corrida no encuentra filas. Vive en el arranque, que es
+    donde este repo hace el resto de las migraciones.
+    """
+    try:
+        cur = conn.execute(
+            """UPDATE subscriptions
+                  SET welcome_email_sent_at = COALESCE(welcome_email_sent_at, created_at)
+                WHERE status = 'authorized'
+                  AND welcome_email_sent_at IS NULL
+                  AND created_at IS NOT NULL
+                  AND created_at < ?""",
+            (BIENVENIDA_REBILL_DESDE,),
+        )
+        n = cur.rowcount or 0
+        conn.commit()
+        if n:
+            log.info("bienvenidas previas marcadas (no se manda nada): %d filas", n)
+        return n
+    except Exception as ex:
+        # No puede voltear el arranque de la app por una marca cosmética.
+        log.warning("no se pudieron marcar las bienvenidas previas: %s", ex)
+        return 0
+
+
 def init_db():
     if USANDO_PG:
         # En Postgres NO se replican las 46 migraciones incrementales: son la
@@ -2330,6 +2375,8 @@ def init_db():
         if sub_cols and 'amount_usd' not in sub_cols:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN amount_usd REAL")
         conn.commit()
+
+        _marcar_bienvenidas_previas(conn)
 
         # ─── Credit window model (Rendi-managed proration) ──────────────────────
         # Cuando un user cambia de plan (Plus ↔ Pro) o cancela mid-período, NO

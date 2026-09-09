@@ -27,6 +27,7 @@ para revert.
 """
 from __future__ import annotations
 import json
+import logging
 from datetime import datetime
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -36,6 +37,11 @@ from .schema import (
     OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TAX, OP_FUTURES_PNL,
 )
 from . import seed as _seed
+
+# Este módulo no tenía logger. Hace falta uno para poder avisar cuando un camino
+# de rescate se apaga: sin eso, un fallback silencioso deja de arreglar y nadie
+# se entera hasta que el número aparece mal en pantalla meses después.
+log = logging.getLogger(__name__)
 try:
     from fx import fx_for_date, fx_version, FX_V2
 except ImportError:  # pragma: no cover — import relativo según cómo se cargue el paquete
@@ -1284,7 +1290,16 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
     _refrescables = set()
     try:
         from twr import clasificar_fila as _clasif, SINTETICO_COSTO as _SINT
-        for _r in conn.execute("SELECT * FROM snapshots WHERE user_id=?", (uid,)).fetchall():
+        # Columnas explícitas y NO `SELECT *`: `holdings_json` guarda la composición
+        # entera de la cartera de ese día y hay cuentas con cientos de fotos. El
+        # clasificador sólo necesita saber si está o no, así que se pregunta eso
+        # (0/1) y el JSON no viaja. Con `SELECT *`, un `repair-snapshots-all` sobre
+        # ~950 cuentas leía megabytes que después tiraba.
+        for _r in conn.execute(
+            """SELECT date, source, fx_to_usd_blue, mtm_coverage,
+                      CASE WHEN holdings_json IS NOT NULL AND holdings_json <> ''
+                           THEN 1 ELSE 0 END AS holdings_json
+                 FROM snapshots WHERE user_id=?""", (uid,)).fetchall():
             _src = _r["source"] if "source" in _r.keys() else None
             # Sin firma no se puede AFIRMAR quién la escribió: se deja quieta
             # (mismo comportamiento que antes). Con `source` explícito
@@ -1292,8 +1307,12 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
             # `tenia_posiciones`, por eso el flag va en False y no se usa.
             if _src and _clasif(_r, False) == _SINT:
                 _refrescables.add(str(_r["date"])[:10])
-    except Exception:
-        _refrescables = set()   # sin clasificador, INSERT-only como antes
+    except Exception as _ex:
+        # Sin clasificador se vuelve al INSERT-only de antes: no se corrige nada,
+        # pero tampoco se pisa nada. Se LOGUEA porque si no, el arreglo se apagaría
+        # en silencio y los ceros volverían sin que nadie se entere.
+        _refrescables = set()
+        log.warning("backfill snapshots: no se pudo clasificar (uid=%s): %s", uid, _ex)
 
     for r in rows:
         cum_dep += r["deposits"] or 0
