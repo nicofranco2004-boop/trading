@@ -1,7 +1,7 @@
 # Handoff — auditoría de cálculo de Rendi y las tandas de fix que quedan
 
-**F2 está hecha** (rama `fix/f2-que-no-mientan`, sin deployar — ver §4). **Arrancá por F3.**
-Todo lo demás está para que entiendas por qué, sin tener que reconstruirlo.
+**F2 está hecha** y **el CER de F5 también** (rama `fix/f2-que-no-mientan`, sin deployar).
+Ver §4 y §4-bis. Todo lo demás está para que entiendas por qué, sin tener que reconstruirlo.
 
 **Base:** `origin/main` actual. Trabajá siempre sobre eso, **no** sobre el commit del mapeo — el
 código se movió y la auditoría original se hizo sobre `b74f450f`, que ya no es producción.
@@ -227,6 +227,64 @@ sigue en 0, esto baja de urgente a deuda estructural.
 **Por qué esta tanda primero:** son pocos, están acotados, y son **lo único que se publica fuera
 de la app o alimenta al modelo**. Un número inflado en una pantalla lo ve un usuario; un número
 inflado en el prompt le tuerce el consejo a todos.
+
+---
+
+## 4-bis. El CER de F5 — ✅ HECHO, adelantado a propósito
+
+El plan lo pone en F5, después de F3. Lo adelanté porque la comparación no da:
+
+| | qué estaba mal | cuánto |
+|---|---|---|
+| F3 | el cron sella el día en UTC en vez de ART | **un día** |
+| CER | todos los bonos CER ajustaban con factor **1,00** | el real es **7,7×–37,6×** |
+
+**Confirmado en vivo el 2026-09-08:** `api.argentinadatos.com/v1/finanzas/indices/cer`
+devuelve 404 mientras `/inflacion` y `/uva` del MISMO host devuelven 200. No está en
+ninguna variante de la ruta (`/cer/`, `/cer/2026`, `/indices`). No es la fuente caída: es
+esa ruta, y no vuelve sola.
+
+**Se sirve con UVA, y no es un parche.** Acá NO se usa el NIVEL del índice:
+`bondSchedule.js` calcula un RATIO, `serie[pago]/serie[emisión]`, y el BCRA actualiza la
+UVA POR CER. Lo dice el propio `_fetch_uva_monthly` del repo, que existe desde hace meses
+("UVA ajusta por inflación INDEC (CER)").
+
+**Verificado, no deducido.** Contra los factores que la auditoría midió con la serie CER
+real: el ratio UVA da **37,34× vs 37,44×** y **7,70× vs 7,72×** — 0,25 % de desvío, en dos
+bonos con fechas de emisión separadas por tres años. Probé además desfasar la serie de 1 a
+12 días por si había un lag: **cualquier desfasaje lo empeora**, así que el residuo es el
+redondeo del informe y no un lag que corregir. El endpoint real, extremo a extremo, hoy
+devuelve 3.816 filas y factor **37,57×** para TX26 donde la app publicaba 1,00×.
+
+**Lo que se arregló además del dato:**
+
+- **La caída era muda.** `_ensure_index_cached` hacía `return` pelado. Ahora loguea — una
+  vez cada 15 min por índice, porque un aviso que sale mil veces es invisible (que es más
+  o menos cómo esto sobrevivió meses). Se limita el aviso, **no** el reintento.
+- **La tarjeta se contradecía sola:** arriba "Serie CER no disponible — flujos en nominal
+  sin ajuste", doce líneas abajo "TIR real (sobre CER)… es lo que ganás POR ENCIMA de la
+  inflación". El rótulo ahora depende de que el factor exista. Eso sigue valiendo aunque
+  la fuente se vuelva a caer.
+- **Una sola bajada de la serie:** `_fetch_uva_monthly` y el fetcher diario pegaban al
+  mismo endpoint por separado.
+- **`basis` viaja al frontend** y la tarjeta dice "(vía UVA)". Servir UVA en silencio bajo
+  el rótulo "CER" sería cambiar un número inventado por otro número inventado mejor.
+
+**Lo que queda de esta pieza:**
+
+- **Un test viejo certificaba la caída.** `test_empty_cache_returns_empty_series_no_500`
+  mockeaba sólo el CER y pasaba en verde *porque* la fuente está muerta. Ya está arreglado,
+  pero vale como recordatorio de qué buscar en los otros.
+- **La pregunta que sólo se contesta contra prod:** si `bond_indices_daily` tiene CER
+  histórico guardado, el síntoma no es "factor 1,00" sino "factor congelado el día que
+  murió la fuente". En la base de dev **no hay una sola fila** de ningún índice, lo que
+  apunta a que nunca funcionó. Con filas en prod, el fallback igual gana (sólo entra
+  cuando no hay CER), pero conviene saberlo.
+- **Límite declarado:** la UVA existe desde 2016-03-31. El bono más viejo del catálogo es
+  de 2020-08-04, así que hoy están todos cubiertos; un bono anterior no tendría base.
+- **Lo demás de F5 sigue pendiente:** el cap de `/api/fx-rates` + el fallback mudo (D-7),
+  punta venta vs. punta media, la política única de faltantes, y los 6 sitios que restan
+  inflación en pesos a retornos en dólares.
 
 ---
 

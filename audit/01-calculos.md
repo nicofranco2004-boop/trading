@@ -111,7 +111,11 @@ Todo C7. Es la tanda de mejor relación resultado/esfuerzo: **el código ya est�
 
 ### Tanda F5 — «Una sola cotización, una sola política de faltantes» *(4–6 días)*
 - El cap de `/api/fx-rates` **y** el fallback mudo al dólar de hoy (**D-7**, los dos).
-- Serie CER caída: reponerla **y** agregar detección — hoy devuelve 404 y nadie se entera.
+- ~~Serie CER caída: reponerla **y** agregar detección — hoy devuelve 404 y nadie se entera.~~
+  ✅ **HECHO** y adelantado a F2 (`fix/f2-que-no-mientan`, sin deployar). Se sirve con UVA
+  —el ratio es el mismo porque el BCRA la actualiza POR CER, verificado a 0,25 % contra los
+  factores medidos—, la caída ya loguea y la tarjeta dejó de contradecirse. Ver
+  `audit/_HANDOFF-TANDAS.md` §4-bis.
 - Unificar punta venta vs. punta media entre `fx_rates_daily` y la valuación viva.
 - Decidir y aplicar **una** política de faltantes (C8): precio ausente, TC ausente, índice no publicado.
 - Gatear por moneda lo que hoy resta inflación-en-pesos a retornos-en-dólares (6 sitios) y pasar `moneda` a los benchmarks.
