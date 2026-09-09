@@ -300,6 +300,42 @@ devuelve 3.816 filas y factor **37,57×** para TX26 donde la app publicaba 1,00�
 
 ---
 
+## 4-ter. Reparaciones sobre lo ya escrito — estado, y un error de F1 que destapó
+
+**Hechas (botones en el panel de admin, con "ver qué cambiaría" antes de "aplicar"):**
+
+- **Interés PF leído como dólares** — ✅ aplicada en prod el 2026-09-09: 1 fila, 1 usuario,
+  $121.095 → US$ 78,88. El medidor la da por cerrada (0 / Sin caso).
+- **Caja reconciliada al 1.415 fijo** — herramienta lista (`/api/admin/repair-caja-1415`),
+  **pendiente de aplicar**. 43 meses (depósitos + retiros; la medición sólo miraba depósitos),
+  41 usuarios.
+
+**⚠️ El error de F1 que destapó el preview.** La primera versión de la reparación dolarizaba al
+dólar del **mes anotado**, igual que dejó F1 en `reconcile-cash` (`9b03ebec`). El preview mostró
+`2021-05 · retiros US$ 84 → 781`: 9×. La causa: reconcile-cash anota la diferencia en el **mes más
+viejo del broker** ("historia pre-CSV"), pero los pesos son de **hoy** — es la diferencia entre lo
+que dice el broker hoy y lo que calculó la app hoy. En 2021 esa misma plata eran 9 veces menos
+pesos. El razonamiento del comentario de F1 ("el ajuste es plata anterior al CSV, va al dólar de
+ese mes") confundía unidades. **Corregido hacia adelante**: reconcile-cash dolariza al dólar de
+hoy. El botón Cash no cambia: ahí el usuario fecha el movimiento.
+
+Para las 43 filas viejas, la fecha de reconciliación no se guardó (ni `monthly_entries` tiene
+timestamps ni reconcile-cash deja registro). Se reconstruye del **lote de importación confirmado**
+de ese usuario+broker, nunca anterior al nacimiento de la función (`def52782`, 2026-05-13): la
+reconciliación es el paso siguiente del importador, su único caller. Sin lote → se lista y no se
+toca.
+
+**Método que vale la pena copiar:** el paso "ver qué cambiaría" no es cortesía. Cazó un fix mal
+diseñado antes de tocar un solo dato de producción.
+
+**Siguen pendientes:** re-correr las fotos pegadas al costo (19 usuarios grandes / 411 en total),
+y las 868 posiciones con costo en pesos en cuentas en dólares de verdad (20 usuarios, 9 brokers;
+sin TC conocido — hay que mirar broker por broker). Y "conversiones fantasma" sigue sin un número
+confiable: hay un desglose por broker en el medidor para entender qué guarda cada uno antes de
+volver a intentar.
+
+---
+
 ## 5. Las tandas que siguen
 
 ### F3 — «Un solo calendario» *(3–5 días)*
