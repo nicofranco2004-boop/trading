@@ -9,6 +9,16 @@ Fix: _cancel_conduit_pairs cancela los pares (compra+venta, igual nominal, cruce
 moneda, ≤ventana) antes del FIFO; y la base de amortización usa el neto genuino.
 
 Corre con: cd backend && python3 -m pytest tests/test_bond_conduit.py
+
+⚠️ LA FECHA DE VALUACIÓN SE FIJA, NO EL RESULTADO. El nominal residual de un bono
+amortizante avanza con el calendario REAL (AL30: 4% el 9-jul-2024 + 12 cuotas de 8%,
+`pricing/bond_amortization.py`). Estos tests esperaban 720 = 1000 × 0,72 con la fecha
+implícita de "hoy": en junio de 2026 R valía 0,72 y en septiembre ya vale 0,64, así que
+los tres se pusieron en rojo solos. Actualizar el 720 a 640 los volvería a romper en la
+próxima cuota — y nadie sabría si el número nuevo es el correcto o el que hacía falta
+para que pasaran. Se fija `REF_DATE` y el 720 vuelve a ser una afirmación verificable.
+El seam ya existía abajo (`sweep_bond_amortizations(ref_date=…)`); faltaba pasarlo por
+`recompute_user`, que es el camino que corre producción.
 """
 import os
 import sys
@@ -30,6 +40,11 @@ from importing import recompute_backfill as rb  # noqa: E402
 import main                                   # noqa: E402
 
 HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
+
+# Fecha de valuación de los sweeps. La misma que usa `tests/test_bond_amortization.py`
+# (el archivo hermano que YA fijaba la fecha y por eso nunca se puso en rojo).
+# A esta fecha el AL30 pagó 4% + 3 cuotas de 8% → residual R = 0,72.
+REF_DATE = "2026-06-25"
 
 
 def _csv(*rows):
@@ -82,9 +97,10 @@ class BondConduitTest(unittest.TestCase):
             ps.persist_batch(self.conn, uid=self.uid, batch_id=p["session_id"], txs=txs,
                              raw_row_ids_by_index=raw, helpers=_helpers())
 
-    def _recompute(self):
+    def _recompute(self, ref_date: str = REF_DATE):
         with self.conn:
-            rb.recompute_user(self.conn, self.uid, recalc=main._recalc_pnl_realized_from_ops)
+            rb.recompute_user(self.conn, self.uid, recalc=main._recalc_pnl_realized_from_ops,
+                              ref_date=ref_date)
 
     def _qty(self, asset, broker_like=None):
         q = ("SELECT COALESCE(SUM(quantity),0) s FROM positions "
@@ -100,7 +116,7 @@ class BondConduitTest(unittest.TestCase):
     def test_genuine_bond_plus_conduit_amortizes_genuine_only(self):
         """El BUG de prod: 1000 AL30 genuino (ARS) + conducto (compra 5000 USD, vende
         5000 ARS) → antes inflaba a 5000 USD fantasma. Ahora: conducto neteado, queda
-        el genuino 1000 → amortizado a 720 (R=0.72 a jun-2026). Sin fantasma en '· USD'."""
+        el genuino 1000 → amortizado a 720 (R=0,72 a REF_DATE). Sin fantasma en '· USD'."""
         self._import(_csv(
             "2024-01-01,COMPRA,Cocos,AL30,1000,108,108000,,,0,ARS,",     # genuino
             "2024-02-01,COMPRA,Cocos,AL30,5000,0.07,350,,,0,USD,",       # conducto: compra USD

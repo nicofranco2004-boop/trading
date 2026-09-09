@@ -781,6 +781,51 @@ def _init_db_postgres():
                 pass          # la FK ya existía (ADD FOREIGN KEY no tiene IF NOT EXISTS)
 
 
+# Fecha en que el mail de bienvenida empezó a salir por Rebill. Todo lo anterior
+# a esto es "ya estaba cuando el mail no salía".
+BIENVENIDA_REBILL_DESDE = "2026-09-09"
+
+
+def _marcar_bienvenidas_previas(conn) -> int:
+    """Marca como YA AVISADOS a los suscriptores que existían antes de que el mail
+    de bienvenida empezara a salir por Rebill. Devuelve cuántos marcó.
+
+    ⚠️ POR QUÉ HACE FALTA. Hasta ahora el mail sólo salía por el webhook de Mercado
+    Pago, así que todos los que se suscribieron por Rebill tienen
+    `welcome_email_sent_at` en NULL — o sea, figuran como "nunca se les avisó". Y
+    Rebill RE-ENTREGA eventos viejos: si mañana repite un `subscription.created` de
+    hace meses, a esa persona le llegaría un "¡Bienvenido!" con fecha vieja. La marca
+    cierra esa puerta sin mandar nada.
+
+    NO afecta a nadie nuevo: el corte es por `created_at`, así que una suscripción
+    creada de acá en adelante queda intacta y sí recibe su mail. Y no toca las
+    `pending` (las que empezaron a pagar y no terminaron): si esas activan algún día,
+    les corresponde la bienvenida.
+
+    Idempotente: la segunda corrida no encuentra filas. Vive en el arranque, que es
+    donde este repo hace el resto de las migraciones.
+    """
+    try:
+        cur = conn.execute(
+            """UPDATE subscriptions
+                  SET welcome_email_sent_at = COALESCE(welcome_email_sent_at, created_at)
+                WHERE status = 'authorized'
+                  AND welcome_email_sent_at IS NULL
+                  AND created_at IS NOT NULL
+                  AND created_at < ?""",
+            (BIENVENIDA_REBILL_DESDE,),
+        )
+        n = cur.rowcount or 0
+        conn.commit()
+        if n:
+            log.info("bienvenidas previas marcadas (no se manda nada): %d filas", n)
+        return n
+    except Exception as ex:
+        # No puede voltear el arranque de la app por una marca cosmética.
+        log.warning("no se pudieron marcar las bienvenidas previas: %s", ex)
+        return 0
+
+
 def init_db():
     if USANDO_PG:
         # En Postgres NO se replican las 46 migraciones incrementales: son la
@@ -2330,6 +2375,8 @@ def init_db():
         if sub_cols and 'amount_usd' not in sub_cols:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN amount_usd REAL")
         conn.commit()
+
+        _marcar_bienvenidas_previas(conn)
 
         # ─── Credit window model (Rendi-managed proration) ──────────────────────
         # Cuando un user cambia de plan (Plus ↔ Pro) o cancela mid-período, NO
@@ -6545,6 +6592,26 @@ _KNOWN_ENTITIES_REGEX = _re_news.compile(
 )
 
 
+# Macro que NO se puede buscar por substring. `_STRONG_MACRO_KEYWORDS` matchea con
+# `kw in texto`, así que un término corto se lleva puestas las palabras que lo
+# contienen: 'fed' matchearía Fedex, confederación y "he was fed"; 'ipc' cualquier
+# sigla larga. Por eso estos van con word boundary, igual que Path A.
+#
+# QUÉ SE ARREGLA CON ESTO (medido el 2026-09-08 sobre los casos de
+# tests/test_news.py): la lista de arriba exige frases largas —'inflación argentina',
+# 'ipc indec', 'fed minutes'— y por eso dejaba AFUERA del feed de mercado las dos
+# formas más comunes del titular más importante para un inversor argentino:
+#   · "Inflación de mayo: el IPC fue de 4.2%"   → caía
+#   · "FED holds rates steady"                  → caía
+# La intención de cubrir esos temas ya estaba escrita en la lista; lo que faltaba
+# eran las formas cortas. No se afloja nada más: sin entidad conocida ni macro,
+# un "stocks rally" pelado sigue afuera, que es lo que se decidió el 2026-05-26.
+_STRONG_MACRO_REGEX = _re_news.compile(
+    r'\b(fed|ipc|inflaci[oó]n)\b',
+    _re_news.IGNORECASE,
+)
+
+
 def _is_market_relevant(item):
     """True si la noticia menciona una empresa conocida O tiene macro fuerte.
 
@@ -6554,7 +6621,9 @@ def _is_market_relevant(item):
        Path A: la noticia menciona una empresa/asset de la whitelist
                (S&P 50 + Merval 25 + crypto top + extras populares LATAM).
        Path B: la noticia tiene una keyword macro fuerte (Fed, CPI, S&P 500,
-               dólar blue, Merval, BCRA, inflación, etc.).
+               dólar blue, Merval, BCRA, inflación, etc.) — por substring para
+               las frases largas y por word boundary para las cortas
+               (`_STRONG_MACRO_REGEX`).
 
     Falla abierto: si no hay title, deja pasar.
     """
@@ -6568,9 +6637,12 @@ def _is_market_relevant(item):
     if _KNOWN_ENTITIES_REGEX.search(haystack):
         return True
 
-    # Path B: macro fuerte (substring sobre lowercase)
+    # Path B: macro fuerte (substring sobre lowercase) + las formas cortas que
+    # necesitan word boundary (ver `_STRONG_MACRO_REGEX`).
     haystack_l = haystack.lower()
-    return any(kw in haystack_l for kw in _STRONG_MACRO_KEYWORDS)
+    if any(kw in haystack_l for kw in _STRONG_MACRO_KEYWORDS):
+        return True
+    return bool(_STRONG_MACRO_REGEX.search(haystack))
 
 
 # ─── News tagging ─────────────────────────────────────────────────────────────
@@ -6993,7 +7065,7 @@ _news_fetch_semaphore = _threading_news.BoundedSemaphore(16)
 _news_fetch_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="news-fetch")
 
 
-def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8, max_wait_seconds=None):
+def _ensure_news_batch_parallel(specs, ttl_seconds, max_wait_seconds=None):
     """Versión paralelizada: fetcha múltiples feeds en threads concurrentes.
 
     `specs`: iterable de:
@@ -7016,6 +7088,15 @@ def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8, max_wait_seco
         cuándo se obtuvo la data, no cuándo arrancó el batch.
 
     Errores individuales se aíslan + se loguean: una falla no rompe el resto.
+
+    ⚠️ ACÁ HABÍA UN `max_workers=8` QUE NO HACÍA NADA. Quedó de cuando la función
+    creaba su propio executor; desde que usa el `_news_fetch_executor` GLOBAL (ver
+    el comentario de abajo), el parámetro se aceptaba y se ignoraba en silencio.
+    Ningún caller de producción lo pasaba —el único que lo pasaba era un test, que
+    medía wall time y venía en rojo desde entonces— así que se saca en vez de
+    implementarlo: quien limita la concurrencia son el pool global y
+    `_news_fetch_semaphore`, y un parámetro que promete un cap que no aplica es
+    peor que no tenerlo.
     """
     now = time.time()
 
@@ -27239,6 +27320,10 @@ def rebill_webhook(request: Request, raw: bytes = Depends(_raw_body)):
         evt = event_type.lower()
         if evt == "subscription.created":
             _rebill_activate(conn, uid, metadata, sub_id, payload)
+            # DESPUÉS de activar, no antes: `_rebill_activate` es quien deja el
+            # `sub_id` real en `mp_subscription_id`, y la bienvenida busca la fila
+            # justo por ahí.
+            _notificar_alta_rebill(conn, uid, sub_id, metadata, payload)
         elif evt == "subscription.updated":
             _rebill_subscription_status_change(conn, uid, metadata, sub_id, payload)
         elif evt == "payment.created" or evt == "payment.updated":
@@ -27974,9 +28059,15 @@ def _process_preapproval_event(conn, preapproval_id: str):
         log.info("Subscription %s now %s (tier change pending end of period)", preapproval_id, our_status)
 
 
-def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state):
+def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, plan="pro"):
     """Manda el email de bienvenida UNA SOLA VEZ por suscripción.
-    Idempotente vía welcome_email_sent_at — si está set, saltamos."""
+    Idempotente vía welcome_email_sent_at — si está set, saltamos.
+
+    `plan` existe porque `send_welcome_pro` lo usa para el título y las features, y
+    su default es "pro": sin pasarlo, a un suscriptor de **Plus** el mail le dice
+    "¡Bienvenido a Rendi Pro!" y le lista features que no tiene. El camino de MP no
+    lo pasaba (vendía un solo plan cuando se escribió); el de Rebill sí lo sabe, lo
+    trae en `metadata.rendi_plan`."""
     from billing import emails
     row = conn.execute(
         """SELECT s.welcome_email_sent_at, s.amount_ars, u.email, u.name
@@ -27995,6 +28086,7 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state):
             period=period,
             amount_ars=row["amount_ars"],
             next_charge_date=mp_state.get("next_payment_date"),
+            plan=plan,
         )
         if sent or not emails._is_configured():
             # Marcamos como enviado igual en modo "no configurado" (log-only)
@@ -28007,6 +28099,50 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state):
                 )
     except Exception as ex:
         log.error("Welcome email failed for sub %s: %s", preapproval_id, ex)
+
+
+def _notificar_alta_rebill(conn, uid: int, sub_id: str, metadata: dict, payload: dict):
+    """El mail de bienvenida cuando el alta entra por REBILL.
+
+    ⚠️ POR QUÉ EXISTE. `send_welcome_pro` tenía UN caller en producción y colgaba de
+    `_process_preapproval_event`, o sea del webhook de MERCADO PAGO. Las altas de hoy
+    entran por Rebill (`/api/billing/rebill-webhook` → `_rebill_activate`), que en sus
+    169 líneas no manda un solo mail: **quien se suscribía no recibía nada**. No es que
+    el mail estuviera mal, es que nadie lo llamaba desde el camino vivo.
+
+    Va acá, en el router del webhook, y no adentro de `_rebill_activate`, por dos
+    razones: notificar no es activar (el que otorga crédito no tiene por qué saber de
+    mails), y así el diff no se mete en las funciones que están bajo auditoría de la
+    ruta del dinero.
+
+    Reusa `_maybe_send_welcome_email` tal cual: ya es idempotente por
+    `welcome_email_sent_at`, que es la traba que importa — `subscription.created` se
+    re-entrega, está medido sobre payloads reales.
+
+    Nunca levanta: un mail que falla no puede voltear un alta ya cobrada.
+    """
+    if not sub_id:
+        # Sin id no se puede ubicar la fila, y buscar por '' matchearía CUALQUIER
+        # suscripción con el campo vacío: le mandaríamos el mail a otra persona.
+        log.warning("Rebill alta sin sub_id (uid=%s): no se manda bienvenida", uid)
+        return
+    try:
+        period = (metadata.get("rendi_period") or "monthly").strip().lower()
+        if period not in ("monthly", "annual"):
+            period = "monthly"
+        plan = (metadata.get("rendi_plan") or "pro").strip().lower()
+        if plan not in ("plus", "pro"):
+            plan = "pro"
+        # Rebill dice `nextChargeDate`; el helper lee `next_payment_date` (nombre de
+        # MP). Se traduce acá y no allá para no tocar el camino de MP.
+        data = payload.get("data") or {}
+        sub_obj = data.get("subscription") or {}
+        prox = (sub_obj.get("nextChargeDate") or data.get("nextChargeDate")
+                or payload.get("nextChargeDate"))
+        _maybe_send_welcome_email(conn, sub_id, uid, period,
+                                  {"next_payment_date": prox}, plan=plan)
+    except Exception as ex:
+        log.error("Bienvenida Rebill falló uid=%s sub=%s: %s", uid, sub_id, ex)
 
 
 def _process_payment_event(conn, payment_id: str, payload: dict):
@@ -31337,20 +31473,165 @@ import threading
 _wallbit_sync_locks = defaultdict(threading.Lock)
 
 
-def _wallbit_cipher():
-    """Fernet derivado de SECRET_KEY (32 bytes urlsafe-b64). SECRET_KEY es estable
-    en prod (env) → las keys cifradas sobreviven restarts. En dev es efímera →
-    una credencial guardada en dev no se puede descifrar tras reiniciar (aceptable)."""
+# ─── Cifrado de las credenciales de broker ───────────────────────────────────
+# En user_broker_credentials.api_key_enc viven la API key de Wallbit y el
+# refresh token de IOL, cifrados con Fernet.
+#
+# Hasta 2026-09 la clave de cifrado se derivaba de SECRET_KEY — la MISMA que
+# firma los JWT. Eso ataba dos cosas que no tienen por qué estarlo: rotar la
+# firma de sesiones dejaba TODAS las credenciales indescifrables, así que rotar
+# dolía y por lo tanto no se rotaba nunca. Ahora la clave de cifrado es propia
+# (CREDENTIALS_KEY) y SECRET_KEY queda sólo como clave de LECTURA de lo que se
+# cifró antes.
+#
+# MultiFernet: la PRIMERA clave cifra, TODAS descifran. Las filas viejas se
+# re-cifran solas en el arranque (_migrar_credenciales_a_credentials_key).
+#
+# ⚠️ ORDEN OBLIGATORIO PARA ROTAR SECRET_KEY. Si se saltea un paso, las
+# credenciales de los usuarios se pierden y hay que reconectar a mano:
+#   1. setear CREDENTIALS_KEY en Railway (independiente de SECRET_KEY)
+#   2. deployar
+#   3. confirmar en los logs: "credenciales: ... 0 migradas ahora"
+#   4. recién entonces rotar SECRET_KEY
+
+def _fernet_de(material: str):
+    """Fernet(sha256(material)) → 32 bytes urlsafe-b64. Es la derivación de
+    siempre: cambiarla haría ilegible todo lo ya guardado."""
     import base64
     from cryptography.fernet import Fernet
-    digest = hashlib.sha256((SECRET_KEY or "dev-insecure").encode("utf-8")).digest()
-    return Fernet(base64.urlsafe_b64encode(digest))
+    return Fernet(base64.urlsafe_b64encode(
+        hashlib.sha256(material.encode("utf-8")).digest()))
+
+
+def _creds_clave_propia() -> Optional[str]:
+    """CREDENTIALS_KEY, si está seteada. Sin ella el sistema se comporta
+    exactamente como antes (una sola clave, la derivada de SECRET_KEY): esto es
+    a propósito, para que dev y los tests no cambien de comportamiento."""
+    return (os.environ.get("CREDENTIALS_KEY") or "").strip() or None
+
+
+def _wallbit_cipher():
+    """MultiFernet [CREDENTIALS_KEY (cifra y descifra), SECRET_KEY (legacy, sólo
+    descifra)]. El nombre `_wallbit_` quedó de cuando Wallbit era el único
+    conector; hoy cifra también el refresh token de IOL."""
+    from cryptography.fernet import MultiFernet
+    claves = []
+    propia = _creds_clave_propia()
+    if propia:
+        claves.append(_fernet_de(propia))
+    claves.append(_fernet_de(SECRET_KEY or "dev-insecure"))
+    return MultiFernet(claves)
 
 def _wallbit_encrypt(plain: str) -> str:
     return _wallbit_cipher().encrypt(plain.encode("utf-8")).decode("utf-8")
 
 def _wallbit_decrypt(enc: str) -> str:
     return _wallbit_cipher().decrypt(enc.encode("utf-8")).decode("utf-8")
+
+
+def _migrar_credenciales_a_credentials_key() -> None:
+    """Re-cifra bajo CREDENTIALS_KEY lo que todavía esté bajo SECRET_KEY.
+
+    Corre en cada arranque. Idempotente y barata: la tabla tiene a lo sumo una
+    fila por usuario conectado. Es el paso 3 del orden de arriba, y corre acá
+    en vez de en un script porque la consola de Railway no siempre conecta: un
+    script que hay que acordarse de correr a mano es un paso que no se corre.
+
+    Sin CREDENTIALS_KEY no hace nada. Nunca tumba el arranque: si falla, las
+    credenciales siguen legibles con la clave legacy y el próximo boot reintenta.
+    """
+    propia = _creds_clave_propia()
+    if not propia:
+        # El silencio NO puede ser ambiguo: sin este log, "falta la variable" y
+        # "la migración corrió y no hizo nada" se ven igual desde afuera — o sea,
+        # se ven igual las dos mitades de la decisión de rotar SECRET_KEY.
+        # En dev que falte es lo normal (info); en prod significa que la rotación
+        # todavía no se puede hacer (warning).
+        log.warning("credenciales: CREDENTIALS_KEY no está seteada — todo sigue cifrado "
+                    "con SECRET_KEY, como antes. NO rotes SECRET_KEY.")
+        return
+    try:
+        from cryptography.fernet import InvalidToken
+        primaria = _fernet_de(propia)
+        ya = migradas = ilegibles = 0
+        with db_abierta() as conn:
+            filas = conn.execute(
+                "SELECT user_id, broker, api_key_enc FROM user_broker_credentials"
+            ).fetchall()
+            for f in filas:
+                try:
+                    primaria.decrypt((f["api_key_enc"] or "").encode("utf-8"))
+                    ya += 1
+                    continue
+                except InvalidToken:
+                    pass
+                try:
+                    plano = _wallbit_decrypt(f["api_key_enc"])
+                except Exception:
+                    ilegibles += 1   # no abre con ninguna clave: ya estaba muerta
+                    continue
+                with conn:
+                    conn.execute(
+                        "UPDATE user_broker_credentials SET api_key_enc=? "
+                        "WHERE user_id=? AND broker=?",
+                        (primaria.encrypt(plano.encode("utf-8")).decode("utf-8"),
+                         f["user_id"], f["broker"]))
+                migradas += 1
+        # ⚠️ WARNING en las TRES ramas, y no es por gusto. Dos motivos, los dos
+        # comprobados en producción:
+        #   1. No va por print(): el start de nixpacks no usa `python -u` ni setea
+        #      PYTHONUNBUFFERED, así que stdout queda con buffer de bloque y la línea
+        #      puede no aparecer nunca. (El warning de SECRET_KEY de main.py:113
+        #      tiene ese problema y por eso no se ve nunca — reportado aparte.)
+        #   2. No va en INFO: esta función corre a nivel de módulo, y el
+        #      `logging.basicConfig(level=logging.INFO)` de este archivo está ~1000
+        #      líneas MÁS ABAJO. Cuando esto se ejecuta, el root logger sigue en
+        #      WARNING y cualquier INFO se descarta en silencio. Pasó: la rama
+        #      "SEGURO rotar" era la única en INFO y era justo la que había que leer.
+        # Este renglón ES el gate de la rotación de SECRET_KEY: si no se ve, el
+        # procedimiento no se puede hacer.
+        if migradas:
+            log.warning("credenciales: %d ya bajo CREDENTIALS_KEY, %d migradas ahora, %d "
+                        "ilegibles. NO rotes SECRET_KEY todavía: redeployá y confirmá "
+                        "'0 migradas ahora'.", ya, migradas, ilegibles)
+        else:
+            log.warning("credenciales: %d ya bajo CREDENTIALS_KEY, 0 migradas ahora, %d "
+                        "ilegibles. SEGURO rotar SECRET_KEY.", ya, ilegibles)
+    except Exception as e:
+        log.warning("credenciales: la migración a CREDENTIALS_KEY falló (%s). Siguen "
+                    "legibles con SECRET_KEY. NO rotes SECRET_KEY.", e)
+
+
+def _log_config_arranque() -> None:
+    """Dice QUÉ recibió el proceso, sin revelar ningún valor.
+
+    ⚠️ TEMPORAL — sacar cuando termine la rotación de SECRET_KEY (2026-09).
+
+    Existe porque la pantalla de variables de Railway muestra todo enmascarado y
+    no hay forma de saber, desde afuera, si el valor que uno ve es el que el
+    proceso realmente tiene. Sin esto la única manera de averiguarlo es probar la
+    app y deducir hacia atrás, que es adivinar.
+
+    NO loguea valores ni hashes: sólo el largo y la forma. Con eso alcanza para
+    distinguir los tres casos que importan:
+      · una API key de Anthropic  → 108 caracteres, empieza con sk-ant-
+      · un token_urlsafe(64)      → ~86 caracteres, no empieza con sk-ant-
+      · ausente                   → 0
+    """
+    def _forma(nombre: str) -> str:
+        v = (os.environ.get(nombre) or "")
+        if not v:
+            return f"{nombre}=AUSENTE"
+        tipo = "parece-clave-de-anthropic" if v.startswith("sk-ant-") else "no-anthropic"
+        return f"{nombre}=[{len(v)} chars, {tipo}]"
+
+    log.warning("config al arrancar: %s | %s | %s | RENDI_ENV=%s",
+                _forma("SECRET_KEY"), _forma("ANTHROPIC_API_KEY"),
+                _forma("CREDENTIALS_KEY"), os.environ.get("RENDI_ENV") or "AUSENTE")
+
+
+_log_config_arranque()
+_migrar_credenciales_a_credentials_key()
 
 
 def _wallbit_ensure_broker(conn, uid: int, broker: str = "Wallbit"):

@@ -14,84 +14,46 @@ from billing import subscriptions
 
 
 def _make_db():
-    """In-memory DB con las tablas mínimas que el job necesita."""
+    """DB en memoria con el schema REAL, no con uno escrito a mano.
+
+    ⚠️ POR QUÉ NO SE ESCRIBEN MÁS LAS TABLAS ACÁ. Este fixture las declaraba a mano
+    y había que acordarse de espejar cada columna nueva de `main.init_db()`. Cuando
+    alguien no se acordaba no explotaba nada visible: el job atrapa sus propios
+    errores y los CUENTA, así que el "no such column: trial_ends_at" salía por el
+    log y el test moría comparando `errors == 0` contra un 2 que no tenía nada que
+    ver con el job. Faltaban cuatro columnas de tres features distintas
+    (`trial_ends_at`, `trial_started_at`, `quota_window_from`, `managed_by`) — o
+    sea que el fixture venía atrasado desde hacía rato y el test ya no probaba el
+    cron: probaba el fixture.
+
+    Copiando el DDL de la base que arma `main.init_db()` (tests/conftest.py le da
+    una por módulo), el schema no puede volver a divergir. Sigue siendo `:memory:`,
+    así que cada test arranca aislado como antes.
+    """
+    import main
+    if getattr(main, "USANDO_PG", False):
+        raise unittest.SkipTest("el fixture copia el DDL de SQLite (sqlite_master)")
+    real = main.get_db()
+    try:
+        ddl = [r[0] for r in real.execute(
+            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL "
+            "  AND name NOT LIKE 'sqlite_%' "   # sqlite_sequence la crea el motor
+            "ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END").fetchall()]
+    finally:
+        real.close()
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.executescript("""
-        CREATE TABLE users (
-            id INTEGER PRIMARY KEY,
-            email TEXT,
-            name TEXT,
-            is_admin INTEGER DEFAULT 0,
-            tier TEXT,
-            email_verified INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT (datetime('now')),
-            -- Modelo de crédito tiempo-based (ver main.py init_db). El código de
-            -- billing ya consulta estas columnas, así que el fixture debe tenerlas.
-            credit_active_until TEXT,
-            credit_anchor_plan TEXT,
-            credit_anchor_period TEXT,
-            credit_anchor_amount_usd REAL,
-            credit_anchor_at TEXT
-        );
-        CREATE TABLE subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            mp_subscription_id TEXT,
-            external_reference TEXT NOT NULL,
-            period TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            amount_ars INTEGER NOT NULL,
-            current_period_start TEXT,
-            current_period_end TEXT,
-            next_charge_date TEXT,
-            init_point TEXT,
-            cancelled_at TEXT,
-            welcome_email_sent_at TEXT,
-            cancellation_email_sent_at TEXT,
-            expiration_reminder_sent_at TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
-        );
-        -- Tablas que _delete_unverified_accounts toca (verificación de "tiene
-        -- data" + cleanup en cascada manual).
-        CREATE TABLE email_verification_codes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            code TEXT, expires_at TEXT, used_at TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE positions (id INTEGER PRIMARY KEY, user_id INTEGER);
-        CREATE TABLE operations (id INTEGER PRIMARY KEY, user_id INTEGER);
-        CREATE TABLE monthly_entries (id INTEGER PRIMARY KEY, user_id INTEGER);
-        CREATE TABLE brokers (id INTEGER PRIMARY KEY, user_id INTEGER);
-        -- Audit del modelo de crédito (ver main.py init_db). Los downgrades
-        -- (_downgrade_expired_credit / _downgrade_expired_cancellations) escriben
-        -- una fila 'expiration' acá, así que el fixture debe tener la tabla.
-        CREATE TABLE credit_ledger (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            kind TEXT NOT NULL,
-            amount_usd REAL NOT NULL,
-            days_delta REAL NOT NULL,
-            from_plan TEXT,
-            from_period TEXT,
-            to_plan TEXT,
-            to_period TEXT,
-            active_until_before TEXT,
-            active_until_after TEXT,
-            source_subscription_id TEXT,
-            payment_id TEXT,
-            note TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-    """)
+    for stmt in ddl:
+        conn.execute(stmt)
     return conn
 
 
 def _add_user(conn, uid, tier='pro', is_admin=0):
+    # `password_hash` es NOT NULL en el schema real. El fixture hecho a mano ni
+    # siquiera declaraba la columna, así que además de faltarle columnas dejaba
+    # entrar filas que producción rechaza.
     conn.execute(
-        "INSERT INTO users (id, email, is_admin, tier) VALUES (?, ?, ?, ?)",
+        "INSERT INTO users (id, email, password_hash, is_admin, tier) VALUES (?, ?, 'x', ?, ?)",
         (uid, f"u{uid}@test.com", is_admin, tier),
     )
     conn.commit()

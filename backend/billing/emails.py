@@ -332,6 +332,35 @@ def send_welcome_pro(*, to: str, user_name: str, period: str,
     """
     period_label = "mensual" if period == "monthly" else "anual"
     plan_label = _plan_label(plan)
+
+    # ⚠️ EL MONTO SE OMITE SI NO LO SABEMOS, no se imprime en cero.
+    # `amount_ars` viene poblado por el camino de Mercado Pago (la respuesta del
+    # preapproval traía el importe). Por el de Rebill la fila nace en 0 y nadie la
+    # actualiza (main.py:26903 y :27335, las dos con literal 0), así que un
+    # `_fmt_ars(0)` le diría "ARS 0 mensual" a alguien que acaba de pagar. Un dato
+    # que no tenemos no se inventa: si no hay importe, el bloque muestra sólo la
+    # fecha de renovación, y si tampoco hay fecha no se muestra el bloque.
+    # (`_fmt_ars(None)` además reventaba en `int(None)`.)
+    _detalle = []
+    if amount_ars:
+        _detalle.append(f"<b>{_fmt_ars(amount_ars)}</b> {period_label}")
+    else:
+        _detalle.append(f"Suscripción <b>{period_label}</b>")
+    if next_charge_date:
+        _detalle.append(f"Próxima renovación: <b>{_fmt_date(next_charge_date)}</b>")
+    detalle_html = (
+        '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;'
+        'padding:16px;margin:20px 0;">'
+        '<p style="font-size:13px;color:#6b7280;margin:0 0 4px;">Detalle de tu suscripción</p>'
+        '<p style="font-size:14px;color:#1a1f2e;margin:0;">'
+        + " · ".join(_detalle) +
+        '</p></div>'
+    )
+    _detalle_txt = [f"Monto: {_fmt_ars(amount_ars)}"] if amount_ars else [f"Suscripción {period_label}"]
+    if next_charge_date:
+        _detalle_txt.append(f"Próxima renovación: {_fmt_date(next_charge_date)}")
+    detalle_text = " · ".join(_detalle_txt)
+
     body_html = f"""
       <h1 style="font-size:24px;font-weight:700;margin:0 0 16px;">¡Bienvenido a Rendi {plan_label}, {user_name}!</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
@@ -340,12 +369,7 @@ def send_welcome_pro(*, to: str, user_name: str, period: str,
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
         {_plan_features_html(plan)}
       </ul>
-      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px;margin:20px 0;">
-        <p style="font-size:13px;color:#6b7280;margin:0 0 4px;">Detalle de tu suscripción</p>
-        <p style="font-size:14px;color:#1a1f2e;margin:0;">
-          <b>{_fmt_ars(amount_ars)}</b> {period_label} · Próxima renovación: <b>{_fmt_date(next_charge_date)}</b>
-        </p>
-      </div>
+      {detalle_html}
       <p style="font-size:14px;color:#374151;line-height:1.6;">
         Podés cancelar cuando quieras desde Configuración → Mi plan.
       </p>
@@ -353,7 +377,7 @@ def send_welcome_pro(*, to: str, user_name: str, period: str,
     text = (
         f"¡Bienvenido a Rendi {plan_label}, {user_name}!\n\n"
         f"Tu suscripción {period_label} está activa.\n\n"
-        f"Monto: {_fmt_ars(amount_ars)} · Próxima renovación: {_fmt_date(next_charge_date)}\n\n"
+        f"{detalle_text}\n\n"
         f"Acceso a {_plan_features_text(plan)}.\n\n"
         f"Podés cancelar cuando quieras desde Configuración → Mi plan.\n\n"
         f"— Rendi"

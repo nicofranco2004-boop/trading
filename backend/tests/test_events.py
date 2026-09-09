@@ -6,6 +6,15 @@ Mockea yfinance — no hace fetch real. Verifica:
   • Excluye crypto.
   • Excluye cash.
   • Filtra por ventana de fechas (days).
+
+⚠️ LAS FECHAS SON RELATIVAS A HOY, A PROPÓSITO. Antes se sembraban fechas fijas
+(mayo-julio 2026) y se consultaba "los próximos N días": el endpoint filtra con
+`event_date >= hoy AND event_date <= hoy + days` (main.py:6201-6205), así que en
+cuanto el calendario pasó por encima de las semillas los 9 tests se pusieron en
+rojo solos — y los que asertaban lista VACÍA (bonos AR, aislamiento cross-user,
+orden) pasaron a estar en verde sin probar nada, que es peor. Lo que estos tests
+verifican es la VENTANA, no una fecha del almanaque: sembrar "dentro de N días"
+prueba lo mismo y no caduca.
   • Persistencia: upsert idempotente.
   • Auth + cross-user isolation.
 """
@@ -14,6 +23,7 @@ import sys
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +37,11 @@ os.environ["DB_PATH"] = TMP_DB.name
 
 import main  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+
+
+def _en_dias(n: int) -> str:
+    """Fecha ISO a `n` días de hoy (UTC, igual que el endpoint)."""
+    return (datetime.utcnow() + timedelta(days=n)).strftime("%Y-%m-%d")
 
 
 def _new_user(conn, email: str) -> int:
@@ -113,8 +128,8 @@ class EventsPortfolioTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        self._seed_event("AAPL", "earnings", "2026-07-25", {"eps_estimate": 1.45})
-        self._seed_event("MSFT", "ex_dividend", "2026-06-12", {"dividend_per_share": 0.75})
+        self._seed_event("AAPL", "earnings", _en_dias(40), {"eps_estimate": 1.45})
+        self._seed_event("MSFT", "ex_dividend", _en_dias(20), {"dividend_per_share": 0.75})
 
         res = self._get("/api/events/portfolio?days=180")
         self.assertEqual(res.status_code, 200, res.text)
@@ -130,22 +145,23 @@ class EventsPortfolioTest(unittest.TestCase):
         conn.close()
 
         # Cerca + lejos
-        self._seed_event("AAPL", "earnings", "2026-06-01", {})
-        self._seed_event("AAPL", "earnings", "2027-01-01", {})
+        cerca, lejos = _en_dias(15), _en_dias(200)
+        self._seed_event("AAPL", "earnings", cerca, {})
+        self._seed_event("AAPL", "earnings", lejos, {})
 
-        # 30 días: sólo el cercano (de 2026-06-01, asumiendo today ~2026-05-12)
+        # 30 días: sólo el cercano
         res = self._get("/api/events/portfolio?days=30")
         body = res.json()
         dates = {e["event_date"] for e in body["events"]}
-        self.assertIn("2026-06-01", dates)
-        self.assertNotIn("2027-01-01", dates)
+        self.assertIn(cerca, dates)
+        self.assertNotIn(lejos, dates)
 
         # 365 días: ambos
         res = self._get("/api/events/portfolio?days=365")
         body = res.json()
         dates = {e["event_date"] for e in body["events"]}
-        self.assertIn("2026-06-01", dates)
-        self.assertIn("2027-01-01", dates)
+        self.assertIn(cerca, dates)
+        self.assertIn(lejos, dates)
 
     def test_excludes_ar_bonds(self):
         """Bonos AR los maneja frontend — el endpoint NO debe traerlos aunque
@@ -156,7 +172,7 @@ class EventsPortfolioTest(unittest.TestCase):
         conn.close()
 
         # Aunque hubiera un evento de AL30 en la tabla, el endpoint lo excluye
-        self._seed_event("AL30", "earnings", "2026-07-09", {})
+        self._seed_event("AL30", "earnings", _en_dias(30), {})
 
         res = self._get("/api/events/portfolio?days=180")
         body = res.json()
@@ -169,7 +185,7 @@ class EventsPortfolioTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        self._seed_event("AAPL", "earnings", "2026-07-25", {})
+        self._seed_event("AAPL", "earnings", _en_dias(40), {})
         res = self._get("/api/events/portfolio?days=90")
         body = res.json()
         # Sólo aparece AAPL — USDT (cash) no se intenta lookup
@@ -199,7 +215,7 @@ class EventsPortfolioTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        self._seed_event("AAPL", "earnings", "2026-07-25", {})
+        self._seed_event("AAPL", "earnings", _en_dias(40), {})
 
         # User A no tiene AAPL → no debe ver el evento
         res = self._get("/api/events/portfolio?days=180")
@@ -211,7 +227,7 @@ class EventsPortfolioTest(unittest.TestCase):
         _add_position(conn, self.uid, "IBKR", "AAPL", qty=10)
         conn.commit()
         conn.close()
-        self._seed_event("AAPL", "earnings", "2026-07-25", {"eps_estimate": 1.45, "currency": "USD"})
+        self._seed_event("AAPL", "earnings", _en_dias(40), {"eps_estimate": 1.45, "currency": "USD"})
 
         res = self._get("/api/events/portfolio?days=90")
         body = res.json()
@@ -297,7 +313,7 @@ class PopularEventsTest(unittest.TestCase):
 
     def test_includes_popular_ticker_earnings(self):
         # Seed earnings de NVDA (magnificent 7) en ventana
-        self._seed_popular_event("NVDA", "earnings", "2026-08-20", {"eps_estimate": 5.10})
+        self._seed_popular_event("NVDA", "earnings", _en_dias(60), {"eps_estimate": 5.10})
         res = self._get("/api/events/popular?days=365")
         body = res.json()
         nvda = [e for e in body["events"] if e["ticker"] == "NVDA"]
@@ -311,14 +327,14 @@ class PopularEventsTest(unittest.TestCase):
         _add_position(conn, self.uid, "IBKR", "TSLA", qty=10)
         conn.commit()
         conn.close()
-        self._seed_popular_event("TSLA", "earnings", "2026-07-22", {"eps_estimate": 0.85})
+        self._seed_popular_event("TSLA", "earnings", _en_dias(45), {"eps_estimate": 0.85})
         res = self._get("/api/events/popular?days=365")
         body = res.json()
         tsla = [e for e in body["events"] if e["ticker"] == "TSLA"][0]
         self.assertTrue(tsla["in_portfolio"])
 
     def test_ar_adr_ticker_included(self):
-        self._seed_popular_event("GGAL", "earnings", "2026-08-05", {})
+        self._seed_popular_event("GGAL", "earnings", _en_dias(30), {})
         res = self._get("/api/events/popular?days=365")
         body = res.json()
         tickers = {e["ticker"] for e in body["events"]}
@@ -327,9 +343,9 @@ class PopularEventsTest(unittest.TestCase):
     # ─── Sorting / filtros ───────────────────────────────────────────────────
 
     def test_events_sorted_by_date(self):
-        self._seed_popular_event("AAPL", "earnings", "2026-09-25", {})
-        self._seed_popular_event("MSFT", "earnings", "2026-07-25", {})
-        self._seed_popular_event("AMZN", "earnings", "2026-08-10", {})
+        self._seed_popular_event("AAPL", "earnings", _en_dias(90), {})
+        self._seed_popular_event("MSFT", "earnings", _en_dias(30), {})
+        self._seed_popular_event("AMZN", "earnings", _en_dias(60), {})
         res = self._get("/api/events/popular?days=365")
         body = res.json()
         # Filtrar sólo earnings que sembramos (macros pueden estar mezclados)
@@ -339,8 +355,8 @@ class PopularEventsTest(unittest.TestCase):
 
     def test_days_window_filters_events(self):
         # Earnings lejano + cercano
-        self._seed_popular_event("NVDA", "earnings", "2026-06-01", {})
-        self._seed_popular_event("AAPL", "earnings", "2027-01-15", {})  # >1 año
+        self._seed_popular_event("NVDA", "earnings", _en_dias(50), {})
+        self._seed_popular_event("AAPL", "earnings", _en_dias(300), {})  # fuera de 180
         res = self._get("/api/events/popular?days=180")
         body = res.json()
         tickers = {e["ticker"] for e in body["events"] if e["event_type"] == "earnings"}
@@ -350,7 +366,7 @@ class PopularEventsTest(unittest.TestCase):
     # ─── Counts en response ─────────────────────────────────────────────────
 
     def test_response_includes_macro_and_ticker_counts(self):
-        self._seed_popular_event("NVDA", "earnings", "2026-06-01", {})
+        self._seed_popular_event("NVDA", "earnings", _en_dias(50), {})
         res = self._get("/api/events/popular?days=365")
         body = res.json()
         self.assertIn("macro_count", body)

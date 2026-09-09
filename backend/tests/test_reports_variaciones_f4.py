@@ -33,7 +33,15 @@ class VariacionesF4Test(unittest.TestCase):
         for t in ("monthly_entries", "snapshots", "operations", "positions", "brokers", "users"):
             self.conn.execute(f"DELETE FROM {t}")
         self.uid = _new_user(self.conn, f"f4-{id(self)}@rendi.test")
-        self.now = datetime.utcnow()
+        # ⚠️ EL "HOY" LO DEFINE LA APP, NO EL RELOJ DE LA MÁQUINA. `_iso_today()`
+        # (main.py:28044) devuelve el día ART (UTC−3) a propósito: los usuarios son
+        # argentinos y "hoy" tiene que ser el día calendario que ELLOS ven. Este
+        # setUp usaba `datetime.utcnow()`, que entre las 21:00 y la medianoche de
+        # Argentina ya es el día siguiente: el snapshot "de ayer" caía en el día que
+        # la app llama HOY, `delta_1d` no encontraba borde y volvía None. O sea que
+        # estos tests estaban en rojo todas las noches y en verde a la mañana. Pedirle
+        # la fecha a la app los deja bien a toda hora y en cualquier zona horaria.
+        self.now = datetime.strptime(main._iso_today(), "%Y-%m-%d")
         self.y, self.m = self.now.year, self.now.month
         self.month_key = f"{self.y:04d}-{self.m:02d}"
         self.month_start = f"{self.y:04d}-{self.m:02d}-01"

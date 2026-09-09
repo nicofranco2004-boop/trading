@@ -29,7 +29,7 @@ from importing.parsers.generic import RendiGenericParser
 from importing.parsers.registry import get_parser, autodetect
 from importing.schema import (RawRow, OP_BUY, OP_SELL, OP_DEPOSIT, OP_WITHDRAW,
                                 OP_DIVIDEND, OP_INTEREST, OP_FX_ARS_TO_USD,
-                                OP_FX_USD_TO_ARS, OP_FEE)
+                                OP_FX_USD_TO_ARS, OP_FEE, OP_TAX)
 from importing.validator import validate
 from importing import pipeline as pl
 from importing import persister as ps
@@ -2724,10 +2724,15 @@ class RobustnessImprovementsTest(unittest.TestCase):
             ("Liquidating Dividend", OP_DIVIDEND, "monto"),
             ("PIL", OP_DIVIDEND, "monto"),
             ("Payment In Lieu", OP_DIVIDEND, "monto"),
-            # Fees / impuestos
-            ("WHTAX", OP_FEE, "monto"),
-            ("Withholding", OP_FEE, "monto"),
-            ("Foreign Tax Paid", OP_FEE, "monto"),
+            # Impuestos → OP_TAX. NO son comisiones: se separaron a propósito
+            # (importing/schema.py:143-146, "van a métrica aparte") porque la
+            # métrica de comisiones contaba las retenciones como costo del broker
+            # y le inflaba a la gente lo que "le cobraban". Este test seguía
+            # esperando el FEE de antes de esa separación.
+            ("WHTAX", OP_TAX, "monto"),
+            ("Withholding", OP_TAX, "monto"),
+            ("Foreign Tax Paid", OP_TAX, "monto"),
+            # Fees de verdad (servicio del broker) → siguen siendo OP_FEE
             ("ADR Mgmt Fee", OP_FEE, "monto"),
             ("ADR Maint Fee", OP_FEE, "monto"),
             ("Custodian Fee", OP_FEE, "monto"),

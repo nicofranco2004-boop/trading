@@ -155,9 +155,13 @@ class MarketRelevanceFilterTest(unittest.TestCase):
 
     def test_passes_when_summary_has_keyword_but_title_doesnt(self):
         """Si el summary tiene la keyword, alcanza para que pase."""
+        # El summary tiene que traer una keyword que HOY sea macro fuerte: el
+        # fixture viejo decía "deuda externa" (genérica, de ningún país) y desde
+        # el filtro estricto del 2026-05-26 eso no alcanza. Lo que este test mide
+        # es que el summary cuente igual que el title, no la lista de keywords.
         item = {
             'title': 'Reunión de funcionarios en Washington',
-            'summary': 'Funcionarios del Tesoro y representantes del FMI debatieron sobre la deuda externa.',
+            'summary': 'Funcionarios del Tesoro y representantes del FMI debatieron sobre la deuda argentina.',
         }
         self.assertTrue(main._is_market_relevant(item))
 
@@ -167,10 +171,21 @@ class MarketRelevanceFilterTest(unittest.TestCase):
         self.assertTrue(main._is_market_relevant({}))
 
     def test_case_insensitive(self):
-        """Capitalización del title no debe afectar match."""
-        self.assertTrue(main._is_market_relevant({'title': 'STOCKS RALLY', 'summary': None}))
-        self.assertTrue(main._is_market_relevant({'title': 'Stocks Rally', 'summary': None}))
-        self.assertTrue(main._is_market_relevant({'title': 'stocks rally', 'summary': None}))
+        """Capitalización del title no debe afectar match.
+
+        El fixture era 'STOCKS RALLY'. Desde el 2026-05-26 el filtro exige entidad
+        conocida O macro fuerte y un "stocks rally" pelado ya NO es relevante —a
+        propósito: el filtro viejo aceptaba cualquier cosa con 'stock' y traía
+        noticias de empresas chicas. O sea que el test no medía la capitalización,
+        medía un contrato que se había borrado. Se cambia el titular por uno que
+        SÍ es relevante hoy; lo que se prueba —que mayúsculas y minúsculas dan lo
+        mismo— es exactamente lo que el test decía probar."""
+        for t in ('NASDAQ RALLY', 'Nasdaq Rally', 'nasdaq rally'):
+            self.assertTrue(main._is_market_relevant({'title': t, 'summary': None}), t)
+        # Y el caso que el fixture viejo daba por relevante sigue afuera, en las
+        # tres capitalizaciones (no es un efecto de las mayúsculas).
+        for t in ('STOCKS RALLY', 'Stocks Rally', 'stocks rally'):
+            self.assertFalse(main._is_market_relevant({'title': t, 'summary': None}), t)
 
 
 class TagNewsItemTest(unittest.TestCase):
@@ -459,14 +474,20 @@ class MarketNewsEndpointTest(unittest.TestCase):
     def test_market_news_ordered_by_recency(self):
         conn = main.get_db()
         with conn:
+            # ⚠️ Los títulos TIENEN que ser market-relevant: el endpoint re-aplica
+            # `_is_market_relevant` al LEER (main.py:25896) para no seguir mostrando
+            # lo que quedó en DB de antes del filtro estricto. Con 'Old news' /
+            # 'New news' —que no son noticias de mercado— la lista volvía vacía y el
+            # test moría con IndexError sin llegar a mirar el orden, que es lo único
+            # que quiere probar.
             conn.execute("""INSERT INTO news (source, external_id, title, url, published_at, category, query_source, fetched_at)
-                            VALUES ('google_news_rss', 'a1', 'Old news', 'http://x/1', '2026-01-01T10:00:00Z', 'market', 'q', '2026-05-12T00:00:00Z')""")
+                            VALUES ('google_news_rss', 'a1', 'Merval cae 2% (vieja)', 'http://x/1', '2026-01-01T10:00:00Z', 'market', 'q', '2026-05-12T00:00:00Z')""")
             conn.execute("""INSERT INTO news (source, external_id, title, url, published_at, category, query_source, fetched_at)
-                            VALUES ('google_news_rss', 'a2', 'New news', 'http://x/2', '2026-05-10T10:00:00Z', 'market', 'q', '2026-05-12T00:00:00Z')""")
+                            VALUES ('google_news_rss', 'a2', 'Merval sube 3% (nueva)', 'http://x/2', '2026-05-10T10:00:00Z', 'market', 'q', '2026-05-12T00:00:00Z')""")
         conn.close()
         res = self._get("/api/news/market?limit=10")
         body = res.json()
-        self.assertEqual(body['news'][0]['title'], 'New news')
+        self.assertEqual(body['news'][0]['title'], 'Merval sube 3% (nueva)')
 
     def test_market_news_limit_validation(self):
         for limit in (-1, 0, 200):
@@ -772,24 +793,47 @@ class EnsureNewsBatchParallelTest(unittest.TestCase):
         # Damos margen amplio (0.8s) para entornos lentos como CI.
         self.assertLess(elapsed, 0.8, f"parallel took {elapsed:.2f}s, expected <0.8s")
 
-    def test_respects_max_workers_cap(self):
-        """Con max_workers=2 y 4 queries lentas, el wall time debe ser ~2x duración,
-        no 1x (no todas en paralelo) ni 4x (no secuencial).
-        """
-        def _slow(conn, query, lang, cat):
-            main.time.sleep(0.15)
+    def test_la_concurrencia_no_pasa_del_tope_del_proceso(self):
+        """Cuántos fetches de noticias corren a la vez NO puede pasar del tope.
+
+        El test viejo (`test_respects_max_workers_cap`) pasaba `max_workers=2` y
+        exigía que el wall time fuera ≥0,25s. Estaba en rojo con 0,16s, y no por
+        una máquina rápida: 0,16s ≈ UNA sola tanda, o sea que las 4 queries
+        corrieron juntas. Tenía razón —el cap no se aplicaba—, pero el parámetro
+        al que apuntaba no existía más que en la firma. Quien limita de verdad es
+        el pool global + `_news_fetch_semaphore`, así que eso es lo que se mide, y
+        se mide contando ejecuciones simultáneas en vez de cronometrando: un
+        umbral de wall time convierte una máquina cargada en un rojo falso."""
+        import threading
+        tope = main._news_fetch_executor._max_workers
+        lock = threading.Lock()
+        estado = {"ahora": 0, "pico": 0}
+
+        def _lento(conn, query, lang, cat):
+            with lock:
+                estado["ahora"] += 1
+                estado["pico"] = max(estado["pico"], estado["ahora"])
+            main.time.sleep(0.05)
+            with lock:
+                estado["ahora"] -= 1
             return 0
 
-        queries = [(f"q{i}", "en", "test") for i in range(4)]
-        with patch('main._refresh_news_query', side_effect=_slow):
-            start = main.time.time()
-            main._ensure_news_batch_parallel(queries, ttl_seconds=60, max_workers=2)
-            elapsed = main.time.time() - start
+        queries = [(f"cap{i}", "en", "test") for i in range(tope * 2)]
+        with patch('main._refresh_news_query', side_effect=_lento):
+            main._ensure_news_batch_parallel(queries, ttl_seconds=60)
 
-        # Con 4 queries × 0.15s y max 2 workers: 2 batches de 2 → ~0.3s.
-        # Aceptamos 0.25-0.7s (margen para overhead).
-        self.assertGreater(elapsed, 0.25, f"too fast — workers not capped? {elapsed:.2f}s")
-        self.assertLess(elapsed, 0.7,    f"too slow — not parallel?      {elapsed:.2f}s")
+        self.assertLessEqual(estado["pico"], tope,
+                             f"corrieron {estado['pico']} fetches a la vez, tope {tope}")
+        self.assertEqual(estado["ahora"], 0, "quedó un worker sin terminar")
+        # Y el semáforo global no puede ser más flojo que el pool: si lo fuera, el
+        # tope real lo pondría el pool y el semáforo no estaría frenando nada.
+        self.assertLessEqual(main._news_fetch_semaphore._initial_value, tope)
+
+    def test_ya_no_acepta_un_cap_que_no_aplica(self):
+        """`max_workers` se aceptaba y se ignoraba en silencio. Que no vuelva."""
+        import inspect
+        firma = inspect.signature(main._ensure_news_batch_parallel).parameters
+        self.assertNotIn("max_workers", firma)
 
 
 if __name__ == "__main__":

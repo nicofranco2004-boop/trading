@@ -27,6 +27,7 @@ para revert.
 """
 from __future__ import annotations
 import json
+import logging
 from datetime import datetime
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -36,6 +37,11 @@ from .schema import (
     OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TAX, OP_FUTURES_PNL,
 )
 from . import seed as _seed
+
+# Este módulo no tenía logger. Hace falta uno para poder avisar cuando un camino
+# de rescate se apaga: sin eso, un fallback silencioso deja de arreglar y nadie
+# se entera hasta que el número aparece mal en pantalla meses después.
+log = logging.getLogger(__name__)
 try:
     from fx import fx_for_date, fx_version, FX_V2
 except ImportError:  # pragma: no cover — import relativo según cómo se cargue el paquete
@@ -1264,6 +1270,50 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
     # evolución. Se limpian los que ya se escribieron y no se escriben más.
     conn.execute("DELETE FROM snapshots WHERE user_id=? AND date > ?",
                  (uid, hoy.isoformat()))
+
+    # ¿QUÉ FILAS PUEDE REESCRIBIR ESTE BACKFILL? Sólo las que fabricó él mismo.
+    #
+    # Esto era un `DO NOTHING` a secas y por eso un cero se volvía permanente:
+    # `revert_batch` (más abajo) purga los snapshots del rango, deja
+    # `monthly_entries` en cero y llama acá → se escribe un fin de mes en 0. Al
+    # RE-IMPORTAR el mismo archivo, `monthly_entries` vuelve a 5000 pero la fila
+    # ya existía, el `DO NOTHING` la protegía, y el 0 quedaba para siempre en el
+    # gráfico y en `net_deposited` (el denominador del %). El `DO NOTHING` se
+    # había puesto para NO pisar la medición real del cron (`a813abc4`) — es
+    # correcto para eso, pero también blindaba las filas sintéticas del import
+    # contra su propia corrección. `scripts/backfill_historical_mtm.py` ya había
+    # descrito este mismo agujero y ya había elegido la salida.
+    #
+    # Quién es medición y quién es fabricación NO se decide acá: se le pregunta a
+    # `twr.clasificar_fila`, la MISMA regla que usa el backfill MtM. Si dos
+    # módulos deciden distinto qué fila es una medición, uno de los dos está mal.
+    _refrescables = set()
+    try:
+        from twr import clasificar_fila as _clasif, SINTETICO_COSTO as _SINT
+        # Columnas explícitas y NO `SELECT *`: `holdings_json` guarda la composición
+        # entera de la cartera de ese día y hay cuentas con cientos de fotos. El
+        # clasificador sólo necesita saber si está o no, así que se pregunta eso
+        # (0/1) y el JSON no viaja. Con `SELECT *`, un `repair-snapshots-all` sobre
+        # ~950 cuentas leía megabytes que después tiraba.
+        for _r in conn.execute(
+            """SELECT date, source, fx_to_usd_blue, mtm_coverage,
+                      CASE WHEN holdings_json IS NOT NULL AND holdings_json <> ''
+                           THEN 1 ELSE 0 END AS holdings_json
+                 FROM snapshots WHERE user_id=?""", (uid,)).fetchall():
+            _src = _r["source"] if "source" in _r.keys() else None
+            # Sin firma no se puede AFIRMAR quién la escribió: se deja quieta
+            # (mismo comportamiento que antes). Con `source` explícito
+            # `clasificar_fila` decide por la firma y vuelve antes de mirar
+            # `tenia_posiciones`, por eso el flag va en False y no se usa.
+            if _src and _clasif(_r, False) == _SINT:
+                _refrescables.add(str(_r["date"])[:10])
+    except Exception as _ex:
+        # Sin clasificador se vuelve al INSERT-only de antes: no se corrige nada,
+        # pero tampoco se pisa nada. Se LOGUEA porque si no, el arreglo se apagaría
+        # en silencio y los ceros volverían sin que nadie se entere.
+        _refrescables = set()
+        log.warning("backfill snapshots: no se pudo clasificar (uid=%s): %s", uid, _ex)
+
     for r in rows:
         cum_dep += r["deposits"] or 0
         cum_wd += r["withdrawals"] or 0
@@ -1273,9 +1323,9 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
         if snap_date > hoy.isoformat():
             continue          # mes en curso: el snapshot diario del cron ya lo cubre
         cap_final = r["capital_final"] or 0
-        # INSERT-only: si ya HAY un snapshot para esa fecha, NO se pisa.
+        # Si ya HAY un snapshot para esa fecha y NO lo fabricó el import, no se pisa.
         #
-        # ⚠️ Antes esto era un UPSERT que sobreescribía `total_value` con el
+        # ⚠️ Antes esto era un UPSERT ciego que sobreescribía `total_value` con el
         # `capital_final` del mes. Y `capital_final` de un mes CERRADO viene de
         # `_repair_monthly_chain`, que fuerza `pnl_unrealized = 0` → o sea, el
         # capital AL COSTO. El snapshot que ya estaba ahí, en cambio, lo escribió
@@ -1285,10 +1335,8 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
         # mes) bajaba artificialmente. Y el snapshot real no se recupera.
         #
         # Este helper existe para que una cuenta recién importada TENGA curva
-        # (rellenar huecos), no para corregir mediciones reales. `net_deposited`
-        # tampoco hace falta actualizarlo acá: el único caller que lo necesita
-        # (el migrador FX) corre `_recompute_snapshots_netdep_for_user` después,
-        # que lo recalcula para TODOS los snapshots.
+        # (rellenar huecos) y para mantener al día las filas que él mismo escribió,
+        # no para corregir mediciones reales.
         conn.execute(
             # `base='costo'` estampado (ronda 11): esto es `capital_final` del mes,
             # o sea la cadena CONTABLE con pnl_unrealized forzado a 0. No es una
@@ -1298,6 +1346,17 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
                ON CONFLICT(user_id, date) DO NOTHING""",
             (uid, snap_date, cap_final, net_dep, net_dep),
         )
+        if snap_date in _refrescables:
+            # La fila era del propio import y quedó desactualizada (un revert la
+            # dejó en cero, o `monthly_entries` cambió después). Se corrige con la
+            # cadena contable de HOY, que es de donde salió.
+            conn.execute(
+                """UPDATE snapshots
+                      SET total_value=?, total_invested=?, net_deposited=?,
+                          source='import', base='costo', apto=0
+                    WHERE user_id=? AND date=?""",
+                (cap_final, net_dep, net_dep, uid, snap_date),
+            )
 
 
 def _read_tc_blue(conn, uid: int) -> float:

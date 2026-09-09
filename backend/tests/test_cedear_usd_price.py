@@ -135,7 +135,17 @@ class SnapshotsJobCedearTest(unittest.TestCase):
             def get(self, k):
                 return _FakeClose() if k == "Close" else None
 
-        with patch.object(snapshots_job.yf, "download", return_value=_FakeData()):
+        # ⚠️ NO ALCANZA CON MOCKEAR yfinance. Después de yfinance,
+        # `fetch_prices_for_symbols` PISA todo lo `.BA` con data912/BYMA
+        # (snapshots_job.py:617-644, "data912 PISA lo de yfinance para .BA"), y esas
+        # dos funciones salen a la red de verdad. O sea que este test hacía HTTP en
+        # cada corrida y comparaba contra el precio REAL del día: por eso esperaba
+        # 22050 para AAPL.BA y recibía 25160, y por eso el resultado dependía de que
+        # hubiera internet. Se mockean los dos escritores POSTERIORES; lo que este
+        # test mide es la conversión del cedear USD-cotizado, no BYMA.
+        with patch.object(snapshots_job.yf, "download", return_value=_FakeData()), \
+             patch.object(main, "_resolve_ar_equity_price", return_value=None), \
+             patch.object(main, "_resolve_ar_bond_price", return_value=None):
             return snapshots_job.fetch_prices_for_symbols(symbols, main.CRYPTO_YF)
 
     def test_snapshot_converts_bac(self):

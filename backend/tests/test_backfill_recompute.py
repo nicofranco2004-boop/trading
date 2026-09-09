@@ -196,9 +196,17 @@ class SafeClassifyTest(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def _kinds(self, before, after):
+    # Fecha de valuación: los cronogramas (vencimiento de letra, residual del bono)
+    # avanzan con el calendario real. Con "hoy" implícito, el caso 1000 → 720 dejó de
+    # ser una amortización limpia en cuanto el AL30 pagó la cuota de julio-2026 (R pasó
+    # de 0,72 a 0,64) y el test se puso en rojo solo. Se fija la fecha, no el resultado.
+    # Misma fecha que `tests/test_bond_amortization.py` y `tests/test_bond_conduit.py`.
+    REF_DATE = "2026-06-25"
+
+    def _kinds(self, before, after, ref_date=None):
         from importing.recompute_backfill import _classify_safe
-        safe = _classify_safe(self.conn, self.uid, before, after)
+        safe = _classify_safe(self.conn, self.uid, before, after,
+                              ref_date=ref_date or self.REF_DATE)
         return {(s["asset"]): s["kind"] for s in safe}
 
     def test_equity_phantom_is_safe(self):
