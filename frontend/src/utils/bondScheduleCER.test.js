@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { generateSchedule, getRemainingPayments, estimateYieldDetailed } from './bondSchedule.js'
+import {
+  generateSchedule, getRemainingPayments, estimateYieldDetailed,
+  nextPaymentForPosition, cerOptsFor,
+} from './bondSchedule.js'
 
 // ════════════════════════════════════════════════════════════════════════════
 // Phase 3C — ajuste por coeficiente CER en bonos AR ARS-linked.
@@ -171,5 +174,74 @@ describe('Bonos no-CER no se afectan por cerSeries', () => {
     expect(sWith).toEqual(sWithout)
     // cerFactor no debe estar en bonos non-CER (campo agregado solo si isCer)
     expect(sWith[0].cerFactor).toBeUndefined()
+  })
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// El AJUSTE TIENE QUE LLEGAR AL PRÓXIMO PAGO, no sólo al cronograma.
+//
+// `nextPaymentForPosition` era el único eslabón de la cadena que TIRABA las
+// options: `getNextPayment` y `getRemainingPayments` ya las aceptaban y se las
+// pasaban a `generateSchedule`. Sus cuatro callers —los dos chips de "próximo
+// cobro", el detalle del bono y el modal que REGISTRA el cobro— recibían el pago
+// en nominal mientras la misma tarjeta mostraba "factor hoy ≈ 37,570×".
+//
+// Con la serie CER caída daba igual (todo era nominal). Repuesta la serie, cada
+// caller que se olvide vuelve a partir la pantalla — y el del modal escribe.
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('nextPaymentForPosition — el ajuste llega al pago que se registra', () => {
+  const desde = '2024-01-01'
+  const qty = 1000        // VN 1.000 → los montos van × qty / 100
+
+  it('sin serie devuelve el pago NOMINAL (comportamiento de siempre)', () => {
+    const sin = nextPaymentForPosition('TZX26', qty, desde)
+    expect(sin).not.toBeNull()
+    expect(sin.amort).toBeCloseTo(100 * qty / 100, 6)
+  })
+
+  it('con serie devuelve el pago AJUSTADO', () => {
+    const con = nextPaymentForPosition('TZX26', qty, desde, { cerSeries: cerLinear3x })
+    const sin = nextPaymentForPosition('TZX26', qty, desde)
+    expect(con.date).toBe(sin.date)
+    // La serie de este archivo llega a 3× en el maturity de TZX26.
+    expect(con.amort).toBeCloseTo(sin.amort * 3, 4)
+    expect(con.total).toBeGreaterThan(sin.total)
+  })
+
+  it('coincide con lo que publica el cronograma para esa misma fecha', () => {
+    const opts = { cerSeries: cerLinear3x }
+    const next = nextPaymentForPosition('TX26', qty, desde, opts)
+    const delCronograma = getRemainingPayments('TX26', desde, opts)[0]
+    // `nextPaymentForPosition` sólo escala por qty/100: el resto tiene que ser
+    // el MISMO número que muestra la tabla.
+    expect(next.date).toBe(delCronograma.date)
+    expect(next.total).toBeCloseTo(delCronograma.total * qty / 100, 2)
+  })
+
+  it('un bono NO-CER no se mueve aunque le pases la serie', () => {
+    const sin = nextPaymentForPosition('AL30', qty, desde)
+    const con = nextPaymentForPosition('AL30', qty, desde, { cerSeries: cerLinear3x })
+    expect(con).toEqual(sin)
+  })
+})
+
+describe('cerOptsFor — una sola regla para decidir si hay ajuste', () => {
+  it('bono CER + serie con datos → pasa la serie', () => {
+    expect(cerOptsFor({ asset: 'TZX26' }, cerLinear3x)).toEqual({ cerSeries: cerLinear3x })
+  })
+
+  it('bono CER + serie vacía o nula → no pasa nada (factor 1)', () => {
+    expect(cerOptsFor({ asset: 'TZX26' }, {})).toEqual({})
+    expect(cerOptsFor({ asset: 'TZX26' }, null)).toEqual({})
+  })
+
+  it('bono no-CER → no pasa nada aunque haya serie', () => {
+    expect(cerOptsFor({ asset: 'AL30' }, cerLinear3x)).toEqual({})
+  })
+
+  it('acepta el ticker suelto o la posición entera', () => {
+    expect(cerOptsFor('TZX26', cerLinear3x)).toEqual({ cerSeries: cerLinear3x })
+    expect(cerOptsFor(undefined, cerLinear3x)).toEqual({})
   })
 })

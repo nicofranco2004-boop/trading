@@ -43,6 +43,7 @@ import FlashValue from '../components/FlashValue'
 import AnimatedNumber from '../components/AnimatedNumber'
 import PositionsMobile from './PositionsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useCerSeries } from '../hooks/useCerSeries'
 
 const REFRESH_MS = 90_000
 
@@ -214,13 +215,14 @@ function PositionsDesktop() {
   // de /operations al montar y se refresca con loadAll() después de un INSERT.
   // Lo agrupamos por `${broker}:${asset}` vía useMemo en `bondCashflowsByKey`.
   const [bondOps, setBondOps] = useState([])
-  // Phase 3C: serie diaria de CER, fetcheada lazy cuando el user expande un
-  // bono CER. Cache shared para todos los bonos CER (la serie es la misma).
-  // null = no se intentó fetch; {} = se intentó pero vino vacío (graceful);
-  // dict no-vacío = serie disponible.
-  const [cerSeries, setCerSeries] = useState(null)
-  const [cerBasis, setCerBasis] = useState('CER')
-  const [cerStale, setCerStale] = useState(false)
+  // Phase 3C: serie diaria de CER para el ajuste de capital de los bonos.
+  // La serie vive en un hook con cache de sesión (`useCerSeries`), compartido
+  // con las pantallas de eventos: antes se pedía sólo acá y sólo al expandir un
+  // bono, así que el inbox de pendientes y el modal que registra el cobro
+  // dependían de que el usuario hubiera abierto el detalle antes.
+  const _tieneCer = (positions || []).some(
+    p => !p.is_cash && getBondMeta(p.asset)?.type === 'cer')
+  const { series: cerSeries, stale: cerStale, basis: cerBasis } = useCerSeries(_tieneCer)
   // Phase 3E: skips de cobranzas teóricas (pagos del cronograma que el user
   // marcó como "no aplica"). Persistido en backend; lo cargamos al mount.
   const [bondSkips, setBondSkips] = useState([])
@@ -269,27 +271,6 @@ function PositionsDesktop() {
     if (tcValuacion > 0) publishTcValuacion(tcValuacion)
   }, [tcValuacion, publishTcValuacion])
 
-  // Carga la serie CER del backend (idempotente — sólo la primera llamada
-  // dispara fetch real, las siguientes son cache hit en `cerSeries`).
-  async function ensureCerSeries() {
-    if (cerSeries !== null) return cerSeries
-    try {
-      const res = await api.get('/bond-indices/CER')
-      setCerSeries(res.series || {})
-      setCerStale(!!res.stale)
-      // Con qué serie ajustó el backend de verdad. La fuente de CER está caída
-      // (404) y se sirve UVA, que el BCRA actualiza POR CER: el ratio entre dos
-      // fechas es el mismo. La pantalla lo dice en vez de rotularlo "CER".
-      setCerBasis(res.basis || 'CER')
-      return res.series || {}
-    } catch {
-      setCerSeries({})
-      setCerStale(true)
-      setCerBasis('CER')
-      return {}
-    }
-  }
-
   function toggleBondExpand(p) {
     const key = `${p.broker}:${p.asset}`
     setExpandedBonds(prev => {
@@ -297,9 +278,6 @@ function PositionsDesktop() {
       next.has(key) ? next.delete(key) : next.add(key)
       return next
     })
-    // Si es CER y la serie aún no se trajo, traerla async (no bloqueante).
-    const meta = getBondMeta(p.asset)
-    if (meta?.type === 'cer') ensureCerSeries()
   }
 
   function openBondCashflow(p, flowType, prefill = null) {
@@ -323,8 +301,12 @@ function PositionsDesktop() {
   // Compara cronograma teórico vs operations vs skips para listar pagos
   // pendientes de confirmar. Usa los mismos bondOps + bondSkips ya cargados.
   const pendingCashflows = useMemo(() => {
-    return detectPendingCashflows(positions, bondOps, bondSkips)
-  }, [positions, bondOps, bondSkips])
+    // Con `cerSeries`: el pago pendiente de un bono CER se detecta y se PRE-LLENA
+    // con el monto ajustado, que es el que el usuario cobró. Sin ella salía en
+    // nominal —hasta 37× por debajo— y el `prefill` tiene prioridad absoluta en
+    // el modal, así que ese número era el que terminaba escrito.
+    return detectPendingCashflows(positions, bondOps, bondSkips, { cerSeries })
+  }, [positions, bondOps, bondSkips, cerSeries])
 
   // Fechas pendientes por bono (`broker:asset` → Set de fechas ISO) — el
   // timeline del detalle las marca en ámbar ("venció sin confirmar").
@@ -3244,6 +3226,7 @@ function PositionsDesktop() {
           asset={bondCashflow.asset}
           position={bondCashflow.position}
           prefill={bondCashflow.prefill}
+          cerSeries={cerSeries}
           onClose={() => setBondCashflow(null)}
           onSuccess={onBondCashflowSuccess}
         />

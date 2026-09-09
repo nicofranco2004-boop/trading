@@ -36,6 +36,16 @@ function archivosJsx(dir) {
   })
 }
 
+/** Índice del `)` que cierra el paréntesis abierto en `desde`. */
+function finDeParentesis(src, desde) {
+  let d = 0
+  for (let i = desde; i < src.length; i++) {
+    if (src[i] === '(') d++
+    else if (src[i] === ')') { d--; if (d === 0) return i + 1 }
+  }
+  return src.length
+}
+
 /** Cada render de un componente, con su archivo y su bloque de props. */
 function renders(tag) {
   const out = []
@@ -69,8 +79,21 @@ describe('el basis del ajuste CER viaja hasta la tarjeta', () => {
   })
 
   it('el fetch lee `basis` de la respuesta, no lo asume', () => {
-    const src = readFileSync(join(SRC, 'pages/Positions.jsx'), 'utf8')
-    expect(src).toMatch(/res\.basis/)
+    // El fetch vive en el hook desde que la serie se comparte con las pantallas
+    // de eventos (antes lo hacía Positions a mano, y sólo al expandir un bono).
+    const src = readFileSync(join(SRC, 'hooks/useCerSeries.js'), 'utf8')
+    expect(src).toMatch(/res\?\.basis/)
+    expect(src).toMatch(/\|\| 'CER'/)   // backend viejo → no rompe
+  })
+
+  it('la serie se pide en UN solo lugar', () => {
+    const malos = []
+    for (const f of archivosJsx(SRC)) {
+      if (/hooks\/useCerSeries\.js$/.test(f)) continue
+      const src = readFileSync(f, 'utf8')
+      if (/['\`]\/bond-indices/.test(src)) malos.push(f.slice(SRC.length + 1))
+    }
+    expect(malos, 'alguien volvió a pedir la serie por su cuenta').toEqual([])
   })
 })
 
@@ -93,5 +116,45 @@ describe('la tarjeta no afirma un ajuste que no ocurrió', () => {
 
   it('sin ajuste, el rótulo dice nominal', () => {
     expect(src).toMatch(/TIR nominal — sin ajuste por CER/)
+  })
+})
+
+describe('el ajuste llega al pago que se REGISTRA, no sólo al que se muestra', () => {
+  // `nextPaymentForPosition` acepta options desde que el cronograma se ajusta.
+  // Un caller que la llame sin ellas muestra el pago en nominal al lado de un
+  // "factor hoy ≈ 37×" — y el del modal además lo escribe.
+  it('ningún caller llama a nextPaymentForPosition sin las options del CER', () => {
+    const malos = []
+    for (const f of archivosJsx(SRC)) {
+      if (/utils\/bondSchedule\.js$/.test(f)) continue      // la definición
+      const src = readFileSync(f, 'utf8')
+      for (const fn of ['nextPaymentForPosition(', 'generateSchedule(']) {
+        let i = src.indexOf(fn)
+        while (i !== -1) {
+          // Paréntesis balanceados: cortar en el primer `)` parte la llamada en
+          // `today()` y deja invisible el argumento que este test busca.
+          const llamada = src.slice(i, finDeParentesis(src, i + fn.length - 1))
+          if (!/cerOpts/.test(llamada)) {
+            malos.push(`${f.slice(SRC.length + 1)}: ${llamada.replace(/\s+/g, ' ')}`)
+          }
+          i = src.indexOf(fn, i + 1)
+        }
+      }
+    }
+    expect(malos, 'llaman al próximo pago sin el ajuste').toEqual([])
+  })
+
+  it('el modal que registra el cobro recibe la serie', () => {
+    for (const r of renders('BondCashflowModal')) {
+      expect(r.props, `${r.archivo}: el modal escribe un monto sin ajustar`)
+        .toMatch(/cerSeries/)
+    }
+  })
+
+  it('el modal la declara como prop y la usa en las deps del memo', () => {
+    const src = readFileSync(join(SRC, 'components/BondCashflowModal.jsx'), 'utf8')
+    expect(src).toMatch(/^\s*cerSeries,/m)
+    // Sin `cerSeries` en las deps, la serie que llega async no re-calcula nada.
+    expect(src).toMatch(/\}, \[asset, flowType, position\?\.quantity, prefill, cerSeries\]\)/)
   })
 })

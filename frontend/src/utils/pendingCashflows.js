@@ -22,7 +22,7 @@
 // efectos de side-effect ni acredita nada.
 
 import { isBondTicker } from './tickers'
-import { generateSchedule, nextPaymentForPosition } from './bondSchedule'
+import { generateSchedule, nextPaymentForPosition, cerOptsFor } from './bondSchedule'
 import { getBondMeta } from './bondMeta'
 
 // Tolerancia para matchear una operation con una fecha del prospecto.
@@ -110,7 +110,9 @@ export function detectPendingCashflows(positions, bondOps, skips = [], options =
     if (p.is_cash) continue
     if (!p.quantity || p.quantity <= 0) continue
     // El schedule necesita meta + maturity. ETFs y otros caen en null.
-    const schedule = generateSchedule(p.asset)
+    // El ajuste CER va acá también: este cronograma es el que decide QUÉ pago
+    // está pendiente y con qué monto se pre-llena el modal que lo registra.
+    const schedule = generateSchedule(p.asset, cerOptsFor(p, options.cerSeries))
     if (!schedule) continue
     const meta = getBondMeta(p.asset)
     const bondCurrency = meta?.currency || 'USD'

@@ -19,6 +19,7 @@ import { usd, ars, pctSigned } from '../utils/format'
 import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import {
   generateSchedule, getRemainingPayments, estimateYieldDetailed, nextPaymentForPosition,
+  cerOptsFor,
 } from '../utils/bondSchedule'
 
 const DATE_TOLERANCE_DAYS = 14  // mismo criterio que pendingCashflows.js
@@ -76,9 +77,7 @@ export function BondDetailBody({
 
   // ── Schedule + TIR + próximo pago (misma lógica que la v1) ────────────────
   const today = new Date().toISOString().slice(0, 10)
-  const cerOpts = (meta?.type === 'cer' && cerSeries && Object.keys(cerSeries).length > 0)
-    ? { cerSeries }
-    : {}
+  const cerOpts = cerOptsFor(p, cerSeries)   // la regla vive en bondSchedule
   const fullSchedule = generateSchedule(p.asset, cerOpts)
   const remaining = fullSchedule ? getRemainingPayments(p.asset, today, cerOpts) : null
 
@@ -112,7 +111,9 @@ export function BondDetailBody({
     ? estimateYieldDetailed(p.asset, pricePer100Clean, today, cerOpts)
     : null
   const yieldEstimate = yieldDetail?.ytm ?? null
-  const nextPay = p.quantity ? nextPaymentForPosition(p.asset, p.quantity, today) : null
+  const nextPay = p.quantity
+    ? nextPaymentForPosition(p.asset, p.quantity, today, cerOpts)
+    : null
 
   // CER: factor actual (contexto del ajuste por inflación).
   function cerLocfLookup(date) {

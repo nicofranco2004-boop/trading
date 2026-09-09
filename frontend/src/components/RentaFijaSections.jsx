@@ -15,7 +15,7 @@ import { useToast } from './Toast'
 import AssetLogo from './AssetLogo'
 import { positionSection, sectionKey, sectionLabel, sortSectionKeys } from '../utils/sections'
 import { getBondMeta } from '../utils/bondMeta'
-import { nextPaymentForPosition, estimateYieldDetailed } from '../utils/bondSchedule'
+import { nextPaymentForPosition, estimateYieldDetailed, cerOptsFor } from '../utils/bondSchedule'
 import { usd, ars, pctSigned } from '../utils/format'
 import { BondDetailBody } from './BondDetail'
 
@@ -141,7 +141,7 @@ export default function RentaFijaSections({
           }
         }
       }
-      const next = p.quantity ? nextPaymentForPosition(p.asset, p.quantity, today) : null
+      const next = p.quantity ? nextPaymentForPosition(p.asset, p.quantity, today, cerOptsFor(p, cerSeries)) : null
       if (next && next.date <= in30) {
         proximos30Count += 1
         const meta = getBondMeta(p.asset)
@@ -291,7 +291,9 @@ function BondCardRow({
   const lotCount = lots?.length || 1
 
   // Próximo cobro (chip cyan) — solo bonos con cronograma.
-  const next = (meta?.maturity && p.quantity) ? nextPaymentForPosition(p.asset, p.quantity, todayIso()) : null
+  const next = (meta?.maturity && p.quantity)
+    ? nextPaymentForPosition(p.asset, p.quantity, todayIso(), cerOptsFor(p, cerSeries))
+    : null
 
   // TIR a precio de hoy (misma convención que el detalle; cross-ccy vía MEP).
   let tir = null
@@ -302,7 +304,7 @@ function BondCardRow({
     if (bondCcy !== brokerCcy && tcMep) pBond = bondCcy === 'USD' ? price / tcMep : price * tcMep
     else if (bondCcy !== brokerCcy) pBond = null
     if (pBond != null) {
-      const cerOpts = (meta.type === 'cer' && cerSeries && Object.keys(cerSeries).length > 0) ? { cerSeries } : {}
+      const cerOpts = cerOptsFor(p, cerSeries)   // misma regla que el resto
       tir = estimateYieldDetailed(p.asset, pBond * 100, todayIso(), cerOpts)?.ytm ?? null
     }
   }

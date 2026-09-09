@@ -41,6 +41,8 @@ import {
   countryFlag,
   isMacroEvent,
 } from '../utils/upcomingEvents'
+import { useCerSeries } from '../hooks/useCerSeries'
+import { getBondMeta } from '../utils/bondMeta'
 
 const WINDOW_OPTIONS = [
   { value: 30,  label: '30D' },
@@ -98,6 +100,13 @@ export default function Events({ embedded = false }) {
   const [windowDays, setWindowDays] = useState(90)
   const [filter, setFilter] = useState('all')
   const [positions, setPositions] = useState([])
+  // Serie de ajuste CER: sin ella los cupones de TX26/TZX salen hasta 37× por
+  // debajo, y estas tarjetas publican el monto. El hook cachea por sesión, así
+  // que compartir la serie con Posiciones no cuesta una request más.
+  const _tieneCer = (positions || []).some(
+    p => !p.is_cash && getBondMeta(p.asset)?.type === 'cer')
+  const { series: cerSeries } = useCerSeries(_tieneCer)
+
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
   const [config, setConfig] = useState({ tc_blue: 1415 })
@@ -190,25 +199,25 @@ export default function Events({ embedded = false }) {
   // Eventos según tab + filter
   const visibleEvents = useMemo(() => {
     if (tab === 'portfolio') {
-      const bonds = upcomingBondEvents(positions, { windowDays })
+      const bonds = upcomingBondEvents(positions, { windowDays, cerSeries })
       const stocks = normalizeBackendEvents(portfolioEvents)
       return mergeEvents(bonds, stocks).filter(e => matchesFilter(e, filter))
     }
     return normalizeBackendEvents(popularEvents)
       .map(e => ({ ...e, inPortfolio: userTickerSet.has(e.ticker) }))
       .filter(e => matchesFilter(e, filter))
-  }, [tab, positions, portfolioEvents, popularEvents, filter, windowDays, userTickerSet])
+  }, [tab, positions, portfolioEvents, popularEvents, filter, windowDays, userTickerSet, cerSeries])
 
   // KPI metrics — calculadas del set de eventos sin filtro (más estable)
   const kpiEvents = useMemo(() => {
     if (tab === 'portfolio') {
-      const bonds = upcomingBondEvents(positions, { windowDays })
+      const bonds = upcomingBondEvents(positions, { windowDays, cerSeries })
       const stocks = normalizeBackendEvents(portfolioEvents)
       return mergeEvents(bonds, stocks)
     }
     return normalizeBackendEvents(popularEvents)
       .map(e => ({ ...e, inPortfolio: userTickerSet.has(e.ticker) }))
-  }, [tab, positions, portfolioEvents, popularEvents, windowDays, userTickerSet])
+  }, [tab, positions, portfolioEvents, popularEvents, windowDays, userTickerSet, cerSeries])
 
   // Spotlight — el próximo evento del portfolio (el más cercano, ya no pasado).
   const nextEvent = useMemo(() => {

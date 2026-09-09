@@ -366,8 +366,34 @@ export function estimateYield(ticker, pricePer100, from) {
 // Para una posición de bono con `quantity` (en nominales, donde 1 nominal = 1
 // unidad de face value), devuelve el monto del próximo pago en moneda del
 // bono. Útil para mostrar al user "tu próximo cobro estimado".
-export function nextPaymentForPosition(ticker, quantity, from) {
-  const next = getNextPayment(ticker, from)
+// ⚠️ `options` HASTA ACÁ TAMBIÉN. `getNextPayment` y `getRemainingPayments` ya
+// aceptaban `{ cerSeries }` y se lo pasaban a `generateSchedule`; esta función
+// era el único eslabón de la cadena que lo TIRABA, así que sus cuatro callers
+// —incluido el modal que REGISTRA el cobro— recibían el pago en nominal mientras
+// la misma tarjeta mostraba "factor hoy ≈ 37,570×" doce líneas más arriba.
+//
+// El monto ajustado es el que el usuario cobra de verdad: en los TX/TZX el cupón
+// y la amortización van AMBOS sobre el capital ajustado (prospecto BCRA/MECON,
+// ver `generateSchedule`). Sin la serie —bono no-CER, o serie caída— el factor
+// es 1 y el número no se mueve.
+// ⚠️ UNA SOLA REGLA PARA DECIDIR SI HAY AJUSTE. La condición —bono CER + serie
+// no vacía— vivía escrita a mano en la tarjeta del bono, y los otros lectores
+// del cronograma directamente no la hacían: mostraban el pago en NOMINAL al lado
+// de un "factor hoy ≈ 37,570×". Con la serie caída daba igual (todo era nominal);
+// con la serie viva, cada caller que se olvide vuelve a partir la pantalla.
+//
+// `posOrAsset` acepta la posición entera o `{ asset }`: los callers tienen una u
+// otra a mano y la única parte que importa es el ticker.
+export function cerOptsFor(posOrAsset, cerSeries) {
+  const ticker = typeof posOrAsset === 'string' ? posOrAsset : posOrAsset?.asset
+  const meta = ticker ? getBondMeta(ticker) : null
+  const hay = cerSeries && Object.keys(cerSeries).length > 0
+  return (meta?.type === 'cer' && hay) ? { cerSeries } : {}
+}
+
+
+export function nextPaymentForPosition(ticker, quantity, from, options = {}) {
+  const next = getNextPayment(ticker, from, options)
   if (!next || !quantity) return null
   return {
     date: next.date,

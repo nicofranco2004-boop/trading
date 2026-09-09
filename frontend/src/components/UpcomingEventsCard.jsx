@@ -18,11 +18,20 @@ import {
   mergeEvents,
   formatRelativeDate,
 } from '../utils/upcomingEvents'
+import { useCerSeries } from '../hooks/useCerSeries'
+import { getBondMeta } from '../utils/bondMeta'
 
 const WINDOW_DAYS = 30  // mostrar sólo el próximo mes en /home
 const MAX_ITEMS = 5
 
 export default function UpcomingEventsCard({ positions }) {
+  // Serie de ajuste CER: sin ella los cupones de TX26/TZX salen hasta 37× por
+  // debajo, y estas tarjetas publican el monto. El hook cachea por sesión, así
+  // que compartir la serie con Posiciones no cuesta una request más.
+  const _tieneCer = (positions || []).some(
+    p => !p.is_cash && getBondMeta(p.asset)?.type === 'cer')
+  const { series: cerSeries } = useCerSeries(_tieneCer)
+
   const [backendEvents, setBackendEvents] = useState([])
   const [loaded, setLoaded] = useState(false)
 
@@ -35,7 +44,7 @@ export default function UpcomingEventsCard({ positions }) {
   }, [positions])
 
   const events = useMemo(() => {
-    const bonds = upcomingBondEvents(positions || [], { windowDays: WINDOW_DAYS })
+    const bonds = upcomingBondEvents(positions || [], { windowDays: WINDOW_DAYS, cerSeries })
     const stocks = normalizeBackendEvents(backendEvents)
     return mergeEvents(bonds, stocks).slice(0, MAX_ITEMS)
   }, [positions, backendEvents])

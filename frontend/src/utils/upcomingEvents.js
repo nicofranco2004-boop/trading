@@ -13,7 +13,7 @@
 // La función `mergeEvents` ordena cronológicamente y deduplica si por algún
 // motivo aparece la misma fecha dos veces (defensivo).
 
-import { generateSchedule } from './bondSchedule'
+import { generateSchedule, cerOptsFor } from './bondSchedule'
 import { getBondMeta } from './bondMeta'
 import { isBondTicker } from './tickers'
 
@@ -55,7 +55,9 @@ export function upcomingBondEvents(positions, options = {}) {
     if (!isBondTicker(p.asset)) continue
     if (p.is_cash) continue
     if (!p.quantity || p.quantity <= 0) continue
-    const schedule = generateSchedule(p.asset)
+    // Ajuste CER: sin la serie, un cupón de TX26 sale hasta 37× por debajo, y
+    // este evento PUBLICA el monto (`details.coupon`/`amort`/`total`).
+    const schedule = generateSchedule(p.asset, cerOptsFor(p, options.cerSeries))
     if (!schedule) continue
     const meta = getBondMeta(p.asset)
     const bondCurrency = meta?.currency || 'USD'

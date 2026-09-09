@@ -21,13 +21,13 @@
 // en USD pero el broker es ARS, el user carga el equivalente en pesos que
 // efectivamente recibió.
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { X, ArrowDownCircle, Layers as LayersIcon } from 'lucide-react'
 import { api } from '../utils/api'
 import { useToast } from './Toast'
 import AssetLogo from './AssetLogo'
 import { getBondMeta, formatBondType } from '../utils/bondMeta'
-import { nextPaymentForPosition } from '../utils/bondSchedule'
+import { nextPaymentForPosition, cerOptsFor } from '../utils/bondSchedule'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { suggestBrokerAmount } from '../utils/bondCashflowFx'
 
@@ -41,6 +41,8 @@ export default function BondCashflowModal({
   position,     // Optional: la posición completa (con quantity) para pre-fill
   prefill,      // Optional: { date, amount, faceAmortized } — pago CONCRETO a
                 // registrar (viene del inbox de cobranzas pendientes).
+  cerSeries,    // Optional: serie de ajuste. Sin ella el pre-llenado de un bono
+                // CER sale en NOMINAL — hasta 37× por debajo de lo que se cobró.
   onClose,
   onSuccess,
 }) {
@@ -68,7 +70,11 @@ export default function BondCashflowModal({
       }
     }
     if (!position?.quantity) return null
-    const next = nextPaymentForPosition(asset, position.quantity, today())
+    // El pago que se PRE-LLENA para registrar tiene que estar ajustado igual
+    // que el que muestra la tarjeta: en un bono CER el cupón va sobre el capital
+    // ajustado, y es la plata que el usuario cobró de verdad.
+    const next = nextPaymentForPosition(asset, position.quantity, today(),
+                                        cerOptsFor({ asset }, cerSeries))
     if (!next) return null
     // Para amortization vs coupon: filtramos el monto al sub-flujo correspondiente.
     if (flowType === 'coupon' && next.coupon > 0) {
@@ -80,7 +86,9 @@ export default function BondCashflowModal({
     // Caso edge: el próximo pago es del tipo opuesto (ej: user abrió "cupón"
     // pero el próximo flujo es sólo amort). Devolvemos null para no confundir.
     return null
-  }, [asset, flowType, position?.quantity, prefill])
+    // `cerSeries` va en las deps: llega async, y sin ella el memo se quedaba
+    // con el monto nominal de la primera pasada.
+  }, [asset, flowType, position?.quantity, prefill, cerSeries])
 
   // ── Sugerencia del monto en la moneda del broker ─────────────────────────
   // El teórico viene en la moneda del BONO; el campo pide la del BROKER. Cuando
@@ -142,10 +150,22 @@ export default function BondCashflowModal({
   // Si cambia la estimación (caso re-render por props), re-aplicar valores.
   // Con conversión pendiente NO se siembra el monto: sería el número en la moneda
   // del bono en un campo rotulado con la del broker (para eso está el chip).
+  //
+  // ⚠️ `!amount` SOLO NO ALCANZA, Y ES UNA CARRERA CON PLATA ADENTRO. La serie de
+  // ajuste CER llega async: el modal abre, siembra el monto NOMINAL, y cuando la
+  // serie aterriza el `estimate` cambia a su valor ajustado (hasta 37× más) pero
+  // el campo ya no está vacío y se quedaba con el nominal. Se re-siembra mientras
+  // el usuario no haya escrito encima — `sembrado` guarda lo último que puso el
+  // modal, así que un valor tipeado a mano nunca se pisa.
+  const sembrado = useRef(null)
   useEffect(() => {
-    if (estimate && !amount) {
-      setDate(estimate.date)
-      if (!sug.applies) setAmount(estimate.amount.toFixed(2))
+    if (!estimate) return
+    if (amount && amount !== sembrado.current) return   // lo tocó el usuario
+    setDate(estimate.date)
+    if (!sug.applies) {
+      const v = estimate.amount.toFixed(2)
+      setAmount(v)
+      sembrado.current = v
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estimate])
