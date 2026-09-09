@@ -186,10 +186,22 @@ que hay que hacer para los tres op_types juntos porque cambia números en pantal
 **⚠️ Y una corrección de método:** dije "cero fallos nuevos, mismo set exacto que el baseline"
 sobre el conteo de la suite completa, y ese número **no sirve como métrica**. Probado en un
 worktree limpio de `origin/main`: agregar UN test que crea UN usuario cambia el conteo de 31 a 30,
-sin tocar una línea de código. La suite comparte una base temporal y tiene tests que dependen del
-orden. La comparación válida es **archivo por archivo, aislado, con base fresca y el mismo
-`backend/.env`** (su ausencia sola cambia 6 resultados de `test_advisor_plan`). Hecho así sobre
-los 247 archivos, en las dos ramas: **la única diferencia es el archivo de test nuevo, que pasa.**
+sin tocar una línea de código. La comparación válida es **archivo por archivo, aislado, con base
+fresca y el mismo `backend/.env`** (su ausencia sola cambia 6 resultados de `test_advisor_plan`).
+Hecho así sobre los 247 archivos, en las dos ramas: **la única diferencia es el archivo de test
+nuevo, que pasa.**
+
+**Y una corrección a la corrección, que la hizo otra sesión.** Atribuí a dependencia del orden
+tres rojos (`test_reports_variaciones_f4`, `test_quota_window_corte`, `test_trial_funnel_smoke`).
+La dependencia del orden existe —el experimento del usuario de más lo prueba— pero **esos tres no
+eran eso: era el reloj**. De 21:00 a 00:00 ART, `datetime.utcnow().date()` ya pasó al día
+siguiente y `date.today()` no: los tests sembraban con un reloj y asertaban con el otro. Está
+arreglado en `main` (`4ad6eed7`) y esta rama lo mergeó. **Corolario para la próxima tanda: antes
+de explicar un rojo, mirá la hora.**
+
+**Estado tras mergear `origin/main` (2026-09-08 22:40):** backend **6 rojos**, los seis en
+`test_advisor_plan` (`ClaimFlow`/`LinkRequest`) y **los mismos seis en un worktree pristino de
+`origin/main` con el mismo `.env`** — son de entorno, no del código. Frontend **1.481 en verde**.
 
 ---
 
