@@ -28437,13 +28437,20 @@ def _process_payment_event(conn, payment_id: str, payload: dict):
             log.error("Payment failed email failed for payment %s: %s", payment_id, ex)
 
 
+def _hoy_art_date():
+    """Hoy en Argentina como `date`, para hacer aritmética de días."""
+    from fechas import hoy_art_date
+    return hoy_art_date()
+
+
 def _iso_today() -> str:
-    """Audit follow-up (2026-05-31): retorna día ART (UTC-3), no UTC.
-    Target users son argentinos — "hoy" debe ser el día calendar local.
-    Sin esto, snapshots, KPIs "HOY", "Δ último cierre" estaban desfasados
-    hasta 3 horas vs lo que el user percibe como "hoy"."""
-    from datetime import timedelta as _td
-    return (datetime.utcnow() - _td(hours=3)).strftime("%Y-%m-%d")
+    """Hoy en Argentina. Alias del canónico `fechas.hoy_art()` — se mantiene el
+    nombre porque lo llaman decenas de sitios de este archivo.
+
+    (Audit F3: antes cada módulo repetía la resta de 3 horas por su cuenta —
+    nueve copias. La definición vive en `backend/fechas.py` y en ningún otro lado.)"""
+    from fechas import hoy_art
+    return hoy_art()
 
 
 def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
@@ -36719,14 +36726,14 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
         "holdings_basis": holdings_basis,
         # Las tenencias se valúan HOY (no al cierre del período) — el papel lo
         # rotula (audit: cartera de julio bajo un encabezado de junio, sin fecha).
-        "holdings_as_of": (datetime.utcnow() - timedelta(hours=3)).date().isoformat(),
+        "holdings_as_of": _iso_today(),
         "movers": movers,
         "note": (note or "").strip() or None,
         "claimed": bool(conn.execute(
             "SELECT approved FROM users WHERE id=?", (client_uid,)).fetchone()["approved"]),
         # Hora ARGENTINA (UTC-3, sin DST): generado a las 21:30 ART no puede
         # decir la fecha de mañana (audit).
-        "generated_at": (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d"),
+        "generated_at": _iso_today(),
     }
 
 
@@ -37896,7 +37903,7 @@ def advisor_book(uid: int = Depends(get_current_user)):
 
         # Fecha "hoy" en ART (UTC-3): los snapshots se estampan con fecha ART
         # (cron 23:59 ART) — cortar en UTC corría el mes 3 horas antes (audit).
-        today = (_dt.utcnow() - _td(hours=3)).date()
+        today = _hoy_art_date()
         latest = _latest_snapshots(conn, ids)
         asof_7d = _snapshots_asof(conn, ids, (today - _td(days=7)).isoformat())
         # Base del mes = ÚLTIMO día del mes anterior. El snapshot fechado el 1°

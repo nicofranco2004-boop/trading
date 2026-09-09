@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
+from fechas import hoy_art
+
 log = logging.getLogger("advisor_brief")
 
 KINDS = ("open", "close")
@@ -35,8 +37,11 @@ def _clientes(n: int) -> str:
 
 
 def _today_art() -> str:
-    """Fecha de HOY en horario argentino (UTC-3) — los snapshots se estampan así."""
-    return (datetime.utcnow() - timedelta(hours=3)).date().isoformat()
+    """Fecha de HOY en horario argentino — los snapshots se estampan así.
+
+    (Verificado en F3: desde que el cron sella con `fechas.hoy_art()`, esta
+    premisa es cierta. Antes NO lo era y esta función construía sobre ella.)"""
+    return hoy_art()
 
 
 def advisor_uids(conn) -> list:

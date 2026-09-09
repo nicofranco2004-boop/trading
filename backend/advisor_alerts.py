@@ -23,13 +23,15 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
+from fechas import hoy_art, hoy_art_date
+
 log = logging.getLogger("advisor_alerts")
 
 HISTORY_DAYS = 3   # el historial es un feed, no un archivo: se limpia solo
 
 
 def _today_art() -> str:
-    return (datetime.utcnow() - timedelta(hours=3)).date().isoformat()
+    return hoy_art()
 
 
 def get_config(conn, uid: int) -> dict:
@@ -242,7 +244,7 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
             # el cron frenado (o recién importado, con un snapshot sintético al
             # costo) se comparaba contra semanas atrás y el "% del día" era un
             # invento (audit). 4 días cubre un finde largo.
-            _floor = (datetime.utcnow() - timedelta(hours=3) - timedelta(days=4)).date().isoformat()
+            _floor = (hoy_art_date() - timedelta(days=4)).isoformat()
             snaps, base_nd = {}, {}
             # OJO: se excluye HOY a propósito. El browser escribe un snapshot
             # intradiario al abrir la app, y si ese pasaba a ser la base el

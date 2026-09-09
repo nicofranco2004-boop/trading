@@ -765,9 +765,8 @@ def take_snapshot_for_user(
         # sábado (= 23:59 ART del viernes), la fecha debe ser "viernes",
         # no "sábado" (que es lo que utcnow().date() devolvería).
         # Conversión: UTC - 3h = ART.
-        from datetime import timedelta as _td
-        art_dt = datetime.utcnow() - _td(hours=3)
-        target_date = art_dt.strftime('%Y-%m-%d')
+        from fechas import hoy_art
+        target_date = hoy_art()
 
     # 1. Cargar brokers, positions y monthly del user
     brokers = [dict(r) for r in conn.execute(

@@ -80,7 +80,8 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
     from .maturity import letra_maturity
 
     D = str(fecha)[:10]
-    HOY = hoy or (datetime.utcnow() - timedelta(hours=3)).date().isoformat()
+    from fechas import hoy_art
+    HOY = hoy or hoy_art()
     ph = ",".join("?" * len(pair))
 
     # ── 1. El ancla: lo que el usuario ve HOY, por el par de brokers ─────────

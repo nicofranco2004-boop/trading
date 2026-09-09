@@ -736,8 +736,8 @@ def _fin_de_mes(mes: str) -> str:
 
 
 def _hoy_art() -> str:
-    from datetime import datetime, timedelta
-    return (datetime.utcnow() - timedelta(hours=3)).date().isoformat()
+    from fechas import hoy_art
+    return hoy_art()
 
 
 def bordes_medibles(conn, uid: int) -> list:

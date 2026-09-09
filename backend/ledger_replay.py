@@ -139,8 +139,8 @@ def verificar_contra_hoy(conn, uid: int, tolerancia: float = 0.01) -> dict:
     crean posición, o porque cargó cosas a mano— tampoco va a poder recrear
     enero, y un valor reconstruido sobre eso queda corto y se lee como pérdida.
     """
-    from datetime import datetime, timedelta
-    hoy = (datetime.utcnow() - timedelta(hours=3)).date().isoformat()
+    from fechas import hoy_art
+    hoy = hoy_art()
     replay = tenencia_en(conn, uid, hoy)
     real = {}
     for r in conn.execute(
