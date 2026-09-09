@@ -36,6 +36,19 @@ _TMP.close()
 os.environ["DB_PATH"] = _TMP.name
 
 import main                                   # noqa: E402
+
+
+def _hoy_del_dato() -> date:
+    """El día del reloj con el que se ESCRIBIERON las fechas que el piso deriva.
+
+    `credit_active_until` / `trial_ends_at` los escribe billing con
+    `datetime.utcnow()`, y `_window_floor` sale de ahí. Asertar contra
+    `date.today()` mezcla dos relojes: en Argentina (UTC−3) son días DISTINTOS
+    entre las 21:00 y la medianoche, así que estos tests se ponían en rojo todas
+    las noches y volvían solos a verde a la mañana siguiente. En producción no
+    pasa (Railway corre en UTC y los dos relojes coinciden): era un rojo que sólo
+    existía en la máquina del que corría la suite."""
+    return datetime.utcnow().date()
 from ai import quota                          # noqa: E402
 from billing import trial as tr               # noqa: E402
 from billing import subscriptions as subs     # noqa: E402
@@ -162,7 +175,7 @@ class DiaDieciseisTest(Base):
             ((date.today() - timedelta(days=15)).isoformat(), self.uid))
         self.conn.commit()
         self.assertEqual(quota._window_floor(self.conn, self.uid),
-                         date.today() - timedelta(days=1))   # el día que venció
+                         _hoy_del_dato() - timedelta(days=1))   # el día que venció
         self.assertTrue(quota.can_analyze(self.conn, self.uid)[0])
 
 
@@ -233,7 +246,7 @@ class HelperDelPisoTest(Base):
              (datetime.utcnow() - timedelta(days=2)).isoformat(), self.uid))
         self.conn.commit()
         self.assertEqual(quota._window_floor(self.conn, self.uid),
-                         date.today() - timedelta(days=2))
+                         _hoy_del_dato() - timedelta(days=2))
 
     def test_un_credito_VIGENTE_no_pone_piso(self):
         """Solo el vencido corta: si el crédito sigue vivo, no bajó de plan."""

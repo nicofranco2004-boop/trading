@@ -294,12 +294,66 @@ las 27 (las otras 3 cambiaron de nombre).
 
 ---
 
+## Eran 27 en la lista, pero de noche son 31
+
+Al verificar el resultado a las 21:03 aparecieron **4 rojos más** que a las 20:57 no estaban.
+No son míos: corrí los mismos 3 archivos en un worktree **prístino de `origin/main`** y fallan
+exactamente igual.
+
+```
+origin/main prístino, 21:05 → 31 failed  (los 27 + estos 4)
+mi rama,             21:01 → 5 failed    (los 4 + un one-off, ver abajo)
+```
+
+| archivo · test | qué pasa |
+|---|---|
+| `test_quota_window_corte` · `test_no_hace_falta_que_corra_ningun_cron` | `date(2026,9,8) != date(2026,9,7)` |
+| `test_quota_window_corte` · `test_gana_la_fuente_mas_nueva` | `date(2026,9,7) != date(2026,9,6)` |
+| `test_reports_variaciones_f4` · `test_h7_delta_chips_netdep_con_baseline` | `delta_1d` es `None` |
+| `test_reports_variaciones_f4` · `test_b1_migracion_startup_no_rompe_delta_chips` | idem |
+
+Todos, un día de diferencia. A las 21:03 de Argentina:
+
+```
+datetime.utcnow().date() = 2026-09-09
+date.today()             = 2026-09-08     >>> DISTINTO DIA
+```
+
+**La suite se ponía en rojo todas las noches, de 21:00 a medianoche, y volvía sola a verde a la
+mañana siguiente.** En producción no pasa: Railway corre en UTC y los dos relojes coinciden. Es un
+rojo que sólo existe en la máquina del que corre los tests — y es el peor tipo de rojo, porque
+enseña que los rojos van y vienen solos.
+
+Lo notable es que la app **ya tenía la respuesta escrita**: `_iso_today()` ([main.py:28044](../../backend/main.py#L28044))
+devuelve el día ART (UTC−3) a propósito —*"Target users son argentinos — 'hoy' debe ser el día
+calendar local"*— y los tests no se lo preguntaban, elegían su propio reloj. Arreglado haciendo que
+cada test use **el mismo reloj que el dato que está mirando**: los de reportes le preguntan la fecha
+a la app (`main._iso_today()`), los de cuota asertan contra el reloj con el que billing escribe
+`credit_active_until`. Queda bien a toda hora y en cualquier zona horaria, no sólo en UTC.
+
+**Están fuera de los 27 y los arreglé igual**: es exactamente la misma clase de podredumbre, el
+cambio es de tests solamente, y dejar la suite roja tres horas por día vacía de sentido el trabajo.
+
+### Un rojo que vi una sola vez
+
+`test_trial_funnel_smoke::test_el_import_que_disparo_la_activacion_cuenta` falló **una vez**, en la
+corrida de las 21:01 — el minuto exacto del cambio de día UTC. No volvió a fallar en dos corridas
+completas posteriores, ni aislado, ni en el árbol prístino. Siembra un batch **4 minutos** antes de
+`trial_started_at`, así que un salto de día en medio de la corrida le pasa por encima. Lo dejo
+anotado: no lo pude reproducir, y sin reproducirlo no sé si el arreglo sería del test o del embudo.
+
+---
+
 ## Verificación final
 
 ```
-$ cd backend && python3 -m pytest tests/ -q
-4017 passed, 93 skipped, 10 xfailed, 21 warnings in 56.51s
+$ date && cd backend && python3 -m pytest tests/ -q
+Tue Sep  8 21:36:04 -03 2026
+4017 passed, 93 skipped, 10 xfailed, 21 warnings in 56.09s
 ```
 
-Cero rojos, cero entradas en la lista de perdón, y ninguna falla nueva reportada por el hook. La
-cuenta cierra: 3.986 + 27 arreglados + 4 tests nuevos = 4.017.
+La corrida final es **a las 21:36**, o sea dentro de la ventana en la que la suite se ponía en rojo
+sola: cero rojos ahí adentro. Cero entradas en la lista de perdón, y ninguna falla nueva reportada
+por el hook. La cuenta cierra: 3.986 + 27 arreglados + 4 tests nuevos = 4.017.
+
+Para comparar, en el mismo horario: `origin/main` prístino da **31 failed, 3986 passed**.
