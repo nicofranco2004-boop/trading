@@ -1,10 +1,54 @@
 # Handoff — auditoría de cálculo de Rendi y las tandas de fix que quedan
 
-**F2 está hecha** y **el CER de F5 también** (rama `fix/f2-que-no-mientan`, sin deployar).
-Ver §4 y §4-bis. Todo lo demás está para que entiendas por qué, sin tener que reconstruirlo.
-
 **Base:** `origin/main` actual. Trabajá siempre sobre eso, **no** sobre el commit del mapeo — el
 código se movió y la auditoría original se hizo sobre `b74f450f`, que ya no es producción.
+
+---
+
+## 0. Las 7 tandas de un vistazo — y la que sigue
+
+Los 222 hallazgos de la auditoría se ejecutan en siete tandas. **No están ordenadas por
+gravedad**, sino por lo que cada una habilita: primero se frena lo que corrompe datos nuevos,
+después lo que se publica mal, y al final se unifican los motores para que la causa raíz deje
+de reproducirse.
+
+> ### ➡️ La próxima es F3, «Un solo calendario».
+
+| tanda | qué resuelve, en una línea | estado |
+|---|---|---|
+| **F1** | Que la app **deje de escribir mal**. Un número mal mostrado se arregla el día que se toca el código; uno mal **escrito** queda para siempre. | ✅ deployada |
+| **F2** | Que **la inteligencia artificial y las pantallas no mientan**: cuatro números que se publicaban mal hacia afuera. | ✅ deployada y **cerrada** (§4) |
+| **F3** | **Un solo calendario.** Hoy conviven tres relojes distintos dentro del mismo endpoint. | ➡️ **LA QUE SIGUE**, 3 a 5 días |
+| **F4** | Los guards que **ya están escritos** pero no llegaron a todos los lectores. | 🟡 3 de 6. Los 3 que faltan **te esperan a vos**, no al código |
+| **F5** | **Una sola cotización y una sola política de faltantes.** | 🟡 lo más grave ✅ deployado (el CER); el resto pendiente, 4 a 6 días |
+| **F6** | **Terminar las migraciones abiertas.** Un solo motor por concepto. | ⬜ pendiente, 1 a 2 semanas |
+| **F7** | **El modelo de datos.** Es diseño, no arreglos. | ⬜ proyecto aparte |
+
+### Por qué F3 y no F4
+
+F4 es la de mejor relación entre resultado y esfuerzo, porque el código ya está escrito y sólo
+falta llevarlo a los demás lectores. Pero **los tres puntos que le quedan están frenados a
+propósito**: en los tres la decisión es de producto, no técnica. A qué edad un precio viejo deja
+de servir, qué guard usar sobre el número titular del Dashboard, y desde qué porcentaje un
+resultado deja de ser plausible. Nadie debería elegir eso por vos. Hasta que las decidas, F4 no
+avanza.
+
+F3 no depende de ninguna decisión tuya y desbloquea a las que siguen, porque casi todo lo que
+mide rendimiento arranca preguntando qué día es hoy.
+
+### Lo único que hay que saber antes de empezar F3
+
+Los dos arreglos de F3 **van en el mismo commit, obligatoriamente**. El error del borde de
+apertura del año está mal, pero **hoy queda tapado** por el error de zona horaria: como la fila
+que dice 1 de enero es en realidad el cierre del 31 de diciembre en hora argentina, el borde
+sale bien por accidente. Arreglar la zona horaria sin tocar el otro **hace aparecer un error que
+hoy nadie ve**: medido, publica −22,86 % sobre una cartera que ganó mil dólares.
+
+### Lo que corrió en paralelo y NO es una tanda
+
+El 2026-09-09 se trabajó una línea aparte sobre **cripto**, nacida de un reporte de usuario y no
+de la auditoría. Tiene su propio plan y sus propias mediciones en producción:
+`audit/08_cripto/PLAN.md`. Tres arreglos ya están deployados; lo que queda está priorizado ahí.
 
 ---
 
@@ -89,7 +133,7 @@ antes de apoyarte en ella. Si el código contradice al mapa, **gana el código**
 
 ---
 
-## 3. F1 — hecha y deployada
+## 3. F1 — ✅ HECHA Y DEPLOYADA
 
 **«Que deje de escribir mal».** Criterio: sólo lo que **corrompe datos nuevos**. Un número mal
 mostrado se arregla el día que se corrige el código; un número mal **escrito** queda.
@@ -365,9 +409,9 @@ volver a intentar.
 
 ---
 
-## 5. Las tandas que siguen
+## 5. Las tandas que siguen, en detalle
 
-### F3 — «Un solo calendario» *(3–5 días)*
+### F3 — «Un solo calendario» — ➡️ **LA QUE SIGUE** *(3–5 días)*
 
 Hay **tres calendarios corriendo a la vez**: ART (`utcnow() − 3h`), UTC (`utcnow()`) y hora local
 del proceso (`date.today()`), más UTC y hora local del navegador en el frontend. Ninguno está mal
@@ -416,7 +460,7 @@ inexistente, `/api/operations` **no**. Ahí el contrato lo tolera deliberadament
 que lo fija (`test_currency_fallback_to_usd_if_broker_unknown`). Hay un test que congela la
 asimetría para que quien la toque tenga que decidirla en vez de romperla de refilón.
 
-### F5 — «Una sola cotización, una sola política de faltantes» *(4–6 días)*
+### F5 — «Una sola cotización, una sola política de faltantes» — 🟡 el CER ✅ deployado (§4-bis), el resto pendiente *(4–6 días)*
 
 - **El cap de `/api/fx-rates` Y el fallback mudo (los dos, dependencia D-7).** El endpoint limita
   por **filas, no por días**: el frontend pide 3.650 días, el backend responde
@@ -435,7 +479,7 @@ asimetría para que quien la toque tenga que decidirla en vez de romperla de ref
   que pasar `moneda` a los benchmarks: hoy `vs_sp500_pct` **cambia de signo** con sólo tocar el
   selector de moneda.
 
-### F6 — «Terminar las migraciones abiertas» *(1–2 semanas)*
+### F6 — «Terminar las migraciones abiertas» — ⬜ pendiente *(1–2 semanas)*
 
 **Acá es donde la causa raíz dominante deja de reproducirse.** Es la tanda que más cuesta y la
 que más cambia el futuro del código.
@@ -448,7 +492,7 @@ que más cambia el futuro del código.
 
 **Estado al cerrar: un solo motor por concepto.**
 
-### F7 — «El modelo de datos» *(proyecto aparte, no es una tanda de fixes)*
+### F7 — «El modelo de datos» — ⬜ proyecto aparte, no es una tanda de fixes
 
 Es diseño, no arreglos:
 
@@ -554,11 +598,16 @@ asumas que la tuya es la buena.
 
 ## 10. Estado del repo
 
-- **`main`** — F1 completa + 3 de 6 de F4, deployado y verificado (27 fallos de test, los mismos
-  que antes; frontend entero en verde). Ojo: el baseline de fallos **subió a 33** desde entonces
-  (`advisor_plan`, `bond_conduit`, `cedear_usd_price` se sumaron a news/events/importer/billing).
+- **`main`** — F1 completa, F2 completa, 3 de 6 de F4 y el CER de F5. Todo deployado.
+- **`fix/f2-que-no-mientan`** — ya **mergeada**: a 2026-09-09 está a **cero commits de
+  diferencia con `origin/main` en las dos direcciones**. No queda nada suyo sin subir. Se puede
+  seguir usando como rama de trabajo o abrir una nueva desde `origin/main`; da igual.
+- **Baseline de la suite a 2026-09-09: 6 fallos**, los seis en `test_advisor_plan`
+  (`ClaimFlow` / `LinkRequest`) y **de ENTORNO, no del código**: tiran 502 cuando existe
+  `RESEND_API_KEY`. Reproducidos en un worktree pristino de `origin/main` con una clave falsa.
+  ⚠️ **El conteo de la suite completa no sirve como métrica** — agregar un test que crea un
+  usuario lo mueve sin tocar código. La comparación válida es archivo por archivo, aislado.
   Medí el tuyo antes de tocar nada, no uses el número de este documento.
-- **`fix/f2-que-no-mientan`** — F2 completa, **sin deployar**. 7 commits. Ver §4.
 - `audit/mapa-sistema` — el mapa y los informes.
 - `audit/trabajo-local-2026-09-07` — prompts e informes previos.
 - `fix/f1-deje-de-escribir-mal` y `fix/f4-guards-en-todos-los-lectores` — **obsoletas**, ya
