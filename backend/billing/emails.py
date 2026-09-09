@@ -87,6 +87,28 @@ def _is_test_address(addr: str) -> bool:
     return a.endswith(_TEST_EMAIL_SUFFIXES)
 
 
+def can_deliver(to: str) -> bool:
+    """¿Un envío a `to` puede llegar de verdad? Preguntá ESTO antes de tratar
+    un `False` de _send() como un error.
+
+    `_send()` devuelve False por TRES motivos que el caller no puede
+    distinguir mirando el bool:
+      1. estamos bajo pytest, o la dirección es de un dominio reservado
+         (.test/.example/...) → no se intenta mandar NUNCA;
+      2. no hay proveedor configurado → se loguea a consola y listo;
+      3. se intentó mandar y falló de verdad.
+    Sólo el 3 es una falla que valga la pena mostrarle al usuario.
+
+    ⚠️ Preguntar por la API KEY sola contesta OTRA pregunta. `backend/.env`
+    tiene RESEND_API_KEY, así que bajo pytest la key ESTÁ presente pero el
+    envío igual no ocurre. Por eso el endpoint de invitación del asesor
+    devolvía 502 y dejaba 6 tests en rojo en cualquier carpeta con `.env`,
+    y verdes en los worktrees que no lo tienen."""
+    if _running_under_pytest() or _is_test_address(to):
+        return False
+    return _is_configured()
+
+
 # ─── Backend de envío ────────────────────────────────────────────────────────
 
 def _send(to: str, subject: str, html: str, text: str,
@@ -113,6 +135,7 @@ def _send(to: str, subject: str, html: str, text: str,
     # Guarda dura: nunca enviar de verdad bajo pytest ni a direcciones de dominio
     # reservado (.test/.example/etc). Evita que la suite spamee el inbox real
     # cuando RESEND_API_KEY está cargada desde backend/.env.
+    # Mismo predicado que can_deliver() — el motivo 1 de los tres de arriba.
     if _running_under_pytest() or _is_test_address(to):
         log.info("EMAIL skip (test): to=%s subject=%s", to, subject)
         return False

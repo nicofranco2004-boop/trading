@@ -28315,7 +28315,7 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, p
             next_charge_date=mp_state.get("next_payment_date"),
             plan=plan,
         )
-        if sent or not emails._is_configured():
+        if sent or not emails.can_deliver(row["email"]):
             # Marcamos como enviado igual en modo "no configurado" (log-only)
             # para no spamear el log con cada webhook.
             with conn:
@@ -35628,9 +35628,13 @@ def advisor_invite_client(
                 claim_url=claim_url, expires_days=ADVISOR_CLAIM_TTL_DAYS)
         except Exception as ex:
             log.error("Advisor claim email failed uid=%s client=%s: %s", uid, client_uid, ex)
-        # Sin RESEND_API_KEY (dev/tests) no hay envío posible — no es una falla.
-        from billing.emails import _api_key as _resend_key
-        if not sent and _resend_key():
+        # Si el envío no era posible (dev sin proveedor, tests, dominio
+        # reservado) NO es una falla. Preguntar por la api key contestaba otra
+        # cosa: bajo pytest la key está y el mail igual no sale. Ver
+        # emails.can_deliver(). Import propio: el de arriba vive dentro del
+        # try y si ese import fallara, acá `emails` no existiría.
+        from billing import emails as _emails
+        if not sent and _emails.can_deliver(email_norm):
             raise HTTPException(502, "No pudimos mandar el email. Probá de nuevo en unos minutos.")
         return {"ok": True, "email": email_norm}
     finally:
@@ -35736,8 +35740,9 @@ def _advisor_link_request(conn, uid: int, shadow_uid: int, target, data: Advisor
             permission=permission, url=url, expires_days=ADVISOR_LINK_TTL_DAYS)
     except Exception as ex:
         log.error("Advisor link request email failed uid=%s target=%s: %s", uid, target_uid, ex)
-    from billing.emails import _api_key as _resend_key
-    if not sent and _resend_key():
+    # Mismo criterio que la invitación: sólo es falla si el envío ERA posible.
+    from billing import emails as _emails
+    if not sent and _emails.can_deliver(email_norm):
         raise HTTPException(502, "No pudimos mandar el pedido. Probá de nuevo en unos minutos.")
     return {"ok": True, "mode": "link_request", "email": email_norm,
             "expires_days": ADVISOR_LINK_TTL_DAYS, "permission": permission}

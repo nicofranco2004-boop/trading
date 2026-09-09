@@ -60,3 +60,16 @@ class EmailGuardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_can_deliver_es_false_bajo_pytest_aunque_haya_api_key():
+    """El bug que dejaba 6 rojos en test_advisor_plan: los endpoints decidían
+    'el mail falló' preguntando si HAY api key. Bajo pytest la key está (viene
+    de backend/.env) pero el envío no ocurre nunca, así que devolvían 502.
+    can_deliver() contesta la pregunta correcta: ¿se puede entregar?"""
+    from unittest.mock import patch
+    from billing import emails
+    with patch.object(emails, "_api_key", return_value="re_fake"):
+        assert emails._is_configured() is True          # hay key...
+        assert emails.can_deliver("real@gmail.com") is False   # ...y aun así no se entrega
+        assert emails.can_deliver("x@rendi.test") is False
