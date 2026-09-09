@@ -1692,25 +1692,32 @@ function RepairCaja1415Panel({ toast }) {
       </div>
       <p className="text-xs text-ink-3 leading-relaxed">
         Cuando un usuario reconciliaba su caja en pesos, el sistema dividía por un dólar de 1.415 escrito a
-        mano en el código, sin importar la fecha. Esto vuelve a dolarizar esos meses con el dólar MEP real
-        del mes (el mismo criterio que usa hoy) y recalcula el capital de cada usuario. <b>Sólo toca los
+        mano en el código, sin importar la fecha. Esto vuelve a dolarizar esos montos con el dólar MEP del
+        <b>día en que se hizo la reconciliación</b> (los pesos son de ese día, aunque se anoten en el mes
+        más viejo del broker) y recalcula el capital de cada usuario. <b>Sólo toca los
         meses con esa firma</b>; apretarlo dos veces no hace nada la segunda. El paso 1 no modifica nada.
       </p>
       {prev && (
         <div className="text-xs space-y-1">
           <p className="text-ink-2">
-            <b>{n}</b> mes(es) de <b>{prev.usuarios}</b> usuario(s). Capital que desaparece porque nunca existió:{' '}
-            <b className="text-rose-500">US$ {fmt(prev.capital_fantasma_usd)}</b>.
+            <b>{n}</b> mes(es) de <b>{prev.usuarios}</b> usuario(s). El capital aportado cambia en{' '}
+            <b className={prev.cambio_capital_aportado_usd < 0 ? 'text-emerald-500' : 'text-amber-500'}>
+              US$ {fmt(prev.cambio_capital_aportado_usd)}
+            </b>{' '}
+            (depósitos {prev.delta_depositos_usd >= 0 ? '+' : ''}{fmt(prev.delta_depositos_usd)} · retiros {prev.delta_retiros_usd >= 0 ? '+' : ''}{fmt(prev.delta_retiros_usd)}).
           </p>
           {prev.meses_a_corregir.map(c => (
             <p key={c.id} className="text-ink-3 tabular">
-              {c.mes} · {c.broker} · dólar del mes {fmt(c.tc_nuevo)}
+              anotado en {c.mes} · {c.broker} · reconciliado el {c.reconciliado_el} · dólar de ese día {fmt(c.tc_nuevo)}
               {c.manual_deposits && <> · depósitos US$ {fmt(c.manual_deposits.usd_antes)} → {fmt(c.manual_deposits.usd_despues)}</>}
               {c.manual_withdrawals && <> · retiros US$ {fmt(c.manual_withdrawals.usd_antes)} → {fmt(c.manual_withdrawals.usd_despues)}</>}
             </p>
           ))}
+          {prev.sin_fecha.length > 0 && (
+            <p className="text-amber-500">{prev.sin_fecha.length} mes(es) sin lote de importación con qué fechar la reconciliación: no se tocan.</p>
+          )}
           {prev.ya_correctas.length > 0 && (
-            <p className="text-ink-3">{prev.ya_correctas.length} mes(es) donde el dólar real era 1.415: no se tocan.</p>
+            <p className="text-ink-3">{prev.ya_correctas.length} mes(es) donde el dólar del día de la reconciliación era 1.415: no se tocan.</p>
           )}
         </div>
       )}
