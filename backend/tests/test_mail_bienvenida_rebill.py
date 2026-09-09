@@ -180,6 +180,81 @@ class BienvenidaRebillTest(unittest.TestCase):
         self.assertIsNone(self._fila(sub_id)["welcome_email_sent_at"])
 
 
+class ElMontoDeRebillEsEnPesosTest(unittest.TestCase):
+    """Rebill cobra e informa en PESOS (confirmado por el dueño el 2026-09-09).
+
+    El código lo guardaba en `amount_usd`: pesos con nombre de dólares. Un cobro de
+    $12.100 quedaba anotado como "12.100 dólares" y el aviso al admin lo imprimía
+    así — `send_plan_change_admin` formatea `USD {monto:,.2f}`.
+
+    Lo que NO estaba afectado (y estos tests lo fijan): los días de acceso salen del
+    catálogo, no del monto."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app)
+
+    def setUp(self):
+        self.conn = main.get_db()
+        self.email = f"monto-{uuid.uuid4().hex[:8]}@rendi.test"
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, name) VALUES (?,?,1,'Nico')",
+            (self.email, "x")).lastrowid
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _alta(self, sub_id, monto=12100):
+        p = _payload(self.uid, sub_id)
+        p["data"]["payment"]["amount"] = monto
+        with patch("billing.emails._send") as send, \
+             patch("billing.emails.send_plan_change_admin") as admin:
+            send.return_value = True
+            r = self.client.post("/api/billing/rebill-webhook", json=p)
+        return r, send, admin
+
+    def _fila(self, sub_id):
+        return self.conn.execute(
+            "SELECT amount_ars, amount_usd FROM subscriptions WHERE mp_subscription_id=?",
+            (sub_id,)).fetchone()
+
+    def test_el_peso_se_guarda_en_la_columna_de_pesos(self):
+        r, _, _ = self._alta("sub-monto-1")
+        self.assertEqual(r.status_code, 200, r.text)
+        fila = self._fila("sub-monto-1")
+        self.assertEqual(fila["amount_ars"], 12100)
+        self.assertIsNone(fila["amount_usd"],
+                          "un monto en pesos no puede quedar anotado como dólares")
+
+    def test_el_aviso_al_admin_no_dice_12100_dolares(self):
+        _, _, admin = self._alta("sub-monto-2")
+        self.assertTrue(admin.called)
+        recibido = admin.call_args.kwargs.get("amount_usd")
+        self.assertNotEqual(recibido, 12100.0,
+                            "le está informando el monto en pesos como si fueran dólares")
+
+    def test_ahora_el_mail_SI_muestra_lo_que_pago(self):
+        """Antes se omitía el importe porque `amount_ars` quedaba en 0. Con el peso
+        en su columna, la persona ve lo que efectivamente pagó."""
+        _, send, _ = self._alta("sub-monto-3")
+        self.assertTrue(send.called)
+        cuerpo = send.call_args[0][2] + send.call_args[0][3]
+        self.assertIn("ARS 12.100", cuerpo)
+
+    def test_los_dias_de_acceso_no_dependen_del_monto(self):
+        """La regresión que hay que impedir: si algún día los días salieran del
+        monto, un cobro en pesos regalaría años de acceso."""
+        from datetime import datetime as _dt
+        from billing import credits as _cr
+        self._alta("sub-monto-4", monto=12100)
+        u = self.conn.execute(
+            "SELECT credit_active_until FROM users WHERE id=?", (self.uid,)).fetchone()
+        dias = (_cr._parse_iso(u["credit_active_until"]) - _dt.utcnow()).total_seconds() / 86400.0
+        self.assertAlmostEqual(dias, 30, delta=1.5,
+                               msg=f"un cobro mensual dio {dias:.0f} días de acceso")
+
+
 class MarcaDeLosQueYaEstabanTest(unittest.TestCase):
     """La marca de una sola vez que corre al arrancar (`_marcar_bienvenidas_previas`).
 

@@ -27432,17 +27432,34 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
         period = "monthly"
     target_tier = plan  # ya validado a plus/pro
 
-    # Monto cobrado: si Rebill lo manda, usamos eso; si no, usamos el catálogo.
-    amount_usd = None
+    # Monto cobrado. ⚠️ REBILL LO MANDA EN PESOS (confirmado por el dueño el
+    # 2026-09-09), y este bloque lo venía guardando en `amount_usd`: pesos con
+    # nombre de dólares. Un cobro de $12.100 quedaba anotado como "12.100 dólares"
+    # en `subscriptions.amount_usd`, en `credit_ledger.amount_usd`, en
+    # `users.credit_anchor_amount_usd` — y el aviso al admin lo IMPRIME así
+    # (`send_plan_change_admin` formatea `USD {monto:,.2f}`, emails.py:988): cada
+    # alta avisaba "USD 12.100,00" por un cobro de ~US$ 8,50.
+    #
+    # Lo que NO afectaba, verificado: los días de acceso salen de
+    # `plan_period_days(plan, period)` y la conversión al cambiar de plan de
+    # `daily_rate(...)`, las dos del CATÁLOGO — no del monto. Nadie recibió ni
+    # perdió acceso por esto; lo que estaba mal era lo que quedaba anotado.
+    #
+    # Ahora el peso va a `amount_ars`, que es la columna que le corresponde, y el
+    # valor en dólares se deja en None a propósito: el motor de crédito y el aviso
+    # usan entonces el precio de catálogo, que es el único USD que podemos afirmar.
+    # Convertirlo con un tipo de cambio inventado sería el mismo error con más pasos.
+    amount_ars_cobrado = None
     data_obj = payload.get("data") or {}
     payment_obj = data_obj.get("payment") or {}
     for c in (payment_obj.get("amount"), data_obj.get("amount"), payload.get("amount")):
         try:
             if c is not None:
-                amount_usd = float(c)
+                amount_ars_cobrado = float(c)
                 break
         except (TypeError, ValueError):
             continue
+    amount_usd = None   # el catálogo manda; ver arriba
 
     # payment_id para idempotency del ledger — el subscription.created suele
     # venir con un payment_id (el primer cobro). Si no está, queda None y
@@ -27480,18 +27497,19 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
                 """UPDATE subscriptions
                    SET status = 'authorized',
                        mp_subscription_id = ?,
-                       amount_usd = COALESCE(?, amount_usd),
+                       amount_ars = COALESCE(?, amount_ars),
                        updated_at = datetime('now')
                    WHERE id = ?""",
-                (sub_id or "", amount_usd, existing["id"]),
+                (sub_id or "", amount_ars_cobrado, existing["id"]),
             )
         else:
             conn.execute(
                 """INSERT INTO subscriptions
                        (user_id, mp_subscription_id, external_reference, period,
-                        status, amount_ars, amount_usd, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'authorized', 0, ?, datetime('now'), datetime('now'))""",
-                (uid, sub_id or "", f"rendi-{uid}-{plan}-{period}", period, amount_usd),
+                        status, amount_ars, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'authorized', ?, datetime('now'), datetime('now'))""",
+                (uid, sub_id or "", f"rendi-{uid}-{plan}-{period}", period,
+                 amount_ars_cobrado or 0),
             )
 
     # Conceder crédito por el período cobrado (fuera del with por simplicidad —
