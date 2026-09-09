@@ -12,19 +12,23 @@ gravedad**, sino por lo que cada una habilita: primero se frena lo que corrompe 
 después lo que se publica mal, y al final se unifican los motores para que la causa raíz deje
 de reproducirse.
 
-> ### ➡️ La próxima es F3, «Un solo calendario».
+> ### ➡️ La próxima es **F4**, y arranca con **tres decisiones tuyas** (§7).
+>
+> F3 quedó **hecha y sin deployar** — 7 commits en `fix/f2-que-no-mientan`. Antes de
+> pushear, leé «Lo que se ve el día del deploy» en §5-F3: hay **un efecto medido** que
+> conviene saber de antemano, y **una decisión tuya** sobre la serie histórica.
 
 | tanda | qué resuelve, en una línea | estado |
 |---|---|---|
 | **F1** | Que la app **deje de escribir mal**. Un número mal mostrado se arregla el día que se toca el código; uno mal **escrito** queda para siempre. | ✅ deployada |
 | **F2** | Que **la inteligencia artificial y las pantallas no mientan**: cuatro números que se publicaban mal hacia afuera. | ✅ deployada y **cerrada** (§4) |
-| **F3** | **Un solo calendario.** Hoy conviven tres relojes distintos dentro del mismo endpoint. | ➡️ **LA QUE SIGUE**, 3 a 5 días |
-| **F4** | Los guards que **ya están escritos** pero no llegaron a todos los lectores. | 🟡 3 de 6. Los 3 que faltan **te esperan a vos**, no al código |
+| **F3** | **Un solo calendario.** Convivían tres relojes distintos dentro del mismo endpoint. | ✅ **HECHA, sin deployar** (7 commits) |
+| **F4** | Los guards que **ya están escritos** pero no llegaron a todos los lectores. | ➡️ **LA QUE SIGUE.** 3 de 6; los 3 que faltan **te esperan a vos**, no al código |
 | **F5** | **Una sola cotización y una sola política de faltantes.** | 🟡 lo más grave ✅ deployado (el CER); el resto pendiente, 4 a 6 días |
 | **F6** | **Terminar las migraciones abiertas.** Un solo motor por concepto. | ⬜ pendiente, 1 a 2 semanas |
 | **F7** | **El modelo de datos.** Es diseño, no arreglos. | ⬜ proyecto aparte |
 
-### Por qué F3 y no F4
+### Por qué F4 ahora, y por qué te toca a vos
 
 F4 es la de mejor relación entre resultado y esfuerzo, porque el código ya está escrito y sólo
 falta llevarlo a los demás lectores. Pero **los tres puntos que le quedan están frenados a
@@ -33,16 +37,8 @@ de servir, qué guard usar sobre el número titular del Dashboard, y desde qué 
 resultado deja de ser plausible. Nadie debería elegir eso por vos. Hasta que las decidas, F4 no
 avanza.
 
-F3 no depende de ninguna decisión tuya y desbloquea a las que siguen, porque casi todo lo que
-mide rendimiento arranca preguntando qué día es hoy.
-
-### Lo único que hay que saber antes de empezar F3
-
-Los dos arreglos de F3 **van en el mismo commit, obligatoriamente**. El borde de apertura del
-año está mal calculado, pero **hoy queda tapado** por el error de zona horaria: como la fila que
-dice 1 de enero es en realidad el cierre del 31 de diciembre en hora argentina, el borde sale
-bien por accidente. Arreglar la zona horaria sin tocar el otro **hace aparecer un error que
-hoy nadie ve**: medido, publica −22,86 % sobre una cartera que ganó mil dólares.
+F3 se hizo primero justamente porque no dependía de ninguna decisión tuya, y porque desbloquea
+a las que siguen: casi todo lo que mide rendimiento arranca preguntando qué día es hoy.
 
 ### Lo que corrió en paralelo y NO es una tanda
 
@@ -411,28 +407,115 @@ volver a intentar.
 
 ## 5. Las tandas que siguen, en detalle
 
-### F3 — «Un solo calendario» — ➡️ **LA QUE SIGUE** *(3–5 días)*
+### F3 — «Un solo calendario» — ✅ **HECHA, SIN DEPLOYAR** (2026-09-09)
 
-Hay **tres calendarios corriendo a la vez**: ART (`utcnow() − 3h`), UTC (`utcnow()`) y hora local
-del proceso (`date.today()`), más UTC y hora local del navegador en el frontend. Ninguno está mal
-en sí; el problema es que **conviven dentro del mismo endpoint** y varios llevan comentarios que
-afirman estar alineados con otro cuando no lo están.
+7 commits sobre `origin/main` (`ab8ae9a5` … `f9bc43db`), rama `fix/f2-que-no-mientan`.
+Suite al terminar: **backend 4.132 en verde / 0 rojos · frontend 1.528 en verde / 0 rojos**,
+contra un baseline medido esa misma tarde de **0 y 0**. Build del frontend OK.
 
-- El cron sella cada snapshot con el día **UTC**, o sea un día ART adelante. Medido: el reporte
-  anual de 2026 cierra con la rueda del 30 de diciembre. La rama que convierte a ART existe,
-  está a 280 líneas y **nunca se ejecuta**.
-- **`_ytd_delta` va en el MISMO commit** — es obligatorio, ver abajo.
-- Los **27** `toISOString` restantes (hay 1 de 28 ya corregido, con el comentario que explica por qué).
-- Los **tres comentarios** que afirman "los snapshots se estampan con fecha ART" y construyen
-  lógica sobre esa premisa falsa. **Corregirlos es parte del fix.**
-- Unificar "este mes": llevar el piso de antigüedad del borde a `computeReturnDelta`. Medido: el
-  KPI del Dashboard publica **+35,24 %** donde el mes real fue **+2,90 %**.
+Convivían **tres calendarios**: ART (`utcnow() − 3h`), UTC (`utcnow()`) y hora local del proceso
+(`date.today()`), más UTC y hora local del navegador en el frontend. Ninguno estaba mal en sí; el
+problema era que convivían dentro del mismo endpoint, y que varios llevaban comentarios
+afirmando estar alineados con otro cuando no lo estaban.
 
-> ⚠️ **Dependencia obligatoria (D-1).** El borde de apertura de `_ytd_delta` está mal, pero **hoy
-> el error está tapado** por el bug de zona horaria: como la fila etiquetada `2026-01-01` es en
-> realidad el cierre ART del 31/12, el borde sale bien por accidente. **Arreglar la zona horaria
-> sin tocar `_ytd_delta` hace aparecer un bug que hoy nadie ve** (medido: publica −22,86 % sobre
-> una cartera que ganó US$1.000).
+**El "hoy" de Rendi es el día calendario argentino.** Esa decisión ya estaba tomada de hecho en
+el producto (el cron corre 02:59 UTC *porque* es medianoche de acá); lo que faltaba era que
+existiera en un solo lugar. Ahora vive en `backend/fechas.py` y en `frontend/src/utils/fecha.js`.
+
+| # | qué se arregló | evidencia |
+|---|---|---|
+| 1 | **La hora argentina estaba escrita nueve veces**, copiada a mano en nueve archivos. Ahora `backend/fechas.py` y nada más | refactor sin cambio de comportamiento |
+| 2 | **El cron archivaba el cierre del viernes como sábado.** La conversión existía desde 2026-05-31 y **nunca corrió**: el runner pasa fecha no-nula, así que la rama era inalcanzable | MEDIDO |
+| 3 | **El YTD restaba dos veces el aporte del 1 de enero.** Sobre una cartera que ganó US$ 1.000 publicaba **−US$ 4.000 / −22,86 %** | MEDIDO |
+| 4 | **"Este mes" del Dashboard medía desde 79 días antes**: +35,24 % / US$ 3.700 donde el mes real fue +2,90 % / US$ 400 | MEDIDO |
+| 5 | **Cargar una operación a las 22:00 la fechaba mañana** — 27 sitios del frontend | ESTRUCTURAL |
+| 6 | **El mes cerraba tres horas antes de terminar** (`is_period_current` en UTC, con el comentario que afirmaba lo contrario) | MEDIDO |
+| 7 | **El guard de fecha futura aceptaba el futuro** tres horas por día — el guard que existe por los 25 cupones de AL35 de 2027 | ESTRUCTURAL |
+
+**Dos hallazgos que se cerraron solos**, sin trabajo propio:
+
+- **H-11** (la foto intradía del browser no se escribía nunca). El cron ocupaba la fecha de hoy
+  con `source='cron'` y el guard de `POST /api/snapshots` la protegía. Al fechar el cron un día
+  atrás, la fecha de hoy queda libre: **vuelve el punto de "hoy" en la curva del Dashboard** para
+  todos, y el cron de la noche lo pisa con el cierre real, como estaba diseñado.
+- **H-4** (los tabs de `/reportes` con calendarios distintos). El tab "Hoy" era uno de los 27
+  `toISOString`; al migrarlo quedó alineado con Semana, Mes y Año.
+
+**Los tres comentarios falsos** (`advisor_brief`, `advisor_alerts`, el hero del libro) que
+afirmaban "los snapshots se estampan con fecha ART" **no se corrigieron: se volvieron ciertos**.
+Quedan anotados con desde cuándo, para que el próximo lector no crea que siempre lo fueron.
+
+#### Lo que se ve el día del deploy — MEDIDO, no deducido
+
+Simulado corriendo el cron real cinco noches seguidas, tres con el código viejo y dos con el
+nuevo (`audit/_fixes/F3-sim-deploy.py` — se corre desde `backend/`):
+
+```
+  archivada en   valor    es en realidad el cierre de…
+  ──────────────────────────────────────────────────────────
+  2026-09-03      100    ⚠️  corrida un día (es el cierre del 2026-09-02)
+  2026-09-04      110    ⚠️  corrida un día (es el cierre del 2026-09-03)
+  2026-09-05      130    ✅ correcta          ← primera noche con el código nuevo
+  2026-09-06      140    ✅ correcta
+
+  Cierres que NO quedaron en la serie: 2026-09-04
+```
+
+Tres cosas, en orden de importancia:
+
+1. **Se pierde exactamente UNA rueda: la del día anterior al deploy.** La primera corrida nueva
+   escribe sobre la fecha que la corrida de la noche anterior ya había ocupado, y el UPSERT la
+   pisa. Es un punto en la curva, una sola vez, y no se puede evitar sin re-etiquetar la serie.
+2. **La historia vieja queda corrida un día.** F3 no repara datos ya escritos, igual que F1.
+   La serie queda partida en dos convenciones en la fecha del deploy.
+3. **De acá en adelante todo queda bien fechado**, y con eso se acomodan los bordes de todos los
+   períodos: el reporte de septiembre deja de arrancar en el cierre del 30 de agosto y el anual
+   deja de cerrar con la rueda del 30 de diciembre.
+
+#### La decisión que es tuya
+
+**¿Se re-etiqueta la serie histórica de `snapshots`, restándole un día a todo lo anterior al
+deploy?**
+
+| | a favor | en contra |
+|---|---|---|
+| **Re-etiquetar** | la serie queda coherente de punta a punta; los reportes de meses y años pasados se corrigen solos | mueve **toda** la historia de **todos** los usuarios; es la operación más grande que se le haya hecho a esa tabla |
+| **No tocar nada** | riesgo cero, y de acá en adelante todo está bien | los reportes de períodos pasados siguen con la rueda corrida, para siempre |
+
+No hace falta decidirlo para deployar. Se puede deployar hoy y re-etiquetar después: la
+reparación es la misma con un día o con un año de por medio. Y si se hace, va como los otros
+botones del panel de admin — con "ver qué cambiaría" antes de "aplicar", que es el paso que ya
+cazó un fix mal diseñado en §4-ter.
+
+#### Lo que F3 NO tocó, y por qué
+
+- **El contador de cuota de IA** (`_record_tool_usage`) se dejó en UTC **a propósito**, con el
+  motivo escrito en el código: no es un día calendario del usuario, es la ventana de una cuota, y
+  su lector (`ai/quota.py`) cuenta con `date.today()`. Mover uno solo desalinea escritura y
+  lectura y le da a alguien un día de más o de menos de cuota. **Los dos se mueven juntos y
+  medido antes, o no se mueve ninguno.**
+- **Los 38 `date.today()` restantes** (cuota de IA, builders de la IA, eventos). Ninguno persiste
+  una fecha de negocio. Son H-15 y quedan para cuando se toque cada zona.
+- **H-7** (el rollover mensual: UTC en el backend, hora local en el frontend), **H-9** (las
+  semanas anidadas que no cubren el mes), **H-13** (las seis tolerancias distintas de arrastre),
+  **H-14** (`_market_open_now` sin feriados ni DST de EE.UU.), **H-16** y **H-17**. Ninguno es
+  "dos relojes en el mismo endpoint": son piezas propias, y cada una necesita su decisión.
+
+#### Los guards que quedaron, y qué leen
+
+Cinco guards nuevos, y **cuatro de los cinco leen CÓDIGO, no números** — porque lo que hay que
+impedir es que las copias vuelvan, y un test de comportamiento no las ve:
+
+| guard | impide que… |
+|---|---|
+| `test_un_solo_calendario.py` | algún módulo vuelva a restar las 3 horas a mano |
+| ídem | `fechas.py` importe algo del repo y deje de poder usarse desde cualquier lado |
+| ídem | un guard de fecha futura decida con un reloj que no es el argentino |
+| `test_f3_cron_art_y_borde_anual.py` | aparezca una quinta copia del borde de apertura |
+| `bordeFresco.test.js` | el frontend y el backend usen números distintos — **lee `builder.py`** |
+| `fecha.test.js` | vuelva el patrón UTC, **y** que un barrido futuro se lleve puestas las marcas de tiempo, que en UTC están bien |
+
+Los cinco se verificaron poniendo el bug de vuelta a mano.
 
 ### F4 — «Los guards que ya existen, en todos los lectores» — 🟡 3 de 6 hechos
 
@@ -599,15 +682,19 @@ asumas que la tuya es la buena.
 ## 10. Estado del repo
 
 - **`main`** — F1 completa, F2 completa, 3 de 6 de F4 y el CER de F5. Todo deployado.
-- **`fix/f2-que-no-mientan`** — ya **mergeada**: a 2026-09-09 está a **cero commits de
-  diferencia con `origin/main` en las dos direcciones**. No queda nada suyo sin subir. Se puede
-  seguir usando como rama de trabajo o abrir una nueva desde `origin/main`; da igual.
-- **Baseline de la suite a 2026-09-09: 6 fallos**, los seis en `test_advisor_plan`
-  (`ClaimFlow` / `LinkRequest`) y **de ENTORNO, no del código**: tiran 502 cuando existe
-  `RESEND_API_KEY`. Reproducidos en un worktree pristino de `origin/main` con una clave falsa.
-  ⚠️ **El conteo de la suite completa no sirve como métrica** — agregar un test que crea un
-  usuario lo mueve sin tocar código. La comparación válida es archivo por archivo, aislado.
-  Medí el tuyo antes de tocar nada, no uses el número de este documento.
+- **`fix/f2-que-no-mientan`** — el nombre quedó viejo: hoy lleva **F3 entera, sin deployar**.
+  7 commits sobre `origin/main` (`ab8ae9a5` … `f9bc43db`), y `origin/main` no se movió mientras
+  tanto (verificado al empezar y al terminar). **Deployar F3 = pushear esta rama a `origin/main`**
+  — pero antes leé «Lo que se ve el día del deploy» en §5-F3.
+- **Baseline de la suite el 2026-09-09 a la tarde: 0 fallos** — backend 4.113 en verde, frontend
+  1.510 en verde, medido en esta misma carpeta (con `backend/.env` presente) justo antes de tocar
+  nada. Al cerrar F3: **backend 4.132 / 0 · frontend 1.528 / 0**, y las diferencias son
+  exactamente los tests nuevos.
+  ⚠️ Ojo con el handoff anterior, que anotaba **6 fallos de `test_advisor_plan`** como baseline
+  "de entorno". Con el `.env` de esta carpeta **no aparecen**. O sea que ni el 6 ni el 0 son "el"
+  número: **el conteo de la suite completa no sirve como métrica** — depende del entorno y hasta
+  de cuántos usuarios crea un test. La comparación válida es archivo por archivo, aislado, y
+  **medí el tuyo antes de tocar nada**.
 - `audit/mapa-sistema` — el mapa y los informes.
 - `audit/trabajo-local-2026-09-07` — prompts e informes previos.
 - `fix/f1-deje-de-escribir-mal` y `fix/f4-guards-en-todos-los-lectores` — **obsoletas**, ya
@@ -617,3 +704,15 @@ asumas que la tuya es la buena.
 
 **Deploy = push a `origin/main`.** No hay CI: Railway observa esa rama. Pushear una rama
 cualquiera no deploya.
+
+### Si vas a deployar F3
+
+En orden, y **el primer paso no se saltea**:
+
+1. `git fetch && git log --oneline origin/main..HEAD` y al revés — que no haya entrado nada de
+   otra sesión (§9). El 2026-09-08 hubo dos sesiones tocando el mismo código.
+2. Correr las dos suites en esta carpeta. Tienen que dar **4.132 / 0** y **1.528 / 0**.
+3. Leer «Lo que se ve el día del deploy» en §5-F3 — hay un efecto medido y visible.
+4. Pushear.
+5. **A la mañana siguiente**, mirar un usuario con snapshots: la fila del cierre de anoche tiene
+   que estar fechada **ayer**, no hoy. Es la prueba de comportamiento de que el cron cambió.
