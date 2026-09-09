@@ -34,6 +34,39 @@ export function esApto(s) {
 }
 
 /**
+ * BORDE_MAX_LAG_DIAS / esBordeFresco — ¿este cierre puede ABRIR el período?
+ *
+ * Espejo exacto de `reporting/builder.py::_border_is_fresh` y de su constante
+ * `_BORDER_MAX_LAG_DAYS`. **Mismo número a propósito: si se separan, uno de los
+ * dos está mal**, y `tests/borde-fresco.test.js` lo verifica leyendo el archivo
+ * de Python — porque durante meses el número estuvo en tres lugares del repo y
+ * faltó justo en el más mirado.
+ *
+ * QUÉ PASABA SIN ESTO. `computeReturnDelta` tomaba como base "el cierre más
+ * reciente anterior al mes", por viejo que fuera, y si no había ninguno caía al
+ * MÁS ANTIGUO de la serie. Medido sobre un usuario que se ausentó en junio y
+ * volvió el 10 de septiembre: el KPI "Este mes" del Dashboard publicaba
+ * **+35,24 % / US$ 3.700** midiendo desde el 20 de junio —79 días— mientras
+ * `/mensual` y `/reportes` no publicaban nada y el mes real era **+2,90 %**.
+ * El propio helper devolvía `dayDiff: 79`: el dato para no publicarlo estaba
+ * calculado y nadie lo miraba.
+ *
+ * Se rechazan las DOS puntas del rango a propósito, igual que el backend:
+ *   · lag > 5   → cierre viejo: mete semanas de mercado ajeno adentro del mes.
+ *   · lag < 0   → el "cierre" cae DENTRO del período: no lo abre, lo parte.
+ */
+export const BORDE_MAX_LAG_DIAS = 5
+
+export function esBordeFresco(fechaCierre, inicioPeriodo, maxLagDias = BORDE_MAX_LAG_DIAS) {
+  if (!fechaCierre || !inicioPeriodo) return false
+  const a = Date.parse(`${String(inicioPeriodo).slice(0, 10)}T00:00:00Z`)
+  const b = Date.parse(`${String(fechaCierre).slice(0, 10)}T00:00:00Z`)
+  if (Number.isNaN(a) || Number.isNaN(b)) return false
+  const lag = Math.round((a - b) / 86_400_000)
+  return lag >= 0 && lag <= maxLagDias
+}
+
+/**
  * esDibujable — ¿este punto entra a la línea?
  *
  * Con `clase` (backend actual) la respuesta es la lista de continuidad. Sin
@@ -336,9 +369,34 @@ export function computeReturnDelta(snapshots, { liveValue = null, liveNetDeposit
   let prev
   if (sinceDate != null) {
     // Cierre más reciente ANTES del inicio del período (ej: último día del mes pasado).
-    prev = desc.find(s => s.date < sinceDate)
-    // Empezaste dentro del período → no hay cierre previo: usamos el más antiguo.
-    if (!prev) prev = desc[desc.length - 1]
+    const cierrePrevio = desc.find(s => s.date < sinceDate)
+    if (cierrePrevio) {
+      // ⚠️ Y TIENE QUE ESTAR PEGADO AL ARRANQUE. Ver `esBordeFresco`: sin esto,
+      // el KPI "Este mes" publicaba +35,24 % / US$ 3.700 midiendo desde 79 días
+      // antes —un usuario que se ausentó en junio y volvió en septiembre—
+      // mientras `/mensual` y `/reportes` no publicaban nada para ese mismo mes
+      // y el mes real era +2,90 %. Sin borde no hay número, y eso es una
+      // respuesta.
+      //
+      // Y si el cierre previo es viejo, NO se cae al fallback de abajo: el más
+      // antiguo de la serie es todavía más viejo. Cortar acá o el guard se
+      // pisa a sí mismo.
+      prev = esBordeFresco(cierrePrevio.date, sinceDate) ? cierrePrevio : null
+    } else {
+      // ⚠️ ASIMETRÍA DELIBERADA CON EL BACKEND, no un descuido.
+      //
+      // No hay NINGÚN cierre anterior al período: la serie entera cae adentro,
+      // o sea que esta persona empezó este mes. `_border_is_fresh` rechazaría
+      // ese borde (`lag < 0`), pero acá se conserva: no mete mercado ajeno
+      // —mide una ventana más corta, no una ajena— y es el único que tiene. El
+      // backend puede rechazarlo porque le queda la cadena contable de
+      // `monthly_entries`; acá no hay segunda vía, así que rechazarlo apaga el
+      // KPI a todo usuario nuevo durante su primer mes. Eso no es arreglarlo.
+      //
+      // `evolution.test.js` fija los dos casos por separado para que quien
+      // toque esto tenga que decidirlo, y no romperlo de refilón.
+      prev = desc[desc.length - 1]
+    }
   } else if (liveValue != null) {
     // Modo diario con live: cierre más reciente con fecha < hoy (saltea el snap de hoy).
     prev = desc.find(s => s.date < today)

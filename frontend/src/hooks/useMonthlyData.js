@@ -38,7 +38,7 @@ import { api } from '../utils/api'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, setBrokersRegistry } from '../utils/valuation'
 import { computeBestWorstClosedOp } from '../utils/insightsModel'
-import { esApto, esDibujable, baseIncomparable } from '../utils/evolution'
+import { esApto, esDibujable, baseIncomparable, esBordeFresco } from '../utils/evolution'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -423,9 +423,14 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       //     deltaPct = −129.416,82 / 196.631,56  = −65,82%
       // Nadie perdió 129 mil dólares: la cartera nunca valió 196.631,56 a precio
       // de mercado. Ese número es el capital_final de la cadena contable.
+      // ⚠️ Y PEGADO AL ARRANQUE DEL MES (`esBordeFresco`, el espejo del
+      // `_border_is_fresh` del backend). Esta rama era la TERCERA copia del
+      // mismo bucle y la única de las tres sin el piso de antigüedad: con el
+      // cron frenado desde junio, el banner del mes en curso arrancaba en junio.
       let baseSnap = null
       for (const s of (snapshots || [])) {
         if (s.total_value == null || !s.date || s.date >= monthStart) continue
+        if (!esBordeFresco(s.date, monthStart)) continue
         if (!esApto(s)) continue
         if (!baseSnap || s.date > baseSnap.date) baseSnap = s
       }
@@ -582,22 +587,15 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
           //
           // La base tiene que ser una MEDICIÓN, igual que la punta. Si no la hay,
           // no hay número — y eso es una respuesta, no una falla.
-          // ⚠️ Y TIENE QUE ESTAR PEGADA AL ARRANQUE DEL MES. Sin el piso de
-          // antigüedad, este loop agarraba la medición más reciente ANTERIOR al
-          // mes por vieja que fuera: si la última era del 31 de diciembre, el
-          // delta de "este mes" arrancaba en diciembre y se comía dos meses de
-          // mercado ajeno presentándolos como el mes en curso.
-          // Es el mismo `_border_is_fresh` / `_BORDER_MAX_LAG_DAYS = 5` que el
-          // backend ya aplica en la rama del mes en curso
-          // (`reporting/builder.py`, `bordes_mercado_periodo`). Mismo número a
-          // propósito: si se separan, uno de los dos está mal.
+          // ⚠️ Y TIENE QUE ESTAR PEGADA AL ARRANQUE DEL MES: `esBordeFresco`,
+          // que es el espejo del `_border_is_fresh` del backend y ahora el único
+          // lugar del frontend donde vive ese número. Antes estaba acá a mano y
+          // faltaba en los otros dos lectores de "este mes".
           const _mStart = `${newestWithCapital.period}-01`
-          const _pisoBase = new Date(new Date(`${_mStart}T00:00:00Z`).getTime() - 5 * 86400000)
-            .toISOString().slice(0, 10)
           let _baseMed = null
           for (const s of (snapshots || [])) {
             if (s.total_value == null || !s.date || s.date >= _mStart) continue
-            if (s.date < _pisoBase) continue
+            if (!esBordeFresco(s.date, _mStart)) continue
             if (!esApto(s)) continue
             if (!_baseMed || s.date > _baseMed.date) _baseMed = s
           }
