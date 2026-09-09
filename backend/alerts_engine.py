@@ -277,7 +277,10 @@ def _deliver(conn, alert, symbol, price, change_pct, message) -> tuple:
             sent = main._send_push_to_user(uid, {
                 "title": "Rendi · Alerta",
                 "body": message,
-                "url": "/config?tab=notificaciones",
+                # Iba a /config?tab=notificaciones: ruta MUERTA desde que las
+                # alertas se mudaron a /alertas (en Config ya no existe esa
+                # pestana), asi que tocar el push caia en Config > Cuenta.
+                "url": "/dashboard",
                 "tag": f"alert-{alert['id']}-{symbol or ''}",
             })
             push_ok = sent > 0
@@ -291,20 +294,41 @@ def _deliver(conn, alert, symbol, price, change_pct, message) -> tuple:
                 from billing import emails
                 email_ok = emails.send_alert_email(
                     to=row["email"], user_name=(row["name"] or ""),
-                    heading=message, detail=_email_detail(alert, symbol))
+                    heading=message,
+                    detail=_email_detail(alert, symbol, price, change_pct))
         except Exception as ex:
             log.warning("alerts email uid=%s falló: %s", uid, ex)
 
     return push_ok, email_ok
 
 
-def _email_detail(alert, symbol) -> str:
+def _email_detail(alert, symbol, price=None, change_pct=None) -> str:
+    """Cuerpo del mail: los NÚMEROS, no una invitación a ir a buscarlos.
+
+    Antes decía "tuvo un movimiento importante hoy, entrá a Rendi para ver
+    cómo impacta en tu cartera": el título traía más información que el
+    cuerpo, y un mail que no dice nada no se abre. Gmail mide justamente eso
+    para decidir la pestaña — medido el 2026-09-09 sobre la casilla del
+    fundador, las ÚNICAS alertas que se salieron de Actualizaciones son las
+    que estaban leídas. `price` y `change_pct` ya los tenía _deliver() al
+    lado; sólo no se los pasaba a esta función."""
     sym = _display_symbol(symbol)
+    cur = _fmt(price, alert["currency"])
     if alert["kind"] == "price_target":
-        return (f"El precio de {sym} cruzó el valor que definiste. "
-                "Entrá a Rendi para ver el detalle y decidir tu próximo paso.")
-    return (f"{sym} tuvo un movimiento importante hoy. "
-            "Entrá a Rendi para ver cómo impacta en tu cartera.")
+        thr = _fmt(alert["threshold"], alert["currency"])
+        lado = "subió hasta" if alert["direction"] == "above" else "bajó hasta"
+        if price is None:
+            return f"{sym} cruzó los {thr} que habías marcado."
+        return (f"{sym} {lado} {cur}. Vos habías marcado {thr}, "
+                f"así que ya lo cruzó.")
+    desde = ("desde que armaste la alerta"
+             if (alert["baseline"] or "prev_close") == "set_price"
+             else "desde el cierre de ayer")
+    if change_pct is None:
+        return f"{sym} se movió {desde}."
+    verbo = "subió" if (change_pct or 0) >= 0 else "cayó"
+    cotiza = f" y cotiza a {cur}" if price is not None else ""
+    return f"{sym} {verbo} {_fmt_pct(change_pct)}% {desde}{cotiza}."
 
 
 def _fire(conn, alert, symbol, price, change_pct, now: datetime):

@@ -608,15 +608,40 @@ def send_welcome_free(*, to: str, user_name: str) -> bool:
                  from_addr=_from_support())
 
 
-def send_alert_email(*, to: str, user_name: str = "", heading: str,
-                     detail: str, cta_path: str = "/config?tab=notificaciones") -> bool:
-    """Email transaccional de una alerta de precio disparada.
+def _from_alerts() -> str:
+    """Remitente de las alertas de precio.
 
-    `heading` = título corto (ej. 'MSFT tocó US$200') — también es el asunto.
-    `detail` = línea explicativa. No-reply (es automático, no soporte)."""
+    Por default seguimos usando no_reply@ (dominio ya verificado en Resend).
+    Si algun dia se crea el alias alertas@rendi.finance y se rutea a un buzon
+    real, se cambia SOLO con la variable de entorno EMAIL_FROM_ALERTS, sin
+    tocar codigo. Ojo: un From cuyo buzon no existe rebota las respuestas."""
+    return os.environ.get("EMAIL_FROM_ALERTS", _from_noreply())
+
+
+def send_alert_email(*, to: str, user_name: str = "", heading: str,
+                     detail: str, cta_path: str = "/dashboard") -> bool:
+    """Email de una alerta disparada (precio, % de variacion, movimiento del
+    libro del asesor). Template branded: logo arriba y boton a Rendi, igual
+    que el brief del asesor.
+
+    `heading` = titulo corto (ej. 'MELI cayo 3.1% hoy'), tambien es el asunto.
+    `detail` = el cuerpo, y tiene que traer LOS NUMEROS. Antes decia "entra a
+    Rendi para ver como impacta en tu cartera": el asunto informaba mas que el
+    cuerpo y el mail no se abria. Los numeros los arma quien dispara la
+    alerta (alerts_engine._email_detail / advisor_alerts).
+
+    `cta_path` default = /dashboard. OJO: el default era
+    /config?tab=notificaciones, una ruta MUERTA -- las alertas se mudaron a
+    /alertas y en Config ya no existe la pestana 'notificaciones', asi que
+    ese boton caia en Configuracion > Cuenta (o en el menu, en mobile).
+
+    reply_to a soporte@: si el usuario contesta el aviso, el mail le llega al
+    equipo en vez de perderse en no_reply@."""
     name = (user_name or "").strip()
-    hi = f"Hola {name}, " if name else ""
+    safe_name = html.escape(name)
+    hi = f"Hola {safe_name}, " if safe_name else ""
     url = f"{APP_URL}{cta_path}"
+    alerts_url = f"{APP_URL}/alertas"
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{html.escape(heading)}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
@@ -628,12 +653,19 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
         </a>
       </div>
       <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:16px 0 0;">
-        Recibís este aviso porque configuraste una alerta en Rendi. Podés editarla o
-        apagarla desde la sección Alertas de Rendi.
+        Recib\u00eds este aviso porque configuraste una alerta. Pod\u00e9s editarla o apagarla
+        en <a href="{alerts_url}" style="color:#5b4ddb;">Alertas</a>, y si algo no cierra
+        respondeme este mail.
       </p>
     """
-    text = f"{heading}\n\n{hi}{detail}\n\nVer en Rendi: {url}\n\n— Rendi"
-    return _send(to, heading, _wrap_html(body_html), text, from_addr=_from_noreply())
+    text = (f"{heading}\n\n{hi}{detail}\n\n"
+            f"Ver en Rendi: {url}\n\n"
+            f"Recib\u00eds este aviso porque configuraste una alerta. Pod\u00e9s editarla o "
+            f"apagarla en {alerts_url}, y si algo no cierra respondeme este mail.\n\n"
+            "\u2014 Rendi")
+    return _send(to, heading, _wrap_html(body_html), text,
+                 from_addr=_from_alerts(),
+                 reply_to="soporte@rendi.finance")
 
 
 def send_reengagement(*, to: str, user_name: str = "") -> bool:

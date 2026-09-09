@@ -133,7 +133,8 @@ def _set_state(conn, uid: int, cid: int, armed: int, fired_date=None):
         (uid, cid, armed, fired_date))
 
 
-def _deliver(conn, uid: int, channel: str, title: str, body: str) -> tuple:
+def _deliver(conn, uid: int, channel: str, title: str, body: str,
+             detail: str = "") -> tuple:
     push_ok = email_ok = False
     if channel in ("push", "both"):
         try:
@@ -150,7 +151,7 @@ def _deliver(conn, uid: int, channel: str, title: str, body: str) -> tuple:
                 email_ok = emails.send_alert_email(
                     to=row["email"], user_name=(row["name"] or ""),
                     heading=body,
-                    detail="Entrá a Rendi para ver su cartera y decidir si lo llamás.",
+                    detail=(detail or body),
                     cta_path="/clientes")
         except Exception as ex:
             log.warning("advisor alert email uid=%s: %s", uid, ex)
@@ -300,6 +301,14 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
 
                 verbo = "subió" if side == "up" else "cayó"
                 msg = f"La cartera de {labels.get(cid)} {verbo} {abs(pct):.1f}% hoy"
+                # El cuerpo del mail lleva los números, no "entrá a Rendi para
+                # verlos": el valor de hoy y el movimiento, que ya los tenemos
+                # acá. Mismo criterio que alerts_engine._email_detail.
+                _val = f"US$ {now_v:,.0f}".replace(",", ".")
+                detail = (f"La cartera de {labels.get(cid)} {verbo} "
+                          f"{abs(pct):.1f}% desde el cierre de ayer y hoy vale "
+                          f"{_val}. El movimiento es del mercado: los depósitos "
+                          f"y retiros del día ya están descontados.")
                 # Sellar el estado y el evento ANTES de mandar: el envío son dos
                 # llamadas HTTP y no puede correr con el write-lock tomado. Si el
                 # push/email falla, el aviso igual queda registrado UNA vez —
@@ -314,7 +323,8 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 _evid = _ev.lastrowid
                 conn.commit()
                 p_ok, e_ok = _deliver(conn, uid, cfg["channel"] or "both",
-                                      "Rendi · Movimiento en tu libro", msg)
+                                      "Rendi · Movimiento en tu libro", msg,
+                                      detail=detail)
                 conn.execute("UPDATE advisor_alert_events SET delivered_push=?, "
                              "delivered_email=? WHERE id=?",
                              (1 if p_ok else 0, 1 if e_ok else 0, _evid))
