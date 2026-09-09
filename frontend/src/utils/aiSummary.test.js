@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { buildAiSummary } from './aiSummary.js'
 
 // `/api/monthly` devuelve la fila sintética `global` (que ya es la suma) JUNTO a
@@ -56,5 +57,26 @@ describe('buildAiSummary — lo que viaja al modelo en cada mensaje', () => {
     expect(s.realized_pnl_usd_lifetime).toBe(0)
     expect(s.months_tracked).toBe(0)
     expect(s.open_positions_count).toBe(0)
+  })
+})
+
+describe('el resumen se arma en UN solo lugar', () => {
+  // No alcanza con haber unificado las dos copias hoy: el bug original fue
+  // exactamente eso, dos `buildSummary` idénticas que dejaron de serlo. Si
+  // alguien vuelve a armar el resumen dentro de una pantalla, esto se pone rojo.
+  const SUPERFICIES = [
+    'src/pages/RendiAI.jsx',
+    'src/components/ai/AICoachDrawer.jsx',
+  ]
+
+  it.each(SUPERFICIES)('%s importa el resumen en vez de rearmarlo', (ruta) => {
+    const src = readFileSync(ruta, 'utf8')
+    expect(src).toMatch(/import \{[^}]*buildAiSummary[^}]*\} from/)
+    expect(src).not.toMatch(/function\s+buildSummary\s*\(/)
+    // Ni la suma CRUDA de las filas mensuales, que es de donde salía el ×2.
+    // Se prohíbe `monthly.reduce(` y `(monthly || []).reduce(` — o sea reducir
+    // sin filtrar. Un `monthly.filter(...).reduce(...)` legítimo pasa.
+    expect(src).not.toMatch(/monthly\s*\.reduce\(/)
+    expect(src).not.toMatch(/\(\s*monthly\s*\|\|\s*\[\]\s*\)\s*\.reduce\(/)
   })
 })
