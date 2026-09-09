@@ -181,16 +181,29 @@ precio en producción, no por una clave escrita a mano en el test.
 
 ---
 
-# Lo que hay que medir antes de empezar
+# Las mediciones · HECHAS y deployadas (`c17ce94a`)
 
-Cuatro consultas de sólo lectura, para el botón de alcance del panel de admin:
+Son cuatro consultas más del botón que ya existía, no un script aparte. Se
+corren desde el panel de admin, en la tarjeta **"Alcance real de la auditoría"**,
+con el botón **"Medir alcance"**. Sólo lectura, sólo agregados, y el guard se
+niega a ejecutar si alguna consulta no es un SELECT limpio.
 
-1. Operaciones de venta a precio cero en brokers que no están en la lista de
-   exchanges → si A-2 es real.
-2. Posiciones de cripto en brokers con moneda en pesos → cuánta gente toca B-1.
-3. Brokers marcados exchange y con moneda en pesos a la vez → si B-3 es real.
-4. Tenencias cuyo símbolo esté en la lista de cripto y a la vez en las listas de
-   acciones → si C-1 tiene víctimas hoy.
+| consulta | qué contesta | para qué punto |
+|---|---|---|
+| Q9 | retiros de cripto registrados como pérdida total | A-2 |
+| Q10 | usuarios con cripto en una cuenta en pesos | B-1 |
+| Q11 | brokers que son exchange y están en pesos a la vez | B-3 |
+| Q12 | tenencias con un código que es cripto y acción | C-1 |
+
+Q9 busca el **daño ya ocurrido**, no el riesgo: ventas de cripto a precio cero
+con resultado negativo, en brokers que la lista no reconoce.
+
+⚠️ Las consultas llevan **copiadas** en SQL dos constantes de Python (los ~100
+símbolos de cripto y los 14 exchanges), porque no hay forma de leer un conjunto
+de Python desde SQL. La copia está atada por `TestLasListasDeCriptoNoDriftean`,
+verificado por mutación: agregar un símbolo de un lado y no del otro pone los
+tests en rojo. Importa el sentido de la falla, porque una consulta que quedó
+corta no explota: mide de menos y publica un número tranquilizador.
 
 Sin esos números, A-2, B-3 y C-1 se deciden a ciegas.
 
