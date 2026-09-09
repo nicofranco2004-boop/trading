@@ -88,10 +88,18 @@ def period_label(period_type: str, period_key: str, period_start: str) -> str:
 
 def is_period_current(period_type: str, period_start: str, period_end: str,
                      today: Optional[date_cls] = None) -> bool:
-    # Usar UTC para consistencia con _iso_today() del endpoint principal.
-    # Sin esto, servidores con TZ no-UTC pueden divergir del frontend cerca
-    # de medianoche, marcando un período como "no current" cuando sí lo es.
-    today = today or datetime.utcnow().date()
+    # ⚠️ Este comentario decía "usar UTC para consistencia con `_iso_today()`",
+    # y `_iso_today()` es ART: la premisa era falsa y la consecuencia real era la
+    # contraria de la buscada. De 21:00 a 23:59 hora argentina, `utcnow()` ya es
+    # mañana, así que el mes y el año se marcaban como CERRADOS tres horas antes
+    # de terminar. Eso cambia de rama el guard `basis_incomparable` y apaga el
+    # valor live del período en curso justo en la franja de mayor uso.
+    #
+    # Un comentario que documenta una alineación en vez de verificarla es el
+    # patrón que la tanda F3 vino a cerrar. Ahora la alineación existe: el único
+    # "hoy" del backend es `fechas.hoy_art()`.
+    from fechas import hoy_art_date
+    today = today or hoy_art_date()
     start = date_cls.fromisoformat(period_start)
     end = date_cls.fromisoformat(period_end)
     return start <= today <= end
@@ -509,7 +517,9 @@ def _fin_de_mes_iso(y: int, m: int) -> str:
 
 
 def _hoy_iso() -> str:
-    return datetime.utcnow().date().isoformat()
+    """Hoy en Argentina — el mismo que sella los snapshots que este módulo lee."""
+    from fechas import hoy_art
+    return hoy_art()
 
 
 def _dia_anterior(iso: str):
@@ -2089,7 +2099,7 @@ def build_period_report(
 
     # ⚠️ `today` VIAJA. `build_period_report` ya lo recibía y lo usaba para su
     # propio `is_current`, pero no se lo pasaba a las métricas: adentro,
-    # `is_period_current` caía en `utcnow()`. En producción da igual (la fecha es
+    # `is_period_current` caía en su default. En producción da igual (la fecha es
     # la misma de los dos lados), pero deja los guards del período EN CURSO sin
     # forma determinista de testearse: `test_sin_cierre_medido_...` fija
     # `today=2026-08-16` y empezó a fallar solo el 1 de septiembre, cuando el

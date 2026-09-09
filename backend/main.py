@@ -34037,12 +34037,18 @@ def reports_period_detail(
         # LIVE del portfolio (positions × precios) si está disponible.
         # Esto permite ver el delta intraday vs cierre de ayer / lunes /
         # 1 enero, aunque el cron del snapshot diario todavía no haya corrido.
-        from datetime import date as _date
         live_value = None
         is_current_period_for_live = False
         if broker == "global":
             live_value = _latest_snapshot_value(conn, uid)
-            today = _date.today()
+            # ⚠️ EL MISMO RELOJ QUE LA RAMA `day` DE ABAJO.
+            # Estas cuatro ramas decidían con dos calendarios distintos: `day`
+            # comparaba contra `_iso_today()` (argentino) y las otras tres contra
+            # `date.today()`, que es la hora local del proceso — UTC en Railway.
+            # De 21:00 a 23:59 ART el mes y el año en curso dejaban de
+            # reconocerse como actuales, así que el reporte del período vivo
+            # cerraba con el último snapshot en vez del valor live.
+            today = _hoy_art_date()
             if period_type == "day" and period_key == _iso_today():
                 is_current_period_for_live = True
             elif period_type == "week":

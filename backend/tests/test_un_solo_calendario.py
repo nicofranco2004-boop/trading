@@ -136,5 +136,52 @@ class ElDueniyoDevuelveElDiaArgentino(unittest.TestCase):
         self.assertEqual(advisor_alerts._today_art(), esperado)
 
 
+class ElPeriodoEnCursoTerminaCuandoTerminaEnArgentina(unittest.TestCase):
+    """`is_period_current` decidía en UTC — con un comentario que afirmaba lo
+    contrario.
+
+    El comentario decía textual *"usar UTC para consistencia con `_iso_today()`"*,
+    y `_iso_today()` es ART. La consecuencia era la opuesta a la buscada: de
+    21:00 a 23:59 hora argentina `utcnow()` ya es el día siguiente, así que el
+    mes y el año se marcaban como CERRADOS tres horas antes de terminar. Eso
+    cambia de rama el guard `basis_incomparable` y apaga el valor live del
+    período en curso justo en la franja de mayor uso de la app.
+    """
+
+    def test_a_las_2200_del_31_de_agosto_agosto_sigue_en_curso(self):
+        import fechas
+        from reporting.builder import is_period_current
+        # 01:00 UTC del 1 de septiembre = 22:00 ART del 31 de agosto.
+        with patch("fechas.datetime") as reloj:
+            reloj.utcnow.return_value = datetime(2026, 9, 1, 1, 0, 0)
+            self.assertTrue(is_period_current("month", "2026-08-01", "2026-08-31"))
+
+    def test_a_las_2200_del_31_de_diciembre_el_anio_sigue_en_curso(self):
+        """Un año PASADO a propósito: si el reloj no se respeta, el test no
+        discrimina — con `utcnow()` real el año en curso da True igual y el
+        rojo no aparece nunca."""
+        import fechas
+        from reporting.builder import is_period_current
+        # 01:00 UTC del 1 de enero de 2026 = 22:00 ART del 31 de diciembre de 2025.
+        with patch("fechas.datetime") as reloj:
+            reloj.utcnow.return_value = datetime(2026, 1, 1, 1, 0, 0)
+            self.assertTrue(is_period_current("year", "2025-01-01", "2025-12-31"))
+
+    def test_y_a_la_maniana_siguiente_ya_esta_cerrado(self):
+        """Control: el guard cierra el período, sólo que en el momento correcto."""
+        import fechas
+        from reporting.builder import is_period_current
+        with patch("fechas.datetime") as reloj:
+            reloj.utcnow.return_value = datetime(2026, 9, 1, 13, 0, 0)  # 10:00 ART
+            self.assertFalse(is_period_current("month", "2026-08-01", "2026-08-31"))
+
+    def test_un_today_explicito_sigue_mandando(self):
+        """Los tests del repo fijan `today=` para no depender del reloj real."""
+        from datetime import date
+        from reporting.builder import is_period_current
+        self.assertTrue(is_period_current(
+            "month", "2026-08-01", "2026-08-31", today=date(2026, 8, 16)))
+
+
 if __name__ == "__main__":
     unittest.main()
