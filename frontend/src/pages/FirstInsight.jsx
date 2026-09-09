@@ -150,7 +150,7 @@ export default function FirstInsight() {
         if (price != null) {
           // Premium dólar-cripto (broker no-exchange) a valor Y costo → ranking
           // best/worst consistente con el resto de la app. f=1 para todo lo demás.
-          const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+          const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, isARS ? 'ARS' : 'USD')
           // Guard anti-distorsión: mkt vs costo en USD sin factor (mismas unidades),
           // luego escala por f (igual que computeBrokerValue). Un ×100/colisión → costo.
           const mkt = price * (p.quantity || 0)

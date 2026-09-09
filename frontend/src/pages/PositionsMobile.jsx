@@ -306,7 +306,7 @@ export default function PositionsMobile() {
       price = priceArs != null ? priceArs / tcCedear : undefined
     } else if (isCrypto(p.asset)) {
       const spot = prices[p.asset]
-      const f = cryptoBrokerFactor(p.asset, exchangeBrokerSet.has(p.broker), false, tcCripto, tcCedear)
+      const f = cryptoBrokerFactor(p.asset, exchangeBrokerSet.has(p.broker), false, tcCripto, tcCedear, isARS ? 'ARS' : 'USD')
       price = spot != null ? spot * f : undefined
     } else {
       price = prices[priceSymbol(p.asset, isARS, p.asset_type)]
@@ -775,7 +775,7 @@ export default function PositionsMobile() {
       // exchange (f=1) o en sub-broker '· USD' (f=cripto/MEP). Espejo EXACTO de
       // computeBrokerValue / PositionDetailMobile, que nunca aplican factor en ARS.
       const isExch = exchangeBrokerSet.has(p.broker)
-      const f = isAR ? 1 : cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
+      const f = isAR ? 1 : cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear, 'USD')
       if (f !== 1) { valueUsd *= f; investedUsd *= f }
       // Costo DISPLAY en USD del modo elegido: en 'purchase' los lotes en pesos van al
       // tc_compra del lote (los USD que realmente puso). Solo para lotes CON precio

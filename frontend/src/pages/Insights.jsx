@@ -421,7 +421,7 @@ function InsightsDesktop({ _embeddedTab }) {
   const holdingValueUsd = (p) => {
     const broker = brokers.find(b => b.name === p.broker)
     const realCost = (p.invested || 0) + (p.commissions || 0)
-    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, broker?.currency)
     // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
     // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
     // El costo YA está en USD; el valor va por el tipo de instrumento (usdLotValue,
@@ -2011,9 +2011,10 @@ function InsightsDesktop({ _embeddedTab }) {
     const isARS = arsBrokerSet.has(p.broker)
     // Cost basis económico = invested + buy commissions (igual que valuation.js).
     const realCost = (p.invested || 0) + (p.commissions || 0)
-    // Cripto en broker AR se valúa al dólar cripto; en exchange, a spot (factor 1).
-    // El factor escala value E invested por igual → el P&L% no cambia.
-    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+    // Cripto de una cuenta EN PESOS se valúa al dólar cripto; en una cuenta en
+    // dólares y en exchange queda a spot (factor 1). El factor escala value E
+    // invested por igual → el P&L% no cambia.
+    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, isARS ? 'ARS' : 'USD')
     // valueUsd usa el helper compartido (con clamp anti-distorsión). investedUsd
     // queda por-rama (el costo no se clampea).
     const valueUsd = holdingValueUsd(p)

@@ -1281,9 +1281,11 @@ function PositionsDesktop() {
       // a la cruda. CEDEAR solo llega acá con override (la rama .BA lo captura).
       price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
     }
-    // Cripto en BROKER (no exchange) se valúa al cripto-dólar (~spot+5%). El factor
-    // escala tanto el valor de mercado como el costo, así el P&L% queda invariante.
-    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+    // Cripto de una cuenta EN PESOS se valúa al cripto-dólar (~spot+4%). Acá el riel
+    // es DÓLARES (calcUSDT), así que el factor es 1: la persona puso dólares y el
+    // broker le muestra dólares, no hay pesos que convertir. Cuando aplica, escala
+    // valor y costo por igual y el P&L% queda invariante.
+    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, 'USD')
     // Cost basis = invested + commissions (las comisiones de compra son costo real).
     const realCost = ((p.invested || 0) + (p.commissions || 0)) * f
     if (price == null) return { value: null, pnl: null, pnlPct: null, price: null, investedUsd: realCost }
@@ -1542,7 +1544,7 @@ function PositionsDesktop() {
     // Cripto en broker AR no-exchange: el MONTO de Var. día escala por el premium
     // dólar-cripto, igual que el valor de la fila (calcUSDT) y que mobile — sin
     // esto el monto desktop quedaba ~2-5% distinto del mobile. El % es invariante.
-    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, isARS ? 'ARS' : 'USD')
     if (f !== 1) return { amount: dv.amount * f, pct: dv.pct }
     return dv
   }

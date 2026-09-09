@@ -101,7 +101,7 @@ export default function PositionDetailMobile() {
   const invested = p.invested || 0
   // Crypto en broker (no exchange) se valúa al dólar cripto (~MEP); en exchange queda a spot.
   const isExch = !!brokers.find(b => b.name === p.broker)?.is_exchange
-  const cryptoF = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
+  const cryptoF = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear, isAR ? 'ARS' : 'USD')
 
   // La MISMA key que se pidió arriba. Todo lo que lea precios en este archivo
   // sale de acá: pedir con una y leer con otra es el bug que congela el P&L.

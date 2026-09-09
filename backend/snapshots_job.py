@@ -280,7 +280,11 @@ def compute_broker_value_usd(
                 # exposure/informe); si está en pesos, ÷MEP como el resto.
                 asset = (p.get('asset') or '').upper()
                 ccy = (p.get('currency') or '').upper()
-                cf = _cb_factor(asset, broker_name, override is not None, _cripto_rate, cedear_rate)
+                # Cuenta EN PESOS: el premium sigue — el valor natural de la cripto
+                # acá son pesos (spot×dólar-cripto) y pasan a USD por el MEP, igual
+                # que el precio `.BA` que usa la Cartera. Mismo número, otro camino.
+                cf = _cb_factor(asset, broker_name, override is not None, _cripto_rate,
+                                cedear_rate, broker_currency)
                 inv_usd = (real_cost if ccy in ('USD', 'USDT')
                            else (real_cost / cedear_rate if cedear_rate > 0 else 0)) * cf
                 invested += inv_usd
@@ -369,7 +373,10 @@ def compute_broker_value_usd(
             else:
                 # Premium cripto (1.0 para CEDEAR/acciones/exchange/sin-rate). Va al
                 # costo Y al valor para que el P&L% no cambie.
-                cf = _cb_factor(p['asset'], broker_name, override is not None, _cripto_rate, cedear_rate)
+                # Cuenta EN DÓLARES → _cb_factor devuelve 1.0: la persona puso dólares
+                # y el broker le muestra dólares, no hay pesos que convertir.
+                cf = _cb_factor(p['asset'], broker_name, override is not None, _cripto_rate,
+                                cedear_rate, broker_currency)
                 invested += real_cost * cf
                 # CEDEAR (o cualquier instrumento BYMA en sub-broker '· USD'): se
                 # valúa por su precio LOCAL .BA (ARS) ÷ MEP, NO por el ticker US.

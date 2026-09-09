@@ -428,16 +428,19 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
     qty = p.get("quantity") or 0
     invested_native = float(p.get("invested") or 0)
 
-    # Premium dólar-cripto: la cripto de un BROKER (Cocos/Balanz, NO exchange) la
-    # muestra el broker al dólar MEP, no al spot. Factor cripto/MEP aplicado a
-    # VALOR y COSTO por igual → P&L% invariante, solo suben ~5% los montos. 1.0
-    # para todo lo demás (cash, override, no-cripto, exchange, rate faltante).
-    # Self-source del rate cripto (no se pasa por firma → no rompe callers).
+    # Premium dólar-cripto: SOLO para la cripto de una cuenta EN PESOS, cuyo valor
+    # natural son pesos (spot×dólar-cripto) y pasa a USD por el MEP como el resto
+    # de la app. En una cuenta EN DÓLARES el factor es 1.0 — la persona puso
+    # dólares y el broker le muestra dólares, no hay conversión que reflejar.
+    # `cost_ccy` es la moneda de ESTA tenencia (fila > sub-broker '· USD' > broker),
+    # o sea la misma que decide todas las conversiones de abajo. Aplicado a VALOR y
+    # COSTO por igual → P&L% invariante. 1.0 también para cash, override, no-cripto,
+    # exchange y rate faltante. Self-source del rate (no se pasa por firma).
     try:
         from main import crypto_broker_factor, _current_cripto_rate
         crypto_f = crypto_broker_factor(
             asset, broker, p.get("price_override") is not None,
-            _current_cripto_rate(), rate_holdings)
+            _current_cripto_rate(), rate_holdings, cost_ccy)
     except Exception:
         crypto_f = 1.0
 

@@ -462,10 +462,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # unrealized_pnl_total / total_equity del snapshot del chat IA.
         if not _trust_mkt_value_usd(mv, cost_usd, p.get("asset_type")):
             mv = cost_usd
-        # Premium dólar-cripto (broker no-exchange): al VALOR (spot-USD) siempre; al
-        # COSTO solo si está en USD (cost_is_ars=False). Un costo en pesos ya pasó a
-        # dólar-MEP con /tc_cedear → no se multiplica de nuevo (compondría /MEP²).
-        cf = _cb_factor(asset, broker_name, p.get("price_override") is not None, _cripto_rate, tc_cedear)
+        # Premium dólar-cripto: SOLO si la tenencia está EN PESOS, donde el valor
+        # natural son pesos (spot×dólar-cripto) que pasan a USD por el MEP. En una
+        # cuenta EN DÓLARES el factor es 1.0 (no hubo pesos en el medio). Cuando
+        # aplica, va al VALOR (spot-USD) siempre y al COSTO solo si está en USD:
+        # un costo en pesos ya pasó a dólar-MEP con /tc_cedear y multiplicarlo de
+        # nuevo compondría /MEP².
+        cf = _cb_factor(asset, broker_name, p.get("price_override") is not None,
+                        _cripto_rate, tc_cedear, "ARS" if cost_is_ars else "USD")
         if cf != 1.0:
             mv *= cf
             if not cost_is_ars:

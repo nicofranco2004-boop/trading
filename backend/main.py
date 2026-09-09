@@ -7362,20 +7362,41 @@ CRYPTO_SYMBOLS = {
 }
 
 
-def crypto_broker_factor(asset, broker_name, has_override, cripto_rate, mep_rate) -> float:
-    """Factor para llevar la cripto de un BROKER (Cocos/Balanz, no exchange) del
-    dólar spot/cripto al dólar MEP que muestra el broker. Se multiplica al VALOR Y
-    al COSTO por igual → el P&L% queda invariante (una pérdida sigue siendo pérdida),
-    solo suben ~5% los montos absolutos para matchear el broker.
+def crypto_broker_factor(asset, broker_name, has_override, cripto_rate, mep_rate,
+                         account_currency=None) -> float:
+    """Factor para expresar en dólar-MEP una cripto que en la cuenta está EN PESOS.
 
-    Devuelve 1.0 (sin premium = comportamiento spot actual) si: hay price_override,
-    el activo NO es cripto, el broker es un EXCHANGE, o falta/≤0 algún rate. Nunca
-    crashea ni devuelve 0. SSoT del factor, compartida por todos los valuadores BE."""
+    QUÉ PREGUNTA CONTESTA (y por qué NO es "¿el broker es argentino?"): el premium
+    existe para UNA cosa — pasar a dólares algo cuyo valor natural está en pesos.
+    Una cripto en una cuenta EN PESOS vale spot×dólar-cripto pesos, y esos pesos se
+    pasan a USD por el MEP como todo el resto de la app → el factor cripto/MEP. Si
+    la cuenta está EN DÓLARES no hubo ningún peso en el medio: la persona puso
+    dólares, el broker le muestra dólares y el valor es spot×qty. Meter ahí un
+    cripto/MEP inventa una conversión que nunca ocurrió: inflaba el VALOR y también
+    el "Invertido" (~4%). Reporte de usuario 2026-09-09 — broker argentino con saldo
+    en dólares que mostraba USD 2.840 contra los USD 2.956 de Rendi.
+
+    Se multiplica al VALOR Y al COSTO por igual → el P&L% queda invariante.
+
+    Devuelve 1.0 (sin premium = spot) si: hay price_override, el activo NO es cripto,
+    el broker es un EXCHANGE, LA CUENTA NO ESTÁ EN PESOS, o falta/≤0 algún rate.
+    Nunca crashea ni devuelve 0. SSoT del factor, compartida por todos los
+    valuadores BE y espejada en frontend/src/utils/crypto.js.
+
+    ⚠️ `account_currency` es opcional en la FIRMA (los callers viven dentro de
+    try/except que se tragarían un TypeError y devolverían 1.0 en silencio), pero
+    NO es opcional en la semántica: omitirlo da 1.0, que es el lado conservador —
+    nunca infla — pero en el riel ARS desincroniza con el precio `.BA` que usa la
+    Cartera, donde el premium viene embebido en el precio en pesos. Si agregás un
+    caller que valúa cripto de una cuenta en pesos, PASALE la moneda."""
     if has_override:
         return 1.0
     if (asset or '').upper() not in CRYPTO_SYMBOLS:
         return 1.0
     if is_exchange_broker(broker_name):
+        return 1.0
+    # Cuenta en dólares → no hay pesos que convertir. Ver el docstring.
+    if (account_currency or '').strip().upper() != 'ARS':
         return 1.0
     if not (cripto_rate and cripto_rate > 0) or not (mep_rate and mep_rate > 0):
         return 1.0

@@ -690,10 +690,11 @@ export function valuePositionLot(p, ctx = {}) {
     return salida({ investedUsd: v, valueUsd: v, invArs: 0, valueArs: 0 })
   }
 
-  // Premium dólar-cripto: la cripto de un BROKER (no exchange) se valúa al
-  // dólar MEP que muestra el broker. Factor a COSTO Y valor → P&L% invariante.
-  // 1 para CEDEAR/acciones/exchange/override/sin-rate.
-  const f = cryptoBrokerFactor(p.asset, broker?.is_exchange, p.price_override != null, tcCripto, cedearRate)
+  // Premium dólar-cripto: SOLO para la cripto de una cuenta EN PESOS, cuyo valor
+  // natural son pesos y pasa a USD por el MEP. En cuenta EN DÓLARES el factor es 1
+  // (no hubo pesos que convertir). Factor a COSTO Y valor → P&L% invariante.
+  // 1 también para CEDEAR/acciones/exchange/override/sin-rate.
+  const f = cryptoBrokerFactor(p.asset, broker?.is_exchange, p.price_override != null, tcCripto, cedearRate, broker?.currency)
   const investedUsd = realCost * f
 
   if ((p.asset_type === 'CEDEAR' || arUsd) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {

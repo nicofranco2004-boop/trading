@@ -235,7 +235,7 @@ export default function HomeMobile() {
       if (px == null) continue
       // Cripto en broker AR (no exchange, sin override) se valúa al dólar cripto:
       // escalamos value e invested por el mismo factor → el % queda invariante.
-      const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+      const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, isAR ? 'ARS' : 'USD')
       const mkt = px * (p.quantity || 0) * f
       // Cost basis = invested + comisiones (igual que la Cartera). Sin las comisiones
       // el % se dispara cuando son parte grande del costo.

@@ -84,7 +84,7 @@ function valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBas
   }
   // Cripto en broker AR (no exchange) se valúa al dólar MEP; en exchange queda a spot.
   // El factor multiplica valor Y costo por igual → el P&L% no cambia.
-  const f = cryptoBrokerFactor(p.asset, !!broker?.is_exchange, p.price_override != null, tcCripto, tcCedear)
+  const f = cryptoBrokerFactor(p.asset, !!broker?.is_exchange, p.price_override != null, tcCripto, tcCedear, broker?.currency)
   // Misma key que pide symbolFor. Antes leía prices[p.asset] CRUDO: un
   // class-share (BRK.B se pide como 'BRK-B') nunca matcheaba y el lote quedaba
   // congelado al costo con P&L 0. El fallback a la cruda cubre el last-known

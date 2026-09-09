@@ -534,20 +534,33 @@ describe('computePf — valuación de plazo fijo (al vencimiento)', () => {
   })
 })
 
-// ─── Premium dólar-cripto (broker vs exchange) ───────────────────────────────
+// ─── Premium dólar-cripto: cuenta en PESOS vs cuenta en DÓLARES ──────────────
 // Mismos números que el backend test_crypto_premium.py → garantiza paridad FE/BE.
-describe('crypto premium — broker (MEP) vs exchange (spot)', () => {
+// El premium existe para pasar a dólares algo cuyo valor natural son pesos. En una
+// cuenta EN DÓLARES no hay pesos que convertir y el factor es 1 — lo contrario
+// inflaba el valor Y el "Invertido" ~4% (reporte de usuario 2026-09-09).
+describe('crypto premium — cuenta en pesos (MEP) vs cuenta en dólares (spot)', () => {
   const CRIPTO = 1554, MEP = 1499, BLUE = 1530, SPOT = 59281, QTY = 0.0114, COST = 700
   const PREMIUM = CRIPTO / MEP
-  const cocos = { name: 'Cocos', currency: 'USDT', is_exchange: 0 }     // broker AR
+  const cocos = { name: 'Cocos', currency: 'USDT', is_exchange: 0 }     // broker AR, saldo USD
+  const cocosArs = { name: 'CocosArs', currency: 'ARS', is_exchange: 0 } // broker AR, saldo ARS
   const binance = { name: 'Binance', currency: 'USDT', is_exchange: 1 } // exchange
   const btc = (broker, extra) => pos({ broker, asset: 'BTC', quantity: QTY, invested: COST, ...extra })
 
-  it('cripto en un BROKER → spot × premium, valor Y costo (P&L% invariante)', () => {
+  it('cripto en un broker AR con saldo en DÓLARES → spot, SIN premium', () => {
     const r = computeBrokerValue([btc('Cocos')], { BTC: SPOT }, cocos, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(QTY * SPOT, 2)
+    expect(r.invested).toBeCloseTo(COST, 2)   // lo que puso, no lo que puso × 1,04
+  })
+  it('cripto en una cuenta EN PESOS → el premium llega por el precio .BA, no por el factor', () => {
+    // En el riel ARS el backend devuelve '<c>.BA' = spot × dólar-cripto (ya en
+    // pesos) y la valuación lo divide por el MEP ⇒ spot × cripto/MEP. Mismo
+    // número que daba el factor, por el camino que corresponde. Aplicar ADEMÁS el
+    // factor acá lo duplicaría (spot × cripto²/MEP²).
+    const r = computeBrokerValue(
+      [btc('CocosArs', { currency: 'ARS', invested: COST * MEP })],
+      { 'BTC.BA': SPOT * CRIPTO }, cocosArs, BLUE, MEP, CRIPTO)
     expect(r.value).toBeCloseTo(QTY * SPOT * PREMIUM, 2)
-    expect(r.invested).toBeCloseTo(COST * PREMIUM, 2)
-    expect((r.value - r.invested) / r.invested).toBeCloseTo((QTY * SPOT - COST) / COST, 5)
   })
   it('cripto en un EXCHANGE → spot (sin premium)', () => {
     const r = computeBrokerValue([btc('Binance')], { BTC: SPOT }, binance, BLUE, MEP, CRIPTO)

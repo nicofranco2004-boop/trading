@@ -31,23 +31,43 @@ export function isCrypto(asset) {
 }
 
 /**
- * cryptoBrokerFactor — factor para llevar la cripto de un BROKER (no exchange) del
- * spot al dólar MEP. Espejo EXACTO de backend main.crypto_broker_factor.
+ * cryptoBrokerFactor — factor para expresar en dólar-MEP una cripto que en la
+ * cuenta está EN PESOS. Espejo EXACTO de backend main.crypto_broker_factor.
  *
- * Devuelve 1 (sin premium = spot, comportamiento actual) si: hay override, no es
- * cripto, el broker es exchange, o falta/≤0 algún rate. Nunca NaN/0.
+ * QUÉ PREGUNTA CONTESTA (y por qué NO es "¿el broker es argentino?"):
+ * el premium existe para UNA cosa: pasar a dólares algo cuyo valor natural está
+ * en pesos. Una cripto en una cuenta EN PESOS vale spot×dólar-cripto pesos, y
+ * esos pesos se pasan a USD por el MEP como TODO lo demás de la app → el factor
+ * cripto/MEP. Si la cuenta está EN DÓLARES no hubo ningún peso en el medio: la
+ * persona puso dólares, el broker le muestra dólares, y el valor es spot×qty.
+ * Meter ahí un cripto/MEP inventa una conversión que nunca ocurrió — inflaba el
+ * VALOR y también el "Invertido" (~4%: reporte de un usuario 2026-09-09, cuyo
+ * broker mostraba USD 2.840 contra los USD 2.956 de Rendi).
  *
- * @param {string}  asset       símbolo de la posición
- * @param {boolean} isExchange  broker.is_exchange (de /api/brokers)
- * @param {boolean} hasOverride price_override != null
- * @param {number}  tcCripto    dólar cripto (dolar.cripto.venta)
- * @param {number}  tcMep       dólar MEP (cedearRate)
+ * Devuelve 1 (sin premium = spot) si: hay override, no es cripto, el broker es
+ * exchange, LA CUENTA NO ESTÁ EN PESOS, o falta/≤0 algún rate. Nunca NaN/0.
+ *
+ * ⚠️ `accountCurrency` NO tiene default a propósito de la semántica, pero un
+ * caller que lo omita recibe undefined → 1 (sin premium). Ese es el lado
+ * conservador (nunca infla), PERO en el riel ARS desincroniza con el precio
+ * `.BA` que la Cartera usa — donde el premium viene embebido en el precio en
+ * pesos, no por este factor. Si agregás un caller que valúa cripto de una
+ * cuenta en pesos, PASALE la moneda. Los callers vivos están en crypto.test.js.
+ *
+ * @param {string}  asset           símbolo de la posición
+ * @param {boolean} isExchange      broker.is_exchange (de /api/brokers)
+ * @param {boolean} hasOverride     price_override != null
+ * @param {number}  tcCripto        dólar cripto (dolar.cripto.venta)
+ * @param {number}  tcMep           dólar MEP (cedearRate)
+ * @param {string}  accountCurrency broker.currency ('ARS' | 'USD' | 'USDT')
  * @returns {number}
  */
-export function cryptoBrokerFactor(asset, isExchange, hasOverride, tcCripto, tcMep) {
+export function cryptoBrokerFactor(asset, isExchange, hasOverride, tcCripto, tcMep, accountCurrency) {
   if (hasOverride) return 1
   if (!isCrypto(asset)) return 1
   if (isExchange) return 1
+  // Cuenta en dólares → no hay pesos que convertir. Ver el bloque de arriba.
+  if (String(accountCurrency || '').toUpperCase() !== 'ARS') return 1
   if (!(tcCripto > 0) || !(tcMep > 0)) return 1
   return tcCripto / tcMep
 }

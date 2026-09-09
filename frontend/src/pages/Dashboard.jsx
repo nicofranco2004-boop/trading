@@ -354,10 +354,11 @@ function PersonalDashboard() {
         // Key normalizada primero (BRK.B → 'BRK-B', la que el fetch pide), fallback
         // a la cruda (last-known del cron). CEDEAR solo llega acá con override.
         const price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
-        // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
-        // (factor 1 si no es crypto / es exchange / tiene override / falta rate).
+        // Cripto de una cuenta EN PESOS → escala valor Y costo al dólar cripto.
+        // Factor 1 si la cuenta está en dólares (no hubo pesos que convertir), si no
+        // es cripto, si es exchange, si tiene override o si falta el rate.
         const isExch = exchangeBrokers.has(p.broker)
-        const f = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
+        const f = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear, isARS ? 'ARS' : 'USD')
         if (price != null) {
           // Guard anti-distorsión: mkt y costo escalados por el MISMO factor f
           // (misma unidad) → el ratio es invariante; ×100 cae a costo, pnl 0.
@@ -368,7 +369,7 @@ function PersonalDashboard() {
         }
       }
       const isExchForPct = exchangeBrokers.has(p.broker)
-      const fForPct = isARS ? 1 : cryptoBrokerFactor(p.asset, isExchForPct, p.price_override != null, tcCripto, tcCedear)
+      const fForPct = isARS ? 1 : cryptoBrokerFactor(p.asset, isExchForPct, p.price_override != null, tcCripto, tcCedear, 'USD')
       // costInUsd en broker ARS (lote USD en Balanz): el costo YA está en USD → sin
       // ÷blue, va antes que isARS (que sí divide por blue y colapsaría el denominador
       // del %). Gateado a broker ARS: una acción US genuina en broker USD cae al último
@@ -571,7 +572,7 @@ function PersonalDashboard() {
           // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
           // (factor 1 si no es crypto / es exchange / tiene override / falta rate),
           // así el P&L queda honesto (ambos lados al mismo dólar).
-          const f = cryptoBrokerFactor(p.asset, b.is_exchange, p.price_override != null, tcCripto, tcCedear)
+          const f = cryptoBrokerFactor(p.asset, b.is_exchange, p.price_override != null, tcCripto, tcCedear, b.currency)
           // Cost basis USD = invested + commissions
           const costUsd = (p.invested || 0) + (p.commissions || 0)
           // Guard anti-distorsión: mkt y costo escalados por el MISMO factor f
