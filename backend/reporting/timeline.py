@@ -21,7 +21,12 @@ from .schema import PeriodReport
 def _months_back(months: int) -> List[str]:
     """Genera period_keys de los últimos N meses (incluyendo el actual),
     ordenados descendientes (más reciente primero)."""
-    today = date_cls.today()
+    # Día ARGENTINO, igual que `is_period_current`. `date.today()` es la hora
+    # local del proceso (UTC en Railway): el último día de cada mes, entre las
+    # 21:00 y las 24:00 de acá, el timeline arrancaba en el mes SIGUIENTE y
+    # dejaba afuera el mes que el usuario todavía estaba viviendo.
+    from fechas import hoy_art_date
+    today = hoy_art_date()
     out = []
     y, m = today.year, today.month
     for _ in range(months):
@@ -244,10 +249,15 @@ def _build_timeline(
 
 
 def wrpt_is_current_check(week_key: str) -> bool:
-    """¿La semana del key es la semana actual ISO? (para decidir liveValue)."""
-    from datetime import date as _date
+    """¿La semana del key es la semana actual ISO? (para decidir liveValue).
+
+    Día ARGENTINO: este check es el gemelo de `is_period_current` y decide lo
+    mismo —si el período va con valor en vivo— así que no puede usar otro
+    reloj. Con `date.today()`, un domingo a las 21:00 la semana en curso ya
+    era la siguiente y la que el usuario miraba perdía su valor live."""
     y_str, w_str = week_key.split("-W")
     y, w = int(y_str), int(w_str)
-    today = _date.today()
+    from fechas import hoy_art_date
+    today = hoy_art_date()
     iy, iw, _ = today.isocalendar()
     return iy == y and iw == w
