@@ -41,10 +41,3 @@ export function fechaISO(d) {
   const dia = String(d.getDate()).padStart(2, '0')
   return `${d.getFullYear()}-${mes}-${dia}`
 }
-
-/** Hoy desplazado `n` días (negativo hacia atrás), como `'YYYY-MM-DD'`. */
-export function hoyMasDias(n) {
-  const d = new Date()
-  d.setDate(d.getDate() + n)
-  return fechaISO(d)
-}

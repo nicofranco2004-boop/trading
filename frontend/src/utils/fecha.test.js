@@ -22,7 +22,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
-import { fechaISO, hoyISO, hoyMasDias } from './fecha.js'
+import { fechaISO, hoyISO } from './fecha.js'
 
 const AQUI = dirname(fileURLToPath(import.meta.url))
 const SRC = resolve(AQUI, '..')
@@ -58,11 +58,9 @@ describe('fechaISO — el día calendario del usuario, no el UTC', () => {
     expect(fechaISO(null)).toBeNull()
   })
 
-  it('hoyISO es fechaISO de ahora, y hoyMasDias se mueve de a un día', () => {
+  it('hoyISO es fechaISO de ahora', () => {
     expect(hoyISO()).toBe(fechaISO(new Date()))
     expect(hoyISO()).toMatch(/^\d{4}-\d{2}-\d{2}$/)
-    const ayer = new Date(); ayer.setDate(ayer.getDate() - 1)
-    expect(hoyMasDias(-1)).toBe(fechaISO(ayer))
   })
 })
 
