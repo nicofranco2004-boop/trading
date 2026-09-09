@@ -157,6 +157,40 @@ de `_NATIVE_CCY_OPS`, y `test_advisor_composition.py` falla si las dos listas di
 `Interés PF` del lado de Python y el test se puso en rojo. Es exactamente la causa raíz que la
 auditoría persigue, agarrada por un guard que ya existía.
 
+### Lo que salió de auditar la propia tanda
+
+Tres cosas eran **parches, no soluciones integradas** por el estándar del `CLAUDE.md`. Las tres
+quedaron arregladas (commits `d89785ef`, `b26ab9dd`, `ed12d949`):
+
+1. **El guard estaba copiado 5 veces.** El fix unificó el primitivo (`twr.dietz`) pero dejó el
+   `ci > 0` en cada lector — justo el que se pierde. Ahora es `twr.retorno_mensual`, que responde
+   la pregunta completa; ningún lector ve `dietz` pelado.
+2. **B-2 hizo coincidir dos copias en vez de unificarlas.** La regla 2 dice textual que la
+   respuesta por defecto no es arreglar las dos. Estaba duplicado hasta la query
+   `MAX(net_deposited)` palabra por palabra. Ahora hay `_retorno_vs_aportado` y nada más.
+3. **B-3 unificó, pero nada impedía que las copias vuelvan.** Ahora hay un test que lee el código
+   de las dos pantallas del chat.
+
+Los tres guards nuevos leen CÓDIGO, no números, y los tres se verificaron poniendo el bug de
+vuelta a mano.
+
+**⚠️ Lo que QUEDA ABIERTO de mi propio fix, y es un hallazgo del audit ya catalogado (DIV-087):**
+al convertir `Interés PF`, el número queda bien en todo lo que pasa por `realized_pnl.py`
+—`monthly_entries` (el recalc usa `realized_usd_sql`), el Dashboard, Reportes, los packets de IA,
+`assetPnl.js`— y **sigue crudo en los lectores que leen `pnl_usd` a pelo**: `AssetDetail.jsx:174`,
+`diagnostics.js` y el detalle mobile de posición. Antes estaba mal en TODOS (uniformemente); ahora
+está bien en la mayoría y mal en esos tres. Es la misma situación que ya tienen Cupón y
+Amortización, y el arreglo de verdad es DIV-087 ("convertir en el endpoint, no en cada lector"),
+que hay que hacer para los tres op_types juntos porque cambia números en pantalla.
+
+**⚠️ Y una corrección de método:** dije "cero fallos nuevos, mismo set exacto que el baseline"
+sobre el conteo de la suite completa, y ese número **no sirve como métrica**. Probado en un
+worktree limpio de `origin/main`: agregar UN test que crea UN usuario cambia el conteo de 31 a 30,
+sin tocar una línea de código. La suite comparte una base temporal y tiene tests que dependen del
+orden. La comparación válida es **archivo por archivo, aislado, con base fresca y el mismo
+`backend/.env`** (su ausencia sola cambia 6 resultados de `test_advisor_plan`). Hecho así sobre
+los 247 archivos, en las dos ramas: **la única diferencia es el archivo de test nuevo, que pasa.**
+
 ---
 
 ### El hallazgo original (lo que decía este documento antes)
