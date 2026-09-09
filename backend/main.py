@@ -27206,6 +27206,10 @@ def rebill_webhook(request: Request, raw: bytes = Depends(_raw_body)):
         evt = event_type.lower()
         if evt == "subscription.created":
             _rebill_activate(conn, uid, metadata, sub_id, payload)
+            # DESPUÉS de activar, no antes: `_rebill_activate` es quien deja el
+            # `sub_id` real en `mp_subscription_id`, y la bienvenida busca la fila
+            # justo por ahí.
+            _notificar_alta_rebill(conn, uid, sub_id, metadata, payload)
         elif evt == "subscription.updated":
             _rebill_subscription_status_change(conn, uid, metadata, sub_id, payload)
         elif evt == "payment.created" or evt == "payment.updated":
@@ -27941,9 +27945,15 @@ def _process_preapproval_event(conn, preapproval_id: str):
         log.info("Subscription %s now %s (tier change pending end of period)", preapproval_id, our_status)
 
 
-def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state):
+def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, plan="pro"):
     """Manda el email de bienvenida UNA SOLA VEZ por suscripción.
-    Idempotente vía welcome_email_sent_at — si está set, saltamos."""
+    Idempotente vía welcome_email_sent_at — si está set, saltamos.
+
+    `plan` existe porque `send_welcome_pro` lo usa para el título y las features, y
+    su default es "pro": sin pasarlo, a un suscriptor de **Plus** el mail le dice
+    "¡Bienvenido a Rendi Pro!" y le lista features que no tiene. El camino de MP no
+    lo pasaba (vendía un solo plan cuando se escribió); el de Rebill sí lo sabe, lo
+    trae en `metadata.rendi_plan`."""
     from billing import emails
     row = conn.execute(
         """SELECT s.welcome_email_sent_at, s.amount_ars, u.email, u.name
@@ -27962,6 +27972,7 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state):
             period=period,
             amount_ars=row["amount_ars"],
             next_charge_date=mp_state.get("next_payment_date"),
+            plan=plan,
         )
         if sent or not emails._is_configured():
             # Marcamos como enviado igual en modo "no configurado" (log-only)
@@ -27974,6 +27985,50 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state):
                 )
     except Exception as ex:
         log.error("Welcome email failed for sub %s: %s", preapproval_id, ex)
+
+
+def _notificar_alta_rebill(conn, uid: int, sub_id: str, metadata: dict, payload: dict):
+    """El mail de bienvenida cuando el alta entra por REBILL.
+
+    ⚠️ POR QUÉ EXISTE. `send_welcome_pro` tenía UN caller en producción y colgaba de
+    `_process_preapproval_event`, o sea del webhook de MERCADO PAGO. Las altas de hoy
+    entran por Rebill (`/api/billing/rebill-webhook` → `_rebill_activate`), que en sus
+    169 líneas no manda un solo mail: **quien se suscribía no recibía nada**. No es que
+    el mail estuviera mal, es que nadie lo llamaba desde el camino vivo.
+
+    Va acá, en el router del webhook, y no adentro de `_rebill_activate`, por dos
+    razones: notificar no es activar (el que otorga crédito no tiene por qué saber de
+    mails), y así el diff no se mete en las funciones que están bajo auditoría de la
+    ruta del dinero.
+
+    Reusa `_maybe_send_welcome_email` tal cual: ya es idempotente por
+    `welcome_email_sent_at`, que es la traba que importa — `subscription.created` se
+    re-entrega, está medido sobre payloads reales.
+
+    Nunca levanta: un mail que falla no puede voltear un alta ya cobrada.
+    """
+    if not sub_id:
+        # Sin id no se puede ubicar la fila, y buscar por '' matchearía CUALQUIER
+        # suscripción con el campo vacío: le mandaríamos el mail a otra persona.
+        log.warning("Rebill alta sin sub_id (uid=%s): no se manda bienvenida", uid)
+        return
+    try:
+        period = (metadata.get("rendi_period") or "monthly").strip().lower()
+        if period not in ("monthly", "annual"):
+            period = "monthly"
+        plan = (metadata.get("rendi_plan") or "pro").strip().lower()
+        if plan not in ("plus", "pro"):
+            plan = "pro"
+        # Rebill dice `nextChargeDate`; el helper lee `next_payment_date` (nombre de
+        # MP). Se traduce acá y no allá para no tocar el camino de MP.
+        data = payload.get("data") or {}
+        sub_obj = data.get("subscription") or {}
+        prox = (sub_obj.get("nextChargeDate") or data.get("nextChargeDate")
+                or payload.get("nextChargeDate"))
+        _maybe_send_welcome_email(conn, sub_id, uid, period,
+                                  {"next_payment_date": prox}, plan=plan)
+    except Exception as ex:
+        log.error("Bienvenida Rebill falló uid=%s sub=%s: %s", uid, sub_id, ex)
 
 
 def _process_payment_event(conn, payment_id: str, payload: dict):
