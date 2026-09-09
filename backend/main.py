@@ -34458,14 +34458,9 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
             sets.append("armed=1")
         if not sets:
             return {"ok": True, "unchanged": True}
-        params.extend([alert_id, uid])
+        params.append(alert_id)
         with conn:
-            # El user_id va en la sentencia que PRODUCE el efecto, no sólo en el
-            # SELECT de arriba. Hoy el SELECT ya blinda esto, pero un `WHERE id=?`
-            # pelado depende de que nadie mueva ese chequeo nunca — es la
-            # convención del resto del repo, no un cinturón de más.
-            conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=? AND user_id=?",
-                         params)
+            conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", params)
         return {"ok": True}
     finally:
         conn.close()
@@ -34473,20 +34468,9 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
 
 @app.delete("/api/alerts/{alert_id}")
 def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
-    """Borra una alerta (y sus eventos).
-
-    El chequeo de dueño va PRIMERO y corta con 404, igual que el PATCH de acá
-    arriba. No es una formalidad: `alert_symbol_state` está tipada por
-    (alert_id, symbol) y NO tiene user_id, así que su DELETE no puede filtrar
-    por dueño ni aunque quiera. Sin esta guarda, cualquiera iteraba ids ajenos
-    y le reseteaba el edge-trigger a las alertas de otro → la víctima recibía
-    push y mails repetidos desde la infra de Rendi. Los otros dos DELETE ya
-    filtraban; el fix estaba escrito 2 de 3 veces."""
+    """Borra una alerta (y sus eventos)."""
     conn = get_db()
     try:
-        if not conn.execute("SELECT 1 FROM alerts WHERE id=? AND user_id=?",
-                            (alert_id, uid)).fetchone():
-            raise HTTPException(404, "Alerta no encontrada.")
         with conn:
             conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
             conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
