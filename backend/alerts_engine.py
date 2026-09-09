@@ -213,11 +213,12 @@ def _display_symbol(symbol: str) -> str:
 
 
 def _fmt(price, currency) -> str:
-    if price is None:
-        return "—"
-    if (currency or "").upper() == "ARS":
-        return f"${price:,.0f}".replace(",", ".")
-    return f"US${price:,.2f}"
+    """Precio en convención argentina. Mostraba los pesos bien ($7.350) y los
+    dólares a la inglesa (US$2,145.30) en el MISMO mail; ahora los dos salen
+    del único formateador, money_fmt.fmt_money. Ojo: esto arma también el
+    ASUNTO de la alerta, no sólo el cuerpo."""
+    from money_fmt import fmt_money
+    return fmt_money(price, currency)
 
 
 def _compose_message(alert, symbol, price, change_pct) -> str:

@@ -309,3 +309,37 @@ def test_set_price_once_deactivates(clean, monkeypatch):
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
     a = conn.execute("SELECT active,anchor_price FROM alerts").fetchone()
     assert a["active"] == 0 and a["anchor_price"] == 100.0   # once: no re-ancla, se apaga
+
+
+# ─── Formato de plata (convención argentina) ────────────────────────────────
+# Se testea a través de las funciones que ARMAN el mensaje (_compose_message
+# arma el asunto, _email_detail arma el cuerpo), no contra fmt_money suelto:
+# un test del primitivo pasaría en verde aunque el call site se olvide de
+# usarlo, que es exactamente el bug que había.
+
+def _alert(kind="pct_move", currency="USD", threshold=None,
+           direction=None, baseline="prev_close"):
+    return {"kind": kind, "currency": currency, "threshold": threshold,
+            "direction": direction, "baseline": baseline, "id": 1}
+
+
+def test_dolares_en_formato_argentino_en_asunto_y_cuerpo():
+    """US$ 2.145,30 — punto de miles, coma decimal. Antes salía US$2,145.30."""
+    a = _alert()
+    assert "US$ 2.145,30" in ae._email_detail(a, "MELI", 2145.30, -3.14)
+    c = _alert(kind="price_target", threshold=200.0, direction="above")
+    assert "US$ 200,10" in ae._compose_message(c, "MSFT", 200.10, None)
+    assert "US$ 200,00" in ae._email_detail(c, "MSFT", 200.10, None)
+
+
+def test_pesos_siguen_con_punto_de_miles_y_sin_decimales():
+    d = _alert(currency="ARS")
+    assert "$7.350" in ae._email_detail(d, "GGAL.BA", 7350.0, 3.0)
+
+
+def test_el_cuerpo_del_mail_trae_los_numeros_y_no_manda_a_buscarlos():
+    """El bug original: el cuerpo decía 'entrá a Rendi para ver' y el asunto
+    informaba más que el mail. El cuerpo tiene que traer % y precio."""
+    body = ae._email_detail(_alert(), "MELI", 2145.30, -3.14)
+    assert "3.1%" in body and "US$ 2.145,30" in body
+    assert "Entrá a Rendi" not in body

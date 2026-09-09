@@ -304,7 +304,8 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 # El cuerpo del mail lleva los números, no "entrá a Rendi para
                 # verlos": el valor de hoy y el movimiento, que ya los tenemos
                 # acá. Mismo criterio que alerts_engine._email_detail.
-                _val = f"US$ {now_v:,.0f}".replace(",", ".")
+                from money_fmt import fmt_money
+                _val = fmt_money(now_v, "USD", decimals=0)
                 detail = (f"La cartera de {labels.get(cid)} {verbo} "
                           f"{abs(pct):.1f}% desde el cierre de ayer y hoy vale "
                           f"{_val}. El movimiento es del mercado: los depósitos "
