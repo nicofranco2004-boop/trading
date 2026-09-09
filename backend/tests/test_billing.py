@@ -1,7 +1,14 @@
-"""Tests para los endpoints de billing — sin tocar la API real de MP.
+"""Tests para los endpoints de billing — sin tocar la API real del procesador.
 
-Mockeamos `billing.mercadopago.create_preapproval` / cancel / get y
-verificamos que nuestro flow (DB + tier transitions) funcione."""
+Mockeamos `billing.rebill.create_payment_link` / `cancel_subscription` y
+verificamos que nuestro flow (DB + tier transitions) funcione.
+
+⚠️ ESTOS TESTS MOCKEABAN `billing.mercadopago`. El procesador se migró a Rebill y
+los endpoints dejaron de llamar a MP, así que el mock caía en el vacío: el request
+llegaba al `rebill.create_payment_link` de verdad, moría con
+"REBILL_PLAN_ID_PRO_MONTHLY no configurada en Railway" y el test veía un 502. O
+sea: subscribe y cancel —dos endpoints de PLATA— se quedaron sin una sola prueba
+que los ejerciera, y el rojo que lo avisaba estaba mezclado con otros 26."""
 import unittest
 import uuid
 import json
@@ -30,60 +37,93 @@ class BillingSubscribeTest(unittest.TestCase):
         self.token = main.create_token(self.uid)
         self.headers = {"Authorization": f"Bearer {self.token}"}
 
-    def _mock_preapproval(self, sub_id="mock-sub-123"):
-        """Helper: mock que devuelve un preapproval payload simulado de MP."""
-        return {
-            "id": sub_id,
-            "init_point": f"https://mercadopago.com/checkout/{sub_id}",
-            "status": "pending",
-            "auto_recurring": {"transaction_amount": 12100, "currency_id": "ARS"},
-        }
+    def _link_rebill(self, link_id="mock-link-123"):
+        """Respuesta de `rebill.create_payment_link`: {id, url} (billing/rebill.py:129).
 
-    def test_subscribe_creates_preapproval_and_saves_to_db(self):
-        with patch("billing.mercadopago.create_preapproval") as mock_create:
-            mock_create.return_value = self._mock_preapproval("test-sub-1")
+        El host TIENE que ser uno de la allowlist de main.py (`_ALLOWED_PAYMENT_HOSTS`):
+        si no, el endpoint devuelve 502 a propósito — es el guard anti-phishing por si
+        la respuesta del procesador viniera tampereada."""
+        return {"id": link_id, "url": f"https://checkout.rebill.com/{link_id}"}
+
+    def test_subscribe_crea_el_payment_link_y_lo_guarda(self):
+        with patch("billing.rebill.create_payment_link") as mock_create:
+            mock_create.return_value = self._link_rebill("test-link-1")
             r = self.client.post(
                 "/api/billing/subscribe",
                 json={"period": "monthly"},
                 headers=self.headers,
             )
-            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.status_code, 200, r.text)
             data = r.json()
-            self.assertEqual(data["subscription_id"], "test-sub-1")
-            self.assertIn("checkout", data["init_point"])
+            self.assertEqual(data["subscription_id"], "test-link-1")
+            self.assertIn("rebill.com", data["init_point"])
 
             mock_create.assert_called_once()
-            # MP recibe email y period correctos
-            call_kwargs = mock_create.call_args.kwargs
-            self.assertEqual(call_kwargs["user_id"], self.uid)
-            self.assertEqual(call_kwargs["user_email"], self.email)
-            self.assertEqual(call_kwargs["period"], "monthly")
+            kwargs = mock_create.call_args.kwargs
+            self.assertEqual(kwargs["user_id"], self.uid)
+            self.assertEqual(kwargs["user_email"], self.email)
+            self.assertEqual(kwargs["period"], "monthly")
+            self.assertEqual(kwargs["plan"], "pro")     # default por back-compat
 
-        # DB tiene la subscription en estado pending
         conn = main.get_db()
         row = conn.execute(
-            "SELECT status, period, amount_ars FROM subscriptions WHERE user_id=?",
+            "SELECT status, period, amount_ars, init_point, external_reference "
+            "  FROM subscriptions WHERE user_id=?",
             (self.uid,),
         ).fetchone()
         conn.close()
         self.assertIsNotNone(row)
         self.assertEqual(row["status"], "pending")
         self.assertEqual(row["period"], "monthly")
-        self.assertEqual(row["amount_ars"], 12100)
+        self.assertEqual(row["init_point"], "https://checkout.rebill.com/test-link-1")
+        self.assertEqual(row["external_reference"], f"rendi-{self.uid}-pro-monthly")
+        # El importe lo fija el PLAN en el dashboard de Rebill, no nosotros: la fila
+        # nace en 0 y la completa el webhook cuando el cobro ocurre. Con MP el monto
+        # venía en la respuesta del preapproval y este test esperaba 12100.
+        self.assertEqual(row["amount_ars"], 0)
 
-    def test_subscribe_reuses_pending_subscription(self):
-        """Si el user ya tiene una sub pending, no creamos duplicado — devolvemos
-        el mismo init_point para que termine de pagar."""
-        with patch("billing.mercadopago.create_preapproval") as mock_create:
-            mock_create.return_value = self._mock_preapproval("test-sub-pending")
-            # Primera llamada crea
-            r1 = self.client.post("/api/billing/subscribe", json={"period": "monthly"}, headers=self.headers)
-            # Segunda llamada reutiliza
-            r2 = self.client.post("/api/billing/subscribe", json={"period": "monthly"}, headers=self.headers)
-            self.assertEqual(r2.json()["reused"], True)
-            self.assertEqual(r1.json()["init_point"], r2.json()["init_point"])
-            # MP llamado UNA sola vez
-            mock_create.assert_called_once()
+    def test_subscribe_rechaza_una_url_que_no_es_de_rebill(self):
+        """El guard anti-phishing: si el procesador devuelve otro dominio, 502."""
+        with patch("billing.rebill.create_payment_link") as mock_create:
+            mock_create.return_value = {"id": "x", "url": "https://evil.example.com/x"}
+            r = self.client.post("/api/billing/subscribe",
+                                 json={"period": "monthly"}, headers=self.headers)
+        self.assertEqual(r.status_code, 502)
+        conn = main.get_db()
+        n = conn.execute("SELECT COUNT(*) c FROM subscriptions WHERE user_id=?",
+                         (self.uid,)).fetchone()["c"]
+        conn.close()
+        self.assertEqual(n, 0, "no debe quedar una sub apuntando a un dominio ajeno")
+
+    def test_subscribe_repetido_crea_OTRO_link_no_reusa_la_pending(self):
+        """⚠️ CAMBIO DE COMPORTAMIENTO, no un bug de este test.
+
+        Con Mercado Pago, un segundo POST sobre una sub `pending` devolvía el MISMO
+        init_point con `reused: True` para que la persona terminara de pagar. El
+        endpoint de Rebill no tiene esa rama: cada llamada crea un payment link
+        nuevo y devuelve `reused: False` fijo (main.py:26874). Lo único que frena la
+        acumulación es el rate limit de 5/600s, y la `x-idempotency-key` NO ayuda
+        porque lleva un `uuid4()` adentro (billing/rebill.py:165), así que nunca hay
+        dos llamadas con la misma clave.
+
+        Este test fija lo que el código hace HOY. Si se decide volver a reusar la
+        pending, tiene que fallar y avisar."""
+        with patch("billing.rebill.create_payment_link") as mock_create:
+            mock_create.side_effect = [self._link_rebill("link-a"), self._link_rebill("link-b")]
+            r1 = self.client.post("/api/billing/subscribe", json={"period": "monthly"},
+                                  headers=self.headers)
+            r2 = self.client.post("/api/billing/subscribe", json={"period": "monthly"},
+                                  headers=self.headers)
+            self.assertEqual(mock_create.call_count, 2)
+        self.assertEqual(r1.status_code, 200, r1.text)
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertFalse(r2.json()["reused"])
+        self.assertNotEqual(r1.json()["init_point"], r2.json()["init_point"])
+        conn = main.get_db()
+        n = conn.execute("SELECT COUNT(*) c FROM subscriptions WHERE user_id=? AND status='pending'",
+                         (self.uid,)).fetchone()["c"]
+        conn.close()
+        self.assertEqual(n, 2, "quedan DOS pending por el mismo plan")
 
     def test_subscribe_rejects_when_already_authorized(self):
         """Si ya tenés una sub authorized, 409 (conflict)."""
@@ -132,10 +172,13 @@ class BillingCancelTest(unittest.TestCase):
 
     def test_cancel_marks_subscription_cancelled(self):
         self._add_authorized_sub("to-cancel-1")
-        with patch("billing.mercadopago.cancel_preapproval") as mock_cancel:
-            mock_cancel.return_value = {"id": "to-cancel-1", "status": "cancelled"}
+        with patch("billing.rebill.cancel_subscription") as mock_cancel:
+            # Rebill devuelve el subscription object; `nextChargeDate` es la fecha
+            # hasta la que la persona conserva el tier (main.py:27633).
+            mock_cancel.return_value = {"id": "to-cancel-1", "status": "cancelled",
+                                        "nextChargeDate": "2026-10-01"}
             r = self.client.post("/api/billing/cancel", headers=self.headers)
-            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.status_code, 200, r.text)
             mock_cancel.assert_called_once_with("to-cancel-1")
 
         conn = main.get_db()

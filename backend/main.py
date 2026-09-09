@@ -6460,6 +6460,26 @@ _KNOWN_ENTITIES_REGEX = _re_news.compile(
 )
 
 
+# Macro que NO se puede buscar por substring. `_STRONG_MACRO_KEYWORDS` matchea con
+# `kw in texto`, así que un término corto se lleva puestas las palabras que lo
+# contienen: 'fed' matchearía Fedex, confederación y "he was fed"; 'ipc' cualquier
+# sigla larga. Por eso estos van con word boundary, igual que Path A.
+#
+# QUÉ SE ARREGLA CON ESTO (medido el 2026-09-08 sobre los casos de
+# tests/test_news.py): la lista de arriba exige frases largas —'inflación argentina',
+# 'ipc indec', 'fed minutes'— y por eso dejaba AFUERA del feed de mercado las dos
+# formas más comunes del titular más importante para un inversor argentino:
+#   · "Inflación de mayo: el IPC fue de 4.2%"   → caía
+#   · "FED holds rates steady"                  → caía
+# La intención de cubrir esos temas ya estaba escrita en la lista; lo que faltaba
+# eran las formas cortas. No se afloja nada más: sin entidad conocida ni macro,
+# un "stocks rally" pelado sigue afuera, que es lo que se decidió el 2026-05-26.
+_STRONG_MACRO_REGEX = _re_news.compile(
+    r'\b(fed|ipc|inflaci[oó]n)\b',
+    _re_news.IGNORECASE,
+)
+
+
 def _is_market_relevant(item):
     """True si la noticia menciona una empresa conocida O tiene macro fuerte.
 
@@ -6469,7 +6489,9 @@ def _is_market_relevant(item):
        Path A: la noticia menciona una empresa/asset de la whitelist
                (S&P 50 + Merval 25 + crypto top + extras populares LATAM).
        Path B: la noticia tiene una keyword macro fuerte (Fed, CPI, S&P 500,
-               dólar blue, Merval, BCRA, inflación, etc.).
+               dólar blue, Merval, BCRA, inflación, etc.) — por substring para
+               las frases largas y por word boundary para las cortas
+               (`_STRONG_MACRO_REGEX`).
 
     Falla abierto: si no hay title, deja pasar.
     """
@@ -6483,9 +6505,12 @@ def _is_market_relevant(item):
     if _KNOWN_ENTITIES_REGEX.search(haystack):
         return True
 
-    # Path B: macro fuerte (substring sobre lowercase)
+    # Path B: macro fuerte (substring sobre lowercase) + las formas cortas que
+    # necesitan word boundary (ver `_STRONG_MACRO_REGEX`).
     haystack_l = haystack.lower()
-    return any(kw in haystack_l for kw in _STRONG_MACRO_KEYWORDS)
+    if any(kw in haystack_l for kw in _STRONG_MACRO_KEYWORDS):
+        return True
+    return bool(_STRONG_MACRO_REGEX.search(haystack))
 
 
 # ─── News tagging ─────────────────────────────────────────────────────────────
@@ -6908,7 +6933,7 @@ _news_fetch_semaphore = _threading_news.BoundedSemaphore(16)
 _news_fetch_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="news-fetch")
 
 
-def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8, max_wait_seconds=None):
+def _ensure_news_batch_parallel(specs, ttl_seconds, max_wait_seconds=None):
     """Versión paralelizada: fetcha múltiples feeds en threads concurrentes.
 
     `specs`: iterable de:
@@ -6931,6 +6956,15 @@ def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8, max_wait_seco
         cuándo se obtuvo la data, no cuándo arrancó el batch.
 
     Errores individuales se aíslan + se loguean: una falla no rompe el resto.
+
+    ⚠️ ACÁ HABÍA UN `max_workers=8` QUE NO HACÍA NADA. Quedó de cuando la función
+    creaba su propio executor; desde que usa el `_news_fetch_executor` GLOBAL (ver
+    el comentario de abajo), el parámetro se aceptaba y se ignoraba en silencio.
+    Ningún caller de producción lo pasaba —el único que lo pasaba era un test, que
+    medía wall time y venía en rojo desde entonces— así que se saca en vez de
+    implementarlo: quien limita la concurrencia son el pool global y
+    `_news_fetch_semaphore`, y un parámetro que promete un cap que no aplica es
+    peor que no tenerlo.
     """
     now = time.time()
 

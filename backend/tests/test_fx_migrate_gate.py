@@ -296,14 +296,85 @@ class RendimientoVisibleTest(unittest.TestCase):
 
 
 class SnapshotsNoSePisanTest(unittest.TestCase):
-    """El backfill de snapshots desde monthly no puede pisar una medición real."""
+    """El backfill de snapshots desde monthly no puede pisar una medición real.
 
-    def test_el_upsert_es_do_nothing(self):
-        import inspect
+    ⚠️ ESTE TEST MIRABA EL TEXTO DEL CÓDIGO, no lo que el código hace:
+    `assertIn("DO NOTHING", inspect.getsource(...))`. Un guard así se conforma
+    con la ortografía — pasaba en verde igual cuando la función pasó a corregir
+    sus propias filas con un UPDATE aparte, que es justo el cambio que tenía que
+    vigilar. Ahora ejerce las tres filas que importan contra una DB de verdad.
+    """
+
+    def setUp(self):
+        # La base la da `tests/conftest.py` (una por MÓDULO), así que cada test
+        # necesita su propio user: comparten archivo.
+        import uuid
+        import main
+        self.conn = main.get_db()
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            (f"snap-guard-{uuid.uuid4().hex[:8]}@rendi.test", "x")).lastrowid
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _monthly(self, deposits, capital_final):
+        self.conn.execute("DELETE FROM monthly_entries WHERE user_id=?", (self.uid,))
+        self.conn.execute(
+            """INSERT INTO monthly_entries (user_id, broker, year, month, deposits,
+                                            withdrawals, capital_final)
+               VALUES (?, 'global', 2024, 1, ?, 0, ?)""",
+            (self.uid, deposits, capital_final))
+        self.conn.commit()
+
+    def _backfill(self):
         import importing.persister as ps
-        src = inspect.getsource(ps._backfill_snapshots_from_monthly)
-        self.assertIn("DO NOTHING", src)
-        self.assertNotIn("total_value = excluded.total_value", src)
+        ps._backfill_snapshots_from_monthly(self.conn, self.uid)
+        self.conn.commit()
+
+    def _snap(self, fecha="2024-01-31"):
+        return self.conn.execute(
+            "SELECT total_value, net_deposited, source FROM snapshots WHERE user_id=? AND date=?",
+            (self.uid, fecha)).fetchone()
+
+    def test_no_pisa_una_medicion_del_cron(self):
+        """El motivo por el que existe el guard (a813abc4): el cierre a MERCADO
+        del cron no se degrada al capital AL COSTO de la cadena contable."""
+        self.conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested,
+                                      net_deposited, fx_to_usd_blue, holdings_json, source, base, apto)
+               VALUES (?, '2024-01-31', 9999, 9999, 9999, 1000.0, '[]', 'cron', 'mercado', 1)""",
+            (self.uid,))
+        self.conn.commit()
+        self._monthly(deposits=5000, capital_final=5000)
+        self._backfill()
+        row = self._snap()
+        self.assertEqual(row["total_value"], 9999, "pisó la medición del cron")
+        self.assertEqual(row["source"], "cron")
+
+    def test_corrige_la_fila_que_fabrico_el_propio_import(self):
+        """El bug que el guard de texto no veía: tras un revert la fila sintética
+        queda en 0 y el re-import tiene que poder corregirla."""
+        self._monthly(deposits=0, capital_final=0)
+        self._backfill()
+        self.assertEqual(self._snap()["net_deposited"], 0)
+        self._monthly(deposits=5000, capital_final=5000)     # re-import
+        self._backfill()
+        row = self._snap()
+        self.assertEqual(row["net_deposited"], 5000, "el 0 del revert quedó clavado")
+        self.assertEqual(row["total_value"], 5000)
+
+    def test_no_toca_una_fila_legacy_sin_firma(self):
+        """Sin `source` no se puede afirmar quién la escribió (las columnas
+        `source`/`holdings_json` son de 2026) → se deja quieta."""
+        self.conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+               VALUES (?, '2024-01-31', 7777, 7777, 7777)""", (self.uid,))
+        self.conn.commit()
+        self._monthly(deposits=5000, capital_final=5000)
+        self._backfill()
+        self.assertEqual(self._snap()["total_value"], 7777)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 import tempfile
 import time as _time
 from contextlib import contextmanager as _contextmanager
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from . import rebuild as _rebuild
 from . import persister as _persister
@@ -285,9 +285,16 @@ def tag_bonds_from_data912(conn, uid: int, *, is_bond_ticker: Callable) -> int:
 def recompute_user(conn, uid: int, *, recalc: Callable,
                    bond_price_per1: Callable = None,
                    tag_bond_ticker: Callable = None,
-                   cost_only: bool = False) -> None:
+                   cost_only: bool = False,
+                   ref_date: Optional[str] = None) -> None:
     """Misma secuencia post-persist que import_confirm. Muta en la transacción
     abierta (el caller commitea).
+
+    `ref_date` (YYYY-MM-DD) = fecha de VALUACIÓN de los sweeps. None = hoy, que es
+    lo que corre en producción. Existe porque la amortización de un bono avanza con
+    el calendario real (AL30 residual 0,72 en jun-2026, 0,64 en sep-2026): un test
+    que fija el RESULTADO caduca solo, uno que fija la FECHA no. Mismo seam que ya
+    tenían `sweep_matured_letras` / `sweep_bond_amortizations` (importing/maturity.py).
 
     `cost_only=True` → SOLO normaliza la unidad de bonos per-100→per-1 + recalc sobre
     las posiciones ACTUALES; NO re-corre el FIFO/sweeps (no toca cantidades) y NO toca
@@ -300,8 +307,8 @@ def recompute_user(conn, uid: int, *, recalc: Callable,
         ).fetchall()]
         for bid in batches:
             _rebuild.rebuild_fifo_after_import(conn, uid, bid, tc_blue=tc_blue)
-        _maturity.sweep_matured_letras(conn, uid)
-        _maturity.sweep_bond_amortizations(conn, uid)
+        _maturity.sweep_matured_letras(conn, uid, ref_date=ref_date)
+        _maturity.sweep_bond_amortizations(conn, uid, ref_date=ref_date)
     # Solo normalizamos costo de posiciones creadas por imports (las manuales no se
     # reproducen → no se tocan), igual que el rebuild FIFO.
     linked = _maturity._import_linked_position_ids(conn, uid)
@@ -428,7 +435,8 @@ def _after_state_on_clone(real_conn, uid: int, recalc: Callable) -> Dict[tuple, 
 
 
 def _classify_safe(real_conn, uid: int, before: Dict[tuple, float],
-                   after: Dict[tuple, float]) -> List[Dict[str, Any]]:
+                   after: Dict[tuple, float],
+                   ref_date: Optional[str] = None) -> List[Dict[str, Any]]:
     """De todos los cambios (before→after del recompute), devuelve SOLO los
     INEQUÍVOCOS, clasificados a nivel del PAR de brokers (para no confundir un
     MOVIMIENTO genuino padre↔sibling con una eliminación):
@@ -437,7 +445,10 @@ def _classify_safe(real_conn, uid: int, before: Dict[tuple, float],
       - bono 100% amortizado → 0
       - amortización limpia (bono, after ≈ before × factor_residual)
     Todo lo demás (inflaciones, bonos→0 con residual>0, movimientos, reducciones que
-    no cierran con el cronograma) se OMITE."""
+    no cierran con el cronograma) se OMITE.
+
+    `ref_date` = fecha contra la que se leen los cronogramas (vencimiento de letra y
+    factor residual del bono). None = hoy, que es lo que corre en producción."""
     from datetime import date
     from .persister import broker_pair
     from .maturity import is_bond_like_name, letra_maturity, maturity_from_name
@@ -448,7 +459,7 @@ def _classify_safe(real_conn, uid: int, before: Dict[tuple, float],
         def is_known_ar_bond(_t):
             return False
 
-    today = date.today().isoformat()
+    today = ref_date or date.today().isoformat()
     name_map: Dict[tuple, str] = {}
     for r in real_conn.execute(
         "SELECT DISTINCT n.broker, n.asset_symbol, n.asset_name FROM import_normalized_tx n "
