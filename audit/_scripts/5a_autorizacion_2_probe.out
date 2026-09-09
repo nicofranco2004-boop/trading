@@ -1,0 +1,76 @@
+========================================================================
+A) IDOR — el ATACANTE apunta a los ids de la VICTIMA
+========================================================================
+  PUT    /api/plazos-fijos/{pid}             -> 404  {"detail":"Plazo fijo no encontrado"}
+  DELETE /api/plazos-fijos/{pid}             -> 200  {"ok":true}
+  POST   /api/plazos-fijos/{pid}/renovar     -> 404  {"detail":"Plazo fijo no encontrado"}
+  POST   /api/plazos-fijos/{pid}/cobrar      -> 404  {"detail":"Plazo fijo no encontrado"}
+  PUT    /api/monthly/{eid}                  -> 404  {"detail":"Not found"}
+  DELETE /api/monthly/{eid}                  -> 200  {"ok":true}
+  PUT    /api/operations/{oid}               -> 404  {"detail":"Not found"}
+  DELETE /api/operations/{oid}               -> 404  {"detail":"Operación no encontrada"}
+  PUT    /api/futures/{fid}                  -> 404  {"detail":"Posición de futuros no encontrada (o ya cerrada)"}
+  DELETE /api/futures/{fid}                  -> 404  {"detail":"Posición de futuros no encontrada"}
+  POST   /api/futures/{fid}/close            -> 404  {"detail":"Posición de futuros no encontrada"}
+  POST   /api/brokers/{bid}/usd-sibling      -> 404  {"detail":"Broker no encontrado"}
+
+  Estado de la VICTIMA despues de las 12 sondas:
+    plazos_fijos       [{'banco': 'BancoV', 'capital': 1000000.0, 'closed_at': None}]
+    monthly_entries    [{'deposits': 500.0, 'capital_final': 500.0}]
+    operations         [{'asset': 'AL30', 'pnl_usd': 123.0}]
+    futures_positions  [{'symbol': 'BTCUSDT', 'quantity': 1.0, 'closed_at': None}]
+
+  Lecturas del atacante (no deben contener nada de la victima):
+    GET /api/plazos-fijos                  -> 200  filas=0
+    GET /api/operations                    -> 200  filas=0
+    GET /api/futures                       -> 200  filas=0
+    GET /api/monthly                       -> 200  filas=0
+    GET /api/movements                     -> 200  filas=0
+    GET /api/bonds/cashflow/skips          -> 200  filas=0
+
+========================================================================
+B) ESCRITURAS POR GET — asesor con permission='read' (solo lectura)
+========================================================================
+  POST /api/monthly (control, debe dar 403) -> 403 {"detail":"Acceso de solo lectura a ese cliente"}
+  GET  /api/monthly  -> 200
+  monthly_entries del CLIENTE: antes=1  despues=9  (ESCRIBIO)
+  filas del cliente ahora: [{'year': 2026, 'month': 1, 'broker': 'BrokerV', 'capital_inicio': 0.0, 'capital_final': 500.0}, {'year': 2026, 'month': 2, 'broker': 'BrokerV', 'capital_inicio': 500.0, 'capital_final': 500.0}, {'year': 2026, 'month': 3, 'broker': 'BrokerV', 'capital_inicio': 500.0, 'capital_final': 500.0}, {'year': 2026, 'month': 4, 'broker': 'BrokerV', 'capital_inicio': 500.0, 'capital_final': 500.0}, {'year': 2026, 'month': 5, 'broker': 'BrokerV', 'capital_inicio': 500.0, 'capital_final': 500.0}, {'year': 2026, 'month': 6, 'broker': 'BrokerV', 'capital_inicio': 500.0, 'capital_final': 500.0}, {'year': 2026, 'month': 7, 'broker': 'BrokerV', 'capital_inicio': 500.0, 'capital_final': 500.0}, {'year': 2026, 'month': 8, 'broker': 'BrokerV', 'capital_inicio': 500.0, 'capital_final': 500.0}, {'year': 2026, 'month': 9, 'broker': 'BrokerV', 'capital_inicio': 500.0, 'capital_final': 500.0}]
+
+========================================================================
+C) X-Rendi-Client-Id sin vinculo / revocado / autoreferencia
+========================================================================
+  atacante sin vinculo  GET /api/operations -> 403 {"detail":"Sin acceso a ese cliente"}
+  atacante sin vinculo  GET /api/export/transactions.csv -> 403 {"detail":"Sin acceso a ese cliente"}
+  asesor REVOCADO       GET /api/operations -> 403 {"detail":"Sin acceso a ese cliente"}
+  header=' 1 '          -> 200 [{"id":1,"user_id":1,"date":"2026-01-10","broker":"B
+  header='+1'           -> 200 [{"id":1,"user_id":1,"date":"2026-01-10","broker":"B
+  header='01'           -> 200 [{"id":1,"user_id":1,"date":"2026-01-10","broker":"B
+  header='abc'          -> 400 {"detail":"X-Rendi-Client-Id inválido"}
+  header='-1'           -> 400 {"detail":"X-Rendi-Client-Id inválido"}
+  header='0'            -> 400 {"detail":"X-Rendi-Client-Id inválido"}
+  header='9223372036854775808' -> 400 {"detail":"X-Rendi-Client-Id inválido"}
+  header='1e3'          -> 400 {"detail":"X-Rendi-Client-Id inválido"}
+
+  D) exports del CLIENTE via asesor SOLO-LECTURA (GET, gate de plan):
+    /api/export/operations.csv         -> 403 bytes=332
+    /api/export/positions.csv          -> 403 bytes=332
+    /api/export/transactions.csv       -> 403 bytes=332
+    /api/export/monthly.csv            -> 403 bytes=332
+
+========================================================================
+E) Broker NO validado en POST /api/operations y POST /api/futures
+========================================================================
+  POST /api/operations broker inexistente -> 200
+  POST /api/futures    broker inexistente -> 200
+  POST /api/monthly    broker inexistente -> 400 (control: SI valida)
+  brokers reales del atacante: []
+  positions creadas: [{'broker': 'BrokerQueNoExiste', 'asset': 'USDT', 'is_cash': 1, 'invested': 5000.0}]
+  monthly_entries creadas: [{'broker': 'BrokerQueNoExiste', 'pnl_realized': 5000.0}, {'broker': 'global', 'pnl_realized': 5000.0}]
+
+========================================================================
+F) 500 con el texto crudo de la excepcion (7 endpoints del tramo)
+========================================================================
+  POST /api/bonds/cashflow           -> 200  {"ok":true,"amount_net":100.0,"op_type":"Cupón","broker":"BrokerA","asset":"AL30","currency":"ARS","fx_to_usd":null,"fx_source":null,"qty_decremented":0.0,"invested_decre
+  POST /api/cash/flow                -> 200  {"ok":true,"direction":"deposit","amount":10.0,"currency":"ARS"}
+  POST /api/brokers/reconcile-cash   -> 200  {"ok":true,"broker":"BrokerA","previous_cash":110.0,"new_cash":100000000000.0,"diff":99999999890.0,"diff_direction":"deposit","recorded_in_period":"2026-09"}
+  POST /api/conversions              -> 200  {"ok":true,"from_broker":"BrokerA","to_broker":"BrokerA · USD","ars_amount":1.0,"usd_amount":1.0,"tc":1.0,"kind":"MEP","pnl_usd_realized":null}
