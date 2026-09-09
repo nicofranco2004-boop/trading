@@ -520,6 +520,44 @@ def _dia_anterior(iso: str):
         return None
 
 
+def snapshot_borde_apertura(conn, uid: int, period_start: str,
+                            max_lag_days: int = _BORDER_MAX_LAG_DAYS
+                            ) -> Optional[Dict[str, Any]]:
+    """El cierre a mercado con el que ABRE un período. `None` si no hay uno servible.
+
+    ⚠️ EL BORDE ES EL CIERRE DEL DÍA ANTERIOR, NUNCA LA FOTO DEL PROPIO DÍA 1.
+
+    La foto del día 1 ya tiene adentro el depósito de ese día, mientras los flujos
+    del período se restan enteros: el aporte se descuenta DOS VECES. Medido en un
+    mes plano con un depósito de US$ 10.000 el 1 de mayo: publicaba −US$ 10.000 /
+    −8,7 % donde lo real era 0. En el KPI anual de Métricas, sobre una cartera que
+    ganó US$ 1.000, publicaba −US$ 4.000 / −22,86 % — con el signo invertido.
+
+    Y tiene que estar PEGADO al arranque: un cierre de hace tres semanas mete tres
+    semanas de mercado ajeno adentro del período.
+
+    POR QUÉ ES UNA FUNCIÓN Y NO CUATRO COPIAS. Este cálculo estaba escrito cuatro
+    veces —el mes en curso, el año en curso, la composición mensual y el KPI YTD de
+    Métricas— y el arreglo del día-anterior había llegado a tres. El cuarto
+    (`main._ytd_delta`) siguió restando dos veces el aporte del 1 de enero durante
+    todo ese tiempo, tapado por otro bug: mientras el cron fechaba en UTC, la fila
+    etiquetada `2026-01-01` era en realidad el cierre del 31/12 y el borde caía bien
+    por accidente. Al arreglar el cron (F3) el error habría salido a la luz.
+
+    Es exactamente el patrón que la auditoría midió como causa raíz dominante: un
+    fix correcto aplicado a N−1 call sites. Ahora hay uno solo.
+    """
+    prev = _dia_anterior(period_start)
+    if not prev:
+        return None
+    snap = fetch_snapshot_at_or_before(conn, uid, prev, mtm_only=True)
+    if not snap or not (float(snap.get("total_value") or 0) > 0):
+        return None
+    if not _border_is_fresh(snap.get("date"), period_start, max_lag_days):
+        return None
+    return snap
+
+
 def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
                            broker_filter: str, *, con_fechas: bool = False):
     """Las dos puntas de un período CERRADO, medidas a mercado. None si no se puede.
@@ -941,19 +979,13 @@ def compute_metrics_for_period(
             # el import fabricó al costo entraba como si fuera mercado y el parche
             # C-2 quedaba sin efecto justo en las cuentas que más lo necesitaban.
             if broker_filter == "global":
-                # ⚠️ `_dia_anterior`, igual que el período cerrado. Con
-                # `<= period_start` el borde elegido era la foto del PROPIO día 1,
-                # que ya tiene adentro el depósito de ese día, mientras `deposits`
-                # seguía siendo el del mes calendario: el aporte se restaba dos
-                # veces. Es el defecto que `bordes_mercado_periodo` documenta, y
-                # había quedado vivo justo en la rama más mirada — la del mes en
-                # curso. Medido: julio cierra 110.000, el 1/8 entra un aporte de
-                # 10.000, la cartera queda plana en 120.000 → "Mes difícil −8,0%".
-                _prev_d = _dia_anterior(period_start)
-                _snap_prev = (fetch_snapshot_at_or_before(
-                    conn, uid, _prev_d, mtm_only=True) if _prev_d else None)
-                if (_snap_prev and float(_snap_prev.get("total_value") or 0) > 0
-                        and _border_is_fresh(_snap_prev.get("date"), period_start)):
+                # El borde es el cierre del mes ANTERIOR, medido y fresco — la
+                # regla entera, con lo que costó cada mitad, está en el docstring
+                # de `snapshot_borde_apertura`. Medido acá: julio cierra 110.000,
+                # el 1/8 entra un aporte de 10.000, la cartera queda plana en
+                # 120.000 → sin esto publicaba "Mes difícil −8,0%".
+                _snap_prev = snapshot_borde_apertura(conn, uid, period_start)
+                if _snap_prev:
                     start_value = float(_snap_prev["total_value"])
                     _start_is_mtm = True
                     # Sin fila monthly, los flows del mes salen del net_deposited
@@ -1151,17 +1183,11 @@ def compute_metrics_for_period(
             # fabricaba el unrealized histórico como "P&L del año". Start desde el
             # snapshot MtM del cierre del año pasado (solo global).
             if broker_filter == "global":
-                # `_dia_anterior`: el borde de apertura del año es el cierre del
-                # 31/12 ANTERIOR. Con `<= period_start` agarraba la foto del propio
-                # 1/1 —que ya tiene adentro el aporte de ese día— mientras
-                # `deposits` seguía siendo el del año entero: el aporte se restaba
-                # dos veces. Mismo defecto que ya se cerró en el período cerrado y
-                # en el mes en curso; faltaba acá.
-                _prev_y = _dia_anterior(period_start)
-                _snap_y = (fetch_snapshot_at_or_before(conn, uid, _prev_y, mtm_only=True)
-                           if _prev_y else None)
-                if (_snap_y and float(_snap_y.get("total_value") or 0) > 0
-                        and _border_is_fresh(_snap_y.get("date"), period_start)):
+                # El borde de apertura del año es el cierre del 31/12 anterior.
+                # Ver `snapshot_borde_apertura` — el mismo primitivo que usan el
+                # mes, la composición mensual y el KPI YTD de Métricas.
+                _snap_y = snapshot_borde_apertura(conn, uid, period_start)
+                if _snap_y:
                     start_value = float(_snap_y["total_value"])
                     _start_is_mtm = True
             # AUDIT D-1: mismo cruce que el mes — sin cierre medido de borde, el
@@ -1336,11 +1362,8 @@ def compute_metrics_for_period(
                     if broker_filter == "global":
                         _ms = f"{y:04d}-{int(r['month']):02d}-01"
                         # Idem: el cierre del mes ANTERIOR, no la foto del día 1.
-                        _msp = _dia_anterior(_ms)
-                        _snap_m = (fetch_snapshot_at_or_before(conn, uid, _msp, mtm_only=True)
-                                   if _msp else None)
-                        if (_snap_m and float(_snap_m.get("total_value") or 0) > 0
-                                and _border_is_fresh(_snap_m.get("date"), _ms)):
+                        _snap_m = snapshot_borde_apertura(conn, uid, _ms)
+                        if _snap_m:
                             ci = float(_snap_m["total_value"])
                             _ci_is_mtm = True
                     # Variable LOCAL a propósito: el `continue` ya saca al mes

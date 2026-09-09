@@ -31,6 +31,9 @@ HISTORY_DAYS = 3   # el historial es un feed, no un archivo: se limpia solo
 
 
 def _today_art() -> str:
+    """Hoy en Argentina. Las alertas EXCLUYEN hoy a propósito (la base tiene que
+    ser el cierre anterior, no la foto intradía) — y esa exclusión sólo cae en el
+    lugar correcto porque desde F3 el cron sella con esta misma fecha."""
     return hoy_art()
 
 

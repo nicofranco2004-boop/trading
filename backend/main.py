@@ -33869,11 +33869,24 @@ def _ytd_delta(conn, uid: int, latest_value: Optional[float],
     # "P&L del año: —" y al lado "YTD 2026: −61,18%". Ahora sólo un cierre MEDIDO
     # sirve de arranque; sin él no hay YTD (None), igual que el período.
     if broker_filter == "global":
-        from reporting.builder import fetch_snapshot_at_or_before, _border_is_fresh
+        # AUDIT F3 (H-2): el borde era la foto del PROPIO 1 de enero, que ya tiene
+        # adentro el aporte de ese día, mientras `net_flows` (abajo) sigue siendo
+        # el del año entero. El aporte se restaba dos veces. Medido sobre una
+        # cartera que ganó US$ 1.000: publicaba −US$ 4.000 / −22,86 %, con el
+        # SIGNO INVERTIDO. Y no se quedaba en la pantalla — de acá sale la clave
+        # `ytd` que viaja al `_bench_cache` y al prompt del chat con el flag
+        # "Retornos REALES precalculados — citalos, NO hagas aritmética nueva".
+        #
+        # Estaba tapado: mientras el cron fechaba en UTC, la fila etiquetada
+        # `2026-01-01` era en realidad el cierre argentino del 31/12 y el borde
+        # caía bien por accidente. Los dos fixes van juntos o el YTD se rompe.
+        #
+        # `snapshot_borde_apertura` es el MISMO primitivo que usan el mes, el año
+        # y la composición mensual de `/reportes` — que ya tenían el arreglo.
+        from reporting.builder import snapshot_borde_apertura
         _yr_start = f"{year:04d}-01-01"
-        snap = fetch_snapshot_at_or_before(conn, uid, _yr_start, mtm_only=True)
-        if not (snap and float(snap.get("total_value") or 0) > 0
-                and _border_is_fresh(snap.get("date"), _yr_start, max_lag_days=5)):
+        snap = snapshot_borde_apertura(conn, uid, _yr_start, max_lag_days=5)
+        if not snap:
             return None
         start = float(snap["total_value"])
     if start <= 0:
@@ -37901,8 +37914,12 @@ def advisor_book(uid: int = Depends(get_current_user)):
         # FX del día (tabla global, sin red). MEP para convertir cash ARS.
         tc_blue, tc_mep = _advisor_book_fx(conn)
 
-        # Fecha "hoy" en ART (UTC-3): los snapshots se estampan con fecha ART
-        # (cron 23:59 ART) — cortar en UTC corría el mes 3 horas antes (audit).
+        # Fecha "hoy" en ART: los snapshots se estampan con fecha ART (cron 23:59
+        # ART) — cortar en UTC corría el mes 3 horas antes (audit).
+        # ⚠️ Esta premisa era FALSA hasta F3 y nadie lo había verificado: el cron
+        # sellaba en UTC, así que la exclusión de "hoy" se llevaba puesta la fila
+        # del cierre de anoche y la base pasaba a ser la de anteayer. Ahora el
+        # cron usa el mismo `fechas.hoy_art()` y el comentario dice la verdad.
         today = _hoy_art_date()
         latest = _latest_snapshots(conn, ids)
         asof_7d = _snapshots_asof(conn, ids, (today - _td(days=7)).isoformat())

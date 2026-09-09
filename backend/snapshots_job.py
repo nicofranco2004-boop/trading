@@ -24,6 +24,8 @@ from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 from collections import defaultdict
 from datetime import date as date_cls, datetime
 from pathlib import Path
+
+from fechas import hoy_art
 from typing import Optional
 
 import yfinance as yf
@@ -743,7 +745,7 @@ def take_snapshot_for_user(
     tc_mep: Optional[float] = None,
 ) -> dict:
     """Computa y persiste el snapshot del portfolio del usuario `uid` para
-    la fecha `target_date` (default: hoy UTC). Idempotente vía UPSERT.
+    la fecha `target_date` (default: hoy ART). Idempotente vía UPSERT.
 
     CONVENCIÓN DE VALUACIÓN: TODO al dólar-MEP (holdings .BA, cash ARS y costos),
     espejo del frontend (pickFinancialRate) y del POST /snapshots del Dashboard —
@@ -760,12 +762,9 @@ def take_snapshot_for_user(
     net_deposited, symbols_fetched, errors}.
     """
     if target_date is None:
-        # Audit follow-up (2026-05-31): fecha del snapshot = día ART, no UTC.
-        # Target users son argentinos. Si el cron corre a las 02:59 UTC del
-        # sábado (= 23:59 ART del viernes), la fecha debe ser "viernes",
-        # no "sábado" (que es lo que utcnow().date() devolvería).
-        # Conversión: UTC - 3h = ART.
-        from fechas import hoy_art
+        # Día ART, igual que el runner. Los dos caminos usan el MISMO helper a
+        # propósito: cuando esto era una copia a mano, el runner se desalineó y
+        # nadie se enteró durante meses (audit F3).
         target_date = hoy_art()
 
     # 1. Cargar brokers, positions y monthly del user
@@ -1037,7 +1036,8 @@ def run_daily_snapshot(
             solo para el stamp display fx_to_usd_blue / fx_rates_daily (la
             valuación va al MEP).
         crypto_yf: dict {ticker: 'ticker-USD'} para mapping
-        target_date: fecha YYYY-MM-DD (default: hoy UTC)
+        target_date: fecha YYYY-MM-DD (default: hoy ART — ver el bloque
+            de abajo; el día argentino, no el UTC)
         fetch_tc_mep: callable que devuelve el dólar-MEP actual (float). Si se
             pasa y NO resuelve, el job ABORTA (fail-closed): sin MEP confiable,
             valuar con config stale (default 1415) corrompería TODA la serie de
@@ -1047,7 +1047,23 @@ def run_daily_snapshot(
     Returns:
         dict resumen: {users_processed, ok, failed, target_date, errors}
     """
-    target = target_date or datetime.utcnow().strftime('%Y-%m-%d')
+    # ⚠️ EL DÍA ARGENTINO, NO EL UTC.
+    #
+    # Este job corre a las 02:59 UTC *a propósito*: eso es 23:59 en Buenos
+    # Aires, o sea el cierre del día que el usuario acaba de terminar de vivir.
+    # Con `utcnow()` la etiqueta decía el día SIGUIENTE, y la serie entera
+    # quedaba corrida: el cierre del viernes archivado como sábado.
+    #
+    # No era cosmético — el desfasaje llegaba al borde de todos los períodos.
+    # Medido: el reporte de septiembre arrancaba en el cierre del 30 de agosto
+    # (una rueda de más adentro del mes) y el reporte anual de 2026 cerraba con
+    # la rueda del 30 de diciembre, porque el cierre real del 31 quedaba
+    # etiquetado 2027-01-01, fuera del período.
+    #
+    # La conversión existía desde 2026-05-31 en `take_snapshot_for_user`, pero
+    # como este runner siempre pasa `target` no-None, esa rama nunca corrió.
+    # Un fix escrito y no propagado: la causa raíz más frecuente del repo.
+    target = target_date or hoy_art()
     log.info(f"Iniciando daily snapshot job para fecha={target}")
 
     tc_blue = None
