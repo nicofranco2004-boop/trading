@@ -333,6 +333,12 @@ export default function PositionsMobile() {
       exit_price: +sellForm.exit_price,
       date: sellForm.date,
       commissions: sellForm.commissions !== '' ? +sellForm.commissions : 0,
+      // Moneda de la venta → el FIFO consume SOLO lotes de esa moneda. Mobile no
+      // la mandaba y el backend caía a la del broker (back-compat), así que un
+      // lote en pesos alojado en una cuenta en dólares consumía los lotes de la
+      // otra moneda. Desktop sí la manda desde siempre: misma venta, dos
+      // resultados según el aparato. `sellForm.currency` sale de `sellCurrency`.
+      currency: sellForm.currency === 'ARS' ? 'ARS' : 'USD',
       ...(sellForm.currency === 'ARS' && sellForm.tc_venta ? { tc_venta: +sellForm.tc_venta } : {}),
     }
     if (!body.quantity || body.quantity <= 0) {
