@@ -252,19 +252,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             cf = float(r["capital_final"] or 0)
             dep = float(r["deposits"] or 0)
             wd = float(r["withdrawals"] or 0)
-            # ⚠️ EL MES DE ALTA NO SE MIDE, y `dietz` NO lo cubre: sólo corta cuando el
-            # denominador es <= 0, y con ci=0 más un depósito queda en 0,5·flujo. Ver
-            # el porqué (y el 23,71 % contra 20,10 % medido) en `twr.tramos`.
-            if ci <= 0:
-                continue
-            # Retorno mensual aislando flujos, con el primitivo canónico.
-            # El denominador es `ci + 0,5·flujo` (Modified Dietz), no `ci`: el aporte
-            # entró a mitad del mes, no el día 1. Con `/ci` el mismo mes daba +10,0 %
-            # donde el motor mide +6,67 % — a doce meses, +213,8 % contra +116,9 %.
-            # `twr.dietz` es EL primitivo: si acá se vuelve a escribir la cuenta,
-            # vuelve a haber dos motores. Devuelve None cuando el denominador no da
-            # para medir (un retiro que se lleva casi todo el capital).
-            ret = _twr.dietz(ci, cf, dep - wd)
+            # El retorno del mes, con SUS DOS GUARDS, en un solo lugar: el mes de
+            # alta no se mide y el denominador lleva el 0,5 del flujo. Escribir la
+            # cuenta acá es volver a tener dos motores — con `/ci` este mismo mes
+            # daba +10,0 % donde el motor mide +6,67 % (+213,8 % contra +116,9 % a
+            # doce meses). Ver `twr.retorno_mensual`.
+            ret = _twr.retorno_mensual(ci, cf, dep - wd)
             if ret is None:
                 continue
             # Cap defensivo a ±200% por mes — algo absurdo y rompería compound

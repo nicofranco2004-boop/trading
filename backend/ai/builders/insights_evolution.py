@@ -55,15 +55,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         cf = float(r["capital_final"] or 0)
         dep = float(r["deposits"] or 0)
         wd = float(r["withdrawals"] or 0)
-        # ⚠️ EL MES DE ALTA NO SE MIDE, y `dietz` NO lo cubre: sólo corta cuando el
-        # denominador es <= 0, y con ci=0 más un depósito queda en 0,5·flujo. Ver
-        # el porqué (y el 23,71 % contra 20,10 % medido) en `twr.tramos`.
-        if ci <= 0:
-            continue
-        # Mismo primitivo que el resto de la app: el denominador lleva el 0,5 del
-        # flujo (Modified Dietz). Con `/ci`, un mes con un aporte grande publicaba
-        # +10,0 % donde el motor mide +6,67 %. Ver `twr.dietz`.
-        ret = _twr.dietz(ci, cf, dep - wd)
+        # El retorno del mes con sus dos guards (el mes de alta no se mide; el
+        # denominador lleva el 0,5 del flujo). Ver `twr.retorno_mensual`.
+        ret = _twr.retorno_mensual(ci, cf, dep - wd)
         if ret is None:
             continue
         if ret < -0.95 or ret > 5:

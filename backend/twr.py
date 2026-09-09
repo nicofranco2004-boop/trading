@@ -576,6 +576,31 @@ def dietz(v0: float, v1: float, flow: float):
     return max((v1 - v0 - flow) / denom, -1.0)
 
 
+def retorno_mensual(ci, cf, flujo):
+    """El retorno de UN MES de `monthly_entries`, con sus DOS guards.
+
+    Existe porque el guard y el primitivo responden preguntas distintas y hay
+    cinco lectores que necesitan las dos:
+
+      ¿este mes SE MIDE?          → `capital_inicio > 0`. El mes de alta no se
+        mide: con ci = 0 el denominador queda en 0,5·flujo y el 0,5 del Dietz
+        INFLA el mes (medido: 23,71 % reportado contra 20,10 % real). Es la misma
+        regla que `tramos`, que arranca en el primer mes calendario completo.
+
+      ¿el DENOMINADOR da?         → `dietz`, que corta en <= 0.
+
+    ⚠️ EL PRIMERO NO SALE DEL SEGUNDO. `0,5·flujo` es positivo, así que `dietz`
+    mide feliz el mes de alta. Cuando los cinco lectores pasaron de su cuenta a
+    mano al primitivo, dar por cubierto el `ci > 0` los hacía publicar ese mes
+    inflado. Por eso los dos guards viven acá y no en cada llamador.
+
+    Devuelve None cuando el mes no se publica. `flujo` es depósitos − retiros.
+    """
+    if not ci or ci <= 0:
+        return None
+    return dietz(ci, cf, flujo)
+
+
 # ─── La cota de cordura de UN leg ────────────────────────────────────────────
 #
 # Medido sobre la copia de producción del 2026-08-16 (AUDIT_benchmark_2026-09-01):

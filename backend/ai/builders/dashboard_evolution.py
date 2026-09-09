@@ -111,15 +111,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             ci = m.get("capital_inicio") or 0
             cf = m.get("capital_final") or 0
             net = (m.get("deposits") or 0) - (m.get("withdrawals") or 0)
-            # ⚠️ EL MES DE ALTA NO SE MIDE, y `dietz` NO lo cubre: sólo corta cuando el
-            # denominador es <= 0, y con ci=0 más un depósito queda en 0,5·flujo. Ver
-            # el porqué (y el 23,71 % contra 20,10 % medido) en `twr.tramos`.
-            if ci <= 0:
-                continue
-            # Mismo primitivo que el resto de la app (`twr.dietz`): el denominador
-            # lleva el 0,5 del flujo. Con `/ci` el "mejor mes" podía ser el mes en
-            # que entró un depósito grande, no el mes en que la cartera rindió.
-            ret = _twr.dietz(ci, cf, net)
+            # El MISMO retorno que publican los otros cuatro lectores, con sus dos
+            # guards. Con `/ci` el "mejor mes" podía ser el mes en que entró un
+            # depósito grande, no el mes en que la cartera rindió.
+            ret = _twr.retorno_mensual(ci, cf, net)
             if ret is not None:
                 ret = max(-0.95, min(5.0, ret))
                 scored.append((f"{m['year']}-{m['month']:02d}", ret))

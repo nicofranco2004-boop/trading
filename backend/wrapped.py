@@ -73,14 +73,7 @@ def _retornos_mensuales(rows: List[dict]) -> List[tuple]:
         ci = r.get('capital_inicio') or 0
         cf = r.get('capital_final') or 0
         net = (r.get('deposits') or 0) - (r.get('withdrawals') or 0)
-        # ⚠️ EL MES DE ALTA NO SE MIDE. Con `capital_inicio = 0` el denominador
-        # queda en 0,5·flujo y ahí el 0,5 del Dietz INFLA el mes (el motor lo
-        # midió: 23,71 % contra 20,10 % real; `twr.tramos` arranca recién en el
-        # primer mes calendario completo). El guard ya estaba y se conserva:
-        # `dietz` sólo corta cuando el denominador es <= 0, y éste da positivo.
-        if ci <= 0:
-            continue
-        ret = _twr.dietz(ci, cf, net)
+        ret = _twr.retorno_mensual(ci, cf, net)
         if ret is not None:
             out.append((r, ret))
     return out

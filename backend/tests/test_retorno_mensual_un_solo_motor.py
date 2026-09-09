@@ -35,8 +35,33 @@ from ai.builders import insights, insights_evolution, reports, dashboard_evoluti
 
 # El mes del audit.
 CI, CF, DEP = 1000.0, 2100.0, 1000.0
-ESPERADO_PCT = round(_twr.dietz(CI, CF, DEP) * 100, 2)      # 6.67
+ESPERADO_PCT = round(_twr.retorno_mensual(CI, CF, DEP) * 100, 2)   # 6.67
 VIEJO_PCT = round((CF - CI - DEP) / CI * 100, 2)            # 10.0
+
+
+class TestNingunLectorReimplementaLaRegla(unittest.TestCase):
+    """Sólo lee código fuente: sin DB, sin usuarios (ver la clase gemela
+    en test_advisor_plan.py)."""
+
+    def test_ningun_lector_reimplementa_la_regla(self):
+        """El guard `ci > 0` vive en `twr.retorno_mensual`, no copiado en cada uno.
+
+        Es la regla 2 del CLAUDE.md: si el mismo cálculo existe en más de un
+        lugar, la respuesta no es arreglar los dos — es que haya uno solo.
+        """
+        import re, pathlib
+        raiz = pathlib.Path(__file__).resolve().parent.parent
+        lectores = ["wrapped.py", "ai/builders/insights.py",
+                    "ai/builders/insights_evolution.py", "ai/builders/reports.py",
+                    "ai/builders/dashboard_evolution.py"]
+        for rel in lectores:
+            txt = (raiz / rel).read_text(encoding="utf-8")
+            self.assertIn("_twr.retorno_mensual(", txt, f"{rel} no usa el helper")
+            # Ni la cuenta a mano ni el primitivo pelado (que se saltea el guard).
+            self.assertNotIn("_twr.dietz(", txt, f"{rel} llama al primitivo sin el guard")
+            self.assertIsNone(
+                re.search(r"\(\s*cf\s*-\s*ci\s*-\s*net\s*\)\s*/", txt),
+                f"{rel} volvió a escribir la cuenta a mano")
 
 
 class TestElMesDeAltaNoSeMide(unittest.TestCase):
@@ -52,7 +77,11 @@ class TestElMesDeAltaNoSeMide(unittest.TestCase):
     """
 
     def test_dietz_sí_mide_ese_mes_y_por_eso_hace_falta_el_guard(self):
+        # `dietz` solo: mide feliz, porque 0,5·flujo es un denominador positivo.
         self.assertIsNotNone(_twr.dietz(0, 1200, 1000))
+        # `retorno_mensual`: los DOS guards, en un solo lugar para los 5 lectores.
+        self.assertIsNone(_twr.retorno_mensual(0, 1200, 1000))
+        self.assertIsNone(_twr.retorno_mensual(None, 1200, 1000))
 
     def test_ningun_lector_publica_el_mes_de_alta(self):
         import wrapped
