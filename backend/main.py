@@ -6043,8 +6043,8 @@ def get_popular_events(
     if days <= 0 or days > 365:
         raise HTTPException(422, "days debe estar entre 1 y 365")
 
-    today = datetime.utcnow().strftime('%Y-%m-%d')
-    end_date = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%d')
+    today = _iso_today()
+    end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
 
     conn = get_db()
     try:
@@ -6215,8 +6215,8 @@ def _has_events_for_tickers(conn, tickers: list, days: int = 90) -> bool:
     """Quick check: ¿hay eventos en DB para alguno de esos tickers en ventana?"""
     if not tickers:
         return False
-    today = datetime.utcnow().strftime('%Y-%m-%d')
-    end_date = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%d')
+    today = _iso_today()
+    end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
     placeholders = ','.join('?' for _ in tickers)
     row = conn.execute(
         f"SELECT 1 FROM financial_events WHERE ticker IN ({placeholders}) "
@@ -6330,8 +6330,8 @@ def get_portfolio_events(
                 pass
 
         # Query: eventos próximos para los tickers del portfolio
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        end_date = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%d')
+        today = _iso_today()
+        end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
         if not stock_tickers:
             return {'events': [], 'refreshed_tickers': 0}
 
@@ -8510,8 +8510,9 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     reusarlo desde la operación grupal del Plan Asesor. NO abre transacción ni
     conexión: el caller decide el alcance del `with conn` (una posición suelta
     o un lote de N clientes). Devuelve la row insertada."""
-    # Auto-fill entry_date a hoy si no viene del cliente
-    entry_date = p.entry_date or datetime.utcnow().strftime("%Y-%m-%d")
+    # Auto-fill entry_date a hoy (ARGENTINO) si no viene del cliente. Con UTC,
+    # una posición dada de alta a las 22:00 nacía fechada mañana.
+    entry_date = p.entry_date or _iso_today()
     # Moneda nativa del lote: explícita del form, o inferida del broker
     # (ARS si el broker es ARS, USD si es el sub-broker '· USD'/USDT). Sin
     # esto los lotes manuales quedaban NULL y se mezclaban ARS+USD en el FIFO.
@@ -9643,7 +9644,7 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
         if interes > 0:
             from datetime import datetime as _dt_op
             moneda = (row["moneda"] or "ARS").upper()
-            _fecha_op = _dt_op.utcnow().strftime('%Y-%m-%d')
+            _fecha_op = _iso_today()
             # ⚠️ EN PESOS ESTA FILA NACÍA CON `fx_to_usd = NULL`, y sin el TC
             # sellado NINGÚN lector puede convertirla: `realized_usd` exige
             # `fx > 0` y cae al valor crudo. O sea el interés en pesos se leía
@@ -11394,7 +11395,7 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                     from_curr, to_curr = 'USDT', 'ARS'
 
                 # 2. Registrar operación tipo CONVERSION en el log de operations
-                op_date = data.date or datetime.utcnow().strftime('%Y-%m-%d')
+                op_date = data.date or _iso_today()
                 op_type = f"CONVERSION {data.kind} {from_curr}→{to_curr}"
                 pnl_pct = None
                 if data.direction == 'usd_to_ars' and data.usd_amount > 0:
@@ -11637,7 +11638,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 if data.quantity > total + 1e-9:
                     raise HTTPException(400, f"Cantidad solicitada ({data.quantity}) excede el total disponible ({total})")
 
-                op_date = data.date or datetime.utcnow().strftime("%Y-%m-%d")
+                op_date = data.date or _iso_today()
                 remaining = data.quantity
                 ops_created = []
                 total_pnl_usd = 0.0          # "true USD" P&L → goes to monthly_entries global
@@ -13390,7 +13391,7 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
             _repair_monthly_chain(conn, uid, b)
     _repair_monthly_chain(conn, uid, "global")
     _recalc_pnl_realized_from_ops(conn, uid)
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _iso_today()
     if since_date:
         conn.execute(
             """DELETE FROM snapshots
@@ -17772,7 +17773,10 @@ def admin_cleanup_future_snapshots(apply: bool = False,
     """
     conn = get_db()
     try:
-        hoy = datetime.utcnow().date().isoformat()
+        # Día argentino: con UTC, el detector de snapshots con fecha futura no
+        # veía los que están fechados justo un día adelante — que son los que
+        # busca.
+        hoy = _iso_today()
         futuros = conn.execute(
             "SELECT user_id, COUNT(*) n, MIN(date) d0, MAX(date) d1 FROM snapshots "
             "WHERE date > ? GROUP BY user_id ORDER BY n DESC", (hoy,)).fetchall()
@@ -20879,7 +20883,7 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
     # revés, un wipe corrido justo un día de cierre de mes borraría el month-end
     # legítimo recién recreado, dejando un hueco permanente en "Evolución".
     try:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = _iso_today()          # la fila a borrar la escriben cron/browser en ART
         with conn:
             conn.execute(
                 "DELETE FROM snapshots WHERE user_id=? AND date=?", (uid, today),
@@ -21841,6 +21845,12 @@ def _record_tool_usage(uid: int, tool_name: str) -> None:
     try:
         conn = get_db()
         try:
+            # ⚠️ SE DEJA EN UTC A PROPÓSITO (audit F3). No es un día calendario
+            # del usuario: es la ventana de una CUOTA, y su lector (`ai/quota.py`)
+            # cuenta con `date.today()`, que en Railway también es UTC. Pasar uno
+            # solo a hora argentina desalinea escritura y lectura, y eso le da a
+            # alguien un día de más o de menos de cuota. Los dos se mueven juntos
+            # o no se mueve ninguno — y eso hay que medirlo antes, no de paso.
             today = datetime.utcnow().strftime('%Y-%m-%d')
             conn.execute(
                 """INSERT INTO ai_tool_usage(user_id, date, tool_name, count)
@@ -24423,7 +24433,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # el de hoy'). Un tc del usuario ADEMÁS habilita conversiones
             # retroactivas (el server ya no tiene que adivinar el MEP viejo).
             # date_is_today se computa más abajo — acá lo derivamos inline
-            _today_iso_c = datetime.utcnow().strftime("%Y-%m-%d")
+            _today_iso_c = _iso_today()   # el mismo `hoy` que el guard de más abajo
             _date_c = str(fields.get("date") or "").strip() or _today_iso_c
             _has_tc = _num_or_none(fields.get("tc")) is not None
             _tc_today = (str(fields.get("price_source") or "").lower() == "market_today"
@@ -31989,7 +31999,7 @@ def _wallbit_reconcile_positions(conn, uid: int, holdings, cash_usd):
     from datetime import datetime
     if not holdings and cash_usd is None:
         return {"seeded": 0, "reduced": 0}
-    seed_date = datetime.utcnow().strftime("%Y-%m-%d")
+    seed_date = _iso_today()
     snap = _import_tenencia.TenenciaSnapshot(holdings=holdings, date=seed_date, cash_usd=cash_usd)
     with conn:
         pair = broker_pair(conn, uid, "Wallbit")
@@ -34448,9 +34458,14 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
             sets.append("armed=1")
         if not sets:
             return {"ok": True, "unchanged": True}
-        params.append(alert_id)
+        params.extend([alert_id, uid])
         with conn:
-            conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", params)
+            # El user_id va en la sentencia que PRODUCE el efecto, no sólo en el
+            # SELECT de arriba. Hoy el SELECT ya blinda esto, pero un `WHERE id=?`
+            # pelado depende de que nadie mueva ese chequeo nunca — es la
+            # convención del resto del repo, no un cinturón de más.
+            conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=? AND user_id=?",
+                         params)
         return {"ok": True}
     finally:
         conn.close()
@@ -34458,9 +34473,20 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
 
 @app.delete("/api/alerts/{alert_id}")
 def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
-    """Borra una alerta (y sus eventos)."""
+    """Borra una alerta (y sus eventos).
+
+    El chequeo de dueño va PRIMERO y corta con 404, igual que el PATCH de acá
+    arriba. No es una formalidad: `alert_symbol_state` está tipada por
+    (alert_id, symbol) y NO tiene user_id, así que su DELETE no puede filtrar
+    por dueño ni aunque quiera. Sin esta guarda, cualquiera iteraba ids ajenos
+    y le reseteaba el edge-trigger a las alertas de otro → la víctima recibía
+    push y mails repetidos desde la infra de Rendi. Los otros dos DELETE ya
+    filtraban; el fix estaba escrito 2 de 3 veces."""
     conn = get_db()
     try:
+        if not conn.execute("SELECT 1 FROM alerts WHERE id=? AND user_id=?",
+                            (alert_id, uid)).fetchone():
+            raise HTTPException(404, "Alerta no encontrada.")
         with conn:
             conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
             conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
@@ -36238,8 +36264,8 @@ def advisor_radar_events(days: int = 90, uid: int = Depends(get_current_user)):
             except Exception:
                 pass
 
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        end_date = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%d')
+        today = _iso_today()
+        end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
         placeholders = ','.join('?' for _ in stock_tickers)
         rows = conn.execute(
             f"""SELECT ticker, event_type, event_date, details, confirmed, source

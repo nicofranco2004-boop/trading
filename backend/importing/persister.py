@@ -1759,9 +1759,12 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
         )
     else:
         # Batch sin fechas (raro) → al menos descartar el intradiario de hoy.
+        # Día ARGENTINO: es la fecha con la que el cron y el browser escriben esa
+        # fila, así que con UTC este DELETE apuntaba a una fecha que no existe.
+        from fechas import hoy_art
         conn.execute(
             "DELETE FROM snapshots WHERE user_id=? AND date=?",
-            (uid, datetime.utcnow().strftime("%Y-%m-%d")),
+            (uid, hoy_art()),
         )
     _backfill_snapshots_from_monthly(conn, uid)
 
