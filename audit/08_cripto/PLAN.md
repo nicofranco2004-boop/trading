@@ -62,6 +62,15 @@ en rojo, sacar la conversión de moneda 1, y sacar el guard 1. Hay una prueba de
 invariante que se rompió: la clave con la que se PIDEN los precios y la que el
 prefill LEE tienen que ser la misma.
 
+### A-1b · Y el mismo modal tenía un segundo defecto, en el envío — ✅ ARREGLADO
+
+`confirmSell` de mobile no mandaba la moneda de la venta. El backend la declara
+opcional y sin ella cae a la moneda del BROKER por compatibilidad hacia atrás,
+así que un lote comprado EN PESOS alojado en una cuenta en dólares se vendía
+contra los lotes de la otra moneda: el FIFO cierra lo que no es. Desktop la
+mandaba desde siempre. Ahora sale del mismo helper que el prefill, y el cuerpo
+de la venta quedó idéntico campo por campo entre las dos pantallas.
+
 ## A-2 · Un retiro de cripto puede quedar registrado como pérdida total
 
 **LEÍDO**, alcance **A CONFIRMAR**. `backend/importing/rebuild.py:456`:
