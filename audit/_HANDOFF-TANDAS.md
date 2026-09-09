@@ -413,6 +413,16 @@ Dependen de la cadena que las tandas modifican; auditarlas ahora produce veredic
 
 ## 7. Lo que depende del founder, no del código
 
+> **Actualización 2026-09-09:** medir el alcance ya no requiere `railway ssh` ni instalar nada.
+> Hay un botón en el panel de admin — **"Alcance real de la auditoría" → "Medir alcance"** —
+> que corre las 13 consultas y devuelve cada número como una pregunta en castellano con su
+> veredicto (urgente / mirar / sin caso). Es `GET /api/admin/alcance-auditoria`, solo lectura y
+> sólo agregados, con un guard que se niega a correr si el `.sql` deja de ser seguro. Railway no
+> tiene consola web para un servicio (su dashboard sólo COPIA el comando SSH), así que el
+> "hacerlo desde el navegador" es esto. El script `1a-medir-alcance.py` queda para copias locales
+> y lee el MISMO `.sql` (antes tenía una copia embebida que ya había divergido).
+
+
 1. **Medir el alcance en producción.** 13 consultas de SOLO LECTURA que devuelven únicamente
    agregados, y un script autocontenido que las corre: `audit/01_calculos/1a-medir-alcance.py`.
    Producción es **SQLite** → usá `1a-alcance-produccion-sqlite.sql`, **no** la versión Postgres
