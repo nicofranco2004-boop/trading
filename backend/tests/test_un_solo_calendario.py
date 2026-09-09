@@ -183,5 +183,53 @@ class ElPeriodoEnCursoTerminaCuandoTerminaEnArgentina(unittest.TestCase):
             "month", "2026-08-01", "2026-08-31", today=date(2026, 8, 16)))
 
 
+class LoQuePERSISTEUsaElDiaArgentino(unittest.TestCase):
+    """Los tres relojes que escribían o validaban filas de verdad.
+
+    El "hoy" mal calculado duele distinto según dónde esté. En una pantalla se
+    corrige el día que se toca el código; en una fila persistida queda. Estos
+    tres escriben:
+
+      · el guard de fecha futura del cobro — el que existe porque un usuario
+        cargó 25 cupones de AL35 fechados en 2027 y metió US$ 3,9M fantasma;
+      · el default de fecha y el guard de `register_trade`, o sea lo que el
+        chat de la IA persiste cuando alguien dicta una operación;
+      · el "HOY es …" del prompt, con el que el modelo resuelve "ayer".
+
+    Y estaban escritos con DOS relojes distintos para la MISMA regla:
+    `date.today()` en uno y `datetime.utcnow()` en el otro. De 21:00 a 23:59 ART
+    los dos ya están en mañana, así que el guard aceptaba justamente las fechas
+    futuras que existe para frenar — en la misma franja en la que el frontend las
+    ofrecía por defecto.
+    """
+
+    def test_el_prompt_de_la_ia_recibe_el_dia_argentino(self):
+        import re
+        ruta = os.path.join(BACKEND, "main.py")
+        with open(ruta, encoding="utf-8") as fh:
+            txt = fh.read()
+        m = re.search(r'_today_line = f"HOY es \{([^}]+)\}\."', txt)
+        self.assertIsNotNone(m, "no encontré la línea `HOY es` del prompt")
+        self.assertIn("_iso_today", m.group(1),
+                      "el modelo resuelve 'ayer' con esto y después lo escribe")
+
+    def test_los_guards_de_fecha_futura_usan_el_mismo_reloj(self):
+        """Dos guards para la misma regla no pueden decidir con relojes distintos."""
+        import re
+        ruta = os.path.join(BACKEND, "main.py")
+        with open(ruta, encoding="utf-8") as fh:
+            lineas = fh.readlines()
+        sospechosas = [
+            f"main.py:{n}: {l.strip()}"
+            for n, l in enumerate(lineas, 1)
+            if re.search(r"(>|>=)\s*(date\.today\(\)\.isoformat\(\)"
+                         r"|datetime\.utcnow\(\)\.strftime)", l)
+        ]
+        self.assertEqual(
+            sospechosas, [],
+            "Un guard de fecha futura decidiendo con un reloj que no es el "
+            "argentino. Usá `_iso_today()`:\n  " + "\n  ".join(sospechosas))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10822,7 +10822,11 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
         # fecha que no existió) → +US$3,9M de "P&L realizado", un mes 2027 en
         # monthly_entries y el Dashboard con +US$500k. Se rechaza acá y no solo en el
         # frontend: el chat de la IA y cualquier cliente viejo pasan por este endpoint.
-        if data.date[:10] > date.today().isoformat():
+        # ⚠️ EL DÍA ARGENTINO. `date.today()` es la hora local del PROCESO: en
+        # Railway, UTC. De 21:00 a 23:59 de acá ese reloj ya está en mañana, así
+        # que el guard aceptaba justo las fechas futuras que existe para frenar
+        # —y en la misma franja en la que el frontend las ofrecía por defecto.
+        if data.date[:10] > _iso_today():
             raise HTTPException(400,
                 "La fecha del cobro no puede ser futura. Los cupones se registran cuando "
                 "los cobrás; el próximo pago del cronograma es solo una estimación.")
@@ -24519,7 +24523,10 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                             "o registrá el retiro y el depósito por separado con cada monto."
                         )}
 
-        today_iso = datetime.utcnow().strftime("%Y-%m-%d")
+        # Día argentino: de acá salen el DEFAULT de fecha de la operación y el
+        # guard de "no futura", los dos sobre filas que se persisten. Con UTC,
+        # una operación registrada por chat a las 22:00 nacía fechada mañana.
+        today_iso = _iso_today()
         date = str(fields.get("date") or "").strip() or today_iso
         if not _DATE_RE.match(date):
             _TRADE_DRAFT.pop(uid, None)
@@ -29206,7 +29213,10 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # La fecha de HOY va en el contexto: sin esto el modelo no puede resolver
     # fechas relativas ('ayer hice un depósito') y las inventaba de su prior
     # (caso real: 'AYER' → 2025-01-08, año equivocado, mensual mal bookeado).
-    _today_line = f"HOY es {datetime.utcnow().strftime('%Y-%m-%d')}."
+    # En día ARGENTINO: el modelo resuelve fechas relativas con esto y después
+    # las escribe (`register_trade`). Con UTC, de 21:00 a 23:59 "hoy" y "ayer"
+    # salían corridos un día y la fila quedaba persistida así.
+    _today_line = f"HOY es {_iso_today()}."
     _ctx_title = "CONTEXTO DE TU LIBRO (todas las carteras de tus clientes)" if book_mode \
         else "CONTEXTO DE TU CARTERA (snapshot del momento)"
     context_block_text = f"""--- {_ctx_title} ---
