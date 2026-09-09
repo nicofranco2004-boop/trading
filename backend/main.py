@@ -10527,8 +10527,15 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
                 # el TC que corresponde es el de ese mes. Sin historia, el ajuste es
                 # de AHORA — usar el día 1 del mes en curso daría una cotización de
                 # hasta 27 días atrás.
-                _ref_date = (datetime.utcnow().strftime('%Y-%m-%d') if sin_historia
-                             else f"{target_year:04d}-{target_month:02d}-01")
+                # ⚠️ EL DÓLAR DE HOY, SIEMPRE — también con historia. El razonamiento
+                # de arriba ("el ajuste es plata anterior al CSV, va al dólar de ese
+                # mes") confunde unidades: la diferencia es entre PESOS DE HOY (lo
+                # que dice el broker) y pesos de hoy (lo que calculó la app). En 2021
+                # esa misma plata eran 9 veces menos pesos; dolarizar pesos de 2026
+                # al dólar de 2021 la multiplica por 9. Medido en el preview de la
+                # reparación de A-6: "retiros US$ 84 → 781". El mes al que se anota
+                # es una convención de dónde ponerla; el monto es de hoy.
+                _ref_date = _iso_today()
                 _rate = _manual_flow_rate(conn, uid, _ref_date, data.tc_blue)
                 amount_usd = magnitude / _rate if _rate else magnitude
             else:
@@ -18842,23 +18849,27 @@ def _repair_interes_pf(conn, apply: bool) -> dict:
             "usd_reales": round(sum(c["queda_en_usd"] for c in cambios), 2)}
 
 
+RECONCILE_CASH_NACIO = "2026-05-13"   # commit def52782: antes no existía la función
+
+
 def _repair_caja_1415(conn, apply: bool) -> dict:
     """Re-dolariza los flujos manuales de caja que quedaron al 1.415 fijo.
 
-    `reconcile-cash` dividía los pesos por un `Field(1415)` literal que su único
-    caller nunca mandaba (A-6, arreglado en F1). Medido en prod: 22 meses, 21
-    usuarios, US$779.200 registrados con ese dólar — cada uno con ~7 % de capital
-    que nunca existió. Se detectan por la firma: `native / usd ≈ 1415.0`.
+    `reconcile-cash` dividía los pesos por un `Field(1415)` literal (A-6). Medido
+    en prod: 43 meses (depósitos + retiros), 41 usuarios.
 
-    Se re-dolariza con `_manual_flow_rate` sobre el día 1 del mes — EXACTAMENTE lo
-    que hace hoy reconcile-cash, no un criterio nuevo — y después corre
-    `_recalc_pnl_realized_from_ops`, que es autoritativo: reconstruye
-    `deposits = importados + manual_deposits`, recompone la fila `global` como
-    Σ(por broker) y rehace la cadena de `capital_final`. Por eso se tocan sólo
-    las filas por broker: la global la rearma el recálculo.
+    ⚠️ CON QUÉ DÓLAR. Los pesos son de la FECHA EN QUE SE RECONCILIÓ ("lo que dice
+    el broker hoy"), pero la fila se anota en el mes MÁS VIEJO del broker. Usar el
+    dólar del mes anotado —lo que hacía la primera versión de esto— infla hasta 9×
+    las filas anotadas en 2021-2023 (preview: "retiros US$ 84 → 781"). La fecha de
+    reconciliación no se guardó; se reconstruye del lote de importación confirmado
+    de ese usuario+broker (la reconciliación es el paso siguiente del importador,
+    su ÚNICO caller), nunca anterior al nacimiento de la función. Sin lote, la
+    fila se lista como `sin_fecha` y NO se toca.
 
-    Idempotente: después de corregir, la firma 1415 desaparece. Si el dólar real
-    del mes fuera 1415 (no pasa), la fila se lista como `ya_correcta` y no se toca.
+    Después corre `_recalc_pnl_realized_from_ops` (autoritativo: deposits =
+    importados + manual, global = Σ por broker, cadena de capital). Idempotente:
+    tras corregir, la firma 1415 desaparece.
     """
     filas = conn.execute(
         """SELECT id, user_id, year, month, broker,
@@ -18871,21 +18882,33 @@ def _repair_caja_1415(conn, apply: bool) -> dict:
                 OR (COALESCE(manual_withdrawals,0) > 0 AND COALESCE(manual_withdrawals_native,0) > 0
                     AND ABS(manual_withdrawals_native / manual_withdrawals - 1415.0) < 0.5))
             ORDER BY year, month""").fetchall()
-    cambios, ya_ok, usuarios = [], [], set()
+    cambios, sin_fecha, ya_ok, usuarios = [], [], [], set()
+    d_dep = d_wd = 0.0
     for r in filas:
-        ref = f"{int(r['year']):04d}-{int(r['month']):02d}-01"
-        rate = _manual_flow_rate(conn, r["user_id"], ref)
-        item = {"id": r["id"], "mes": ref[:7], "broker": r["broker"], "tc_nuevo": round(rate, 2)}
+        lote = conn.execute(
+            """SELECT substr(COALESCE(confirmed_at, created_at),1,10) AS f FROM import_batches
+                WHERE user_id=? AND broker=? AND status='confirmed'
+                  AND substr(COALESCE(confirmed_at, created_at),1,10) >= ?
+                ORDER BY COALESCE(confirmed_at, created_at) DESC LIMIT 1""",
+            (r["user_id"], r["broker"], RECONCILE_CASH_NACIO)).fetchone()
+        item = {"id": r["id"], "mes": f"{int(r['year']):04d}-{int(r['month']):02d}",
+                "broker": r["broker"]}
+        if not lote:
+            sin_fecha.append(item); continue
+        rate = _manual_flow_rate(conn, r["user_id"], lote["f"])
+        item.update(reconciliado_el=lote["f"], tc_nuevo=round(rate, 2))
         if not rate or abs(rate - 1415.0) < 0.5:
             ya_ok.append(item); continue
         sets, args = [], []
-        for col, nat in (("manual_deposits", "manual_deposits_native"),
-                         ("manual_withdrawals", "manual_withdrawals_native")):
+        for col, nat, signo in (("manual_deposits", "manual_deposits_native", 1),
+                                ("manual_withdrawals", "manual_withdrawals_native", -1)):
             usd, pesos = float(r[col] or 0), float(r[nat] or 0)
             if usd > 0 and pesos > 0 and abs(pesos / usd - 1415.0) < 0.5:
                 nuevo = round(pesos / rate, 2)
                 item[col] = {"pesos": round(pesos, 2), "usd_antes": round(usd, 2),
-                             "usd_despues": nuevo, "diferencia": round(nuevo - usd, 2)}
+                             "usd_despues": nuevo}
+                if signo > 0: d_dep += nuevo - usd
+                else:         d_wd  += nuevo - usd
                 sets.append(f"{col}=?"); args.append(nuevo)
         item["_sql"] = (sets, args)
         cambios.append(item); usuarios.add(r["user_id"])
@@ -18899,10 +18922,11 @@ def _repair_caja_1415(conn, apply: bool) -> dict:
                 _recalc_pnl_realized_from_ops(conn, u)
     for c in cambios:
         c.pop("_sql", None)
-    dif = sum(v["diferencia"] for c in cambios for k, v in c.items()
-              if k in ("manual_deposits", "manual_withdrawals"))
-    return {"applied": bool(apply), "meses_a_corregir": cambios, "ya_correctas": ya_ok,
-            "usuarios": len(usuarios), "capital_fantasma_usd": round(-dif, 2)}
+    # Capital aportado = depósitos − retiros: el cambio neto es Δdep − Δret.
+    return {"applied": bool(apply), "meses_a_corregir": cambios, "sin_fecha": sin_fecha,
+            "ya_correctas": ya_ok, "usuarios": len(usuarios),
+            "cambio_capital_aportado_usd": round(d_dep - d_wd, 2),
+            "delta_depositos_usd": round(d_dep, 2), "delta_retiros_usd": round(d_wd, 2)}
 
 
 @app.post("/api/admin/repair-caja-1415")
