@@ -14,7 +14,7 @@ de reproducirse.
 
 > ### ➡️ La próxima es **F4**, y arranca con **tres decisiones tuyas** (§7).
 >
-> F3 quedó **hecha y sin deployar** — 7 commits en `fix/f2-que-no-mientan`. Antes de
+> F3 quedó **hecha y ya deployada** (ver la nota en §5-F3). Si querés entender qué cambió, antes de
 > pushear, leé «Lo que se ve el día del deploy» en §5-F3: hay **un efecto medido** que
 > conviene saber de antemano, y **una decisión tuya** sobre la serie histórica.
 
@@ -22,7 +22,7 @@ de reproducirse.
 |---|---|---|
 | **F1** | Que la app **deje de escribir mal**. Un número mal mostrado se arregla el día que se toca el código; uno mal **escrito** queda para siempre. | ✅ deployada |
 | **F2** | Que **la inteligencia artificial y las pantallas no mientan**: cuatro números que se publicaban mal hacia afuera. | ✅ deployada y **cerrada** (§4) |
-| **F3** | **Un solo calendario.** Convivían tres relojes distintos dentro del mismo endpoint. | ✅ **HECHA, sin deployar** (7 commits) |
+| **F3** | **Un solo calendario.** Convivían tres relojes distintos dentro del mismo endpoint. | ✅ **DEPLOYADA** (llegó a `main` el 2026-09-09 con los pushes de la limpieza; ver §5-F3) |
 | **F4** | Los guards que **ya están escritos** pero no llegaron a todos los lectores. | ➡️ **LA QUE SIGUE.** 3 de 6; los 3 que faltan **te esperan a vos**, no al código |
 | **F5** | **Una sola cotización y una sola política de faltantes.** | 🟡 lo más grave ✅ deployado (el CER); el resto pendiente, 4 a 6 días |
 | **F6** | **Terminar las migraciones abiertas.** Un solo motor por concepto. | ⬜ pendiente, 1 a 2 semanas |
@@ -407,7 +407,14 @@ volver a intentar.
 
 ## 5. Las tandas que siguen, en detalle
 
-### F3 — «Un solo calendario» — ✅ **HECHA, SIN DEPLOYAR** (2026-09-09)
+### F3 — «Un solo calendario» — ✅ **HECHA Y DEPLOYADA** (2026-09-09)
+
+> **Nota de coordinación (2026-09-10):** los commits de F3 se hicieron sobre `fix/f2-que-no-mientan`
+> —la misma rama y el mismo árbol que usaba la sesión de la limpieza— y salieron a `main` con uno de
+> los pushes de esa sesión el 2026-09-09, sin que ninguna de las dos lo supiera. `fb63ef1a` es
+> ancestro de `origin/main`. El efecto medido de abajo (una rueda perdida, la historia corrida un
+> día, el YTD con una rueda de más) **ya ocurrió**. Dos sesiones sobre un mismo árbol es lo que
+> hizo posible esto; conviene no repetirlo.
 
 7 commits sobre `origin/main` (`ab8ae9a5` … `f9bc43db`), rama `fix/f2-que-no-mientan`.
 Suite al terminar: **backend 4.132 en verde / 0 rojos · frontend 1.528 en verde / 0 rojos**,
