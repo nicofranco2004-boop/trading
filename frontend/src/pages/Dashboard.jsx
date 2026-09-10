@@ -38,7 +38,7 @@ import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDon
 import { computeClassBreakdown } from '../utils/assetClass'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { toDistributionAiParams } from '../utils/distributionAi'
-import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
+import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { applyMtmToMonthly } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
@@ -263,8 +263,24 @@ function PersonalDashboard() {
   }, [monthly, currency, tcValuacion, getHistoricalFx, realizedPnl])
 
   // Total return = market value vs net deposited (so deposits aren't counted as performance)
-  const totalReturnUsd = totalValue - netDeposited
-  const totalReturnPct = netDeposited > 0 ? totalReturnUsd / netDeposited : 0
+  //
+  // El DENOMINADOR no es el aportado de hoy sino el MÁXIMO histórico: con
+  // retiros grandes el de hoy se achica y el % se infla solo (50k puestos, 45k
+  // sacados, 35k de cartera daban +600 %), y si se pone negativo el call site
+  // publicaba 0 % — que no es "no sé", es "no ganaste", sobre alguien que ganó.
+  // Para quien nunca retiró el máximo ES el de hoy y el número no se mueve.
+  // Ver capitalMaximoAportado, que explica por qué el guard del gráfico (pico
+  // de la CARTERA) no se puede copiar acá.
+  //
+  // `pf.investedUsd` es el ajuste de escala: los snapshots no fotografían los
+  // plazos fijos, y `netDeposited` sí los incluye.
+  const capitalMaximo = useMemo(
+    () => capitalMaximoAportado(snapshots, netDeposited, pf.investedUsd),
+    [snapshots, netDeposited, pf.investedUsd],
+  )
+  const { usd: totalReturnUsd, pct: totalReturnPct } = retornoTotal({
+    totalValue, netDeposited, capitalMaximo,
+  })
 
   // ── Discrepancia contable ───────────────────────────────────────────────────
   // Identidad: realizedPnl + unrealizedPnl = totalReturnUsd + discrepancia
@@ -431,7 +447,10 @@ function PersonalDashboard() {
   // formateo respeta el toggle global, igual que AssetBreakdownBar.
   const compFmt = (v) => (currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v))
 
-  const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, positions: positionsForInsight }), [totalValue, netDeposited, positionsForInsight])
+  // `capitalMaximo` va también acá: la frase de arriba del Dashboard y el chip
+  // del hero son el MISMO número. Sin esto, cambiarle el denominador a uno
+  // solo dejaba dos porcentajes distintos en la misma pantalla.
+  const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, capitalMaximo, positions: positionsForInsight }), [totalValue, netDeposited, capitalMaximo, positionsForInsight])
 
   // Cobertura de precios: fracción del cost basis (no-cash, ponderado en USD)
   // que tiene un precio real. Es el guard contra snapshots subvaluados: si
@@ -667,7 +686,10 @@ function PersonalDashboard() {
 
   // Rendimiento acumulado (desde el inicio). Mismo número que el hero "Ganancia
   // total" y el KPI "Resultado total"; acá lo mostramos también por horizonte.
-  const totalVar = (totalValue > 0 && netDeposited > 0)
+  // El monto vale aunque el % no: `pct` puede venir en null y `pctSigned` ya
+  // lo muestra como "—". Antes la fila entera desaparecía cuando el aportado
+  // quedaba en cero o negativo, escondiendo también la plata, que era correcta.
+  const totalVar = totalValue > 0
     ? { usd: totalReturnUsd, pct: totalReturnPct }
     : null
 

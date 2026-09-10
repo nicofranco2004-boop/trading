@@ -304,6 +304,69 @@ function netDepositedOf(s) {
 }
 
 /**
+ * capitalMaximoAportado — el denominador estable del retorno total.
+ *
+ * EL PROBLEMA. El "+X %" del hero se calcula sobre `netDeposited`, que es
+ * "lo que pusiste MENOS lo que sacaste" AL DÍA DE HOY. Ese número se achica
+ * con cada retiro, y el porcentaje se infla solo:
+ *
+ *   pusiste 50k, sacaste 45k, hoy tenés 35k  →  30k / 5k  = +600 %
+ *   pusiste 50k, sacaste 60k, hoy tenés  5k  →  denominador NEGATIVO, y el
+ *                                                call site publicaba 0 %
+ *
+ * Ese 0 % es peor que el +600 %: no dice "no sé", dice "no ganaste nada",
+ * sobre alguien que ganó.
+ *
+ * POR QUÉ NO ES EL GUARD DE `realized%` DE MÁS ABAJO. Ese usa el PICO DE LA
+ * CARTERA (`peakValueUsd * 0.8`) y no se puede copiar acá: al que nunca retiró
+ * le rompe el número. Con 10k puestos y 30k de cartera, el pico es 30k y el
+ * +200 % real pasaría a +25 %. Arregla al que retiró y arruina al que no.
+ *
+ * LO QUE SÍ SIRVE es el pico del CAPITAL APORTADO, no el de la cartera: la
+ * mayor cantidad de plata que el usuario llegó a tener puesta. Para el que
+ * nunca retiró es exactamente `netDeposited` de hoy —el número no se mueve un
+ * decimal— y para el que retiró da la base real sobre la que trabajó.
+ *
+ * @param snapshots        la serie histórica (usa `net_deposited`, con el
+ *                         mismo fallback que el resto del archivo)
+ * @param netDepositedHoy  el aportado neto actual: es el PISO, nunca se
+ *                         devuelve menos que esto
+ * @param ajuste           lo que está en `netDepositedHoy` pero NO en los
+ *                         snapshots (el capital de plazos fijos, que el cron
+ *                         no fotografía). Se suma a cada punto histórico para
+ *                         que las dos escalas sean comparables.
+ */
+export function capitalMaximoAportado(snapshots, netDepositedHoy = 0, ajuste = 0) {
+  let max = Number.isFinite(netDepositedHoy) ? netDepositedHoy : 0
+  for (const s of (snapshots || [])) {
+    const nd = netDepositedOf(s) + (Number.isFinite(ajuste) ? ajuste : 0)
+    if (Number.isFinite(nd) && nd > max) max = nd
+  }
+  return max
+}
+
+/**
+ * retornoTotal — el "Ganancia total · +X %" del hero, en UN solo lugar.
+ *
+ * Estaba calculado a mano en dos: el chip del hero (Dashboard.jsx) y la frase
+ * "Tu cartera rinde X % desde el inicio" (insights.js). Los dos con el mismo
+ * `netDeposited`, así que al cambiarle el denominador a uno solo la misma
+ * pantalla habría mostrado dos porcentajes distintos.
+ *
+ * `pct` viene en null —no en 0— cuando no hay denominador que lo sostenga.
+ * Null es "no lo puedo calcular"; 0 es "no ganaste nada", que es otra
+ * afirmación y era falsa. Quien lo muestre tiene que decidir qué hacer con el
+ * null; el MONTO (`usd`) es siempre correcto y se publica siempre.
+ */
+export function retornoTotal({ totalValue = 0, netDeposited = 0, capitalMaximo = null } = {}) {
+  const usd = totalValue - netDeposited
+  const denom = (capitalMaximo != null && capitalMaximo > 0)
+    ? capitalMaximo
+    : (netDeposited > 0 ? netDeposited : 0)
+  return { usd, pct: denom > 0 ? usd / denom : null }
+}
+
+/**
  * computeReturnDelta
  * ──────────────────
  * Δ(Total Return) entre "hoy" y un punto de referencia, EXCLUYENDO cashflows
