@@ -614,7 +614,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
   //
   // Mirá 40 líneas más abajo antes de tocar esto. Cada punto que entra acá es:
   //   · DENOMINADOR de un período  → `period_return = pnl_t / (value_t-1 + 0.5·flows_t)`
-  //   · candidato a PICO del aportado → `if (netDep > peakNetDepUsd) …`
+  //   · candidato a PICO del aportado → sólo si trae `net_deposited` MEDIDO
   // Son exactamente las dos cosas que `esApto` protege, y son las dos que el
   // contrato de `twr.py` le prohíbe a una foto INTRADIA.
   //
