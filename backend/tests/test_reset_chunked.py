@@ -116,8 +116,11 @@ def test_suelta_el_lock_entre_tandas():
     # exacto en que antes no había ventana.
     original = main._borrar_en_chunks
 
-    def instrumentado(conn, u, tabla, where, args):
+    def instrumentado(conn, u, tabla, where, args, pausa=0.0):
         # Misma lógica que el helper real, con una sonda después de cada tanda.
+        # `pausa` existe porque el helper real la recibe (el freno entre tandas del
+        # reset de admin): si esta firma no la acepta, el doble se rompe con
+        # TypeError y el test miente diciendo que falló el lock.
         total = 0
         while True:
             with conn:

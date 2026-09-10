@@ -342,6 +342,8 @@ export default function Admin() {
 
       <RepairUserPanel toast={toast} />
 
+      <ResetUserPanel toast={toast} />
+
       <MassRepairPanel toast={toast} />
 
       {/* ── Alerta de billing: pagaron pero figuran en Free ──────────────── */}
@@ -3106,6 +3108,193 @@ function RepairUserPanel({ toast }) {
           ✅ <b>{result.email}</b>: snapshots {result.snapshots_before} → {result.snapshots_after}
           {result.corrupt_removed > 0 && ` · ${result.corrupt_removed} corruptos eliminados`}
           {result.netdep_updated > 0 && ` · ${result.netdep_updated} net_deposited corregidos`}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── ResetUserPanel — dejar la cuenta de UN usuario en cero, por email ───────
+// El botón "Empezar de cero" del propio usuario está pausado desde el 13/08: no
+// por un bug suyo, sino porque esta base tiene UN SOLO ESCRITOR y un borrado
+// masivo apretado en hora pico dejaba a TODOS con "database is locked". Acá el
+// que elige el momento sos vos, y antes de borrar se MIDE cuántas filas son.
+function ResetUserPanel({ toast }) {
+  const [email, setEmail] = useState('')
+  const [confirmar, setConfirmar] = useState('')
+  const [preview, setPreview] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [prog, setProg] = useState(null)
+  const timer = useRef(null)
+
+  useEffect(() => () => clearInterval(timer.current), [])
+
+  async function verPreview() {
+    const e = email.trim()
+    if (!e) return
+    setBusy(true); setPreview(null); setProg(null); setConfirmar('')
+    try {
+      setPreview(await api.get(`/admin/reset-user/preview?email=${encodeURIComponent(e)}`))
+    } catch (ex) {
+      toast.push('Error: ' + (ex.message || 'no se pudo consultar'), { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  function seguirProgreso(userId) {
+    clearInterval(timer.current)
+    timer.current = setInterval(async () => {
+      try {
+        const st = await api.get(`/admin/reset-user/status?user_id=${userId}`)
+        setProg(st)
+        if (st.estado !== 'corriendo') {
+          clearInterval(timer.current)
+          setBusy(false)
+          if (st.estado === 'listo') toast.push('Cuenta reseteada a cero', { type: 'success' })
+          else toast.push('El reset se cortó: ' + (st.error || ''), { type: 'error' })
+        }
+      } catch { /* un poll que falla no rompe nada: el siguiente reintenta */ }
+    }, 700)
+  }
+
+  async function resetear() {
+    const e = email.trim()
+    if (!preview || confirmar.trim().toLowerCase() !== e.toLowerCase()) return
+    if (!confirm(`ÚLTIMA CONFIRMACIÓN\n\nVas a borrar ${preview.total_filas.toLocaleString('es-AR')} filas de ${preview.usuario.email}.\n\nNO se puede deshacer. Su login y su plan pago NO se tocan.`)) return
+    setBusy(true); setProg({ estado: 'corriendo', pct: 0 })
+    try {
+      const r = await api.post('/admin/reset-user', { email: e, confirmar_email: confirmar.trim() })
+      seguirProgreso(r.user_id)
+    } catch (ex) {
+      setBusy(false); setProg(null)
+      toast.push('Error: ' + (ex.message || 'no se pudo resetear'), { type: 'error' })
+    }
+  }
+
+  const puedeBorrar = preview && confirmar.trim().toLowerCase() === email.trim().toLowerCase()
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        <Trash2 size={16} className="text-rose-500" />
+        <h2 className="font-semibold text-ink-0">Dejar una cuenta en cero</h2>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Para un usuario con datos arrastrados que no se van borrando el bróker. Le borra
+        <b> cartera, operaciones, importaciones, historial del gráfico, alertas, seguidos,
+        credenciales de brokers y preferencias</b>: queda como el día que se registró.
+        <b className="text-ink-2"> Conserva el login y el plan pago</b> (no se le corta el acceso ni
+        hay que volver a cobrarle). <b className="text-rose-500">No se puede deshacer</b> — si la
+        cuenta es grande, hacé antes el "Backup manual (S3)" de arriba. Va por tandas y con freno,
+        para no trabar la app a los demás; aun así, en una cuenta grande conviene una hora tranquila.
+        Antes de tocar nada, primero probá "Reparar histórico" — si el problema es el aportado del
+        gráfico, eso lo arregla sin borrarle la cartera.
+      </p>
+
+      <div className="flex items-center gap-2">
+        <input
+          type="email" value={email} onChange={(ev) => { setEmail(ev.target.value); setPreview(null); setProg(null) }}
+          placeholder="email del usuario" disabled={busy}
+          className="flex-1 text-sm px-3 py-2 rounded bg-bg-2 dark:bg-bg-1 border border-line/60 text-ink-0 placeholder:text-ink-3"
+        />
+        <button
+          onClick={verPreview} disabled={busy || !email.trim()}
+          className="flex items-center gap-1 text-xs px-3 py-2 rounded bg-bg-2 dark:bg-bg-1 border border-line/60 text-ink-1 hover:bg-line/30 disabled:opacity-50 flex-shrink-0"
+        >
+          <Search size={13} className={busy && !prog ? 'animate-pulse' : ''} /> Ver qué se va a borrar
+        </button>
+      </div>
+
+      {preview && (
+        <div className="space-y-3 text-xs">
+          <div className="bg-bg-1/40 border border-line/40 rounded px-3 py-2 text-ink-2">
+            <b className="text-ink-0">{preview.usuario.email}</b>
+            {preview.usuario.name ? ` · ${preview.usuario.name}` : ''} · #{preview.usuario.id} ·
+            plan <b>{PLAN_LABEL[preview.usuario.tier] || preview.usuario.tier || 'Free'}</b> ·
+            alta {(preview.usuario.created_at || '').slice(0, 10)} ·
+            último ingreso {(preview.usuario.last_login_at || '—').slice(0, 10)}
+          </div>
+
+          {preview.avisos?.length > 0 && (
+            <ul className="space-y-1">
+              {preview.avisos.map((a, i) => (
+                <li key={i} className="flex items-start gap-1.5 text-amber-600 dark:text-amber-400">
+                  <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" /> <span>{a}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div>
+            <p className="text-ink-2 mb-1">
+              Se borran <b className="tabular text-rose-500">{preview.total_filas.toLocaleString('es-AR')}</b> filas
+              {preview.total_filas === 0 && ' — esta cuenta ya está vacía.'}
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {preview.filas.map((f) => (
+                <span key={f.tabla} className="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-600 dark:text-rose-400">
+                  {f.tabla} <b className="tabular">{f.filas.toLocaleString('es-AR')}</b>
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <p className="text-ink-3">
+            Sobreviven: suscripciones <b className="tabular">{preview.protegido.suscripciones}</b> ·
+            crédito <b className="tabular">{preview.protegido.credit_ledger}</b> ·
+            notificaciones <b className="tabular">{preview.protegido.push_subscriptions}</b> ·
+            días de uso de IA <b className="tabular">{preview.protegido.uso_ia_dias}</b> · y el login.
+          </p>
+
+          {preview.tablas_ausentes?.length > 0 && (
+            <p className="text-amber-600 dark:text-amber-400">
+              No pude contar: {preview.tablas_ausentes.join(', ')} (se saltean al borrar).
+            </p>
+          )}
+
+          {preview.total_filas > 0 && !prog && (
+            <div className="border-t border-line/40 pt-3 space-y-2">
+              <p className="text-ink-2">Para confirmar, escribí el email otra vez:</p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="email" value={confirmar} onChange={(ev) => setConfirmar(ev.target.value)}
+                  placeholder={preview.usuario.email} disabled={busy}
+                  className="flex-1 text-sm px-3 py-2 rounded bg-bg-2 dark:bg-bg-1 border border-line/60 text-ink-0 placeholder:text-ink-3"
+                />
+                <button
+                  onClick={resetear} disabled={busy || !puedeBorrar}
+                  className="flex items-center gap-1 text-xs px-3 py-2 rounded bg-rose-500 text-white hover:bg-rose-500/90 disabled:opacity-40 flex-shrink-0"
+                >
+                  <Trash2 size={13} /> Dejar en cero
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {prog && (
+        <div className="space-y-2 text-xs">
+          <div className="h-1.5 rounded-full bg-line/40 overflow-hidden">
+            <div className="h-full bg-rose-500 transition-all" style={{ width: `${prog.pct || 0}%` }} />
+          </div>
+          <p className="text-ink-2">
+            {prog.estado === 'corriendo' && (
+              <>Borrando{prog.tabla ? ` ${prog.tabla}` : ''}… <b className="tabular">{(prog.hechas || 0).toLocaleString('es-AR')}</b> de <b className="tabular">{(prog.total || 0).toLocaleString('es-AR')}</b> filas ({prog.pct || 0}%)</>
+            )}
+            {prog.estado === 'listo' && (
+              <>✅ Listo. La cuenta quedó en cero — el usuario puede entrar con su misma contraseña y empezar de nuevo.</>
+            )}
+            {prog.estado === 'error' && <span className="text-rose-500">{prog.error}</span>}
+          </p>
+          {prog.estado === 'listo' && prog.cleared && (
+            <div className="flex flex-wrap gap-1">
+              {Object.entries(prog.cleared).map(([t, n]) => (
+                <span key={t} className="px-1.5 py-0.5 rounded bg-bg-1/60 border border-line/40 text-ink-3">
+                  {t} <b className="tabular">{Number(n).toLocaleString('es-AR')}</b>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
