@@ -285,8 +285,16 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # `pnl_usd` se normaliza a USD real UNA vez, acá. Todo lo que se calcula más
     # abajo (winners/losers, pnl_by_ticker, realized_pnl_usd) lee de `closed`, así
     # que con esto queda correcto sin tener que acordarse en cada suma.
+    #
+    # `pnl_pct` pasa por su techo en el MISMO lugar y por la misma razón. Acá
+    # pesa más que en una pantalla: de esta lista salen el mejor y el peor
+    # trade y DOS PROMEDIOS (realized_avg_pct, pct_by_ticker). Una sola fila
+    # con +188.566 % no se muestra sola en una esquina — se lleva puesta la
+    # media de todas las demás y el LLM le cuenta eso al usuario.
     closed = [
-        {**o, "pnl_usd": _realized_pnl.realized_usd(o)}
+        {**o,
+         "pnl_usd": _realized_pnl.realized_usd(o),
+         "pnl_pct": _realized_pnl.pct_creible(o.get("pnl_pct"))}
         for o in ops
         if o.get("pnl_usd") is not None and _realized_pnl.is_closed_op(o.get("op_type"))
     ]
@@ -294,8 +302,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     losers = [o for o in closed if (o.get("pnl_usd") or 0) < 0]
     win_rate = (len(winners) / len(closed)) if closed else 0.0
 
-    best_pct = max((o.get("pnl_pct") or 0) for o in closed) if closed else None
-    worst_pct = min((o.get("pnl_pct") or 0) for o in closed) if closed else None
+    # Sin `or 0`: un pct que no se pudo publicar es DESCONOCIDO, no cero. Con
+    # `or 0` el peor trade del año podía ser un 0 % que en realidad era un
+    # número que decidimos no publicar.
+    _pcts_ok = [o["pnl_pct"] for o in closed if o.get("pnl_pct") is not None]
+    best_pct = max(_pcts_ok) if _pcts_ok else None
+    worst_pct = min(_pcts_ok) if _pcts_ok else None
 
     # Atribución de TRADES CERRADOS: P&L realizado por ticker (suma).
     # Esto es histórico — un ticker puede no estar más en portfolio. Por eso
@@ -307,7 +319,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         if not t:
             continue
         pnl_by_ticker[t] = pnl_by_ticker.get(t, 0) + float(o.get("pnl_usd") or 0)
-        pct_by_ticker.setdefault(t, []).append(float(o.get("pnl_pct") or 0))
+        if o.get("pnl_pct") is not None:   # un pct oculto no promedia como 0
+            pct_by_ticker.setdefault(t, []).append(float(o["pnl_pct"]))
 
     def _avg(xs):
         return sum(xs) / len(xs) if xs else 0

@@ -38,6 +38,7 @@ import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDonut'
 import { computeClassBreakdown } from '../utils/assetClass'
 import { computeSectorBreakdown } from '../utils/assetSector'
+import { pctCreible } from '../utils/assetPnl'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { lookupHistoricalDolar } from '../utils/fx'
@@ -2206,7 +2207,10 @@ function InsightsDesktop({ _embeddedTab }) {
     entry_price: o.entry_price,
     exit_price: o.exit_price,
     pnl_usd: o.pnl_usd != null ? +o.pnl_usd.toFixed(2) : null,
-    pnl_pct: o.pnl_pct != null ? +o.pnl_pct.toFixed(2) : null,
+    // Techo de credibilidad antes de mandárselo al modelo: arriba de 1000 % el
+    // cociente ya no es un rendimiento. El monto va igual. Mismo criterio y
+    // misma constante que la ficha de activo. Ver pctCreible.
+    pnl_pct: (v => v != null ? +v.toFixed(2) : null)(pctCreible(o.pnl_pct)),
     entry_date: o.entry_date,
   }))
 

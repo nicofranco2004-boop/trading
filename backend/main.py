@@ -13897,6 +13897,12 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
                ORDER BY date DESC""",
             (uid,),
         ).fetchall()]
+        # Mismo techo que la app: arriba de 1000 % el cociente dejó de ser un
+        # rendimiento y la celda va vacía. `pnl_usd` sale igual — falta el
+        # costo, no el dato. Sin esto la planilla que el usuario le manda a su
+        # contador llevaba un "+188.566 %". Ver realized_pnl.pct_creible.
+        for r in rows:
+            r["pnl_pct"] = realized_pnl.pct_creible(r.get("pnl_pct"))
     finally:
         conn.close()
 
@@ -38640,24 +38646,13 @@ def _strip_accents(s: str) -> str:
                    if not unicodedata.combining(c))
 
 
-MAX_PNL_TO_COST = 10   # espejo de assetPnl.js — ver _rate_pct
-
-
-def _rate_pct(total: float, cost: float, incomplete: bool):
-    """La tasa, o None cuando no hay tasa que valga. Espejo de ratePct()
-    (frontend/src/utils/assetPnl.js), MISMA constante.
-
-    Tres motivos para no publicarla: no hay costo, el costo está incompleto
-    (alguna venta no trajo con qué despejarlo), o el costo es tan chico contra
-    el resultado que el cociente dejó de ser un rendimiento — un bono que
-    amortizó casi todo sigue sumando años de cupones contra un costo residual
-    (GD35: US$15 de posición, US$1.463 de renta ⇒ +9.804%).
-    """
-    if incomplete or not cost or cost <= 0:
-        return None
-    if abs(total) > cost * MAX_PNL_TO_COST:
-        return None
-    return (total / cost) * 100
+# El techo y la regla viven en realized_pnl.py, junto al resto del criterio de
+# "P&L realizado sobre operations". Estaban acá y sólo los usaba el libro del
+# asesor; el Wrapped, Reportes, la exportación y los paquetes de la IA
+# publicaban el porcentaje crudo. Se re-exportan con el nombre de acá porque
+# `main.MAX_PNL_TO_COST` es lo que lee el test que custodia el espejo con
+# assetPnl.js (test_advisor_composition.py).
+from realized_pnl import MAX_PNL_TO_COST, rate_pct as _rate_pct  # noqa: E402
 
 
 def _advisor_realized_raw(conn, ids: list) -> dict:
