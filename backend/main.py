@@ -89,6 +89,10 @@ from snapshots_job import (
     # (completar en cada request, persistir 1×/minuto).
     persist_last_prices,
     read_last_prices,
+    # El límite de frescura vive en snapshots_job junto a la tabla que lo
+    # necesita. Estaba escrito a mano acá abajo (48 * 3600) y allá no existía:
+    # un solo número, un solo lugar.
+    MAX_PRICE_AGE_HOURS,
 )
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -24364,6 +24368,11 @@ def _trade_market_price(asset: str, kind, currency: str, uid: int):
     # Frescura: get_prices rellena huecos con el last-known SIN límite de edad
     # (para valuar la cartera está bien; para escribir el costo de un lote "de
     # HOY" no). Si la última persistencia del símbolo es vieja, no confiamos.
+    #
+    # Este era el ÚNICO lugar que aplicaba la regla. El cron de snapshots
+    # escribe una medición igual de definitiva y no la aplicaba: rellenaba con
+    # cualquier edad y el guard de cobertura del 95 % se quedaba ciego. Ahora
+    # los dos usan MAX_PRICE_AGE_HOURS, definido junto a `asset_last_price`.
     try:
         _c = get_db()
         try:
@@ -24374,7 +24383,7 @@ def _trade_market_price(asset: str, kind, currency: str, uid: int):
         if row and row["updated_at"]:
             _age = (datetime.utcnow()
                     - datetime.fromisoformat(str(row["updated_at"]).replace("Z", "")))
-            if _age.total_seconds() > 48 * 3600:
+            if _age.total_seconds() > MAX_PRICE_AGE_HOURS * 3600:
                 log.info("register_trade: precio de %s con last-known viejo (%s) → lo da el usuario",
                          sym, row["updated_at"])
                 return None

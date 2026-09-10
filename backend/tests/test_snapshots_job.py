@@ -22,6 +22,7 @@ from snapshots_job import (
     compute_net_deposited,
     take_snapshot_for_user,
     run_daily_snapshot,
+    compute_live_portfolio_value,
 )
 
 
@@ -938,3 +939,118 @@ class TestSnapshotLoteEnPesosEnCuentaUsdE2E(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
+    """F4 · guard C7 — MOSTRAR y ANOTAR no son lo mismo.
+
+    Toma prestado el fixture de la cobertura (AAPL 9700 + XYZ 100, y la tabla
+    `asset_last_price`) porque el escenario es el mismo: yfinance no devuelve
+    precio y el relleno con el último conocido decide si el guard del 95 % ve o
+    no ve el faltante. Se toman los tres métodos sueltos en vez de heredar la
+    clase: heredarla arrastraba también sus seis tests, que pasaban a correr
+    dos veces.
+
+    Lo que se rompía: `apply_last_known_prices` completaba con un precio de
+    CUALQUIER edad ANTES del guard. El guard entonces medía 100 % de cobertura y
+    escribía la foto del día con precios de hace meses — y esa foto es la que
+    define el AUM del asesor y la punta del gráfico. El guard ya decía, textual,
+    "preferimos NO escribir ese día antes que escribir un dato corrupto": nunca
+    se enteraba de que había algo que decidir.
+    """
+
+    setUp = TestSnapshotCoverageGate.setUp
+    tearDown = TestSnapshotCoverageGate.tearDown
+    _snap_count = TestSnapshotCoverageGate._snap_count
+
+    def _sembrar_precio(self, symbol, price, updated_at):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT OR REPLACE INTO asset_last_price VALUES (?,?,?)",
+                     (symbol, price, updated_at))
+        conn.commit(); conn.close()
+
+    # ── lo que NO se anota ──────────────────────────────────────────────
+    def test_precio_rancio_no_escribe_la_foto(self):
+        """Último precio de hace tres meses + yfinance caído → NO escribe.
+
+        Contra el código viejo este test FALLA: el snapshot se escribía con
+        `ok=True` y un total_value armado con los precios de marzo.
+        """
+        self._sembrar_precio('AAPL', 200.0, '2026-03-01')
+        self._sembrar_precio('XYZ', 50.0, '2026-03-01')
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: None for s in syms}):
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        self.assertFalse(r['ok'], "una foto no se escribe con precios de hace 3 meses")
+        self.assertEqual(r['reason'], 'low_price_coverage')
+        self.assertEqual(self._snap_count(conn), 0)
+        conn.close()
+
+    def test_el_rancio_no_pisa_una_foto_buena_que_ya_estaba(self):
+        """Y si ya había una medición real de ese día, queda intacta."""
+        self._sembrar_precio('AAPL', 200.0, '2026-03-01')
+        self._sembrar_precio('XYZ', 50.0, '2026-03-01')
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+            "VALUES (1, '2026-06-02', 12345.0, 9800.0, 9000.0)")
+        conn.commit()
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: None for s in syms}):
+            with conn:
+                take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        self.assertEqual(conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=1 AND date='2026-06-02'"
+        ).fetchone()['total_value'], 12345.0)
+        conn.close()
+
+    # ── el borde exacto, para que el número no se corra sin que nadie mire ──
+    def test_el_borde_esta_en_la_fecha_de_la_foto_y_no_en_el_reloj(self):
+        """Precio de AYER-de-la-foto: fresco. De ANTEAYER: rancio.
+
+        La foto es del 2026-06-02, o sea del pasado visto desde hoy. Si la edad
+        se midiera contra el reloj de pared, los dos casos serían rancios y
+        reconstruir una foto vieja sería imposible.
+        """
+        def corrida(estampa):
+            conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+            conn.execute("DELETE FROM snapshots WHERE user_id=1")
+            for sym, px in (('AAPL', 200.0), ('XYZ', 50.0)):
+                conn.execute("INSERT OR REPLACE INTO asset_last_price VALUES (?,?,?)",
+                             (sym, px, estampa))
+            conn.commit()
+            with patch('snapshots_job.fetch_prices_for_symbols',
+                       side_effect=lambda syms, cy: {s: None for s in syms}):
+                with conn:
+                    r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+            conn.close()
+            return r
+
+        self.assertTrue(corrida('2026-06-01')['ok'],
+                        "el precio de ayer sirve para la foto de hoy")
+        self.assertFalse(corrida('2026-05-31')['ok'],
+                         "anteayer ya no: el corte son 48 h")
+
+    # ── y la asimetría, que es deliberada ───────────────────────────────
+    def test_la_pantalla_si_muestra_el_precio_rancio(self):
+        """El valor VIVO del Dashboard sigue usando el último precio conocido,
+        tenga la edad que tenga. No es un descuido: sin él la posición cae a su
+        costo y el total pega un salto que el usuario lee como pérdida.
+
+        Este test existe para que el guard de arriba NO se propague acá de
+        refilón. Si alguien "termina de arreglar" el bug filtrando también este
+        camino, este test se pone rojo y le pide que lo decida en serio.
+        """
+        self._sembrar_precio('AAPL', 200.0, '2026-03-01')
+        self._sembrar_precio('XYZ', 50.0, '2026-03-01')
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: None for s in syms}):
+            v = compute_live_portfolio_value(conn, 1, 1500, {})
+        # AAPL 200×50 + XYZ 50×1 = 10050, con precios de marzo.
+        self.assertIsNotNone(v, "la pantalla no se queda sin número por un precio viejo")
+        self.assertAlmostEqual(v, 10050.0, places=1)
+        self.assertEqual(self._snap_count(conn), 0, "y no escribió nada")
+        conn.close()
