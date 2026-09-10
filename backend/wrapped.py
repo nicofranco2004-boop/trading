@@ -27,7 +27,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 from collections import Counter
 
-from realized_pnl import realized_usd
+from realized_pnl import realized_usd, pct_creible
 import twr as _twr
 
 
@@ -243,6 +243,11 @@ def _slide_best_trade(ops: List[dict]) -> Optional[dict]:
     if pnl_usd <= 0:
         return None
     pct_str = ''
+    # El techo de credibilidad: arriba de 1000 % el cociente ya no es un
+    # rendimiento y no se publica. El MONTO sí, siempre — falta el costo, no el
+    # dato. Acá pesa más que en otras pantallas: shareCard.js exporta esta
+    # diapositiva como PNG, así que el número sale de la app.
+    pnl_pct = pct_creible(pnl_pct)
     if pnl_pct is not None:
         # pnl_pct viene como número (no fracción): 18.2 = 18.2%
         pct_str = f' ({"+" if pnl_pct >= 0 else "−"}{abs(pnl_pct):.1f}%)'

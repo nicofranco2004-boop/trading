@@ -151,3 +151,69 @@ def realized_usd(row) -> float:
     except (TypeError, ValueError):
         return raw
     return raw / fx if fx > 0 else raw
+
+
+# ─── El techo de credibilidad del % realizado (F4 · guard C7) ──────────────
+#
+# `pnl_pct` se DEFINE como 100·pnl_usd/invested_usd (persister.py, rebuild.py,
+# main.py: los tres motores de venta escriben esa identidad). O sea que el
+# cociente pnl/costo y el porcentaje guardado son el MISMO número en escalas
+# distintas, y el techo "no publicar arriba de 10× el costo" se lee directo
+# sobre la columna: |pnl_pct| > 1000.
+#
+# Por qué existe el techo — el razonamiento es de `ratePct` en
+# frontend/src/utils/assetPnl.js, que lo aplica desde antes: cuando el costo se
+# evapora, el cociente deja de ser un rendimiento. Un bono que amortizó casi
+# todo sigue sumando años de cupones contra un costo residual (GD35: US$15 de
+# posición, US$1.463 de renta ⇒ +9.804%). Y con el bug de escala per-100 del
+# motor de ventas, un bono cotizado por 100 nominales da pnl = 99×costo.
+#
+# ⚠️ ESTO ES UN CINTURÓN, NO UN ARREGLO. Las dos causas conocidas del número
+# absurdo siguen abiertas y tienen nombre: el motor toma el COSTO de
+# `gross_amount` y los INGRESOS de `unit_price*qty` sin reconciliarlos (ver
+# /api/admin/diagnose-scale, que las cuenta), y la venta declarada en una
+# moneda distinta a la del lote no convierte el precio de salida. El techo
+# impide publicar el número; no arregla la fila. Lo que sí hace, y por eso vale
+# igual, es atrapar la PRÓXIMA causa — la que todavía no tiene nombre.
+#
+# Qué se oculta y qué no: se oculta LA TASA, nunca el monto. Falta el costo, no
+# el dato. Misma decisión que ya tomaba `ratePct`.
+#
+# ⚠️ El valor está ESPEJADO en frontend/src/utils/assetPnl.js y hay un test que
+# verifica que los dos no diverjan (test_advisor_composition.py). Si tocás uno,
+# tocá el otro.
+MAX_PNL_TO_COST = 10
+MAX_PNL_PCT = MAX_PNL_TO_COST * 100        # 1000 %
+
+
+def pct_creible(pnl_pct):
+    """El `operations.pnl_pct` guardado, o None cuando no se sostiene.
+
+    Para los lectores que ya tienen el porcentaje escrito en la fila. Los que
+    tienen el par (total, costo) y necesitan además el chequeo de costo
+    incompleto usan `rate_pct` de acá abajo — misma regla, misma constante.
+    """
+    if pnl_pct is None:
+        return None
+    try:
+        p = float(pnl_pct)
+    except (TypeError, ValueError):
+        return None
+    if p != p or p in (float("inf"), float("-inf")):   # NaN / ±inf
+        return None
+    return None if abs(p) > MAX_PNL_PCT else p
+
+
+def rate_pct(total: float, cost: float, incomplete: bool = False):
+    """La tasa a partir del par (resultado, costo), o None cuando no hay tasa
+    que valga. Espejo exacto de `ratePct()` en assetPnl.js.
+
+    Tres motivos para no publicarla: no hay costo, el costo está incompleto
+    (alguna venta no trajo con qué despejarlo), o el costo es tan chico contra
+    el resultado que el cociente dejó de ser un rendimiento.
+    """
+    if incomplete or not cost or cost <= 0:
+        return None
+    if abs(total) > cost * MAX_PNL_TO_COST:
+        return None
+    return (total / cost) * 100

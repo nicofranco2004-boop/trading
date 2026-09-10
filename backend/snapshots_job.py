@@ -22,10 +22,10 @@ import sqlite3
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 from collections import defaultdict
-from datetime import date as date_cls, datetime
+from datetime import date as date_cls, datetime, timedelta
 from pathlib import Path
 
-from fechas import hoy_art
+from fechas import hoy_art, hoy_art_date
 from typing import Optional
 
 import yfinance as yf
@@ -702,33 +702,119 @@ def persist_last_prices(conn, prices: dict) -> None:
         log.warning(f"persist_last_prices falló (migration pendiente?): {e}")
 
 
-def read_last_prices(conn, symbols: list) -> dict:
-    """Devuelve {symbol: price} para los símbolos con último precio guardado."""
+# ─── Frescura del último precio conocido (F4 · guard C7) ───────────────────
+#
+# MOSTRAR y ANOTAR no son lo mismo, y este archivo hace las dos cosas.
+#
+#   · MOSTRAR (Dashboard, libro del asesor, buffer de `get_prices`): un precio
+#     viejo es mejor que un agujero. Sin él la posición cae a su COSTO y el
+#     total pega un salto fantasma. Acá NO se filtra por edad: es la decisión
+#     que `register_trade` ya dejaba por escrito ("para valuar la cartera está
+#     bien").
+#   · ANOTAR (la foto diaria que queda en la historia y define el AUM del
+#     asesor y la punta del gráfico): una foto es una MEDICIÓN. Escribir "el
+#     9/9 tu cartera valía X" con el precio de hace dos meses no es medir de
+#     menos, es inventar una medición. Acá SÍ se filtra.
+#
+# El límite es el mismo que `_register_trade_market_price` en main.py ya había
+# elegido para no escribir el costo de un lote con un precio rancio. Vivía
+# hardcodeado allá; ahora vive acá y allá lo importa — un solo número, un solo
+# lugar (mismo criterio que `fechas.py` con el calendario).
+#
+# Sin este filtro, el relleno de abajo le TAPABA LOS OJOS al guard de cobertura
+# del 95 %: completaba los faltantes con precios de junio, el guard veía 100 %
+# de cobertura y escribía la foto igual. El guard ya decía, textual, "preferimos
+# NO escribir ese día antes que escribir un dato corrupto"; simplemente nunca
+# llegaba a enterarse de que faltaban precios.
+MAX_PRICE_AGE_HOURS = 48
+
+
+def corte_frescura(target_date: str = None) -> str:
+    """El día más viejo del que puede venir un precio para que la foto fechada
+    `target_date` ('YYYY-MM-DD'; None = hoy) lo cuente como fresco.
+
+    ⚠️ La edad se mide contra la fecha de la FOTO, no contra el reloj de pared.
+    Escribir la foto del 2 de junio con el precio del 1 de junio es correcto:
+    tiene un día. Medirlo contra "ahora" haría imposible reconstruir una foto
+    vieja y rompería cualquier backfill — el precio de aquel día siempre va a
+    estar "viejo" visto desde hoy. (Este párrafo lo escribió un test que ya
+    estaba y que tenía razón: `test_uses_last_known_price_not_cost`.)
+
+    Devuelve un DÍA, no un instante, y a propósito: `updated_at` a veces trae
+    hora y a veces no, y contra un día suelto la comparación de texto ISO sale
+    bien en los dos casos ('2026-06-01T10:00' > '2026-06-01' > '2026-05-31T23:00').
+    Contra un instante, un `updated_at` sin hora quedaba afuera por el formato y
+    no por la edad.
+    """
+    # `date.fromisoformat` en 3.9 es estricto: '2026-06-02T00:00' o '2026-6-2'
+    # lanzan ValueError. Hoy los dos callers de producción pasan `hoy_art()` o
+    # nada, así que no puede pasar — pero esto corre DENTRO del job que escribe
+    # la foto de todos los usuarios, y una fecha rara no puede ser la razón por
+    # la que un día no se mide. Ante la duda se usa hoy, que es lo que hacía
+    # antes de que esta función existiera.
+    dia = None
+    if target_date:
+        try:
+            dia = date_cls.fromisoformat(str(target_date)[:10])
+        except ValueError:
+            log.warning("corte_frescura: target_date ilegible (%r) — uso hoy", target_date)
+    if dia is None:
+        dia = hoy_art_date()
+    # ⚠️ En DÍAS ENTEROS y redondeando PARA ARRIBA. `timedelta(days=0.5)` sobre
+    # un `date` se trunca a 0 y el corte queda igual que con 24 h; peor, con un
+    # límite menor a 24 h la resta daba NEGATIVA y el corte quedaba en el
+    # FUTURO, o sea rechazando TODOS los precios y dejando de escribir la foto
+    # de todo el mundo. El límite se expresa en horas porque `register_trade`
+    # lo usa con esa precisión; acá se convierte a días y nunca baja de 0.
+    dias_atras = max(0, math.ceil(MAX_PRICE_AGE_HOURS / 24.0) - 1)
+    return (dia - timedelta(days=dias_atras)).isoformat()
+
+
+def read_last_prices(conn, symbols: list, *, fresh_since: str = None) -> dict:
+    """Devuelve {symbol: price} para los símbolos con último precio guardado.
+
+    `fresh_since=None` (default) = sin límite de edad: el comportamiento de
+    siempre, el que usan las superficies que MUESTRAN. Con una fecha
+    'YYYY-MM-DD' (la que devuelve `corte_frescura`), descarta los símbolos cuyo
+    `updated_at` sea anterior — para los caminos que ESCRIBEN historia. La
+    comparación es de texto ISO contra un día suelto, que es lo que hace que
+    funcione con `updated_at` con hora y sin hora. Ver el bloque de arriba.
+    """
     syms = [s for s in (symbols or []) if s]
     if not syms:
         return {}
     try:
         placeholders = ",".join("?" * len(syms))
-        rows = conn.execute(
-            f"SELECT symbol, price FROM asset_last_price WHERE symbol IN ({placeholders})",
-            tuple(syms),
-        ).fetchall()
+        sql = f"SELECT symbol, price FROM asset_last_price WHERE symbol IN ({placeholders})"
+        params = list(syms)
+        if fresh_since:
+            # `updated_at` es NOT NULL en el esquema, así que no hay fila sin
+            # edad que haya que decidir qué hacer con ella.
+            sql += " AND updated_at >= ?"
+            params.append(fresh_since)
+        rows = conn.execute(sql, tuple(params)).fetchall()
         return {r[0]: r[1] for r in rows}
     except ERR_OPERACIONAL:
         return {}
 
 
-def apply_last_known_prices(conn, prices: dict) -> dict:
+def apply_last_known_prices(conn, prices: dict, *, fresh_since: str = None) -> dict:
     """(1) Persiste los precios reales (no-None) de `prices` como último conocido.
     (2) Completa los símbolos en None con su último precio conocido guardado.
     Muta y devuelve `prices`. Reemplaza el fallback a cost basis: sin precio hoy
-    → la posición queda al último valor real visto (no a lo que se pagó)."""
+    → la posición queda al último valor real visto (no a lo que se pagó).
+
+    `fresh_since` se pasa tal cual a `read_last_prices`: None = rellenar con
+    cualquier edad (mostrar), un timestamp = sólo con precios frescos (anotar).
+    Lo que queda en None después de esto lo cuenta el guard de cobertura del
+    caller, que es quien decide si vale la pena escribir el día.
+    """
     if not prices:
         return prices
     persist_last_prices(conn, {s: p for s, p in prices.items() if p is not None})
     missing = [s for s, p in prices.items() if p is None]
     if missing:
-        for s, p in read_last_prices(conn, missing).items():
+        for s, p in read_last_prices(conn, missing, fresh_since=fresh_since).items():
             if p is not None:
                 prices[s] = p
     return prices
@@ -806,7 +892,14 @@ def take_snapshot_for_user(
     # 2b-bis. Último precio conocido: guarda los que conseguimos y completa los
     # que siguen sin precio con su último valor real (no cost basis). Así una
     # posición sin precio hoy queda "igual que ayer" en vez de saltar a su costo.
-    apply_last_known_prices(conn, prices)
+    #
+    # …pero SÓLO si "ayer" es de verdad ayer. Este camino ESCRIBE la foto que
+    # queda en la historia, así que el relleno se limita a precios frescos: lo
+    # que siga sin precio queda en None a propósito, para que el guard de
+    # cobertura de acá abajo lo VEA y decida. Antes el relleno sin límite de
+    # edad tapaba el faltante y el guard escribía el día con precios de hace
+    # meses creyendo que tenía el 100 %. Ver MAX_PRICE_AGE_HOURS.
+    apply_last_known_prices(conn, prices, fresh_since=corte_frescura(target_date))
 
     # 2c. INTEGRIDAD: no persistir un snapshot subvaluado. Si después del retry
     # sigue faltando precio para una porción grande del portfolio, esas
@@ -974,6 +1067,12 @@ def compute_live_portfolio_value(
                     prices[s] = v
         except Exception:
             pass
+    # SIN límite de edad, a diferencia del cron — y la asimetría es deliberada.
+    # Esto no escribe nada: es el valor VIVO que se muestra en pantalla, y ahí
+    # un precio viejo es mejor que un agujero (sin él la posición cae a costo y
+    # el total pega un salto que el usuario lee como pérdida). Lo que no se
+    # puede es dejar que ese número se convierta en una medición guardada: de
+    # eso se ocupa `take_snapshot_for_user`, que sí filtra. Ver MAX_PRICE_AGE_HOURS.
     apply_last_known_prices(conn, prices)
 
     tc_cedear = _user_tc_cedear(conn, uid, tc_blue)

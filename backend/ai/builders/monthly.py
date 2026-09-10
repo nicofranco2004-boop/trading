@@ -120,7 +120,11 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         return {
             "asset": item.get("asset"),
             "pnl_usd": round(float(item.get("pnl_usd") or 0), 2),
-            "pnl_pct": round(float(item.get("pnl_pct") or 0), 2),
+            # El report ya pasó por el techo (reporting/builder.fetch_ops_in_range),
+            # así que acá `pnl_pct` puede venir en None. Con `or 0` el LLM leía
+            # "0 %" — que no es "no se puede publicar", es otra afirmación.
+            "pnl_pct": (round(float(item["pnl_pct"]), 2)
+                        if item.get("pnl_pct") is not None else None),
             # Etiqueta explícita para el LLM: estos son trades CERRADOS
             # del mes (filtrados de operations con pnl_usd no null y
             # op_type != Compra/Dividendo). No son posiciones abiertas.

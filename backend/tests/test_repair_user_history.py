@@ -220,8 +220,8 @@ class SnapshotFuturoTest(RepairUserHistoryTest):
     hasta fin de mes."""
 
     def test_no_escribe_snapshot_del_mes_en_curso(self):
-        from datetime import datetime
-        hoy = datetime.utcnow().date()
+        from fechas import hoy_art_date
+        hoy = hoy_art_date()
         self._monthly(hoy.year, hoy.month, 1000, 5000)      # mes ABIERTO
         self.conn.commit()
         with self.conn:
@@ -232,8 +232,9 @@ class SnapshotFuturoTest(RepairUserHistoryTest):
         self.assertEqual(futuros, 0)
 
     def test_limpia_los_futuros_que_ya_estaban(self):
-        from datetime import datetime, timedelta
-        hoy = datetime.utcnow().date()
+        from datetime import timedelta
+        from fechas import hoy_art_date
+        hoy = hoy_art_date()
         futuro = (hoy + timedelta(days=5)).isoformat()
         self.conn.execute(
             "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) "
@@ -255,8 +256,9 @@ class CleanupFuturosEndpointTest(RepairUserHistoryTest):
     """El endpoint que limpia los snapshots futuros que quedaron de corridas previas."""
 
     def test_cuenta_y_borra_solo_los_futuros(self):
-        from datetime import datetime, timedelta
-        hoy = datetime.utcnow().date()
+        from datetime import timedelta
+        from fechas import hoy_art_date
+        hoy = hoy_art_date()
         futuro = (hoy + timedelta(days=3)).isoformat()
         pasado = (hoy - timedelta(days=3)).isoformat()
         for d, v in ((futuro, 111.0), (pasado, 222.0), (hoy.isoformat(), 333.0)):

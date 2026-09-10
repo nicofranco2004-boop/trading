@@ -33,7 +33,7 @@ from __future__ import annotations
 from typing import Dict, Any
 from collections import Counter
 
-from realized_pnl import is_closed_op, realized_usd_sql
+from realized_pnl import is_closed_op, realized_usd_sql, pct_creible
 
 
 def _is_trade(op: Dict[str, Any]) -> bool:
@@ -102,7 +102,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         return {
             "ticker": (o.get("asset") or "").upper(),
             "pnl_usd": round(float(o.get("pnl_usd") or 0), 2),
-            "pnl_pct": round(float(o.get("pnl_pct") or 0), 2) if o.get("pnl_pct") is not None else None,
+            # Techo de credibilidad: arriba de 1000 % no se publica la tasa
+            # (el monto sí). Ver realized_pnl.pct_creible.
+            "pnl_pct": (lambda v: round(v, 2) if v is not None else None)(
+                pct_creible(o.get("pnl_pct"))),
             "date": str(o.get("date") or "")[:10],
         }
 

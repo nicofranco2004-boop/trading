@@ -150,7 +150,8 @@ class ReconcileSinHistoriaTest(unittest.TestCase):
             "VALUES ('sinhist@rendi.test','x',1,1)").lastrowid
         conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,'ARS')",
                      (self.uid, self.BROKER))
-        hoy = datetime.utcnow()
+        from fechas import ahora_art
+        hoy = ahora_art()
         self.anio, self.mes = hoy.year, hoy.month
         # Dos cotizaciones: la del día 1 de este mes y la de hoy, bien separadas.
         primero = f"{self.anio:04d}-{self.mes:02d}-01"

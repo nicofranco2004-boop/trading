@@ -74,6 +74,18 @@ def _setup_yfinance_cache():
 _setup_yfinance_cache()
 import fx as _fx
 import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
+# El techo del % realizado y su regla viven en ese mismo módulo. Estaban acá
+# abajo (constante + `_rate_pct` escritos a mano) y sólo los usaba el libro del
+# asesor; el Wrapped, Reportes, la exportación y los paquetes de la IA
+# publicaban el porcentaje crudo. Se re-exportan con el nombre de acá porque
+# `main.MAX_PNL_TO_COST` es lo que lee el test que custodia el espejo con
+# assetPnl.js (test_advisor_composition.py).
+#
+# Va ACÁ ARRIBA y no al lado de donde se usa: un import a nivel de módulo en la
+# línea 38.000 es exactamente lo que se rompe cuando alguien mueve código y
+# queda entre un `@app.post` y su función — este repo ya tuvo ese incidente y
+# la suite no lo caza.
+from realized_pnl import MAX_PNL_TO_COST, rate_pct as _rate_pct
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from snapshots_job import (
@@ -89,6 +101,10 @@ from snapshots_job import (
     # (completar en cada request, persistir 1×/minuto).
     persist_last_prices,
     read_last_prices,
+    # El límite de frescura vive en snapshots_job junto a la tabla que lo
+    # necesita. Estaba escrito a mano acá abajo (48 * 3600) y allá no existía:
+    # un solo número, un solo lugar.
+    MAX_PRICE_AGE_HOURS,
 )
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -13893,6 +13909,12 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
                ORDER BY date DESC""",
             (uid,),
         ).fetchall()]
+        # Mismo techo que la app: arriba de 1000 % el cociente dejó de ser un
+        # rendimiento y la celda va vacía. `pnl_usd` sale igual — falta el
+        # costo, no el dato. Sin esto la planilla que el usuario le manda a su
+        # contador llevaba un "+188.566 %". Ver realized_pnl.pct_creible.
+        for r in rows:
+            r["pnl_pct"] = realized_pnl.pct_creible(r.get("pnl_pct"))
     finally:
         conn.close()
 
@@ -24364,6 +24386,11 @@ def _trade_market_price(asset: str, kind, currency: str, uid: int):
     # Frescura: get_prices rellena huecos con el last-known SIN límite de edad
     # (para valuar la cartera está bien; para escribir el costo de un lote "de
     # HOY" no). Si la última persistencia del símbolo es vieja, no confiamos.
+    #
+    # Este era el ÚNICO lugar que aplicaba la regla. El cron de snapshots
+    # escribe una medición igual de definitiva y no la aplicaba: rellenaba con
+    # cualquier edad y el guard de cobertura del 95 % se quedaba ciego. Ahora
+    # los dos usan MAX_PRICE_AGE_HOURS, definido junto a `asset_last_price`.
     try:
         _c = get_db()
         try:
@@ -24374,7 +24401,7 @@ def _trade_market_price(asset: str, kind, currency: str, uid: int):
         if row and row["updated_at"]:
             _age = (datetime.utcnow()
                     - datetime.fromisoformat(str(row["updated_at"]).replace("Z", "")))
-            if _age.total_seconds() > 48 * 3600:
+            if _age.total_seconds() > MAX_PRICE_AGE_HOURS * 3600:
                 log.info("register_trade: precio de %s con last-known viejo (%s) → lo da el usuario",
                          sym, row["updated_at"])
                 return None
@@ -38629,26 +38656,6 @@ def _strip_accents(s: str) -> str:
     import unicodedata
     return "".join(c for c in unicodedata.normalize("NFD", s)
                    if not unicodedata.combining(c))
-
-
-MAX_PNL_TO_COST = 10   # espejo de assetPnl.js — ver _rate_pct
-
-
-def _rate_pct(total: float, cost: float, incomplete: bool):
-    """La tasa, o None cuando no hay tasa que valga. Espejo de ratePct()
-    (frontend/src/utils/assetPnl.js), MISMA constante.
-
-    Tres motivos para no publicarla: no hay costo, el costo está incompleto
-    (alguna venta no trajo con qué despejarlo), o el costo es tan chico contra
-    el resultado que el cociente dejó de ser un rendimiento — un bono que
-    amortizó casi todo sigue sumando años de cupones contra un costo residual
-    (GD35: US$15 de posición, US$1.463 de renta ⇒ +9.804%).
-    """
-    if incomplete or not cost or cost <= 0:
-        return None
-    if abs(total) > cost * MAX_PNL_TO_COST:
-        return None
-    return (total / cost) * 100
 
 
 def _advisor_realized_raw(conn, ids: list) -> dict:

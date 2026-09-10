@@ -129,6 +129,27 @@ export function ratePct(total, cost, costIncomplete) {
   return (total / cost) * 100
 }
 
+// Techo máximo del % realizado, en unidades de porcentaje. `operations.pnl_pct`
+// se DEFINE como 100·pnl_usd/invested_usd (los tres motores de venta escriben
+// esa identidad), así que el techo "arriba de 10× el costo" se lee directo
+// sobre la columna sin despejar nada.
+export const MAX_PNL_PCT = MAX_PNL_TO_COST * 100   // 1000 %
+
+/**
+ * pctCreible — el `pnl_pct` que ya viene guardado en la fila, o null cuando no
+ * se sostiene. Para los lectores que tienen el porcentaje y no el par
+ * (total, costo); los que tienen el par usan `ratePct`, misma regla y misma
+ * constante.
+ *
+ * Espejo de `pct_creible` en backend/realized_pnl.py. Si tocás uno, tocá el
+ * otro: hay un test que verifica que no diverjan (test_advisor_composition.py).
+ */
+export function pctCreible(pnlPct) {
+  const p = Number(pnlPct)
+  if (pnlPct == null || !Number.isFinite(p)) return null
+  return Math.abs(p) > MAX_PNL_PCT ? null : p
+}
+
 /**
  * computePnlByKey
  *

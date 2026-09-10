@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from datetime import date as date_cls, datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
-from realized_pnl import realized_usd_sql
+from realized_pnl import realized_usd_sql, pct_creible
 
 log = logging.getLogger(__name__)
 
@@ -250,7 +250,18 @@ def fetch_operations_in_range(conn, uid: int, start: str, end: str,
              ORDER BY date ASC, id ASC""",
         (uid, start, end, *br_args),
     ).fetchall()
-    return [dict(r) for r in rows]
+    # `pnl_pct` pasa por el techo de credibilidad en el MISMO lugar que
+    # `pnl_usd` pasa por la conversión de moneda, y por la misma razón: todo el
+    # módulo lee las ops por esta función, así que normalizarlo en el origen
+    # deja bien el mejor/peor del período y cualquier lector futuro, sin repetir
+    # la condición. Arriba de 1000 % queda en None: el monto se publica igual,
+    # la tasa no. Ver realized_pnl.pct_creible.
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["pnl_pct"] = pct_creible(d.get("pnl_pct"))
+        out.append(d)
+    return out
 
 
 def fetch_snapshots_in_range(conn, uid: int, start: str, end: str) -> List[Dict[str, Any]]:

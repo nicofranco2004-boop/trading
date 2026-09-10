@@ -29,7 +29,7 @@ from typing import Dict, Any
 from datetime import datetime
 
 
-from realized_pnl import is_closed_op, realized_usd_sql, closed_filter_sql
+from realized_pnl import is_closed_op, realized_usd_sql, closed_filter_sql, pct_creible
 
 
 def _is_trade(op: Dict[str, Any]) -> bool:
@@ -136,7 +136,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "exit_price": round(float(op.get("exit_price") or 0), 4) if op.get("exit_price") else None,
             "quantity": round(float(op.get("quantity") or 0), 6),
             "pnl_usd": round(pnl, 2),
-            "pnl_pct": round(float(op.get("pnl_pct") or 0), 2) if op.get("pnl_pct") is not None else None,
+            # Techo de credibilidad: ver realized_pnl.pct_creible.
+            "pnl_pct": (lambda v: round(v, 2) if v is not None else None)(
+                pct_creible(op.get("pnl_pct"))),
             "holding_days": holding_days,
         },
         "user_context": user_context,
