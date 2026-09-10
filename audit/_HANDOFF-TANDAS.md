@@ -764,7 +764,7 @@ Tres reglas que salen de eso:
 ## 10. Estado del repo
 
 - **`main`** — F1 completa, F2 completa, 3 de 6 de F4 y el CER de F5. Todo deployado.
-- **`fix/f2-que-no-mientan`** — el nombre quedó viejo: hoy lleva **F3 entera, sin deployar**.
+- **`fix/f2-que-no-mientan`** — el nombre quedó viejo: hoy lleva F2, F3, el CER y la limpieza, **todo en `main`**. ⚠️ Dos sesiones trabajaron sobre esta misma rama y el mismo directorio; cada push de una se llevó los commits de la otra.
   7 commits sobre `origin/main` (`ab8ae9a5` … `f9bc43db`), y `origin/main` no se movió mientras
   tanto (verificado al empezar y al terminar). **Deployar F3 = pushear esta rama a `origin/main`**
   — pero antes leé «Lo que se ve el día del deploy» en §5-F3.
