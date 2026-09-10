@@ -38053,16 +38053,21 @@ def _retorno_vs_aportado(row, max_nd: float):
       · la punta está EN BASE DE MERCADO (`_es_base_de_mercado`) — si la última
         fila es la foto del import, valuada al COSTO, el cociente no mide un
         retorno: mide la brecha entre dos formas de medir;
-      · el denominador llega a USD 100 — un `nd` residual de centavos explota el
+      · el denominador llega al piso — un `nd` residual de centavos explota el
         % y secuestra el Mejor/Peor con retornos astronómicos falsos.
+
+    El denominador lo da `twr.denominador_aportado`, que es LA regla y la misma
+    que usa el frontend. Vivía escrita acá y en otros seis lugares, con tres
+    criterios distintos.
 
     Devuelve el porcentaje SIN redondear: cada superficie redondea como muestra.
     """
+    import twr as _twr          # local, como el resto de este archivo
     if row is None or not _es_base_de_mercado(row):
         return None
     nd = float(row["net_deposited"] or 0)
-    base_nd = max(float(max_nd or 0), nd)
-    if base_nd < 100:
+    base_nd = _twr.denominador_aportado(nd, max_nd)
+    if base_nd is None:
         return None
     return (float(row["total_value"] or 0) - nd) / base_nd * 100
 

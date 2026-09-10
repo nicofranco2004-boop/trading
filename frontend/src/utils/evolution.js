@@ -317,10 +317,13 @@ function netDepositedOf(s) {
  * Ese 0 % es peor que el +600 %: no dice "no sé", dice "no ganaste nada",
  * sobre alguien que ganó.
  *
- * POR QUÉ NO ES EL GUARD DE `realized%` DE MÁS ABAJO. Ese usa el PICO DE LA
- * CARTERA (`peakValueUsd * 0.8`) y no se puede copiar acá: al que nunca retiró
- * le rompe el número. Con 10k puestos y 30k de cartera, el pico es 30k y el
- * +200 % real pasaría a +25 %. Arregla al que retiró y arruina al que no.
+ * EL GUARD DE `realized%` DE MÁS ABAJO USABA EL PICO DE LA CARTERA
+ * (`peakValueUsd * 0.8`) y copiarlo acá le rompía el número al que nunca
+ * retiró: con 10k puestos y 30k de cartera el pico es 30k, y el +200 % real
+ * pasaba a +25 %. Al mirarlo de cerca resultó que el equivocado era ÉL — metía
+ * la ganancia no realizada en el denominador de un porcentaje sobre capital
+ * aportado — así que ese guard también pasó a `denominadorAportado` y hoy el
+ * pico de la cartera no lo usa nadie.
  *
  * LO QUE SÍ SIRVE es el pico del CAPITAL APORTADO, no el de la cartera: la
  * mayor cantidad de plata que el usuario llegó a tener puesta. Para el que
@@ -363,6 +366,51 @@ export function capitalMaximoAportado(snapshots, netDepositedHoy = 0, ajuste = 0
 }
 
 /**
+ * PISO_DENOMINADOR_USD — abajo de esto no se publica ningún porcentaje.
+ *
+ * Un aportado residual de centavos hace explotar cualquier cociente: US$3 de
+ * capital con US$30 de resultado publica +1000 % y se lleva puesto el
+ * "mejor/peor" de cualquier ranking. El número sale del libro del asesor
+ * (`_retorno_vs_aportado` en main.py), que ya lo aplicaba.
+ *
+ * ⚠️ ESPEJADO en backend/twr.py. Hay un test que verifica que no diverjan.
+ */
+export const PISO_DENOMINADOR_USD = 100
+
+/**
+ * denominadorAportado — LA regla, una sola vez.
+ *
+ * El capital contra el que se mide un porcentaje: el mayor entre lo que hay
+ * aportado hoy y lo máximo que se llegó a aportar. Devuelve null cuando no
+ * llega al piso — null es "no lo puedo calcular", que no es lo mismo que 0.
+ *
+ * ── POR QUÉ ESTA Y NO LAS OTRAS TRES QUE HABÍA ──────────────────────────
+ * Esta regla estaba escrita CUATRO veces en el repo con TRES criterios
+ * distintos, y el mismo usuario veía números diferentes según la pantalla:
+ *
+ *   · el libro del asesor:  max(nd, nd_máx) con piso 100   ← ésta
+ *   · la curva de acá:      max(nd, pico_de_CARTERA × 0,8)
+ *   · Análisis (×2):        nd si nd ≥ 60 % del pico, si no el pico
+ *
+ * El pico de la CARTERA estaba mal y no es opinable: mete la ganancia NO
+ * realizada adentro del denominador de un porcentaje sobre capital aportado.
+ * Medido — quien aportó 10k, nunca retiró, tiene 30k y realizó 5k: publicaba
+ * 20,8 % donde el número es 50 %. Con la cartera multiplicada por diez, 62,5 %
+ * donde son 500 %.
+ *
+ * El umbral del 60 % también se va, por otro motivo: es discontinuo. Retirar
+ * un dólar de más cruzaba el 60 % y el denominador saltaba de golpe, con el
+ * porcentaje pegando un escalón que no corresponde a nada que haya pasado.
+ * `max()` es continua y monótona.
+ */
+export function denominadorAportado(ndActual = 0, ndMaximo = 0) {
+  const a = Number.isFinite(ndActual) ? ndActual : 0
+  const b = Number.isFinite(ndMaximo) ? ndMaximo : 0
+  const d = Math.max(a, b)
+  return d >= PISO_DENOMINADOR_USD ? d : null
+}
+
+/**
  * retornoTotal — el "Ganancia total · +X %" del hero, en UN solo lugar.
  *
  * Estaba calculado a mano en dos: el chip del hero (Dashboard.jsx) y la frase
@@ -377,10 +425,8 @@ export function capitalMaximoAportado(snapshots, netDepositedHoy = 0, ajuste = 0
  */
 export function retornoTotal({ totalValue = 0, netDeposited = 0, capitalMaximo = null } = {}) {
   const usd = totalValue - netDeposited
-  const denom = (capitalMaximo != null && capitalMaximo > 0)
-    ? capitalMaximo
-    : (netDeposited > 0 ? netDeposited : 0)
-  return { usd, pct: denom > 0 ? usd / denom : null }
+  const denom = denominadorAportado(netDeposited, capitalMaximo ?? 0)
+  return { usd, pct: denom ? usd / denom : null }
 }
 
 /**
@@ -562,7 +608,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
   //
   // Mirá 40 líneas más abajo antes de tocar esto. Cada punto que entra acá es:
   //   · DENOMINADOR de un período  → `period_return = pnl_t / (value_t-1 + 0.5·flows_t)`
-  //   · candidato a PICO           → `if (value > peakValueUsd) peakValueUsd = value`
+  //   · candidato a PICO del aportado → `if (netDep > peakNetDepUsd) …`
   // Son exactamente las dos cosas que `esApto` protege, y son las dos que el
   // contrato de `twr.py` le prohíbe a una foto INTRADIA.
   //
@@ -624,13 +670,19 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
   let prevNetDep = null
   let prevValueArs = null
   let prevBaselineArs = null
-  // Peak portfolio value alcanzado en toda la historia. Sirve como denominador
-  // estable para realized% cuando hay retiros grandes: si la cartera llegó a
-  // \$100k y después retirás \$70k para impuestos, net_deposited puede quedar
-  // chico o negativo. Usar peakValue evita que el ratio (cumRealized / denom)
-  // explote a 90%+ artificialmente — es la base "real" del capital trabajado.
-  let peakValueUsd = 0
-  let peakValueArs = 0
+  // Pico del capital APORTADO — no el de la cartera. Sirve como denominador
+  // estable de realized% cuando hay retiros grandes: si aportaste \$100k y
+  // después retirás \$70k para impuestos, `net_deposited` queda chico o
+  // negativo y el ratio (cumRealized / denom) explota.
+  //
+  // ⚠️ ACÁ VIVÍA `peakValueUsd`, el pico del VALOR DE LA CARTERA × 0,8, y
+  // estaba mal: metía la ganancia NO realizada adentro del denominador de un
+  // porcentaje sobre capital aportado. Medido — quien aportó 10k, nunca
+  // retiró, tiene 30k y realizó 5k: publicaba 20,8 % donde el número es 50 %.
+  // Con la cartera multiplicada por diez, 62,5 % donde son 500 %. Ver
+  // `denominadorAportado`, que es la regla única.
+  let peakNetDepUsd = 0
+  let peakNetDepArs = 0
 
   for (const s of sorted) {
     // ⚠️ LA MISMA REGLA, NO UNA COPIA. Acá vivía un segundo
@@ -647,7 +699,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
     const baselineUsd = netDepositedOf(s)
     const value = s.total_value || 0
     const netDep = baselineUsd || 0
-    if (value > peakValueUsd) peakValueUsd = value
+    if (netDep > peakNetDepUsd) peakNetDepUsd = netDep
 
     // First snapshot → baseline = 0% TWRR
     if (prevValueUsd === null) {
@@ -684,11 +736,10 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
       cumUsd *= (1 + r)
     }
 
-    // Denominador estable para realized%: el MAYOR de net_deposited actual y
-    // el peak portfolio value histórico. Así un withdrawal grande no infla el
-    // % al achicar el denominador.
-    const denomRealizedUsd = Math.max(baselineUsd, peakValueUsd * 0.8)
-    const realPctUsd = denomRealizedUsd > 0 ? (realizedAt(s.date) / denomRealizedUsd) * 100 : 0
+    // Denominador estable para realized%: LA regla, la misma que el hero y que
+    // el libro del asesor. Ver `denominadorAportado`.
+    const denomRealizedUsd = denominadorAportado(baselineUsd, peakNetDepUsd)
+    const realPctUsd = denomRealizedUsd ? (realizedAt(s.date) / denomRealizedUsd) * 100 : 0
     seriesUsd.push({
       key: s.date,
       label: s.date.slice(5),       // MM-DD
@@ -704,7 +755,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
     const fx = lookupHistoricalDolar(bench, y, mo, tcValuacion)
     const valueArs    = value * fx
     const baselineArs = netDep * fx
-    if (valueArs > peakValueArs) peakValueArs = valueArs
+    if (baselineArs > peakNetDepArs) peakNetDepArs = baselineArs
 
     if (prevValueArs !== null && prevBaselineArs !== null) {
       const flowsArs = baselineArs - prevBaselineArs
@@ -722,7 +773,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
       const rArs = Math.max(rRawArs, -0.99)
       cumArs *= (1 + rArs)
     }
-    const denomRealizedArs = Math.max(baselineArs, peakValueArs * 0.8)
+    const denomRealizedArs = denominadorAportado(baselineArs, peakNetDepArs) || 0
     const realPctArs = denomRealizedArs > 0 ? ((realizedAt(s.date) * fx) / denomRealizedArs) * 100 : 0
     seriesArs.push({
       key: s.date,

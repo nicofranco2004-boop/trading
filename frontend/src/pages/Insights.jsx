@@ -39,6 +39,7 @@ import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDon
 import { computeClassBreakdown } from '../utils/assetClass'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { pctCreible } from '../utils/assetPnl'
+import { denominadorAportado } from '../utils/evolution'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { lookupHistoricalDolar } from '../utils/fx'
@@ -649,12 +650,6 @@ function InsightsDesktop({ _embeddedTab }) {
     // Cuando el net vuelve a niveles normales, retomamos el net actual.
     let peakNetDeposits = baseline
 
-    // Función para denominador estable: usa net actual si está al menos
-    // al 60% del peak; sino, usa peak (el capital que TUVO el portfolio
-    // en su mejor momento — el retiro fue ruido temporal).
-    const safeDenom = (netDep, peakDep) =>
-      netDep >= peakDep * 0.6 && netDep > 1000 ? netDep : peakDep
-
     for (let i = 0; i < globalMonthly.length; i++) {
       const m = globalMonthly[i]
       const isFirst = i === 0
@@ -685,7 +680,7 @@ function InsightsDesktop({ _embeddedTab }) {
       cumIdx *= (1 + r)
 
       const totalPct = +((cumIdx - 1) * 100).toFixed(2)
-      const denom = safeDenom(cumNetDeposits, peakNetDeposits)
+      const denom = (denominadorAportado(cumNetDeposits, peakNetDeposits) ?? 0)
       const realPct = denom > 0 ? +((cumRealized / denom) * 100).toFixed(2) : 0
 
       seriesUsd.push({
@@ -706,7 +701,7 @@ function InsightsDesktop({ _embeddedTab }) {
         cumRealizedArs += (m.pnl_realized || 0) * fx
 
         const totalPctArs = +((cumIdxArs - 1) * 100).toFixed(2)
-        const denomArs = safeDenom(cumNetDeposits, peakNetDeposits) * fx
+        const denomArs = (denominadorAportado(cumNetDeposits, peakNetDeposits) ?? 0) * fx
         const realPctArs = denomArs > 0 ? +((cumRealizedArs / denomArs) * 100).toFixed(2) : 0
         seriesArs.push({
           key: monthKey(m.year, m.month),
@@ -727,7 +722,7 @@ function InsightsDesktop({ _embeddedTab }) {
         cumIdx *= (1 + rLiveClamped)
       }
       const totalLive = +((cumIdx - 1) * 100).toFixed(2)
-      const denomLive = safeDenom(cumNetDeposits, peakNetDeposits)
+      const denomLive = (denominadorAportado(cumNetDeposits, peakNetDeposits) ?? 0)
       const realLive = denomLive > 0 ? +((cumRealized / denomLive) * 100).toFixed(2) : 0
       seriesUsd.push({ key: 'today', label: 'Hoy', realized: realLive, total: totalLive })
 
@@ -749,7 +744,7 @@ function InsightsDesktop({ _embeddedTab }) {
         }
         const totalArsLive = +((cumIdxArs - 1) * 100).toFixed(2)
         // Mismo riel que el numerador (cumRealizedArs se acumuló al blue de cada mes).
-        const denomArsLive = safeDenom(cumNetDeposits, peakNetDeposits) * fxHoyChart
+        const denomArsLive = (denominadorAportado(cumNetDeposits, peakNetDeposits) ?? 0) * fxHoyChart
         const realArsLive = denomArsLive > 0 ? +((cumRealizedArs / denomArsLive) * 100).toFixed(2) : 0
         seriesArs.push({ key: 'today', label: 'Hoy', realized: realArsLive, total: totalArsLive })
       }
@@ -849,9 +844,6 @@ function InsightsDesktop({ _embeddedTab }) {
       for (const k of mesesOrd) { if (k <= mk) found = k; else break }
       return found ? map.get(found) : null
     }
-    const safeDenom = (netDep, peakDep) =>
-      netDep >= peakDep * 0.6 && netDep > 1000 ? netDep : peakDep
-
     // Cada punto viaja con SU TRAMO. El corte de la línea NO se inserta acá: si se
     // mete un punto sintético antes del resampleo mensual, su clave ('corte-…')
     // cae en el bucket 'corte-2' de `s.key.slice(0,7)` y después ordena AL FINAL
@@ -871,7 +863,7 @@ function InsightsDesktop({ _embeddedTab }) {
       const benchIdx = (bp && bp.date === pt.date && typeof bp.index === 'number') ? bp.index : null
       const nd = alMes(netByMonth, mk)
       const rz = alMes(realizedByMonth, mk) || 0
-      const denom = nd ? safeDenom(nd.net, nd.peak) : 0
+      const denom = nd ? (denominadorAportado(nd.net, nd.peak) ?? 0) : 0
       out.push({
         key: esHoy ? 'today' : pt.date,
         label: esHoy ? 'Hoy' : benchLabel(pt.date.slice(0, 7)),
@@ -931,11 +923,9 @@ function InsightsDesktop({ _embeddedTab }) {
     const baselinePesos = arsMonthly[0].capital_inicio * blueBase
     let netFlowsPesos = 0, cumRealizedPesos = 0
     let cumIdxArs = 1.0
-    // Mismo treatment de peak-stable denom que benchSeriesUsd (ver arriba) — solo
-    // para el realized% (la línea total ahora es TWR, no necesita denom).
+    // Mismo denominador que todo el resto — solo para el realized% (la línea
+    // total ahora es TWR y no necesita denom). Ver `denominadorAportado`.
     let peakInvestedPesos = baselinePesos > 0 ? baselinePesos : 0
-    const stableInvestedPesos = (cur, peak) =>
-      (cur >= peak * 0.6 && cur > 1000) ? cur : peak
     out.push({ key: firstKey, label: benchLabel(firstKey), total: 0, realized: 0 })
 
     let idxArs = 0
@@ -963,7 +953,7 @@ function InsightsDesktop({ _embeddedTab }) {
       cumRealizedPesos += (m.pnl_realized || 0) * fx
       const investedNowPesos = baselinePesos + netFlowsPesos
       if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
-      const denomP = stableInvestedPesos(investedNowPesos, peakInvestedPesos)
+      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos) ?? 0)
       const total = +((cumIdxArs - 1) * 100).toFixed(2)
       const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       portfolioReturnArsPctRaw = total  // TWR acumulado — para el diagnóstico de inflación
@@ -1011,7 +1001,7 @@ function InsightsDesktop({ _embeddedTab }) {
       }
       const total = +((cumIdxArs - 1) * 100).toFixed(2)
       const investedNowPesos = baselinePesos + netFlowsPesos
-      const denomP = stableInvestedPesos(investedNowPesos, peakInvestedPesos)
+      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos) ?? 0)
       const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       // El punto "Hoy" es el último de la serie → su TWR es el retorno final.
       portfolioReturnArsPctRaw = total
@@ -1474,7 +1464,6 @@ function InsightsDesktop({ _embeddedTab }) {
     //
     // Cada benchmark tiene su simulador en benchmarkSim.js — cada uno maneja
     // su propio lookup interno con fallback al mes anterior disponible.
-    const stableInv = (cur, peak) => (cur >= peak * 0.6 && cur > 1000) ? cur : peak
 
     // Retorno SIMPLE del índice: (price[k] / price[primer mes] − 1) × 100. Es el
     // retorno TIME-WEIGHTED del benchmark — "¿cuánto rindió el S&P?" — igual que el
@@ -1561,7 +1550,7 @@ function InsightsDesktop({ _embeddedTab }) {
         netFlowsPesos += ((m.deposits || 0) - (m.withdrawals || 0)) * fx
         const investedNowPesos = baselinePesos + netFlowsPesos
         if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
-        const denomP = stableInv(investedNowPesos, peakInvestedPesos)
+        const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos) ?? 0)
         const shadowUsd = simByKey[mk]
         if (shadowUsd == null) continue
         const gainP = (shadowUsd * fx) - investedNowPesos
@@ -1573,7 +1562,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // portfolio (valor live × tcValuacion), para que ambos reciban el mismo salto de FX.
       const last = simResult.series[simResult.series.length - 1]
       const investedNowPesos = baselinePesos + netFlowsPesos
-      const denomP = stableInv(investedNowPesos, peakInvestedPesos)
+      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos) ?? 0)
       const gainP = (last.value * tcValuacion) - investedNowPesos
       const pct = denomP > 0 ? (gainP / denomP) * 100 : 0
       result.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))
