@@ -327,8 +327,22 @@ function netDepositedOf(s) {
  * nunca retiró es exactamente `netDeposited` de hoy —el número no se mueve un
  * decimal— y para el que retiró da la base real sobre la que trabajó.
  *
- * @param snapshots        la serie histórica (usa `net_deposited`, con el
- *                         mismo fallback que el resto del archivo)
+ * ⚠️ NO USA `netDepositedOf`, Y ESO ES EL PUNTO. Ese helper cae a
+ * `total_invested` —o sea COSTO— cuando `net_deposited` viene en 0, que es lo
+ * correcto para dibujar una serie pero veneno para ESTE denominador: los
+ * snapshots legacy de este repo tienen costos corruptos conocidos (el CEDEAR
+ * ×1486, la comisión fantasma), y un solo `total_invested` inflado se
+ * convertiría en el máximo y aplastaría el número más visible de la app.
+ * Medido: con un snapshot legacy de total_invested 14.860.000, un +200 % real
+ * pasaba a +0,13 %.
+ *
+ * Acá un `net_deposited === 0` significa "no lo tengo" (la columna es NOT NULL
+ * DEFAULT 0, así es como se escribe el hueco pre-Phase 6) y se SALTEA. Si
+ * todos los puntos son huecos, el máximo es el aportado de hoy — o sea, una
+ * cuenta legacy se comporta exactamente como antes.
+ *
+ * @param snapshots        la serie histórica; sólo se miran los puntos con un
+ *                         `net_deposited` medido (≠ 0)
  * @param netDepositedHoy  el aportado neto actual: es el PISO, nunca se
  *                         devuelve menos que esto
  * @param ajuste           lo que está en `netDepositedHoy` pero NO en los
@@ -338,8 +352,11 @@ function netDepositedOf(s) {
  */
 export function capitalMaximoAportado(snapshots, netDepositedHoy = 0, ajuste = 0) {
   let max = Number.isFinite(netDepositedHoy) ? netDepositedHoy : 0
+  const aj = Number.isFinite(ajuste) ? ajuste : 0
   for (const s of (snapshots || [])) {
-    const nd = netDepositedOf(s) + (Number.isFinite(ajuste) ? ajuste : 0)
+    const medido = s?.net_deposited
+    if (medido == null || medido === 0) continue   // hueco, no un aportado de 0
+    const nd = medido + aj
     if (Number.isFinite(nd) && nd > max) max = nd
   }
   return max

@@ -103,6 +103,48 @@ describe('retornoTotal — los tres casos que decidieron el diseño', () => {
   })
 })
 
+describe('lo que encontró auditar esto contra sí mismo', () => {
+  // Los tres salieron de revisar el propio fix, no de un reporte. Los tres
+  // pasaban en verde con el código que se había escrito primero.
+
+  it('un costo histórico corrupto NO puede contaminar el denominador', () => {
+    // `netDepositedOf` —el helper que usa el resto del archivo— cae a
+    // `total_invested` (COSTO) cuando net_deposited viene en 0. Reusarlo acá
+    // metía la base contable por la ventana: los snapshots legacy de este repo
+    // tienen costos corruptos conocidos (CEDEAR ×1486, comisión fantasma), y
+    // uno solo se convertía en el máximo.
+    //
+    // Medido con la primera versión: el +200 % real daba +0,13 %.
+    const conLegacyRoto = [
+      { date: '2024-01-01', total_value: 10_000, total_invested: 14_860_000, net_deposited: 0 },
+      { date: '2026-01-01', total_value: 30_000, total_invested: 10_000, net_deposited: 10_000 },
+    ]
+    const cap = capitalMaximoAportado(conLegacyRoto, 10_000)
+    expect(cap).toBe(10_000)
+    const r = retornoTotal({ totalValue: 30_000, netDeposited: 10_000, capitalMaximo: cap })
+    expect(r.pct).toBeCloseTo(2.0, 10)          // +200 %, no +0,13 %
+  })
+
+  it('un net_deposited en 0 es un HUECO, no un aportado de cero', () => {
+    // La columna es NOT NULL DEFAULT 0: así se escribe "no lo tengo" en las
+    // filas pre-Phase 6. Saltearlas es lo correcto; tomarlas como 0 no cambia
+    // el máximo pero tomarlas por `total_invested` sí.
+    expect(capitalMaximoAportado(serie(0, 0, 0), 7_000)).toBe(7_000)
+  })
+
+  it('la frase no afirma una causa que puede ser falsa', () => {
+    // `pct` viene en null por más de un motivo. Decir "retiraste más de lo que
+    // pusiste" a un usuario NUEVO que todavía no cargó ningún aporte es
+    // afirmarle un retiro que nunca hizo.
+    const nuevo = buildDashboardInsight({
+      totalValue: 5_000, netDeposited: 0, capitalMaximo: null,
+      positions: [{ asset: 'AAPL', pnl_usd: 100, pnl_pct: 2, value_usd: 5_000 }],
+    })
+    expect(nuevo.text).not.toMatch(/retiraste/i)
+    expect(nuevo.text).toContain('no se puede calcular')
+  })
+})
+
 describe('la frase del Dashboard usa el MISMO número que el hero', () => {
   const positions = [
     { asset: 'AAPL', pnl_usd: 1_000, pnl_pct: 10, value_usd: 11_000 },

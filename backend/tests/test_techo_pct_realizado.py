@@ -164,7 +164,11 @@ class LasSuperficiesLoAplicanTest(unittest.TestCase):
         self.assertIn("18.2%", wrapped._slide_best_trade(sano)["subtitle"])
 
     def test_los_paquetes_de_la_ia_lo_aplican(self):
-        """Los builders que leen operations.pnl_pct y se lo pasan al modelo."""
+        """CONTRATO: los builders que leen operations.pnl_pct y se lo pasan al
+        modelo tienen que nombrar el techo. Armar el packet completo de cada
+        uno pide media base de datos; el comportamiento de la regla está en
+        `ElTechoEnSiTest` y el de un lector real en el test de Reportes.
+        """
         from ai.builders.operations import build as _b_ops          # noqa: F401
         from ai.builders.operation_trade import build as _b_trade   # noqa: F401
         import ai.builders.insights as _insights                    # noqa: F401
@@ -175,12 +179,48 @@ class LasSuperficiesLoAplicanTest(unittest.TestCase):
                               f"{mod} publica pnl_pct sin pasarlo por el techo")
 
     def test_reportes_lo_aplica_en_el_embudo(self):
-        """Todo el módulo lee las ops por `fetch_ops_in_range`: ahí va."""
-        with open(os.path.join(BACKEND, "reporting", "builder.py"), encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn("pct_creible", src)
+        """Todo el módulo lee las ops por `fetch_operations_in_range`: ahí va.
+
+        Test de COMPORTAMIENTO: se siembra la fila rota y se pide por el mismo
+        embudo que usa el reporte.
+        """
+        import sqlite3, tempfile
+        from reporting.builder import fetch_operations_in_range
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        try:
+            conn = sqlite3.connect(tmp.name)
+            conn.row_factory = sqlite3.Row
+            conn.executescript("""
+                CREATE TABLE operations (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, date TEXT,
+                  broker TEXT, asset TEXT, op_type TEXT, quantity REAL,
+                  entry_price REAL, exit_price REAL, pnl_usd REAL, pnl_pct REAL,
+                  currency TEXT, fx_to_usd REAL);
+                INSERT INTO operations (user_id,date,broker,asset,op_type,quantity,
+                                        entry_price,exit_price,pnl_usd,pnl_pct)
+                VALUES (1,'2026-06-10','B','AL30','Venta',1,1,2,200000.0,188566.67),
+                       (1,'2026-06-11','B','AAPL','Venta',1,1,2,500.0,18.2);
+            """)
+            conn.commit()
+            filas = fetch_operations_in_range(conn, 1, '2026-06-01', '2026-06-30')
+            conn.close()
+            por_activo = {f["asset"]: f for f in filas}
+            self.assertIsNone(por_activo["AL30"]["pnl_pct"],
+                              "el reporte publicaba el % imposible")
+            self.assertEqual(por_activo["AL30"]["pnl_usd"], 200000.0,
+                             "…pero el monto se publica igual")
+            self.assertAlmostEqual(por_activo["AAPL"]["pnl_pct"], 18.2, places=2,
+                                   msg="una venta normal pasa intacta")
+        finally:
+            os.unlink(tmp.name)
 
     def test_la_exportacion_a_planilla_lo_aplica(self):
+        """CONTRATO, no comportamiento: el endpoint pide auth y un usuario
+        entero, así que acá se verifica que la llamada exista en el bloque del
+        CSV de operaciones. El comportamiento de `pct_creible` en sí está
+        cubierto por `ElTechoEnSiTest`.
+        """
         with open(os.path.join(BACKEND, "main.py"), encoding="utf-8") as f:
             src = f.read()
         i = src.index('rendi_operaciones_')

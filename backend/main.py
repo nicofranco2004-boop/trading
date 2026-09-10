@@ -74,6 +74,18 @@ def _setup_yfinance_cache():
 _setup_yfinance_cache()
 import fx as _fx
 import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
+# El techo del % realizado y su regla viven en ese mismo módulo. Estaban acá
+# abajo (constante + `_rate_pct` escritos a mano) y sólo los usaba el libro del
+# asesor; el Wrapped, Reportes, la exportación y los paquetes de la IA
+# publicaban el porcentaje crudo. Se re-exportan con el nombre de acá porque
+# `main.MAX_PNL_TO_COST` es lo que lee el test que custodia el espejo con
+# assetPnl.js (test_advisor_composition.py).
+#
+# Va ACÁ ARRIBA y no al lado de donde se usa: un import a nivel de módulo en la
+# línea 38.000 es exactamente lo que se rompe cuando alguien mueve código y
+# queda entre un `@app.post` y su función — este repo ya tuvo ese incidente y
+# la suite no lo caza.
+from realized_pnl import MAX_PNL_TO_COST, rate_pct as _rate_pct
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from snapshots_job import (
@@ -38644,15 +38656,6 @@ def _strip_accents(s: str) -> str:
     import unicodedata
     return "".join(c for c in unicodedata.normalize("NFD", s)
                    if not unicodedata.combining(c))
-
-
-# El techo y la regla viven en realized_pnl.py, junto al resto del criterio de
-# "P&L realizado sobre operations". Estaban acá y sólo los usaba el libro del
-# asesor; el Wrapped, Reportes, la exportación y los paquetes de la IA
-# publicaban el porcentaje crudo. Se re-exportan con el nombre de acá porque
-# `main.MAX_PNL_TO_COST` es lo que lee el test que custodia el espejo con
-# assetPnl.js (test_advisor_composition.py).
-from realized_pnl import MAX_PNL_TO_COST, rate_pct as _rate_pct  # noqa: E402
 
 
 def _advisor_realized_raw(conn, ids: list) -> dict:

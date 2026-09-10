@@ -17,6 +17,7 @@ if BACKEND not in sys.path:
 
 from unittest.mock import patch
 
+import snapshots_job
 from snapshots_job import (
     compute_broker_value_usd,
     compute_net_deposited,
@@ -959,9 +960,20 @@ class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
     se enteraba de que había algo que decidir.
     """
 
-    setUp = TestSnapshotCoverageGate.setUp
     tearDown = TestSnapshotCoverageGate.tearDown
     _snap_count = TestSnapshotCoverageGate._snap_count
+
+    def setUp(self):
+        TestSnapshotCoverageGate.setUp(self)
+        # ⚠️ `compute_live_portfolio_value` cachea 60 s en un dict GLOBAL de
+        # módulo con clave (uid, tc_blue), y nadie lo limpia entre tests. Con
+        # uid=1 y tc_blue=1500 —los mismos que usa medio archivo— el test de la
+        # pantalla podía leer el valor de OTRA base y pasar sin ejecutar una
+        # línea del código que dice probar. Verificado sembrando el caché a
+        # mano. Se limpia acá y no en el test para que valga también para los
+        # que se agreguen después.
+        snapshots_job._LIVE_VALUE_CACHE.clear()
+        self.addCleanup(snapshots_job._LIVE_VALUE_CACHE.clear)
 
     def _sembrar_precio(self, symbol, price, updated_at):
         conn = sqlite3.connect(self.db_path)
@@ -1032,6 +1044,41 @@ class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
                         "el precio de ayer sirve para la foto de hoy")
         self.assertFalse(corrida('2026-05-31')['ok'],
                          "anteayer ya no: el corte son 48 h")
+
+    # ── lo que encontró auditar el fix contra sí mismo ──────────────────
+    def test_una_fecha_ilegible_no_deja_a_nadie_sin_foto(self):
+        """`date.fromisoformat` en 3.9 es estricto y esto corre dentro del job
+        que escribe la foto de TODOS. Una fecha rara no puede ser la razón por
+        la que un día no se mide: se avisa y se usa hoy."""
+        # Una fecha ISO con hora pegada SÍ se entiende: se recorta el día.
+        self.assertEqual(snapshots_job.corte_frescura("2026-06-02T10:00:00"),
+                         "2026-06-01")
+        # Lo que no se puede leer cae a hoy, avisando, en vez de tirar
+        # ValueError adentro del job.
+        for raro in ("2026-6-2", "hoy", "", "2026-13-45", 12345):
+            self.assertEqual(snapshots_job.corte_frescura(raro),
+                             snapshots_job.corte_frescura(None),
+                             f"{raro!r} tendría que caer a hoy, no explotar")
+
+    def test_el_limite_funciona_con_cualquier_cantidad_de_horas(self):
+        """La primera versión hacía `timedelta(days=HORAS/24 - 1)` sobre un
+        `date`: con 36 h truncaba a 0 y con 12 h la resta daba NEGATIVA — el
+        corte quedaba en el FUTURO, rechazando TODOS los precios y dejando sin
+        foto a todo el mundo. Nadie lo iba a ver hasta cambiar la constante."""
+        from datetime import date as _d
+        original = snapshots_job.MAX_PRICE_AGE_HOURS
+        try:
+            esperado = {48: "2026-06-01", 24: "2026-06-02", 72: "2026-05-31",
+                        36: "2026-06-01", 12: "2026-06-02", 1: "2026-06-02"}
+            for horas, corte in esperado.items():
+                snapshots_job.MAX_PRICE_AGE_HOURS = horas
+                self.assertEqual(snapshots_job.corte_frescura("2026-06-02"), corte,
+                                 f"con {horas} h el corte quedó mal")
+                self.assertLessEqual(_d.fromisoformat(snapshots_job.corte_frescura("2026-06-02")),
+                                     _d(2026, 6, 2),
+                                     f"con {horas} h el corte quedó en el FUTURO")
+        finally:
+            snapshots_job.MAX_PRICE_AGE_HOURS = original
 
     # ── y la asimetría, que es deliberada ───────────────────────────────
     def test_la_pantalla_si_muestra_el_precio_rancio(self):

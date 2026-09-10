@@ -686,10 +686,12 @@ function PersonalDashboard() {
 
   // Rendimiento acumulado (desde el inicio). Mismo número que el hero "Ganancia
   // total" y el KPI "Resultado total"; acá lo mostramos también por horizonte.
-  // El monto vale aunque el % no: `pct` puede venir en null y `pctSigned` ya
-  // lo muestra como "—". Antes la fila entera desaparecía cuando el aportado
-  // quedaba en cero o negativo, escondiendo también la plata, que era correcta.
-  const totalVar = totalValue > 0
+  // ⚠️ `totalVar` NO se renderiza en ninguna card: su único uso es decidir si
+  // la sección "Rendimiento" aparece (ver el `&&` más abajo). Aflojarle la
+  // condición a `totalValue > 0` hacía aparecer la sección VACÍA —título y
+  // tooltip sin una sola card— para quien tiene el aportado en cero o negativo
+  // y todavía no tiene serie. Queda como estaba.
+  const totalVar = (totalValue > 0 && netDeposited > 0)
     ? { usd: totalReturnUsd, pct: totalReturnPct }
     : null
 

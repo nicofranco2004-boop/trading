@@ -746,17 +746,39 @@ def corte_frescura(target_date: str = None) -> str:
     Contra un instante, un `updated_at` sin hora quedaba afuera por el formato y
     no por la edad.
     """
-    dia = date_cls.fromisoformat(target_date) if target_date else hoy_art_date()
-    return (dia - timedelta(days=MAX_PRICE_AGE_HOURS / 24.0 - 1)).isoformat()
+    # `date.fromisoformat` en 3.9 es estricto: '2026-06-02T00:00' o '2026-6-2'
+    # lanzan ValueError. Hoy los dos callers de producción pasan `hoy_art()` o
+    # nada, así que no puede pasar — pero esto corre DENTRO del job que escribe
+    # la foto de todos los usuarios, y una fecha rara no puede ser la razón por
+    # la que un día no se mide. Ante la duda se usa hoy, que es lo que hacía
+    # antes de que esta función existiera.
+    dia = None
+    if target_date:
+        try:
+            dia = date_cls.fromisoformat(str(target_date)[:10])
+        except ValueError:
+            log.warning("corte_frescura: target_date ilegible (%r) — uso hoy", target_date)
+    if dia is None:
+        dia = hoy_art_date()
+    # ⚠️ En DÍAS ENTEROS y redondeando PARA ARRIBA. `timedelta(days=0.5)` sobre
+    # un `date` se trunca a 0 y el corte queda igual que con 24 h; peor, con un
+    # límite menor a 24 h la resta daba NEGATIVA y el corte quedaba en el
+    # FUTURO, o sea rechazando TODOS los precios y dejando de escribir la foto
+    # de todo el mundo. El límite se expresa en horas porque `register_trade`
+    # lo usa con esa precisión; acá se convierte a días y nunca baja de 0.
+    dias_atras = max(0, math.ceil(MAX_PRICE_AGE_HOURS / 24.0) - 1)
+    return (dia - timedelta(days=dias_atras)).isoformat()
 
 
 def read_last_prices(conn, symbols: list, *, fresh_since: str = None) -> dict:
     """Devuelve {symbol: price} para los símbolos con último precio guardado.
 
     `fresh_since=None` (default) = sin límite de edad: el comportamiento de
-    siempre, el que usan las superficies que MUESTRAN. Con un timestamp (el que
-    devuelve `corte_frescura`), descarta los símbolos cuyo `updated_at` sea
-    anterior — para los caminos que ESCRIBEN historia. Ver el bloque de arriba.
+    siempre, el que usan las superficies que MUESTRAN. Con una fecha
+    'YYYY-MM-DD' (la que devuelve `corte_frescura`), descarta los símbolos cuyo
+    `updated_at` sea anterior — para los caminos que ESCRIBEN historia. La
+    comparación es de texto ISO contra un día suelto, que es lo que hace que
+    funcione con `updated_at` con hora y sin hora. Ver el bloque de arriba.
     """
     syms = [s for s in (symbols or []) if s]
     if not syms:

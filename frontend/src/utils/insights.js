@@ -26,8 +26,7 @@ export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, capita
   // del `netDeposited > 0 ? ... : 0`. `pct` puede venir en null — no hay
   // denominador que lo sostenga — y entonces la frase habla de PLATA y no de
   // porcentaje, en vez de afirmar un 0 % que sería falso.
-  const { usd: totalReturn, pct: pctRaw } = retornoTotal({ totalValue, netDeposited, capitalMaximo })
-  const totalReturnPct = pctRaw
+  const { usd: totalReturn, pct: totalReturnPct } = retornoTotal({ totalValue, netDeposited, capitalMaximo })
 
   // Find biggest losers / winners with valid pnl
   const withPnl = positions.filter(p => p.pnl_usd != null && p.pnl_pct != null)
@@ -45,9 +44,13 @@ export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, capita
       return { tone: 'neutral',
                text: 'Cargá tus movimientos y posiciones para ver el rendimiento real de tu cartera.' }
     }
+    // ⚠️ La frase dice el HECHO y no la causa. `pct` viene en null por más de
+    // un motivo —retiraste más de lo que pusiste, o directamente no cargaste
+    // ningún aporte— y nombrar el equivocado le afirma a un usuario nuevo que
+    // retiró plata que nunca retiró. Desde acá no se puede distinguir cuál es.
     return {
       tone: totalReturn >= 0 ? 'positive' : 'negative',
-      text: `Tu cartera está ${fmtUsd(Math.abs(totalReturn))} ${totalReturn >= 0 ? 'a favor' : 'en contra'} de lo que aportaste. Como retiraste más de lo que pusiste, el porcentaje no se puede calcular sobre el capital.`,
+      text: `Tu cartera está ${fmtUsd(Math.abs(totalReturn))} ${totalReturn >= 0 ? 'a favor' : 'en contra'} de lo que aportaste. El porcentaje no se puede calcular: no hay un capital aportado contra el cual medirlo.`,
     }
   }
 
