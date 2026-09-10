@@ -1097,8 +1097,25 @@ class BullMarketParser(Parser):
             if not monto:
                 continue
             activo = _norm_ticker(r["tk"] or "") if tipo == "DIVIDENDO" else ""
+            # En los movimientos de CAJA la última columna es la leyenda del
+            # comprobante ("GTOS. TRANS. TITULOS", "TRANSFERENCIA VIA MEP",
+            # "CREDITO CTA. CTE."), no una especie: la guardamos. Sin esto el
+            # historial mostraba sólo "Op. 257047" y se perdía el dato de que ese
+            # día hubo un TRASPASO DE TÍTULOS a otro broker — la única señal de
+            # que las posiciones que quedan abiertas ya no están en la cuenta
+            # (el export de Bull Market es el libro de caja: no trae la salida de
+            # los títulos, sólo lo que costó el trámite). No afecta el dedup: el
+            # fingerprint no mira las notas.
+            # Sólo la leyenda de verdad: en los dividendos esa columna trae el
+            # número de especie ("8006 BYMA", "30043"), que no dice nada. Las
+            # leyendas empiezan con letra ("GTOS. TRANS. TITULOS", "CREDITO CTA.
+            # CTE.", "TRANSFERENCIA VIA MEP"); los números de especie, con dígito.
+            _leyenda = re.sub(r"\s+", " ", (r["txt"] or "")).strip()
+            if _leyenda[:1].isdigit():
+                _leyenda = ""
+            _notas = f"{notas} · {_leyenda}" if (notas and _leyenda) else (notas or _leyenda)
             result.raw_rows.append(
-                _mk_row(idx, fecha, tipo, activo or "", "", "", monto, moneda, notas))
+                _mk_row(idx, fecha, tipo, activo or "", "", "", monto, moneda, _notas))
 
         # Netos sintéticos de cauciones y futuros, uno por moneda.
         n_idx = len(rows) + 1

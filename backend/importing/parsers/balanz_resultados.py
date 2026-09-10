@@ -35,7 +35,7 @@ import csv
 import io
 from typing import Dict, List, Optional
 from .base import Parser
-from ..schema import ParseResult, RawRow, RowError
+from ..schema import ParseResult, RawRow, RowError, omitted_row_error
 
 
 def _norm_header(h: str) -> str:
@@ -228,7 +228,7 @@ class BalanzResultadosParser(Parser):
         has_hoja = bool(cols.get("_hoja"))
         ridx = 0  # contador propio: "Orden" emite 2 filas (compra + venta)
 
-        for row in reader:
+        for _row_i, row in enumerate(reader):
             # Multi-hoja: solo procesamos la hoja por_realizado (las otras son
             # redundantes). En CSV de una sola hoja no hay '_hoja' → procesamos todo.
             if has_hoja:
@@ -290,8 +290,8 @@ class BalanzResultadosParser(Parser):
             # precio+cantidad, generaría una COMPRA ESPURIA → posición fantasma.
             # Mejor avisar al usuario que tragarlo en silencio.
             if mov and not (mov.startswith("no realizado") or mov.startswith("orden")):
-                result.parse_errors.append(RowError(
-                    ridx + 1, activo, "BALANZ_RES_TIPO_DESCONOCIDO",
+                result.parse_errors.append(omitted_row_error(
+                    _row_i + 1, activo, "BALANZ_RES_TIPO_DESCONOCIDO",
                     f"Tipo de movimiento no reconocido para {activo}: "
                     f"'{_g(row, 'tipo_mov')}'. Se omitió la fila — escribinos si "
                     f"creés que debería importarse."))

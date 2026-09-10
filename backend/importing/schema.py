@@ -268,13 +268,33 @@ class NormalizedTx:
 
 @dataclass
 class RowError:
+    # `row_index` es la CLAVE que une el error con su RawRow (`errors_by_row`), no
+    # un número de línea. Para una fila que el parser OMITIÓ no existe RawRow: usar
+    # ahí el contador de emitidas le pegaba el error a una fila válida ajena (y dos
+    # omitidas seguidas compartían clave → se contaba una sola). Esas van con
+    # `row_index` NEGATIVO — nunca colisiona, porque los RawRow son 1..N — y el
+    # número que ve el usuario viaja aparte en `file_row`. Ver `omitted_row_error`.
     row_index: int
     field: Optional[str]
     code: str           # 'INVALID_DATE', 'UNKNOWN_BROKER', 'MISSING_QUANTITY', etc.
     message: str        # mensaje en castellano para el usuario
+    # Fila REAL del archivo que subió el usuario, contada como el resto del
+    # importer: 1 = primera fila de datos, el header no cuenta (igual que
+    # `RawRow.row_index`). Es lo que hay que mostrar como "Fila N".
+    file_row: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"row_index": self.row_index, "field": self.field, "code": self.code, "message": self.message}
+        return {"row_index": self.row_index, "field": self.field, "code": self.code,
+                "message": self.message, "file_row": self.file_row}
+
+
+def omitted_row_error(file_row: int, field: Optional[str], code: str, message: str) -> RowError:
+    """Error de una fila que el parser OMITIÓ (no emitió RawRow).
+
+    `file_row` = fila de datos del archivo (1-based, sin contar el header). La
+    clave interna va negativa para no pisar ninguna fila válida ni chocar con
+    otra omitida."""
+    return RowError(-int(file_row), field, code, message, file_row=int(file_row))
 
 
 @dataclass
