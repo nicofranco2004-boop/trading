@@ -3758,12 +3758,39 @@ _RESET_PORTFOLIO_TABLES = (
     "monthly_entries", "snapshots", "plazos_fijos", "goals", "twr_periods",
     "deleted_ops_journal", "bond_cashflow_skips",
     "ai_analyses_cache", "ai_user_facts",
+    # Agregada 2026-09-09: `futures_positions` es CARTERA y nació DESPUÉS de que
+    # se escribió este allowlist (feat 413996ad). Es exactamente el costo que el
+    # allowlist explícito cobra —una tabla nueva no se resetea sola— y el motivo
+    # por el que el reset dejaba futuros abiertos en una cuenta "vaciada".
+    "futures_positions",
 )
 # Keys de config que son de CARTERA (se borran); el resto —onboarding,
 # welcome_email_sent_at, diag_*— son prefs de UX y sobreviven. Borrar fx_version
 # es clave: sin esto una cuenta v2 sigue en v2 al re-importar (uno de los
 # "arrastres" que reporta el usuario). Al quedar sin historia, se re-resuelve sola.
 _RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
+
+# Tablas que suma el reset de ADMIN ("como la primera vez") por encima de la
+# cartera. Criterio, decidido con el dueño del producto: se va TODO menos el
+# login y el plan pago. Acá viven las cosas que el usuario configuró y que un
+# "empezar de cero" de verdad no debería heredar: sus alertas, lo que sigue, las
+# claves read-only con las que conectó un broker y los mapeos de columnas que
+# guardó el importador.
+# ⚠️ Lo que NO está acá y NO es casualidad:
+#   • users / subscriptions / billing_events / credit_ledger / plan_events /
+#     trial_* → identidad y plata. Tocarlas es resetearle el plan a alguien que
+#     pagó: la razón entera de que este allowlist sea explícito.
+#   • ai_usage_daily / ai_tool_usage → son el CONTADOR de la cuota de IA. Si se
+#     borran, "resetear" pasa a ser la forma de regalarse cuota.
+#   • push_subscriptions → es el permiso de notificaciones del DISPOSITIVO.
+#     Borrarlo deja al usuario sin push en silencio hasta que lo vuelva a dar.
+#   • advisor_* → son vínculos con OTRAS personas, no datos propios.
+#   • login_history / password_reset_tokens / email_verification_codes → rastro
+#     de seguridad de la cuenta, que sigue siendo la misma cuenta.
+_RESET_ADMIN_EXTRA_TABLES = (
+    "alerts", "alert_events", "watchlist",
+    "user_broker_credentials", "import_mappings",
+)
 
 
 # ─── Progreso del reset ──────────────────────────────────────────────────────
@@ -3796,13 +3823,21 @@ def _reset_set(uid: int, **kw) -> None:
         st.update(kw)
 
 
-def _borrar_en_chunks(conn, uid: int, tabla: str, where: str, args: tuple) -> int:
+def _borrar_en_chunks(conn, uid: int, tabla: str, where: str, args: tuple,
+                     pausa: float = 0.0) -> int:
     """Borra en tandas, UNA TRANSACCIÓN POR TANDA.
 
     `DELETE ... LIMIT` no está disponible en todos los builds de SQLite (pide
     SQLITE_ENABLE_UPDATE_DELETE_LIMIT), así que acotamos por rowid, que funciona
     siempre. Entre tanda y tanda el lock queda libre: ahí es donde entran las
     escrituras del resto de los usuarios.
+
+    `pausa` (segundos) es un freno DELIBERADO entre tanda y tanda. Soltar el lock
+    no alcanza si volvemos a pedirlo en el microsegundo siguiente: el escritor
+    único de SQLite queda igual de ocupado y la cola de los demás igual de larga
+    (es el incidente del 13/08). Con la pausa, entre tanda y tanda hay una ventana
+    REAL en la que entran los writes del resto. Cuesta tiempo de reloj y no le
+    cuesta nada a nadie más.
     """
     total = 0
     while True:
@@ -3816,10 +3851,26 @@ def _borrar_en_chunks(conn, uid: int, tabla: str, where: str, args: tuple) -> in
             return total
         total += n
         _reset_set(uid, hechas=_reset_estado(uid).get("hechas", 0) + n)
+        if pausa:
+            time.sleep(pausa)
 
 
-def _reset_data_worker(uid: int) -> None:
+def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool = False,
+                       borrar_perfil: bool = False, pausa: float = 0.0) -> None:
     """Corre el borrado completo. Publica progreso en `_reset_progress`.
+
+    UN SOLO MOTOR para los dos botones. El de "Empezar de cero" del usuario y el
+    de admin ("resetear a cero por email") borran lo MISMO con el MISMO código:
+    lo único que cambia son los parámetros. Forkear el borrado en dos funciones
+    sería garantizar que dentro de tres meses una arregle un bug y la otra no.
+      • `tablas`: allowlist a usar (por defecto, la cartera).
+      • `toda_la_config`: borra TODAS las prefs del usuario en `config`, no sólo
+        las 3 keys de cartera. Es lo que hace que la cuenta arranque de cero de
+        verdad (checklist de onboarding incluido).
+      • `borrar_perfil`: limpia `users.investor_profile` — lo que declaró en el
+        onboarding. Es la ÚNICA columna de `users` que se toca, y a propósito:
+        `users` es también donde viven el tier y el crédito pago.
+      • `pausa`: segundos de freno entre tandas (ver `_borrar_en_chunks`).
 
     ATOMICIDAD: en chunks el reset ya NO es atómico — si el proceso muere a
     mitad, la cartera queda a medio borrar. Es un intercambio deliberado y es
@@ -3840,7 +3891,7 @@ def _reset_data_worker(uid: int) -> None:
             for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
                 plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
             plan.append(("import_batches", "user_id=?", (uid,)))
-        for t in _RESET_PORTFOLIO_TABLES:
+        for t in (tablas or _RESET_PORTFOLIO_TABLES):
             plan.append((t, "user_id=?", (uid,)))
 
         total = 0
@@ -3858,18 +3909,31 @@ def _reset_data_worker(uid: int) -> None:
         cleared = {}
         for t, where, args in vivas:
             _reset_set(uid, tabla=t)
-            n = _run_with_lock_retry(lambda: _borrar_en_chunks(conn, uid, t, where, args))
+            n = _run_with_lock_retry(lambda: _borrar_en_chunks(conn, uid, t, where, args, pausa))
             if n:
                 cleared[t] = n
 
         # Las keys de config de CARTERA (no las prefs de UX). Son 3 filas: sin chunks.
-        _kph = ",".join("?" * len(_RESET_CONFIG_KEYS))
+        # En el reset de admin se van TODAS: una cuenta "como la primera vez" no
+        # puede arrastrar la moneda elegida ni el checklist de onboarding tildado.
         with conn:
-            n = conn.execute(
-                f"DELETE FROM config WHERE user_id=? AND key IN ({_kph})",
-                (uid, *_RESET_CONFIG_KEYS)).rowcount
+            if toda_la_config:
+                n = conn.execute("DELETE FROM config WHERE user_id=?", (uid,)).rowcount
+            else:
+                _kph = ",".join("?" * len(_RESET_CONFIG_KEYS))
+                n = conn.execute(
+                    f"DELETE FROM config WHERE user_id=? AND key IN ({_kph})",
+                    (uid, *_RESET_CONFIG_KEYS)).rowcount
         if n:
             cleared["config"] = n
+
+        if borrar_perfil:
+            with conn:
+                n = conn.execute(
+                    "UPDATE users SET investor_profile=NULL "
+                    "WHERE id=? AND investor_profile IS NOT NULL", (uid,)).rowcount
+            if n:
+                cleared["users.investor_profile"] = n
 
         # Sin esto el chat de IA sigue respondiendo con la cartera RECIÉN BORRADA
         # hasta 60s — justo el síntoma de "datos fantasma" que este botón elimina.
@@ -16228,6 +16292,237 @@ def admin_repair_user_history(data: RepairUserIn, uid: int = Depends(get_admin_u
         return {"ok": True, "email": row["email"], "user_id": tu, **res}
     finally:
         conn.close()
+
+
+# ─── Reset de admin: dejar una cuenta en cero, por email ─────────────────────
+# POR QUÉ EXISTE. "Empezar de cero" (el botón del usuario, /api/me/reset-data)
+# está PAUSADO desde el 13/08 y no por un bug suyo: esta base es SQLite con UN
+# SOLO ESCRITOR, y un borrado masivo desbordaba la cola de escritura — el
+# `database is locked` no le salía al que reseteaba, le salía a TODOS. Dejarlo
+# apretable por cualquiera con la app llena de gente no se podía.
+#
+# Esto NO es reabrir aquella puerta. Lo que cambia, y es todo lo que cambia:
+#   1. El disparador es una persona sola (vos) que elige el MOMENTO. Un reset a
+#      las 4 AM no compite con nadie; el botón del usuario se apretaba a las 11.
+#   2. Antes de borrar se MIDE. `/preview` es read-only y dice exactamente
+#      cuántas filas se van a borrar: 3.000 filas es intrascendente y 900.000 no,
+#      y hasta hoy eso se adivinaba. Sin número no hay decisión, hay corazonada.
+#   3. El borrado va FRENADO (`pausa`): entre tanda y tanda se le deja una
+#      ventana real al resto de los escritores en vez de volver a pedir el lock
+#      de inmediato.
+# El motor es el mismo `_reset_data_worker` del botón del usuario, con otros
+# parámetros: dos copias del borrado serían dos lugares donde arreglar el
+# próximo bug y uno donde olvidárselo.
+
+# Freno entre tandas del reset de admin, en milisegundos. 60 ms sobre tandas de
+# 5.000 filas ≈ +12 s por cada millón de filas: nada de reloj, mucha ventana para
+# los demás. Se puede subir sin deployar con RENDI_RESET_PAUSA_MS.
+_RESET_ADMIN_PAUSA_MS = int(os.environ.get("RENDI_RESET_PAUSA_MS", "60") or 60)
+
+
+class AdminResetUserIn(BaseModel):
+    email: str = Field(..., min_length=3, max_length=200)
+    # El mismo email, tipeado de nuevo. Es el único freno contra el error que
+    # importa acá: resetear a la persona equivocada. No hay Deshacer.
+    confirmar_email: str = Field(..., min_length=3, max_length=200)
+
+
+def _reset_admin_tablas() -> tuple:
+    """Cartera + lo que suma el reset de admin, sin repetidos y en orden estable."""
+    vistas, out = set(), []
+    for t in (*_RESET_PORTFOLIO_TABLES, *_RESET_ADMIN_EXTRA_TABLES):
+        if t not in vistas:
+            vistas.add(t)
+            out.append(t)
+    return tuple(out)
+
+
+def _reset_admin_usuario(conn, email: str):
+    row = conn.execute(
+        "SELECT id, email, name, tier, is_admin, created_at, last_login_at, "
+        "       investor_profile, managed_by "
+        "FROM users WHERE lower(email)=lower(?)", (email.strip(),)).fetchone()
+    if not row:
+        raise HTTPException(404, f"No hay usuario con email '{email.strip()}'.")
+    return row
+
+
+def _reset_admin_conteo(conn, uid: int) -> dict:
+    """Cuenta lo que se va a borrar SIN BORRAR NADA (read-only puro).
+
+    Es la parte que faltaba en el botón viejo: saber, antes de tocar la base, si
+    esta cuenta son 3.000 filas o un millón. De eso depende si conviene correrlo
+    ahora o a la madrugada."""
+    batch_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+    _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
+
+    plan = []
+    if batch_ids:
+        for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+            plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
+        plan.append(("import_batches", "user_id=?", (uid,)))
+    for t in _reset_admin_tablas():
+        plan.append((t, "user_id=?", (uid,)))
+    plan.append(("config", "user_id=?", (uid,)))
+
+    filas, total, faltantes = [], 0, []
+    for t, where, args in plan:
+        try:
+            n = conn.execute(f"SELECT COUNT(*) FROM {t} WHERE {where}", args).fetchone()[0]
+        except ERR_OPERACIONAL as ex:
+            # Tabla ausente en una DB vieja: se informa, NO se traga. Un conteo
+            # incompleto que parece completo es peor que no contar.
+            faltantes.append(f"{t} ({type(ex).__name__})")
+            continue
+        total += n
+        if n:
+            filas.append({"tabla": t, "filas": n})
+    filas.sort(key=lambda r: r["filas"], reverse=True)
+    return {"filas": filas, "total_filas": total, "tablas_ausentes": faltantes}
+
+
+def _reset_admin_protegido(conn, uid: int) -> dict:
+    """Lo que el reset NO toca, con números. Sirve para verlo, no para confiar:
+    el test `test_reset_admin` fija la invariante de que no se borra."""
+    def _n(sql, args=(uid,)):
+        try:
+            return conn.execute(sql, args).fetchone()[0]
+        except ERR_OPERACIONAL:
+            return None
+    return {
+        "suscripciones": _n("SELECT COUNT(*) FROM subscriptions WHERE user_id=?"),
+        "credit_ledger": _n("SELECT COUNT(*) FROM credit_ledger WHERE user_id=?"),
+        "push_subscriptions": _n("SELECT COUNT(*) FROM push_subscriptions WHERE user_id=?"),
+        "uso_ia_dias": _n("SELECT COUNT(*) FROM ai_usage_daily WHERE user_id=?"),
+        "logins": _n("SELECT COUNT(*) FROM login_history WHERE user_id=?"),
+    }
+
+
+def _reset_admin_avisos(conn, u) -> list:
+    """Avisos para que no se resetee a la persona equivocada, o a la correcta sin
+    saber qué se lleva puesto."""
+    uid = u["id"]
+    avisos = []
+    if u["is_admin"]:
+        avisos.append("Es una cuenta ADMIN.")
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM advisor_clients WHERE advisor_uid=? "
+                         "AND (status IS NULL OR status<>'revoked')", (uid,)).fetchone()[0]
+        if n:
+            avisos.append(f"Es ASESOR con {n} cliente(s) vinculados: se le borra SU cartera, "
+                          f"la de los clientes NO se toca (viven en sus propias cuentas).")
+    except ERR_OPERACIONAL:
+        pass
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM advisor_clients WHERE client_uid=? "
+                         "AND (status IS NULL OR status<>'revoked')", (uid,)).fetchone()[0]
+        if n:
+            avisos.append(f"Es CLIENTE de {n} asesor(es): el asesor va a ver la cuenta vacía.")
+    except ERR_OPERACIONAL:
+        pass
+    if u["managed_by"]:
+        avisos.append("Es un cliente SHADOW (lo administra un asesor, no tiene login propio).")
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM subscriptions WHERE user_id=? "
+                         "AND status='authorized'", (uid,)).fetchone()[0]
+        if n:
+            avisos.append("Tiene suscripción ACTIVA: el plan y el cobro NO se tocan.")
+    except ERR_OPERACIONAL:
+        pass
+    return avisos
+
+
+@app.get("/api/admin/reset-user/preview")
+def admin_reset_user_preview(email: str, uid: int = Depends(get_admin_user)):
+    """READ-ONLY: qué usuario es, cuántas filas se borrarían y qué sobrevive.
+    No escribe una sola fila. Es el paso obligatorio antes del botón rojo."""
+    conn = get_db()
+    try:
+        u = _reset_admin_usuario(conn, email)
+        return {
+            "ok": True,
+            "usuario": {
+                "id": u["id"], "email": u["email"], "name": u["name"],
+                "tier": u["tier"], "is_admin": bool(u["is_admin"]),
+                "created_at": u["created_at"], "last_login_at": u["last_login_at"],
+                "tiene_perfil_inversor": bool(u["investor_profile"]),
+            },
+            **_reset_admin_conteo(conn, u["id"]),
+            "protegido": _reset_admin_protegido(conn, u["id"]),
+            "avisos": _reset_admin_avisos(conn, u),
+            "estado_actual": _reset_estado(u["id"]).get("estado", "inactivo"),
+            "pausa_ms": _RESET_ADMIN_PAUSA_MS,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/admin/reset-user/status")
+def admin_reset_user_status(user_id: int, uid: int = Depends(get_admin_user)):
+    """Progreso del reset de OTRO usuario (el de /api/me/... sólo mira el propio)."""
+    st = _reset_estado(user_id)
+    if not st:
+        return {"estado": "inactivo", "user_id": user_id}
+    total, hechas = st.get("total") or 0, st.get("hechas") or 0
+    return {
+        "user_id": user_id,
+        "estado": st.get("estado", "inactivo"),
+        "total": total,
+        "hechas": min(hechas, total) if total else hechas,
+        "pct": round(100.0 * min(hechas, total) / total, 1) if total else (
+            100.0 if st.get("estado") == "listo" else 0.0),
+        "tabla": st.get("tabla"),
+        "cleared": st.get("cleared"),
+        "error": st.get("error"),
+    }
+
+
+@app.post("/api/admin/reset-user")
+def admin_reset_user(data: AdminResetUserIn, uid: int = Depends(get_admin_user)):
+    """Deja la cuenta de UN usuario (por email) como el día que se registró:
+    sin cartera, sin importaciones, sin historial, sin alertas, sin seguidos, sin
+    credenciales de broker y sin preferencias. CONSERVA el login (email, contraseña,
+    sesión) y TODO lo de plata: plan, suscripción, crédito, prueba gratis.
+
+    IRREVERSIBLE Y SIN DESHACER: lo borrado se recupera sólo desde un backup de la
+    base entera. Antes de correrlo en una cuenta grande, tocá "Backup manual (S3)".
+
+    Arranca y vuelve al instante; el progreso está en
+    GET /api/admin/reset-user/status?user_id=... . El borrado va por tandas y con
+    freno entre tanda y tanda para no monopolizar el único escritor de SQLite.
+
+    ⚠️ `get_admin_user` cuelga de `get_current_user`, NO de `get_effective_user`:
+    este endpoint es inmune al contexto de cliente del Plan Asesor. Si algún día
+    alguien lo pasa a `get_effective_user`, un asesor con un cliente abierto
+    resetearía al cliente creyendo que resetea a otro. Hay test que lo traba."""
+    if data.email.strip().lower() != data.confirmar_email.strip().lower():
+        raise HTTPException(400, "El email de confirmación no coincide. No se borró nada.")
+    conn = get_db()
+    try:
+        u = _reset_admin_usuario(conn, data.email)
+        tu = u["id"]
+        conteo = _reset_admin_conteo(conn, tu)
+    finally:
+        conn.close()
+
+    st = _reset_estado(tu)
+    if st.get("estado") == "corriendo":
+        # Idempotente: dos clicks no lanzan dos borrados.
+        return {"ok": True, "estado": "corriendo", "ya_corriendo": True,
+                "user_id": tu, "email": u["email"]}
+
+    log.warning("ADMIN RESET admin_uid=%s → user_id=%s email=%s filas=%s",
+                uid, tu, u["email"], conteo["total_filas"])
+    _reset_set(tu, estado="corriendo", total=conteo["total_filas"], hechas=0,
+               tabla=None, cleared={}, error=None)
+    threading.Thread(
+        target=_reset_data_worker, args=(tu,),
+        kwargs={"tablas": _reset_admin_tablas(), "toda_la_config": True,
+                "borrar_perfil": True, "pausa": _RESET_ADMIN_PAUSA_MS / 1000.0},
+        daemon=True, name=f"reset-admin-{tu}").start()
+    return {"ok": True, "estado": "corriendo", "user_id": tu, "email": u["email"],
+            "total_filas": conteo["total_filas"]}
 
 
 @app.post("/api/admin/repair-snapshots-all")
