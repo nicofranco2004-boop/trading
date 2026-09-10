@@ -819,13 +819,23 @@ def run_preview(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint, gross_amount_usd, tc_compra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd, transfer_out, tc_compra)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (batch_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
              tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes,
-             fp, gross_usd, tx.tc_compra),
+             # `transfer_out` marca la VENTA que NO es venta: el título se fue a
+             # otro broker / wallet y se cierra A COSTO (P&L 0). El confirm lo
+             # relee de esta tabla, así que si no se escribe acá el flag muere en
+             # el round-trip y el persister bookea el costo entero como PÉRDIDA
+             # FANTASMA. Faltaba justo en este INSERT — el del importador de
+             # ARCHIVOS — que es el que usan IEB (RETR), PPI ("Retiro de
+             # Títulos"), Binance (retiro a wallet) y Balanz (Transferencia
+             # Externa Débito). `store_preview_txs` (foto de tenencia) sí lo
+             # guardaba: el arreglo estaba escrito y no se había propagado.
+             fp, gross_usd, 1 if getattr(tx, "transfer_out", False) else 0,
+             tx.tc_compra),
         )
 
     preview_payload = build_preview(
@@ -1257,13 +1267,16 @@ def load_session_with_seed_revalidate(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint, gross_amount_usd, tc_compra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd, transfer_out, tc_compra)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (session_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
              tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes,
-             fp, gross_usd, getattr(tx, "tc_compra", None)),
+             # Mismo motivo que en `run_preview`: sin esto el flag muere en el
+             # round-trip y la venta a costo se convierte en pérdida fantasma.
+             fp, gross_usd, 1 if getattr(tx, "transfer_out", False) else 0,
+             getattr(tx, "tc_compra", None)),
         )
 
     return valid_txs, raw_id_by_index

@@ -370,20 +370,31 @@ class BalanzMovimientosCanjeArancelesTest(unittest.TestCase):
             self.assertTrue(v.get("_corporate_close"))
 
     def test_renta_sin_cash_no_emite_fee_monto_0(self):
-        # Una fila de renta/cobro/fee con importe 0 PERO con cantidad (que dejó
-        # pasar el guard de arriba) NO debe emitir un FEE monto 0 → el validador lo
-        # rechazaba ("comisión aislada necesita monto > 0"). Se omite limpio.
+        # Una fila de renta/cobro/fee con importe 0 PERO con cantidad NO debe
+        # emitir un FEE monto 0 → el validador lo rechazaba ("comisión aislada
+        # necesita monto > 0"). Eso sigue igual: no se emite nada.
+        #
+        # Lo que SÍ cambió (2026-09-10): antes se descartaba EN SILENCIO, y así
+        # se perdieron durante meses los canjes de ON y una amortización total
+        # que sí movían nominales (ver test_canje_de_on_mueve_los_nominales).
+        # Con una renta no sabemos si esa cantidad es un movimiento o es la
+        # tenencia sobre la que se paga —adivinar crearía una posición
+        # fantasma—, así que ahora se REPORTA con su número de fila en vez de
+        # tragarse. Sigue sin importarse nada.
         res = self._parse(
             "Pago Complementario / TLC1O,TLC1O,Corporativos,2025-10-01,150,0,2025-10-01,Pesos,0",
             "Intereses devengados / GD30,GD30,Bonos,2025-10-02,200,0,2025-10-02,Pesos,0",
             "Renta / AL30,AL30,Bonos,2025-10-03,100,0,2025-10-03,Pesos,0",
         )
-        self.assertEqual(res.parse_errors, [])
         self.assertEqual(len(res.raw_rows), 0)       # nada que importar (sin cash)
         # y NO hay ningún FEE/DIVIDENDO con monto 0
         self.assertFalse(any(rr.data.get("tipo") in ("FEE", "DIVIDENDO")
                              and float(rr.data.get("monto") or 0) == 0
                              for rr in res.raw_rows))
+        # las tres quedan reportadas, con la fila REAL del archivo
+        self.assertEqual([e.code for e in res.parse_errors],
+                         ["BALANZ_MOV_CANTIDAD_SIN_CASH"] * 3)
+        self.assertEqual([e.file_row for e in res.parse_errors], [1, 2, 3])
 
     def test_descripcion_desconocida_sin_cash_sigue_flaggeada(self):
         # El guard de "cash-only sin cash" NO debe tragarse una descripción

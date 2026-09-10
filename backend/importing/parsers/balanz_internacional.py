@@ -33,10 +33,11 @@ import io
 from typing import List, Optional
 
 from .base import Parser
-from ..schema import ParseResult, RawRow, RowError
+from ..schema import ParseResult, RawRow, RowError, omitted_row_error
 # Reusamos los helpers PUROS del parser local (mismo formato de columnas) sin tocarlo.
 from .balanz_movimientos import (
     _norm_header, _norm_ccy, _num, _resolve_columns, _REQUIRED, _is_tax,
+    transferencia_externa,
 )
 
 BROKER = "Balanz Internacional"
@@ -100,6 +101,14 @@ def _classify_desc(desc_norm: str) -> str:
     # (devuelve capital → baja nominal), intereses, prima/rescate de bono.
     if (d.startswith("renta") or d.startswith("dividendo") or d.startswith("amortizacion")
             or d.startswith("pago complementario") or d.startswith("prima por rescate")
+            # "Intereses corridos" es la MISMA cosa que "intereses devengados"
+            # con otras dos palabras: los intereses que el bono acumuló hasta la
+            # fecha del canje. Llega en dos patas —el cobro en dólares y su
+            # retención en pesos—, igual que "Intereses devengados canje …", que
+            # ya entraba bien por esta misma rama.
+            # "Contraprestación período temprano" es el premio por entrar temprano
+            # a un canje de ON: cash que ENTRA, sin nominales.
+            or d.startswith("intereses corridos") or d.startswith("contraprestacion")
             or d.startswith("intereses devengados") or d.startswith("rescate")
             or d.startswith("baja derecho")):
         return "renta"
@@ -176,7 +185,7 @@ class BalanzInternacionalParser(Parser):
 
         _amort_closed = set()
 
-        for row in reader:
+        for _row_i, row in enumerate(reader):
             desc_raw = _g(row, "descripcion")
             desc = _norm_header(desc_raw)
             if not desc:
@@ -198,6 +207,48 @@ class BalanzInternacionalParser(Parser):
 
             if not has_cash and not has_qty:
                 continue
+
+            # ── ⭐ Con CANTIDAD y sin plata: mueve NOMINALES, no caja ────────
+            # Estas filas se descartaban más abajo para no emitir un FEE de monto
+            # 0 que el validador rechaza — pero de paso se tiraba la CANTIDAD, y
+            # con ella la tenencia. Un export real lo dejó a la vista:
+            #   • los CANJES de ON llegan como "Movimiento Manual / … canje …":
+            #     el bono viejo sale (−) y el nuevo entra (+) el mismo día, con
+            #     Importe 0 y a veces vía un certificado provisorio ("21030").
+            #     El viejo nunca salía y el nuevo nunca llegaba.
+            #   • una "Amortización / RCCJO" de −232 nominales con Importe 0 (el
+            #     cobro había venido días antes, en su propia fila) dejaba el bono
+            #     entero como posición fantasma.
+            # Van a `corporate` SÓLO las dos formas que vimos en un export real
+            # —"Movimiento Manual" y las amortizaciones—; esa rama ya sabe
+            # hacerlo (es la misma que atiende "canje s/aviso", el canje que
+            # Balanz sí nombra así) y sin ticker no emite nada. El resto se
+            # REPORTA en vez de descartarse: con una renta, la cantidad podría
+            # ser la tenencia de referencia y no un movimiento, y adivinar
+            # crearía una posición fantasma. VA ACÁ, ANTES de la rama
+            # `corporate` — más abajo no sirve, esa rama ya pasó.
+            # `not has_price` es parte de la condición y no un detalle: una acción
+            # societaria de Balanz SIEMPRE viene con precio = -1 (el sentinela de
+            # "sin precio"). Si la fila trae un precio REAL es un trade y tiene
+            # que seguir hasta su propia rama (FCI / trade con precio), que están
+            # MÁS ABAJO que `corporate` — sin este guard, reclasificar acá arriba
+            # se las robaba y las emitía a precio 0, borrándoles el costo.
+            if (kind in ("deposito", "retiro", "fee", "renta", "manual")
+                    and not has_cash and not has_price):
+                if kind == "manual" or "amortizacion" in desc:
+                    kind = "corporate"
+                else:
+                    # Acá la CANTIDAD es ambigua y no la inventamos: puede ser un
+                    # movimiento de nominales o puede ser sólo la tenencia sobre
+                    # la que se paga la renta. Tampoco la tragamos en silencio
+                    # (así se perdieron los canjes durante meses): la reportamos
+                    # con su número de fila para resolverla con un export real.
+                    result.parse_errors.append(omitted_row_error(
+                        _row_i + 1, ticker, "BALANZ_INTL_CANTIDAD_SIN_CASH",
+                        f"'{desc_raw[:60]}' trae cantidad pero no plata y no "
+                        f"sabemos si mueve tenencia. Se omitió esta fila — "
+                        f"escribinos para resolverlo."))
+                    continue
 
             def base(tipo, **extra):
                 d = {"fecha": fecha, "tipo": tipo, "broker": BROKER,
@@ -225,25 +276,33 @@ class BalanzInternacionalParser(Parser):
                     _emit(base("DIVIDENDO" if cash_in else "IMPUESTO", monto=str(abs(importe))))
                 continue
 
-            # ── Transferencia de título (entrada/salida). Con precio → COMPRA a su
-            # costo + DEPOSITO por el valor (cash netea 0, capital aportado refleja el
-            # título). Sin precio (Liquidación de Transferencia de un fondo, importe 0)
-            # → COMPRA precio 0 (crea la posición; la foto de tenencia la valúa).
+            # ── Transferencia de título (entrada/salida) ─────────────────────
+            # Misma regla que el parser local, en una sola función compartida: la
+            # dirección la da el SIGNO de la cantidad, no el Importe (que en una
+            # transferencia de títulos viene 0 y no distingue nada).
+            #   • entra → COMPRA a su valor + DEPOSITO por ese valor (el cash
+            #     netea a 0 y el capital aportado refleja el título); sin precio,
+            #     COMPRA a 0 y la foto de tenencia la valúa después.
+            #   • sale  → cierre A COSTO (P&L 0). Antes esta rama emitía COMPRA
+            #     cuando la fila traía precio, y un `_corporate_close` —que bookea
+            #     el costo como PÉRDIDA— cuando no lo traía. Las dos estaban mal:
+            #     el papel se fue a otro broker, sigue siendo del usuario.
+            # Ver `transferencia_externa` en el parser local.
             if kind == "transfer":
-                if ticker and has_qty and has_price:
-                    cost = abs(qty) * precio
-                    _emit(base("COMPRA", activo=ticker, cantidad=str(abs(qty)),
-                               precio=str(precio), monto=str(round(cost, 4))))
-                    _emit({"fecha": fecha, "tipo": "DEPOSITO", "broker": BROKER,
-                           "moneda": moneda or "USD", "monto": str(round(cost, 4)),
-                           "notas": "Transferencia (entrada de título)"})
-                elif ticker and has_qty:
-                    if qty > 0:
-                        _emit(base("COMPRA", activo=ticker, cantidad=str(abs(qty)),
-                                   precio="0", monto="0"))
-                    else:
-                        _emit(base("VENTA", activo=ticker, cantidad=str(abs(qty)),
-                                   precio="0", monto="0", _corporate_close=True))
+                _tipo, _extra, _cash = (
+                    transferencia_externa(qty, precio) if ticker and has_qty
+                    else (None, {}, None))
+                if _tipo:
+                    # Igual que en el local: la salida cierra a costo y el precio
+                    # de mercado del día queda anotado, no se pierde.
+                    _nota = notas
+                    if qty < 0 and (precio or 0) > 0:
+                        _nota = f"{notas} · valuado a {precio}"
+                    _emit(base(_tipo, activo=ticker, notas=_nota, **_extra))
+                    if _cash:
+                        _emit({"fecha": fecha, "tipo": _cash[0], "broker": BROKER,
+                               "moneda": moneda or "USD", "monto": _cash[1],
+                               "notas": "Transferencia (entrada de título)"})
                 if has_cash:
                     _emit(base("DEPOSITO" if cash_in else "RETIRO", monto=str(abs(importe))))
                 continue
@@ -286,22 +345,17 @@ class BalanzInternacionalParser(Parser):
                 _emit(base("DIVIDENDO" if cash_in else "IMPUESTO", monto=str(abs(importe))))
                 continue
 
-            # ── Movimiento manual que CAMBIA cantidad sin cash (ej. "Cambio notas
-            # estructuradas a fondos": el título viejo SALE) → cierre corporate, para
-            # no dejar una posición fantasma. El destino (fondo) entra por su propia
-            # fila "Liquidación de Transferencia Crédito".
-            if kind == "manual" and has_qty and ticker and not has_cash:
-                if qty > 0:
-                    _emit(base("COMPRA", activo=ticker, cantidad=str(abs(qty)),
-                               precio="0", monto="0"))
-                else:
-                    _emit(base("VENTA", activo=ticker, cantidad=str(abs(qty)),
-                               precio="0", monto="0", _corporate_close=True))
-                continue
-
-            # ── Movimientos de caja / renta (precio = -1) ────────────────────
+            # ── Red de seguridad: sin plata, no hay movimiento de caja ──────
+            # Las filas con cantidad que SÍ mueven nominales ya se desviaron
+            # arriba a `corporate`, y las ambiguas ya se reportaron. Lo que llega
+            # acá con `kind` de caja y sin plata es una fila que ninguna rama
+            # quiso (ej. trae precio pero no ticker): descartarla evita emitir un
+            # FEE de monto 0 —que el validador rechaza— o reventar con `importe`
+            # en None. Este guard estaba desde antes; la reclasificación de
+            # arriba NO lo reemplaza, lo complementa.
             if kind in ("deposito", "retiro", "fee", "renta", "manual") and not has_cash:
                 continue
+
             if kind == "deposito":
                 _emit(base("DEPOSITO" if cash_in else "RETIRO", monto=str(abs(importe))))
                 continue
@@ -342,8 +396,8 @@ class BalanzInternacionalParser(Parser):
                 continue
 
             # ── Descripción no reconocida → la marcamos (Import Guardian). ───────
-            result.parse_errors.append(RowError(
-                ridx + 1, ticker, "BALANZ_INTL_DESC_DESCONOCIDA",
+            result.parse_errors.append(omitted_row_error(
+                _row_i + 1, ticker, "BALANZ_INTL_DESC_DESCONOCIDA",
                 f"Movimiento de Balanz Internacional no reconocido: '{desc_raw[:60]}'. "
                 f"Se omitió esta fila — escribinos para soportarlo."))
 

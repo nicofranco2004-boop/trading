@@ -2387,7 +2387,11 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
           <ul className="text-xs text-red-700 dark:text-red-400 space-y-1 max-h-40 overflow-y-auto">
             {preview.errors.map((e, i) => (
               <li key={i}>
-                <span className="font-mono text-[10px] bg-red-500/10 px-1 py-0.5 rounded mr-2">Fila {e.row_index}</span>
+                {/* `file_row` = la fila REAL del archivo. Va primero porque para una
+                    fila OMITIDA `row_index` es una clave interna negativa (no una
+                    fila); los parsers que no la mandan ya usan la fila del archivo
+                    como row_index. */}
+                <span className="font-mono text-[10px] bg-red-500/10 px-1 py-0.5 rounded mr-2">Fila {e.file_row ?? e.row_index}</span>
                 {e.message}
               </li>
             ))}

@@ -78,9 +78,14 @@ def build_preview(
         "fx_conversions": by_op_type.get(OP_FX_ARS_TO_USD, 0) + by_op_type.get(OP_FX_USD_TO_ARS, 0),
     }
 
-    # Lista plana de errores (frontend la pagina)
+    # Lista plana de errores (frontend la pagina). Se ordena por la fila REAL del
+    # archivo: las filas OMITIDAS llevan `row_index` negativo (clave interna que
+    # no pisa ninguna fila válida) y su número de fila viaja en `file_row` — sin
+    # esto salían todas primero y al revés.
     flat_errors: List[Dict[str, Any]] = []
-    for ridx in sorted(errors_by_row.keys()):
+    for ridx in sorted(errors_by_row.keys(),
+                       key=lambda k: (errors_by_row[k][0].file_row
+                                      if errors_by_row[k][0].file_row is not None else k)):
         for e in errors_by_row[ridx]:
             flat_errors.append(e.to_dict())
 

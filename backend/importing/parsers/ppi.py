@@ -59,7 +59,7 @@ import io
 import re
 from typing import Dict, List, Optional
 from .base import Parser
-from ..schema import ParseResult, RawRow, RowError
+from ..schema import ParseResult, RawRow, RowError, omitted_row_error
 
 
 def _norm_header(h: str) -> str:
@@ -244,7 +244,7 @@ class PpiParser(Parser):
 
         # Necesitamos materializar las filas para poder pasar dos veces si hiciera
         # falta; pero con el routing por kind alcanza una sola pasada.
-        for row in reader:
+        for _row_i, row in enumerate(reader):
             desc_raw = _g(row, "descripcion")
             desc = _norm_header(desc_raw)
             if not desc:
@@ -283,8 +283,8 @@ class PpiParser(Parser):
                     continue  # redundante con la hoja de moneda
                 else:
                     # Ingreso de Títulos / Canje / Traspaso / etc → follow-up.
-                    result.parse_errors.append(RowError(
-                        ridx + 1, especie, "PPI_INSTRUMENTO_NO_SOPORTADO",
+                    result.parse_errors.append(omitted_row_error(
+                        _row_i + 1, especie, "PPI_INSTRUMENTO_NO_SOPORTADO",
                         f"Movimiento de títulos de PPI no soportado aún: "
                         f"'{desc_raw[:50]}'. Se omitió — escribinos para soportarlo."))
                 continue
@@ -314,8 +314,8 @@ class PpiParser(Parser):
                 if ticker == "SPOT" or not ticker:
                     # Conducto dólar-MEP: el ticker real vive en Instrumentos y la
                     # qty no matchea → lo flaggeamos para soportarlo con dato real.
-                    result.parse_errors.append(RowError(
-                        ridx + 1, None, "PPI_SPOT_REVIEW",
+                    result.parse_errors.append(omitted_row_error(
+                        _row_i + 1, None, "PPI_SPOT_REVIEW",
                         f"Operación SPOT (dólar MEP) de PPI: '{desc_raw[:50]}'. "
                         f"Se omitió — la soportamos con un export real."))
                     continue
@@ -372,8 +372,8 @@ class PpiParser(Parser):
                 # Plazo Com. A, traspaso: por signo (igual que Balanz "manual").
                 _emit(base("INTERES" if cash_in else "FEE", monto=str(abs(importe))))
             else:
-                result.parse_errors.append(RowError(
-                    ridx + 1, None, "PPI_DESC_DESCONOCIDA",
+                result.parse_errors.append(omitted_row_error(
+                    _row_i + 1, None, "PPI_DESC_DESCONOCIDA",
                     f"Movimiento de PPI no reconocido: '{desc_raw[:60]}'. Se omitió "
                     f"esta fila — escribinos para soportarlo."))
 
