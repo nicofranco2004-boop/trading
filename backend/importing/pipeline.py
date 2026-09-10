@@ -225,6 +225,57 @@ def find_duplicate_batch(conn, uid: int, file_hash: str) -> Optional[str]:
     return row["id"] if row else None
 
 
+# Marca que ponen los parsers en la fila del saldo de apertura de un export.
+SALDO_ANTERIOR_NOTE = "Saldo anterior"
+
+
+def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
+    """Saca la fila de "Saldo anterior" cuando esa plata YA está contada.
+
+    Los exports históricos de Bull Market abren con el saldo que la cuenta traía
+    de ANTES del período del archivo (`S.ANTERIOR`). Cargarlo es lo correcto
+    cuando ese archivo es el principio de la historia: si no, el efectivo del
+    broker arranca corrido. Pero el broker manda la historia PARTIDA en varios
+    archivos, y ahí el saldo de apertura del segundo es el cierre del primero:
+    si el primero ya está importado, sumarlo es contar la misma plata dos veces.
+
+    El parser resuelve el caso de varios archivos en UN mismo batch (el wizard
+    los combina). Esto cubre el otro camino, el de subirlos de a uno: acá sí hay
+    conexión, así que preguntamos si el usuario ya tiene movimientos anteriores
+    en ese broker —importados o cargados a mano— y en ese caso la fila se cae.
+    """
+    saldos = [t for t in txs if (t.notes or "").strip() == SALDO_ANTERIOR_NOTE]
+    if not saldos:
+        return txs
+    fuera = set()
+    for t in saldos:
+        base = (t.broker or "").strip()
+        if not base or not t.date:
+            continue
+        # El broker y su hermano en dólares ("Bull Market · USD"): el efectivo es
+        # de la misma cuenta, partido por moneda.
+        like = f"{base} · %"
+        previo = conn.execute(
+            """SELECT 1 FROM import_normalized_tx n
+                 JOIN import_batches b ON n.batch_id = b.id
+                WHERE b.user_id=? AND b.status='confirmed' AND b.reverted_at IS NULL
+                  AND n.excluded_at IS NULL AND n.date < ?
+                  AND (n.broker = ? OR n.broker LIKE ?)
+                LIMIT 1""",
+            (uid, t.date, base, like),
+        ).fetchone() or conn.execute(
+            """SELECT 1 FROM operations
+                WHERE user_id=? AND date < ? AND (broker = ? OR broker LIKE ?)
+                LIMIT 1""",
+            (uid, t.date, base, like),
+        ).fetchone()
+        if previo:
+            fuera.add(id(t))
+    if not fuera:
+        return txs
+    return [t for t in txs if id(t) not in fuera]
+
+
 def already_imported_row_indices(conn, uid: int, session_id: str, txs,
                                  already_skipped=()) -> set:
     """row_index de las filas cuyo fingerprint YA existe en OTRO batch confirmado
@@ -515,6 +566,9 @@ def run_preview(
 
     # Normalizar
     normalized, norm_errors = normalize_rows(parse_result.raw_rows)
+
+    # Saldo de apertura ya contado (historia partida en varios archivos) → fuera.
+    normalized = drop_saldo_anterior_ya_contado(conn, uid, normalized)
 
     # FCI escrito por NOMBRE (plantilla manual): el normalizer resuelve tickers de
     # broker contra un mapa curado, pero no tiene DB para mirar el catálogo. Acá sí

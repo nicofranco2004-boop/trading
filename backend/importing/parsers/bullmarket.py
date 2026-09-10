@@ -1,6 +1,6 @@
-"""Parser de Bull Market Brokers — dos layouts del mismo broker.
+"""Parser de Bull Market Brokers — tres layouts del mismo broker.
 
-Bull Market expone los movimientos en DOS formatos distintos:
+Bull Market expone los movimientos en TRES formatos distintos:
 
   1. "Cuenta Corriente" (Excel): columna `Comprobante` con descripciones
      ("COMPRA NORMAL", "RECIBO DE COBRO", …) y columnas Cantidad/Precio/Saldo
@@ -10,6 +10,25 @@ Bull Market expone los movimientos en DOS formatos distintos:
      VTAS, VTU$, PAGA, DIV, RTA, SFCI, LRFD), cantidad y precio PEGADOS en un
      solo campo `Referencia/Cantidad/Precio`, y signo de `Importe` INVERTIDO
      (negativo = ingreso de plata). Es un único archivo con el historial completo.
+
+  3. "Histórico compacto" (CSV que Bull Market MANDA POR MAIL, partido en varios
+     archivos por período — reporte de un usuario, 2026-09-09). Header:
+     `F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad`. No trae ni
+     `Especie` ni `Saldo` ni `Operado`: el TICKER viaja pegado a la cantidad
+     dentro de `Ref./Cantidad` ("833.0000  GD30"; las ventas marcan el signo con
+     un guión pegado atrás, "247.0000- TXAR") y NO trae precio: se deriva como
+     importe ÷ cantidad, que ya sale per-1 (no hace falta el ajuste per-100).
+
+     Lo que lo hace distinto de verdad son las columnas `Dolares` + `Mda`: el
+     archivo lista LAS DOS sub-cuentas (pesos y dólares) en una sola tabla.
+     Cuando `Mda` viene lleno (U$S / DOLAR) la plata REAL de esa fila es la de
+     `Dolares`; el `Importe` de esas filas es sólo el equivalente en pesos al
+     dólar OFICIAL, para que cierre el total del pie. Tomarlo como pesos sería
+     cargar un dividendo de US$2,57 como $460 — y al TC oficial, encima.
+     Verificado contra los dos archivos reales del usuario: la suma del `Importe`
+     de las filas SIN `Mda` del archivo 2021-2022 da -630,92, que es exactamente
+     el `S.ANTERIOR` (-630,93) con el que abre el archivo 2023-2024; y la suma de
+     `Dolares` de un archivo (+555,78) cancela con la del otro (-555,78).
 
 `parse()` detecta el layout por el header y despacha al sub-parser correspondiente.
 
@@ -79,6 +98,12 @@ from ..schema import ParseResult, RawRow, RowError
 # con "no parece un export de Bull Market" (reporte de un usuario, 2026-07-29).
 _REQUIRED_HEADERS = {"liquida", "especie", "importe"}
 
+# El TERCER layout ("Histórico compacto", el que Bull Market manda por mail en
+# archivos partidos por período — ver docstring del módulo) no trae ni `Especie`
+# ni `Operado` ni `Saldo`: el ticker viaja PEGADO a la cantidad y la fecha se
+# llama `F.Liquid`. Tiene su propio juego mínimo de headers.
+_REQUIRED_HEADERS_HIST = {"f.liquid", "importe", "dolares", "mda"}
+
 # Comprobante (lowercase) → categoría Rendi, por PREFIJO (Bull Market tiene muchas
 # variantes: COMPRA NORMAL/PARIDAD/EXTERIOR, RENTA Y AMORTIZ, DIVIDENDOS DOLARES
 # CABLE, etc.). `Importe` es el efecto en caja → el tipo se elige para que el signo
@@ -131,6 +156,57 @@ _MOV_CODE_MAP = {
     "paga": "RETIRO",     # orden de pago (importe positivo); dirección por signo
     "sfci": "RETIRO",     # suscripción FCI (egreso de plata)
     "lrfd": "VENTA",      # liquidación rescate FCI (ingreso, con cantidad)
+}
+
+# Layout 3 (Histórico compacto): código `Cpbt` → tipo Rendi. Se consulta ANTES
+# que la leyenda del pie, porque acá hay códigos de la sub-cuenta en DÓLARES
+# (CDOA/PU$A: cobro y pago EN dólares) que en este layout sí se pueden importar
+# bien —la columna `Dolares` trae el monto real— y en los otros dos layouts NO
+# (ahí sólo está la columna en pesos, así que siguen dando error visible en vez
+# de importarse en la moneda equivocada). Los tipos "_SIGNED" los resuelve el
+# signo del Importe más abajo (en este layout negativo = ENTRA plata).
+_HIST_CODE_MAP = {
+    "coba": "DEPOSITO",     # recibo de cobro (pesos)
+    "cdoa": "DEPOSITO",     # rec. cobro dólares
+    "paga": "RETIRO",       # orden de pago (pesos)
+    "pu$a": "RETIRO",       # ord. pago dólares
+    "cpra": "COMPRA",
+    "vtas": "VENTA",
+    "cpu$": "COMPRA",       # compra paridad — puede ser pata de un MEP (ver abajo)
+    "vtu$": "VENTA",        # venta paridad  — ídem
+    "sfci": "RETIRO",       # suscripción FCI
+    "lrfd": "VENTA",        # liquidación rescate FCI
+    "div":  "DIV_SIGNED",   # dividendos
+    "cdiv": "DIV_SIGNED",   # pago de dividendos / fracciones
+    "ddiv": "DIV_SIGNED",
+    "rta":  "DIV_SIGNED",   # renta y amortización de bonos
+    "drep": "FEE_SIGNED",   # retención
+    "drec": "FEE_SIGNED",   # retención dólares
+    "nocr": "FEE_SIGNED",   # devolución de retención (entra plata → ingreso)
+    "dtrt": "FEE_SIGNED",   # gastos de transferencia de títulos
+    "canj": "FEE_SIGNED",   # canje: sólo queda el residuo de caja
+    # Notas de crédito/débito en dólares: cuando vienen EMPAREJADAS son una
+    # conversión cable↔MEP y se omiten (ver _HIST_NOTA_USD). Una nota suelta —el
+    # export real trae una, "RET BS PS/GCIA"— es una retención de verdad y se
+    # cobra por signo. Sin esta entrada quedaba como código no soportado y la
+    # caja en dólares cerraba 0,04 corrida.
+    "du$v": "FEE_SIGNED",
+    "cu$v": "FEE_SIGNED",
+}
+
+# Layout 3: notas de crédito/débito en dólares. Son las conversiones internas
+# cable↔MEP: mueven LOS MISMOS dólares entre sub-cuentas y vienen SIEMPRE de a
+# pares que se cancelan (mismo día, mismo monto, signo opuesto). Emparejadas se
+# omiten —igual que en la Cuenta Corriente—; suelta, una nota de débito es una
+# retención real y se cobra por signo.
+_HIST_NOTA_USD = ("du$v", "cu$v")
+
+# Palabras que aparecen como PRIMER token de `Ref./Cantidad` y NO son un ticker
+# (el campo mezcla referencias de dividendo, plazas y textos libres).
+_HIST_NO_TICKER = {
+    "BYMA", "MAE", "RET", "DEV", "PAGO", "FRACC", "CONV", "CABLE", "TENENCIA",
+    "CREDITO", "DEBITO", "TRANSFERENCIA", "GTOS", "GTO", "RETENCION",
+    "RETENCIONES", "CTA", "S", "ANT", "TOTAL", "DOLAR", "DOLARES", "MEP",
 }
 
 # Normalización de tickers Bull Market → símbolo BYMA/Rendi. Pass-through si no
@@ -233,6 +309,60 @@ def _split_ref(s: str):
     return (qty, price, "")
 
 
+def _num_us(s: str) -> Optional[float]:
+    """Número del campo `Ref./Cantidad` del layout Histórico compacto. OJO: acá
+    el formato es AL REVÉS que el de `Importe` — la cantidad viene a la yanqui
+    ('1,400.0000' = mil cuatrocientos) mientras que el importe de la MISMA fila
+    viene a la argentina ('79.992,31'). Y las ventas marcan el signo con un
+    guión PEGADO ATRÁS ('247.0000-'), no adelante."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    neg = s.endswith("-")
+    if neg:
+        s = s[:-1]
+    s = s.replace(",", "")
+    if not re.match(r"^\d+(\.\d+)?$", s):
+        return None
+    v = float(s)
+    return -v if neg else v
+
+
+def _split_ref_hist(s: str):
+    """Campo `Ref./Cantidad` → (cantidad_con_signo, ticker, texto_crudo).
+
+    Tres formas reales en el archivo:
+      · "833.0000  GD30"      → operación: cantidad + TICKER (no hay precio)
+      · "8044 BYMA" / "322"   → referencia del dividendo (número de plaza/cupón)
+      · "CREDITO CTA. CTE."   → texto libre
+    Devolvemos el ticker sólo cuando el token parece uno de verdad; quién puede
+    usarlo (operación vs dividendo) lo decide el llamador, que sabe el código."""
+    s = (s or "").strip()
+    toks = s.split()
+    if not toks:
+        return (None, None, "")
+    qty = _num_us(toks[0])
+    tk = None
+    cand = toks[1] if (qty is not None and len(toks) > 1) else (toks[0] if qty is None else None)
+    if cand:
+        c = cand.strip().upper()
+        if c not in _HIST_NO_TICKER and re.match(r"^[A-Z][A-Z0-9]{0,9}$", c):
+            tk = c
+    return (qty, tk, s)
+
+
+def _add_days(iso: str, n: int) -> str:
+    """ISO ± n días. Sin dependencias: sólo se usa para fechar el saldo inicial
+    un día antes del primer movimiento, así no compite por el desempate de orden
+    con una operación del mismo día."""
+    try:
+        import datetime as _dt
+        y, m, d = (int(x) for x in iso.split("-"))
+        return (_dt.date(y, m, d) + _dt.timedelta(days=n)).isoformat()
+    except Exception:
+        return iso
+
+
 def _mk_row(idx, fecha, tipo, activo, cantidad, precio, monto, moneda, notas) -> RawRow:
     def fmt(v):
         return "" if v is None or v == "" else f"{v}"
@@ -263,6 +393,12 @@ class BullMarketParser(Parser):
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}
+        # Layout 3 (Histórico compacto por mail): no trae `Especie`, así que no
+        # pasa el gate de los otros dos. Se reconoce por su propio juego de
+        # headers + la columna de código `Cpbt` (sin punto).
+        if (len(_REQUIRED_HEADERS_HIST & norm) == len(_REQUIRED_HEADERS_HIST)
+                and any(h.startswith("cpbt") for h in norm)):
+            return True
         if len(_REQUIRED_HEADERS & norm) < len(_REQUIRED_HEADERS):
             return False
         # Tiene que ser reconocible como uno de los dos layouts (Comprobante o Cpbt.).
@@ -287,6 +423,10 @@ class BullMarketParser(Parser):
         norm_set = set(norm_to_orig.keys())
         has_comprobante = "comprobante" in norm_set
         has_cpbt = any(h.startswith("cpbt") for h in norm_set)
+        # Layout 3 (Histórico compacto por mail): sin `Especie`, con `Dolares`+`Mda`.
+        if (has_cpbt
+                and len(_REQUIRED_HEADERS_HIST & norm_set) == len(_REQUIRED_HEADERS_HIST)):
+            return self._parse_historico_compacto(list(reader), norm_to_orig)
         if (not (has_comprobante or has_cpbt)
                 or len(_REQUIRED_HEADERS & norm_set) < len(_REQUIRED_HEADERS)):
             result.parse_errors.append(RowError(
@@ -707,6 +847,269 @@ class BullMarketParser(Parser):
                 result.raw_rows.append(_mk_row(
                     n_idx, last_fecha, "INTERES" if neto > 0 else "FEE",
                     "", "", "", abs(neto), "ARS", etiqueta))
+                n_idx += 1
+
+        return result
+
+    # ── Layout 3: Histórico compacto (CSV por mail, con Dolares + Mda) ───────
+    def _parse_historico_compacto(self, rows: list, norm_to_orig: dict) -> ParseResult:
+        """El export que Bull Market MANDA POR MAIL cuando el portal no deja bajar
+        toda la historia. Ver el docstring del módulo para la forma del archivo.
+
+        Las tres cosas que lo hacen distinto de los otros dos layouts:
+          1. La moneda de cada fila la manda `Mda`: si viene lleno, la plata REAL
+             es la de `Dolares` y el `Importe` de esa fila es sólo un equivalente
+             en pesos al dólar oficial (informativo, para el total del pie).
+          2. No hay columna de precio: se deriva importe ÷ cantidad (ya per-1).
+          3. El ticker viene pegado a la cantidad dentro de `Ref./Cantidad`.
+        """
+        result = ParseResult()
+        f_col = _col(norm_to_orig, "f.liquid", "liquida")
+        cpbt_col = _col(norm_to_orig, "cpbt")
+        num_col = _col(norm_to_orig, "n.cpbt", "numero")
+        imp_col = norm_to_orig.get("importe")
+        dol_col = norm_to_orig.get("dolares")
+        mda_col = norm_to_orig.get("mda")
+        ref_col = _col(norm_to_orig, "ref.", "referencia")
+
+        def gv(row, col) -> str:
+            return _strip(row.get(col, "")) if col else ""
+
+        def es_fecha(s: str) -> bool:
+            return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", s or ""))
+
+        def dias(a: str, b: str) -> int:
+            import datetime as _dt
+            try:
+                pa = _dt.date(*(int(x) for x in a.split("-")))
+                pb = _dt.date(*(int(x) for x in b.split("-")))
+                return abs((pa - pb).days)
+            except Exception:
+                return 9999
+
+        # Pass 1 — LEYENDA del pie. Acá no hay columna `Especie` donde poner el
+        # código, así que la leyenda viene TODA junta en `Ref./Cantidad`, con el
+        # código y la descripción separados por 2+ espacios ("CDIV   PAGO DIV").
+        # La leemos para que un código que Bull Market agregue mañana se entienda
+        # solo, vía _classify_comprobante, sin tocar el mapa fijo.
+        legend = {}
+        for row in rows:
+            if es_fecha(_iso_date(gv(row, f_col))):
+                continue
+            m = re.match(r"^([A-Z0-9$]{2,6})\s{2,}(\S.*)$", gv(row, ref_col))
+            if m:
+                legend[m.group(1).upper()] = re.sub(r"\s+", " ", m.group(2)).strip()
+
+        def _desc(code: str) -> str:
+            return legend.get(code.upper(), "")
+
+        def _es_caucion(code: str) -> bool:
+            return (code[:4].lower() in ("ccdo", "vtct", "vtcc", "cpct")
+                    or "caucion" in _desc(code).lower())
+
+        def _es_indice(code: str) -> bool:
+            if code[:4].lower() in ("crgi", "dbpi", "virm", "cirm", "decu"):
+                return True
+            d = _desc(code).lower()
+            return "indice" in d or "a3 mtr" in d
+
+        # Pass 2 — una pasada leyendo las filas que SÍ son movimientos. La fila
+        # rota que trae el export (la leyenda de DTRT sale en ancho fijo, sin
+        # `;`) no tiene fecha parseable → cae acá afuera sola.
+        recs = []
+        for idx, row in enumerate(rows, start=1):
+            fecha = _iso_date(gv(row, f_col))
+            if not es_fecha(fecha):
+                continue
+            code = gv(row, cpbt_col).upper()
+            if not code:
+                continue
+            qty, tk, txt = _split_ref_hist(gv(row, ref_col))
+            mda = gv(row, mda_col)
+            recs.append({
+                "idx": idx, "fecha": fecha, "code": code, "c4": code[:4].lower(),
+                "numero": gv(row, num_col), "imp": _num(gv(row, imp_col)),
+                "dol": _num(gv(row, dol_col)), "mda": mda, "usd": bool(mda),
+                "qty": qty, "tk": tk, "txt": txt,
+            })
+
+        # Pass 3 — DÓLAR MEP. Acá, a diferencia de los otros dos layouts, las DOS
+        # patas traen monto: la de pesos y la de dólares. Así que en vez de
+        # perder los dólares en un RETIRO (que además infla el capital aportado),
+        # las colapsamos en UNA conversión, que es lo que realmente pasó.
+        #   · CPRA (bono en pesos, sale plata) + VTU$ (venta paridad) → ARS→USD
+        #   · CPU$ (compra paridad, salen dólares) + VTAS (entra plata) → USD→ARS
+        # Guardas para no fusionar de más: la contraparte tiene que ser de la OTRA
+        # moneda (un CPU$+VTU$ del mismo papel es un round-trip en dólares, NO una
+        # conversión), mismo ticker, misma cantidad, a menos de una semana, y con
+        # un TC plausible. Lo que no empareja es una compra/venta común.
+        mep, drop, usados = {}, set(), set()
+        for u in recs:
+            if u["c4"] not in ("vtu$", "cpu$") or not u["usd"] or not u["dol"]:
+                continue
+            if u["idx"] in usados or u["qty"] is None or not u["tk"]:
+                continue
+            want = "cpra" if u["c4"] == "vtu$" else "vtas"
+            for p in recs:
+                if p["idx"] in usados or p["idx"] == u["idx"] or p["usd"]:
+                    continue
+                if p["c4"] != want or not p["imp"] or p["qty"] is None:
+                    continue
+                if p["tk"] != u["tk"] or abs(abs(p["qty"]) - abs(u["qty"])) > 1e-6:
+                    continue
+                if dias(p["fecha"], u["fecha"]) > 7:
+                    continue
+                ars, usd = abs(p["imp"]), abs(u["dol"])
+                if not (usd > 0 and 10.0 <= ars / usd <= 100000.0):
+                    continue
+                mep[p["idx"]] = ("FX_ARS_USD" if u["c4"] == "vtu$" else "FX_USD_ARS",
+                                 ars, usd, u["tk"])
+                drop.add(u["idx"])
+                usados.add(p["idx"]); usados.add(u["idx"])
+                break
+
+        # Pass 4 — notas de crédito/débito en dólares emparejadas (conversiones
+        # cable↔MEP): mismos dólares moviéndose entre sub-cuentas, mismo día,
+        # monto igual y signo opuesto → se omiten las dos. Una nota SUELTA no se
+        # toca acá: es una retención real y se cobra por signo más abajo.
+        for a in recs:
+            if a["c4"] not in _HIST_NOTA_USD or a["idx"] in drop or not a["dol"]:
+                continue
+            for b in recs:
+                if (b["idx"] == a["idx"] or b["idx"] in drop
+                        or b["c4"] not in _HIST_NOTA_USD or not b["dol"]):
+                    continue
+                if b["fecha"] == a["fecha"] and abs(a["dol"] + b["dol"]) < 0.005:
+                    drop.add(a["idx"]); drop.add(b["idx"])
+                    break
+
+        # Pass 5 — SALDO ANTERIOR. Viene SIN fecha y con el texto partido entre
+        # dos columnas ("S.ANT" | "ERIOR"). Sólo se emite si este archivo es el
+        # PRIMERO del lote: cuando el usuario sube los dos períodos juntos (que es
+        # lo que Bull Market manda), el saldo inicial del segundo ya está contado
+        # como movimientos en el primero → emitirlo sería contarlo dos veces.
+        min_fecha = min((r["fecha"] for r in recs), default="")
+        pos_fecha = {}   # posición en `rows` → fecha del primer movimiento posterior
+        ult = ""
+        for i in range(len(rows) - 1, -1, -1):
+            f = _iso_date(gv(rows[i], f_col))
+            if es_fecha(f):
+                ult = f
+            pos_fecha[i] = ult
+        for i, row in enumerate(rows):
+            if es_fecha(_iso_date(gv(row, f_col))):
+                continue
+            marca = (gv(row, cpbt_col) + gv(row, num_col)).upper().replace(".", "")
+            if not marca.startswith("SANT") and not marca.startswith("ANT"):
+                continue
+            arranca = pos_fecha.get(i, "")
+            if not arranca or arranca != min_fecha:
+                continue    # bloque posterior del lote → ya viene contado
+            mda = gv(row, mda_col)
+            v = _num(gv(row, dol_col)) if mda else _num(gv(row, imp_col))
+            if not v:
+                continue
+            result.raw_rows.append(_mk_row(
+                0, _add_days(arranca, -1), "DEPOSITO" if v < 0 else "RETIRO",
+                "", "", "", abs(v), "USD" if mda else "ARS", "Saldo anterior"))
+
+        # Pass 6 — emisión.
+        caucion_net, indice_net, last_fecha = {}, {}, ""
+        for r in recs:
+            idx, fecha, code = r["idx"], r["fecha"], r["code"]
+            last_fecha = fecha
+            if idx in drop:
+                continue
+            notas = f"Op. {r['numero']}" if r["numero"] else ""
+            moneda = "USD" if r["usd"] else "ARS"
+            # La plata REAL de la fila: `Dolares` si la fila es de la sub-cuenta
+            # en dólares, `Importe` si es de la de pesos. Signo INVERTIDO en las
+            # dos (negativo = entra plata).
+            v = r["dol"] if r["usd"] else r["imp"]
+
+            fx = mep.get(idx)
+            if fx:
+                fx_op, ars, usd, tk = fx
+                result.raw_rows.append(RawRow(row_index=idx, data={
+                    "fecha": fecha, "tipo": fx_op, "broker": "Bull Market",
+                    "activo": "", "cantidad": "", "precio": "",
+                    "monto": f"{ars}", "monto_usd": f"{usd}", "tc": "",
+                    "comisiones": "0", "moneda": "",
+                    "notas": (f"Dólar MEP vía {tk}" if tk else "Dólar MEP")
+                             + (f" · {notas}" if notas else ""),
+                }))
+                continue
+
+            # Cauciones y futuros de dólar: manejo de caja / contrato, no tenencia.
+            # Sólo su NETO cuenta, y por moneda (este archivo trae las dos juntas).
+            if _es_caucion(code):
+                if v is not None:
+                    caucion_net[moneda] = caucion_net.get(moneda, 0.0) - v
+                continue
+            if _es_indice(code):
+                if v is not None:
+                    indice_net[moneda] = indice_net.get(moneda, 0.0) - v
+                continue
+
+            tipo = _HIST_CODE_MAP.get(r["c4"])
+            if tipo is None:
+                d = _desc(code) or r["txt"]
+                tipo = _classify_comprobante(re.sub(r"\s+", " ", d).strip().lower()) if d else None
+            if tipo is None:
+                tipo = _MOV_CODE_MAP.get(r["c4"])
+            if tipo is None:
+                result.parse_errors.append(RowError(
+                    idx, "Cpbt", "BULLMARKET_OP_UNKNOWN",
+                    f"Código de comprobante no soportado: '{code}'.",
+                ))
+                continue
+
+            # Dirección por SIGNO — reconcilia por construcción con el archivo.
+            if tipo == "DIV_SIGNED":
+                if not v:
+                    continue        # dividendo listado sin monto: nada que registrar
+                tipo = "DIVIDENDO" if v < 0 else "FEE"
+            elif tipo == "FEE_SIGNED":
+                if not v:
+                    continue
+                tipo = "FEE" if v > 0 else "DIVIDENDO"
+            elif tipo in ("DEPOSITO", "RETIRO") and v is not None:
+                tipo = "DEPOSITO" if v < 0 else "RETIRO"
+
+            monto = abs(v) if v else None
+            if tipo in ("COMPRA", "VENTA"):
+                tk = _norm_ticker(r["tk"] or "")
+                if not tk or not r["qty"] or not monto:
+                    result.parse_errors.append(RowError(
+                        idx, "Ref./Cantidad", "BULLMARKET_HIST_REF_ILEGIBLE",
+                        f"No pudimos leer especie y cantidad de '{r['txt']}' ({code}).",
+                    ))
+                    continue
+                q = abs(r["qty"])
+                # No hay columna de precio: se deriva. Como el importe es el TOTAL
+                # de la operación, el precio sale ya per-1 (los bonos de este
+                # export NO necesitan el ajuste per-100 de los otros layouts).
+                result.raw_rows.append(
+                    _mk_row(idx, fecha, tipo, tk, q, round(monto / q, 8), monto,
+                            moneda, notas))
+                continue
+
+            if not monto:
+                continue
+            activo = _norm_ticker(r["tk"] or "") if tipo == "DIVIDENDO" else ""
+            result.raw_rows.append(
+                _mk_row(idx, fecha, tipo, activo or "", "", "", monto, moneda, notas))
+
+        # Netos sintéticos de cauciones y futuros, uno por moneda.
+        n_idx = len(rows) + 1
+        for tabla, etiqueta in ((caucion_net, "Neto de cauciones"),
+                                (indice_net, "Neto de futuros de dólar (A3)")):
+            for moneda, neto in tabla.items():
+                if abs(neto) < 0.01:
+                    continue
+                result.raw_rows.append(_mk_row(
+                    n_idx, last_fecha, "INTERES" if neto > 0 else "FEE",
+                    "", "", "", abs(neto), moneda, etiqueta))
                 n_idx += 1
 
         return result

@@ -20,7 +20,7 @@ if BACKEND not in sys.path:
 import openpyxl
 
 from importing.excel import is_xlsx, xlsx_to_csv, to_csv_text
-from importing.parsers.bullmarket import BullMarketParser
+from importing.parsers.bullmarket import BullMarketParser, _num
 
 
 def _build_bm_xlsx() -> bytes:
@@ -571,3 +571,214 @@ class TestBullMarketIndiceA3CuentaCorriente(unittest.TestCase):
         cash = sum(signo[x.data["tipo"]] * float(x.data["monto"] or 0)
                    for x in self.r.raw_rows)
         self.assertAlmostEqual(cash, 102000.0, places=2)   # el saldo del archivo
+
+
+class TestBullMarketHistoricoCompacto(unittest.TestCase):
+    """TERCER layout: el "Histórico compacto" que Bull Market MANDA POR MAIL,
+    partido en varios archivos por período (reporte de un usuario, 2026-09-09).
+
+    Header `F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad`. Antes lo
+    rechazaba entero ("no parece un export de Bull Market"): no trae `Especie`,
+    así que no pasaba el gate. Lo que lo hace distinto:
+      · la moneda REAL de cada fila la manda `Mda` (lleno = la plata es la de
+        `Dolares`; el `Importe` de esas filas es sólo el equivalente en pesos al
+        dólar oficial, para que cierre el total del pie),
+      · el ticker viene pegado a la cantidad ("833.0000  GD30"), con el signo de
+        las ventas como guión PEGADO ATRÁS ("247.0000- TXAR"),
+      · no hay columna de precio (se deriva importe ÷ cantidad),
+      · la cantidad viene a la yanqui ("1,400.0000") y el importe de la MISMA
+        fila a la argentina ("79.992,31").
+    Datos SINTÉTICOS con la forma exacta del archivo real (no de nadie)."""
+
+    HC = (
+        "F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad\n"
+        # Saldo anterior: SIN fecha y con el texto partido entre dos columnas.
+        ";S.ANT;ERIOR;-1000;;;\n"
+        "02/01/23;COBA;6668;-500000;;;CREDITO CTA. CTE.\n"
+        # Compra común en pesos: el precio se deriva → 120000 / 100 = 1200.
+        "03/01/23;CPRA;21126;120000;;;100.0000  ALUA\n"
+        # Venta común: el signo de la cantidad va como guión PEGADO ATRÁS.
+        "17/01/23;VTAS;204598;-72724,52;;;247.0000- TXAR\n"
+        # Retención (sale plata) y devolución de retención (entra) — importes
+        # tipo ",39" (coma decimal sin el cero adelante).
+        "02/01/23;DREP;34324;13,05;;;RET BS PS ALUAR\n"
+        "02/01/23;NOCR;46701;-,39;;;DEV RET BS PS A\n"
+        # MEP comprando dólares: CPRA (pesos) + VTU$ (pata dólar) → conversión.
+        "03/02/23;CPRA;21127;99000;;;833.0000  GD30\n"
+        "04/02/23;VTU$;33940;-43118,28;-300;DOLAR;833.0000- GD30\n"
+        # MEP vendiendo dólares: CPU$ (pata dólar) + VTAS (pesos) → conversión.
+        "10/03/23;CPU$;829076;16917,74;150;DOLAR;439.0000  GD35\n"
+        "10/03/23;VTAS;829078;-45000;;;439.0000- GD35\n"
+        # CPU$ SUELTO: compra de verdad EN DÓLARES (no es conversión). Cantidad
+        # con separador de miles yanqui.
+        "03/08/23;CPU$;3449524;70054,6;250;DOLAR;1,000.0000  AL30\n"
+        # Mismo día: un dividendo en pesos y otro en dólares.
+        "18/12/23;DIV;466972;-187,47;;;322 BYMA\n"
+        "18/12/23;DIV;534255;-1683,99;-2,11;U$S;8006 BYMA\n"
+        # Dividendo cuya referencia SÍ trae el ticker adelante.
+        "11/01/24;DIV;180726;-1859,25;-2,29;U$S;CEPU BYMA\n"
+        # Gastos de transferencia de títulos (el código no está en la leyenda:
+        # se entiende por el texto de la propia fila).
+        "22/01/24;DTRT;257047;1210;;;GTOS. TRANS. TITULOS\n"
+        # Conversión cable↔MEP: par que se cancela → se omiten las dos.
+        "25/01/24;DU$V;35166;61151,82;74,63;U$S;CONV CABLE MEP\n"
+        "25/01/24;CU$V;26954;-61151,82;-74,63;DOLAR;CONV CABLE MEP\n"
+        # Nota de débito SUELTA: es una retención real en dólares → FEE.
+        "18/07/24;DU$V;39425;5,12;,04;U$S;RET BS PS/GCIA\n"
+        # Cobro y pago EN DÓLARES (sub-cuenta dólares).
+        "28/12/23;CDOA;153020;-1061510,37;-1000;DOLAR;CREDITO CTA. CTE.\n"
+        "02/05/24;PU$A;81689;121360,6;545;DOLAR;TRANSFERENCIA VIA MEP\n"
+        "21/11/24;PAGA;1025907;78997,84;;;TRANSFERENCIA VIA MEP\n"
+        # Pie: totales + leyenda (sin fecha; código y descripción juntos en
+        # `Ref./Cantidad`, separados por 2+ espacios).
+        ";Total;;0;;;\n"
+        ";;;0;;;COBA   RECIBO DE COBRO\n"
+        ";;;0;;;CPRA   COMPRA\n"
+        ";;;0;;;VTAS   VENTA\n"
+        ";;;0;;;PAGA   ORDEN  DE PAGO\n"
+        # La leyenda de DTRT sale ROTA en el export real: ancho fijo, sin `;`.
+        "                             3,630.00              0.00       DTRT   TRANS. TITULOS\n"
+    )
+
+    def setUp(self):
+        self.r = BullMarketParser().parse(self.HC, file_name="HC12345.CSV")
+
+    def _by(self):
+        d = {}
+        for x in self.r.raw_rows:
+            d.setdefault(x.data["tipo"], []).append(x.data)
+        return d
+
+    def test_can_handle(self):
+        self.assertTrue(BullMarketParser().can_handle(
+            ["F.Liquid", "Cpbt", "N.Cpbt", "Importe", "Dolares", "Mda",
+             "Ref./Cantidad"]))
+
+    def test_no_lo_rechaza_ni_queda_vacio(self):
+        # Regresión: el gate pedía `Especie`, que este layout no trae → el
+        # archivo entero se rechazaba con "no parece un export de Bull Market".
+        self.assertGreater(len(self.r.raw_rows), 0)
+        self.assertEqual([e.code for e in self.r.parse_errors], [])
+
+    def test_moneda_por_mda_no_por_importe(self):
+        # El dividendo con Mda=U$S vale US$2,11 — NO $1.683,99. La columna en
+        # pesos de esas filas es el equivalente al dólar oficial, no plata.
+        divs = self._by()["DIVIDENDO"]
+        usd = [d for d in divs if d["moneda"] == "USD"]
+        ars = [d for d in divs if d["moneda"] == "ARS"]
+        self.assertIn(2.11, [float(d["monto"]) for d in usd])
+        self.assertNotIn(1683.99, [float(d["monto"]) for d in usd + ars])
+        self.assertIn(187.47, [float(d["monto"]) for d in ars])
+        self.assertNotIn(1683.99, [float(d["monto"]) for d in ars])
+        # El cobro y el pago en dólares también van por `Dolares`.
+        self.assertIn(("DEPOSITO", "USD", 1000.0),
+                      [(d["tipo"], d["moneda"], float(d["monto"]))
+                       for d in self._by()["DEPOSITO"]])
+        self.assertIn(("RETIRO", "USD", 545.0),
+                      [(d["tipo"], d["moneda"], float(d["monto"]))
+                       for d in self._by()["RETIRO"]])
+
+    def test_dividendo_con_ticker_en_la_referencia(self):
+        con_tk = [d for d in self._by()["DIVIDENDO"] if d["activo"]]
+        self.assertEqual([d["activo"] for d in con_tk], ["CEPU"])
+        # "8006 BYMA" / "322 BYMA" son referencias de cupón, NO tickers: si las
+        # tomáramos como activo nos inventaríamos una posición "BYMA".
+        self.assertNotIn("BYMA", {x.data["activo"] for x in self.r.raw_rows})
+
+    def test_precio_derivado_y_venta_con_guion_atras(self):
+        compra = next(d for d in self._by()["COMPRA"] if d["activo"] == "ALUA")
+        self.assertEqual(float(compra["cantidad"]), 100.0)
+        self.assertAlmostEqual(float(compra["precio"]), 1200.0, places=6)
+        venta = next(d for d in self._by()["VENTA"] if d["activo"] == "TXAR")
+        self.assertEqual(float(venta["cantidad"]), 247.0)       # "247.0000-" → 247
+        self.assertAlmostEqual(float(venta["precio"]), 294.43125, places=4)
+
+    def test_mep_colapsa_en_conversion_no_en_deposito(self):
+        # Las DOS patas traen monto → sabemos los pesos Y los dólares. Se emite
+        # UNA conversión (no un RETIRO/DEPOSITO, que inflaría el aportado) y el
+        # bono no queda como tenencia.
+        by = self._by()
+        compra_mep = by["FX_ARS_USD"]
+        self.assertEqual(len(compra_mep), 1)
+        self.assertAlmostEqual(float(compra_mep[0]["monto"]), 99000.0, places=2)
+        self.assertAlmostEqual(float(compra_mep[0]["monto_usd"]), 300.0, places=2)
+        venta_mep = by["FX_USD_ARS"]
+        self.assertEqual(len(venta_mep), 1)
+        self.assertAlmostEqual(float(venta_mep[0]["monto"]), 45000.0, places=2)
+        self.assertAlmostEqual(float(venta_mep[0]["monto_usd"]), 150.0, places=2)
+        self.assertNotIn("GD35", {x.data["activo"] for x in self.r.raw_rows})
+
+    def test_pata_dolar_suelta_es_compra_real_en_dolares(self):
+        # Un CPU$ sin contraparte en pesos NO es una conversión: es una compra
+        # de verdad, en dólares. Cantidad "1,000.0000" = mil (formato yanqui).
+        al30 = next(d for d in self._by()["COMPRA"] if d["activo"] == "AL30")
+        self.assertEqual(al30["moneda"], "USD")
+        self.assertEqual(float(al30["cantidad"]), 1000.0)
+        self.assertAlmostEqual(float(al30["monto"]), 250.0, places=2)
+        self.assertAlmostEqual(float(al30["precio"]), 0.25, places=6)
+
+    def test_notas_dolar_emparejadas_se_omiten_la_suelta_cobra(self):
+        # DU$V + CU$V del mismo día y monto opuesto = los mismos dólares
+        # moviéndose entre sub-cuentas → no son ni ingreso ni gasto.
+        fees_usd = [float(d["monto"]) for d in self._by()["FEE"]
+                    if d["moneda"] == "USD"]
+        self.assertNotIn(74.63, fees_usd)
+        self.assertIn(0.04, fees_usd)          # la nota suelta sí es retención
+
+    def test_retencion_sale_y_devolucion_entra(self):
+        by = self._by()
+        self.assertIn(13.05, [float(d["monto"]) for d in by["FEE"]])      # DREP
+        self.assertIn(0.39, [float(d["monto"]) for d in by["DIVIDENDO"]])  # NOCR
+        self.assertIn(1210.0, [float(d["monto"]) for d in by["FEE"]])      # DTRT
+
+    def test_caja_reconcilia_en_las_dos_monedas(self):
+        # La prueba que importa: lo que emitimos tiene que mover exactamente la
+        # misma plata que el archivo, en CADA moneda por separado. En el archivo
+        # el signo va invertido (negativo = entra plata).
+        esperado = {"ARS": 1000.0, "USD": 0.0}   # saldo anterior = 1000 a favor
+        for line in self.HC.split("\n")[1:]:
+            c = line.split(";")
+            if len(c) < 7 or not c[0].strip():
+                continue
+            v = _num(c[4] if c[5].strip() else c[3])
+            if v is not None:
+                esperado["USD" if c[5].strip() else "ARS"] -= v
+        signo = {"DEPOSITO": 1, "VENTA": 1, "DIVIDENDO": 1, "INTERES": 1,
+                 "RETIRO": -1, "COMPRA": -1, "FEE": -1}
+        real = {"ARS": 0.0, "USD": 0.0}
+        for x in self.r.raw_rows:
+            d = x.data
+            if d["tipo"] == "FX_ARS_USD":
+                real["ARS"] -= float(d["monto"]); real["USD"] += float(d["monto_usd"])
+            elif d["tipo"] == "FX_USD_ARS":
+                real["ARS"] += float(d["monto"]); real["USD"] -= float(d["monto_usd"])
+            else:
+                real[d["moneda"]] += signo[d["tipo"]] * float(d["monto"] or 0)
+        self.assertAlmostEqual(real["ARS"], esperado["ARS"], places=2)
+        self.assertAlmostEqual(real["USD"], esperado["USD"], places=2)
+
+    def test_saldo_anterior_solo_en_el_bloque_mas_viejo(self):
+        # Solo en este archivo: es el primero, así que el saldo inicial se carga
+        # y queda fechado UN DÍA ANTES del primer movimiento (para no competir
+        # por el desempate de orden con una operación del mismo día).
+        sa = [x.data for x in self.r.raw_rows if x.data["notas"] == "Saldo anterior"]
+        self.assertEqual(len(sa), 1)
+        self.assertEqual(sa[0]["tipo"], "DEPOSITO")
+        self.assertEqual(float(sa[0]["monto"]), 1000.0)
+        self.assertEqual(sa[0]["fecha"], "2023-01-01")
+
+    def test_dos_periodos_juntos_no_cuentan_dos_veces_el_saldo(self):
+        # Bull Market manda la historia PARTIDA en varios archivos y el wizard
+        # los combina en un solo batch. El `S.ANTERIOR` del segundo período ya
+        # está contado como movimientos en el primero: emitirlo sería sumar la
+        # misma plata dos veces. Sólo sobrevive el del bloque más viejo.
+        previo = (
+            "F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad\n"
+            "11/04/21;COBA;145726;-5000;;;CREDITO CTA. CTE.\n"
+            "15/04/21;CPRA;934863;4000;;;1.0000  MELI\n"
+        )
+        combinado = previo + "\n".join(self.HC.split("\n")[1:])
+        r = BullMarketParser().parse(combinado, file_name="combinado.csv")
+        self.assertEqual([e.code for e in r.parse_errors], [])
+        self.assertEqual(
+            [x.data for x in r.raw_rows if x.data["notas"] == "Saldo anterior"], [])
