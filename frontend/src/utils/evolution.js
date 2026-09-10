@@ -403,11 +403,17 @@ export const PISO_DENOMINADOR_USD = 100
  * porcentaje pegando un escalón que no corresponde a nada que haya pasado.
  * `max()` es continua y monótona.
  */
-export function denominadorAportado(ndActual = 0, ndMaximo = 0) {
+export function denominadorAportado(ndActual = 0, ndMaximo = 0, fxDelPiso = 1) {
   const a = Number.isFinite(ndActual) ? ndActual : 0
   const b = Number.isFinite(ndMaximo) ? ndMaximo : 0
   const d = Math.max(a, b)
-  return d >= PISO_DENOMINADOR_USD ? d : null
+  // ⚠️ EL PISO ESTÁ EN DÓLARES. Si los montos vienen en PESOS hay que pasar el
+  // tipo de cambio: comparar 140.000 pesos contra un piso de 100 deja pasar
+  // todo, y entonces el mismo usuario con US$50 aportados no ve porcentaje en
+  // dólares y sí lo ve en pesos. Las dos monedas tienen que dar el mismo
+  // veredicto.
+  const fx = Number.isFinite(fxDelPiso) && fxDelPiso > 0 ? fxDelPiso : 1
+  return d >= PISO_DENOMINADOR_USD * fx ? d : null
 }
 
 /**
@@ -682,7 +688,6 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
   // Con la cartera multiplicada por diez, 62,5 % donde son 500 %. Ver
   // `denominadorAportado`, que es la regla única.
   let peakNetDepUsd = 0
-  let peakNetDepArs = 0
 
   for (const s of sorted) {
     // ⚠️ LA MISMA REGLA, NO UNA COPIA. Acá vivía un segundo
@@ -699,7 +704,18 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
     const baselineUsd = netDepositedOf(s)
     const value = s.total_value || 0
     const netDep = baselineUsd || 0
-    if (netDep > peakNetDepUsd) peakNetDepUsd = netDep
+    // ⚠️ EL PICO NO SE ALIMENTA DE `baselineUsd`. Ese sale de `netDepositedOf`,
+    // que cae a `total_invested` —COSTO— cuando el dato falta: correcto para
+    // dibujar la línea (no querés un hueco), veneno para un DENOMINADOR. Los
+    // snapshots legacy de este repo tienen costos corruptos conocidos, y uno
+    // solo se volvía el pico. Medido: con un legacy de total_invested
+    // 14.860.000, un realized% de 50 % publicaba 0,03 %.
+    // Mismo criterio que `capitalMaximoAportado`: un `net_deposited` en 0 es el
+    // hueco (la columna es NOT NULL DEFAULT 0), y un hueco se saltea.
+    const ndMedido = s?.net_deposited
+    if (ndMedido != null && ndMedido !== 0 && ndMedido > peakNetDepUsd) {
+      peakNetDepUsd = ndMedido
+    }
 
     // First snapshot → baseline = 0% TWRR
     if (prevValueUsd === null) {
@@ -755,7 +771,6 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
     const fx = lookupHistoricalDolar(bench, y, mo, tcValuacion)
     const valueArs    = value * fx
     const baselineArs = netDep * fx
-    if (baselineArs > peakNetDepArs) peakNetDepArs = baselineArs
 
     if (prevValueArs !== null && prevBaselineArs !== null) {
       const flowsArs = baselineArs - prevBaselineArs
@@ -773,7 +788,13 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
       const rArs = Math.max(rRawArs, -0.99)
       cumArs *= (1 + rArs)
     }
-    const denomRealizedArs = denominadorAportado(baselineArs, peakNetDepArs) || 0
+    // El denominador en pesos es el MISMO que en dólares, convertido — y no uno
+    // calculado aparte. Si se calculan por separado, el piso (que está en USD)
+    // se compara contra pesos: con el dólar a 1400, US$100 de piso son 140.000
+    // pesos, así que el mismo usuario con US$50 aportados NO veía porcentaje en
+    // dólares y SÍ lo veía en pesos. Las dos monedas tienen que dar el mismo
+    // veredicto — este repo ya se quemó con eso en los benchmarks.
+    const denomRealizedArs = denomRealizedUsd ? denomRealizedUsd * fx : 0
     const realPctArs = denomRealizedArs > 0 ? ((realizedAt(s.date) * fx) / denomRealizedArs) * 100 : 0
     seriesArs.push({
       key: s.date,

@@ -953,7 +953,7 @@ function InsightsDesktop({ _embeddedTab }) {
       cumRealizedPesos += (m.pnl_realized || 0) * fx
       const investedNowPesos = baselinePesos + netFlowsPesos
       if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
-      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos) ?? 0)
+      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, blueBase) ?? 0)
       const total = +((cumIdxArs - 1) * 100).toFixed(2)
       const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       portfolioReturnArsPctRaw = total  // TWR acumulado — para el diagnóstico de inflación
@@ -1001,7 +1001,7 @@ function InsightsDesktop({ _embeddedTab }) {
       }
       const total = +((cumIdxArs - 1) * 100).toFixed(2)
       const investedNowPesos = baselinePesos + netFlowsPesos
-      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos) ?? 0)
+      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, blueBase) ?? 0)
       const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       // El punto "Hoy" es el último de la serie → su TWR es el retorno final.
       portfolioReturnArsPctRaw = total
@@ -1550,7 +1550,7 @@ function InsightsDesktop({ _embeddedTab }) {
         netFlowsPesos += ((m.deposits || 0) - (m.withdrawals || 0)) * fx
         const investedNowPesos = baselinePesos + netFlowsPesos
         if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
-        const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos) ?? 0)
+        const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, blueBase) ?? 0)
         const shadowUsd = simByKey[mk]
         if (shadowUsd == null) continue
         const gainP = (shadowUsd * fx) - investedNowPesos
@@ -1562,7 +1562,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // portfolio (valor live × tcValuacion), para que ambos reciban el mismo salto de FX.
       const last = simResult.series[simResult.series.length - 1]
       const investedNowPesos = baselinePesos + netFlowsPesos
-      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos) ?? 0)
+      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, blueBase) ?? 0)
       const gainP = (last.value * tcValuacion) - investedNowPesos
       const pct = denomP > 0 ? (gainP / denomP) * 100 : 0
       result.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))

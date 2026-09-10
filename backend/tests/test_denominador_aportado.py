@@ -65,6 +65,30 @@ class LaReglaTest(unittest.TestCase):
             self.assertIsNot(twr.denominador_aportado(a, b), 0)
 
 
+class ElPisoEstaEnDolaresTest(unittest.TestCase):
+    """Lo que encontró auditar la unificación: el piso es en USD y se estaba
+    comparando contra montos en PESOS."""
+
+    def test_las_dos_monedas_dan_el_MISMO_veredicto(self):
+        FX = 1400.0
+        for nd_usd in (50, 99, 100, 150, 5_000):
+            en_usd = twr.denominador_aportado(nd_usd, nd_usd)
+            en_ars = twr.denominador_aportado(nd_usd * FX, nd_usd * FX, FX)
+            self.assertEqual(en_usd is None, en_ars is None,
+                             f"con US${nd_usd} una moneda publica y la otra no")
+
+    def test_sin_fx_los_pesos_pasaban_todos(self):
+        """La medición del bug: 70.000 pesos son US$50 —abajo del piso— pero
+        contra un piso de 100 a secas pasaban igual."""
+        self.assertIsNotNone(twr.denominador_aportado(70_000, 70_000))       # sin fx: pasa
+        self.assertIsNone(twr.denominador_aportado(70_000, 70_000, 1400))    # con fx: no
+
+    def test_un_fx_invalido_no_rompe_el_guard(self):
+        for fx in (0, -1, None, "x", float("nan")):
+            self.assertIsNone(twr.denominador_aportado(50, 50, fx),
+                              f"con fx={fx!r} el piso tiene que seguir filtrando")
+
+
 class ElEspejoConElFrontendTest(unittest.TestCase):
     """No se pueden unificar —son lenguajes distintos— así que lo que queda es
     que nadie pueda moverlas por separado sin que esto se ponga rojo."""
@@ -80,6 +104,12 @@ class ElEspejoConElFrontendTest(unittest.TestCase):
 
     def test_el_frontend_expone_la_misma_funcion(self):
         self.assertIn("export function denominadorAportado", self._evolution_js())
+
+    def test_el_frontend_tambien_acepta_el_fx_del_piso(self):
+        """Si un lado convierte el piso y el otro no, vuelve la divergencia
+        entre monedas por la puerta de atrás."""
+        self.assertRegex(self._evolution_js(),
+                         r"export function denominadorAportado\([^)]*fxDelPiso")
 
 
 class NadieLaRecopiaTest(unittest.TestCase):

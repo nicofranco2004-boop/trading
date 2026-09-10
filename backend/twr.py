@@ -104,22 +104,28 @@ CLASES = (MEDICION, RECONSTRUIDO, INTRADIA, SINTETICO_COSTO, INDETERMINADO)
 PISO_DENOMINADOR_USD = 100
 
 
-def denominador_aportado(nd_actual, nd_maximo=0):
+def denominador_aportado(nd_actual, nd_maximo=0, fx_del_piso=1.0):
     """El capital contra el que medir, o None si no llega al piso.
 
     None es "no lo puedo calcular", que no es lo mismo que 0: el llamador tiene
     que decidir qué muestra, y lo que NUNCA tiene que hacer es publicar un cero.
+
+    ⚠️ EL PISO ESTÁ EN DÓLARES. Si los montos vienen en PESOS hay que pasar el
+    tipo de cambio: comparar 140.000 pesos contra un piso de 100 deja pasar
+    todo, y entonces el mismo usuario con US$50 aportados no ve porcentaje en
+    dólares y sí lo ve en pesos. Las dos monedas tienen que dar el mismo
+    veredicto — este repo ya se quemó con eso en los benchmarks.
     """
-    try:
-        a = float(nd_actual or 0)
-    except (TypeError, ValueError):
-        a = 0.0
-    try:
-        b = float(nd_maximo or 0)
-    except (TypeError, ValueError):
-        b = 0.0
-    d = max(a, b)
-    return d if d >= PISO_DENOMINADOR_USD else None
+    def _f(x):
+        try:
+            return float(x or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    d = max(_f(nd_actual), _f(nd_maximo))
+    fx = _f(fx_del_piso)
+    if not (fx > 0):
+        fx = 1.0
+    return d if d >= PISO_DENOMINADOR_USD * fx else None
 
 
 BASE_MERCADO = (MEDICION, RECONSTRUIDO)

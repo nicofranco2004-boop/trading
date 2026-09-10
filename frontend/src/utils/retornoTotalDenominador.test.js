@@ -241,3 +241,46 @@ describe('unificar las siete copias del denominador', () => {
     expect(delHero.pct).toBeCloseTo(30_000 / denominadorAportado(nd, max), 10)
   })
 })
+
+describe('auditar la unificación encontró tres más', () => {
+  it('la CURVA alimentaba su pico con el helper que cae a costo', async () => {
+    // Arreglé ese fallback en `capitalMaximoAportado` y no vi que la curva
+    // tenía el mismo, alimentándose de `netDepositedOf`. Medido con el costo
+    // corrupto conocido (CEDEAR ×1486): el realized% publicaba 0,03 %.
+    const { buildEvolutionFromSnapshots } = await import('./evolution')
+    const snaps = [
+      { date: '2024-01-31', total_value: 10_000, total_invested: 14_860_000,
+        net_deposited: 0, source: 'cron', base: 'mercado', apto: 1 },
+      { date: '2026-01-31', total_value: 30_000, total_invested: 10_000,
+        net_deposited: 10_000, source: 'cron', base: 'mercado', apto: 1 },
+    ]
+    const monthly = [
+      { year: 2024, month: 1, broker: 'global', pnl_realized: 0, capital_inicio: 10_000 },
+      { year: 2026, month: 1, broker: 'global', pnl_realized: 5_000, capital_inicio: 10_000 },
+    ]
+    const r = buildEvolutionFromSnapshots(snaps, monthly, null, 1400)
+    const ultimo = r.seriesUsd[r.seriesUsd.length - 1]
+    expect(ultimo.realized).toBeCloseTo(50, 0)     // 5k realizados sobre 10k aportados
+  })
+
+  it('el piso está en DÓLARES: las dos monedas dan el mismo veredicto', () => {
+    const FX = 1400
+    for (const ndUsd of [50, 99, 100, 150, 5_000]) {
+      const enUsd = denominadorAportado(ndUsd, ndUsd)
+      const enArs = denominadorAportado(ndUsd * FX, ndUsd * FX, FX)
+      expect(enUsd === null, `US$${ndUsd}: una moneda publica y la otra no`)
+        .toBe(enArs === null)
+    }
+  })
+
+  it('sin el FX, los pesos pasaban todos el piso', () => {
+    expect(denominadorAportado(70_000, 70_000)).not.toBeNull()        // sin fx: pasa
+    expect(denominadorAportado(70_000, 70_000, 1400)).toBeNull()      // con fx: no
+  })
+
+  it('un FX inválido no apaga el guard', () => {
+    for (const fx of [0, -1, null, undefined, NaN, 'x']) {
+      expect(denominadorAportado(50, 50, fx), `fx=${fx}`).toBeNull()
+    }
+  })
+})
