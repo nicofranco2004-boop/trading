@@ -501,7 +501,20 @@ alcanza a las filas NUEVAS: las de diciembre de 2025 siguen con la etiqueta corr
 
 Re-etiquetar la historia lo cierra de inmediato. Es el argumento más fuerte a favor de hacerlo.
 
-#### La decisión que es tuya
+#### La decisión: ✅ TOMADA — no se re-etiqueta (2026-09-09)
+
+**El dueño decidió dejar la historia como está y esperar a enero.** No hace falta volver a
+preguntárselo. Consecuencia aceptada, con los ojos abiertos: el KPI «YTD» de Métricas publica
+una rueda de más hasta que la fila `2026-12-31` la escriba el cron nuevo, y ahí se acomoda solo.
+Los reportes de meses y años ANTERIORES al deploy quedan con esa misma rueda para siempre.
+
+⚠️ Y ojo, porque es la trampa de este punto: **el botón para re-etiquetar NO EXISTE.** No está
+en el panel de admin ni en ningún lado — habría que construirlo. Si algún día se retoma, es
+trabajo nuevo (con su "ver qué cambiaría" antes de "aplicar", como los otros), no apretar algo
+que ya está.
+
+<details>
+<summary>El análisis que llevó a esa decisión, por si se retoma</summary>
 
 **¿Se re-etiqueta la serie histórica de `snapshots`, restándole un día a todo lo anterior al
 deploy?**
@@ -512,9 +525,9 @@ deploy?**
 | **No tocar nada** | riesgo cero, y de acá en adelante todo está bien | los reportes de períodos pasados siguen con la rueda corrida, para siempre |
 
 No hace falta decidirlo para deployar. Se puede deployar hoy y re-etiquetar después: la
-reparación es la misma con un día o con un año de por medio. Y si se hace, va como los otros
-botones del panel de admin — con "ver qué cambiaría" antes de "aplicar", que es el paso que ya
-cazó un fix mal diseñado en §4-ter.
+reparación es la misma con un día o con un año de por medio.
+
+</details>
 
 #### Lo que F3 NO tocó, y por qué
 
