@@ -252,6 +252,28 @@ class UnRielGuardTest(unittest.TestCase):
                 "costo_en_moneda_de_venta(" in self._fuente(rel),
                 f"{rel} dejó de usar la conversión única")
 
+    def test_un_tc_invalido_no_convierte_en_vez_de_inventar_un_costo(self):
+        """`> 0`, no "¿tiene valor?".
+
+        Con la guarda de truthiness un `tc_blue = -5` pasaba y devolvía un costo
+        NEGATIVO, que después se resta de los ingresos y publica una ganancia
+        inventada. Hoy los tres productores acotan el TC a positivo, así que no
+        hay camino que llegue así — pero el guard va en el LECTOR, que es donde se
+        usa el dato, no sólo donde se produce.
+        """
+        import fx
+        for tc_malo in (-5, 0, None, "x", float("nan")):
+            self.assertEqual(
+                fx.costo_en_moneda_de_venta(100.0, "ARS", "USD", tc_blue=tc_malo), 100.0,
+                f"tc_blue={tc_malo!r} produjo una conversión")
+        # Un `tc_venta` inválido cae al `tc_blue`, no se cuela.
+        self.assertEqual(
+            fx.costo_en_moneda_de_venta(100.0, "USD", "ARS", tc_venta=-9, tc_blue=1500.0),
+            150000.0)
+        # Y lo normal sigue igual.
+        self.assertEqual(
+            fx.costo_en_moneda_de_venta(150000.0, "ARS", "USD", tc_blue=1500.0), 100.0)
+
     def test_la_funcion_unica_respeta_la_version(self):
         """`historico=False` (v1) tiene que dar blue, no MEP."""
         import fx

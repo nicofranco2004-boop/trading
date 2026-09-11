@@ -5438,6 +5438,14 @@ def get_fx_rates(
     deja el corte en el mismo 2016 y no arregla nada. El tope tiene que ser más
     largo que la serie, no al revés.
 
+    ⚠️ CAMBIO DE SEMÁNTICA EN LAS VENTANAS CORTAS. Cortando por FECHA, si la serie
+    está desactualizada (el cron caído) un `days=1` devuelve VACÍO, donde el
+    `LIMIT` viejo devolvía igual la última rueda conocida. Es correcto —la ventana
+    es la ventana— y no afecta a nadie hoy: el único consumidor no pasa `days` y
+    recibe la serie entera. Pero si alguna vez se agrega un caller con ventana
+    corta, tiene que contemplar la respuesta vacía: `useFxHistory` la trata como
+    falla blanda y cae a `tcValuacion`.
+
     Shape:
         [{ "date": "2025-12-31", "blue": 1450.0 }, ...]  (ordenado asc)
     """

@@ -151,14 +151,29 @@ def costo_en_moneda_de_venta(base_invested, lot_currency, sell_currency, *,
     Sin `conn` o sin `entry_date` cae a `tc_blue`, que es el comportamiento que
     ya tenían los tres call sites para tests y callers viejos.
     """
-    if lot_currency == sell_currency or not tc_blue:
+    # ⚠️ `> 0`, NO "¿tiene valor?". Los tres call sites acotan `tc_blue` a
+    # positivo antes de llamar (persister.py:365, pipeline._read_user_tc_blue,
+    # main._user_tc_blue), así que hoy no hay camino que llegue con un negativo.
+    # Pero esta función es el EMBUDO ÚNICO de la cuenta: con la guarda de
+    # truthiness un `tc_blue = -5` pasaba y devolvía un costo NEGATIVO, que
+    # después se resta de los ingresos y publica una ganancia inventada. El guard
+    # va donde se usa el dato, no sólo donde se produce — es lo mismo que cerró
+    # la tanda F4.
+    def _pos(x):
+        try:
+            return float(x) if x is not None and float(x) > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    _tcb = _pos(tc_blue)
+    if lot_currency == sell_currency or _tcb is None:
         return base_invested
     if lot_currency == "USD" and sell_currency == "ARS":
-        return base_invested * (tc_venta or tc_blue)
+        return base_invested * (_pos(tc_venta) or _tcb)
     if lot_currency == "ARS" and sell_currency == "USD":
         riel = RIEL_MEP if historico else RIEL_BLUE
-        compra_fx = fx_for_date(conn, entry_date, fallback=tc_blue, riel=riel)
-        return base_invested / (compra_fx or tc_blue)
+        compra_fx = fx_for_date(conn, entry_date, fallback=_tcb, riel=riel)
+        return base_invested / (_pos(compra_fx) or _tcb)
     return base_invested
 
 # ─── Versionado por usuario: la migración es POR CUENTA, no global ────────────

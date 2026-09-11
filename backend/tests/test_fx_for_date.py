@@ -220,9 +220,12 @@ class MotorUsaElTcDeLaFechaTest(unittest.TestCase):
                       "el rebuild le está pasando otro TC a la conversión")
         self.assertNotIn("tc_venta=tc_blue", src)
 
-        # 2. La fórmula, ahora en su único lugar.
+        # 2. La fórmula, ahora en su único lugar. El TC de la venta manda y el
+        # `tc_blue` es sólo el respaldo — nunca al revés. (Los dos pasan por un
+        # filtro de "positivo", de ahí los `_pos`/`_tcb`.)
         formula = inspect.getsource(_fx.costo_en_moneda_de_venta)
-        self.assertIn("base_invested * (tc_venta or tc_blue)", formula)
+        self.assertIn("base_invested * (_pos(tc_venta) or _tcb)", formula)
+        self.assertNotIn("base_invested * _tcb", formula)
         self.assertNotIn("base_invested * tc_blue", formula)
 
 
