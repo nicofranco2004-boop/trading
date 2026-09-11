@@ -34785,6 +34785,44 @@ def reports_years(
                     log.exception("reports_years uid=%s year=%s", uid, y)
                     continue
                 m = rep.metrics
+                # ⚠️ SI EL AÑO ENTERO NO SE PUEDE MEDIR, EL TRAMO QUE SÍ VALE MÁS
+                # QUE NADA. El año exige que la medición CUBRA el período: con las
+                # fotos arrancando a mitad de año, el número no se publica — y la
+                # pantalla decía "sin dos fotos a precio de mercado" con sesenta
+                # fotos en la base. Reportado desde producción: al lado, el propio
+                # Dashboard mostraba "Desde que medimos · +5,9 % · 74 días".
+                # El motor sí sabe medir ese tramo. Se publica APARTE, nunca como
+                # `pct`, y siempre con la fecha desde la que corre: "+2,15 % desde
+                # el 30 de junio" es verdadero y accionable; llamarlo "2026" sería
+                # exactamente la mentira que este trabajo viene cerrando.
+                parcial = {"parcial_pct": None, "parcial_desde": None, "parcial_hasta": None,
+                           "parcial_vs_sp500_pct": None}
+                # ⚠️ SIN EL GUARD DE `basis_incomparable`. Esa bandera dice que las dos
+                # puntas DEL AÑO están en bases distintas (el arranque de la contabilidad,
+                # el cierre a mercado) — y es exactamente el caso en que el tramo del motor
+                # más sirve, porque él sólo encadena puntos MEDIDOS y por definición no
+                # mezcla bases. Con el guard puesto, el caso reportado desde producción
+                # —fotos desde el 30/06, año incomparable— se quedaba sin nada que mostrar.
+                if m.delta_pct is None:
+                    try:
+                        import twr as _twr_p
+                        _c = _twr_p.curva_indexada(
+                            conn, uid, f"{y}-01-01", f"{y}-12-31",
+                            modo=(_twr_p.MODO_ESTIMADO if modo == "estimado" else _twr_p.MODO_CERTERO),
+                            moneda=(_twr_p.MONEDA_ARS if str(moneda).lower() == "ars"
+                                    else _twr_p.MONEDA_USD))
+                        if _c.get("twr") is not None and _c.get("ventana_desde"):
+                            parcial["parcial_pct"] = round(_c["twr"] * 100, 2)
+                            parcial["parcial_desde"] = _c["ventana_desde"]
+                            parcial["parcial_hasta"] = _c["ventana_hasta"]
+                            # El veredicto del tramo se mide en el MISMO tramo.
+                            from reporting.builder import benchmark_entre_fechas as _bef
+                            _sp = _bef(bench_data, _c["ventana_desde"], _c["ventana_hasta"], "sp500")
+                            if _sp is not None:
+                                parcial["parcial_vs_sp500_pct"] = round(
+                                    parcial["parcial_pct"] - _sp, 2)
+                    except Exception:
+                        log.exception("tramo parcial uid=%s year=%s", uid, y)
                 # Un año sin una sola operación, sin flujos y sin movimiento no se
                 # lista: ocupa una fila y no dice nada. El año en curso siempre va
                 # —es el que el inicio muestra— aunque todavía esté vacío.
@@ -34805,6 +34843,7 @@ def reports_years(
                     # Va desde acá porque el "hoy" de Rendi es el día ARGENTINO y
                     # vive en el backend, no en el reloj del navegador.
                     "meses_del_anio": (hoy.month if es_actual else 12),
+                    **parcial,
                     "pct": m.delta_pct,
                     "usd": m.delta_usd,
                     "start_value": m.start_value,
