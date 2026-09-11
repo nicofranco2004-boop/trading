@@ -191,11 +191,39 @@ class MotorUsaElTcDeLaFechaTest(unittest.TestCase):
         self.assertGreater(costo_roto, 7000.0)   # ~7,6× el costo real = pérdida fantasma
 
     def test_rebuild_multiplica_por_tc_venta_no_por_tc_blue(self):
-        """Chequeo estructural: la línea existe y usa `tc_venta`. Es la que divergía."""
+        """Chequeo estructural: el rebuild multiplica por `tc_venta`, no por `tc_blue`.
+
+        LA FÓRMULA SE MUDÓ, LA PROPIEDAD NO (F5). La conversión cross-currency
+        estaba copiada en tres motores y pasó a vivir una sola vez, en
+        `fx.costo_en_moneda_de_venta`. Este guard buscaba la línea LITERAL dentro
+        de `_replay_asset`, así que después de unificar quedaba vigilando una
+        habitación vacía: pasaba a rojo sin que el comportamiento cambiara, y —lo
+        peor— habría pasado a verde igual si mañana alguien le pasa `tc_blue`.
+
+        Ahora mira las DOS mitades, que es lo que la unificación vuelve necesario:
+
+          1. el CALL SITE — `_replay_asset` le pasa `tc_venta=tc_venta`. Si pasara
+             `tc_blue`, el TC dejaría de cancelarse contra el `pnl_ars/tc_venta` de
+             más abajo y aparecería la pérdida fantasma de ~7,6× que mide
+             `test_cross_currency_rebuild_no_diverge_del_persister`.
+          2. la FÓRMULA — la función única sigue multiplicando por
+             `(tc_venta or tc_blue)` y no por `tc_blue` a secas.
+        """
         import inspect
+        import fx as _fx
+
+        # 1. El call site del rebuild.
         src = inspect.getsource(rb._replay_asset)
-        self.assertIn("base_invested = base_invested * (tc_venta or tc_blue)", src)
-        self.assertNotIn("base_invested = base_invested * tc_blue", src)
+        self.assertIn("costo_en_moneda_de_venta(", src,
+                      "el rebuild dejó de usar la conversión única")
+        self.assertIn("tc_venta=tc_venta", src,
+                      "el rebuild le está pasando otro TC a la conversión")
+        self.assertNotIn("tc_venta=tc_blue", src)
+
+        # 2. La fórmula, ahora en su único lugar.
+        formula = inspect.getsource(_fx.costo_en_moneda_de_venta)
+        self.assertIn("base_invested * (tc_venta or tc_blue)", formula)
+        self.assertNotIn("base_invested * tc_blue", formula)
 
 
 class FlujosUsanElTcDeSuFechaTest(unittest.TestCase):

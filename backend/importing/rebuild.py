@@ -58,11 +58,11 @@ from typing import Any, Dict, List, Optional
 from datetime import date as _date
 
 from .schema import OP_BUY, OP_SELL
-from .persister import _link, broker_pair, blue_for_date, reconciled_unit_price
+from .persister import _link, broker_pair, reconciled_unit_price
 try:
-    from fx import fx_for_date, fx_version, FX_V2
+    from fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
 except ImportError:  # pragma: no cover
-    from ..fx import fx_for_date, fx_version, FX_V2
+    from ..fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
 from .maturity import is_bond_like_name
 from .normalizer import guess_asset_type
 try:
@@ -413,33 +413,21 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             base_invested = (lot["invested"] or 0) + pos_buy_commissions
 
             # Cross-currency: valuar el invested del lote en la moneda de la venta.
-            if is_cross and tc_blue:
-                if lot_currency == "USD" and currency == "ARS":
-                    # ⚠️ TIENE que ser el MISMO número que `tc_venta`, no `tc_blue`.
-                    # El costo USD se lleva a pesos acá y después `pnl_ars/tc_venta`
-                    # lo divide de vuelta: el TC se CANCELA y el costo USD se
-                    # preserva. Mientras ambos eran `tc_blue` daba igual cuál se
-                    # usara; ahora que `tc_venta` es el TC histórico de la fecha,
-                    # dejar `tc_blue` acá los hace divergir ~5× y mete una pérdida
-                    # fantasma en TODA operación dólar-MEP — y solo por el camino
-                    # del rebuild (re-import, foto, backfill), o sea invisible en
-                    # un test normal. El persister ya usaba `tc_venta` acá.
-                    base_invested = base_invested * (tc_venta or tc_blue)
-                elif lot_currency == "ARS" and currency == "USD":
-                    # Dólar-MEP: el costo USD es lo que esos pesos valían CUANDO
-                    # COMPRASTE (blue de la fecha de entrada), NO el blue de hoy —
-                    # sino la devaluación achica el costo e infla la ganancia.
-                    # MISMA convención que el persister (persister.py:570-578);
-                    # antes rebuild usaba el blue de hoy y divergía → la P&L
-                    # realizada cambiaba según cuándo corría el rebuild. Sin conn
-                    # cae al tc_blue actual (back-compat con callers/tests viejos).
-                    if conn is None:
-                        _pfx = tc_blue
-                    elif use_hist:
-                        _pfx = fx_for_date(conn, lot.get("entry_date"), fallback=tc_blue)
-                    else:
-                        _pfx = blue_for_date(conn, lot.get("entry_date"), tc_blue)
-                    base_invested = base_invested / (_pfx or tc_blue)
+            # La cuenta vive en `fx.costo_en_moneda_de_venta` — LA misma que usan el
+            # persister y la venta manual, donde estaba copiada por tercera vez.
+            #
+            # ⚠️ En la pata USD→ARS el TC TIENE que ser el MISMO que `tc_venta`, no
+            # `tc_blue`: el costo USD se lleva a pesos acá y después `pnl_ars/tc_venta`
+            # lo divide de vuelta, así que el TC se CANCELA y el costo USD se preserva.
+            # Mientras los dos eran `tc_blue` daba igual cuál se usara; con `tc_venta`
+            # siendo el TC histórico de la fecha, dejar `tc_blue` acá los hace divergir
+            # ~5× y mete una pérdida fantasma en TODA operación dólar-MEP — y sólo por
+            # el camino del rebuild (re-import, foto, backfill), o sea invisible en un
+            # test normal. Ese acople es justamente lo que la función única protege.
+            base_invested = costo_en_moneda_de_venta(
+                base_invested, lot_currency, currency,
+                conn=conn, entry_date=lot.get("entry_date"),
+                tc_venta=tc_venta, tc_blue=tc_blue, historico=use_hist)
 
             entry_invested = base_invested * ratio if base_invested else None
             chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0

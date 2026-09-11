@@ -107,6 +107,60 @@ def fx_for_date(conn, date_str, fallback=None, riel: str = RIEL_MEP) -> Optional
     return fx_for_date_detail(conn, date_str, fallback=fallback, riel=riel)[0]
 
 
+
+
+# ─── El costo de un lote, en la moneda de la venta ───────────────────────────
+
+def costo_en_moneda_de_venta(base_invested, lot_currency, sell_currency, *,
+                             conn=None, entry_date=None, tc_venta=None,
+                             tc_blue=None, historico: bool = False):
+    """Lleva el costo de un lote a la moneda en que se lo vende.
+
+    POR QUÉ ACÁ Y NO EN CADA MOTOR
+    ──────────────────────────────
+    Esta cuenta vivía copiada en TRES lugares —`persister._persist_sell_fifo`,
+    `rebuild`, y el endpoint de venta manual `POST /api/positions/sell`— y las
+    tres copias no decían lo mismo. Las dos del importador respetan el
+    `fx_version` de la cuenta; la del formulario manual no lo miraba y pedía el
+    BLUE siempre.
+
+    O sea que en una cuenta v2 la MISMA venta daba un costo distinto según se
+    hubiera importado o tipeado. Medido sobre la serie real: MEP y blue se
+    separan más de 3 % en la mitad de los días con los dos publicados, más de
+    10 % en el 8 %, y el peor día 25,1 % (2023-10-20).
+
+    Y el defecto estaba a treinta líneas de su propio arreglo: en ese mismo
+    endpoint la pata de la VENTA ya era version-aware y usaba `fx_for_date`
+    (main.py, `tc_venta`). Se arregló una de las dos patas.
+
+    LAS DOS DIRECCIONES
+    ───────────────────
+    · lote USD vendido en ARS → el costo en dólares es real; se lleva a pesos al
+      MISMO TC de la venta, así `pnl_ars / tc_venta` preserva el costo USD (se
+      cancela).
+    · lote ARS vendido en USD (dólar-MEP) → el FX SÍ se realiza al vender. El
+      costo en dólares es lo que esos pesos valían CUANDO SE COMPRÓ, no hoy:
+      usar el de hoy achica el costo e infla la ganancia con la devaluación.
+
+    `historico` viene del `fx_version` de la cuenta (v2 → True). En v1 el riel
+    es el blue y el replay queda EXACTAMENTE como siempre: `fx_for_date` con
+    `riel=RIEL_BLUE` es la misma consulta que hacía `persister.blue_for_date`
+    (`blue_venta` es NOT NULL en los dos motores, así que el `IS NOT NULL` del
+    WHERE no cambia ninguna fila).
+
+    Sin `conn` o sin `entry_date` cae a `tc_blue`, que es el comportamiento que
+    ya tenían los tres call sites para tests y callers viejos.
+    """
+    if lot_currency == sell_currency or not tc_blue:
+        return base_invested
+    if lot_currency == "USD" and sell_currency == "ARS":
+        return base_invested * (tc_venta or tc_blue)
+    if lot_currency == "ARS" and sell_currency == "USD":
+        riel = RIEL_MEP if historico else RIEL_BLUE
+        compra_fx = fx_for_date(conn, entry_date, fallback=tc_blue, riel=riel)
+        return base_invested / (compra_fx or tc_blue)
+    return base_invested
+
 # ─── Versionado por usuario: la migración es POR CUENTA, no global ────────────
 #
 # Deployar el TC histórico sin esto rompe a los 503 usuarios con data existente:

@@ -11769,6 +11769,11 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 # vendida de cada lote, y reduce el P&L y el proceeds del cash.
                 total_commission_native = float(data.commissions or 0)
 
+                # El riel de dólar de la cuenta, resuelto UNA vez. Se usa en las dos
+                # patas de la venta —el costo del lote y el TC de la venta— y antes
+                # se consultaba por lote adentro del loop.
+                _hist_fx = _fx.fx_version(conn, uid) == _fx.FX_V2
+
                 for p in positions:
                     if remaining <= 1e-9:
                         break
@@ -11794,13 +11799,19 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                     # vendido en ARS usa el TC de venta (se cancela, preserva el costo
                     # USD). Sin esto, un lote en otra moneda daba P&L absurdo.
                     lot_currency = (p["currency"] if "currency" in p.keys() else None) or sell_ccy
-                    if lot_currency != sell_ccy:
-                        if lot_currency == "USD" and sell_ccy == "ARS":
-                            base_invested = base_invested * (data.tc_venta or cur_blue)
-                        elif lot_currency == "ARS" and sell_ccy == "USD":
-                            entry_dt = p["entry_date"] if "entry_date" in p.keys() else None
-                            purchase_blue = _import_persister.blue_for_date(conn, entry_dt, cur_blue)
-                            base_invested = base_invested / (purchase_blue or cur_blue)
+                    # CROSS-CURRENCY: el costo del lote, llevado a la moneda de la
+                    # venta. LA MISMA función que el importador y el rebuild —
+                    # `fx.costo_en_moneda_de_venta`. Acá vivía una cuarta copia que
+                    # pedía el BLUE siempre, sin mirar el `fx_version` de la cuenta:
+                    # en una cuenta v2 la misma venta daba un costo distinto tipeada
+                    # que importada (MEP y blue se separan >3 % en la mitad de los
+                    # días). Y el arreglo ya estaba treinta líneas más abajo, en la
+                    # pata del TC de venta: se había migrado una sola de las dos.
+                    base_invested = _fx.costo_en_moneda_de_venta(
+                        base_invested, lot_currency, sell_ccy,
+                        conn=conn,
+                        entry_date=(p["entry_date"] if "entry_date" in p.keys() else None),
+                        tc_venta=data.tc_venta, tc_blue=cur_blue, historico=_hist_fx)
 
                     entry_invested = base_invested * ratio if base_invested else None
 
@@ -11832,7 +11843,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                         # B5 del diagnóstico, imposible de distinguir después de una
                         # venta USD genuina (las dos quedan byte-idénticas). Ahora cae al
                         # TC de la fecha, que es lo que el usuario habría puesto.
-                        if _fx.fx_version(conn, uid) == _fx.FX_V2:
+                        if _hist_fx:
                             tc_venta = data.tc_venta or _fx.fx_for_date(
                                 conn, op_date, fallback=_user_tc_blue(conn, uid)) or 1
                         else:
