@@ -36,6 +36,16 @@ function Chip({ nombre, articulo, pp, detalle }) {
   )
 }
 
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+               'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+
+// "2026-06-30" → "30 de junio". La fecha en palabras porque va dentro de una
+// oración ("desde el 30 de junio"), no en una columna de números.
+export function fechaEnPalabras(iso) {
+  if (!iso || iso.length < 10) return ''
+  return `${parseInt(iso.slice(8, 10), 10)} de ${MESES[parseInt(iso.slice(5, 7), 10) - 1]}`
+}
+
 export default function YearReturnLine({ modo = 'certero', className = '' }) {
   const { currency } = useCurrency()
   const moneda = currency === 'ARS' ? 'ars' : 'usd'
@@ -56,7 +66,16 @@ export default function YearReturnLine({ modo = 'certero', className = '' }) {
   }
   if (!current) return null
 
-  const pct = current.pct
+  // ⚠️ SI EL AÑO ENTERO NO SE PUEDE MEDIR, SE MUESTRA EL TRAMO QUE SÍ.
+  // Reportado desde producción: la card decía "Todavía no se puede medir · sin dos
+  // fotos a mercado" mientras la card de AL LADO decía "Desde que medimos · +5,9 %
+  // · 74 días". Había sesenta fotos; lo que no llegaba era a cubrir el año. El
+  // motor sabe medir ese tramo, así que se publica con la fecha desde la que corre
+  // — "desde el 30 de junio" es verdadero; llamarlo "2026" sería la mentira.
+  const parcial = current.pct == null && current.parcial_pct != null
+  const pct = parcial ? current.parcial_pct : current.pct
+  const vsSp = parcial ? current.parcial_vs_sp500_pct : current.vs_sp500_pct
+  const vsInfl = parcial ? null : current.vs_inflation_pct
   const positivo = pct != null && pct >= 0
 
   return (
@@ -79,17 +98,17 @@ export default function YearReturnLine({ modo = 'certero', className = '' }) {
         </div>
       )}
 
-      {pct != null && (current.vs_sp500_pct != null || current.vs_inflation_pct != null) && (
+      {pct != null && (vsSp != null || vsInfl != null) && (
         <div className="flex flex-wrap gap-1.5 mt-2.5">
-          {current.vs_sp500_pct != null && (
-            <Chip nombre="S&P 500" articulo="el" pp={current.vs_sp500_pct} />
+          {vsSp != null && (
+            <Chip nombre="S&P 500" articulo="el" pp={vsSp} />
           )}
           {/* El veredicto contra la inflación se calcula SIEMPRE en pesos (el backend
               convierte el retorno con `twr.vs_inflacion_ar`), así que aparece en las
               dos monedas. En dólares, el globo aclara contra qué número se restó. */}
-          {current.vs_inflation_pct != null && (
+          {vsInfl != null && (
             <Chip
-              nombre="inflación" articulo="la" pp={current.vs_inflation_pct}
+              nombre="inflación" articulo="la" pp={vsInfl}
               detalle={moneda !== 'ars' && current.retorno_ars_pct != null
                 ? `Se compara en pesos: tu cartera hizo ${current.retorno_ars_pct.toFixed(2)} % en pesos y la inflación ${current.inflation_pct?.toFixed(1)} %`
                 : null}
@@ -106,7 +125,8 @@ export default function YearReturnLine({ modo = 'certero', className = '' }) {
           para que quede abajo aunque la card se estire al alto de sus hermanas. */}
       <div className="flex items-center justify-between gap-2 flex-wrap mt-auto pt-2.5">
         <span className="text-[11px] text-ink-3 leading-none">
-          {pct == null ? 'sin dos fotos a mercado'
+          {parcial ? `desde el ${fechaEnPalabras(current.parcial_desde)}`
+            : pct == null ? 'todavía sin dos mediciones que cubran el año'
             : current.basis === 'contable' ? 'de tu historia importada'
             : 'medido a mercado'}
         </span>

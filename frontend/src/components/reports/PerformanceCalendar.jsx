@@ -18,6 +18,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Lock } from 'lucide-react'
 import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
+import { fechaEnPalabras } from '../YearReturnLine'
 
 function monthNum(period_key) {
   if (!period_key) return null
@@ -410,7 +411,11 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
             // Ahora el número viene de `/api/reports/years` (`twr.curva_indexada`),
             // que es el mismo que publica la pestaña Año y el inicio.
             const resumen = years.find(a => a.year === year) || null
-            const pct = resumen?.pct
+            // El mismo criterio que la card del inicio: si el año entero no se puede
+            // medir pero hay un tramo medido adentro, se muestra ese tramo con su
+            // fecha. Ver `YearReturnLine` — la regla vive documentada allá.
+            const parcial = resumen != null && resumen.pct == null && resumen.parcial_pct != null
+            const pct = parcial ? resumen.parcial_pct : resumen?.pct
             // ⚠️ "BLOQUEADO" NO ES "SIN MEDIR". Sin el resumen —porque el plan no
             // lo incluye— la fila diría "sin fotos a precio de mercado", que es
             // falso: el número existe y está del otro lado del muro. Decirle al
@@ -442,11 +447,15 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   <span className="text-[10.5px] text-ink-3 leading-tight">
                     {bloqueado
                       ? 'los años anteriores están en el plan pago'
-                      : pct == null
-                        ? (resumen?.motivo_texto ? 'el motor no publica este año' : 'sin fotos a precio de mercado')
-                        : resumen.basis === 'contable'
-                          ? 'de tu historia importada'
-                          : 'medido a precio de mercado'}
+                      : parcial
+                        ? `desde el ${fechaEnPalabras(resumen.parcial_desde)}`
+                        : pct == null
+                          ? (resumen?.motivo_texto
+                              ? 'el motor no publica este año'
+                              : 'todavía sin mediciones que cubran el año')
+                          : resumen.basis === 'contable'
+                            ? 'de tu historia importada'
+                            : 'medido a precio de mercado'}
                   </span>
                 </div>
                 <div className="flex-1 min-w-0">
@@ -464,7 +473,8 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   )}
                 </div>
                 <div className="flex flex-col gap-1.5 items-end min-w-[132px]">
-                  <Veredicto nombre="S&P 500" articulo="el" pp={resumen?.vs_sp500_pct} />
+                  <Veredicto nombre="S&P 500" articulo="el"
+                             pp={parcial ? resumen.parcial_vs_sp500_pct : resumen?.vs_sp500_pct} />
                   {/* ⚠️ LA INFLACIÓN SE COMPARA SIEMPRE EN PESOS (ver `twr.vs_inflacion_ar`):
                       restarle a un retorno en dólares un índice que mide precios
                       argentinos es restar unidades distintas. Cuando el usuario está
@@ -473,7 +483,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                       dice: si no, la resta que el usuario puede hacer con lo que ve no
                       le va a dar. */}
                   <Veredicto
-                    nombre="inflación" articulo="la" pp={resumen?.vs_inflation_pct}
+                    nombre="inflación" articulo="la" pp={parcial ? null : resumen?.vs_inflation_pct}
                     detalle={!enPesos && resumen?.retorno_ars_pct != null
                       ? `Se compara en pesos: tu cartera hizo ${resumen.retorno_ars_pct.toFixed(2)} % en pesos y la inflación ${resumen.inflation_pct?.toFixed(1)} %`
                       : null}
