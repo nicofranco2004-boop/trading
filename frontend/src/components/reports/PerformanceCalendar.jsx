@@ -40,7 +40,7 @@ const MES_INICIAL = ['E', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D']
 // que no toque el borde y se lea como cortada.
 const ALTO_MAX_PCT = 92
 
-function BarrasDelAnio({ cells, money, enPesos }) {
+function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
   const [encima, setEncima] = useState(null)
 
   const meses = cells.map(({ month }) => {
@@ -67,15 +67,25 @@ function BarrasDelAnio({ cells, money, enPesos }) {
     <div className="relative">
       {activo && (
         <div
-          className="absolute -top-1.5 z-10 pointer-events-none bg-bg-3 border border-line-2
+          className="absolute z-10 pointer-events-none bg-bg-3 border border-line-2
                      rounded-lg px-2.5 py-1.5 whitespace-nowrap"
-          style={
-            // El globo se ancla al centro de su columna, salvo en las puntas: con
-            // doce columnas, enero y diciembre lo mandarían fuera de la caja.
-            encima <= 1 ? { left: 0, transform: 'translateY(-100%)' }
-              : encima >= 10 ? { right: 0, transform: 'translateY(-100%)' }
-                : { left: `${((encima + 0.5) / 12) * 100}%`, transform: 'translate(-50%, -100%)' }
-          }
+          style={{
+            // ⚠️ EN LA PRIMERA FILA EL GLOBO VA PARA ABAJO. Arriba se salía de la
+            // tarjeta y quedaba cortado a la mitad: el contenedor de las bandas
+            // lleva scroll horizontal —para que las barras no se recorten— y un
+            // `overflow-x` recorta también en vertical. No hay lugar arriba de la
+            // primera banda, así que ahí se abre hacia abajo.
+            ...(tipAbajo ? { top: '100%', marginTop: '6px' } : { top: '-6px' }),
+            // Y se ancla al centro de su columna, salvo en las puntas: con doce
+            // columnas, enero y diciembre lo mandarían fuera de la caja.
+            ...(encima <= 1 ? { left: 0 }
+              : encima >= 10 ? { right: 0 }
+                : { left: `${((encima + 0.5) / 12) * 100}%` }),
+            transform: [
+              encima > 1 && encima < 10 ? 'translateX(-50%)' : '',
+              tipAbajo ? '' : 'translateY(-100%)',
+            ].filter(Boolean).join(' ') || 'none',
+          }}
         >
           <div className="text-[10.5px] text-ink-3 leading-none">{activo.label}</div>
           <div className="flex items-baseline gap-1.5 mt-1 leading-none">
@@ -396,7 +406,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
             meses más el cierre no entran en un teléfono, y el contrato del repo ya
             marca este archivo como sitio de riesgo por sus anchos fijos. */}
         <div className="px-4 py-5 space-y-5 overflow-x-auto">
-          {yearGroups.map(({ year, months }) => {
+          {yearGroups.map(({ year, months }, idxAnio) => {
             const cells = Array.from({ length: 12 }, (_, idx) => {
               const m = months.find(mm => monthNum(mm.period_key) === idx + 1)
               return { idx, month: m }
@@ -469,7 +479,8 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                       El detalle mes a mes de este año todavía no está cargado.
                     </div>
                   ) : (
-                    <BarrasDelAnio cells={cells} money={money} enPesos={enPesos} />
+                    <BarrasDelAnio cells={cells} money={money} enPesos={enPesos}
+                                   tipAbajo={idxAnio === 0} />
                   )}
                 </div>
                 <div className="flex flex-col gap-1.5 items-end min-w-[132px]">
