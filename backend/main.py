@@ -11774,6 +11774,33 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 # se consultaba por lote adentro del loop.
                 _hist_fx = _fx.fx_version(conn, uid) == _fx.FX_V2
 
+                # EL TC DE LA VENTA, RESUELTO UNA SOLA VEZ Y ANTES DEL LOOP.
+                #
+                # Tiene que ser EL MISMO número en las dos puntas: el costo del lote
+                # se lleva a pesos con él y después `pnl_ars / tc_venta` lo divide de
+                # vuelta, así que el TC se CANCELA y el costo en dólares se preserva.
+                # Es el mismo acople que documenta `rebuild._replay_asset`.
+                #
+                # Antes no lo era. La conversión del costo usaba `data.tc_venta or
+                # cur_blue` —el campo CRUDO del formulario, con el dólar de HOY como
+                # respaldo— y la división usaba el TC RESUELTO, que en una cuenta v2
+                # es el de la FECHA. Con el campo "TC de venta" vacío los dos números
+                # son distintos y no se cancelan: sobre un lote de US$ 1.000 vendido
+                # en pesos, con el dólar de la fecha en 1.000 y el de hoy en 1.500,
+                # publicaba −US$ 300 donde el resultado real era +US$ 200. El signo
+                # invertido.
+                #
+                # No es un número nuevo: es exactamente el que ya se usaba para
+                # dividir, movido arriba para que la otra punta lo pueda usar.
+                if sell_ccy == "ARS":
+                    if _hist_fx:
+                        _tc_venta = data.tc_venta or _fx.fx_for_date(
+                            conn, op_date, fallback=_user_tc_blue(conn, uid)) or 1
+                    else:
+                        _tc_venta = data.tc_venta or 1
+                else:
+                    _tc_venta = None
+
                 for p in positions:
                     if remaining <= 1e-9:
                         break
@@ -11811,7 +11838,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                         base_invested, lot_currency, sell_ccy,
                         conn=conn,
                         entry_date=(p["entry_date"] if "entry_date" in p.keys() else None),
-                        tc_venta=data.tc_venta, tc_blue=cur_blue, historico=_hist_fx)
+                        tc_venta=_tc_venta, tc_blue=cur_blue, historico=_hist_fx)
 
                     entry_invested = base_invested * ratio if base_invested else None
 
@@ -11843,11 +11870,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                         # B5 del diagnóstico, imposible de distinguir después de una
                         # venta USD genuina (las dos quedan byte-idénticas). Ahora cae al
                         # TC de la fecha, que es lo que el usuario habría puesto.
-                        if _hist_fx:
-                            tc_venta = data.tc_venta or _fx.fx_for_date(
-                                conn, op_date, fallback=_user_tc_blue(conn, uid)) or 1
-                        else:
-                            tc_venta = data.tc_venta or 1
+                        tc_venta = _tc_venta
                         tc_venta_usado = tc_venta
                         pnl_ars_chunk = data.exit_price * take - (entry_invested or 0) - chunk_commission_native
                         pnl_usd = pnl_ars_chunk / tc_venta

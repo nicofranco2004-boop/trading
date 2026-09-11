@@ -126,6 +126,90 @@ class RielUnicoVentaTest(unittest.TestCase):
         self.assertNotAlmostEqual(self.COSTO_CON_BLUE, self.COSTO_CON_MEP, places=2)
 
 
+class MismoTcEnLasDosPuntasTest(unittest.TestCase):
+    """Un lote en DÓLARES vendido en PESOS: el TC tiene que cancelarse.
+
+    EL BUG (encontrado auditando esta misma tanda). El costo del lote se llevaba a
+    pesos con `data.tc_venta or cur_blue` —el campo CRUDO del formulario, con el
+    dólar de HOY como respaldo— y el P&L se dividía por el TC RESUELTO, que en una
+    cuenta v2 es el de la FECHA. Con el campo "TC de venta" vacío los dos números
+    son distintos y el TC no se cancela: aparece una ganancia (o pérdida) que no
+    ocurrió.
+
+    Es el mismo acople que `rebuild._replay_asset` documenta hace tiempo — "dejar
+    `tc_blue` acá los hace divergir ~5× y mete una pérdida fantasma en TODA
+    operación dólar-MEP". Estaba arreglado en los dos motores del importador y no
+    en el formulario.
+    """
+
+    BROKER = "TestCancela"
+    VENTA = "2024-03-15"
+    TC_DE_LA_FECHA = 1000.0
+    TC_DE_HOY = 1500.0
+    COSTO_USD = 1000.0
+    CANTIDAD = 10.0
+    PRECIO_VENTA_ARS = 120_000.0      # 10 × 120.000 = 1.200.000 ARS
+
+    # Bien: costo 1.000 × 1.000 = 1.000.000 → P&L +200.000 ARS → +200 USD
+    PNL_CORRECTO_USD = 200.0
+    # Mal:  costo 1.000 × 1.500 = 1.500.000 → P&L −300.000 ARS → −300 USD
+    PNL_ROTO_USD = -300.0
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "positions", "monthly_entries", "snapshots",
+                  "brokers", "fx_rates_daily", "config", "users"):
+            try:
+                conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.uid = conn.execute(
+            "INSERT INTO users (email,password_hash,approved,email_verified) "
+            "VALUES ('cancela@rendi.test','x',1,1)").lastrowid
+        conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,'ARS')",
+                     (self.uid, self.BROKER))
+        conn.execute("INSERT INTO config (user_id,key,value) VALUES (?,?,?)",
+                     (self.uid, "fx_version", "v2"))
+        # El dólar de HOY, muy lejos del de la fecha de la venta.
+        conn.execute("INSERT INTO config (user_id,key,value) VALUES (?,?,?)",
+                     (self.uid, "tc_blue", str(self.TC_DE_HOY)))
+        conn.execute(
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+            (self.VENTA, self.TC_DE_LA_FECHA, self.TC_DE_LA_FECHA))
+        conn.execute(
+            """INSERT INTO positions
+               (user_id,broker,asset,is_cash,buy_price,quantity,invested,
+                currency,entry_date,commissions)
+               VALUES (?,?,'AAPL',0,?,?,?,'USD','2024-01-10',0)""",
+            (self.uid, self.BROKER, self.COSTO_USD / self.CANTIDAD,
+             self.CANTIDAD, self.COSTO_USD))
+        conn.commit()
+        conn.close()
+
+    def test_sin_tc_en_el_formulario_el_tc_se_cancela_igual(self):
+        """El caso real: el usuario borra el campo opcional "TC de venta"."""
+        client = TestClient(main.app)
+        r = client.post("/api/positions/sell",
+                        headers={"Authorization": f"Bearer {main.create_token(self.uid)}"},
+                        json={"broker": self.BROKER, "asset": "AAPL",
+                              "quantity": self.CANTIDAD,
+                              "exit_price": self.PRECIO_VENTA_ARS,
+                              "date": self.VENTA, "currency": "ARS"})
+        self.assertEqual(r.status_code, 200, r.text)
+        conn = main.get_db()
+        try:
+            row = conn.execute(
+                "SELECT pnl_usd, fx_to_usd FROM operations "
+                "WHERE user_id=? AND op_type='Venta' LIMIT 1", (self.uid,)).fetchone()
+        finally:
+            conn.close()
+        self.assertAlmostEqual(row["pnl_usd"], self.PNL_CORRECTO_USD, places=2,
+                               msg="el costo y la venta se valuaron a TC distintos")
+        self.assertNotAlmostEqual(row["pnl_usd"], self.PNL_ROTO_USD, places=2)
+        # Y el TC que se SELLA en la fila es el mismo que se usó para las dos patas.
+        self.assertAlmostEqual(row["fx_to_usd"], self.TC_DE_LA_FECHA, places=2)
+
+
 class UnRielGuardTest(unittest.TestCase):
     """Guards que leen CÓDIGO. Un test de comportamiento pasa igual aunque mañana
     alguien escriba la cuarta copia en otro archivo — y esa copia es el bug."""
