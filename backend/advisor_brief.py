@@ -167,26 +167,41 @@ def _fx(conn):
     ((compra+venta)/2, vía _val_rate), no la punta de venta — si no, el valor
     vivo y el snapshot se valúan con dólares distintos y aparece una pérdida
     fantasma de ~0,7% todos los días (audit). Fallback: la fila más nueva puede
-    venir solo-blue (cron nocturno) → se busca la última CON mep."""
+    venir solo-blue (cron nocturno) → se busca la última CON mep.
+
+    ⚠️ Este docstring decía esto desde antes, y el camino de arriba ya usaba el
+    medio — pero los DOS fallbacks de abajo seguían leyendo la punta de venta de
+    `fx_rates_daily`, que era la única que había guardada. Con la punta compradora
+    en la tabla, los tres caminos derivan el mismo medio (`fx.SQL_MEDIO_*`).
+
+    El alias del módulo se llama `_fxmod` y no `_fx` a propósito: `_fx` es el
+    nombre de ESTA función."""
+    import fx as _fxmod          # afuera del try: los fallbacks de abajo lo usan
     try:
         import main
         _live = main._current_cedear_rate()   # medio, misma fuente que el snapshot
         if _live and float(_live) > 0:
+            # El PUNTO MEDIO, con la expresión compartida: `_current_cedear_rate`
+            # de arriba ya devuelve el medio, y leer acá la punta de venta ponía
+            # las dos patas del brief en bases distintas.
             fx0 = conn.execute(
-                "SELECT blue_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1").fetchone()
-            return (float(fx0["blue_venta"]) if fx0 and fx0["blue_venta"] else 1415.0,
+                f"SELECT {_fxmod.SQL_MEDIO_BLUE} AS blue FROM fx_rates_daily "
+                "ORDER BY date DESC LIMIT 1").fetchone()
+            return (float(fx0["blue"]) if fx0 and fx0["blue"] else 1415.0,
                     float(_live))
     except Exception:
         pass
     fx = conn.execute(
-        "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
+        f"SELECT {_fxmod.SQL_MEDIO_BLUE} AS blue, {_fxmod.SQL_MEDIO_MEP} AS mep "
+        "FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
     ).fetchone()
-    tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
-    tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else None
+    tc_blue = float(fx["blue"]) if fx and fx["blue"] else 1415.0
+    tc_mep = float(fx["mep"]) if fx and fx["mep"] else None
     if tc_mep is None:
-        r = conn.execute("SELECT mep_venta FROM fx_rates_daily WHERE mep_venta IS NOT NULL "
+        r = conn.execute(f"SELECT {_fxmod.SQL_MEDIO_MEP} AS mep FROM fx_rates_daily "
+                         "WHERE mep_venta IS NOT NULL "
                          "ORDER BY date DESC LIMIT 1").fetchone()
-        tc_mep = float(r["mep_venta"]) if r else tc_blue
+        tc_mep = float(r["mep"]) if r else tc_blue
     return tc_blue, tc_mep
 
 

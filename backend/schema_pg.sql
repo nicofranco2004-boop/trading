@@ -922,6 +922,10 @@ ALTER TABLE fx_rates_daily ADD COLUMN IF NOT EXISTS blue_venta double precision;
 
 ALTER TABLE fx_rates_daily ADD COLUMN IF NOT EXISTS mep_venta double precision;
 
+ALTER TABLE fx_rates_daily ADD COLUMN IF NOT EXISTS blue_compra double precision;
+
+ALTER TABLE fx_rates_daily ADD COLUMN IF NOT EXISTS mep_compra double precision;
+
 ALTER TABLE fx_rates_daily ADD COLUMN IF NOT EXISTS source text DEFAULT 'unknown';
 
 ALTER TABLE fx_rates_daily ADD COLUMN IF NOT EXISTS fetched_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');

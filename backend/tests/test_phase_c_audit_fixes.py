@@ -99,6 +99,12 @@ class TestPersistBlueForDate(unittest.TestCase):
                 date TEXT PRIMARY KEY,
                 blue_venta REAL NOT NULL,
                 mep_venta REAL,
+                -- La punta COMPRADORA (2026-09-11): con ella los lectores derivan
+                -- el punto medio. Este fixture arma la tabla a mano, así que tiene
+                -- que seguir al esquema de `init_db` — si se separan, el test
+                -- certifica en verde contra una tabla que no existe en ningún lado.
+                blue_compra REAL,
+                mep_compra REAL,
                 source TEXT DEFAULT 'unknown',
                 fetched_at TEXT DEFAULT (datetime('now'))
             );

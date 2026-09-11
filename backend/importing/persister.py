@@ -52,8 +52,13 @@ def blue_for_date(conn, date_str, fallback):
     """Blue (venta) del día `date_str` (YYYY-MM-DD) desde fx_rates_daily — el más
     reciente en o antes de esa fecha. Fallback al valor dado si no hay data.
 
-    ⚠️ YA NO LA LLAMA NINGÚN CÓDIGO DE PRODUCCIÓN. El riel blue se pide por
-    `fx.fx_for_date(..., riel=fx.RIEL_BLUE)`, que hace exactamente esta consulta
+    ⚠️ YA NO LA LLAMA NINGÚN CÓDIGO DE PRODUCCIÓN, y desde 2026-09-11 tampoco
+    devuelve lo mismo: acá quedó la punta de VENTA cruda mientras `fx_for_date`
+    pasó al punto MEDIO. Un caller nuevo que la usara valuaría ~0,2 % distinto que
+    todo el resto — otra razón para no tenerla.
+
+    El riel blue se pide por `fx.fx_for_date(..., riel=fx.RIEL_BLUE)`, que hace
+    la misma consulta salvo por el medio
     (`blue_venta` es NOT NULL, así que el `IS NOT NULL` del WHERE no cambia
     ninguna fila) y además obliga a nombrar el riel en el call site en vez de
     esconderlo en el nombre de la función. Se conserva porque

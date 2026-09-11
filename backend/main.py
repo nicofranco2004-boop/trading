@@ -1641,6 +1641,20 @@ def init_db():
         except ERR_OPERACIONAL as e:
             if not dberrors.es_columna_duplicada(e):
                 raise  # error real (no "ya existe") → no lo escondemos
+        # LA PUNTA COMPRADORA (2026-09-11). La tabla guardaba UNA sola punta —la de
+        # venta— mientras la valuación viva usa el punto MEDIO, que es el que
+        # muestran los brokers (ver `_val_rate`). Esas dos bases distintas son el
+        # bug de la "pérdida fantasma" que `ledger_replay` documenta y parchea
+        # marcando los tramos: un borde reconstruido a la venta y otro medido al
+        # medio difieren por el spread y encadenarlos fabrica retorno de la nada.
+        # Guardamos el dato CRUDO; el medio lo derivan los lectores con la MISMA
+        # expresión (`fx.SQL_MEDIO_MEP` / `fx.SQL_MEDIO_BLUE`).
+        for _col in ("blue_compra", "mep_compra"):
+            try:
+                conn.execute(f"ALTER TABLE fx_rates_daily ADD COLUMN {_col} REAL")
+            except ERR_OPERACIONAL as e:
+                if not dberrors.es_columna_duplicada(e):
+                    raise
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS goals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4893,7 +4907,8 @@ def _val_rate(obj):
 # realidad de "cuánto valía mi portfolio en pesos en julio 2024".
 
 def _persist_blue_for_date(date_str: str, blue: float, source: str = 'snapshot_cron',
-                           mep: float = None) -> bool:
+                           mep: float = None, blue_compra: float = None,
+                           mep_compra: float = None) -> bool:
     """Upsert idempotente del blue (y opcionalmente el MEP) en fx_rates_daily. NO
     falla si ya existe (overwrite con el valor más reciente, asumimos que la última
     lectura es más confiable). Devuelve True si el insert/update se aplicó.
@@ -4901,22 +4916,32 @@ def _persist_blue_for_date(date_str: str, blue: float, source: str = 'snapshot_c
     `mep`: dólar-MEP del día (Fase B). Si es None o ≤0, NO se toca mep_venta
     (COALESCE preserva el valor previo o el backfill histórico). Sólo se escribe
     junto al blue del día corriente — el histórico lo llena _backfill_mep_rates.
+
+    `blue_compra` / `mep_compra`: LA PUNTA COMPRADORA. Con ella los lectores
+    derivan el punto MEDIO —el dólar al que valúan los brokers y al que ya valuaba
+    la app en vivo— en vez de quedarse con la punta de venta. Mismo COALESCE que
+    el MEP: si no viene, NO se pisa lo que ya había.
     """
     if not blue or blue <= 0 or not date_str:
         return False
     mep_val = float(mep) if (mep and mep > 0) else None
+    bc_val = float(blue_compra) if (blue_compra and blue_compra > 0) else None
+    mc_val = float(mep_compra) if (mep_compra and mep_compra > 0) else None
     conn = None
     try:
         conn = get_db()
         conn.execute(
-            """INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source,
+                                           blue_compra, mep_compra)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(date) DO UPDATE SET
                  blue_venta = excluded.blue_venta,
                  mep_venta = COALESCE(excluded.mep_venta, fx_rates_daily.mep_venta),
+                 blue_compra = COALESCE(excluded.blue_compra, fx_rates_daily.blue_compra),
+                 mep_compra = COALESCE(excluded.mep_compra, fx_rates_daily.mep_compra),
                  source = excluded.source,
                  fetched_at = datetime('now')""",
-            (date_str, float(blue), mep_val, source),
+            (date_str, float(blue), mep_val, source, bc_val, mc_val),
         )
         conn.commit()
         return True
@@ -4935,10 +4960,11 @@ def _persist_blue_for_date(date_str: str, blue: float, source: str = 'snapshot_c
 # fija su semántica (tests/test_fx_backfill_upsert.py) se ate a ESTA consulta y no
 # a una copia pegada. Si mañana alguien le saca el `mep_venta` de encima —o se lo
 # agrega al SET— el test lo ve. Con una copia en el test, no.
-SQL_BACKFILL_FX_BLUE = """INSERT INTO fx_rates_daily (date, blue_venta, source)
-   VALUES (?, ?, ?)
+SQL_BACKFILL_FX_BLUE = """INSERT INTO fx_rates_daily (date, blue_venta, blue_compra, source)
+   VALUES (?, ?, ?, ?)
    ON CONFLICT(date) DO UPDATE SET
      blue_venta = EXCLUDED.blue_venta,
+     blue_compra = COALESCE(EXCLUDED.blue_compra, fx_rates_daily.blue_compra),
      source     = EXCLUDED.source,
      fetched_at = datetime('now')"""
 
@@ -4963,9 +4989,12 @@ def _backfill_fx_rates_if_empty():
             for item in r.json():
                 fecha = item.get("fecha", "")
                 venta = item.get("venta")
+                compra = item.get("compra")
                 if fecha and venta is not None and len(fecha) == 10:
                     try:
-                        rows.append((fecha, float(venta), 'argentinadatos'))
+                        _c = float(compra) if compra is not None else None
+                        rows.append((fecha, float(venta),
+                                     _c if (_c and _c > 0) else None, 'argentinadatos'))
                     except (TypeError, ValueError):
                         continue
             if rows:
@@ -5068,6 +5097,90 @@ def _backfill_mep_rates_if_missing():
             logging.warning(f"backfill mep_venta failed: {e}")
     except Exception as e:
         logging.warning(f"_backfill_mep_rates_if_missing outer error: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _backfill_compras_if_missing():
+    """LA PUNTA COMPRADORA histórica, desde argentinadatos (blue y /bolsa).
+
+    Con `blue_compra`/`mep_compra` los lectores derivan el punto MEDIO —el dólar
+    al que valúan los brokers y al que ya valuaba la app en vivo— en vez de
+    quedarse con la punta de venta. Sin esto, `COALESCE` deja el medio = venta y
+    el deploy no cambia un solo número: el backfill ES el cambio.
+
+    Idempotent y sólo UPDATE de filas existentes, igual que el del MEP: si no hay
+    ninguna fila a la que le falte la compra, no pega a la API. `mep_compra` sólo
+    se escribe donde ya hay `mep_venta` — sin la punta de venta el medio no se
+    puede formar y la fila tiene que seguir cayendo al blue.
+
+    Medido sobre la fuente (2026-09-11): las DOS series traen compra en el 100 %
+    de sus filas — blue 5.731 desde 2011-01-03, bolsa 2.875 desde 2018-10-29.
+    """
+    conn = None
+    try:
+        conn = get_db()
+        # ⚠️ LA CONDICIÓN MIRA LO RECIENTE, NO EL TOTAL. Preguntando por el total
+        # este backfill le pega a la API en CADA arranque para siempre: quedan
+        # ~4.200 filas sin compra que la fuente sencillamente no cubre (fechas
+        # viejas del MEP, y las que el filtro de cordura rechaza). Esas tienen que
+        # quedar en NULL — el lector cae a la punta de venta, que es lo correcto.
+        # Con la ventana de 60 días la primera corrida llena TODO (el UPDATE no se
+        # limita a la ventana) y las siguientes son no-op, salvo que el cron haya
+        # escrito días nuevos sin compra (caché frío), que es justo cuando hay que
+        # volver a correr.
+        _desde = (_hoy_art_date() - timedelta(days=60)).isoformat()
+        faltan = conn.execute(
+            "SELECT COUNT(*) FROM fx_rates_daily WHERE date >= ? AND ("
+            "blue_compra IS NULL OR (mep_venta IS NOT NULL AND mep_compra IS NULL))",
+            (_desde,)).fetchone()[0]
+        if not faltan:
+            return
+        logging.info(f"fx_rates_daily: {faltan} filas recientes sin punta compradora — backfill")
+        for casa, col_compra, col_venta in (
+            ("blue", "blue_compra", "blue_venta"),
+            ("bolsa", "mep_compra", "mep_venta"),
+        ):
+            try:
+                r = requests.get(
+                    f"https://api.argentinadatos.com/v1/cotizaciones/dolares/{casa}",
+                    timeout=10)
+                if r.status_code != 200:
+                    continue
+                updates = []
+                for item in r.json():
+                    fecha = item.get("fecha", "")
+                    compra, venta = item.get("compra"), item.get("venta")
+                    if fecha and compra is not None and len(fecha) == 10:
+                        try:
+                            c, v = float(compra), float(venta or 0)
+                        except (TypeError, ValueError):
+                            continue
+                        # MISMO filtro que el lector (`fx._sql_medio`): la fuente
+                        # tiene dato podrido —el 2025-05-02 el MEP figura con 45 %
+                        # de spread, y hay 73 días con la compra por encima de la
+                        # venta—. Ante la duda no se guarda: el lector cae a la
+                        # punta de venta, que es lo que ya usaba.
+                        if c > 0 and v > 0 and c < v and (v - c) <= 0.10 * v:
+                            updates.append((c, fecha))
+                if updates:
+                    conn.executemany(
+                        f"UPDATE fx_rates_daily SET {col_compra} = ? "
+                        f"WHERE date = ? AND {col_compra} IS NULL "
+                        f"AND {col_venta} IS NOT NULL",
+                        updates)
+                    conn.commit()
+                    logging.info(
+                        f"fx_rates_daily: {col_compra} backfilled desde /{casa} "
+                        f"({len(updates)} fechas ofrecidas)")
+            except Exception as e:
+                logging.warning(f"backfill {col_compra} failed: {e}")
+    except Exception as e:
+        logging.warning(f"_backfill_compras_if_missing outer error: {e}")
     finally:
         if conn is not None:
             try:
@@ -5264,17 +5377,28 @@ def post_snapshot(data: SnapshotIn, request: Request,
     # El frontend hace fallback automático al tcBlue actual via useFxHistory.
     blue_now = None
     mep_now = None
+    blue_compra_now = None
+    mep_compra_now = None
     try:
         if _dolar_cache["data"]:
-            blue_now = (_dolar_cache["data"].get("blue") or {}).get("venta")
-            mep_now = (_dolar_cache["data"].get("mep") or {}).get("venta")
+            _b_obj = _dolar_cache["data"].get("blue") or {}
+            _m_obj = _dolar_cache["data"].get("mep") or {}
+            # Se guardan las DOS puntas: la de venta por compatibilidad con todo lo
+            # ya escrito, y la compradora para que los lectores deriven el MEDIO.
+            blue_now = _b_obj.get("venta")
+            mep_now = _m_obj.get("venta")
+            blue_compra_now = _b_obj.get("compra")
+            mep_compra_now = _m_obj.get("compra")
     except Exception:
         blue_now = None
         mep_now = None
+        blue_compra_now = None
+        mep_compra_now = None
     # Si conseguimos el blue desde cache, persistimos en fx_rates_daily también
     # (junto con el MEP del día, Fase B — mep_venta queda NULL si el cache no lo trae).
     if blue_now and blue_now > 0:
-        _persist_blue_for_date(today, float(blue_now), source='dolarapi', mep=mep_now)
+        _persist_blue_for_date(today, float(blue_now), source='dolarapi', mep=mep_now,
+                               blue_compra=blue_compra_now, mep_compra=mep_compra_now)
 
     conn = get_db()
     try:
@@ -5452,8 +5576,12 @@ def get_fx_rates(
     days = max(1, min(int(days or _FX_DIAS_TODO), _FX_DIAS_TODO))
     desde = (_hoy_art_date() - timedelta(days=days)).isoformat()
     with db_abierta() as conn:
+        # El PUNTO MEDIO de cada riel, con la expresión compartida de `fx.py`. Las
+        # claves del JSON siguen llamándose `blue`/`mep` — lo que cambia es qué
+        # punta llevan, y ahora es la misma que usa la valuación viva.
         rows = conn.execute(
-            "SELECT date, blue_venta, mep_venta FROM fx_rates_daily "
+            f"SELECT date, {_fx.SQL_MEDIO_BLUE} AS blue_venta, "
+            f"{_fx.SQL_MEDIO_MEP} AS mep_venta FROM fx_rates_daily "
             "WHERE date >= ? ORDER BY date DESC",
             (desde,),
         ).fetchall()
@@ -5647,7 +5775,12 @@ def _fetch_sp500_monthly():
 
 
 def _fetch_dolar_blue_monthly():
-    """Monthly dolar blue venta from argentinadatos.com. Returns dict {YYYY-MM: venta} (last of month)."""
+    """Dólar blue mensual de argentinadatos. {YYYY-MM: medio} (último del mes).
+
+    El PUNTO MEDIO, igual que el resto de la app: esta serie alimenta
+    `lookupHistoricalDolar` y la comparación contra inflación del frontend, y con
+    la punta de venta esos números quedaban en otra base que la valuación.
+    """
     try:
         r = requests.get("https://api.argentinadatos.com/v1/cotizaciones/dolares/blue", timeout=8)
         if r.status_code != 200:
@@ -5656,8 +5789,16 @@ def _fetch_dolar_blue_monthly():
         for item in r.json():
             fecha = item.get("fecha", "")
             venta = item.get("venta")
+            compra = item.get("compra")
             if fecha and venta is not None:
-                out[fecha[:7]] = float(venta)  # last entry of month wins (dict overwrite)
+                try:
+                    _v = float(venta)
+                    _c = float(compra) if compra is not None else None
+                except (TypeError, ValueError):
+                    continue
+                # Misma regla que `_val_rate` y que `fx.SQL_MEDIO_*`: medio con red
+                # a la punta de venta cuando no hay compra.
+                out[fecha[:7]] = ((_c + _v) / 2) if (_c and _c > 0) else _v
         return out
     except Exception:
         return {}
@@ -17080,6 +17221,13 @@ def admin_diagnose_sell_fx(limit_ops: int = 500000, uid: int = Depends(get_admin
         }
 
         def _serie(col):
+            # ⚠️ LA PUNTA DE VENTA CRUDA, A PROPÓSITO, y es la única excepción del
+            # repo. Este diagnóstico clasifica ventas YA ESCRITAS comparándolas
+            # contra el TC con el que se escribieron — y todo lo escrito hasta
+            # 2026-09-11 se escribió con la punta de venta. Pasarlo al punto medio
+            # movería los buckets de la historia sin que cambiara un solo dato.
+            # Los MOTORES sí usan el medio (`fx.SQL_MEDIO_*`); acá se mira el
+            # pasado, no se valúa.
             rs = conn.execute(
                 f"SELECT date, {col} v FROM fx_rates_daily "
                 f"WHERE {col} IS NOT NULL ORDER BY date").fetchall()
@@ -33282,9 +33430,13 @@ _snapshot_log = logging.getLogger('snapshots_job')
 
 # Helper que el job usa para obtener el blue. Reusa la lógica + cache existente.
 def _get_blue_for_scheduler() -> float:
+    # `_val_rate`, no la punta de venta: el dólar de VALUACIÓN es el punto medio
+    # (el que muestran los brokers). Con la venta, la foto nocturna quedaba ~0,65 %
+    # abajo de lo que el usuario veía en la app durante el día.
     blue = _fetch_dolar("blue")
-    if blue and blue.get("venta"):
-        return float(blue["venta"])
+    v = _val_rate(blue)
+    if v:
+        return float(v)
     raise RuntimeError("No se pudo obtener cotización del blue")
 
 
@@ -33301,10 +33453,16 @@ def _get_mep_for_scheduler() -> float:
         return float(mep)
     # dolarapi llama 'bolsa' al MEP (no existe /v1/dolares/mep — devuelve 404);
     # mismo nombre que ya usa _get_dolar_data. CCL como 2da pata.
+    # ⚠️ `_val_rate`, IGUAL QUE LA RAMA DE ARRIBA. `_current_cedear_rate` devuelve
+    # el punto MEDIO; acá se leía la punta de venta, así que la MISMA función
+    # valuaba distinto según el caché estuviera caliente o frío. Y el cron corre a
+    # las 23:59 ART —la hora de menos tráfico—, o sea que la rama fría era la
+    # PROBABLE, no la excepción: la foto nocturna quedaba en otra base que la app.
     for casa in ("bolsa", "contadoconliqui"):
         d = _fetch_dolar(casa)
-        if d and d.get("venta") and float(d["venta"]) > 0:
-            return float(d["venta"])
+        v = _val_rate(d)
+        if v and float(v) > 0:
+            return float(v)
     raise RuntimeError("No se pudo obtener cotización del MEP")
 
 
@@ -33385,6 +33543,9 @@ def _backfill_fx_rates_on_boot():
             # Fase B: tras seedear el blue, rellenar el MEP histórico (idempotent;
             # no-op si ya está). Mismo thread daemon → no bloquea el boot.
             _backfill_mep_rates_if_missing()
+            # La punta COMPRADORA de las dos series. Va al final porque sólo
+            # actualiza filas que ya existen y que ya tienen su punta de venta.
+            _backfill_compras_if_missing()
         except Exception as e:
             log.warning(f"fx_rates backfill background falló: {e}")
     t = threading.Thread(target=worker, daemon=True, name="fx-backfill")
@@ -37040,18 +37201,20 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     mep_var_pct = None
     fx_start_date = base_date or start
     fx_end_date = value_as_of or end
+    # El punto MEDIO, con la expresión compartida: la referencia del MEP tiene que
+    # estar en la misma base que la cartera con la que se la compara.
     fx0 = conn.execute(
-        "SELECT mep_venta FROM fx_rates_daily WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
+        f"SELECT {_fx.SQL_MEDIO_MEP} AS mep FROM fx_rates_daily WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
         (fx_start_date,)).fetchone()
     fx1 = conn.execute(
-        "SELECT mep_venta FROM fx_rates_daily WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
+        f"SELECT {_fx.SQL_MEDIO_MEP} AS mep FROM fx_rates_daily WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
         (fx_end_date,)).fetchone()
-    if fx0 and fx1 and float(fx0["mep_venta"] or 0) > 0:
-        mep_var_pct = round((float(fx1["mep_venta"]) / float(fx0["mep_venta"]) - 1) * 100, 2)
+    if fx0 and fx1 and float(fx0["mep"] or 0) > 0:
+        mep_var_pct = round((float(fx1["mep"]) / float(fx0["mep"]) - 1) * 100, 2)
     # El MEP que se MUESTRA junto al valor: el del cierre del dato, no el de
     # generación. La VALUACIÓN de tenencias sigue con el tc_mep del día (los
     # precios de read_last_prices son de hoy — mezclar sería peor).
-    tc_mep_display = float(fx1["mep_venta"]) if fx1 and fx1["mep_venta"] else tc_mep
+    tc_mep_display = float(fx1["mep"]) if fx1 and fx1["mep"] else tc_mep
 
     # Tenencias HOY (top 6) — misma valuación y denominador que el contexto IA.
     valued, _sk = _advisor_positions_valued(conn, [client_uid], tc_blue, tc_mep)
@@ -38201,19 +38364,23 @@ def _advisor_book_fx(conn):
     pantallas del asesor mostrando el mismo libro a tipos de cambio distintos
     es el bug clásico de esta app. Una sola copia = no puede pasar.
     """
+    # El punto MEDIO de los dos rieles, con la expresión compartida de `fx.py`:
+    # el libro del asesor tiene que valuar con el mismo dólar que el resto.
     fx = conn.execute(
-        "SELECT blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
+        f"SELECT {_fx.SQL_MEDIO_BLUE} AS blue, {_fx.SQL_MEDIO_MEP} AS mep "
+        "FROM fx_rates_daily ORDER BY date DESC LIMIT 1"
     ).fetchone()
-    tc_blue = float(fx["blue_venta"]) if fx and fx["blue_venta"] else 1415.0
+    tc_blue = float(fx["blue"]) if fx and fx["blue"] else 1415.0
     # MEP: la fila MÁS NUEVA puede venir solo-blue (el cron nocturno no
     # trae mep) → buscamos la última fila CON mep (audit: si no, el libro
     # entero se valuaba al blue ~5% abajo un fin de semana cualquiera).
-    tc_mep = float(fx["mep_venta"]) if fx and fx["mep_venta"] else None
+    tc_mep = float(fx["mep"]) if fx and fx["mep"] else None
     if tc_mep is None:
         _fxm = conn.execute(
-            "SELECT mep_venta FROM fx_rates_daily WHERE mep_venta IS NOT NULL "
+            f"SELECT {_fx.SQL_MEDIO_MEP} AS mep FROM fx_rates_daily "
+            "WHERE mep_venta IS NOT NULL "
             "ORDER BY date DESC LIMIT 1").fetchone()
-        tc_mep = float(_fxm["mep_venta"]) if _fxm else tc_blue
+        tc_mep = float(_fxm["mep"]) if _fxm else tc_blue
     return tc_blue, tc_mep
 
 

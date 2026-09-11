@@ -17,18 +17,21 @@ Compartido — no sabe qué es un asesor ni qué es un usuario.
    no puede reproducir la cartera de HOY, que conocemos, tampoco puede
    reproducir la de enero. Es la prueba más dura que hay y sale gratis.
 
-2. LA BASE DE CAMBIO NO ES LA MISMA. El cron valúa al MEP MEDIO; lo único que
-   hay guardado por fecha es `fx_rates_daily.mep_venta`, una sola punta. Un
-   borde reconstruido a la venta y otro medido al medio difieren por el spread
-   (~0,7%), y encadenarlos fabrica ese retorno de la nada — es exactamente el
-   bug de la "pérdida fantasma" que ya mordió al brief. Por eso cada valor sale
-   estampado con su `fx_basis` y un tramo con bases distintas se marca.
+2. LA BASE DE CAMBIO — YA ES LA MISMA (2026-09-11). Antes el cron valuaba al MEP
+   MEDIO y lo único guardado por fecha era `mep_venta`, una sola punta: un borde
+   reconstruido a la venta y otro medido al medio diferían por el spread (~0,7%)
+   y encadenarlos fabricaba ese retorno de la nada — el bug de la "pérdida
+   fantasma" que mordió al brief. Ahora `fx_rates_daily` guarda las DOS puntas y
+   todos los lectores derivan el MEDIO con la misma expresión (`fx.SQL_MEDIO_MEP`),
+   así que las dos bases coinciden. El estampado de `fx_basis` se conserva: sigue
+   siendo la forma de saber con qué se valuó cada punto, y la marca de tramo con
+   bases distintas sigue sirviendo para los valores escritos ANTES de este cambio.
 """
 import logging
 
 log = logging.getLogger(__name__)
 
-FX_BASIS = "mep_venta"      # lo único disponible por fecha (ver límite 2)
+FX_BASIS = "mep_medio"      # el punto medio, igual que la valuación viva (ver límite 2)
 COBERTURA_MINIMA = 0.98     # sin casi todos los precios, el total no es el total
 
 
@@ -185,11 +188,12 @@ def _simbolo_de(conn, uid: int, broker: str, asset: str) -> str:
 def _fx_en(conn, fecha: str):
     """MEP de esa fecha (la punta que hay guardada). None si no hay — y sin FX
     no se valúa una pata en pesos, no se inventa una tasa."""
+    import fx as _fx_medio
     r = conn.execute(
-        """SELECT mep_venta FROM fx_rates_daily
-           WHERE date <= ? AND mep_venta IS NOT NULL
-           ORDER BY date DESC LIMIT 1""", (str(fecha)[:10],)).fetchone()
-    return float(r["mep_venta"]) if r else None
+        f"""SELECT {_fx_medio.SQL_MEDIO_MEP} AS mep FROM fx_rates_daily
+            WHERE date <= ? AND mep_venta IS NOT NULL
+            ORDER BY date DESC LIMIT 1""", (str(fecha)[:10],)).fetchone()
+    return float(r["mep"]) if r else None
 
 
 def valor_en(conn, uid: int, fecha: str) -> dict:

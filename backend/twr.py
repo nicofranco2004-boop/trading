@@ -1383,7 +1383,13 @@ def serie_fx(conn, desde: str = None, hasta: str = None):
     'blue' o 'mixto'. None cuando la fecha es anterior a todo dato: ahí no se
     puede convertir, y el punto no entra a la línea en pesos.
     """
-    q = ["SELECT date, mep_venta, blue_venta FROM fx_rates_daily WHERE 1=1"]
+    # EL PUNTO MEDIO, con LA expresión compartida — no una copia. Es el dólar al
+    # que valúan los brokers y al que ya valuaba la app en vivo; mientras acá se
+    # leía la punta de venta, un borde reconstruido y otro medido diferían por el
+    # spread (~0,7 %) y encadenarlos fabricaba retorno de la nada.
+    import fx as _fx_medio
+    q = [f"SELECT date, {_fx_medio.SQL_MEDIO_MEP} AS mep_venta, "
+         f"{_fx_medio.SQL_MEDIO_BLUE} AS blue_venta FROM fx_rates_daily WHERE 1=1"]
     args = []
     # Se traen fechas ANTERIORES a `desde` a propósito: el arrastre necesita el
     # último hábil previo (un lunes feriado toma el viernes anterior).

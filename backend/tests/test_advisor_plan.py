@@ -2840,8 +2840,45 @@ class LedgerReplayTest(AdvisorBase):
             v = lr.valor_en(conn, self.client_uid, "2026-01-31")
         finally:
             conn.close()
+        # Sin punta compradora guardada, el medio CAE a la venta (COALESCE): el
+        # valor es el mismo de siempre. Lo que cambia es la etiqueta, que ahora
+        # dice con qué base se valuó de verdad.
         self.assertAlmostEqual(v["valor"], 100 * 7000.0 / 1400, places=2)
-        self.assertEqual(v["fx_basis"], "mep_venta")
+        self.assertEqual(v["fx_basis"], "mep_medio")
+
+    def test_con_las_dos_puntas_valua_al_MEDIO_no_a_la_venta(self):
+        """LO QUE CAMBIÓ. La misma pata en pesos, con compra Y venta guardadas.
+
+        Mientras acá se leía `mep_venta` y el cron valuaba al medio, un borde
+        reconstruido y otro medido diferían por el spread (~0,7 %) y encadenarlos
+        fabricaba retorno de la nada — la "pérdida fantasma" que este módulo
+        documenta en su límite 2.
+        """
+        import ledger_replay as lr, price_history as ph
+        bid = self._batch(self.client_uid)
+        self._tx(bid, "2026-01-10", "BUY", "GGAL", 100)
+        self._pos(self.client_uid, "GGAL", 100)      # broker Cocos = ARS
+        conn = self._conn()
+        try:
+            # ⚠️ FECHA PROPIA (2026-02-27), no la 2026-01-31 que comparten los
+            # otros dos tests del módulo. Escribir `mep_compra` sobre la fecha
+            # compartida se la deja puesta al que corra después: su valor pasaría
+            # de 500 a 518,52 y el caso "sin punta compradora" mediría otra cosa.
+            # Con fecha propia no hay nada que limpiar ni orden del que depender.
+            ph.guardar(conn, "GGAL.BA", {"2026-02-27": 7000.0})
+            # compra 1300 / venta 1400 → medio 1350. Spread ancho a propósito:
+            # con uno real (~0,7 %) el test no distinguiría las dos ramas.
+            conn.execute("INSERT INTO fx_rates_daily (date,blue_venta,mep_venta,mep_compra) "
+                         "VALUES ('2026-02-27',1500,1400,1300) "
+                         "ON CONFLICT (date) DO UPDATE SET "
+                         "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+                         "mep_compra=EXCLUDED.mep_compra")
+            conn.commit()
+            v = lr.valor_en(conn, self.client_uid, "2026-02-27")
+        finally:
+            conn.close()
+        self.assertAlmostEqual(v["valor"], 100 * 7000.0 / 1350, places=2)
+        self.assertNotAlmostEqual(v["valor"], 100 * 7000.0 / 1400, places=2)
 
     def test_sin_precio_de_un_activo_NO_se_publica_un_valor_corto(self):
         # Publicar un borde al que le falta un activo es fabricar una caída.

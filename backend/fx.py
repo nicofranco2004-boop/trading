@@ -44,22 +44,84 @@ from typing import Optional
 RIEL_MEP = "mep"
 RIEL_BLUE = "blue"
 
-_COL = {RIEL_MEP: "mep_venta", RIEL_BLUE: "blue_venta"}
+# ─── EL DÓLAR DE VALUACIÓN POR FECHA: EL PUNTO MEDIO ─────────────────────────
+#
+# `(compra + venta) / 2`, con red a la punta de venta cuando no hay compra
+# guardada. Es la MISMA regla que `main._val_rate` aplica al dólar vivo, y existe
+# por la misma razón: los brokers (Cocos/IOL/Balanz) valúan al medio. Medido con
+# un usuario real: veía US$ 6.884 donde Cocos le mostraba 6.933 — los mismos
+# 10,53 M de pesos divididos por 1.529,71 (la punta cara) en vez de 1.518,43.
+#
+# POR QUÉ IMPORTA QUE SEA LA MISMA EN LAS DOS. Mientras la valuación viva usaba
+# el medio y lo guardado por fecha era la venta, un borde reconstruido y otro
+# medido diferían por el spread (~0,7 %) y encadenarlos FABRICABA retorno de la
+# nada. `ledger_replay` lo documenta como la "pérdida fantasma" y lo parcheaba
+# estampando `fx_basis` y marcando los tramos con bases distintas.
+#
+# Va como EXPRESIÓN SQL y no como función de Python porque los lectores son
+# siete y cada uno arma su propia consulta: así la cuenta vive una sola vez.
+# `tests/test_dolar_medio_historico.py` verifica que ninguno la re-escriba.
+#
+# COALESCE y no `IFNULL`: funciona igual en SQLite y en Postgres. Si `*_compra`
+# es NULL la suma es NULL y cae a la punta de venta — exactamente el fallback de
+# `_val_rate` para el caché viejo o una casa sin compra.
+# ⚠️ FILTRO DE CORDURA SOBRE LA PUNTA COMPRADORA — no es decorativo.
+#
+# La fuente tiene dato podrido, medido el 2026-09-11 sobre las dos series:
+#   · 2025-05-02 (bolsa): compra 751,67 contra venta 1.363,60 = 45 % de spread.
+#     El MEP nunca tuvo eso. Tomar ese medio mueve el dólar de esa fecha −22,4 %.
+#   · 73 días con la compra POR ENCIMA de la venta (70 en blue, 3 en bolsa).
+#   · un `0` sería "no hay dato", no "el dólar vale cero": su medio es venta/2,
+#     un error del 50 %.
+#
+# La asimetría manda el criterio: usar una compra mala corrompe el costo hasta un
+# 22 %, mientras que descartarla deja el valor que ya se usaba —la punta de venta—
+# o sea el statu quo. Ante la duda NO se usa. El tope de 10 % deja pasar las
+# cotizaciones viejas del blue, donde el dólar valía $10 y el redondeo entero a
+# 10/11 da un 9 % que es legítimo.
+#
+# El guard va acá, en el LECTOR, aunque el backfill ya filtre: es el embudo único
+# y una fila mala escrita por cualquier otro camino no puede hacer daño. Misma
+# lección que cerró la tanda F4.
+#
+# `CASE` y no `COALESCE`: con la compra en NULL la condición da NULL, que no es
+# verdadera, y cae al ELSE. Funciona igual en SQLite y en Postgres.
+def _sql_medio(compra: str, venta: str) -> str:
+    return (f"CASE WHEN {compra} > 0 AND {compra} < {venta} "
+            f"AND ({venta} - {compra}) <= 0.10 * {venta} "
+            f"THEN ({compra} + {venta}) / 2.0 ELSE {venta} END")
 
 
-def _lookup(conn, col: str, d: str) -> Optional[float]:
-    """Último valor NO NULO de `col` en o antes de `d`.
+SQL_MEDIO_MEP = _sql_medio("mep_compra", "mep_venta")
+SQL_MEDIO_BLUE = _sql_medio("blue_compra", "blue_venta")
+
+_COL = {RIEL_MEP: SQL_MEDIO_MEP, RIEL_BLUE: SQL_MEDIO_BLUE}
+
+# La columna CRUDA de cada riel, para el `IS NOT NULL` del WHERE: el medio puede
+# ser NULL por falta de compra y aun así haber venta, que es lo que se entrega.
+_COL_CRUDA = {RIEL_MEP: "mep_venta", RIEL_BLUE: "blue_venta"}
+
+
+def _lookup(conn, riel: str, d: str) -> Optional[float]:
+    """El dólar de VALUACIÓN del riel `riel` en o antes de `d`: el punto medio.
 
     ⚠️ El filtro `IS NOT NULL` va en el WHERE, no después de traer la fila. Si se
     toma "la fila más reciente ≤ fecha" y recién ahí se valida la columna, un solo
     día sin MEP devuelve NULL y el caller cae al fallback creyendo que no hay
     cobertura — cuando el dato existía dos días antes. `mep_venta` es NULLABLE y se
     pobló por UPDATE sobre fechas que ya tenían blue, así que ese caso es real.
+
+    ⚠️ Y el WHERE mira la columna CRUDA, no la expresión del medio. Una fila con
+    venta pero sin compra tiene medio = venta (por el COALESCE) y es perfectamente
+    entregable; filtrar por el medio no cambiaría nada hoy, pero ata el criterio de
+    cobertura a la presencia de la punta compradora, que es otra pregunta.
     """
+    col = _COL.get(riel) or _COL[RIEL_MEP]
+    cruda = _COL_CRUDA.get(riel) or _COL_CRUDA[RIEL_MEP]
     try:
         row = conn.execute(
             f"SELECT {col} FROM fx_rates_daily "
-            f"WHERE date <= ? AND {col} IS NOT NULL ORDER BY date DESC LIMIT 1",
+            f"WHERE date <= ? AND {cruda} IS NOT NULL ORDER BY date DESC LIMIT 1",
             (d,),
         ).fetchone()
     except Exception:
@@ -84,13 +146,13 @@ def fx_for_date_detail(conn, date_str, fallback=None, riel: str = RIEL_MEP):
     d = str(date_str)[:10]
 
     primero = riel if riel in _COL else RIEL_MEP
-    v = _lookup(conn, _COL[primero], d)
+    v = _lookup(conn, primero, d)
     if v is not None:
         return (v, primero)
 
     # Red histórica: el blue cubre desde 2011 y es determinístico igual.
     if primero != RIEL_BLUE:
-        v = _lookup(conn, _COL[RIEL_BLUE], d)
+        v = _lookup(conn, RIEL_BLUE, d)
         if v is not None:
             return (v, RIEL_BLUE)
 

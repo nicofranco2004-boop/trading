@@ -138,14 +138,26 @@ def _precio_por_subyacente(asset: str, ym: str, start_iso: str):
         return None
 
 
-# ─── FX histórico — BLUE de fx_rates_daily (último ≤ fin de mes) ──────────────
+# ─── FX histórico — el BLUE de fx_rates_daily (último ≤ fin de mes) ──────────
 def _hist_blue(conn, month_end_iso: str, fallback: float) -> float:
+    """El punto MEDIO del blue, con la expresión compartida de `fx.py`.
+
+    Esto valúa a mercado los meses cerrados (`capital_final`), o sea que escribe
+    en la misma cadena que después lee el resto de la app. Leer acá la punta de
+    venta mientras todo lo demás usa el medio es exactamente la mezcla de bases
+    que fabrica retorno de la nada — ver el límite 2 de `ledger_replay`.
+    """
+    try:
+        import fx as _fxmod
+    except ImportError:  # pragma: no cover — según cómo se cargue el paquete
+        from .. import fx as _fxmod
     row = conn.execute(
-        "SELECT blue_venta FROM fx_rates_daily WHERE date <= ? ORDER BY date DESC LIMIT 1",
+        f"SELECT {_fxmod.SQL_MEDIO_BLUE} AS blue FROM fx_rates_daily "
+        "WHERE date <= ? ORDER BY date DESC LIMIT 1",
         (month_end_iso,),
     ).fetchone()
     try:
-        v = float(row["blue_venta"]) if row and row["blue_venta"] is not None else None
+        v = float(row["blue"]) if row and row["blue"] is not None else None
         return v if (v and v > 0) else fallback
     except (TypeError, ValueError):
         return fallback
