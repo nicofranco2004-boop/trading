@@ -225,23 +225,31 @@ def retorno_bench_en_moneda(bench_pct, bench_key, *, moneda=twr.MONEDA_USD,
         sin devaluación no hay comparación honesta, y publicar el número de una
         moneda con la etiqueta de la otra es justo el defecto que esto cierra.
 
-      · **El benchmark es PORCENTUAL** (inflación, plazo fijo UVA) y la cartera
-        está en dólares. Esos no son índices de precio: son tasas en pesos, y la
-        inflación en dólares no existe. Para ellos la casa ya decidió lo contrario
-        —se mueve la CARTERA a pesos, no el índice a dólares— y eso vive en
-        `twr.vs_inflacion_ar`. Devolver un número acá sería una segunda respuesta
-        a la pregunta que esa función ya contesta.
+    Los benchmarks PORCENTUALES (inflación, plazo fijo UVA) NO SE CONVIERTEN
+    NUNCA y se devuelven tal cual: no son índices de precio, son TASAS EN PESOS, y
+    la inflación en dólares no existe. Para ellos la casa ya decidió lo contrario
+    —se mueve la CARTERA a pesos— y eso vive en `twr.vs_inflacion_ar`, que recibe
+    justamente este número crudo.
+
+    ⚠️ ACÁ ME EQUIVOQUÉ UNA VEZ Y VALE DEJARLO ESCRITO. La primera versión
+    devolvía `None` para los porcentuales cuando la cartera estaba en dólares,
+    razonando que "la inflación en dólares no existe, así que no hay respuesta".
+    Confundía dos cosas: esta función no contesta "¿le ganaste?" —eso lo hace
+    `vs_inflacion_ar`—, sólo entrega el número del índice. Devolver `None` le
+    sacaba a `vs_inflacion_ar` el dato con el que compara, y el veredicto contra
+    inflación desaparecía en dólares: exactamente el defecto que F5 vino a cerrar,
+    entrando por la puerta de al lado. Lo cazaron cuatro tests ajenos.
     """
     if bench_pct is None:
         return None
+    if bench_key in BENCH_PORCENTUAL:
+        return float(bench_pct)
     en_ars = bench_key in BENCH_EN_ARS
     quiere_ars = str(moneda).lower() == twr.MONEDA_ARS
     if en_ars == quiere_ars:
         # Ya está en la moneda de la cartera: no se toca. Es el caso del S&P con
         # el selector en dólares y el del Merval con el selector en pesos.
         return float(bench_pct)
-    if bench_key in BENCH_PORCENTUAL:
-        return None
     if quiere_ars:
         return twr.retorno_en_pesos_pct(bench_pct, fx0, fx1)
     # PESOS → DÓLARES: la misma identidad con las puntas al revés.

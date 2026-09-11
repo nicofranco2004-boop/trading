@@ -126,6 +126,15 @@ class PeriodMetrics:
     # corta que el período: "del 3 al 31 de julio", no "julio entero").
     medido_desde: Optional[str] = None
     medido_hasta: Optional[str] = None
+    # ⚠️ LA VENTANA EN LA QUE SE MIDIÓ EL BENCHMARK, QUE ES LA DEL NÚMERO PUBLICADO
+    # y no siempre la del motor: el % del año puede venir del motor, de la
+    # composición contable o de las puntas, y cada fuente cubre un tramo distinto.
+    # Se publica por dos razones: la pantalla tiene que poder decir "comparado del
+    # 31/12 al 11/9" en vez de dejarlo implícito, y sin esto la ventana no es
+    # observable — un test sobre el veredicto pasa igual midiendo el tramo
+    # equivocado, que fue exactamente lo que pasó auditando esto.
+    bench_desde: Optional[str] = None
+    bench_hasta: Optional[str] = None
     # Con qué modo y en qué moneda se midió — los mismos dos controles que Métricas.
     modo: str = "certero"
     moneda: str = "usd"

@@ -45,7 +45,11 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       proxy: {
-        '/api': 'http://localhost:8000',
+        // El puerto del backend se puede mover con VITE_BACKEND_URL. Existe para
+        // poder levantar DOS worktrees a la vez: con el 8000 tomado por otra copia
+        // del proyecto, un literal acá manda las llamadas de esta app al backend
+        // de la otra — y la pantalla miente sin un solo error visible.
+        '/api': process.env.VITE_BACKEND_URL || 'http://localhost:8000',
       },
     },
     build: {

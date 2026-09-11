@@ -198,3 +198,95 @@ Alinear las dos pantallas hoy, sin eso, elige entre dos números que los dos est
 mal para el usuario con PF; sólo cambia a cuál de los dos.
 
 **Es una dependencia de F7, no un bug vivo de F6.** Va al plan, no a esta tanda.
+
+---
+
+# Lo que encontró auditarme (la ronda que el handoff pide, y por qué vale)
+
+Cinco defectos, **cuatro míos**. Ninguno lo mostró la suite en verde.
+
+## 1. ⭐ Otra sesión había implementado LA MISMA REGLA el mismo día
+
+Mientras yo trabajaba, otra sesión pusheó 5 commits a `origin/main` tocando el
+mismo archivo y la misma función. Uno de ellos (`benchmark_entre_fechas`) convierte
+el índice a pesos con **la misma tabla `BENCH_EN_ARS`, la misma política de
+faltantes y la misma aritmética** que yo escribí — pero sólo para el AÑO.
+
+Verificado que son algebraicamente idénticas: con `pct = (i1−1)·100`,
+`(1+pct/100)·(f1/f0) − 1` se reduce a `i1·f1/f0 − 1`.
+
+**Apiladas habrían contado la devaluación DOS VECES para el año.** El merge las
+unificó en un solo primitivo, al que ahora pasan las dos ramas. Los números
+publicados no se movieron (sonda: 22,4 / −2,4 antes y después).
+
+## 2. Mi primera resolución rompía la pata de inflación
+
+Al unificar las puntas del TC en un par de variables, dejé la llamada a
+`vs_inflacion_ar` referenciando variables que había borrado → `NameError`, o sea
+el endpoint de Reportes caído. **Las dos patas no se pueden compartir**: necesitan
+TC en el caso OPUESTO (la inflación en dólares, el S&P en pesos) y mueven cosas
+distintas (una la cartera, otra el índice). Queda escrito al lado del código.
+
+## 3. Una puerta sin guardia que sólo apareció al unificar
+
+La conversión se decidía con `if fx is not None` — o sea "estoy en pesos" se
+INFERÍA de que el TC estuviera disponible. Pero el caller envuelve `serie_fx` en
+try/except: si falla, `fx` queda en None y el índice salía **en dólares contra una
+cartera en pesos**. El bug entero, por la puerta de al lado. Ahora `moneda` viaja
+declarada y aparte de `fx`, y sin TC no se publica.
+
+## 4. ⭐ Mi primitivo devolvía None para la inflación, y mi test cristalizaba el error
+
+`retorno_bench_en_moneda(4.5, "inflation_ar", moneda="usd")` devolvía `None`,
+razonando que "la inflación en dólares no existe". Confundía dos cosas: la función
+no contesta *"¿le ganaste?"* —eso es `vs_inflacion_ar`—, sólo **entrega el número
+del índice**. Devolver None le sacaba el dato con el que compara, y **el veredicto
+contra inflación desaparecía en dólares**: exactamente el defecto que F5 cerró,
+reintroducido por mí.
+
+**Lo cazaron cuatro tests ajenos** (`test_benchmark_anual.py`), no los míos — los
+míos afirmaban el bug. Es la quinta vez en este repo que el test viejo tiene razón.
+Se corrigió el primitivo, no el test, y se reescribió el mío.
+
+## 5. Un comentario propio describiendo código que ya no estaba
+
+Escrito treinta minutos antes. C12 se produce así de rápido.
+
+---
+
+# Hallazgos PREEXISTENTES que aparecieron de paso (no son míos, y uno es grave)
+
+## 🔴 El % ANUAL en pesos publica el número de DÓLARES — y da vuelta dos veredictos
+
+**MEDIDO contra `origin/main` PURO** (worktree aparte, sin ninguno de mis cambios),
+con una cartera plana en dólares, un año, 100 % de devaluación, S&P +2 %,
+inflación 50 %:
+
+    moneda=usd  delta_pct=26,82  sp500=  2,0  vs_sp500=+24,82  retorno_ars=153,64  vs_infl=+103,64
+    moneda=ars  delta_pct=26,82  sp500=104,0  vs_sp500=−77,18  retorno_ars= 26,82  vs_infl= −23,18
+                             ↑ EL MISMO NÚMERO EN LAS DOS MONEDAS
+
+Con el selector en Pesos el usuario lee **"el S&P te ganó por 77 puntos"** y
+**"la inflación te ganó por 23"**, cuando lo correcto es *le ganaste por 24,8* y
+*le ganaste por 103,6*. **Los dos veredictos invertidos.**
+
+CAUSA RAÍZ, y es de libro: para el AÑO, cuando el motor canónico no puede medir,
+`delta_pct` cae a la composición geométrica de `monthly_entries` (`:1443`), que
+está **en dólares y no se convierte** — y pisa al `_pct_puntas_ars` que sí estaba
+en pesos (`:1544` vs `:1558`). El benchmark, en cambio, sí se convierte. Cruzados.
+
+Y lo que lo vuelve evidente: **el número correcto ya está en la misma respuesta**.
+Con el selector en dólares, `retorno_ars_pct` publica 153,64 — el año en pesos,
+bien calculado. Con el selector en pesos, nadie lo mira. Es el patrón del hallazgo
+O-01 del propio informe ("el dato para decirlo bien viaja en la misma respuesta y
+nadie lo mira").
+
+**NO SE TOCÓ**: está en la zona que la otra sesión está editando ahora mismo.
+Tocarlo a ciegas choca. Es del punto 6.2 de F6 (retorno fuera del motor).
+
+## `bench_desde` / `bench_hasta` se declaran y nunca se llenan
+
+`schema.py` los documenta con un párrafo que explica que sin ellos "la ventana no
+es observable — un test sobre el veredicto pasa igual midiendo el tramo
+equivocado, que fue exactamente lo que pasó auditando esto". **Ningún lugar del
+backend los escribe y ninguno del frontend los lee** (grep: cero). C12.

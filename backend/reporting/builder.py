@@ -805,16 +805,180 @@ def fetch_cum_deposits_until(conn, uid: int, end_date: str,
 
 # ─── Benchmarks ──────────────────────────────────────────────────────────────
 
+# Cuántos días de tolerancia tiene el arranque de una ventana para considerarse
+# "pegado" a un borde de mes. Ver `_ancla_mensual`.
+_BENCH_BORDE_MES_DIAS = 3
+
+
+def _ancla_mensual(desde: str) -> Optional[str]:
+    """La fecha con la que anclar un benchmark MENSUAL para una ventana que
+    arranca en `desde` — o None si esta ventana no se puede medir con datos
+    mensuales sin meter sesgo.
+
+    Un benchmark mensual sólo sabe de meses enteros. Si la ventana del usuario
+    arranca el 20 de marzo, cualquier anclaje inventa medio marzo: contarlo entero
+    sobreestima al benchmark (y le come mérito al usuario), saltearlo lo subestima
+    (y se lo regala). Las dos direcciones son sesgo y ninguna es declarable, así
+    que ahí no se publica.
+
+    Cuando el arranque SÍ cae en un borde de mes el anclaje es exacto:
+      · día 1-3           → el cierre del mes ANTERIOR (la ventana cubre el mes entero).
+      · último día del mes → ese mismo mes, ya cerrado (la ventana arranca después).
+    """
+    try:
+        d = datetime.strptime(str(desde)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    import calendar as _cal
+    ultimo = _cal.monthrange(d.year, d.month)[1]
+    if d.day <= _BENCH_BORDE_MES_DIAS:
+        return _dia_anterior(d.isoformat())
+    if d.day == ultimo:
+        return d.isoformat()
+    return None
+
+
+def _moneda_efectiva(moneda, fx):
+    """En qué moneda se mide la CARTERA contra la que se va a comparar el índice.
+
+    Existe para conciliar dos contratos que se cruzaron (F6). El del año, escrito
+    primero, infería el modo pesos de que hubiera TC (`if fx is not None`). El
+    nuevo lo declara. Los dos son razonables y conviven acá, con una diferencia
+    que importa:
+
+      · `moneda` DECLARADA manda siempre. Y es lo que pasa el call site de
+        producción, en los dos períodos. Ahí "pesos sin TC" ya no puede
+        confundirse con "no hace falta TC": el primitivo corta y no se publica.
+      · sin declarar, se conserva el contrato viejo (`fx` ⟹ pesos) para no
+        romperle la llamada a nadie que ya la hacía así.
+    """
+    if moneda is not None:
+        return str(moneda)
+    import twr as _twr_me
+    return _twr_me.MONEDA_ARS if fx is not None else _twr_me.MONEDA_USD
+
+
+def benchmark_entre_fechas(bench: Dict[str, Any], desde: str, hasta: str,
+                           key: str, fx=None, moneda=None) -> Optional[float]:
+    """El % que hizo el benchmark ENTRE DOS FECHAS — las del usuario, no las del
+    almanaque.
+
+    ⚠️ POR QUÉ NO ALCANZA EL AÑO CALENDARIO. El TWR de un año cubre la ventana que
+    el motor PUDO medir, que rara vez va del 1 de enero al 31 de diciembre: puede
+    ser "del 3 de marzo al 11 de septiembre". Comparar ese tramo contra el S&P de
+    enero a diciembre no es una comparación, y en un año donde el índice hizo casi
+    todo su recorrido fuera de la ventana da vuelta el veredicto — que es el único
+    output que el usuario lee de acá ("¿le gané o no?").
+
+    El anclaje sale de `performance.benchmark_recortado`, EL MISMO que dibuja la
+    línea del índice en Métricas: serie diaria cuando la hay (cierre de ese día o
+    del último hábil anterior), mensual como respaldo. No es una copia — si el
+    criterio de anclaje cambia, cambia en los dos lados a la vez.
+
+    `fx` (opcional) pasa un índice de precio a pesos: una función fecha → TC. Un
+    índice en dólares comparado contra una cartera medida en pesos le esconde la
+    devaluación, que es justamente lo que separa las dos monedas.
+
+    ⚠️ `moneda` NO ES REDUNDANTE CON `fx`, y por eso son dos parámetros (F6).
+    Antes la conversión se decidía con `if fx is not None`, o sea que el modo
+    pesos se INFERÍA de que el TC estuviera disponible. Con eso, un `serie_fx`
+    que falla —su caller lo envuelve en try/except y deja `fx` en None— no
+    producía un 'no sé': producía el índice en DÓLARES publicado contra una
+    cartera en pesos, que es exactamente el bug. Declarando la moneda aparte, la
+    falta de TC se distingue de la falta de necesidad de TC, y el primitivo
+    corta. Sin `moneda` se asume dólares (el default histórico).
+    """
+    if not bench or not desde or not hasta:
+        return None
+    # Una ventana al revés no es una ventana. Sin este corte devolvía el retorno
+    # del tramo NEGADO (−9,09 % donde el índice hizo +10 %): un veredicto dado
+    # vuelta, que es peor que no publicar. Ninguna de las tres fuentes de ventana
+    # debería producirlo, y justamente por eso nadie lo miraría.
+    if str(desde)[:10] > str(hasta)[:10]:
+        return None
+    import performance as _perf
+
+    def _medir(serie, d0):
+        puntos = _perf.benchmark_recortado(serie, [d0, hasta], key)
+        if len(puntos) < 2:
+            return None
+        i0, i1 = puntos[0].get("index"), puntos[-1].get("index")
+        # ⚠️ EL PRIMER PUNTO TIENE QUE SER EL ANCLA, Y VALER 1,0.
+        # `benchmark_recortado` fija la base en la primera fecha CON cierre: si la
+        # historia del índice arranca después que la ventana, el primer punto viene
+        # en None y la base se corre al segundo — o sea publicaría "0,0 %" donde la
+        # respuesta verdadera es "no sé".
+        if i0 is None or i1 is None or abs(float(i0) - 1.0) > 1e-9:
+            return None
+        _pct = (float(i1) - 1.0) * 100
+        # ⚠️ LA CONVERSIÓN A PESOS ESTABA ESCRITA ACÁ Y AHORA SE PIDE (F6).
+        #
+        # Era `(i1 × f1 / f0 − 1) × 100` con su propia consulta a `BENCH_EN_ARS` y
+        # su propia política de faltantes. Es ALGEBRAICAMENTE LA MISMA que
+        # `performance.retorno_bench_en_moneda` —con `pct = (i1−1)×100`,
+        # `(1+pct/100)·(f1/f0) − 1` se reduce a `i1·f1/f0 − 1`— así que los números
+        # publicados no se mueven. Lo que cambia es que deja de haber dos copias:
+        # la rama del MES necesitaba exactamente esta conversión y, por estar
+        # escrita adentro de la del año, no la tenía. Dos copias de una regla es
+        # cómo nació ese bug, y unificarlas es lo que lo cierra.
+        return _perf.retorno_bench_en_moneda(
+            _pct, key, moneda=_moneda_efectiva(moneda, fx),
+            fx0=(fx(d0) if fx is not None else None),
+            fx1=(fx(hasta) if fx is not None else None))
+
+    # ⚠️ LA DIARIA PRIMERO, PERO NO LA DIARIA SOLA.
+    #
+    # La diaria mide la ventana exacta, así que va primero. Pero se baja con
+    # `period="5y"` (`_fetch_sp500_daily`) mientras la mensual va con "max" y llega
+    # a 1988: para todo año de más de cinco años de antigüedad la diaria NO TIENE el
+    # ancla, y quedarse ahí devolvía None con el dato mensual disponible al lado.
+    # Medido contra el fixture con yfinance real: 2021 y 2020 se quedaban sin
+    # veredicto mientras 2022-2025 lo tenían. Un año viejo cae en bordes de mes
+    # (31/12 → 31/12), que es justo donde el mensual mide sin sesgo.
+    candidatos = []
+    if key not in _perf.BENCH_PORCENTUAL:
+        diaria = bench.get(f"{key}_d") or {}
+        if diaria and _perf._es_diario(diaria):
+            candidatos.append((diaria, desde))
+    mensual = bench.get(key) or {}
+    if mensual:
+        # Con datos mensuales la ventana tiene que calzar con meses enteros.
+        desde_m = _ancla_mensual(desde)
+        if desde_m is not None:
+            candidatos.append((mensual, desde_m))
+    for serie, d0 in candidatos:
+        r = _medir(serie, d0)
+        if r is not None:
+            return r
+    return None
+
+
 def benchmark_return_for_period(bench: Dict[str, Any], period_type: str,
                                 period_start: str, period_end: str,
-                                key: str) -> Optional[float]:
+                                key: str, ventana=None, fx=None,
+                                moneda=None) -> Optional[float]:
     """% del benchmark en el período. `key` ∈ {'sp500', 'inflation_ar'}.
 
     sp500 está keyed por YYYY-MM con cierre del mes. Para mes completo es directo.
     Para semana, devolvemos None (no podemos pro-ratear sin daily data).
+
+    Para AÑO el cálculo es otro y vive en `benchmark_entre_fechas`: se mide entre
+    las fechas que el motor realmente midió (`ventana`), no entre el 1 de enero y
+    el 31 de diciembre. El mes queda exactamente como estaba — es el número que
+    Reportes publica hace meses y no hay motivo para moverlo.
     """
-    if not bench or key not in bench:
+    if not bench or (key not in bench and f"{key}_d" not in bench):
         return None
+    if period_type == "year":
+        d0, d1 = (ventana or (None, None))
+        # ⚠️ SIN VENTANA DECLARADA NO HAY VEREDICTO. Caer al año calendario sería
+        # comparar el % del usuario —que puede cubrir de enero a junio— contra el
+        # índice de enero a diciembre. Medido con el fixture: el año en curso daba
+        # "+3,16 % vs S&P +10,96 %" cuando el S&P de esa MISMA ventana es otro.
+        # Un "no sé" es peor noticia y mejor dato que un veredicto invertido.
+        if not d0 or not d1:
+            return None
+        return benchmark_entre_fechas(bench, d0, d1, key, fx=fx, moneda=moneda)
     series = bench.get(key) or {}
     if period_type != "month":
         return None  # Phase 1: no soportamos benchmark sub-mensual
@@ -828,7 +992,16 @@ def benchmark_return_for_period(bench: Dict[str, Any], period_type: str,
         cur = series.get(end_mk)
         prev = series.get(prev_mk)
         if cur and prev and prev > 0:
-            return ((cur / prev) - 1) * 100
+            _pct = ((cur / prev) - 1) * 100
+            # EL MES, EN LA MONEDA DE LA CARTERA — misma regla, mismo primitivo y
+            # mismo `fx` que el año (`benchmark_entre_fechas`). Las puntas del TC
+            # son las del tramo que el índice acaba de medir: el último día del mes
+            # anterior y el último del mes, no otras.
+            import performance as _perf_m
+            return _perf_m.retorno_bench_en_moneda(
+                _pct, key, moneda=_moneda_efectiva(moneda, fx),
+                fx0=(fx(_dia_anterior(period_start)) if fx is not None else None),
+                fx1=(fx(period_end) if fx is not None else None))
         return None
     if key == "inflation_ar":
         # ya viene en % por mes
@@ -939,6 +1112,14 @@ def compute_metrics_for_period(
     month_twr_pct = None
     month_twr_usd = None
     _ventana_medida = (None, None)
+    # ⚠️ EL BENCHMARK SE MIDE EN LA VENTANA DEL NÚMERO QUE SE PUBLICA, NO EN LA DEL
+    # ALMANAQUE. El % del año puede salir de tres fuentes —el motor, la composición
+    # contable, las puntas— y cada una cubre un tramo distinto. Comparar un % que
+    # va de enero a junio contra el S&P de enero a diciembre da vuelta el veredicto,
+    # que es lo ÚNICO que el usuario lee de acá. Cada candidato declara su ventana
+    # al lado de su número, y abajo gana la del que se publique.
+    _ventana_comp = (None, None)
+    _ventana_puntas = (None, None)
     _start_is_mtm = False   # start_value salió de un cierre real a mercado
     _live_month_unmeasured = False  # (año) el mes vivo no tiene borde medido
 
@@ -1211,6 +1392,9 @@ def compute_metrics_for_period(
                 if _snap_y:
                     start_value = float(_snap_y["total_value"])
                     _start_is_mtm = True
+                    # El cierre del que arranca, y hoy: las dos fechas que este
+                    # `delta_pct` de puntas realmente cubre.
+                    _ventana_puntas = (str(_snap_y["date"])[:10], _hoy_iso())
             # AUDIT D-1: mismo cruce que el mes — sin cierre medido de borde, el
             # año resta cadena contra mercado.
             if _basis_is_incomparable(_start_is_mtm, start_value, deposits, withdrawals):
@@ -1229,6 +1413,7 @@ def compute_metrics_for_period(
                 start_value, end_value, _bd0, _bd1 = _b
                 _basis = "mercado"
                 _start_is_mtm = True
+                _ventana_puntas = (_bd0, _bd1)
                 if str(moneda).lower() == "ars":
                     _pct_puntas_ars = _pct_en_pesos(
                         conn, _bd0, _bd1, start_value, end_value,
@@ -1349,6 +1534,18 @@ def compute_metrics_for_period(
             f"{y:04d}-{_meses_con_fila[0]:02d}-01",
             _fin_de_mes_iso(y, _meses_con_fila[-1]),
             period_start, period_end, year_is_current)
+        if _meses_con_fila:
+            # Del cierre anterior al primer mes con fila hasta el cierre del último.
+            # ⚠️ EN EL AÑO EN CURSO EL FINAL ES HOY, NO EL FIN DEL ÚLTIMO MES CON FILA.
+            # La composición cierra su último mes con `cf = live_value` (el valor de
+            # HOY), así que el % ya cubre hasta hoy. Si `monthly_entries` todavía no
+            # tiene la fila del mes en curso —lo normal hasta que el mes cierra— el
+            # último mes con fila es el ANTERIOR, y medir ahí el índice le descontaba
+            # al benchmark hasta 30 días de mercado que el usuario sí vivió.
+            _fin_comp = (_hoy_iso() if year_is_current
+                         else _fin_de_mes_iso(y, _meses_con_fila[-1]))
+            _ventana_comp = (
+                _dia_anterior(f"{y:04d}-{_meses_con_fila[0]:02d}-01"), _fin_comp)
         if rows and not _hay_agujero and _cubre_el_periodo:
             comp = 1.0
             have_comp = False
@@ -1554,8 +1751,17 @@ def compute_metrics_for_period(
         delta_pct = month_twr_pct
         if month_twr_usd is not None:
             delta_usd = month_twr_usd
-    if period_type == "year" and year_twr_pct is not None and not _live_month_unmeasured:
-        delta_pct = year_twr_pct
+    # La ventana que el benchmark tiene que respetar. Se decide ACÁ, pegada a la
+    # línea que elige el número: si se decidiera aparte, las dos podrían separarse
+    # con cualquier cambio futuro y nadie se enteraría.
+    _bench_ventana = None
+    if period_type == "year":
+        if year_twr_pct is not None and not _live_month_unmeasured:
+            delta_pct = year_twr_pct
+            _bench_ventana = (_ventana_medida if _ventana_medida[0]
+                              else _ventana_comp)
+        else:
+            _bench_ventana = _ventana_puntas
     # AUDIT B4/B10 + C-3/H-8: período sin base confiable (día/semana con huecos,
     # broker-filter sub-mensual, mes en curso sin historia) → % None, no un
     # número engañoso.
@@ -1680,61 +1886,68 @@ def compute_metrics_for_period(
     # del benchmark va a su propio campo y `vs_*_pct` es el EXCESO, que es lo que
     # el nombre promete y lo que ya asumían el frontend (`Reports.jsx`,
     # `MonthCard.jsx`, `demo.js`) y `ai/builders/reports.py`.
+    # ⚠️ EL BENCHMARK DEL AÑO SE MIDE EN LA VENTANA QUE EL MOTOR MIDIÓ.
+    # `_ventana_medida` es "del 3 de marzo al 11 de septiembre" cuando eso es lo
+    # que el TWR cubre; el año calendario sería otra pregunta. Para mes/día/semana
+    # va `None` y el camino de abajo es el de siempre, intacto.
+    # En PESOS el índice de precio se pasa a pesos con el TC de cada punta, igual
+    # que hace la sección Performance (`performance._en_pesos`). Sin esto, un S&P
+    # en dólares comparado contra una cartera medida en pesos le esconde la
+    # devaluación — y la devaluación es justamente lo que separa las dos monedas.
+    #
+    # ⚠️ EL MES TAMBIÉN (F6). La conversión nació para el año y al mes le faltaba,
+    # así que con el selector en Pesos la tarjeta mensual restaba un `delta_pct`
+    # que YA lleva la devaluación adentro (:1544 lo pisa con `_pct_puntas_ars`)
+    # menos un S&P que no. MEDIDO por `compute_metrics_for_period`, sobre una
+    # cartera 100 % en dólares y PLANA, 20 % de devaluación y un S&P de +2 %:
+    # publicaba "vs S&P 500 · +18,0 pp · le ganaste" donde la verdad es −2,4.
+    # Los 18 puntos eran la devaluación, que esa cartera nunca ganó.
+    #
+    # Es la MISMA conversión y el mismo `fx`, no una segunda: el que decide es
+    # `performance.retorno_bench_en_moneda`, y las dos ramas —año y mes— pasan
+    # por él. Tenerlo dos veces era garantizar que un día se separaran, que es
+    # exactamente cómo nació este bug.
+    _bench_fx = None
+    if period_type in ("year", "month") and str(moneda).lower() == "ars":
+        try:
+            import twr as _twr_fx
+            _bench_fx = _twr_fx.serie_fx(conn, None, period_end)[0]
+        except Exception:
+            log.exception("serie_fx para benchmark uid=%s", uid)
     sp500_ret = benchmark_return_for_period(bench or {}, period_type, period_start,
-                                            period_end, "sp500")
+                                            period_end, "sp500",
+                                            ventana=_bench_ventana, fx=_bench_fx,
+                                            moneda=moneda)
+    # ⚠️ ACÁ HUBO UN GATE PROPIO QUE TAPABA LA INFLACIÓN EN DÓLARES, Y SOBRABA.
+    #
+    # El problema es real —restarle la inflación del INDEC, que mide pesos, a un
+    # rendimiento medido en dólares es restar unidades distintas— pero F5 ya lo
+    # resolvió mejor y para TODAS las superficies: `twr.vs_inflacion_ar` convierte
+    # el retorno del usuario a pesos y hace la comparación ahí, en vez de esconder
+    # el veredicto. Se decidió con el dueño y está unos renglones más abajo.
+    #
+    # Dejar los dos no era redundante: era ROMPER el de F5. Este gate le pasaba
+    # `inflation_ret = None` para el año en dólares, así que `vs_inflacion_ar` no
+    # tenía con qué comparar y el veredicto desaparecía justo donde ellos habían
+    # decidido publicarlo. Dos arreglos del mismo problema se unifican en uno, y el
+    # que queda es el que cubre más.
     inflation_ret = benchmark_return_for_period(bench or {}, period_type, period_start,
-                                                period_end, "inflation_ar")
-
-    # ⚠️ LAS PUNTAS DEL TC SIRVEN A LAS DOS COMPARACIONES, Y POR MOTIVOS OPUESTOS.
-    #
-    # `benchmark_return_for_period` devuelve números en MONEDAS DISTINTAS según la
-    # `key` —el S&P en dólares, la inflación del INDEC en pesos— y `delta_pct`
-    # sigue la moneda del selector (:1544 lo pisa con `_pct_puntas_ars`). O sea que
-    # SIEMPRE hay exactamente una de las dos patas cruzada, y cuál es depende del
-    # selector: en dólares se cruza la inflación, en pesos se cruza el S&P.
-    #
-    # Antes esto se calculaba treinta líneas más abajo y SÓLO para la inflación
-    # (`moneda != ARS`), así que la pata del S&P quedó sin convertir — el mismo
-    # arreglo aplicado a una de dos patas del mismo `return`, que es la forma que
-    # toma un fix en este código. Con el selector en Pesos, `delta_pct` lleva la
-    # devaluación adentro y el S&P no: la resta se la regalaba entera al veredicto.
-    # Una cartera quieta en dólares, un mes de 5 % de devaluación y un S&P de
-    # +2 % publicaba "vs S&P 500 · +3,0 %" cuando la verdad es −2,0.
-    import twr as _twr_bench
-    _fx0_bench = _fx1_bench = None
-    _necesita_fx = delta_pct is not None and (
-        (inflation_ret is not None and str(moneda).lower() != _twr_bench.MONEDA_ARS)
-        or (sp500_ret is not None and str(moneda).lower() == _twr_bench.MONEDA_ARS))
-    if _necesita_fx:
-        _d0_bench = _dia_anterior(period_start)
-        if _d0_bench:
-            try:
-                _fxfn_bench, _ = _twr_bench.serie_fx(conn, _d0_bench, period_end)
-                _fx0_bench, _fx1_bench = _fxfn_bench(_d0_bench), _fxfn_bench(period_end)
-            except Exception:
-                log.exception("vs_benchmark serie_fx %s..%s", _d0_bench, period_end)
-
-    # EL S&P SE MUEVE A LA MONEDA DE LA CARTERA, no al revés — es un índice de
-    # PRECIO y "el S&P en pesos" existe (es lo que valdría en pesos la misma plata
-    # puesta en el índice). Con la inflación es al revés y por eso tiene su propia
-    # función: una tasa en pesos no tiene versión en dólares.
-    #
-    # La regla de qué índice está en qué moneda NO se copia acá: vive en
-    # `performance.BENCH_EN_ARS`, la misma tabla que usa el motor del gráfico.
-    from performance import retorno_bench_en_moneda as _bench_en_moneda
-    sp500_ret = _bench_en_moneda(sp500_ret, "sp500", moneda=moneda,
-                                 fx0=_fx0_bench, fx1=_fx1_bench)
+                                                period_end, "inflation_ar",
+                                                ventana=_bench_ventana,
+                                                moneda=moneda)
     # Sin `delta_pct` no hay con qué comparar — y si lo tapamos por base
     # incomparable, publicar un "vs benchmark" sería reintroducir el mismo número
     # por la ventana. Sin TC tampoco: `sp500_ret` ya vino None de la conversión, y
     # entonces no se publica ni el exceso ni el retorno del índice. Publicar el
     # número en dólares con etiqueta de pesos es peor que no publicar nada.
     #
-    # ⚠️ `sp500_ret` QUEDA PISADO A PROPÓSITO CON EL CONVERTIDO, y es lo que viaja
-    # a `sp500_return_pct`. La tarjeta muestra los dos juntos ("El S&P hizo X ·
-    # vs S&P Y"): si el X que se muestra no es el X del que salió la resta, la
-    # tarjeta se contradice sola. Es la misma razón por la que `vs_inflacion_ar`
-    # devuelve el retorno convertido ADEMÁS del exceso.
+    # ⚠️ `sp500_ret` YA VIENE EN LA MONEDA DE LA CARTERA y acá no se convierte
+    # nada: la conversión vive adentro de `benchmark_return_for_period`, una sola
+    # vez para el año y para el mes. Ese mismo número es el que viaja a
+    # `sp500_return_pct`, y tiene que serlo: la tarjeta muestra los dos juntos
+    # ("El S&P hizo X · vs S&P Y"), así que si el X que se muestra no es el X del
+    # que salió la resta, se contradice sola. Es la misma razón por la que
+    # `vs_inflacion_ar` devuelve el retorno convertido ADEMÁS del exceso.
     vs_sp500 = (delta_pct - sp500_ret) if (delta_pct is not None and sp500_ret is not None) else None
     # LA COMPARACIÓN CONTRA INFLACIÓN SE HACE SIEMPRE EN PESOS. Antes era
     # `delta_pct - inflation_ret` a secas, y `delta_pct` sigue la moneda del
@@ -1778,11 +1991,27 @@ def compute_metrics_for_period(
     # El precio de componer es el residuo intrínseco de Modified Dietz cuando hay
     # aportes (medido sobre producción: p90 0,003). Es tres órdenes de magnitud
     # menos que el riesgo de tomar el número de otra fuente.
-    # Las puntas del TC son las MISMAS que usó la pata del S&P y se calculan una
-    # sola vez, arriba: misma ventana (`_dia_anterior(period_start)` → `period_end`)
-    # y misma serie. Tenerlas dos veces era garantizar que un día se separaran.
-    _ret_ars_infl, vs_inflation = _twr_bench.vs_inflacion_ar(
-        delta_pct, inflation_ret, moneda=moneda, fx0=_fx0_bench, fx1=_fx1_bench)
+    # ⚠️ ESTAS PUNTAS NO SON LAS DEL S&P, Y NO SE PUEDEN COMPARTIR.
+    #
+    # Las dos patas necesitan TC en el caso OPUESTO —la inflación cuando el
+    # selector está en dólares, el S&P cuando está en pesos— así que nunca hacen
+    # falta a la vez. Y miden cosas distintas: acá se mueve la CARTERA a pesos
+    # (una tasa en pesos no tiene versión en dólares), mientras que para el S&P se
+    # mueve el ÍNDICE a la moneda de la cartera. Un intento de unificarlas en un
+    # solo par de variables se cayó justo en esto.
+    import twr as _twr_infl
+    _fx0_infl = _fx1_infl = None
+    if (delta_pct is not None and inflation_ret is not None
+            and str(moneda).lower() != _twr_infl.MONEDA_ARS):
+        _d0_infl = _dia_anterior(period_start)
+        if _d0_infl:
+            try:
+                _fxfn_infl, _ = _twr_infl.serie_fx(conn, _d0_infl, period_end)
+                _fx0_infl, _fx1_infl = _fxfn_infl(_d0_infl), _fxfn_infl(period_end)
+            except Exception:
+                log.exception("vs_inflacion serie_fx %s..%s", _d0_infl, period_end)
+    _ret_ars_infl, vs_inflation = _twr_infl.vs_inflacion_ar(
+        delta_pct, inflation_ret, moneda=moneda, fx0=_fx0_infl, fx1=_fx1_infl)
 
     metrics = PeriodMetrics(
         start_value=round(start_value, 2),
@@ -1809,6 +2038,8 @@ def compute_metrics_for_period(
         motor_motivo_texto=_motor_nego_texto,
         medido_desde=_ventana_medida[0],
         medido_hasta=_ventana_medida[1],
+        bench_desde=(_bench_ventana or (None, None))[0],
+        bench_hasta=(_bench_ventana or (None, None))[1],
         modo=("estimado" if modo == "estimado" else "certero"),
         moneda=("ars" if str(moneda).lower() == "ars" else "usd"),
     )

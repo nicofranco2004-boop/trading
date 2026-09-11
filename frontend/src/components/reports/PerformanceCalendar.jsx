@@ -1,16 +1,23 @@
-// PerformanceCalendar — overview visual fuerte de Reportes (V2).
+// PerformanceCalendar — el año por año de Reportes (V3).
 // ═══════════════════════════════════════════════════════════════════════════
 // Dos piezas:
-//   1) KPI strip 12M (acumulado realizado, meses positivos, mejor/peor, trades)
-//   2) Calendario heatmap por año — bandas con 12 cuadrados (ENE-DIC)
-//      coloreados según delta_pct mensual. Escala 7 pasos + neutro + sin datos.
+//   1) KPI strip 12M (acumulado realizado, meses positivos, trades)
+//   2) Una fila por año: el CIERRE del año (del motor canónico, vía
+//      `/api/reports/years`), un gráfico de BARRAS mes a mes, los veredictos
+//      contra el S&P y la inflación, y las métricas del año.
 //
-// Visual: tipografía mono operativa, celdas con altura generosa, colores
-// con buen contraste sobre bg-bg-1.
+// ⚠️ ACÁ HABÍA UN HEATMAP DE DOCE CUADRADOS con el número adentro, y tenía dos
+// problemas: doce números chicos compiten entre sí —para leer la forma del año
+// había que leerlos todos— y no entran en una laptop, porque un cuadrado con
+// texto adentro no se puede comprimir. Las barras muestran la forma sin leer un
+// solo número y sí se comprimen; el detalle aparece al pasar el mouse.
+//
+// Visual: barras en los verdes/rojos semánticos, números en Geist + tabular.
 
-import { useMoneyFormat } from '../../contexts/CurrencyContext'
-
-const MONTH_SHORT = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC']
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Lock } from 'lucide-react'
+import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
 
 function monthNum(period_key) {
   if (!period_key) return null
@@ -18,38 +25,145 @@ function monthNum(period_key) {
   return m ? parseInt(m[1], 10) : null
 }
 
-// ─── Color bins (7 niveles + neutro + sin datos) ─────────────────────────────
-// Colores con buen contraste sobre bg-bg-1. Texto adapta al fondo.
-function colorForCell(pct, hasData) {
-  if (!hasData) {
+// ─── El gráfico de barras de un año ─────────────────────────────────────────
+//
+// ⚠️ LA ESCALA ES PROPIA DE CADA AÑO, Y POR ESO SE DECLARA. Cada gráfico usa
+// todo su alto, así que se ve lleno — pero un mes de +2 % en un año tranquilo
+// dibuja la MISMA barra que uno de +30 % en otro, y el ojo compara alturas sin
+// preguntar. El rótulo "barra más alta = X %" de abajo no es decoración: es lo
+// único que evita esa lectura. Si algún día se pasa a escala común, se borra el
+// rótulo en el mismo movimiento.
+const MES_INICIAL = ['E', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D']
+
+// Cuánto del alto de la caja ocupa la barra más extrema. Por debajo de 100 para
+// que no toque el borde y se lea como cortada.
+const ALTO_MAX_PCT = 92
+
+function BarrasDelAnio({ cells, money, enPesos }) {
+  const [encima, setEncima] = useState(null)
+
+  const meses = cells.map(({ month }) => {
+    const m = month?.metrics
+    if (!month || !month.is_relevant || m?.delta_pct == null) return null
     return {
-      bg: 'transparent',
-      border: '1px dashed rgba(255,255,255,0.06)',
-      label: '#5A6478',
-      value: '#5A6478',
+      pct: m.delta_pct,
+      usd: m.delta_usd,
+      // Sólo lo que se cerró vendiendo. NO es lo mismo que `delta_usd`, que
+      // incluye lo que se movieron las posiciones que siguen abiertas.
+      realizado: m.realized_pnl,
+      label: month.period_label,
+      actual: month.is_current,
     }
-  }
-  if (pct == null || Math.abs(pct) < 0.5) {
-    return { bg: '#1B2230', border: 'none', label: '#9CA3B5', value: '#C3CAD8' }
-  }
-  if (pct >= 5)    return { bg: '#21D07A', border: 'none', label: '#06160E', value: '#06160E' }
-  if (pct >= 2)    return { bg: '#14A560', border: 'none', label: '#E6EAF2', value: '#E6EAF2' }
-  if (pct > 0)     return { bg: '#0F5C36', border: 'none', label: '#C3CAD8', value: '#5FE19D' }
-  if (pct <= -5)   return { bg: '#FF5360', border: 'none', label: '#1F0A0C', value: '#1F0A0C' }
-  if (pct <= -2)   return { bg: '#C8333E', border: 'none', label: '#E6EAF2', value: '#E6EAF2' }
-  return            { bg: '#8E2B33', border: 'none', label: '#C3CAD8', value: '#FFB1B7' }
+  })
+
+  const conDato = meses.filter(Boolean)
+  // El piso de 0,5 evita que un año plano dibuje barras enormes por dividir por
+  // casi cero.
+  const max = Math.max(0.5, ...conDato.map(m => Math.abs(m.pct)))
+  const activo = encima != null ? meses[encima] : null
+
+  return (
+    <div className="relative">
+      {activo && (
+        <div
+          className="absolute -top-1.5 z-10 pointer-events-none bg-bg-3 border border-line-2
+                     rounded-lg px-2.5 py-1.5 whitespace-nowrap"
+          style={
+            // El globo se ancla al centro de su columna, salvo en las puntas: con
+            // doce columnas, enero y diciembre lo mandarían fuera de la caja.
+            encima <= 1 ? { left: 0, transform: 'translateY(-100%)' }
+              : encima >= 10 ? { right: 0, transform: 'translateY(-100%)' }
+                : { left: `${((encima + 0.5) / 12) * 100}%`, transform: 'translate(-50%, -100%)' }
+          }
+        >
+          <div className="text-[10.5px] text-ink-3 leading-none">{activo.label}</div>
+          <div className="flex items-baseline gap-1.5 mt-1 leading-none">
+            <b className={`text-[13px] font-semibold tabular ${
+              activo.pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+              {activo.pct >= 0 ? '+' : '−'}{Math.abs(activo.pct).toFixed(2)}%
+            </b>
+            <span className="text-ink-3 text-[11px]">·</span>
+            <b className={`text-[13px] font-semibold tabular ${
+              activo.usd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+              {money.fmtMoney(activo.usd, { signed: true })}
+            </b>
+          </div>
+          {/* ⚠️ EN PESOS EL % Y EL MONTO NO ESTÁN EN EL MISMO PESO. El porcentaje lo
+              mide el motor con el dólar de CADA PUNTA, así que incluye la devaluación
+              de ese mes; el monto sale en dólares y lo convierte la pantalla al dólar
+              de HOY (es deliberado: convertirlo también en el servidor lo convertiría
+              dos veces, ver `_pct_en_pesos`). Puestos uno al lado del otro invitan a
+              una cuenta que no da, así que el globo dice a qué dólar está el monto.
+              Medido: mayo 2025 = +3,98 % y +$629.063, que son US$409 al dólar de hoy. */}
+          {enPesos && (
+            <div className="text-[10px] text-ink-3 mt-1 leading-none">al dólar de hoy</div>
+          )}
+          {/* El renglón de abajo sólo cuando hubo ventas: en un mes sin operaciones
+              cerradas, un "realizado: 0" no informa, ocupa. */}
+          {!!activo.realizado && (
+            <div className="text-[10.5px] text-ink-3 mt-1 leading-none tabular">
+              de operaciones cerradas: {money.fmtMoney(activo.realizado, { signed: true })}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-stretch gap-[3px] h-[72px] relative">
+        <div className="absolute inset-x-0 top-1/2 h-px bg-line-2 pointer-events-none" />
+        {meses.map((m, i) => (
+          <div
+            key={i}
+            onMouseEnter={() => setEncima(i)}
+            onMouseLeave={() => setEncima(prev => (prev === i ? null : prev))}
+            onFocus={() => setEncima(i)}
+            onBlur={() => setEncima(null)}
+            tabIndex={m ? 0 : -1}
+            aria-label={m
+              ? `${m.label}: ${m.pct >= 0 ? '+' : '−'}${Math.abs(m.pct).toFixed(2)} por ciento, ${money.fmtMoney(m.usd, { signed: true })}`
+              : undefined}
+            className={`flex-1 min-w-0 relative rounded-sm transition-colors
+                        focus:outline-none focus-visible:ring-1 focus-visible:ring-rendi-accent
+                        ${encima === i ? 'bg-ink-0/5' : ''}
+                        ${m?.actual ? 'ring-1 ring-inset ring-rendi-pos/40' : ''}`}
+          >
+            {m ? (
+              <div
+                className={`absolute left-[14%] right-[14%] rounded-xs transition-colors ${
+                  m.pct >= 0
+                    ? `bottom-1/2 ${encima === i ? 'bg-green-200' : 'bg-rendi-pos'}`
+                    : `top-1/2 ${encima === i ? 'bg-red-100' : 'bg-rendi-neg'}`}`}
+                style={{ height: `${Math.max(2, (Math.abs(m.pct) / max) * ALTO_MAX_PCT / 2)}%` }}
+              />
+            ) : (
+              // ⚠️ UN MES SIN MEDIR NO ES UN MES QUE DIO CERO. Una barra de altura
+              // cero se leería como "plano"; esta rayita gris dice "acá no hay dato".
+              <div className="absolute left-[32%] right-[32%] top-1/2 -mt-px h-0.5 rounded-xs bg-line-2" />
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="flex gap-[3px] mt-1.5">
+        {MES_INICIAL.map((l, i) => (
+          <span
+            key={i}
+            className={`flex-1 min-w-0 text-center text-[9px] font-semibold tracking-wide leading-none
+                        ${encima === i ? 'text-ink-0' : 'text-ink-3'}`}
+          >
+            {l}
+          </span>
+        ))}
+      </div>
+
+      {conDato.length > 0 && (
+        <div className="text-[10px] text-ink-3 text-right mt-1.5 tabular leading-none">
+          barra más alta = {max.toFixed(1)}%
+        </div>
+      )}
+    </div>
+  )
 }
 
-function fmtPctValue(p) {
-  if (p == null) return '—'
-  const sign = p >= 0 ? '+' : ''
-  // Compacto: enteros para >=10, 1 decimal para <10
-  const abs = Math.abs(p)
-  return `${sign}${abs >= 10 ? p.toFixed(0) : p.toFixed(2)}`
-}
-
-// fmtUsdSigned reemplazado por money.fmtMoney(v, { signed: true }) en el
-// componente — respeta el toggle global ARS/USD (Fase B).
 
 // ─── KPI strip data ──────────────────────────────────────────────────────────
 function computeKpis(yearGroups) {
@@ -93,11 +207,142 @@ function KpiCell({ label, value, sub, tone, first }) {
   )
 }
 
-export default function PerformanceCalendar({ yearGroups }) {
+// ─── Veredicto contra un benchmark ───────────────────────────────────────────
+// `pp` es el EXCESO en puntos porcentuales (cartera − benchmark), no el retorno
+// del índice. Sin dato no se dibuja nada: un "—" por año ocupa lugar y no dice
+// más que el vacío.
+function Veredicto({ nombre, articulo, pp, detalle }) {
+  if (pp == null) return null
+  const gana = pp >= 0
+  const de = articulo === 'el' ? 'del' : 'de la'
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
+      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1)} puntos porcentuales`
+             + (detalle ? `. ${detalle}` : '')}
+    >
+      vs {nombre}
+      <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1)} pp
+      </b>
+    </span>
+  )
+}
+
+// dd/mm/aa — corto pero sin perder el año, que es lo que distingue las dos
+// puntas de una ventana anual.
+function fmtFechaCorta(iso) {
+  if (!iso || iso.length < 10) return iso || ''
+  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(2, 4)}`
+}
+
+// ─── La fila de métricas del año ─────────────────────────────────────────────
+// Lo que Reportes ya calculaba para el año en curso y sólo mostraba ahí. Los
+// meses en verde y el mejor/peor salen de las celdas que ya están dibujadas
+// arriba, así que describen exactamente lo que el usuario tiene delante.
+function Dato({ label, valor, tono }) {
+  const color = tono === 'pos' ? 'text-rendi-pos' : tono === 'neg' ? 'text-rendi-neg' : 'text-ink-1'
+  return (
+    <div className="flex flex-col gap-0.5 min-w-[92px]">
+      <span className="text-[10.5px] text-ink-3 font-medium leading-none">{label}</span>
+      <span className={`text-[13px] font-semibold tabular leading-none ${color}`}>{valor}</span>
+    </div>
+  )
+}
+
+function MetricasDelAno({ resumen, months, money, enPesos }) {
+  if (!resumen) return null
+  const conDato = months.filter(m => m.is_relevant && m.metrics?.delta_pct != null)
+  const pcts = conDato.map(m => m.metrics.delta_pct)
+  const verdes = pcts.filter(p => p > 0).length
+  // ⚠️ EL DENOMINADOR SON LOS MESES DEL AÑO, NO LOS QUE TIENEN DATO. Contando sólo
+  // los medidos, un año con un hueco se publicaba como perfecto: "11 de 11" cuando
+  // 2024 tuvo doce meses y a marzo le falta la medición. El usuario leía "no fallé
+  // ni un mes" donde la verdad es "no fallé ninguno de los que pudimos medir".
+  // El denominador lo dice el SERVIDOR (`meses_del_anio`): 12 para un año cerrado,
+  // los meses transcurridos para el año en curso. No se deriva de `bench_hasta`
+  // —esa fecha describe la ventana en que se midió el índice, no el calendario— ni
+  // de `new Date()`, porque el "hoy" de Rendi es el día argentino.
+  const mesesDelAnio = resumen.meses_del_anio ?? (resumen.is_current ? conDato.length : 12)
+  const sinMedir = Math.max(0, mesesDelAnio - conDato.length)
+  const datos = []
+  if (resumen.sp500_return_pct != null) {
+    datos.push({ label: 'S&P 500 ese año',
+                 valor: `${resumen.sp500_return_pct >= 0 ? '+' : '−'}${Math.abs(resumen.sp500_return_pct).toFixed(1)}%` })
+  }
+  if (resumen.inflation_pct != null) {
+    datos.push({ label: 'Inflación AR', valor: `+${resumen.inflation_pct.toFixed(1)}%` })
+  }
+  if (resumen.deposits > 0) {
+    datos.push({ label: 'Aportaste', valor: money.fmtMoney(resumen.deposits) })
+  }
+  if (resumen.withdrawals > 0) {
+    datos.push({ label: 'Retiraste', valor: money.fmtMoney(resumen.withdrawals) })
+  }
+  if (resumen.realized_pnl) {
+    datos.push({ label: 'P&L realizado', valor: money.fmtMoney(resumen.realized_pnl, { signed: true }),
+                 tono: resumen.realized_pnl >= 0 ? 'pos' : 'neg' })
+  }
+  if (resumen.trades_count > 0) {
+    datos.push({ label: 'Operaciones', valor: `${resumen.trades_count} cerradas` })
+    if (resumen.win_rate != null) {
+      datos.push({ label: 'Win rate', valor: `${resumen.win_rate.toFixed(0)}%` })
+    }
+  }
+  if (pcts.length > 0) {
+    datos.push({ label: 'Meses en verde', valor: `${verdes} de ${mesesDelAnio}` })
+    const mejor = Math.max(...pcts), peor = Math.min(...pcts)
+    datos.push({ label: 'Mejor mes', valor: `+${mejor.toFixed(1)}%`, tono: 'pos' })
+    if (peor < 0) datos.push({ label: 'Peor mes', valor: `−${Math.abs(peor).toFixed(1)}%`, tono: 'neg' })
+  }
+  // Sin un solo dato la fila no se dibuja: un separador vacío bajo cada año es
+  // ruido que el ojo tiene que descartar en cada pasada.
+  if (datos.length === 0) return null
+  const hayMontos = resumen.deposits > 0 || resumen.withdrawals > 0 || !!resumen.realized_pnl
+  return (
+    <div className="flex flex-wrap gap-x-6 gap-y-2.5 pl-[120px] pt-2.5 border-t border-line/50">
+      {datos.map((d, i) => <Dato key={i} {...d} />)}
+      {/* ⚠️ TODOS LOS MONTOS DE ESTA FILA ESTÁN AL DÓLAR DE HOY, NO AL DE SU FECHA.
+          El servidor los publica en dólares a propósito (ver `_pct_en_pesos`) y la
+          pantalla los convierte al pasar a pesos. Eso hace que dos aportes de US$500
+          hechos en años distintos se muestren como el MISMO monto en pesos —medido:
+          2025 y 2026 dicen los dos "$769.100"— cuando en su momento fueron cantidades
+          bien distintas. Mientras el monto no venga convertido a la época, esto se
+          declara en vez de dejar que se lea como pesos de entonces. */}
+      {enPesos && hayMontos && (
+        <span className="text-[10.5px] text-ink-3 self-end leading-none">montos al dólar de hoy</span>
+      )}
+      {sinMedir > 0 && (
+        // ⚠️ ESTO EXPLICA POR QUÉ LAS BARRAS NO COMPONEN EL TOTAL DE AL LADO. El
+        // total lo mide el motor punta a punta; las barras son los meses que hay.
+        // Con un mes sin medición los dos números difieren —2024: +22,00 % arriba
+        // y +20,88 % componiendo sus barras— y están a diez centímetros.
+        <span className="text-[10.5px] text-rendi-warn/80 self-end leading-none">
+          {sinMedir === 1 ? '1 mes sin medir' : `${sinMedir} meses sin medir`}
+        </span>
+      )}
+      {resumen.bench_desde && resumen.bench_hasta && (
+        // ⚠️ CON AÑO. Sin él, un año cerrado se leía "comparado del 31/12 al
+        // 31/12" — dos fechas idénticas que sugieren un solo día, cuando son los
+        // dos extremos del año. La ventana existe justamente para poder leerla.
+        <span className="text-[10.5px] text-ink-3 self-end leading-none">
+          comparado del {fmtFechaCorta(resumen.bench_desde)} al {fmtFechaCorta(resumen.bench_hasta)}
+        </span>
+      )}
+    </div>
+  )
+}
+
+export default function PerformanceCalendar({ yearGroups, years = [], yearsLoading = false,
+                                             historicos = true }) {
   const kpis = computeKpis(yearGroups)
   // Fase B: el P&L Realizado 12M respeta el toggle global ARS/USD.
   // Los % no cambian (son ratios) — solo el valor monetario se convierte.
   const money = useMoneyFormat()
+  // El selector global de moneda: decide si los montos que dibuja esta pantalla
+  // están convertidos, y por lo tanto si hay que declarar a qué dólar.
+  const { currency } = useCurrency()
+  const enPesos = currency === 'ARS'
   if (!kpis) return null
 
   return (
@@ -144,83 +389,110 @@ export default function PerformanceCalendar({ yearGroups }) {
           </span>
         </header>
 
-        <div className="px-4 py-5 space-y-5">
+        {/* ⚠️ SCROLL, NO RECORTE. La card de afuera lleva `overflow-hidden`, así que
+            sin esto las bandas angostas se CORTABAN: en 554px de ancho, noviembre,
+            diciembre y los chips de veredicto desaparecían sin ninguna señal. Doce
+            meses más el cierre no entran en un teléfono, y el contrato del repo ya
+            marca este archivo como sitio de riesgo por sus anchos fijos. */}
+        <div className="px-4 py-5 space-y-5 overflow-x-auto">
           {yearGroups.map(({ year, months }) => {
             const cells = Array.from({ length: 12 }, (_, idx) => {
               const m = months.find(mm => monthNum(mm.period_key) === idx + 1)
               return { idx, month: m }
             })
-            // Retorno anual = producto geométrico de los meses con data (NO suma
-            // aritmética de %, que sobreestima en años en tendencia y falla en los
-            // volátiles). Meses vacíos/irrelevantes → factor 1 (no-op).
-            const yearReturnPct = (months.reduce((acc, m) => {
-              const r = m.metrics?.delta_pct
-              if (r == null || !m.is_relevant) return acc
-              return acc * (1 + r / 100)
-            }, 1) - 1) * 100
+            // ⚠️ ACÁ VIVÍA UN SEGUNDO MOTOR DEL RENDIMIENTO ANUAL, Y CONTRADECÍA AL
+            // PRIMERO. Componía los meses que la timeline hubiera traído y contaba
+            // los ausentes como +0% (factor 1). Con la timeline en 12 meses, el año
+            // anterior sólo tenía sus últimos meses cargados: medido en la cuenta de
+            // prueba, 2025 publicaba "+6,50%" acá mientras el motor canónico mide
+            // +32,95% — 26 puntos de diferencia para el mismo año, y el rótulo de
+            // arriba diciendo "TWR mensual" como si fuera lo mismo.
+            // Ahora el número viene de `/api/reports/years` (`twr.curva_indexada`),
+            // que es el mismo que publica la pestaña Año y el inicio.
+            const resumen = years.find(a => a.year === year) || null
+            const pct = resumen?.pct
+            // ⚠️ "BLOQUEADO" NO ES "SIN MEDIR". Sin el resumen —porque el plan no
+            // lo incluye— la fila diría "sin fotos a precio de mercado", que es
+            // falso: el número existe y está del otro lado del muro. Decirle al
+            // usuario que le faltan datos cuando lo que le falta es el plan es la
+            // peor de las dos mentiras posibles.
+            const bloqueado = !historicos && !resumen
             return (
-              <div key={year} className="flex items-center gap-4">
-                <div className="font-mono text-[12px] tracking-label text-ink-3 min-w-[52px] tabular">
-                  {year}
+              <div key={year} className="space-y-2.5 min-w-[560px]">
+              <div className="flex items-center gap-4">
+                <div className="min-w-[104px] flex flex-col gap-1">
+                  <span className="font-mono text-[12px] tracking-label text-ink-3 tabular">
+                    {year}{resumen?.is_current ? ' · hasta hoy' : ''}
+                  </span>
+                  {pct != null ? (
+                    <span className={`text-[22px] font-semibold tracking-tight leading-none tabular ${
+                      resumen.basis === 'contable' ? 'text-ink-1'
+                        : pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                      {pct >= 0 ? '+' : '−'}{Math.abs(pct).toFixed(2)}%
+                    </span>
+                  ) : bloqueado ? (
+                    <Link to="/planes" className="inline-flex items-center gap-1.5 text-[13px] text-rendi-accent hover:text-rendi-accent/80 font-medium leading-none">
+                      <Lock size={12} strokeWidth={2} /> Ver {year}
+                    </Link>
+                  ) : (
+                    <span className="text-[13px] text-ink-3 font-medium leading-none">
+                      {yearsLoading ? '…' : 'Sin medir'}
+                    </span>
+                  )}
+                  <span className="text-[10.5px] text-ink-3 leading-tight">
+                    {bloqueado
+                      ? 'los años anteriores están en el plan pago'
+                      : pct == null
+                        ? (resumen?.motivo_texto ? 'el motor no publica este año' : 'sin fotos a precio de mercado')
+                        : resumen.basis === 'contable'
+                          ? 'de tu historia importada'
+                          : 'medido a precio de mercado'}
+                  </span>
                 </div>
-                <div className="grid grid-cols-12 gap-1.5 flex-1">
-                  {cells.map(({ idx, month }) => {
-                    const pct = month?.metrics?.delta_pct
-                    const hasData = !!month && month.is_relevant && pct != null
-                    const c = colorForCell(pct, hasData)
-                    const isCurrent = month?.is_current
-                    return (
-                      <div
-                        key={idx}
-                        title={month ? `${month.period_label}: ${fmtPctValue(pct)}%` : `${MONTH_SHORT[idx]}: sin datos`}
-                        className="aspect-[1.4/1] min-h-[56px] p-2 flex flex-col justify-between"
-                        style={{
-                          background: c.bg,
-                          border: c.border,
-                          outline: isCurrent ? '1.5px solid #21D07A' : undefined,
-                          outlineOffset: isCurrent ? '-2px' : undefined,
-                          borderRadius: '3px',
-                        }}
-                      >
-                        <span
-                          className="font-mono text-[10px] tracking-label leading-none"
-                          style={{ color: c.label }}
-                        >
-                          {MONTH_SHORT[idx]}
-                        </span>
-                        <span
-                          className="font-mono text-[13px] font-semibold leading-none tabular"
-                          style={{ color: c.value }}
-                        >
-                          {hasData ? fmtPctValue(pct) : '—'}
-                        </span>
-                      </div>
-                    )
-                  })}
+                <div className="flex-1 min-w-0">
+                  {/* ⚠️ "NO TE LO PEDÍ" NO ES "NO SE PUDO MEDIR". El servidor devuelve
+                      hasta doce años de rendimiento, pero el detalle mensual se pide
+                      de a 36 meses: para un año más viejo que eso, las doce rayitas
+                      grises dirían "sin medir" cuando lo cierto es que esta pantalla
+                      no trajo sus meses. El total de arriba sigue siendo válido. */}
+                  {months.length === 0 && pct != null ? (
+                    <div className="h-[72px] flex items-center text-[11.5px] text-ink-3">
+                      El detalle mes a mes de este año todavía no está cargado.
+                    </div>
+                  ) : (
+                    <BarrasDelAnio cells={cells} money={money} enPesos={enPesos} />
+                  )}
                 </div>
-                <div
-                  className={`font-mono text-[12px] min-w-[80px] text-right tabular font-medium ${
-                    yearReturnPct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
-                  }`}
-                >
-                  {yearReturnPct >= 0 ? '+' : ''}{yearReturnPct.toFixed(2)}%
+                <div className="flex flex-col gap-1.5 items-end min-w-[132px]">
+                  <Veredicto nombre="S&P 500" articulo="el" pp={resumen?.vs_sp500_pct} />
+                  {/* ⚠️ LA INFLACIÓN SE COMPARA SIEMPRE EN PESOS (ver `twr.vs_inflacion_ar`):
+                      restarle a un retorno en dólares un índice que mide precios
+                      argentinos es restar unidades distintas. Cuando el usuario está
+                      mirando en dólares, el veredicto sale de SU retorno convertido a
+                      pesos — un número que no está en pantalla —, así que el globo lo
+                      dice: si no, la resta que el usuario puede hacer con lo que ve no
+                      le va a dar. */}
+                  <Veredicto
+                    nombre="inflación" articulo="la" pp={resumen?.vs_inflation_pct}
+                    detalle={!enPesos && resumen?.retorno_ars_pct != null
+                      ? `Se compara en pesos: tu cartera hizo ${resumen.retorno_ars_pct.toFixed(2)} % en pesos y la inflación ${resumen.inflation_pct?.toFixed(1)} %`
+                      : null}
+                  />
                 </div>
+              </div>
+              <MetricasDelAno resumen={resumen} months={months} money={money} enPesos={enPesos} />
               </div>
             )
           })}
 
-          {/* Legend */}
-          <div className="flex items-center gap-1 pt-3 border-t border-line/50 text-[10px] font-mono text-ink-3">
-            <span className="mr-2 font-medium">−5%</span>
-            <span className="inline-block w-5 h-2.5" style={{ background: '#FF5360' }} />
-            <span className="inline-block w-5 h-2.5" style={{ background: '#C8333E' }} />
-            <span className="inline-block w-5 h-2.5" style={{ background: '#8E2B33' }} />
-            <span className="inline-block w-5 h-2.5 mx-1" style={{ background: '#1B2230' }} />
-            <span className="inline-block w-5 h-2.5" style={{ background: '#0F5C36' }} />
-            <span className="inline-block w-5 h-2.5" style={{ background: '#14A560' }} />
-            <span className="inline-block w-5 h-2.5" style={{ background: '#21D07A' }} />
-            <span className="ml-2 font-medium">+5%</span>
-            <span className="ml-auto font-medium">Rendimiento mensual</span>
+          <div className="flex items-center gap-2 flex-wrap pt-3 border-t border-line/50 text-[11px] text-ink-3">
+            <span className="inline-block w-2.5 h-2.5 rounded-xs bg-rendi-pos" aria-hidden="true" />
+            <span>mes en verde</span>
+            <span className="inline-block w-2.5 h-2.5 rounded-xs bg-rendi-neg ml-2" aria-hidden="true" />
+            <span>mes en rojo</span>
+            <span className="inline-block w-2.5 h-0.5 rounded-xs bg-line-2 ml-2" aria-hidden="true" />
+            <span>sin medir</span>
+            <span className="ml-auto">Pasá el mouse por una barra para ver el mes</span>
           </div>
         </div>
       </div>

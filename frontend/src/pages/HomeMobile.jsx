@@ -20,7 +20,7 @@ import MiniSparkline from '../components/MiniSparkline'
 import FlashValue from '../components/FlashValue'
 import Skeleton from '../components/Skeleton'
 import Panel from '../components/Panel'
-import BenchmarksLine from '../components/BenchmarksLine'
+import YearReturnLine from '../components/YearReturnLine'
 import PersonalLayer from '../components/home/PersonalLayer'
 import Heatmap from '../components/home/Heatmap'
 import MoversRail from '../components/home/MoversRail'
@@ -431,16 +431,13 @@ export default function HomeMobile() {
         </Panel>
       </section>
 
-      {/* ── 2.5. Headline benchmarks ───────────────────────────────
-          1 línea con S&P + dólar quieto. Detalle completo en /insights.
-          Liviano para no saturar la primera screen mobile. */}
+      {/* ── 2.5. Cómo viene ESTE año ───────────────────────────────
+          Reemplaza la línea "vs el S&P 500" que comparaba toda la historia en un
+          solo número. Una línea: el año en curso, el veredicto contra el índice
+          y la puerta a Reportes, que tiene el año por año con las métricas. */}
       {totals.totalValue > 0 && (
         <section className="px-4 mb-5">
-          <BenchmarksLine
-            monthly={monthly}
-            bench={bench}
-            totalPortfolio={totals.totalValue}
-          />
+          <YearReturnLine />
         </section>
       )}
 

@@ -15,6 +15,7 @@ import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import { Loader2, FileText, AlertTriangle, ChevronDown, ChevronUp, ArrowRight } from 'lucide-react'
 import useReportsTimeline from '../hooks/useReportsTimeline'
+import useReportYears from '../hooks/useReportYears'
 import BrokerSelector from '../components/reports/BrokerSelector'
 import MonthCard from '../components/reports/MonthCard'
 import PerformanceCalendar from '../components/reports/PerformanceCalendar'
@@ -154,7 +155,13 @@ export default function Reports() {
   const { currency } = useCurrency()
   const moneda = currency === 'ARS' ? 'ars' : 'usd'
   const [modoRend, setModoRend] = useState('certero')
-  const timelineData = useReportsTimeline(broker, 12, modoRend, moneda)
+  // 36 meses, no 12: el calendario dibuja una banda por AÑO, y con 12 meses los
+  // años anteriores salían con la mitad de las celdas vacías — que además era lo
+  // que el total paralelo del calendario tomaba como "+0%".
+  const timelineData = useReportsTimeline(broker, 36, modoRend, moneda)
+  // El rendimiento por año, del motor canónico. Una sola fuente para el número
+  // del año: el calendario, la pestaña Año y el inicio leen de acá.
+  const yearsData = useReportYears(broker, modoRend, moneda)
   const [tab, setTab] = useState('month')
   const [expandedKey, setExpandedKey] = useState(null)
   const plan = usePlanFeatures()
@@ -217,7 +224,12 @@ export default function Reports() {
 
       {!timelineData.loading && !timelineData.error && timelineData.hasAnyData && (
         <>
-          <PerformanceCalendar yearGroups={timelineData.yearGroups} />
+          <PerformanceCalendar
+            yearGroups={timelineData.yearGroups}
+            years={yearsData.years}
+            yearsLoading={yearsData.loading}
+            historicos={yearsData.historicos}
+          />
 
           {plan.can('reportes.historicos') ? (
             <>

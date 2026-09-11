@@ -2958,6 +2958,71 @@ export function handleDemoRequest(method, path, body) {
     }
     if (basePath.startsWith('/insights')) return {}
     if (basePath.startsWith('/goals'))    return []
+
+    // ⚠️ SIN ESTO EL DEMO DECÍA "SIN MEDIR" EN TODOS LOS AÑOS. La ruta no estaba
+    // interceptada, así que caía en el `return null` de abajo y la pantalla leía
+    // "no hay años" — mientras las barras de los meses SÍ se dibujaban, porque
+    // `/reports/timeline` sí está cubierta. Visto en pantalla: los tres años con
+    // "Sin medir · sin fotos a precio de mercado" al lado de sus doce barras.
+    // Es la peor superficie donde podía pasar: el demo es lo único que ve alguien
+    // que todavía no tiene cuenta, y le estábamos diciendo que no podemos medir.
+    // El año se arma con `buildDemoPeriodReport`, que ya existía para la pestaña
+    // Año — no hay un segundo generador.
+    if (basePath === '/reports/years') {
+      const años = [...new Set(REPORTS_TIMELINE.map(r => parseInt(r.period_key.slice(0, 4), 10)))]
+        .sort((a, b) => b - a)
+      const hoy = new Date()
+      return {
+        broker: 'global',
+        modo: 'certero',
+        moneda: 'usd',
+        historicos: true,
+        years: años.map(y => {
+          const r = buildDemoPeriodReport('year', String(y))
+          const m = r.metrics || {}
+          const finVentana = r.is_current
+            ? hoy.toISOString().slice(0, 10)
+            : `${y}-12-31`
+          return {
+            year: y,
+            is_current: !!r.is_current,
+            pct: m.delta_pct ?? null,
+            usd: m.delta_usd ?? null,
+            start_value: m.start_value ?? null,
+            end_value: m.end_value ?? null,
+            basis: 'mercado',
+            basis_incomparable: false,
+            motivo: null,
+            motivo_texto: null,
+            medido_desde: `${y - 1}-12-31`,
+            medido_hasta: finVentana,
+            bench_desde: `${y - 1}-12-31`,
+            bench_hasta: finVentana,
+            // El demo no simula el índice ni el INDEC: publica el EXCESO contra el
+            // S&P que ya traía y deja el retorno propio del benchmark en null, que
+            // es como la pantalla distingue "no lo tengo" de "dio cero".
+            sp500_return_pct: null,
+            vs_sp500_pct: m.vs_sp500_pct ?? null,
+            // ⚠️ EL VEREDICTO CONTRA LA INFLACIÓN NO SE PUBLICA EN DEMO. Se mide
+            // SIEMPRE en pesos (`twr.vs_inflacion_ar`) y para eso hace falta la serie
+            // de dólar por fecha, que el demo no tiene. El fixture traía un
+            // `vs_inflation_pct` viejo calculado como `retorno − 80`, o sea la resta
+            // en unidades distintas que el producto acaba de dejar de hacer: se veía
+            // "vs inflación −76,1 pp" en la pantalla que existe para convencer a
+            // alguien de abrir la cuenta.
+            inflation_pct: null,
+            vs_inflation_pct: null,
+            retorno_ars_pct: null,
+            deposits: m.deposits ?? 0,
+            withdrawals: m.withdrawals ?? 0,
+            realized_pnl: m.realized_pnl ?? 0,
+            trades_count: m.trades_count ?? 0,
+            win_rate: m.win_rate ?? null,
+            meses_del_anio: r.is_current ? hoy.getMonth() + 1 : 12,
+          }
+        }),
+      }
+    }
     return null
   }
 

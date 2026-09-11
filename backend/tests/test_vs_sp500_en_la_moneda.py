@@ -102,16 +102,26 @@ class LaReglaTest(unittest.TestCase):
             60.0, "merval", moneda=twr.MONEDA_USD, fx0=1000, fx1=1200)
         self.assertAlmostEqual(r, (1.60 / 1.20 - 1) * 100, places=6)
 
-    def test_la_inflacion_no_pasa_por_aca(self):
-        """Una tasa en pesos no tiene versión en dólares. La casa ya decidió lo
-        contrario para estos —se mueve la CARTERA— y eso vive en
-        `twr.vs_inflacion_ar`. Devolver un número acá sería una segunda respuesta
-        a la pregunta que esa función ya contesta."""
+    def test_la_inflacion_no_se_convierte_NUNCA_y_se_devuelve_cruda(self):
+        """Una tasa en pesos no tiene versión en dólares, así que el índice no se
+        mueve: se mueve la CARTERA, y eso lo hace `twr.vs_inflacion_ar`.
+
+        ⚠️ ACÁ ESTABA MI ERROR, y el test lo cristalizaba. La primera versión
+        devolvía None razonando que "no hay respuesta en dólares". Pero esta
+        función no contesta "¿le ganaste?" — sólo entrega el número del índice, y
+        `vs_inflacion_ar` necesita justamente ese número crudo para comparar.
+        Devolver None le sacaba el dato y el veredicto contra inflación
+        desaparecía en dólares: el defecto que F5 vino a cerrar, por la puerta de
+        al lado. Lo cazaron cuatro tests de `test_benchmark_anual.py` — el test
+        ajeno tenía razón y el mío estaba afirmando el bug.
+        """
         self.assertIn("inflation_ar", performance.BENCH_PORCENTUAL)
-        self.assertIsNone(performance.retorno_bench_en_moneda(
-            4.5, "inflation_ar", moneda=twr.MONEDA_USD, fx0=1000, fx1=1200))
-        self.assertIsNone(performance.retorno_bench_en_moneda(
-            4.5, "plazo_fijo", moneda=twr.MONEDA_USD, fx0=1000, fx1=1200))
+        for moneda in (twr.MONEDA_USD, twr.MONEDA_ARS, None):
+            for key in ("inflation_ar", "plazo_fijo"):
+                self.assertAlmostEqual(
+                    performance.retorno_bench_en_moneda(
+                        4.5, key, moneda=moneda, fx0=1000, fx1=1200),
+                    4.5, places=6, msg=f"{key} / {moneda}")
 
     def test_sin_tc_no_publica(self):
         """Misma política que `twr.vs_inflacion_ar`: sin devaluación no hay
@@ -266,6 +276,61 @@ class ReportesLoUsaTest(unittest.TestCase):
         m = self._metrics("usd")
         self.assertAlmostEqual(m.sp500_return_pct, self.SP500_MES_PCT, places=1)
         self.assertAlmostEqual(m.vs_sp500_pct, -2.0, places=1)
+
+
+class LaPuertaSinGuardiaTest(unittest.TestCase):
+    """El agujero que aparecio al UNIFICAR con la otra sesion, y no antes.
+
+    Las dos sesiones llegaron a la misma regla el mismo dia: ellos adentro de
+    `benchmark_entre_fechas` (solo para el ANIO), yo en el call site (para todos
+    los periodos). Las dos conversiones son algebraicamente identicas —con
+    `pct = (i1-1)x100`, `(1+pct/100)*(f1/f0)-1` se reduce a `i1*f1/f0-1`— asi que
+    dejar las dos apiladas habria contado la devaluacion DOS VECES para el anio.
+
+    Al unificarlas quedo una puerta sin guardia: la conversion se decidia con
+    `if fx is not None`, o sea que "estoy en pesos" se INFERIA de que el TC
+    estuviera disponible. Pero el caller envuelve `serie_fx` en try/except y deja
+    `fx = None` si falla — y entonces el indice salia EN DOLARES, sin convertir,
+    contra una cartera en pesos. El bug entero, entrando por la puerta de al lado.
+
+    Por eso `moneda` viaja aparte de `fx`: la falta de TC se distingue de la falta
+    de NECESIDAD de TC, y sin TC no se publica.
+    """
+
+    def test_en_pesos_sin_TC_no_se_publica_el_indice_en_dolares(self):
+        from reporting import builder as _b
+        BENCH = {"sp500": {"2026-02": 100.0, "2026-03": 102.0}}
+        # Con TC: convierte.
+        con = _b.benchmark_return_for_period(
+            BENCH, "month", "2026-03-01", "2026-03-31", "sp500",
+            fx=lambda d: 1200.0 if str(d) >= "2026-03-01" else 1000.0, moneda="ars")
+        self.assertAlmostEqual(con, 22.4, places=1)
+        # Sin TC y en pesos: NO se publica. Antes devolvia 2.0 — el S&P en dolares
+        # con etiqueta de pesos.
+        sin = _b.benchmark_return_for_period(
+            BENCH, "month", "2026-03-01", "2026-03-31", "sp500",
+            fx=None, moneda="ars")
+        self.assertIsNone(sin, "publico el indice en dolares con etiqueta de pesos")
+
+    def test_en_dolares_sin_TC_se_publica_normal(self):
+        """En dolares el S&P no necesita conversion: el guard no puede taparlo."""
+        from reporting import builder as _b
+        BENCH = {"sp500": {"2026-02": 100.0, "2026-03": 102.0}}
+        for moneda in (None, "usd"):
+            r = _b.benchmark_return_for_period(
+                BENCH, "month", "2026-03-01", "2026-03-31", "sp500",
+                fx=None, moneda=moneda)
+            self.assertAlmostEqual(r, 2.0, places=1, msg=str(moneda))
+
+    def test_la_inflacion_nunca_se_convierte_por_esta_via(self):
+        """Aunque venga TC: es una tasa en pesos y su regla es `vs_inflacion_ar`."""
+        from reporting import builder as _b
+        BENCH = {"inflation_ar": {"2026-03": 4.5}}
+        for moneda in (None, "usd", "ars"):
+            r = _b.benchmark_return_for_period(
+                BENCH, "month", "2026-03-01", "2026-03-31", "inflation_ar",
+                fx=lambda d: 1200.0, moneda=moneda)
+            self.assertAlmostEqual(r, 4.5, places=2, msg=str(moneda))
 
 
 class UnaSolaTablaDeMonedasGuardTest(unittest.TestCase):
