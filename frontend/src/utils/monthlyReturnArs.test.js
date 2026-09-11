@@ -5,6 +5,9 @@
 //
 // El test que faltaba y que habría cazado esto: dos meses con el MISMO retorno en
 // dólares y un FX que cambia entre ellos. Antes daban idéntico; ahora no.
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import { monthlyReturnArs } from './insightsModel'
 
@@ -125,5 +128,72 @@ describe('la cadena completa — el escenario que se midió en producción', () 
     // En pesos: (1,01 × 1,05)^4 − 1 ≈ +27,7%. Antes daba +4,06% (el de dólares).
     expect(cumArs - 1).toBeCloseTo(Math.pow(1.01 * 1.05, 4) - 1, 10)
     expect(cumArs).toBeGreaterThan(cumUsd)
+  })
+})
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F5 — la MISMA regla del lado del backend, y el veredicto contra inflación.
+//
+// EL BUG QUE QUEDABA. `monthlyReturnArs` ya existía y ya estaba medido, pero
+// `useMonthlyData` —que arma los drivers por mes de Reportes— seguía haciendo
+// `deltaPct - inflPct` a mano, con `deltaPct` medido en DÓLARES. O sea: el
+// arreglo estaba escrito en este archivo y no había llegado a ese call site.
+// Es la causa raíz más frecuente del repo, otra vez.
+//
+// Medido con inflación del INDEC y la serie de dólar reales, sobre una cartera
+// 100 % en dólares y PLANA: el veredicto se daba vuelta con sólo tocar el
+// selector de moneda en 65 de 186 meses (35 %), y en 6 de los últimos 14.
+//
+// El último test LEE el archivo de Python. La regla vive en los dos lados a
+// propósito (cada lado calcula su vista) y ésta es la única forma de que "el
+// mismo número" sea una afirmación verificable y no un deseo.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('el veredicto contra la inflación se mide en pesos', () => {
+  it('cartera PLANA en dólares con 50 % de devaluación le gana a 20 % de inflación', () => {
+    const rArs = monthlyReturnArs({ ci: 1000, cf: 1000, net: 0, fxPrev: 1000, fx: 1500 })
+    const vs = rArs * 100 - 20
+    expect(vs).toBeCloseTo(30, 6)
+    expect(vs).toBeGreaterThan(0)              // le ganaste
+    expect(0 - 20).toBeLessThan(0)             // lo que decía antes: te ganó
+  })
+
+  it('sin TC en alguna punta devuelve null, no un número', () => {
+    // Un null es "no sé". Caer al retorno en dólares sería volver al bug, y
+    // publicar un 0 sería decir "empataste con la inflación", que es otra
+    // afirmación y sería falsa.
+    expect(monthlyReturnArs({ ci: 1000, cf: 1100, net: 0, fxPrev: 0, fx: 1200 })).toBeNull()
+    expect(monthlyReturnArs({ ci: 1000, cf: 1100, net: 0, fxPrev: 1000, fx: null })).toBeNull()
+  })
+})
+
+describe('el espejo no se puede separar del backend', () => {
+  const py = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), '../../../backend/twr.py'), 'utf8')
+
+  it('la regla existe del lado de Python', () => {
+    expect(py).toContain('def vs_inflacion_ar(')
+    expect(py).toContain('def retorno_en_pesos_pct(')
+  })
+
+  it('sin flujos, los dos lados dan EXACTAMENTE el mismo número', () => {
+    // El backend sólo tiene el porcentaje (Reportes ya lo calculó) y compone:
+    //     1 + r_ars = (1 + r_usd) · (fx1/fx0)
+    // Acá están los valores crudos y se hace el Dietz en pesos, punta por punta.
+    // Con flujo CERO las dos cuentas son la misma identidad, así que tienen que
+    // coincidir al bit. Si alguien cambia una y no la otra, esto se rompe.
+    const ci = 1000, cf = 1100, fxPrev = 1000, fx = 1200
+    const rUsdPct = ((cf - ci) / ci) * 100                    // +10 %
+    const porComposicion = ((1 + rUsdPct / 100) * (fx / fxPrev) - 1) * 100
+    const porDietzArs = monthlyReturnArs({ ci, cf, net: 0, fxPrev, fx }) * 100
+    expect(porDietzArs).toBeCloseTo(porComposicion, 10)
+    expect(porDietzArs).toBeCloseTo(32, 10)
+  })
+
+  it('los dos devuelven "no sé" y no 0 cuando falta el TC', () => {
+    const cuerpo = py.split('def vs_inflacion_ar(')[1].split('\ndef ')[0]
+    expect(cuerpo).toContain('return (None, None)')
+    expect(monthlyReturnArs({ ci: 1000, cf: 1100, net: 0, fxPrev: null, fx: null })).toBeNull()
   })
 })

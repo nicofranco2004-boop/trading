@@ -395,16 +395,36 @@ def _slide_vs_benchmark(twr_user: Optional[float], benchmarks: Optional[dict], y
     }
 
 
-def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float], year: int) -> Optional[dict]:
-    """Sólo aplica cuando hay inflación AR del año disponible. La idea: aún
-    rindiendo positivo en USD, el dato cultural es 'le ganaste a la inflación
-    en ARS'. Lo dejamos opcional."""
+def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float], year: int,
+                        fx_ytd: Optional[tuple] = None) -> Optional[dict]:
+    """"Le ganaste a la inflación AR" — medido SIEMPRE en pesos.
+
+    La idea del slide es el dato cultural: aún rindiendo en dólares, ¿le ganaste
+    a los precios argentinos? Pero la resta se hacía contra `twr_user`, que está
+    medido EN DÓLARES, y la inflación del INDEC está en pesos. Le faltaba la
+    devaluación, que es exactamente lo que separa las dos monedas.
+
+    Medido: el veredicto se daba vuelta en 65 de 186 meses (35 %). Y este slide
+    `shareCard` lo exporta como PNG, así que ese número salía de la app.
+
+    `fx_ytd` es `(TC al cierre del año anterior, TC al cierre del año)`. Sin él no
+    se puede convertir y el slide NO SE PUBLICA — que es mejor que publicar la
+    resta de dos monedas distintas sobre una imagen que el usuario comparte.
+    """
     if twr_user is None or inflation_ytd is None:
         return None
-    delta = twr_user - inflation_ytd
+    import twr as _twr_mod          # `twr` acá adentro es una variable local del caller
+    _fx0, _fx1 = (fx_ytd or (None, None))
+    # El helper trabaja en PUNTOS (2,5 = 2,5 %); acá los dos son FRACCIONES.
+    _ret_ars_pct, _delta_pp = _twr_mod.vs_inflacion_ar(
+        twr_user * 100.0, inflation_ytd * 100.0, fx0=_fx0, fx1=_fx1)
+    if _delta_pp is None:
+        return None
+    twr_user = _ret_ars_pct / 100.0      # lo que se MUESTRA es lo que se restó
+    delta = _delta_pp / 100.0
     sign = '+' if delta >= 0 else '−'
     bars = [
-        {'label': 'Tu cartera', 'value': twr_user, 'highlight': True},
+        {'label': 'Tu cartera (en pesos)', 'value': twr_user, 'highlight': True},
         {'label': f'Inflación AR {year}', 'value': inflation_ytd},
     ]
     if delta >= 0:
@@ -415,7 +435,7 @@ def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float
             'subtitle': f'Tu rendimiento estuvo {sign}{abs(delta) * 100:.2f}pp por encima de la inflación de {year}.',
             'metric': {'value': f'{sign}{abs(delta) * 100:.2f}pp', 'label': 'VS INFLACIÓN AR'},
             'stats': [
-                {'label': 'Tu rendimiento', 'value': f'{"+" if twr_user >= 0 else "−"}{abs(twr_user) * 100:.2f}%'},
+                {'label': 'Tu rendimiento en pesos', 'value': f'{"+" if twr_user >= 0 else "−"}{abs(twr_user) * 100:.2f}%'},
                 {'label': f'Inflación {year}', 'value': f'{inflation_ytd * 100:.2f}%'},
             ],
             'tone': 'positive',
@@ -428,7 +448,7 @@ def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float
         'subtitle': f'Tu rendimiento quedó {abs(delta) * 100:.2f}pp por debajo de la inflación AR.',
         'metric': {'value': f'−{abs(delta) * 100:.2f}pp', 'label': 'VS INFLACIÓN AR'},
         'stats': [
-            {'label': 'Tu rendimiento', 'value': f'{"+" if twr_user >= 0 else "−"}{abs(twr_user) * 100:.2f}%'},
+            {'label': 'Tu rendimiento en pesos', 'value': f'{"+" if twr_user >= 0 else "−"}{abs(twr_user) * 100:.2f}%'},
             {'label': f'Inflación {year}', 'value': f'{inflation_ytd * 100:.2f}%'},
         ],
         'tone': 'negative',
@@ -457,6 +477,7 @@ def build_wrapped(
     behavioral_cards: Optional[List[dict]] = None,
     benchmarks: Optional[dict] = None,
     inflation_ytd: Optional[float] = None,
+    fx_ytd: Optional[tuple] = None,
 ) -> dict:
     """Orquesta los slides. Retorna {year, slides: [...], summary: {...}}.
 
@@ -536,7 +557,7 @@ def build_wrapped(
     if vs_bm:
         slides.append(vs_bm)
 
-    vs_inf = _slide_vs_inflation(twr, inflation_ytd, year)
+    vs_inf = _slide_vs_inflation(twr, inflation_ytd, year, fx_ytd)
     if vs_inf:
         slides.append(vs_inf)
 

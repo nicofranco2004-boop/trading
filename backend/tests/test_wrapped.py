@@ -393,17 +393,47 @@ def test_slide_vs_benchmark_none_when_no_data():
     assert _slide_vs_benchmark(0.10, {}, 2026) is None
 
 
+# F5 — la comparación contra inflación se mide SIEMPRE EN PESOS. `fx_ytd` es el TC
+# de las dos puntas del año; sin él el slide no se publica (ver `_slide_vs_inflation`).
+SIN_DEVALUACION = (1.0, 1.0)
+
+
 def test_slide_vs_inflation_positive():
-    s = _slide_vs_inflation(0.30, 0.20, 2026)
+    s = _slide_vs_inflation(0.30, 0.20, 2026, SIN_DEVALUACION)
     assert s is not None
     assert s['tone'] == 'positive'
     assert 'ganaste' in s['title'].lower()
 
 
 def test_slide_vs_inflation_negative():
-    s = _slide_vs_inflation(0.10, 0.30, 2026)
+    s = _slide_vs_inflation(0.10, 0.30, 2026, SIN_DEVALUACION)
     assert s is not None
     assert s['tone'] == 'negative'
+
+
+def test_la_devaluacion_da_vuelta_el_veredicto():
+    """EL BUG. Cartera PLANA en dólares, inflación 20 %, devaluación 50 %.
+
+    En pesos esa cartera rindió 50 % y le ganó a la inflación por 30pp. El código
+    viejo restaba 20 − 0 y publicaba 'la inflación te ganó por 20pp' sobre una
+    imagen que el usuario comparte. Medido sobre datos reales del INDEC y la serie
+    de dólar, el veredicto se daba vuelta en 65 de 186 meses.
+    """
+    s = _slide_vs_inflation(0.0, 0.20, 2026, (1000.0, 1500.0))
+    assert s is not None
+    assert s['tone'] == 'positive', 'la devaluación sigue sin entrar en la cuenta'
+    assert 'ganaste' in s['title'].lower()
+    # Y lo que MUESTRA es lo que restó: 50 % en pesos, no 0 % en dólares.
+    etiquetas = {st['label']: st['value'] for st in s['stats']}
+    assert 'Tu rendimiento en pesos' in etiquetas
+    assert etiquetas['Tu rendimiento en pesos'].startswith('+50')
+
+
+def test_sin_tc_no_publica():
+    """Sin las dos puntas del TC no se puede convertir, y publicar la resta de dos
+    monedas distintas en una imagen compartible es peor que no publicar el slide."""
+    assert _slide_vs_inflation(0.30, 0.20, 2026) is None
+    assert _slide_vs_inflation(0.30, 0.20, 2026, (None, 1500.0)) is None
 
 
 # ── Build wrapped (integration) ────────────────────────────────────────────
@@ -432,7 +462,8 @@ def test_build_wrapped_complete_year():
         {'code': 'overtrade', 'severity': 'medium', 'title': 'Operás mucho', 'one_liner': '...'},
     ]
     benchmarks = {'sp500_ytd': 0.10, 'merval_ytd': 0.08}
-    out = build_wrapped(2026, monthly, ops, behavioral, benchmarks, inflation_ytd=0.20)
+    out = build_wrapped(2026, monthly, ops, behavioral, benchmarks, inflation_ytd=0.20,
+                        fx_ytd=SIN_DEVALUACION)
 
     assert out['summary']['has_data'] is True
     codes = [s['code'] for s in out['slides']]

@@ -1688,7 +1688,41 @@ def compute_metrics_for_period(
     # incomparable, publicar un "vs benchmark" sería reintroducir el mismo número
     # por la ventana.
     vs_sp500 = (delta_pct - sp500_ret) if (delta_pct is not None and sp500_ret is not None) else None
-    vs_inflation = (delta_pct - inflation_ret) if (delta_pct is not None and inflation_ret is not None) else None
+    # LA COMPARACIÓN CONTRA INFLACIÓN SE HACE SIEMPRE EN PESOS. Antes era
+    # `delta_pct - inflation_ret` a secas, y `delta_pct` sigue la moneda del
+    # selector (se convierte más arriba, en `_pct_puntas_ars`) mientras la
+    # inflación del INDEC está siempre en pesos. Con el selector en dólares eso
+    # restaba unidades distintas: le faltaba justo la devaluación.
+    #
+    # Medido con inflación del INDEC y la serie de dólar reales, sobre una cartera
+    # 100 % en dólares y PLANA: el veredicto se daba vuelta con sólo tocar el
+    # selector en 65 de 186 meses (35 %). En 2024 la misma cartera leía "la
+    # inflación te ganó por 117,7pp" en dólares y por 44,9pp en pesos.
+    #
+    # `twr.vs_inflacion_ar` es LA regla, la misma que usan el Wrapped, el paquete
+    # de la IA y el gráfico de Performance.
+    _ret_ars_infl = None
+    if delta_pct is not None and inflation_ret is not None:
+        if str(moneda).lower() == "ars":
+            # Ya viene medido en pesos por el motor: `_pct_puntas_ars` lo pisó más
+            # arriba. Volver a convertirlo contaría la devaluación dos veces.
+            _ret_ars_infl = delta_pct
+        else:
+            # LA MISMA función que usa la rama de pesos, no una conversión propia:
+            # `_pct_en_pesos` hace el Dietz con cada punta al TC de SU fecha y el
+            # flujo al TC medio geométrico del tramo. Calcular acá la composición
+            # `(1+r)·(fx1/fx0)` sería tener dos motores para el mismo número dentro
+            # de la misma función — y es exactamente así como se desincronizan.
+            _d0_infl = _dia_anterior(period_start)
+            if _d0_infl and _pct_puntas_ars is None:
+                _ret_ars_infl = _pct_en_pesos(
+                    conn, _d0_infl, period_end, start_value, end_value,
+                    deposits, withdrawals)
+            elif _pct_puntas_ars is not None:
+                _ret_ars_infl = _pct_puntas_ars
+    vs_inflation = ((_ret_ars_infl - inflation_ret)
+                    if (_ret_ars_infl is not None and inflation_ret is not None)
+                    else None)
 
     metrics = PeriodMetrics(
         start_value=round(start_value, 2),
@@ -1706,6 +1740,7 @@ def compute_metrics_for_period(
         win_rate=round(win_rate, 1) if win_rate is not None else None,
         vs_sp500_pct=round(vs_sp500, 2) if vs_sp500 is not None else None,
         vs_inflation_pct=round(vs_inflation, 2) if vs_inflation is not None else None,
+        retorno_ars_pct=round(_ret_ars_infl, 2) if _ret_ars_infl is not None else None,
         sp500_return_pct=round(sp500_ret, 2) if sp500_ret is not None else None,
         inflation_pct=round(inflation_ret, 2) if inflation_ret is not None else None,
         basis_incomparable=basis_incomparable,

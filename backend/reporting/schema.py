@@ -82,6 +82,14 @@ class PeriodMetrics:
     vs_inflation_pct: Optional[float]
     sp500_return_pct: Optional[float] = None   # cuánto hizo el S&P en el período
     inflation_pct: Optional[float] = None      # inflación AR del período
+    # El rendimiento CON EL QUE SE HIZO la comparación contra inflación, medido en
+    # PESOS. La inflación del INDEC mide precios argentinos; restársela a un
+    # rendimiento en dólares es restar unidades distintas (le falta la
+    # devaluación). Viaja aparte de `delta_pct` porque ese sigue la moneda del
+    # selector: sin este campo, con el selector en dólares la tarjeta mostraría un
+    # rendimiento y un exceso que no salen el uno del otro. Null cuando no se pudo
+    # convertir — y entonces `vs_inflation_pct` tampoco se publica.
+    retorno_ars_pct: Optional[float] = None
     # AUDIT D-1: true = las dos puntas del período no son comparables (start de
     # la cadena contable, end a mercado) → delta_usd/delta_pct no se publican.
     basis_incomparable: bool = False

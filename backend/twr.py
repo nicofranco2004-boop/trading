@@ -1286,6 +1286,81 @@ MONEDA_USD = "usd"
 MONEDA_ARS = "ars"
 
 
+def retorno_en_pesos_pct(retorno_pct, fx0, fx1):
+    """Un retorno medido en DÓLARES, re-expresado en PESOS. En puntos (2,5 = 2,5 %).
+
+    `1 + r_ars = (1 + r_usd) · (fx1/fx0)` — la misma identidad que `_leg_en_moneda`
+    persigue leg a leg y de la que se aparta, medido sobre la copia de producción,
+    0,003 en el p90.
+
+    Devuelve None si falta cualquiera de las dos puntas del TC: sin devaluación no
+    hay conversión, y publicar el número de dólares con etiqueta de pesos es
+    exactamente el defecto que esto viene a cerrar.
+    """
+    if retorno_pct is None or not fx0 or not fx1:
+        return None
+    try:
+        return ((1 + float(retorno_pct) / 100.0) * (float(fx1) / float(fx0)) - 1) * 100.0
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def vs_inflacion_ar(retorno_pct, inflacion_pct, *, moneda=MONEDA_USD, fx0=None, fx1=None):
+    """"¿Le ganaste a la inflación?" — LA respuesta, medida SIEMPRE en pesos.
+
+    POR QUÉ SIEMPRE EN PESOS
+    ────────────────────────
+    La inflación del INDEC mide precios argentinos, que están en pesos. Restársela
+    a un rendimiento medido en dólares es restar unidades distintas: le falta
+    justo la devaluación, que es lo que separa las dos monedas. Es la misma cuenta
+    que `performance._en_pesos` ya hacía para los índices de precio, sólo que en
+    la otra dirección — ahí el índice se mueve a la moneda de la cartera; acá la
+    cartera se mueve a la moneda del índice, porque la inflación en dólares no
+    existe.
+
+    Medido con inflación del INDEC y la serie de dólar reales, sobre una cartera
+    100 % en dólares y PLANA: el veredicto ("le ganaste" / "te ganó") se daba
+    vuelta con sólo tocar el selector de moneda en 65 de 186 meses — el 35 % —, y
+    en 6 de los últimos 14. En 2024 la misma cartera leía "la inflación te ganó
+    por 117,7pp" en dólares y por 44,9pp en pesos.
+
+    DEVUELVE `(retorno_en_pesos_pct, exceso_pp)`, los dos en puntos, o
+    `(None, None)` cuando no se puede medir. Se devuelve el retorno convertido
+    ADEMÁS del exceso a propósito: las pantallas muestran las dos cosas juntas
+    ("Tu cartera X % · Inflación Y %") y si el X que muestran no es el X del que
+    salió la resta, la tarjeta se contradice sola.
+
+    Cuando `moneda` ya es ARS el retorno viene medido en pesos por el motor y no
+    se toca — ésa es la vía exacta, la conversión es la aproximación.
+
+    ⚠️ CUÁNDO **NO** USAR ESTA FUNCIÓN. Si en el call site tenés los valores
+    CRUDOS (capital inicial, final y flujo), la vía exacta es hacer el Dietz en
+    pesos —`reporting.builder._pct_en_pesos` en el backend, `monthlyReturnArs` en
+    el frontend—, que lleva cada punta al TC de su fecha y el flujo al TC medio
+    geométrico. Reportes usa ésa, justamente porque los tiene. Esta función es
+    para los call sites que sólo tienen el PORCENTAJE ya calculado (el Wrapped y
+    el paquete de la IA componen meses, no legs).
+
+    Los dos caminos coinciden AL BIT cuando el flujo es cero; con aportes queda el
+    residuo intrínseco de Modified Dietz que documenta `_leg_en_moneda` (medido
+    sobre la copia de producción: p90 0,003, máx 0,19). No son dos motores: son la
+    misma identidad con distinta información disponible, y
+    `monthlyReturnArs.test.js` verifica que no se separen.
+    """
+    if retorno_pct is None or inflacion_pct is None:
+        return (None, None)
+    if str(moneda).lower() == MONEDA_ARS:
+        r_ars = float(retorno_pct)
+    else:
+        r_ars = retorno_en_pesos_pct(retorno_pct, fx0, fx1)
+        if r_ars is None:
+            # Sin devaluación no hay comparación honesta. No publicar es mejor que
+            # publicar la resta de dos monedas distintas.
+            return (None, None)
+    return (r_ars, r_ars - float(inflacion_pct))
+
+
+
 def serie_fx(conn, desde: str = None, hasta: str = None):
     """fecha → tipo de cambio del día, para medir la MISMA cartera en pesos.
 
