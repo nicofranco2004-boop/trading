@@ -1856,22 +1856,22 @@ def compute_metrics_for_period(
     sp500_ret = benchmark_return_for_period(bench or {}, period_type, period_start,
                                             period_end, "sp500",
                                             ventana=_bench_ventana, fx=_bench_fx)
-    # ⚠️ LA INFLACIÓN ARGENTINA SÓLO SE COMPARA CONTRA UN RETORNO EN PESOS.
+    # ⚠️ ACÁ HUBO UN GATE PROPIO QUE TAPABA LA INFLACIÓN EN DÓLARES, Y SOBRABA.
     #
-    # La inflación es un fenómeno del PESO. Restarle un retorno medido en dólares
-    # no da un veredicto, da una mezcla de unidades: en 2024 la inflación fue ~118 %
-    # y una cartera en dólares que hizo +22 % aparecería "96 puntos abajo" de algo
-    # contra lo que nunca jugó. Es el mismo error que el resto de la app ya cierra
-    # —`performance.BENCH_EN_ARS` existe por esto— y el año es la superficie donde
-    # más se nota, porque es el plazo en que la brecha se acumula.
+    # El problema es real —restarle la inflación del INDEC, que mide pesos, a un
+    # rendimiento medido en dólares es restar unidades distintas— pero F5 ya lo
+    # resolvió mejor y para TODAS las superficies: `twr.vs_inflacion_ar` convierte
+    # el retorno del usuario a pesos y hace la comparación ahí, en vez de esconder
+    # el veredicto. Se decidió con el dueño y está unos renglones más abajo.
     #
-    # En dólares el comparable es el S&P; en pesos aparecen los dos. El mes queda
-    # como estaba: es un número publicado hace meses y moverlo es otra decisión.
-    _infl_aplica = (period_type != "year") or (str(moneda).lower() == "ars")
-    inflation_ret = (benchmark_return_for_period(bench or {}, period_type, period_start,
-                                                 period_end, "inflation_ar",
-                                                 ventana=_bench_ventana)
-                     if _infl_aplica else None)
+    # Dejar los dos no era redundante: era ROMPER el de F5. Este gate le pasaba
+    # `inflation_ret = None` para el año en dólares, así que `vs_inflacion_ar` no
+    # tenía con qué comparar y el veredicto desaparecía justo donde ellos habían
+    # decidido publicarlo. Dos arreglos del mismo problema se unifican en uno, y el
+    # que queda es el que cubre más.
+    inflation_ret = benchmark_return_for_period(bench or {}, period_type, period_start,
+                                                period_end, "inflation_ar",
+                                                ventana=_bench_ventana)
     # Sin `delta_pct` no hay con qué comparar — y si lo tapamos por base
     # incomparable, publicar un "vs benchmark" sería reintroducir el mismo número
     # por la ventana.

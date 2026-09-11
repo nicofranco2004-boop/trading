@@ -19,13 +19,14 @@ import { pctSigned } from '../utils/format'
 
 // El artículo viaja aparte del nombre: el chip dice "vs el S&P 500" y el tooltip
 // "Por encima DEL S&P 500". Con el artículo pegado al nombre salía "de el S&P 500".
-function Chip({ nombre, articulo, pp }) {
+function Chip({ nombre, articulo, pp, detalle }) {
   const gana = pp >= 0
   const de = articulo === 'el' ? 'del' : 'de la'
   return (
     <span
       className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1)} puntos porcentuales`}
+      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1)} puntos porcentuales`
+             + (detalle ? `. ${detalle}` : '')}
     >
       vs {articulo} {nombre}
       <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
@@ -83,11 +84,16 @@ export default function YearReturnLine({ modo = 'certero', className = '' }) {
           {current.vs_sp500_pct != null && (
             <Chip nombre="S&P 500" articulo="el" pp={current.vs_sp500_pct} />
           )}
-          {/* La inflación sólo aparece en PESOS: restarle a un retorno en dólares
-              la inflación argentina no es un veredicto, es una mezcla de unidades.
-              El backend ya no la publica en dólares — esto es su espejo. */}
+          {/* El veredicto contra la inflación se calcula SIEMPRE en pesos (el backend
+              convierte el retorno con `twr.vs_inflacion_ar`), así que aparece en las
+              dos monedas. En dólares, el globo aclara contra qué número se restó. */}
           {current.vs_inflation_pct != null && (
-            <Chip nombre="inflación" articulo="la" pp={current.vs_inflation_pct} />
+            <Chip
+              nombre="inflación" articulo="la" pp={current.vs_inflation_pct}
+              detalle={moneda !== 'ars' && current.retorno_ars_pct != null
+                ? `Se compara en pesos: tu cartera hizo ${current.retorno_ars_pct.toFixed(2)} % en pesos y la inflación ${current.inflation_pct?.toFixed(1)} %`
+                : null}
+            />
           )}
         </div>
       )}

@@ -211,14 +211,15 @@ function KpiCell({ label, value, sub, tone, first }) {
 // `pp` es el EXCESO en puntos porcentuales (cartera − benchmark), no el retorno
 // del índice. Sin dato no se dibuja nada: un "—" por año ocupa lugar y no dice
 // más que el vacío.
-function Veredicto({ nombre, articulo, pp }) {
+function Veredicto({ nombre, articulo, pp, detalle }) {
   if (pp == null) return null
   const gana = pp >= 0
   const de = articulo === 'el' ? 'del' : 'de la'
   return (
     <span
       className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1)} puntos porcentuales`}
+      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1)} puntos porcentuales`
+             + (detalle ? `. ${detalle}` : '')}
     >
       vs {nombre}
       <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
@@ -464,7 +465,19 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                 </div>
                 <div className="flex flex-col gap-1.5 items-end min-w-[132px]">
                   <Veredicto nombre="S&P 500" articulo="el" pp={resumen?.vs_sp500_pct} />
-                  <Veredicto nombre="inflación" articulo="la" pp={resumen?.vs_inflation_pct} />
+                  {/* ⚠️ LA INFLACIÓN SE COMPARA SIEMPRE EN PESOS (ver `twr.vs_inflacion_ar`):
+                      restarle a un retorno en dólares un índice que mide precios
+                      argentinos es restar unidades distintas. Cuando el usuario está
+                      mirando en dólares, el veredicto sale de SU retorno convertido a
+                      pesos — un número que no está en pantalla —, así que el globo lo
+                      dice: si no, la resta que el usuario puede hacer con lo que ve no
+                      le va a dar. */}
+                  <Veredicto
+                    nombre="inflación" articulo="la" pp={resumen?.vs_inflation_pct}
+                    detalle={!enPesos && resumen?.retorno_ars_pct != null
+                      ? `Se compara en pesos: tu cartera hizo ${resumen.retorno_ars_pct.toFixed(2)} % en pesos y la inflación ${resumen.inflation_pct?.toFixed(1)} %`
+                      : null}
+                  />
                 </div>
               </div>
               <MetricasDelAno resumen={resumen} months={months} money={money} enPesos={enPesos} />

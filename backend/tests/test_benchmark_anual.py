@@ -219,20 +219,39 @@ class AnualIntegracionTest(_Base):
         self.assertAlmostEqual(m.sp500_return_pct, 10.0, places=2)
         self.assertAlmostEqual(m.vs_sp500_pct, round(m.delta_pct - 10.0, 2), places=2)
 
-    def test_en_dolares_NO_se_compara_contra_la_inflacion_argentina(self):
-        """La inflación es un fenómeno del PESO. Restarle un retorno medido en
-        dólares no da un veredicto, da una mezcla de unidades: en 2024 daría
-        "96 puntos abajo" de algo contra lo que la cartera nunca jugó."""
-        self.ano_medido()
-        m = self.metrics("year", "2025-01-01", "2025-12-31", moneda="usd")
-        self.assertIsNone(m.inflation_pct)
-        self.assertIsNone(m.vs_inflation_pct)
+    def test_contra_la_inflacion_se_compara_SIEMPRE_EN_PESOS(self):
+        """⚠️ ESTE TEST DEFENDÍA OTRA DECISIÓN Y SE CAMBIÓ A PROPÓSITO.
 
-    def test_en_pesos_SI(self):
+        Pedía que en dólares NO se publicara el "vs inflación", para no restar
+        unidades distintas (la inflación del INDEC mide pesos). El problema es
+        real, pero F5 lo resolvió mejor y para todas las superficies: en vez de
+        esconder el veredicto, `twr.vs_inflacion_ar` lleva el retorno del usuario
+        a pesos y compara ahí. Decidido con el dueño.
+
+        Mantener las dos soluciones no era redundante: el gate de acá le pasaba
+        `inflation_ret = None` y le rompía la suya justo para el año.
+
+        Lo que se fija ahora: el veredicto EXISTE en las dos monedas, y sale de
+        comparar el retorno EN PESOS contra la inflación."""
+        self.ano_medido()
+        usd = self.metrics("year", "2025-01-01", "2025-12-31", moneda="usd")
+        # Lo que fija este test es que el gate se fue: la inflación del período se
+        # publica también en dólares, para que `vs_inflacion_ar` tenga con qué
+        # comparar. El exceso en sí necesita la serie de dólar por fecha —sin ella
+        # se abstiene, que es lo correcto— y eso lo cubre `test_vs_inflacion_en_pesos`
+        # con series reales; esta base de laboratorio no las tiene.
+        self.assertIsNotNone(usd.inflation_pct, "el gate viejo escondía esto en dólares")
+        self.assertAlmostEqual(usd.inflation_pct, (1.02 ** 12 - 1) * 100, places=1)
+
+    def test_en_pesos_el_retorno_NO_se_vuelve_a_convertir(self):
+        """Con el selector ya en pesos, el motor midió en pesos: convertirlo otra
+        vez sería contar la devaluación dos veces. `retorno_ars_pct` tiene que ser
+        el mismo `delta_pct` que ya se publica."""
         self.ano_medido()
         m = self.metrics("year", "2025-01-01", "2025-12-31", moneda="ars")
         self.assertIsNotNone(m.inflation_pct)
         self.assertAlmostEqual(m.inflation_pct, (1.02 ** 12 - 1) * 100, places=1)
+        self.assertAlmostEqual(m.retorno_ars_pct, m.delta_pct, places=2)
 
     def test_sin_ventana_declarada_NO_hay_veredicto(self):
         """La contabilidad con agujeros no compone y el motor no publica: queda
@@ -376,15 +395,18 @@ class EndpointAniosTest(_Base):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["years"], [])
 
-    def test_en_pesos_aparece_la_inflacion_y_en_dolares_no(self):
+    def test_el_veredicto_contra_la_inflacion_viaja_en_las_dos_monedas(self):
+        """Y con él, el retorno convertido a pesos del que salió la resta: sin eso
+        la pantalla mostraría un retorno y un veredicto que no se corresponden."""
         self.ano_medido()
-        def infl(moneda):
-            fila = next(a for a in self.client.get(
+        def fila(moneda):
+            return next(a for a in self.client.get(
                 f"/api/reports/years?modo=certero&moneda={moneda}").json()["years"]
                 if a["year"] == 2025)
-            return fila["inflation_pct"]
-        self.assertIsNone(infl("usd"))
-        self.assertIsNotNone(infl("ars"))
+        for moneda in ("usd", "ars"):
+            f = fila(moneda)
+            self.assertIsNotNone(f["inflation_pct"], f"falta la inflación en {moneda}")
+            self.assertIn("retorno_ars_pct", f, f"falta el retorno en pesos en {moneda}")
 
 
 class CacheDeBenchmarksTest(unittest.TestCase):

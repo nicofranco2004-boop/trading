@@ -34826,6 +34826,11 @@ def reports_years(
                     "vs_sp500_pct": m.vs_sp500_pct,
                     "inflation_pct": m.inflation_pct,
                     "vs_inflation_pct": m.vs_inflation_pct,
+                    # El retorno del usuario CONVERTIDO A PESOS, que es contra lo que
+                    # se restó la inflación (ver `twr.vs_inflacion_ar`). Viaja para que
+                    # la pantalla pueda mostrar los dos números de la misma resta: si
+                    # muestra un retorno y el veredicto salió de otro, se contradice sola.
+                    "retorno_ars_pct": m.retorno_ars_pct,
                     "deposits": m.deposits,
                     "withdrawals": m.withdrawals,
                     "realized_pnl": m.realized_pnl,
