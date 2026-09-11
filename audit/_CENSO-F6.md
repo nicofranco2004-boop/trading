@@ -326,3 +326,110 @@ Queda como sospecha, no como hallazgo.
 es observable — un test sobre el veredicto pasa igual midiendo el tramo
 equivocado, que fue exactamente lo que pasó auditando esto". **Ningún lugar del
 backend los escribe y ninguno del frontend los lee** (grep: cero). C12.
+
+---
+
+# Auditoría completa pre-deploy (pedida por el dueño)
+
+Lógica, cálculos, palabras e integridad con el resto de la app. **Dos bugs más, los
+dos EN PRODUCCIÓN, ninguno mío.**
+
+## 🔴 1. Un tipo de cambio NEGATIVO cruzaba el guard entero
+
+Batería de 22 casos sobre `retorno_bench_en_moneda`, incluidos los bordes hostiles.
+Veinte pasaron. Los dos que no:
+
+    retorno_en_pesos_pct(2,0 %, fx0=−1000, fx1=1200)   →  −222,4 %
+    vs_inflacion_ar(10 %, 5 %, fx0=−1000, fx1=1200)    →  (−232,0 · −237,0 pp)
+
+El guard era `not fx0 or not fx1` — que pregunta *"¿tiene valor?"* y no *"¿es un
+tipo de cambio?"*. `not (-1000)` es `False`, así que un negativo pasaba derecho.
+
+**Es exactamente la corrección que `295b3d3e` (F5) hizo en el guard de al lado**
+—"la guarda del TC era 'tiene valor' y no 'es positivo'"— y que a esta función no
+había llegado. Un fix correcto aplicado a un call site de dos: C1 con nombre y
+apellido. Y `vs_inflacion_ar` **ya está deployado** con el agujero.
+
+Trampa aritmética que lo hacía difícil de ver: con las DOS puntas negativas el
+cociente se normaliza solo y el número sale bien. El defecto sólo aparece cuando
+**una sola** de las dos está rota — que es justo lo que produce una fuente con
+errores, y la de este repo los tiene documentados (45 % de spread, 73 días con la
+compra por encima de la venta).
+
+✅ Arreglado en la RAÍZ (`twr.retorno_en_pesos_pct`), que cubre a los cuatro
+call sites de una vez.
+
+## 🔴 2. Un TERCER call site del bug del S&P, en la pantalla nueva del año
+
+`/api/reports/years` publica un tramo PARCIAL cuando el año completo no se puede
+medir ("+2,15 % desde el 30 de junio"). Ese `parcial_pct` sale de
+`twr.curva_indexada`, que recibe `moneda` cuatro líneas antes y devuelve **pesos**
+con el selector en Pesos. El S&P contra el que se restaba se pedía **sin `fx` ni
+`moneda`**, o sea en dólares.
+
+MEDIDO con la serie del tramo (S&P 100 → 110, el peso valiendo la mitad):
+
+    S&P que se restaba (dólares)   =  10,0 %
+    S&P que corresponde (pesos)    = 120,0 %
+
+**110 puntos regalados al veredicto**, en el número que esa pantalla publica
+*justo cuando* el del año completo no está disponible. Es código de hoy de la otra
+sesión, **ya deployado**.
+
+✅ Arreglado, y con un **guard estructural que lee código**: verifica que todo
+caller de producción de `benchmark_entre_fechas` / `benchmark_return_for_period`
+declare `moneda`. Contra el código viejo señala exactamente `main.py:34820`.
+
+Tres call sites del mismo patrón en la misma pantalla, dos con el arreglo y uno
+sin él — la forma exacta de C1, otra vez.
+
+## 3. Todas mis citas de número de línea estaban corridas
+
+Escribí `:1544`, `:238`, `:1486`, `:1760`, `:1762`. Después del merge, `:1544` es
+`:1811` y `:238` es `:302`. **Ninguna apuntaba a lo que decía.** Es el mismo
+problema que el handoff documenta del mapa ("~53 tenían el número de línea
+corrido"), producido en una sola sesión.
+
+✅ Reemplazadas por nombres de símbolo, que no se corren.
+
+## 4. Un comentario de F5 que quedó incompleto
+
+Decía que las superficies del veredicto "ya se migraron … falta este gráfico",
+hablando sólo de la inflación. Tras este trabajo la pata del S&P tampoco está
+pendiente, y quien lo leyera iba a buscar un fix ya hecho. ✅ Aclarado.
+
+## 5. Integridad con el resto de la app — verificada, sin sorpresas
+
+Censo de todo lo que consume los campos que cambié (`vs_sp500_pct`,
+`sp500_return_pct`, `retorno_ars_pct`, `delta_pct`):
+
+| consumidor | moneda | efecto |
+|---|---|---|
+| `/api/reports` (timeline) | propaga `moneda` | ✅ correcto |
+| `/api/reports/years` | propaga `moneda` | ✅ correcto |
+| `reporting/timeline.py` (mes y semana) | propaga `moneda` | ✅ correcto |
+| `reporting/detectors.py` (la frase narrativa) | usa los campos del reporte | ✅ ahora consistente |
+| `ai/builders/monthly.py` → `monthly_insight.py` | **sin `moneda`** → dólares | ✅ no lo afecta |
+| `ai/builders/reports.py` | calcula el suyo, todo en USD | ✅ no lo afecta |
+| `advisor_brief.py` (el mail del asesor) | no los usa | ✅ |
+| `YearReturnLine.jsx` (pantalla nueva) | pide al backend, **no convierte** | ✅ sin doble conversión |
+| `MonthCard.jsx` / `Reports.jsx` | muestran lo que viene | ✅ |
+| `demo.js` | números inventados para la demo | — no pasa por el backend |
+
+La frase de `detectors.py` ("Tu portfolio: X %. S&P 500: Y %. Diferencia: Z
+puntos") ahora sale con los tres números en la misma moneda. Antes, en Pesos,
+decía `+26,8 %` / `+104,0 %` / `−77,2 puntos`: aritméticamente consistente y
+enteramente falsa.
+
+**Anotado, no arreglado**: esa frase no dice en qué moneda está. Hoy el selector
+global está a la vista y es el mismo diseño que el resto de la app, así que no se
+tocó — pero `metrics.moneda` viaja al lado por si se decide decirlo.
+
+## 6. Lo que NO es un problema, verificado
+
+- `moneda` con espacios (`" ars "`) cae a dólares en silencio. **No alcanzable
+  desde la app**: el frontend manda literales generados por código
+  (`currency === 'ARS' ? 'ars' : 'usd'`). Y "arreglarlo" sólo acá lo dejaría
+  inconsistente con los otros cinco lugares que usan el mismo patrón — sería
+  crear justo la divergencia que F6 viene a cerrar.
+- Mayúsculas (`"ARS"`) sí funcionan. Verificado en la batería.

@@ -5,8 +5,8 @@ EL BUG, y por qué daba vuelta DOS veredictos a la vez
 Para el año, `delta_pct` tiene tres fuentes posibles y sólo dos estaban en la
 moneda del selector:
 
-  · `_pct_puntas_ars` (:1544)          → en pesos ✅
-  · el motor `curva_indexada` (:1486)  → recibe `moneda=`, en pesos ✅
+  · `_pct_puntas_ars`                  → en pesos ✅
+  · el motor `curva_indexada`          → recibe `moneda=`, en pesos ✅
   · la COMPOSICIÓN de `monthly_entries` → en DÓLARES ❌, y PISA a las otras
 
 `monthly_entries` lleva la contabilidad en dólares, así que el producto de los

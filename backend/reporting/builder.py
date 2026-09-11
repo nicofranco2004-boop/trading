@@ -1678,8 +1678,9 @@ def compute_metrics_for_period(
                 #
                 # `monthly_entries` lleva la contabilidad en dólares, así que el
                 # producto de los Dietz mensuales es un retorno en dólares. Treinta
-                # líneas más abajo (:1760) pisa a `delta_pct` — que para el
-                # selector en Pesos venía de `_pct_puntas_ars` (:1544), medido en
+                # líneas más abajo pisa a `delta_pct` (la rama
+                # `period_type == "year" and year_twr_pct is not None`) — que para
+                # el selector en Pesos venía de `_pct_puntas_ars`, medido en
                 # pesos. El selector decía Pesos y el número era el de dólares.
                 #
                 # MEDIDO sobre una cartera plana en dólares, un año con 100 % de
@@ -1698,7 +1699,7 @@ def compute_metrics_for_period(
                 #
                 # LAS PUNTAS SON LAS DE `_ventana_comp`, la ventana que esta
                 # composición REALMENTE cubre — la misma que se le pasa al
-                # benchmark del año (:1762). Usar el año calendario mediría el TC
+                # benchmark del año. Usar el año calendario mediría el TC
                 # de un tramo distinto del que mide el rendimiento, y entonces la
                 # devaluación no se cancelaría contra la del índice.
                 if str(moneda).lower() == "ars":
@@ -1967,7 +1968,7 @@ def compute_metrics_for_period(
     #
     # ⚠️ EL MES TAMBIÉN (F6). La conversión nació para el año y al mes le faltaba,
     # así que con el selector en Pesos la tarjeta mensual restaba un `delta_pct`
-    # que YA lleva la devaluación adentro (:1544 lo pisa con `_pct_puntas_ars`)
+    # que YA lleva la devaluación adentro (lo pisa `_pct_puntas_ars`)
     # menos un S&P que no. MEDIDO por `compute_metrics_for_period`, sobre una
     # cartera 100 % en dólares y PLANA, 20 % de devaluación y un S&P de +2 %:
     # publicaba "vs S&P 500 · +18,0 pp · le ganaste" donde la verdad es −2,4.

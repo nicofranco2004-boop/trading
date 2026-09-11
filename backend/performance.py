@@ -37,9 +37,16 @@ BENCH_EN_ARS = ("merval", "uva", "plazo_fijo", "inflation_ar")
 # Las cuatro superficies que publican el VEREDICTO como frase ("le ganaste a la
 # inflación") ya se migraron a `twr.vs_inflacion_ar`: Reportes (backend y
 # frontend), el Wrapped y el paquete de la IA. Falta este gráfico, que además
-# tiene su propio motor de benchmark duplicado en `Insights.jsx:1582` — o sea que
+# tiene su propio motor de benchmark duplicado en `Insights.jsx` — o sea que
 # arreglarlo acá solo no alcanza. Es de los "6 lugares que comparan contra un
 # índice sin pasar por performance.py" que la tanda F6 viene a unificar.
+#
+# ⚠️ ESO ES DE LA INFLACIÓN. LA PATA DEL S&P YA NO ESTÁ PENDIENTE (F6). Los tres
+# call sites que restan un índice de PRECIO del rendimiento del usuario —el mes y
+# el año de Reportes, y el tramo parcial de `/api/reports/years`— ahora piden la
+# conversión a `retorno_bench_en_moneda` (acá abajo), que lee esta misma tabla.
+# Lo que sigue pendiente es el GRÁFICO, por el motivo de arriba: no es la cuenta,
+# es el rótulo del eje.
 
 
 def _ym(fecha: str) -> str:
@@ -216,7 +223,8 @@ def retorno_bench_en_moneda(bench_pct, bench_key, *, moneda=twr.MONEDA_USD,
     es −2,0.
 
     Quién decide la moneda de cada índice es `BENCH_EN_ARS`, la MISMA tabla que
-    usa el motor del gráfico (`performance`, :238). No hay una segunda lista.
+    usa el motor del gráfico (la rama `moneda == MONEDA_ARS` de `performance`,
+    que llama a `_en_pesos`). No hay una segunda lista.
 
     DEVUELVE `None` —y entonces el caller no publica— en los dos casos en que no
     se puede convertir:
