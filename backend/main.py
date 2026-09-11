@@ -5404,24 +5404,50 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_effective_user)):
 
 
 # ─── Phase C: FX history endpoint ────────────────────────────────────────────
+#
+# `days` de /api/fx-rates es una ventana en DÍAS CORRIDOS, y este es su tope: 100
+# años. No es un número de payload — es el "traeme todo" explícito. La serie real
+# arranca en 2011 (5.634 ruedas, 254 KB de JSON) y crece ~365 filas por año, así
+# que el tope nunca es la restricción que manda: la que manda es la tabla.
+_FX_DIAS_TODO = 36500
+
 @app.get("/api/fx-rates")
 def get_fx_rates(
-    days: int = 3650,
+    days: int = _FX_DIAS_TODO,
     uid: int = Depends(get_effective_user),
 ):
-    """Devuelve la historia de blue diaria. Default 10 años (mismo cap que
-    snapshots). El frontend la fetcha una vez por session y la cachea en
-    memoria para hacer conversión a ARS por fecha histórica.
+    """Devuelve la historia de blue diaria. El frontend la fetcha una vez por
+    session y la cachea en memoria para hacer conversión a ARS por fecha
+    histórica.
+
+    `days` recorta por FECHA — días corridos hacia atrás desde hoy. El default
+    es la serie ENTERA, que es lo que necesita el único consumidor
+    (`useFxHistory`): tiene que poder convertir CUALQUIER fecha en la que el
+    usuario tenga una operación, y esa fecha puede ser más vieja que cualquier
+    ventana que elijamos.
+
+    ⚠️ ANTES ESTO CORTABA POR CANTIDAD DE FILAS (`LIMIT ?`), NO POR FECHA.
+    El front pedía `days=3650` creyendo pedir diez años y recibía las últimas
+    3.650 *ruedas*. Como la serie tiene ruedas y no días corridos, la ventana
+    real arrancaba en 2016-06-09 con datos desde 2011-01-03: 1.984 días de
+    cotización que existían en la tabla y NO se entregaban. Toda fecha anterior
+    caía al dólar de hoy sin avisar — medido, ×389 en el arranque de la serie y
+    ×111 justo en el borde.
+
+    Y el cap importa tanto como el criterio: filtrar por fecha manteniendo 3650
+    deja el corte en el mismo 2016 y no arregla nada. El tope tiene que ser más
+    largo que la serie, no al revés.
 
     Shape:
         [{ "date": "2025-12-31", "blue": 1450.0 }, ...]  (ordenado asc)
     """
-    days = max(1, min(int(days or 3650), 3650))
+    days = max(1, min(int(days or _FX_DIAS_TODO), _FX_DIAS_TODO))
+    desde = (_hoy_art_date() - timedelta(days=days)).isoformat()
     with db_abierta() as conn:
         rows = conn.execute(
             "SELECT date, blue_venta, mep_venta FROM fx_rates_daily "
-            "ORDER BY date DESC LIMIT ?",
-            (days,),
+            "WHERE date >= ? ORDER BY date DESC",
+            (desde,),
         ).fetchall()
     # Reverse to ascending order — el frontend espera de viejo → nuevo.
     # `mep` se agrega ADITIVAMENTE: los consumidores existentes siguen leyendo `blue`
