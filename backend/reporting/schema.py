@@ -78,6 +78,14 @@ class PeriodMetrics:
     # narrativa decía "quedaste 2,5 puntos por encima del S&P 500" en un mes de
     # −63,4%. El retorno del benchmark ahora vive en `sp500_return_pct` /
     # `inflation_pct`. Null si no se puede comparar (sin `delta_pct`).
+    #
+    # ⚠️ LA "CARTERA" DE CADA UNO NO ES LA MISMA (F5). `vs_sp500_pct` se mide en
+    # la moneda del selector, igual que `delta_pct`. `vs_inflation_pct` se mide
+    # SIEMPRE EN PESOS, porque la inflación del INDEC mide precios argentinos y
+    # restársela a un rendimiento en dólares deja afuera la devaluación. El
+    # rendimiento del que sale esa resta viaja en `retorno_ars_pct`: con el
+    # selector en dólares NO es `delta_pct`, y quien muestre los dos juntos tiene
+    # que usar ése.
     vs_sp500_pct: Optional[float]
     vs_inflation_pct: Optional[float]
     sp500_return_pct: Optional[float] = None   # cuánto hizo el S&P en el período

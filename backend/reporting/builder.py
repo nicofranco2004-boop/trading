@@ -1699,8 +1699,14 @@ def compute_metrics_for_period(
     # selector en 65 de 186 meses (35 %). En 2024 la misma cartera leía "la
     # inflación te ganó por 117,7pp" en dólares y por 44,9pp en pesos.
     #
-    # `twr.vs_inflacion_ar` es LA regla, la misma que usan el Wrapped, el paquete
-    # de la IA y el gráfico de Performance.
+    # LA REGLA VIVE EN `twr.vs_inflacion_ar`, con su docstring. Acá NO se la llama:
+    # ahí sólo hay el porcentaje ya calculado y se compone `(1+r)·(fx1/fx0)`,
+    # mientras que en este punto están los valores crudos y la vía exacta es
+    # `_pct_en_pesos` (abajo). Los dos caminos coinciden al bit con flujo cero y
+    # difieren por el residuo intrínseco de Modified Dietz cuando hay aportes.
+    # `vs_inflacion_ar` la usan el Wrapped y el paquete de la IA, que componen
+    # meses y no legs. El gráfico de Performance NO está migrado — ver la nota en
+    # `performance.py`.
     _ret_ars_infl = None
     if delta_pct is not None and inflation_ret is not None:
         if str(moneda).lower() == "ars":
@@ -1713,13 +1719,22 @@ def compute_metrics_for_period(
             # flujo al TC medio geométrico del tramo. Calcular acá la composición
             # `(1+r)·(fx1/fx0)` sería tener dos motores para el mismo número dentro
             # de la misma función — y es exactamente así como se desincronizan.
+            #
+            # Sólo se paga en períodos MENSUALES: `benchmark_return_for_period`
+            # devuelve None para semana y día, así que `inflation_ret` es None y
+            # ni se entra acá. Es el mismo costo que la vista en pesos ya paga
+            # hoy por cada mes (`_pct_puntas_ars`, más arriba), no uno nuevo.
+            # Medido con la serie de FX del tamaño real (5.634 filas): 3,5 ms por
+            # mes, 127 ms un timeline entero de 36 meses en SQLite. `serie_fx` lee
+            # la serie completa en cada llamada a propósito (necesita el arrastre
+            # del último hábil previo); si esto alguna vez molesta, lo que
+            # corresponde es memoizarla por request como `pair_cache`, no volver a
+            # calcular el número de otra manera.
             _d0_infl = _dia_anterior(period_start)
-            if _d0_infl and _pct_puntas_ars is None:
+            if _d0_infl:
                 _ret_ars_infl = _pct_en_pesos(
                     conn, _d0_infl, period_end, start_value, end_value,
                     deposits, withdrawals)
-            elif _pct_puntas_ars is not None:
-                _ret_ars_infl = _pct_puntas_ars
     vs_inflation = ((_ret_ars_infl - inflation_ret)
                     if (_ret_ars_infl is not None and inflation_ret is not None)
                     else None)
