@@ -1,4 +1,4 @@
-# Handoff — la auditoría de cálculo de Rendi, y por qué la próxima es F4
+# Handoff — la auditoría de cálculo de Rendi, y por qué la próxima es F5
 
 > **Si sos la sesión que arranca: leé esto entero antes de tocar código.** Es autocontenido.
 > No hace falta abrir el mapa de 3,4 MB ni los 14 informes de detalle salvo que el trabajo
@@ -9,15 +9,20 @@
 ## 0 · Lo primero, en treinta segundos
 
 Rendi tiene una auditoría de cálculo con **222 hallazgos**, que se ejecuta en **siete tandas**
-(F1 a F7). **F1, F2 y F3 están hechas y deployadas.**
+(F1 a F7). **F1, F2, F3 y F4 están hechas y deployadas.**
 
-➡️ **La que sigue es F4, «los guards que ya existen, en todos los lectores».**
+➡️ **La que sigue es F5, «una sola cotización, una sola política de faltantes».**
 
-Y F4 tiene una particularidad que hay que entender antes de empezar: **le quedan tres puntos y
-los tres están frenados a propósito**, esperando una decisión del dueño. No son difíciles de
-programar — son difíciles de *decidir*, y la decisión no es técnica. **Tu primer trabajo en F4
-no es escribir código: es hacerle tres preguntas al dueño de una forma que pueda contestar.**
-La §6 te dice cuáles y cómo.
+F5 tiene la misma particularidad que tuvo F4, y conviene saberla antes de empezar: **su punto
+más grande no es programar, es decidir.** "Una sola política de faltantes" —qué hace la app
+cuando no hay precio, no hay tipo de cambio o no se publicó el índice— es una decisión de
+producto, y hasta que esté tomada cualquier código que escribas es una apuesta. La §6 te dice
+qué preguntar y con qué datos.
+
+⭐ **Y lo más importante que dejó F4, que no está en ningún informe: auditar la tanda contra sí
+misma encontró 12 defectos propios que la suite en verde no mostraba.** Dos estaban en commits
+ya ofrecidos para deploy; uno aplastaba un 50 % a 0,03 % en la curva del Dashboard. **Reservá
+tiempo para auditarte al final. No es opcional y no lo cubre la suite.** La §9 explica cómo.
 
 **Antes de tocar nada:**
 
@@ -145,14 +150,14 @@ que la causa raíz deje de reproducirse.
 | **F1** | Que la app **deje de escribir mal**. Un número mal mostrado se arregla el día que se toca el código; uno mal **escrito** queda para siempre | ✅ **hecha y deployada** |
 | **F2** | Que **la IA y las pantallas no mientan**: cuatro números que se publicaban mal hacia afuera | ✅ **hecha, deployada y cerrada** |
 | **F3** | **Un solo calendario.** Convivían tres relojes dentro del mismo endpoint | ✅ **hecha y deployada** (2026-09-09) |
-| **F4** | Los guards que **ya están escritos** pero no llegaron a todos los lectores | ➡️ **LA QUE SIGUE** — 3 de 6; los 3 que faltan **esperan una decisión del dueño** |
-| **F5** | **Una sola cotización y una sola política de faltantes** | 🟡 lo más grave ✅ deployado (el CER); el resto pendiente, 4 a 6 días |
+| **F4** | Los guards que **ya están escritos** pero no llegaron a todos los lectores | ✅ **hecha y deployada** (2026-09-10), 6 de 6 |
+| **F5** | **Una sola cotización y una sola política de faltantes** | ➡️ **LA QUE SIGUE** — el CER ✅ ya deployado; el resto, 4 a 6 días, y **arranca con una decisión** |
 | **F6** | **Terminar las migraciones abiertas.** Un solo motor por concepto | ⬜ pendiente, 1 a 2 semanas |
 | **F7** | **El modelo de datos.** Es diseño, no arreglos | ⬜ proyecto aparte |
 
 ---
 
-## 5 · Las tres que ya están hechas
+## 5 · Las cuatro que ya están hechas
 
 ### F1 ✅ — «que deje de escribir mal»
 
@@ -218,141 +223,134 @@ habría que construirlo.
 
 Detalle completo: `audit/_HANDOFF-TANDAS.md` §5-F3.
 
----
+⚠️ **F3 no terminó, y su guard no lo ve.** Unificó la *definición* del día argentino y dejó un
+test que impide re-copiarla — eso funciona. Pero ese test busca la fórmula (`hours = 3`), **no
+el uso del reloj equivocado**, que es otra cosa. Quedan **~40 sitios de producción** pidiéndole
+la fecha a `date.today()` / `utcnow()` (en Railway los dos son UTC). La mayoría no decide un
+borde. **Uno sí**: `importing/persister.py:1264` borra las fotos con fecha futura con el reloj
+malo, así que entre las 21:00 y las 00:00 **no borra justo la de mañana, que es la única que
+existe para borrar** — y el limpiador de `main.py` sí usa el reloj bueno. Además, 33 archivos de
+test siembran fechas con UTC; dos de ellos ponían la suite en rojo sola de noche (arreglados en
+`a1bceb12`). Ver `memory/project_f3_relojes_pendientes`.
 
-## 6 · ➡️ F4 — «los guards que ya existen, en todos los lectores»
+### F4 ✅ — «los guards que ya existen, en todos los lectores» (2026-09-10, `9ecb35f1` + `48b934f9`)
 
-**Es toda la causa C7.** Y es la tanda de mejor relación entre resultado y esfuerzo, porque
-**el código de los guards ya está escrito**: sólo no llegó a todos los lectores.
+Toda la causa C7, 6 de 6. Las tres decisiones que estaban frenadas las tomó el dueño:
 
-### Qué es un "guard" acá
-
-Una cota de cordura. El código de Rendi tiene varias, escritas cada una cuando algo explotó:
-"un valor de mercado que se va más de ×50 del costo no se publica", "un monto no finito no
-entra", "un porcentaje sobre una base ≤ 0 no es 0, es indefinido". El problema no es que falten:
-es que **cada una vive en uno o dos lectores y no en los demás**.
-
-### Los 3 que ya están hechos y deployados
-
-| guard | qué frena |
+| punto | qué se hizo |
 |---|---|
-| `trustMktValue` con 0 y negativos | una posición valiendo **menos que nada**, o NaN |
-| `_FINITE_BOUND` en `PositionIn` | `invested = 1e308` entrando y llegando a `capital_final` |
-| Validación de broker existente en `positions` | fila huérfana → pérdida fantasma de −US$ 9.999 |
+| `trustMktValue` con 0/negativos, `_FINITE_BOUND`, broker en `positions` | ya estaban de antes |
+| **Edad máxima del precio** | **mostrar ≠ anotar**: la pantalla sigue usando el último precio conocido tenga la edad que tenga; la foto que queda en la historia sólo acepta precios frescos (48 h, el mismo número que ya usaba `register_trade`) |
+| **Cota del % realizado** | el techo (1000 %) pasó de **2 superficies a 7**: Wrapped, Reportes, la exportación CSV y 5 paquetes de IA lo ignoraban |
+| **Denominador del hero** | **el máximo aportado histórico** en vez del actual, con piso de US$100 |
 
-### ⛔ Los 3 que quedan — **NO los "arregles" sin decidirlos**
+**La raíz del primero es la más instructiva:** el relleno de precios **le tapaba los ojos al
+guard de cobertura del 95 %**, que decía textual *"preferimos NO escribir ese día antes que
+escribir un dato corrupto"* y nunca se enteraba de que faltaba nada. Misma forma que el hallazgo
+de F1.
 
-En los tres, o el código contradecía al plan, o la decisión es de producto. **Verificados contra
-el código el 2026-09-09**, o sea que estas citas están vivas:
+**El segundo es un cinturón, no un arreglo** — y está dicho en el código: las dos causas del
++188.566 % siguen abiertas (`project_sell_scale_per100` y `project_entry_price_cruzada`).
 
----
+**El tercero no era propagar un guard, era corregirlo.** El plan proponía copiar el de
+`realized%`, que usa el pico de la **CARTERA**; copiarlo le rompía el número al que nunca
+retiró. Al mirarlo de cerca el equivocado era ése: metía la ganancia **no realizada** en el
+denominador de un porcentaje sobre capital **aportado**. Medido: 10k aportados, 30k de cartera,
+5k realizados → publicaba **20,8 % donde son 50 %**. Terminó unificando **siete copias con tres
+criterios** en `twr.denominador_aportado` + su espejo `evolution.js`.
 
-**1 · Edad máxima del precio en `read_last_prices`**
+⛔ **El sub-punto "y `operations`" del plan NO se hace, y es una decisión.**
+`test_currency_fallback_to_usd_if_broker_unknown` **exige** que `POST /api/operations` acepte un
+broker desconocido con 200. El contrato lo tolera a propósito.
 
-`backend/snapshots_job.py:705` devuelve el último precio guardado **sin mirar cuándo se guardó**.
-Alimenta el snapshot nocturno, el Dashboard y el libro del asesor.
-
-El arreglo ya existe **en otro lado**: `backend/main.py:24069-24085` (`register_trade`) rechaza
-un precio de más de **48 horas**, con este comentario textual:
-
-> *"Frescura: get_prices rellena huecos con el last-known SIN límite de edad (para valuar la
-> cartera está bien; para escribir el costo de un lote 'de HOY' no)."*
-
-⚠️ **Leelo dos veces: el comentario dice que para valuar la cartera está bien.** O sea que el
-código *contradice al plan de la auditoría*, a propósito y por escrito. La regla de 48 h existe
-deliberadamente **sólo para escribir costos**. La tabla `asset_last_price` tiene columna
-`updated_at`, así que el dato para decidir está disponible.
-
-**Lo que hay que decidir:** a qué edad un precio viejo deja de ser mejor que no mostrar nada.
+Detalle: `memory/project_f4_guards`.
 
 ---
 
-**2 · Guard de denominador en el número titular del Dashboard**
+## 6 · ➡️ F5 — «una sola cotización, una sola política de faltantes»
 
-`frontend/src/utils/evolution.js` tiene un guard que usa el **pico histórico** de la cartera como
-denominador estable: si la cartera llegó a US$ 100k y después retirás US$ 70k, el capital
-aportado puede quedar chico o negativo y el porcentaje **explota a 90 %+ artificialmente**.
+Toda la causa C8 más la parte de C1 que toca el tipo de cambio. **Citas verificadas contra el
+árbol el 2026-09-11** — si no coinciden, buscá por nombre de función, no por número de línea.
 
-Pero ese guard es para el **% realizado**, no para el retorno total, y **el Dashboard no tiene el
-pico a mano**. O sea: no es propagar un guard, es **diseño nuevo sobre el número más visible de
-la app**.
+### Lo que ya está deployado
 
-**Lo que hay que decidir:** si el hero del Dashboard debe cambiar de denominador, y a cuál.
+**La serie CER estaba caída** y **todos los bonos CER ajustaban por 1,00 cuando el factor real
+es 7,7× a 37,6×**. La fuente devuelve 404 mientras `/inflacion` y `/uva` del mismo host
+devuelven 200. Se sirve con UVA, que da el mismo ratio porque el BCRA la actualiza *por* CER —
+verificado a 0,25 % contra los factores medidos. Ver `memory/project_cer_via_uva`.
 
----
+### 1 · El tope de `/api/fx-rates` **y** el fallback mudo (van juntos)
 
-**3 · Cota de plausibilidad en la ganancia realizada**
+`main.py:5400`, `get_fx_rates`. El endpoint limita por **filas**, no por días:
 
-Hoy **no hay ninguna**. Medido: **+188.566,67 %** en una sola fila de `operations`, sobre un
-lote cuyo costo entero es US$ 106 (venta declarada en una moneda distinta a la del lote → cae a
-todos los lotes y no convierte el precio de salida).
+```python
+days = max(1, min(int(days or 3650), 3650))
+...
+"SELECT date, blue_venta, mep_venta FROM fx_rates_daily ORDER BY date DESC LIMIT ?", (days,)
+```
 
-La asimetría es el hallazgo: **el valor NO realizado está protegido por una banda de ×50; el
-realizado no tiene absolutamente nada.** Y existe `MAX_PNL_TO_COST = 10` en
-`frontend/src/utils/assetPnl.js:45` con su espejo en `backend/main.py:38339` — pero sólo lo
-aplican la ficha de activo y el libro del asesor, **no el motor de la venta**.
+El frontend pide 3.650 "días" y el backend devuelve las **últimas 3.650 filas**. Como la serie
+tiene ruedas y no días corridos, la ventana es mucho más corta de lo que el nombre sugiere.
 
-⚠️ Hay un test que verifica que las dos copias del espejo no diverjan
-(`test_advisor_composition.py`). Si tocás una, tocá la otra.
+**Medido en la base local (5.634 filas desde 2011-01-03): la ventana arranca el 2016-06-09 y
+quedan 1.984 días invisibles.** Toda fecha anterior cae al dólar de hoy **sin avisar**. Una
+venta de 2013 se dibuja 160× mal.
 
-**Lo que hay que decidir:** desde qué porcentaje un resultado deja de ser creíble, y qué se hace
-cuando lo supera (no publicarlo, o rechazar la venta al escribirla).
+Poner un `WHERE date >= ?` arregla el síntoma. **El fallback mudo es la causa** y sigue vivo
+para cualquier otro hueco: hoy no hay forma de distinguir "convertí con el TC de esa fecha" de
+"no lo tenía y usé el de hoy".
 
----
+### 2 · Punta venta vs. punta media
 
-### 🔑 Tu primer trabajo en F4: hacer estas tres preguntas
+`fx_rates_daily` guarda `blue_venta` / `mep_venta`, y hay al menos un lugar que calcula el medio
+(`main.py:4853`: `medio = round((compra + venta) / 2, 2) if compra else venta`). Explica un
+escalón sistemático de **0,74 %** entre la valuación viva y la histórica. Ver
+`memory/project_dolar_medio`.
 
-**El dueño no programa.** Decide sobre el producto, la plata y los usuarios. Las preguntas
-tienen que poder contestarse **sin leer código**, y cada una tiene que venir con lo que pasa en
-cada opción. Leé `~/.claude/CLAUDE.md` y `memory/feedback_como_explicarle` antes de escribirlas.
+### 3 · ⛔ La política de faltantes — **acá arranca F5, y no es código**
 
-Un ejemplo de cómo NO preguntarlo y cómo sí:
+Qué hace la app cuando **no hay precio**, **no hay tipo de cambio** o **el índice no se
+publicó**. Hoy cada capa decide por su cuenta: unas caen al costo, otras al dólar de hoy, otras
+publican 0, otras no publican nada.
 
-> ❌ *"¿Le pongo un `max_lag_days` a `read_last_prices` o dejo el fallback?"*
->
-> ✅ *"Si el precio de un activo no se actualiza hace días, ¿preferís que la cartera lo siga
-> mostrando al último precio conocido (aunque sea viejo), o que diga 'sin precio'? Mostrarlo
-> viejo mantiene el total completo pero puede estar desactualizado; decir 'sin precio' es
-> honesto pero deja huecos en el total. ¿A partir de cuántos días te parece que ya no sirve:
-> 2, 5, o 15?"*
+**Es una decisión de producto y el dueño ya tomó una parecida en F4**, que conviene usar de
+ancla porque quedó bien y está deployada:
 
-**Sugerencia de orden:** la (1) es la más acotada y la más fácil de contestar. La (3) cambia
-números publicados. La (2) es diseño y conviene dejarla para el final.
+> **Mostrar y anotar no son lo mismo.** En pantalla, un dato viejo es mejor que un agujero. En
+> la historia que queda guardada, **prefiero no medir a medir mal**.
 
-### Y una asimetría que está bien y NO hay que "arreglar"
+La pregunta para el dueño no es "¿qué política querés?" sino, para cada faltante, **"¿esto se
+muestra o se anota?"**. Y hay un tercer caso que F4 dejó abierto y que cae justo acá: las curvas
+publican **0 %** cuando no hay denominador, y un 0 no es "no sé", es "no ganaste nada".
 
-`/api/positions` rechaza un broker inexistente; `/api/operations` **no**. Ahí el contrato lo
-tolera deliberadamente y hay un test que lo fija
-(`test_currency_fallback_to_usd_if_broker_unknown`). **Hay un test que congela esa asimetría a
-propósito**, para que quien la toque tenga que decidirla en vez de romperla de refilón.
+### 4 · Inflación restada a retornos en dólares, sin mirar la moneda
+
+Verificados: `wrapped.py:404` (`twr_user - inflation_ytd`), `reporting/builder.py:1691`
+(`delta_pct - inflation_ret`), `ai/builders/insights.py:643` (`twr_pct - inflation_pct`),
+`main.py:14324` (`inflation_loss`). Ninguno mira la moneda del retorno: **restarle la inflación
+en pesos a un rendimiento medido en dólares no significa nada.**
+
+Y falta pasar **moneda a los índices**: hoy `vs_sp500_pct` **cambia de signo** con sólo tocar el
+selector. Es la misma familia que el audit de benchmarks ya cerró para otras superficies
+(`memory/project_benchmark_audit`) — mirá cómo se resolvió ahí antes de inventar nada.
+
+### 🔑 Tu primer trabajo en F5
+
+Igual que en F4: **preguntar antes de programar**, y preguntar de una forma que el dueño pueda
+contestar **mirando**, no sabiendo. Leé `~/.claude/CLAUDE.md` y
+`memory/feedback_como_explicarle` antes de escribir la pregunta.
+
+Lo que hizo que las tres preguntas de F4 salieran bien:
+
+1. **Medir primero.** "¿Cortamos a los 2, 5 o 15 días?" no se podía contestar hasta que medí la
+   antigüedad real de los precios y resultó ser **bimodal**: 21 frescos y 68 de dos meses, nada
+   en el medio. Eso cambió la pregunta.
+2. **Decir qué pasa en cada opción**, incluido "no cambia nada para la mayoría".
+3. **Una sola pregunta por vez.**
 
 ---
 
 ## 7 · Las tandas que vienen después
-
-### F5 — «una sola cotización, una sola política de faltantes» *(4–6 días)*
-
-Lo más grave ya está deployado: **la serie CER estaba caída** (la fuente devuelve 404 mientras
-`/inflacion` y `/uva` del mismo host devuelven 200) y **todos los bonos CER ajustaban por 1,00
-cuando el factor real es 7,7× a 37,6×**. Se sirve con UVA, que da el mismo ratio porque el BCRA
-la actualiza *por* CER — verificado a 0,25 % contra los factores medidos. Ver
-`memory/project_cer_via_uva`.
-
-Lo que queda:
-
-- **El tope de `/api/fx-rates` Y el fallback mudo** (van juntos). El endpoint limita por
-  **filas**, no por días: el frontend pide 3.650 días, el backend responde
-  `ORDER BY date DESC LIMIT 3650`, y la serie tiene ~5.685 filas desde 2011 → la ventana arranca
-  en 2016 y **toda fecha anterior cae al dólar de hoy sin avisar**. Medido: una venta de 2013 se
-  dibuja **160× mal**. Poner un `WHERE date >= ?` arregla el síntoma; el fallback mudo es la
-  causa y sigue vivo para cualquier otro hueco.
-- Unificar **punta venta vs. punta media** entre `fx_rates_daily` y la valuación viva (explica un
-  escalón sistemático de **0,74 %**).
-- Decidir y aplicar **una** política de faltantes: precio ausente, TC ausente, índice no
-  publicado. **Es decisión de producto antes que código.**
-- **6 sitios restan inflación en pesos a retornos en dólares** y ninguno mira la moneda. Y hay
-  que pasar moneda a los índices: hoy `vs_sp500_pct` **cambia de signo** con sólo tocar el
-  selector de moneda.
 
 ### F6 — «terminar las migraciones abiertas» *(1–2 semanas)*
 
@@ -420,6 +418,26 @@ La variación diaria dependía de F3, **así que ya se puede**.
    `frontend/src/utils/bordeFresco.test.js` (este último **lee el archivo de Python** para
    verificar que los dos lados usen el mismo número).
 
+9. ⭐⭐ **AUDITÁ TU PROPIA TANDA ANTES DE PEDIR EL DEPLOY.** Es lo que más valor dio en F4 y no
+   lo cubre ninguna suite. Tres rondas encontraron **12 defectos propios con la suite en verde**,
+   y dos estaban en commits ya ofrecidos para deployar. Qué mirar, en orden de rendimiento:
+   **(a)** de dónde salen los argumentos de cada función que tocaste — no sólo la función;
+   **(b)** el diff completo leído de nuevo, buscando lo que cambiaste sin entender;
+   **(c)** los comentarios que quedaron describiendo el código de antes (C12);
+   **(d)** tus propios tests: ¿miden, o sólo verifican que aparezca un string?
+10. ⭐ **Cuando unifiques un cálculo, revisá también de dónde salen sus argumentos.** La regla
+   puede quedar perfecta y seguir recibiendo basura. En F4 unifiqué el denominador en siete
+   sitios y dejé uno alimentándose de un helper que cae a COSTO: el resultado correcto era 50 %
+   y publicaba **0,03 %**. Ver `memory/feedback_el_fallback_del_helper`.
+11. ⭐ **Un helper no es su nombre: leé qué devuelve cuando el dato falta.** `netDepositedOf`
+   suena a "el aportado", y cae a `total_invested` (costo) cuando el dato no está. Correcto para
+   dibujar una serie, veneno para un denominador. **Si tu cálculo es un denominador, una cota o
+   un máximo, un fallback pensado para "que no quede un hueco" casi nunca sirve.**
+12. ⭐ **Si el número puede verse en pesos y en dólares, probá las dos.** Un umbral en USD
+   comparado contra montos en pesos no filtra nada: el mismo usuario con US$50 aportados no veía
+   porcentaje en dólares y sí en pesos. **La forma que no puede divergir es calcular en una
+   moneda y convertir, no calcular dos veces.**
+
 ### Cinco trampas concretas que ya costaron
 
 1. **Ojo con dónde insertás una función en `main.py`.** Un helper metido entre el decorador
@@ -432,10 +450,24 @@ La variación diaria dependía de F3, **así que ya se puede**.
    que una posición con cantidad 0 vale 0. Tenían razón. Pasó **de nuevo** en F3, con el borde
    de quien empezó dentro del mes. **Leé el test antes de cambiarlo.**
 4. **El primitivo no hereda tus guards.** Ver F2 arriba.
-5. **Antes de explicar un test en rojo, mirá la hora.** De 21:00 a 00:00 hora argentina la suite
-   se ponía roja sola (los tests sembraban con un reloj y verificaban con otro). Arreglado en
-   F3, pero el reflejo sirve igual. Y **el conteo de la suite completa no es una métrica**:
-   agregar un test que crea un usuario lo mueve sin tocar código.
+5. **Antes de explicar un test en rojo, mirá la hora.** De 21:00 a 00:00 hora argentina la
+   suite se pone roja sola. ⚠️ **F3 NO cerró esto**: arregló el código, no los tests, y quedaron
+   33 archivos sembrando fechas con UTC. Medido el 2026-09-10: `origin/main` daba **2 en rojo a
+   las 23:20 y 0 a las 10:40** sin que nadie tocara nada (esos dos se arreglaron en `a1bceb12`;
+   los otros 31 son latentes). Y **el conteo de la suite completa no es una métrica**: agregar
+   un test que crea un usuario lo mueve sin tocar código.
+6. ⭐ **Revertir con `git stash` no prueba nada si ya commiteaste el arreglo** — vuelve al
+   último commit, que YA lo tiene. Me pasó verificando: todo verde y ese verde no significaba
+   nada. Para probar que tu fix importa, `git checkout <commit-anterior> -- <archivos de
+   código>`, dejando los tests nuevos puestos.
+7. ⭐ **Un test que sólo existe porque la función es nueva no mide nada.** Al revertir el código,
+   la mitad de los tests fallan con "X is not a function" — eso prueba que X es nueva, no que el
+   bug existía. **Poné los imports DENTRO de cada test** (o marcá en la cabecera cuáles son los
+   que miden de verdad) para que cada uno falle por SU motivo.
+8. ⭐ **Cuidado con el estado global entre tests.** `compute_live_portfolio_value` cachea 60 s en
+   un dict de módulo con clave `(uid, tc_blue)`, y nadie lo limpia: con `uid=1, tc_blue=1500`
+   —los que usa medio archivo— un test puede pasar leyendo el valor de OTRA base, sin ejecutar
+   una línea de lo que dice probar. Verificado sembrando el caché a mano.
 
 ---
 
@@ -450,6 +482,13 @@ una peor.
 **2026-09-09, durante F3:** otra sesión editaba `backend/main.py` en la misma carpeta. Un
 `git add -A backend/` **se llevó su fix de seguridad adentro de un commit mío** que hablaba de
 fechas — **y sin su test**, que vivía en otro archivo. Estuvo a un push de ir a producción.
+
+**2026-09-10/11, durante F4: esta vez salió bien, y así fue.** La otra sesión trabajó en los
+importadores toda la sesión y pusheó dos veces en el medio. No hubo un solo conflicto porque:
+(a) trabajé en un **worktree propio y limpio** creado desde `origin/main`, nunca en la carpeta
+compartida; (b) antes de cada push hice `git fetch` y **comparé las dos listas de archivos con
+`comm -12`** — cero intersección las dos veces; (c) commiteé **archivo por archivo**, nunca
+`git add -A`. **Es el procedimiento, no la suerte: repetilo.**
 
 **Las cuatro reglas que salen de eso:**
 
@@ -485,6 +524,12 @@ cd frontend && npm test -- --run                 # ~2 s
 cd frontend && npm run build                     # verificá que compile antes de pushear
 ```
 
+⚠️ **`npm test` necesita `node_modules`, y un worktree nuevo no lo tiene.** No hace falta
+instalar: `ln -s <repo-principal>/frontend/node_modules node_modules` alcanza (es sólo lectura y
+no toca el árbol de la otra sesión) **siempre que `package.json` sea idéntico — verificalo con
+`diff`**. Y **borralo antes de commitear**: `.gitignore` ignora `node_modules/` como directorio
+y un symlink NO matchea, así que aparece como archivo sin trackear.
+
 **Verificar un deploy sin adivinar** — los dos exponen el SHA:
 
 ```bash
@@ -493,9 +538,10 @@ curl -s https://rendi.finance/api/health        # backend (Railway), ~100 s
 ```
 
 **El baseline no es un número que puedas copiar de un documento.** Depende del entorno (con o sin
-`backend/.env` cambian 6 resultados) y hasta de cuántos usuarios crea un test. **Medí el tuyo
-antes de tocar nada.** Como referencia del 2026-09-09, en worktrees limpios: `origin/main`
-**4.113 / 0** y con F3 **4.132 / 0**.
+`backend/.env` cambian 6 resultados), **de la hora** (ver §9, trampa 5) y hasta de cuántos
+usuarios crea un test. **Medí el tuyo antes de tocar nada.** Como referencia, en worktrees
+limpios: 2026-09-09 `origin/main` **4.113 / 0**; 2026-09-11 después de F4, **4.237 / 0** en
+backend y **1.552 / 0** en frontend.
 
 ### Dónde está todo
 
@@ -506,28 +552,72 @@ antes de tocar nada.** Como referencia del 2026-09-09, en worktrees limpios: `or
 | `audit/01_calculos/1a-resumen.md` | tabla de las 94 divergencias con veredicto |
 | `audit/01_calculos/1b-resumen.md` | tabla de los 128 hallazgos transversales |
 | `audit/01_calculos/1a-*.md` (8) | detalle de 1A, uno por concepto |
-| `audit/01_calculos/1b-*.md` (6) | detalle de 1B, uno por tema. **`1b-borde.md` es el de F4** |
+| `audit/01_calculos/1b-*.md` (6) | detalle de 1B, uno por tema. **Los de F5 son `1b-monedas.md` (cotizaciones y faltantes de TC), `1b-inflacion.md` (el punto 4) y `1b-benchmarks.md` (moneda en los índices)**; `1b-borde.md` fue el de F4 |
 | `audit/01_calculos/1a-evidencia.md` | MEDIDO vs DEDUCIDO vs ESTRUCTURAL, hallazgo por hallazgo |
 | `audit/01_calculos/_grupos/*.md` | las 72 divergencias sin veredicto |
 | `audit/00-mapa-sistema.md` | el mapa, 3,4 MB — **no lo leas entero, grepealo** |
 
+> ⚠️ **Los informes tampoco son verdad: son hipótesis verificables.** Además del mapa, F4
+> encontró un **error aritmético en `1a-rendimiento.md`**: decía que la regla del asesor daría
+> −95 % en su ejemplo y el código da **+4 %** (el informe aplicó el máximo también al
+> numerador). Quien lo siguiera al pie de la letra publicaba una pérdida del 95 % sobre alguien
+> que ganó plata. **Recalculá los ejemplos del informe antes de implementarlos.**
+>
 > ⚠️ **El mapa es hipótesis, no verdad.** Se verificaron 290 de sus citas: ~53 tenían el número
 > de línea corrido y **5 afirmaciones eran sustantivamente falsas**. Confirmá cada cita con
 > `grep` antes de apoyarte en ella. **Si el código contradice al mapa, gana el código.**
 >
-> Y lo mismo vale para este documento: `main.py` se movió ~700 líneas desde que se escribieron
-> los informes. Las citas de la §6 se verificaron el **2026-09-09**; si no coinciden, buscá por
-> nombre de función, no por número de línea.
+> Y lo mismo vale para este documento. Las citas de la §6 se verificaron una por una el
+> **2026-09-11**; si no coinciden, buscá por nombre de función, no por número de línea.
+>
+> ⚠️ **Incluidos los nombres de archivo.** Escribiendo esta misma tabla puse dos informes que no
+> existen (`1b-fx.md`, `1b-faltantes`) y los cazó un `ls`. **Antes de mandar a alguien a un
+> archivo, verificá que esté.**
 
 ### Memoria del proyecto
 
 Hay memoria persistente en
-`~/.claude/projects/-Users-nicolaspussetto-Documents-trading/memory/`. Las que importan para F4:
+`~/.claude/projects/-Users-nicolaspussetto-Documents-trading/memory/`. Las que importan para F5:
 
+**Antes de escribir una sola línea**
+- `feedback_como_explicarle` — ⭐⭐ **cómo hablarle al dueño.** No programa. Sin jerga pero CON
+  todo el detalle, y separando "lo hago yo" de "lo hacés vos"
 - `project_tandas_calculo` — estado vivo de las 7 tandas
-- `project_f3_un_solo_calendario` — lo último que se hizo y qué dejó abierto
-- `feedback_como_explicarle` — ⭐ **cómo hablarle al dueño. Leelo antes de escribir las tres preguntas**
+- `project_f4_guards` — lo último que se hizo, con las 3 decisiones que tomó el dueño y las 12
+  cosas que encontró auditarlas
+
+**Sobre el tema de F5**
+- `project_cer_via_uva` — el CER, lo único de F5 ya deployado
+- `project_fx_rate_audit` — la regla "todo MEP excepto cripto-exchange" y las 67 desviaciones
+- `project_dolar_medio` — la punta media vs la punta venta
+- `project_benchmark_audit` — ⭐ cómo se resolvió el modo pesos en los índices. **Mirá esto
+  antes de inventar nada para el punto 4**
+
+**Trampas del método**
+- `feedback_el_fallback_del_helper` — ⭐ leé qué devuelve un helper cuando el dato falta
+- `feedback_el_test_viejo_tenia_razon` — ⭐ pasó tres veces
 - `feedback_git_add_con_otra_sesion_viva` — la §10 de acá, resumida
 - `feedback_quien_mas_pasa_por_aca` — antes de una validación que rechaza
 - `feedback_buscar_el_guard` — antes de una reparación masiva
+- `feedback_antes_de_explicar_un_rojo_mira_la_hora` — la suite se pone roja sola de noche
 - `project_test_suite_state` — por qué el conteo de la suite no es una métrica
+- `project_f3_relojes_pendientes` — los ~40 relojes que F3 dejó y el bug del importador
+
+---
+
+## 12 · Lo que queda anotado y sin hacer (fuera de las tandas)
+
+Cuatro cosas que F4 encontró, midió y **no** tocó, con el motivo:
+
+1. **El bug del reloj en el importador** (`importing/persister.py:1264`). Una línea. No se tocó
+   porque abrir los ~40 relojes es decidir cuánto trabajo más meterle a F3.
+2. **`POST /api/snapshots` escribe la foto con el total calculado en el NAVEGADOR** y
+   `SnapshotIn` son tres números sueltos: no viaja cobertura, así que un precio viejo entra a la
+   historia por esa puerta. Amortiguado (`apto=0`) pero su `total_value` se guarda. Cerrarlo
+   cambia el contrato con el frontend.
+3. **Las curvas publican `realized: 0` cuando no hay denominador.** Un 0 no es "no sé", es "no
+   ganaste nada". Arreglarlo bien = que la serie lleve `null` y el gráfico dibuje un hueco: es
+   un cambio de forma de los datos. **Cae dentro de la política de faltantes de F5** (§6.3).
+4. **El `MEMORY.md` del proyecto está sobre el límite** (~28 KB contra 24,4) y se carga
+   incompleto: 37 entradas del índice pasan los 200 caracteres, una llega a 1.290. El detalle
+   está en los archivos de tema; hay que acortar el índice.
