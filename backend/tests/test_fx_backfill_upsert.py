@@ -63,7 +63,7 @@ class BackfillBlueNoPisaElMepTest(unittest.TestCase):
         self.conn.commit()
 
         self.conn.executemany(main.SQL_BACKFILL_FX_BLUE,
-                              [(self.FECHA, 120.0, "argentinadatos")])
+                              [(self.FECHA, 120.0, 118.0, "argentinadatos")])
         self.conn.commit()
 
         f = self._fila(self.FECHA)
@@ -83,7 +83,7 @@ class BackfillBlueNoPisaElMepTest(unittest.TestCase):
         self.conn.commit()
 
         self.conn.executemany(main.SQL_BACKFILL_FX_BLUE,
-                              [(self.FECHA, 120.0, "argentinadatos")])
+                              [(self.FECHA, 120.0, 118.0, "argentinadatos")])
         self.conn.commit()
 
         self.assertNotEqual(self._fila(self.FECHA)["fetched_at"], "2001-01-01 00:00:00",
@@ -93,7 +93,7 @@ class BackfillBlueNoPisaElMepTest(unittest.TestCase):
         """El camino normal del backfill: tabla vacía, no hay conflicto."""
         self.assertIsNone(self._fila(self.FECHA))
         self.conn.executemany(main.SQL_BACKFILL_FX_BLUE,
-                              [(self.FECHA, 120.0, "argentinadatos")])
+                              [(self.FECHA, 120.0, 118.0, "argentinadatos")])
         self.conn.commit()
         f = self._fila(self.FECHA)
         self.assertEqual(f["blue"], 120)

@@ -44,7 +44,12 @@ Shape:
     "sp500_pct": float | null,
     "inflation_ar_pct": float | null,
     "delta_sp500_pp": float | null,  # tu return - SPY return (puntos %)
-    "delta_inflation_pp": float | null,
+    "delta_inflation_pp": float | null,  # EN PESOS: retorno_ars_pct - inflation_ar_pct
+    "retorno_ars_pct": float | null,     # tu return medido en PESOS (incluye la
+                                         # devaluación). Es el que se comparó
+                                         # contra la inflación; `twr_pct` está en
+                                         # dólares y restarle inflación argentina
+                                         # no significa nada.
   },
   "drawdown": {
     "current_pct": float,           # caída actual desde peak
@@ -228,6 +233,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # crudos porque net_deposited se popula retroactivamente al importar
     # operations y eso rompe el cálculo basado en deltas.
     twr_pct: Optional[float] = None
+    _twr_meses = [None, None]      # (primer mes cubierto, último mes cubierto)
     try:
         from datetime import timedelta
         cutoff_date = today - timedelta(days=window_days)
@@ -265,6 +271,16 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
                 continue
             compound *= (1 + ret)
             used += 1
+            # Los meses que el retorno REALMENTE cubre. No son "los de la
+            # ventana": arriba se saltean el mes de alta (`retorno_mensual`
+            # devuelve None) y los outliers. Sirven para convertirlo a pesos con
+            # la devaluación DEL MISMO TRAMO — con la de la ventana entera se le
+            # sumaría devaluación que ese retorno no contiene.
+            _mes = f"{y:04d}-{m:02d}"
+            if _twr_meses[0] is None or _mes < _twr_meses[0]:
+                _twr_meses[0] = _mes
+            if _twr_meses[1] is None or _mes > _twr_meses[1]:
+                _twr_meses[1] = _mes
         if used > 0:
             twr_pct = round((compound - 1) * 100, 2)
     except Exception:
@@ -603,6 +619,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # ── 4. Benchmarks ────────────────────────────────────────────────────────
     sp500_pct: Optional[float] = None
     inflation_pct: Optional[float] = None
+    fx_ventana = None
     try:
         import main as _m
         cache_bench = getattr(_m, "_bench_cache", {}) or {}
@@ -629,8 +646,34 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             for _, pct in infl_in_window:
                 comp *= (1 + pct / 100)
             inflation_pct = round((comp - 1) * 100, 2)
+            # El TC de las dos puntas DEL TRAMO QUE CUBRE `twr_pct`, para poder
+            # compararlo en pesos (ver `twr.vs_inflacion_ar`). `twr_pct` sale de
+            # monthly_entries, que está en DÓLARES: restarle la inflación del
+            # INDEC, que mide precios en pesos, deja afuera la devaluación. El
+            # paquete se lo pasaba así a la IA, que narraba a partir de ese número.
+            #
+            # ⚠️ LAS FECHAS SALEN DEL TWR, NO DE LA INFLACIÓN. Son ventanas
+            # distintas: el TWR saltea el mes de alta y el INDEC publica con ~14
+            # días de atraso. Tomar las de la inflación convertía el retorno con
+            # una devaluación que no le corresponde, y el resultado no era ni el
+            # retorno de una ventana ni el de la otra.
+            if _twr_meses[0] and _twr_meses[1]:
+                _y0, _m0 = (int(x) for x in _twr_meses[0].split("-"))
+                _mes_previo = f"{_y0 - 1:04d}-12" if _m0 == 1 else f"{_y0:04d}-{_m0 - 1:02d}"
+                _d0 = _twr._fin_de_mes(_mes_previo)
+                _d1 = _twr._fin_de_mes(_twr_meses[1])
+                _fxfn, _ = _twr.serie_fx(conn, _d0, _d1)
+                _f0, _f1 = _fxfn(_d0), _fxfn(_d1)
+                if _f0 and _f1:
+                    fx_ventana = (_f0, _f1)
     except Exception:
         pass
+
+    _ret_ars_infl, _delta_infl_pp = _twr.vs_inflacion_ar(
+        twr_pct, inflation_pct,
+        fx0=(fx_ventana or (None, None))[0], fx1=(fx_ventana or (None, None))[1])
+    _ret_ars_infl = round(_ret_ars_infl, 2) if _ret_ars_infl is not None else None
+    _delta_infl_pp = round(_delta_infl_pp, 2) if _delta_infl_pp is not None else None
 
     vs_benchmarks = {
         "sp500_pct": sp500_pct,
@@ -639,10 +682,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             round(twr_pct - sp500_pct, 2)
             if twr_pct is not None and sp500_pct is not None else None
         ),
-        "delta_inflation_pp": (
-            round(twr_pct - inflation_pct, 2)
-            if twr_pct is not None and inflation_pct is not None else None
-        ),
+        # SIEMPRE EN PESOS. `twr_pct` está en dólares y la inflación del INDEC en
+        # pesos; la resta cruda dejaba afuera la devaluación y daba vuelta el
+        # veredicto en el 35 % de los meses. `retorno_ars_pct` viaja al lado para
+        # que la IA no narre un exceso que no sale del rendimiento que ve.
+        "delta_inflation_pp": _delta_infl_pp,
+        "retorno_ars_pct": _ret_ars_infl,
     }
 
     # ── 4. Metadata de bonos AR (Ola 3-K) — enriquece cuando hay bonos

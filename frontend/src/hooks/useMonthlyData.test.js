@@ -535,6 +535,10 @@ describe('buildMonthlyReports', () => {
     const bench = {
       sp500: { '2026-04': 5000, '2026-05': 5200 },        // +4.0%
       inflation_ar: { '2026-05': 4.5 },                    // 4.5%
+      // F5 — la comparación contra inflación se mide en PESOS, así que necesita el
+      // TC de las dos puntas del mes. Acá SIN devaluación, para que los casos que
+      // ya estaban escritos sigan midiendo lo que medían.
+      dolar_blue: { '2026-04': 1000, '2026-05': 1000 },
     }
     const brokersArs = [{ name: 'Cocos', currency: 'ARS' }]
     const brokersUsd = [{ name: 'Binance', currency: 'USDT' }]
@@ -561,6 +565,40 @@ describe('buildMonthlyReports', () => {
       )
       // delta = 10%, inflación = 4.5%, diferencia = +5.5
       expect(out.years[0].months[0].drivers.vsInflation).toBeCloseTo(5.5, 1)
+    })
+
+    it('la devaluación entra en la cuenta: da vuelta el veredicto', () => {
+      // EL BUG. Cartera con +10 % en DÓLARES, inflación 4,5 %, y el peso
+      // devaluándose 20 % en el mes. En pesos esa cartera rindió 32 % y le ganó a
+      // la inflación por 27,5pp. El código viejo hacía 10 − 4,5 = +5,5.
+      const benchDev = {
+        ...bench,
+        dolar_blue: { '2026-04': 1000, '2026-05': 1200 },   // +20 %
+      }
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],
+        [], [], 'global',
+        { bench: benchDev, brokers: brokersArs }
+      )
+      const d = out.years[0].months[0].drivers
+      // (1,10 × 1,20 − 1) × 100 = 32 %  →  32 − 4,5 = 27,5pp
+      expect(d.retornoArsPct).toBeCloseTo(32, 1)
+      expect(d.vsInflation).toBeCloseTo(27.5, 1)
+      expect(d.vsInflation).not.toBeCloseTo(5.5, 1)
+    })
+
+    it('sin TC de las dos puntas no publica un número: queda pendiente', () => {
+      // Un null es "no sé". Publicar la resta de dos monedas distintas es afirmar
+      // algo falso, y es lo que hacía antes.
+      const benchSinDolar = { ...bench, dolar_blue: { '2026-05': 1000 } }  // falta abril
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],
+        [], [], 'global',
+        { bench: benchSinDolar, brokers: brokersArs }
+      )
+      const d = out.years[0].months[0].drivers
+      expect(d.vsInflation).toBeNull()
+      expect(d.vsInflationPending).toBe(true)
     })
 
     it('vsInflation es NULL cuando NO hay brokers ARS (solo USD)', () => {

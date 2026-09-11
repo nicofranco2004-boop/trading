@@ -1876,7 +1876,61 @@ def compute_metrics_for_period(
     # incomparable, publicar un "vs benchmark" sería reintroducir el mismo número
     # por la ventana.
     vs_sp500 = (delta_pct - sp500_ret) if (delta_pct is not None and sp500_ret is not None) else None
-    vs_inflation = (delta_pct - inflation_ret) if (delta_pct is not None and inflation_ret is not None) else None
+    # LA COMPARACIÓN CONTRA INFLACIÓN SE HACE SIEMPRE EN PESOS. Antes era
+    # `delta_pct - inflation_ret` a secas, y `delta_pct` sigue la moneda del
+    # selector (se convierte más arriba, en `_pct_puntas_ars`) mientras la
+    # inflación del INDEC está siempre en pesos. Con el selector en dólares eso
+    # restaba unidades distintas: le faltaba justo la devaluación.
+    #
+    # Medido con inflación del INDEC y la serie de dólar reales, sobre una cartera
+    # 100 % en dólares y PLANA: el veredicto se daba vuelta con sólo tocar el
+    # selector en 65 de 186 meses (35 %). En 2024 la misma cartera leía "la
+    # inflación te ganó por 117,7pp" en dólares y por 44,9pp en pesos.
+    #
+    # LA REGLA VIVE EN `twr.vs_inflacion_ar`, con su docstring. Acá NO se la llama:
+    # ahí sólo hay el porcentaje ya calculado y se compone `(1+r)·(fx1/fx0)`,
+    # mientras que en este punto están los valores crudos y la vía exacta es
+    # `_pct_en_pesos` (abajo). Los dos caminos coinciden al bit con flujo cero y
+    # difieren por el residuo intrínseco de Modified Dietz cuando hay aportes.
+    # `vs_inflacion_ar` la usan el Wrapped y el paquete de la IA, que componen
+    # meses y no legs. El gráfico de Performance NO está migrado — ver la nota en
+    # `performance.py`.
+    # ⚠️ SE CONVIERTE `delta_pct`, NO SE RECALCULA EL RENDIMIENTO.
+    #
+    # Éste es el punto donde me equivoqué una vez y vale dejarlo escrito. La
+    # primera versión llamaba a `_pct_en_pesos` —el Dietz punta a punta sobre
+    # `start_value`/`end_value`/flujos, en pesos— porque parecía "la vía exacta".
+    # No lo es PARA ESTO: para un mes, `delta_pct` ya no es ese número. Treinta
+    # líneas más arriba lo pisa `month_twr_pct`, que sale del motor canónico y
+    # mide contra MERCADO, no contra la cadena contable. Los dos pueden estar
+    # lejísimos: el comentario de ese bloque mide "31 meses publicados como
+    # PLANOS (<0,5 %) cuando a mercado se habían movido más de 5 %, el peor
+    # −0,00 % sobre un mes que a mercado hizo +133,58 %".
+    #
+    # O sea que recalcular acá publicaba un exceso sobre inflación que NO salía
+    # del rendimiento que la misma tarjeta muestra. La propiedad que la pantalla
+    # necesita no es "el número más exacto posible": es que
+    # `retorno_ars_pct − inflation_pct == vs_inflation_pct` y que
+    # `retorno_ars_pct` sea `delta_pct` visto en pesos. Por eso se COMPONE con la
+    # devaluación del período, que es la única operación que preserva esa
+    # identidad sea cual sea el motor que terminó produciendo `delta_pct`.
+    #
+    # El precio de componer es el residuo intrínseco de Modified Dietz cuando hay
+    # aportes (medido sobre producción: p90 0,003). Es tres órdenes de magnitud
+    # menos que el riesgo de tomar el número de otra fuente.
+    import twr as _twr_infl
+    _fx0_infl = _fx1_infl = None
+    if (delta_pct is not None and inflation_ret is not None
+            and str(moneda).lower() != _twr_infl.MONEDA_ARS):
+        _d0_infl = _dia_anterior(period_start)
+        if _d0_infl:
+            try:
+                _fxfn_infl, _ = _twr_infl.serie_fx(conn, _d0_infl, period_end)
+                _fx0_infl, _fx1_infl = _fxfn_infl(_d0_infl), _fxfn_infl(period_end)
+            except Exception:
+                log.exception("vs_inflacion serie_fx %s..%s", _d0_infl, period_end)
+    _ret_ars_infl, vs_inflation = _twr_infl.vs_inflacion_ar(
+        delta_pct, inflation_ret, moneda=moneda, fx0=_fx0_infl, fx1=_fx1_infl)
 
     metrics = PeriodMetrics(
         start_value=round(start_value, 2),
@@ -1894,6 +1948,7 @@ def compute_metrics_for_period(
         win_rate=round(win_rate, 1) if win_rate is not None else None,
         vs_sp500_pct=round(vs_sp500, 2) if vs_sp500 is not None else None,
         vs_inflation_pct=round(vs_inflation, 2) if vs_inflation is not None else None,
+        retorno_ars_pct=round(_ret_ars_infl, 2) if _ret_ars_infl is not None else None,
         sp500_return_pct=round(sp500_ret, 2) if sp500_ret is not None else None,
         inflation_pct=round(inflation_ret, 2) if inflation_ret is not None else None,
         basis_incomparable=basis_incomparable,

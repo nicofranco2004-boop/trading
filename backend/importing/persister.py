@@ -43,14 +43,30 @@ from . import seed as _seed
 # se entera hasta que el número aparece mal en pantalla meses después.
 log = logging.getLogger(__name__)
 try:
-    from fx import fx_for_date, fx_version, FX_V2
+    from fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
 except ImportError:  # pragma: no cover — import relativo según cómo se cargue el paquete
-    from ..fx import fx_for_date, fx_version, FX_V2
+    from ..fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
 
 
 def blue_for_date(conn, date_str, fallback):
     """Blue (venta) del día `date_str` (YYYY-MM-DD) desde fx_rates_daily — el más
     reciente en o antes de esa fecha. Fallback al valor dado si no hay data.
+
+    ⚠️ YA NO LA LLAMA NINGÚN CÓDIGO DE PRODUCCIÓN, y desde 2026-09-11 tampoco
+    devuelve lo mismo: acá quedó la punta de VENTA cruda mientras `fx_for_date`
+    pasó al punto MEDIO. Un caller nuevo que la usara valuaría ~0,2 % distinto que
+    todo el resto — otra razón para no tenerla.
+
+    El riel blue se pide por `fx.fx_for_date(..., riel=fx.RIEL_BLUE)`, que hace
+    la misma consulta salvo por el medio
+    (`blue_venta` es NOT NULL, así que el `IS NOT NULL` del WHERE no cambia
+    ninguna fila) y además obliga a nombrar el riel en el call site en vez de
+    esconderlo en el nombre de la función. Se conserva porque
+    `tests/test_importer.py::test_blue_for_date_helper` fija su contrato.
+
+    `tests/test_riel_unico_venta.py` verifica que no vuelva a haber un caller de
+    producción: el problema nunca fue esta función, fue que había call sites
+    pidiendo blue sin mirar el `fx_version` de la cuenta.
 
     Se usa para valuar el cost basis de un lote ARS vendido en USD (dólar-MEP):
     los pesos que pusiste valían `cost_ars / blue_de_la_compra` dólares, NO
@@ -760,22 +776,14 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         # CROSS-CURRENCY: el SELL es en otra moneda que el BUY → convertimos el
         # cost basis del lote a la moneda del SELL. Sin esto, un lote comprado por
         # USD 573 vs SELL en ARS daba P&L de +160000%.
-        if lot_currency != currency and tc_blue:
-            if lot_currency == "USD" and currency == "ARS":
-                # Lote USD vendido en ARS: el costo USD es real. Se lleva a ARS al
-                # MISMO TC que la venta (tc_venta) — así pnl_ars/tc_venta preserva
-                # el costo USD (se cancela). tc_venta == tc_blue para SELLs ARS.
-                base_invested = base_invested * (tc_venta or tc_blue)
-            elif lot_currency == "ARS" and currency == "USD":
-                # Lote ARS vendido en USD (dólar-MEP): convertiste pesos→dólares al
-                # vender, así que el FX SÍ se realiza. El costo en USD es lo que esos
-                # pesos valían CUANDO COMPRASTE (blue de la fecha de entrada del
-                # lote), NO el blue de hoy: usarlo achica el costo e infla la
-                # ganancia con la devaluación del peso.
-                entry_dt = p["entry_date"] if "entry_date" in p.keys() else None
-                purchase_fx = (fx_for_date(conn, entry_dt, fallback=tc_blue) if _hist
-                               else blue_for_date(conn, entry_dt, tc_blue))
-                base_invested = base_invested / (purchase_fx or tc_blue)
+        # La cuenta vive en `fx.costo_en_moneda_de_venta` — LA misma que usan el
+        # rebuild y la venta manual. Estaba copiada en los tres, y la del
+        # formulario manual no miraba el `fx_version` de la cuenta.
+        base_invested = costo_en_moneda_de_venta(
+            base_invested, lot_currency, currency,
+            conn=conn,
+            entry_date=(p["entry_date"] if "entry_date" in p.keys() else None),
+            tc_venta=tc_venta, tc_blue=tc_blue, historico=_hist)
 
         entry_invested = base_invested * ratio if base_invested else None
 

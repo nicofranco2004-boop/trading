@@ -62,7 +62,13 @@ export function fetchFxHistory() {
   }
   // Reintento permitido
   _fxCacheError = false
-  _fxCachePromise = api.get('/fx-rates?days=3650')
+  // Sin `days`: la serie ENTERA. Pedía `days=3650` creyendo pedir diez años, y
+  // el backend cortaba por CANTIDAD DE FILAS — 3.650 ruedas, que con una serie
+  // que arranca en 2011 dejaba 1.984 días de cotización afuera. Toda fecha
+  // anterior a 2016-06-09 caía al fallback (el dólar de HOY) sin avisar.
+  // Acá no hay ventana que elegir: hay que poder convertir cualquier fecha en la
+  // que el usuario tenga una operación, y esa fecha la elige él, no nosotros.
+  _fxCachePromise = api.get('/fx-rates')
     .then(rows => {
       _fxCacheData = Array.isArray(rows) ? rows : []
       _fxCachePromise = null

@@ -393,17 +393,130 @@ def test_slide_vs_benchmark_none_when_no_data():
     assert _slide_vs_benchmark(0.10, {}, 2026) is None
 
 
+# F5 — la comparación contra inflación se mide SIEMPRE EN PESOS. `fx_ytd` es el TC
+# de las dos puntas del año; sin él el slide no se publica (ver `_slide_vs_inflation`).
+SIN_DEVALUACION = (1.0, 1.0)
+
+
 def test_slide_vs_inflation_positive():
-    s = _slide_vs_inflation(0.30, 0.20, 2026)
+    s = _slide_vs_inflation(0.30, 0.20, 2026, SIN_DEVALUACION)
     assert s is not None
     assert s['tone'] == 'positive'
     assert 'ganaste' in s['title'].lower()
 
 
 def test_slide_vs_inflation_negative():
-    s = _slide_vs_inflation(0.10, 0.30, 2026)
+    s = _slide_vs_inflation(0.10, 0.30, 2026, SIN_DEVALUACION)
     assert s is not None
     assert s['tone'] == 'negative'
+
+
+def test_la_devaluacion_da_vuelta_el_veredicto():
+    """EL BUG. Cartera PLANA en dólares, inflación 20 %, devaluación 50 %.
+
+    En pesos esa cartera rindió 50 % y le ganó a la inflación por 30pp. El código
+    viejo restaba 20 − 0 y publicaba 'la inflación te ganó por 20pp' sobre una
+    imagen que el usuario comparte. Medido sobre datos reales del INDEC y la serie
+    de dólar, el veredicto se daba vuelta en 65 de 186 meses.
+    """
+    s = _slide_vs_inflation(0.0, 0.20, 2026, (1000.0, 1500.0))
+    assert s is not None
+    assert s['tone'] == 'positive', 'la devaluación sigue sin entrar en la cuenta'
+    assert 'ganaste' in s['title'].lower()
+    # Y lo que MUESTRA es lo que restó: 50 % en pesos, no 0 % en dólares.
+    etiquetas = {st['label']: st['value'] for st in s['stats']}
+    assert 'Tu rendimiento en pesos' in etiquetas
+    assert etiquetas['Tu rendimiento en pesos'].startswith('+50')
+
+
+def test_la_ventana_del_tc_es_la_del_retorno_no_la_del_anio():
+    """Una cuenta que EMPEZÓ EN JUNIO tiene un retorno de jun–dic.
+
+    Convertirlo con el dólar del 31 de diciembre ANTERIOR le metería seis meses de
+    devaluación que ese retorno no contiene. `ventana_de_los_retornos` devuelve el
+    tramo real, y `_retornos_mensuales` ya descarta el mes de alta.
+    """
+    from wrapped import ventana_de_los_retornos
+    # Alta en junio: ese mes no se puede medir (capital_inicio 0) y queda afuera.
+    rows = [
+        {'year': 2026, 'month': 6, 'broker': 'global', 'capital_inicio': 0,
+         'capital_final': 1000, 'deposits': 1000, 'withdrawals': 0},
+        {'year': 2026, 'month': 7, 'broker': 'global', 'capital_inicio': 1000,
+         'capital_final': 1100, 'deposits': 0, 'withdrawals': 0},
+        {'year': 2026, 'month': 12, 'broker': 'global', 'capital_inicio': 1100,
+         'capital_final': 1300, 'deposits': 0, 'withdrawals': 0},
+    ]
+    assert ventana_de_los_retornos(rows) == ('2026-06', '2026-12')
+    # Y NO ('2025-12', '2026-12'), que es el año entero.
+    assert ventana_de_los_retornos([]) is None
+
+
+def test_las_fechas_que_se_le_piden_al_tc_son_fines_de_mes():
+    """El TC de cierre del tramo, no el de un día cualquiera."""
+    pedidas = []
+
+    def fx_espia(fecha):
+        pedidas.append(fecha)
+        return 1000.0
+
+    monthly = [
+        {'year': 2026, 'month': 6, 'broker': 'global', 'capital_inicio': 0,
+         'capital_final': 1000, 'deposits': 1000, 'withdrawals': 0,
+         'pnl_realized': 0, 'pnl_unrealized': 0},
+        {'year': 2026, 'month': 7, 'broker': 'global', 'capital_inicio': 1000,
+         'capital_final': 1100, 'deposits': 0, 'withdrawals': 0,
+         'pnl_realized': 100, 'pnl_unrealized': 0},
+    ]
+    build_wrapped(2026, monthly, [], None, None, inflation_ytd=0.05, fx_de=fx_espia)
+    assert pedidas == ['2026-06-30', '2026-07-31'], pedidas
+
+
+def test_un_mes_invalido_no_tira_la_respuesta_entera():
+    """`monthly_entries.month` es NOT NULL en los dos motores, pero NOT NULL
+    admite `month = 0`. Con eso `ventana_de_los_retornos` armaba `'2026--1'` y el
+    fin-de-mes reventaba: un 500 en `/api/wrapped/{year}` por una fila rara.
+
+    El slide vs-inflación ya sabe no publicarse sin TC — degradar es el camino.
+    """
+    from wrapped import ventana_de_los_retornos
+    base = {'capital_inicio': 1000, 'capital_final': 1100, 'deposits': 0, 'withdrawals': 0}
+    for mes_malo in (0, 13, None, -3):
+        assert ventana_de_los_retornos([{**base, 'year': 2026, 'month': mes_malo}]) is None
+    # Y una fila sana entre filas rotas sigue midiendo.
+    assert ventana_de_los_retornos([{**base, 'year': 2026, 'month': 0},
+                                    {**base, 'year': 2026, 'month': 9}]) == ('2026-08', '2026-09')
+    # El endpoint entero no se cae.
+    out = build_wrapped(2026, [{**base, 'year': 2026, 'month': 0}], [], None, None,
+                        inflation_ytd=0.05, fx_de=lambda _f: 1000.0)
+    assert out['slides']
+
+
+def test_si_el_lookup_de_tc_falla_se_pierde_el_slide_no_la_respuesta():
+    """`main.py` calculaba el par de TC en su propio try/except y pasaba una
+    tupla. Al pasar la FUNCIÓN esa protección se perdió y cualquier error del
+    lookup tiraba la respuesta entera."""
+    base = {'capital_inicio': 1000, 'capital_final': 1100, 'deposits': 0,
+            'withdrawals': 0, 'pnl_realized': 100, 'pnl_unrealized': 0}
+    rows = [{**base, 'year': 2026, 'month': 7}]
+
+    def fx_roto(_fecha):
+        raise RuntimeError('la serie de TC se cayó')
+
+    out = build_wrapped(2026, rows, [], None, None, inflation_ytd=0.05, fx_de=fx_roto)
+    codes = [s['code'] for s in out['slides']]
+    assert 'vs_inflation' not in codes      # el slide no se publica
+    assert 'intro' in codes and 'outro' in codes   # pero la respuesta vive
+
+    sano = build_wrapped(2026, rows, [], None, None, inflation_ytd=0.05,
+                         fx_de=lambda _f: 1000.0)
+    assert 'vs_inflation' in [s['code'] for s in sano['slides']]
+
+
+def test_sin_tc_no_publica():
+    """Sin las dos puntas del TC no se puede convertir, y publicar la resta de dos
+    monedas distintas en una imagen compartible es peor que no publicar el slide."""
+    assert _slide_vs_inflation(0.30, 0.20, 2026) is None
+    assert _slide_vs_inflation(0.30, 0.20, 2026, (None, 1500.0)) is None
 
 
 # ── Build wrapped (integration) ────────────────────────────────────────────
@@ -432,7 +545,8 @@ def test_build_wrapped_complete_year():
         {'code': 'overtrade', 'severity': 'medium', 'title': 'Operás mucho', 'one_liner': '...'},
     ]
     benchmarks = {'sp500_ytd': 0.10, 'merval_ytd': 0.08}
-    out = build_wrapped(2026, monthly, ops, behavioral, benchmarks, inflation_ytd=0.20)
+    out = build_wrapped(2026, monthly, ops, behavioral, benchmarks, inflation_ytd=0.20,
+                        fx_de=lambda _fecha: 1000.0)   # TC plano = sin devaluación
 
     assert out['summary']['has_data'] is True
     codes = [s['code'] for s in out['slides']]

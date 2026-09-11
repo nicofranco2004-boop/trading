@@ -24,6 +24,23 @@ BENCH_PORCENTUAL = ("inflation_ar", "plazo_fijo")
 # los índices en dólares (S&P, T-Bills, oro) se convierten para la vista en pesos.
 BENCH_EN_ARS = ("merval", "uva", "plazo_fijo", "inflation_ar")
 
+# ⚠️ PENDIENTE, MEDIDO Y NO ARREGLADO (F5). La exención de arriba es correcta
+# cuando la CARTERA está en pesos. Con el selector en DÓLARES, en cambio, acá se
+# dibuja una curva en dólares al lado de una línea de inflación en pesos — la
+# misma mezcla de unidades que `_en_pesos` condena, en la otra dirección. Para la
+# inflación y el plazo fijo (BENCH_PORCENTUAL) no hay conversión posible del
+# índice: son tasas en pesos. Lo que corresponde es medir la CURVA en pesos, y
+# `twr.curva_indexada` ya sabe hacerlo — pero el frontend rotula el eje con el
+# selector global y no con el `moneda` que esta respuesta ya declara, así que
+# convertir sin tocarlo dejaría el gráfico mal etiquetado, que es peor.
+#
+# Las cuatro superficies que publican el VEREDICTO como frase ("le ganaste a la
+# inflación") ya se migraron a `twr.vs_inflacion_ar`: Reportes (backend y
+# frontend), el Wrapped y el paquete de la IA. Falta este gráfico, que además
+# tiene su propio motor de benchmark duplicado en `Insights.jsx:1582` — o sea que
+# arreglarlo acá solo no alcanza. Es de los "6 lugares que comparan contra un
+# índice sin pasar por performance.py" que la tanda F6 viene a unificar.
+
 
 def _ym(fecha: str) -> str:
     return str(fecha)[:7]

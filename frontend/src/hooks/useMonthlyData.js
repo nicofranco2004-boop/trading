@@ -37,7 +37,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, setBrokersRegistry } from '../utils/valuation'
-import { computeBestWorstClosedOp } from '../utils/insightsModel'
+import { computeBestWorstClosedOp, monthlyReturnArs } from '../utils/insightsModel'
 import { esApto, esDibujable, baseIncomparable, esBordeFresco } from '../utils/evolution'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -82,10 +82,16 @@ function prevPeriodOf(period) {
  *   deltaPct: rendimiento del mes (en %)
  *   sp500Map: dict { 'YYYY-MM': close }
  *   inflationMap: dict { 'YYYY-MM': pct }
+ *   ciUsd / cfUsd / netUsd: las puntas y el flujo del mes EN DÓLARES — los
+ *             valores crudos que sostienen `deltaPct`. Null cuando no hay
+ *             baseline real.
+ *   dolarMap: dict { 'YYYY-MM': TC de cierre del mes } — para medir la
+ *             comparación contra inflación EN PESOS (ver monthlyReturnArs)
  *   period: 'YYYY-MM'
  *   showInflation: bool (si la cartera tiene exposure a ARS)
  */
-function computeDriversForMonth({ monthOps, deltaPct, sp500Map, inflationMap, period, showInflation }) {
+function computeDriversForMonth({ monthOps, deltaPct, ciUsd, cfUsd, netUsd,
+                                  sp500Map, inflationMap, dolarMap, period, showInflation }) {
   // Mejor / peor operación cerrada del mes (solo trades, sin compras/dividendos/etc)
   const tradesInMonth = (monthOps || []).filter(isTradeOp).filter(o => o.pnl_usd != null)
   let bestOp = null, worstOp = null
@@ -118,16 +124,46 @@ function computeDriversForMonth({ monthOps, deltaPct, sp500Map, inflationMap, pe
   // ARS), vsInflation queda null y la fila se oculta como hasta ahora.
   let vsInflation = null
   let vsInflationPending = false
+  let retornoArsPct = null
   if (showInflation && deltaPct != null) {
     const inflPct = inflationMap?.[period]
     if (inflPct != null) {
-      vsInflation = deltaPct - inflPct
+      // SIEMPRE EN PESOS, Y CON EL MOTOR QUE YA EXISTÍA.
+      //
+      // `deltaPct` se mide sobre `total_value`, que está en DÓLARES; la inflación
+      // del INDEC mide precios argentinos, o sea pesos. La resta cruda dejaba
+      // afuera la devaluación, que es exactamente lo que separa las dos monedas.
+      //
+      // `monthlyReturnArs` ya arreglaba esto para la serie de Insights — su
+      // comentario lo dice textual: "el veredicto 'Inflación' divide ese retorno
+      // (dólares) por la inflación del INDEC (pesos) [...] INVIERTE EL SIGNO [...]
+      // el sesgo es siempre en contra del usuario y crece con la ventana (79,9pp
+      // desde 2021)". El arreglo estaba escrito y no había llegado hasta acá.
+      //
+      // Se le pasan los valores CRUDOS y no el porcentaje: así cada punta va al TC
+      // de SU fecha y los flujos al TC medio geométrico del tramo — la cuenta
+      // exacta, no la composición aproximada.
+      const fx = dolarMap?.[period]
+      const fxPrev = dolarMap?.[prevPeriodOf(period)]
+      const rArs = (ciUsd != null && cfUsd != null)
+        ? monthlyReturnArs({ ci: ciUsd, cf: cfUsd, net: netUsd, fxPrev, fx })
+        : null
+      if (rArs != null) {
+        retornoArsPct = rArs * 100
+        vsInflation = retornoArsPct - inflPct
+      } else {
+        // Sin las dos puntas del TC —o sin baseline en dólares— no hay comparación
+        // honesta. Es el mismo estado que "el INDEC todavía no publicó": la
+        // métrica existe, el dato no. Publicar la resta de dos monedas distintas
+        // sería afirmar algo falso.
+        vsInflationPending = true
+      }
     } else {
       vsInflationPending = true
     }
   }
 
-  return { bestOp, worstOp, vsSp500, vsInflation, vsInflationPending }
+  return { bestOp, worstOp, vsSp500, vsInflation, vsInflationPending, retornoArsPct }
 }
 
 /**
@@ -297,6 +333,23 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
 
   const sp500Map = context.bench?.sp500 || null
   const inflationMap = context.bench?.inflation_ar || null
+  // TC de cierre por mes — la misma serie que usa `lookupHistoricalDolar`. Sirve
+  // para medir la comparación contra inflación en PESOS (ver computeDriversForMonth).
+  //
+  // ⚠️ ESTE RIEL NO ES EL DEL BACKEND, Y ES UNA DIVERGENCIA CONOCIDA. Acá es
+  // BLUE (`bench.dolar_blue`); `reporting/builder.py` mide el mismo número con
+  // `twr.serie_fx`, que prefiere MEP y cae a blue. Medido sobre la serie real:
+  // los dos rieles se separan más de 3 % en la mitad de los días con ambos
+  // publicados, más de 10 % en el 8 %, y 25,1 % el peor (2023-10-20).
+  //
+  // No se unificó porque HOY NINGUNA PANTALLA RENDERIZA `drivers.vsInflation`:
+  // se calcula y se devuelve, y no lo consume nadie. Arreglarlo bien es que este
+  // hook use el MEP de `/api/fx-rates` (que ya lo trae) en vez de la serie
+  // mensual de `/api/benchmarks`, lo que implica meterle un fetch más a un hook
+  // caliente para alimentar una salida muerta. Si alguna vez se muestra, ESO hay
+  // que hacer primero — si no, la misma tarjeta daría dos números según quién la
+  // calcule. Es de los motores que F6 viene a unificar.
+  const dolarMap = context.bench?.dolar_blue || null
 
   // 5. Indexar snapshots por mes para sparklines + lookup del valor live.
   // Cada snapshot tiene shape { date: 'YYYY-MM-DD', total_value, ... }.
@@ -378,9 +431,17 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
     // (asume flujos uniformes → peso 0.5).
     const avgCapital = (startUsd || 0) + 0.5 * flows
     let deltaUsd, deltaPct
+    // Las dos puntas EN DÓLARES que sostienen `deltaPct`. Se capturan porque la
+    // comparación contra inflación se mide en PESOS y `monthlyReturnArs` necesita
+    // los valores crudos, no el porcentaje: convertir el % ya calculado es una
+    // aproximación, y acá los valores exactos están a mano.
+    // Quedan en null cuando no hay baseline real ('partial' usa un proxy de P&L,
+    // 'derived' no tiene punta de arranque): ahí no se publica comparación.
+    let ciUsd = null, cfUsd = null
     if (source === 'manual') {
       deltaUsd = endUsd - startUsd - flows
       deltaPct = avgCapital > 0 ? (deltaUsd / avgCapital) * 100 : 0
+      ciUsd = startUsd; cfUsd = endUsd
     } else if (source === 'partial') {
       // Falta data — usamos pnl_realized + pnl_unrealized como proxy
       deltaUsd = pnlRealized + pnlUnrealized
@@ -443,11 +504,13 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
         const avgMtm = mtmStart + 0.5 * flows
         deltaUsd = mtmEnd - mtmStart - flows
         deltaPct = avgMtm > 0 ? (deltaUsd / avgMtm) * 100 : 0
+        ciUsd = mtmStart; cfUsd = mtmEnd
       } else {
         // Sin baseline MtM no se puede calcular el rendimiento del mes sin mezclar
         // bases → no inventamos un número.
         deltaUsd = null
         deltaPct = null
+        ciUsd = null; cfUsd = null
       }
     }
 
@@ -456,8 +519,12 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
     const drivers = computeDriversForMonth({
       monthOps,
       deltaPct,
+      ciUsd,
+      cfUsd,
+      netUsd: flows,
       sp500Map,
       inflationMap,
+      dolarMap,
       period,
       showInflation,
     })
