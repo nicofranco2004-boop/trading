@@ -25,7 +25,7 @@
  *        insights.js.
  */
 import { describe, it, expect } from 'vitest'
-import { capitalMaximoAportado, retornoTotal } from './evolution'
+import { capitalMaximoAportado, retornoTotal, denominadorAportado, PISO_DENOMINADOR_USD } from './evolution'
 import { buildDashboardInsight } from './insights'
 
 // Serie mínima: sólo hace falta `net_deposited` por fecha.
@@ -198,5 +198,89 @@ describe('nadie lo recalcula por su cuenta', () => {
     }
     expect(culpables, 'el denominador del retorno total vive en evolution.js: ' +
       'usá retornoTotal() en vez de dividir por netDeposited a mano').toEqual([])
+  })
+})
+
+
+describe('unificar las siete copias del denominador', () => {
+  // La misma regla vivía escrita SIETE veces con TRES criterios distintos.
+  // Estos tests fijan cuál ganó y por qué las otras dos estaban mal.
+
+  it('el pico de la CARTERA estaba mal: metía la ganancia no realizada', () => {
+    // Aportó 10k, nunca retiró, la cartera vale 30k, realizó 5k.
+    // La curva del Dashboard usaba max(nd, valorCartera*0.8) = 24k → 20,8 %.
+    const conLaReglaVieja = 5_000 / Math.max(10_000, 30_000 * 0.8) * 100
+    expect(conLaReglaVieja).toBeCloseTo(20.83, 1)
+    // La regla única usa el capital APORTADO: 5k sobre 10k = 50 %.
+    expect(5_000 / denominadorAportado(10_000, 10_000) * 100).toBe(50)
+  })
+
+  it('el umbral del 60 % era discontinuo; max() no puede saltar', () => {
+    // Con el umbral, retirar un dólar de más cruzaba el 60 % y el denominador
+    // pegaba un salto que no corresponde a nada que haya pasado.
+    const viejo = (nd, peak) => (nd >= peak * 0.6 && nd > 1000) ? nd : peak
+    expect(viejo(60_000, 100_000)).toBe(60_000)
+    expect(viejo(59_999, 100_000)).toBe(100_000)   // ← salta 40 mil por un dólar
+    // La regla única da lo mismo a los dos lados del ex-umbral.
+    expect(denominadorAportado(60_000, 100_000)).toBe(100_000)
+    expect(denominadorAportado(59_999, 100_000)).toBe(100_000)
+  })
+
+  it('abajo del piso no se publica nada, ni siquiera un cero', () => {
+    expect(denominadorAportado(50, 50)).toBeNull()
+    expect(denominadorAportado(PISO_DENOMINADOR_USD, 0)).toBe(PISO_DENOMINADOR_USD)
+    // …y el hero hereda el piso
+    expect(retornoTotal({ totalValue: 200, netDeposited: 50, capitalMaximo: 50 }).pct).toBeNull()
+    expect(retornoTotal({ totalValue: 200, netDeposited: 50, capitalMaximo: 50 }).usd).toBe(150)
+  })
+
+  it('el retorno total y la curva usan EL MISMO denominador', () => {
+    // Si se separan, la misma pantalla cuenta dos historias.
+    const nd = 5_000, max = 50_000
+    const delHero = retornoTotal({ totalValue: 35_000, netDeposited: nd, capitalMaximo: max })
+    expect(delHero.pct).toBeCloseTo(30_000 / denominadorAportado(nd, max), 10)
+  })
+})
+
+describe('auditar la unificación encontró tres más', () => {
+  it('la CURVA alimentaba su pico con el helper que cae a costo', async () => {
+    // Arreglé ese fallback en `capitalMaximoAportado` y no vi que la curva
+    // tenía el mismo, alimentándose de `netDepositedOf`. Medido con el costo
+    // corrupto conocido (CEDEAR ×1486): el realized% publicaba 0,03 %.
+    const { buildEvolutionFromSnapshots } = await import('./evolution')
+    const snaps = [
+      { date: '2024-01-31', total_value: 10_000, total_invested: 14_860_000,
+        net_deposited: 0, source: 'cron', base: 'mercado', apto: 1 },
+      { date: '2026-01-31', total_value: 30_000, total_invested: 10_000,
+        net_deposited: 10_000, source: 'cron', base: 'mercado', apto: 1 },
+    ]
+    const monthly = [
+      { year: 2024, month: 1, broker: 'global', pnl_realized: 0, capital_inicio: 10_000 },
+      { year: 2026, month: 1, broker: 'global', pnl_realized: 5_000, capital_inicio: 10_000 },
+    ]
+    const r = buildEvolutionFromSnapshots(snaps, monthly, null, 1400)
+    const ultimo = r.seriesUsd[r.seriesUsd.length - 1]
+    expect(ultimo.realized).toBeCloseTo(50, 0)     // 5k realizados sobre 10k aportados
+  })
+
+  it('el piso está en DÓLARES: las dos monedas dan el mismo veredicto', () => {
+    const FX = 1400
+    for (const ndUsd of [50, 99, 100, 150, 5_000]) {
+      const enUsd = denominadorAportado(ndUsd, ndUsd)
+      const enArs = denominadorAportado(ndUsd * FX, ndUsd * FX, FX)
+      expect(enUsd === null, `US$${ndUsd}: una moneda publica y la otra no`)
+        .toBe(enArs === null)
+    }
+  })
+
+  it('sin el FX, los pesos pasaban todos el piso', () => {
+    expect(denominadorAportado(70_000, 70_000)).not.toBeNull()        // sin fx: pasa
+    expect(denominadorAportado(70_000, 70_000, 1400)).toBeNull()      // con fx: no
+  })
+
+  it('un FX inválido no apaga el guard', () => {
+    for (const fx of [0, -1, null, undefined, NaN, 'x']) {
+      expect(denominadorAportado(50, 50, fx), `fx=${fx}`).toBeNull()
+    }
   })
 })

@@ -84,6 +84,50 @@ CLASES = (MEDICION, RECONSTRUIDO, INTRADIA, SINTETICO_COSTO, INDETERMINADO)
 #
 # Lo que NUNCA entra en ninguna es SINTETICO_COSTO: no es una medición de nada,
 # es la cadena contable copiada. Ése era el defecto original.
+# ─── El denominador de cualquier % sobre capital aportado ──────────────────
+#
+# LA regla, una sola vez. El capital contra el que se mide: el mayor entre lo
+# aportado hoy y lo máximo que se llegó a aportar. Sin esto, cada retiro achica
+# el denominador y el porcentaje se infla solo — un cliente que retiró casi
+# todo publicaba +1000 % falso y secuestraba el Mejor/Peor del libro.
+#
+# El PISO existe porque un aportado residual de centavos hace explotar
+# cualquier cociente: US$3 de capital con US$30 de resultado da +1000 %.
+#
+# ⚠️ ESPEJADO en frontend/src/utils/evolution.js (`denominadorAportado` /
+# `PISO_DENOMINADOR_USD`). Hay un test que verifica que los dos números no
+# diverjan. Si tocás uno, tocá el otro.
+#
+# Antes de unificar esto vivía escrito SIETE veces con TRES criterios
+# distintos —el pico del aportado, el pico de la CARTERA × 0,8, y un umbral
+# del 60 %— y el mismo usuario veía números diferentes según la pantalla.
+PISO_DENOMINADOR_USD = 100
+
+
+def denominador_aportado(nd_actual, nd_maximo=0, fx_del_piso=1.0):
+    """El capital contra el que medir, o None si no llega al piso.
+
+    None es "no lo puedo calcular", que no es lo mismo que 0: el llamador tiene
+    que decidir qué muestra, y lo que NUNCA tiene que hacer es publicar un cero.
+
+    ⚠️ EL PISO ESTÁ EN DÓLARES. Si los montos vienen en PESOS hay que pasar el
+    tipo de cambio: comparar 140.000 pesos contra un piso de 100 deja pasar
+    todo, y entonces el mismo usuario con US$50 aportados no ve porcentaje en
+    dólares y sí lo ve en pesos. Las dos monedas tienen que dar el mismo
+    veredicto — este repo ya se quemó con eso en los benchmarks.
+    """
+    def _f(x):
+        try:
+            return float(x or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    d = max(_f(nd_actual), _f(nd_maximo))
+    fx = _f(fx_del_piso)
+    if not (fx > 0):
+        fx = 1.0
+    return d if d >= PISO_DENOMINADOR_USD * fx else None
+
+
 BASE_MERCADO = (MEDICION, RECONSTRUIDO)
 ACEPTA_LINEA = BASE_MERCADO + (INTRADIA,)
 # Alias explícito para los callers que preguntan por un BORDE de período. Es la
