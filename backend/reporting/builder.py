@@ -679,6 +679,41 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
     return float(ini["total_value"]), float(fin["total_value"])
 
 
+def _pct_comp_en_pesos(conn, pct, ventana):
+    """La COMPOSICIÓN anual, que sale en dólares, re-expresada en pesos.
+
+    Hermana de `_pct_en_pesos` y con la misma razón de ser, para la otra fuente
+    del % del año. Aquélla convierte un tramo del que se tienen los valores
+    crudos (y por eso rehace el Dietz en pesos, que es la vía exacta); ésta
+    convierte un porcentaje ya compuesto, porque acá eso es todo lo que hay.
+
+    ⚠️ Y COMPONER AL FINAL ES EXACTO, no una aproximación. Convertir cada mes con
+    su propia devaluación y multiplicar da el mismo número: las puntas intermedias
+    se cancelan de a pares, `Π (1+rₘ)·(fxₘ₁/fxₘ₀) = Π(1+rₘ) · fx_fin/fx_inicio`.
+    Por eso alcanza con las dos puntas de la ventana.
+
+    `ventana` es `(desde, hasta)` — el tramo que la composición REALMENTE cubre,
+    no el año calendario. Es la misma que recibe el benchmark del año, y tiene que
+    serlo: si el rendimiento se convirtiera con el TC de un tramo y el índice con
+    el de otro, la devaluación no se cancelaría entre los dos y la resta volvería
+    a mezclar unidades — el defecto, con un disfraz más difícil de ver.
+
+    Devuelve None si falta cualquiera de las dos puntas del TC. El caller no pisa
+    nada entonces, y se queda con el número que ya estaba medido en pesos.
+    """
+    d0, d1 = (ventana or (None, None))
+    if pct is None or not d0 or not d1:
+        return None
+    try:
+        import twr as _twr_cp
+        _fx, _ = _twr_cp.serie_fx(conn, d0, d1)
+        r = _twr_cp.retorno_en_pesos_pct(pct, _fx(d0), _fx(d1))
+        return round(r, 2) if r is not None else None
+    except Exception:
+        log.exception("composicion anual en pesos %s..%s", d0, d1)
+        return None
+
+
 def _pct_en_pesos(conn, d0: str, d1: str, v0: float, v1: float,
                   deposits: float, withdrawals: float):
     """El MISMO tramo medido a mercado, pero contestando la pregunta en pesos.
@@ -1637,7 +1672,42 @@ def compute_metrics_for_period(
                 _motor_nego_texto = _MOTIVO_MES_DUDOSO
             if (have_comp and year_twr_pct is None and _basis != "mercado"
                     and _motor_nego not in MOTIVOS_DATO_ROTO and not _mes_dudoso):
-                year_twr_pct = round((comp - 1) * 100, 2)
+                _comp_pct = round((comp - 1) * 100, 2)
+                # ⚠️ ESTA COMPOSICIÓN ESTÁ EN DÓLARES, Y PISA UN NÚMERO QUE SÍ
+                # ESTABA EN PESOS.
+                #
+                # `monthly_entries` lleva la contabilidad en dólares, así que el
+                # producto de los Dietz mensuales es un retorno en dólares. Treinta
+                # líneas más abajo (:1760) pisa a `delta_pct` — que para el
+                # selector en Pesos venía de `_pct_puntas_ars` (:1544), medido en
+                # pesos. El selector decía Pesos y el número era el de dólares.
+                #
+                # MEDIDO sobre una cartera plana en dólares, un año con 100 % de
+                # devaluación, S&P +2 % e inflación 50 %:
+                #     publicaba   delta_pct 26,82 % en las DOS monedas
+                #                 "el S&P te ganó por 77" · "la inflación por 23"
+                #     la verdad   en pesos la cartera hizo +153,64 %, el S&P +104 %
+                #                 → le ganó a los dos (+49,6 y +103,6)
+                # Los dos veredictos invertidos, porque el benchmark SÍ se convertía
+                # y el rendimiento no.
+                #
+                # SE CONVIERTE, NO SE RECALCULA — la regla de F5. Y componer al
+                # final es EXACTO, no una aproximación: convertir cada mes con su
+                # propia devaluación y multiplicar da lo mismo, porque las puntas
+                # intermedias se cancelan (Π(1+rₘ)·(fxₘ₁/fxₘ₀) = Π(1+rₘ)·fx_fin/fx_ini).
+                #
+                # LAS PUNTAS SON LAS DE `_ventana_comp`, la ventana que esta
+                # composición REALMENTE cubre — la misma que se le pasa al
+                # benchmark del año (:1762). Usar el año calendario mediría el TC
+                # de un tramo distinto del que mide el rendimiento, y entonces la
+                # devaluación no se cancelaría contra la del índice.
+                if str(moneda).lower() == "ars":
+                    _comp_pct = _pct_comp_en_pesos(conn, _comp_pct, _ventana_comp)
+                # Sin TC no se pisa: `delta_pct` se queda con `_pct_puntas_ars`,
+                # que ya está en pesos. Degradar al número de la otra moneda sería
+                # volver a publicar el defecto que esto cierra.
+                if _comp_pct is not None:
+                    year_twr_pct = _comp_pct
     elif broker_filter != "global":
         # AUDIT H-8 — day/week con filtro de broker: los snapshots son GLOBALES,
         # así que el delta por snapshots mostraba el movimiento de TODO el

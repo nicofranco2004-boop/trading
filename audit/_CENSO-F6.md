@@ -287,8 +287,38 @@ bien calculado. Con el selector en pesos, nadie lo mira. Es el patrón del halla
 O-01 del propio informe ("el dato para decirlo bien viaja en la misma respuesta y
 nadie lo mira").
 
-**NO SE TOCÓ**: está en la zona que la otra sesión está editando ahora mismo.
-Tocarlo a ciegas choca. Es del punto 6.2 de F6 (retorno fuera del motor).
+✅ **ARREGLADO** — decidido con el dueño, coordinando con la otra sesión (se mergeó
+su último commit antes de tocar). Se CONVIERTE la composición, no se recalcula
+(regla de F5), con las puntas de `_ventana_comp` — el tramo que esa composición
+realmente cubre, que es **el mismo que ya recibe el benchmark del año**. Si se
+midieran sobre tramos distintos, la devaluación no se cancelaría entre rendimiento
+e índice y la resta volvería a mezclar unidades, con un disfraz más difícil de ver.
+
+Y componer al final es EXACTO, no aproximado: convertir cada mes con su propia
+devaluación y multiplicar da lo mismo, porque las puntas intermedias se cancelan
+de a pares. Sin TC no se pisa nada y `delta_pct` se queda con el punta-a-punta,
+que ya está en pesos.
+
+Medido después:
+
+    moneda=ars  delta_pct=153,64  sp500=104,0  vs_sp500=+49,64  vs_infl=+103,64
+
+⭐ **La verificación cruzada más fuerte**: `vs_inflation_pct` da **103,64 idéntico
+en las dos monedas**. Se llega por dos caminos independientes —en dólares lo
+convierte `twr.vs_inflacion_ar` (F5), en pesos `delta_pct` ya viene convertido por
+este arreglo— y coinciden. Si alguno de los dos se rompe, el test lo caza.
+
+**PROPAGACIÓN** (grep de quién más compone Dietz de `monthly_entries`):
+`ai/builders/reports.py:84`, `insights.py:272`, `insights_evolution.py:65`,
+`insights_benchmarks.py:134` — ninguno recibe selector de moneda (miden siempre en
+dólares), así que no hay cruce. `main.py:24361` compone la INFLACIÓN, que ya está
+en pesos. El bug estaba acotado a `builder.py`.
+
+**SOSPECHA NO MEDIDA**: para `day`/`week`, `_pct_puntas_ars` no se calcula (su
+condición es `period_type in ("month","year")`), así que `delta_pct` podría quedar
+en dólares con el selector en pesos. **No lo pude reproducir**: el fixture cae
+antes en el guard `dw_incomplete` y `delta_pct` sale `None` en las dos monedas.
+Queda como sospecha, no como hallazgo.
 
 ## `bench_desde` / `bench_hasta` se declaran y nunca se llenan
 
