@@ -28,7 +28,10 @@ from typing import Dict, List, Optional, Tuple
 from collections import Counter
 
 from realized_pnl import realized_usd, pct_creible
+import logging
 import twr as _twr
+
+log = logging.getLogger(__name__)
 
 
 # ── Helpers de cálculo ───────────────────────────────────────────────────────
@@ -99,7 +102,23 @@ def ventana_de_los_retornos(rows: List[dict]) -> Optional[tuple]:
     pares = _retornos_mensuales(rows)
     if not pares:
         return None
-    meses = sorted(f"{r.get('year'):04d}-{(r.get('month') or 0):02d}" for r, _ in pares)
+    # ⚠️ SE VALIDA AÑO Y MES ANTES DE FORMATEARLOS. `monthly_entries` los tiene
+    # NOT NULL en los dos motores, pero NOT NULL admite `month = 0`, y con eso
+    # esta función armaba `'2026--1'` y el `_fin_de_mes` de abajo reventaba con
+    # `ValueError` — o sea un 500 en `/api/wrapped/{year}` por una fila rara. El
+    # slide vs-inflación ya sabe no publicarse sin TC: degradar a None es el
+    # camino que esta función tiene que tomar, no tirar la respuesta entera.
+    meses = []
+    for r, _ in pares:
+        y, m = r.get("year"), r.get("month")
+        if not isinstance(y, int) or not isinstance(m, int):
+            continue
+        if not (1 <= m <= 12) or not (1900 <= y <= 2200):
+            continue
+        meses.append(f"{y:04d}-{m:02d}")
+    if not meses:
+        return None
+    meses.sort()
     y0, m0 = (int(x) for x in meses[0].split("-"))
     previo = f"{y0 - 1:04d}-12" if m0 == 1 else f"{y0:04d}-{m0 - 1:02d}"
     return (previo, meses[-1])
@@ -588,11 +607,21 @@ def build_wrapped(
     # base; acá se decide QUÉ FECHAS, que es lo que depende de `rows`.
     fx_ytd = None
     if fx_de is not None:
-        _v = ventana_de_los_retornos(rows)
-        if _v:
-            _f0, _f1 = fx_de(_fin_de_mes_wrapped(_v[0])), fx_de(_fin_de_mes_wrapped(_v[1]))
-            if _f0 and _f1:
-                fx_ytd = (_f0, _f1)
+        # ⚠️ BLINDADO. `main.py` calculaba el par de TC adentro de su propio
+        # try/except y pasaba una tupla; al pasar la FUNCIÓN, esa protección se
+        # perdió y cualquier error del lookup tiraba `/api/wrapped/{year}` entero.
+        # El slide vs-inflación ya sabe no publicarse sin TC: que falte es una
+        # diapositiva menos, no una respuesta rota.
+        try:
+            _v = ventana_de_los_retornos(rows)
+            if _v:
+                _f0 = fx_de(_fin_de_mes_wrapped(_v[0]))
+                _f1 = fx_de(_fin_de_mes_wrapped(_v[1]))
+                if _f0 and _f1:
+                    fx_ytd = (_f0, _f1)
+        except Exception:
+            log.exception("wrapped: ventana de TC (year=%s)", year)
+            fx_ytd = None
     vs_inf = _slide_vs_inflation(twr, inflation_ytd, year, fx_ytd)
     if vs_inf:
         slides.append(vs_inf)

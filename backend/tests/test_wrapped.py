@@ -471,6 +471,47 @@ def test_las_fechas_que_se_le_piden_al_tc_son_fines_de_mes():
     assert pedidas == ['2026-06-30', '2026-07-31'], pedidas
 
 
+def test_un_mes_invalido_no_tira_la_respuesta_entera():
+    """`monthly_entries.month` es NOT NULL en los dos motores, pero NOT NULL
+    admite `month = 0`. Con eso `ventana_de_los_retornos` armaba `'2026--1'` y el
+    fin-de-mes reventaba: un 500 en `/api/wrapped/{year}` por una fila rara.
+
+    El slide vs-inflación ya sabe no publicarse sin TC — degradar es el camino.
+    """
+    from wrapped import ventana_de_los_retornos
+    base = {'capital_inicio': 1000, 'capital_final': 1100, 'deposits': 0, 'withdrawals': 0}
+    for mes_malo in (0, 13, None, -3):
+        assert ventana_de_los_retornos([{**base, 'year': 2026, 'month': mes_malo}]) is None
+    # Y una fila sana entre filas rotas sigue midiendo.
+    assert ventana_de_los_retornos([{**base, 'year': 2026, 'month': 0},
+                                    {**base, 'year': 2026, 'month': 9}]) == ('2026-08', '2026-09')
+    # El endpoint entero no se cae.
+    out = build_wrapped(2026, [{**base, 'year': 2026, 'month': 0}], [], None, None,
+                        inflation_ytd=0.05, fx_de=lambda _f: 1000.0)
+    assert out['slides']
+
+
+def test_si_el_lookup_de_tc_falla_se_pierde_el_slide_no_la_respuesta():
+    """`main.py` calculaba el par de TC en su propio try/except y pasaba una
+    tupla. Al pasar la FUNCIÓN esa protección se perdió y cualquier error del
+    lookup tiraba la respuesta entera."""
+    base = {'capital_inicio': 1000, 'capital_final': 1100, 'deposits': 0,
+            'withdrawals': 0, 'pnl_realized': 100, 'pnl_unrealized': 0}
+    rows = [{**base, 'year': 2026, 'month': 7}]
+
+    def fx_roto(_fecha):
+        raise RuntimeError('la serie de TC se cayó')
+
+    out = build_wrapped(2026, rows, [], None, None, inflation_ytd=0.05, fx_de=fx_roto)
+    codes = [s['code'] for s in out['slides']]
+    assert 'vs_inflation' not in codes      # el slide no se publica
+    assert 'intro' in codes and 'outro' in codes   # pero la respuesta vive
+
+    sano = build_wrapped(2026, rows, [], None, None, inflation_ytd=0.05,
+                         fx_de=lambda _f: 1000.0)
+    assert 'vs_inflation' in [s['code'] for s in sano['slides']]
+
+
 def test_sin_tc_no_publica():
     """Sin las dos puntas del TC no se puede convertir, y publicar la resta de dos
     monedas distintas en una imagen compartible es peor que no publicar el slide."""
