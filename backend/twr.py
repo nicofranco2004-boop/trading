@@ -1296,11 +1296,35 @@ def retorno_en_pesos_pct(retorno_pct, fx0, fx1):
     Devuelve None si falta cualquiera de las dos puntas del TC: sin devaluación no
     hay conversión, y publicar el número de dólares con etiqueta de pesos es
     exactamente el defecto que esto viene a cerrar.
+
+    ⚠️ Y "FALTA" INCLUYE NEGATIVO, NO SÓLO None Y CERO (F6). El guard era
+    `not fx0 or not fx1`, que es "¿tiene valor?" y no "¿es un tipo de cambio?": un
+    TC negativo lo cruzaba entero. MEDIDO acá mismo:
+
+        retorno_en_pesos_pct(2,0, fx0=−1000, fx1=1200)  →  −222,4 %
+        vs_inflacion_ar(10,0, 5,0, fx0=−1000, fx1=1200) →  (−232,0 · −237,0 pp)
+
+    Es la misma corrección que `295b3d3e` (F5) hizo en el guard de al lado —"la
+    guarda del TC era 'tiene valor' y no 'es positivo'"— y que a esta función no
+    había llegado: un fix correcto aplicado a un call site de dos. Un TC no puede
+    ser negativo; si la fuente lo da, el dato está roto y la respuesta es "no sé",
+    no un rendimiento de tres cifras con el signo dado vuelta.
+
+    Ojo con la trampa aritmética que lo hacía difícil de ver: con las DOS puntas
+    negativas el cociente se normaliza solo y el número sale correcto, así que el
+    defecto sólo aparece cuando una sola de las dos está rota — que es justo el
+    caso que una fuente con errores produce.
     """
     if retorno_pct is None or not fx0 or not fx1:
         return None
     try:
-        return ((1 + float(retorno_pct) / 100.0) * (float(fx1) / float(fx0)) - 1) * 100.0
+        _f0, _f1 = float(fx0), float(fx1)
+    except (TypeError, ValueError):
+        return None
+    if _f0 <= 0 or _f1 <= 0:
+        return None
+    try:
+        return ((1 + float(retorno_pct) / 100.0) * (_f1 / _f0) - 1) * 100.0
     except (TypeError, ValueError, ZeroDivisionError):
         return None
 

@@ -34816,8 +34816,32 @@ def reports_years(
                             parcial["parcial_desde"] = _c["ventana_desde"]
                             parcial["parcial_hasta"] = _c["ventana_hasta"]
                             # El veredicto del tramo se mide en el MISMO tramo.
+                            # ⚠️ Y EN LA MISMA MONEDA (F6). `parcial_pct` sale de
+                            # `curva_indexada`, que recibe `moneda` cuatro líneas
+                            # arriba y devuelve pesos cuando el selector está en
+                            # Pesos. El S&P de esta resta salía SIEMPRE en dólares,
+                            # así que con el selector en Pesos le regalaba la
+                            # devaluación entera al veredicto — el mismo defecto
+                            # que el `vs_sp500_pct` del año completo, en el tramo
+                            # parcial, que es justamente el que se publica cuando
+                            # el año completo no se puede medir.
+                            #
+                            # TERCER call site del mismo patrón en la misma
+                            # pantalla; los otros dos viven en `reporting/builder`
+                            # y ya lo tienen. La conversión NO se copia acá: se le
+                            # pide a `benchmark_entre_fechas` declarando `moneda`,
+                            # y el primitivo decide. Sin TC devuelve None y no se
+                            # publica, que es mejor que publicarlo cruzado.
                             from reporting.builder import benchmark_entre_fechas as _bef
-                            _sp = _bef(bench_data, _c["ventana_desde"], _c["ventana_hasta"], "sp500")
+                            _fx_parcial = None
+                            if str(moneda).lower() == "ars":
+                                try:
+                                    _fx_parcial = _twr_p.serie_fx(
+                                        conn, None, _c["ventana_hasta"])[0]
+                                except Exception:
+                                    log.exception("serie_fx tramo parcial uid=%s", uid)
+                            _sp = _bef(bench_data, _c["ventana_desde"], _c["ventana_hasta"],
+                                       "sp500", fx=_fx_parcial, moneda=moneda)
                             if _sp is not None:
                                 parcial["parcial_vs_sp500_pct"] = round(
                                     parcial["parcial_pct"] - _sp, 2)

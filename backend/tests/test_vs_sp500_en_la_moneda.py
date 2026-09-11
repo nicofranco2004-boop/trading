@@ -4,8 +4,8 @@ EL BUG
 ──────
 `benchmark_return_for_period` devuelve números en MONEDAS DISTINTAS según la
 `key` —el S&P en dólares, la inflación del INDEC en pesos— y no lo declara en
-ninguna parte. `delta_pct`, en cambio, sigue el selector de moneda (`:1544` lo
-pisa con `_pct_puntas_ars`).
+ninguna parte. `delta_pct`, en cambio, sigue el selector de moneda (lo pisa
+`_pct_puntas_ars`).
 
 O sea que SIEMPRE había exactamente una de las dos patas cruzada, y cuál era
 dependía del selector. F5 arregló la pata de la inflación —la que se cruza con el
@@ -30,7 +30,7 @@ existe —es lo que valdría en pesos la misma plata puesta en el índice—, as
 se mueve el ÍNDICE a la moneda de la cartera. Con la inflación es al revés (una
 tasa en pesos no tiene versión en dólares) y por eso tiene su propia función,
 `twr.vs_inflacion_ar`. Quién está en qué moneda lo decide `performance.BENCH_EN_ARS`,
-la misma tabla que ya usaba el motor del gráfico (`performance`, :238) — no hay
+la misma tabla que ya usaba el motor del gráfico (`performance._en_pesos`) — no hay
 una segunda lista.
 
 CUÁLES MIDEN DE VERDAD
@@ -331,6 +331,135 @@ class LaPuertaSinGuardiaTest(unittest.TestCase):
                 BENCH, "month", "2026-03-01", "2026-03-31", "inflation_ar",
                 fx=lambda d: 1200.0, moneda=moneda)
             self.assertAlmostEqual(r, 4.5, places=2, msg=str(moneda))
+
+
+class ElTramoParcialTest(unittest.TestCase):
+    """TERCER call site del mismo patron, en la pantalla NUEVA del anio.
+
+    `/api/reports/years` publica un tramo PARCIAL cuando el anio completo no se
+    puede medir ("+2,15 % desde el 30 de junio"). Ese `parcial_pct` sale de
+    `twr.curva_indexada`, que recibe `moneda` y devuelve PESOS con el selector en
+    Pesos — y el S&P contra el que se restaba salia SIEMPRE EN DOLARES, porque la
+    llamada a `benchmark_entre_fechas` no pasaba ni `fx` ni `moneda`.
+
+    MEDIDO con la serie del tramo (S&P 100 -> 110, el peso valiendo la mitad):
+
+        S&P que se restaba (dolares)   =  10,0 %
+        S&P que corresponde (pesos)    = 120,0 %   (1,10 x 2 - 1)
+
+    110 puntos regalados al veredicto, en el numero que esa pantalla publica
+    JUSTO CUANDO el del anio completo no esta disponible.
+    """
+
+    BENCH = {"sp500_d": {"2025-06-30": 100.0, "2025-12-31": 110.0}}
+    TC = {"2025-06-30": 1000.0, "2025-12-31": 2000.0}
+
+    def _fx(self, d):
+        return self.TC.get(str(d)[:10])
+
+    def test_el_tramo_parcial_tambien_va_en_la_moneda_de_la_cartera(self):
+        from reporting import builder as _b
+        en_pesos = _b.benchmark_entre_fechas(
+            self.BENCH, "2025-06-30", "2025-12-31", "sp500",
+            fx=self._fx, moneda="ars")
+        self.assertAlmostEqual(en_pesos, 120.0, places=1)
+        # Lo que se pasaba antes (sin moneda ni fx): el S&P en dolares.
+        viejo = _b.benchmark_entre_fechas(
+            self.BENCH, "2025-06-30", "2025-12-31", "sp500")
+        self.assertAlmostEqual(viejo, 10.0, places=1)
+        self.assertNotAlmostEqual(en_pesos, viejo, places=1)
+
+    def test_en_dolares_el_tramo_no_cambia(self):
+        from reporting import builder as _b
+        self.assertAlmostEqual(
+            _b.benchmark_entre_fechas(self.BENCH, "2025-06-30", "2025-12-31",
+                                      "sp500", fx=None, moneda="usd"),
+            10.0, places=1)
+
+    def test_en_pesos_sin_TC_el_tramo_no_publica(self):
+        from reporting import builder as _b
+        self.assertIsNone(_b.benchmark_entre_fechas(
+            self.BENCH, "2025-06-30", "2025-12-31", "sp500",
+            fx=None, moneda="ars"))
+
+    def test_GUARD_todo_caller_de_produccion_declara_la_moneda(self):
+        """LEE CODIGO. Un test de comportamiento pasa igual si manana aparece el
+        cuarto caller sin `moneda` — que es exactamente como nacio este bug: tres
+        call sites del mismo patron en la misma pantalla, dos con el arreglo y uno
+        sin el."""
+        import pathlib as _pl, re as _re
+        raiz = _pl.Path(__file__).resolve().parent.parent
+        culpables = []
+        for py in raiz.rglob("*.py"):
+            if "/tests/" in str(py):
+                continue
+            txt = py.read_text(encoding="utf-8", errors="ignore")
+            for m in _re.finditer(
+                    r"(?:_bef|benchmark_entre_fechas|benchmark_return_for_period)\s*\("
+                    r"(?:[^()]|\([^()]*\))*\)", txt):
+                llamada = m.group(0)
+                if llamada.lstrip().startswith("def "):
+                    continue
+                if "moneda" not in llamada:
+                    linea = txt[:m.start()].count(chr(10)) + 1
+                    culpables.append(f"{py.relative_to(raiz)}:{linea}")
+        self.assertEqual(
+            culpables, [],
+            "hay callers que no declaran la moneda del benchmark; sin eso el "
+            "indice sale en dolares contra una cartera en pesos:\n"
+            + "\n".join(culpables))
+
+
+class ElTCNegativoTest(unittest.TestCase):
+    """Un tipo de cambio NEGATIVO cruzaba el guard entero.
+
+    `twr.retorno_en_pesos_pct` cortaba con `not fx0 or not fx1`, que pregunta
+    "tiene valor?" y no "es un tipo de cambio?". `not (-1000)` es False, asi que
+    un negativo pasaba derecho. MEDIDO antes del arreglo:
+
+        retorno_en_pesos_pct(2,0, fx0=-1000, fx1=1200)  ->  -222,4 %
+        vs_inflacion_ar(10,0, 5,0, fx0=-1000, fx1=1200) ->  (-232,0 . -237,0 pp)
+
+    Es la MISMA correccion que `295b3d3e` (F5) hizo en el guard de al lado —"la
+    guarda del TC era 'tiene valor' y no 'es positivo'"— y que a esta funcion no
+    habia llegado: un fix correcto aplicado a un call site de dos. El arreglo va
+    en la RAIZ, asi que cubre a `vs_inflacion_ar` (ya deployado con el agujero),
+    a `retorno_bench_en_moneda` y a `_pct_comp_en_pesos` de una vez.
+
+    ⚠️ LA TRAMPA QUE LO HACIA DIFICIL DE VER: con las DOS puntas negativas el
+    cociente se normaliza solo y el numero sale bien. El defecto aparece solo
+    cuando UNA de las dos esta rota — que es justo lo que produce una fuente con
+    errores, y la de este repo los tiene documentados (45 % de spread, 73 dias con
+    la compra por encima de la venta).
+    """
+
+    def test_el_primitivo_rechaza_un_TC_negativo(self):
+        self.assertIsNone(twr.retorno_en_pesos_pct(2.0, -1000, 1200))
+        self.assertIsNone(twr.retorno_en_pesos_pct(2.0, 1000, -1200))
+        # Y tambien cuando los DOS son negativos, donde el numero "salia bien"
+        # por casualidad: un TC negativo es un dato roto, no una convencion.
+        self.assertIsNone(twr.retorno_en_pesos_pct(2.0, -1000, -1200))
+
+    def test_vs_inflacion_ar_hereda_el_guard(self):
+        """Ya estaba deployado con el agujero. El arreglo en la raiz lo cubre."""
+        self.assertEqual(twr.vs_inflacion_ar(10.0, 5.0, fx0=-1000, fx1=1200),
+                         (None, None))
+
+    def test_el_conversor_de_benchmark_hereda_el_guard(self):
+        for fx0, fx1 in ((-1000, 1200), (1000, -1200), (-1000, -1200)):
+            self.assertIsNone(
+                performance.retorno_bench_en_moneda(
+                    2.0, "sp500", moneda=twr.MONEDA_ARS, fx0=fx0, fx1=fx1),
+                f"fx0={fx0} fx1={fx1}")
+
+    def test_lo_que_SI_es_un_TC_sigue_funcionando(self):
+        """El guard no puede tapar lo bueno."""
+        self.assertAlmostEqual(twr.retorno_en_pesos_pct(2.0, 1000, 1200), 22.4, places=6)
+        # Revaluacion (el peso se fortalece): fx1 < fx0, los dos positivos.
+        self.assertAlmostEqual(twr.retorno_en_pesos_pct(2.0, 1200, 1000),
+                               (1.02 * 1000 / 1200 - 1) * 100, places=6)
+        self.assertEqual(twr.vs_inflacion_ar(0.0, 20.0, fx0=1000, fx1=1500),
+                         (50.0, 30.0))
 
 
 class UnaSolaTablaDeMonedasGuardTest(unittest.TestCase):
