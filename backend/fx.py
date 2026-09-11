@@ -86,14 +86,46 @@ RIEL_BLUE = "blue"
 #
 # `CASE` y no `COALESCE`: con la compra en NULL la condición da NULL, que no es
 # verdadera, y cae al ELSE. Funciona igual en SQLite y en Postgres.
+SPREAD_MAX = 0.10
+
+
 def _sql_medio(compra: str, venta: str) -> str:
     return (f"CASE WHEN {compra} > 0 AND {compra} < {venta} "
-            f"AND ({venta} - {compra}) <= 0.10 * {venta} "
+            f"AND ({venta} - {compra}) <= {SPREAD_MAX} * {venta} "
             f"THEN ({compra} + {venta}) / 2.0 ELSE {venta} END")
 
 
 SQL_MEDIO_MEP = _sql_medio("mep_compra", "mep_venta")
 SQL_MEDIO_BLUE = _sql_medio("blue_compra", "blue_venta")
+
+
+
+def punta_media(compra, venta):
+    """LA MISMA REGLA que `_sql_medio`, para los callers que NO pasan por SQL.
+
+    La hay en dos medios porque hay dos caminos: los siete lectores de
+    `fx_rates_daily` arman su consulta (y ahí la cuenta viaja como expresión), y
+    los que reciben el JSON de la fuente la necesitan en Python — hoy
+    `_fetch_dolar_blue_monthly`, que arma la serie mensual de benchmarks sin
+    tocar la tabla. Es el mismo patrón que `fechas.py` ↔ `fecha.js`, y
+    `tests/test_dolar_medio_historico.py` verifica que las dos den lo mismo.
+
+    Devuelve la punta de venta cuando la compra falta o es implausible — el
+    statu quo, que es lo que hay que hacer ante la duda.
+    """
+    try:
+        v = float(venta)
+    except (TypeError, ValueError):
+        return None
+    if not v > 0:
+        return None
+    try:
+        c = float(compra) if compra is not None else None
+    except (TypeError, ValueError):
+        c = None
+    if c is None or not (0 < c < v) or (v - c) > SPREAD_MAX * v:
+        return v
+    return (c + v) / 2.0
 
 _COL = {RIEL_MEP: SQL_MEDIO_MEP, RIEL_BLUE: SQL_MEDIO_BLUE}
 

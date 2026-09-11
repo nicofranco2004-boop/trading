@@ -206,7 +206,30 @@ class UnaSolaCuentaGuardTest(unittest.TestCase):
             "los dos rieles se calculan distinto")
         # Y el filtro de cordura sigue adentro (no es decorativo: sin él, el
         # 2025-05-02 del MEP mueve el dólar de esa fecha −22,4 %).
-        self.assertIn("0.10", fx.SQL_MEDIO_MEP)
+        self.assertIn(str(fx.SPREAD_MAX), fx.SQL_MEDIO_MEP)
+        self.assertIn("CASE WHEN", fx.SQL_MEDIO_MEP)
+
+    def test_la_version_de_SQL_y_la_de_PYTHON_dan_lo_mismo(self):
+        """La regla vive en dos medios porque hay dos caminos: los lectores de la
+        tabla arman consultas, y `_fetch_dolar_blue_monthly` recibe el JSON de la
+        fuente sin tocar la tabla. Mismo patrón que `fechas.py` ↔ `fecha.js`: dos
+        implementaciones y un test que las ata.
+
+        Sin esto, el día podrido del 45 % entraba por la puerta de Python —la
+        única sin guardia— mientras la de SQL lo rechazaba.
+        """
+        import sqlite3
+        casos = [(1300, 1400), (None, 1400), (0, 1400), (751.67, 1363.6),
+                 (1500, 1400), (1288, 1400), (1400, 1400), (-5, 1400),
+                 (1399.99, 1400), (1260, 1400)]
+        c = sqlite3.connect(":memory:")
+        c.execute("CREATE TABLE t (mep_compra REAL, mep_venta REAL)")
+        c.executemany("INSERT INTO t VALUES (?,?)", casos)
+        en_sql = [r[0] for r in c.execute(f"SELECT {fx.SQL_MEDIO_MEP} FROM t")]
+        for (compra, venta), sql in zip(casos, en_sql):
+            self.assertAlmostEqual(
+                fx.punta_media(compra, venta), sql, places=9,
+                msg=f"SQL y Python se separaron en compra={compra} venta={venta}")
 
     def test_nadie_re_escribe_la_cuenta(self):
         """Nadie arma el promedio a mano en una consulta propia."""

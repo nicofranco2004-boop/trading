@@ -4925,8 +4925,23 @@ def _persist_blue_for_date(date_str: str, blue: float, source: str = 'snapshot_c
     if not blue or blue <= 0 or not date_str:
         return False
     mep_val = float(mep) if (mep and mep > 0) else None
-    bc_val = float(blue_compra) if (blue_compra and blue_compra > 0) else None
-    mc_val = float(mep_compra) if (mep_compra and mep_compra > 0) else None
+    # Se guarda la compra SÓLO si la regla única la usaría. Guardar una compra
+    # que el lector va a descartar es guardar ruido que parece dato.
+    def _compra_usable(compra, venta):
+        try:
+            v = float(venta) if venta else None
+        except (TypeError, ValueError):
+            return None
+        if not v or not compra:
+            return None
+        try:
+            c = float(compra)
+        except (TypeError, ValueError):
+            return None
+        return c if _fx.punta_media(c, v) != v else None
+
+    bc_val = _compra_usable(blue_compra, blue)
+    mc_val = _compra_usable(mep_compra, mep)
     conn = None
     try:
         conn = get_db()
@@ -5156,16 +5171,17 @@ def _backfill_compras_if_missing():
                     fecha = item.get("fecha", "")
                     compra, venta = item.get("compra"), item.get("venta")
                     if fecha and compra is not None and len(fecha) == 10:
+                        # MISMO filtro que el lector, preguntándoselo a la regla
+                        # única: si `punta_media` no usaría esa compra, no se
+                        # guarda. La fuente tiene dato podrido (el 2025-05-02 el
+                        # MEP figura con 45 % de spread, y hay 73 días con la
+                        # compra por encima de la venta) y ante la duda el lector
+                        # cae a la punta de venta, que es lo que ya usaba.
                         try:
                             c, v = float(compra), float(venta or 0)
                         except (TypeError, ValueError):
                             continue
-                        # MISMO filtro que el lector (`fx._sql_medio`): la fuente
-                        # tiene dato podrido —el 2025-05-02 el MEP figura con 45 %
-                        # de spread, y hay 73 días con la compra por encima de la
-                        # venta—. Ante la duda no se guarda: el lector cae a la
-                        # punta de venta, que es lo que ya usaba.
-                        if c > 0 and v > 0 and c < v and (v - c) <= 0.10 * v:
+                        if v > 0 and _fx.punta_media(c, v) != v:
                             updates.append((c, fecha))
                 if updates:
                     conn.executemany(
@@ -5791,14 +5807,14 @@ def _fetch_dolar_blue_monthly():
             venta = item.get("venta")
             compra = item.get("compra")
             if fecha and venta is not None:
-                try:
-                    _v = float(venta)
-                    _c = float(compra) if compra is not None else None
-                except (TypeError, ValueError):
-                    continue
-                # Misma regla que `_val_rate` y que `fx.SQL_MEDIO_*`: medio con red
-                # a la punta de venta cuando no hay compra.
-                out[fecha[:7]] = ((_c + _v) / 2) if (_c and _c > 0) else _v
+                # LA MISMA regla que la expresión SQL, no una copia: `punta_media`
+                # trae el filtro de cordura (la fuente tiene un día con 45 % de
+                # spread y 73 con la compra por encima de la venta). Acá no pasa
+                # por SQL —se arma desde el JSON— así que sin esto ese dato entraba
+                # por la única puerta sin guardia.
+                _m = _fx.punta_media(compra, venta)
+                if _m is not None:
+                    out[fecha[:7]] = _m
         return out
     except Exception:
         return {}
