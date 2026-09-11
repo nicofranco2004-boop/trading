@@ -267,8 +267,14 @@ inflación 50 %:
                              ↑ EL MISMO NÚMERO EN LAS DOS MONEDAS
 
 Con el selector en Pesos el usuario lee **"el S&P te ganó por 77 puntos"** y
-**"la inflación te ganó por 23"**, cuando lo correcto es *le ganaste por 24,8* y
-*le ganaste por 103,6*. **Los dos veredictos invertidos.**
+**"la inflación te ganó por 23"**. Medido TODO en pesos, que es lo que el selector
+promete: la cartera hizo +153,64 %, el S&P +104 % y la inflación 50 %, o sea
+**le ganó al S&P por 49,6 puntos y a la inflación por 103,6**. En dólares el
+veredicto es el mismo signo (+24,8 contra el S&P). **Los dos invertidos, en
+cualquiera de las dos lecturas.**
+
+⚠️ **ESTÁ EN PRODUCCIÓN**: `/api/health` y `version.json` devuelven `e9211ca5`,
+que es `origin/main`. Llegó con el deploy de hoy, no es viejo.
 
 CAUSA RAÍZ, y es de libro: para el AÑO, cuando el motor canónico no puede medir,
 `delta_pct` cae a la composición geométrica de `monthly_entries` (`:1443`), que
