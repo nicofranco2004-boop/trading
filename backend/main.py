@@ -34532,6 +34532,18 @@ def reports_years(
                 out.append({
                     "year": y,
                     "is_current": es_actual,
+                    # ⚠️ CUÁNTOS MESES TIENE ESTE AÑO, DICHO POR EL SERVIDOR. La
+                    # pantalla lo usa de denominador para "meses en verde" y para
+                    # contar los que faltan. Un primer intento lo derivaba del mes
+                    # de `bench_hasta`, que describe OTRA cosa —la ventana en que se
+                    # midió el índice—: con la ventana terminando en junio, un año
+                    # en curso en septiembre habría dicho "de 6" y se habría comido
+                    # tres meses sin medir. Y cuando no hay ventana, caía al conteo
+                    # de meses CON dato, que es exactamente el defecto que esto vino
+                    # a cerrar ("11 de 11" en un año de doce).
+                    # Va desde acá porque el "hoy" de Rendi es el día ARGENTINO y
+                    # vive en el backend, no en el reloj del navegador.
+                    "meses_del_anio": (hoy.month if es_actual else 12),
                     "pct": m.delta_pct,
                     "usd": m.delta_usd,
                     "start_value": m.start_value,

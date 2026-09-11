@@ -66,7 +66,26 @@ export default function useReportYears(broker = 'global', modo = 'certero', mone
     return () => { cancelled = true }
   }, [broker, modo, moneda])
 
-  useEffect(() => load(), [load])
+  // ⚠️ Y SE VUELVE A PEDIR CUANDO LOS DATOS CAMBIAN. El Dashboard se recarga solo
+  // ante `rendi:portfolio-changed` —que emiten el importador, el chat que registra
+  // operaciones, el ajuste de split y el aviso de trial— y al volver a la pestaña.
+  // Este hook no escuchaba ninguna de las dos: importabas un archivo, todo el
+  // Dashboard se actualizaba y la card del año se quedaba con el número anterior
+  // hasta recargar la página a mano.
+  useEffect(() => {
+    let cancelar = load()
+    function refrescar() {
+      if (cancelar) cancelar()
+      cancelar = load()
+    }
+    window.addEventListener('rendi:portfolio-changed', refrescar)
+    window.addEventListener('focus', refrescar)
+    return () => {
+      if (cancelar) cancelar()
+      window.removeEventListener('rendi:portfolio-changed', refrescar)
+      window.removeEventListener('focus', refrescar)
+    }
+  }, [load])
 
   // El año en curso — el que muestra el inicio. El backend lo manda primero y
   // marcado, así que no se deduce de `new Date()`: el "hoy" de Rendi es el día
