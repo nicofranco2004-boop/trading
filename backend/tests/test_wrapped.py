@@ -429,6 +429,48 @@ def test_la_devaluacion_da_vuelta_el_veredicto():
     assert etiquetas['Tu rendimiento en pesos'].startswith('+50')
 
 
+def test_la_ventana_del_tc_es_la_del_retorno_no_la_del_anio():
+    """Una cuenta que EMPEZÓ EN JUNIO tiene un retorno de jun–dic.
+
+    Convertirlo con el dólar del 31 de diciembre ANTERIOR le metería seis meses de
+    devaluación que ese retorno no contiene. `ventana_de_los_retornos` devuelve el
+    tramo real, y `_retornos_mensuales` ya descarta el mes de alta.
+    """
+    from wrapped import ventana_de_los_retornos
+    # Alta en junio: ese mes no se puede medir (capital_inicio 0) y queda afuera.
+    rows = [
+        {'year': 2026, 'month': 6, 'broker': 'global', 'capital_inicio': 0,
+         'capital_final': 1000, 'deposits': 1000, 'withdrawals': 0},
+        {'year': 2026, 'month': 7, 'broker': 'global', 'capital_inicio': 1000,
+         'capital_final': 1100, 'deposits': 0, 'withdrawals': 0},
+        {'year': 2026, 'month': 12, 'broker': 'global', 'capital_inicio': 1100,
+         'capital_final': 1300, 'deposits': 0, 'withdrawals': 0},
+    ]
+    assert ventana_de_los_retornos(rows) == ('2026-06', '2026-12')
+    # Y NO ('2025-12', '2026-12'), que es el año entero.
+    assert ventana_de_los_retornos([]) is None
+
+
+def test_las_fechas_que_se_le_piden_al_tc_son_fines_de_mes():
+    """El TC de cierre del tramo, no el de un día cualquiera."""
+    pedidas = []
+
+    def fx_espia(fecha):
+        pedidas.append(fecha)
+        return 1000.0
+
+    monthly = [
+        {'year': 2026, 'month': 6, 'broker': 'global', 'capital_inicio': 0,
+         'capital_final': 1000, 'deposits': 1000, 'withdrawals': 0,
+         'pnl_realized': 0, 'pnl_unrealized': 0},
+        {'year': 2026, 'month': 7, 'broker': 'global', 'capital_inicio': 1000,
+         'capital_final': 1100, 'deposits': 0, 'withdrawals': 0,
+         'pnl_realized': 100, 'pnl_unrealized': 0},
+    ]
+    build_wrapped(2026, monthly, [], None, None, inflation_ytd=0.05, fx_de=fx_espia)
+    assert pedidas == ['2026-06-30', '2026-07-31'], pedidas
+
+
 def test_sin_tc_no_publica():
     """Sin las dos puntas del TC no se puede convertir, y publicar la resta de dos
     monedas distintas en una imagen compartible es peor que no publicar el slide."""
@@ -463,7 +505,7 @@ def test_build_wrapped_complete_year():
     ]
     benchmarks = {'sp500_ytd': 0.10, 'merval_ytd': 0.08}
     out = build_wrapped(2026, monthly, ops, behavioral, benchmarks, inflation_ytd=0.20,
-                        fx_ytd=SIN_DEVALUACION)
+                        fx_de=lambda _fecha: 1000.0)   # TC plano = sin devaluación
 
     assert out['summary']['has_data'] is True
     codes = [s['code'] for s in out['slides']]

@@ -14361,7 +14361,6 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
             benchmarks = {}
         # Inflación YTD AR: compose por mes del año
         inflation_ytd = None
-        _ultimo_mes_infl = None
         try:
             if inflation_monthly:
                 acc = 1.0
@@ -14370,34 +14369,29 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
                     if isinstance(ym, str) and ym.startswith(f"{year}-"):
                         acc *= 1 + (m_pct or 0) / 100
                         any_match = True
-                        _ultimo_mes_infl = ym
                 if any_match:
                     inflation_ytd = acc - 1
         except Exception:
             inflation_ytd = None
-            _ultimo_mes_infl = None
-        # El TC de las DOS PUNTAS, para medir la comparación contra inflación en
-        # pesos (ver `twr.vs_inflacion_ar`). La ventana tiene que ser LA MISMA que
-        # la de la inflación: el INDEC publica con ~14 días de retraso, así que en
-        # el año en curso `inflation_ytd` llega hasta el mes pasado. Tomar la
-        # devaluación hasta hoy compararía nueve meses de dólar contra ocho de
-        # precios — y esa diferencia es justamente lo que el número mide.
-        fx_ytd = None
+        # El TC POR FECHA. Acá sólo se provee el LOOKUP; QUÉ DOS FECHAS usar lo
+        # decide `build_wrapped`, que es quien sabe qué tramo cubre realmente el
+        # retorno encadenado.
+        #
+        # Ese tramo NO es "el año". `_retornos_mensuales` descarta los meses que no
+        # se pueden medir, empezando por el de alta: una cuenta abierta en junio
+        # tiene un retorno de jun–dic, y convertirlo con el dólar del 31 de
+        # diciembre anterior le metería seis meses de devaluación que no contiene.
+        fx_de = None
         try:
-            if _ultimo_mes_infl:
-                import twr as _twr_w
-                _d0 = f"{year - 1}-12-31"
-                _d1 = _twr_w._fin_de_mes(_ultimo_mes_infl)
-                _fxfn, _ = _twr_w.serie_fx(conn, _d0, _d1)
-                _f0, _f1 = _fxfn(_d0), _fxfn(_d1)
-                if _f0 and _f1:
-                    fx_ytd = (_f0, _f1)
+            import twr as _twr_w
+            _fxfn, _ = _twr_w.serie_fx(conn, None, f"{year}-12-31")
+            fx_de = _fxfn
         except Exception:
-            logging.exception("wrapped fx_ytd %s", year)
+            logging.exception("wrapped serie_fx %s", year)
     finally:
         conn.close()
     return build_wrapped(year, monthly, ops, behavioral_cards, benchmarks,
-                         inflation_ytd, fx_ytd)
+                         inflation_ytd, fx_de)
 
 
 @app.get("/api/behavioral/insights")

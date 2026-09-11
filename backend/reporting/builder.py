@@ -1707,37 +1707,42 @@ def compute_metrics_for_period(
     # `vs_inflacion_ar` la usan el Wrapped y el paquete de la IA, que componen
     # meses y no legs. El gráfico de Performance NO está migrado — ver la nota en
     # `performance.py`.
-    _ret_ars_infl = None
-    if delta_pct is not None and inflation_ret is not None:
-        if str(moneda).lower() == "ars":
-            # Ya viene medido en pesos por el motor: `_pct_puntas_ars` lo pisó más
-            # arriba. Volver a convertirlo contaría la devaluación dos veces.
-            _ret_ars_infl = delta_pct
-        else:
-            # LA MISMA función que usa la rama de pesos, no una conversión propia:
-            # `_pct_en_pesos` hace el Dietz con cada punta al TC de SU fecha y el
-            # flujo al TC medio geométrico del tramo. Calcular acá la composición
-            # `(1+r)·(fx1/fx0)` sería tener dos motores para el mismo número dentro
-            # de la misma función — y es exactamente así como se desincronizan.
-            #
-            # Sólo se paga en períodos MENSUALES: `benchmark_return_for_period`
-            # devuelve None para semana y día, así que `inflation_ret` es None y
-            # ni se entra acá. Es el mismo costo que la vista en pesos ya paga
-            # hoy por cada mes (`_pct_puntas_ars`, más arriba), no uno nuevo.
-            # Medido con la serie de FX del tamaño real (5.634 filas): 3,5 ms por
-            # mes, 127 ms un timeline entero de 36 meses en SQLite. `serie_fx` lee
-            # la serie completa en cada llamada a propósito (necesita el arrastre
-            # del último hábil previo); si esto alguna vez molesta, lo que
-            # corresponde es memoizarla por request como `pair_cache`, no volver a
-            # calcular el número de otra manera.
-            _d0_infl = _dia_anterior(period_start)
-            if _d0_infl:
-                _ret_ars_infl = _pct_en_pesos(
-                    conn, _d0_infl, period_end, start_value, end_value,
-                    deposits, withdrawals)
-    vs_inflation = ((_ret_ars_infl - inflation_ret)
-                    if (_ret_ars_infl is not None and inflation_ret is not None)
-                    else None)
+    # ⚠️ SE CONVIERTE `delta_pct`, NO SE RECALCULA EL RENDIMIENTO.
+    #
+    # Éste es el punto donde me equivoqué una vez y vale dejarlo escrito. La
+    # primera versión llamaba a `_pct_en_pesos` —el Dietz punta a punta sobre
+    # `start_value`/`end_value`/flujos, en pesos— porque parecía "la vía exacta".
+    # No lo es PARA ESTO: para un mes, `delta_pct` ya no es ese número. Treinta
+    # líneas más arriba lo pisa `month_twr_pct`, que sale del motor canónico y
+    # mide contra MERCADO, no contra la cadena contable. Los dos pueden estar
+    # lejísimos: el comentario de ese bloque mide "31 meses publicados como
+    # PLANOS (<0,5 %) cuando a mercado se habían movido más de 5 %, el peor
+    # −0,00 % sobre un mes que a mercado hizo +133,58 %".
+    #
+    # O sea que recalcular acá publicaba un exceso sobre inflación que NO salía
+    # del rendimiento que la misma tarjeta muestra. La propiedad que la pantalla
+    # necesita no es "el número más exacto posible": es que
+    # `retorno_ars_pct − inflation_pct == vs_inflation_pct` y que
+    # `retorno_ars_pct` sea `delta_pct` visto en pesos. Por eso se COMPONE con la
+    # devaluación del período, que es la única operación que preserva esa
+    # identidad sea cual sea el motor que terminó produciendo `delta_pct`.
+    #
+    # El precio de componer es el residuo intrínseco de Modified Dietz cuando hay
+    # aportes (medido sobre producción: p90 0,003). Es tres órdenes de magnitud
+    # menos que el riesgo de tomar el número de otra fuente.
+    import twr as _twr_infl
+    _fx0_infl = _fx1_infl = None
+    if (delta_pct is not None and inflation_ret is not None
+            and str(moneda).lower() != _twr_infl.MONEDA_ARS):
+        _d0_infl = _dia_anterior(period_start)
+        if _d0_infl:
+            try:
+                _fxfn_infl, _ = _twr_infl.serie_fx(conn, _d0_infl, period_end)
+                _fx0_infl, _fx1_infl = _fxfn_infl(_d0_infl), _fxfn_infl(period_end)
+            except Exception:
+                log.exception("vs_inflacion serie_fx %s..%s", _d0_infl, period_end)
+    _ret_ars_infl, vs_inflation = _twr_infl.vs_inflacion_ar(
+        delta_pct, inflation_ret, moneda=moneda, fx0=_fx0_infl, fx1=_fx1_infl)
 
     metrics = PeriodMetrics(
         start_value=round(start_value, 2),

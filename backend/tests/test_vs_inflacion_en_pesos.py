@@ -147,20 +147,10 @@ class ReportesLaUsaTest(unittest.TestCase):
         # viejo el test falla con AttributeError, o sea probando que el campo es
         # nuevo y no que el número estaba mal.
         #
-        # El número en pesos es 31,33 %, no 31,42 %. La diferencia (0,09pp) NO es
-        # un error: es el residuo intrínseco de Modified Dietz que documenta
-        # `twr._leg_en_moneda`. Componer `(1 + r_usd) × (fx1/fx0)` daría 31,42,
-        # pero acá se usa `_pct_en_pesos` —la MISMA función que la rama de pesos—,
-        # que lleva cada punta al TC de SU fecha y el flujo al TC medio geométrico:
-        #     ci  = 5.000 × 1.000                    = 5.000.000
-        #     cf  = 6.000 × 1.200                    = 7.200.000
-        #     net =   500 × √(1.000 × 1.200)         =   547.723
-        #     (7.200.000 − 5.000.000 − 547.723) / (5.000.000 + 273.861) = 31,33 %
-        # Con flujo CERO las dos cuentas coinciden al bit (lo fija
-        # monthlyReturnArs.test.js). El residuo aparece sólo cuando hay aportes.
-        self.assertAlmostEqual(m.vs_inflation_pct, 31.33 - self.INFLACION_MES, places=1)
+        # En pesos: (1,0952 × 1,20 − 1) = 31,42 %  →  31,42 − 4,5 = 26,92pp
+        self.assertAlmostEqual(m.vs_inflation_pct, 31.42 - self.INFLACION_MES, places=1)
         self.assertNotAlmostEqual(m.vs_inflation_pct, 9.52 - self.INFLACION_MES, places=1)
-        self.assertAlmostEqual(m.retorno_ars_pct, 31.33, places=1)
+        self.assertAlmostEqual(m.retorno_ars_pct, 31.42, places=1)
 
     def test_el_benchmark_propio_no_se_toca(self):
         """`inflation_pct` sigue siendo la inflación del mes, tal cual. Lo que
@@ -178,6 +168,25 @@ class ReportesLaUsaTest(unittest.TestCase):
         self.assertEqual(en_usd >= 0, en_ars >= 0,
                          f"el veredicto se da vuelta: {en_usd} vs {en_ars}")
 
+    def test_el_retorno_en_pesos_ES_delta_pct_visto_en_pesos(self):
+        """LA PROPIEDAD. No "un número exacto": EL MISMO número, en pesos.
+
+        `1 + r_ars = (1 + r_usd) × (fx1/fx0)`, al bit. Si esto se rompe, la
+        tarjeta publica un exceso que no sale del rendimiento que muestra — y eso
+        es indistinguible de un error de cuenta para quien la lee.
+
+        Con tolerancia APRETADA a propósito: la primera versión de este arreglo
+        recalculaba el rendimiento con `_pct_en_pesos` en vez de convertir
+        `delta_pct`, y fallaba acá por 0,09pp. Esa forma chica es la misma que en
+        un mes donde el motor publica se vuelve enorme (ver la clase de abajo).
+        """
+        m = self._metrics("usd")
+        fx0, fx1 = 1000.0, 1200.0
+        esperado = ((1 + m.delta_pct / 100) * (fx1 / fx0) - 1) * 100
+        self.assertAlmostEqual(m.retorno_ars_pct, esperado, places=1)
+        self.assertAlmostEqual(m.retorno_ars_pct - m.inflation_pct,
+                               m.vs_inflation_pct, places=1)
+
     def test_sin_serie_de_dolar_no_publica_el_vs(self):
         """Y entonces tampoco publica el retorno convertido: los dos o ninguno."""
         self.conn.execute("DELETE FROM fx_rates_daily")
@@ -187,6 +196,106 @@ class ReportesLaUsaTest(unittest.TestCase):
         self.assertIsNone(m.retorno_ars_pct)
         # El rendimiento en dólares sigue publicándose: ése nunca estuvo mal.
         self.assertAlmostEqual(m.delta_pct, 9.52, places=1)
+
+
+class CuandoElMotorPisaElNumeroTest(unittest.TestCase):
+    """EL CASO GRAVE, reproducido. Para un MES CERRADO sin bordes de mercado el
+    día exacto anterior, `curva_indexada` igual mide con las fotos que hay
+    ADENTRO y su número pisa `delta_pct` — pero `start_value`/`end_value` se
+    quedan siendo los de la CADENA CONTABLE (esa rama no los reemplaza; la otra,
+    la de `bordes_mercado_periodo`, sí).
+
+    Con lo cual recalcular el rendimiento en pesos desde `start_value`/`end_value`
+    publica un número que no tiene NADA que ver con el `delta_pct` que la misma
+    tarjeta muestra. Medido con este fixture:
+
+        delta_pct          −40,00 %   (el mercado: la cartera se derrumbó)
+        retorno_ars_pct    +24,32 %   (la contabilidad llevada a pesos)
+        vs_inflation_pct   +19,82pp   → "LE GANASTE A LA INFLACIÓN"
+
+    52 puntos de diferencia y el signo invertido, sobre un mes en que el usuario
+    perdió el 40 %. Por eso el rendimiento en pesos se COMPONE desde `delta_pct` y
+    no se recalcula: la composición sigue a `delta_pct` sea cual sea el motor que
+    lo haya producido.
+    """
+
+    INFLACION_MES = 4.5
+    BENCH = {"inflation_ar": {"2026-03": INFLACION_MES}}
+    FX0, FX1 = 1000.0, 1200.0          # +20 % de devaluación en el mes
+
+    def setUp(self):
+        import uuid
+        self.conn = main.get_db()
+        self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved,email_verified) "
+            "VALUES (?,'x',1,1)", (f"motor-{uuid.uuid4().hex[:8]}@rendi.test",))
+        self.uid = self.conn.execute(
+            "SELECT id FROM users ORDER BY id DESC LIMIT 1").fetchone()[0]
+        self.conn.execute(
+            "INSERT INTO positions (user_id,broker,asset,is_cash,quantity,invested,entry_date) "
+            "VALUES (?,'IBKR','AAPL',0,1,100000,'2025-01-01')", (self.uid,))
+        # CONTABILIDAD: 100.000 → 103.600, todo realizado. +3,6 %.
+        self.conn.execute(
+            "INSERT INTO monthly_entries (user_id,broker,year,month,capital_inicio,"
+            "capital_final,deposits,withdrawals,pnl_realized,pnl_unrealized) "
+            "VALUES (?,'global',2026,3,100000,103600,0,0,3600,0)", (self.uid,))
+        # MERCADO: fotos DENTRO del mes y NINGUNA el día anterior. Esa ausencia es
+        # lo que manda el mes a la rama donde el motor mide pero start/end no se
+        # reemplazan — con una foto el 28/02 el bug no se reproduce.
+        for d, v in (("2026-03-05", 100000.0), ("2026-03-12", 85000.0),
+                     ("2026-03-20", 70000.0), ("2026-03-28", 60000.0)):
+            self.conn.execute(
+                "INSERT INTO snapshots (user_id,date,total_value,total_invested,"
+                "net_deposited,source,fx_to_usd_blue,holdings_json) "
+                "VALUES (?,?,?,?,0,'cron',1200.0,'[]')", (self.uid, d, v, v))
+        for d, tc in (("2026-02-28", self.FX0), ("2026-03-31", self.FX1)):
+            self.conn.execute(
+                "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta) "
+                "VALUES (?,?,?)", (d, tc, tc))
+        self.conn.commit()
+
+    def tearDown(self):
+        for sql, args in (
+            ("DELETE FROM snapshots WHERE user_id=?", (self.uid,)),
+            ("DELETE FROM positions WHERE user_id=?", (self.uid,)),
+            ("DELETE FROM monthly_entries WHERE user_id=?", (self.uid,)),
+            ("DELETE FROM users WHERE id=?", (self.uid,)),
+            ("DELETE FROM fx_rates_daily WHERE date IN (?,?)", ("2026-02-28", "2026-03-31")),
+        ):
+            try:
+                self.conn.execute(sql, args)
+            except Exception:
+                pass
+        self.conn.commit()
+        self.conn.close()
+
+    def _metrics(self):
+        m, _ = builder.compute_metrics_for_period(
+            self.conn, self.uid, "month", "2026-03-01", "2026-03-31",
+            broker_filter="global", bench=self.BENCH, moneda="usd")
+        return m
+
+    def test_el_fixture_mide(self):
+        """Si el motor no pisara `delta_pct`, o si start/end vinieran del mercado,
+        este archivo entero certificaría en verde algo que no está probando."""
+        m = self._metrics()
+        self.assertEqual(m.basis, "mercado")
+        self.assertAlmostEqual(m.delta_pct, -40.0, places=1)
+        self.assertAlmostEqual(m.start_value, 100000.0, places=2)
+        self.assertAlmostEqual(m.end_value, 103600.0, places=2)   # la CONTABLE
+
+    def test_el_retorno_en_pesos_sigue_a_delta_pct_y_no_a_la_contabilidad(self):
+        m = self._metrics()
+        esperado = ((1 + m.delta_pct / 100) * (self.FX1 / self.FX0) - 1) * 100
+        self.assertAlmostEqual(m.retorno_ars_pct, esperado, places=1,
+                               msg="el rendimiento en pesos no es `delta_pct` en pesos")
+        self.assertAlmostEqual(m.retorno_ars_pct, -28.0, places=1)
+
+    def test_no_publica_que_le_gano_a_la_inflacion_en_un_mes_que_perdio_40(self):
+        m = self._metrics()
+        self.assertLess(m.vs_inflation_pct, 0,
+                        "publicó 'le ganaste a la inflación' sobre un derrumbe del 40 %")
+        self.assertAlmostEqual(m.vs_inflation_pct, -28.0 - self.INFLACION_MES, places=1)
 
 
 if __name__ == "__main__":

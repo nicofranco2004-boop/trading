@@ -233,6 +233,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # crudos porque net_deposited se popula retroactivamente al importar
     # operations y eso rompe el cálculo basado en deltas.
     twr_pct: Optional[float] = None
+    _twr_meses = [None, None]      # (primer mes cubierto, último mes cubierto)
     try:
         from datetime import timedelta
         cutoff_date = today - timedelta(days=window_days)
@@ -270,6 +271,16 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
                 continue
             compound *= (1 + ret)
             used += 1
+            # Los meses que el retorno REALMENTE cubre. No son "los de la
+            # ventana": arriba se saltean el mes de alta (`retorno_mensual`
+            # devuelve None) y los outliers. Sirven para convertirlo a pesos con
+            # la devaluación DEL MISMO TRAMO — con la de la ventana entera se le
+            # sumaría devaluación que ese retorno no contiene.
+            _mes = f"{y:04d}-{m:02d}"
+            if _twr_meses[0] is None or _mes < _twr_meses[0]:
+                _twr_meses[0] = _mes
+            if _twr_meses[1] is None or _mes > _twr_meses[1]:
+                _twr_meses[1] = _mes
         if used > 0:
             twr_pct = round((compound - 1) * 100, 2)
     except Exception:
@@ -635,20 +646,26 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             for _, pct in infl_in_window:
                 comp *= (1 + pct / 100)
             inflation_pct = round((comp - 1) * 100, 2)
-            # El TC de las dos puntas de ESA MISMA ventana, para poder comparar en
-            # pesos (ver `twr.vs_inflacion_ar`). `twr_pct` sale de monthly_entries,
-            # que está en DÓLARES: restarle la inflación del INDEC, que mide precios
-            # en pesos, deja afuera la devaluación. El paquete se lo pasaba así a la
-            # IA, que narraba a partir de ese número.
-            _mes0, _mesN = infl_in_window[0][0], infl_in_window[-1][0]
-            _y0, _m0 = (int(x) for x in _mes0.split("-"))
-            _mes_previo = f"{_y0 - 1:04d}-12" if _m0 == 1 else f"{_y0:04d}-{_m0 - 1:02d}"
-            _d0 = _twr._fin_de_mes(_mes_previo)
-            _d1 = _twr._fin_de_mes(_mesN)
-            _fxfn, _ = _twr.serie_fx(conn, _d0, _d1)
-            _f0, _f1 = _fxfn(_d0), _fxfn(_d1)
-            if _f0 and _f1:
-                fx_ventana = (_f0, _f1)
+            # El TC de las dos puntas DEL TRAMO QUE CUBRE `twr_pct`, para poder
+            # compararlo en pesos (ver `twr.vs_inflacion_ar`). `twr_pct` sale de
+            # monthly_entries, que está en DÓLARES: restarle la inflación del
+            # INDEC, que mide precios en pesos, deja afuera la devaluación. El
+            # paquete se lo pasaba así a la IA, que narraba a partir de ese número.
+            #
+            # ⚠️ LAS FECHAS SALEN DEL TWR, NO DE LA INFLACIÓN. Son ventanas
+            # distintas: el TWR saltea el mes de alta y el INDEC publica con ~14
+            # días de atraso. Tomar las de la inflación convertía el retorno con
+            # una devaluación que no le corresponde, y el resultado no era ni el
+            # retorno de una ventana ni el de la otra.
+            if _twr_meses[0] and _twr_meses[1]:
+                _y0, _m0 = (int(x) for x in _twr_meses[0].split("-"))
+                _mes_previo = f"{_y0 - 1:04d}-12" if _m0 == 1 else f"{_y0:04d}-{_m0 - 1:02d}"
+                _d0 = _twr._fin_de_mes(_mes_previo)
+                _d1 = _twr._fin_de_mes(_twr_meses[1])
+                _fxfn, _ = _twr.serie_fx(conn, _d0, _d1)
+                _f0, _f1 = _fxfn(_d0), _fxfn(_d1)
+                if _f0 and _f1:
+                    fx_ventana = (_f0, _f1)
     except Exception:
         pass
 

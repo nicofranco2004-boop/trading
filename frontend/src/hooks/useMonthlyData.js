@@ -335,6 +335,20 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
   const inflationMap = context.bench?.inflation_ar || null
   // TC de cierre por mes — la misma serie que usa `lookupHistoricalDolar`. Sirve
   // para medir la comparación contra inflación en PESOS (ver computeDriversForMonth).
+  //
+  // ⚠️ ESTE RIEL NO ES EL DEL BACKEND, Y ES UNA DIVERGENCIA CONOCIDA. Acá es
+  // BLUE (`bench.dolar_blue`); `reporting/builder.py` mide el mismo número con
+  // `twr.serie_fx`, que prefiere MEP y cae a blue. Medido sobre la serie real:
+  // los dos rieles se separan más de 3 % en la mitad de los días con ambos
+  // publicados, más de 10 % en el 8 %, y 25,1 % el peor (2023-10-20).
+  //
+  // No se unificó porque HOY NINGUNA PANTALLA RENDERIZA `drivers.vsInflation`:
+  // se calcula y se devuelve, y no lo consume nadie. Arreglarlo bien es que este
+  // hook use el MEP de `/api/fx-rates` (que ya lo trae) en vez de la serie
+  // mensual de `/api/benchmarks`, lo que implica meterle un fetch más a un hook
+  // caliente para alimentar una salida muerta. Si alguna vez se muestra, ESO hay
+  // que hacer primero — si no, la misma tarjeta daría dos números según quién la
+  // calcule. Es de los motores que F6 viene a unificar.
   const dolarMap = context.bench?.dolar_blue || null
 
   // 5. Indexar snapshots por mes para sparklines + lookup del valor live.

@@ -79,6 +79,32 @@ def _retornos_mensuales(rows: List[dict]) -> List[tuple]:
     return out
 
 
+def _fin_de_mes_wrapped(mes: str) -> str:
+    """El último día de `'YYYY-MM'`. Delega en `twr._fin_de_mes`: la cuenta del
+    calendario vive en un solo lugar."""
+    return _twr._fin_de_mes(mes)
+
+
+def ventana_de_los_retornos(rows: List[dict]) -> Optional[tuple]:
+    """`(mes_anterior_al_primero, ultimo_mes)` que el retorno encadenado CUBRE.
+
+    Sirve para convertirlo a pesos con la devaluación DEL MISMO TRAMO. La ventana
+    no es "el año": `_retornos_mensuales` descarta los meses que no se pueden
+    medir —empezando por el de alta—, así que una cuenta que abrió en junio tiene
+    un retorno de jun–dic. Convertirlo con el dólar del 31 de diciembre anterior
+    le metería seis meses de devaluación que ese retorno no contiene.
+
+    Devuelve meses `'YYYY-MM'`, o None si no hay ningún mes medible.
+    """
+    pares = _retornos_mensuales(rows)
+    if not pares:
+        return None
+    meses = sorted(f"{r.get('year'):04d}-{(r.get('month') or 0):02d}" for r, _ in pares)
+    y0, m0 = (int(x) for x in meses[0].split("-"))
+    previo = f"{y0 - 1:04d}-12" if m0 == 1 else f"{y0:04d}-{m0 - 1:02d}"
+    return (previo, meses[-1])
+
+
 def _twr_for_period(rows: List[dict]) -> Optional[float]:
     """Retorno geométrico encadenado de una serie de meses.
 
@@ -477,7 +503,7 @@ def build_wrapped(
     behavioral_cards: Optional[List[dict]] = None,
     benchmarks: Optional[dict] = None,
     inflation_ytd: Optional[float] = None,
-    fx_ytd: Optional[tuple] = None,
+    fx_de=None,
 ) -> dict:
     """Orquesta los slides. Retorna {year, slides: [...], summary: {...}}.
 
@@ -557,6 +583,16 @@ def build_wrapped(
     if vs_bm:
         slides.append(vs_bm)
 
+    # El TC de las DOS PUNTAS DEL TRAMO QUE EL RETORNO CUBRE — no las del año.
+    # `fx_de(fecha) -> float|None` lo provee el endpoint, que es quien tiene la
+    # base; acá se decide QUÉ FECHAS, que es lo que depende de `rows`.
+    fx_ytd = None
+    if fx_de is not None:
+        _v = ventana_de_los_retornos(rows)
+        if _v:
+            _f0, _f1 = fx_de(_fin_de_mes_wrapped(_v[0])), fx_de(_fin_de_mes_wrapped(_v[1]))
+            if _f0 and _f1:
+                fx_ytd = (_f0, _f1)
     vs_inf = _slide_vs_inflation(twr, inflation_ytd, year, fx_ytd)
     if vs_inf:
         slides.append(vs_inf)
