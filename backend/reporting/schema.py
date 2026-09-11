@@ -88,7 +88,12 @@ class PeriodMetrics:
     # que usar ése.
     vs_sp500_pct: Optional[float]
     vs_inflation_pct: Optional[float]
-    sp500_return_pct: Optional[float] = None   # cuánto hizo el S&P en el período
+    # Cuánto hizo el S&P en el período, EN LA MISMA MONEDA QUE `delta_pct`. Con el
+    # selector en pesos es el S&P convertido (`performance.retorno_bench_en_moneda`,
+    # la misma tabla `BENCH_EN_ARS` que usa el gráfico), no el S&P en dólares: si
+    # no fuera el mismo número del que salió `vs_sp500_pct`, la tarjeta que muestra
+    # los dos juntos se contradiría sola. Null cuando falta el TC para convertir.
+    sp500_return_pct: Optional[float] = None
     inflation_pct: Optional[float] = None      # inflación AR del período
     # El rendimiento CON EL QUE SE HIZO la comparación contra inflación, medido en
     # PESOS. La inflación del INDEC mide precios argentinos; restársela a un

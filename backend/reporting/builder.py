@@ -1684,9 +1684,57 @@ def compute_metrics_for_period(
                                             period_end, "sp500")
     inflation_ret = benchmark_return_for_period(bench or {}, period_type, period_start,
                                                 period_end, "inflation_ar")
+
+    # ⚠️ LAS PUNTAS DEL TC SIRVEN A LAS DOS COMPARACIONES, Y POR MOTIVOS OPUESTOS.
+    #
+    # `benchmark_return_for_period` devuelve números en MONEDAS DISTINTAS según la
+    # `key` —el S&P en dólares, la inflación del INDEC en pesos— y `delta_pct`
+    # sigue la moneda del selector (:1544 lo pisa con `_pct_puntas_ars`). O sea que
+    # SIEMPRE hay exactamente una de las dos patas cruzada, y cuál es depende del
+    # selector: en dólares se cruza la inflación, en pesos se cruza el S&P.
+    #
+    # Antes esto se calculaba treinta líneas más abajo y SÓLO para la inflación
+    # (`moneda != ARS`), así que la pata del S&P quedó sin convertir — el mismo
+    # arreglo aplicado a una de dos patas del mismo `return`, que es la forma que
+    # toma un fix en este código. Con el selector en Pesos, `delta_pct` lleva la
+    # devaluación adentro y el S&P no: la resta se la regalaba entera al veredicto.
+    # Una cartera quieta en dólares, un mes de 5 % de devaluación y un S&P de
+    # +2 % publicaba "vs S&P 500 · +3,0 %" cuando la verdad es −2,0.
+    import twr as _twr_bench
+    _fx0_bench = _fx1_bench = None
+    _necesita_fx = delta_pct is not None and (
+        (inflation_ret is not None and str(moneda).lower() != _twr_bench.MONEDA_ARS)
+        or (sp500_ret is not None and str(moneda).lower() == _twr_bench.MONEDA_ARS))
+    if _necesita_fx:
+        _d0_bench = _dia_anterior(period_start)
+        if _d0_bench:
+            try:
+                _fxfn_bench, _ = _twr_bench.serie_fx(conn, _d0_bench, period_end)
+                _fx0_bench, _fx1_bench = _fxfn_bench(_d0_bench), _fxfn_bench(period_end)
+            except Exception:
+                log.exception("vs_benchmark serie_fx %s..%s", _d0_bench, period_end)
+
+    # EL S&P SE MUEVE A LA MONEDA DE LA CARTERA, no al revés — es un índice de
+    # PRECIO y "el S&P en pesos" existe (es lo que valdría en pesos la misma plata
+    # puesta en el índice). Con la inflación es al revés y por eso tiene su propia
+    # función: una tasa en pesos no tiene versión en dólares.
+    #
+    # La regla de qué índice está en qué moneda NO se copia acá: vive en
+    # `performance.BENCH_EN_ARS`, la misma tabla que usa el motor del gráfico.
+    from performance import retorno_bench_en_moneda as _bench_en_moneda
+    sp500_ret = _bench_en_moneda(sp500_ret, "sp500", moneda=moneda,
+                                 fx0=_fx0_bench, fx1=_fx1_bench)
     # Sin `delta_pct` no hay con qué comparar — y si lo tapamos por base
     # incomparable, publicar un "vs benchmark" sería reintroducir el mismo número
-    # por la ventana.
+    # por la ventana. Sin TC tampoco: `sp500_ret` ya vino None de la conversión, y
+    # entonces no se publica ni el exceso ni el retorno del índice. Publicar el
+    # número en dólares con etiqueta de pesos es peor que no publicar nada.
+    #
+    # ⚠️ `sp500_ret` QUEDA PISADO A PROPÓSITO CON EL CONVERTIDO, y es lo que viaja
+    # a `sp500_return_pct`. La tarjeta muestra los dos juntos ("El S&P hizo X ·
+    # vs S&P Y"): si el X que se muestra no es el X del que salió la resta, la
+    # tarjeta se contradice sola. Es la misma razón por la que `vs_inflacion_ar`
+    # devuelve el retorno convertido ADEMÁS del exceso.
     vs_sp500 = (delta_pct - sp500_ret) if (delta_pct is not None and sp500_ret is not None) else None
     # LA COMPARACIÓN CONTRA INFLACIÓN SE HACE SIEMPRE EN PESOS. Antes era
     # `delta_pct - inflation_ret` a secas, y `delta_pct` sigue la moneda del
@@ -1730,19 +1778,11 @@ def compute_metrics_for_period(
     # El precio de componer es el residuo intrínseco de Modified Dietz cuando hay
     # aportes (medido sobre producción: p90 0,003). Es tres órdenes de magnitud
     # menos que el riesgo de tomar el número de otra fuente.
-    import twr as _twr_infl
-    _fx0_infl = _fx1_infl = None
-    if (delta_pct is not None and inflation_ret is not None
-            and str(moneda).lower() != _twr_infl.MONEDA_ARS):
-        _d0_infl = _dia_anterior(period_start)
-        if _d0_infl:
-            try:
-                _fxfn_infl, _ = _twr_infl.serie_fx(conn, _d0_infl, period_end)
-                _fx0_infl, _fx1_infl = _fxfn_infl(_d0_infl), _fxfn_infl(period_end)
-            except Exception:
-                log.exception("vs_inflacion serie_fx %s..%s", _d0_infl, period_end)
-    _ret_ars_infl, vs_inflation = _twr_infl.vs_inflacion_ar(
-        delta_pct, inflation_ret, moneda=moneda, fx0=_fx0_infl, fx1=_fx1_infl)
+    # Las puntas del TC son las MISMAS que usó la pata del S&P y se calculan una
+    # sola vez, arriba: misma ventana (`_dia_anterior(period_start)` → `period_end`)
+    # y misma serie. Tenerlas dos veces era garantizar que un día se separaran.
+    _ret_ars_infl, vs_inflation = _twr_bench.vs_inflacion_ar(
+        delta_pct, inflation_ret, moneda=moneda, fx0=_fx0_bench, fx1=_fx1_bench)
 
     metrics = PeriodMetrics(
         start_value=round(start_value, 2),

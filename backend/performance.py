@@ -196,6 +196,60 @@ def _en_pesos(bench: list, fx) -> list:
     return out
 
 
+def retorno_bench_en_moneda(bench_pct, bench_key, *, moneda=twr.MONEDA_USD,
+                            fx0=None, fx1=None):
+    """El % de un benchmark, re-expresado en la moneda en que se mide la CARTERA.
+
+    Es `_en_pesos` para un PORCENTAJE en vez de para una serie: la misma regla —un
+    índice en dólares comparado contra una cartera en pesos no es una comparación,
+    le falta la devaluación— aplicada donde el call site sólo tiene el % del
+    período y no la curva. `_en_pesos` la aplica dentro del gráfico; ésta la aplica
+    donde se publica el veredicto en texto.
+
+    POR QUÉ EXISTE. `benchmark_return_for_period` devuelve números en MONEDAS
+    DISTINTAS según la `key` —el S&P en dólares, la inflación en pesos— y no lo
+    declara en ninguna parte. Reportes restaba ese número de un `delta_pct` que SÍ
+    sigue el selector de moneda. Con el selector en Pesos, el rendimiento del
+    usuario lleva la devaluación adentro y el S&P no: la resta se la regalaba
+    entera al veredicto. Una cartera quieta en dólares, un mes de 5 % de
+    devaluación y un S&P de +2 % publicaba "vs S&P 500 · +3,0 %" cuando la verdad
+    es −2,0.
+
+    Quién decide la moneda de cada índice es `BENCH_EN_ARS`, la MISMA tabla que
+    usa el motor del gráfico (`performance`, :238). No hay una segunda lista.
+
+    DEVUELVE `None` —y entonces el caller no publica— en los dos casos en que no
+    se puede convertir:
+
+      · **Falta alguna punta del TC.** Misma política que `twr.vs_inflacion_ar`:
+        sin devaluación no hay comparación honesta, y publicar el número de una
+        moneda con la etiqueta de la otra es justo el defecto que esto cierra.
+
+      · **El benchmark es PORCENTUAL** (inflación, plazo fijo UVA) y la cartera
+        está en dólares. Esos no son índices de precio: son tasas en pesos, y la
+        inflación en dólares no existe. Para ellos la casa ya decidió lo contrario
+        —se mueve la CARTERA a pesos, no el índice a dólares— y eso vive en
+        `twr.vs_inflacion_ar`. Devolver un número acá sería una segunda respuesta
+        a la pregunta que esa función ya contesta.
+    """
+    if bench_pct is None:
+        return None
+    en_ars = bench_key in BENCH_EN_ARS
+    quiere_ars = str(moneda).lower() == twr.MONEDA_ARS
+    if en_ars == quiere_ars:
+        # Ya está en la moneda de la cartera: no se toca. Es el caso del S&P con
+        # el selector en dólares y el del Merval con el selector en pesos.
+        return float(bench_pct)
+    if bench_key in BENCH_PORCENTUAL:
+        return None
+    if quiere_ars:
+        return twr.retorno_en_pesos_pct(bench_pct, fx0, fx1)
+    # PESOS → DÓLARES: la misma identidad con las puntas al revés.
+    # `1 + r_usd = (1 + r_ars) · (fx0/fx1)`. Se reusa el primitivo en vez de
+    # escribir la división acá, para que siga habiendo UNA sola conversión.
+    return twr.retorno_en_pesos_pct(bench_pct, fx1, fx0)
+
+
 def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
                 desde: str = None, hasta: str = None, valor_live: float = None,
                 incluir_indeterminado: bool = False,
