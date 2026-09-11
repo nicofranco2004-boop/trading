@@ -1082,6 +1082,7 @@ ALTER TABLE import_normalized_tx ADD COLUMN IF NOT EXISTS created_position_id bi
 ALTER TABLE import_normalized_tx ADD COLUMN IF NOT EXISTS created_operation_id bigint;
 
 ALTER TABLE import_normalized_tx ADD COLUMN IF NOT EXISTS transfer_out bigint DEFAULT 0;
+ALTER TABLE import_normalized_tx ADD COLUMN IF NOT EXISTS transfer_in bigint DEFAULT 0;
 
 ALTER TABLE import_normalized_tx ADD COLUMN IF NOT EXISTS tc_compra double precision;
 

@@ -228,9 +228,10 @@ def transferencia_externa(qty: float, precio: Optional[float]):
         if valor > 0:
             return ("COMPRA",
                     {"cantidad": str(abs(qty)), "precio": str(precio),
-                     "monto": str(valor)},
+                     "monto": str(valor), "_transfer_in": "1"},
                     ("DEPOSITO", str(valor)))
-        return ("COMPRA", {"cantidad": str(abs(qty)), "precio": "0", "monto": "0"}, None)
+        return ("COMPRA", {"cantidad": str(abs(qty)), "precio": "0", "monto": "0",
+                           "_transfer_in": "1"}, None)
     return ("VENTA",
             {"cantidad": str(abs(qty)), "precio": "0", "monto": "0", "_transfer_out": "1"},
             None)

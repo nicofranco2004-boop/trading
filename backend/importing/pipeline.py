@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .schema import (NormalizedTx, RawRow, RowError,
                      OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS)
 from .parsers.registry import get_parser, autodetect, list_parsers
+from . import traspasos as _traspasos
 from .normalizer import normalize_rows
 from .fci_map import resolve_fci_by_name
 from .validator import validate
@@ -731,6 +732,17 @@ def run_preview(
         route_by_currency=route_by_currency,
     )
 
+    # ── Traspaso de títulos desde OTRO broker del usuario ────────────────────
+    # Si este import trae títulos que ENTRAN desde otro broker que también está
+    # cargado en Rendi, hay que cerrar la posición de allá: el mismo papel no
+    # puede estar abierto en los dos lados. Las filas van al MISMO lote, así que
+    # el confirm las aplica y el revert las deshace sin código extra — y van
+    # marcadas `[requiere-aprobacion]`, o sea que NO se aplican solas.
+    # Ver `importing/traspasos.py` para los tres frenos.
+    _cierres_traspaso = _traspasos.cerrar_origen_de_traspasos(
+        conn, uid, valid_txs, existing_pos)
+    valid_txs += _cierres_traspaso
+
     # Combinar errores por row_index (parse + norm + validation)
     errors_by_row: Dict[int, List[RowError]] = {}
     for e in parse_result.parse_errors + norm_errors + val_errors:
@@ -787,6 +799,23 @@ def run_preview(
         )
         raw_id_by_index[raw.row_index] = cur.lastrowid
 
+    # Las filas SINTÉTICAS (cierres de traspaso) no salieron del archivo, así que
+    # no tienen RawRow: se les crea una acá para que el confirm y el revert las
+    # puedan mapear igual que a las demás. Mismo patrón que `store_preview_txs`
+    # con la foto de tenencia. Su row_index es NEGATIVO, la convención que ya usa
+    # el resto del sistema para distinguir "esto no vino del archivo".
+    for tx in valid_txs:
+        if tx.row_index in raw_id_by_index:
+            continue
+        cur = conn.execute(
+            """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+               VALUES (?,?,?, 'valid', NULL)""",
+            (batch_id, tx.row_index, json.dumps(
+                {"asset": tx.asset_symbol, "op": tx.operation_type,
+                 "qty": tx.quantity, "price": tx.unit_price, "notes": tx.notes},
+                ensure_ascii=False)))
+        raw_id_by_index[tx.row_index] = cur.lastrowid
+
     # Fingerprints existentes en batches confirmados — para detectar dupes
     existing_fingerprints = set(
         r[0] for r in conn.execute(
@@ -819,8 +848,8 @@ def run_preview(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint, gross_amount_usd, transfer_out, tc_compra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (batch_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
@@ -835,6 +864,7 @@ def run_preview(
              # Externa Débito). `store_preview_txs` (foto de tenencia) sí lo
              # guardaba: el arreglo estaba escrito y no se había propagado.
              fp, gross_usd, 1 if getattr(tx, "transfer_out", False) else 0,
+             1 if getattr(tx, "transfer_in", False) else 0,
              tx.tc_compra),
         )
 
@@ -846,6 +876,16 @@ def run_preview(
         file_name=file_name,
         duplicate_of_batch_id=duplicate_of,
     )
+    # Lo que el usuario tiene que aprobar: un traspaso de títulos desde otro
+    # broker suyo. Va desglosado —una línea por título— porque esto TOCA UN
+    # BROKER QUE NI SIQUIERA ESTÁ IMPORTANDO, y eso sorprende.
+    preview_payload["traspasos"] = [
+        {"broker_origen": t.broker, "activo": t.asset_symbol,
+         "cantidad": t.quantity, "valor": t.gross_amount,
+         "moneda": t.currency, "fecha": t.date,
+         "broker_destino": _traspasos.destino_de(t.notes)}
+        for t in _cierres_traspaso if t.operation_type == "SELL"
+    ]
     preview_payload["session_id"] = batch_id
     preview_payload["route_by_currency"] = route_by_currency
     preview_payload["is_multi_broker"] = is_multi_broker
@@ -1103,14 +1143,15 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint, gross_amount_usd, transfer_out, tc_compra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (batch_id, raw_id, tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
              tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes,
              _row_fingerprint(tx), gross_usd,
              1 if getattr(tx, "transfer_out", False) else 0,
+             1 if getattr(tx, "transfer_in", False) else 0,
              getattr(tx, "tc_compra", None)))
     return batch_id
 
@@ -1167,6 +1208,7 @@ def load_session_for_confirm(conn, *, uid: int, session_id: str
             # corregía → si el rebuild fallaba, quedaba la pérdida. Es una columna
             # de import_normalized_tx (default 0 para filas viejas / no-tenencia).
             transfer_out=bool(r["transfer_out"]) if "transfer_out" in r.keys() else False,
+            transfer_in=bool(r["transfer_in"]) if "transfer_in" in r.keys() else False,
             # tc_compra debe sobrevivir el round-trip a la DB igual que
             # transfer_out: el confirm rehidrata desde import_normalized_tx (no
             # de la lista en memoria) y NO hay re-derivación posible (a
@@ -1267,8 +1309,8 @@ def load_session_with_seed_revalidate(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint, gross_amount_usd, transfer_out, tc_compra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (session_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
@@ -1276,6 +1318,7 @@ def load_session_with_seed_revalidate(
              # Mismo motivo que en `run_preview`: sin esto el flag muere en el
              # round-trip y la venta a costo se convierte en pérdida fantasma.
              fp, gross_usd, 1 if getattr(tx, "transfer_out", False) else 0,
+             1 if getattr(tx, "transfer_in", False) else 0,
              getattr(tx, "tc_compra", None)),
         )
 

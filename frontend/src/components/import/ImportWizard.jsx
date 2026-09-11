@@ -254,6 +254,10 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   // aplicar, igual que en el backend. Que tenga que hacer algo para que
   // entre, no algo para que no entre.
   const [tenenciaPreview, setTenenciaPreview] = useState(null)
+  // Traspasos de títulos desde OTRO broker del usuario: se aprueban por ticker y
+  // NO se aplican solos (el backend los manda marcados). Estado propio, separado
+  // del de la foto de tenencia, aunque los dos terminen en `aprobar_tickers`.
+  const [traspasosOk, setTraspasosOk] = useState(new Set())
   const [aprobados, setAprobados] = useState(new Set())  // 'cocos' (CSV) o null (Bull Market PDF)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -670,6 +674,9 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
         session_id: preview.session_id,
         skip_row_indices: Array.from(skippedRowIndices),
         seed_state: seedPayload,
+        // OPT-IN: lo que no se nombra acá, no entra. Sin esto los cierres por
+        // traspaso nunca se podrían aplicar desde la pantalla.
+        aprobar_tickers: Array.from(traspasosOk),
       })
       // Cadena Bull Market: si entre los archivos también vino la Tenencia (PDF),
       // la aplicamos AHORA — recién creadas las posiciones de la Cuenta Corriente
@@ -844,6 +851,8 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
               onSeedClick={goToSeedStep}
               redoBanner={redoBanner}
               faltaTenencia={faltaTenencia}
+              traspasosOk={traspasosOk}
+              setTraspasosOk={setTraspasosOk}
             />
           )}
 
@@ -2113,7 +2122,8 @@ function RecFila({ tk, detalle }) {
 
 function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                         skippedRowIndices = new Set(), onToggleSkipRow, onSeedClick,
-                        redoBanner = null, faltaTenencia = null }) {
+                        redoBanner = null, faltaTenencia = null,
+                        traspasosOk = new Set(), setTraspasosOk = () => {} }) {
   const s = preview.summary || {}
   const dup = preview.duplicate_of_batch_id
   const routing = preview.routing_summary
@@ -2377,6 +2387,45 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
             ))}
           </ul>
         </div>
+      )}
+
+      {(preview.traspasos || []).length > 0 && (
+        <Section title={`Títulos que venían de otro broker tuyo (${preview.traspasos.length})`} variant="warning">
+          <p className="text-xs text-ink-3 mb-2">
+            Estos títulos entraron a <b>{preview.traspasos[0].broker_destino}</b> desde otro
+            broker que también tenés cargado. Si no se cierran allá, el mismo papel
+            queda contado <b>dos veces</b> — en los dos brokers a la vez — y la plata que
+            trajiste figura como si la hubieras aportado de nuevo.
+          </p>
+          <p className="text-xs text-ink-3 mb-3">
+            <b>No se hace solo:</b> marcá los que quieras cerrar. Lo que no marques
+            queda como está hoy.
+          </p>
+          <ul className="text-xs space-y-1 max-h-56 overflow-y-auto">
+            {preview.traspasos.map((t, i) => (
+              <li key={i} className="flex items-center gap-2">
+                <input type="checkbox" className="accent-amber-500"
+                       checked={traspasosOk.has(t.activo)}
+                       onChange={() => setTraspasosOk(prev => {
+                         const n = new Set(prev)
+                         n.has(t.activo) ? n.delete(t.activo) : n.add(t.activo)
+                         return n
+                       })} />
+                <span className="font-medium">{t.activo}</span>
+                <span className="text-ink-3">
+                  cerrar {Number(t.cantidad).toLocaleString('es-AR')} en <b>{t.broker_origen}</b>
+                  {' · '}pasaron el {t.fecha}
+                  {t.valor ? ` · valuados en ${t.moneda === 'USD' ? 'USD ' : '$'}${Number(t.valor).toLocaleString('es-AR', { maximumFractionDigits: 0 })}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-ink-3 mt-3">
+            Lo que marques se cierra en {preview.traspasos[0].broker_origen} al valor que
+            tenían el día del traspaso: la ganancia que hiciste allá queda registrada,
+            y el capital deja de contarse dos veces.
+          </p>
+        </Section>
       )}
 
       {(preview.errors || []).length > 0 && (
@@ -2971,11 +3020,13 @@ function Section({ title, children, variant }) {
   return (
     <div>
       <div className={`text-xs font-medium mb-2
-        ${variant === 'error' ? 'text-red-700 dark:text-red-400' : 'text-ink-1'}`}>
+        ${variant === 'error' ? 'text-red-700 dark:text-red-400'
+          : variant === 'warning' ? 'text-amber-700 dark:text-amber-400' : 'text-ink-1'}`}>
         {title}
       </div>
       <div className={`px-3 py-2 rounded-md border
         ${variant === 'error' ? 'border-red-500/30 bg-red-500/5' :
+          variant === 'warning' ? 'border-amber-500/30 bg-amber-500/5' :
           'border-line bg-bg-2 dark:bg-bg-1/40'}`}>
         {children}
       </div>

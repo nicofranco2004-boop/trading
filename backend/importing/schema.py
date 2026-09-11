@@ -256,6 +256,13 @@ class NormalizedTx:
     # siendo tuyo, solo se fue del exchange).
     transfer_out: bool = False
 
+    # ENTRADA de un título que viene de otro broker ("Transferencia Externa
+    # (Crédito)" de Balanz). Es el espejo de `transfer_out` y la usa el
+    # emparejador de traspasos: si el broker de ORIGEN también está cargado en
+    # Rendi, sus posiciones tienen que cerrarse — el mismo papel no puede estar
+    # abierto en los dos lados. Ver `importing/traspasos.py`.
+    transfer_in: bool = False
+
     # Tipo de cambio de la COMPRA (ARS por USD). Solo se setea en BUY de un lote
     # en pesos (del CSV, columna 'tc', o derivado monto_ARS/monto_usd). Alimenta
     # la vista "costo al dólar de la compra" (dólares reales invertidos) sin

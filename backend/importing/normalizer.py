@@ -485,6 +485,10 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
         # validador acepta su precio 0; el persister no bookea pérdida.
         tx.transfer_out = bool(d.get("_transfer_out"))
 
+        # Entrada de un título que viene de otro broker: el emparejador de
+        # traspasos la usa para cerrar la posición del broker de origen.
+        tx.transfer_in = bool(d.get("_transfer_in"))
+
         # Fallback de monto para filas non-FX en CSVs con columnas separadas
         # por moneda (típico en Argentina: monto_ars + monto_usd). Si la fila
         # tiene monto_usd pero no monto, usamos monto_usd como el monto en

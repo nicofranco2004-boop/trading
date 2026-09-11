@@ -2734,6 +2734,13 @@ def init_db():
         norm_cols = _table_cols(conn, 'import_normalized_tx')
         if norm_cols and 'transfer_out' not in norm_cols:
             conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN transfer_out INTEGER NOT NULL DEFAULT 0")
+        # Migración (2026-09-10): `transfer_in` — el espejo. Marca la ENTRADA de un
+        # título que viene de otro broker. El emparejador de traspasos la busca en
+        # lotes YA CONFIRMADOS para el caso en que el broker que RECIBE se importó
+        # primero y el que ENTREGA después (ver `importing/traspasos.py`).
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'transfer_in' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN transfer_in INTEGER NOT NULL DEFAULT 0")
 
         # Migración (2026-07-13): tc_compra (ARS/USD de la compra) en
         # import_normalized_tx, para que sobreviva la rehidratación del confirm y
