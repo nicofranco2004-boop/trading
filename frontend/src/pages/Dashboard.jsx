@@ -16,7 +16,7 @@ import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
 import { DashboardSkeleton } from '../components/Skeleton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
-import BenchmarksLine from '../components/BenchmarksLine'
+import YearReturnLine from '../components/YearReturnLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
 import LazySparkline from '../components/LazySparkline'
 import AssetLogo from '../components/AssetLogo'
@@ -994,47 +994,78 @@ function PersonalDashboard() {
             <ModoRendimiento valor={modoRend} onChange={setModoRend} className="ml-1" />
             <InfoTooltip size={11} align="left">
               <p className="font-medium text-ink-0">Variación de tus posiciones, sin contar aportes/retiros.</p>
-              <p className="text-ink-2 mt-1"><strong className="text-ink-1">Hoy</strong>: vs cierre 23:59 ART. <strong className="text-ink-1">Este mes</strong>: vs cierre del mes anterior. <strong className="text-ink-1">Anual</strong>: CAGR.</p>
+              <p className="text-ink-2 mt-1"><strong className="text-ink-1">Hoy</strong>: vs cierre 23:59 ART. <strong className="text-ink-1">Este mes</strong>: vs cierre del mes anterior. <strong className="text-ink-1">Promedio anual</strong>: el promedio de toda tu historia (CAGR), no lo que va del año.</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="text-ink-3">⚠ Medido en USD. Si tenés posiciones en ARS (CEDEARs, bonos), los movimientos del dólar blue afectan la variación aunque el precio en pesos no haya cambiado — porque tus pesos valen más o menos dólares.</p>
             </InfoTooltip>
           </div>
           {/* Cards compactas con el % como protagonista (Hoy / Este mes / Anual),
               mismo lenguaje que el desglose de arriba. */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-w-xl">
+          {/* Cuatro horizontes, todos del mismo tamaño y en orden temporal: lo
+              corto, el mes, EL AÑO y el promedio de toda la historia. Antes el año
+              vivía en una card suelta debajo, con dos tamaños distintos de bloque
+              de rendimiento en la misma pantalla. */}
+          <div className="grid grid-cols-2 sm:grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3 max-w-4xl items-stretch">
             {[
-              dailyVar && {
-                key: 'd',
-                label: dailyVar.dayDiff === 1 ? 'Hoy' : `Últimos ${dailyVar.dayDiff} días`,
-                data: dailyVar,
-              },
-              monthlyVar && {
-                key: 'm',
-                label: 'Este mes',
-                data: monthlyVar,
-                note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSigned(realizedThisMonth)}` : null,
-              },
+              // ⚠️ LA CARD QUE FALTA TIENE QUE DECIR QUE FALTA. El bloque explicativo
+              // de más abajo sólo aparece cuando NO hay NI diaria NI mensual; con una
+              // de las dos presente, la otra simplemente DESAPARECÍA. En la cuenta de
+              // prueba pasaba exacto: con la última foto de hace 17 días había "Hoy"
+              // (rotulado "Últimos 17 días") y "Este mes" no estaba — ni el número ni
+              // el motivo, un hueco donde el usuario esperaba un dato. El mismo
+              // razonamiento que ya se aplicó al caso de las dos juntas.
+              dailyVar
+                ? {
+                    key: 'd',
+                    label: dailyVar.dayDiff === 1 ? 'Hoy' : `Últimos ${dailyVar.dayDiff} días`,
+                    data: dailyVar,
+                  }
+                : { key: 'd', label: 'Hoy', vacio: 'falta el cierre de la rueda anterior' },
+              monthlyVar
+                ? {
+                    key: 'm',
+                    label: 'Este mes',
+                    data: monthlyVar,
+                    note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSigned(realizedThisMonth)}` : null,
+                  }
+                : { key: 'm', label: 'Este mes', vacio: 'todavía no hay una foto de este mes' },
+              // ⚠️ EL ORDEN ES EL DEL RELOJ: hoy → este mes → este año → toda la
+              // historia. `anio: true` no dibuja una VarCell sino la card del año,
+              // que trae su propio dato; ponerla fuera del array la mandaba al
+              // final, después del promedio de toda la historia.
+              { key: 'y', anio: true },
               cagrVar && {
                 key: 'a',
                 // ⚠️ EL RÓTULO SIGUE AL NÚMERO. Decir "Anual" sobre un acumulado de
                 // 44 días es la misma mentira que anualizarlo: el usuario compara
                 // ese número contra un plazo fijo anual.
-                label: cagrVar.anual ? 'Anual' : 'Desde que medimos',
+                // ⚠️ "PROMEDIO ANUAL", NO "ANUAL". Este número es la CAGR de toda
+                // la historia; al lado, la línea de abajo publica cuánto rindió
+                // ESTE año. Dos cards llamadas casi igual que miden cosas
+                // distintas se leen como la misma, y el usuario compara la que no
+                // era. El cálculo no cambia: cambia el rótulo y la nota.
+                label: cagrVar.anual ? 'Promedio anual' : 'Desde que medimos',
                 data: cagrVar,
                 pctHero: true,
                 note: cagrVar.anual
-                  ? (cagrVar.months < 12 ? `${cagrVar.months}m · anualizado` : `${cagrVar.months} meses`)
+                  ? (cagrVar.months < 12 ? `${cagrVar.months}m · anualizado` : `toda tu historia · ${cagrVar.months} meses`)
                   : `${cagrVar.dias} días · sin anualizar`,
               },
             ].filter(Boolean).map((c) => (
-              <VarCell
-                key={c.key}
-                label={c.label}
-                data={c.data}
-                note={c.note}
-                pctHero={c.pctHero}
-                fmtSigned={fmtSigned}
-              />
+              c.anio ? (
+                <YearReturnLine key={c.key} modo={modoRend} />
+              ) : c.vacio ? (
+                <SinDatoCell key={c.key} label={c.label} motivo={c.vacio} />
+              ) : (
+                <VarCell
+                  key={c.key}
+                  label={c.label}
+                  data={c.data}
+                  note={c.note}
+                  pctHero={c.pctHero}
+                  fmtSigned={fmtSigned}
+                />
+              )
             ))}
             {/* ⚠️ EL VACÍO TIENE QUE HABLAR. Sin esto, `.filter(Boolean)` hacía
                 DESAPARECER las cards "Hoy" y "Este mes" sin decir una palabra: el
@@ -1042,7 +1073,7 @@ function PersonalDashboard() {
                 de saber si se rompió algo, si perdió datos o si no calificaba.
                 Son 173 usuarios en la copia de producción. */}
             {sinMedicion && (
-              <div className="col-span-2 sm:col-span-3 bg-bg-1 border border-line rounded-xl px-4 py-3.5">
+              <div className="col-span-2 sm:col-span-4 bg-bg-1 border border-line rounded-xl px-4 py-3.5">
                 <div className="text-[12px] text-ink-3 leading-none font-medium">
                   Rendimiento del período
                 </div>
@@ -1058,16 +1089,11 @@ function PersonalDashboard() {
         </div>
       )}
 
-      {/* ── Headline de benchmarks ────────────────────────────────────────────
-          1 línea con S&P + dólar quieto + monto absoluto. El detalle (vs blue,
-          inflación, cards grandes) vive en /insights → "Comparativa con
-          benchmarks" — esto es solo el descubrimiento. */}
-      <BenchmarksLine
-        monthly={monthly}
-        bench={bench}
-        totalPortfolio={totalValue}
-        className="mb-8"
-      />
+      {/* Acá vivía `BenchmarksLine`, que comparaba toda la historia junta contra
+          el S&P: un número que no dice en qué año le ganaste y que para una cuenta
+          de cinco años no se puede accionar. Lo reemplazó el año en curso, que
+          ahora es una card más de la fila "Rendimiento" de arriba. */}
+      <div className="mb-8" />
 
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
       <AskAIAbout
@@ -1393,12 +1419,27 @@ function rangeLabel(id) {
 // Total). Con pctHero=true el % es el valor principal y no hay monto (Anual/CAGR).
 // El subdato opcional (note) lleva contexto: "realizado", "desde el inicio",
 // "anualizado". Renderiza igual en mobile y desktop.
+// La misma caja que `VarCell`, para el horizonte que no se puede medir todavía.
+// Ocupa su lugar en la fila y dice por qué no hay número: un hueco mudo se lee
+// como "se rompió algo".
+function SinDatoCell({ label, motivo }) {
+  return (
+    <div className="h-full bg-bg-1 border border-line rounded-xl px-4 py-3.5">
+      <div className="text-[12px] text-ink-3 leading-none font-medium">{label}</div>
+      <div className="mt-2 font-semibold tabular num leading-none text-[22px] tracking-tight text-ink-3">—</div>
+      <div className="text-[11px] text-ink-3 mt-2 leading-snug">{motivo}</div>
+    </div>
+  )
+}
+
 function VarCell({ label, data, fmtSigned, note = null, pctHero = false }) {
   const pos = (pctHero ? data.pct : data.usd) >= 0
   const toneCls = pos ? 'text-rendi-pos' : 'text-rendi-neg'
   const subTone = pos ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
   return (
-    <div className="bg-bg-1 border border-line rounded-xl px-4 py-3.5">
+    // `h-full`: comparte fila con la card del año, que es más alta porque lleva su
+    // veredicto. Sin esto quedaban tres cajas de alturas distintas en la misma fila.
+    <div className="h-full bg-bg-1 border border-line rounded-xl px-4 py-3.5">
       <div className="text-[12px] text-ink-3 leading-none font-medium">{label}</div>
       <div className={`mt-2 font-semibold tabular num leading-none text-[22px] tracking-tight ${toneCls}`}>{pctSigned(data.pct)}</div>
       {!pctHero && (

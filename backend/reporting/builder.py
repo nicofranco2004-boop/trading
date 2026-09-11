@@ -805,16 +805,141 @@ def fetch_cum_deposits_until(conn, uid: int, end_date: str,
 
 # ─── Benchmarks ──────────────────────────────────────────────────────────────
 
+# Cuántos días de tolerancia tiene el arranque de una ventana para considerarse
+# "pegado" a un borde de mes. Ver `_ancla_mensual`.
+_BENCH_BORDE_MES_DIAS = 3
+
+
+def _ancla_mensual(desde: str) -> Optional[str]:
+    """La fecha con la que anclar un benchmark MENSUAL para una ventana que
+    arranca en `desde` — o None si esta ventana no se puede medir con datos
+    mensuales sin meter sesgo.
+
+    Un benchmark mensual sólo sabe de meses enteros. Si la ventana del usuario
+    arranca el 20 de marzo, cualquier anclaje inventa medio marzo: contarlo entero
+    sobreestima al benchmark (y le come mérito al usuario), saltearlo lo subestima
+    (y se lo regala). Las dos direcciones son sesgo y ninguna es declarable, así
+    que ahí no se publica.
+
+    Cuando el arranque SÍ cae en un borde de mes el anclaje es exacto:
+      · día 1-3           → el cierre del mes ANTERIOR (la ventana cubre el mes entero).
+      · último día del mes → ese mismo mes, ya cerrado (la ventana arranca después).
+    """
+    try:
+        d = datetime.strptime(str(desde)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    import calendar as _cal
+    ultimo = _cal.monthrange(d.year, d.month)[1]
+    if d.day <= _BENCH_BORDE_MES_DIAS:
+        return _dia_anterior(d.isoformat())
+    if d.day == ultimo:
+        return d.isoformat()
+    return None
+
+
+def benchmark_entre_fechas(bench: Dict[str, Any], desde: str, hasta: str,
+                           key: str, fx=None) -> Optional[float]:
+    """El % que hizo el benchmark ENTRE DOS FECHAS — las del usuario, no las del
+    almanaque.
+
+    ⚠️ POR QUÉ NO ALCANZA EL AÑO CALENDARIO. El TWR de un año cubre la ventana que
+    el motor PUDO medir, que rara vez va del 1 de enero al 31 de diciembre: puede
+    ser "del 3 de marzo al 11 de septiembre". Comparar ese tramo contra el S&P de
+    enero a diciembre no es una comparación, y en un año donde el índice hizo casi
+    todo su recorrido fuera de la ventana da vuelta el veredicto — que es el único
+    output que el usuario lee de acá ("¿le gané o no?").
+
+    El anclaje sale de `performance.benchmark_recortado`, EL MISMO que dibuja la
+    línea del índice en Métricas: serie diaria cuando la hay (cierre de ese día o
+    del último hábil anterior), mensual como respaldo. No es una copia — si el
+    criterio de anclaje cambia, cambia en los dos lados a la vez.
+
+    `fx` (opcional) pasa un índice de precio a pesos: una función fecha → TC. Un
+    índice en dólares comparado contra una cartera medida en pesos le esconde la
+    devaluación, que es justamente lo que separa las dos monedas.
+    """
+    if not bench or not desde or not hasta:
+        return None
+    # Una ventana al revés no es una ventana. Sin este corte devolvía el retorno
+    # del tramo NEGADO (−9,09 % donde el índice hizo +10 %): un veredicto dado
+    # vuelta, que es peor que no publicar. Ninguna de las tres fuentes de ventana
+    # debería producirlo, y justamente por eso nadie lo miraría.
+    if str(desde)[:10] > str(hasta)[:10]:
+        return None
+    import performance as _perf
+
+    def _medir(serie, d0):
+        puntos = _perf.benchmark_recortado(serie, [d0, hasta], key)
+        if len(puntos) < 2:
+            return None
+        i0, i1 = puntos[0].get("index"), puntos[-1].get("index")
+        # ⚠️ EL PRIMER PUNTO TIENE QUE SER EL ANCLA, Y VALER 1,0.
+        # `benchmark_recortado` fija la base en la primera fecha CON cierre: si la
+        # historia del índice arranca después que la ventana, el primer punto viene
+        # en None y la base se corre al segundo — o sea publicaría "0,0 %" donde la
+        # respuesta verdadera es "no sé".
+        if i0 is None or i1 is None or abs(float(i0) - 1.0) > 1e-9:
+            return None
+        if fx is not None and key not in _perf.BENCH_EN_ARS:
+            f0, f1 = fx(d0), fx(hasta)
+            if not f0 or not f1:
+                return None
+            return ((float(i1) * float(f1)) / float(f0) - 1.0) * 100
+        return (float(i1) - 1.0) * 100
+
+    # ⚠️ LA DIARIA PRIMERO, PERO NO LA DIARIA SOLA.
+    #
+    # La diaria mide la ventana exacta, así que va primero. Pero se baja con
+    # `period="5y"` (`_fetch_sp500_daily`) mientras la mensual va con "max" y llega
+    # a 1988: para todo año de más de cinco años de antigüedad la diaria NO TIENE el
+    # ancla, y quedarse ahí devolvía None con el dato mensual disponible al lado.
+    # Medido contra el fixture con yfinance real: 2021 y 2020 se quedaban sin
+    # veredicto mientras 2022-2025 lo tenían. Un año viejo cae en bordes de mes
+    # (31/12 → 31/12), que es justo donde el mensual mide sin sesgo.
+    candidatos = []
+    if key not in _perf.BENCH_PORCENTUAL:
+        diaria = bench.get(f"{key}_d") or {}
+        if diaria and _perf._es_diario(diaria):
+            candidatos.append((diaria, desde))
+    mensual = bench.get(key) or {}
+    if mensual:
+        # Con datos mensuales la ventana tiene que calzar con meses enteros.
+        desde_m = _ancla_mensual(desde)
+        if desde_m is not None:
+            candidatos.append((mensual, desde_m))
+    for serie, d0 in candidatos:
+        r = _medir(serie, d0)
+        if r is not None:
+            return r
+    return None
+
+
 def benchmark_return_for_period(bench: Dict[str, Any], period_type: str,
                                 period_start: str, period_end: str,
-                                key: str) -> Optional[float]:
+                                key: str, ventana=None, fx=None) -> Optional[float]:
     """% del benchmark en el período. `key` ∈ {'sp500', 'inflation_ar'}.
 
     sp500 está keyed por YYYY-MM con cierre del mes. Para mes completo es directo.
     Para semana, devolvemos None (no podemos pro-ratear sin daily data).
+
+    Para AÑO el cálculo es otro y vive en `benchmark_entre_fechas`: se mide entre
+    las fechas que el motor realmente midió (`ventana`), no entre el 1 de enero y
+    el 31 de diciembre. El mes queda exactamente como estaba — es el número que
+    Reportes publica hace meses y no hay motivo para moverlo.
     """
-    if not bench or key not in bench:
+    if not bench or (key not in bench and f"{key}_d" not in bench):
         return None
+    if period_type == "year":
+        d0, d1 = (ventana or (None, None))
+        # ⚠️ SIN VENTANA DECLARADA NO HAY VEREDICTO. Caer al año calendario sería
+        # comparar el % del usuario —que puede cubrir de enero a junio— contra el
+        # índice de enero a diciembre. Medido con el fixture: el año en curso daba
+        # "+3,16 % vs S&P +10,96 %" cuando el S&P de esa MISMA ventana es otro.
+        # Un "no sé" es peor noticia y mejor dato que un veredicto invertido.
+        if not d0 or not d1:
+            return None
+        return benchmark_entre_fechas(bench, d0, d1, key, fx=fx)
     series = bench.get(key) or {}
     if period_type != "month":
         return None  # Phase 1: no soportamos benchmark sub-mensual
@@ -939,6 +1064,14 @@ def compute_metrics_for_period(
     month_twr_pct = None
     month_twr_usd = None
     _ventana_medida = (None, None)
+    # ⚠️ EL BENCHMARK SE MIDE EN LA VENTANA DEL NÚMERO QUE SE PUBLICA, NO EN LA DEL
+    # ALMANAQUE. El % del año puede salir de tres fuentes —el motor, la composición
+    # contable, las puntas— y cada una cubre un tramo distinto. Comparar un % que
+    # va de enero a junio contra el S&P de enero a diciembre da vuelta el veredicto,
+    # que es lo ÚNICO que el usuario lee de acá. Cada candidato declara su ventana
+    # al lado de su número, y abajo gana la del que se publique.
+    _ventana_comp = (None, None)
+    _ventana_puntas = (None, None)
     _start_is_mtm = False   # start_value salió de un cierre real a mercado
     _live_month_unmeasured = False  # (año) el mes vivo no tiene borde medido
 
@@ -1211,6 +1344,9 @@ def compute_metrics_for_period(
                 if _snap_y:
                     start_value = float(_snap_y["total_value"])
                     _start_is_mtm = True
+                    # El cierre del que arranca, y hoy: las dos fechas que este
+                    # `delta_pct` de puntas realmente cubre.
+                    _ventana_puntas = (str(_snap_y["date"])[:10], _hoy_iso())
             # AUDIT D-1: mismo cruce que el mes — sin cierre medido de borde, el
             # año resta cadena contra mercado.
             if _basis_is_incomparable(_start_is_mtm, start_value, deposits, withdrawals):
@@ -1229,6 +1365,7 @@ def compute_metrics_for_period(
                 start_value, end_value, _bd0, _bd1 = _b
                 _basis = "mercado"
                 _start_is_mtm = True
+                _ventana_puntas = (_bd0, _bd1)
                 if str(moneda).lower() == "ars":
                     _pct_puntas_ars = _pct_en_pesos(
                         conn, _bd0, _bd1, start_value, end_value,
@@ -1349,6 +1486,18 @@ def compute_metrics_for_period(
             f"{y:04d}-{_meses_con_fila[0]:02d}-01",
             _fin_de_mes_iso(y, _meses_con_fila[-1]),
             period_start, period_end, year_is_current)
+        if _meses_con_fila:
+            # Del cierre anterior al primer mes con fila hasta el cierre del último.
+            # ⚠️ EN EL AÑO EN CURSO EL FINAL ES HOY, NO EL FIN DEL ÚLTIMO MES CON FILA.
+            # La composición cierra su último mes con `cf = live_value` (el valor de
+            # HOY), así que el % ya cubre hasta hoy. Si `monthly_entries` todavía no
+            # tiene la fila del mes en curso —lo normal hasta que el mes cierra— el
+            # último mes con fila es el ANTERIOR, y medir ahí el índice le descontaba
+            # al benchmark hasta 30 días de mercado que el usuario sí vivió.
+            _fin_comp = (_hoy_iso() if year_is_current
+                         else _fin_de_mes_iso(y, _meses_con_fila[-1]))
+            _ventana_comp = (
+                _dia_anterior(f"{y:04d}-{_meses_con_fila[0]:02d}-01"), _fin_comp)
         if rows and not _hay_agujero and _cubre_el_periodo:
             comp = 1.0
             have_comp = False
@@ -1554,8 +1703,17 @@ def compute_metrics_for_period(
         delta_pct = month_twr_pct
         if month_twr_usd is not None:
             delta_usd = month_twr_usd
-    if period_type == "year" and year_twr_pct is not None and not _live_month_unmeasured:
-        delta_pct = year_twr_pct
+    # La ventana que el benchmark tiene que respetar. Se decide ACÁ, pegada a la
+    # línea que elige el número: si se decidiera aparte, las dos podrían separarse
+    # con cualquier cambio futuro y nadie se enteraría.
+    _bench_ventana = None
+    if period_type == "year":
+        if year_twr_pct is not None and not _live_month_unmeasured:
+            delta_pct = year_twr_pct
+            _bench_ventana = (_ventana_medida if _ventana_medida[0]
+                              else _ventana_comp)
+        else:
+            _bench_ventana = _ventana_puntas
     # AUDIT B4/B10 + C-3/H-8: período sin base confiable (día/semana con huecos,
     # broker-filter sub-mensual, mes en curso sin historia) → % None, no un
     # número engañoso.
@@ -1680,10 +1838,40 @@ def compute_metrics_for_period(
     # del benchmark va a su propio campo y `vs_*_pct` es el EXCESO, que es lo que
     # el nombre promete y lo que ya asumían el frontend (`Reports.jsx`,
     # `MonthCard.jsx`, `demo.js`) y `ai/builders/reports.py`.
+    # ⚠️ EL BENCHMARK DEL AÑO SE MIDE EN LA VENTANA QUE EL MOTOR MIDIÓ.
+    # `_ventana_medida` es "del 3 de marzo al 11 de septiembre" cuando eso es lo
+    # que el TWR cubre; el año calendario sería otra pregunta. Para mes/día/semana
+    # va `None` y el camino de abajo es el de siempre, intacto.
+    # En PESOS el índice de precio se pasa a pesos con el TC de cada punta, igual
+    # que hace la sección Performance (`performance._en_pesos`). Sin esto, un S&P
+    # en dólares comparado contra una cartera medida en pesos le esconde la
+    # devaluación — y la devaluación es justamente lo que separa las dos monedas.
+    _bench_fx = None
+    if period_type == "year" and str(moneda).lower() == "ars":
+        try:
+            import twr as _twr_fx
+            _bench_fx = _twr_fx.serie_fx(conn, None, period_end)[0]
+        except Exception:
+            log.exception("serie_fx para benchmark anual uid=%s", uid)
     sp500_ret = benchmark_return_for_period(bench or {}, period_type, period_start,
-                                            period_end, "sp500")
-    inflation_ret = benchmark_return_for_period(bench or {}, period_type, period_start,
-                                                period_end, "inflation_ar")
+                                            period_end, "sp500",
+                                            ventana=_bench_ventana, fx=_bench_fx)
+    # ⚠️ LA INFLACIÓN ARGENTINA SÓLO SE COMPARA CONTRA UN RETORNO EN PESOS.
+    #
+    # La inflación es un fenómeno del PESO. Restarle un retorno medido en dólares
+    # no da un veredicto, da una mezcla de unidades: en 2024 la inflación fue ~118 %
+    # y una cartera en dólares que hizo +22 % aparecería "96 puntos abajo" de algo
+    # contra lo que nunca jugó. Es el mismo error que el resto de la app ya cierra
+    # —`performance.BENCH_EN_ARS` existe por esto— y el año es la superficie donde
+    # más se nota, porque es el plazo en que la brecha se acumula.
+    #
+    # En dólares el comparable es el S&P; en pesos aparecen los dos. El mes queda
+    # como estaba: es un número publicado hace meses y moverlo es otra decisión.
+    _infl_aplica = (period_type != "year") or (str(moneda).lower() == "ars")
+    inflation_ret = (benchmark_return_for_period(bench or {}, period_type, period_start,
+                                                 period_end, "inflation_ar",
+                                                 ventana=_bench_ventana)
+                     if _infl_aplica else None)
     # Sin `delta_pct` no hay con qué comparar — y si lo tapamos por base
     # incomparable, publicar un "vs benchmark" sería reintroducir el mismo número
     # por la ventana.
@@ -1714,6 +1902,8 @@ def compute_metrics_for_period(
         motor_motivo_texto=_motor_nego_texto,
         medido_desde=_ventana_medida[0],
         medido_hasta=_ventana_medida[1],
+        bench_desde=(_bench_ventana or (None, None))[0],
+        bench_hasta=(_bench_ventana or (None, None))[1],
         modo=("estimado" if modo == "estimado" else "certero"),
         moneda=("ars" if str(moneda).lower() == "ars" else "usd"),
     )

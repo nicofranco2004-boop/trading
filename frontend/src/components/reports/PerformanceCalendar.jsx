@@ -8,6 +8,8 @@
 // Visual: tipografía mono operativa, celdas con altura generosa, colores
 // con buen contraste sobre bg-bg-1.
 
+import { Link } from 'react-router-dom'
+import { Lock } from 'lucide-react'
 import { useMoneyFormat } from '../../contexts/CurrencyContext'
 
 const MONTH_SHORT = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC']
@@ -93,7 +95,103 @@ function KpiCell({ label, value, sub, tone, first }) {
   )
 }
 
-export default function PerformanceCalendar({ yearGroups }) {
+// ─── Veredicto contra un benchmark ───────────────────────────────────────────
+// `pp` es el EXCESO en puntos porcentuales (cartera − benchmark), no el retorno
+// del índice. Sin dato no se dibuja nada: un "—" por año ocupa lugar y no dice
+// más que el vacío.
+function Veredicto({ nombre, articulo, pp }) {
+  if (pp == null) return null
+  const gana = pp >= 0
+  const de = articulo === 'el' ? 'del' : 'de la'
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
+      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1)} puntos porcentuales`}
+    >
+      vs {nombre}
+      <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1)} pp
+      </b>
+    </span>
+  )
+}
+
+// dd/mm/aa — corto pero sin perder el año, que es lo que distingue las dos
+// puntas de una ventana anual.
+function fmtFechaCorta(iso) {
+  if (!iso || iso.length < 10) return iso || ''
+  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(2, 4)}`
+}
+
+// ─── La fila de métricas del año ─────────────────────────────────────────────
+// Lo que Reportes ya calculaba para el año en curso y sólo mostraba ahí. Los
+// meses en verde y el mejor/peor salen de las celdas que ya están dibujadas
+// arriba, así que describen exactamente lo que el usuario tiene delante.
+function Dato({ label, valor, tono }) {
+  const color = tono === 'pos' ? 'text-rendi-pos' : tono === 'neg' ? 'text-rendi-neg' : 'text-ink-1'
+  return (
+    <div className="flex flex-col gap-0.5 min-w-[92px]">
+      <span className="text-[10.5px] text-ink-3 font-medium leading-none">{label}</span>
+      <span className={`text-[13px] font-semibold tabular leading-none ${color}`}>{valor}</span>
+    </div>
+  )
+}
+
+function MetricasDelAno({ resumen, months, money }) {
+  if (!resumen) return null
+  const conDato = months.filter(m => m.is_relevant && m.metrics?.delta_pct != null)
+  const pcts = conDato.map(m => m.metrics.delta_pct)
+  const verdes = pcts.filter(p => p > 0).length
+  const datos = []
+  if (resumen.sp500_return_pct != null) {
+    datos.push({ label: 'S&P 500 ese año',
+                 valor: `${resumen.sp500_return_pct >= 0 ? '+' : '−'}${Math.abs(resumen.sp500_return_pct).toFixed(1)}%` })
+  }
+  if (resumen.inflation_pct != null) {
+    datos.push({ label: 'Inflación AR', valor: `+${resumen.inflation_pct.toFixed(1)}%` })
+  }
+  if (resumen.deposits > 0) {
+    datos.push({ label: 'Aportaste', valor: money.fmtMoney(resumen.deposits) })
+  }
+  if (resumen.withdrawals > 0) {
+    datos.push({ label: 'Retiraste', valor: money.fmtMoney(resumen.withdrawals) })
+  }
+  if (resumen.realized_pnl) {
+    datos.push({ label: 'P&L realizado', valor: money.fmtMoney(resumen.realized_pnl, { signed: true }),
+                 tono: resumen.realized_pnl >= 0 ? 'pos' : 'neg' })
+  }
+  if (resumen.trades_count > 0) {
+    datos.push({ label: 'Operaciones', valor: `${resumen.trades_count} cerradas` })
+    if (resumen.win_rate != null) {
+      datos.push({ label: 'Win rate', valor: `${resumen.win_rate.toFixed(0)}%` })
+    }
+  }
+  if (pcts.length > 0) {
+    datos.push({ label: 'Meses en verde', valor: `${verdes} de ${pcts.length}` })
+    const mejor = Math.max(...pcts), peor = Math.min(...pcts)
+    datos.push({ label: 'Mejor mes', valor: `+${mejor.toFixed(1)}%`, tono: 'pos' })
+    if (peor < 0) datos.push({ label: 'Peor mes', valor: `−${Math.abs(peor).toFixed(1)}%`, tono: 'neg' })
+  }
+  // Sin un solo dato la fila no se dibuja: un separador vacío bajo cada año es
+  // ruido que el ojo tiene que descartar en cada pasada.
+  if (datos.length === 0) return null
+  return (
+    <div className="flex flex-wrap gap-x-6 gap-y-2.5 pl-[120px] pt-2.5 border-t border-line/50">
+      {datos.map((d, i) => <Dato key={i} {...d} />)}
+      {resumen.bench_desde && resumen.bench_hasta && (
+        // ⚠️ CON AÑO. Sin él, un año cerrado se leía "comparado del 31/12 al
+        // 31/12" — dos fechas idénticas que sugieren un solo día, cuando son los
+        // dos extremos del año. La ventana existe justamente para poder leerla.
+        <span className="text-[10.5px] text-ink-3 self-end leading-none">
+          comparado del {fmtFechaCorta(resumen.bench_desde)} al {fmtFechaCorta(resumen.bench_hasta)}
+        </span>
+      )}
+    </div>
+  )
+}
+
+export default function PerformanceCalendar({ yearGroups, years = [], yearsLoading = false,
+                                             historicos = true }) {
   const kpis = computeKpis(yearGroups)
   // Fase B: el P&L Realizado 12M respeta el toggle global ARS/USD.
   // Los % no cambian (son ratios) — solo el valor monetario se convierte.
@@ -144,24 +242,65 @@ export default function PerformanceCalendar({ yearGroups }) {
           </span>
         </header>
 
-        <div className="px-4 py-5 space-y-5">
+        {/* ⚠️ SCROLL, NO RECORTE. La card de afuera lleva `overflow-hidden`, así que
+            sin esto las bandas angostas se CORTABAN: en 554px de ancho, noviembre,
+            diciembre y los chips de veredicto desaparecían sin ninguna señal. Doce
+            meses más el cierre no entran en un teléfono, y el contrato del repo ya
+            marca este archivo como sitio de riesgo por sus anchos fijos. */}
+        <div className="px-4 py-5 space-y-5 overflow-x-auto">
           {yearGroups.map(({ year, months }) => {
             const cells = Array.from({ length: 12 }, (_, idx) => {
               const m = months.find(mm => monthNum(mm.period_key) === idx + 1)
               return { idx, month: m }
             })
-            // Retorno anual = producto geométrico de los meses con data (NO suma
-            // aritmética de %, que sobreestima en años en tendencia y falla en los
-            // volátiles). Meses vacíos/irrelevantes → factor 1 (no-op).
-            const yearReturnPct = (months.reduce((acc, m) => {
-              const r = m.metrics?.delta_pct
-              if (r == null || !m.is_relevant) return acc
-              return acc * (1 + r / 100)
-            }, 1) - 1) * 100
+            // ⚠️ ACÁ VIVÍA UN SEGUNDO MOTOR DEL RENDIMIENTO ANUAL, Y CONTRADECÍA AL
+            // PRIMERO. Componía los meses que la timeline hubiera traído y contaba
+            // los ausentes como +0% (factor 1). Con la timeline en 12 meses, el año
+            // anterior sólo tenía sus últimos meses cargados: medido en la cuenta de
+            // prueba, 2025 publicaba "+6,50%" acá mientras el motor canónico mide
+            // +32,95% — 26 puntos de diferencia para el mismo año, y el rótulo de
+            // arriba diciendo "TWR mensual" como si fuera lo mismo.
+            // Ahora el número viene de `/api/reports/years` (`twr.curva_indexada`),
+            // que es el mismo que publica la pestaña Año y el inicio.
+            const resumen = years.find(a => a.year === year) || null
+            const pct = resumen?.pct
+            // ⚠️ "BLOQUEADO" NO ES "SIN MEDIR". Sin el resumen —porque el plan no
+            // lo incluye— la fila diría "sin fotos a precio de mercado", que es
+            // falso: el número existe y está del otro lado del muro. Decirle al
+            // usuario que le faltan datos cuando lo que le falta es el plan es la
+            // peor de las dos mentiras posibles.
+            const bloqueado = !historicos && !resumen
             return (
-              <div key={year} className="flex items-center gap-4">
-                <div className="font-mono text-[12px] tracking-label text-ink-3 min-w-[52px] tabular">
-                  {year}
+              <div key={year} className="space-y-2.5 min-w-[880px]">
+              <div className="flex items-center gap-4">
+                <div className="min-w-[104px] flex flex-col gap-1">
+                  <span className="font-mono text-[12px] tracking-label text-ink-3 tabular">
+                    {year}{resumen?.is_current ? ' · hasta hoy' : ''}
+                  </span>
+                  {pct != null ? (
+                    <span className={`text-[22px] font-semibold tracking-tight leading-none tabular ${
+                      resumen.basis === 'contable' ? 'text-ink-1'
+                        : pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                      {pct >= 0 ? '+' : '−'}{Math.abs(pct).toFixed(2)}%
+                    </span>
+                  ) : bloqueado ? (
+                    <Link to="/planes" className="inline-flex items-center gap-1.5 text-[13px] text-rendi-accent hover:text-rendi-accent/80 font-medium leading-none">
+                      <Lock size={12} strokeWidth={2} /> Ver {year}
+                    </Link>
+                  ) : (
+                    <span className="text-[13px] text-ink-3 font-medium leading-none">
+                      {yearsLoading ? '…' : 'Sin medir'}
+                    </span>
+                  )}
+                  <span className="text-[10.5px] text-ink-3 leading-tight">
+                    {bloqueado
+                      ? 'los años anteriores están en el plan pago'
+                      : pct == null
+                        ? (resumen?.motivo_texto ? 'el motor no publica este año' : 'sin fotos a precio de mercado')
+                        : resumen.basis === 'contable'
+                          ? 'de tu historia importada'
+                          : 'medido a precio de mercado'}
+                  </span>
                 </div>
                 <div className="grid grid-cols-12 gap-1.5 flex-1">
                   {cells.map(({ idx, month }) => {
@@ -173,7 +312,13 @@ export default function PerformanceCalendar({ yearGroups }) {
                       <div
                         key={idx}
                         title={month ? `${month.period_label}: ${fmtPctValue(pct)}%` : `${MONTH_SHORT[idx]}: sin datos`}
-                        className="aspect-[1.4/1] min-h-[56px] p-2 flex flex-col justify-between"
+                        // ⚠️ SIN PROPORCIÓN FIJA. Con `aspect-[1.4/1]` + `min-h-[56px]`
+                        // la celda EXIGE 78px de ancho: cuando su columna daba menos
+                        // —doce columnas más el cierre del año no entran en una
+                        // laptop— el cuadrado se salía de su lugar y pisaba al de al
+                        // lado. El alto ahora lo fija `min-h` y el ancho lo pone la
+                        // columna, que es quien sabe cuánto hay.
+                        className="min-h-[52px] px-1.5 py-2 flex flex-col justify-between"
                         style={{
                           background: c.bg,
                           border: c.border,
@@ -189,7 +334,7 @@ export default function PerformanceCalendar({ yearGroups }) {
                           {MONTH_SHORT[idx]}
                         </span>
                         <span
-                          className="font-mono text-[13px] font-semibold leading-none tabular"
+                          className="font-mono text-[12px] font-semibold leading-none tabular"
                           style={{ color: c.value }}
                         >
                           {hasData ? fmtPctValue(pct) : '—'}
@@ -198,13 +343,12 @@ export default function PerformanceCalendar({ yearGroups }) {
                     )
                   })}
                 </div>
-                <div
-                  className={`font-mono text-[12px] min-w-[80px] text-right tabular font-medium ${
-                    yearReturnPct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
-                  }`}
-                >
-                  {yearReturnPct >= 0 ? '+' : ''}{yearReturnPct.toFixed(2)}%
+                <div className="flex flex-col gap-1.5 items-end min-w-[132px]">
+                  <Veredicto nombre="S&P 500" articulo="el" pp={resumen?.vs_sp500_pct} />
+                  <Veredicto nombre="inflación" articulo="la" pp={resumen?.vs_inflation_pct} />
                 </div>
+              </div>
+              <MetricasDelAno resumen={resumen} months={months} money={money} />
               </div>
             )
           })}

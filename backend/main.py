@@ -5437,6 +5437,79 @@ def get_fx_rates(
 # ─── Benchmarks (inflación AR, S&P 500, dólar blue histórico) ────────────────
 
 _bench_cache = {"data": None, "ts": 0.0}
+
+
+def _bench_para_reportes(esperar: bool = True) -> dict:
+    """Las series de benchmark que necesita `reporting.builder`: inflación, S&P
+    mensual y S&P DIARIO.
+
+    ⚠️ EL DIARIO NO ES UN EXTRA. El benchmark del AÑO se mide entre las fechas que
+    el motor realmente midió (`benchmark_entre_fechas`), y con datos MENSUALES una
+    ventana que no arranca pegada a un borde de mes no se puede medir sin sesgo:
+    ahí la función se abstiene y el año se queda sin veredicto. La serie diaria
+    mide la ventana exacta, que es el caso normal de un año medido.
+
+    Sale del caché de `/api/benchmarks` cuando lo hay —el mismo dato que ya usa
+    Métricas, y así el request no baja dos veces de yfinance—; con el caché frío
+    se fetchea lo mínimo. Vive en UN solo lugar porque los dos endpoints de
+    Reportes armaban este dict por su cuenta: agregarle el diario a uno y no al
+    otro es exactamente la forma de deuda que este repo viene cerrando.
+    """
+    # ⚠️ SERIE POR SERIE, NO TODO-O-NADA. Un primer intento preguntaba "¿el caché
+    # tiene algo de S&P?" y, si sí, devolvía las tres claves del caché tal cual.
+    # Pero `_benchmarks_fetch_and_cache` llena cada serie por separado y contempla
+    # que una venga vacía (loguea "el S&P volvió vacío (mensual=%d, diario=%d)"):
+    # con el diario lleno y el mensual vacío, esto devolvía `sp500: {}` y el
+    # rendimiento MENSUAL de Reportes —que sólo sabe leer el mensual— se quedaba
+    # sin su "vs S&P 500", que antes conseguía porque bajaba fresco. Era una
+    # regresión en el camino del mes, justamente el que este trabajo no toca.
+    cache = _bench_cache["data"] or {}
+    # ⚠️ EL DASHBOARD NO ESPERA A YFINANCE. Con el caché frío —cada deploy, cada
+    # reinicio del worker— bajar las tres series tarda: medido acá, 7,25 s la
+    # primera llamada contra 0,23 s las siguientes, y el repo tiene registrados
+    # casos de 20-45 s en cache miss. Reportes puede esperar (es una pantalla a la
+    # que se entra a leer); el inicio no, y hasta este trabajo no dependía de esto.
+    # Con `esperar=False` se devuelve lo que haya y se dispara el refresco en
+    # background: el % del año —que es el dato— sale igual, y el veredicto contra
+    # el índice aparece en el refresco siguiente en vez de trabar la pantalla.
+    if not esperar and not (cache.get("sp500") or cache.get("sp500_d")):
+        if not _bench_refresh_inflight["flag"]:
+            _bench_refresh_inflight["flag"] = True
+
+            def _traer():
+                try:
+                    _benchmarks_fetch_and_cache()
+                except Exception as ex:
+                    log.warning("benchmarks para Reportes: %s", ex)
+                finally:
+                    _bench_refresh_inflight["flag"] = False
+
+            _bench_fetch_executor.submit(_traer)
+        return {"inflation_ar": cache.get("inflation_ar") or {},
+                "sp500": {}, "sp500_d": {}}
+    bajado = {}
+    infl = cache.get("inflation_ar")
+    if not infl:
+        infl = bajado["inflation_ar"] = _fetch_inflation_ar()
+    sp_m = cache.get("sp500")
+    if not sp_m:
+        sp_m = bajado["sp500"] = _fetch_sp500_monthly()
+    sp_d = cache.get("sp500_d")
+    if not sp_d:
+        sp_d = bajado["sp500_d"] = _fetch_sp500_daily()
+    # ⚠️ LO QUE SE BAJA, SE GUARDA. Sin esto el helper LEÍA el caché y no lo
+    # llenaba nunca: con el caché frío —el estado normal hasta que alguien abre
+    # Métricas— cada visita a Reportes y al Dashboard volvía a bajar las tres
+    # series de yfinance. Medido: 1,74 s la primera vez y 0,77 s CADA vez
+    # después, cuando debería ser cero.
+    # Se MEZCLA, no se reemplaza: el caché tiene más series (blue, merval, oro,
+    # UVA…) que `/api/insights/performance` lee de ahí, y pisarlo con estas tres
+    # se las borraría. Y `ts` no se toca a propósito: este caché está incompleto,
+    # así que el refresco en background de `/api/benchmarks` tiene que seguir
+    # viéndolo como viejo.
+    if bajado and (sp_m or sp_d):
+        _bench_cache["data"] = {**cache, **bajado}
+    return {"inflation_ar": infl, "sp500": sp_m, "sp500_d": sp_d}
 _bench_refresh_inflight = {"flag": False}  # SWR: evita disparar múltiples refreshes
 BENCH_TTL = 3600  # 1 hour
 
@@ -34322,10 +34395,7 @@ def reports_timeline(
         raise HTTPException(400, "months debe estar entre 1 y 36")
     conn = get_db()
     try:
-        bench_data = {
-            "inflation_ar": _fetch_inflation_ar(),
-            "sp500": _fetch_sp500_monthly(),
-        }
+        bench_data = _bench_para_reportes()
         # live_value es el TOTAL del portfolio (snapshots no se desagregan
         # por broker). Solo aplica como end_value del período en curso cuando
         # el reporte es global; con broker_filter se cae al capital_final
@@ -34362,6 +34432,141 @@ def reports_timeline(
         conn.close()
 
 
+# Cuántos años para atrás se listan como máximo. Doce cubre cualquier historia
+# real de un usuario retail y pone un techo al costo: cada año es un
+# `build_period_report` (medido: 2-4 ms después del primero).
+_REPORTES_MAX_ANOS = 12
+
+
+@app.get("/api/reports/years")
+def reports_years(
+    broker: str = "global",
+    modo: str = "certero",
+    moneda: str = "usd",
+    uid: int = Depends(get_effective_user),
+):
+    """El año por año: cuánto rindió cada año y contra qué.
+
+    ⚠️ ESTE ENDPOINT EXISTE PORQUE EL AÑO ERA UNO SOLO. `/api/reports/period/year/
+    {key}` siempre supo contestar por cualquier año, pero el único que lo llamaba
+    (`Reports.jsx`) le pasaba `new Date().getFullYear()` escrito a mano: la pestaña
+    Año mostraba el año en curso y no había forma de ver 2025 cerrado. Acá se listan
+    todos los años con historia, con el MISMO builder — no un cálculo paralelo, que
+    es como se fabricaron las divergencias que este repo viene cerrando.
+
+    Cada año trae su rendimiento, la ventana que ese número cubre, y el veredicto
+    contra el S&P (y contra la inflación cuando se mide en pesos; en dólares la
+    inflación argentina no es un comparable, ver `compute_metrics_for_period`).
+    """
+    conn = get_db()
+    try:
+        hoy = _hoy_art_date()
+        # El rango de años con historia: lo más viejo entre la contabilidad y las
+        # fotos. Sin filtro de broker a propósito — el rango es del usuario; el
+        # filtro lo aplica cada reporte.
+        primeros = []
+        r = conn.execute("SELECT MIN(year) AS y FROM monthly_entries WHERE user_id=?",
+                         (uid,)).fetchone()
+        if r and r["y"]:
+            primeros.append(int(r["y"]))
+        r = conn.execute("SELECT MIN(date) AS d FROM snapshots "
+                         "WHERE user_id=? AND total_value > 0", (uid,)).fetchone()
+        if r and r["d"]:
+            primeros.append(int(str(r["d"])[:4]))
+        if not primeros:
+            return {"broker": broker, "modo": modo, "moneda": moneda, "years": []}
+        desde = max(min(primeros), hoy.year - _REPORTES_MAX_ANOS + 1)
+
+        # ⚠️ LOS AÑOS ANTERIORES SON DE PLAN PAGO. El calendario de Reportes está
+        # fuera del muro (siempre lo estuvo), así que al colgarle el cierre de cada
+        # año, sus veredictos y sus métricas, todo eso quedaba visible en Free sin
+        # que nadie lo decidiera. El año EN CURSO sí es gratis —es el que muestra
+        # el inicio— y el resto pide plan. Se corta ACÁ y no sólo en la pantalla:
+        # un gate que vive únicamente en el frontend es una cortina, no una puerta.
+        try:
+            from ai import plan as _plan
+            historicos = _plan.can_access(conn, uid, "reportes.historicos")
+        except Exception:
+            log.exception("plan para reports_years uid=%s", uid)
+            historicos = False
+        bench_data = _bench_para_reportes(esperar=False)
+        tc_blue = _live_valuation_rate(conn, uid)
+        # El año EN CURSO cierra con el valor vivo, igual que en la pestaña Año:
+        # sin esto su % iría hasta el último snapshot y el resto de la app mostraría
+        # otro número para el mismo año.
+        live_value = None
+        if broker == "global":
+            live_value = _latest_snapshot_value(conn, uid)
+            try:
+                lv = compute_live_portfolio_value(conn, uid, tc_blue, CRYPTO_YF)
+                if lv is not None and lv > 0:
+                    live_value = lv
+            except Exception:
+                pass
+
+        from reporting.builder import pair_cache
+        out = []
+        with pair_cache():
+            for y in range(hoy.year, desde - 1, -1):
+                es_actual = (y == hoy.year)
+                if not es_actual and not historicos:
+                    continue
+                try:
+                    rep = build_period_report(
+                        conn, uid, "year", str(y), broker_filter=broker,
+                        bench=bench_data,
+                        live_value=(live_value if es_actual else None),
+                        modo=modo, moneda=moneda,
+                    )
+                except ValueError:
+                    continue
+                except Exception:
+                    log.exception("reports_years uid=%s year=%s", uid, y)
+                    continue
+                m = rep.metrics
+                # Un año sin una sola operación, sin flujos y sin movimiento no se
+                # lista: ocupa una fila y no dice nada. El año en curso siempre va
+                # —es el que el inicio muestra— aunque todavía esté vacío.
+                if not (es_actual or rep.is_relevant or m.delta_pct is not None):
+                    continue
+                out.append({
+                    "year": y,
+                    "is_current": es_actual,
+                    "pct": m.delta_pct,
+                    "usd": m.delta_usd,
+                    "start_value": m.start_value,
+                    "end_value": m.end_value,
+                    # Con qué está hecho el número y, si no hay número, por qué.
+                    "basis": m.basis,
+                    "basis_incomparable": m.basis_incomparable,
+                    "motivo": m.motor_motivo,
+                    "motivo_texto": m.motor_motivo_texto,
+                    # La ventana que el % REALMENTE cubre (puede ser más corta que
+                    # el año). Es la misma en la que se midió el benchmark.
+                    "medido_desde": m.medido_desde,
+                    "medido_hasta": m.medido_hasta,
+                    # La ventana en la que se midió el benchmark: la pantalla la
+                    # declara al lado del veredicto ("comparado del 31/12 al 11/9").
+                    "bench_desde": m.bench_desde,
+                    "bench_hasta": m.bench_hasta,
+                    "sp500_return_pct": m.sp500_return_pct,
+                    "vs_sp500_pct": m.vs_sp500_pct,
+                    "inflation_pct": m.inflation_pct,
+                    "vs_inflation_pct": m.vs_inflation_pct,
+                    "deposits": m.deposits,
+                    "withdrawals": m.withdrawals,
+                    "realized_pnl": m.realized_pnl,
+                    "trades_count": m.trades_count,
+                    "win_rate": m.win_rate,
+                })
+        # `historicos` viaja para que la pantalla sepa por qué faltan años y pueda
+        # ofrecer el plan, en vez de dibujar un vacío sin explicación.
+        return {"broker": broker, "modo": modo, "moneda": moneda,
+                "historicos": historicos, "years": out}
+    finally:
+        conn.close()
+
+
 @app.get("/api/reports/period/{period_type}/{period_key}")
 def reports_period_detail(
     period_type: str, period_key: str,
@@ -34376,10 +34581,7 @@ def reports_period_detail(
         raise HTTPException(400, "period_type inválido")
     conn = get_db()
     try:
-        bench_data = {
-            "inflation_ar": _fetch_inflation_ar(),
-            "sp500": _fetch_sp500_monthly(),
-        }
+        bench_data = _bench_para_reportes()
         # AUDIT H-9: rate LIVE (misma cascada que el cron) — ver _live_valuation_rate.
         tc_blue = _live_valuation_rate(conn, uid)
         # Para el período en curso (day/week/year actual) usamos el valor
