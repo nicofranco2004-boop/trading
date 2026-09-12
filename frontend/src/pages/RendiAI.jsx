@@ -12,13 +12,14 @@
 // consumimos una sola vez y AICoach la auto-envía (autoAsk).
 
 import { useEffect, useRef, useState } from 'react'
-import { Loader2, AlertCircle, Plus } from 'lucide-react'
+import { Loader2, AlertCircle, Plus, Volume2, VolumeX } from 'lucide-react'
 import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { clearChatSession } from '../utils/chatSession'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
+import { useVoz } from '../contexts/VozContext'
 
 // Book-mode: AICoach exige un snapshot truthy para habilitar el envío; el
 // backend lo IGNORA en este modo (arma el libro server-side). Ref estable
@@ -29,6 +30,7 @@ export default function RendiAI() {
   const { initialQuestion, consumeInitialQuestion } = useCoachDrawer()
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
+  const { enabled: vozEnabled, setEnabled: setVozEnabled } = useVoz()
   // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO — el
   // backend arma el contexto server-side e IGNORA el snapshot personal.
   // Acá: no fetcheamos la cartera (vacía) ni bloqueamos el chat si esos
@@ -107,6 +109,26 @@ export default function RendiAI() {
               Viendo tu cartera{nPos != null ? ` · ${nPos} posiciones` : ''}{nBrokers ? ` · ${nBrokers} brokers` : ''}
             </span>
           )}
+          {/* SILENCIAR / DES-SILENCIAR, acá arriba del chat. El mismo
+              interruptor está en la cabecera del acompañante flotante, pero
+              esta es la pantalla donde el usuario pregunta: tener que
+              descubrir la burbujita para poder callarla es pedirle demasiado.
+              Los dos botones mueven el MISMO estado (VozContext), así que no
+              se pueden contradecir. */}
+          <button
+            type="button"
+            onClick={() => setVozEnabled(!vozEnabled)}
+            aria-pressed={vozEnabled}
+            title={vozEnabled ? 'Rendi te lee las respuestas en voz alta' : 'Rendi te deja las respuestas sólo escritas'}
+            className={`inline-flex items-center gap-1.5 text-[12.5px] font-semibold rounded-lg px-3 py-1.5
+              border transition-colors ${vozEnabled
+                ? 'text-ink-1 border-line hover:border-ink-3 hover:text-ink-0'
+                : 'text-ink-3 border-line/60 hover:text-ink-1 hover:border-line'}`}
+          >
+            {vozEnabled
+              ? <><Volume2 size={13} strokeWidth={2} aria-hidden="true" /> Te lee en voz alta</>
+              : <><VolumeX size={13} strokeWidth={2} aria-hidden="true" /> Silenciado</>}
+          </button>
           <button
             type="button"
             onClick={() => { clearChatSession(); setConvKey(k => k + 1) }}

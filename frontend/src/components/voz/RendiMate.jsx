@@ -84,18 +84,36 @@ export default function RendiMate() {
   }, [loc.pathname, status, setOpen])
 
   if (!open) {
+    // LA BURBUJA CERRADA. Antes decía sólo "Rendi" y no se entendía: ni que se
+    // podía apretar, ni qué iba a pasar, ni que ahí adentro estaba el control
+    // del audio. Ahora dice en qué estado está y, si Rendi está hablando, trae
+    // el botón de pausa ENCIMA — no hay que abrir nada para callarla.
     return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="fixed top-[88px] right-4 z-40 inline-flex items-center gap-2 rounded-full
-                   bg-bg-2 border border-line-3 hover:border-ink-3 shadow-lg
-                   pl-2 pr-3.5 py-1.5 text-[12.5px] text-ink-1 hover:text-ink-0 transition-colors"
-        aria-label={hablando ? 'Rendi está hablando — abrir' : 'Abrir a Rendi'}
-      >
-        <Pulso hablando={hablando} />
-        {hablando ? 'Hablando…' : 'Rendi'}
-      </button>
+      <div className="fixed top-[88px] right-4 z-40 flex items-center gap-1 rounded-full
+                      bg-bg-2 border border-line-3 shadow-lg pl-2 pr-1 py-1">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center gap-2 pr-1.5 text-[12.5px] text-ink-1 hover:text-ink-0 transition-colors"
+          aria-label={hablando ? 'Rendi está hablando — abrir la conversación'
+                    : preparando ? 'Preparando el audio — abrir la conversación'
+                    : 'Abrir la conversación con Rendi'}
+        >
+          <Pulso hablando={hablando} />
+          {hablando ? 'Rendi está hablando' : preparando ? 'Preparando…' : 'Preguntale a Rendi'}
+        </button>
+        {hayAudio && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); toggle() }}
+            aria-label={hablando ? 'Pausar' : 'Reproducir'}
+            title={hablando ? 'Pausar' : 'Reproducir'}
+            className="w-6 h-6 rounded-full grid place-items-center flex-none bg-ink-0 text-bg-0"
+          >
+            {hablando ? <Pause size={11} fill="currentColor" /> : <Play size={11} fill="currentColor" />}
+          </button>
+        )}
+      </div>
     )
   }
 

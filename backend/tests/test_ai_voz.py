@@ -156,6 +156,65 @@ class ExtraerVozTest(unittest.TestCase):
         self.assertIsNone(main._voz_payload("Hola."))
 
 
+# ─── Que la conversación se hable ENTERA ─────────────────────────────────────
+# El bug que reportó Nico probándolo: la primera respuesta se escuchaba y la
+# segunda no. Causa medida: con historial largo el modelo deja de emitir el
+# bloque ---RENDI--- en las repreguntas ("¿y qué hago con eso?"), así que no hay
+# campo "voz" ni titular. Sin respaldo, silencio — y el usuario se queda
+# esperando una voz que nunca llega, sin entender por qué.
+
+class LaConversacionSeHablaEnteraTest(unittest.TestCase):
+    def test_una_repregunta_SIN_bloque_igual_se_lee(self):
+        prosa = ("Esa pregunta es la correcta y la respuesta depende de vos. "
+                 "Lo primero es saber por qué estás en cada posición: si la tesis "
+                 "sigue en pie, la concentración es una apuesta, no un descuido. "
+                 "Lo segundo es definir de antemano cuánto estás dispuesto a ver caer.")
+        out = main._extract_voz(prosa)
+        self.assertIsNotNone(out, "una repregunta con respuesta real no puede quedar muda")
+        self.assertIn("posición", out)
+
+    def test_saca_lo_que_solo_tiene_sentido_MIRANDO(self):
+        """Era la objeción concreta contra leer la prosa: 'te dejo los números en
+        pantalla' leído en voz alta es absurdo."""
+        prosa = ("Tu cartera subió catorce por ciento en el año y la mayor parte "
+                 "viene de Nvidia. Te dejo los números en pantalla para que los mires. "
+                 "Como ves arriba, la concentración es alta. "
+                 "Lo que hay que decidir es hasta dónde te sentís cómodo con eso.")
+        out = main._extract_voz(prosa)
+        self.assertIsNotNone(out)
+        for frase in ("pantalla", "Como ves", "ves arriba"):
+            self.assertNotIn(frase, out, "quedó una referencia visual: %r" % out)
+        self.assertIn("Nvidia", out)
+
+    def test_un_saludo_NO_se_lee(self):
+        self.assertIsNone(main._extract_voz("Hola, ¿en qué te ayudo?"))
+        self.assertIsNone(main._extract_voz("Dale, avisame cuando quieras."))
+
+    def test_el_registro_de_operaciones_NO_se_lee(self):
+        """Registrar es de la pantalla. El confirm/form del flujo de registro
+        silencia la respuesta aunque tenga prosa larga."""
+        largo = "Anotado, revisá que esté todo bien antes de confirmar. " * 4
+        for tipo, extra in (("confirm", {"rows": [["Activo", "TSLA"]]}),
+                            ("form", {"fields": [{"k": "broker", "label": "¿Cuál?", "kind": "text"}]})):
+            crudo = largo + _bloque({"blocks": [dict(type=tipo, **extra)]})
+            self.assertIsNone(main._extract_voz(crudo), "el bloque %s tenía que callar" % tipo)
+
+    def test_el_orden_de_preferencia_se_respeta(self):
+        # 1º el campo voz, 2º el titular, 3º la prosa.
+        prosa = "Una prosa larga y sustanciosa que alcanza de sobra el mínimo para leerse en voz alta. " * 2
+        con_voz = prosa + _bloque({"voz": "El resumen hablado.", "headline": "El titular"})
+        self.assertEqual(main._extract_voz(con_voz), "El resumen hablado.")
+        con_titular = prosa + _bloque({"headline": "El titular manda sobre la prosa"})
+        self.assertIn("titular", main._extract_voz(con_titular))
+        self.assertNotIn("sustanciosa", main._extract_voz(con_titular))
+
+    def test_el_respaldo_de_prosa_respeta_el_tope_blando(self):
+        prosa = "Una oración con contenido real que ocupa su espacio. " * 30
+        out = main._extract_voz(prosa)
+        self.assertIsNotNone(out)
+        self.assertLessEqual(len(out), tts.MAX_CHARS_SOFT)
+
+
 # ─── El cache ────────────────────────────────────────────────────────────────
 
 class CacheTest(unittest.TestCase):

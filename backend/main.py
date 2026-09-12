@@ -29644,69 +29644,99 @@ def _maybe_refund_trade_turn(uid: int, turn_flags: set, reserved: bool = True) -
 _RENDI_DELIM_RE = re.compile(r"-{3,}\s*RENDI\s*-{3,}")
 
 
+# Largo mínimo de prosa para que valga la pena leerla. Debajo de esto son
+# saludos, acuses y aclaraciones de una línea — leer "dale, avisame" en voz alta
+# no le sirve a nadie.
+_VOZ_PROSA_MINIMA = 140
+# Bloques del flujo de REGISTRO de operaciones. Si la respuesta trae uno de
+# estos, no se lee: registrar es de la pantalla, no de la voz (el _confirm_word
+# es a propósito desconfiado y la voz lo rompe por los dos lados).
+_VOZ_BLOQUES_MUDOS = {"form", "confirm"}
+
+
 def _extract_voz(text: str) -> Optional[str]:
-    """Saca el resumen hablado del bloque estructurado. Nunca lanza: si el
-    modelo no lo emitió, o emitió JSON roto, devolvemos None y la respuesta
-    queda sólo escrita (que es exactamente lo que tiene que pasar)."""
+    """El texto que Rendi va a decir, en orden de preferencia:
+
+      1. el campo "voz" del bloque — escrito para la OREJA, es el bueno;
+      2. el titular del bloque, destrabado de símbolos;
+      3. la prosa misma, sin las oraciones que sólo tienen sentido mirando.
+
+    Los niveles 2 y 3 no son adornos: MEDIDO el 2026-09-12, con historial largo
+    el modelo deja de emitir el bloque en las repreguntas, y sin respaldo la
+    primera respuesta de una conversación sonaba y la segunda no. Para el
+    usuario eso es peor que no tener voz: se queda esperando algo que no llega.
+    Una conversación hablada se habla ENTERA.
+
+    Nunca lanza. Devuelve None cuando de verdad no hay nada que decir: saludos,
+    acuses de una línea y todo el flujo de registro de operaciones.
+    """
     if not text:
         return None
+
+    # Partir prosa / bloque. Se toma SIEMPRE el PRIMER delimitador: si hubiera
+    # un segundo (el modelo escribió "--- RENDI ---" y el guard del epílogo, que
+    # compara la forma exacta, no lo vio), un rfind sobre todo el resto agarraría
+    # la llave de cierre del segundo bloque y el JSON del medio no parsearía.
     m = _RENDI_DELIM_RE.search(text)
-    if not m:
-        return None
-    # Acotar al PRIMER bloque: si hubiera un segundo `---RENDI---` (el modelo
-    # escribió "--- RENDI ---" y el guard del epílogo, que compara la forma
-    # exacta, no lo vio), un rfind sobre todo el resto agarraría la llave de
-    # cierre del SEGUNDO bloque y el JSON del medio no parsearía nunca.
-    tail = text[m.end():]
-    otro = _RENDI_DELIM_RE.search(tail)
-    if otro:
-        tail = tail[:otro.start()]
-    start, end = tail.find("{"), tail.rfind("}")
-    if start == -1 or end <= start:
-        return None
-    try:
-        meta = json.loads(tail[start:end + 1])
-    except Exception:
-        return None
-    if not isinstance(meta, dict):
-        return None
-    voz = meta.get("voz")
-    voz = voz.strip() if isinstance(voz, str) else ""
-    if not voz:
-        # RESPALDO. El campo "voz" es lo mejor —está escrito para la oreja—
-        # pero el modelo a veces se lo olvida: es un campo adentro de un JSON
-        # que el usuario no ve, y lo que no se ve no se reclama. Sin respaldo,
-        # esa respuesta se queda muda y el parlante no hace nada.
-        #
-        # Se arma con el titular del bloque, que sí está casi siempre, pasado
-        # por tts.hablable() para destrabar los símbolos ("+64%" leído tal cual
-        # no se entiende). Suena peor que el resumen de verdad, y por eso se
-        # LOGUEA: si esto aparece seguido, hay que arreglar el prompt, no el
-        # respaldo.
-        #
-        # Si tampoco hay titular, no se inventa nada: la respuesta queda escrita.
-        titular = meta.get("headline")
-        if not isinstance(titular, str) or not titular.strip():
+    prosa = (text[:m.start()] if m else text).strip()
+    meta = None
+    if m:
+        tail = text[m.end():]
+        otro = _RENDI_DELIM_RE.search(tail)
+        if otro:
+            tail = tail[:otro.start()]
+        ini, fin = tail.find("{"), tail.rfind("}")
+        if ini != -1 and fin > ini:
+            try:
+                cand = json.loads(tail[ini:fin + 1])
+                meta = cand if isinstance(cand, dict) else None
+            except Exception:
+                meta = None
+
+    # El flujo de registro no se lee, tenga o no prosa.
+    if meta:
+        tipos = {b.get("type") for b in (meta.get("blocks") or [])
+                 if isinstance(b, dict)}
+        if tipos & _VOZ_BLOQUES_MUDOS:
             return None
-        veredicto = meta.get("verdict")
-        partes = []
-        if isinstance(veredicto, str) and veredicto.strip():
-            partes.append(veredicto.strip().rstrip(".") + ".")
-        partes.append(titular.strip())
-        voz = tts.hablable(" ".join(partes))
+
+    voz, origen = "", "voz"
+    if meta:
+        v = meta.get("voz")
+        voz = v.strip() if isinstance(v, str) else ""
         if not voz:
+            titular = meta.get("headline")
+            if isinstance(titular, str) and titular.strip():
+                veredicto = meta.get("verdict")
+                partes = []
+                if isinstance(veredicto, str) and veredicto.strip():
+                    partes.append(veredicto.strip().rstrip(".") + ".")
+                partes.append(titular.strip())
+                voz, origen = tts.hablable(" ".join(partes)), "titular"
+
+    if not voz:
+        # Último recurso: la prosa. Sólo si hay respuesta de verdad — por debajo
+        # del mínimo es un saludo o un acuse y no se lee.
+        if len(prosa) < _VOZ_PROSA_MINIMA:
             return None
-        log.info("voz: el modelo no mandó el resumen hablado — se lee el titular (%d chars)",
-                 len(voz))
+        voz, origen = tts.prosa_hablable(prosa, tts.MAX_CHARS_SOFT), "prosa"
+
+    if not voz:
+        return None
+
+    if origen != "voz":
+        # Que se vea en los logs: si esto aparece seguido, lo que hay que
+        # arreglar es el prompt, no el respaldo.
+        log.info("voz: el modelo no mandó el resumen hablado — se lee %s (%d chars)",
+                 origen, len(voz))
+
     if len(voz) > tts.MAX_CHARS:
-        # El modelo se pasó del tope duro. Cortamos en la última oración
-        # completa que entra — leer media frase suena peor que leer menos.
+        # Se pasó del tope duro. Cortamos en la última oración completa que
+        # entra — leer media frase suena peor que leer menos.
         cut = voz[:tts.MAX_CHARS]
         dot = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
         voz = (cut[:dot + 1] if dot > 80 else cut).strip()
     if len(voz) > tts.MAX_CHARS_SOFT:
-        # No rechaza: avisa. Pasado este largo la regla "escuchar = 1 ficha
-        # más" deja de cerrar (§3 del handoff) y hay que ajustar el prompt.
         log.info("voz: resumen largo (%d chars ≈ %.1fs) — la cuenta de la ficha se estira",
                  len(voz), tts.estimated_seconds(voz))
     return voz
@@ -30079,7 +30109,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
 
 RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días.
 
-RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: prosa CORTA (máx ~120 palabras: la respuesta directa + tu lectura) y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Omitilo SOLO en saludos, aclaraciones breves y todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos) — se olvida fácil porque no se ve en pantalla, pero si falta el usuario se queda sin audio."""
+RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: prosa CORTA (máx ~120 palabras: la respuesta directa + tu lectura) y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos) — se olvida fácil porque no se ve en pantalla, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
@@ -30407,6 +30437,21 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN,
                         allowed_names=chat_allowed_names, turn_flags=_turn_flags,
                         request_id=_req_id, confirm_signal=_confirm_signal)
+                    # El modelo dijo "voy a usar una herramienta" y no mandó ninguna.
+                    # MEDIDO el 2026-09-12: pasa en ~1 de cada 3 preguntas que usan tools, y
+                    # el contenido que llega es un único bloque de texto VACÍO con
+                    # stop_reason='tool_use'. Sin este corte se arma un mensaje de usuario sin
+                    # contenido y Anthropic rechaza el turno siguiente con
+                    # "messages.N: user messages must have non-empty content" → el usuario ve
+                    # "Hubo un problema procesando tu consulta" y pierde la respuesta.
+                    #
+                    # El error de fondo era confiar en stop_reason en vez de mirar si de verdad
+                    # hay algo que ejecutar. Cortamos el loop y caemos a la síntesis forzada
+                    # (tool_choice=none), que responde con lo que ya tiene.
+                    if not tool_results:
+                        log.warning("ai_chat: stop_reason=tool_use SIN tool_use blocks "
+                                    "(tier=%s uid=%s) — a la síntesis forzada", tier, uid)
+                        break
                     messages_loop.append({"role": "assistant", "content": _sanitize_assistant_blocks(resp.content)})
                     messages_loop.append({"role": "user", "content": tool_results})
                 # Fallback: forzar síntesis sin tools (mismo criterio que el path JSON).
@@ -30548,6 +30593,21 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 turn_flags=_turn_flags, request_id=_req_id,
                 confirm_signal=_confirm_signal)
 
+            # El modelo dijo "voy a usar una herramienta" y no mandó ninguna.
+            # MEDIDO el 2026-09-12: pasa en ~1 de cada 3 preguntas que usan tools, y
+            # el contenido que llega es un único bloque de texto VACÍO con
+            # stop_reason='tool_use'. Sin este corte se arma un mensaje de usuario sin
+            # contenido y Anthropic rechaza el turno siguiente con
+            # "messages.N: user messages must have non-empty content" → el usuario ve
+            # "Hubo un problema procesando tu consulta" y pierde la respuesta.
+            #
+            # El error de fondo era confiar en stop_reason en vez de mirar si de verdad
+            # hay algo que ejecutar. Cortamos el loop y caemos a la síntesis forzada
+            # (tool_choice=none), que responde con lo que ya tiene.
+            if not tool_results:
+                log.warning("ai_chat: stop_reason=tool_use SIN tool_use blocks "
+                            "(tier=%s uid=%s) — a la síntesis forzada", tier, uid)
+                break
             # Agregar respuesta del asistente (con tool_use blocks) + resultados al historial
             messages_loop.append({
                 "role": "assistant",

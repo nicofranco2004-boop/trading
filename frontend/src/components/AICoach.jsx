@@ -15,7 +15,7 @@
 // el tono research-note.
 
 import { useState, useRef, useEffect } from 'react'
-import { Sparkles, AlertCircle, RotateCcw, Send, Lock, TrendingUp, TrendingDown, AlertTriangle, Activity } from 'lucide-react'
+import { Sparkles, AlertCircle, RotateCcw, Send, Lock, TrendingUp, TrendingDown, AlertTriangle, Activity, Volume2, Pause, Loader2 } from 'lucide-react'
 import { api } from '../utils/api'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAuth } from '../contexts/AuthContext'
@@ -92,7 +92,11 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
-  const { publicar } = useVoz()
+  const { publicar, speak: vozSpeak, toggle: vozToggle,
+          status: vozStatus, current: vozCurrent } = useVoz()
+  // ¿El audio cargado es el de ESTE mensaje? Se compara por el texto hablado,
+  // que es único por respuesta.
+  const esteSuena = (voz) => !!(voz && vozCurrent && vozCurrent.text === voz.text)
   // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO (backend
   // arma el contexto server-side). Por IDENTIDAD (useAuth), no por plan
   // features — en contexto de cliente el lente es 'pro' y ahí el chat es el
@@ -267,6 +271,19 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         question: content, reply: _prose || stripMarkdown(acc), voz: res?.voz || null,
         meta: _meta, autoplay,
       })
+      // El audio queda PEGADO AL MENSAJE, no sólo en el reproductor: así cada
+      // respuesta tiene su propio botón de escuchar y se puede volver a
+      // cualquiera de las anteriores. Sin esto el único audio alcanzable era el
+      // último, y para el usuario el reproductor "se quedaba" en el primero.
+      if (res?.voz) {
+        setMessages(m => {
+          const copy = m.slice()
+          for (let k = copy.length - 1; k >= 0; k--) {
+            if (copy[k].role === 'assistant') { copy[k] = { ...copy[k], voz: res.voz }; break }
+          }
+          return copy
+        })
+      }
       // Refrescar cuota tras success — no es crítico, best-effort.
       api.get('/ai/usage')
         .then(u => { setUsage(u); _publicar(puedeArrancarSolo(u)) })
@@ -516,6 +533,28 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                     onSendMessage={send}
                     interactive={isLastMsg && !loading && !sending}
                   />
+                )}
+                {/* ESCUCHAR. Va acá, debajo de la respuesta, porque es donde el
+                    usuario está mirando: la burbujita flotante existe para
+                    cuando te vas a otra pantalla, no para descubrir la función.
+                    Aparece en TODA respuesta que tenga audio, así se puede
+                    volver a escuchar cualquiera, no sólo la última. */}
+                {m.voz && (
+                  <button
+                    type="button"
+                    onClick={() => (esteSuena(m.voz) ? vozToggle() : vozSpeak(m.voz))}
+                    className={`inline-flex items-center gap-1.5 mt-2.5 rounded-full border px-2.5 py-1
+                      text-[11.5px] font-medium transition-colors ${
+                        esteSuena(m.voz)
+                          ? 'border-rendi-accent/40 bg-rendi-accent/10 text-rendi-accent'
+                          : 'border-line text-ink-2 hover:text-ink-0 hover:border-ink-3'}`}
+                  >
+                    {vozStatus === 'preparing' && esteSuena(m.voz)
+                      ? <><Loader2 size={12} className="animate-spin" aria-hidden="true" /> Preparando…</>
+                      : vozStatus === 'playing' && esteSuena(m.voz)
+                        ? <><Pause size={12} aria-hidden="true" /> Pausar</>
+                        : <><Volume2 size={12} aria-hidden="true" /> Escuchar</>}
+                  </button>
                 )}
                 {meta?.sources?.length > 0 && (
                   <div className="flex items-center gap-1.5 mt-2.5 flex-wrap text-[11px] text-ink-3">

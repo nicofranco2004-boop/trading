@@ -132,7 +132,12 @@ No es la prosa recortada — es otro texto, escrito para la OREJA:
 - NOMBRES de los activos, NUNCA los códigos. Decí "Bonar 2030", no "AL30"; "Nvidia", no "NVDA"; "Galicia", no "GGAL". El nombre sale del campo `name` de la posición en el snapshot — si una posición no lo trae, decí el código como palabra sólo si se puede pronunciar, y si no, evitá nombrarla.
 - Nada que se lea con los ojos: sin tablas, sin listas, sin viñetas, sin paréntesis, sin flechas, sin símbolos (%, +, −, US$ se DICEN: "por ciento", "más", "menos", "dólares"), sin "como ves arriba" ni referencias a las tarjetas.
 - Oraciones cortas, una idea cada una: el titular, el porqué, y lo único que hay que mirar.
-- Mismo rioplatense de siempre. Si la respuesta es un saludo, una aclaración breve o cualquier paso del registro de operaciones, OMITÍ "voz" (igual que el bloque entero).
+- Mismo rioplatense de siempre.
+
+🔴 "voz" VA EN TODA RESPUESTA CON CONTENIDO, TAMBIÉN EN LAS REPREGUNTAS. No depende de que haya tarjetas.
+Si estás contestando algo real pero no hay nada visual que mostrar —una repregunta tipo "¿y qué hago con eso?", "¿vos qué harías?", una explicación, un consejo— igual mandá el bloque, con SÓLO el campo "voz" adentro: `---RENDI---{"voz":"..."}`. El usuario no ve nada de más (sin stats ni blocks no se dibuja ninguna tarjeta) y la conversación no se queda muda a mitad.
+POR QUÉ IMPORTA: si la primera respuesta se escucha y la segunda no, el usuario se queda esperando una voz que nunca llega y no entiende por qué. Una conversación hablada se habla ENTERA.
+ÚNICAS excepciones, donde no va ni el bloque ni "voz": saludos de una línea ("hola", "gracias"), y TODO el flujo de registro de operaciones (confirmaciones, resultado, undo).
 """
 
 # ─── El respaldo: convertir un texto de PANTALLA en uno que se pueda decir ───
@@ -170,6 +175,52 @@ def hablable(texto: str) -> str:
     for rx, rep in _HABLABLE:
         out = rx.sub(rep, out)
     return out.strip(" .;,").strip()
+
+
+# ─── Último respaldo: leer la PROSA, quitándole lo que sólo se ve ────────────
+# Orden de preferencia para el texto hablado:
+#   1. el campo "voz" (escrito para la oreja) — lo mejor
+#   2. el titular del bloque, destrabado
+#   3. ESTO: la prosa misma, limpiada
+#
+# El nivel 3 existe porque los niveles 1 y 2 dependen de que el modelo emita el
+# bloque, y MEDIDO: con historial largo deja de emitirlo en las repreguntas. El
+# resultado era que la primera respuesta sonaba y la segunda no — el usuario se
+# queda esperando una voz que nunca llega. Entre una prosa imperfecta y el
+# silencio, gana la prosa: una conversación hablada se habla entera.
+#
+# Lo que se saca son las oraciones que sólo tienen sentido MIRANDO ("te dejo los
+# números en pantalla", "como ves arriba", "mirá la tabla"), que leídas en voz
+# alta son absurdas. Es la objeción concreta que había contra leer la prosa, y
+# es la que esta función responde.
+_MIRAR = re.compile(
+    r"(en pantalla|en la pantalla|como ves|ves arriba|acá arriba|más arriba|acá abajo|"
+    r"más abajo|la tabla|el gráfico|las tarjetas|la tarjeta|el cuadro|te dejo los|"
+    r"fijate arriba|mirá (?:la|el|arriba|abajo)|revisá (?:la|el) (?:tabla|gráfico))",
+    re.IGNORECASE)
+# Corta en el punto que cierra oración, sin partir "US$ 1.850,00" ni "S&P 500".
+_ORACION = re.compile(r"(?<=[.!?])\s+")
+
+
+def prosa_hablable(texto: str, max_chars: int = None) -> str:
+    """La prosa de pantalla, lista para decirse: sin las oraciones que sólo
+    tienen sentido mirando, sin símbolos, y cortada en oración completa."""
+    tope = max_chars or MAX_CHARS
+    limpio = []
+    for oracion in _ORACION.split((texto or "").strip()):
+        o = oracion.strip()
+        if not o or _MIRAR.search(o):
+            continue
+        limpio.append(o)
+    out = ""
+    for o in limpio:
+        cand = (out + " " + o).strip()
+        if len(hablable(cand)) > tope:
+            break
+        out = cand
+    if not out and limpio:          # la primera ya se pasa: se corta a mano
+        out = limpio[0][:tope]
+    return hablable(out)
 
 
 _OPENAI_URL = "https://api.openai.com/v1/audio/speech"
