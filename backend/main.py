@@ -30752,7 +30752,7 @@ def _voz_quota_429(tier: str, usage: dict, con_cupo: bool) -> HTTPException:
                 "target_tier": "plus" if tier == "free" else "pro",
                 "resets_on": resets_on,
                 "benefits": [
-                    "Escuchá todas las respuestas que quieras (9 consultas/sem vs 1)",
+                    "Hasta 4 respuestas habladas por semana (en Free es 1)",
                     "Hasta 3 brokers (vs 1 en Free)",
                     "Reportes históricos + Export CSV",
                     "Diagnóstico completo + 4 detectores de comportamiento",
