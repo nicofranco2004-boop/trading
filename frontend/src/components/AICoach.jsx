@@ -23,7 +23,9 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { trackEvent } from '../utils/analytics'
 import { markAIDiscovered } from './ai/AIDiscoveryBanner'
 import UpgradePromoCard from './ai/UpgradePromoCard'
+import { Link } from 'react-router-dom'
 import { useVoz, puedeArrancarSolo } from '../contexts/VozContext'
+import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota } from '../utils/cuotaTexto'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
@@ -430,9 +432,9 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           {usage && usage.chat_limit > 0 && (
             <span
               className="text-[10px] font-mono text-ink-3 tabular hidden sm:inline"
-              title={usage.resets_on ? `Se renueva el ${usage.resets_on}` : 'Cuota semanal'}
+              title={costoDeEscuchar(usage) + (usage.resets_on ? ` Se renueva el ${usage.resets_on}.` : '')}
             >
-              {usage.chat_count}/{usage.chat_limit} esta semana
+              {contadorCorto(usage)}
             </span>
           )}
           {messages.length > 0 && (
@@ -677,6 +679,28 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           El gate del contenido es server-side (whitelist + intención de
           registro) — acá solo cambia el placeholder por tier. */}
       <div className="border-t border-line/40 px-4 py-3 mt-auto">
+        {/* AVISO DE CUOTA. Aparece SÓLO cuando queda poco (2 consultas, o al
+            agotarse en Free, que tiene una sola): un cartel permanente se
+            vuelve decorado y deja de leerse. El atajo a Planes va sólo si hay
+            adónde ir — a un Pro, que ya está en el techo, ofrecerle "mejorá tu
+            plan" es ruido; a ése se le dice cuándo se le renueva y nada más. */}
+        {(() => {
+          const av = avisoDeCuota(usage)
+          if (!av) return null
+          return (
+            <div className={`flex items-center justify-between gap-3 mb-2 rounded-lg border px-3 py-2 text-[12px] ${
+              av.agotado ? 'border-data-violet/40 bg-data-violet/[0.10] text-ink-1'
+                         : 'border-line bg-bg-1 text-ink-2'}`}>
+              <span>{av.texto}</span>
+              {av.cta && (
+                <Link to="/planes"
+                  className="flex-none font-semibold text-data-violet hover:underline underline-offset-2 whitespace-nowrap">
+                  Desbloqueá más →
+                </Link>
+              )}
+            </div>
+          )
+        })()}
         <form
           onSubmit={handleFreeSubmit}
           className="flex items-center gap-2.5 bg-bg-1 border border-line focus-within:border-data-violet/50 rounded-2xl pl-4 pr-2 py-1.5 transition-colors"
@@ -707,8 +731,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         <div className="flex items-center justify-between mt-2 px-1 text-[11.5px] text-ink-3">
           <span>Rendi AI puede equivocarse — no es asesoramiento financiero.</span>
           {usage && usage.chat_limit > 0 && (
-            <span className="tabular num" title={usage.resets_on ? `Se renueva el ${usage.resets_on}` : 'Cuota semanal'}>
-              {Math.max(0, usage.chat_limit - usage.chat_count)} consultas restantes
+            <span className="tabular num" title={costoDeEscuchar(usage)}>
+              {restantesTexto(usage)}
             </span>
           )}
         </div>
