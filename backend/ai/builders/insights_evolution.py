@@ -10,7 +10,9 @@ Shape (~700 bytes):
 {
   "screen": "insights.evolution",
   "window_days": int,
-  "twr_pct": float | null,
+  "twr_pct": float | null,           # acumulado — SIEMPRE de `twr.rendimiento_publicable`
+  "twr_base": "mercado" | "contable" | null,   # de dónde sale ese número
+  "twr_motivo_texto": str | null,    # por qué no se pudo medir a mercado
   "monthly_returns": [
     { "month": "YYYY-MM", "return_pct": float, "capital_final": float }
   ],
@@ -41,7 +43,6 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     ).fetchall()
 
     monthly_returns = []
-    compound = 1.0
     positive = 0
     for r in rows:
         y, m = r["year"], r["month"]
@@ -62,7 +63,6 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             continue
         if ret < -0.95 or ret > 5:
             continue
-        compound *= (1 + ret)
         if ret > 0:
             positive += 1
         monthly_returns.append({
@@ -71,9 +71,24 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "capital_final": round(cf, 2),
         })
 
-    twr_pct: Optional[float] = (
-        round((compound - 1) * 100, 2) if monthly_returns else None
-    )
+    # ⚠️ EL ACUMULADO SE LE PIDE AL MOTOR, NO SE COMPONE ACÁ (F6).
+    #
+    # Esto multiplicaba `(1 + ret)` mes a mes sobre `monthly_entries`. MEDIDO sobre
+    # la copia de producción del 2026-08-16: 121 usuarios publicaban un acumulado
+    # de más de 100 % y el peor llegaba a **+129.544 %** (uid 118), para el que el
+    # motor dice **+0,7 %**. El motor no se equivocaba: no lo estaban llamando.
+    #
+    # Y agregarle `leg_dudoso` a esta composición NO alcanzaba —bajaba el peor a
+    # +30.300 %— porque el defecto no es un mes malo suelto: saltear el mes que no
+    # se puede medir y seguir encadenando toma la base ya achicada como si fuera
+    # continua. Al uid 826 el guard SOLO le SUBÍA el número, de 884 % a 3.983 %.
+    #
+    # `rendimiento_publicable` mide a mercado cuando puede y, cuando no, publica la
+    # contabilidad DICIENDO que es contabilidad. Los meses de abajo se siguen
+    # listando tal cual: cada uno por separado es un dato honesto, y lo que estaba
+    # mal era el producto.
+    _rend = _twr.rendimiento_publicable(conn, user_id, desde=cutoff.isoformat())
+    twr_pct: Optional[float] = _rend["pct"]
     total = len(monthly_returns)
     best = max(monthly_returns, key=lambda x: x["return_pct"]) if monthly_returns else None
     worst = min(monthly_returns, key=lambda x: x["return_pct"]) if monthly_returns else None
@@ -82,6 +97,11 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "screen": "insights.evolution",
         "window_days": window_days,
         "twr_pct": twr_pct,
+        # De dónde sale el número: 'mercado' (fotos reales) o 'contable' (la cadena
+        # de monthly_entries). Sin esto el modelo no puede decir con qué confianza
+        # hablar del rendimiento, que es justo lo que se le pide.
+        "twr_base": _rend["base"],
+        "twr_motivo_texto": _rend["motivo_texto"],
         # Cap a 18 entradas (~1.5 años) para no inflar el prompt
         "monthly_returns": monthly_returns[-18:],
         "best_month": best,

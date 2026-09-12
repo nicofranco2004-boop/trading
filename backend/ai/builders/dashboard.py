@@ -153,14 +153,32 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
     if snapshots:
         # ordenar ascendente para tomar primero y último
         sorted_snaps = sorted(snapshots, key=lambda s: s["date"])
-        cutoff = (datetime.utcnow() - timedelta(days=30)).date().isoformat()
+        # ⚠️ EL RELOJ ARGENTINO, no UTC (F3). Acá decía `datetime.utcnow()`, y en
+        # Railway eso es UTC: entre las 21:00 y la medianoche de Argentina el
+        # `cutoff` se corre un día y la ventana deja afuera una rueda.
+        import twr as _twr_d
+        from datetime import date as _date_d
+        cutoff = (_date_d.fromisoformat(_twr_d._hoy_art()) - timedelta(days=30)).isoformat()
         in_window = [s for s in sorted_snaps if s["date"] >= cutoff]
         if len(in_window) >= 2 and in_window[0]["total_value"]:
             start_val = float(in_window[0]["total_value"])
             end_val = float(in_window[-1]["total_value"])
             if start_val > 0:
-                twr_30d_pct = (end_val - start_val) / start_val
                 delta_30d_usd = end_val - start_val
+        # ⚠️ EL % NO SE CALCULA ACÁ (F6). Era `(end − start) / start`: ni restaba
+        # los flujos —un depósito de US$1.000 en una cartera de 10.000 salía como
+        # "+10 % de rendimiento"— ni tenía uno solo de los guards del motor. Es el
+        # más crudo de los cuatro lectores que esta tanda unifica.
+        #
+        # `permitir_contable=False` a propósito: `monthly_entries` es MENSUAL, así
+        # que sobre 30 días no mide los últimos 30 días — mide el mes que los
+        # contiene. Con la etiqueta "30d" eso es peor que no publicar nada.
+        try:
+            _r30 = _twr_d.rendimiento_publicable(
+                conn, user_id, desde=cutoff, permitir_contable=False)
+            twr_30d_pct = None if _r30["pct"] is None else _r30["pct"] / 100.0
+        except Exception:
+            twr_30d_pct = None
 
     # ─── TWR lifetime — MISMA fuente que /api/goals/cagr (snapshots durables MTM,
     # fallback a monthly). Antes se computaba inline desde monthly_entries, que en

@@ -14551,6 +14551,10 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
     from behavioral import build_behavioral_insights
     from analysis_prep import currency_context
     conn = get_db()
+    # Inicializado ANTES del try: se lee en el `return`, que está después del
+    # `finally`. Si el bloque de abajo fallara antes de resolverlo, el endpoint
+    # moriría con NameError en vez de devolver un Wrapped sin el número.
+    rendimiento = None
     try:
         monthly = [dict(r) for r in conn.execute(
             "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month", (uid,)
@@ -14626,10 +14630,22 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
             fx_de = _fxfn
         except Exception:
             logging.exception("wrapped serie_fx %s", year)
+        # ⚠️ EL RENDIMIENTO SE RESUELVE ACÁ, CON LA CONEXIÓN TODAVÍA ABIERTA (F6).
+        # `build_wrapped` es una función PURA por diseño —recibe `monthly`, no una
+        # conexión— así que no puede consultar el motor por su cuenta; y este
+        # `finally` cierra la conexión una línea antes de llamarla. Sin esto el
+        # Wrapped se queda con la rama contable y pierde justamente lo que esta
+        # tanda vino a darle: el número medido contra fotos de mercado.
+        try:
+            rendimiento = _twr_w.rendimiento_publicable(
+                conn, uid, desde=f"{year}-01-01", hasta=f"{year}-12-31")
+        except Exception:
+            logging.exception("wrapped rendimiento_publicable %s", year)
+            rendimiento = None
     finally:
         conn.close()
     return build_wrapped(year, monthly, ops, behavioral_cards, benchmarks,
-                         inflation_ytd, fx_de)
+                         inflation_ytd, fx_de, rendimiento=rendimiento)
 
 
 @app.get("/api/behavioral/insights")

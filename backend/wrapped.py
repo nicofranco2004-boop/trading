@@ -124,24 +124,32 @@ def ventana_de_los_retornos(rows: List[dict]) -> Optional[tuple]:
     return (previo, meses[-1])
 
 
-def _twr_for_period(rows: List[dict]) -> Optional[float]:
-    """Retorno geométrico encadenado de una serie de meses.
+def _twr_for_period(rows: List[dict], rendimiento: Optional[dict] = None) -> Optional[float]:
+    """El rendimiento del período, en fracción (0,12 = 12 %). None si no se publica.
 
-    ⚠️ NO es el TWR del motor y el slide ya no lo llama así: encadena
-    `monthly_entries`, que en los meses cerrados tiene `pnl_unrealized` forzado a
-    0 — o sea la cadena CONTABLE, no el mercado. El método es time-weighted; la
-    base, no. Migrarlo a `twr.curva_indexada` (que mide sobre snapshots) es otra
-    tanda; lo que no podía seguir es decir «TWR» sobre esto.
+    ⚠️ ESTA FUNCIÓN COMPONÍA LOS MESES A MANO, Y ERA LA TANDA QUE FALTABA (F6).
+    El comentario que estaba acá lo decía: «migrarlo a `twr.curva_indexada` (que
+    mide sobre snapshots) es otra tanda». Ésta es esa tanda.
+
+    Componía `(1 + ret)` mes a mes con un clamp por mes y nada más. MEDIDO sobre la
+    copia de producción del 2026-08-16: 121 usuarios con un acumulado de más de
+    100 % y el peor en **+129.544 %** (uid 118), para el que el motor mide +0,7 %.
+    Y este número sale del producto como IMAGEN COMPARTIBLE.
+
+    Ahora:
+      · si el caller pudo consultar el motor, le pasa el `rendimiento` ya resuelto
+        —`twr.rendimiento_publicable`— y se usa ése;
+      · si no (el Wrapped es una función PURA por diseño: recibe `monthly`, no una
+        conexión, y ocho tests dependen de eso), se compone con `twr.contable_de_filas`,
+        que es LA MISMA composición contable del primitivo, con sus cuatro guards:
+        `retorno_mensual`, `leg_dudoso` CORTANDO EL TRAMO, el piso de US$100 y el
+        techo de 1000 %. No una copia: la misma función.
     """
-    pares = _retornos_mensuales(rows)
-    if not pares:
-        return None
-    prod = 1.0
-    for _r, ret in pares:
-        # Clamp para evitar que un outlier arruine el geom mean. Se conserva tal
-        # cual estaba: lo único que cambió es el denominador de `ret`.
-        prod *= (1 + max(-0.95, min(5.0, ret)))
-    return prod - 1
+    if rendimiento is not None:
+        pct = rendimiento.get("pct")
+        return None if pct is None else pct / 100.0
+    pct, _meses = _twr.contable_de_filas(rows)
+    return None if pct is None else pct / 100.0
 
 
 def _operations_for_year(operations: List[dict], year: int) -> List[dict]:
@@ -201,14 +209,19 @@ def _slide_intro(year: int, teaser: Optional[dict] = None) -> dict:
     }
 
 
-def _slide_pnl(rows: List[dict], year: int) -> dict:
-    twr = _twr_for_period(rows)
+def _slide_pnl(rows: List[dict], year: int, rendimiento: Optional[dict] = None) -> dict:
+    twr = _twr_for_period(rows, rendimiento)
     if twr is None:
+        # ⚠️ CUANDO NO SE PUEDE MEDIR, SE DICE POR QUÉ. `motivo_texto` ya viene
+        # escrito en castellano desde `twr.MOTIVO_TEXTO` — «la historia se importó:
+        # son datos contables, no mediciones a mercado» dice bastante más que
+        # «cargá tus meses», sobre todo cuando el usuario YA los cargó.
+        _motivo = (rendimiento or {}).get('motivo_texto')
         return {
             'code': 'pnl',
             'kind': 'pnl',
             'title': 'Aún no hay suficiente historial',
-            'subtitle': f'Cargá tus meses de {year} para ver el rendimiento.',
+            'subtitle': _motivo or f'Cargá tus meses de {year} para ver el rendimiento.',
             'metric': {'value': '—', 'label': 'RENDIMIENTO'},
             'stats': [],
             'tone': 'neutral',
@@ -218,11 +231,20 @@ def _slide_pnl(rows: List[dict], year: int) -> dict:
     capital_final = rows[-1].get('capital_final') or 0
     pnl_usd = sum((r.get('pnl_realized') or 0) + (r.get('pnl_unrealized') or 0) for r in rows)
     sign = '+' if twr >= 0 else '−'
+    # ⚠️ EL SLIDE DICE DE DÓNDE SALE SU NÚMERO, y no es decoración: esto se exporta
+    # como PNG y se comparte. Un "+35 %" que sale de la contabilidad importada —no
+    # de mediciones contra el mercado— tiene que poder distinguirse de uno medido.
+    # Es la decisión del dueño en F6: no se le saca el número a nadie, se etiqueta.
+    _base = (rendimiento or {}).get('base')
+    _sub = (f'Tu rendimiento de {year}' if _base != 'contable'
+            else f'Tu rendimiento de {year}, según tu contabilidad cargada')
     return {
         'code': 'pnl',
         'kind': 'pnl',
         'title': f'{sign}{abs(twr) * 100:.2f}%',
-        'subtitle': f'Tu rendimiento de {year}',
+        'subtitle': _sub,
+        # Para que el frontend pueda marcarlo sin volver a adivinar del texto.
+        'base': _base,
         'metric': {'value': f'{sign}${abs(pnl_usd):,.0f}', 'label': 'P&L TOTAL'},
         'stats': [
             {'label': 'Capital inicio', 'value': f'${capital_inicio:,.0f}'},
@@ -523,6 +545,7 @@ def build_wrapped(
     benchmarks: Optional[dict] = None,
     inflation_ytd: Optional[float] = None,
     fx_de=None,
+    rendimiento: Optional[dict] = None,
 ) -> dict:
     """Orquesta los slides. Retorna {year, slides: [...], summary: {...}}.
 
@@ -532,7 +555,10 @@ def build_wrapped(
     """
     rows = _monthly_for_year(monthly, year)
     ops = _operations_for_year(operations or [], year)
-    twr = _twr_for_period(rows)
+    # `rendimiento` es el dict de `twr.rendimiento_publicable`, que el endpoint
+    # resuelve porque tiene la conexión. Acá no se consulta nada: esta función es
+    # pura a propósito.
+    twr = _twr_for_period(rows, rendimiento)
 
     # Computar teaser para el intro
     pnl_usd_total = None
@@ -567,7 +593,7 @@ def build_wrapped(
 
     slides: List[dict] = []
     slides.append(_slide_intro(year, teaser=teaser))
-    slides.append(_slide_pnl(rows, year))
+    slides.append(_slide_pnl(rows, year, rendimiento))
 
     # Si no hay data del año, terminamos acá con un mensaje claro
     if not rows:

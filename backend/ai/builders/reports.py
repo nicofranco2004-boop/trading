@@ -17,9 +17,9 @@ Shape (~900 bytes):
   "year": int,
   "total_months_active": int,    # meses con actividad real
   "winrate_monthly": float,       # % meses positivos
-  "twr_year_pct": float | null,   # TWR compoundeado del año (combina P&L
-                                  # realizado de meses cerrados + unrealized
-                                  # mark-to-market del mes en curso)
+  "twr_year_pct": float | null,   # rendimiento del año — SIEMPRE de `twr.rendimiento_publicable`
+  "twr_year_base": "mercado"|"contable"|null,   # de dónde sale ese número
+  "twr_year_motivo_texto": str | null,          # por qué no se pudo medir a mercado
   "realized_pnl_year_usd": float, # P&L REALIZADO del año (suma pnl_realized
                                   # de monthly_entries del año) — SOLO trades
                                   # cerrados, NO mark-to-market
@@ -57,8 +57,6 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # Filter al año pedido
     entries = [e for e in all_entries if e["year"] == year]
 
-    # Compoundear retornos mensuales (TWR aislando flujos, igual que insights)
-    compound = 1.0
     positive = 0
     used = 0
     best: Optional[Dict[str, Any]] = None
@@ -81,7 +79,6 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
         month_label = f"{e['year']:04d}-{e['month']:02d}"
         delta_pct = round(ret * 100, 2)
-        compound *= (1 + ret)
         used += 1
         if ret > 0:
             positive += 1
@@ -93,9 +90,15 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         if worst is None or delta_pct < worst["delta_pct"]:
             worst = {"month": month_label, "delta_pct": delta_pct}
 
-    twr_year_pct: Optional[float] = (
-        round((compound - 1) * 100, 2) if used > 0 else None
-    )
+    # ⚠️ EL ACUMULADO DEL AÑO SE LE PIDE AL MOTOR (F6). Ver el comentario largo en
+    # `twr.rendimiento_publicable`: componer `monthly_entries` acá publicaba
+    # +129.544 % para un usuario al que el motor le mide +0,7 %, y agregarle
+    # `leg_dudoso` no alcanzaba porque el defecto es SALTEAR el mes malo en vez de
+    # cortar el tramo. Los meses de `monthly_deltas` siguen igual: cada uno por
+    # separado es honesto, lo que estaba mal era el producto.
+    _rend = _twr.rendimiento_publicable(
+        conn, user_id, desde=f"{year:04d}-01-01", hasta=f"{year:04d}-12-31")
+    twr_year_pct: Optional[float] = _rend["pct"]
     winrate_monthly = round((positive / used) * 100, 1) if used > 0 else 0.0
     pnl_year_usd = round(sum(
         float(e.get("pnl_realized") or 0) for e in entries
@@ -159,7 +162,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # _field_docs — descripciones inline para el LLM (Ola 2-E).
         "_field_docs": {
             "_doc_scope": "Solo documentamos campos ambiguos donde el nombre no basta. Los demás (year, broker, sections, monthly_breakdown) son explícitos por su nombre — confiá en ellos.",
-            "twr_year_pct": "TWR del año compoundeado mensual. Combina realized de meses cerrados + unrealized mark-to-market del mes en curso.",
+            "twr_year_pct": "Rendimiento del año. Sale del motor canónico; mirá SIEMPRE `twr_year_base` antes de hablar de él.",
+            "twr_year_base": "De dónde sale `twr_year_pct`. 'mercado' = medido contra fotos reales de la cartera, es el bueno. 'contable' = de la cadena de monthly_entries, que no sabe nada del mercado: al hablarlo decilo (\"según tu contabilidad cargada\"). null = no se pudo medir y NO hay que publicar ningún número; el motivo está en `twr_year_motivo_texto`.",
+            "twr_year_motivo_texto": "Por qué no se pudo medir a mercado, ya escrito en castellano para el usuario. Si `twr_year_pct` es null, esto es lo que hay que contestar EN LUGAR de un número — no inventes uno de otra parte del packet.",
             "realized_pnl_year_usd": "USD ABSOLUTO de P&L REALIZADO del año (suma pnl_realized de monthly_entries). Solo trades cerrados.",
             "pnl_year_usd": "Alias back-compat de realized_pnl_year_usd. Mismo valor.",
             "trades_year": "Cantidad de operaciones CERRADAS en el año.",
@@ -170,6 +175,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "total_months_active": used,
         "winrate_monthly": winrate_monthly,
         "twr_year_pct": twr_year_pct,
+        # De dónde sale: 'mercado' (fotos) o 'contable' (la cadena mensual). Sin
+        # esto el modelo no sabe con qué confianza hablar del número.
+        "twr_year_base": _rend["base"],
+        "twr_year_motivo_texto": _rend["motivo_texto"],
         # realized_pnl_year_usd es el nombre claro — suma pnl_realized de
         # monthly_entries (solo trades cerrados). pnl_year_usd queda como
         # alias para back-compat (mismo valor) hasta migrar consumers.

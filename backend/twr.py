@@ -645,6 +645,174 @@ def retorno_mensual(ci, cf, flujo):
     return dietz(ci, cf, flujo)
 
 
+def rendimiento_publicable(conn, uid: int, *, modo=None, moneda=None,
+                           desde=None, hasta=None, valor_live=None,
+                           permitir_contable=True):
+    """EL rendimiento acumulado de una cuenta, CON SU PROCEDENCIA. Un solo lugar.
+
+    Devuelve siempre un dict, nunca un float pelado:
+
+        {"pct": float|None,          # el rendimiento, en puntos (2,5 = 2,5 %)
+         "base": "mercado"|"contable"|None,
+         "motivo": str|None,         # por qué NO se pudo medir a mercado
+         "motivo_texto": str|None,   # lo mismo, en castellano, para la pantalla
+         "meses": int}               # cuántos meses cubre la rama contable
+
+    ⚠️ POR QUÉ EXISTE, Y POR QUÉ DEVUELVE LA PROCEDENCIA Y NO UN NÚMERO.
+    ──────────────────────────────────────────────────────────────────────
+    Cuatro superficies —el Wrapped, y los paquetes `insights_evolution`, `reports`
+    y `dashboard` de la IA— publicaban el rendimiento componiendo `monthly_entries`
+    por su cuenta, sin pasar por el motor. MEDIDO sobre la copia de producción del
+    2026-08-16 (673 usuarios):
+
+        publicaban un acumulado > 100 %      121 usuarios
+        el peor                              +129.544 %   (uid 118)
+        lo que el MOTOR dice del uid 118          +0,7 %
+
+    El motor no se equivocaba: no lo estaban llamando. Y agregarle `leg_dudoso` a
+    la composición NO alcanzaba —bajaba el peor a +30.300 %— porque el defecto no
+    es un mes malo suelto: es que la composición SALTEA el mes que no puede medir y
+    sigue encadenando desde la base ya achicada. Medido: al uid 826 el guard solo le
+    SUBÍA el número, de 884 % a 3.983 %. Un leg no creíble CORTA EL TRAMO.
+
+    LA REGLA, decidida con el dueño: se mide a mercado cuando se puede; cuando no,
+    se publica la contabilidad **diciendo que es contabilidad** (`base`), que es el
+    mismo patrón que Reportes ya usa con su campo `basis`. Nadie pierde su número y
+    nadie ve un número sin saber de dónde sale.
+
+    LOS CUATRO GUARDS DE LA RAMA CONTABLE YA EXISTÍAN EN EL REPO. No se inventó
+    ninguno; lo que faltaba era usarlos juntos:
+
+      · `retorno_mensual`        — el mes de alta no se mide, y el denominador ≤ 0.
+      · `leg_dudoso`             — el salto sin flujo y el denominador chico. Y acá
+                                   CORTA EL TRAMO: se publica el último tramo
+                                   continuo, no el producto de los pedazos.
+      · `PISO_DENOMINADOR_USD`   — con menos de US$100 de capital, el porcentaje no
+                                   describe nada. Medido: el uid 956 va de US$13 a
+                                   US$93 con todos los meses entre +1 % y +12 %
+                                   —ninguno "dudoso"— y compone **+14.063 %**.
+      · `MAX_PNL_PCT` (1000 %)   — el mismo techo de credibilidad que F4 propagó a
+                                   las otras siete superficies.
+
+    RESULTADO MEDIDO sobre los mismos 673 usuarios:
+
+        rama          usuarios   el peor
+        mercado            438     +96,6 %      (todos por debajo de 100 %)
+        contable           170    +892,0 %      (cero por encima de 1000 %)
+        sin número          65     —            (con `motivo` y `motivo_texto`)
+
+    Publican 608 contra los 575 de hoy: el motor RESCATA a 65 que hoy no tienen
+    número, y los 65 que lo pierden son los de capital bajo el piso o porcentaje
+    sobre el techo — casos donde el número no significaba nada.
+    """
+    _modo = modo if modo is not None else MODO_CERTERO
+    _moneda = moneda if moneda is not None else MONEDA_USD
+    vacio = {"pct": None, "base": None, "motivo": None, "motivo_texto": None, "meses": 0}
+
+    # 1. EL MOTOR. Mide contra fotos de mercado y trae sus propios guards.
+    motivo = None
+    try:
+        c = curva_indexada(conn, uid, desde, hasta, modo=_modo, moneda=_moneda,
+                           valor_live=valor_live)
+        if c.get("twr") is not None:
+            return {"pct": round(c["twr"] * 100, 2), "base": "mercado",
+                    "motivo": None, "motivo_texto": None, "meses": 0}
+        motivo = c.get("motivo")
+    except Exception:
+        log.exception("rendimiento_publicable: motor uid=%s", uid)
+
+    # 2. LA CONTABILIDAD, etiquetada y con los cuatro guards.
+    #
+    # `permitir_contable=False` para VENTANAS CORTAS. `monthly_entries` es mensual:
+    # sobre 30 días no mide "los últimos 30 días", mide el mes que los contiene.
+    # Publicar eso con la etiqueta de 30 días es peor que no publicar nada.
+    if not permitir_contable:
+        return {**vacio, "motivo": motivo,
+                "motivo_texto": MOTIVO_TEXTO.get(motivo) if motivo else None}
+    try:
+        pct, meses = _contable_publicable(conn, uid, desde, hasta)
+    except Exception:
+        log.exception("rendimiento_publicable: contable uid=%s", uid)
+        pct, meses = None, 0
+    if pct is None:
+        return {**vacio, "motivo": motivo,
+                "motivo_texto": MOTIVO_TEXTO.get(motivo) if motivo else None}
+    return {"pct": round(pct, 2), "base": "contable", "motivo": motivo,
+            "motivo_texto": MOTIVO_TEXTO.get(motivo) if motivo else None,
+            "meses": meses}
+
+
+def _contable_publicable(conn, uid: int, desde=None, hasta=None):
+    """La composición de `monthly_entries`, con los guards. `(pct, meses)`.
+
+    ⚠️ EL TRAMO SE CORTA, NO SE SALTEA — y ésa es toda la diferencia. Saltear el
+    mes que no se puede medir y seguir encadenando toma la base ya achicada como si
+    fuera continua: al uid 826 eso le SUBÍA el acumulado de 884 % a 3.983 %. Se
+    publica el ÚLTIMO tramo continuo, que es lo mismo que hace el motor.
+    """
+    q = ("SELECT year, month, capital_inicio, capital_final, deposits, withdrawals "
+         "FROM monthly_entries WHERE user_id=? AND broker='global'")
+    args = [uid]
+    if desde:
+        q += " AND (year*100+month) >= ?"; args.append(int(str(desde)[:4]) * 100 + int(str(desde)[5:7]))
+    if hasta:
+        q += " AND (year*100+month) <= ?"; args.append(int(str(hasta)[:4]) * 100 + int(str(hasta)[5:7]))
+    return contable_de_filas(conn.execute(q + " ORDER BY year, month", args).fetchall())
+
+
+def contable_de_filas(filas):
+    """La misma composición contable, PURA — sobre filas ya leídas. `(pct, meses)`.
+
+    Existe partida en dos porque `wrapped.build_wrapped` es una función pura por
+    diseño (recibe `monthly` y no una conexión, y ocho tests dependen de eso). Sin
+    esta versión, el Wrapped tendría que quedarse con SU copia de la composición —
+    que es exactamente el problema que se está cerrando.
+    """
+    from realized_pnl import MAX_PNL_PCT
+    tramos, comp, usados, ci_arranque = [], 1.0, 0, None
+
+    def _campo(r, k):
+        try:
+            return r[k]
+        except (KeyError, IndexError, TypeError):
+            return r.get(k) if hasattr(r, "get") else None
+
+
+    def cerrar():
+        nonlocal comp, usados, ci_arranque
+        # El piso va sobre el capital con el que ARRANCA el tramo: es el
+        # denominador contra el que se mide todo lo que sigue.
+        if usados and (ci_arranque or 0) >= PISO_DENOMINADOR_USD:
+            tramos.append((comp, usados))
+        comp, usados, ci_arranque = 1.0, 0, None
+
+    for r in filas:
+        ci = float(_campo(r, "capital_inicio") or 0)
+        cf = float(_campo(r, "capital_final") or 0)
+        flujo = float(_campo(r, "deposits") or 0) - float(_campo(r, "withdrawals") or 0)
+        ret = retorno_mensual(ci, cf, flujo)
+        # El clamp por mes que los cuatro lectores ya aplicaban, y el guard del leg.
+        if ret is None or ret < -0.95 or ret > 5 or leg_dudoso(ci, cf, flujo):
+            cerrar()
+            continue
+        if ci_arranque is None:
+            ci_arranque = ci
+        comp *= (1 + ret)
+        usados += 1
+    cerrar()
+    if not tramos:
+        return None, 0
+    # ⚠️ SIN REDONDEAR. Quien PUBLICA redondea; acá se devuelve el número tal cual.
+    # La primera versión redondeaba a 2 decimales y le cambiaba la precisión al
+    # Wrapped, que compara contra `twr.dietz` con tolerancia 1e-12: lo cazaron dos
+    # tests suyos (`test_wrapped.py:128` y `:143`). Un guard de cordura no tiene por
+    # qué degradar el número que deja pasar.
+    pct = (tramos[-1][0] - 1) * 100
+    if abs(pct) > MAX_PNL_PCT:
+        return None, 0
+    return pct, tramos[-1][1]
+
+
 # ─── La cota de cordura de UN leg ────────────────────────────────────────────
 #
 # Medido sobre la copia de producción del 2026-08-16 (AUDIT_benchmark_2026-09-01):
