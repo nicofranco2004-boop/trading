@@ -193,6 +193,24 @@ export function VozProvider({ children }) {
     }
   }, [aplicarRate, rate])
 
+  /**
+   * "Escuchar" — lo que pasa cuando el usuario PIDE oír una respuesta.
+   *
+   * Además de reproducirla, PRENDE el parlante. Dos motivos, y los dos salieron
+   * de verlo en uso:
+   *  1. Sin esto, tocabas Escuchar, la respuesta sonaba, y el interruptor de
+   *     arriba seguía diciendo "Silenciado". La pantalla contradecía a los
+   *     parlantes.
+   *  2. Pedir que te lea una respuesta ES decir "quiero escuchar". Obligarte a
+   *     pedirlo de nuevo en cada mensaje era justo lo que había que sacar: una
+   *     conversación hablada se habla entera.
+   * Para volver al silencio está el interruptor, que queda a la vista.
+   */
+  const escuchar = useCallback((voz) => {
+    setEnabled(true)
+    speak(voz)
+  }, [setEnabled, speak])
+
   /** Play/pausa del audio ya cargado. */
   const toggle = useCallback(async () => {
     const a = audioRef.current
@@ -339,11 +357,11 @@ export function VozProvider({ children }) {
     enabled, setEnabled,
     rate, setRate, rates: RATES,
     status, progress, current,
-    speak, toggle, stop,
+    speak, escuchar, toggle, stop,
     open, setOpen,
     thread, sending, askError, sinCupo, ask, publicar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
-       speak, toggle, stop, open, thread, sending, askError, sinCupo, ask, publicar])
+       speak, escuchar, toggle, stop, open, thread, sending, askError, sinCupo, ask, publicar])
 
   return (
     <VozContext.Provider value={value}>
@@ -361,7 +379,7 @@ const INERTE = {
   enabled: false, setEnabled: () => {},
   rate: DEFAULT_RATE, setRate: () => {}, rates: RATES,
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
-  speak: () => {}, toggle: () => {}, stop: () => {},
+  speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
   thread: [], sending: false, askError: null, sinCupo: null, ask: () => {}, publicar: () => {},
 }

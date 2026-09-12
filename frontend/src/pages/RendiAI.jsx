@@ -122,17 +122,19 @@ export default function RendiAI() {
             aria-pressed={vozEnabled}
             title={vozEnabled ? 'Rendi te lee las respuestas en voz alta' : 'Rendi te deja las respuestas sólo escritas'}
             className={`inline-flex items-center gap-1.5 text-[12.5px] font-semibold rounded-lg px-3 py-1.5
-              border transition-colors ${vozEnabled
+              border transition-colors ${(vozEnabled || vozHablando)
                 ? 'text-data-violet border-data-violet/45 bg-data-violet/[0.12] hover:bg-data-violet/[0.18]'
                 : 'text-ink-3 border-line/60 hover:text-ink-1 hover:border-line'}`}
           >
-            {vozEnabled
-              ? <>
-                  <Volume2 size={13} strokeWidth={2.2} aria-hidden="true"
-                    className={vozHablando ? 'animate-pulse' : undefined} />
-                  {vozHablando ? 'Hablando…' : 'Te lee en voz alta'}
-                </>
-              : <><VolumeX size={13} strokeWidth={2} aria-hidden="true" /> Silenciado</>}
+            {/* "Hablando…" gana sobre todo lo demás: si SUENA, el chip lo dice.
+                Antes mostraba "Silenciado" mientras la respuesta se escuchaba
+                —la pantalla contradecía a los parlantes— porque el chip miraba
+                sólo el interruptor y no si había audio. */}
+            {vozHablando
+              ? <><Volume2 size={13} strokeWidth={2.2} aria-hidden="true" className="animate-pulse" /> Hablando…</>
+              : vozEnabled
+                ? <><Volume2 size={13} strokeWidth={2.2} aria-hidden="true" /> Te lee en voz alta</>
+                : <><VolumeX size={13} strokeWidth={2} aria-hidden="true" /> Silenciado</>}
           </button>
           <button
             type="button"

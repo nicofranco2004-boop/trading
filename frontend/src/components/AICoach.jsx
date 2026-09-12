@@ -92,11 +92,17 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
-  const { publicar, speak: vozSpeak, toggle: vozToggle,
+  const { publicar, escuchar: vozEscuchar, toggle: vozToggle,
           status: vozStatus, current: vozCurrent } = useVoz()
-  // ¿El audio cargado es el de ESTE mensaje? Se compara por el texto hablado,
-  // que es único por respuesta.
-  const esteSuena = (voz) => !!(voz && vozCurrent && vozCurrent.text === voz.text)
+  // ¿El audio de ESTE mensaje está CARGADO en el reproductor?
+  //
+  // No alcanza con que coincida el texto: la respuesta se guarda como "actual"
+  // aunque el parlante esté silenciado (para que el acompañante la tenga a
+  // mano), pero en ese caso NUNCA se pidió el audio. Sin el chequeo de `url`,
+  // el botón creía que ya estaba sonando y llamaba a "pausar" —que sin audio
+  // cargado no hace nada—, así que tocabas Escuchar y no pasaba nada.
+  // `url` la escribe speak(), o sea que sólo está cuando el audio existe.
+  const esteSuena = (voz) => !!(voz && vozCurrent && vozCurrent.url && vozCurrent.text === voz.text)
   // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO (backend
   // arma el contexto server-side). Por IDENTIDAD (useAuth), no por plan
   // features — en contexto de cliente el lente es 'pro' y ahí el chat es el
@@ -542,7 +548,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                 {m.voz && (
                   <button
                     type="button"
-                    onClick={() => (esteSuena(m.voz) ? vozToggle() : vozSpeak(m.voz))}
+                    onClick={() => (esteSuena(m.voz) ? vozToggle() : vozEscuchar(m.voz))}
                     className={`inline-flex items-center gap-1.5 mt-2.5 rounded-full border px-2.5 py-1
                       text-[11.5px] font-medium transition-colors ${
                         esteSuena(m.voz)

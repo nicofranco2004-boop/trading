@@ -49,7 +49,7 @@ export default function RendiMate() {
   const {
     enabled, setEnabled, rate, setRate,
     status, progress, current,
-    speak, toggle,
+    escuchar, toggle,
     open, setOpen,
     thread, sending, askError, sinCupo, ask,
   } = useVoz()
@@ -64,7 +64,7 @@ export default function RendiMate() {
   // usuario podía querer usarlo. Y re-escuchar es la parte que sale gratis
   // —el audio ya está en el cache del server—, o sea lo último que hay que
   // esconder. Visto en pantalla, no deducido.
-  const hayAudio = !!current
+  const hayAudio = !!(current && (current.url || preparando))
 
   useEffect(() => {
     if (hiloRef.current) hiloRef.current.scrollTop = hiloRef.current.scrollHeight
@@ -241,7 +241,7 @@ export default function RendiMate() {
         <div className="flex items-center gap-2 px-3 pb-2.5">
           <button
             type="button"
-            onClick={status === 'blocked' ? () => speak(current) : toggle}
+            onClick={(status === 'blocked' || !current?.url) ? () => escuchar(current) : toggle}
             disabled={preparando}
             aria-label={hablando ? 'Pausar' : 'Reproducir'}
             className="w-7 h-7 rounded-full grid place-items-center flex-none bg-ink-0 text-bg-0
