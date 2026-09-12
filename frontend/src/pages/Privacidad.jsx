@@ -18,7 +18,7 @@ export default function Privacidad() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Política de Privacidad — Rendi"
-        description="Cómo Rendi maneja tus datos personales: qué recolectamos, para qué, con quién compartimos, transferencias internacionales, cookies, seguridad, conservación y tus derechos como titular. Compliance Ley 25.326 (Argentina). Última actualización junio 2026."
+        description="Cómo Rendi maneja tus datos personales: qué recolectamos, para qué, con quién compartimos, transferencias internacionales, cookies, seguridad, conservación y tus derechos como titular. Compliance Ley 25.326 (Argentina). Última actualización septiembre 2026."
         canonical="/privacidad"
       />
 
@@ -36,7 +36,7 @@ export default function Privacidad() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de Privacidad</h1>
-        <p className="text-sm text-ink-3 mb-10">Última actualización: 3 de junio de 2026</p>
+        <p className="text-sm text-ink-3 mb-10">Última actualización: 12 de septiembre de 2026</p>
 
         {/* Resumen prominente */}
         <div className="border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 mb-10">
@@ -46,7 +46,7 @@ export default function Privacidad() {
             <li>No tenemos acceso a tu dinero ni a tus cuentas: no hay integración bancaria. Vos cargás los datos manualmente o por CSV.</li>
             <li>No vendemos, alquilamos ni compartimos tus datos con fines comerciales, ni hacemos profiling publicitario.</li>
             <li>El pago lo procesa Rebill: nunca almacenamos datos de tu tarjeta o medio de pago.</li>
-            <li>El Coach IA usa Claude (Anthropic), que no entrena sus modelos con tus datos.</li>
+            <li>El Coach IA usa Claude (Anthropic) para pensar la respuesta y, si pedís escucharla, OpenAI para leerla en voz alta. Ninguno de los dos entrena sus modelos con tus datos.</li>
             <li>Podés acceder, rectificar o eliminar tus datos en cualquier momento escribiéndonos.</li>
             <li>Sujeto a la Ley 25.326 (Protección de Datos Personales, Argentina).</li>
           </ul>
@@ -154,8 +154,10 @@ export default function Privacidad() {
             <li>
               <strong className="text-ink-0">Responder con el Coach IA (consentimiento).</strong>{' '}
               Cuando le hacés una consulta al Coach IA, enviamos un snapshot de tu cartera
-              a Anthropic (Claude) para que pueda responderte con contexto. Lo hacemos
-              porque vos elegís usar esa función. Ver la sección 4 para el detalle.
+              a Anthropic (Claude) para que pueda responderte con contexto. Si además elegís
+              escuchar la respuesta, enviamos el texto de ese resumen a OpenAI, que lo
+              convierte en audio. Lo hacemos porque vos elegís usar esas funciones. Ver la
+              sección 4 para el detalle.
             </li>
             <li>
               <strong className="text-ink-0">Comunicación transaccional (ejecución del contrato).</strong>{' '}
@@ -179,7 +181,7 @@ export default function Privacidad() {
           </ul>
         </Section>
 
-        <Section title="4. Coach IA y procesamiento por Anthropic">
+        <Section title="4. Coach IA: procesamiento por Anthropic y OpenAI">
           <p>
             Rendi ofrece un <strong className="text-ink-0">Coach IA</strong> que usa Claude,
             el modelo de inteligencia artificial de{' '}
@@ -198,6 +200,22 @@ export default function Privacidad() {
               Según la política comercial de Anthropic, los datos que se le envían a través
               de su API no se utilizan para entrenar sus modelos. Podés consultar su política en{' '}
               <a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">anthropic.com/legal/privacy</a>.
+            </li>
+            <li>
+              <strong className="text-ink-0">Si pedís escuchar la respuesta.</strong> El
+              Coach IA puede leerte la respuesta en voz alta. Pensar la respuesta la sigue
+              haciendo Claude; para convertirla en audio enviamos a{' '}
+              <strong className="text-ink-0">OpenAI</strong> únicamente el{' '}
+              <strong className="text-ink-0">texto de ese resumen hablado</strong> — tres
+              oraciones con los montos redondeados. No le enviamos tu snapshot, ni tu email,
+              ni ningún otro dato de tu cuenta. La función es opcional: se activa con el
+              botón del parlante y podés apagarla cuando quieras.
+            </li>
+            <li>
+              <strong className="text-ink-0">OpenAI NO entrena con tus datos.</strong>{' '}
+              Según la política de OpenAI para su API, el contenido que se le envía por esa
+              vía no se usa para entrenar ni mejorar sus modelos. Podés consultar su política en{' '}
+              <a href="https://openai.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">openai.com/policies/privacy-policy</a>.
             </li>
             <li>
               <strong className="text-ink-0">Para qué sirve y para qué no.</strong> Las
@@ -228,6 +246,12 @@ export default function Privacidad() {
               <strong className="text-ink-0">Anthropic (Coach IA).</strong> Recibe el
               snapshot de tu cartera y tu consulta cuando usás el Coach IA. Política:{' '}
               <a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">anthropic.com/legal/privacy</a>.
+            </li>
+            <li>
+              <strong className="text-ink-0">OpenAI (la voz del Coach IA).</strong> Recibe
+              el texto del resumen hablado —y sólo eso— cuando pedís escuchar una respuesta.
+              Política:{' '}
+              <a href="https://openai.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">openai.com/policies/privacy-policy</a>.
             </li>
             <li>
               <strong className="text-ink-0">Resend (emails transaccionales).</strong>{' '}

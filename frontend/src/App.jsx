@@ -1,5 +1,8 @@
 import { useEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { getClientContext } from './utils/api'
+import { VozProvider } from './contexts/VozContext'
+import RendiMate from './components/voz/RendiMate'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
@@ -156,6 +159,24 @@ function RouteTracker() {
     }
   }, [location.pathname])
   return null
+}
+
+// El acompañante sólo aparece con sesión y fuera de los flujos que piden la
+// pantalla entera: durante el onboarding o la primera lectura, una tarjeta
+// flotando arriba a la derecha estorba en vez de acompañar.
+const SIN_ACOMPANANTE = ['/onboarding', '/bienvenida', '/claim', '/verify-email', '/reset-password']
+
+function VozGate() {
+  const { user } = useAuth()
+  const { pathname } = useLocation()
+  if (!user) return null
+  if (SIN_ACOMPANANTE.some(r => pathname.startsWith(r))) return null
+  // El asesor EN SU PROPIO NIVEL queda afuera de esta etapa: su chat habla del
+  // LIBRO y ese contexto lo arma el servidor. El acompañante le mandaría el
+  // snapshot de su cuenta personal, que está vacía. Adentro de un cliente
+  // (hay contexto) sí corresponde: ahí la cartera es la del cliente.
+  if (user.tier === 'advisor' && !getClientContext()) return null
+  return <RendiMate />
 }
 
 function AdvisorLandingRedirect() {
@@ -396,6 +417,7 @@ export default function App() {
         <CurrencyProvider>
           <PrivacyProvider>
           <CoachDrawerProvider>
+          <VozProvider>
             <div className="min-h-screen bg-bg-0 text-ink-0">
               {/* RouteTracker vive ACÁ (no dentro de los shells autenticados)
                   para que GA4 + Meta también midan al visitante SIN login:
@@ -404,9 +426,16 @@ export default function App() {
                   importa para los ads) era invisible en analytics. */}
               <RouteTracker />
               <Layout />
+              {/* EL ACOMPAÑANTE. Hermano de <Layout/>, no hijo de una página:
+                  montado adentro el router lo desmontaría al navegar, el
+                  <audio> se destruiría y Rendi se callaría a mitad de frase —
+                  justo lo que se pidió que no pasara. Mismo patrón que el
+                  selector de moneda del sidebar. Ver contexts/VozContext.jsx. */}
+              <VozGate />
               {/* Rendi AI vive en /ai (página propia) — el drawer lateral se
                   retiró (clean pass 2026-07). useCoachDrawer().open() navega. */}
             </div>
+          </VozProvider>
           </CoachDrawerProvider>
           </PrivacyProvider>
         </CurrencyProvider>

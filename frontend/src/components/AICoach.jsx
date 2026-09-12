@@ -23,6 +23,7 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { trackEvent } from '../utils/analytics'
 import { markAIDiscovered } from './ai/AIDiscoveryBanner'
 import UpgradePromoCard from './ai/UpgradePromoCard'
+import { useVoz } from '../contexts/VozContext'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
@@ -91,6 +92,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
+  const { publicar } = useVoz()
   // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO (backend
   // arma el contexto server-side). Por IDENTIDAD (useAuth), no por plan
   // features — en contexto de cliente el lente es 'pro' y ahí el chat es el
@@ -253,8 +255,25 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       if (res?.portfolioChanged) {
         window.dispatchEvent(new Event('rendi:portfolio-changed'))
       }
+      // Pasarle el turno al ACOMPAÑANTE (contexts/VozContext): se queda con la
+      // pregunta, la respuesta y —si la hubo— la versión hablada, para poder
+      // seguir la conversación desde cualquier otra pantalla.
+      //
+      // El autoplay espera a la cuota fresca a propósito. Escuchar cuesta una
+      // ficha más, y un Free tiene UNA por semana: si arrancáramos el audio a
+      // ciegas, su única consulta terminaría siempre con un cartel de "sin
+      // cuota" que él no pidió. Con el dato en la mano, si no le queda nada
+      // dejamos la respuesta escrita y el botón de escuchar ahí, por si la
+      // quiere igual.
+      const { prose: _prose, meta: _meta } = parseStructured(stripMarkdown(acc))
+      const _publicar = (autoplay) => publicar({
+        question: content, reply: _prose || stripMarkdown(acc), voz: res?.voz || null,
+        meta: _meta, autoplay,
+      })
       // Refrescar cuota tras success — no es crítico, best-effort.
-      api.get('/ai/usage').then(u => setUsage(u)).catch(() => {})
+      api.get('/ai/usage')
+        .then(u => { setUsage(u); _publicar((u?.chat_remaining ?? 1) > 0) })
+        .catch(() => _publicar(true))
     } catch (e) {
       // Abort deliberado (tocó "Nuevo" o cerró el drawer): salir en silencio —
       // no es un error del usuario y reset() ya dejó el chat como corresponde.

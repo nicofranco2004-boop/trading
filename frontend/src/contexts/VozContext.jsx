@@ -1,0 +1,335 @@
+// VozContext — la voz de Rendi y el acompañante que la sostiene.
+// ═══════════════════════════════════════════════════════════════════════════
+// POR QUÉ ESTO VIVE EN EL SHELL Y NO ADENTRO DE UNA PANTALLA
+// ---------------------------------------------------------------------------
+// Es LA decisión de la etapa, y de ella depende todo lo demás. El pedido fue
+// "que me siga hablando mientras miro otra cosa". Si el <audio> se montara
+// dentro de una página, al navegar React la desmonta, el elemento se destruye
+// y el sonido se corta a mitad de frase — justo lo que se pidió que no pasara.
+//
+// Acá el <audio> lo renderiza el provider, que es hermano de <Layout/> y vive
+// arriba del router: cambiar de sección no lo toca. Es el mismo patrón que ya
+// usa el selector de moneda del sidebar, que sobrevive a la navegación.
+//
+// QUÉ HAY ADENTRO
+//   · el parlante  — si Rendi LEE las respuestas o las deja sólo escritas.
+//                    Es lo único que decide ese botón (no tiene nada que ver
+//                    con el micrófono, que es de otra etapa).
+//   · el reproductor — un solo <audio>, su estado y la perilla de velocidad.
+//   · el acompañante — el hilo corto y la caja de texto que flotan sobre la
+//                    pantalla que el usuario esté mirando.
+//
+// LO QUE NO HACE: no elige QUÉ se dice. El texto hablado lo escribe Claude en
+// el mismo turno del chat y viene FIRMADO por el backend; acá se reenvía tal
+// cual. Cambiarle un espacio rompe la firma y el servidor lo rechaza.
+
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { api } from '../utils/api'
+import { fetchAiSnapshot } from '../utils/aiSnapshot'
+import { stripMarkdown } from '../utils/stripMarkdown'
+import { parseStructured } from '../utils/aiStructured'
+import { sendWindow } from '../utils/chatSession'
+
+const LS_ON = 'rendi:voz:on'
+const LS_RATE = 'rendi:voz:rate'
+
+// 1,25× por defecto: a la velocidad natural el resumen de 3 oraciones dura 24
+// segundos y se hace largo. Las tres marcas son las del mockup; acelerar más
+// allá de 1,4 empieza a sonar a ardilla aunque se conserve el tono.
+export const RATES = [1, 1.25, 1.4]
+const DEFAULT_RATE = 1.25
+
+// Cuántos mensajes guarda el hilo del acompañante. Es un acompañante, no una
+// segunda pantalla de chat: la conversación entera vive en /ai.
+const MAX_THREAD = 8
+
+const VozContext = createContext(null)
+
+function leerBool(k, def) {
+  try {
+    const v = localStorage.getItem(k)
+    return v == null ? def : v === '1'
+  } catch { return def }
+}
+function leerRate() {
+  try {
+    const v = parseFloat(localStorage.getItem(LS_RATE))
+    return RATES.includes(v) ? v : DEFAULT_RATE
+  } catch { return DEFAULT_RATE }
+}
+function guardar(k, v) {
+  try { localStorage.setItem(k, v) } catch { /* modo privado: no es crítico */ }
+}
+
+export function VozProvider({ children }) {
+  const audioRef = useRef(null)
+
+  // ── El parlante ──────────────────────────────────────────────────────────
+  const [enabled, setEnabledState] = useState(() => leerBool(LS_ON, true))
+  const [rate, setRateState] = useState(leerRate)
+
+  // ── El reproductor ───────────────────────────────────────────────────────
+  // 'idle' · 'preparing' (pidiendo el audio) · 'playing' · 'paused'
+  // 'blocked' (el navegador no deja sonar sin que toquen algo — iPhone la
+  // primera vez) · 'error' · 'quota' (se acabaron las fichas)
+  const [status, setStatus] = useState('idle')
+  const [progress, setProgress] = useState({ t: 0, d: 0 })
+  // El resumen hablado en curso: { text, sig, url }
+  const [current, setCurrent] = useState(null)
+
+  // ── El acompañante ───────────────────────────────────────────────────────
+  const [open, setOpen] = useState(false)
+  const [thread, setThread] = useState([])
+  const [sending, setSending] = useState(false)
+  const [askError, setAskError] = useState(null)
+
+  // Snapshot de la cartera para poder repreguntar desde cualquier pantalla.
+  // Perezoso: recién se pide cuando hace falta, y se refresca si el chat
+  // registró una operación.
+  const snapRef = useRef(null)
+  const sendingRef = useRef(false)
+
+  useEffect(() => {
+    const invalidar = () => { snapRef.current = null }
+    window.addEventListener('rendi:portfolio-changed', invalidar)
+    return () => window.removeEventListener('rendi:portfolio-changed', invalidar)
+  }, [])
+
+  const setEnabled = useCallback((v) => {
+    setEnabledState(v)
+    guardar(LS_ON, v ? '1' : '0')
+    // Apagar el parlante calla lo que esté sonando: el usuario tocó "no me
+    // leas" y seguir hablando sería no haberle hecho caso.
+    if (!v && audioRef.current) {
+      audioRef.current.pause()
+      setStatus(s => (s === 'playing' ? 'paused' : s))
+    }
+  }, [])
+
+  // playbackRate SIN que la voz se ponga aguda: preservesPitch va ANTES de
+  // tocar la velocidad, y con los tres prefijos porque cada navegador tardó
+  // lo suyo en estandarizarlo.
+  const aplicarRate = useCallback((a, r) => {
+    if (!a) return
+    a.preservesPitch = true
+    a.mozPreservesPitch = true
+    a.webkitPreservesPitch = true
+    a.playbackRate = r
+  }, [])
+
+  const setRate = useCallback((r) => {
+    const v = RATES.includes(r) ? r : DEFAULT_RATE
+    setRateState(v)
+    guardar(LS_RATE, String(v))
+    aplicarRate(audioRef.current, v)
+  }, [aplicarRate])
+
+  /**
+   * Reproduce un resumen hablado. `voz` es { text, sig } tal como lo devolvió
+   * el backend — no lo re-armes ni lo recortes.
+   *
+   * Dos pasos a propósito: primero le preguntamos al servidor la dirección del
+   * audio, y después se la damos al <audio> para que la baje ÉL. Así el sonido
+   * arranca apenas llegan los primeros bytes (~1,5 s en vez de ~5) y el
+   * celular puede seguir reproduciéndolo con la pantalla apagada — dos cosas
+   * que se pierden si el audio se baja entero por JavaScript antes de sonar.
+   */
+  const speak = useCallback(async (voz) => {
+    const a = audioRef.current
+    if (!a || !voz?.text || !voz?.sig) return
+    setStatus('preparing')
+    setAskError(null)
+    try {
+      const { url } = await api.post('/ai/voz', { text: voz.text, sig: voz.sig })
+      if (!url) throw new Error('sin url')
+      setCurrent({ ...voz, url })
+      a.src = url
+      aplicarRate(a, rate)
+      await a.play()
+      setStatus('playing')
+    } catch (e) {
+      if (e?.name === 'NotAllowedError') {
+        // El navegador exige que el usuario toque algo antes del primer
+        // sonido (iPhone, sobre todo). No es un error: mostramos el botón de
+        // play y con ese toque queda habilitado para el resto de la sesión.
+        setStatus('blocked')
+        return
+      }
+      const detail = e?.payload?.detail
+      if (e?.status === 429) {
+        setStatus('quota')
+        setAskError(detail?.message || 'Te quedaste sin consultas por esta semana.')
+        return
+      }
+      setStatus('error')
+      setAskError(detail?.message || 'No pudimos generar el audio.')
+    }
+  }, [aplicarRate, rate])
+
+  /** Play/pausa del audio ya cargado. */
+  const toggle = useCallback(async () => {
+    const a = audioRef.current
+    if (!a || !a.src) return
+    if (a.paused) {
+      try {
+        // Terminado → volver a empezar. Sale del cache del servidor, así que
+        // re-escuchar no cuesta ni una ficha ni una llamada a OpenAI.
+        if (a.ended || (a.duration && a.currentTime >= a.duration - 0.05)) a.currentTime = 0
+        aplicarRate(a, rate)
+        await a.play()
+        setStatus('playing')
+      } catch { setStatus('blocked') }
+    } else {
+      a.pause()
+      setStatus('paused')
+    }
+  }, [aplicarRate, rate])
+
+  const stop = useCallback(() => {
+    const a = audioRef.current
+    if (!a) return
+    a.pause()
+    try { a.currentTime = 0 } catch { /* sin metadata todavía */ }
+    setStatus('idle')
+  }, [])
+
+  /**
+   * Lo que /ai (o el propio acompañante) le pasa al terminar un turno: la
+   * pregunta, la respuesta y —si la hubo— la versión hablada.
+   * Si el parlante está prendido y hay audio, arranca solo.
+   */
+  const publicar = useCallback(({ question, reply, voz, meta, autoplay = true }) => {
+    setThread(t => {
+      const next = [...t]
+      if (question) next.push({ role: 'user', content: question })
+      if (reply) next.push({ role: 'assistant', content: reply, voz: voz || null, meta: meta || null })
+      return next.slice(-MAX_THREAD)
+    })
+    if (voz) {
+      setCurrent(voz)
+      // Arranca el audio pero NO abre el panel: el usuario está mirando la
+      // respuesta completa en /ai y taparla sería estorbar. La burbuja pasa a
+      // "Hablando…", y el panel se abre solo si se va a otra sección (ver
+      // RendiMate: ahí es donde el acompañante tiene que hacerse ver).
+      if (enabled && autoplay) speak(voz)
+    }
+  }, [enabled, speak])
+
+  /** Repreguntar desde el acompañante, sin volver a /ai. */
+  const ask = useCallback(async (texto) => {
+    const content = (texto || '').trim()
+    if (!content || sendingRef.current) return
+    sendingRef.current = true
+    setSending(true)
+    setAskError(null)
+    const previos = thread
+    setThread(t => [...t, { role: 'user', content }].slice(-MAX_THREAD))
+    try {
+      if (!snapRef.current) snapRef.current = await fetchAiSnapshot()
+      let acc = ''
+      // Al modelo van SOLO role y content: el hilo de acá guarda además el
+      // audio firmado y las tarjetas, que no son parte de la conversación.
+      const messages = sendWindow([...previos, { role: 'user', content }])
+        .map(({ role, content: c }) => ({ role, content: c }))
+      const res = await api.chatStream(
+        { messages, snapshot: snapRef.current },
+        { onDelta: (c) => { acc += c }, onReset: () => { acc = '' } },
+      )
+      const { prose, meta } = parseStructured(stripMarkdown(acc))
+      setThread(t => [...t, { role: 'assistant', content: prose || '…', voz: res?.voz || null, meta }].slice(-MAX_THREAD))
+      if (res?.portfolioChanged) window.dispatchEvent(new Event('rendi:portfolio-changed'))
+      if (res?.voz) {
+        setCurrent(res.voz)
+        if (enabled) speak(res.voz)
+      }
+    } catch (e) {
+      const detail = e?.payload?.detail
+      setAskError(
+        (detail && typeof detail === 'object' && detail.message)
+          ? detail.message
+          : 'No pudimos completar la consulta. Probá de nuevo.',
+      )
+      setThread(t => t.slice(0, -1))   // sacar la pregunta que falló
+    } finally {
+      sendingRef.current = false
+      setSending(false)
+    }
+  }, [thread, enabled, speak])
+
+  // ── Cablear el <audio> ───────────────────────────────────────────────────
+  useEffect(() => {
+    const a = audioRef.current
+    if (!a) return
+    const onTime = () => setProgress({ t: a.currentTime || 0, d: a.duration || 0 })
+    const onEnd = () => { setStatus('idle'); setProgress(p => ({ ...p, t: 0 })) }
+    const onErr = () => setStatus('error')
+    const onPlay = () => setStatus('playing')
+    const onPause = () => setStatus(s => (s === 'playing' ? 'paused' : s))
+    a.addEventListener('timeupdate', onTime)
+    a.addEventListener('loadedmetadata', onTime)
+    a.addEventListener('ended', onEnd)
+    a.addEventListener('error', onErr)
+    a.addEventListener('play', onPlay)
+    a.addEventListener('pause', onPause)
+    return () => {
+      a.removeEventListener('timeupdate', onTime)
+      a.removeEventListener('loadedmetadata', onTime)
+      a.removeEventListener('ended', onEnd)
+      a.removeEventListener('error', onErr)
+      a.removeEventListener('play', onPlay)
+      a.removeEventListener('pause', onPause)
+    }
+  }, [])
+
+  // Controles del sistema (pantalla bloqueada, auriculares, barra del celu).
+  // Best-effort: si el navegador no la tiene, no pasa nada.
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    try {
+      navigator.mediaSession.setActionHandler('play', () => { audioRef.current?.play().catch(() => {}) })
+      navigator.mediaSession.setActionHandler('pause', () => { audioRef.current?.pause() })
+    } catch { /* navegador sin soporte parcial */ }
+  }, [])
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !window.MediaMetadata || !current?.text) return
+    try {
+      navigator.mediaSession.metadata = new window.MediaMetadata({
+        title: current.text.slice(0, 70),
+        artist: 'Rendi',
+      })
+    } catch { /* idem */ }
+  }, [current?.text])
+
+  const value = useMemo(() => ({
+    enabled, setEnabled,
+    rate, setRate, rates: RATES,
+    status, progress, current,
+    speak, toggle, stop,
+    open, setOpen,
+    thread, sending, askError, ask, publicar,
+  }), [enabled, setEnabled, rate, setRate, status, progress, current,
+       speak, toggle, stop, open, thread, sending, askError, ask, publicar])
+
+  return (
+    <VozContext.Provider value={value}>
+      {children}
+      {/* EL elemento de audio de toda la app. Uno solo, acá arriba: es lo que
+          hace que el sonido no se corte al cambiar de sección. */}
+      <audio ref={audioRef} preload="auto" hidden />
+    </VozContext.Provider>
+  )
+}
+
+// Devuelve un objeto inerte si no hay provider (tests que montan un componente
+// suelto, o el árbol sin sesión): así ningún caller tiene que preguntar.
+const INERTE = {
+  enabled: false, setEnabled: () => {},
+  rate: DEFAULT_RATE, setRate: () => {}, rates: RATES,
+  status: 'idle', progress: { t: 0, d: 0 }, current: null,
+  speak: () => {}, toggle: () => {}, stop: () => {},
+  open: false, setOpen: () => {},
+  thread: [], sending: false, askError: null, ask: () => {}, publicar: () => {},
+}
+
+export const useVoz = () => useContext(VozContext) || INERTE

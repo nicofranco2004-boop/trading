@@ -326,6 +326,9 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
   // El turno ESCRIBIÓ en la cartera (registro/undo por chat) — el caller
   // dispara el refresh de Cartera y del snapshot sin F5 del usuario.
   let portfolioChanged = false
+  // Resumen hablado firmado (ver el frame `done` más abajo). null si el turno
+  // no produjo uno — entonces la respuesta queda sólo escrita.
+  let voz = null
   let streamErr = null
   // B-6 (audit IA #2): sin sentinel de fin, un stream CORTADO a mitad (Vercel
   // corta a 30s, red móvil, proxy) terminaba el reader sin frame terminal y se
@@ -359,6 +362,14 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
           sawTerminal = true
           tier = evt.tier ?? tier
           if (evt.portfolio_changed) portfolioChanged = true
+          // El resumen HABLADO + su firma. Viene sólo en respuestas de
+          // análisis (el registro de operaciones no se lee en voz alta) y
+          // viaja acá, no en un delta, porque no es texto que el user LEA:
+          // es el guion del audio. Se devuelve tal cual — cambiarle un
+          // espacio rompe la firma y el backend lo rechaza.
+          if (evt.voz && typeof evt.voz.text === 'string' && typeof evt.voz.sig === 'string') {
+            voz = { text: evt.voz.text, sig: evt.voz.sig }
+          }
         } else if (evt.t === 'error') {
           // Error del LLM a mitad de stream: lo guardamos y cortamos la lectura.
           sawTerminal = true
@@ -379,7 +390,7 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
     err.truncated = true
     throw err
   }
-  return { tier, portfolioChanged }
+  return { tier, portfolioChanged, voz }
 }
 
 export const api = {

@@ -17,9 +17,8 @@ import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
-import { api } from '../utils/api'
 import { clearChatSession } from '../utils/chatSession'
-import { buildAiSummary } from '../utils/aiSummary'
+import { fetchAiSnapshot } from '../utils/aiSnapshot'
 
 // Book-mode: AICoach exige un snapshot truthy para habilitar el envío; el
 // backend lo IGNORA en este modo (arma el libro server-side). Ref estable
@@ -59,22 +58,9 @@ export default function RendiAI() {
     if (bookMode) { setLoading(false); setError(null); return }
     if (!snapshotRef.current) setLoading(true)
     setError(null)
-    Promise.all([
-      api.get('/positions'),
-      api.get('/monthly'),
-      api.get('/brokers'),
-      api.get('/operations').catch(() => []),  // no crítico si falla
-    ])
-      .then(([positions, monthly, brokers, operations]) => {
+    fetchAiSnapshot()
+      .then(snap => {
         if (cancelled) return
-        const opsCapped = Array.isArray(operations) ? operations.slice(0, 100) : []
-        const snap = {
-          summary: buildAiSummary(positions, monthly),
-          positions: positions || [],
-          operations: opsCapped,
-          monthly: monthly || [],
-          brokers: brokers || [],
-        }
         snapshotRef.current = snap
         setSnapshot(snap)
         setLoading(false)

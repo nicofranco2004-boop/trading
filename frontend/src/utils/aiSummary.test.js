@@ -61,22 +61,36 @@ describe('buildAiSummary — lo que viaja al modelo en cada mensaje', () => {
 })
 
 describe('el resumen se arma en UN solo lugar', () => {
-  // No alcanza con haber unificado las dos copias hoy: el bug original fue
+  // No alcanza con haber unificado las copias hoy: el bug original fue
   // exactamente eso, dos `buildSummary` idénticas que dejaron de serlo. Si
   // alguien vuelve a armar el resumen dentro de una pantalla, esto se pone rojo.
+  //
+  // Con la voz (2026-09-12) el snapshot ENTERO —no sólo el resumen— pasó a
+  // armarse en utils/aiSnapshot.js: el acompañante flotante pregunta desde
+  // cualquier pantalla y hubiera sido una TERCERA copia del mismo fetch. Por
+  // eso el guard ahora exige `fetchAiSnapshot` en las superficies y reserva
+  // `buildAiSummary` para el único módulo que puede llamarlo.
   const SUPERFICIES = [
     'src/pages/RendiAI.jsx',
     'src/components/ai/AICoachDrawer.jsx',
+    'src/contexts/VozContext.jsx',
   ]
 
-  it.each(SUPERFICIES)('%s importa el resumen en vez de rearmarlo', (ruta) => {
+  it.each(SUPERFICIES)('%s pide el snapshot en vez de rearmarlo', (ruta) => {
     const src = readFileSync(ruta, 'utf8')
-    expect(src).toMatch(/import \{[^}]*buildAiSummary[^}]*\} from/)
+    expect(src).toMatch(/import \{[^}]*fetchAiSnapshot[^}]*\} from/)
     expect(src).not.toMatch(/function\s+buildSummary\s*\(/)
+    // Armar el resumen a mano en una pantalla vuelve a abrir el mismo bug.
+    expect(src).not.toMatch(/import \{[^}]*buildAiSummary[^}]*\} from/)
     // Ni la suma CRUDA de las filas mensuales, que es de donde salía el ×2.
     // Se prohíbe `monthly.reduce(` y `(monthly || []).reduce(` — o sea reducir
     // sin filtrar. Un `monthly.filter(...).reduce(...)` legítimo pasa.
     expect(src).not.toMatch(/monthly\s*\.reduce\(/)
     expect(src).not.toMatch(/\(\s*monthly\s*\|\|\s*\[\]\s*\)\s*\.reduce\(/)
+  })
+
+  it('el snapshot compartido es el que llama a buildAiSummary', () => {
+    const src = readFileSync('src/utils/aiSnapshot.js', 'utf8')
+    expect(src).toMatch(/import \{[^}]*buildAiSummary[^}]*\} from/)
   })
 })

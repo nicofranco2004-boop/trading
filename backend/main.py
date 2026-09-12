@@ -15,6 +15,11 @@ from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 # se arman a nivel de módulo. `ai/voz.py` no importa nada, así que no hay
 # riesgo de import circular ni costo de arranque.
 from ai.voz import VOZ
+# tts = la voz HABLADA (OpenAI). Top-level por el mismo motivo que voz.py: sus
+# constantes (el tope de largo) se usan al armar los prompts. Sólo importa
+# httpx y la stdlib; no lee la API key hasta que alguien pide audio, así que
+# un deploy sin OPENAI_API_KEY arranca igual (el endpoint responde 503).
+from ai import tts
 from collections import defaultdict
 
 # ─── Cargar .env del backend antes de leer cualquier variable de entorno ────
@@ -21956,7 +21961,7 @@ RECETAS por pregunta (las sugeridas de la UI llegan tal cual — cada una tiene 
 - vs S&P 500 / inflación → "compare" con summary.benchmarks + action "Ver comparativa completa" → /analisis.
 - "mejorar UNA cosa" → "scenario" o "alloc" según el hallazgo + action con el atajo para hacerlo en Rendi.
 
-ACTIONS — usalo MÁS de lo que tu instinto dice: si la respuesta nombra un riesgo, una concentración, un evento próximo o algo revisable, cerrá con 1-3 atajos DE LA APP (crear alerta con ?new=TICKER, ver Métricas, agenda de earnings, ficha del activo, revisar operaciones). NUNCA es consejo de inversión ("comprá/vendé" prohibido) — son shortcuts para que el usuario actúe dentro de Rendi."""
+ACTIONS — usalo MÁS de lo que tu instinto dice: si la respuesta nombra un riesgo, una concentración, un evento próximo o algo revisable, cerrá con 1-3 atajos DE LA APP (crear alerta con ?new=TICKER, ver Métricas, agenda de earnings, ficha del activo, revisar operaciones). NUNCA es consejo de inversión ("comprá/vendé" prohibido) — son shortcuts para que el usuario actúe dentro de Rendi.""" + tts.SUMMARY_PROMPT
 
 
 # Addendum del PLAN ASESOR (book-mode): se CONCATENA a _AI_CHAT_SYSTEM cuando
@@ -22085,7 +22090,7 @@ BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
 Al FINAL de cada respuesta de análisis, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado:
 {"verdict":"2-3 palabras","tone":"pos|warn|neg|neutral","headline":"el dato principal en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor","t":"pos|warn|neg|neutral"}],"sources":["ej: 12 posiciones"]}
 Reglas: stats máx 3 con números REALES del snapshot (nunca inventados); sources máx 2; NO incluyas "followups" (este plan no tiene chat libre); la prosa va antes y no menciona el bloque; omitilo en saludos y en el flujo de registro de operaciones.
-El JSON también acepta "blocks" (máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"NVDA","pct":28},...]} (composición, máx 6, pct reales) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"...","to":"/alertas?new=TICKER"}]} (solo rutas internas /alertas /analisis /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). En respuestas de análisis incluí al menos 1. Guía rápida por pregunta: riesgo/concentración → "alloc" o "scenario" + "actions" (crear alerta del activo pesado); comparaciones vs benchmark → "compare" con summary.benchmarks; earnings/listas → "table" + action a /novedades. Los valores como STRINGS formateados ("+6,7%"), no números crudos. "actions" son atajos DE LA APP — nunca consejo de comprar/vender."""
+El JSON también acepta "blocks" (máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"NVDA","pct":28},...]} (composición, máx 6, pct reales) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"...","to":"/alertas?new=TICKER"}]} (solo rutas internas /alertas /analisis /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). En respuestas de análisis incluí al menos 1. Guía rápida por pregunta: riesgo/concentración → "alloc" o "scenario" + "actions" (crear alerta del activo pesado); comparaciones vs benchmark → "compare" con summary.benchmarks; earnings/listas → "table" + action a /novedades. Los valores como STRINGS formateados ("+6,7%"), no números crudos. "actions" son atajos DE LA APP — nunca consejo de comprar/vender.""" + tts.SUMMARY_PROMPT
 
 
 # Strip markdown que el modelo a veces inyecta a pesar del prompt. Aplicamos
@@ -24052,6 +24057,10 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
     _ITEM_FIELDS = {
         # fallback si el enrich de valuación no corre — normalmente el server
         # REEMPLAZA positions entero con las valuadas
+        # `name` NO está en la lista a propósito: el nombre del activo lo
+        # pone el SERVER después (_con_nombres, desde ai/asset_names.py).
+        # Aceptarlo del cliente reabriría el canal de texto libre por-fila que
+        # este allowlist existe para cerrar (B-15).
         "positions": {"asset", "broker", "quantity", "invested", "buy_price",
                        "currency", "asset_type", "is_cash", "entry_date", "_kind"},
         # notes afuera a propósito: era el canal de texto libre por-item
@@ -24246,6 +24255,35 @@ def _valuate_positions_for_chat(conn, uid: int):
     return valued, totals
 
 
+def _con_nombres(positions):
+    """Le pega a cada posición cómo se LLAMA el activo, para que la voz diga
+    "Nvidia" y no "N-V-D-A" (ver ai/asset_names.py).
+
+    Va acá —en el único lugar donde se decide la lista final de posiciones que
+    ve el modelo— y no del lado del navegador: el server pisa las posiciones
+    del cliente con las que valúa él, y el sanitizer recorta cada fila a una
+    lista cerrada de campos. Un nombre puesto en el frontend se perdía dos
+    veces. Sin nombre en el catálogo la posición viaja igual, sin el campo: el
+    prompt le pide a la IA que ahí no invente."""
+    from ai.asset_names import asset_name
+    if not isinstance(positions, list):
+        return positions
+    out = []
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        n = asset_name(p.get("asset"))
+        if n:
+            out.append({**p, "name": n})
+        elif "name" in p:
+            # Sin nombre en el catálogo no queda NINGÚN nombre: si vino uno de
+            # otro lado, se va. El único que puede nombrar activos es el server.
+            out.append({k: v for k, v in p.items() if k != "name"})
+        else:
+            out.append(p)
+    return out
+
+
 def _enrich_chat_snapshot_valuation(uid: int, snapshot: dict) -> dict:
     """Sobrescribe positions + summary del snapshot con la valuación USD canónica
     server-side (ver _valuate_positions_for_chat). AUTORITATIVO: no confía en los
@@ -24261,10 +24299,14 @@ def _enrich_chat_snapshot_valuation(uid: int, snapshot: dict) -> dict:
             conn.close()
     except Exception as ex:
         log.warning("chat snapshot valuation enrich failed (uid=%s): %s", uid, ex)
-        return snapshot
+        # Degradación segura: se devuelven las posiciones del cliente. Los
+        # nombres se ponen IGUAL — si no, la voz de este turno diría códigos.
+        fallback = dict(snapshot)
+        fallback["positions"] = _con_nombres(snapshot.get("positions"))
+        return fallback
 
     out = dict(snapshot)
-    out["positions"] = valued
+    out["positions"] = _con_nombres(valued)
     summ = dict(out.get("summary") or {})
     summ.update(totals)
     # Recuentos server-side, coherentes con las posiciones valuadas (agrupadas por
@@ -29523,6 +29565,84 @@ def _maybe_refund_trade_turn(uid: int, turn_flags: set, reserved: bool = True) -
         _refund_chat_quota(uid)
 
 
+# ─── El resumen HABLADO ──────────────────────────────────────────────────────
+# Cada respuesta de análisis termina en un bloque `---RENDI---` + una línea de
+# JSON que el frontend convierte en tarjetas. La voz agrega ahí un campo más,
+# `voz`: la misma respuesta en 3 oraciones, escrita para la oreja.
+#
+# ¿POR QUÉ NO SE LEE LA PROSA DE PANTALLA? Porque está escrita para los ojos:
+# tiene números al centavo ("US$ 8.812,47"), referencias a las tarjetas ("como
+# ves arriba") y nombres con paréntesis que leídos suenan a formulario
+# ("Bonar 2030 paréntesis U-S-D ley A-R"). Son dos textos distintos, no dos
+# formatos del mismo texto.
+#
+# El mismo regex tolerante que usa el parser del frontend (utils/aiStructured.js):
+# el modelo a veces escribe "--- RENDI ---" o "----RENDI----". Se toma SIEMPRE
+# el PRIMER delimitador, igual que el frontend — los epílogos del registro de
+# operaciones anexan un segundo bloque y leer ése daría el resumen equivocado.
+_RENDI_DELIM_RE = re.compile(r"-{3,}\s*RENDI\s*-{3,}")
+
+
+def _extract_voz(text: str) -> Optional[str]:
+    """Saca el resumen hablado del bloque estructurado. Nunca lanza: si el
+    modelo no lo emitió, o emitió JSON roto, devolvemos None y la respuesta
+    queda sólo escrita (que es exactamente lo que tiene que pasar)."""
+    if not text:
+        return None
+    m = _RENDI_DELIM_RE.search(text)
+    if not m:
+        return None
+    # Acotar al PRIMER bloque: si hubiera un segundo `---RENDI---` (el modelo
+    # escribió "--- RENDI ---" y el guard del epílogo, que compara la forma
+    # exacta, no lo vio), un rfind sobre todo el resto agarraría la llave de
+    # cierre del SEGUNDO bloque y el JSON del medio no parsearía nunca.
+    tail = text[m.end():]
+    otro = _RENDI_DELIM_RE.search(tail)
+    if otro:
+        tail = tail[:otro.start()]
+    start, end = tail.find("{"), tail.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        meta = json.loads(tail[start:end + 1])
+    except Exception:
+        return None
+    if not isinstance(meta, dict):
+        return None
+    voz = meta.get("voz")
+    if not isinstance(voz, str):
+        return None
+    voz = voz.strip()
+    if not voz:
+        return None
+    if len(voz) > tts.MAX_CHARS:
+        # El modelo se pasó del tope duro. Cortamos en la última oración
+        # completa que entra — leer media frase suena peor que leer menos.
+        cut = voz[:tts.MAX_CHARS]
+        dot = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+        voz = (cut[:dot + 1] if dot > 80 else cut).strip()
+    if len(voz) > tts.MAX_CHARS_SOFT:
+        # No rechaza: avisa. Pasado este largo la regla "escuchar = 1 ficha
+        # más" deja de cerrar (§3 del handoff) y hay que ajustar el prompt.
+        log.info("voz: resumen largo (%d chars ≈ %.1fs) — la cuenta de la ficha se estira",
+                 len(voz), tts.estimated_seconds(voz))
+    return voz
+
+
+def _voz_payload(text: str) -> Optional[dict]:
+    """El resumen hablado FIRMADO, listo para viajar al frontend.
+
+    La firma es lo que impide que /api/ai/voz sea un servicio de voz gratis
+    para cualquiera con una cuenta: el navegador nos devuelve texto + firma, y
+    sin firma válida el endpoint no canta nada. Mandamos el texto EXACTO que
+    firmamos (en vez de que el frontend lo re-extraiga del JSON) porque
+    cualquier diferencia de un espacio rompería la verificación."""
+    voz = _extract_voz(text)
+    if not voz:
+        return None
+    return {"text": voz, "sig": tts.sign(voz)}
+
+
 def _chat_direct_reply(stream: bool, text: str, tier: str,
                        portfolio_changed: bool = False, uid=None):
     """Respuesta del chat SIN llamar al LLM (short-circuit de confirmación de
@@ -29807,8 +29927,16 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # Free 300 → 500 (2026-07): el bloque estructurado ---RENDI--- (~150-200
     # tokens) no entraba en 300 sin truncar la respuesta. Costo extra máximo
     # ~$0.001/respuesta × 1 chat/sem = ~sub-centavo/mes por Free activo.
-    max_tokens = 1200 if is_premium else 500
-    max_tokens_fallback = 800 if is_premium else 400
+    # Techo de salida. Subido con la voz (2026-09-12): el bloque estructurado
+    # ahora lleva un campo más, "voz" —el resumen hablado, ~290 caracteres ≈
+    # 100 tokens—. Sin este aire, Free quedaba con 500 tokens para prosa (~200)
+    # + bloque (~200) + voz (~100) sin margen: la respuesta se cortaba a mitad
+    # del JSON y se perdía el bloque ENTERO, no sólo el audio (es el mismo
+    # síntoma que llevó de 300 a 500 en julio). El costo del aire extra es
+    # marginal: son tokens de SALIDA de Haiku, y sólo se gastan si el modelo
+    # los usa.
+    max_tokens = 1350 if is_premium else 650
+    max_tokens_fallback = 950 if is_premium else 520
 
     # Modo del bloque de perfil: Pro/Admin → causal (infiere causas plausibles).
     # Free/Plus → descriptive (solo presenta el dato, no interpreta).
@@ -29878,7 +30006,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
 
 RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días.
 
-RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: prosa CORTA (máx ~120 palabras: la respuesta directa + tu lectura) y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Omitilo SOLO en saludos, aclaraciones breves y todo el flujo de registro de operaciones (confirmaciones, resultado, undo)."""
+RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: prosa CORTA (máx ~120 palabras: la respuesta directa + tu lectura) y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Omitilo SOLO en saludos, aclaraciones breves y todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos) — se olvida fácil porque no se ve en pantalla, pero si falta el usuario se queda sin audio."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
@@ -30186,7 +30314,14 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         _done = {"t": "done", "tier": tier}
                         if _turn_flags & {"trade_registered", "undo_ok"}:
                             _done["portfolio_changed"] = True
-                        yield "data: " + json.dumps(_done) + "\n\n"
+                        # El resumen hablado FIRMADO viaja en el frame final:
+                        # el navegador lo devuelve tal cual a /api/ai/voz. Va
+                        # acá y no en un delta porque no es texto que el user
+                        # lea — es el guion del audio.
+                        _voz = _voz_payload(state["synth_text"])
+                        if _voz:
+                            _done["voz"] = _voz
+                        yield "data: " + json.dumps(_done, ensure_ascii=False) + "\n\n"
                         return
                     # tool_use: B-13 — el frame `reset` avisa que lo streameado
                     # era PREÁMBULO ("déjame consultar…"), no la respuesta: el
@@ -30230,7 +30365,10 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 _done = {"t": "done", "tier": tier}
                 if _turn_flags & {"trade_registered", "undo_ok"}:
                     _done["portfolio_changed"] = True
-                yield "data: " + json.dumps(_done) + "\n\n"
+                _voz = _voz_payload(state["synth_text"])   # ídem al path final
+                if _voz:
+                    _done["voz"] = _voz
+                yield "data: " + json.dumps(_done, ensure_ascii=False) + "\n\n"
             except Exception as ex:
                 ex_name = type(ex).__name__
                 log.warning("ai_chat stream exception tier=%s uid=%s type=%s msg=%s", tier, uid, ex_name, str(ex)[:200])
@@ -30322,6 +30460,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 _out = {"reply": _strip_markdown(text.strip()), "tier": tier}
                 if _turn_flags & {"trade_registered", "undo_ok"}:
                     _out["portfolio_changed"] = True
+                _voz = _voz_payload(text)     # resumen hablado firmado (ver _voz_payload)
+                if _voz:
+                    _out["voz"] = _voz
                 return _out
 
             # Hay tool_use: ejecutar cada tool y continuar el loop. Unificado
@@ -30374,6 +30515,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
         _out = {"reply": _strip_markdown(text.strip()), "tier": tier}
         if _turn_flags & {"trade_registered", "undo_ok"}:
             _out["portfolio_changed"] = True
+        _voz = _voz_payload(text)             # ídem al path final
+        if _voz:
+            _out["voz"] = _voz
         return _out
 
     except HTTPException:
@@ -30422,6 +30566,139 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 },
             )
         raise HTTPException(500, f"Error en el chat: {ex}")
+
+
+# ─── La voz: convertir en audio lo que Rendi ya escribió ─────────────────────
+# Este endpoint NO decide qué se dice. Recibe el resumen hablado que el turno
+# de chat ya generó y firmó (_voz_payload) y devuelve el mp3.
+#
+# CUATRO CANDADOS, y ninguno sobra:
+#   1. Sesión (get_effective_user) — sin cuenta no hay audio.
+#   2. FIRMA — sin esto, cualquiera con una cuenta manda el texto que quiera y
+#      Rendi se lo canta: un servicio de text-to-speech gratis pago por
+#      nosotros. Con la firma, sólo se canta lo que Rendi escribió.
+#   3. Tope de largo — cinturón sobre los tirantes: aunque la firma se filtrara,
+#      nadie puede hacernos leer una novela.
+#   4. Cuota — escuchar cuesta 1 ficha más (la cuenta cierra: §3 del handoff).
+#      Sólo se cobra cuando hay que GENERAR: re-escuchar sale del cache y es
+#      gratis, que es la decisión de producto, no una optimización.
+class AIVozIn(BaseModel):
+    # El tope acá es el mismo que el del módulo, y a propósito: un texto de
+    # 5.000 caracteres tiene que morir en la validación de Pydantic, antes de
+    # tocar la firma, la cuota o la red.
+    text: str = Field(..., min_length=1, max_length=tts.MAX_CHARS)
+    sig: str = Field(..., min_length=8, max_length=128)
+
+
+@app.post("/api/ai/voz")
+def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effective_user)):
+    """Paso 1: valida el texto hablado y devuelve la dirección de su audio.
+
+    No genera nada ni cobra nada — sólo dice "sí, esto lo escribió Rendi, el
+    audio lo pedís acá". `cached` le avisa al frontend si ya está listo (para
+    no mostrar el "preparando…" cuando va a sonar al instante)."""
+    if not tts.enabled():
+        raise HTTPException(503, detail={
+            "error": "voz_unavailable",
+            "message": "La voz de Rendi no está disponible en este momento.",
+        })
+
+    # 12/min por usuario: más que eso no es alguien escuchando respuestas.
+    _check_rate_limit(request, max_calls=12, window_seconds=60, suffix=f"ai_voz:{uid}")
+
+    text = (data.text or "").strip()
+    if not text or not tts.verify(text, data.sig):
+        log.warning("ai_voz: firma inválida uid=%s len=%d", uid, len(text))
+        raise HTTPException(403, detail={
+            "error": "voz_bad_signature",
+            "message": "Ese texto no lo escribió Rendi.",
+        })
+
+    key = tts.remember(text)
+    return {
+        "url": f"/api/ai/voz/{key}.mp3",
+        "cached": tts.cache_get(key) is not None,
+        "seconds": tts.estimated_seconds(text),
+    }
+
+
+@app.get("/api/ai/voz/{key}.mp3")
+def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_user)):
+    """Paso 2: el mp3, en streaming.
+
+    Es un GET a propósito: se lo pide el propio `<audio>` del navegador, que
+    empieza a reproducir apenas tiene los primeros bytes (~1,4 s) y sabe
+    seguir sonando con la pantalla apagada. Un POST no puede hacer eso.
+
+    Lo que autoriza NO es la dirección: es la sesión + que la clave esté en la
+    tabla, y en la tabla sólo entran textos que pasaron la firma en el paso 1."""
+    if not tts.enabled():
+        raise HTTPException(503, detail={
+            "error": "voz_unavailable",
+            "message": "La voz de Rendi no está disponible en este momento.",
+        })
+    if not re.fullmatch(r"[0-9a-f]{64}", key or ""):
+        raise HTTPException(404, "No encontrado")
+
+    cached = tts.cache_get(key)
+    if cached is not None:
+        # Re-escuchar es gratis: ni ficha ni llamada a OpenAI. Es la decisión
+        # de producto, no una optimización — por eso el cache es requisito.
+        log.info("ai_voz cache HIT uid=%s bytes=%d", uid, len(cached))
+        return Response(content=cached, media_type=tts.MEDIA_TYPE, headers={
+            "Cache-Control": "private, max-age=86400",
+            "X-Rendi-Voz-Cache": "hit",
+        })
+
+    text = tts.recall(key)
+    if not text:
+        # Clave desconocida: nunca se preparó, o el proceso se reinició entre
+        # los dos pasos. El frontend reintenta el paso 1 y sigue solo.
+        raise HTTPException(404, "No encontrado")
+
+    # Hay que generar → cuesta una ficha. Misma reserva atómica que el chat
+    # (quota.reserve_chat): el conteo y el incremento ocurren en un solo
+    # statement, así que N pedidos simultáneos no pasan todos el tope.
+    from ai import quota
+    _conn = get_db()
+    try:
+        _tier = quota.get_tier(_conn, uid)
+        _ok, _usage = quota.reserve_chat(_conn, uid)
+    finally:
+        _conn.close()
+    if not _ok:
+        raise _chat_quota_429(_tier, _usage)
+
+    log.info("ai_voz cache MISS uid=%s tier=%s chars=%d ≈%.1fs",
+             uid, _tier, len(text), tts.estimated_seconds(text))
+
+    def _audio():
+        # Se reenvía a medida que llega (el primer pedazo en ~1,4 s) Y se
+        # acumula para el cache. Materializar todo antes de mandar triplicaría
+        # la espera; no acumular haría que re-escuchar vuelva a pagar.
+        buf = bytearray()
+        try:
+            for chunk in tts.speak(text):
+                buf.extend(chunk)
+                yield chunk
+        except Exception as ex:
+            log.error("ai_voz: falló la generación uid=%s: %s", uid, str(ex)[:200])
+            if not buf:
+                # No se escuchó nada → no se cobra. Con audio parcial ya
+                # entregado sí se cobra (mismo criterio que el chat: el gasto
+                # con OpenAI ya está hecho).
+                _refund_chat_quota(uid)
+            return
+        if buf:
+            tts.cache_put(key, bytes(buf))
+
+    return StreamingResponse(_audio(), media_type=tts.MEDIA_TYPE, headers={
+        # Anti-buffering: sin esto el proxy junta todo el mp3 antes de
+        # reenviarlo y el streaming no sirve de nada (misma trampa que el SSE).
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        "X-Rendi-Voz-Cache": "miss",
+    })
 
 
 # ─── AI memory — ai_user_facts (Ola 3-L) ─────────────────────────────────────
