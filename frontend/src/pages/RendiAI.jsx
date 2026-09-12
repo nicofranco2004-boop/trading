@@ -30,7 +30,8 @@ export default function RendiAI() {
   const { initialQuestion, consumeInitialQuestion } = useCoachDrawer()
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
-  const { enabled: vozEnabled, setEnabled: setVozEnabled } = useVoz()
+  const { enabled: vozEnabled, setEnabled: setVozEnabled, status: vozStatus } = useVoz()
+  const vozHablando = vozStatus === 'playing' || vozStatus === 'preparing'
   // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO — el
   // backend arma el contexto server-side e IGNORA el snapshot personal.
   // Acá: no fetcheamos la cartera (vacía) ni bloqueamos el chat si esos
@@ -122,11 +123,15 @@ export default function RendiAI() {
             title={vozEnabled ? 'Rendi te lee las respuestas en voz alta' : 'Rendi te deja las respuestas sólo escritas'}
             className={`inline-flex items-center gap-1.5 text-[12.5px] font-semibold rounded-lg px-3 py-1.5
               border transition-colors ${vozEnabled
-                ? 'text-ink-1 border-line hover:border-ink-3 hover:text-ink-0'
+                ? 'text-data-violet border-data-violet/45 bg-data-violet/[0.12] hover:bg-data-violet/[0.18]'
                 : 'text-ink-3 border-line/60 hover:text-ink-1 hover:border-line'}`}
           >
             {vozEnabled
-              ? <><Volume2 size={13} strokeWidth={2} aria-hidden="true" /> Te lee en voz alta</>
+              ? <>
+                  <Volume2 size={13} strokeWidth={2.2} aria-hidden="true"
+                    className={vozHablando ? 'animate-pulse' : undefined} />
+                  {vozHablando ? 'Hablando…' : 'Te lee en voz alta'}
+                </>
               : <><VolumeX size={13} strokeWidth={2} aria-hidden="true" /> Silenciado</>}
           </button>
           <button

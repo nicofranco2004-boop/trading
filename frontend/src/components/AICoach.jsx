@@ -546,7 +546,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                     className={`inline-flex items-center gap-1.5 mt-2.5 rounded-full border px-2.5 py-1
                       text-[11.5px] font-medium transition-colors ${
                         esteSuena(m.voz)
-                          ? 'border-rendi-accent/40 bg-rendi-accent/10 text-rendi-accent'
+                          ? 'border-data-violet/45 bg-data-violet/[0.12] text-data-violet'
                           : 'border-line text-ink-2 hover:text-ink-0 hover:border-ink-3'}`}
                   >
                     {vozStatus === 'preparing' && esteSuena(m.voz)

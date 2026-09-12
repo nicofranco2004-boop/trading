@@ -149,7 +149,8 @@ export default function RendiMate() {
           title={enabled ? 'Te lee las respuestas en voz alta' : 'Te deja las respuestas sólo escritas'}
           aria-label={enabled ? 'Te lee las respuestas en voz alta' : 'Te deja las respuestas sólo escritas'}
           className={`p-1.5 rounded-lg transition-colors flex-none ${
-            enabled ? 'text-ink-1 hover:text-ink-0 hover:bg-bg-3' : 'text-ink-3 hover:text-ink-1 hover:bg-bg-3'
+            enabled ? 'text-data-violet bg-data-violet/[0.12] hover:bg-data-violet/20'
+                    : 'text-ink-3 hover:text-ink-1 hover:bg-bg-3'
           }`}
         >
           {enabled ? <Volume2 size={15} strokeWidth={2} /> : <VolumeX size={15} strokeWidth={2} />}
