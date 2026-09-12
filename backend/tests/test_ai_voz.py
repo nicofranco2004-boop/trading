@@ -723,16 +723,28 @@ class PromptTest(unittest.TestCase):
             self.assertIn(tts.SUMMARY_PROMPT.strip(), prompt,
                           "%s no usa la spec compartida" % nombre)
 
-    def test_el_molde_de_290_caracteres_sigue_en_pie(self):
-        """Si el resumen se estira, la regla 'escuchar = 1 ficha más' pierde
-        plata. A 13,5 caracteres/segundo (medido sobre el mp3 real), 290
-        caracteres son ~21 s ≈ US$0,0054 — con margen contra los US$0,007 de
-        la respuesta escrita. El empate está en 378 caracteres."""
-        self.assertIn("290", tts.SUMMARY_PROMPT)
-        self.assertAlmostEqual(tts.estimated_seconds("a" * 290), 21.5, places=1)
-        # El tope blando avisa ANTES del punto de empate, no después.
+    def test_el_costo_se_estima_con_el_ritmo_CONSERVADOR(self):
+        """El ritmo de la voz depende de cuántas CIFRAS tenga el texto, no sólo
+        de su largo: un número ocupa mucho más tiempo hablado que caracteres
+        escritos ("16,8%" son 5 caracteres y se dice "dieciséis coma ocho por
+        ciento"). Medido: 9,4 caracteres/segundo con un texto lleno de montos y
+        porcentajes contra 13,7 con uno casi sin números — 46% de diferencia.
+
+        Las respuestas de Rendi son del primer tipo, así que el estimador usa el
+        extremo conservador. De los dos errores posibles, el caro es subestimar:
+        un costo que da más bajo de lo real es el que hace que nadie se entere de
+        que el margen se fue.
+        """
+        self.assertLessEqual(tts.CHARS_PER_SECOND, 10,
+                             "el estimador se volvió optimista: fijate con qué texto se midió")
+        self.assertEqual(tts.estimated_seconds("a" * 290), 29.0)
+        # El empate es donde el audio pasa a costar más que la respuesta escrita
+        # (US$0,007). A US$0,015 el minuto son 28 segundos. El aviso salta antes.
         empate = 0.007 / 0.015 * 60 * tts.CHARS_PER_SECOND     # US$/min → caracteres
         self.assertLess(tts.MAX_CHARS_SOFT, empate)
+        # Y el tope DURO es una válvula, no el camino normal.
+        self.assertGreater(tts.MAX_CHARS, tts.MAX_CHARS_SOFT * 2)
+        self.assertIn("290", tts.SUMMARY_PROMPT)
 
     def test_pide_nombres_y_no_codigos(self):
         self.assertIn("NOMBRES", tts.SUMMARY_PROMPT)

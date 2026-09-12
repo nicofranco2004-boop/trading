@@ -38,16 +38,31 @@ pedacito llega igual de rápido, pero Safari de iPhone no reproduce opus en
 contenedor ogg — y el celular de Nico es donde esto se va a probar. Cuando el
 acompañante corra sólo en escritorio, opus es mejor negocio.
 
-COSTO: US$0,015 por minuto de audio, y con estas instrucciones la voz va a
-13,3-14,4 caracteres por segundo (medido sobre el mp3: 263 caracteres → 18,2 s;
-195 → 14,9 s; 145 → 10,9 s). Un resumen de ~290 caracteres dura ~21 s y sale
-~US$0,0053.
+COSTO: US$0,015 por minuto de audio.
 
-⚠️ El plan había anotado 12 caracteres/segundo y US$0,0061. La diferencia juega
-A FAVOR: la regla "escuchar cuesta 1 ficha más" cierra con MÁS margen del que se
-creía. El empate —donde el audio costaría lo mismo que la respuesta escrita,
-US$0,007— son 28 segundos ≈ 378 caracteres. MAX_CHARS_SOFT avisa mucho antes;
-su propio comentario explica en cuánto y por qué.
+🔴 EL RITMO NO ES UN NÚMERO, ES UN RANGO — Y DEPENDE DE CUÁNTAS CIFRAS TENGA EL
+TEXTO. Un número leído en voz alta ocupa MUCHO más tiempo que los caracteres que
+escribe: "16,8%" son 5 caracteres y se dice "dieciséis coma ocho por ciento".
+Medido con estas mismas instrucciones y esta misma voz:
+
+    205 caracteres CARGADOS DE CIFRAS  → 21,9 s →  9,4 caracteres/segundo
+    228 caracteres CASI SIN CIFRAS     → 16,6 s → 13,7 caracteres/segundo
+
+46% de diferencia entre los dos, con textos casi del mismo largo. Y las
+respuestas de Rendi son del PRIMER tipo: el producto entero son cifras.
+
+Por eso `CHARS_PER_SECOND` está en 10 y no en el promedio: es el extremo
+CONSERVADOR, a propósito. Se usa para estimar costo, y un costo subestimado es
+justo el que hace que nadie se entere de que el margen se fue.
+
+⚠️ Mediciones anteriores dieron 12 (el plan) y 13,3-14,4 (las nuestras). Las dos
+se hicieron con textos de pocos números y por eso salieron optimistas. Si volvés
+a medir, medí con un texto REAL de Rendi, lleno de porcentajes y montos.
+
+CUÁNTO SALE: un resumen de ~290 caracteres con cifras dura ~31 s y sale
+~US$0,0077. El EMPATE —donde el audio cuesta lo mismo que la respuesta escrita,
+US$0,007— está en 28 segundos ≈ 263 caracteres. Por eso MAX_CHARS_SOFT vale 260:
+avisa justo antes del empate.
 """
 
 from __future__ import annotations
@@ -81,18 +96,22 @@ INSTRUCTIONS = (
 )
 
 # Tope DURO del endpoint: más que esto no se canta, se rechaza. 600 caracteres
-# son ~44 segundos de audio (a 13,5 c/s) — el doble del molde, ya generoso.
+# son ~60 segundos de audio — el doble del molde, ya generoso. Es una VÁLVULA,
+# no el camino normal: el aviso de que algo se está estirando salta mucho antes
+# (MAX_CHARS_SOFT).
 MAX_CHARS = 600
 # Tope BLANDO: el aviso de que los resúmenes se están estirando. No rechaza
 # nada — loguea.
 #
-# Está en 260 y no pegado al techo económico a propósito. El empate (donde el
-# audio cuesta lo mismo que la respuesta escrita, US$0,007) son 378 caracteres;
-# avisar recién ahí sería avisar cuando ya no queda margen. 260 es un aviso
-# TEMPRANO, calibrado con lo que el modelo escribe DE VERDAD: los resúmenes
-# reales medidos en pantalla dieron 195 y 224 caracteres, bastante por debajo de
-# los ~290 que pide el prompt. O sea que este umbral no se dispara con la
-# salida normal: se dispara cuando algo cambió.
+# 260 es el EMPATE, redondeado hacia abajo: con texto cargado de cifras (9,4
+# caracteres/segundo) el audio empieza a costar más que la respuesta escrita a
+# partir de los 263 caracteres —28 segundos a US$0,015 el minuto contra los
+# US$0,007 que sale escribirla—. Pasado ese punto, la regla "escuchar cuesta una
+# ficha más" deja de cerrar.
+#
+# Y no molesta en el uso normal: los resúmenes reales medidos en pantalla dieron
+# 195 y 224 caracteres. Este umbral no se dispara con la salida de todos los
+# días, se dispara cuando algo cambió.
 MAX_CHARS_SOFT = 260
 
 # ─── Qué le pedimos a Claude que escriba para la oreja ───────────────────────
@@ -444,9 +463,13 @@ def speak(text: str) -> Iterator[bytes]:
                 yield chunk
 
 
-# Velocidad real del habla con estas instrucciones. Medida sobre el mp3, no
-# estimada: ver el encabezado. Si se cambia INSTRUCTIONS, hay que re-medirla.
-CHARS_PER_SECOND = 13.5
+# Caracteres por segundo de audio. NO es el promedio medido (9,4-13,7 según
+# cuántas cifras tenga el texto): es el extremo CONSERVADOR, redondeado hacia
+# abajo. Se usa para estimar el costo, y de los dos errores posibles el caro es
+# subestimar — un costo que da más bajo de lo real es el que hace que nadie se
+# entere de que el margen se fue. Ver el encabezado para las dos mediciones.
+# Si se cambia INSTRUCTIONS, hay que volver a medir CON UN TEXTO LLENO DE CIFRAS.
+CHARS_PER_SECOND = 10
 
 
 def estimated_seconds(text: str) -> float:
