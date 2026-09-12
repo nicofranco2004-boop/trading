@@ -12,9 +12,12 @@ Shape del packet (estable — cambios acá invalidan el cache existente):
   "period": "30d",
   "portfolio": {
     "value_usd": int,
-    "twr_30d_pct": float,           # decimal, ej 0.032 = +3.2%
+    "twr_30d_pct": float|null,      # decimal, ej 0.032 = +3.2%. Del motor
+                                    # (`twr.rendimiento_publicable`), no de una
+                                    # resta de puntas. null = no se pudo medir
     "twr_lifetime_pct": float|null,
-    "delta_30d_usd": float|null,    # value_now - value_30d_ago
+    "delta_30d_usd": float|null,    # Δ(valor − aportado) en 30d: descuenta los
+                                    # aportes, MISMO criterio que twr_30d_pct
     "best_position": {"asset": str, "pnl_pct": float} | null,
     "worst_position": {"asset": str, "pnl_pct": float} | null,
     "cash_pct": float,
@@ -103,7 +106,7 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
     # cartera del caso 452 dentro de la ventana: `twr_30d_pct = -47,26%`,
     # `delta_30d_usd = -65.967` y la anomalía disparada, con la pantalla en "—".
     snapshots = [dict(r) for r in conn.execute(
-        "SELECT date, total_value FROM snapshots_medibles WHERE user_id=? "
+        "SELECT date, total_value, net_deposited FROM snapshots_medibles WHERE user_id=? "
         "ORDER BY date DESC LIMIT 90",
         (user_id,)
     ).fetchall()]
@@ -164,7 +167,18 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
             start_val = float(in_window[0]["total_value"])
             end_val = float(in_window[-1]["total_value"])
             if start_val > 0:
-                delta_30d_usd = end_val - start_val
+                # ⚠️ EL MONTO SE MIDE CON EL MISMO CRITERIO QUE EL %, y esto lo
+                # introduje yo al migrar el porcentaje al motor: el % pasó a
+                # descontar los aportes y el monto seguía siendo `fin − inicio`.
+                # Los dos viajan en el MISMO packet, así que el modelo leía
+                # "ganaste US$1.000" al lado de "rendiste 0 %" — sobre un usuario
+                # que sólo había depositado esos US$1.000.
+                #
+                # `Δ(valor − aportado)` es el mismo criterio que `_snapshot_delta`
+                # de main.py, que ya lo resolvió así para los chips del Dashboard.
+                _nd0 = float(in_window[0].get("net_deposited") or 0)
+                _nd1 = float(in_window[-1].get("net_deposited") or 0)
+                delta_30d_usd = (end_val - _nd1) - (start_val - _nd0)
         # ⚠️ EL % NO SE CALCULA ACÁ (F6). Era `(end − start) / start`: ni restaba
         # los flujos —un depósito de US$1.000 en una cartera de 10.000 salía como
         # "+10 % de rendimiento"— ni tenía uno solo de los guards del motor. Es el
