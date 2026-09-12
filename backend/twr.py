@@ -13,6 +13,7 @@ MEDICIÓN A MERCADO, y no contabilidad congelada ni una foto de media rueda?
 """
 import json
 import logging
+import re
 from collections import defaultdict
 
 log = logging.getLogger(__name__)
@@ -570,6 +571,9 @@ def _motivo(conteo: dict, n_mediciones: int) -> str:
 # el usuario final lean exactamente lo mismo.
 MOTIVO_TEXTO = {
     "sin_historia": "Todavía no hay historia de esta cuenta.",
+    # No es un problema de los datos del usuario: es un período mal pedido. Se
+    # publica igual para que se vea en pantalla en vez de quedar sólo en el log.
+    "ventana_invalida": "El período pedido no es válido.",
     "importado_sin_mediciones": "La historia se importó: son datos contables, "
                                "no mediciones a mercado.",
     "una_sola_medicion": "Hay una sola medición: hace falta al menos una "
@@ -645,6 +649,26 @@ def retorno_mensual(ci, cf, flujo):
     return dietz(ci, cf, flujo)
 
 
+_RE_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def clave_mes(iso):
+    """`'2025-03-17'` → `202503`, para comparar contra `year*100+month`. None si no
+    es una fecha ISO.
+
+    ⚠️ EXISTE PORQUE EL PARSEO POR POSICIÓN FALLA EN SILENCIO. Era
+    `int(str(d)[:4]) * 100 + int(str(d)[5:7])` y con `"2025-1-1"`, `"20250101"` o
+    un entero reventaba adentro de un `try` que devolvía None — o sea que el
+    usuario se quedaba SIN RENDIMIENTO por un error de formato del llamador, con
+    un `log.exception` enterrado como única pista. Y `"2025-13-99"` pasaba
+    entero: el mes 13 no existe y el filtro lo aceptaba igual.
+    """
+    if not _RE_ISO.match(str(iso)):
+        return None
+    y, m = int(str(iso)[:4]), int(str(iso)[5:7])
+    return None if not (1 <= m <= 12) else y * 100 + m
+
+
 def rendimiento_publicable(conn, uid: int, *, modo=None, moneda=None,
                            desde=None, hasta=None, valor_live=None,
                            permitir_contable=True):
@@ -709,6 +733,15 @@ def rendimiento_publicable(conn, uid: int, *, modo=None, moneda=None,
     _moneda = moneda if moneda is not None else MONEDA_USD
     vacio = {"pct": None, "base": None, "motivo": None, "motivo_texto": None, "meses": 0}
 
+    # ⚠️ LA VENTANA SE VALIDA ACÁ Y SE DICE. Con una fecha mal formada el resto de
+    # la función devolvía None en silencio y el usuario se quedaba sin número por
+    # un error del LLAMADOR, indistinguible de "esta cuenta no se puede medir".
+    for _v in (desde, hasta):
+        if _v and clave_mes(_v) is None:
+            log.error("rendimiento_publicable: ventana inválida %r (uid=%s)", _v, uid)
+            return {**vacio, "motivo": "ventana_invalida",
+                    "motivo_texto": MOTIVO_TEXTO.get("ventana_invalida")}
+
     # 1. EL MOTOR. Mide contra fotos de mercado y trae sus propios guards.
     motivo = None
     try:
@@ -753,10 +786,16 @@ def _contable_publicable(conn, uid: int, desde=None, hasta=None):
     q = ("SELECT year, month, capital_inicio, capital_final, deposits, withdrawals "
          "FROM monthly_entries WHERE user_id=? AND broker='global'")
     args = [uid]
-    if desde:
-        q += " AND (year*100+month) >= ?"; args.append(int(str(desde)[:4]) * 100 + int(str(desde)[5:7]))
-    if hasta:
-        q += " AND (year*100+month) <= ?"; args.append(int(str(hasta)[:4]) * 100 + int(str(hasta)[5:7]))
+    for valor, op in ((desde, ">="), (hasta, "<=")):
+        if not valor:
+            continue
+        k = clave_mes(valor)
+        if k is None:
+            # Una fecha que no se entiende NO es "no hay datos": es un llamador
+            # roto. Se levanta para que el caller lo vea, en vez de devolver un
+            # None que se confunde con "esta cuenta no se puede medir".
+            raise ValueError(f"ventana inválida: {valor!r} no es una fecha ISO")
+        q += f" AND (year*100+month) {op} ?"; args.append(k)
     return contable_de_filas(conn.execute(q + " ORDER BY year, month", args).fetchall())
 
 

@@ -210,5 +210,94 @@ class LosLectoresLoUsanTest(unittest.TestCase):
                          "no usan el primitivo: " + ", ".join(faltan))
 
 
+class LosChipsDelDashboardTest(unittest.TestCase):
+    """`main._snapshot_delta` — los chips Δ1d / Δ7d / Δ30d, que el usuario ve TODOS
+    LOS DIAS y que no tenian UN SOLO guard.
+
+    MEDIDO sobre la copia de produccion del 2026-08-16, 794 usuarios con cinco o
+    mas fotos:
+
+                antes            despues
+        Δ 1d      -8.093,1 %       100,0 %
+        Δ 7d  -9.346.280,6 %       100,7 %
+        Δ30d  -9.170.283,9 %       110,5 %
+
+    No eran rendimientos: eran datos rotos. Al uid 329 el `net_deposited` le salta
+    de -1.055.894 a +1.699.812.606 de un dia para el otro con la cartera quieta en
+    18.400; el uid 412 tiene una foto donde la cartera vale -805.744.
+
+    El costo: 3 o 4 usuarios por ventana se quedan sin chip. A cambio, nadie ve
+    nueve millones por ciento.
+    """
+
+    def setUp(self):
+        self.conn = main.get_db()
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            (f"chip-{uuid.uuid4().hex[:8]}@rendi.test", "x")).lastrowid
+        self.conn.commit()
+
+    def tearDown(self):
+        try:
+            self.conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.uid,))
+            self.conn.execute("DELETE FROM users WHERE id=?", (self.uid,))
+        except Exception:
+            pass
+        self.conn.commit(); self.conn.close()
+
+    def snap(self, d, valor, nd=0.0):
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested,"
+            " net_deposited, source, fx_to_usd_blue, holdings_json)"
+            " VALUES (?,?,?,?,?,'cron',1200.0,'[]')", (self.uid, d, valor, valor, nd))
+        self.conn.commit()
+
+    def test_el_caso_del_uid_329_reproducido(self):
+        """El `net_deposited` salta 1.700 millones con la cartera quieta. Antes
+        publicaba -9.346.280,6 %."""
+        self.snap("2026-08-01", 18499.68, nd=-1055894.40)
+        self.snap("2026-08-08", 18323.55, nd=1699812606.06)
+        r = main._snapshot_delta(self.conn, self.uid, 18323.55, "2026-08-08", 7,
+                                 latest_netdep=1699812606.06)
+        self.assertIsNone(r, "un salto de 1.700 millones sin cartera que lo explique")
+
+    def test_el_caso_del_uid_412_reproducido(self):
+        """La cartera pasa a valer -805.744. Antes publicaba -8.093,1 %."""
+        self.snap("2026-07-14", 10080.49, nd=-827856.22)
+        self.snap("2026-07-15", -805744.19, nd=-827856.22)
+        r = main._snapshot_delta(self.conn, self.uid, -805744.19, "2026-07-15", 1,
+                                 latest_netdep=-827856.22)
+        self.assertIsNone(r, "una cartera no puede valer menos que nada")
+
+    def test_un_dia_NORMAL_sigue_publicando(self):
+        """El guard no puede tapar lo que esta bien: 10.000 -> 10.200 es +2 %."""
+        self.snap("2026-07-14", 10000.0, nd=9000.0)
+        self.snap("2026-07-15", 10200.0, nd=9000.0)
+        r = main._snapshot_delta(self.conn, self.uid, 10200.0, "2026-07-15", 1,
+                                 latest_netdep=9000.0)
+        self.assertIsNotNone(r, "un dia normal tiene que seguir publicando")
+        self.assertAlmostEqual(r["pct"], 2.0, places=1)
+
+    def test_un_APORTE_grande_no_se_lee_como_rendimiento(self):
+        """Lo que el chip ya hacia bien y tiene que seguir haciendo: descontar los
+        flujos. Un deposito de 5.000 sobre 10.000 no es +50 %."""
+        self.snap("2026-07-14", 10000.0, nd=9000.0)
+        self.snap("2026-07-15", 15000.0, nd=14000.0)
+        r = main._snapshot_delta(self.conn, self.uid, 15000.0, "2026-07-15", 1,
+                                 latest_netdep=14000.0)
+        if r is not None:
+            self.assertLess(abs(r["pct"]), 5.0, "el aporte no es rendimiento")
+
+    def test_usa_LA_MISMA_funcion_del_motor_no_una_copia(self):
+        """GUARD: si el umbral cambia, tiene que cambiar en un solo lugar."""
+        import pathlib as _pl
+        src = (_pl.Path(__file__).resolve().parent.parent / "main.py").read_text(
+            encoding="utf-8")
+        i = src.index("def _snapshot_delta(")
+        cuerpo = src[i:i + 6000]
+        self.assertIn("leg_dudoso", cuerpo, "el chip perdió la cota de cordura")
+        self.assertNotIn("SALTO_MAX_VECES =", cuerpo, "copió el umbral en vez de importarlo")
+
+
 if __name__ == "__main__":
     unittest.main()

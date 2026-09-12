@@ -34510,6 +34510,31 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
     cur_netdep = float(latest_netdep or 0)
     flows = cur_netdep - prev_netdep
     delta_usd = (latest_value - cur_netdep) - (prev_v - prev_netdep)
+
+    # ⚠️ LA COTA DE CORDURA DEL MOTOR, QUE ACÁ FALTABA (F6). Este chip se ve todos
+    # los días en el Dashboard y no tenía UN SOLO guard. MEDIDO sobre la copia de
+    # producción del 2026-08-16, 794 usuarios con cinco o más fotos:
+    #
+    #     Δ7d   el peor:  −9.346.280,6 %   (uid 329)
+    #     Δ30d  el peor:  −9.170.283,9 %
+    #     Δ1d   el peor:      −8.093,1 %   (uid 412)
+    #
+    # No son rendimientos: son datos rotos. Al uid 329 el `net_deposited` le salta
+    # de −1.055.894 a +1.699.812.606 de un día para el otro con la cartera quieta
+    # en 18.400; el uid 412 tiene una foto en la que la cartera vale −805.744.
+    # `leg_dudoso` los caza a los dos —el salto sin flujo que lo explique y el
+    # denominador que se achica— y es la MISMA función del motor, importada y no
+    # copiada, así que el umbral sigue viviendo en un solo lugar.
+    #
+    # Cuando corta no se publica el chip: `None` es "no sé", y para un número que
+    # el usuario mira todos los días eso es mejor que nueve millones por ciento.
+    try:
+        from twr import leg_dudoso as _leg_dudoso_chip
+        if _leg_dudoso_chip(prev_v, latest_value, flows):
+            return None
+    except Exception:
+        log.exception("_snapshot_delta leg_dudoso uid=%s", uid)
+
     # Pct sobre el VALOR base (no Total Return — ese podría ser 0 o negativo).
     return {
         "usd": round(delta_usd, 2),

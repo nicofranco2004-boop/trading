@@ -331,11 +331,29 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
                                       AND COALESCE(s2.apto, CASE WHEN COALESCE(s2.source,'') IN ('import','mtm_backfill') THEN 0 ELSE 1 END) = 1)""",
                 ids + [_hoy, _hoy]).fetchall()}
             # Solo clientes con base: comparar vivo contra su último cierre.
+            # ⚠️ LA COTA DE CORDURA DEL MOTOR, QUE ACÁ FALTABA (F6).
+            #
+            # Los filtros de arriba cuidan la CALIDAD DE LA FOTO (`apto`, ni import
+            # ni reconstrucción) pero ninguno mira el NÚMERO que sale. Un valor vivo
+            # que salta ×5 contra la última foto —un precio roto, un activo que se
+            # duplicó por un split mal leído— publicaba ese salto como el % del día.
+            #
+            # Y acá el error se amplifica: `movers` ORDENA por `pct`, así que el
+            # cliente con el dato roto sale primero y el mail del asesor lo anuncia
+            # como «el mejor del día». El informe de la auditoría lo marca como el
+            # caso más caro de los once: en el informe firmado el guard SÍ existe
+            # (`_cortes_adentro`), y en este mail no.
+            #
+            # Sin flujos que descontar: se compara el vivo contra el cierre anterior.
+            # Es la MISMA función del motor, importada y no copiada.
+            from twr import leg_dudoso as _leg_dudoso_brief
             per = []
             for cid, now_v in live.items():
                 s = snaps.get(cid)
                 base = float(s["total_value"] or 0) if s else 0.0
                 if base <= 0:
+                    continue
+                if _leg_dudoso_brief(base, now_v, 0.0):
                     continue
                 per.append({"cid": cid, "label": labels.get(cid), "now": now_v,
                             "delta": now_v - base, "pct": (now_v - base) / base * 100})

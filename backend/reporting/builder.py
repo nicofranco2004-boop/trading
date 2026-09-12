@@ -684,7 +684,16 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
 # porque `twr.serie_fx` ARRASTRA el último cierre conocido para cualquier string
 # que le pidas: con una fecha inventada devuelve un TC igual en las dos puntas, la
 # conversión queda en identidad y el número de dólares sale con etiqueta de pesos.
-_RE_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+def _es_fecha_iso(x) -> bool:
+    """¿Es una fecha ISO usable? LA MISMA definición que usa el motor.
+
+    Se le pregunta a `twr.clave_mes` en vez de tener acá una segunda copia del
+    regex: dos definiciones de la misma regla son dos que un día se separan, que
+    es la causa raíz que esta tanda viene cerrando. Y `clave_mes` además valida el
+    MES (rechaza `2025-13-01`), que un regex de forma no mira.
+    """
+    import twr as _twr_iso
+    return _twr_iso.clave_mes(str(x)[:10]) is not None
 
 
 def _pct_comp_en_pesos(conn, pct, ventana):
@@ -731,10 +740,11 @@ def _pct_comp_en_pesos(conn, pct, ventana):
         return None
     if pct is None or not d0 or not d1:
         return None
-    # Fechas ISO de verdad, y en orden. `_ISO` es el mismo formato que usa toda la
-    # cadena; sin esto `("x","y")` pasaba el `not d0` y llegaba al arrastre.
+    # Fechas ISO de verdad, y en orden. La definición es la del motor
+    # (`twr.clave_mes`); sin esto `("x","y")` pasaba el `not d0` y llegaba al
+    # arrastre de `serie_fx`.
     for _d in (d0, d1):
-        if not _RE_ISO.match(str(_d)[:10]):
+        if not _es_fecha_iso(_d):
             return None
     if str(d0)[:10] >= str(d1)[:10]:
         return None
@@ -783,7 +793,7 @@ def _pct_en_pesos(conn, d0: str, d1: str, v0: float, v1: float,
     # guards propios, y el tercero protege con `if _d0c`—. Va igual, porque el
     # cuarto call site que alguien agregue no va a traer esos guards puestos: es
     # exactamente así como nació el defecto en la hermana, escrita el mismo día.
-    if not _RE_ISO.match(str(d0)[:10]) or not _RE_ISO.match(str(d1)[:10]):
+    if not _es_fecha_iso(d0) or not _es_fecha_iso(d1):
         return None
     if str(d0)[:10] >= str(d1)[:10]:
         return None
