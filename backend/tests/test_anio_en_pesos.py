@@ -50,7 +50,15 @@ camino que producción, y todos fallan contra el código viejo:
     test_los_dos_veredictos_estaban_invertidos     →  -77.18 not greater than 0
     test_el_veredicto_no_depende_del_selector      →  False != True
 
-`LaConversionTest` prueba el helper y NO mide el bug (la función es nueva).
+`LaConversionTest` prueba el helper y NO mide el bug (la función es nueva:
+contra el código viejo falla con AttributeError, que prueba que no existía).
+
+Los guards de ventana de `LaConversionTest` sí valen aunque no midan el bug
+ORIGINAL: cubren un defecto que apareció DESPUÉS, al auditar el arreglo. `serie_fx`
+arrastra el último cierre conocido para cualquier fecha, así que con una ventana
+invertida, de un solo día o con basura, las dos puntas daban el MISMO TC, el
+cociente daba 1 y esta función publicaba el número de DÓLARES con etiqueta de
+pesos — el defecto que viene a cerrar, entrando por un camino nuevo.
 
 ⚠️ Para verificarlo hay que revertir SÓLO el código, dejando este archivo:
    git checkout <commit-anterior> -- backend/reporting/builder.py
@@ -94,13 +102,26 @@ class ElAnioEnPesosTest(unittest.TestCase):
                        deposits, withdrawals, pnl_realized, pnl_unrealized)
                    VALUES (?, 'global', 2025, ?, 5000, 5100, 0, 0, 100, 0)""",
                 (self.uid, mes))
+        # Borrar antes de insertar: `date` es PRIMARY KEY y la tabla es GLOBAL.
+        # Una fila huerfana de un tearDown que no llego a correr reventaria este
+        # setUp con IntegrityError, por una razon ajena a lo que el test mide.
         for fecha, tc in zip(self.FECHAS_FX, (1000.0, 2000.0)):
+            self.conn.execute("DELETE FROM fx_rates_daily WHERE date=?", (fecha,))
             self.conn.execute(
                 "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
                 (fecha, tc, tc))
         self.conn.commit()
 
     def tearDown(self):
+        # ⚠️ LA TABLA GLOBAL SE LIMPIA PRIMERO Y APARTE. Estaba al final del mismo
+        # `try` que los deletes por `user_id`: si uno de esos fallaba, el delete de
+        # `fx_rates_daily` no llegaba a correr y la fecha quedaba para el proximo
+        # setUp, que muere con IntegrityError (es PRIMARY KEY).
+        try:
+            self.conn.execute("DELETE FROM fx_rates_daily WHERE date IN (?,?)",
+                              self.FECHAS_FX)
+        except Exception:
+            pass
         try:
             self.conn.execute("DELETE FROM monthly_entries WHERE user_id=?", (self.uid,))
             self.conn.execute("DELETE FROM users WHERE id=?", (self.uid,))
@@ -225,6 +246,55 @@ class LaConversionTest(unittest.TestCase):
             self.assertIsNone(
                 builder._pct_comp_en_pesos(conn, None, ("2024-12-31", "2025-12-31")))
         finally:
+            conn.close()
+
+    def test_una_ventana_ROTA_no_publica_el_numero_de_dolares(self):
+        """EL DEFECTO QUE APARECIO AL AUDITAR EL ARREGLO.
+
+        `twr.serie_fx` ARRASTRA el ultimo cierre conocido para cualquier fecha que
+        se le pida. Con una ventana rota las dos puntas devuelven EL MISMO TC, el
+        cociente da 1, la conversion queda en IDENTIDAD — y esta funcion devolvia
+        el numero de DOLARES con etiqueta de pesos, que es exactamente el defecto
+        que viene a cerrar, por un camino nuevo.
+
+        MEDIDO antes de los guards, con pct = 26,82 y la serie 1.000 -> 2.000:
+
+            ventana invertida  ("2025-12-31","2025-06-30")  -> 26,82  (el de USD)
+            fechas basura      ("x","y")                     -> 26,82
+            un solo dia        ("2025-12-31","2025-12-31")   -> 26,82
+            no es un par       "abc" / 5                     -> EXCEPCION
+
+        `benchmark_entre_fechas` YA tenia este guard escrito para su propia ventana
+        ("una ventana al reves no es una ventana"). Lo omiti al escribir la
+        hermana: la forma exacta de C1, esta vez producida por mi.
+        """
+        conn = main.get_db()
+        try:
+            for f, tc in (("2025-06-30", 1000.0), ("2025-12-31", 2000.0)):
+                conn.execute("DELETE FROM fx_rates_daily WHERE date=?", (f,))
+                conn.execute("INSERT INTO fx_rates_daily "
+                             "(date, blue_venta, mep_venta) VALUES (?,?,?)", (f, tc, tc))
+            conn.commit()
+            # La buena convierte.
+            self.assertAlmostEqual(
+                builder._pct_comp_en_pesos(conn, 26.82, ("2025-06-30", "2025-12-31")),
+                153.64, places=1)
+            # Las rotas NO publican — y sobre todo, no publican 26,82.
+            for ventana, desc in (
+                    (("2025-12-31", "2025-06-30"), "invertida"),
+                    (("2025-12-31", "2025-12-31"), "un solo dia"),
+                    (("x", "y"), "fechas basura"),
+                    (("2025-6-30", "2025-12-31"), "formato no ISO"),
+                    ((), "tupla vacia"),
+                    (("2025-06-30", "2025-12-31", "x"), "tres elementos"),
+                    ("abc", "no es un par (str)"),
+                    (5, "no es un par (int)")):
+                r = builder._pct_comp_en_pesos(conn, 26.82, ventana)
+                self.assertIsNone(r, f"{desc}: devolvio {r!r}")
+        finally:
+            for f in ("2025-06-30", "2025-12-31"):
+                conn.execute("DELETE FROM fx_rates_daily WHERE date=?", (f,))
+            conn.commit()
             conn.close()
 
 

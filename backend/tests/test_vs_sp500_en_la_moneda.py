@@ -33,14 +33,24 @@ tasa en pesos no tiene versión en dólares) y por eso tiene su propia función,
 la misma tabla que ya usaba el motor del gráfico (`performance._en_pesos`) — no hay
 una segunda lista.
 
-CUÁLES MIDEN DE VERDAD
-──────────────────────
-Contra el código viejo, los de `LaReglaTest` fallan con ImportError porque
-`performance.retorno_bench_en_moneda` todavía no existe: eso prueba que la
-función es nueva, NO que el número estaba mal.
+CUÁLES MIDEN DE VERDAD — CONTADO, NO AFIRMADO
+─────────────────────────────────────────────
+Corriendo este archivo y `test_anio_en_pesos.py` contra el código viejo (los
+cuatro archivos de código revertidos, los tests intactos): **28 fallan y 6 pasan**.
+De los 28:
+
+    16  fallan con AttributeError / "unexpected keyword argument 'moneda'"
+        → prueban que la función o el parámetro son NUEVOS. NO miden el bug.
+    12  fallan con un NÚMERO distinto → ésos son los que miden.
+
+Los 6 que pasan son los que verifican lo que NO tenía que cambiar (la rama de
+dólares), y pasan a propósito: si fallaran, el arreglo habría roto lo que estaba
+bien.
 
 Los que MIDEN son los de `ReportesLoUsaTest`, que atraviesan
-`compute_metrics_for_period` —el mismo camino que producción— y fallan así:
+`compute_metrics_for_period` —el mismo camino que producción, verificado
+comparando sus salidas contra `build_period_report` campo por campo— y fallan
+así:
 
     test_en_pesos_el_sp_tambien_va_en_pesos    →  2.0 != 22.4
     test_el_veredicto_no_depende_del_selector  →  True != False  (el signo)
@@ -166,13 +176,28 @@ class ReportesLoUsaTest(unittest.TestCase):
             (self.uid,))
         # El peso se devalúa 20 % dentro del mes. Las dos puntas son el último día
         # del mes anterior y el último del mes, igual que el motor.
+        # ⚠️ BORRAR ANTES DE INSERTAR. `fx_rates_daily.date` es PRIMARY KEY y la
+        # tabla es GLOBAL (no lleva user_id): una fila que sobrevivio a un tearDown
+        # que no llego a correr —el `try` de abajo tapa la excepcion— hace que este
+        # INSERT muera con IntegrityError, y el test falla por una razon que no
+        # tiene nada que ver con lo que mide.
         for fecha, tc in zip(self.FECHAS_FX, (1000.0, 1200.0)):
+            self.conn.execute("DELETE FROM fx_rates_daily WHERE date=?", (fecha,))
             self.conn.execute(
                 "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
                 (fecha, tc, tc))
         self.conn.commit()
 
     def tearDown(self):
+        # ⚠️ LA TABLA GLOBAL SE LIMPIA PRIMERO Y APARTE. Estaba al final del mismo
+        # `try` que los deletes por `user_id`: si uno de esos fallaba, el delete de
+        # `fx_rates_daily` no llegaba a correr y la fecha quedaba para el proximo
+        # setUp, que muere con IntegrityError (es PRIMARY KEY).
+        try:
+            self.conn.execute("DELETE FROM fx_rates_daily WHERE date IN (?,?)",
+                              self.FECHAS_FX)
+        except Exception:
+            pass
         try:
             self.conn.execute("DELETE FROM monthly_entries WHERE user_id=?", (self.uid,))
             self.conn.execute("DELETE FROM users WHERE id=?", (self.uid,))
@@ -383,31 +408,75 @@ class ElTramoParcialTest(unittest.TestCase):
             fx=None, moneda="ars"))
 
     def test_GUARD_todo_caller_de_produccion_declara_la_moneda(self):
-        """LEE CODIGO. Un test de comportamiento pasa igual si manana aparece el
-        cuarto caller sin `moneda` — que es exactamente como nacio este bug: tres
-        call sites del mismo patron en la misma pantalla, dos con el arreglo y uno
-        sin el."""
-        import pathlib as _pl, re as _re
+        """LEE CODIGO, no numeros. Un test de comportamiento pasa igual el dia que
+        aparezca el cuarto caller sin `moneda` — que es exactamente como nacio este
+        bug: tres call sites del mismo patron en la misma pantalla, dos con el
+        arreglo y uno sin el.
+
+        ⚠️ CON `ast`, NO CON UNA EXPRESION REGULAR. La primera version usaba un
+        regex que solo sabia balancear UN nivel de parentesis: una llamada con dos
+        niveles (`_bef(b, f(g(x)), ...)`) o partida en varias lineas podia no
+        matchear, y entonces el guard NO REPORTABA al culpable. Un guard con falsos
+        negativos es peor que no tenerlo: da la tranquilidad sin la garantia. El
+        parser de Python no tiene ese problema.
+        """
+        import ast as _ast, pathlib as _pl
+        VIGILADAS = {"_bef", "benchmark_entre_fechas", "benchmark_return_for_period"}
         raiz = _pl.Path(__file__).resolve().parent.parent
         culpables = []
-        for py in raiz.rglob("*.py"):
+        for py in sorted(raiz.rglob("*.py")):
             if "/tests/" in str(py):
                 continue
-            txt = py.read_text(encoding="utf-8", errors="ignore")
-            for m in _re.finditer(
-                    r"(?:_bef|benchmark_entre_fechas|benchmark_return_for_period)\s*\("
-                    r"(?:[^()]|\([^()]*\))*\)", txt):
-                llamada = m.group(0)
-                if llamada.lstrip().startswith("def "):
+            try:
+                arbol = _ast.parse(py.read_text(encoding="utf-8", errors="ignore"))
+            except SyntaxError:
+                continue
+            for nodo in _ast.walk(arbol):
+                if not isinstance(nodo, _ast.Call):
                     continue
-                if "moneda" not in llamada:
-                    linea = txt[:m.start()].count(chr(10)) + 1
-                    culpables.append(f"{py.relative_to(raiz)}:{linea}")
+                f = nodo.func
+                nombre = (f.id if isinstance(f, _ast.Name)
+                          else f.attr if isinstance(f, _ast.Attribute) else None)
+                if nombre not in VIGILADAS:
+                    continue
+                if not any(k.arg == "moneda" for k in nodo.keywords):
+                    culpables.append(f"{py.relative_to(raiz)}:{nodo.lineno}")
         self.assertEqual(
             culpables, [],
             "hay callers que no declaran la moneda del benchmark; sin eso el "
             "indice sale en dolares contra una cartera en pesos:\n"
             + "\n".join(culpables))
+
+    def test_GUARD_el_guard_de_arriba_no_tiene_falsos_negativos(self):
+        """El guard que vigila al guard. Se le da codigo que SI esta mal y tiene
+        que verlo, incluso en las formas que el regex anterior se comia:
+        parentesis anidados y llamada partida en varias lineas."""
+        import ast as _ast
+        VIGILADAS = {"_bef", "benchmark_entre_fechas", "benchmark_return_for_period"}
+
+        def _detecta(codigo):
+            malos = []
+            for nodo in _ast.walk(_ast.parse(codigo)):
+                if isinstance(nodo, _ast.Call):
+                    f = nodo.func
+                    nombre = (f.id if isinstance(f, _ast.Name)
+                              else f.attr if isinstance(f, _ast.Attribute) else None)
+                    if nombre in VIGILADAS and not any(
+                            k.arg == "moneda" for k in nodo.keywords):
+                        malos.append(nodo.lineno)
+            return malos
+
+        # SIN moneda -> lo tiene que ver, en las tres formas.
+        self.assertTrue(_detecta("_bef(b, d0, d1, 'sp500')"), "llamada simple")
+        self.assertTrue(_detecta("_bef(b, f(g(x)), h(i(y)), 'sp500', fx=fx)"),
+                        "dos niveles de parentesis: es lo que el regex se comia")
+        self.assertTrue(_detecta("_bef(\n  b,\n  d0,\n  d1,\n  'sp500',\n  fx=fx,\n)"),
+                        "partida en varias lineas")
+        self.assertTrue(_detecta("mod.benchmark_return_for_period(b, 'month', a, z, k)"),
+                        "llamada por atributo (mod.funcion)")
+        # CON moneda -> no tiene que decir nada.
+        self.assertEqual(_detecta("_bef(b, d0, d1, 'sp500', fx=fx, moneda=moneda)"), [])
+        self.assertEqual(_detecta("_bef(b, f(g(x)), d1, 'sp500', moneda='ars')"), [])
 
 
 class ElTCNegativoTest(unittest.TestCase):

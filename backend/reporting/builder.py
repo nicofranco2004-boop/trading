@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import threading
 from contextlib import contextmanager
 from datetime import date as date_cls, datetime, timedelta
@@ -679,6 +680,13 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
     return float(ini["total_value"]), float(fin["total_value"])
 
 
+# Una fecha ISO de verdad — el mismo formato que usa toda la cadena. Se valida
+# porque `twr.serie_fx` ARRASTRA el último cierre conocido para cualquier string
+# que le pidas: con una fecha inventada devuelve un TC igual en las dos puntas, la
+# conversión queda en identidad y el número de dólares sale con etiqueta de pesos.
+_RE_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def _pct_comp_en_pesos(conn, pct, ventana):
     """La COMPOSICIÓN anual, que sale en dólares, re-expresada en pesos.
 
@@ -700,9 +708,35 @@ def _pct_comp_en_pesos(conn, pct, ventana):
 
     Devuelve None si falta cualquiera de las dos puntas del TC. El caller no pisa
     nada entonces, y se queda con el número que ya estaba medido en pesos.
+
+    ⚠️ LA VENTANA SE VALIDA, Y NO ES CEREMONIA. `serie_fx` ARRASTRA el último
+    cierre conocido para cualquier fecha que le pidas, así que con una ventana
+    rota las dos puntas devuelven EL MISMO TC, el cociente da 1 y la conversión
+    queda en identidad — o sea que esta función publicaría el número de DÓLARES
+    con etiqueta de pesos, que es exactamente el defecto que viene a cerrar, por
+    un camino nuevo. Medido antes de poner los guards, con `pct = 26,82`:
+
+        ventana invertida  ("2025-12-31", "2025-06-30")  →  26,82   ❌
+        fechas basura      ("x", "y")                     →  26,82   ❌
+        un solo día        ("2025-12-31", "2025-12-31")   →  26,82   ❌
+        no es un par       "abc" / 5                      →  EXCEPCIÓN ❌
+
+    Es el mismo guard que `benchmark_entre_fechas` ya tenía escrito para su propia
+    ventana ("una ventana al revés no es una ventana"): lo omití al escribir la
+    hermana, que es la forma exacta de C1 — el fix correcto en un lugar de dos.
     """
-    d0, d1 = (ventana or (None, None))
+    try:
+        d0, d1 = ventana
+    except (TypeError, ValueError):
+        return None
     if pct is None or not d0 or not d1:
+        return None
+    # Fechas ISO de verdad, y en orden. `_ISO` es el mismo formato que usa toda la
+    # cadena; sin esto `("x","y")` pasaba el `not d0` y llegaba al arrastre.
+    for _d in (d0, d1):
+        if not _RE_ISO.match(str(_d)[:10]):
+            return None
+    if str(d0)[:10] >= str(d1)[:10]:
         return None
     try:
         import twr as _twr_cp

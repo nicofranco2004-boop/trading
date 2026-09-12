@@ -42,9 +42,14 @@ BENCH_EN_ARS = ("merval", "uva", "plazo_fijo", "inflation_ar")
 # índice sin pasar por performance.py" que la tanda F6 viene a unificar.
 #
 # ⚠️ ESO ES DE LA INFLACIÓN. LA PATA DEL S&P YA NO ESTÁ PENDIENTE (F6). Los tres
-# call sites que restan un índice de PRECIO del rendimiento del usuario —el mes y
-# el año de Reportes, y el tramo parcial de `/api/reports/years`— ahora piden la
-# conversión a `retorno_bench_en_moneda` (acá abajo), que lee esta misma tabla.
+# lugares que restan un índice de PRECIO del rendimiento del usuario —el mes y el
+# año de Reportes, y el tramo parcial de `/api/reports/years`— pasan todos por
+# `retorno_bench_en_moneda` (acá abajo), que lee esta misma tabla. Ojo al buscarlos:
+# sólo DOS lo llaman por su nombre (las dos ramas de `benchmark_return_for_period`,
+# la del mes y la del año); el tramo parcial llega por dentro, porque llama a
+# `benchmark_entre_fechas` y ésa desemboca en el mismo primitivo. Un grep del
+# nombre devuelve dos, no tres, y eso no es un call site que falte.
+#
 # Lo que sigue pendiente es el GRÁFICO, por el motivo de arriba: no es la cuenta,
 # es el rótulo del eje.
 

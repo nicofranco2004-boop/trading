@@ -433,3 +433,127 @@ tocó — pero `metrics.moneda` viaja al lado por si se decide decirlo.
   inconsistente con los otros cinco lugares que usan el mismo patrón — sería
   crear justo la divergencia que F6 viene a cerrar.
 - Mayúsculas (`"ARS"`) sí funcionan. Verificado en la batería.
+
+---
+
+# Tercera ronda: auditar el código escrito para las dos anteriores
+
+El handoff avisa que cada ronda correctiva necesita su propia ronda. **Cinco
+defectos más, los cinco MÍOS**, ninguno visible en la suite en verde.
+
+## 🔴 1. Mi propia función reproducía el bug que vino a cerrar
+
+`_pct_comp_en_pesos` no validaba la ventana. Y `twr.serie_fx` **arrastra** el
+último cierre conocido para cualquier fecha que le pidas — así que con una ventana
+rota las dos puntas devuelven **el mismo TC**, el cociente da 1, la conversión
+queda en identidad, y la función **publica el número de DÓLARES con etiqueta de
+pesos**. El defecto exacto de toda esta tanda, entrando por un camino nuevo.
+
+MEDIDO antes de los guards, con `pct = 26,82` y la serie 1.000 → 2.000:
+
+| entrada | devolvía | debía |
+|---|---|---|
+| ventana invertida `("2025-12-31","2025-06-30")` | **26,82** ← el de dólares | None |
+| fechas basura `("x","y")` | **26,82** | None |
+| un solo día `("2025-12-31","2025-12-31")` | **26,82** | None |
+| formato no ISO `("2025-6-30", …)` | **26,82** | None |
+| no es un par (`"abc"`, `5`) | **excepción sin capturar** | None |
+
+**`benchmark_entre_fechas` YA tenía este guard escrito** para su propia ventana
+("una ventana al revés no es una ventana"). Lo omití al escribir la hermana: la
+forma exacta de C1, esta vez producida por mí, y a veinte minutos del original.
+
+✅ Validación de par, de formato ISO y de orden. Los 11 casos hostiles dan None.
+
+## 🔴 2. Mi guard estructural tenía FALSOS NEGATIVOS
+
+Lo escribí con una expresión regular que sólo sabía balancear **un** nivel de
+paréntesis. Una llamada con dos niveles (`_bef(b, f(g(x)), …)`) o partida en varias
+líneas podía no matchear — y entonces **el guard no reportaba al culpable**.
+
+Un guard con falsos negativos es peor que no tenerlo: da la tranquilidad sin la
+garantía.
+
+✅ Reescrito con `ast` (el parser de Python, que no tiene ese problema) **y con un
+guard del guard**: se le da código que sí está mal, en las cuatro formas que el
+regex se comía, y tiene que verlo. Contra el código viejo sigue señalando
+exactamente `main.py:34820`.
+
+## 3. Mis tests eran frágiles por el estado global
+
+`fx_rates_daily.date` es **PRIMARY KEY** y la tabla es global (no lleva `user_id`).
+Dos problemas:
+
+- el `setUp` insertaba sin borrar: una fila que sobreviviera a un tearDown
+  reventaba el test siguiente con `IntegrityError`, por una razón ajena a lo que
+  mide;
+- el `tearDown` borraba la tabla global **al final** del mismo `try` que los
+  deletes por `user_id`: si uno de esos fallaba, la fecha quedaba sucia.
+
+✅ `setUp` idempotente y la tabla global se limpia primero, en su propio `try`.
+
+## 4. Conteo honesto de qué miden mis tests — contado, no afirmado
+
+Contra el código viejo (los cuatro archivos de código revertidos, tests intactos):
+**28 fallan, 6 pasan**. De los 28:
+
+- **16** fallan con `AttributeError` / `unexpected keyword argument 'moneda'` →
+  prueban que la función o el parámetro son NUEVOS. **No miden el bug.**
+- **12** fallan con un **número distinto** → ésos son los que miden.
+
+Los 6 que pasan verifican lo que NO tenía que cambiar (la rama de dólares), y
+pasan a propósito. El conteo quedó escrito en la cabecera de cada archivo.
+
+## 5. Una afirmación mía imprecisa (C12 propio, otra vez)
+
+Escribí que "los tres call sites piden la conversión a `retorno_bench_en_moneda`".
+Un grep del nombre devuelve **dos**: el tercero (el tramo parcial) llega por dentro
+de `benchmark_entre_fechas`. Quien leyera eso iba a buscar una llamada que no
+existe y a concluir que falta un call site. ✅ Aclarado en el propio comentario.
+
+---
+
+## Lo que se verificó y NO es problema
+
+- **Doble conversión: no hay.** La rama de la composición sólo corre cuando el
+  motor no publicó (`year_twr_pct is None`), así que un número nunca pasa por las
+  dos. Comprobado además por el valor: con 100 % de devaluación el resultado es
+  ×2, no ×4.
+- **Performance: despreciable.** Las llamadas a `serie_fx` que agregué cuestan
+  **0,69 ms** cada una; 60 reportes suman 41 ms.
+- **Aislamiento entre archivos de test: no aplica.** Medido con dos módulos sonda:
+  cada archivo recibe **su propia base** (`tmpjz9e0jaa.db` vs `tmpfen2ik35.db`),
+  por el fixture `_db_por_modulo` del conftest. Las colisiones de fecha que tengo
+  con `test_vs_inflacion_en_pesos.py` (F5) no pueden pisarse.
+  ⚠️ **El handoff está desactualizado en este punto**: dice "toda la suite comparte
+  UNA base". Ese conftest lo arregló. Corrido en los dos órdenes: 42 passed.
+- **Mis tests atraviesan el camino de producción.** Comparé
+  `compute_metrics_for_period` (lo que prueban) contra `build_period_report` (por
+  donde entra el endpoint) **campo por campo y en las dos monedas**: coinciden. Y
+  `build_period_report` sólo LEE las métricas para decidir `is_relevant` — no pisa
+  ninguno de los campos que cambié.
+
+## 🔴 6. Y auditando la auditoría: **borré 4 tests sin darme cuenta**
+
+Al reescribir el guard estructural usé un corte por índices
+(`archivo[:inicio] + nuevo + archivo[fin:]`) y entre esos dos puntos vivía la clase
+`ElTCNegativoTest` entera. **Se fue con el reemplazo.**
+
+Lo grave es cómo se detecta: **ningún test falló.** Los tests borrados no fallan,
+simplemente dejan de existir. La suite quedó en verde, con 4359 passed.
+
+**Lo único que lo cazó fue el CONTEO.** Venía de 4361, agregué 2 tests, y dio 4359
+en vez de 4363. Cuatro de menos.
+
+⚠️ **ESTO MATIZA UNA REGLA DEL HANDOFF.** Dice que "el conteo de fallos NO es
+métrica (un usuario de más lo mueve)" — y es cierto para los FALLOS. Pero el conteo
+de tests **que pasan** sí es métrica para una cosa concreta: detectar tests que
+desaparecieron. Es la única señal que existe para eso, porque un test borrado no
+produce ningún rojo.
+
+Es la misma familia que la trampa de `cat > archivo` que destruyó 13 casos en F5,
+con otra herramienta: un reemplazo por índices se lleva todo lo que hay en medio.
+**Contar antes y después de cualquier reescritura de un archivo de tests.**
+
+✅ Recuperada del último commit con `git show HEAD:<archivo>` y reinsertada. 29
+tests en el archivo, las 6 clases.
