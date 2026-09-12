@@ -29450,6 +29450,48 @@ def _sanitize_assistant_blocks(content) -> list:
     return out
 
 
+# ─── Qué está haciendo Rendi, en castellano ──────────────────────────────────
+# El usuario espera 10-20 segundos mirando "Pensando…", que no dice nada. Y no
+# es lo mismo esperar sin saber que esperar viendo que algo pasa: la misma
+# espera se hace corta cuando se entiende en qué se está yendo el tiempo.
+#
+# Cada herramienta tiene su frase. En primera persona y en presente, como quien
+# te cuenta lo que está haciendo mientras lo hace — no como un registro técnico.
+# Si mañana se agrega una herramienta sin frase, cae en el genérico y no se
+# rompe nada.
+_PASOS_HUMANOS = {
+    "get_current_prices":        "Buscando los precios de hoy",
+    "get_asset_operations":      "Revisando tus movimientos",
+    "get_monthly_detail":        "Mirando tu historial mes a mes",
+    "get_realized_vs_unrealized": "Separando lo que ya cobraste de lo que todavía no",
+    "get_recent_news_for_assets": "Leyendo noticias de tus activos",
+    "get_market_news":           "Leyendo las noticias del mercado",
+    "get_stock_fundamentals":    "Mirando los números de la empresa",
+    "get_value_scorecard":       "Viendo si está cara o barata",
+    "get_earnings_history":      "Buscando cuándo presentó resultados",
+    "get_analyst_ratings":       "Viendo qué opinan los analistas",
+    "get_company_profile":       "Averiguando a qué se dedica la empresa",
+    "get_ar_bond_metadata":      "Buscando la letra chica del bono",
+    "get_fx_rates":              "Mirando el dólar",
+    "remember_user_fact":        "Anotando eso para la próxima",
+    "register_trade":            "Registrando la operación",
+    "undo_last_trade":           "Deshaciendo la última operación",
+}
+
+
+def _paso_humano(nombres) -> str:
+    """La frase que se le muestra al usuario para un turno de herramientas.
+
+    Con varias a la vez se dice UNA sola cosa: enumerar tres tareas técnicas es
+    volver al registro de sistema, que es lo que estamos sacando."""
+    frases = [_PASOS_HUMANOS[n] for n in nombres if n in _PASOS_HUMANOS]
+    if not frases:
+        return "Buscando datos"
+    if len(frases) == 1:
+        return frases[0]
+    return frases[0] + " y algo más"
+
+
 def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total: int, max_calls: int,
                         allowed_names=None, turn_flags=None, request_id=None,
                         confirm_signal: str = ""):
@@ -30433,6 +30475,12 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     # la ventana silenciosa de tools (además de keep-alive).
                     yield "data: " + json.dumps({"t": "reset"}) + "\n\n"
                     state["synth_deltas"] = 0
+                    # Contarle al usuario qué se está haciendo, antes de hacerlo.
+                    _nombres = [getattr(b, "name", "") for b in resp.content
+                                if getattr(b, "type", "") == "tool_use"]
+                    if _nombres:
+                        yield ("data: " + json.dumps({"t": "paso", "d": _paso_humano(_nombres)},
+                                                     ensure_ascii=False) + "\n\n")
                     tool_results, tcalls = _ai_chat_exec_tools(
                         resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN,
                         allowed_names=chat_allowed_names, turn_flags=_turn_flags,

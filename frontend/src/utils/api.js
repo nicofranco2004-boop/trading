@@ -285,7 +285,7 @@ async function getBlob(path) {
 // (UpgradePromoCard, etc). Un error del LLM a mitad del stream llega como frame
 // `error` y se lanza con el mismo shape. En demo mode no hay streaming real:
 // usamos el mock y emitimos todo de una.
-async function chatStream(body, { onDelta, onReset, signal } = {}) {
+async function chatStream(body, { onDelta, onReset, onPaso, signal } = {}) {
   if (isDemoMode()) {
     const res = await req('POST', '/ai/chat', { ...body, stream: false })
     // El mock demo resuelve por setTimeout (inabortable): respetar el abort
@@ -353,6 +353,10 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
         try { evt = JSON.parse(payload) } catch { continue }
         if (evt.t === 'delta') {
           if (onDelta && evt.d) onDelta(evt.d)
+        } else if (evt.t === 'paso') {
+          // Qué está haciendo Rendi ahora mismo ("Buscando los precios de hoy").
+          // Es sólo para mostrar: no cambia la respuesta ni el flujo.
+          if (onPaso && evt.d) onPaso(evt.d)
         } else if (evt.t === 'reset') {
           // B-13: el turno anterior terminó en tool_use — lo streameado hasta
           // acá era el PREÁMBULO ("déjame consultar…"), no la respuesta. El

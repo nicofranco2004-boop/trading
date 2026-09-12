@@ -122,6 +122,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [freeText, setFreeText] = useState('')
+  // Qué está haciendo Rendi ahora mismo, para que la espera no sea muda.
+  const [paso, setPaso] = useState(null)
   // Usage: { chat_count, chat_limit, chat_remaining, resets_on }
   const [usage, setUsage] = useState(null)
   // Upgrade payload — solo se setea cuando llega un 429 con upgrade.available.
@@ -130,6 +132,14 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const scrollRef = useRef(null)
   // ¿el user está pegado al fondo? Solo auto-scrolleamos si sí (ver useEffect).
   const stickToBottomRef = useRef(true)
+  // La posición sola no alcanza: el auto-scroll corre al llegar cada palabra y
+  // el aviso de que el usuario se movió llega un cuadro después, así que el
+  // tirón gana la carrera. Escuchamos también la INTENCIÓN (rueda o dedo).
+  const tomoElControlRef = useRef(false)
+  const tomarControlDelScroll = () => {
+    tomoElControlRef.current = true
+    stickToBottomRef.current = false
+  }
   // B-5 (audit IA #2): `loading` se apaga al PRIMER token (para ocultar los
   // puntitos) → desde ahí el guard quedaba abierto durante TODO el stream y una
   // 2da pregunta mezclaba deltas en la misma burbuja + cobraba doble cuota.
@@ -202,8 +212,10 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
     const newMessages = [...messages, userMsg]
     setMessages(newMessages)
     setLoading(true)
+    setPaso(null)
     setError(null)
     stickToBottomRef.current = true  // pregunta nueva → arrancamos pegados al fondo
+    tomoElControlRef.current = false
 
     // Streaming: los puntitos se muestran hasta que llega el PRIMER token; a
     // partir de ahí ocultamos el loader y vamos rellenando la burbuja del
@@ -256,7 +268,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       // en Home para detectar que el user ya probó el chat.
       markAIDiscovered()
       // Al modelo va SOLO la ventana final (cost cap) — en pantalla queda todo.
-      const res = await api.chatStream({ messages: sendWindow(newMessages), snapshot }, { onDelta, onReset, signal: ctrl.signal })
+      const res = await api.chatStream({ messages: sendWindow(newMessages), snapshot }, { onDelta, onReset, onPaso: setPaso, signal: ctrl.signal })
       // Edge: el stream cerró sin emitir texto → mostrar algo en vez de nada.
       if (!assistantAdded) {
         setMessages(m => [...m, { role: 'assistant', content: stripMarkdown(acc) || '…' }])
@@ -365,6 +377,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       })
     } finally {
       setLoading(false)
+      setPaso(null)
       sendingRef.current = false
       setSending(false)
       if (abortRef.current === ctrl) abortRef.current = null
@@ -457,8 +470,12 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         onScroll={(e) => {
           const el = e.currentTarget
           // pegado al fondo si está a menos de 80px del final
-          stickToBottomRef.current = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80
+          const abajo = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80
+          if (abajo) tomoElControlRef.current = false
+          stickToBottomRef.current = abajo && !tomoElControlRef.current
         }}
+        onWheel={tomarControlDelScroll}
+        onTouchMove={tomarControlDelScroll}
         className={`overflow-y-auto px-4 py-3 space-y-4 ${
           messages.length === 0 && fullHeight
             ? ''                                     /* vacío: hero+chips juntos, sin estirar */
@@ -590,8 +607,12 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           )
         })}
 
+        {/* Los puntitos, y al lado QUÉ está haciendo. Tres puntos rebotando
+            durante 15 segundos no dicen nada; "Buscando los precios de hoy" sí,
+            y la misma espera se hace corta cuando se entiende en qué se va el
+            tiempo. La frase la manda el backend (_PASOS_HUMANOS en main.py). */}
         {loading && (
-          <div className="flex justify-start">
+          <div className="flex justify-start items-center gap-2.5">
             <div className="bg-bg-2 dark:bg-bg-2/50 rounded-2xl rounded-bl-sm px-4 py-2.5">
               <div className="flex gap-1.5">
                 <span className="w-1.5 h-1.5 bg-ink-3 dark:bg-bg-20 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -599,6 +620,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                 <span className="w-1.5 h-1.5 bg-ink-3 dark:bg-bg-20 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
               </div>
             </div>
+            {paso && <span className="text-[12.5px] text-ink-3">{paso}…</span>}
           </div>
         )}
 

@@ -99,6 +99,10 @@ export function VozProvider({ children }) {
   const [open, setOpen] = useState(false)
   const [thread, setThread] = useState([])
   const [sending, setSending] = useState(false)
+  // Qué está haciendo Rendi ahora mismo ("Buscando los precios de hoy"). Lo
+  // manda el backend cuando sale a buscar datos; sirve para que la espera no
+  // sea un "pensando" mudo de 15 segundos.
+  const [paso, setPaso] = useState(null)
   const [askError, setAskError] = useState(null)
   // Se acabó el cupo de escuchas: { message, upgrade }. Se dibuja como aviso
   // con su atajo a Planes, no como error.
@@ -266,6 +270,7 @@ export function VozProvider({ children }) {
     if (!content || sendingRef.current) return
     sendingRef.current = true
     setSending(true)
+    setPaso(null)
     setAskError(null)
     const previos = thread
     setThread(t => [...t, { role: 'user', content }].slice(-MAX_THREAD))
@@ -276,12 +281,53 @@ export function VozProvider({ children }) {
       // audio firmado y las tarjetas, que no son parte de la conversación.
       const messages = sendWindow([...previos, { role: 'user', content }])
         .map(({ role, content: c }) => ({ role, content: c }))
+
+      // 🔴 SE ESCRIBE EN VIVO, letra por letra, igual que en /ai.
+      //
+      // Antes acá sólo se acumulaba el texto y el mensaje se agregaba al hilo
+      // RECIÉN al terminar. Como escribir la respuesta lleva 10-20 segundos
+      // (medido: el 100% de la espera es el modelo redactando, buscar los datos
+      // tarda 0,4 s), el acompañante se quedaba mudo todo ese rato y después
+      // escupía el texto entero de golpe. Se sentía muchísimo más lento que el
+      // chat grande aunque tardara lo mismo: la espera con algo pasando en
+      // pantalla es corta, la espera mirando nada es eterna.
+      let agregado = false
+      const pintar = (texto) => setThread(t => {
+        const copia = t.slice()
+        if (agregado && copia.length && copia[copia.length - 1].role === 'assistant') {
+          copia[copia.length - 1] = { ...copia[copia.length - 1], content: texto }
+          return copia
+        }
+        agregado = true
+        return [...copia, { role: 'assistant', content: texto }].slice(-MAX_THREAD)
+      })
+      const onDelta = (c) => {
+        acc += c
+        // Se pinta la PROSA, no el texto crudo: así el bloque de datos del
+        // final no aparece medio escrito en pantalla mientras llega.
+        const { prose } = parseStructured(stripMarkdown(acc))
+        if (prose) pintar(prose)
+      }
+      // El turno terminó en una herramienta: lo que se escribió era el
+      // preámbulo ("dejame ver los precios…"), no la respuesta. Se borra y
+      // vuelve el "pensando" hasta que llegue la de verdad.
+      const onReset = () => {
+        acc = ''
+        if (agregado) { setThread(t => t.slice(0, -1)); agregado = false }
+      }
       const res = await api.chatStream(
-        { messages, snapshot: snapRef.current },
-        { onDelta: (c) => { acc += c }, onReset: () => { acc = '' } },
+        { messages, snapshot: snapRef.current }, { onDelta, onReset, onPaso: setPaso },
       )
       const { prose, meta } = parseStructured(stripMarkdown(acc))
-      setThread(t => [...t, { role: 'assistant', content: prose || '…', voz: res?.voz || null, meta }].slice(-MAX_THREAD))
+      setThread(t => {
+        const copia = t.slice()
+        const final = { role: 'assistant', content: prose || '…', voz: res?.voz || null, meta }
+        if (agregado && copia.length && copia[copia.length - 1].role === 'assistant') {
+          copia[copia.length - 1] = final
+          return copia
+        }
+        return [...copia, final].slice(-MAX_THREAD)
+      })
       if (res?.portfolioChanged) window.dispatchEvent(new Event('rendi:portfolio-changed'))
       if (res?.voz) {
         setCurrent(res.voz)
@@ -305,6 +351,7 @@ export function VozProvider({ children }) {
     } finally {
       sendingRef.current = false
       setSending(false)
+      setPaso(null)
     }
   }, [thread, enabled, speak])
 
@@ -359,9 +406,9 @@ export function VozProvider({ children }) {
     status, progress, current,
     speak, escuchar, toggle, stop,
     open, setOpen,
-    thread, sending, askError, sinCupo, ask, publicar,
+    thread, sending, paso, askError, sinCupo, ask, publicar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
-       speak, escuchar, toggle, stop, open, thread, sending, askError, sinCupo, ask, publicar])
+       speak, escuchar, toggle, stop, open, thread, sending, paso, askError, sinCupo, ask, publicar])
 
   return (
     <VozContext.Provider value={value}>
@@ -381,7 +428,7 @@ const INERTE = {
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
-  thread: [], sending: false, askError: null, sinCupo: null, ask: () => {}, publicar: () => {},
+  thread: [], sending: false, paso: null, askError: null, sinCupo: null, ask: () => {}, publicar: () => {},
 }
 
 export const useVoz = () => useContext(VozContext) || INERTE
