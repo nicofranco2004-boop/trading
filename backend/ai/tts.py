@@ -5,39 +5,49 @@ guardias); este módulo sólo la LEE. Anthropic no vende API de voz a terceros,
 así que la lectura la hace `gpt-4o-mini-tts` de OpenAI con la voz `fable`
 —elegida escuchando las 11— y nada más: acá no se decide QUÉ se dice.
 
-TRES COSAS QUE SE MIDIERON CON LA API DE VERDAD (2026-09-11/12) Y MANDAN SOBRE
-EL DISEÑO DE ESTE ARCHIVO
+LO QUE SE MIDIÓ CONTRA LA API DE VERDAD, Y MANDA SOBRE ESTE ARCHIVO
 --------------------------------------------------------------------------
-1. STREAMING O NADA. El primer pedacito de audio llega en 1,35-1,43 s; el
-   archivo entero, en 4,3-4,7 s. Esperar el mp3 completo antes de mandarlo
-   sube la espera total de ~4 s a ~9 s y se siente roto. Por eso `speak()` es
-   un generador y el endpoint lo reenvía a medida que llega.
-2. EL CACHE NO ES UNA OPTIMIZACIÓN, ES LA FUNCIONALIDAD. La decisión de
+Los números de acá son los que se midieron EN ESTE REPO el 2026-09-12,
+cronometrando las llamadas y leyendo la duración del mp3 con `afinfo`. Donde el
+plan de la etapa había anotado otra cosa, se aclara — pero manda la medición.
+
+1. STREAMING O NADA. El primer sonido llega en 1,1-1,6 s reusando la conexión;
+   el archivo entero, en 2,3-3,3 s. Esperar el mp3 completo antes de mandarlo
+   duplica la espera y se siente roto. Por eso `speak()` es un generador y el
+   endpoint lo reenvía a medida que llega.
+   (El plan estimaba 1,35-1,43 s y 4,3-4,7 s. El primer sonido dio parecido; el
+   archivo entero, más rápido. La conclusión no cambia.)
+2. LA CONEXIÓN SE REUSA O SE PAGA UN SEGUNDO. Abrirla de cero costaba 2,68 s
+   hasta el primer sonido contra 1,60 s con el pool caliente, mismo texto, una
+   llamada detrás de la otra. Por eso el cliente httpx es uno solo por proceso
+   (ver `_client()`), no uno por pedido.
+3. EL CACHE NO ES UNA OPTIMIZACIÓN, ES LA FUNCIONALIDAD. La decisión de
    producto es "re-escuchar una respuesta es gratis, siempre". Eso sólo se
    sostiene si el mismo texto no se vuelve a generar nunca. Cache por hash del
    texto (+ voz + modelo + instrucciones: si cambia cualquiera, cambia la
    clave y se regenera).
-3. PEDIRLE AL MODELO QUE HABLE MÁS RÁPIDO NO HACE NADA. El mismo texto con
-   "ritmo ágil" dio 24,2 s y con "hablá RÁPIDO, ritmo de podcast" dio 24,4 s.
-   La velocidad se controla SOLO con playbackRate en el navegador. Las
-   instrucciones de abajo piden ritmo igual —ayudan al acento y a la energía,
-   no al reloj—, pero no esperes que ahorren un centavo.
+4. PEDIRLE AL MODELO QUE HABLE MÁS RÁPIDO NO HACE NADA. El mismo texto con
+   "ritmo ágil" y con "hablá RÁPIDO, ritmo de podcast" dio prácticamente lo
+   mismo (24,2 s contra 24,4 s, medido al diseñar la etapa). La velocidad se
+   controla SOLO con playbackRate en el navegador. Las instrucciones de abajo
+   piden ritmo igual —ayudan al acento y a la energía, no al reloj—, pero no
+   esperes que ahorren un centavo.
 
-FORMATO: mp3, no opus. Opus pesa la mitad (220 KB vs 388 KB) y el primer
+FORMATO: mp3, no opus. Opus pesa la mitad (220 KB contra 388 KB) y el primer
 pedacito llega igual de rápido, pero Safari de iPhone no reproduce opus en
 contenedor ogg — y el celular de Nico es donde esto se va a probar. Cuando el
 acompañante corra sólo en escritorio, opus es mejor negocio.
 
-COSTO: US$0,015 por minuto de audio, y con las instrucciones de acá la voz va
-a 13,3-14,4 caracteres por segundo (MEDIDO el 2026-09-12 sobre el mp3 que
-devuelve la API: 263 caracteres → 18,2 s; 145 → 10,9 s). Un resumen de ~290
-caracteres dura ~21 s y sale ~US$0,0053.
+COSTO: US$0,015 por minuto de audio, y con estas instrucciones la voz va a
+13,3-14,4 caracteres por segundo (medido sobre el mp3: 263 caracteres → 18,2 s;
+195 → 14,9 s; 145 → 10,9 s). Un resumen de ~290 caracteres dura ~21 s y sale
+~US$0,0053.
 
-⚠️ El plan de la etapa había anotado 12 caracteres/segundo y US$0,0061. La
-diferencia juega A FAVOR: la regla "escuchar cuesta 1 ficha más" cierra con más
-margen del que se creía, no con menos. El punto donde el audio empataría con lo
-que cuesta la respuesta escrita (US$0,007) son 28 segundos ≈ 378 caracteres —
-por eso MAX_CHARS_SOFT está en 340: avisa ANTES de llegar ahí.
+⚠️ El plan había anotado 12 caracteres/segundo y US$0,0061. La diferencia juega
+A FAVOR: la regla "escuchar cuesta 1 ficha más" cierra con MÁS margen del que se
+creía. El empate —donde el audio costaría lo mismo que la respuesta escrita,
+US$0,007— son 28 segundos ≈ 378 caracteres. MAX_CHARS_SOFT avisa mucho antes;
+su propio comentario explica en cuánto y por qué.
 """
 
 from __future__ import annotations
@@ -46,6 +56,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import threading
 from collections import OrderedDict
 from typing import Iterator
@@ -72,11 +83,17 @@ INSTRUCTIONS = (
 # Tope DURO del endpoint: más que esto no se canta, se rechaza. 600 caracteres
 # son ~44 segundos de audio (a 13,5 c/s) — el doble del molde, ya generoso.
 MAX_CHARS = 600
-# Tope BLANDO: el aviso ANTES de que la cuenta se ponga fea. A 13,5 c/s, 340
-# caracteres son ~25 s = US$0,0063, todavía por debajo de los US$0,007 que
-# cuesta la respuesta escrita. No rechaza nada: loguea, para que se note si el
-# prompt derivó y los resúmenes empezaron a estirarse.
-MAX_CHARS_SOFT = 340
+# Tope BLANDO: el aviso de que los resúmenes se están estirando. No rechaza
+# nada — loguea.
+#
+# Está en 260 y no pegado al techo económico a propósito. El empate (donde el
+# audio cuesta lo mismo que la respuesta escrita, US$0,007) son 378 caracteres;
+# avisar recién ahí sería avisar cuando ya no queda margen. 260 es un aviso
+# TEMPRANO, calibrado con lo que el modelo escribe DE VERDAD: los resúmenes
+# reales medidos en pantalla dieron 195 y 224 caracteres, bastante por debajo de
+# los ~290 que pide el prompt. O sea que este umbral no se dispara con la
+# salida normal: se dispara cuando algo cambió.
+MAX_CHARS_SOFT = 260
 
 # ─── Qué le pedimos a Claude que escriba para la oreja ───────────────────────
 # Va TEXTUAL dentro de los prompts de chat, y vive acá —no copiado en cada
@@ -98,6 +115,43 @@ No es la prosa recortada — es otro texto, escrito para la OREJA:
 - Oraciones cortas, una idea cada una: el titular, el porqué, y lo único que hay que mirar.
 - Mismo rioplatense de siempre. Si la respuesta es un saludo, una aclaración breve o cualquier paso del registro de operaciones, OMITÍ "voz" (igual que el bloque entero).
 """
+
+# ─── El respaldo: convertir un texto de PANTALLA en uno que se pueda decir ───
+# El resumen hablado lo escribe Claude en el campo "voz". A veces se lo olvida
+# —es un campo más adentro de un JSON que el usuario no ve, y lo que no se ve no
+# se reclama—. Sin respaldo, esa respuesta simplemente no tiene audio y el
+# usuario toca el parlante y no pasa nada.
+#
+# El respaldo usa el titular del bloque, que SÍ está casi siempre. Pero está
+# escrito para los OJOS: "Cartera de USD 30k: +64% sin realizar" leído tal cual
+# suena a fórmula. Esto lo traduce a algo pronunciable.
+#
+# Es un plan B a propósito modesto: no reescribe ni resume, sólo destraba los
+# símbolos. Un titular leído siempre va a sonar peor que un resumen escrito para
+# la oreja — por eso además se LOGUEA cada vez que se usa: si empieza a aparecer
+# seguido, el problema está en el prompt, no acá.
+_HABLABLE = [
+    (re.compile(r"(?:US\$|USD)\s*([\d.,]+)\s*(?:k|K)\b"), r"\1 mil dólares"),
+    (re.compile(r"(?:US\$|USD)\s*([\d.,]+)"), r"\1 dólares"),
+    (re.compile(r"(?:AR\$|ARS)\s*([\d.,]+)"), r"\1 pesos"),
+    (re.compile(r"(\d)\s*(?:k|K)\b"), r"\1 mil"),
+    (re.compile(r"\s*%"), " por ciento"),
+    (re.compile(r"(?<![\w])\+(?=\d)"), "más "),
+    (re.compile(r"(?<![\w])[-−–](?=\d)"), "menos "),
+    (re.compile(r"\bpp\b"), "puntos"),
+    (re.compile(r"[()\[\]]"), " "),      # los paréntesis se leen "paréntesis"
+    (re.compile(r"\s*[·•→←|]+\s*"), ". "),
+    (re.compile(r"\s{2,}"), " "),
+]
+
+
+def hablable(texto: str) -> str:
+    """Deja un texto de pantalla en condiciones de ser leído en voz alta."""
+    out = texto or ""
+    for rx, rep in _HABLABLE:
+        out = rx.sub(rep, out)
+    return out.strip(" .;,").strip()
+
 
 _OPENAI_URL = "https://api.openai.com/v1/audio/speech"
 # La primera llamada del día a OpenAI puede tardar más que las siguientes; el
@@ -250,6 +304,64 @@ def cache_clear() -> None:
         _cache.clear()
         _cache_bytes = 0
         _texts.clear()
+    with _inflight_lock:
+        for ev in _inflight.values():
+            ev.set()
+        _inflight.clear()
+
+
+# ─── Un solo generador por texto ─────────────────────────────────────────────
+# El cache resuelve la segunda escucha, pero no la SIMULTÁNEA: dos pedidos del
+# mismo audio que llegan antes de que el primero termine encuentran el cache
+# vacío los dos, y entonces los dos llaman a OpenAI y los dos cobran cuota. El
+# usuario paga dos veces por un audio que va a escuchar una.
+#
+# No es un caso raro de laboratorio: pasa con un doble toque en play, con dos
+# pestañas abiertas, y sobre todo porque un reproductor de audio del navegador
+# puede pedir el mismo archivo más de una vez (reintentos, pedidos por rango).
+#
+# La guarda: el primero que llega SE QUEDA con la clave; los demás esperan a que
+# termine y se sirven del cache, sin pagar nada. Si el primero falla, el
+# siguiente puede reclamarla e intentar.
+_INFLIGHT_WAIT = 25.0        # segundos; generar tarda 2-5 s, esto es el techo
+_inflight = {}               # clave → Event que se prende al terminar
+_inflight_lock = threading.Lock()
+
+
+def claim(key: str) -> bool:
+    """¿Me toca generar a mí? True = sí, y quedás obligado a llamar a `finish`.
+    False = ya lo está generando otro; esperalo con `wait_for`."""
+    with _inflight_lock:
+        if key in _inflight:
+            return False
+        _inflight[key] = threading.Event()
+        return True
+
+
+def wait_for(key: str, timeout: float = _INFLIGHT_WAIT) -> bool:
+    """Espera a que el que tenía la clave termine. Devuelve True si terminó
+    (entonces mirá el cache; puede estar vacío si al otro le fue mal)."""
+    with _inflight_lock:
+        ev = _inflight.get(key)
+    if ev is None:
+        return True          # terminó entre que preguntamos y ahora
+    return ev.wait(timeout)
+
+
+def finish(key: str) -> None:
+    """Suelta la clave y despierta a los que estaban esperando. Va SIEMPRE en un
+    finally: si se olvida en un camino de error, los que esperan se quedan
+    colgados hasta el timeout."""
+    with _inflight_lock:
+        ev = _inflight.pop(key, None)
+    if ev is not None:
+        ev.set()
+
+
+def inflight_count() -> int:
+    """Cuántas generaciones hay en curso. Sólo para tests y diagnóstico."""
+    with _inflight_lock:
+        return len(_inflight)
 
 
 # ─── El texto guardado por clave ─────────────────────────────────────────────

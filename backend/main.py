@@ -27288,15 +27288,10 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
     conn = get_db()
     try:
         # Resolver tier del user al inicio — afecta cache key, prompt y mensaje 429.
-        tier = quota.get_tier(conn, uid)
-        # Lente del asesor (mismo fix que /api/ai/chat, audit): dentro de un
-        # cliente Free/Plus, el que mira es el ASESOR → tier pro (prompts con
-        # causalidad + follow-ups sin upsell). Los contadores siguen en el
-        # cliente (uid), consistente con el chat.
-        _lens_auth = getattr(request.state, "rendi_auth_uid", uid)
-        if uid != _lens_auth and tier in ("free", "plus") \
-                and quota.get_tier(conn, _lens_auth) == "advisor":
-            tier = "pro"
+        # Lente del asesor dentro de un cliente Free/Plus → se sirve como pro
+        # (prompts con causalidad + follow-ups sin upsell). La regla vive en
+        # _tier_con_lente, que es el único lugar donde está escrita.
+        tier, _ = _tier_con_lente(conn, request, uid)
 
         # Follow-ups son exclusivos Pro — el diferencial real del paywall.
         # Free Y Plus que intentan follow-up reciben 403 con upgrade payload
@@ -29534,6 +29529,46 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
     return tool_results, tool_calls_total
 
 
+def _auth_uid_de(request, uid: int) -> int:
+    """El uid del que PUSO EL TOKEN, que no es `uid` cuando un asesor está
+    adentro de la cuenta de un cliente (ahí `get_effective_user` devuelve el
+    cliente). Lo stashea el resolver en request.state."""
+    return getattr(getattr(request, "state", None), "rendi_auth_uid", uid)
+
+
+def _tier_con_lente(conn, request, uid: int):
+    """El tier con el que hay que SERVIR, mirando quién está del otro lado.
+
+    Cuando un asesor entra al Rendi de un cliente, `get_effective_user` resuelve
+    la cuenta del CLIENTE. Si esa cuenta es Free o Plus —el caso real: un cliente
+    que reclamó su cuenta y cayó a 'free'— servirle su tier a secas le da al
+    ASESOR, que está en el plan más caro, la experiencia del plan más barato: la
+    UI le ofrece lo premium y el backend se lo rebota con un "pasate a Pro"…
+    al asesor.
+
+    La regla: si el que mira es un asesor y la cuenta mirada es free/plus, se
+    sirve con LENTE 'pro'. Los CONTADORES siguen en la cuenta del cliente (mismo
+    criterio que el shadow; F5 centraliza el pool en el asesor) — por eso además
+    del tier devolvemos el override, que hay que pasarle a reserve_* para que el
+    TOPE sea el de la lente y no el de la cuenta mirada.
+
+    Devuelve (tier, lens_override). lens_override es None cuando no hay lente.
+
+    ⚠️ ESTA FUNCIÓN EXISTE PORQUE LA REGLA YA SE HABÍA OLVIDADO DOS VECES.
+    Estaba copiada en /api/ai/chat y en /api/ai/analyze, y los dos endpoints de
+    la voz —escritos después— volvieron a nacer sin ella. Copiada por tercera
+    vez, el cuarto endpoint la iba a olvidar igual. Si agregás un endpoint que
+    resuelve tier con quota.get_tier, usá ESTA función.
+    """
+    from ai import quota
+    tier = quota.get_tier(conn, uid)
+    auth_uid = _auth_uid_de(request, uid)
+    if uid != auth_uid and tier in ("free", "plus") \
+            and quota.get_tier(conn, auth_uid) == "advisor":
+        return "pro", "pro"
+    return tier, None
+
+
 def _record_chat_quota(uid: int, cost_cents: int) -> None:
     """Registra el COSTO del chat exitoso. B-9: el slot de cuota ya lo tomó
     quota.reserve_chat ANTES del LLM (reserva atómica) — acá solo se suma el
@@ -29636,11 +29671,33 @@ def _extract_voz(text: str) -> Optional[str]:
     if not isinstance(meta, dict):
         return None
     voz = meta.get("voz")
-    if not isinstance(voz, str):
-        return None
-    voz = voz.strip()
+    voz = voz.strip() if isinstance(voz, str) else ""
     if not voz:
-        return None
+        # RESPALDO. El campo "voz" es lo mejor —está escrito para la oreja—
+        # pero el modelo a veces se lo olvida: es un campo adentro de un JSON
+        # que el usuario no ve, y lo que no se ve no se reclama. Sin respaldo,
+        # esa respuesta se queda muda y el parlante no hace nada.
+        #
+        # Se arma con el titular del bloque, que sí está casi siempre, pasado
+        # por tts.hablable() para destrabar los símbolos ("+64%" leído tal cual
+        # no se entiende). Suena peor que el resumen de verdad, y por eso se
+        # LOGUEA: si esto aparece seguido, hay que arreglar el prompt, no el
+        # respaldo.
+        #
+        # Si tampoco hay titular, no se inventa nada: la respuesta queda escrita.
+        titular = meta.get("headline")
+        if not isinstance(titular, str) or not titular.strip():
+            return None
+        veredicto = meta.get("verdict")
+        partes = []
+        if isinstance(veredicto, str) and veredicto.strip():
+            partes.append(veredicto.strip().rstrip(".") + ".")
+        partes.append(titular.strip())
+        voz = tts.hablable(" ".join(partes))
+        if not voz:
+            return None
+        log.info("voz: el modelo no mandó el resumen hablado — se lee el titular (%d chars)",
+                 len(voz))
     if len(voz) > tts.MAX_CHARS:
         # El modelo se pasó del tope duro. Cortamos en la última oración
         # completa que entra — leer media frase suena peor que leer menos.
@@ -29828,23 +29885,11 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # Resolver tier + cuota + perfil + facts en una sola conexión.
     conn = get_db()
     try:
-        tier = quota.get_tier(conn, uid)
         # LENTE del asesor dentro de un cliente (misma regla que
-        # /api/plan/features): el resolver YA validó el vínculo activo (uid ≠
-        # auth_uid solo pasa con link 'active'). Si el que mira es un asesor y
-        # la cuenta del cliente es free/plus — el caso real: un cliente que
-        # RECLAMÓ su cuenta (F4a) y cayó a 'free' — el chat se sirve con
-        # lente 'pro' (chat libre, prompt premium), igual que un shadow.
-        # Sin esto la UI ofrecía input libre (lente pro de /plan/features) y
-        # el backend lo rebotaba con un upsell "pasate a Pro"… al asesor.
-        # Los contadores siguen en la cuenta del cliente (criterio del
-        # shadow; F5 centraliza el pool en el asesor).
-        _lens_auth = getattr(request.state, "rendi_auth_uid", uid)
-        _lens_override = None
-        if uid != _lens_auth and tier in ("free", "plus") \
-                and quota.get_tier(conn, _lens_auth) == "advisor":
-            tier = "pro"
-            _lens_override = "pro"
+        # /api/plan/features): el resolver YA validó el vínculo activo — uid ≠
+        # auth_uid sólo pasa con link 'active'. El porqué y la historia están en
+        # _tier_con_lente, que es el único lugar donde vive la regla.
+        tier, _lens_override = _tier_con_lente(conn, request, uid)
         # Cuota semanal por tier (Free/Plus=6, Pro=60, Admin=1000). PRE-CHECK
         # barato read-only para el 429 temprano con upgrade payload. La toma
         # REAL del slot es la reserva atómica justo antes del LLM (B-9) — el
@@ -29940,7 +29985,9 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
     if book_mode:
         base_system = _AI_CHAT_SYSTEM + _AI_CHAT_SYSTEM_ADVISOR
-    elif _lens_override == "pro" or (uid != _lens_auth and quota.get_tier(conn, _lens_auth) == "advisor"):
+    elif _lens_override == "pro" or (
+            uid != _auth_uid_de(request, uid)
+            and quota.get_tier(conn, _auth_uid_de(request, uid)) == "advisor"):
         # Asesor mirando la cuenta de un cliente (cualquier tier del cliente).
         base_system = base_system + _AI_CHAT_SYSTEM_ADVISOR_IN_CLIENT
     # Pro chat max_tokens: 1000 → 800 (audit #3 cost control) → 1200 (2026-07,
@@ -30694,9 +30741,13 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
         from ai import quota
         _conn = get_db()
         try:
-            _tier = quota.get_tier(_conn, uid)
+            # Con LENTE (ver _tier_con_lente): un asesor adentro de un cliente
+            # Free se sirve como pro. Si no, su escucha le quemaría al CLIENTE
+            # el único escuche de la semana y a partir del segundo el asesor
+            # —que está en el plan más caro— vería un cartel de "pasate a Pro".
+            _tier, _lens = _tier_con_lente(_conn, request, uid)
             _con_cupo = quota.listen_limit(_tier) is not None
-            _usage = quota.get_current_usage(_conn, uid)
+            _usage = quota.get_current_usage(_conn, uid, tier_override=_lens)
         finally:
             _conn.close()
         _quedan = (_usage.get("listens_remaining") if _con_cupo
@@ -30745,6 +30796,30 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
         # los dos pasos. El frontend reintenta el paso 1 y sigue solo.
         raise HTTPException(404, "No encontrado")
 
+    # ¿YA LO ESTÁ GENERANDO OTRO PEDIDO? El cache resuelve la segunda escucha,
+    # pero no la simultánea: dos pedidos del mismo audio que llegan antes de
+    # que el primero termine ven el cache vacío los dos, llaman a OpenAI los dos
+    # y cobran los dos. Pasa con un doble toque en play, con dos pestañas, y
+    # sobre todo porque el reproductor del navegador puede pedir el mismo
+    # archivo más de una vez. Acá el segundo ESPERA al primero y se sirve de su
+    # resultado, gratis.
+    if not tts.claim(key):
+        tts.wait_for(key)
+        _listo = tts.cache_get(key)
+        if _listo is not None:
+            log.info("ai_voz esperó al que generaba uid=%s bytes=%d", uid, len(_listo))
+            return Response(content=_listo, media_type=tts.MEDIA_TYPE, headers={
+                "Cache-Control": "private, max-age=86400",
+                "X-Rendi-Voz-Cache": "hit-esperado",
+            })
+        # Al otro le fue mal (o tardó más que el techo de espera). Intentamos
+        # nosotros, si es que ya soltó la clave.
+        if not tts.claim(key):
+            raise HTTPException(503, detail={
+                "error": "voz_ocupado",
+                "message": "El audio se está preparando. Probá de nuevo en unos segundos.",
+            })
+
     # Hay que GENERAR → recién acá se cobra. Dos regímenes, a propósito
     # (ver ai/quota.py):
     #   · Free  → gasta 1 de su CUPO PROPIO de escuchas, que no toca su única
@@ -30759,43 +30834,63 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     from ai import quota
     _conn = get_db()
     try:
-        _tier = quota.get_tier(_conn, uid)
+        # Mismo criterio que el paso 1 y que el chat: con lente de asesor el
+        # tier es 'pro' → no hay cupo propio → paga con ficha de chat, y el
+        # TOPE que se aplica es el de la lente (tier_override), aunque el
+        # contador siga en la fila del cliente. Sin el override, el asesor
+        # chocaría contra la cuota de 1 de la cuenta que está mirando.
+        _tier, _lens = _tier_con_lente(_conn, request, uid)
         _con_cupo = quota.listen_limit(_tier) is not None
         if _con_cupo:
-            _ok, _usage = quota.reserve_listen(_conn, uid)
+            _ok, _usage = quota.reserve_listen(_conn, uid, tier_override=_lens)
         else:
-            _ok, _usage = quota.reserve_chat(_conn, uid)
+            _ok, _usage = quota.reserve_chat(_conn, uid, tier_override=_lens)
+    except Exception:
+        tts.finish(key)          # nadie puede quedarse esperando por nosotros
+        raise
     finally:
         _conn.close()
     if not _ok:
+        tts.finish(key)          # ídem: rebotamos, que pase el que sigue
         raise _voz_quota_429(_tier, _usage, con_cupo=_con_cupo)
 
     log.info("ai_voz cache MISS uid=%s tier=%s chars=%d ≈%.1fs",
              uid, _tier, len(text), tts.estimated_seconds(text))
 
     def _audio():
-        # Se reenvía a medida que llega (el primer pedazo en ~1,4 s) Y se
-        # acumula para el cache. Materializar todo antes de mandar triplicaría
-        # la espera; no acumular haría que re-escuchar vuelva a pagar.
+        """Manda el mp3 en pedazos, lo guarda en el cache y suelta la clave.
+
+        El orden importa: primero se GUARDA el audio y recién después se suelta
+        la clave. Al revés, el pedido que está esperando se despertaría con el
+        cache todavía vacío y volvería a generar — que es exactamente lo que la
+        guarda existe para evitar.
+
+        El `finally` cubre también que el cliente corte la conexión a mitad: eso
+        llega como GeneratorExit y no lo atrapa un `except Exception`. Sin
+        soltar la clave ahí, los que esperan se cuelgan hasta el techo.
+        """
         buf = bytearray()
         try:
-            for chunk in tts.speak(text):
-                buf.extend(chunk)
-                yield chunk
-        except Exception as ex:
-            log.error("ai_voz: falló la generación uid=%s: %s", uid, str(ex)[:200])
-            if not buf:
-                # No se escuchó nada → no se cobra. Se devuelve LO MISMO que se
-                # reservó: el escuche si era Free, la ficha si era pago. Con
-                # audio parcial ya entregado sí se cobra (mismo criterio que el
-                # chat: el gasto con OpenAI ya está hecho).
-                if _con_cupo:
-                    _refund_listen_quota(uid)
-                else:
-                    _refund_chat_quota(uid)
-            return
-        if buf:
-            tts.cache_put(key, bytes(buf))
+            try:
+                for chunk in tts.speak(text):
+                    buf.extend(chunk)
+                    yield chunk
+            except Exception as ex:
+                log.error("ai_voz: falló la generación uid=%s: %s", uid, str(ex)[:200])
+                if not buf:
+                    # No se escuchó nada → no se cobra. Se devuelve LO MISMO que
+                    # se reservó: el escuche si era Free, la ficha si era pago.
+                    # Con audio parcial ya entregado sí se cobra (mismo criterio
+                    # que el chat: el gasto con OpenAI ya está hecho).
+                    if _con_cupo:
+                        _refund_listen_quota(uid)
+                    else:
+                        _refund_chat_quota(uid)
+                return
+            if buf:
+                tts.cache_put(key, bytes(buf))
+        finally:
+            tts.finish(key)
 
     return StreamingResponse(_audio(), media_type=tts.MEDIA_TYPE, headers={
         # Anti-buffering: sin esto el proxy junta todo el mp3 antes de

@@ -14,6 +14,8 @@ Corre con: cd backend && python3 -m pytest tests/test_ai_voz.py
 """
 import json
 import os
+import threading
+import time
 import sqlite3
 import sys
 import tempfile
@@ -97,8 +99,37 @@ class ExtraerVozTest(unittest.TestCase):
         self.assertIsNone(main._extract_voz(""))
         self.assertIsNone(main._extract_voz(None))
 
-    def test_bloque_sin_campo_voz(self):
+    def test_sin_voz_y_sin_titular_no_hay_audio(self):
+        # Sin nada que leer no se inventa nada: la respuesta queda escrita.
         self.assertIsNone(main._extract_voz(_bloque({"verdict": "Buen mes"})))
+        self.assertIsNone(main._extract_voz(_bloque({"headline": "   "})))
+
+    def test_sin_voz_pero_CON_titular_se_lee_el_titular(self):
+        """El respaldo. El campo "voz" vive adentro de un JSON que el usuario no
+        ve, y lo que no se ve el modelo se lo olvida. Sin esto, esa respuesta se
+        queda muda y el parlante no hace nada."""
+        out = main._extract_voz(_bloque({
+            "verdict": "Ojo acá",
+            "headline": "Cartera de USD 30k en tecno: +64% sin realizar, muy concentrada",
+        }))
+        self.assertIsNotNone(out)
+        self.assertTrue(out.startswith("Ojo acá."))
+        # Y llega HABLABLE: sin símbolos que no se pronuncian.
+        self.assertIn("30 mil dólares", out)
+        self.assertIn("más 64 por ciento", out)
+        for simbolo in ("%", "$", "USD", "+"):
+            self.assertNotIn(simbolo, out, "quedó %r sin traducir en %r" % (simbolo, out))
+
+    def test_el_respaldo_tambien_viene_firmado(self):
+        pay = main._voz_payload(_bloque({"headline": "Ganaste 16,8% este año"}))
+        self.assertTrue(tts.verify(pay["text"], pay["sig"]))
+        self.assertIn("por ciento", pay["text"])
+
+    def test_el_campo_voz_le_gana_al_titular(self):
+        # Cuando están los dos, manda el que está escrito para la oreja.
+        out = main._extract_voz(_bloque({"voz": "Esto es lo hablado.",
+                                          "headline": "Esto es el titular"}))
+        self.assertEqual(out, "Esto es lo hablado.")
 
     def test_json_roto_no_explota(self):
         self.assertIsNone(main._extract_voz('Prosa.\n---RENDI---{"voz": "sin cerra'))
@@ -469,6 +500,187 @@ class PagoSigueCobrandoFichaTest(_EndpointBase):
             self.client.get(url)
         self.assertEqual(self._fichas(), 2, "preguntar + escuchar = 2 fichas")
         self.assertEqual(self._escuchas(), 0, "el cupo propio de Free ni se toca")
+
+
+# ─── Dos pedidos del mismo audio al mismo tiempo ─────────────────────────────
+# El cache resuelve la SEGUNDA escucha; no resuelve la SIMULTÁNEA. Antes de la
+# guarda, dos pedidos que llegaban antes de que el primero terminara veían el
+# cache vacío los dos: dos llamadas a OpenAI y dos cobros por un audio que el
+# usuario escucha una sola vez. Pasa con un doble toque en play, con dos
+# pestañas, y sobre todo porque el reproductor del navegador puede pedir el
+# mismo archivo más de una vez.
+
+class DosPedidosALaVezTest(_EndpointBase):
+    def test_solo_uno_genera_y_solo_uno_paga(self):
+        url = self._preparar().json()["url"]
+        arranco = threading.Event()
+        soltar = threading.Event()
+        llamadas = []
+
+        def _lento(_t):
+            # Simula la generación real: entra, avisa, y se queda adentro hasta
+            # que el test la suelta — así los dos pedidos se pisan de verdad.
+            llamadas.append(1)
+            arranco.set()
+            soltar.wait(10)
+            yield MP3
+
+        respuestas = {}
+
+        def _pedir(nombre):
+            respuestas[nombre] = self.client.get(url)
+
+        with patch.object(tts, "speak", _lento):
+            t1 = threading.Thread(target=_pedir, args=("primero",))
+            t1.start()
+            self.assertTrue(arranco.wait(5), "el primero nunca empezó a generar")
+            # El segundo entra CON el primero adentro.
+            t2 = threading.Thread(target=_pedir, args=("segundo",))
+            t2.start()
+            # ⚠️ Hay que darle al segundo tiempo REAL de llegar al punto de
+            # conflicto antes de soltar al primero. La primera versión de este
+            # test soltaba enseguida: el primero terminaba y dejaba el audio en
+            # el cache, el segundo lo encontraba ahí, y el test pasaba EN VERDE
+            # aunque la guarda estuviera desactivada. Un test así no prueba
+            # nada. Acá esperamos hasta 2 s: sin guarda, en esa ventana el
+            # segundo entra a speak() y `llamadas` llega a 2 (y el test falla,
+            # que es lo que tiene que pasar); con guarda se queda esperando y
+            # el bucle agota el tiempo con `llamadas` en 1.
+            limite = time.time() + 2.0
+            while time.time() < limite and len(llamadas) < 2:
+                time.sleep(0.05)
+            soltar.set()
+            t1.join(15)
+            t2.join(15)
+
+        self.assertEqual(len(llamadas), 1, "OpenAI tenía que llamarse UNA sola vez")
+        self.assertEqual(self._fichas(), 1, "y cobrarse UNA sola vez")
+        for nombre, r in respuestas.items():
+            self.assertEqual(r.status_code, 200, "%s no recibió el audio" % nombre)
+            self.assertEqual(r.content, MP3, "%s recibió un audio distinto" % nombre)
+        self.assertEqual(tts.inflight_count(), 0, "la clave quedó tomada")
+
+    def test_si_el_primero_falla_la_clave_queda_libre(self):
+        """Que la guarda no se convierta en un candado: si al que generaba le
+        fue mal, el siguiente tiene que poder intentar."""
+        url = self._preparar().json()["url"]
+
+        def _explota(_t):
+            raise RuntimeError("OpenAI 500")
+            yield b""          # pragma: no cover — lo hace generador
+
+        with patch.object(tts, "speak", _explota):
+            self.client.get(url)
+        self.assertEqual(tts.inflight_count(), 0, "la clave quedó tomada tras el fallo")
+        self.assertEqual(self._fichas(), 0, "no escuchó nada: no se cobra")
+
+        # Y el reintento funciona.
+        with patch.object(tts, "speak", return_value=iter([MP3])):
+            r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._fichas(), 1)
+
+
+# ─── El asesor adentro de la cuenta de un cliente ────────────────────────────
+# Cuando un asesor entra al Rendi de un cliente, get_effective_user resuelve la
+# cuenta del CLIENTE. Si esa cuenta es Free y no se aplica la lente, pasan dos
+# cosas feas: la escucha del asesor le quema al cliente su único escuche de la
+# semana, y a partir de la segunda el asesor —que está en el plan más caro— ve
+# un cartel de "pasate a Pro". La regla ya estaba resuelta en /api/ai/chat y en
+# /api/ai/analyze; los endpoints de la voz eran el tercer call site y nacieron
+# sin ella. Ahora vive en main._tier_con_lente y la usan los cuatro.
+
+class AsesorAdentroDeUnClienteTest(unittest.TestCase):
+    def setUp(self):
+        tts.cache_clear()
+        self.conn = main.get_db()
+        tag = os.urandom(5).hex()
+        self.asesor = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved,tier) VALUES (?,?,1,'advisor')",
+            ("asesor-voz-%s@rendi.test" % tag, "x")).lastrowid
+        # approved=1 + tier free = el cliente que YA RECLAMÓ su cuenta (F4a) y
+        # cayó a Free. Es el caso real: con approved=0 (shadow sin reclamar)
+        # get_tier ya devuelve 'pro' solo y la lente ni haría falta.
+        self.cliente = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved,tier) VALUES (?,?,1,'free')",
+            ("cliente-voz-%s@rendi.test" % tag, "x")).lastrowid
+        self.conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.asesor, self.cliente))
+        self.conn.execute(
+            """INSERT INTO advisor_clients (advisor_uid, client_uid, link_type,
+                   permission, status, label) VALUES (?,?,'managed','read_write','active','Juan P')""",
+            (self.asesor, self.cliente))
+        self.conn.commit()
+        self.client = TestClient(main.app)
+        self._env = patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-no-se-usa"})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        try:
+            self.conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=?", (self.asesor,))
+            self.conn.execute("DELETE FROM ai_usage_daily WHERE user_id IN (?,?)",
+                              (self.asesor, self.cliente))
+            self.conn.execute("UPDATE users SET managed_by=NULL WHERE id=?", (self.cliente,))
+            self.conn.execute("DELETE FROM users WHERE id IN (?,?)", (self.asesor, self.cliente))
+            self.conn.commit()
+            self.conn.close()
+        except Exception:
+            pass
+
+    def _hdr(self, uid, ctx=None):
+        h = {"Authorization": "Bearer " + main.create_token(uid)}
+        if ctx is not None:
+            h["X-Rendi-Client-Id"] = str(ctx)
+        return h
+
+    def _contador(self, col, uid):
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(%s),0) AS n FROM ai_usage_daily WHERE user_id=?" % col,
+            (uid,)).fetchone()
+        return row["n"] if isinstance(row, sqlite3.Row) else row[0]
+
+    def _escuchar(self, texto, hdr):
+        r = self.client.post("/api/ai/voz", json={"text": texto, "sig": tts.sign(texto)}, headers=hdr)
+        if r.status_code != 200:
+            return r
+        with patch.object(tts, "speak", return_value=iter([MP3])):
+            return self.client.get(r.json()["url"], headers=hdr)
+
+    def test_no_le_quema_el_escuche_al_cliente(self):
+        h = self._hdr(self.asesor, ctx=self.cliente)
+        r = self._escuchar("El asesor escucha la cartera de su cliente.", h)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._contador("listen_count", self.cliente), 0,
+                         "el cupo de 1 escuche del cliente NO se puede tocar")
+        self.assertEqual(self._contador("chat_count", self.cliente), 1,
+                         "se cobra como ficha de chat, igual que el chat escrito")
+        self.assertEqual(self._contador("chat_count", self.asesor), 0,
+                         "los contadores siguen en la cuenta del cliente")
+
+    def test_la_segunda_escucha_del_asesor_no_rebota(self):
+        """Sin la lente, la 2da chocaba contra la cuota de 1 del cliente y el
+        asesor —el plan más caro— veía un upsell dirigido a él."""
+        h = self._hdr(self.asesor, ctx=self.cliente)
+        for i, t in enumerate(("Primera respuesta del cliente.",
+                               "Segunda respuesta, distinta de la primera.",
+                               "Tercera respuesta, otra vez distinta.")):
+            r = self._escuchar(t, h)
+            self.assertEqual(r.status_code, 200, "la escucha %d rebotó: %s" % (i + 1, r.text[:200]))
+        self.assertEqual(self._contador("listen_count", self.cliente), 0)
+        self.assertEqual(self._contador("chat_count", self.cliente), 3)
+
+    def test_el_cliente_SOLO_sigue_con_su_escuche_semanal(self):
+        """La lente no le regala nada al cliente cuando entra por su cuenta."""
+        h = self._hdr(self.cliente)
+        r = self._escuchar("El cliente escucha su propia cartera.", h)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._contador("listen_count", self.cliente), 1)
+        self.assertEqual(self._contador("chat_count", self.cliente), 0)
+        # Y la segunda le rebota con su upsell, como corresponde.
+        otro = "Otra respuesta distinta para el mismo cliente."
+        r2 = self.client.post("/api/ai/voz", json={"text": otro, "sig": tts.sign(otro)}, headers=h)
+        self.assertEqual(r2.status_code, 429)
+        self.assertTrue(r2.json()["detail"]["upgrade"]["available"])
 
 
 # ─── Los nombres que se dicen ────────────────────────────────────────────────
