@@ -655,3 +655,92 @@ entre los dos lados de la resta — el mismo defecto con un disfraz mucho peor.
   y las fechas basura. ⚠️ **Asimetría observada, no tocada**: con un solo día
   devuelve `0,0` donde la hermana devuelve `None`. Para el año no es alcanzable
   (el motor mide tramos, no días). Se anota en vez de tocarles el código.
+
+---
+
+# F6 · los 11 lectores de rendimiento — MEDIDO sobre producción
+
+Medido en **solo lectura** sobre la copia real `trading-2026-08-16.db`: 673 usuarios,
+13.144 filas de `monthly_entries`.
+
+## El censo, corregido: F2 ya migró tres, pero al primitivo EQUIVOCADO
+
+| lector | qué usa hoy | qué le falta |
+|---|---|---|
+| `wrapped.py` | `twr.retorno_mensual` | el denominador chico y el salto |
+| `ai/builders/insights_evolution.py` | `twr.retorno_mensual` | ídem |
+| `ai/builders/reports.py` | `twr.retorno_mensual` | ídem |
+| `ai/builders/insights.py` | **el motor** (`serie_medible`/`curva_indexada`) | ✅ cubierto |
+| `ai/builders/dashboard.py` | `(end−start)/start` crudo | todo — ni resta flujos |
+| `advisor_brief.py` | `(now−base)/base×100` crudo | todo |
+| `main._snapshot_delta` | pct sobre valor base, con flujos | `leg_dudoso` |
+
+`retorno_mensual` tiene DOS guards (`ci > 0` y el denominador ≤ 0 de `dietz`) y **no
+tiene** los otros dos de `leg_dudoso`: el **denominador chico** (25 %) y el **salto ×3**.
+Ésa es la mitad cara.
+
+## ⚠️ Y propagar `leg_dudoso` NO ARREGLA EL PROBLEMA — medido
+
+Lo que el guard taparía: **124 meses de 10.772 (1,15 %), 98 usuarios.** Ninguno es un
+rendimiento real — el peor es `ci=575 → cf=4.035.223 con US$202 de flujo` (**+596.335 %**),
+y los seis más chicos tienen el **capital final NEGATIVO**. Cero falsos positivos.
+
+Pero lo que se publica no es el mes: es el **compuesto**. Y ahí:
+
+| | >100 % | >1000 % | el peor |
+|---|---|---|---|
+| hoy | 121 | 25 | **+129.544 %** |
+| con `leg_dudoso` (saltear el mes) | 113 | 21 | +39.439 % |
+| con `leg_dudoso` + **cortar el tramo** | 98 | 19 | +30.300 % |
+
+**Ninguna de las dos resuelve.** Y saltear tiene un efecto contraintuitivo: a algunos el
+número les **sube** (uid 826: 884 % → 3.983 %), porque el guard saca el mes de la caída y
+deja los que parten de la base ya achicada. El propio comentario de `leg_dudoso` dice que
+un leg no creíble **corta el tramo**, no se saltea — y estos lectores lo saltean.
+
+## ⭐ Lo que SÍ resuelve: el motor. Y está medido
+
+Para los mismos usuarios:
+
+| | hoy publica | el motor dice |
+|---|---|---|
+| uid 118 | **+129.544 %** | **+0,7 %** |
+| uid 904 | +5.090 % | −0,3 % |
+| uid 992 | +2.719 % | −3,5 % |
+| uid 421 | +2.027 % | −0,0 % |
+
+**De los 373 usuarios que tienen los dos números, los 373 quedan bajo 100 % con el motor.
+Cero absurdos. El peor pasa de +129.544 % a +96,6 %.**
+
+## El costo de migrar, sin maquillar
+
+| | usuarios |
+|---|---|
+| publican hoy (compuesto contable) | 575 |
+| el motor puede medir | 438 |
+| **pierden el número** | **202** |
+| ganan un número que hoy no tienen | 65 |
+
+Por qué el motor no puede con esos 202: `importado_sin_mediciones` 168 · `medicion_dudosa`
+31 · `una_sola_medicion` 2 · `serie_partida` 1.
+
+Y de esos 202, **lo que están viendo hoy**:
+
+| lo que ven hoy | cuántos |
+|---|---|
+| 0–50 % (razonable) | 117 (57,9 %) |
+| 50–100 % (alto pero posible) | 27 (13,4 %) |
+| 100–1000 % (dudoso) | 44 (21,8 %) |
+| >1000 % (imposible) | 14 (6,9 %) |
+
+Mediana: **33,6 %**.
+
+→ **58 cambiarían un número imposible por "no se puede medir"** (puro beneficio) y
+**144 cambiarían uno plausible por "no se puede medir"** — **ése es el costo real, y es
+una decisión de producto, no técnica.**
+
+## La tercera opción, que el repo ya usa en Reportes
+
+`reporting/schema.py` tiene el campo `basis` (`'mercado'` vs `'contable'`) justamente para
+esto: no quitar el número, sino **decir de dónde sale**. Combinado con `leg_dudoso` + corte
+de tramo, nadie pierde el número y nadie ve basura sin aviso. Falta medirla.
