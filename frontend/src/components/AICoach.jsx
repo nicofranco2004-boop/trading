@@ -25,7 +25,7 @@ import { markAIDiscovered } from './ai/AIDiscoveryBanner'
 import UpgradePromoCard from './ai/UpgradePromoCard'
 import { Link } from 'react-router-dom'
 import { useVoz, puedeArrancarSolo } from '../contexts/VozContext'
-import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota } from '../utils/cuotaTexto'
+import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota, fechaLegible } from '../utils/cuotaTexto'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
@@ -432,7 +432,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           {usage && usage.chat_limit > 0 && (
             <span
               className="text-[10px] font-mono text-ink-3 tabular hidden sm:inline"
-              title={costoDeEscuchar(usage) + (usage.resets_on ? ` Se renueva el ${usage.resets_on}.` : '')}
+              title={costoDeEscuchar(usage) + (usage.resets_on ? ` Se renueva el ${fechaLegible(usage.resets_on)}.` : '')}
             >
               {contadorCorto(usage)}
             </span>
@@ -695,7 +695,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
               {av.cta && (
                 <Link to="/planes"
                   className="flex-none font-semibold text-data-violet hover:underline underline-offset-2 whitespace-nowrap">
-                  Desbloqueá más →
+                  Ver planes →
                 </Link>
               )}
             </div>

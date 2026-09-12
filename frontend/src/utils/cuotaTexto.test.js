@@ -20,21 +20,21 @@ describe('quién paga la escucha con qué', () => {
 
 describe('lo que le queda, en el pie del chat', () => {
   it('a Free le muestra las escuchas — antes eran invisibles hasta gastarse', () => {
-    expect(restantesTexto(FREE)).toBe('1 consulta y 1 escucha esta semana')
+    expect(restantesTexto(FREE)).toBe('1 consulta y 1 audio esta semana')
   })
 
   it('a Free le cuenta cada cosa por su lado', () => {
     // Gastó la consulta pero NO la escucha: decirle "no te queda nada" sería falso.
     expect(restantesTexto(con(FREE, { chat_count: 1 })))
-      .toBe('0 consultas y 1 escucha esta semana')
+      .toBe('0 consultas y 1 audio esta semana')
     expect(restantesTexto(con(FREE, { chat_count: 1, listen_count: 1, listens_remaining: 0 })))
-      .toBe('Sin consultas ni escuchas esta semana')
+      .toBe('Sin consultas ni audios esta semana')
   })
 
   it('a los pagos les avisa que escuchar cuesta una más', () => {
     // El contador les bajaba de a dos sin ninguna explicación.
-    expect(restantesTexto(PLUS)).toBe('9 consultas restantes · escucharla gasta 1 más')
-    expect(restantesTexto(con(PRO, { chat_count: 39 }))).toBe('1 consulta restante · escucharla gasta 1 más')
+    expect(restantesTexto(PLUS)).toBe('9 consultas restantes · escuchar gasta 1 consulta más')
+    expect(restantesTexto(con(PRO, { chat_count: 39 }))).toBe('1 consulta restante · escuchar gasta 1 consulta más')
   })
 
   it('sin cuota que mostrar no inventa nada', () => {
@@ -63,6 +63,14 @@ describe('qué dice el globo del parlante', () => {
   })
 })
 
+describe('las fechas se dicen, no se muestran como en la base', () => {
+  it('nunca sale un 2026-09-19 en la cara del usuario', () => {
+    const a = avisoDeCuota(con(PLUS, { chat_count: 9 }))
+    expect(a.texto).not.toMatch(/\d{4}-\d{2}-\d{2}/)
+    expect(a.texto).toContain('19 de septiembre')
+  })
+})
+
 describe('el aviso de que se está acabando', () => {
   it('no aparece cuando sobra cuota — si aparece siempre, deja de leerse', () => {
     expect(avisoDeCuota(PRO)).toBeNull()
@@ -76,8 +84,8 @@ describe('el aviso de que se está acabando', () => {
   })
 
   it('avisa con 2 o menos, y con 0 dice que se acabó', () => {
-    expect(avisoDeCuota(con(PLUS, { chat_count: 7 })).texto).toBe('Te quedan 2 consultas esta semana. Se renuevan el 2026-09-19.')
-    expect(avisoDeCuota(con(PLUS, { chat_count: 8 })).texto).toBe('Te queda 1 consulta esta semana. Se renuevan el 2026-09-19.')
+    expect(avisoDeCuota(con(PLUS, { chat_count: 7 })).texto).toBe('Te quedan 2 consultas esta semana. Se renuevan el 19 de septiembre.')
+    expect(avisoDeCuota(con(PLUS, { chat_count: 8 })).texto).toBe('Te queda 1 consulta esta semana. Se renuevan el 19 de septiembre.')
     expect(avisoDeCuota(con(PLUS, { chat_count: 9 })).agotado).toBe(true)
   })
 
@@ -86,11 +94,11 @@ describe('el aviso de que se está acabando', () => {
     expect(avisoDeCuota(con(PLUS, { chat_count: 9 })).cta).toBe(true)
     // Arriba de Pro no hay plan retail: ofrecerle "mejorá tu plan" es ruido.
     expect(avisoDeCuota(con(PRO, { chat_count: 40 })).cta).toBe(false)
-    expect(avisoDeCuota(con(PRO, { chat_count: 40 })).texto).toContain('Se renuevan el')
+    expect(avisoDeCuota(con(PRO, { chat_count: 40 })).texto).toContain('Se renuevan el 19 de septiembre')
   })
 
   it('a Free sin consultas pero CON escucha no le dice que no le queda nada', () => {
     const a = avisoDeCuota(con(FREE, { chat_count: 1 }))
-    expect(a.texto).toContain('Todavía te queda 1 escucha')
+    expect(a.texto).toContain('Todavía te queda 1 audio')
   })
 })

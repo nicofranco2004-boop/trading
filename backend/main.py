@@ -30723,6 +30723,20 @@ class AIVozIn(BaseModel):
     sig: str = Field(..., min_length=8, max_length=128)
 
 
+_MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio",
+             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+
+
+def _fecha_legible(iso: str) -> str:
+    """"2026-09-19" → "19 de septiembre". La fecha sale de la base en formato de
+    máquina y así se le estaba mostrando al usuario. Nadie lee una fecha así."""
+    try:
+        a, m, d = str(iso).split("-")
+        return "%d de %s" % (int(d), _MESES_ES[int(m) - 1])
+    except Exception:
+        return str(iso)
+
+
 def _voz_quota_429(tier: str, usage: dict, con_cupo: bool) -> HTTPException:
     """El 429 de "no te quedan escuchas".
 
@@ -30736,14 +30750,17 @@ def _voz_quota_429(tier: str, usage: dict, con_cupo: bool) -> HTTPException:
     if not con_cupo:
         return _chat_quota_429(tier, usage)
     resets_on = usage.get("resets_on")
-    cuando = (f" Tu próximo escuche se libera el {resets_on}." if resets_on
-              else " Se te renueva cuando venza el más viejo (ventana móvil de 7 días).")
+    # "escuche" como sustantivo suena a estudio de fonoaudiología; nadie dice
+    # "usé mi escuche". Todo el mundo sabe qué es un audio. Y la fecha va en
+    # castellano, no en el formato de la base.
+    cuando = (f" El próximo se libera el {_fecha_legible(resets_on)}." if resets_on
+              else " Se te renueva a los 7 días del que usaste.")
     return HTTPException(
         429,
         detail={
             "error": "voz_quota_exceeded",
-            "message": (f"Ya usaste tu escuche de esta semana "
-                        f"({usage.get('listen_count')}/{usage.get('listens_limit')})."
+            "message": (f"Ya usaste tu audio de esta semana "
+                        f"({usage.get('listen_count')} de {usage.get('listens_limit')})."
                         + cuando + " La respuesta escrita la seguís teniendo."),
             "usage": usage,
             "upgrade": {
@@ -30783,7 +30800,7 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
         log.warning("ai_voz: firma inválida uid=%s len=%d", uid, len(text))
         raise HTTPException(403, detail={
             "error": "voz_bad_signature",
-            "message": "Ese texto no lo escribió Rendi.",
+            "message": "Ese texto no lo escribió Rendi, así que no lo puede leer.",
         })
 
     key = tts.remember(text)

@@ -517,10 +517,17 @@ class CupoDeEscuchasFreeTest(_EndpointBase):
         d = r.json()["detail"]
         self.assertEqual(d["error"], "voz_quota_exceeded")
         self.assertTrue(d["upgrade"]["available"])
-        self.assertIn("escuche", d["message"].lower())
+        # El mensaje habla del AUDIO, no de las consultas: al Free todavía le
+        # queda su consulta escrita y decirle lo contrario sería mentirle.
+        # Se chequea el sentido, no la palabra exacta — si no, cada retoque de
+        # redacción rompe el test sin que nada esté mal.
+        self.assertRegex(d["message"].lower(), r"audio|escuch")
+        self.assertIn("escrita la seguís teniendo", d["message"])
         # Y dice CUÁNDO se renueva, no sólo que se acabó.
         self.assertTrue(d["upgrade"]["resets_on"] or "7 días" in d["message"],
                         "el aviso no dice cuándo se le renueva: %r" % d["message"])
+        # La fecha va en castellano, no en el formato de la base.
+        self.assertNotRegex(d["message"], r"\d{4}-\d{2}-\d{2}")
 
         # Y si igual pidiera el audio a mano, tampoco se genera.
         key = tts.remember(otro)

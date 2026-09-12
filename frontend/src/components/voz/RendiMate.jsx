@@ -159,7 +159,7 @@ export default function RendiMate() {
         <button
           type="button"
           onClick={() => setOpen(false)}
-          title="Cerrar (si está hablando, sigue)"
+          title="Cerrar — si está hablando, sigue"
           aria-label="Cerrar"
           className="p-1.5 rounded-lg text-ink-3 hover:text-ink-0 hover:bg-bg-3 transition-colors flex-none"
         >

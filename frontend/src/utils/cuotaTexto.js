@@ -18,6 +18,17 @@
 
 const plural = (n, singular, plural_) => `${n} ${n === 1 ? singular : plural_}`
 
+// La fecha llega de la base como "2026-09-19" y así se le mostraba al usuario.
+// Nadie lee una fecha en ese formato: es de máquina. Se dice como se dice.
+export function fechaLegible(iso) {
+  if (!iso || typeof iso !== 'string') return null
+  const [a, m, d] = iso.split('-').map(Number)
+  if (!a || !m || !d) return iso
+  const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+                 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+  return `${d} de ${MESES[m - 1] || m}`
+}
+
 /** ¿Este plan tiene cupo PROPIO de escuchas, o las paga con consultas? */
 export function tieneCupoDeEscuchas(usage) {
   return !!usage && usage.listens_limit != null
@@ -31,13 +42,13 @@ export function restantesTexto(usage) {
   if (!usage || !(usage.chat_limit > 0)) return null
   const consultas = Math.max(0, usage.chat_limit - usage.chat_count)
   if (!tieneCupoDeEscuchas(usage)) {
-    return `${plural(consultas, 'consulta restante', 'consultas restantes')} · escucharla gasta 1 más`
+    return `${plural(consultas, 'consulta restante', 'consultas restantes')} · escuchar gasta 1 consulta más`
   }
   const escuchas = usage.listens_remaining != null
     ? usage.listens_remaining
     : Math.max(0, usage.listens_limit - (usage.listen_count || 0))
-  if (consultas === 0 && escuchas === 0) return 'Sin consultas ni escuchas esta semana'
-  return `${plural(consultas, 'consulta', 'consultas')} y ${plural(escuchas, 'escucha', 'escuchas')} esta semana`
+  if (consultas === 0 && escuchas === 0) return 'Sin consultas ni audios esta semana'
+  return `${plural(consultas, 'consulta', 'consultas')} y ${plural(escuchas, 'audio', 'audios')} esta semana`
 }
 
 /** La versión corta, para el contador del encabezado. */
@@ -55,8 +66,8 @@ export function costoDeEscuchar(usage) {
     const escuchas = usage.listens_remaining != null
       ? usage.listens_remaining
       : Math.max(0, usage.listens_limit - (usage.listen_count || 0))
-    return `Rendi te lee la respuesta en voz alta. Tenés ${plural(escuchas, 'escucha', 'escuchas')} `
-      + 'por semana, aparte de tus consultas. Volver a oír una que ya escuchaste es gratis.'
+    return `Rendi te lee la respuesta en voz alta. Tenés ${plural(escuchas, 'audio', 'audios')} `
+      + 'por semana, aparte de tus consultas. Volver a oír uno que ya escuchaste es gratis.'
   }
   return 'Rendi te lee la respuesta en voz alta. Escuchar gasta 1 consulta más, '
     + 'así que una respuesta hablada te sale 2. Volver a oír una que ya escuchaste es gratis.'
@@ -79,7 +90,7 @@ export function avisoDeCuota(usage) {
   const umbral = usage.chat_limit === 1 ? 0 : 2
   if (consultas > umbral) return null
 
-  const cuando = usage.resets_on ? ` Se renuevan el ${usage.resets_on}.` : ''
+  const cuando = usage.resets_on ? ` Se renuevan el ${fechaLegible(usage.resets_on)}.` : ''
   const cta = CON_ADONDE_IR.has(usage.tier)
 
   if (consultas === 0) {
@@ -90,7 +101,7 @@ export function avisoDeCuota(usage) {
           ? usage.listens_remaining
           : Math.max(0, usage.listens_limit - (usage.listen_count || 0)))
       : 0
-    const extra = escuchas > 0 ? ` Todavía te queda ${plural(escuchas, 'escucha', 'escuchas')}.` : ''
+    const extra = escuchas > 0 ? ` Todavía te queda ${plural(escuchas, 'audio', 'audios')}.` : ''
     return { agotado: true, cta, texto: `Te quedaste sin consultas por esta semana.${cuando}${extra}` }
   }
   const frase = consultas === 1 ? 'Te queda 1 consulta' : `Te quedan ${consultas} consultas`
