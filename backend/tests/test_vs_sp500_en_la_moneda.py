@@ -531,6 +531,273 @@ class ElTCNegativoTest(unittest.TestCase):
                          (50.0, 30.0))
 
 
+class LasHermanasQueNoToqueTest(unittest.TestCase):
+    """LA RONDA QUE MIRO EL CODIGO QUE **NO** SE MODIFICO.
+
+    La regla de propagacion, aplicada a los DEFECTOS de la auditoria y no solo a
+    los del producto: si `_pct_comp_en_pesos` (la que escribi) tenia cinco agujeros
+    de ventana y un guard de TC debil, su hermana literal `_pct_en_pesos` —que YA
+    ESTA DEPLOYADA y produce el `delta_pct` en pesos del camino principal— es la
+    primera sospechosa. Lo era.
+
+    CENSO DEL GUARD DEBIL (`not f0 or not f1`, que pregunta "tiene valor?" y no
+    "es un tipo de cambio?"). Estaba en CUATRO lugares y yo habia arreglado UNO:
+
+        twr.retorno_en_pesos_pct          ✅ arreglado en la ronda anterior
+        twr._factor_fx                    ❌ devolvia un FACTOR NEGATIVO
+        twr._leg_en_moneda                ❌ devolvia un flujo COMPLEJO
+        reporting.builder._pct_en_pesos   ❌ dejaba pasar el negativo
+
+    Un fix que llega a 1 de 4 call sites no esta terminado: es exactamente la
+    causa raiz que esta tanda viene a cerrar, cometida mientras la cerraba.
+    """
+
+    A = dict(v0=1000.0, v1=1100.0, deposits=0.0, withdrawals=0.0)   # +10 % en USD
+    FECHAS = ("2025-06-30", "2025-12-31")                            # TC x2 -> +120 %
+
+    def setUp(self):
+        self.conn = main.get_db()
+        for f, tc in zip(self.FECHAS, (1000.0, 2000.0)):
+            self.conn.execute("DELETE FROM fx_rates_daily WHERE date=?", (f,))
+            self.conn.execute("INSERT INTO fx_rates_daily "
+                              "(date, blue_venta, mep_venta) VALUES (?,?,?)", (f, tc, tc))
+        self.conn.commit()
+
+    def tearDown(self):
+        try:
+            self.conn.execute("DELETE FROM fx_rates_daily WHERE date IN (?,?)", self.FECHAS)
+        except Exception:
+            pass
+        self.conn.commit()
+        self.conn.close()
+
+    def test_la_hermana_convierte_bien_cuando_la_ventana_es_buena(self):
+        """Lo que ya funcionaba tiene que seguir igual: +10 % en dolares con el TC
+        duplicandose son +120 % en pesos."""
+        self.assertAlmostEqual(
+            builder._pct_en_pesos(self.conn, *self.FECHAS, **self.A), 120.0, places=1)
+
+    def test_la_hermana_con_la_ventana_ROTA_no_publica_el_de_dolares(self):
+        """MEDIDO antes del guard: las cinco formas devolvian 10,0 — el numero de
+        DOLARES con etiqueta de pesos, porque `serie_fx` arrastra y las dos puntas
+        daban el mismo TC.
+
+        ⚠️ HOY NO ES ALCANZABLE, y por eso no es un bug vivo: los tres call sites
+        arman las fechas bien (`bordes_mercado_periodo` garantiza `fin > ini` con
+        dos guards propios; el tercero protege con `if _d0c`). Va igual porque el
+        cuarto call site que alguien agregue no va a traer esos guards puestos —
+        que es exactamente como nacio el defecto en la hermana.
+        """
+        for d0, d1, desc in (("2025-12-31", "2025-06-30", "invertida"),
+                             ("2025-12-31", "2025-12-31", "un solo dia"),
+                             ("x", "y", "basura"),
+                             ("2025-6-30", "2025-12-31", "formato no ISO"),
+                             (None, "2025-12-31", "punta None"),
+                             ("2025-06-30", None, "punta None (la otra)")):
+            r = builder._pct_en_pesos(self.conn, d0, d1, **self.A)
+            self.assertIsNone(r, f"{desc}: devolvio {r!r}")
+
+    def test_el_motor_no_devuelve_un_NUMERO_COMPLEJO(self):
+        """`_leg_en_moneda` hace `(f0 * f1) ** 0.5` — la raiz del producto. Con un
+        TC negativo el producto es negativo y la raiz sale COMPLEJA. MEDIDO con
+        f0=-1000, f1=1200 y un flujo de 500:
+
+            flow -> (3.35e-11 + 547722.5575j)
+
+        que despues revienta en `_modified_dietz_pct` con "'<=' not supported
+        between instances of 'complex' and 'int'". El try/except del caller lo
+        vuelve None, asi que NO se publicaba un numero malo — pero se perdia el
+        periodo por una excepcion en vez de por un guard.
+        """
+        p0 = {"fx": -1000.0, "net_deposited": 0.0}
+        p1 = {"fx": 1200.0, "net_deposited": 500.0}
+        _, _, flow = twr._leg_en_moneda(p0, p1, 1000.0, 1100.0)
+        self.assertNotIsInstance(flow, complex, "el flujo salio complejo")
+        self.assertEqual(flow, 500.0, "con el TC roto el leg va SIN convertir")
+
+    def test_el_factor_de_devaluacion_no_puede_ser_NEGATIVO(self):
+        """`_factor_fx` devolvia `f1/f0` sin mirar el signo: una devaluacion con el
+        signo dado vuelta, propagada a toda la curva en pesos. Con el TC roto vale
+        1,0 — lo mismo que ya hacia cuando el TC faltaba."""
+        self.assertEqual(twr._factor_fx({"fx": -1000.0}, {"fx": 1200.0}), 1.0)
+        self.assertEqual(twr._factor_fx({"fx": 1000.0}, {"fx": -1200.0}), 1.0)
+        self.assertEqual(twr._factor_fx({"fx": -1000.0}, {"fx": -1200.0}), 1.0)
+        # Y el bueno no se toca.
+        self.assertAlmostEqual(twr._factor_fx({"fx": 1000.0}, {"fx": 1200.0}), 1.2, places=9)
+
+    def test_fx_usable_es_LA_definicion_y_cubre_todo(self):
+        """La regla vive en UNA funcion, no en cuatro condiciones repetidas.
+
+        Repetir `float(f) <= 0` en los cuatro lugares habria sido volver a dejar
+        cuatro copias de la misma regla esperando a separarse — la causa raiz de
+        este repo. Por eso `twr.fx_usable`.
+
+        Y cubre dos casos que la condicion repetida NO cubria: `nan` e `inf` pasan
+        cualquier `<= 0` (`nan <= 0` es False) y salian por el otro lado
+        convertidos en un rendimiento `nan`.
+        """
+        for v in (None, 0, -1000, float("nan"), float("inf"), float("-inf"),
+                  "abc", [1], {"a": 1}):
+            self.assertIsNone(twr.fx_usable(v), f"{v!r} no es un tipo de cambio")
+        for v, esp in ((1200.0, 1200.0), (1200, 1200.0), ("1200", 1200.0), (1e-9, 1e-9)):
+            self.assertAlmostEqual(twr.fx_usable(v), esp, places=12, msg=repr(v))
+
+    def test_ninguno_de_los_cuatro_REVIENTA_con_basura(self):
+        """Degradan a "no se", no a una excepcion. Antes `"abc"` y las listas
+        tiraban ValueError/TypeError mas abajo, con un mensaje que no decia que el
+        TC era la causa."""
+        for v in (-1000.0, float("nan"), float("inf"), "abc", [1], None, 0):
+            self.assertEqual(twr._factor_fx({"fx": v}, {"fx": 1200.0}), 1.0, repr(v))
+            _, _, flow = twr._leg_en_moneda(
+                {"fx": v, "net_deposited": 0.0},
+                {"fx": 1200.0, "net_deposited": 500.0}, 1000.0, 1100.0)
+            self.assertEqual(flow, 500.0, f"{v!r}: el leg tiene que ir sin convertir")
+            self.assertIsNone(twr.retorno_en_pesos_pct(2.0, v, 1200.0), repr(v))
+            self.assertEqual(twr.vs_inflacion_ar(10.0, 5.0, fx0=v, fx1=1200.0),
+                             (None, None), repr(v))
+
+    def test_lo_bueno_quedo_INTACTO(self):
+        """El guard no puede tapar lo que estaba bien. Los cuatro, con TC validos."""
+        self.assertAlmostEqual(twr._factor_fx({"fx": 1000.0}, {"fx": 1200.0}), 1.2, places=9)
+        self.assertEqual(
+            twr._leg_en_moneda({"fx": 1000.0, "net_deposited": 0.0},
+                               {"fx": 1200.0, "net_deposited": 500.0}, 1000.0, 1100.0),
+            (1000000.0, 1320000.0, 547722.5575051662))
+        self.assertAlmostEqual(twr.retorno_en_pesos_pct(2.0, 1000, 1200), 22.4, places=6)
+        self.assertEqual(twr.vs_inflacion_ar(0.0, 20.0, fx0=1000, fx1=1500), (50.0, 30.0))
+        # Y sin fx sigue siendo la rama de dolares, bit a bit.
+        self.assertEqual(
+            twr._leg_en_moneda({"net_deposited": 0.0}, {"net_deposited": 500.0},
+                               1000.0, 1100.0),
+            (1000.0, 1100.0, 500.0))
+
+    def test_GUARD_no_queda_ningun_TC_guardeado_con_tiene_valor(self):
+        """LEE CODIGO. El patron `not fx0 or not fx1` es "tiene valor?", no "es un
+        tipo de cambio?". Estaba en cuatro lugares y el fix habia llegado a uno.
+        Este guard existe para que el quinto no vuelva a nacer sin el signo."""
+        import pathlib as _pl, re as _re
+        raiz = _pl.Path(__file__).resolve().parent.parent
+        patron = _re.compile(r"if not (f0|fx0|_f0) or not (f1|fx1|_f1)\s*:")
+        culpables = []
+        for py in sorted(raiz.rglob("*.py")):
+            if "/tests/" in str(py):
+                continue
+            for i, linea in enumerate(py.read_text(encoding="utf-8",
+                                                   errors="ignore").splitlines(), 1):
+                m = patron.search(linea)
+                # Con `<= 0` en la misma linea el guard SI mira el signo.
+                if m and "<= 0" not in linea:
+                    culpables.append(f"{py.relative_to(raiz)}:{i}")
+        self.assertEqual(
+            culpables, [],
+            "hay guards de TC que aceptan un valor negativo:\n" + "\n".join(culpables))
+
+
+class ElContratoDeCurvaIndexadaTest(unittest.TestCase):
+    """EL SUPUESTO QUE SOSTIENE TRES FIXES Y NO TENIA UN SOLO TEST.
+
+    "`twr.curva_indexada` con `moneda=ARS` devuelve el retorno EN PESOS" es la
+    premisa sobre la que se apoyan:
+
+        · el fix de F5      (el mes de Reportes)
+        · el de la otra sesion (el anio)
+        · el mio            (el tramo parcial de /api/reports/years)
+
+    Los tres RESTAN un benchmark convertido a pesos de un numero que sale de aca.
+    Si este devolviera dolares, los tres estarian cruzados — y ninguno lo notaria,
+    porque el numero sale igual de plausible.
+
+    CENSO: cinco call sites de produccion le pasan `moneda` (`performance`, las dos
+    ramas de `reporting.builder`, `/goals/cagr` y el tramo parcial) y **ningun test
+    de la suite lo hacia**. Todos usaban el default (dolares). Este cierra el hueco.
+
+    Y verifica la otra mitad, que es la que importa para que la resta tenga
+    sentido: que el motor convierta con `serie_fx` —la MISMA fuente que usa la
+    conversion del benchmark (`twr.py:1535`)—, para que la devaluacion se cancele
+    entre los dos lados. Con fuentes distintas la resta volveria a mezclar
+    unidades, con un disfraz mucho mas dificil de ver.
+    """
+
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("snapshots", "monthly_entries", "positions", "users"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            ("curva@t", "x")).lastrowid
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, quantity, "
+            "invested, entry_date) VALUES (?,?,?,0,1,100,?)",
+            (self.uid, "IBKR", "AAPL", "2024-01-01"))
+        # CARTERA PLANA EN DOLARES: 100.000 todos los meses, sin flujos. Y el peso
+        # se DUPLICA en el anio. Todo lo que aparezca en pesos es devaluacion.
+        import calendar as _cal
+        self._fechas = ["2024-12-31"] + [
+            f"2025-{m:02d}-{_cal.monthrange(2025, m)[1]:02d}" for m in range(1, 13)]
+        for i, d in enumerate(self._fechas):
+            self.conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+                "net_deposited, source, fx_to_usd_blue, holdings_json) "
+                "VALUES (?,?,?,?,0,'cron',?,'[]')",
+                (self.uid, d, 100000.0, 100000.0, 1000.0))
+            tc = 1000.0 * (2.0 ** (i / len(self._fechas)))   # x2 a lo largo del anio
+            self.conn.execute("DELETE FROM fx_rates_daily WHERE date=?", (d,))
+            self.conn.execute("INSERT INTO fx_rates_daily "
+                              "(date, blue_venta, mep_venta) VALUES (?,?,?)", (d, tc, tc))
+        self.conn.commit()
+
+    def tearDown(self):
+        try:
+            self.conn.execute(
+                "DELETE FROM fx_rates_daily WHERE date IN (%s)"
+                % ",".join("?" * len(self._fechas)), self._fechas)
+        except Exception:
+            pass
+        self.conn.commit()
+        self.conn.close()
+
+    def test_en_dolares_una_cartera_plana_rinde_CERO(self):
+        c = twr.curva_indexada(self.conn, self.uid, "2024-12-31", "2025-12-31",
+                               moneda=twr.MONEDA_USD)
+        self.assertIsNotNone(c.get("twr"), "el fixture tiene que ser medible")
+        self.assertAlmostEqual(c["twr"] * 100, 0.0, places=1)
+
+    def test_en_PESOS_la_misma_cartera_plana_rinde_LA_DEVALUACION(self):
+        """EL CONTRATO. Si esto devolviera 0 —o sea el numero de dolares— los tres
+        fixes que restan un benchmark en pesos estarian cruzados."""
+        c = twr.curva_indexada(self.conn, self.uid, "2024-12-31", "2025-12-31",
+                               moneda=twr.MONEDA_ARS)
+        self.assertIsNotNone(c.get("twr"), "el fixture tiene que ser medible")
+        pct = c["twr"] * 100
+        self.assertGreater(pct, 50.0,
+                           f"en pesos una cartera plana con el peso al doble no "
+                           f"puede rendir {pct:.2f} %: eso es el numero de dolares")
+        self.assertAlmostEqual(pct, 100.0, delta=15.0)
+
+    def test_declara_en_que_moneda_esta(self):
+        """La respuesta dice su propia moneda — sin eso el consumidor adivina."""
+        for mon in (twr.MONEDA_USD, twr.MONEDA_ARS):
+            c = twr.curva_indexada(self.conn, self.uid, "2024-12-31", "2025-12-31",
+                                   moneda=mon)
+            self.assertEqual(c.get("moneda"), mon)
+
+    def test_el_motor_convierte_con_serie_fx_LA_MISMA_del_benchmark(self):
+        """LEE CODIGO. Si el motor convirtiera con otra fuente que el benchmark
+        —por ejemplo `snapshots.fx_to_usd_blue`, que viaja en la misma fila— la
+        devaluacion NO se cancelaria entre los dos lados de la resta, y el
+        veredicto saldria mal sin que ningun numero pareciera raro."""
+        import inspect, re as _re
+        src = inspect.getsource(twr.serie_medible)
+        m = _re.search(r"_fx,\s*_riel_fx\s*=\s*\(([^\n]+)", src)
+        self.assertIsNotNone(m, "cambio la forma en que el motor toma el TC")
+        self.assertIn("serie_fx", m.group(1),
+                      "el motor dejo de convertir con `serie_fx`: la devaluacion "
+                      "ya no se cancela contra la del benchmark")
+
+
 class UnaSolaTablaDeMonedasGuardTest(unittest.TestCase):
     """Guard contra la re-copia. LEE CÓDIGO, no números.
 

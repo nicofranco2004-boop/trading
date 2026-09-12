@@ -716,6 +716,45 @@ def leg_dudoso(v0: float, v1: float, flow: float):
     return None
 
 
+def fx_usable(f):
+    """El tipo de cambio validado, o None si no se puede usar. UNA sola definición.
+
+    POR QUÉ EXISTE. La misma pregunta —"¿esto es un tipo de cambio?"— estaba
+    escrita en CUATRO lugares, y en tres de ellos mal: `not f0 or not f1`, que
+    responde "¿tiene valor?". `not (-1000)` es False, así que un TC negativo
+    pasaba. Lo que producía cada uno, medido:
+
+        retorno_en_pesos_pct          -> −222,4 % de retorno
+        vs_inflacion_ar (ya deployada)-> (−232,0 · −237,0 pp)
+        _factor_fx                    -> un factor de devaluación NEGATIVO (−1,2)
+        _leg_en_moneda                -> un flujo COMPLEJO, (3.35e-11+547722.55j)
+
+    El arreglo llegó primero a uno solo. Repetir la condición en los otros tres es
+    volver a dejar cuatro copias de la misma regla esperando a separarse — que es
+    la causa raíz de este repo. Por eso es una función y no un `and` más largo.
+
+    RECHAZA, y cada motivo costó una medición:
+      · None y 0        — no hay TC (lo único que el guard viejo cubría).
+      · negativos       — un TC no puede serlo; si la fuente lo da, está roto. La
+                          fuente de este repo da datos raros: 45 % de spread en un
+                          día y 73 con la compra por encima de la venta.
+      · `nan` / `inf`   — pasaban los tres guards (`nan <= 0` es False) y salían
+                          por el otro lado convertidos en un rendimiento `nan`.
+      · lo que no es número — `"abc"`, listas, dicts. Ya reventaban, pero más
+                          abajo y con un mensaje que no decía que el TC era la
+                          causa. Acá se convierten en "no sé", que es la respuesta.
+
+    Devuelve el float ya convertido para que el caller no lo convierta de nuevo.
+    """
+    try:
+        v = float(f)
+    except (TypeError, ValueError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")) or v <= 0:
+        return None
+    return v
+
+
 def _factor_fx(p0, p1) -> float:
     """Cuánto se movió el TIPO DE CAMBIO entre dos puntos (1,0 en dólares).
 
@@ -726,8 +765,11 @@ def _factor_fx(p0, p1) -> float:
     """
     if not isinstance(p0, dict) or not isinstance(p1, dict):
         return 1.0
-    f0, f1 = p0.get("fx"), p1.get("fx")
-    if not f0 or not f1:
+    # Un TC roto (negativo, nan, texto) devolvía acá un FACTOR NEGATIVO: una
+    # devaluación con el signo dado vuelta, propagada a toda la curva en pesos.
+    # Con el dato roto vale 1,0 — lo mismo que ya hacía cuando el TC faltaba.
+    f0, f1 = fx_usable(p0.get("fx")), fx_usable(p1.get("fx"))
+    if f0 is None or f1 is None:
         return 1.0
     return f1 / f0
 
@@ -768,7 +810,19 @@ def _leg_en_moneda(p0, p1, v0: float, v1: float):
     f0 = p0.get("fx") if isinstance(p0, dict) else None
     f1 = p1.get("fx") if isinstance(p1, dict) else None
     flow = p1["net_deposited"] - p0["net_deposited"]
-    if not f0 or not f1:
+    # ⚠️ Y ACÁ UN TC NEGATIVO NO ERA SÓLO UN NÚMERO MAL: ERA UN NÚMERO COMPLEJO.
+    # `(f0 · f1) ** 0.5` con el producto negativo devuelve la raíz de un negativo.
+    # MEDIDO con f0 = −1000, f1 = 1200 y un flujo de 500:
+    #     flow -> (3.35e-11 + 547722.5575j)
+    # que después revienta en `_modified_dietz_pct` con
+    # "'<=' not supported between instances of 'complex' and 'int'". El try/except
+    # del caller lo convierte en un None, así que NO se publica un número malo —
+    # pero se pierde el período por una excepción en vez de por un guard, y el log
+    # se llena de tracebacks que no dicen cuál es la causa.
+    # Con el TC roto se devuelve el leg SIN CONVERTIR, que es exactamente lo que ya
+    # hacía cuando el TC faltaba.
+    f0, f1 = fx_usable(f0), fx_usable(f1)
+    if f0 is None or f1 is None:
         return v0, v1, flow
     return v0 * f0, v1 * f1, flow * ((f0 * f1) ** 0.5)
 
@@ -1315,13 +1369,8 @@ def retorno_en_pesos_pct(retorno_pct, fx0, fx1):
     defecto sólo aparece cuando una sola de las dos está rota — que es justo el
     caso que una fuente con errores produce.
     """
-    if retorno_pct is None or not fx0 or not fx1:
-        return None
-    try:
-        _f0, _f1 = float(fx0), float(fx1)
-    except (TypeError, ValueError):
-        return None
-    if _f0 <= 0 or _f1 <= 0:
+    _f0, _f1 = fx_usable(fx0), fx_usable(fx1)
+    if retorno_pct is None or _f0 is None or _f1 is None:
         return None
     try:
         return ((1 + float(retorno_pct) / 100.0) * (_f1 / _f0) - 1) * 100.0

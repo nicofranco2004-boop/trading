@@ -768,11 +768,34 @@ def _pct_en_pesos(conn, d0: str, d1: str, v0: float, v1: float,
     TC de su fecha, el flujo al TC medio geométrico del tramo. Reimplementar esas
     dos líneas acá es exactamente cómo se desincronizan dos motores.
     """
+    # ⚠️ LA VENTANA SE VALIDA, IGUAL QUE EN LA HERMANA `_pct_comp_en_pesos` (F6).
+    #
+    # `serie_fx` ARRASTRA el último cierre conocido para cualquier fecha, así que
+    # con una ventana rota las dos puntas dan EL MISMO TC, la conversión queda en
+    # identidad y esta función devuelve el número de DÓLARES con etiqueta de pesos.
+    # MEDIDO sobre un tramo de +10 % en dólares con el TC duplicándose:
+    #     ventana buena  ("2025-06-30","2025-12-31")  -> 120,0   ✅
+    #     invertida / un solo día / basura / no ISO    ->  10,0   ❌ el de dólares
+    #     una punta en None                            ->  10,0   ❌
+    #
+    # HOY NO ES ALCANZABLE y por eso no es un bug vivo: los tres call sites arman
+    # las fechas bien —`bordes_mercado_periodo` garantiza `fin > ini` con dos
+    # guards propios, y el tercero protege con `if _d0c`—. Va igual, porque el
+    # cuarto call site que alguien agregue no va a traer esos guards puestos: es
+    # exactamente así como nació el defecto en la hermana, escrita el mismo día.
+    if not _RE_ISO.match(str(d0)[:10]) or not _RE_ISO.match(str(d1)[:10]):
+        return None
+    if str(d0)[:10] >= str(d1)[:10]:
+        return None
     try:
         import twr as _twr_fx
         _fxfn, _ = _twr_fx.serie_fx(conn, d0, d1)
-        f0, f1 = _fxfn(d0), _fxfn(d1)
-        if not f0 or not f1:
+        # `fx_usable` es LA definición de "¿esto es un tipo de cambio?", una sola
+        # para los cuatro lugares que lo preguntaban (tres lo hacían mal). Sin
+        # esto, `_leg_en_moneda` producía un flujo COMPLEJO y el período se perdía
+        # por una excepción en vez de por una decisión.
+        f0, f1 = _twr_fx.fx_usable(_fxfn(d0)), _twr_fx.fx_usable(_fxfn(d1))
+        if f0 is None or f1 is None:
             return None
         p0 = {"fx": f0, "net_deposited": 0.0}
         sv, ev, dep = _twr_fx._leg_en_moneda(

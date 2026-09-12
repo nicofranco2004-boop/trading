@@ -557,3 +557,101 @@ con otra herramienta: un reemplazo por índices se lleva todo lo que hay en medi
 
 ✅ Recuperada del último commit con `git show HEAD:<archivo>` y reinsertada. 29
 tests en el archivo, las 6 clases.
+
+---
+
+# Cuarta ronda: el código que NO se modificó
+
+Pedida explícitamente: auditar tanto lo tocado como lo no tocado. La regla de
+propagación aplicada a los **defectos de la auditoría**, no sólo a los del
+producto: si mi función tenía cinco agujeros de ventana y un guard de TC débil, su
+hermana literal es la primera sospechosa. Lo era.
+
+## 🔴 1. El guard del TC estaba en CUATRO lugares y yo había arreglado UNO
+
+`not f0 or not f1` pregunta *"¿tiene valor?"*, no *"¿es un tipo de cambio?"*.
+Censo completo:
+
+| función | estado antes | qué hacía con un TC negativo |
+|---|---|---|
+| `twr.retorno_en_pesos_pct` | ✅ ronda 2 | — |
+| `twr._factor_fx` | ❌ | devolvía un **factor de devaluación NEGATIVO** (−1,2) |
+| `twr._leg_en_moneda` | ❌ | devolvía un flujo **COMPLEJO** |
+| `reporting.builder._pct_en_pesos` | ❌ | dejaba pasar el negativo |
+
+**Un fix que llega a 1 de 4 call sites no está terminado** — la causa raíz de este
+proyecto, cometida mientras la cerraba.
+
+✅ **Y no se cerró repitiendo la condición cuatro veces.** El primer intento fue
+poner `float(f) <= 0` en cada uno — o sea dejar de nuevo cuatro copias de la misma
+regla esperando a separarse, que es exactamente lo que esta tanda viene a evitar.
+Quedó **una sola función, `twr.fx_usable`**, y un guard estructural que impide que
+nazca la quinta copia.
+
+Repetir la condición además **no alcanzaba**: `nan` e `inf` pasan cualquier
+`<= 0` (`nan <= 0` es False) y salían por el otro lado convertidos en un
+rendimiento `nan`. Y `"abc"` o una lista reventaban con un `ValueError` cuyo
+mensaje no decía que el TC era la causa. La función cubre los cinco motivos —
+None, cero, negativo, no-finito y no-numérico— y devuelve el float ya convertido.
+Medido: 14 de 14 casos, y los cuatro consumidores degradan a "no sé" sin tirar.
+
+### El número complejo, medido
+
+`_leg_en_moneda` calcula el TC medio como `(f0·f1) ** 0.5`. Con el producto
+negativo eso es la raíz de un negativo. Con f0=−1000, f1=1200 y flujo 500:
+
+    flow → (3.35e-11 + 547722.5575j)
+
+que revienta después en `_modified_dietz_pct` con *"'<=' not supported between
+instances of 'complex' and 'int'"*. **No se publicaba un número malo** —el
+try/except del caller lo vuelve None— pero el período se perdía por una excepción
+en vez de por una decisión, y el log se llenaba de tracebacks sin causa visible.
+
+## 🔴 2. `_pct_en_pesos` tenía los CINCO agujeros de ventana de su hermana
+
+Es la que produce el `delta_pct` en pesos del **camino principal**, y ya está
+deployada. MEDIDO sobre un tramo de +10 % en dólares con el TC duplicándose
+(la respuesta correcta es +120 %):
+
+| ventana | devolvía |
+|---|---|
+| invertida · un solo día · basura `("x","y")` · no ISO · una punta en None | **10,0 — el número de DÓLARES** |
+
+Misma causa: `serie_fx` arrastra, las dos puntas dan el mismo TC, la conversión
+queda en identidad.
+
+⚠️ **HOY NO ES ALCANZABLE**, y eso hay que decirlo: los tres call sites arman las
+fechas bien — `bordes_mercado_periodo` garantiza `fin > ini` con dos guards
+propios, y el tercero protege con `if _d0c`. **No es un bug vivo.** Se cierra igual
+porque el cuarto call site que alguien agregue no va a traer esos guards puestos:
+es exactamente así como nació el defecto en la hermana, escrita el mismo día.
+
+## 🔴 3. Un supuesto que sostiene TRES fixes y no tenía un solo test
+
+*"`twr.curva_indexada` con `moneda=ARS` devuelve pesos"* es la premisa de:
+
+- el fix de F5 (el mes de Reportes),
+- el de la otra sesión (el año),
+- el mío (el tramo parcial).
+
+Los tres **restan** un benchmark convertido a pesos de un número que sale de ahí.
+Si devolviera dólares, los tres estarían cruzados y ninguno se notaría.
+
+**Cinco call sites de producción le pasan `moneda`. Ningún test lo hacía** — todos
+usaban el default. ✅ Cerrado con cuatro tests, incluido uno que verifica la otra
+mitad: que el motor convierta con **`serie_fx`, la misma fuente que el benchmark**
+(`twr.py:1535`, verificado). Con fuentes distintas la devaluación no se cancelaría
+entre los dos lados de la resta — el mismo defecto con un disfraz mucho peor.
+
+## 4. Verificado y sano: el código que no toqué y está bien
+
+- **`_dia_anterior`**: maneja bisiestos (2024-03-01 → 2024-02-29), fin de año, y
+  devuelve None para `None`, `""`, `"x"` y `"2026-13-45"`. Sólido.
+- **`bordes_mercado_periodo`**: ya tiene los dos guards que evitan `d0 >= d1`. Es
+  la razón por la que el defecto #2 no es alcanzable.
+- **`serie_fx` arrastra a propósito** — es su diseño documentado, no un bug. Lo que
+  faltaba era que los lectores no confundieran "arrastró" con "midió".
+- **`benchmark_entre_fechas`** (de la otra sesión) corta bien la ventana invertida
+  y las fechas basura. ⚠️ **Asimetría observada, no tocada**: con un solo día
+  devuelve `0,0` donde la hermana devuelve `None`. Para el año no es alcanzable
+  (el motor mide tramos, no días). Se anota en vez de tocarles el código.
