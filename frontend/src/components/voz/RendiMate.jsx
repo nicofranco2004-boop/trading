@@ -51,7 +51,7 @@ export default function RendiMate() {
     status, progress, current,
     speak, toggle,
     open, setOpen,
-    thread, sending, askError, ask,
+    thread, sending, askError, sinCupo, ask,
   } = useVoz()
   const [texto, setTexto] = useState('')
   const hiloRef = useRef(null)
@@ -198,6 +198,22 @@ export default function RendiMate() {
 
         {askError && (
           <p className="m-0 text-[12px] text-rendi-neg">{askError}</p>
+        )}
+
+        {/* Se acabó el cupo de escuchas. NO va en rojo: no hizo nada mal, usó
+            lo que tenía. Dice cuándo se le renueva (el backend lo arma con la
+            fecha real de la ventana móvil) y ofrece el atajo — pero la
+            respuesta escrita la sigue teniendo arriba, intacta. */}
+        {sinCupo && (
+          <div className="rounded-lg border border-rendi-accent/30 bg-rendi-accent/[0.07] px-3 py-2">
+            <p className="m-0 text-[12px] text-ink-1 leading-snug">{sinCupo.message}</p>
+            {sinCupo.upgrade?.available && (
+              <Link to="/planes" onClick={() => setOpen(false)}
+                className="mt-1.5 inline-flex items-center gap-1 text-[12px] font-semibold text-rendi-accent hover:underline underline-offset-2">
+                Escuchar todas las que quieras <ArrowUpRight size={12} aria-hidden="true" />
+              </Link>
+            )}
+          </div>
         )}
       </div>
 

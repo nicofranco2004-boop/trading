@@ -80,6 +80,15 @@ LIMITS = {
         # descartar por ventana 7d. Free ve la grilla completa pero puede
         # personalizarla solo 2×/sem → al pasarse, upsell a Plus. None = ∞.
         "diag_dismiss_per_week": 2,
+        # listens_per_week: CUPO PROPIO de escuchas (la voz de Rendi), que NO
+        # sale de chat_per_week. Free tiene 1 consulta escrita por semana; si
+        # escuchar le costara "una ficha más" como al resto, no podría escuchar
+        # NUNCA su única consulta. Con un escuche propio, la escucha.
+        #
+        # Los dos regímenes son distintos A PROPÓSITO: sobre una cuota de 40,
+        # "cuesta el doble" es un precio proporcional; sobre una cuota de 1,
+        # significa "jamás". Ver reserve_listen.
+        "listens_per_week": 1,
     },
     # Plus diferencial IA: 9× más chat que Free (9 vs 1) y 6× más análisis
     # (6 vs 1). Plus es upgrade de "más broker + algo más de IA descriptiva".
@@ -89,6 +98,9 @@ LIMITS = {
         "hub_queries_per_week": 0,
         "chat_per_week": 9,             # 9× Free
         "diag_dismiss_per_week": None,  # ilimitado (el diferencial vs Free)
+        # None = este tier NO usa el cupo de escuchas: escuchar le descuenta
+        # 1 ficha de chat, que es la regla general.
+        "listens_per_week": None,
     },
     "pro": {
         "analyses_per_week": 60,        # 60× Free · 10× Plus
@@ -99,6 +111,9 @@ LIMITS = {
         # Worst case proyectado: ~$3.50/Pro/mes (chat + analyses + hub).
         "chat_per_week": 40,
         "diag_dismiss_per_week": None,  # ilimitado
+        # None = este tier NO usa el cupo de escuchas: escuchar le descuenta
+        # 1 ficha de chat, que es la regla general.
+        "listens_per_week": None,
     },
     # Advisor — Plan Asesor Financiero (B2B). Pool PROPIO del asesor: toda la
     # IA que use (en su cuenta o dentro de un cliente vía contexto) descuenta
@@ -109,12 +124,18 @@ LIMITS = {
         "hub_queries_per_week": 60,
         "chat_per_week": 40,
         "diag_dismiss_per_week": None,  # ilimitado
+        # None = este tier NO usa el cupo de escuchas: escuchar le descuenta
+        # 1 ficha de chat, que es la regla general.
+        "listens_per_week": None,
     },
     "admin": {
         "analyses_per_week": 1000,
         "hub_queries_per_week": 1000,
         "chat_per_week": 1000,
         "diag_dismiss_per_week": None,  # ilimitado
+        # None = este tier NO usa el cupo de escuchas: escuchar le descuenta
+        # 1 ficha de chat, que es la regla general.
+        "listens_per_week": None,
     },
 }
 
@@ -359,17 +380,19 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
                   COALESCE(SUM(hub_queries_count), 0) AS h,
                   COALESCE(SUM(chat_count), 0) AS c,
                   COALESCE(SUM(diag_dismiss_count), 0) AS d,
+                  COALESCE(SUM(listen_count), 0) AS l,
                   date(MIN(date), '+7 days') AS resets_on
              FROM ai_usage_daily
             WHERE user_id = ? AND date >= ?
               AND (analyses_count > 0 OR hub_queries_count > 0 OR chat_count > 0
-                   OR diag_dismiss_count > 0)""",
+                   OR diag_dismiss_count > 0 OR listen_count > 0)""",
         (user_id, window_start.isoformat()),
     ).fetchone()
     analyses = int(row["a"] or 0) if row else 0
     hub = int(row["h"] or 0) if row else 0
     chat = int(row["c"] or 0) if row else 0
     diag_dismiss = int(row["d"] or 0) if row else 0
+    listens = int(row["l"] or 0) if row else 0
     resets_on = row["resets_on"] if row else None
 
     tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
@@ -379,6 +402,11 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
     c_limit = limits.get("chat_per_week", 0)
     # diag_dismiss_per_week puede ser None (ilimitado en plus/pro/admin).
     dd_limit = limits.get("diag_dismiss_per_week")
+    # listens_per_week None = este tier NO usa el cupo (paga con fichas de chat).
+    # OJO: acá None NO quiere decir "ilimitado" como en diag_dismiss — quiere
+    # decir "no aplica". El frontend lo lee así: si listens_limit viene, la voz
+    # se cobra de este cupo; si viene null, se cobra de chat.
+    l_limit = limits.get("listens_per_week")
 
     return {
         "tier": tier,
@@ -395,6 +423,9 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
         "diag_dismiss_count": diag_dismiss,
         "diag_dismiss_limit": dd_limit,  # None = ilimitado
         "diag_dismiss_remaining": None if dd_limit is None else max(0, dd_limit - diag_dismiss),
+        "listen_count": listens,
+        "listens_limit": l_limit,       # None = no aplica (paga con fichas de chat)
+        "listens_remaining": None if l_limit is None else max(0, l_limit - listens),
         "resets_on": resets_on,
         "window_starts_on": window_start.isoformat(),
         # Alias back-compat para callers viejos.
@@ -514,6 +545,77 @@ def refund_chat(conn, user_id: int) -> None:
                 WHERE user_id = ?
                   AND date = (SELECT MAX(date) FROM ai_usage_daily
                                WHERE user_id = ? AND chat_count > 0)""",
+            (user_id, user_id),
+        )
+
+
+# ─── El cupo de escuchas (la voz de Rendi) ───────────────────────────────────
+# Dos regímenes, a propósito:
+#   · Free  → cupo PROPIO: 1 escuche por ventana móvil de 7 días, que NO toca
+#             chat_per_week. Su única consulta escrita de la semana sigue
+#             entera, y además la puede escuchar.
+#   · Pago  → sin cupo propio: escuchar descuenta 1 ficha de chat (reserve_chat),
+#             que es la regla general "escuchar cuesta una ficha más".
+# Sobre una cuota de 40, "cuesta el doble" es un precio proporcional. Sobre una
+# cuota de 1, significa "jamás" — por eso Free necesita su propio contador.
+
+
+def listen_limit(tier: str):
+    """Cuántas escuchas por semana tiene ese tier con cupo PROPIO, o None si no
+    usa cupo (paga con fichas de chat). El caller decide con esto a cuál de las
+    dos reservas llamar — que sean dos funciones distintas y no un `if` adentro
+    evita cobrar dos veces por error."""
+    return LIMITS.get(tier, {}).get("listens_per_week")
+
+
+def reserve_listen(conn, user_id: int, tier_override: str = None) -> tuple[bool, dict]:
+    """Reserva ATÓMICA de 1 escuche (mismo patrón que reserve_chat).
+
+    🔴 SÓLO SE LLAMA CUANDO HAY QUE GENERAR AUDIO DE VERDAD — o sea en el cache
+    MISS. Volver a escuchar algo ya generado es gratis y NO puede quemar el
+    escuche de la semana: si subiera también en el HIT, un Free que toca play
+    dos veces se queda sin nada y "re-escuchar es gratis" deja de ser cierto
+    justo para el tier al que más le importa.
+
+    Tier sin cupo propio (limit None) → devuelve True sin tocar nada: ése paga
+    con reserve_chat y el caller ya lo hizo.
+
+    Devuelve (ok, usage). ok=False → el endpoint responde 429 con upsell.
+    """
+    tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
+    limit = listen_limit(tier)
+    if limit is None:
+        return True, get_current_usage(conn, user_id, tier_override=tier)
+    today = date.today()
+    window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
+    with conn:
+        cur = conn.execute(
+            """INSERT INTO ai_usage_daily (user_id, date, listen_count, cost_usd_cents)
+               SELECT ?, ?, 1, 0
+                WHERE (SELECT COALESCE(SUM(listen_count), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 listen_count = ai_usage_daily.listen_count + 1
+               WHERE (SELECT COALESCE(SUM(listen_count), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?""",
+            (user_id, today.isoformat(), user_id, window_start, limit,
+             user_id, window_start, limit),
+        )
+        ok = cur.rowcount > 0
+    return ok, get_current_usage(conn, user_id, tier_override=tier)
+
+
+def refund_listen(conn, user_id: int) -> None:
+    """Devuelve el escuche cuando la generación falló y el usuario no escuchó
+    nada. Misma lógica que refund_chat: resta de la fila MÁS RECIENTE con
+    listen_count > 0, no de "hoy" (una reserva a las 23:59 con error a las 00:01
+    restaría de un día sin fila = escuche perdido 7 días)."""
+    with conn:
+        conn.execute(
+            """UPDATE ai_usage_daily SET listen_count = MAX(0, listen_count - 1)
+                WHERE user_id = ?
+                  AND date = (SELECT MAX(date) FROM ai_usage_daily
+                               WHERE user_id = ? AND listen_count > 0)""",
             (user_id, user_id),
         )
 

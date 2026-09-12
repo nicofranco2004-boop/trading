@@ -23,7 +23,7 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { trackEvent } from '../utils/analytics'
 import { markAIDiscovered } from './ai/AIDiscoveryBanner'
 import UpgradePromoCard from './ai/UpgradePromoCard'
-import { useVoz } from '../contexts/VozContext'
+import { useVoz, puedeArrancarSolo } from '../contexts/VozContext'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
@@ -259,12 +259,9 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       // pregunta, la respuesta y —si la hubo— la versión hablada, para poder
       // seguir la conversación desde cualquier otra pantalla.
       //
-      // El autoplay espera a la cuota fresca a propósito. Escuchar cuesta una
-      // ficha más, y un Free tiene UNA por semana: si arrancáramos el audio a
-      // ciegas, su única consulta terminaría siempre con un cartel de "sin
-      // cuota" que él no pidió. Con el dato en la mano, si no le queda nada
-      // dejamos la respuesta escrita y el botón de escuchar ahí, por si la
-      // quiere igual.
+      // El autoplay espera a la cuota FRESCA a propósito: la de antes del turno
+      // ya quedó vieja. La regla de quién puede arrancar solo vive en un solo
+      // lugar (puedeArrancarSolo) porque el acompañante decide lo mismo.
       const { prose: _prose, meta: _meta } = parseStructured(stripMarkdown(acc))
       const _publicar = (autoplay) => publicar({
         question: content, reply: _prose || stripMarkdown(acc), voz: res?.voz || null,
@@ -272,7 +269,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       })
       // Refrescar cuota tras success — no es crítico, best-effort.
       api.get('/ai/usage')
-        .then(u => { setUsage(u); _publicar((u?.chat_remaining ?? 1) > 0) })
+        .then(u => { setUsage(u); _publicar(puedeArrancarSolo(u)) })
         .catch(() => _publicar(true))
     } catch (e) {
       // Abort deliberado (tocó "Nuevo" o cerró el drawer): salir en silencio —

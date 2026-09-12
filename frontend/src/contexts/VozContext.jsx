@@ -43,6 +43,24 @@ const DEFAULT_RATE = 1.25
 // segunda pantalla de chat: la conversación entera vive en /ai.
 const MAX_THREAD = 8
 
+/**
+ * ¿El audio puede arrancar SOLO, sin que el usuario lo pida?
+ *
+ * Para Free la respuesta es SIEMPRE no. Free tiene UN escuche por semana (cupo
+ * propio, aparte de su consulta escrita — ver ai/quota.py). Gastárselo sin que
+ * lo haya pedido es peor que no dárselo: se quedaría sin el único de la semana
+ * mirando una pantalla que ni sabía que iba a hablar. Lo tiene que tocar él.
+ *
+ * Se reconoce por `listens_limit`: si viene un número, ese tier paga con cupo
+ * propio; si viene null, paga con fichas de chat y ahí sí arranca solo, mientras
+ * le queden.
+ */
+export function puedeArrancarSolo(usage) {
+  if (!usage) return true                       // sin dato, el comportamiento de antes
+  if (usage.listens_limit != null) return false // Free: siempre a pedido
+  return (usage.chat_remaining ?? 1) > 0
+}
+
 const VozContext = createContext(null)
 
 function leerBool(k, def) {
@@ -82,6 +100,9 @@ export function VozProvider({ children }) {
   const [thread, setThread] = useState([])
   const [sending, setSending] = useState(false)
   const [askError, setAskError] = useState(null)
+  // Se acabó el cupo de escuchas: { message, upgrade }. Se dibuja como aviso
+  // con su atajo a Planes, no como error.
+  const [sinCupo, setSinCupo] = useState(null)
 
   // Snapshot de la cartera para poder repreguntar desde cualquier pantalla.
   // Perezoso: recién se pide cuando hace falta, y se refresca si el chat
@@ -139,6 +160,7 @@ export function VozProvider({ children }) {
     if (!a || !voz?.text || !voz?.sig) return
     setStatus('preparing')
     setAskError(null)
+    setSinCupo(null)
     try {
       const { url } = await api.post('/ai/voz', { text: voz.text, sig: voz.sig })
       if (!url) throw new Error('sin url')
@@ -157,8 +179,13 @@ export function VozProvider({ children }) {
       }
       const detail = e?.payload?.detail
       if (e?.status === 429) {
+        // No es un error del usuario: se le acabó el cupo. Se muestra como
+        // aviso con la fecha en que se renueva, no como una falla en rojo.
         setStatus('quota')
-        setAskError(detail?.message || 'Te quedaste sin consultas por esta semana.')
+        setSinCupo({
+          message: detail?.message || 'Te quedaste sin escuchas por esta semana.',
+          upgrade: detail?.upgrade || null,
+        })
         return
       }
       setStatus('error')
@@ -240,7 +267,14 @@ export function VozProvider({ children }) {
       if (res?.portfolioChanged) window.dispatchEvent(new Event('rendi:portfolio-changed'))
       if (res?.voz) {
         setCurrent(res.voz)
-        if (enabled) speak(res.voz)
+        // Mismo criterio que /ai: con el parlante prendido arranca solo, salvo
+        // que el tier pague con cupo propio de escuchas (Free) — ahí siempre a
+        // pedido. La cuota se consulta fresca porque la de antes del turno ya
+        // quedó vieja.
+        if (enabled) {
+          const u = await api.get('/ai/usage').catch(() => null)
+          if (puedeArrancarSolo(u)) speak(res.voz)
+        }
       }
     } catch (e) {
       const detail = e?.payload?.detail
@@ -307,9 +341,9 @@ export function VozProvider({ children }) {
     status, progress, current,
     speak, toggle, stop,
     open, setOpen,
-    thread, sending, askError, ask, publicar,
+    thread, sending, askError, sinCupo, ask, publicar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
-       speak, toggle, stop, open, thread, sending, askError, ask, publicar])
+       speak, toggle, stop, open, thread, sending, askError, sinCupo, ask, publicar])
 
   return (
     <VozContext.Provider value={value}>
@@ -329,7 +363,7 @@ const INERTE = {
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
   speak: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
-  thread: [], sending: false, askError: null, ask: () => {}, publicar: () => {},
+  thread: [], sending: false, askError: null, sinCupo: null, ask: () => {}, publicar: () => {},
 }
 
 export const useVoz = () => useContext(VozContext) || INERTE

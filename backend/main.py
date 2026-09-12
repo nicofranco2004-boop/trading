@@ -2074,6 +2074,13 @@ def init_db():
                 -- diag_dismiss_count: "No me interesa" del diagnóstico (cuota Free
                 -- 2/sem → upsell a Plus; plus/pro/admin ilimitado).
                 diag_dismiss_count INTEGER NOT NULL DEFAULT 0,
+                -- listen_count: escuchas de la voz de Rendi. Cupo PROPIO de Free
+                -- (1/sem) que NO sale de chat_count: con 1 consulta semanal,
+                -- cobrarle "una ficha más" por escuchar sería no dejarlo escuchar
+                -- nunca. Los tiers pagos no usan esta columna (pagan con
+                -- chat_count). Sube SOLO cuando se genera audio, nunca al
+                -- re-escuchar del cache. Ver ai/quota.py: reserve_listen.
+                listen_count INTEGER NOT NULL DEFAULT 0,
                 cost_usd_cents INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, date)
             );
@@ -2725,6 +2732,9 @@ def init_db():
         # Migración: ai_usage_daily.diag_dismiss_count (cuota del "No me interesa").
         if ai_usage_cols and 'diag_dismiss_count' not in ai_usage_cols:
             conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN diag_dismiss_count INTEGER NOT NULL DEFAULT 0")
+        # Migración: ai_usage_daily.listen_count (cupo de escuchas de Free).
+        if ai_usage_cols and 'listen_count' not in ai_usage_cols:
+            conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN listen_count INTEGER NOT NULL DEFAULT 0")
 
         # Migración: columna broker en import_normalized_tx (agregada después de la
         # versión inicial de las tablas).
@@ -29554,6 +29564,22 @@ def _refund_chat_quota(uid: int) -> None:
         log.warning("refund_chat failed for uid=%s: %s", uid, ex)
 
 
+def _refund_listen_quota(uid: int) -> None:
+    """Devuelve el ESCUCHE reservado cuando la generación del audio falló y el
+    usuario no llegó a oír nada. Es el gemelo de _refund_chat_quota para el cupo
+    propio de Free — devolver la ficha equivocada le dejaría el escuche quemado
+    igual. Best-effort."""
+    from ai import quota
+    try:
+        conn2 = get_db()
+        try:
+            quota.refund_listen(conn2, uid)
+        finally:
+            conn2.close()
+    except Exception as ex:
+        log.warning("refund_listen failed for uid=%s: %s", uid, ex)
+
+
 def _maybe_refund_trade_turn(uid: int, turn_flags: set, reserved: bool = True) -> None:
     """Refund del slot cuando un UNDO exitoso se ejecutó en un turno que RESERVÓ
     (deshacer un error no debe costar cuota; el registro deshecho ya pagó el
@@ -30590,6 +30616,45 @@ class AIVozIn(BaseModel):
     sig: str = Field(..., min_length=8, max_length=128)
 
 
+def _voz_quota_429(tier: str, usage: dict, con_cupo: bool) -> HTTPException:
+    """El 429 de "no te quedan escuchas".
+
+    Con cupo propio (Free) el mensaje habla de ESCUCHAS, no de consultas: decirle
+    "llegaste al máximo de consultas" a alguien que todavía tiene su consulta
+    escrita disponible sería mentirle. Y dice CUÁNDO se le renueva — "se acabó"
+    a secas no le sirve a nadie.
+
+    Sin cupo propio (pago) es la cuota de chat de siempre: reusamos el 429 del
+    chat para que la tarjeta de upgrade y el shape no se bifurquen."""
+    if not con_cupo:
+        return _chat_quota_429(tier, usage)
+    resets_on = usage.get("resets_on")
+    cuando = (f" Tu próximo escuche se libera el {resets_on}." if resets_on
+              else " Se te renueva cuando venza el más viejo (ventana móvil de 7 días).")
+    return HTTPException(
+        429,
+        detail={
+            "error": "voz_quota_exceeded",
+            "message": (f"Ya usaste tu escuche de esta semana "
+                        f"({usage.get('listen_count')}/{usage.get('listens_limit')})."
+                        + cuando + " La respuesta escrita la seguís teniendo."),
+            "usage": usage,
+            "upgrade": {
+                "available": tier in ("free", "plus"),
+                "current_tier": tier,
+                "target_tier": "plus" if tier == "free" else "pro",
+                "resets_on": resets_on,
+                "benefits": [
+                    "Escuchá todas las respuestas que quieras (9 consultas/sem vs 1)",
+                    "Hasta 3 brokers (vs 1 en Free)",
+                    "Reportes históricos + Export CSV",
+                    "Diagnóstico completo + 4 detectores de comportamiento",
+                ],
+            },
+        },
+    )
+
+
 @app.post("/api/ai/voz")
 def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effective_user)):
     """Paso 1: valida el texto hablado y devuelve la dirección de su audio.
@@ -30615,9 +30680,33 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
         })
 
     key = tts.remember(text)
+    ya_esta = tts.cache_get(key) is not None
+
+    # PRE-CHECK de cuota, read-only. La reserva de verdad sigue estando en el
+    # GET (atómica, a prueba de pedidos simultáneos) — esto es para poder
+    # AVISAR. Motivo: el GET lo hace el propio <audio> del navegador, y un
+    # elemento de audio no sabe contarle al código qué código de estado le
+    # devolvieron: un 429 ahí llega como un "error" pelado. Sin este chequeo, un
+    # Free sin escuches vería "no pudimos generar el audio" en vez del aviso con
+    # la fecha en que se le renueva.
+    # Sólo si hay que GENERAR: lo que ya está en el cache no cuesta nada.
+    if not ya_esta:
+        from ai import quota
+        _conn = get_db()
+        try:
+            _tier = quota.get_tier(_conn, uid)
+            _con_cupo = quota.listen_limit(_tier) is not None
+            _usage = quota.get_current_usage(_conn, uid)
+        finally:
+            _conn.close()
+        _quedan = (_usage.get("listens_remaining") if _con_cupo
+                   else _usage.get("chat_remaining"))
+        if _quedan is not None and _quedan <= 0:
+            raise _voz_quota_429(_tier, _usage, con_cupo=_con_cupo)
+
     return {
         "url": f"/api/ai/voz/{key}.mp3",
-        "cached": tts.cache_get(key) is not None,
+        "cached": ya_esta,
         "seconds": tts.estimated_seconds(text),
     }
 
@@ -30656,18 +30745,30 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
         # los dos pasos. El frontend reintenta el paso 1 y sigue solo.
         raise HTTPException(404, "No encontrado")
 
-    # Hay que generar → cuesta una ficha. Misma reserva atómica que el chat
-    # (quota.reserve_chat): el conteo y el incremento ocurren en un solo
-    # statement, así que N pedidos simultáneos no pasan todos el tope.
+    # Hay que GENERAR → recién acá se cobra. Dos regímenes, a propósito
+    # (ver ai/quota.py):
+    #   · Free  → gasta 1 de su CUPO PROPIO de escuchas, que no toca su única
+    #             consulta escrita de la semana.
+    #   · Pago  → gasta 1 ficha de chat, la regla general "escuchar cuesta una
+    #             ficha más".
+    # 🔴 Este bloque está DESPUÉS del cache hit de arriba y eso no es un detalle
+    # de orden: re-escuchar algo ya generado no cobra nada. Si el contador
+    # subiera también en el hit, un Free que toca play dos veces se quedaría sin
+    # escuche y "re-escuchar es gratis" dejaría de ser cierto justo para el tier
+    # al que más le importa.
     from ai import quota
     _conn = get_db()
     try:
         _tier = quota.get_tier(_conn, uid)
-        _ok, _usage = quota.reserve_chat(_conn, uid)
+        _con_cupo = quota.listen_limit(_tier) is not None
+        if _con_cupo:
+            _ok, _usage = quota.reserve_listen(_conn, uid)
+        else:
+            _ok, _usage = quota.reserve_chat(_conn, uid)
     finally:
         _conn.close()
     if not _ok:
-        raise _chat_quota_429(_tier, _usage)
+        raise _voz_quota_429(_tier, _usage, con_cupo=_con_cupo)
 
     log.info("ai_voz cache MISS uid=%s tier=%s chars=%d ≈%.1fs",
              uid, _tier, len(text), tts.estimated_seconds(text))
@@ -30684,10 +30785,14 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
         except Exception as ex:
             log.error("ai_voz: falló la generación uid=%s: %s", uid, str(ex)[:200])
             if not buf:
-                # No se escuchó nada → no se cobra. Con audio parcial ya
-                # entregado sí se cobra (mismo criterio que el chat: el gasto
-                # con OpenAI ya está hecho).
-                _refund_chat_quota(uid)
+                # No se escuchó nada → no se cobra. Se devuelve LO MISMO que se
+                # reservó: el escuche si era Free, la ficha si era pago. Con
+                # audio parcial ya entregado sí se cobra (mismo criterio que el
+                # chat: el gasto con OpenAI ya está hecho).
+                if _con_cupo:
+                    _refund_listen_quota(uid)
+                else:
+                    _refund_chat_quota(uid)
             return
         if buf:
             tts.cache_put(key, bytes(buf))

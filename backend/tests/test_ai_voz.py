@@ -167,12 +167,14 @@ class CacheTest(unittest.TestCase):
 # ─── El endpoint, punta a punta ──────────────────────────────────────────────
 
 class _EndpointBase(unittest.TestCase):
+    TIER = "pro"
+
     def setUp(self):
         tts.cache_clear()
         self.conn = main.get_db()
         cur = self.conn.execute(
             "INSERT INTO users (email, password_hash, tier) VALUES (?,?,?)",
-            ("voz-%s@rendi.test" % os.urandom(4).hex(), "x", "pro"))
+            ("voz-%s@rendi.test" % os.urandom(4).hex(), "x", self.TIER))
         self.conn.commit()
         self.uid = cur.lastrowid
         main.app.dependency_overrides[main.get_effective_user] = lambda: self.uid
@@ -190,8 +192,14 @@ class _EndpointBase(unittest.TestCase):
             pass
 
     def _fichas(self):
+        return self._contador("chat_count")
+
+    def _escuchas(self):
+        return self._contador("listen_count")
+
+    def _contador(self, col):
         row = self.conn.execute(
-            "SELECT COALESCE(SUM(chat_count),0) AS n FROM ai_usage_daily WHERE user_id=?",
+            "SELECT COALESCE(SUM(%s),0) AS n FROM ai_usage_daily WHERE user_id=?" % col,
             (self.uid,)).fetchone()
         return row["n"] if isinstance(row, sqlite3.Row) else row[0]
 
@@ -299,6 +307,168 @@ class EndpointCobraUnaVezTest(_EndpointBase):
                 # no lo generó — la prueba de que va saliendo a medida que llega.
                 self.assertNotIn("content-length", {k.lower() for k in r.headers})
                 self.assertEqual(b"".join(r.iter_bytes()), b"".join(pedazos))
+
+
+# ─── El contador, a nivel cuota ──────────────────────────────────────────────
+# Los mismos cuidados que reserve_chat (ver test_ai_final_fixes.py::TestB9):
+# tope re-verificado DENTRO del statement, refund que no baja de cero, y refund
+# que cruza la medianoche.
+
+class ContadorDeEscuchasTest(unittest.TestCase):
+    def setUp(self):
+        self.conn = main.get_db()
+        self.addCleanup(self.conn.close)
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,'free')",
+            ("esc-%s@rendi.test" % os.urandom(4).hex(), "x"))
+        self.uid = cur.lastrowid
+        self.conn.commit()
+
+    def _n(self, col="listen_count"):
+        return self.conn.execute(
+            "SELECT COALESCE(SUM(%s),0) FROM ai_usage_daily WHERE user_id=?" % col,
+            (self.uid,)).fetchone()[0]
+
+    def test_quien_usa_cupo_propio_y_quien_no(self):
+        self.assertEqual(quota.listen_limit("free"), 1)
+        for pago in ("plus", "pro", "advisor", "admin"):
+            self.assertIsNone(quota.listen_limit(pago),
+                              "%s no debería tener cupo propio: paga con fichas" % pago)
+
+    def test_el_tope_se_respeta_y_no_incrementa_de_mas(self):
+        ok, usage = quota.reserve_listen(self.conn, self.uid)
+        self.assertTrue(ok)
+        self.assertEqual(usage["listens_remaining"], 0)
+        ok2, usage2 = quota.reserve_listen(self.conn, self.uid)
+        self.assertFalse(ok2)
+        self.assertEqual(self._n(), 1, "la que rebota NO puede incrementar")
+        self.assertEqual(usage2["listen_count"], 1)
+
+    def test_no_toca_las_fichas_de_chat(self):
+        quota.reserve_listen(self.conn, self.uid)
+        self.assertEqual(self._n("chat_count"), 0)
+        quota.reserve_chat(self.conn, self.uid)
+        self.assertEqual(self._n("listen_count"), 1, "y el chat tampoco toca el escuche")
+
+    def test_un_tier_sin_cupo_propio_no_incrementa_nada(self):
+        self.conn.execute("UPDATE users SET tier='pro' WHERE id=?", (self.uid,))
+        self.conn.commit()
+        ok, _ = quota.reserve_listen(self.conn, self.uid)
+        self.assertTrue(ok, "no bloquea: ése paga con reserve_chat")
+        self.assertEqual(self._n(), 0, "y no escribe en el contador que no usa")
+
+    def test_el_refund_devuelve_el_escuche_y_no_baja_de_cero(self):
+        quota.reserve_listen(self.conn, self.uid)
+        quota.refund_listen(self.conn, self.uid)
+        self.assertEqual(self._n(), 0)
+        quota.refund_listen(self.conn, self.uid)      # sin reserva previa
+        self.assertEqual(self._n(), 0)
+        ok, _ = quota.reserve_listen(self.conn, self.uid)
+        self.assertTrue(ok, "el escuche tiene que haber vuelto")
+
+    def test_el_refund_cruza_la_medianoche(self):
+        """Reserva a las 23:59, falla a las 00:01: si restara de "hoy" (que no
+        tiene fila) el escuche quedaría quemado 7 días."""
+        from datetime import date, timedelta
+        ayer = (date.today() - timedelta(days=1)).isoformat()
+        self.conn.execute(
+            "INSERT INTO ai_usage_daily (user_id, date, listen_count) VALUES (?,?,1)",
+            (self.uid, ayer))
+        self.conn.commit()
+        quota.refund_listen(self.conn, self.uid)
+        self.assertEqual(self._n(), 0, "tenía que restar de ayer")
+
+
+# ─── El cupo de escuchas de Free ─────────────────────────────────────────────
+# Free tiene UNA consulta escrita por semana. Cobrarle "una ficha más" por
+# escucharla, como al resto, sería no dejarlo escuchar NUNCA. Por eso tiene un
+# cupo PROPIO de 1 escuche, que no toca su consulta. Los cuatro casos que
+# importan, uno por test.
+
+class CupoDeEscuchasFreeTest(_EndpointBase):
+    TIER = "free"
+
+    def test_escuchar_gasta_el_ESCUCHE_y_no_la_consulta(self):
+        url = self._preparar().json()["url"]
+        with patch.object(tts, "speak", return_value=iter([MP3])):
+            r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._escuchas(), 1, "tenía que gastar su escuche")
+        self.assertEqual(self._fichas(), 0,
+                         "NO puede tocarle la consulta escrita de la semana")
+
+    def test_volver_a_darle_play_a_LA_MISMA_no_quema_el_escuche(self):
+        """🔴 El detalle que no se puede errar. Si el contador subiera también
+        en el cache hit, un Free que toca play dos veces se queda sin nada y
+        "re-escuchar es gratis" deja de ser cierto justo para el tier al que
+        más le importa."""
+        url = self._preparar().json()["url"]
+        with patch.object(tts, "speak", return_value=iter([MP3])):
+            self.client.get(url)
+        self.assertEqual(self._escuchas(), 1)
+
+        with patch.object(tts, "speak", side_effect=AssertionError("no debe generar de nuevo")) as hablar:
+            r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["x-rendi-voz-cache"], "hit")
+        self.assertEqual(hablar.call_count, 0)
+        self.assertEqual(self._escuchas(), 1, "re-escuchar NO puede quemar el escuche")
+
+    def test_una_SEGUNDA_respuesta_distinta_en_la_misma_semana_rebota(self):
+        url = self._preparar().json()["url"]
+        with patch.object(tts, "speak", return_value=iter([MP3])):
+            self.client.get(url)
+
+        otro = "Otra respuesta distinta, con otras palabras y otros números."
+        # Rebota ya en el paso 1: el <audio> del navegador no sabe leer un 429,
+        # así que el aviso tiene que llegar por acá (ver ai_voz_preparar).
+        r = self.client.post("/api/ai/voz", json={"text": otro, "sig": tts.sign(otro)})
+        self.assertEqual(r.status_code, 429)
+        d = r.json()["detail"]
+        self.assertEqual(d["error"], "voz_quota_exceeded")
+        self.assertTrue(d["upgrade"]["available"])
+        self.assertIn("escuche", d["message"].lower())
+        # Y dice CUÁNDO se renueva, no sólo que se acabó.
+        self.assertTrue(d["upgrade"]["resets_on"] or "7 días" in d["message"],
+                        "el aviso no dice cuándo se le renueva: %r" % d["message"])
+
+        # Y si igual pidiera el audio a mano, tampoco se genera.
+        key = tts.remember(otro)
+        with patch.object(tts, "speak", side_effect=AssertionError("no debe generar")) as hablar:
+            r2 = self.client.get("/api/ai/voz/%s.mp3" % key)
+        self.assertEqual(r2.status_code, 429)
+        self.assertEqual(hablar.call_count, 0)
+        self.assertEqual(self._escuchas(), 1)
+
+    def test_si_falla_la_generacion_le_devolvemos_el_escuche(self):
+        url = self._preparar().json()["url"]
+
+        def _explota(_t):
+            raise RuntimeError("OpenAI 500")
+            yield b""          # pragma: no cover — lo hace generador
+
+        with patch.object(tts, "speak", _explota):
+            self.client.get(url)
+        self.assertEqual(self._escuchas(), 0, "no escuchó nada: el escuche vuelve")
+        self.assertEqual(self._fichas(), 0)
+
+
+class PagoSigueCobrandoFichaTest(_EndpointBase):
+    TIER = "pro"
+
+    def test_a_pro_la_respuesta_hablada_le_sale_2_fichas(self):
+        """Los dos regímenes conviven: en una cuota de 40, "cuesta el doble" es
+        un precio proporcional; en una de 1, sería "jamás". Acá se cuenta el
+        turno ENTERO —preguntar y escuchar— que es donde se ve el 2."""
+        # 1) la pregunta escrita, como cualquier turno de chat
+        quota.reserve_chat(self.conn, self.uid)
+        self.assertEqual(self._fichas(), 1)
+        # 2) escucharla
+        url = self._preparar().json()["url"]
+        with patch.object(tts, "speak", return_value=iter([MP3])):
+            self.client.get(url)
+        self.assertEqual(self._fichas(), 2, "preguntar + escuchar = 2 fichas")
+        self.assertEqual(self._escuchas(), 0, "el cupo propio de Free ni se toca")
 
 
 # ─── Los nombres que se dicen ────────────────────────────────────────────────

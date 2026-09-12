@@ -28,6 +28,7 @@ def _make_db():
             hub_queries_count INTEGER DEFAULT 0,
             chat_count INTEGER NOT NULL DEFAULT 0,
             diag_dismiss_count INTEGER NOT NULL DEFAULT 0,
+            listen_count INTEGER NOT NULL DEFAULT 0,
             cost_usd_cents INTEGER DEFAULT 0,
             PRIMARY KEY (user_id, date)
         );
