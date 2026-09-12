@@ -43,13 +43,18 @@ log = logging.getLogger("ai.llm")
 
 # Modelo IDs canónicos del catálogo (no inventar — son los exactos)
 MODEL_HAIKU = "claude-haiku-4-5"
-MODEL_SONNET = "claude-sonnet-4-6"
+# Sonnet 5, no el 4-6 que estaba acá: es MEJOR y además un tercio más barato
+# (US$2/$10 contra US$3/$15). El 4-6 quedó como referencia de precio para
+# cualquier código viejo que todavía lo nombre.
+MODEL_SONNET = "claude-sonnet-5"
+MODEL_SONNET_46 = "claude-sonnet-4-6"
 
-# Tarifas por modelo en USD por 1M tokens (cached: 2026-04-29 del catálogo)
+# Tarifas por modelo en USD por 1M tokens (catálogo al 2026-09-12).
 # Cache reads ≈ 10% del input price. Cache writes ≈ 125% del input price.
 _PRICING_USD_PER_M = {
-    MODEL_HAIKU:  {"input": 1.00,  "output": 5.00},
-    MODEL_SONNET: {"input": 3.00,  "output": 15.00},
+    MODEL_HAIKU:     {"input": 1.00,  "output": 5.00},
+    MODEL_SONNET:    {"input": 2.00,  "output": 10.00},
+    MODEL_SONNET_46: {"input": 3.00,  "output": 15.00},
 }
 
 

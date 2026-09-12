@@ -21758,7 +21758,21 @@ ANTI-SPAM DE TOOLS:
 
 """ + VOZ + """
 EXTENSIÓN Y FORMATO
-CORTO — REGLA DURA DE EXTENSIÓN: la prosa es el TITULAR de tu respuesta, no el cuerpo. Máximo ~120 palabras (2 párrafos cortos o 4-5 oraciones), incluso si piden detalle. PROHIBIDO: ensayos numerados (1./2./3. con párrafos), enumerar posiciones o P&L por activo en texto, repetir en prosa números que ya van en las tarjetas. El CUERPO de la respuesta son los blocks visuales del BLOQUE ESTRUCTURADO (tablas, barras, comparaciones) — la UI los muestra lindos; el texto largo da fiaca y nadie lo lee. Estructura ideal: 1 oración con la respuesta directa → 2-3 oraciones con tu lectura/el porqué → (si aplica) 1 pregunta corta al usuario → bloque estructurado con los datos.
+CORTO — REGLA DURA DE EXTENSIÓN: **máximo 70 palabras de prosa**, y apuntá a 45. Son 3 o 4 oraciones. No es una sugerencia: pasarte es el error más caro que podés cometer acá.
+
+LA FORMA DE TODA RESPUESTA ES: el dato + la puerta.
+  1. EL DATO (1-2 oraciones): contestá exactamente lo que preguntaron, con el número que lo contesta. Nada más.
+  2. LA PUERTA (1 oración): ofrecé el paso siguiente CONCRETO, como pregunta, y esperá.
+
+Ejemplo de lo que se espera. Pregunta: "¿Tesla está cara?"
+  BIEN: "Tesla cerró hoy a 248 dólares, 12% abajo de su máximo del año. Para decirte si está cara o barata hay que mirar cuánto gana y a qué múltiplo cotiza. ¿Querés que lo vea?"
+  MAL: los mismos datos + tres párrafos de contexto sobre el sector, la competencia, los riesgos y qué debería mirar. Eso NO lo pidió.
+
+POR QUÉ: cada párrafo de más cuesta plata, hace esperar más y encima le da fiaca leerlo — así que ni siquiera lo lee. Una respuesta corta que ofrece seguir se lee entera y deja al usuario eligiendo qué profundizar. Si quiere el análisis largo, te lo va a pedir, y AHÍ SÍ te extendés.
+
+Cuando el usuario te pide expresamente que profundices ("dale", "analizalo", "contame más"), podés usar hasta 150 palabras. Sólo entonces.
+
+PROHIBIDO SIEMPRE: ensayos numerados (1./2./3. con párrafos), enumerar posiciones o P&L activo por activo en el texto, repetir en prosa números que ya van en las tarjetas, y cerrar con un resumen de lo que acabás de decir. El CUERPO de la respuesta son los blocks visuales del BLOQUE ESTRUCTURADO — el texto largo nadie lo lee.
 NO uses markdown (sin bold con asteriscos, sin listas con guión, sin headers con numeral). Escribí en prosa fluida con saltos de línea naturales. La UI no renderiza markdown. ÚNICA EXCEPCIÓN: la línea ---RENDI--- del BLOQUE ESTRUCTURADO final NO es markdown — es un marcador técnico para la UI y va siempre que la respuesta sea de análisis.
 Si viene de un mes muy bueno, no le sigas la euforia: decí el número y decí qué parte todavía no se sabe. Si perdió plata, decilo derecho y seguí con lo que sirve para la decisión que viene — sin consolar.
 Separá la persona de la decisión: "los números muestran X" en vez de "estás haciendo mal".
@@ -21948,7 +21962,7 @@ Al FINAL de cada respuesta de ANÁLISIS, agregá una línea EXACTA `---RENDI---`
 {"verdict":"2-3 palabras (ej: Buen mes / Ojo acá / Todo en orden)","tone":"pos|warn|neg|neutral","headline":"la respuesta resumida en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor con signo/unidad","t":"pos|warn|neg|neutral"}],"followups":["repregunta corta","otra"],"sources":["qué datos miraste, ej: 12 posiciones","snapshot de hoy"]}
 Reglas del bloque:
 - stats: máx 3, SOLO números reales del snapshot o de tools — nunca inventados. Elegí los números que RESPONDEN LA PREGUNTA (deltas, brechas vs benchmark, concentración, el dato que sorprende) — NO el resumen genérico de la cartera (invertido/valor actual ya lo ve en el dashboard; repetirlo aburre). Si no hay métricas relevantes, mandá stats vacío []. LABELS SIN AMBIGÜEDAD: para el peso/ponderación de posiciones decí "Concentración top 5" o "Top 5 = % de tu cartera" — NUNCA "pesos" (acá "pesos" es la moneda ARS y se lee como plata). Mismo criterio en títulos de blocks y prosa: "peso" solo si el contexto lo hace inequívoco.
-- followups: máx 3 preguntas cortas que VOS puedas responder con esta data.
+- followups: 2 o 3, y son LA PUERTA que abriste en la prosa, escritas como las diría el usuario ("Sí, analizá los fundamentos", "Mostrame el detalle por activo", "¿Y contra el S&P?"). El frontend las muestra como botones, así que aceptar tiene que ser un solo toque. Concretas y distintas entre sí: tres formas de decir lo mismo no son tres caminos. NUNCA las omitas en una respuesta de análisis — son cómo sigue la conversación.
 - sources: máx 3, cortitos.
 - La prosa va ANTES del bloque y NO lo menciona (el usuario no ve el JSON, ve tarjetas).
 - OMITÍ el bloque entero en: saludos, aclaraciones breves, y TODO el flujo de registro de operaciones (confirmaciones "¿Confirmás?", resultado del registro, undo). Ahí respondé texto plano como siempre.
@@ -29350,23 +29364,25 @@ def _is_whitelisted_question(text: str) -> bool:
     return _normalize_question(text) in _FREE_QUESTIONS_NORMALIZED
 
 
-# Pricing Haiku 4.5 (USD por 1M tokens). Actualizar si Anthropic cambia.
-# https://docs.anthropic.com/en/docs/about-claude/pricing
-_HAIKU_PRICE = {
-    "input": 1.0,          # input no cacheado
-    "cache_write": 1.25,   # cache_creation
-    "cache_read": 0.10,    # cache_read
-    "output": 5.0,
-}
-
-# Sonnet 4.6 (el modelo del chat del LIBRO, book-mode del Plan Asesor) — sin
-# esto el monitoreo de costos subreportaba 3× justo el modo más caro (audit).
-_SONNET_PRICE = {
-    "input": 3.0,
-    "cache_write": 3.75,
-    "cache_read": 0.30,
-    "output": 15.0,
-}
+# Precios por 1M de tokens. NO se escriben acá: se derivan de la ÚNICA tabla
+# del repo, `ai/llm.py::_PRICING_USD_PER_M`.
+#
+# Antes esto era una segunda tabla escrita a mano, y se desincronizó apenas
+# cambió el modelo: el chat pasó a Sonnet 5 (US$2/$10) y esta copia seguía
+# cobrando Sonnet 4.6 (US$3/$15), así que el costo que se guardaba en
+# ai_usage_daily salía ~50% inflado. Un número de costo equivocado es peor que
+# no tenerlo: se toman decisiones de precio con él.
+def _precio_por_millon(modelo: str) -> dict:
+    from ai import llm as _llm
+    base = _llm._PRICING_USD_PER_M.get(modelo)
+    if base is None:      # modelo desconocido → el más caro que conocemos
+        base = max(_llm._PRICING_USD_PER_M.values(), key=lambda v: v["output"])
+    return {
+        "input": base["input"],
+        "cache_write": base["input"] * 1.25,   # cache_creation
+        "cache_read": base["input"] * 0.10,    # cache_read
+        "output": base["output"],
+    }
 
 
 def _warn_if_truncated(resp_obj, tier: str, uid: int, stage: str) -> None:
@@ -29405,7 +29421,8 @@ def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str,
         cw = int(getattr(usage_obj, "cache_creation_input_tokens", 0) or 0)
         cr = int(getattr(usage_obj, "cache_read_input_tokens", 0) or 0)
 
-        price = _SONNET_PRICE if (model and "sonnet" in model) else _HAIKU_PRICE
+        from ai import llm as _llm
+        price = _precio_por_millon(model or _llm.MODEL_HAIKU)
         cost_usd = (
             inp * price["input"]
             + cw * price["cache_write"]
@@ -29576,6 +29593,16 @@ def _auth_uid_de(request, uid: int) -> int:
     adentro de la cuenta de un cliente (ahí `get_effective_user` devuelve el
     cliente). Lo stashea el resolver en request.state."""
     return getattr(getattr(request, "state", None), "rendi_auth_uid", uid)
+
+
+# Cuánto "piensa" el modelo antes de escribir. Sonnet 5 viene en `high` y con
+# eso tarda ~16 segundos en soltar la primera palabra: el usuario mira una
+# pantalla muda todo ese rato. En `medium` arranca en ~1 segundo, igual que
+# Haiku, y conserva lo que lo hace mejor (que respeta el formato del bloque).
+# `low` también arranca rápido pero razona menos; Nico eligió el escalón de
+# arriba. Si algún día se sube a `high`, medí PRIMERO el tiempo al primer
+# token — es lo que el usuario siente.
+_CHAT_EFFORT = {"effort": "medium"}
 
 
 def _tier_con_lente(conn, request, uid: int):
@@ -30004,11 +30031,24 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # el modelo puede emitir cualquier nombre y el dispatch lo ejecutaría).
     chat_tools = _AI_TOOLS_ADVISOR if book_mode else (_AI_TOOLS if is_premium else _AI_TOOLS_FREE)
     chat_allowed_names = {t["name"] for t in chat_tools}
-    # Sonnet SOLO para el libro (decisión de Nico): contexto más grande +
-    # razonamiento de agregación cross-cliente donde Haiku afloja; el costo
-    # (~US$6/mes a uso pleno) es marginal contra el precio del plan Asesor.
+    # SONNET 5 PARA TODOS (decisión de Nico, 2026-09-12). Antes era Haiku para
+    # retail y Sonnet sólo para el libro del asesor.
+    #
+    # POR QUÉ, MEDIDO: con Haiku el bloque estructurado —las tarjetas Y el
+    # resumen hablado— aparecía en 1 de cada 4 respuestas. Con Sonnet 5, en 4
+    # de 4. Es la diferencia entre que la voz y las tarjetas funcionen siempre
+    # o una de cada cuatro veces. (Los respaldos de _extract_voz existen para
+    # tapar justamente eso; con Sonnet casi no se usan.)
+    #
+    # Y NO ES MÁS LENTO: 0,9s al primer token y 9,7s en total con Haiku, contra
+    # 1,0s y 10,4s con Sonnet. La clave es el ESFUERZO de abajo: sin acotarlo,
+    # Sonnet piensa 16 segundos antes de escribir una sola palabra.
+    #
+    # Costo: la consulta pasa de US$0,0066 a US$0,0140. Sobre uso real (~40% de
+    # la cuota) son +US$0,51 por mes en un Pro de US$6,99 — el margen baja de
+    # 93% a 86%.
     from ai import llm as _llm
-    chat_model = _llm.MODEL_SONNET if book_mode else _llm.MODEL_HAIKU
+    chat_model = _llm.MODEL_SONNET
 
     # Gating Free/Plus: solo whitelist. Pro/Admin: libre.
     #
@@ -30151,7 +30191,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
 
 RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días.
 
-RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: prosa CORTA (máx ~120 palabras: la respuesta directa + tu lectura) y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos) — se olvida fácil porque no se ve en pantalla, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
+RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: prosa MUY CORTA —máximo 70 palabras, apuntá a 45: el dato que contesta la pregunta, y después UNA pregunta ofreciendo el paso siguiente— y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar, contá las palabras de la prosa: si pasan de 70, sacá el párrafo que el usuario NO pidió (casi siempre es el del contexto de más). Con los followups cargados no perdés nada: lo que sacaste se lo ofrecés en un botón y él decide si lo quiere. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos) — se olvida fácil porque no se ve en pantalla, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
@@ -30431,6 +30471,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     with client.messages.stream(
                         model=chat_model,
                         max_tokens=max_tokens,
+                        output_config=_CHAT_EFFORT,
                         system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
                         tools=chat_tools,
                         messages=messages_loop,
@@ -30506,6 +30547,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 with client.messages.stream(
                     model=chat_model,
                     max_tokens=max_tokens_fallback,
+                    output_config=_CHAT_EFFORT,
                     system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
                     tools=chat_tools,
                     tool_choice={"type": "none"},
@@ -30588,6 +30630,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             response = client.messages.create(
                 model=chat_model,
                 max_tokens=max_tokens,
+                output_config=_CHAT_EFFORT,
                 system=[
                     {"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}
                 ],
@@ -30672,6 +30715,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
         response = client.messages.create(
             model=chat_model,
             max_tokens=max_tokens_fallback,
+            output_config=_CHAT_EFFORT,
             system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
             tools=chat_tools,
             tool_choice={"type": "none"},
