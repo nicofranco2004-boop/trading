@@ -744,3 +744,78 @@ una decisión de producto, no técnica.**
 `reporting/schema.py` tiene el campo `basis` (`'mercado'` vs `'contable'`) justamente para
 esto: no quitar el número, sino **decir de dónde sale**. Combinado con `leg_dudoso` + corte
 de tramo, nadie pierde el número y nadie ve basura sin aviso. Falta medirla.
+
+---
+
+# Auditoría de la migración — dos bugs vivos más, en código que no había tocado
+
+## 🔴 1. Los chips Δ1d / Δ7d / Δ30d del Dashboard no tenían UN SOLO guard
+
+Es el número que el usuario ve **todos los días**. MEDIDO sobre la copia de
+producción, 794 usuarios con cinco o más fotos:
+
+| | antes | después |
+|---|---|---|
+| Δ1d | −8.093,1 % | **100,0 %** |
+| Δ7d | **−9.346.280,6 %** | **100,7 %** |
+| Δ30d | −9.170.283,9 % | **110,5 %** |
+
+No son rendimientos, son **datos rotos**: al uid 329 el `net_deposited` le salta de
+−1.055.894 a **+1.699.812.606** de un día para el otro con la cartera quieta en
+18.400; el uid 412 tiene una foto donde la cartera vale **−805.744**.
+
+Costo: **3 o 4 usuarios por ventana** se quedan sin chip. A cambio, nadie ve nueve
+millones por ciento.
+
+## 🔴 2. El mail diario del asesor tampoco, y ahí el error se amplifica
+
+Sus filtros cuidan la **calidad de la foto** (`apto`, ni import ni reconstrucción)
+pero ninguno mira el número que sale. Y `movers` **ordena por ese %**: el cliente
+con el dato roto sale primero y el mail lo anuncia como *«el mejor del día»*.
+
+El informe lo marca como el caso más caro de los once: en el **informe firmado** el
+guard sí existe (`_cortes_adentro`); en el **mail** no.
+
+## 3. Mi propio parseo de fechas fallaba en silencio
+
+Era `int(str(d)[:4]) * 100 + int(str(d)[5:7])`. Medido:
+
+| entrada | devolvía |
+|---|---|
+| `"2025-1-1"`, `"20250101"`, `2025`, `["x"]` | **sin número, en silencio** |
+| `"2025-13-99"` | lo aceptaba entero (el mes 13 no existe) |
+
+El usuario se quedaba sin rendimiento por un error **del que llama**, indistinguible
+de "esta cuenta no se puede medir", con un `log.exception` enterrado como única
+pista. Ahora `twr.clave_mes` valida forma **y mes**, y una ventana inválida se
+**declara** (`motivo='ventana_invalida'`) en vez de desaparecer.
+
+## 4. Y yo mismo había duplicado la definición de "fecha ISO"
+
+`reporting.builder` tenía su propio regex — lo escribí dos rondas atrás, en el
+arreglo cuyo comentario dice *"no se copia acá: vive en el motor"*. Ahora le
+pregunta a `twr.clave_mes`, que además valida el mes, cosa que un regex de forma
+no mira.
+
+---
+
+## Estado de los 11 lectores
+
+| | estado |
+|---|---|
+| `wrapped.py` | ✅ al motor, con etiqueta en el slide compartible |
+| `ai/builders/insights_evolution.py` | ✅ al motor |
+| `ai/builders/reports.py` | ✅ al motor |
+| `ai/builders/dashboard.py` | ✅ al motor (+ el reloj UTC arreglado) |
+| `ai/builders/insights.py` | ✅ ya usaba el motor |
+| `main.py::_snapshot_delta` | ✅ `leg_dudoso` |
+| `advisor_brief.py` | ✅ `leg_dudoso` |
+| `frontend/utils/evolution.js` | ⬜ pendiente |
+| `frontend/utils/insightsModel.js` | ⬜ pendiente |
+| `frontend/pages/Insights.jsx` | ⬜ pendiente |
+| `frontend/hooks/useMonthlyData.js` | ⬜ pendiente |
+
+**7 de 11.** Los cuatro que faltan son del frontend, donde `leg_dudoso` no existe
+en ninguna forma: o se porta a JS con un guard estructural que verifique que las
+dos versiones no se separen (el patrón de F5), o esas pantallas pasan a consumir
+`/insights/performance`, que es lo que el informe recomienda.
