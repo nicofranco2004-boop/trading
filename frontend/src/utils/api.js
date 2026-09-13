@@ -285,7 +285,7 @@ async function getBlob(path) {
 // (UpgradePromoCard, etc). Un error del LLM a mitad del stream llega como frame
 // `error` y se lanza con el mismo shape. En demo mode no hay streaming real:
 // usamos el mock y emitimos todo de una.
-async function chatStream(body, { onDelta, onReset, onPaso, signal } = {}) {
+async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, signal } = {}) {
   if (isDemoMode()) {
     const res = await req('POST', '/ai/chat', { ...body, stream: false })
     // El mock demo resuelve por setTimeout (inabortable): respetar el abort
@@ -293,6 +293,7 @@ async function chatStream(body, { onDelta, onReset, onPaso, signal } = {}) {
     if (signal?.aborted) {
       throw new DOMException('Aborted', 'AbortError')
     }
+    if (onPregunta && res?.pregunta) onPregunta(res.pregunta)
     if (onDelta && res?.reply) onDelta(res.reply)
     return { tier: res?.tier, portfolioChanged: !!res?.portfolio_changed }
   }
@@ -353,6 +354,12 @@ async function chatStream(body, { onDelta, onReset, onPaso, signal } = {}) {
         try { evt = JSON.parse(payload) } catch { continue }
         if (evt.t === 'delta') {
           if (onDelta && evt.d) onDelta(evt.d)
+        } else if (evt.t === 'pregunta') {
+          // Turno del botón ✦: la pregunta la escribió el servidor (el
+          // navegador mandó qué botón se tocó, no un texto). Llega antes que
+          // el primer pedazo de respuesta para que la burbuja del usuario se
+          // pinte arriba y recién después la de Rendi.
+          if (onPregunta && evt.d) onPregunta(evt.d)
         } else if (evt.t === 'paso') {
           // Qué está haciendo Rendi ahora mismo ("Buscando los precios de hoy").
           // Es sólo para mostrar: no cambia la respuesta ni el flujo.

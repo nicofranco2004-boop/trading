@@ -34,7 +34,7 @@ export default function ProfileSummaryBlock({ className = '' }) {
   const count = usage?.analyses_count
   const limit = usage?.analyses_limit
   // 429 (cupo agotado) trae upgrade.available → card promocional en vez de
-  // banner rojo, igual que AnalysisDrawer.
+  // banner rojo, en vez de un banner de error.
   const showUpgradeCard = !!(upgrade && upgrade.available)
 
   return (
@@ -77,7 +77,7 @@ export default function ProfileSummaryBlock({ className = '' }) {
           del result — si el user regenera y se queda sin cupo, el 429 no borra
           el result viejo (useAIAnalysis no limpia result en error), así que un
           ternario result-primero se comería la UpgradePromoCard. Mismo patrón
-          que AnalysisDrawer: card de upgrade / error arriba, result debajo. */}
+          criterio de siempre: card de upgrade / error arriba, result debajo. */}
       <div className="p-4 space-y-4">
         {showUpgradeCard && !loading && (
           <UpgradePromoCard usage={usage} upgrade={upgrade} source="profile_summary_429" />

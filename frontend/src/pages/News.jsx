@@ -181,7 +181,7 @@ export default function News({ embedded = false }) {
 
       {/* Briefing del día — CTA on-demand. Reusa el topic `news` (screen-level):
           una sola llamada IA que sintetiza las noticias pesadas por tu cartera.
-          NO se auto-genera — el AnalysisDrawer solo dispara al hacer click. */}
+          NO se auto-genera — solo cuando el usuario toca el botón. */}
       {embedded && (
         <div className="flex items-center gap-3 bg-bg-1 border border-data-violet/30 rounded-lg p-3.5 mb-4">
           <div className="w-9 h-9 rounded-lg bg-data-violet/15 flex items-center justify-center shrink-0">

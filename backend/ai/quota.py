@@ -549,6 +549,62 @@ def refund_chat(conn, user_id: int) -> None:
         )
 
 
+# ─── El cupo de análisis (el botón ✦) ────────────────────────────────────────
+# El botón ✦ Analizar dejó de abrir un panel y ahora le escribe una pregunta al
+# chat de Rendi. La RESPUESTA cambió de lugar; el PRECIO no: sigue descontando
+# del contador de análisis (Free 6/semana, Pro 60), no del de consultas.
+#
+# Por qué importa que no cambie: si el botón pasara a cobrar una consulta, un
+# Free bajaría de 6 análisis + 1 consulta por semana a 1 sola cosa por semana.
+# Sería bajarle el plan gratis a la séptima parte por mudar una pantalla.
+#
+# Estas dos funciones son reserve_chat/refund_chat contra la otra columna. La
+# vieja pareja can_analyze + record_analysis (mirar y después escribir, en dos
+# pasos) tiene el agujero que el audit ya le cerró al chat: dos pedidos a la vez
+# leen el mismo número y los dos pasan. Acá el conteo y la suma van en UN solo
+# statement, así que no hay ventana entre mirar y cobrar.
+
+
+def reserve_analysis(conn, user_id: int, tier_override: str = None) -> tuple[bool, dict]:
+    """Reserva ATÓMICA de 1 slot de análisis. Mismo mecanismo que reserve_chat.
+
+    Devuelve (ok, usage). Con ok=True el slot ya está tomado: si el LLM falla,
+    el caller lo devuelve con refund_analysis.
+    """
+    tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
+    limit = LIMITS[tier]["analyses_per_week"]
+    today = date.today()
+    window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
+    with conn:
+        cur = conn.execute(
+            """INSERT INTO ai_usage_daily (user_id, date, analyses_count, cost_usd_cents)
+               SELECT ?, ?, 1, 0
+                WHERE (SELECT COALESCE(SUM(analyses_count), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 analyses_count = ai_usage_daily.analyses_count + 1
+               WHERE (SELECT COALESCE(SUM(analyses_count), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?""",
+            (user_id, today.isoformat(), user_id, window_start, limit,
+             user_id, window_start, limit),
+        )
+        ok = cur.rowcount > 0
+    return ok, get_current_usage(conn, user_id, tier_override=tier_override)
+
+
+def refund_analysis(conn, user_id: int) -> None:
+    """Devuelve el slot de análisis cuando el LLM falló. Misma regla de fila
+    que refund_chat: la MÁS RECIENTE con analyses_count > 0, nunca bajo 0."""
+    with conn:
+        conn.execute(
+            """UPDATE ai_usage_daily SET analyses_count = MAX(0, analyses_count - 1)
+                WHERE user_id = ?
+                  AND date = (SELECT MAX(date) FROM ai_usage_daily
+                               WHERE user_id = ? AND analyses_count > 0)""",
+            (user_id, user_id),
+        )
+
+
 # ─── El cupo de escuchas (la voz de Rendi) ───────────────────────────────────
 # Dos regímenes, a propósito:
 #   · Free  → cupo PROPIO: 1 escuche por ventana móvil de 7 días, que NO toca

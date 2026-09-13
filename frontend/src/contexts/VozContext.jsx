@@ -265,21 +265,39 @@ export function VozProvider({ children }) {
   }, [enabled, speak])
 
   /** Repreguntar desde el acompañante, sin volver a /ai. */
-  const ask = useCallback(async (texto) => {
+  // `analisis` = { screen, params }: el turno lo disparó el botón ✦ de una
+  // pantalla, no el usuario escribiendo. Cambia tres cosas y ninguna más — por
+  // eso es un parámetro y no una segunda función: la pregunta la escribe el
+  // servidor, se descuenta del cupo de análisis y no del de consultas, y el
+  // acompañante recibe de yapa el dato calculado de esa pantalla. Todo lo
+  // demás —el hilo, el audio, las tarjetas, poder repreguntar— es idéntico.
+  const ask = useCallback(async (texto, { analisis } = {}) => {
     const content = (texto || '').trim()
-    if (!content || sendingRef.current) return
+    if ((!content && !analisis) || sendingRef.current) return
     sendingRef.current = true
     setSending(true)
     setPaso(null)
     setAskError(null)
     const previos = thread
-    setThread(t => [...t, { role: 'user', content }].slice(-MAX_THREAD))
+    // Con el botón ✦ todavía no sabemos qué se preguntó: la pregunta la
+    // escribe el servidor y llega en el primer frame, antes que la respuesta.
+    // Se espera ese pestañeo en vez de pintar una burbuja inventada que
+    // después habría que corregir en pantalla.
+    let preguntaPuesta = !analisis
+    if (!analisis) setThread(t => [...t, { role: 'user', content }].slice(-MAX_THREAD))
+    const onPregunta = (q) => {
+      preguntaPuesta = true
+      setThread(t => [...t, { role: 'user', content: q }].slice(-MAX_THREAD))
+    }
     try {
       if (!snapRef.current) snapRef.current = await fetchAiSnapshot()
       let acc = ''
       // Al modelo van SOLO role y content: el hilo de acá guarda además el
       // audio firmado y las tarjetas, que no son parte de la conversación.
-      const messages = sendWindow([...previos, { role: 'user', content }])
+      // En el turno del ✦ el último mensaje es un relleno que el servidor
+      // pisa con la pregunta de verdad; la conversación previa viaja igual,
+      // así Rendi sigue acordándose de lo que venían hablando.
+      const messages = sendWindow([...previos, { role: 'user', content: content || '✦' }])
         .map(({ role, content: c }) => ({ role, content: c }))
 
       // 🔴 SE ESCRIBE EN VIVO, letra por letra, igual que en /ai.
@@ -316,7 +334,8 @@ export function VozProvider({ children }) {
         if (agregado) { setThread(t => t.slice(0, -1)); agregado = false }
       }
       const res = await api.chatStream(
-        { messages, snapshot: snapRef.current }, { onDelta, onReset, onPaso: setPaso },
+        { messages, snapshot: snapRef.current, ...(analisis ? { analisis } : {}) },
+        { onDelta, onReset, onPaso: setPaso, onPregunta },
       )
       const { prose, meta } = parseStructured(stripMarkdown(acc))
       setThread(t => {
@@ -347,13 +366,36 @@ export function VozProvider({ children }) {
           ? detail.message
           : 'No pudimos completar la consulta. Probá de nuevo.',
       )
-      setThread(t => t.slice(0, -1))   // sacar la pregunta que falló
+      // Sacar la pregunta que falló — sólo si llegó a haber una. Un 429 del
+      // botón ✦ revienta ANTES del frame con la pregunta: ahí no hay burbuja
+      // que sacar y este slice se llevaría la respuesta anterior.
+      if (preguntaPuesta) setThread(t => t.slice(0, -1))
     } finally {
       sendingRef.current = false
       setSending(false)
       setPaso(null)
     }
   }, [thread, enabled, speak])
+
+  /**
+   * Lo que hace el botón ✦ Analizar de cualquier pantalla: abre el
+   * acompañante y le pregunta a Rendi por eso.
+   *
+   * Antes cada uno de estos botones abría un panel lateral con una respuesta
+   * larga y un callejón sin salida — se leía y se cerraba. Ahora la respuesta
+   * cae en la conversación: se puede escuchar, se puede repreguntar, y sigue
+   * ahí cuando el usuario se va a otra sección.
+   *
+   * `screen` es cuál de los análisis (la lista vive en el servidor,
+   * ai/preguntas.py) y `params` sobre qué — el activo, el mes, la categoría.
+   * La pregunta en castellano NO se arma acá: la escribe el servidor. Ver el
+   * comentario de ese archivo para el porqué.
+   */
+  const analizar = useCallback(({ screen, params } = {}) => {
+    if (!screen) return
+    setOpen(true)
+    ask('', { analisis: { screen, params: params || {} } })
+  }, [ask])
 
   // ── Cablear el <audio> ───────────────────────────────────────────────────
   useEffect(() => {
@@ -406,9 +448,10 @@ export function VozProvider({ children }) {
     status, progress, current,
     speak, escuchar, toggle, stop,
     open, setOpen,
-    thread, sending, paso, askError, sinCupo, ask, publicar,
+    thread, sending, paso, askError, sinCupo, ask, analizar, publicar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
-       speak, escuchar, toggle, stop, open, thread, sending, paso, askError, sinCupo, ask, publicar])
+       speak, escuchar, toggle, stop, open, thread, sending, paso, askError, sinCupo,
+       ask, analizar, publicar])
 
   return (
     <VozContext.Provider value={value}>
@@ -428,7 +471,7 @@ const INERTE = {
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
-  thread: [], sending: false, paso: null, askError: null, sinCupo: null, ask: () => {}, publicar: () => {},
+  thread: [], sending: false, paso: null, askError: null, sinCupo: null, ask: () => {}, analizar: () => {}, publicar: () => {},
 }
 
 export const useVoz = () => useContext(VozContext) || INERTE

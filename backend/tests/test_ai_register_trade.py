@@ -374,22 +374,30 @@ class TestPromptsNoStaleToken(unittest.TestCase):
 
 
 class TestQuotaRefund(unittest.TestCase):
+    """Quién devuelve la ficha y cuándo.
+
+    La función ya no sabe QUÉ ficha devolver: recibe la función que lo sabe.
+    Desde que el botón ✦ pasa por el chat hay dos cupos distintos —consultas
+    y análisis— y decidir acá cuál devolver era tener la decisión escrita en
+    dos lugares. Estos tests miran lo que la función sí decide: SI se devuelve
+    o no."""
+
     def test_undo_ok_refunds_when_reserved(self):
-        with patch.object(main, "_refund_chat_quota") as m:
-            main._maybe_refund_trade_turn(1, {"undo_ok"}, reserved=True)
-        m.assert_called_once_with(1)
+        devolver = MagicMock()
+        main._maybe_refund_trade_turn({"undo_ok"}, devolver, reserved=True)
+        devolver.assert_called_once_with()
 
     def test_undo_in_free_turn_no_refund(self):
         """L1 del re-review: un undo en turno GRATIS (skip-reserve) no debe
         devolver un slot que nunca se cobró."""
-        with patch.object(main, "_refund_chat_quota") as m:
-            main._maybe_refund_trade_turn(1, {"undo_ok"}, reserved=False)
-        m.assert_not_called()
+        devolver = MagicMock()
+        main._maybe_refund_trade_turn({"undo_ok"}, devolver, reserved=False)
+        devolver.assert_not_called()
 
     def test_non_undo_no_refund(self):
-        with patch.object(main, "_refund_chat_quota") as m:
-            main._maybe_refund_trade_turn(1, {"trade_registered"}, reserved=True)
-        m.assert_not_called()
+        devolver = MagicMock()
+        main._maybe_refund_trade_turn({"trade_registered"}, devolver, reserved=True)
+        devolver.assert_not_called()
 
 
 class TestGateIntent(unittest.TestCase):

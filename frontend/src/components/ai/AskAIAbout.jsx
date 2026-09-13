@@ -26,21 +26,23 @@ import { useState, useEffect } from 'react'
 import { Sparkles } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { track } from '../../utils/track'
-import AnalysisDrawer from './AnalysisDrawer'
+import { useVoz } from '../../contexts/VozContext'
 import { isAIDiscovered, markAIDiscovered } from './AIDiscoveryBanner'
 
 export default function AskAIAbout({
   topic,
   params,
-  subtitle,
-  title = 'Análisis',
+  // Encabezados del panel lateral que ya no existe (ver AnalyzeButton). Se
+  // siguen aceptando: los pasan ~30 llamadores y sacarlos sería un barrido.
+  subtitle,                            // eslint-disable-line no-unused-vars
+  title,                               // eslint-disable-line no-unused-vars
   children,
   className = '',
   enableDoubleClick = true,
   // Si el child tiene padding propio, podés desactivar el rounded del wrapper
   rounded = true,
 }) {
-  const [open, setOpen] = useState(false)
+  const { analizar } = useVoz()
   const [hovered, setHovered] = useState(false)
   // Si el user NUNCA descubrió la feature, dejamos el ✦ siempre visible
   // (con un pulse sutil) hasta el primer click. Después pasa a hover-only.
@@ -57,13 +59,15 @@ export default function AskAIAbout({
     return () => window.removeEventListener('storage', onStorage)
   }, [])
 
-  function openDrawer(source) {
+  // Le pregunta a Rendi por esta sección. La respuesta cae en el acompañante
+  // flotante: corta, se puede escuchar y se le puede repreguntar.
+  function preguntarle(source) {
     if (!discovered) {
       markAIDiscovered()
       setDiscovered(true)
     }
     track('ai_analyze_opened', { screen: topic, source })
-    setOpen(true)
+    analizar({ screen: topic, params })
   }
 
   // Double-click detection (sin pasar por el child)
@@ -73,7 +77,7 @@ export default function AskAIAbout({
     const tag = (e.target?.tagName || '').toLowerCase()
     if (['button', 'a', 'input', 'select', 'textarea'].includes(tag)) return
     e.preventDefault()
-    openDrawer('dblclick')
+    preguntarle('dblclick')
   }
 
   return (
@@ -94,10 +98,10 @@ export default function AskAIAbout({
         type="button"
         onClick={(e) => {
           e.stopPropagation()
-          openDrawer('hover_button')
+          preguntarle('hover_button')
         }}
-        aria-label="Analizar con IA"
-        title="Analizar con IA"
+        aria-label="Preguntarle a Rendi"
+        title="Preguntarle a Rendi"
         className={[
           'absolute z-10 inline-flex items-center justify-center',
           'top-2 right-2',
@@ -132,16 +136,6 @@ export default function AskAIAbout({
         `}</style>
       )}
 
-      {open && (
-        <AnalysisDrawer
-          open
-          onClose={() => setOpen(false)}
-          screen={topic}
-          params={params}
-          title={title}
-          subtitle={subtitle}
-        />
-      )}
     </div>
   )
 }

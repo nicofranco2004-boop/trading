@@ -21,7 +21,7 @@ import { cashAssetLabel } from '../../utils/valuation'
 import { api } from '../../utils/api'
 import { inferType } from '../../utils/tickers'
 import { track } from '../../utils/track'
-import AnalysisDrawer from '../ai/AnalysisDrawer'
+import { useVoz } from '../../contexts/VozContext'
 
 import TickerSearch from './TickerSearch'
 import CategoryDetail from './CategoryDetail'
@@ -110,7 +110,7 @@ function AxisCard({ title, read }) {
 }
 
 export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false, onCompareWith }) {
-  const [analyzeCat, setAnalyzeCat] = useState(null)
+  const { analizar } = useVoz()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -308,7 +308,10 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
                     question={cat.question}
                     score={cat.score}
                     metrics={cat.metrics}
-                    onAsk={() => setAnalyzeCat(cat)}
+                    onAsk={() => analizar({
+                      screen: 'fundamentals.category',
+                      params: { asset: data.ticker, category: cat.key },
+                    })}
                   />
                 ))}
               </div>
@@ -318,18 +321,6 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
         </div>
       )}
 
-      {/* Análisis IA por categoría — patrón AnalysisDrawer con prompt curado
-          (topic fundamentals.category), igual que el resto de Rendi. */}
-      {analyzeCat && data?.available && (
-        <AnalysisDrawer
-          open
-          onClose={() => setAnalyzeCat(null)}
-          screen="fundamentals.category"
-          params={{ asset: data.ticker, category: analyzeCat.key }}
-          title="Análisis IA"
-          subtitle={`${data.company_name || data.ticker} — ${analyzeCat.label}`}
-        />
-      )}
     </div>
   )
 }

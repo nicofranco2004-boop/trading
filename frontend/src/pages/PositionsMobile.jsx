@@ -18,7 +18,7 @@ import { useEffect, useMemo, useState, useRef, useCallback, lazy, Suspense, memo
 import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, TrendingUp, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown, ChevronUp, ArrowRight, MoreVertical, Layers as LayersIcon } from 'lucide-react'
 import { groupBrokersIntoAccounts, brokerLegLabel } from '../utils/brokerAccounts'
-import AnalysisDrawer from '../components/ai/AnalysisDrawer'
+import { useVoz } from '../contexts/VozContext'
 import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
 import EmptyState from '../components/EmptyState'
@@ -2292,6 +2292,9 @@ const MS_PULSACION = 450
 const TOLERANCIA_PX = 8
 
 const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, displayCurrency = 'USD', tcValuacion = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
+  // "Analizar" le pregunta a Rendi por esta posición y la respuesta cae en el
+  // acompañante flotante. Antes abría un panel lateral (ver AnalyzeButton).
+  const { analizar } = useVoz()
 
   // El MONTO del P&L sigue al toggle global, como el desktop
   // (Positions.jsx:979: `const basePnl = isARS ? c.pnlArs : c.pnl`). Antes iba
@@ -2307,7 +2310,6 @@ const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, di
   const pnlDisplay = displayCurrency === 'ARS'
     ? ((p._multiCcy ? p.pnlUsd : p.pnlUsdToday) * tcValuacion)
     : p.pnlUsd
-  const [aiOpen, setAiOpen] = useState(false)
   const [accionesAbiertas, setAccionesAbiertas] = useState(false)
   // Selector de pata para la fila que junta las dos monedas de la cuenta:
   // 'sell' | 'edit' | null. Desktop abre un modal con lo mismo.
@@ -2341,7 +2343,7 @@ const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, di
           tone: 'accent',
           onClick: () => {
             track('mobile_row_action', { code: 'analyze', asset: p.asset })
-            setAiOpen(true)
+            analizar({ screen: 'position', params: { asset: p.asset, broker: p.broker } })
           },
         },
         onSell && {
@@ -2430,7 +2432,7 @@ const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, di
           tone: 'accent',
           onClick: () => {
             track('mobile_row_action', { code: 'analyze', asset: p.asset })
-            setAiOpen(true)
+            analizar({ screen: 'position', params: { asset: p.asset, broker: p.broker } })
           },
         },
         onSell && {
@@ -2750,16 +2752,6 @@ const PositionRow = memo(function PositionRow({ p, enCuentaUnificada = false, di
       </BottomSheet>
     )}
 
-    {aiOpen && (
-      <AnalysisDrawer
-        open
-        onClose={() => setAiOpen(false)}
-        screen="position"
-        params={{ asset: p.asset, broker: p.broker }}
-        title="Análisis"
-        subtitle={`${fciLabel(p.asset)} · ${p.broker}`}
-      />
-    )}
     </>
   )
 })

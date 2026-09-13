@@ -14,31 +14,33 @@
 //   - Con `label`: pill "✦ Analizar" con el mismo tratamiento que AnalyzeButton
 //     (bg-data-violet/10, texto data-violet, borde /30) para que el usuario vea
 //     que puede pedir el análisis on-demand. Reutilizado en Novedades.
-//   - Click → abre AnalysisDrawer.
+//   - Click → le pregunta a Rendi en el acompañante flotante (antes abría un
+//     panel lateral; ver la cabecera de AnalyzeButton para el porqué).
 //   - Trackea ai_analyze_opened con source='inline_button'.
 
-import { useState } from 'react'
 import { Sparkles } from 'lucide-react'
 import { track } from '../../utils/track'
-import AnalysisDrawer from './AnalysisDrawer'
+import { useVoz } from '../../contexts/VozContext'
 
 export default function InlineAIButton({
   topic,
   params,
-  subtitle,
-  title = 'Análisis',
-  ariaLabel = 'Analizar con IA',
+  // Encabezados del panel que ya no existe. Se siguen aceptando para no tener
+  // que tocar los llamadores; la pregunta arriba de la respuesta los reemplaza.
+  subtitle,                            // eslint-disable-line no-unused-vars
+  title,                               // eslint-disable-line no-unused-vars
+  ariaLabel = 'Preguntarle a Rendi',
   label,
   size = 13,
   className = '',
 }) {
-  const [open, setOpen] = useState(false)
+  const { analizar } = useVoz()
 
   function handleClick(e) {
     e.stopPropagation()
     e.preventDefault()
     track('ai_analyze_opened', { screen: topic, source: 'inline_button' })
-    setOpen(true)
+    analizar({ screen: topic, params })
   }
 
   // Con label → pill con texto (mismo look que AnalyzeButton default).
@@ -59,27 +61,15 @@ export default function InlineAIButton({
       ].join(' ')
 
   return (
-    <>
-      <button
-        type="button"
-        onClick={handleClick}
-        aria-label={ariaLabel}
-        title={ariaLabel}
-        className={buttonClass}
-      >
-        <Sparkles size={label ? 12 : size} strokeWidth={1.75} />
-        {label}
-      </button>
-      {open && (
-        <AnalysisDrawer
-          open
-          onClose={() => setOpen(false)}
-          screen={topic}
-          params={params}
-          title={title}
-          subtitle={subtitle}
-        />
-      )}
-    </>
+    <button
+      type="button"
+      onClick={handleClick}
+      aria-label={ariaLabel}
+      title={ariaLabel}
+      className={buttonClass}
+    >
+      <Sparkles size={label ? 12 : size} strokeWidth={1.75} />
+      {label}
+    </button>
   )
 }
