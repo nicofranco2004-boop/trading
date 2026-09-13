@@ -59,10 +59,22 @@ justo el que hace que nadie se entere de que el margen se fue.
 se hicieron con textos de pocos números y por eso salieron optimistas. Si volvés
 a medir, medí con un texto REAL de Rendi, lleno de porcentajes y montos.
 
-CUÁNTO SALE: un resumen de ~290 caracteres con cifras dura ~31 s y sale
-~US$0,0077. El EMPATE —donde el audio cuesta lo mismo que la respuesta escrita,
-US$0,007— está en 28 segundos ≈ 263 caracteres. Por eso MAX_CHARS_SOFT vale 260:
-avisa justo antes del empate.
+CUÁNTO SALE: un resumen de ~350 caracteres con cifras dura ~35 s y sale
+~US$0,0087.
+
+⚠️ EL EMPATE SE MOVIÓ Y LA CUENTA VIEJA QUEDÓ ACÁ ESCRITA MAL. Decía que el
+audio empataba con la respuesta escrita a los 263 caracteres. Ese número salía
+de que una consulta costaba US$0,007, que era el precio con Haiku. Desde que el
+chat pasó a Sonnet (2026-09-12) una consulta cuesta **US$0,021** — medido en el
+log del backend, no estimado: cost_usd=0,0202 · 0,0213 · 0,0217 · 0,0219 · 0,0225.
+
+Con ese número el empate está en **84 segundos ≈ 840 caracteres**, no en 263.
+Ni siquiera el tope DURO de 600 lo alcanza: 600 caracteres son el 71% de una
+ficha. Un resumen normal de 350 sale el 41%.
+
+La consecuencia práctica: el largo del resumen dejó de ser una restricción de
+plata. Se sigue acotando por otra razón —nadie quiere escuchar 90 segundos de
+resumen— pero el aviso ya no marca un límite económico.
 """
 
 from __future__ import annotations
@@ -99,20 +111,51 @@ INSTRUCTIONS = (
 # son ~60 segundos de audio — el doble del molde, ya generoso. Es una VÁLVULA,
 # no el camino normal: el aviso de que algo se está estirando salta mucho antes
 # (MAX_CHARS_SOFT).
+# ─── Los dos precios, en un solo lugar ──────────────────────────────────────
+# Están acá y no sueltos en un comentario porque ya pasó: el empate del audio
+# quedó escrito en tres lugares con el precio de Haiku, el chat pasó a Sonnet y
+# los tres siguieron diciendo lo mismo. El test los lee de acá.
+USD_POR_MINUTO_DE_AUDIO = 0.015     # lo que cobra OpenAI por gpt-4o-mini-tts
+# Lo que nos sale UNA consulta escrita — o sea, lo que vale la ficha que se
+# cobra por escuchar. MEDIDO en el log del backend con el chat en Sonnet 5
+# (2026-09-13): cost_usd = 0,0202 · 0,0213 · 0,0217 · 0,0219 · 0,0225.
+# Si se cambia de modelo, este número cambia: volvé a mirar el log.
+USD_POR_CONSULTA_ESCRITA = 0.021
+
+
+def empate_en_caracteres() -> float:
+    """A partir de cuántos caracteres el audio sale más caro que la ficha que
+    se cobra por escucharlo. Hoy da ~840 — ni el tope duro lo roza."""
+    segundos = USD_POR_CONSULTA_ESCRITA / (USD_POR_MINUTO_DE_AUDIO / 60)
+    return segundos * CHARS_PER_SECOND
+
+
 MAX_CHARS = 600
 # Tope BLANDO: el aviso de que los resúmenes se están estirando. No rechaza
 # nada — loguea.
 #
-# 260 es el EMPATE, redondeado hacia abajo: con texto cargado de cifras (9,4
-# caracteres/segundo) el audio empieza a costar más que la respuesta escrita a
-# partir de los 263 caracteres —28 segundos a US$0,015 el minuto contra los
-# US$0,007 que sale escribirla—. Pasado ese punto, la regla "escuchar cuesta una
-# ficha más" deja de cerrar.
+# ERA 260 y era el empate económico. Ya no: ver la nota del encabezado — con el
+# chat en Sonnet el empate está en 840 caracteres y ni el tope duro lo alcanza.
+# Dejarlo en 260 lo convertía en una alarma que suena siempre y por lo tanto no
+# suena: desde que el resumen ofrece por dónde seguir, TODOS los reales la
+# pasan (medidos: 307 · 332 · 341 · 347 · 372 · 394).
 #
-# Y no molesta en el uso normal: los resúmenes reales medidos en pantalla dieron
-# 195 y 224 caracteres. Este umbral no se dispara con la salida de todos los
-# días, se dispara cuando algo cambió.
-MAX_CHARS_SOFT = 260
+# 450 es lo que vigila ahora, y no es un límite de plata: es cuánto está
+# dispuesto a escuchar alguien. 450 caracteres son ~45 segundos de audio para
+# un resumen de tres oraciones — pasado eso ya no es un resumen. Con los reales
+# entre 307 y 394, el aviso no se dispara con la salida de todos los días: se
+# dispara cuando algo cambió.
+MAX_CHARS_SOFT = 450
+
+# Cuánto se lee del RESPALDO, que es otra cosa. Cuando el modelo no manda el
+# resumen hablado, se lee la prosa de pantalla recortada — y eso es un plan B,
+# no el camino bueno: está escrito para los ojos y suena peor. Tiene que ser
+# CORTO.
+#
+# Este número venía compartido con MAX_CHARS_SOFT, y ahí estaba el enganche: al
+# subir el aviso de 260 a 450 el respaldo se puso a leer un 73% más sin que
+# nadie lo pidiera. Dos trabajos distintos, dos números.
+MAX_CHARS_RESPALDO = 260
 
 # ─── Qué le pedimos a Claude que escriba para la oreja ───────────────────────
 # Va TEXTUAL dentro de los prompts de chat, y vive acá —no copiado en cada
@@ -126,7 +169,9 @@ MAX_CHARS_SOFT = 260
 # "escuchar cuesta 1 ficha más" no pierda plata. Ver el encabezado.
 SUMMARY_PROMPT = """
 EL RESUMEN HABLADO (campo "voz" del bloque ---RENDI---)
-Agregá al JSON un campo más, "voz": la MISMA respuesta contada en voz alta, en 3 oraciones, apuntá a 290 caracteres (nunca más de 600).
+Agregá al JSON un campo más, "voz": la MISMA respuesta contada en voz alta. TRES oraciones: dos de contenido y una última que ofrece por dónde seguir. Apuntá a 350 caracteres contando todo; nunca más de 600.
+
+El largo importa porque es tiempo de alguien escuchando, no porque falte lugar: 350 caracteres son ~35 segundos, y un resumen de más de un minuto ya no es un resumen. Si no entra, sacá un dato ENTERO del cuerpo — nunca cortes una frase por la mitad, y nunca te comas la oración de los caminos.
 
 🔴 "voz" VA PRIMERO, apenas abrís la llave: `---RENDI---{"voz":"...","verdict":...`. No es un capricho de orden: el audio no puede empezar hasta que ese campo esté completo, y el usuario lo escucha SIN ver el JSON. Escribiéndolo último —que es lo que salía solo— el que tenía el parlante prendido se comía CINCO SEGUNDOS de silencio mirando la respuesta ya escrita en pantalla, mientras vos armabas las tarjetas. Escribiéndolo primero, empieza a hablar mientras las armás.
 No es la prosa recortada — es otro texto, escrito para la OREJA:
@@ -135,6 +180,8 @@ No es la prosa recortada — es otro texto, escrito para la OREJA:
 - Nada que se lea con los ojos: sin tablas, sin listas, sin viñetas, sin paréntesis, sin flechas, sin símbolos (%, +, −, US$ se DICEN: "por ciento", "más", "menos", "dólares"), sin "como ves arriba" ni referencias a las tarjetas.
 - Oraciones cortas, una idea cada una: el titular, el porqué, y lo único que hay que mirar.
 - Mismo rioplatense de siempre.
+
+🔴 TERMINA OFRECIENDO POR DÓNDE SEGUIR, igual que la prosa. Una última oración corta con DOS caminos, dichos como se dicen: "Si querés puedo mirar si está cara, o qué le pasaría a tu cartera si corrige." Esto se venía olvidando —la prosa cerraba con las puertas y el audio se cortaba antes— y el que sólo escucha, manejando o caminando, se quedaba sin enterarse de que podía seguir preguntando. No repitas la frase de la prosa palabra por palabra: son los mismos dos caminos dichos para la oreja, sin signos ni códigos.
 
 🔴 "voz" VA EN TODA RESPUESTA CON CONTENIDO, TAMBIÉN EN LAS REPREGUNTAS. No depende de que haya tarjetas.
 Si estás contestando algo real pero no hay nada visual que mostrar —una repregunta tipo "¿y qué hago con eso?", "¿vos qué harías?", una explicación, un consejo— igual mandá el bloque, con SÓLO el campo "voz" adentro: `---RENDI---{"voz":"..."}`. El usuario no ve nada de más (sin stats ni blocks no se dibuja ninguna tarjeta) y la conversación no se queda muda a mitad.

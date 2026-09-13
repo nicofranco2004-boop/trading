@@ -29878,7 +29878,7 @@ def _extract_voz(text: str) -> Optional[str]:
         # del mínimo es un saludo o un acuse y no se lee.
         if len(prosa) < _VOZ_PROSA_MINIMA:
             return None
-        voz, origen = tts.prosa_hablable(prosa, tts.MAX_CHARS_SOFT), "prosa"
+        voz, origen = tts.prosa_hablable(prosa, tts.MAX_CHARS_RESPALDO), "prosa"
 
     if not voz:
         return None

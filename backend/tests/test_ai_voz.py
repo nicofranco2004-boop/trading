@@ -426,11 +426,16 @@ class LaConversacionSeHablaEnteraTest(unittest.TestCase):
         self.assertIn("titular", main._extract_voz(con_titular))
         self.assertNotIn("sustanciosa", main._extract_voz(con_titular))
 
-    def test_el_respaldo_de_prosa_respeta_el_tope_blando(self):
+    def test_el_respaldo_de_prosa_se_corta_CORTO(self):
+        """El respaldo lee la prosa de pantalla, que está escrita para los ojos
+        y suena peor: es un plan B y va corto. Mide contra MAX_CHARS_RESPALDO y
+        no contra el aviso — eran el mismo número, y cuando el aviso subió de
+        260 a 450 el respaldo se puso a leer un 73% más sin que nadie lo
+        pidiera. Este test mira el tope que le corresponde."""
         prosa = "Una oración con contenido real que ocupa su espacio. " * 30
         out = main._extract_voz(prosa)
         self.assertIsNotNone(out)
-        self.assertLessEqual(len(out), tts.MAX_CHARS_SOFT)
+        self.assertLessEqual(len(out), tts.MAX_CHARS_RESPALDO)
 
 
 # ─── El cache ────────────────────────────────────────────────────────────────
@@ -1022,13 +1027,36 @@ class PromptTest(unittest.TestCase):
         self.assertLessEqual(tts.CHARS_PER_SECOND, 10,
                              "el estimador se volvió optimista: fijate con qué texto se midió")
         self.assertEqual(tts.estimated_seconds("a" * 290), 29.0)
-        # El empate es donde el audio pasa a costar más que la respuesta escrita
-        # (US$0,007). A US$0,015 el minuto son 28 segundos. El aviso salta antes.
-        empate = 0.007 / 0.015 * 60 * tts.CHARS_PER_SECOND     # US$/min → caracteres
-        self.assertLess(tts.MAX_CHARS_SOFT, empate)
-        # Y el tope DURO es una válvula, no el camino normal.
-        self.assertGreater(tts.MAX_CHARS, tts.MAX_CHARS_SOFT * 2)
-        self.assertIn("290", tts.SUMMARY_PROMPT)
+        # El empate es donde el audio pasa a costar más que la ficha que se
+        # cobra por escucharlo. El PRINCIPIO no cambió: ningún tope nuestro
+        # puede quedar del lado caro. El NÚMERO sí — y por eso ya no está
+        # escrito acá.
+        #
+        # Este test estuvo en verde meses certificando una cuenta vieja: tenía
+        # el US$0,007 de la época de Haiku escrito a mano. El chat pasó a
+        # Sonnet, la consulta pasó a costar US$0,021, el empate se movió de 263
+        # a 840 caracteres y el test siguió en verde igual, porque comparaba
+        # contra su propia copia congelada del precio. Ahora los dos precios
+        # viven en tts.py y esto los lee de ahí: si mañana cambia el modelo, se
+        # actualiza UN número y esta comparación se mueve sola.
+        empate = tts.empate_en_caracteres()
+        self.assertLess(tts.MAX_CHARS, empate,
+                        "hasta el tope DURO tiene que quedar del lado barato")
+        self.assertLess(tts.MAX_CHARS_SOFT, tts.MAX_CHARS)
+        # El respaldo (leer la prosa de pantalla) es un plan B y va CORTO: no
+        # puede heredar el largo del aviso, que es justo el enganche que hubo.
+        self.assertLess(tts.MAX_CHARS_RESPALDO, tts.MAX_CHARS_SOFT)
+        # El prompt tiene que pedir un largo concreto — sin número se va solo.
+        self.assertIn("350 caracteres", tts.SUMMARY_PROMPT)
+
+    def test_pide_que_el_audio_tambien_ofrezca_por_donde_seguir(self):
+        """El agujero que encontró Nico mirando un par lado a lado: la prosa
+        cerraba con "¿querés que miremos si está cara, o qué pasa si corrige?"
+        y el audio se cortaba antes. El que sólo escucha —manejando,
+        caminando— no se enteraba de que podía seguir preguntando. Justo lo
+        que se acababa de construir para que las respuestas ofrezcan caminos,
+        en el audio no llegaba."""
+        self.assertIn("ofrece por dónde seguir", tts.SUMMARY_PROMPT)
 
     def test_pide_nombres_y_no_codigos(self):
         self.assertIn("NOMBRES", tts.SUMMARY_PROMPT)
