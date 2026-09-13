@@ -326,6 +326,31 @@ export function VozProvider({ children }) {
         const { prose } = parseStructured(stripMarkdown(acc))
         if (prose) pintar(prose)
       }
+      // 🔴 EL AUDIO NO ESPERA A LAS TARJETAS.
+      //
+      // Antes se arrancaba recién con el frame final, o sea cuando el modelo
+      // había terminado de escribir TODO —incluidas las tarjetas, que el
+      // usuario ya no necesita oír—. Medido: 4,7 · 4,9 · 5,3 segundos de
+      // silencio con la respuesta entera escrita en pantalla, y recién ahí
+      // empezaba el pedido del audio, que suma el suyo.
+      //
+      // Ahora el servidor manda el resumen hablado apenas lo termina de
+      // escribir (frame `voz`), y esto lo agarra al vuelo. Se dispara una sola
+      // vez por turno: si además viniera en el frame final, `yaSono` lo frena.
+      let yaSono = false
+      const arrancarAudio = async (v) => {
+        if (yaSono || !v) return
+        yaSono = true
+        setCurrent(v)
+        if (!enabled) return
+        // Con el parlante prendido arranca solo, salvo que el plan pague con
+        // cupo propio de escuchas (Free) — ahí siempre lo tiene que tocar él.
+        // La cuota se pregunta ACÁ y no antes del turno: el turno ya descontó
+        // su ficha y con una sola de saldo la respuesta cambia.
+        const u = await api.get('/ai/usage').catch(() => null)
+        if (puedeArrancarSolo(u)) speak(v)
+      }
+
       // El turno terminó en una herramienta: lo que se escribió era el
       // preámbulo ("dejame ver los precios…"), no la respuesta. Se borra y
       // vuelve el "pensando" hasta que llegue la de verdad.
@@ -335,7 +360,7 @@ export function VozProvider({ children }) {
       }
       const res = await api.chatStream(
         { messages, snapshot: snapRef.current, ...(analisis ? { analisis } : {}) },
-        { onDelta, onReset, onPaso: setPaso, onPregunta },
+        { onDelta, onReset, onPaso: setPaso, onPregunta, onVoz: arrancarAudio },
       )
       const { prose, meta } = parseStructured(stripMarkdown(acc))
       setThread(t => {
@@ -348,17 +373,11 @@ export function VozProvider({ children }) {
         return [...copia, final].slice(-MAX_THREAD)
       })
       if (res?.portfolioChanged) window.dispatchEvent(new Event('rendi:portfolio-changed'))
-      if (res?.voz) {
-        setCurrent(res.voz)
-        // Mismo criterio que /ai: con el parlante prendido arranca solo, salvo
-        // que el tier pague con cupo propio de escuchas (Free) — ahí siempre a
-        // pedido. La cuota se consulta fresca porque la de antes del turno ya
-        // quedó vieja.
-        if (enabled) {
-          const u = await api.get('/ai/usage').catch(() => null)
-          if (puedeArrancarSolo(u)) speak(res.voz)
-        }
-      }
+      // Red de seguridad: si el resumen hablado no vino adelantado (un turno
+      // donde el modelo lo escribió último igual, o el respaldo que lo saca
+      // del titular), acá está el que viaja en el frame final. Si ya sonó,
+      // esto no hace nada.
+      await arrancarAudio(res?.voz)
     } catch (e) {
       const detail = e?.payload?.detail
       setAskError(

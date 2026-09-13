@@ -20,7 +20,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from fastapi.testclient import TestClient
 
@@ -154,6 +154,224 @@ class ExtraerVozTest(unittest.TestCase):
 
     def test_sin_voz_no_hay_payload(self):
         self.assertIsNone(main._voz_payload("Hola."))
+
+
+# ─── Que el audio no espere a las tarjetas ───────────────────────────────────
+# Nico, probándolo: "el mensaje se termina de enviar, queda pensando un poco
+# hasta que manda las imágenes, y ahí recién empieza a hablar. Ese tiempo no
+# está agregando información".
+#
+# MEDIDO contra el backend real, cuatro respuestas: entre que terminaba la
+# prosa y el usuario podía escuchar pasaban 3,9 · 4,0 · 4,4 · 5,3 segundos.
+# Silencio con la respuesta ya escrita entera en pantalla.
+#
+# Dos causas, las dos arregladas: el modelo escribía "voz" ÚLTIMO (ahora el
+# prompt le pide que vaya primero) y el servidor la entregaba recién en el
+# frame final (ahora la manda apenas el campo cierra). Después: 1,4 a 1,9s,
+# que es lo que tarda el modelo en escribir el resumen — eso no se puede
+# achicar más sin dejar de tener resumen.
+
+class LaVozNoEsperaALasTarjetasTest(unittest.TestCase):
+    """_voz_temprana lee un bloque a MEDIO escribir. Es la pieza que permite
+    firmar y mandar el audio antes de que el modelo termine."""
+
+    def test_la_agarra_apenas_cierra_aunque_falte_todo_lo_demas(self):
+        parcial = 'Prosa.\n---RENDI---{"voz":"Nvidia subió mucho.","verdict":"Buen m'
+        self.assertEqual(main._voz_temprana(parcial), "Nvidia subió mucho.")
+
+    def test_a_medio_escribir_NO_devuelve_nada(self):
+        """Devolver medio resumen sería peor que esperar: Rendi diría una
+        frase cortada y el usuario no tiene forma de saber que faltó algo."""
+        for parcial in ('Prosa.\n---RENDI---{"voz":"Nvidia sub',
+                        'Prosa.\n---RENDI---{"voz":"',
+                        'Prosa.\n---RENDI---{"vo',
+                        'Prosa.\n---RENDI---{'):
+            self.assertIsNone(main._voz_temprana(parcial), parcial)
+
+    def test_todavia_no_hay_bloque(self):
+        self.assertIsNone(main._voz_temprana("Tu cartera viene bien."))
+        self.assertIsNone(main._voz_temprana(""))
+        self.assertIsNone(main._voz_temprana(None))
+
+    def test_la_palabra_voz_en_la_prosa_no_dispara(self):
+        """Sólo se mira DESPUÉS del delimitador. Si no, alguien preguntando
+        por la "voz" de Rendi haría que se pusiera a hablar cualquier cosa."""
+        self.assertIsNone(main._voz_temprana('¿Cómo cambio la "voz": la de ahora no me gusta?'))
+
+    def test_las_comillas_de_adentro_no_la_cortan_antes(self):
+        parcial = 'P.\n---RENDI---{"voz":"Dijo \\"basta\\" y cerró.","verdict":"x'
+        self.assertEqual(main._voz_temprana(parcial), 'Dijo "basta" y cerró.')
+
+    def test_los_acentos_escapados_se_resuelven(self):
+        parcial = 'P.\n---RENDI---{"voz":"Subi\\u00f3 un 8 por ciento.","x":1'
+        self.assertEqual(main._voz_temprana(parcial), "Subió un 8 por ciento.")
+
+    def test_tolera_el_delimitador_escrito_de_otra_forma(self):
+        self.assertEqual(main._voz_temprana('P.\n--- RENDI ---{"voz":"Anda igual."}'),
+                         "Anda igual.")
+
+    def test_una_voz_vacia_no_cuenta(self):
+        self.assertIsNone(main._voz_temprana('P.\n---RENDI---{"voz":"","verdict":"x"}'))
+        self.assertIsNone(main._voz_temprana('P.\n---RENDI---{"voz":"   ","verdict":"x"}'))
+
+    def test_dice_LO_MISMO_que_el_extractor_final(self):
+        """El adelanto y el que viaja al final tienen que coincidir SIEMPRE:
+        el navegador arranca el audio con el primero y se queda con el
+        segundo. Si difirieran, la firma del final no validaría el texto que
+        ya está sonando."""
+        for voz in ("Nvidia subió 82 por ciento.",
+                    'Dijo "basta" y cerró la posición.',
+                    "Subió un 8,3 por ciento en el año."):
+            entero = _bloque({"voz": voz, "verdict": "Buen mes", "headline": "x"})
+            self.assertEqual(main._voz_temprana(entero), main._extract_voz(entero), voz)
+
+
+class ElPromptPideLaVozPrimeroTest(unittest.TestCase):
+    """El adelanto sirve poco si el modelo escribe "voz" al final: medido, la
+    arrancaba en el 70% del bloque. El prompt tiene que pedirle que vaya
+    primera, y en los DOS prompts (el de pago y el de Free)."""
+
+    def test_los_dos_prompts_lo_piden(self):
+        for nombre, prompt in (("pago", main._AI_CHAT_SYSTEM),
+                               ("free", main._AI_CHAT_SYSTEM_FREE)):
+            self.assertIn('{"voz"', prompt, nombre)
+
+    def test_en_el_shape_la_voz_va_antes_que_verdict(self):
+        for nombre, prompt in (("pago", main._AI_CHAT_SYSTEM),
+                               ("free", main._AI_CHAT_SYSTEM_FREE)):
+            i, j = prompt.find('{"voz"'), prompt.find('"verdict"')
+            self.assertTrue(0 <= i < j, "%s: la voz no va primera en el shape" % nombre)
+
+
+class ElFrameDeVozLlegaAntesQueElFinalTest(unittest.TestCase):
+    """La prueba que importa de verdad: el orden de los frames en el stream.
+
+    Los tests de arriba miran la función suelta. Este mira lo que ve el
+    navegador: que el resumen hablado FIRMADO llegue mientras el modelo
+    todavía está escribiendo las tarjetas, y no al final con todo lo demás.
+    Si esto se rompe, los otros siguen en verde y el usuario vuelve a comerse
+    los cinco segundos de silencio.
+    """
+
+    def setUp(self):
+        self.conn = main.get_db()
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, tier) VALUES (?,?,?)",
+            ("stream-%s@rendi.test" % os.urandom(4).hex(), "x", "pro"))
+        self.conn.commit()
+        self.uid = cur.lastrowid
+        self.token = main.create_token(self.uid)
+        self.client = TestClient(main.app)
+
+    def tearDown(self):
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+    def _frames(self, pedazos):
+        """Corre un turno con el modelo simulado escupiendo `pedazos` y
+        devuelve la lista de frames tal como los ve el navegador."""
+        class _FakeStream:
+            text_stream = pedazos
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+            def get_final_message(s):
+                return _RespFinal([_TextoPlano("".join(pedazos))])
+
+        class _TextoPlano:
+            type = "text"
+            def __init__(s, t): s.text = t
+            def model_dump(s): return {"type": "text", "text": s.text}
+
+        class _RespFinal:
+            def __init__(s, content):
+                s.content, s.stop_reason, s.usage = content, "end_turn", None
+
+        mc = MagicMock()
+        mc.messages.stream.return_value = _FakeStream()
+        with patch.object(main, "_get_anthropic_client", return_value=mc), \
+             patch.object(main, "_kick_bench_refresh", lambda: None):
+            r = self.client.post(
+                "/api/ai/chat",
+                headers={"Authorization": "Bearer %s" % self.token},
+                json={"messages": [{"role": "user", "content": "¿Cómo está mi portfolio en general?"}],
+                      "snapshot": {"summary": {}, "positions": [], "operations": [],
+                                    "monthly": [], "brokers": []},
+                      "stream": True})
+        self.assertEqual(r.status_code, 200, r.text)
+        out = []
+        for linea in r.text.splitlines():
+            if linea.startswith("data:"):
+                try:
+                    out.append(json.loads(linea[5:]))
+                except ValueError:
+                    pass
+        return out
+
+    # El bloque partido como lo parte el modelo de verdad: la voz primero,
+    # las tarjetas después y en varios pedazos.
+    PEDAZOS = [
+        "Tu cartera viene bien. ", "Nvidia pesa mucho.\n",
+        "---RENDI---", '{"voz":"Tu cartera viene bien', ', pero Nvidia pesa mucho."',
+        ',"verdict":"Buen mes"', ',"tone":"pos"',
+        ',"stats":[{"l":"Retorno","v":"+73%","t":"pos"}]',
+        ',"blocks":[{"type":"alloc","items":[{"l":"NVDA","pct":38}]}]',
+        ',"followups":["¿Y contra el S&P?"]}',
+    ]
+
+    def test_la_voz_llega_ANTES_de_que_termine_el_bloque(self):
+        frames = self._frames(self.PEDAZOS)
+        tipos = [f.get("t") for f in frames]
+        self.assertIn("voz", tipos, "no se adelantó el resumen hablado")
+        i_voz = tipos.index("voz")
+        i_done = tipos.index("done")
+        self.assertLess(i_voz, i_done)
+        # Y no sólo antes del final: antes de los pedazos de las TARJETAS,
+        # que es de donde sale el tiempo que se gana.
+        deltas_despues = sum(1 for t in tipos[i_voz:] if t == "delta")
+        self.assertGreaterEqual(deltas_despues, 3,
+                                "llegó al final igual: no se ganó nada")
+
+    def test_viene_firmado_y_la_firma_valida(self):
+        """Sin firma válida /api/ai/voz no canta nada — un adelanto sin firmar
+        sería un frame decorativo."""
+        voz = next(f["voz"] for f in self._frames(self.PEDAZOS) if f.get("t") == "voz")
+        self.assertEqual(voz["text"], "Tu cartera viene bien, pero Nvidia pesa mucho.")
+        self.assertTrue(tts.verify(voz["text"], voz["sig"]))
+
+    def test_el_adelanto_y_el_final_dicen_lo_mismo(self):
+        """El navegador arranca con el adelantado y se queda con el del final.
+        Si difirieran, el audio sonaría con un texto y la firma cubriría otro."""
+        frames = self._frames(self.PEDAZOS)
+        temprana = next(f["voz"] for f in frames if f.get("t") == "voz")
+        final = next(f.get("voz") for f in frames if f.get("t") == "done")
+        self.assertEqual(temprana, final)
+
+    def test_se_manda_UNA_sola_vez(self):
+        """Un segundo frame pisaría el audio del primero a mitad de frase."""
+        frames = self._frames(self.PEDAZOS)
+        self.assertEqual(sum(1 for f in frames if f.get("t") == "voz"), 1)
+
+    def test_sin_bloque_no_se_adelanta_nada_pero_igual_suena(self):
+        """Una respuesta sin bloque no tiene nada que adelantar — pero no
+        puede quedarse muda: ahí entra el respaldo que lee la prosa (pasa en
+        las repreguntas, donde el modelo se saltea el bloque). El adelanto no
+        puede haber roto ese camino."""
+        frames = self._frames([
+            "Tu cartera subió 8 por ciento este mes y la mayor parte lo explica Nvidia. ",
+            "El resto se movió poco. Si querés miramos qué pasaría si esa posición corrige, ",
+            "o cómo venís contra el mercado en lo que va del año."])
+        self.assertNotIn("voz", [f.get("t") for f in frames])
+        final = next(f for f in frames if f.get("t") == "done")
+        self.assertTrue(final.get("voz"), "se quedó sin audio")
+
+    def test_una_respuesta_de_una_linea_sigue_sin_hablar(self):
+        """Y al revés: un acuse corto no se lee ni antes ni después. El
+        adelanto no puede convertir en audio algo que no lo era."""
+        frames = self._frames(["Dale, avisame."])
+        self.assertNotIn("voz", [f.get("t") for f in frames])
+        self.assertIsNone(next(f for f in frames if f.get("t") == "done").get("voz"))
 
 
 # ─── Que la conversación se hable ENTERA ─────────────────────────────────────

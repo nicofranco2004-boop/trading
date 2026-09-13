@@ -127,6 +127,8 @@ MAX_CHARS_SOFT = 260
 SUMMARY_PROMPT = """
 EL RESUMEN HABLADO (campo "voz" del bloque ---RENDI---)
 Agregá al JSON un campo más, "voz": la MISMA respuesta contada en voz alta, en 3 oraciones, apuntá a 290 caracteres (nunca más de 600).
+
+🔴 "voz" VA PRIMERO, apenas abrís la llave: `---RENDI---{"voz":"...","verdict":...`. No es un capricho de orden: el audio no puede empezar hasta que ese campo esté completo, y el usuario lo escucha SIN ver el JSON. Escribiéndolo último —que es lo que salía solo— el que tenía el parlante prendido se comía CINCO SEGUNDOS de silencio mirando la respuesta ya escrita en pantalla, mientras vos armabas las tarjetas. Escribiéndolo primero, empieza a hablar mientras las armás.
 No es la prosa recortada — es otro texto, escrito para la OREJA:
 - Montos REDONDEADOS y dichos como se dicen: "ochenta y cuatro mil dólares", no "US$ 84.210,37". Porcentajes con un decimal como mucho.
 - NOMBRES de los activos, NUNCA los códigos. Decí "Bonar 2030", no "AL30"; "Nvidia", no "NVDA"; "Galicia", no "GGAL". El nombre sale del campo `name` de la posición en el snapshot — si una posición no lo trae, decí el código como palabra sólo si se puede pronunciar, y si no, evitá nombrarla.

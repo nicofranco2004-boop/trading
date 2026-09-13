@@ -21965,7 +21965,7 @@ NVDA tiene P/E 33, forward 17, PEG 0.71, payoutRatio 0.0061, ROE 1.14, debtToEqu
 
 BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
 Al FINAL de cada respuesta de ANÁLISIS, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado con este shape:
-{"verdict":"2-3 palabras (ej: Buen mes / Ojo acá / Todo en orden)","tone":"pos|warn|neg|neutral","headline":"la respuesta resumida en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor con signo/unidad","t":"pos|warn|neg|neutral"}],"followups":["repregunta corta","otra"],"sources":["qué datos miraste, ej: 12 posiciones","snapshot de hoy"]}
+{"voz":"el resumen hablado — ver más abajo; VA PRIMERO","verdict":"2-3 palabras (ej: Buen mes / Ojo acá / Todo en orden)","tone":"pos|warn|neg|neutral","headline":"la respuesta resumida en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor con signo/unidad","t":"pos|warn|neg|neutral"}],"followups":["repregunta corta","otra"],"sources":["qué datos miraste, ej: 12 posiciones","snapshot de hoy"]}
 Reglas del bloque:
 - stats: máx 3, SOLO números reales del snapshot o de tools — nunca inventados. Elegí los números que RESPONDEN LA PREGUNTA (deltas, brechas vs benchmark, concentración, el dato que sorprende) — NO el resumen genérico de la cartera (invertido/valor actual ya lo ve en el dashboard; repetirlo aburre). Si no hay métricas relevantes, mandá stats vacío []. LABELS SIN AMBIGÜEDAD: para el peso/ponderación de posiciones decí "Concentración top 5" o "Top 5 = % de tu cartera" — NUNCA "pesos" (acá "pesos" es la moneda ARS y se lee como plata). Mismo criterio en títulos de blocks y prosa: "peso" solo si el contexto lo hace inequívoco.
 - followups: 2 o 3, y son LA PUERTA que abriste en la prosa, escritas como las diría el usuario ("Sí, analizá los fundamentos", "Mostrame el detalle por activo", "¿Y contra el S&P?"). El frontend las muestra como botones, así que aceptar tiene que ser un solo toque. Concretas y distintas entre sí: tres formas de decir lo mismo no son tres caminos. NUNCA las omitas en una respuesta de análisis — son cómo sigue la conversación.
@@ -22118,7 +22118,7 @@ El plan Pro recibe respuestas con interpretación, causalidad, comparaciones y p
 
 BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
 Al FINAL de cada respuesta de análisis, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado:
-{"verdict":"2-3 palabras","tone":"pos|warn|neg|neutral","headline":"el dato principal en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor","t":"pos|warn|neg|neutral"}],"sources":["ej: 12 posiciones"]}
+{"voz":"el resumen hablado — ver más abajo; VA PRIMERO","verdict":"2-3 palabras","tone":"pos|warn|neg|neutral","headline":"el dato principal en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor","t":"pos|warn|neg|neutral"}],"sources":["ej: 12 posiciones"]}
 Reglas: stats máx 3 con números REALES del snapshot (nunca inventados); sources máx 2; NO incluyas "followups" (este plan no tiene chat libre); la prosa va antes y no menciona el bloque; omitilo en saludos y en el flujo de registro de operaciones.
 El JSON también acepta "blocks" (máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"NVDA","pct":28},...]} (composición, máx 6, pct reales) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"...","to":"/alertas?new=TICKER"}]} (solo rutas internas /alertas /analisis /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). En respuestas de análisis incluí al menos 1. Guía rápida por pregunta: riesgo/concentración → "alloc" o "scenario" + "actions" (crear alerta del activo pesado); comparaciones vs benchmark → "compare" con summary.benchmarks; earnings/listas → "table" + action a /novedades. Los valores como STRINGS formateados ("+6,7%"), no números crudos. "actions" son atajos DE LA APP — nunca consejo de comprar/vender.""" + tts.SUMMARY_PROMPT
 
@@ -29901,6 +29901,62 @@ def _extract_voz(text: str) -> Optional[str]:
     return voz
 
 
+# ─── Adelantar el audio: no esperar a que termine de dibujar las tarjetas ────
+# MEDIDO el 2026-09-12 contra el backend real, tres respuestas: entre que
+# termina la prosa y el usuario puede empezar a escuchar pasaban 4,7 · 4,9 ·
+# 5,3 SEGUNDOS. Cinco segundos de silencio con la respuesta ya escrita en
+# pantalla, mirando cómo aparecen las tarjetas. Y recién DESPUÉS de eso arranca
+# el pedido del audio, que agrega el suyo.
+#
+# La causa eran dos cosas, y hacían falta las dos:
+#   1. El modelo escribía "voz" ÚLTIMO — arrancaba al 70% del bloque. Ahora el
+#      prompt le pide que vaya primero.
+#   2. El servidor entregaba la voz firmada recién en el frame `done`, o sea
+#      cuando ya había terminado TODO. Ahora la manda apenas el campo cierra.
+#
+# Por qué la firma tiene que salir del servidor y no armarla el navegador con
+# lo que va leyendo: la firma es lo único que impide que /api/ai/voz sea un
+# lector de texto gratis para cualquiera con cuenta. El servidor ve pasar los
+# mismos pedacitos que el navegador, así que puede firmar en el momento.
+def _voz_temprana(texto: str) -> Optional[str]:
+    """El campo "voz" de un bloque a MEDIO escribir, o None si todavía no cerró.
+
+    Se busca sólo después del delimitador: un `"voz"` que aparezca en la prosa
+    (el usuario preguntando por la voz de Rendi, por ejemplo) no cuenta.
+
+    El valor se corta en la comilla de cierre que NO esté escapada y se pasa
+    por json.loads con las comillas puestas, así los \" \n y los \u00e1 se
+    resuelven igual que los resolvería el parseo final. Un texto a medias nunca
+    se devuelve: sin comilla de cierre, esto devuelve None y se vuelve a
+    intentar con el pedacito siguiente.
+    """
+    if not texto:
+        return None
+    m = _RENDI_DELIM_RE.search(texto)
+    if not m:
+        return None
+    cola = texto[m.end():]
+    i = cola.find('"voz"')
+    if i == -1:
+        return None
+    j = cola.find('"', i + 5)          # la comilla que abre el valor
+    if j == -1:
+        return None
+    k = j + 1
+    while k < len(cola):
+        if cola[k] == "\\":
+            k += 2
+            continue
+        if cola[k] == '"':
+            try:
+                v = json.loads(cola[j:k + 1])
+            except Exception:
+                return None
+            return v.strip() or None
+        k += 1
+    return None                        # todavía se está escribiendo
+
+
 def _voz_payload(text: str) -> Optional[dict]:
     """El resumen hablado FIRMADO, listo para viajar al frontend.
 
@@ -30373,7 +30429,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
 
 RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días.
 
-RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: un RESUMEN de hasta 80 palabras —2 o 3 oraciones COMPLETAS, jamás cortadas a la mitad— y después una línea ofreciendo DISTINTOS caminos para seguir, para que elija el usuario. Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar, contá las palabras: si pasás de 80, sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como una de las puertas. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos) — se olvida fácil porque no se ve en pantalla, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
+RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: un RESUMEN de hasta 80 palabras —2 o 3 oraciones COMPLETAS, jamás cortadas a la mitad— y después una línea ofreciendo DISTINTOS caminos para seguir, para que elija el usuario. Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar, contá las palabras: si pasás de 80, sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como una de las puertas. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos), y va PRIMERO de todo, apenas abrís la llave: ---RENDI---{{"voz":"...","verdict":... El orden importa de verdad: Rendi empieza a hablar apenas ese campo cierra, así que escribirlo último son cinco segundos de silencio con la respuesta ya escrita en pantalla. Se olvida fácil porque no se ve, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
@@ -30693,6 +30749,16 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             #   se desconecta antes del done, se le COBRA (sin esto: leer y
             #   cortar al 95% = chats infinitos). Si casi no llegó texto, refund.
             state = {"settled": False, "synth_deltas": 0, "synth_text": ""}
+            # ¿Ya se mandó el resumen hablado adelantado en este turno? Uno
+            # solo: el segundo pisaría el audio del primero a mitad de frase.
+            # Se apaga con el frame `reset` — lo que se había escrito era el
+            # preámbulo, y su voz (si la hubo) hablaba de otra cosa.
+            # `desde` = a partir de qué punto del texto acumulado se busca. El
+            # preámbulo de una vuelta con herramientas ("dejame ver los
+            # precios…") queda ATRÁS de esta marca: si ese preámbulo trajera un
+            # bloque con voz, Rendi arrancaría hablando de algo que después se
+            # borra de la pantalla. Con la marca, ese texto ya no se mira.
+            voz_adelantada = {"ya": False, "desde": 0}
             try:
                 # +1 iteración cuando la 1ra va FORZADA a register_trade: esa
                 # vuelta no puede combinar tools (p.ej. get_current_prices para
@@ -30722,6 +30788,17 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                 state["synth_deltas"] += 1
                                 state["synth_text"] += chunk
                                 yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+                                # Apenas el campo "voz" cierra, se manda
+                                # firmado — sin esperar a que el modelo termine
+                                # de escribir las tarjetas. Son los ~5 segundos
+                                # de silencio que medimos (ver _voz_temprana).
+                                if not voz_adelantada["ya"]:
+                                    _vt = _voz_temprana(state["synth_text"][voz_adelantada["desde"]:])
+                                    if _vt:
+                                        voz_adelantada["ya"] = True
+                                        yield ("data: " + json.dumps(
+                                            {"t": "voz", "voz": {"text": _vt, "sig": tts.sign(_vt)}},
+                                            ensure_ascii=False) + "\n\n")
                         resp = stream.get_final_message()
                     if resp.stop_reason != "tool_use":
                         # Garantía de visibilidad: si quedó un pendiente y el
@@ -30757,6 +30834,11 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     # la ventana silenciosa de tools (además de keep-alive).
                     yield "data: " + json.dumps({"t": "reset"}) + "\n\n"
                     state["synth_deltas"] = 0
+                    # Lo escrito hasta acá era preámbulo: no se mira más para
+                    # el audio, y la respuesta de verdad puede volver a
+                    # adelantar su voz.
+                    voz_adelantada["ya"] = False
+                    voz_adelantada["desde"] = len(state["synth_text"])
                     # Contarle al usuario qué se está haciendo, antes de hacerlo.
                     _nombres = [getattr(b, "name", "") for b in resp.content
                                 if getattr(b, "type", "") == "tool_use"]

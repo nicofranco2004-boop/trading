@@ -285,7 +285,7 @@ async function getBlob(path) {
 // (UpgradePromoCard, etc). Un error del LLM a mitad del stream llega como frame
 // `error` y se lanza con el mismo shape. En demo mode no hay streaming real:
 // usamos el mock y emitimos todo de una.
-async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, signal } = {}) {
+async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, signal } = {}) {
   if (isDemoMode()) {
     const res = await req('POST', '/ai/chat', { ...body, stream: false })
     // El mock demo resuelve por setTimeout (inabortable): respetar el abort
@@ -354,6 +354,16 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, signal }
         try { evt = JSON.parse(payload) } catch { continue }
         if (evt.t === 'delta') {
           if (onDelta && evt.d) onDelta(evt.d)
+        } else if (evt.t === 'voz') {
+          // El resumen hablado, FIRMADO, apenas el modelo lo terminó de
+          // escribir — sin esperar a que dibuje las tarjetas. Son ~5 segundos
+          // de silencio menos con la respuesta ya escrita en pantalla.
+          // Sigue viniendo también en `done`: este frame lo ADELANTA, no lo
+          // reemplaza, así un turno sin él (o un backend viejo) suena igual.
+          if (evt.voz && typeof evt.voz.text === 'string' && typeof evt.voz.sig === 'string') {
+            voz = { text: evt.voz.text, sig: evt.voz.sig }
+            if (onVoz) onVoz(voz)
+          }
         } else if (evt.t === 'pregunta') {
           // Turno del botón ✦: la pregunta la escribió el servidor (el
           // navegador mandó qué botón se tocó, no un texto). Llega antes que
@@ -368,6 +378,9 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, signal }
           // B-13: el turno anterior terminó en tool_use — lo streameado hasta
           // acá era el PREÁMBULO ("déjame consultar…"), no la respuesta. El
           // caller limpia la burbuja y vuelve al loader.
+          // Lo streameado era preámbulo: si ya se había arrancado el audio
+          // con su voz, hablaba de algo que se acaba de borrar de la pantalla.
+          voz = null
           if (onReset) onReset()
         } else if (evt.t === 'done') {
           sawTerminal = true
