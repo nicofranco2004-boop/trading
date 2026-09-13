@@ -22,9 +22,21 @@ const msg = (role, content) => ({ role, content })
 describe('chatSession', () => {
   beforeEach(() => stubStorage())
 
-  it('roundtrip: save → load conserva role/content y descarta extras', () => {
+  it('roundtrip: save → load conserva role/content y descarta lo desconocido', () => {
     saveChatSession([{ role: 'user', content: 'hola', extra: 'x' }, msg('assistant', 'buenas')])
     expect(loadChatSession()).toEqual([msg('user', 'hola'), msg('assistant', 'buenas')])
+  })
+
+  it('el audio y las tarjetas SOBREVIVEN a cambiar de pantalla', () => {
+    // Antes se guardaba sólo role+content: al volver de otra sección los
+    // mensajes viejos quedaban en texto pelado, sin tarjetas y —peor— sin
+    // botón de escuchar, porque la firma del audio vivía sólo en memoria.
+    const voz = { text: 'Tu cartera subió.', sig: 'abc123' }
+    const meta = { stats: [{ l: 'Retorno', v: '+73%' }], followups: ['¿Y contra el S&P?'] }
+    saveChatSession([msg('user', 'hola'), { role: 'assistant', content: 'r', voz, meta }])
+    const [, a] = loadChatSession()
+    expect(a.voz).toEqual(voz)
+    expect(a.meta).toEqual(meta)
   })
 
   it('cap MAX_STORED: guarda solo los últimos', () => {

@@ -28,7 +28,8 @@ import { api } from '../utils/api'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
-import { sendWindow } from '../utils/chatSession'
+import { loadChatSession, saveChatSession, clearChatSession, sendWindow, MAX_STORED } from '../utils/chatSession'
+import { traducirErrorDeChat, esCancelacion } from '../utils/errorChat'
 
 const LS_ON = 'rendi:voz:on'
 const LS_RATE = 'rendi:voz:rate'
@@ -39,9 +40,14 @@ const LS_RATE = 'rendi:voz:rate'
 export const RATES = [1, 1.25, 1.4]
 const DEFAULT_RATE = 1.25
 
-// Cuántos mensajes guarda el hilo del acompañante. Es un acompañante, no una
-// segunda pantalla de chat: la conversación entera vive en /ai.
-const MAX_THREAD = 8
+// Cuántos mensajes guarda LA conversación. Es el mismo tope que usaba el chat
+// grande, y ahora es el único: antes la isla guardaba 8 y /ai 40, así que al
+// pasar de una a otra la conversación se acortaba sola.
+//
+// La isla sigue siendo un acompañante y no una segunda pantalla de chat: eso
+// se resuelve mostrando el FINAL en una tarjeta chica, no guardando menos.
+// Guardar menos era perder mensajes de verdad.
+const MAX_THREAD = MAX_STORED
 
 /**
  * ¿El audio puede arrancar SOLO, sin que el usuario lo pida?
@@ -95,15 +101,41 @@ export function VozProvider({ children }) {
   // El resumen hablado en curso: { text, sig, url }
   const [current, setCurrent] = useState(null)
 
-  // ── El acompañante ───────────────────────────────────────────────────────
+  // ── LA conversación con Rendi ────────────────────────────────────────────
+  // UNA sola, no una por pantalla. La isla flotante y el chat grande de /ai
+  // son dos ventanas a lo MISMO.
+  //
+  // Antes eran dos hilos separados que se copiaban al final: el chat grande
+  // le "publicaba" su respuesta a la isla cuando terminaba. Tres agujeros, los
+  // tres reportados:
+  //   · Preguntabas en la isla, ibas a /ai y no estaba: la copia iba en un
+  //     solo sentido.
+  //   · Recargabas y la isla arrancaba vacía aunque /ai tuviera todo: sólo el
+  //     chat grande guardaba.
+  //   · Y el peor: preguntabas en /ai, te ibas a otra sección en el medio y la
+  //     respuesta NO se copiaba tarde — se CANCELABA (`abortRef` al
+  //     desmontar). Perdías la respuesta y la ficha igual se cobraba.
+  //
+  // Por qué el dueño es ESTE archivo y no el chat: el proveedor está montado
+  // arriba de todo y no se desmonta al navegar. Es exactamente la misma razón
+  // por la que el audio no se corta al cambiar de pantalla.
   const [open, setOpen] = useState(false)
-  const [thread, setThread] = useState([])
+  const [thread, setThread] = useState(() => loadChatSession())
   const [sending, setSending] = useState(false)
   // Qué está haciendo Rendi ahora mismo ("Buscando los precios de hoy"). Lo
   // manda el backend cuando sale a buscar datos; sirve para que la espera no
   // sea un "pensando" mudo de 15 segundos.
   const [paso, setPaso] = useState(null)
   const [askError, setAskError] = useState(null)
+  // `loading` NO es lo mismo que `sending`: sending dura todo el turno, loading
+  // se apaga en cuanto llega la primera letra. Es lo que decide si se ven los
+  // puntitos o la respuesta escribiéndose.
+  const [loading, setLoading] = useState(false)
+  // El payload de "pasate a Pro" cuando el backend lo manda con un 429 o un
+  // 403. Con esto la UI dibuja la card promocional en vez del cartel rojo.
+  const [upgradeInfo, setUpgradeInfo] = useState(null)
+  // La cuota que viene pegada al error, para refrescar el pie sin otro viaje.
+  const [usageDelError, setUsageDelError] = useState(null)
   // Se acabó el cupo de escuchas: { message, upgrade }. Se dibuja como aviso
   // con su atajo a Planes, no como error.
   const [sinCupo, setSinCupo] = useState(null)
@@ -113,6 +145,11 @@ export function VozProvider({ children }) {
   // registró una operación.
   const snapRef = useRef(null)
   const sendingRef = useRef(false)
+
+  // Se guarda en cada cambio, incluidos los pedacitos del streaming: es
+  // sessionStorage sincrónico sobre 40 mensajes, sale nada. Y es lo que hace
+  // que la conversación siga ahí después de un F5.
+  useEffect(() => { saveChatSession(thread) }, [thread])
 
   useEffect(() => {
     const invalidar = () => { snapRef.current = null }
@@ -243,41 +280,33 @@ export function VozProvider({ children }) {
   }, [])
 
   /**
-   * Lo que /ai (o el propio acompañante) le pasa al terminar un turno: la
-   * pregunta, la respuesta y —si la hubo— la versión hablada.
-   * Si el parlante está prendido y hay audio, arranca solo.
+   * PREGUNTARLE A RENDI. Es la ÚNICA forma — la usan las dos pantallas.
+   *
+   * Antes había dos: ésta y `send()` adentro del chat grande, cada una con su
+   * propio hilo, su propio acumulador de texto y su propia traducción de
+   * errores. Eran la misma función escrita dos veces, y por eso se
+   * desincronizaban. Ahora el chat grande es una VISTA de esto.
+   *
+   * Vive en el proveedor —que está montado arriba de todo y no se desmonta al
+   * navegar— y ésa es la parte que importa: si preguntás en /ai y te vas al
+   * Dashboard en el medio, la respuesta sigue llegando. Antes se cancelaba.
+   *
+   * `analisis` = { screen, params }: el turno lo disparó el botón ✦ de una
+   * pantalla. Cambia tres cosas: la pregunta la escribe el servidor, se
+   * descuenta del cupo de análisis y no del de consultas, y llega de yapa el
+   * dato calculado de esa pantalla.
+   * `snapshot`: sólo para el modo LIBRO del asesor, donde la foto la arma la
+   * página. En el uso normal se resuelve solo.
    */
-  const publicar = useCallback(({ question, reply, voz, meta, autoplay = true }) => {
-    setThread(t => {
-      const next = [...t]
-      if (question) next.push({ role: 'user', content: question })
-      if (reply) next.push({ role: 'assistant', content: reply, voz: voz || null, meta: meta || null })
-      return next.slice(-MAX_THREAD)
-    })
-    if (voz) {
-      setCurrent(voz)
-      // Arranca el audio pero NO abre el panel: el usuario está mirando la
-      // respuesta completa en /ai y taparla sería estorbar. La burbuja pasa a
-      // "Hablando…", y el panel se abre solo si se va a otra sección (ver
-      // RendiMate: ahí es donde el acompañante tiene que hacerse ver).
-      if (enabled && autoplay) speak(voz)
-    }
-  }, [enabled, speak])
-
-  /** Repreguntar desde el acompañante, sin volver a /ai. */
-  // `analisis` = { screen, params }: el turno lo disparó el botón ✦ de una
-  // pantalla, no el usuario escribiendo. Cambia tres cosas y ninguna más — por
-  // eso es un parámetro y no una segunda función: la pregunta la escribe el
-  // servidor, se descuenta del cupo de análisis y no del de consultas, y el
-  // acompañante recibe de yapa el dato calculado de esa pantalla. Todo lo
-  // demás —el hilo, el audio, las tarjetas, poder repreguntar— es idéntico.
-  const ask = useCallback(async (texto, { analisis } = {}) => {
+  const ask = useCallback(async (texto, { analisis, snapshot: snapDeAfuera } = {}) => {
     const content = (texto || '').trim()
     if ((!content && !analisis) || sendingRef.current) return
     sendingRef.current = true
     setSending(true)
+    setLoading(true)
     setPaso(null)
     setAskError(null)
+    setUpgradeInfo(null)
     const previos = thread
     // Con el botón ✦ todavía no sabemos qué se preguntó: la pregunta la
     // escribe el servidor y llega en el primer frame, antes que la respuesta.
@@ -290,7 +319,8 @@ export function VozProvider({ children }) {
       setThread(t => [...t, { role: 'user', content: q }].slice(-MAX_THREAD))
     }
     try {
-      if (!snapRef.current) snapRef.current = await fetchAiSnapshot()
+      if (snapDeAfuera) snapRef.current = snapDeAfuera
+      else if (!snapRef.current) snapRef.current = await fetchAiSnapshot()
       let acc = ''
       // Al modelo van SOLO role y content: el hilo de acá guarda además el
       // audio firmado y las tarjetas, que no son parte de la conversación.
@@ -321,6 +351,7 @@ export function VozProvider({ children }) {
       })
       const onDelta = (c) => {
         acc += c
+        setLoading(false)          // ya hay texto: se apagan los puntitos
         // Se pinta la PROSA, no el texto crudo: así el bloque de datos del
         // final no aparece medio escrito en pantalla mientras llega.
         const { prose } = parseStructured(stripMarkdown(acc))
@@ -356,6 +387,7 @@ export function VozProvider({ children }) {
       // vuelve el "pensando" hasta que llegue la de verdad.
       const onReset = () => {
         acc = ''
+        setLoading(true)
         if (agregado) { setThread(t => t.slice(0, -1)); agregado = false }
       }
       const res = await api.chatStream(
@@ -379,22 +411,36 @@ export function VozProvider({ children }) {
       // esto no hace nada.
       await arrancarAudio(res?.voz)
     } catch (e) {
-      const detail = e?.payload?.detail
-      setAskError(
-        (detail && typeof detail === 'object' && detail.message)
-          ? detail.message
-          : 'No pudimos completar la consulta. Probá de nuevo.',
-      )
-      // Sacar la pregunta que falló — sólo si llegó a haber una. Un 429 del
-      // botón ✦ revienta ANTES del frame con la pregunta: ahí no hay burbuja
-      // que sacar y este slice se llevaría la respuesta anterior.
-      if (preguntaPuesta) setThread(t => t.slice(0, -1))
+      // Cancelar no es fallar: tocó "Nueva conversación" y ya se limpió todo.
+      if (esCancelacion(e)) return
+      const { mensaje, usage, upgrade } = traducirErrorDeChat(e)
+      setAskError(mensaje)
+      if (usage) setUsageDelError(usage)
+      if (upgrade) setUpgradeInfo(upgrade)
+      // Sacar del hilo lo que falló, para que se pueda reintentar: la burbuja
+      // a medio escribir si la hubo, y la pregunta. Con el botón ✦ un 429
+      // revienta ANTES del frame con la pregunta: ahí no hay burbuja que sacar
+      // y este recorte se llevaría la respuesta anterior.
+      setThread(t => {
+        const sinParcial = agregado ? t.slice(0, -1) : t
+        return preguntaPuesta ? sinParcial.slice(0, -1) : sinParcial
+      })
     } finally {
       sendingRef.current = false
       setSending(false)
+      setLoading(false)
       setPaso(null)
     }
   }, [thread, enabled, speak])
+
+  /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
+  const limpiar = useCallback(() => {
+    clearChatSession()
+    setThread([])
+    setAskError(null)
+    setUpgradeInfo(null)
+    setUsageDelError(null)
+  }, [])
 
   /**
    * Lo que hace el botón ✦ Analizar de cualquier pantalla: abre el
@@ -467,10 +513,11 @@ export function VozProvider({ children }) {
     status, progress, current,
     speak, escuchar, toggle, stop,
     open, setOpen,
-    thread, sending, paso, askError, sinCupo, ask, analizar, publicar,
+    thread, sending, loading, paso, askError, upgradeInfo, usageDelError,
+    sinCupo, ask, analizar, limpiar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
-       speak, escuchar, toggle, stop, open, thread, sending, paso, askError, sinCupo,
-       ask, analizar, publicar])
+       speak, escuchar, toggle, stop, open, thread, sending, loading, paso, askError,
+       upgradeInfo, usageDelError, sinCupo, ask, analizar, limpiar])
 
   return (
     <VozContext.Provider value={value}>
@@ -490,7 +537,8 @@ const INERTE = {
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
-  thread: [], sending: false, paso: null, askError: null, sinCupo: null, ask: () => {}, analizar: () => {}, publicar: () => {},
+  thread: [], sending: false, paso: null, askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null,
+  ask: () => {}, analizar: () => {}, limpiar: () => {},
 }
 
 export const useVoz = () => useContext(VozContext) || INERTE

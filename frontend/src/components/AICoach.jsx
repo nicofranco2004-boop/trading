@@ -24,7 +24,7 @@ import { trackEvent } from '../utils/analytics'
 import { markAIDiscovered } from './ai/AIDiscoveryBanner'
 import UpgradePromoCard from './ai/UpgradePromoCard'
 import { Link } from 'react-router-dom'
-import { useVoz, puedeArrancarSolo } from '../contexts/VozContext'
+import { useVoz } from '../contexts/VozContext'
 import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota, fechaLegible } from '../utils/cuotaTexto'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
@@ -70,7 +70,6 @@ const ADVISOR_SUGGESTED = [
 // aritmética con asteriscos).
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
-import { loadChatSession, saveChatSession, clearChatSession, sendWindow } from '../utils/chatSession'
 import AIBlocks from './ai/AIBlocks'
 
 // Tonos del bloque estructurado (v2: veredicto = banda con ícono y gradiente
@@ -94,8 +93,15 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
-  const { publicar, escuchar: vozEscuchar, toggle: vozToggle,
-          status: vozStatus, current: vozCurrent } = useVoz()
+  // ESTA PANTALLA NO TIENE SU PROPIA CONVERSACIÓN. Es una vista de la que vive
+  // en VozContext, la misma que muestra la isla flotante. Ver el comentario de
+  // `thread` allá: eran dos hilos que se copiaban al final, y por eso se
+  // desincronizaban.
+  const { escuchar: vozEscuchar, toggle: vozToggle,
+          status: vozStatus, current: vozCurrent,
+          thread: messages, ask, limpiar,
+          sending, loading, paso, askError: error,
+          upgradeInfo, usageDelError } = useVoz()
   // ¿El audio de ESTE mensaje está CARGADO en el reproductor?
   //
   // No alcanza con que coincida el texto: la respuesta se guarda como "actual"
@@ -117,18 +123,10 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   // La conversación PERSISTE al navegar (pedido de Nico: ir al Dashboard y
   // volver sin perder el chat). Se hidrata del sessionStorage y solo se borra
   // con "Nueva conversación" / "Nuevo" (reset). Ver utils/chatSession.js —
-  // al modelo viaja solo la ventana final (sendWindow), el costo no crece.
-  const [messages, setMessages] = useState(() => loadChatSession())
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  // al modelo viaja solo la ventana final, el costo no crece.
   const [freeText, setFreeText] = useState('')
-  // Qué está haciendo Rendi ahora mismo, para que la espera no sea muda.
-  const [paso, setPaso] = useState(null)
   // Usage: { chat_count, chat_limit, chat_remaining, resets_on }
   const [usage, setUsage] = useState(null)
-  // Upgrade payload — solo se setea cuando llega un 429 con upgrade.available.
-  // Si está seteado, mostramos UpgradePromoCard en lugar del banner rojo.
-  const [upgradeInfo, setUpgradeInfo] = useState(null)
   const scrollRef = useRef(null)
   // ¿el user está pegado al fondo? Solo auto-scrolleamos si sí (ver useEffect).
   const stickToBottomRef = useRef(true)
@@ -140,23 +138,13 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
     tomoElControlRef.current = true
     stickToBottomRef.current = false
   }
-  // B-5 (audit IA #2): `loading` se apaga al PRIMER token (para ocultar los
-  // puntitos) → desde ahí el guard quedaba abierto durante TODO el stream y una
-  // 2da pregunta mezclaba deltas en la misma burbuja + cobraba doble cuota.
-  // `sending` cubre la ventana completa (hasta el finally de chatStream):
-  // - sendingRef: guard SINCRÓNICO race-proof (el estado tarda un render)
-  // - sending (estado): deshabilita chips/input/submit con re-render
-  const sendingRef = useRef(false)
-  const [sending, setSending] = useState(false)
-  // Abort del stream en curso al tocar "Nuevo" o cerrar el drawer — sin esto
-  // los deltas del stream viejo seguían llegando y re-poblaban una burbuja
-  // fantasma sobre el chat "nuevo".
-  const abortRef = useRef(null)
-  useEffect(() => () => { abortRef.current?.abort() }, [])
+  // Ya NO se aborta el stream al desmontar. Era justo el bug: irse a otra
+  // sección en medio de una respuesta la CANCELABA —y la ficha se cobraba
+  // igual—. Ahora el stream lo maneja el proveedor, que no se desmonta.
 
-  // Persistir la conversación en cada cambio (incluye los deltas del
-  // streaming — barato: sessionStorage síncrono sobre ~40 mensajes máx).
-  useEffect(() => { saveChatSession(messages) }, [messages])
+  // La cuota que viene pegada a un error de cuota, para que el pie del chat
+  // muestre el número nuevo sin pedirlo otra vez.
+  useEffect(() => { if (usageDelError) setUsage(usageDelError) }, [usageDelError])
 
   // "Corregir" del ConfirmBlock enfoca el input (evento global, sin drilling).
   const freeInputRef = useRef(null)
@@ -200,188 +188,29 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoAsk, snapshot])
 
-  async function send(text) {
-    const content = (text || '').trim()
-    if (!content || loading || sendingRef.current || !snapshot) return
-    sendingRef.current = true
-    setSending(true)
-    const ctrl = new AbortController()
-    abortRef.current = ctrl
-
-    const userMsg = { role: 'user', content }
-    const newMessages = [...messages, userMsg]
-    setMessages(newMessages)
-    setLoading(true)
-    setPaso(null)
-    setError(null)
-    stickToBottomRef.current = true  // pregunta nueva → arrancamos pegados al fondo
+  // Mandar la pregunta. Todo el trabajo —el streaming, el hilo, el audio, las
+  // tarjetas, los errores— lo hace el proveedor: acá sólo se pasa el texto.
+  //
+  // ANTES esto eran 180 líneas que hacían exactamente lo mismo que `ask()` del
+  // proveedor: acumular los pedacitos, pintar la burbuja, parsear el bloque,
+  // pegar el audio, decidir el autoplay. Dos copias de la misma función es
+  // como se desincronizaban las dos pantallas.
+  //
+  // El `snapshot` se pasa porque en el modo LIBRO del asesor lo arma la página
+  // (la cuenta del asesor está vacía; el contexto es el libro de sus clientes).
+  // En el uso normal el proveedor lo resuelve solo.
+  function send(text) {
+    if (!snapshot) return          // la página todavía está armando la foto
+    stickToBottomRef.current = true   // pregunta nueva → pegados al fondo
     tomoElControlRef.current = false
-
-    // Streaming: los puntitos se muestran hasta que llega el PRIMER token; a
-    // partir de ahí ocultamos el loader y vamos rellenando la burbuja del
-    // asistente en vivo (typewriter). `acc` acumula el texto crudo; renderizamos
-    // stripMarkdown(acc) para limpiar cualquier markdown que se cuele.
-    let acc = ''
-    let assistantAdded = false
-    const onDelta = (chunk) => {
-      acc += chunk
-      const clean = stripMarkdown(acc)
-      if (!assistantAdded) {
-        assistantAdded = true
-        setLoading(false)  // ocultar puntitos: ya hay texto que mostrar
-        setMessages(m => [...m, { role: 'assistant', content: clean }])
-      } else {
-        setMessages(m => {
-          const copy = m.slice()
-          copy[copy.length - 1] = { role: 'assistant', content: clean }
-          return copy
-        })
-      }
+    trackEvent('ai_chat_sent', { is_freeform: !!(isPro || isAdmin), tier })
+    const _q = (text || '').toLowerCase()
+    if (_q.includes('s&p') || _q.includes('inflación') || _q.includes('inflacion')) {
+      trackEvent('ai_benchmark_question', { tier })
     }
-    // B-13: el turno terminó en tool_use — lo streameado era el PREÁMBULO
-    // ("déjame consultar los precios…"), no la respuesta. Limpiamos la burbuja
-    // y volvemos al loader mientras corren las tools; la síntesis final llega
-    // en el próximo turno con su propio stream.
-    const onReset = () => {
-      acc = ''
-      if (assistantAdded) {
-        assistantAdded = false
-        setMessages(m => m.slice(0, -1))
-      }
-      setLoading(true)
-    }
-
-    try {
-      // GA4: engagement metric. No mandamos el content del mensaje (PII potential).
-      trackEvent('ai_chat_sent', {
-        is_freeform: !!(isPro || isAdmin),
-        tier,
-      })
-      // M-benchmark (hipótesis de conversión): trackear la pregunta de
-      // benchmark por separado — es el momento de upsell que estamos midiendo
-      // (pregunta → respuesta con data real → CTA Pro → ¿upgrade?).
-      const _q = content.toLowerCase()
-      if (_q.includes('s&p') || _q.includes('inflación') || _q.includes('inflacion')) {
-        trackEvent('ai_benchmark_question', { tier })
-      }
-      // Marcar Coach IA como "descubierto" — usado por OnboardingChecklist
-      // en Home para detectar que el user ya probó el chat.
-      markAIDiscovered()
-      // Al modelo va SOLO la ventana final (cost cap) — en pantalla queda todo.
-      const res = await api.chatStream({ messages: sendWindow(newMessages), snapshot }, { onDelta, onReset, onPaso: setPaso, signal: ctrl.signal })
-      // Edge: el stream cerró sin emitir texto → mostrar algo en vez de nada.
-      if (!assistantAdded) {
-        setMessages(m => [...m, { role: 'assistant', content: stripMarkdown(acc) || '…' }])
-      }
-      // El turno ESCRIBIÓ en la cartera (registro/undo): avisar a la app para
-      // que Cartera y el snapshot del drawer se refresquen al instante, sin
-      // que el usuario tenga que recargar a mano.
-      if (res?.portfolioChanged) {
-        window.dispatchEvent(new Event('rendi:portfolio-changed'))
-      }
-      // Pasarle el turno al ACOMPAÑANTE (contexts/VozContext): se queda con la
-      // pregunta, la respuesta y —si la hubo— la versión hablada, para poder
-      // seguir la conversación desde cualquier otra pantalla.
-      //
-      // El autoplay espera a la cuota FRESCA a propósito: la de antes del turno
-      // ya quedó vieja. La regla de quién puede arrancar solo vive en un solo
-      // lugar (puedeArrancarSolo) porque el acompañante decide lo mismo.
-      const { prose: _prose, meta: _meta } = parseStructured(stripMarkdown(acc))
-      const _publicar = (autoplay) => publicar({
-        question: content, reply: _prose || stripMarkdown(acc), voz: res?.voz || null,
-        meta: _meta, autoplay,
-      })
-      // El audio queda PEGADO AL MENSAJE, no sólo en el reproductor: así cada
-      // respuesta tiene su propio botón de escuchar y se puede volver a
-      // cualquiera de las anteriores. Sin esto el único audio alcanzable era el
-      // último, y para el usuario el reproductor "se quedaba" en el primero.
-      if (res?.voz) {
-        setMessages(m => {
-          const copy = m.slice()
-          for (let k = copy.length - 1; k >= 0; k--) {
-            if (copy[k].role === 'assistant') { copy[k] = { ...copy[k], voz: res.voz }; break }
-          }
-          return copy
-        })
-      }
-      // Refrescar cuota tras success — no es crítico, best-effort.
-      api.get('/ai/usage')
-        .then(u => { setUsage(u); _publicar(puedeArrancarSolo(u)) })
-        .catch(() => _publicar(true))
-    } catch (e) {
-      // Abort deliberado (tocó "Nuevo" o cerró el drawer): salir en silencio —
-      // no es un error del usuario y reset() ya dejó el chat como corresponde.
-      if (e?.name === 'AbortError' || ctrl.signal.aborted) {
-        return
-      }
-      // Manejo de errores tier-aware. El backend devuelve `detail` de 3 formas:
-      //   1. dict { error, message, usage? }  → 403 gate, 429 cuota (shape custom)
-      //   2. array [{ type, loc, msg, input }] → 422 validation Pydantic
-      //   3. string  → 500 genérico
-      // Renderear el array Pydantic crudo es UX inaceptable (JSON técnico al
-      // usuario). Detectamos cada caso y damos mensaje amigable.
-      //
-      // El api.js wrapper guarda el detail crudo en `err.payload.detail`
-      // (línea 89 de api.js). El `e.message` que prepara el wrapper para
-      // arrays Pydantic es JSON.stringify del detail — feo, no lo usamos
-      // como fallback si tenemos algo mejor.
-      let msg = 'No pudimos completar la consulta. Intentalo nuevamente.'
-      const detail = e?.payload?.detail ?? e?.detail ?? e?.response?.data?.detail
-      const status = e?.status
-
-      // Caso especial: payload null (body no es JSON) → típicamente Vercel
-      // 504 Gateway Timeout devolviendo HTML genérico cuando el backend
-      // tarda > 30s. El detail vendrá undefined. Damos mensaje útil al user.
-      // Síntoma reportado: pregunta sobre P/E en follow-up → tools cache
-      // miss + 2-3 round-trips Anthropic → > 30s → Vercel corta.
-      if (e?.truncated) {
-        // B-6: el stream se cortó sin frame terminal (Vercel 30s, red móvil).
-        // Antes esto se mostraba como respuesta COMPLETA; ahora avisamos y el
-        // user reintenta (el mensaje parcial se remueve abajo).
-        msg = 'La respuesta se cortó a mitad de camino. Volvé a intentarlo — si pasa seguido, probá una pregunta más corta.'
-      } else if (!detail && (status === 504 || status === 502 || status === 503 || e?.payload === null)) {
-        msg = 'El bot tardó más de lo normal en responder. Intentá una pregunta más simple, o esperá unos segundos y reintentá.'
-      } else if (detail && typeof detail === 'object' && !Array.isArray(detail) && detail.message) {
-        // Caso 1: error estructurado del backend (gate Free, cuota agotada)
-        msg = detail.message
-        if (detail.usage) setUsage(detail.usage)
-        // Si el backend mandó upgrade.available=true (429 chat_quota_exceeded
-        // o 403 free_chat_not_allowed), seteamos upgradeInfo → render de
-        // UpgradePromoCard reemplaza al banner rojo de error. Audit #4.
-        if (detail.upgrade && detail.upgrade.available) {
-          setUpgradeInfo(detail.upgrade)
-        }
-      } else if (Array.isArray(detail) && detail.length > 0) {
-        // Caso 2: array Pydantic — no lo mostramos crudo. Inferimos el tipo.
-        const firstErr = detail[0] || {}
-        const errType = String(firstErr.type || '').toLowerCase()
-        if (errType === 'string_too_long' || errType.includes('too_long')) {
-          // Causa típica: la conversación acumuló muchos turnos y el history
-          // del bot superó el cap. Tras subir el cap a 5000 esto no debería
-          // pasar normalmente, pero mantenemos el mensaje como red de
-          // seguridad si el assistant genera output extraordinariamente largo.
-          msg = 'La conversación se hizo muy larga. Tocá "Nuevo" para empezar de cero y volvé a preguntar.'
-        } else {
-          msg = 'El mensaje no pasó la validación del servidor. Tocá "Nuevo" para refrescar el chat.'
-        }
-      } else if (typeof detail === 'string') {
-        msg = detail
-      }
-      setError(msg)
-      // Sacar del historial lo que falló para que el user pueda reintentar:
-      // si el stream alcanzó a agregar la burbuja del asistente (texto parcial),
-      // la sacamos también; siempre sacamos el user msg.
-      setMessages(m => {
-        const mm = assistantAdded ? m.slice(0, -1) : m
-        return mm.slice(0, -1)
-      })
-    } finally {
-      setLoading(false)
-      setPaso(null)
-      sendingRef.current = false
-      setSending(false)
-      if (abortRef.current === ctrl) abortRef.current = null
-    }
+    // Marca el Coach como "descubierto" — lo lee la checklist de Home.
+    markAIDiscovered()
+    ask(text, { snapshot })
   }
 
   function handleFreeSubmit(e) {
@@ -397,13 +226,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   }
 
   function reset() {
-    // Abortar el stream en curso ANTES de limpiar: sin esto, los deltas del
-    // stream viejo re-poblaban una burbuja fantasma sobre el chat nuevo.
-    abortRef.current?.abort()
-    clearChatSession()
-    setMessages([])
-    setError(null)
-    setUpgradeInfo(null)
+    limpiar()
   }
 
   // Cuál chips mostrar: si todavía no hay mensajes, las 4-6 iniciales.

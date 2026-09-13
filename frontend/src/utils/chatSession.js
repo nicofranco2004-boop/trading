@@ -40,6 +40,20 @@ function isValidMsg(m) {
   return m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string'
 }
 
+// Qué se guarda de cada mensaje, además del texto. Es una lista CERRADA a
+// propósito: lo que no esté acá se descarta al guardar.
+//
+//   voz  — el resumen hablado FIRMADO. Sin esto, al volver de otra pantalla
+//          los mensajes viejos pierden su botón de escuchar: el audio existe
+//          en el cache del servidor pero el navegador ya no sabe pedirlo,
+//          porque la firma viajaba en memoria.
+//   meta — las tarjetas (stats, blocks, followups). Sin esto la conversación
+//          vuelve en texto pelado y los botones de "seguí por acá" desaparecen.
+//
+// Cuánto pesa: 40 mensajes con tarjetas dan ~40 KB, contra los ~5 MB que
+// aguanta el navegador. No es el límite que nos va a molestar.
+const CAMPOS_QUE_SOBREVIVEN = ['voz', 'meta']
+
 /** Conversación guardada (o [] si no hay / storage roto). */
 export function loadChatSession() {
   try {
@@ -63,7 +77,11 @@ export function saveChatSession(messages) {
     const slim = messages
       .filter(isValidMsg)
       .slice(-MAX_STORED)
-      .map(m => ({ role: m.role, content: m.content }))
+      .map(m => {
+        const out = { role: m.role, content: m.content }
+        for (const k of CAMPOS_QUE_SOBREVIVEN) if (m[k]) out[k] = m[k]
+        return out
+      })
     sessionStorage.setItem(storageKey(), JSON.stringify(slim))
   } catch {
     // storage lleno / modo privado → el chat sigue funcionando, solo no persiste.

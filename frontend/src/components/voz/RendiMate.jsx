@@ -104,14 +104,21 @@ export default function RendiMate() {
   // sigue hablando. Ahí se abre solo, para que tengas dónde pausarla y
   // repreguntar sin volver. En la pantalla donde preguntaste no se abre: ahí
   // ya estás leyendo la respuesta entera.
+  //
+  // Y en /ai se cierra SIEMPRE, aunque la hayas abierto vos en otra pantalla:
+  // desde que la conversación es UNA sola, la isla abierta ahí muestra lo
+  // mismo que estás leyendo, y encima tapándolo. La burbuja cerrada igual
+  // deja el botón de pausa a mano, así que no se pierde nada.
   const loc = useLocation()
+  const enElChatGrande = loc.pathname === '/ai'
   const rutaPrevia = useRef(loc.pathname)
   useEffect(() => {
+    if (enElChatGrande) { setOpen(false); rutaPrevia.current = loc.pathname; return }
     if (loc.pathname !== rutaPrevia.current && (status === 'playing' || status === 'preparing')) {
       setOpen(true)
     }
     rutaPrevia.current = loc.pathname
-  }, [loc.pathname, status, setOpen])
+  }, [loc.pathname, enElChatGrande, status, setOpen])
 
   if (!open) {
     // LA BURBUJA CERRADA. Antes decía sólo "Rendi" y no se entendía: ni que se
