@@ -20,6 +20,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useMicrofono } from './BotonMicrofono'
 import { useVoz, RATES } from '../../contexts/VozContext'
 import { usePegadoAlFondo } from '../../hooks/usePegadoAlFondo'
+import { useArrastrable } from '../../hooks/useArrastrable'
 
 // Preguntas de arranque: dos, cortas, y de las que ya están en la whitelist
 // del backend (si no, Free y Plus se comen un 403 al tocarlas).
@@ -71,6 +72,13 @@ export default function RendiMate() {
   // arriba a leer. El cómo vive en hooks/usePegadoAlFondo.js: acá estaba
   // copiado igual que en el chat grande, y las dos copias fallaban igual.
   const { ref: hiloRef, alFondo } = usePegadoAlFondo()
+  // ARRASTRAR LA ISLA. Flota siempre arriba a la derecha y ahí viven los
+  // botones de varias pantallas; el usuario la corre adonde no le moleste y se
+  // queda ahí. El cómo vive en hooks/useArrastrable.js.
+  //
+  // La misma posición para cerrada y abierta a propósito: uno la deja en un
+  // lugar y la espera ahí, no en dos lugares distintos según el estado.
+  const { ref: islaRef, estilo: islaEstilo, manija } = useArrastrable('rendi:isla:pos')
   // Pregunta nueva → volvemos a seguirla, esté donde esté el usuario.
   useEffect(() => { if (sending) alFondo() }, [sending, alFondo])
 
@@ -144,8 +152,16 @@ export default function RendiMate() {
     // del audio. Ahora dice en qué estado está y, si Rendi está hablando, trae
     // el botón de pausa ENCIMA — no hay que abrir nada para callarla.
     return (
-      <div className="fixed top-[88px] right-4 z-40 flex items-center gap-1 rounded-full
-                      bg-bg-2 border border-line-3 shadow-lg pl-2 pr-1 py-1">
+      <div
+        ref={islaRef}
+        style={{ ...islaEstilo, ...manija.style }}
+        onPointerDown={manija.onPointerDown}
+        onPointerMove={manija.onPointerMove}
+        onPointerUp={manija.onPointerUp}
+        onPointerCancel={manija.onPointerCancel}
+        onClickCapture={manija.onClickCapture}
+        className="fixed top-[88px] right-4 z-40 flex items-center gap-1 rounded-full
+                   bg-bg-2 border border-line-3 shadow-lg pl-2 pr-1 py-1 cursor-grab active:cursor-grabbing">
         <button
           type="button"
           onClick={() => setOpen(true)}
@@ -185,9 +201,17 @@ export default function RendiMate() {
                  bg-bg-2 shadow-2xl
                  top-[88px] left-3 right-3 sm:left-auto sm:right-4 sm:w-[340px]"
       aria-label="Rendi, tu acompañante"
+      ref={islaRef}
+      style={islaEstilo}
     >
-      {/* ── Cabecera ─────────────────────────────────────────────────────── */}
-      <header className="flex items-center gap-2 px-3 py-2 border-b border-line-2">
+      {/* ── Cabecera ─────────────────────────────────────────────────────────
+          Y la MANIJA para arrastrar: apretás acá y la movés. El hilo y el
+          cuadro de escribir quedan afuera a propósito — ahí se selecciona
+          texto y se scrollea, y si arrastraran no se podría hacer ninguna de
+          las dos. */}
+      <header
+        {...manija}
+        className="flex items-center gap-2 px-3 py-2 border-b border-line-2 cursor-grab active:cursor-grabbing">
         <Pulso hablando={hablando} />
         <span className="flex-1 min-w-0 text-[12.5px] font-semibold text-ink-0 leading-tight">
           Rendi
