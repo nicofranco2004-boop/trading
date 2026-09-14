@@ -30106,9 +30106,23 @@ def _voz_temprana(texto: str) -> Optional[str]:
     i = cola.find('"voz"')
     if i == -1:
         return None
-    j = cola.find('"', i + 5)          # la comilla que abre el valor
-    if j == -1:
+    # Entre la clave y el valor puede haber dos puntos y espacios, y nada más.
+    # Sin este chequeo, un `"voz":null` hacía que la comilla siguiente fuera la
+    # de la clave de al lado: `json.loads` devolvía "verdict" y Rendi decía esa
+    # palabra suelta en voz alta.
+    k0 = i + 5
+    while k0 < len(cola) and cola[k0] in ' \t\r\n':
+        k0 += 1
+    if k0 >= len(cola) or cola[k0] != ':':
         return None
+    k0 += 1
+    while k0 < len(cola) and cola[k0] in ' \t\r\n':
+        k0 += 1
+    if k0 >= len(cola):
+        return None                    # todavía no llegó el valor
+    if cola[k0] != '"':
+        return None                    # el valor no es un texto (null, 0, …)
+    j = k0                             # la comilla que abre el valor
     k = j + 1
     while k < len(cola):
         if cola[k] == "\\":

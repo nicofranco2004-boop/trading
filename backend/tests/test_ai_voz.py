@@ -190,6 +190,20 @@ class LaVozNoEsperaALasTarjetasTest(unittest.TestCase):
                         'Prosa.\n---RENDI---{'):
             self.assertIsNone(main._voz_temprana(parcial), parcial)
 
+    def test_un_voz_que_no_es_texto_no_agarra_la_clave_de_al_lado(self):
+        """🔴 Con `"voz":null` el lector saltaba a la comilla siguiente —la de
+        la clave de al lado— y devolvía "verdict". O sea: Rendi se ponía a decir
+        esa palabra suelta en voz alta. Ahora, si el valor no es un texto, no
+        hay resumen hablado y listo."""
+        self.assertIsNone(main._voz_temprana('---RENDI---{"voz":null,"verdict":"ok"}'))
+        self.assertIsNone(main._voz_temprana('---RENDI---{"voz":0,"verdict":"ok"}'))
+        self.assertIsNone(main._voz_temprana('---RENDI---{"voz":'))
+
+    def test_el_espacio_entre_la_clave_y_el_valor_no_molesta(self):
+        # Un JSON que no viene minificado sigue siendo JSON válido.
+        self.assertEqual(main._voz_temprana('---RENDI---{"voz" : "Con espacios."}'),
+                         "Con espacios.")
+
     def test_todavia_no_hay_bloque(self):
         self.assertIsNone(main._voz_temprana("Tu cartera viene bien."))
         self.assertIsNone(main._voz_temprana(""))
