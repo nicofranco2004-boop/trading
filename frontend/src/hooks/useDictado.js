@@ -85,6 +85,9 @@ export function useDictado({ onTexto, onAntesDeGrabar } = {}) {
   const [error, setError] = useState(null)
   const [segundos, setSegundos] = useState(0)
   const [niveles, setNiveles] = useState(() => new Array(BARRITAS).fill(0))
+  // { pregunta, parecido, dicho } — sólo en Free y Plus, cuando lo dictado se
+  // parece a una de las doce preguntas que esos planes pueden mandar.
+  const [sugerida, setSugerida] = useState(null)
 
   const recRef = useRef(null)
   const streamRef = useRef(null)
@@ -203,12 +206,16 @@ export function useDictado({ onTexto, onAntesDeGrabar } = {}) {
 
       setEstado('transcribiendo')
       try {
-        const texto = await mandarAlServidor(blob, tipoBase(mime))
+        const { texto, sugerida } = await mandarAlServidor(blob, tipoBase(mime))
         setEstado('reposo')
         // Texto vacío = no se escuchó nada. NO es un error del servidor: es la
         // respuesta correcta a un micrófono que no tomó nada, y el usuario
         // tiene que poder reintentar sin un cartel rojo.
         if (!texto) { setError(LOS_ERRORES.nada); setEstado('error'); return }
+        // En Free y Plus el servidor devuelve con qué pregunta de las doce se
+        // parece lo dictado. Se muestra para CONFIRMAR en vez de tirar el
+        // texto al cuadro: si lo mandara tal cual, el chat se lo rechazaría.
+        if (sugerida) { setSugerida({ ...sugerida, dicho: texto }); return }
         onTexto?.(texto)
       } catch (e) {
         setError({ ...LOS_ERRORES.fallo, ...(e?.mensaje ? { texto: e.mensaje } : {}) })
@@ -236,11 +243,15 @@ export function useDictado({ onTexto, onAntesDeGrabar } = {}) {
   }, [estado, onAntesDeGrabar, onTexto, soltar])
 
   return {
-    estado, error, segundos, niveles,
+    estado, error, segundos, niveles, sugerida,
     grabando: estado === 'escuchando',
     ocupado: estado !== 'reposo' && estado !== 'error',
     grabar, terminar, cancelar,
     limpiarError: () => { setError(null); setEstado('reposo') },
+    // Confirmar la sugerencia manda la pregunta EXACTA de la lista, no lo que
+    // se dictó: es lo que hace que el candado de las doce siga cerrado.
+    aceptarSugerida: () => { const q = sugerida?.pregunta; setSugerida(null); if (q) onTexto?.(q) },
+    descartarSugerida: () => setSugerida(null),
   }
 }
 
@@ -265,5 +276,5 @@ export async function mandarAlServidor(blob, contentType) {
     throw err
   }
   const data = await res.json()
-  return (data?.texto || '').trim()
+  return { texto: (data?.texto || '').trim(), sugerida: data?.sugerida || null }
 }

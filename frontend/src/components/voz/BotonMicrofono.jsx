@@ -40,7 +40,9 @@ export function useMicrofono({ onTexto, onAntesDeGrabar, deshabilitado, compacto
 
   return {
     grabando,
-    aviso: hay ? <Aviso error={d.error} onCerrar={d.limpiarError} /> : null,
+    aviso: !hay ? null : (d.sugerida
+      ? <Sugerida s={d.sugerida} onAceptar={d.aceptarSugerida} onDescartar={d.descartarSugerida} />
+      : <Aviso error={d.error} onCerrar={d.limpiarError} />),
     boton: !hay ? null
       : grabando ? <PanelGrabando d={d} />
       : <Boton d={d} deshabilitado={deshabilitado} compacto={compacto} />,
@@ -128,6 +130,47 @@ function PanelGrabando({ d }) {
                      hover:text-ink-0 hover:border-ink-3 transition-colors"
         >
           Cancelar
+        </button>
+      </div>
+    </div>
+  )
+}
+
+
+/**
+ * Free y Plus: "entendí que preguntabas X".
+ *
+ * Esos planes sólo pueden mandar 12 preguntas EXACTAS, y lo dictado nunca
+ * coincide letra por letra. MEDIDO: un Free dictó la pregunta exacta de un
+ * chip, salió "porfolio" en vez de "portfolio" y el chat se lo rechazó con
+ * "el chat libre es solo Pro". Le mostrábamos un micrófono, hablaba, y le
+ * rebotaba.
+ *
+ * Acá elige entre opciones NUESTRAS: al confirmar viaja la pregunta de la
+ * lista letra por letra, así que el candado sigue cerrado. Lo que dijo se
+ * muestra arriba, chiquito, para que entienda por qué le ofrecemos ésa.
+ */
+function Sugerida({ s, onAceptar, onDescartar }) {
+  return (
+    <div className="rounded-xl border border-data-violet/35 bg-data-violet/[0.07] px-3 py-2.5">
+      <p className="m-0 text-[11px] text-ink-3">Dijiste: «{s.dicho}»</p>
+      <p className="m-0 mt-1.5 text-[11.5px] text-ink-2">Entendí que preguntabas:</p>
+      <p className="m-0 mt-0.5 text-[13px] font-semibold leading-snug text-ink-0">{s.pregunta}</p>
+      <div className="flex items-center gap-2 mt-2.5">
+        <button
+          type="button"
+          onClick={onAceptar}
+          className="rounded-full bg-data-violet text-bg-0 text-[12px] font-semibold px-3.5 py-1.5"
+        >
+          Sí, esa
+        </button>
+        <button
+          type="button"
+          onClick={onDescartar}
+          className="rounded-full border border-line-2 text-[12px] text-ink-2 px-3.5 py-1.5
+                     hover:text-ink-0 hover:border-ink-3 transition-colors"
+        >
+          No, otra cosa
         </button>
       </div>
     </div>

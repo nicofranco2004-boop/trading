@@ -77,7 +77,7 @@ describe('lo que se manda al servidor', () => {
     const fetchFalso = vi.fn(async () => ({ ok: true, json: async () => ({ texto: 'hola' }) }))
     vi.stubGlobal('fetch', fetchFalso)
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' })
-    const texto = await mandarAlServidor(blob, 'audio/webm')
+    const { texto } = await mandarAlServidor(blob, 'audio/webm')
     expect(texto).toBe('hola')
     const [url, opciones] = fetchFalso.mock.calls[0]
     expect(url).toBe('/api/ai/dictado')
@@ -92,14 +92,14 @@ describe('lo que se manda al servidor', () => {
 
   it('el texto vuelve sin espacios de sobra', async () => {
     vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ texto: '  ¿Cómo viene?  ' }) }))
-    expect(await mandarAlServidor(new Blob(['x']), 'audio/webm')).toBe('¿Cómo viene?')
+    expect((await mandarAlServidor(new Blob(['x']), 'audio/webm')).texto).toBe('¿Cómo viene?')
   })
 
   it('sin texto devuelve vacío, no revienta', async () => {
     // Vacío = no se escuchó nada. Es una respuesta legítima del servidor, no
     // un error: el usuario tocó el micrófono y no habló.
     vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({}) }))
-    expect(await mandarAlServidor(new Blob(['x']), 'audio/webm')).toBe('')
+    expect((await mandarAlServidor(new Blob(['x']), 'audio/webm')).texto).toBe('')
   })
 
   it('un error del servidor sube con SU mensaje, no uno inventado', async () => {
@@ -133,6 +133,28 @@ describe('los avisos de cuando sale mal', () => {
     // Rechazar el permiso una vez cuesta caro: volver a habilitarlo hay que
     // ir a la configuración del navegador, y nadie sabe dónde está.
     expect(LOS_ERRORES.permiso.texto).toMatch(/candado|barra de direcciones/i)
+  })
+})
+
+describe('Free y Plus: la sugerencia viaja', () => {
+  beforeEach(() => { conNavegador() })
+
+  it('la sugerencia del servidor llega al que la va a mostrar', async () => {
+    // Sin esto, un Free dicta, el texto cae en el cuadro, lo manda y el chat
+    // se lo rechaza con "el chat libre es solo Pro". Medido: la pregunta
+    // exacta de un chip salió "porfolio" y rebotó por una letra.
+    vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({
+      texto: 'cómo viene mi cartera',
+      sugerida: { pregunta: '¿Cómo está mi portfolio en general?', parecido: 1 },
+    }) }))
+    const r = await mandarAlServidor(new Blob(['x']), 'audio/webm')
+    expect(r.texto).toBe('cómo viene mi cartera')
+    expect(r.sugerida.pregunta).toBe('¿Cómo está mi portfolio en general?')
+  })
+
+  it('en Pro no viene ninguna y eso no rompe nada', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ texto: 'lo que sea' }) }))
+    expect((await mandarAlServidor(new Blob(['x']), 'audio/webm')).sugerida).toBeNull()
   })
 })
 

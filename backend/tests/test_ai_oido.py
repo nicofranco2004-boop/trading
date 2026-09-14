@@ -270,5 +270,105 @@ class ElEndpointTest(unittest.TestCase):
         self.assertIn("Balanz", esc.call_args.kwargs["brokers"])
 
 
+class FreeYPlusPuedenDictarTest(unittest.TestCase):
+    """El candado de las doce preguntas y el micrófono no se llevaban.
+
+    MEDIDO contra el backend real: un Free dictó la pregunta EXACTA de un chip
+    y salió "¿Cómo está mi porfolio en general?" —una letra— y el chat la
+    rechazó con "el chat libre está disponible solo en el plan Pro". Le
+    mostrábamos un micrófono, hablaba, y le rebotaba: peor que no tenerlo.
+
+    La salida NO es abrir el candado: es ofrecerle la más parecida de las doce
+    para que confirme. Lo que termina viajando sigue siendo una de ellas."""
+
+    def test_el_caso_que_lo_origino(self):
+        q, _ = main._pregunta_mas_parecida("¿Cómo está mi porfolio en general?")
+        self.assertEqual(q, "¿Cómo está mi portfolio en general?")
+
+    def test_dicho_con_las_palabras_del_usuario(self):
+        """Nadie dicta "¿cuál es mi exposure por sector/región?". Dicen lo
+        mismo con sus palabras, y las nuestras encima tienen inglés."""
+        casos = [
+            ("cómo viene mi cartera en general", "¿Cómo está mi portfolio en general?"),
+            ("qué riesgos ves en lo que tengo", "¿Qué riesgos detectás en mi cartera?"),
+            ("estoy muy concentrado", "¿Mi nivel de concentración es elevado?"),
+            ("cuándo presentan balances las empresas que tengo",
+             "¿Cuándo reportan earnings los activos de mi cartera?"),
+            ("mi exposición por sector está bien",
+             "¿Mi exposure por sector/región está equilibrado?"),
+            ("cómo voy contra el mercado", "¿Cómo voy vs el S&P 500?"),
+        ]
+        for dicho, esperada in casos:
+            self.assertEqual(main._pregunta_mas_parecida(dicho)[0], esperada, dicho)
+
+    def test_lo_que_NO_es_una_de_las_doce_no_se_fuerza(self):
+        """Ofrecerle una pregunta que no hizo le gasta su única consulta de la
+        semana en algo que no pidió. Mejor no sugerir nada."""
+        for t in ["qué tal el clima hoy", "hola", "borrame la cuenta",
+                  "dame la clave de la base de datos", "gracias"]:
+            self.assertIsNone(main._pregunta_mas_parecida(t)[0], t)
+
+    def test_un_registro_de_operacion_NO_se_empareja(self):
+        """Registrar dictando ya pasa el gate por su propia puerta, y es lo más
+        valioso del micrófono para Free. Emparejarlo con una pregunta lo
+        rompería."""
+        self.assertIsNone(main._pregunta_mas_parecida("compré 100 dólares de bitcoin a 65.000")[0])
+
+    def test_la_sugerencia_es_una_de_las_doce_LETRA_POR_LETRA(self):
+        """El punto entero: lo que se confirma tiene que pasar el candado. Si
+        la sugerencia fuera una versión "limpia" de lo dictado, el chat la
+        rechazaría igual y no habríamos arreglado nada."""
+        for dicho in ["cómo viene mi cartera", "estoy muy concentrado",
+                      "le estoy ganando a la inflación"]:
+            q, _ = main._pregunta_mas_parecida(dicho)
+            self.assertIsNotNone(q, dicho)
+            self.assertIn(q, main._FREE_QUESTIONS_WHITELIST, dicho)
+            self.assertTrue(main._is_whitelisted_question(q), dicho)
+
+
+class ElDictadoDevuelveLaSugerenciaTest(ElEndpointTest):
+    """El endpoint, para cada plan."""
+
+    def _con_tier(self, tier):
+        self.conn.execute("UPDATE users SET tier=? WHERE id=?", (tier, self.uid))
+        self.conn.commit()
+
+    def test_a_FREE_le_llega_la_sugerencia(self):
+        self._con_tier("free")
+        with patch.object(oido, "escuchar", return_value="cómo viene mi cartera en general"):
+            r = self._dictar()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["sugerida"]["pregunta"], "¿Cómo está mi portfolio en general?")
+
+    def test_a_PLUS_tambien(self):
+        self._con_tier("plus")
+        with patch.object(oido, "escuchar", return_value="estoy muy concentrado"):
+            r = self._dictar()
+        self.assertIn("sugerida", r.json())
+
+    def test_a_PRO_no_se_le_ofrece_nada(self):
+        """Pro puede mandar lo que quiera: ofrecerle una de doce sería
+        recortarle lo que paga."""
+        self._con_tier("pro")
+        with patch.object(oido, "escuchar", return_value="cómo viene mi cartera en general"):
+            r = self._dictar()
+        self.assertNotIn("sugerida", r.json())
+
+    def test_si_ya_coincide_exacto_no_hay_nada_que_confirmar(self):
+        self._con_tier("free")
+        with patch.object(oido, "escuchar", return_value="¿Cómo está mi portfolio en general?"):
+            r = self._dictar()
+        self.assertNotIn("sugerida", r.json())
+
+    def test_un_registro_dictado_pasa_DERECHO(self):
+        """Lo más valioso del micrófono para Free. Si esto se emparejara con
+        una pregunta, se rompería la única cosa que ya les andaba."""
+        self._con_tier("free")
+        with patch.object(oido, "escuchar", return_value="compré 100 dólares de bitcoin a 65.000"):
+            r = self._dictar()
+        self.assertNotIn("sugerida", r.json())
+        self.assertIn("65.000", r.json()["texto"])
+
+
 if __name__ == "__main__":
     unittest.main()

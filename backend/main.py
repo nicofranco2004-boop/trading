@@ -29409,6 +29409,147 @@ def _is_whitelisted_question(text: str) -> bool:
     return _normalize_question(text) in _FREE_QUESTIONS_NORMALIZED
 
 
+# ─── Emparejar lo DICTADO con una de las doce ────────────────────────────────
+# El micrófono y el candado de las 12 preguntas no se llevaban. MEDIDO: un Free
+# dictó la pregunta EXACTA de un chip y salió
+#     "¿Cómo está mi porfolio en general?"
+# — una letra de menos — y el chat la rechazó con "el chat libre es solo Pro".
+# O sea: le mostrábamos un micrófono, hablaba, y le rebotaba. Peor que no
+# tenerlo.
+#
+# La salida NO es abrirle el candado. Es emparejar lo que dijo con la pregunta
+# de la lista que más se le parece y mostrársela para que confirme: lo que
+# termina viajando sigue siendo una de las doce, letra por letra. El usuario
+# elige entre opciones nuestras, que es exactamente lo que el candado permite.
+#
+# El emparejado vive ACÁ, al lado de la lista, y no en el frontend: si viviera
+# allá, el navegador elegiría qué pregunta mandar, que es el agujero que el
+# candado existe para tapar.
+
+# 🔴 LA GENTE DICTA CON SUS PALABRAS, NO CON LAS NUESTRAS. Las doce preguntas
+# están escritas con vocabulario nuestro —y encima con inglés: "portfolio",
+# "win rate", "exposure"—. MEDIDO, los dos casos que fallaban:
+#     "cómo viene mi cartera en general"  no emparejaba con  "¿Cómo está mi
+#                                          portfolio en general?"
+#     "qué riesgos ves en lo que tengo"   no emparejaba con  "¿Qué riesgos
+#                                          detectás en mi cartera?"
+# Son la MISMA pregunta dicha de otra forma. Contar palabras iguales no las
+# junta nunca, y bajar el umbral para forzarlo emparejaría cosas equivocadas.
+#
+# Esta tabla lleva las dos formas a una sola palabra antes de comparar. Es
+# cerrada y corta a propósito: cubre las palabras que aparecen en las doce, no
+# es un diccionario de sinónimos del castellano.
+_MISMO_SIGNIFICADO = {
+    # lo que tiene el usuario
+    "portfolio": "cartera", "portafolio": "cartera", "posiciones": "cartera",
+    "tenencia": "cartera", "tengo": "cartera", "plata": "cartera",
+    "invertido": "cartera", "activos": "cartera",
+    # encontrar / ver
+    "detectas": "ver", "ves": "ver", "encontras": "ver", "notas": "ver",
+    "hay": "ver",
+    # el porcentaje de aciertos
+    "win": "aciertos", "rate": "aciertos", "aciertos": "aciertos",
+    "efectividad": "aciertos", "evaluo": "aciertos",
+    # cómo está repartida
+    "exposure": "reparto", "exposicion": "reparto", "repartida": "reparto",
+    "distribucion": "reparto", "diversificada": "reparto",
+    "equilibrado": "reparto", "equilibrada": "reparto",
+    # los balances de las empresas
+    "earnings": "balances", "balances": "balances", "resultados": "balances",
+    "reportan": "balances", "presentan": "balances",
+    # concentración
+    "concentracion": "concentracion", "concentrado": "concentracion",
+    "concentrada": "concentracion", "elevado": "concentracion",
+    # cómo opera
+    "sesgo": "sesgo", "sesgos": "sesgo", "manias": "sesgo", "errores": "sesgo",
+    "operar": "operar", "opero": "operar", "operando": "operar",
+    # el mercado
+    "sp": "mercado", "s&p": "mercado", "500": "mercado", "merval": "mercado",
+    # cara / barata
+    "cara": "cara", "caro": "cara", "sobrevalorada": "cara", "barata": "cara",
+    "valuacion": "cara",
+    # riesgo
+    "riesgos": "riesgo", "riesgo": "riesgo", "peligro": "riesgo",
+    # mejorar
+    "mejorar": "mejorar", "mejorarias": "mejorar", "cambiarias": "mejorar",
+}
+
+
+def _palabras_utiles(texto: str) -> set:
+    """Las palabras que distinguen una pregunta de otra, con los sinónimos ya
+    unificados. Se sacan las que están en casi todas ("mi", "de", "qué")
+    porque si cuentan, las doce se parecen entre sí y el emparejado elige
+    cualquiera."""
+    import re as _re
+    import unicodedata as _ud
+    t = _ud.normalize("NFKD", _normalize_question(texto))
+    t = "".join(c for c in t if not _ud.combining(c))
+    vacias = {"que", "el", "la", "los", "las", "un", "una", "de", "del", "en",
+              "mi", "mis", "tu", "me", "se", "y", "o", "a", "al", "es", "esta",
+              "como", "cual", "cuales", "por", "para", "con", "lo", "si",
+              "general", "viene", "estoy", "nivel", "forma", "mas", "sector",
+              "region", "ganando", "tuvieras", "una", "cosa", "seria", "voy",
+              "vs", "agrega", "grande", "todo"}
+    crudas = [p for p in _re.findall(r"[a-z0-9]+", t) if len(p) > 1]
+    return {_unificar(p) for p in crudas if p not in vacias}
+
+
+def _unificar(palabra: str) -> str:
+    """La palabra llevada a su forma común, tolerando que esté mal escrita.
+
+    Hacen falta las DOS cosas y por motivos distintos: la tabla arregla que el
+    usuario diga otra palabra ("cartera" por "portfolio"), y esto arregla que
+    el micrófono la escriba con una letra de menos. MEDIDO: el caso que
+    originó todo esto fue "porfolio" —así, sin la t— y con la tabla sola
+    seguía sin emparejar, porque "porfolio" no está en ninguna lista.
+
+    `difflib` viene en la biblioteca estándar: no se escribe una comparación de
+    palabras a mano para esto.
+    """
+    if palabra in _MISMO_SIGNIFICADO:
+        return _MISMO_SIGNIFICADO[palabra]
+    # Sólo en palabras largas: abajo de 6 letras, "cara" y "caro" y "casa"
+    # están todas a una letra y se emparejaría cualquier cosa.
+    if len(palabra) >= 6:
+        import difflib
+        cerca = difflib.get_close_matches(palabra, _MISMO_SIGNIFICADO.keys(), n=1, cutoff=0.86)
+        if cerca:
+            return _MISMO_SIGNIFICADO[cerca[0]]
+    return palabra
+
+
+# Cuánto tiene que parecerse para ofrecerla. Debajo de esto se prefiere no
+# sugerir nada: proponerle "¿cómo evalúo mi win rate?" a alguien que preguntó
+# otra cosa le hace gastar su única consulta de la semana en algo que no pidió.
+_PARECIDO_MINIMO = 0.45
+
+
+def _pregunta_mas_parecida(texto: str):
+    """(la pregunta de la lista, cuánto se parece) o (None, 0).
+
+    Compara por PALABRAS y no letra por letra: quien dicta dice lo mismo con
+    otras palabras ("cómo viene mi cartera" por "¿cómo está mi portfolio en
+    general?"), y una distancia de letras ahí da lejísimos.
+    """
+    dichas = _palabras_utiles(texto)
+    if not dichas:
+        return None, 0.0
+    mejor, mejor_p = None, 0.0
+    for q in _FREE_QUESTIONS_WHITELIST:
+        suyas = _palabras_utiles(q)
+        if not suyas:
+            continue
+        # Cuánto de la pregunta de la lista está en lo que dijo, y al revés.
+        # Las dos mitades importan: sin la segunda, decir una palabra suelta
+        # que aparece en una pregunta larga la emparejaría con ella.
+        a = len(dichas & suyas) / len(suyas)
+        b = len(dichas & suyas) / len(dichas)
+        p = (a + b) / 2
+        if p > mejor_p:
+            mejor, mejor_p = q, p
+    return (mejor, round(mejor_p, 2)) if mejor_p >= _PARECIDO_MINIMO else (None, round(mejor_p, 2))
+
+
 # Precios por 1M de tokens. NO se escriben acá: se derivan de la ÚNICA tabla
 # del repo, `ai/llm.py::_PRICING_USD_PER_M`.
 #
@@ -31516,10 +31657,45 @@ def ai_dictado(request: Request,
             "message": "No pude pasar tu audio a texto. Probá de nuevo, o escribilo.",
         }) from ex
 
-    log.info("dictado uid=%s bytes=%d fmt=%s chars=%d", uid, len(crudo), ext, len(texto))
+    # ── Free y Plus: emparejar con una de las doce ──────────────────────────
+    # Esos planes sólo pueden mandar 12 preguntas EXACTAS. Lo dictado nunca va
+    # a coincidir letra por letra — medido: la pregunta exacta de un chip salió
+    # "porfolio" en vez de "portfolio" y el chat la rechazó con "el chat libre
+    # es solo Pro". Le mostrábamos un micrófono, hablaba, y le rebotaba.
+    #
+    # Se le devuelve la más parecida para que CONFIRME. El candado no se abre:
+    # lo que termina viajando sigue siendo una de las doce, letra por letra.
+    #
+    # No se empareja si es un registro de operación ("compré 100 de BTC"): eso
+    # ya pasa el gate por su propia puerta y es lo más valioso del micrófono
+    # para Free. Ni si ya coincide exacto, que no habría nada que confirmar.
+    sugerida = None
+    if texto:
+        try:
+            conn = get_db()
+            try:
+                _tier, _ = _tier_con_lente(conn, request, uid)
+            finally:
+                conn.close()
+            if (_tier in ("free", "plus")
+                    and not _is_whitelisted_question(texto)
+                    and not _is_trade_intent(texto)):
+                q, parecido = _pregunta_mas_parecida(texto)
+                if q:
+                    sugerida = {"pregunta": q, "parecido": parecido}
+        except Exception as ex:
+            # Sin sugerencia el micrófono sigue andando para Pro y para
+            # registrar operaciones. No es motivo para fallar el dictado.
+            log.warning("dictado: no se pudo emparejar uid=%s: %s", uid, ex)
+
+    log.info("dictado uid=%s bytes=%d fmt=%s chars=%d sugerida=%s",
+             uid, len(crudo), ext, len(texto), bool(sugerida))
     # `texto` vacío = no se escuchó nada. Es una respuesta legítima, no un
     # error: el frontend muestra "no se escuchó nada" y deja reintentar.
-    return {"texto": texto, "segundos_max": oido.MAX_SEGUNDOS}
+    out = {"texto": texto, "segundos_max": oido.MAX_SEGUNDOS}
+    if sugerida:
+        out["sugerida"] = sugerida
+    return out
 
 
 # ─── AI memory — ai_user_facts (Ola 3-L) ─────────────────────────────────────
