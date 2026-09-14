@@ -1238,3 +1238,46 @@ class ElReintentoPorLaPUERTADEENTRADATest(ElCorteAMitadDelAudioTest):
             r2 = self.client.get(r.json()["url"], headers=self._hdr())
         self.assertEqual(r2.status_code, 200, r2.text)
         self.assertEqual(self._escuchas(), 1, "se cobró dos veces")
+
+
+class ElPerdonTieneTopeTest(ElCorteAMitadDelAudioTest):
+    """🔴 EL AGUJERO QUE ABRIÓ EL ARREGLO DEL CORTE.
+
+    Perdonar el reintento le sacó al pedido del audio su ÚNICO freno: ese
+    endpoint no tenía límite por minuto propio, y lo frenaba la cuota, que se
+    descuenta en cada generación. Con el perdón sin tope, alguien que pide el
+    audio y corta, una y otra vez, nos hace generar el mp3 en OpenAI todas las
+    veces que quiera habiendo pagado UNA.
+    """
+
+    def test_a_la_cuarta_vuelve_a_cobrar(self):
+        texto = "Una respuesta cualquiera de Rendi."
+        url = self._preparar(texto)
+        for _ in range(1 + tts._PERDONES_MAX):
+            self._cortar_a_mitad(url)
+        # El primero cobra; los tres siguientes se perdonan; el quinto NO.
+        self.assertEqual(self._escuchas(), 1)
+        r = self.client.post("/api/ai/voz", json={"text": texto, "sig": tts.sign(texto)},
+                             headers=self._hdr())
+        self.assertEqual(r.status_code, 429,
+                         "el perdón no tiene tope: se puede generar gratis para siempre")
+
+    def test_preguntar_NO_gasta_un_perdon(self):
+        """El paso que dice dónde está el archivo pregunta sin gastar. Si
+        consumiera, cada reintento gastaría dos y el tope sería la mitad."""
+        texto = "Otra respuesta de Rendi."
+        url = self._preparar(texto)
+        key = url.rsplit("/", 1)[-1].replace(".mp3", "")
+        self._cortar_a_mitad(url)
+        for _ in range(10):
+            self.assertTrue(tts.ya_pago(self.uid, key), "preguntar gastó perdones")
+
+    def test_pagar_de_nuevo_reinicia_los_perdones(self):
+        texto = "Y otra más."
+        url = self._preparar(texto)
+        key = url.rsplit("/", 1)[-1].replace(".mp3", "")
+        for _ in range(tts._PERDONES_MAX):
+            self.assertTrue(tts.ya_pago(self.uid, key, consumir=True) or True)
+        tts.marcar_pago(self.uid, key)
+        self.assertTrue(tts.ya_pago(self.uid, key),
+                        "pagó de nuevo y sigue sin poder reintentar")

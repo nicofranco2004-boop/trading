@@ -84,11 +84,46 @@ export function costoDeEscuchar(usage) {
 // nada más. Ofrecerle "mejorá tu plan" al que ya está en el techo es ruido.
 const CON_ADONDE_IR = new Set(['free', 'plus'])
 
+// 🔴 EL BOTÓN ✦ GASTA UN CUPO QUE NO SE VE EN NINGÚN CONTADOR.
+//
+// Desde que el ✦ escribe en el chat en vez de abrir un panel, su respuesta
+// aparece en esta pantalla — pero sigue descontando del cupo de ANÁLISIS, que
+// es otro (Free 1 por semana, Plus 6). Acá no se muestra en ningún lado: el pie
+// cuenta consultas y el contador de arriba también.
+//
+// Resultado, y es el caso normal de un Free: toca ✦ una vez, el pie sigue
+// diciéndole "1 consulta restante", toca otro ✦ y se come "llegaste al máximo
+// de análisis (1/1)" sin haber tenido cómo verlo venir. La pantalla le estaba
+// diciendo que le quedaba algo.
+//
+// No se agrega al pie —que en el celular ya ocupa dos renglones— sino acá, que
+// es el aviso que existe justo para "se te está acabando" y que está callado
+// mientras no haga falta.
+function analisisQueQuedan(usage) {
+  if (!usage || !(usage.analyses_limit > 0)) return null
+  return usage.analyses_remaining != null
+    ? usage.analyses_remaining
+    : Math.max(0, usage.analyses_limit - (usage.analyses_count || 0))
+}
+
 export function avisoDeCuota(usage) {
   if (!usage || !(usage.chat_limit > 0)) return null
   const consultas = Math.max(0, usage.chat_limit - usage.chat_count)
   const umbral = usage.chat_limit === 1 ? 0 : 2
-  if (consultas > umbral) return null
+  const analisis = analisisQueQuedan(usage)
+
+  // Sin consultas que avisar, pero los ✦ ya no andan: eso igual hay que
+  // decirlo. Si no, el usuario los sigue tocando por toda la app.
+  if (consultas > umbral) {
+    if (analisis !== 0) return null
+    const cuandoA = usage.resets_on ? ` Se renuevan el ${fechaLegible(usage.resets_on)}.` : ''
+    return {
+      agotado: true,
+      cta: CON_ADONDE_IR.has(usage.tier),
+      texto: `Usaste los análisis de esta semana: los botones ✦ van a pedirte que esperes.`
+        + `${cuandoA} Preguntarle a Rendi por escrito sigue andando.`,
+    }
+  }
 
   const cuando = usage.resets_on ? ` Se renuevan el ${fechaLegible(usage.resets_on)}.` : ''
   const cta = CON_ADONDE_IR.has(usage.tier)
@@ -102,7 +137,13 @@ export function avisoDeCuota(usage) {
           : Math.max(0, usage.listens_limit - (usage.listen_count || 0)))
       : 0
     const extra = escuchas > 0 ? ` Todavía te queda ${plural(escuchas, 'audio', 'audios')}.` : ''
-    return { agotado: true, cta, texto: `Te quedaste sin consultas por esta semana.${cuando}${extra}` }
+    // Los análisis son otro cupo: puede quedarle alguno aunque no le queden
+    // consultas, y decirle "te quedaste sin nada" sería falso al revés.
+    const conAnalisis = analisis > 0
+      ? ` Los botones ✦ te quedan ${plural(analisis, 'análisis', 'análisis')}.`
+      : ''
+    return { agotado: true, cta,
+             texto: `Te quedaste sin consultas por esta semana.${cuando}${extra}${conAnalisis}` }
   }
   const frase = consultas === 1 ? 'Te queda 1 consulta' : `Te quedan ${consultas} consultas`
   return { agotado: false, cta, texto: `${frase} esta semana.${cuando}` }

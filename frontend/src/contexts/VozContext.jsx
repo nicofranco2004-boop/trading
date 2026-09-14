@@ -145,6 +145,20 @@ export function VozProvider({ children }) {
   // registró una operación.
   const snapRef = useRef(null)
   const sendingRef = useRef(false)
+  // 🔴 DE QUÉ CONVERSACIÓN ES LO QUE ESTÁ LLEGANDO.
+  //
+  // Nada cancela el pedido en vuelo, y es a propósito: cancelar al desmontar
+  // era el bug que se arregló —preguntabas en /ai, te ibas al panel y perdías
+  // la respuesta con la ficha ya cobrada—. Pero quedó el caso de al lado sin
+  // cubrir: tocar "Nueva conversación" mientras Rendi escribe. El hilo se
+  // vacía, la respuesta sigue viajando, y al llegar se dibuja igual — sola, en
+  // el chat vacío, contestando una pregunta que ya no se ve.
+  //
+  // La diferencia entre los dos casos es de QUIÉN es la respuesta, no de dónde
+  // está el usuario. Así que en vez de cortar el pedido se le pone número al
+  // turno: navegar no lo cambia (la respuesta sigue siendo tuya), vaciar sí
+  // (esa conversación ya no existe) y lo que llegue tarde se descarta.
+  const turnoRef = useRef(0)
 
   // Se guarda en cada cambio, incluidos los pedacitos del streaming. Escribir
   // en sessionStorage es SINCRÓNICO —bloquea la pantalla— así que la duda era
@@ -311,6 +325,9 @@ export function VozProvider({ children }) {
     setPaso(null)
     setAskError(null)
     setUpgradeInfo(null)
+    const miTurno = turnoRef.current
+    // ¿Esta conversación sigue siendo la que está en pantalla?
+    const vigente = () => turnoRef.current === miTurno
     const previos = thread
     // Con el botón ✦ todavía no sabemos qué se preguntó: la pregunta la
     // escribe el servidor y llega en el primer frame, antes que la respuesta.
@@ -319,6 +336,7 @@ export function VozProvider({ children }) {
     let preguntaPuesta = !analisis
     if (!analisis) setThread(t => [...t, { role: 'user', content }].slice(-MAX_THREAD))
     const onPregunta = (q) => {
+      if (!vigente()) return
       preguntaPuesta = true
       setThread(t => [...t, { role: 'user', content: q }].slice(-MAX_THREAD))
     }
@@ -344,7 +362,7 @@ export function VozProvider({ children }) {
       // chat grande aunque tardara lo mismo: la espera con algo pasando en
       // pantalla es corta, la espera mirando nada es eterna.
       let agregado = false
-      const pintar = (texto) => setThread(t => {
+      const pintar = (texto) => { if (!vigente()) return; setThread(t => {
         const copia = t.slice()
         if (agregado && copia.length && copia[copia.length - 1].role === 'assistant') {
           copia[copia.length - 1] = { ...copia[copia.length - 1], content: texto }
@@ -352,7 +370,7 @@ export function VozProvider({ children }) {
         }
         agregado = true
         return [...copia, { role: 'assistant', content: texto }].slice(-MAX_THREAD)
-      })
+      }) }
       const onDelta = (c) => {
         acc += c
         setLoading(false)          // ya hay texto: se apagan los puntitos
@@ -374,7 +392,7 @@ export function VozProvider({ children }) {
       // vez por turno: si además viniera en el frame final, `yaSono` lo frena.
       let yaSono = false
       const arrancarAudio = async (v) => {
-        if (yaSono || !v) return
+        if (yaSono || !v || !vigente()) return
         yaSono = true
         setCurrent(v)
         if (!enabled) return
@@ -390,6 +408,7 @@ export function VozProvider({ children }) {
       // preámbulo ("dejame ver los precios…"), no la respuesta. Se borra y
       // vuelve el "pensando" hasta que llegue la de verdad.
       const onReset = () => {
+        if (!vigente()) return
         acc = ''
         setLoading(true)
         if (agregado) { setThread(t => t.slice(0, -1)); agregado = false }
@@ -415,6 +434,7 @@ export function VozProvider({ children }) {
         { onDelta, onReset, onPaso: setPaso, onPregunta, onVoz: arrancarAudio },
       )
       const { prose, meta } = parseStructured(stripMarkdown(acc))
+      if (!vigente()) return          // vaciaron el chat mientras llegaba
       setThread(t => {
         const copia = t.slice()
         const final = { role: 'assistant', content: prose || '…', voz: res?.voz || null, meta }
@@ -432,7 +452,7 @@ export function VozProvider({ children }) {
       await arrancarAudio(res?.voz)
     } catch (e) {
       // Cancelar no es fallar: tocó "Nueva conversación" y ya se limpió todo.
-      if (esCancelacion(e)) return
+      if (esCancelacion(e) || !vigente()) return
       const { mensaje, usage, upgrade } = traducirErrorDeChat(e)
       setAskError(mensaje)
       if (usage) setUsageDelError(usage)
@@ -446,15 +466,30 @@ export function VozProvider({ children }) {
         return preguntaPuesta ? sinParcial.slice(0, -1) : sinParcial
       })
     } finally {
-      sendingRef.current = false
-      setSending(false)
-      setLoading(false)
-      setPaso(null)
+      // SÓLO si este turno sigue siendo el de la pantalla. Si vaciaron el chat
+      // y ya se preguntó otra cosa, soltar acá le sacaría el lugar al turno
+      // nuevo y se podrían encimar dos.
+      if (vigente()) {
+        sendingRef.current = false
+        setSending(false)
+        setLoading(false)
+        setPaso(null)
+      }
     }
   }, [thread, enabled, speak, stop])
 
   /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
   const limpiar = useCallback(() => {
+    // Lo que venga del turno anterior ya no es de nadie.
+    turnoRef.current += 1
+    // Y la pantalla queda libre AHORA. Sin esto el chat recién vaciado se
+    // quedaba diciendo "pensando…" por la respuesta vieja, y no dejaba
+    // preguntar hasta que ésa terminara — hasta veinte segundos mirando un
+    // chat vacío que dice que está pensando algo que ya se descartó.
+    sendingRef.current = false
+    setSending(false)
+    setLoading(false)
+    setPaso(null)
     clearChatSession()
     setThread([])
     setAskError(null)

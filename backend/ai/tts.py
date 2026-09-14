@@ -503,7 +503,18 @@ def finish(key: str) -> None:
 # cubrir un reintento, no un registro contable.
 _PAGOS_TTL = 1800.0
 _PAGOS_MAX = 5000
-_pagos = {}                  # (uid, clave) → cuándo se pagó
+# 🔴 CUÁNTAS VECES SE PERDONA, y por qué tiene que haber un número.
+#
+# Perdonar el reintento le saca al pedido del audio su ÚNICO freno: ese endpoint
+# no tiene límite por minuto propio, y hasta ahora lo frenaba la cuota, que se
+# descontaba en cada generación. Con el perdón puesto sin tope, alguien que pide
+# el audio y corta, una y otra vez, hace que le generemos el mp3 en OpenAI todas
+# las veces que quiera habiendo pagado UNA.
+#
+# Tres alcanza de sobra para lo que esto existe: un corte de señal se reintenta
+# una o dos veces. A la cuarta ya no es un corte, y vuelve a cobrarse.
+_PERDONES_MAX = 3
+_pagos = {}                  # (uid, clave) → [cuándo se pagó, perdones usados]
 _pagos_lock = threading.Lock()
 
 
@@ -512,23 +523,35 @@ def marcar_pago(uid: int, key: str) -> None:
     ahora = time.time()
     with _pagos_lock:
         if len(_pagos) >= _PAGOS_MAX:
-            viejo = ahora - _PAGOS_TTL
-            for k in [k for k, t in _pagos.items() if t < viejo]:
+            corte = ahora - _PAGOS_TTL
+            for k in [k for k, v in _pagos.items() if v[0] < corte]:
                 del _pagos[k]
             if len(_pagos) >= _PAGOS_MAX:
                 _pagos.clear()
-        _pagos[(uid, key)] = ahora
+        # Un pago nuevo reinicia los perdones: pagó de nuevo, empieza de cero.
+        _pagos[(uid, key)] = [ahora, 0]
 
 
-def ya_pago(uid: int, key: str) -> bool:
-    """¿Ya pagó este audio y se le cortó? Entonces el reintento es gratis."""
+def ya_pago(uid: int, key: str, consumir: bool = False) -> bool:
+    """¿Ya pagó este audio y se le cortó? Entonces el reintento es gratis.
+
+    `consumir=True` va SÓLO donde el perdón se usa de verdad, o sea donde se
+    iba a generar el audio. El otro llamador —el paso que dice dónde está el
+    archivo— pregunta sin gastar: si consumiera, cada reintento gastaría dos
+    perdones en vez de uno y el tope sería la mitad de lo que dice.
+    """
     with _pagos_lock:
-        t = _pagos.get((uid, key))
-        if t is None:
+        v = _pagos.get((uid, key))
+        if v is None:
             return False
-        if time.time() - t > _PAGOS_TTL:
+        cuando, perdones = v
+        if time.time() - cuando > _PAGOS_TTL:
             del _pagos[(uid, key)]
             return False
+        if perdones >= _PERDONES_MAX:
+            return False
+        if consumir:
+            v[1] = perdones + 1
         return True
 
 

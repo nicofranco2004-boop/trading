@@ -102,3 +102,45 @@ describe('el aviso de que se está acabando', () => {
     expect(a.texto).toContain('Todavía te queda 1 audio')
   })
 })
+
+// ─── El cupo que el usuario no ve ────────────────────────────────────────────
+// El botón ✦ escribe en el chat pero descuenta del cupo de ANÁLISIS, que es
+// otro. En esta pantalla no se muestra en ningún lado: el pie cuenta consultas
+// y el contador de arriba también. Un Free toca ✦ una vez, el pie le sigue
+// diciendo "1 consulta restante", toca otro y se come "llegaste al máximo de
+// análisis (1/1)" sin haber tenido cómo verlo venir.
+describe('avisar que los análisis se acabaron', () => {
+  const freeConAnalisis = (analisis, consultas = 1) => ({
+    tier: 'free', chat_limit: 1, chat_count: 1 - consultas,
+    analyses_limit: 1, analyses_remaining: analisis,
+    listens_limit: 1, listens_remaining: 1, resets_on: '2026-09-19',
+  })
+
+  it('con consultas de sobra pero sin análisis, igual avisa', () => {
+    const a = avisoDeCuota({ ...freeConAnalisis(0), chat_limit: 40, chat_count: 0, tier: 'pro' })
+    expect(a).not.toBeNull()
+    expect(a.texto).toMatch(/✦/)
+    expect(a.texto).toMatch(/escrito sigue andando/i)
+  })
+
+  it('con análisis de sobra y consultas de sobra, se queda callado', () => {
+    expect(avisoDeCuota({ tier: 'pro', chat_limit: 40, chat_count: 0,
+                          analyses_limit: 60, analyses_remaining: 59 })).toBeNull()
+  })
+
+  it('sin consultas Y con análisis, no le dice que se quedó sin nada', () => {
+    const a = avisoDeCuota(freeConAnalisis(1, 0))
+    expect(a.agotado).toBe(true)
+    expect(a.texto).toMatch(/✦/)
+  })
+
+  it('sin consultas y sin análisis, no inventa un cupo que no hay', () => {
+    const a = avisoDeCuota(freeConAnalisis(0, 0))
+    expect(a.texto).not.toMatch(/✦/)
+  })
+
+  it('un plan sin cupo de análisis declarado no rompe nada', () => {
+    // usage viejo o incompleto: mejor callado que inventando.
+    expect(avisoDeCuota({ tier: 'pro', chat_limit: 40, chat_count: 0 })).toBeNull()
+  })
+})

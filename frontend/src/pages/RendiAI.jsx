@@ -17,7 +17,6 @@ import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
-import { clearChatSession } from '../utils/chatSession'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { useVoz } from '../contexts/VozContext'
 
@@ -30,7 +29,8 @@ export default function RendiAI() {
   const { initialQuestion, consumeInitialQuestion } = useCoachDrawer()
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
-  const { enabled: vozEnabled, setEnabled: setVozEnabled, status: vozStatus } = useVoz()
+  const { enabled: vozEnabled, setEnabled: setVozEnabled, status: vozStatus,
+          limpiar: limpiarConversacion } = useVoz()
   const vozHablando = vozStatus === 'playing' || vozStatus === 'preparing'
   // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO — el
   // backend arma el contexto server-side e IGNORA el snapshot personal.
@@ -124,6 +124,26 @@ export default function RendiAI() {
     return () => { window.removeEventListener('resize', medir); obs.disconnect() }
   }, [])
 
+  // 🔴 ESTE BOTÓN NO BORRABA NADA. Medido en pantalla: después de tocarlo la
+  // burbuja del usuario seguía ahí y lo guardado pasaba de 1.826 a 1.925 bytes
+  // — o sea que crecía en vez de vaciarse.
+  //
+  // Era una víctima del cambio que convirtió a AICoach en una VISTA. Antes la
+  // conversación vivía adentro de AICoach, así que volver a montarlo (cambiar
+  // `convKey`) la tiraba. Ahora vive un piso más arriba, en VozContext: montar
+  // de nuevo la vista no toca el hilo, y el `clearChatSession()` de al lado
+  // borraba el guardado que el contexto volvía a escribir en el cambio
+  // siguiente. El botón más usado de la pantalla, sin hacer nada.
+  //
+  // `limpiar` es del contexto, que es el dueño: borra el hilo, el guardado, el
+  // error y —desde el arreglo del turno— descarta lo que venga de la respuesta
+  // que estaba en vuelo. El remonte se queda porque además resetea lo propio de
+  // la vista (lo que había escrito en el cuadro, la cuota que tenía cargada).
+  const nuevaConversacion = () => {
+    limpiarConversacion()
+    setConvKey(k => k + 1)
+  }
+
   const nPos = snapshot?.summary?.open_positions_count
   const nBrokers = snapshot?.brokers?.length
 
@@ -193,7 +213,7 @@ export default function RendiAI() {
           </button>
           <button
             type="button"
-            onClick={() => { clearChatSession(); setConvKey(k => k + 1) }}
+            onClick={nuevaConversacion}
             title="Nueva conversación"
             aria-label="Nueva conversación"
             className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-ink-2 hover:text-ink-0 border border-line hover:border-ink-3 rounded-lg px-3 py-1.5 transition-colors"

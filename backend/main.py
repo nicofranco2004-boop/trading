@@ -31480,6 +31480,13 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     if not re.fullmatch(r"[0-9a-f]{64}", key or ""):
         raise HTTPException(404, "No encontrado")
 
+    # Freno propio. Este endpoint es el que le habla al proveedor pago y no
+    # tenía ninguno: lo frenaba la cuota, que se descuenta al generar. Desde que
+    # un reintento cortado se perdona, la cuota ya no frena TODOS los pedidos,
+    # así que hace falta el freno de acá. 30/min es holgado hasta para un
+    # reproductor que reabre el archivo varias veces.
+    _check_rate_limit(request, max_calls=30, window_seconds=60, suffix=f"ai_voz_mp3:{uid}")
+
     cached = tts.cache_get(key)
     if cached is not None:
         # Re-escuchar es gratis: ni ficha ni llamada a OpenAI. Es la decisión
@@ -31537,7 +31544,10 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     # cerrando el pedido) no deja nada en el cache, así que sin esto el segundo
     # intento cobraba de nuevo — y a un Free, con UNA escucha por semana, la
     # primera conexión floja le quemaba la semana sin haber oído nada entero.
-    _ya_pagado = tts.ya_pago(uid, key)
+    # `consumir=True`: acá es donde el perdón se usa de verdad (más arriba ya
+    # se devolvió lo que estaba en el cache, así que llegar hasta acá es ir a
+    # generar). El paso anterior sólo pregunta.
+    _ya_pagado = tts.ya_pago(uid, key, consumir=True)
     _conn = get_db()
     try:
         # Mismo criterio que el paso 1 y que el chat: con lente de asesor el
@@ -31561,7 +31571,12 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     if not _ok:
         tts.finish(key)          # ídem: rebotamos, que pase el que sigue
         raise _voz_quota_429(_tier, _usage, con_cupo=_con_cupo)
-    tts.marcar_pago(uid, key)
+    # Se marca SÓLO cuando se cobró de verdad. Marcarlo también en el reintento
+    # perdonado reiniciaba el contador de perdones en cada vuelta, así que el
+    # tope no mordía nunca y se podía generar gratis para siempre — lo cazó el
+    # test del tope, no la lectura.
+    if not _ya_pagado:
+        tts.marcar_pago(uid, key)
 
     log.info("ai_voz cache MISS uid=%s tier=%s chars=%d ≈%.1fs",
              uid, _tier, len(text), tts.estimated_seconds(text))
