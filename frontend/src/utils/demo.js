@@ -61,7 +61,21 @@ function clearDemoOverlay() {
 
 export function isDemoMode() {
   if (typeof window === 'undefined') return false
-  return localStorage.getItem(DEMO_FLAG_KEY) === '1'
+  // ⚠️ LEER localStorage PUEDE TIRAR EXCEPCIÓN, no sólo venir vacío: pasa en
+  // navegación privada vieja, en un iframe con el almacenamiento bloqueado y
+  // con la configuración de "no guardar datos de sitios". Chequear `window` no
+  // cubre ninguno de esos casos — ahí `window` existe igual.
+  //
+  // Sin esto, la excepción sube por donde se la haya llamado. Son muchos
+  // lugares (la clave del chat guardado, el cliente de la API, el micrófono),
+  // y en el peor caso se lleva puesta la pantalla entera. "No es demo" es la
+  // respuesta correcta cuando no se puede saber: es lo que pasa siempre salvo
+  // que alguien haya entrado por el link de la demo.
+  try {
+    return localStorage.getItem(DEMO_FLAG_KEY) === '1'
+  } catch {
+    return false
+  }
 }
 
 export function enableDemoMode() {

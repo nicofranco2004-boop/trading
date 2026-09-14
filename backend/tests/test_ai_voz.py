@@ -1207,3 +1207,34 @@ class ElCorteAMitadDelAudioTest(unittest.TestCase):
         finally:
             self.conn.execute("DELETE FROM users WHERE id=?", (otro,))
             self.conn.commit()
+
+
+class ElReintentoPorLaPUERTADEENTRADATest(ElCorteAMitadDelAudioTest):
+    """🔴 EL AGUJERO DEL ARREGLO ANTERIOR.
+
+    Escuchar son DOS pedidos: uno que valida la firma y dice dónde está el
+    audio (POST /api/ai/voz), y otro que lo trae (GET .../{clave}.mp3). El
+    arreglo del corte se puso en el SEGUNDO. El navegador, cuando el usuario
+    toca "Escuchar" de nuevo, vuelve a hacer LOS DOS.
+
+    Así que un Free al que se le cortó el audio choca contra el chequeo de
+    cuota del PRIMERO —que no sabe que ya pagó— y se come el 429 sin llegar
+    nunca al segundo, que era el arreglado. El test anterior no lo vio porque
+    pedía el audio directo por su dirección, saltándose la puerta de entrada.
+    """
+
+    def test_el_free_cortado_puede_volver_a_pedir_el_audio_DESDE_CERO(self):
+        texto = "Tu cartera cerró la semana en verde."
+        url = self._preparar(texto)
+        self._cortar_a_mitad(url)
+        self.assertEqual(self._escuchas(), 1)
+
+        # Y ahora el camino REAL: el usuario toca "Escuchar" otra vez.
+        r = self.client.post("/api/ai/voz", json={"text": texto, "sig": tts.sign(texto)},
+                             headers=self._hdr())
+        self.assertEqual(r.status_code, 200,
+                         "el primer paso lo rebota por cuota un audio que YA PAGÓ")
+        with patch.object(tts, "speak", return_value=iter([MP3])):
+            r2 = self.client.get(r.json()["url"], headers=self._hdr())
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(self._escuchas(), 1, "se cobró dos veces")

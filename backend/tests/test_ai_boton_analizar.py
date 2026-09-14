@@ -422,3 +422,54 @@ class LaLenteDelAsesorEnElCupoDeAnalisisTest(unittest.TestCase):
         for c in llamadas:
             self.assertIn("tier_override", c,
                           "este llamador se quedó sin lente: can_analyze(%s)" % c)
+
+
+# ─── Qué se come la poda ─────────────────────────────────────────────────────
+# El paquete del botón ✦ y la foto de la cartera dicen lo mismo en cinco campos
+# —y a veces con números distintos, que es el problema que la poda resuelve—.
+# Pero la poda corta por NOMBRE a cualquier profundidad, y ahí se pasa de largo:
+# el mismo nombre en otro nivel es OTRO número, y si la foto no lo tiene, el
+# análisis se queda sin él y nadie se entera. Rendi contesta igual, un poco
+# peor, sumando a mano.
+#
+# MEDIDO sobre los 37 análisis: corta 15 caminos. Este test los fija.
+
+class LaPodaNoSeComeLoQueLaFotoNoTieneTest(unittest.TestCase):
+
+    def test_la_plata_por_broker_SOBREVIVE(self):
+        """El caso que estaba roto. La foto trae plata por POSICIÓN, no por
+        broker: /brokers devuelve nombre y moneda. Así que la pregunta "¿cómo
+        está repartida mi plata entre los brokers?" se quedaba sin la plata."""
+        paquete = {"screen": "dashboard.brokers", "brokers": [
+            {"name": "Balanz", "value_usd": 1000, "invested_usd": 800, "weight_pct": 0.6}]}
+        podado = main._podar_lo_que_ya_esta(paquete)
+        b = podado["brokers"][0]
+        for campo in ("value_usd", "invested_usd", "weight_pct"):
+            self.assertIn(campo, b, "la poda se comió %s por broker" % campo)
+
+    def test_el_agregado_por_broker_de_composicion_tambien(self):
+        paquete = {"screen": "dashboard.composition",
+                   "by_broker": [{"name": "Cocos", "weight_pct": 0.4}]}
+        self.assertIn("weight_pct", main._podar_lo_que_ya_esta(paquete)["by_broker"][0])
+
+    def test_lo_que_SI_esta_duplicado_se_sigue_yendo(self):
+        """Y el trabajo original se mantiene: por posición y en el total, la foto
+        tiene su propio número con el motor canónico, y mandar los dos hacía que
+        Rendi contestara 61,9% en una respuesta y 36% en la siguiente."""
+        paquete = {"total_value_usd": 100,
+                   "top_holdings": [{"asset": "NVDA", "weight_pct": 0.4, "value_usd": 40}],
+                   "position": {"weight_pct": 0.4, "invested_usd": 30}}
+        podado = main._podar_lo_que_ya_esta(paquete)
+        self.assertNotIn("total_value_usd", podado)
+        self.assertNotIn("weight_pct", podado["top_holdings"][0])
+        self.assertNotIn("value_usd", podado["top_holdings"][0])
+        self.assertNotIn("invested_usd", podado["position"])
+        self.assertIn("asset", podado["top_holdings"][0], "se llevó puesto algo que no era")
+
+    def test_no_toca_el_paquete_original(self):
+        """/api/ai/analyze usa el MISMO paquete y no tiene la foto al lado: si
+        la poda mutara, ese endpoint perdería los números sin motivo."""
+        paquete = {"total_value_usd": 100, "top_holdings": [{"weight_pct": 0.4}]}
+        main._podar_lo_que_ya_esta(paquete)
+        self.assertEqual(paquete["total_value_usd"], 100)
+        self.assertIn("weight_pct", paquete["top_holdings"][0])

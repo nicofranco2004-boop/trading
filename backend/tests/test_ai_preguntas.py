@@ -126,3 +126,59 @@ def test_no_importan_mayusculas_ni_espacios():
 
 def test_params_en_none_no_rompe():
     assert pregunta_de("position", None) == "¿Cómo viene esta posición?"
+
+
+# ─── Las dos orillas del botón ✦ ─────────────────────────────────────────────
+# El navegador manda el NOMBRE de la pantalla y el servidor lo busca en una
+# tabla cerrada. Si manda uno que no está, el endpoint responde 400 y el botón
+# no hace absolutamente nada: no hay cartel, no hay error en pantalla, no hay
+# test en rojo. El usuario toca y no pasa nada.
+#
+# Esto ata las dos orillas. Es la única forma de que agregar un botón en el
+# frontend sin su pregunta acá se note antes de producción.
+
+def _frontend_src():
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[2] / "frontend" / "src"
+    return p if p.is_dir() else None
+
+
+def _pantallas_que_manda_el_navegador():
+    """Los nombres que el frontend le pasa a los botones de IA."""
+    import re
+    raiz = _frontend_src()
+    if raiz is None:
+        return None
+    encontrados = set()
+    for f in raiz.rglob("*.jsx"):
+        txt = f.read_text(encoding="utf8", errors="ignore")
+        encontrados.update(re.findall(r'\btopic="([^"]+)"', txt))
+        encontrados.update(re.findall(r"analizar\(\{\s*screen:\s*'([^']+)'", txt))
+        encontrados.update(re.findall(r"screen:\s*'([^']+)'\s*,?\s*params", txt))
+    return encontrados
+
+
+def test_toda_pantalla_que_manda_el_navegador_tiene_su_pregunta():
+    import pytest
+    pantallas = _pantallas_que_manda_el_navegador()
+    if pantallas is None:
+        pytest.skip("sin el frontend al lado no hay nada que cruzar")
+    assert pantallas, "no se encontró ni un botón: el patrón de búsqueda quedó viejo"
+    sin_pregunta = sorted(p for p in pantallas if pregunta_de(p) is None)
+    assert not sin_pregunta, (
+        "estos botones del frontend mandan una pantalla que PREGUNTAS no conoce; "
+        "el endpoint les responde 400 y el botón no hace nada: %s" % sin_pregunta)
+
+
+def test_el_buscador_de_botones_encuentra_los_que_sabemos_que_existen():
+    """El guard del guard. Si el patrón de búsqueda deja de encontrar los
+    botones, el test de arriba pasa en verde sin haber mirado nada — que es
+    exactamente cómo un cruce entre dos lados se vuelve decorativo."""
+    import pytest
+    pantallas = _pantallas_que_manda_el_navegador()
+    if pantallas is None:
+        pytest.skip("sin el frontend al lado no hay nada que cruzar")
+    for conocida in ("dashboard.composition", "insights.drawdown", "position"):
+        assert conocida in pantallas, (
+            "el buscador dejó de ver los botones (no encontró %r)" % conocida)
+    assert len(pantallas) >= 25, "sólo encontró %d botones" % len(pantallas)

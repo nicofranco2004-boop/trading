@@ -454,3 +454,32 @@ class ElTechoDeGastoDelMicrofonoTest(ElEndpointTest):
         for t in ("free", "plus", "pro", "advisor", "admin"):
             self.assertIsNotNone(quota.dictado_budget(t),
                                  "%s se quedó sin techo" % t)
+
+
+class ElEstimadoCuandoNoVieneLaDuracionTest(unittest.TestCase):
+    """El plan B del contador de segundos, que se puede romper en silencio.
+
+    Si el proveedor deja de mandar `duration` se estima por peso. La tasa que
+    se elija decide si un dictado normal se cobra bien o al doble — y si se
+    cobra al doble, los usuarios de verdad se quedan sin micrófono a mitad de
+    camino sin que nadie se entere.
+    """
+
+    def test_un_dictado_NORMAL_se_cobra_por_lo_que_dura(self):
+        # 30 s de webm/opus de voz pesan ~120 KB (la cuenta está en el módulo).
+        # La primera versión usaba una tasa castigadora y esto daba 61.
+        self.assertEqual(oido._segundos_de({}, 120 * 1024, "webm"), 30)
+
+    def test_uno_anormalmente_grande_SI_se_cobra_caro(self):
+        # El estimado no puede ser generoso: es el único freno cuando no hay
+        # duración, y 1 MB de audio comprimido no son 30 segundos.
+        self.assertGreater(oido._segundos_de({}, 1024 * 1024, "webm"), 200)
+
+    def test_la_duracion_del_proveedor_GANA_sobre_el_peso(self):
+        # Lo que se paga son los minutos que él dice, no los que pese el
+        # archivo: un wav de 5 MB con 3 segundos de voz adentro son 3 segundos.
+        self.assertEqual(oido._segundos_de({"duration": 3.0}, 5_000_000, "wav"), 3)
+
+    def test_nunca_cobra_cero(self):
+        self.assertGreaterEqual(oido._segundos_de({"duration": 0.2}, 100, "webm"), 1)
+        self.assertGreaterEqual(oido._segundos_de({}, 10, "webm"), 1)

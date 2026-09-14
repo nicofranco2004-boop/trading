@@ -18,6 +18,14 @@ function conNavegador({ mediaRecorder = true, getUserMedia = true, soporta = () 
     ? Object.assign(function () {}, { isTypeSupported: soporta })
     : undefined
   vi.stubGlobal('window', globalThis)
+  // `sePuedeGrabar` pregunta si estamos en la demo, y eso lee el almacenamiento
+  // del navegador — que en node no existe.
+  const guardado = {}
+  vi.stubGlobal('localStorage', {
+    getItem: (k) => (k in guardado ? guardado[k] : null),
+    setItem: (k, v) => { guardado[k] = String(v) },
+    removeItem: (k) => { delete guardado[k] },
+  })
   vi.stubGlobal('MediaRecorder', MR)
   vi.stubGlobal('navigator', getUserMedia ? { mediaDevices: { getUserMedia: () => {} } } : {})
 }
@@ -201,5 +209,30 @@ describe('el tope de grabación', () => {
     // Si los dos números se separan, el navegador manda algo que el servidor
     // rechaza — y el usuario pierde lo que dijo sin entender por qué.
     expect(MAX_SEGUNDOS).toBe(30)
+  })
+})
+
+describe('en la demo el micrófono no se dibuja', () => {
+  // El visitante de la demo entra SIN CUENTA y las llamadas se contestan con
+  // fixtures del propio navegador: no hay backend. El dictado sí lo necesita
+  // (es el servidor el que habla con OpenAI), así que devolvía 401.
+  //
+  // Visto en pantalla, en la isla de la demo: el botón estaba. Le pedía
+  // permiso del micrófono a alguien que todavía no tiene cuenta, grababa, y
+  // recién ahí decía "no pude pasar tu audio a texto".
+  it('con la demo prendida, no', () => {
+    conNavegador()
+    localStorage.setItem('rendi_demo_mode', '1')
+    try {
+      expect(sePuedeGrabar()).toBe(false)
+    } finally {
+      localStorage.removeItem('rendi_demo_mode')
+    }
+  })
+
+  it('y con la demo apagada, sí', () => {
+    conNavegador()
+    localStorage.removeItem('rendi_demo_mode')
+    expect(sePuedeGrabar()).toBe(true)
   })
 })

@@ -29893,12 +29893,35 @@ _CAMPOS_QUE_YA_TRAE_LA_FOTO = frozenset((
 ))
 
 
+# 🔴 DONDE LA FOTO NO TIENE EL NÚMERO, NO HAY NADA QUE SACAR.
+#
+# La poda saca campos por NOMBRE a cualquier profundidad, y eso se pasaba de
+# largo: `weight_pct` adentro de `by_broker[]` NO es el mismo número que el
+# `weight_pct` de una posición, y la foto no trae ninguno por broker — el
+# endpoint /brokers devuelve nombre, moneda y poco más, sin un peso.
+#
+# MEDIDO sobre los 37 análisis: la poda corta 15 caminos y 13 están bien (son
+# los que la foto publica por posición o en el total). Los 2 que sobraban:
+#     dashboard.brokers   -> brokers[].value_usd, invested_usd, weight_pct
+#     dashboard.composition -> by_broker[].weight_pct
+# O sea que justo "¿cómo está repartida mi plata entre los brokers?" se quedaba
+# SIN la plata por broker: el paquete la traía, la poda se la comía, y la foto
+# no la tenía. A Rendi le quedaba sumar las posiciones a mano y agrupar, que es
+# exactamente donde un modelo se equivoca.
+_AGREGADOS_QUE_LA_FOTO_NO_TIENE = frozenset(("brokers", "by_broker"))
+
+
 def _podar_lo_que_ya_esta(nodo):
-    """Saca, a cualquier profundidad, los campos que la foto de la cartera ya
-    publica con el motor canónico. Devuelve una copia — el paquete original no
-    se toca (lo usa /api/ai/analyze, que no tiene la foto al lado)."""
+    """Saca los campos que la foto de la cartera ya publica con el motor
+    canónico. Devuelve una copia — el paquete original no se toca (lo usa
+    /api/ai/analyze, que no tiene la foto al lado).
+
+    No entra en los agregados por broker: ahí el mismo nombre de campo es otro
+    número y la foto no tiene con qué contradecirlo."""
     if isinstance(nodo, dict):
-        return {k: _podar_lo_que_ya_esta(v) for k, v in nodo.items()
+        return {k: (v if k in _AGREGADOS_QUE_LA_FOTO_NO_TIENE
+                    else _podar_lo_que_ya_esta(v))
+                for k, v in nodo.items()
                 if k not in _CAMPOS_QUE_YA_TRAE_LA_FOTO}
     if isinstance(nodo, list):
         return [_podar_lo_que_ya_esta(v) for v in nodo]
@@ -31407,7 +31430,14 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
     # Free sin escuches vería "no pudimos generar el audio" en vez del aviso con
     # la fecha en que se le renueva.
     # Sólo si hay que GENERAR: lo que ya está en el cache no cuesta nada.
-    if not ya_esta:
+    #
+    # Y tampoco cuesta si YA LO PAGÓ y se le cortó (ver tts.ya_pago). Escuchar
+    # son dos pedidos —éste dice dónde está el audio, el otro lo trae— y el
+    # navegador vuelve a hacer LOS DOS cuando el usuario toca "Escuchar" de
+    # nuevo. Con el perdón puesto sólo en el segundo, un Free al que se le cortó
+    # chocaba acá con "te quedaste sin escuchas" y no llegaba nunca al que sabía
+    # perdonarlo. Es la misma condición: tiene que estar en los dos lados.
+    if not ya_esta and not tts.ya_pago(uid, key):
         from ai import quota
         _conn = get_db()
         try:

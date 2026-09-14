@@ -317,8 +317,22 @@ def _segundos_de(cuerpo: dict, bytes_: int, ext: str) -> int:
             return max(1, int(d + 0.999))
     except (TypeError, ValueError):
         pass
-    bits_por_segundo = 128_000 if ext in _SIN_COMPRIMIR else 16_000
-    return max(1, int(bytes_ * 8 / bits_por_segundo))
+    # ⚠️ ACÁ SE ESTIMA, Y LA TASA IMPORTA MÁS DE LO QUE PARECE. Con una tasa
+    # castigadora "por las dudas", un dictado NORMAL sale cobrado al doble:
+    # medido, 30 s de webm reales (120 KB) daban 61 segundos con 16 kbps. Si el
+    # proveedor dejara de mandar la duración, todos los usuarios de verdad se
+    # comerían el presupuesto a la mitad de rápido y nadie se enteraría.
+    #
+    # Por eso la tasa es la que el navegador GRABA de verdad (32 kbps para voz):
+    # un archivo normal sale bien y uno anormalmente grande igual se cobra caro,
+    # que es exactamente el reparto que queremos.
+    bits_por_segundo = 128_000 if ext in _SIN_COMPRIMIR else 32_000
+    estimado = max(1, int(bytes_ * 8 / bits_por_segundo))
+    # Y se avisa fuerte: esto no debería pasar nunca, y si empieza a pasar el
+    # síntoma sería gente quedándose sin micrófono sin motivo.
+    log.warning("dictado: el proveedor no mandó la duración — estimados %d s "
+                "por %d bytes (%s)", estimado, bytes_, ext)
+    return estimado
 
 
 # ─── Corregir con lo que el usuario TIENE ────────────────────────────────────

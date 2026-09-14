@@ -20,6 +20,7 @@
 // y se lo entrega al que lo llamó. Revisar es de la pantalla, no del motor.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { isDemoMode } from '../utils/demo'
 
 // El mismo tope que el servidor (ai/oido.py MAX_SEGUNDOS). Acá corta antes de
 // mandar; allá es la red por si el navegador miente.
@@ -54,8 +55,26 @@ export const LOS_ERRORES = {
   },
 }
 
-/** ¿Este navegador puede grabar? Sin esto, el botón ni se dibuja. */
+/**
+ * ¿Se puede dictar acá? Sin esto, el botón ni se dibuja.
+ *
+ * Son dos cosas y las dos terminan en lo mismo — un micrófono que al tocarlo
+ * sólo sabe fallar es peor que no estar:
+ *
+ *   1. Que el navegador sepa grabar.
+ *   2. Que haya un backend del otro lado. EN LA DEMO NO LO HAY: el visitante
+ *      entra sin cuenta y las llamadas se contestan con fixtures del propio
+ *      navegador. El dictado necesita al servidor de verdad (es él quien habla
+ *      con OpenAI, la clave nunca baja acá), así que en la demo devolvía 401.
+ *      Visto en pantalla: el botón estaba, pedía permiso del micrófono —que en
+ *      un visitante que todavía no confía en vos es mucho pedir—, grababa, y
+ *      recién ahí decía "no pude pasar tu audio a texto".
+ *
+ * La demo se chequea ACÁ y no en cada pantalla porque ésta es la única puerta:
+ * la isla flotante y el chat grande preguntan los dos por esta función.
+ */
 export function sePuedeGrabar() {
+  if (isDemoMode()) return false
   return !!(typeof window !== 'undefined'
     && window.MediaRecorder
     && navigator?.mediaDevices?.getUserMedia)
