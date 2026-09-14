@@ -47,6 +47,7 @@ export default function Privacidad() {
             <li>No vendemos, alquilamos ni compartimos tus datos con fines comerciales, ni hacemos profiling publicitario.</li>
             <li>El pago lo procesa Rebill: nunca almacenamos datos de tu tarjeta o medio de pago.</li>
             <li>El Coach IA usa Claude (Anthropic) para pensar la respuesta y, si pedís escucharla, OpenAI para leerla en voz alta. Ninguno de los dos entrena sus modelos con tus datos.</li>
+            <li>Si le hablás al Coach IA con el micrófono, ese audio va a OpenAI para convertirse en texto. Nosotros no lo guardamos en ningún lado, y el micrófono sólo se prende cuando vos lo tocás.</li>
             <li>Podés acceder, rectificar o eliminar tus datos en cualquier momento escribiéndonos.</li>
             <li>Sujeto a la Ley 25.326 (Protección de Datos Personales, Argentina).</li>
           </ul>
@@ -156,8 +157,9 @@ export default function Privacidad() {
               Cuando le hacés una consulta al Coach IA, enviamos un snapshot de tu cartera
               a Anthropic (Claude) para que pueda responderte con contexto. Si además elegís
               escuchar la respuesta, enviamos el texto de ese resumen a OpenAI, que lo
-              convierte en audio. Lo hacemos porque vos elegís usar esas funciones. Ver la
-              sección 4 para el detalle.
+              convierte en audio; y si elegís dictarle la pregunta en vez de escribirla,
+              enviamos a OpenAI la grabación para convertirla en texto. Lo hacemos porque
+              vos elegís usar esas funciones. Ver la sección 4 para el detalle.
             </li>
             <li>
               <strong className="text-ink-0">Comunicación transaccional (ejecución del contrato).</strong>{' '}
@@ -207,9 +209,39 @@ export default function Privacidad() {
               haciendo Claude; para convertirla en audio enviamos a{' '}
               <strong className="text-ink-0">OpenAI</strong> únicamente el{' '}
               <strong className="text-ink-0">texto de ese resumen hablado</strong> — tres
-              oraciones con los montos redondeados. No le enviamos tu snapshot, ni tu email,
-              ni ningún otro dato de tu cuenta. La función es opcional: se activa con el
-              botón del parlante y podés apagarla cuando quieras.
+              oraciones con los montos redondeados. Para esta función no le enviamos tu
+              snapshot, ni tu email, ni ningún otro dato de tu cuenta. Es opcional: se
+              activa con el botón del parlante y podés apagarla cuando quieras.
+            </li>
+            <li>
+              <strong className="text-ink-0">Si le hablás con el micrófono.</strong> Podés
+              dictarle la pregunta al Coach IA en vez de escribirla. Cuando tocás el
+              micrófono, el navegador te pide permiso por su cuenta —nosotros no podemos
+              prenderlo sin eso— y se graban como máximo{' '}
+              <strong className="text-ink-0">30 segundos</strong>. Esa grabación se envía a{' '}
+              <strong className="text-ink-0">OpenAI</strong>, que la convierte en texto.
+              Tres cosas sobre eso, porque es tu voz:
+              <ul className="mt-1.5 space-y-1.5">
+                <li>
+                  <strong className="text-ink-0">No guardamos el audio.</strong> Entra,
+                  se envía, vuelve como texto y se descarta. No queda en nuestros
+                  servidores ni en tu historial: de lo que dijiste sólo queda el texto,
+                  y sólo si vos lo mandás.
+                </li>
+                <li>
+                  <strong className="text-ink-0">Va con una ayuda de vocabulario.</strong>{' '}
+                  Junto con el audio enviamos una lista corta con los{' '}
+                  <strong className="text-ink-0">códigos y nombres de los activos que
+                  tenés y los nombres de tus brokers</strong>, para que reconozca «AL30» o
+                  «Balanz» y no los escriba mal. Son sólo esos nombres: no van montos, ni
+                  cantidades, ni tu email, ni el resto de tu cartera.
+                </li>
+                <li>
+                  <strong className="text-ink-0">Lo dictado no se envía solo.</strong> El
+                  texto aparece en el cuadro para que lo leas y lo corrijas; la consulta
+                  se manda cuando vos lo decidís.
+                </li>
+              </ul>
             </li>
             <li>
               <strong className="text-ink-0">OpenAI NO entrena con tus datos.</strong>{' '}
@@ -248,8 +280,10 @@ export default function Privacidad() {
               <a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">anthropic.com/legal/privacy</a>.
             </li>
             <li>
-              <strong className="text-ink-0">OpenAI (la voz del Coach IA).</strong> Recibe
-              el texto del resumen hablado —y sólo eso— cuando pedís escuchar una respuesta.
+              <strong className="text-ink-0">OpenAI (la voz y el micrófono del Coach IA).</strong>{' '}
+              Recibe el texto del resumen hablado cuando pedís escuchar una respuesta, y la
+              grabación —más los nombres de tus activos y brokers, como ayuda de
+              vocabulario— cuando le dictás una pregunta. El audio no lo guardamos nosotros.
               Política:{' '}
               <a href="https://openai.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">openai.com/policies/privacy-policy</a>.
             </li>
