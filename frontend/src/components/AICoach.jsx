@@ -135,6 +135,31 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   // escuchaban la rueda y el dedo, así que arrastrar la barra, el teclado y la
   // INERCIA del dedo en el celular se seguían yendo al fondo solas.
   const { ref: scrollRef, alFondo } = usePegadoAlFondo()
+  // Ya NO se aborta el stream al desmontar. Era justo el bug: irse a otra
+  // sección en medio de una respuesta la CANCELABA —y la ficha se cobraba
+  // igual—. Ahora el stream lo maneja el proveedor, que no se desmonta.
+
+  // La cuota que viene pegada a un error de cuota, para que el pie del chat
+  // muestre el número nuevo sin pedirlo otra vez.
+  useEffect(() => { if (usageDelError) setUsage(usageDelError) }, [usageDelError])
+
+  // "Corregir" del ConfirmBlock enfoca el input (evento global, sin drilling).
+  const freeInputRef = useRef(null)
+  useEffect(() => {
+    const onFocus = () => freeInputRef.current?.focus()
+    window.addEventListener('rendi:chat-focus', onFocus)
+    return () => window.removeEventListener('rendi:chat-focus', onFocus)
+  }, [])
+
+  // Cargar cuota inicial — solo lectura, sin gating front (el server tiene la
+  // verdad). Si falla, no rompemos UX — el server devolverá 429 si excede.
+  useEffect(() => {
+    let cancelled = false
+    api.get('/ai/usage').then(u => {
+      if (!cancelled) setUsage(u)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   // Auto-envío de pregunta pre-cargada (ej. botón ✦ "Analizar" de otra
   // pantalla). Se dispara una sola vez al montar, cuando ya hay snapshot.

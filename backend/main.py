@@ -22333,6 +22333,11 @@ class AIChatIn(BaseModel):
     # que esté en la lista de las 12 (es nuestra, no del usuario), y descuenta
     # del cupo de ANÁLISIS y no del de consultas.
     analisis: Optional[AnalisisRef] = None
+    # ¿El parlante está prendido? Lo manda el navegador, que es donde vive ese
+    # interruptor. Apagado, el modelo NO escribe el resumen hablado — son ~130
+    # tokens de salida por respuesta que se pagarían para nada (ver _SIN_VOZ).
+    # Default True: un caller viejo que no lo mande sigue recibiendo la voz.
+    voz: bool = True
 
     @field_validator('snapshot')
     @classmethod
@@ -30108,6 +30113,44 @@ def _extract_voz(text: str) -> Optional[str]:
 # lo que va leyendo: la firma es lo único que impide que /api/ai/voz sea un
 # lector de texto gratis para cualquiera con cuenta. El servidor ve pasar los
 # mismos pedacitos que el navegador, así que puede firmar en el momento.
+# ─── Cuando el parlante está apagado, no se escribe el resumen hablado ───────
+# El resumen hablado son ~130 tokens de SALIDA en cada respuesta, y la salida es
+# lo caro: US$0,0013 por respuesta en Sonnet 5, un 6% de lo que sale la consulta
+# entera. Si el usuario silenció a Rendi, eso se paga para nada.
+#
+# 🔴 POR QUÉ VA COMO BLOQUE APARTE Y NO SACANDO EL PÁRRAFO DEL PROMPT.
+#
+# La instrucción de la voz vive adentro del manifiesto, que es lo que se cachea
+# —30 mil caracteres que se cobran al 10% porque no cambian nunca—. Sacarla de
+# ahí y agregarla sólo cuando hace falta parece más limpio, pero sale PEOR: el
+# parlante viene PRENDIDO de fábrica, así que la mayoría pagaría ese párrafo sin
+# cache (10× más caro) para ahorrárselo la minoría que lo apaga. Medido: ~340
+# tokens al 100% contra los mismos al 10%.
+#
+# Al revés sale gratis: el manifiesto queda IGUAL para todos —un solo cache, sin
+# partirlo en dos— y al que silenció se le agrega este bloquecito que lo pisa.
+# Va como bloque de SISTEMA y no metido en el contexto del pedido porque tiene
+# que poder contradecir al manifiesto, y el contexto no manda sobre él.
+_SIN_VOZ = (
+    "AJUSTE DE ESTE TURNO, y pisa lo que diga el manifiesto sobre el campo "
+    "\"voz\": el usuario tiene a Rendi SILENCIADA, así que esta respuesta NO se "
+    "va a leer en voz alta. NO escribas el campo \"voz\" en el bloque ---RENDI---. "
+    "Todo lo demás del bloque va igual que siempre (verdict, headline, stats, "
+    "blocks, followups): lo único que se saca es \"voz\"."
+)
+
+
+def _bloques_de_sistema(system_text: str, con_voz: bool) -> list:
+    """Los bloques `system` del pedido. UNO solo arma esto para los cuatro
+    llamados del endpoint: con cuatro copias, apagar la voz en tres y olvidarse
+    de la cuarta no se nota — la respuesta sale igual, sólo que pagando."""
+    bloques = [{"type": "text", "text": system_text,
+                "cache_control": {"type": "ephemeral"}}]
+    if not con_voz:
+        bloques.append({"type": "text", "text": _SIN_VOZ})
+    return bloques
+
+
 def _voz_temprana(texto: str) -> Optional[str]:
     """El campo "voz" de un bloque a MEDIO escribir, o None si todavía no cerró.
 
@@ -30863,6 +30906,10 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # caminos de error usan `_devolver_la_ficha`. Si mañana aparece un tercer
     # camino de error y se olvida de llamarla, se nota: el usuario reclama que
     # le cobraron una respuesta que nunca vio.
+    # El parlante, resuelto UNA vez para todo el turno: decide el bloque de
+    # sistema (ver _bloques_de_sistema) y si se firma y se manda el resumen.
+    _quiere_voz = bool(data.voz)
+
     _es_analisis = bool(data.analisis)
 
     def _devolver_la_ficha() -> None:
@@ -30986,7 +31033,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         model=chat_model,
                         max_tokens=max_tokens,
                         output_config=_CHAT_EFFORT,
-                        system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+                        system=_bloques_de_sistema(system_text, _quiere_voz),
                         tools=chat_tools,
                         messages=messages_loop,
                         **_extra,
@@ -31079,7 +31126,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     model=chat_model,
                     max_tokens=max_tokens_fallback,
                     output_config=_CHAT_EFFORT,
-                    system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+                    system=_bloques_de_sistema(system_text, _quiere_voz),
                     tools=chat_tools,
                     tool_choice={"type": "none"},
                     messages=messages_loop,
@@ -31163,9 +31210,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 model=chat_model,
                 max_tokens=max_tokens,
                 output_config=_CHAT_EFFORT,
-                system=[
-                    {"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}
-                ],
+                system=_bloques_de_sistema(system_text, _quiere_voz),
                 tools=chat_tools,
                 messages=messages_loop,
                 **_extra_j,
@@ -31244,7 +31289,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             model=chat_model,
             max_tokens=max_tokens_fallback,
             output_config=_CHAT_EFFORT,
-            system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+            system=_bloques_de_sistema(system_text, _quiere_voz),
             tools=chat_tools,
             tool_choice={"type": "none"},
             messages=messages_loop,

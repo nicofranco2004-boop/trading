@@ -430,7 +430,11 @@ export function VozProvider({ children }) {
         }
       }
       const res = await api.chatStream(
-        { messages, snapshot: snapRef.current, ...(analisis ? { analisis } : {}) },
+        // `voz: enabled` — si el parlante está apagado, el servidor le pide al
+        // modelo que NO escriba el resumen hablado. Son ~130 tokens de salida
+        // por respuesta que se pagaban aunque nadie los fuera a escuchar.
+        { messages, snapshot: snapRef.current, voz: enabled,
+          ...(analisis ? { analisis } : {}) },
         { onDelta, onReset, onPaso: setPaso, onPregunta, onVoz: arrancarAudio },
       )
       const { prose, meta } = parseStructured(stripMarkdown(acc))

@@ -1281,3 +1281,65 @@ class ElPerdonTieneTopeTest(ElCorteAMitadDelAudioTest):
         tts.marcar_pago(self.uid, key)
         self.assertTrue(tts.ya_pago(self.uid, key),
                         "pagó de nuevo y sigue sin poder reintentar")
+
+
+# ─── Silenciada, no se paga el resumen hablado ───────────────────────────────
+# El resumen hablado son ~130 tokens de SALIDA en cada respuesta, y la salida es
+# la cara: US$0,0013 por respuesta en Sonnet 5, un 6% de lo que sale la consulta
+# entera. Si el usuario silenció a Rendi, eso se pagaba para nada.
+
+class SilenciadaNoSePagaElResumenHabladoTest(unittest.TestCase):
+
+    def test_el_manifiesto_es_EL_MISMO_con_y_sin_voz(self):
+        """Lo que se cachea no se puede partir en dos.
+
+        Sacar el párrafo de la voz del manifiesto y agregarlo sólo cuando hace
+        falta parece más limpio y sale PEOR: el parlante viene prendido de
+        fábrica, así que la mayoría pagaría ese párrafo SIN cache (10× más caro)
+        para que se lo ahorre la minoría que lo apaga. Y partir el manifiesto en
+        dos versiones parte también el cache.
+        """
+        con = main._bloques_de_sistema("MANIFIESTO", True)
+        sin = main._bloques_de_sistema("MANIFIESTO", False)
+        self.assertEqual(con[0], sin[0], "se partió el cache en dos versiones")
+        self.assertEqual(con[0]["cache_control"], {"type": "ephemeral"})
+
+    def test_silenciada_agrega_un_bloque_que_lo_pisa(self):
+        sin = main._bloques_de_sistema("MANIFIESTO", False)
+        self.assertEqual(len(sin), 2)
+        extra = sin[1]["text"]
+        self.assertIn("NO escribas", extra)
+        self.assertIn('"voz"', extra)
+        # Y sólo eso: las tarjetas, el veredicto y los seguimientos siguen.
+        for pieza in ("verdict", "headline", "stats", "blocks", "followups"):
+            self.assertIn(pieza, extra, "el ajuste se lleva puesto %s" % pieza)
+
+    def test_el_bloque_de_silencio_NO_se_cachea(self):
+        """Es de UN turno. Cachearlo lo dejaría pegado al manifiesto y se lo
+        comería también el que tiene el parlante prendido."""
+        sin = main._bloques_de_sistema("MANIFIESTO", False)
+        self.assertNotIn("cache_control", sin[1])
+
+    def test_con_voz_no_se_agrega_NADA(self):
+        con = main._bloques_de_sistema("MANIFIESTO", True)
+        self.assertEqual(len(con), 1, "el que escucha no paga tokens de más")
+
+    def test_los_CUATRO_llamados_del_endpoint_lo_usan(self):
+        """El guard de propagación: el endpoint le habla al modelo en cuatro
+        lugares (las dos rondas de herramientas, la síntesis y el respaldo).
+        Apagar la voz en tres y olvidarse del cuarto no se nota — la respuesta
+        sale igual, sólo que pagando."""
+        import inspect, re
+        fuente = inspect.getsource(main)
+        llamadas = re.findall(r"system=([^\n]+)", fuente)
+        self.assertEqual(len(llamadas), 4, "cambió la cantidad de llamados: %r" % (llamadas,))
+        for c in llamadas:
+            self.assertIn("_bloques_de_sistema", c,
+                          "este llamado arma los bloques por su cuenta: %s" % c)
+
+    def test_el_pedido_trae_el_parlante_y_por_defecto_viene_prendido(self):
+        """Default True: un navegador viejo que no mande el campo sigue
+        recibiendo la voz, en vez de quedarse mudo sin motivo."""
+        self.assertTrue(main.AIChatIn(messages=[{"role": "user", "content": "hola"}]).voz)
+        self.assertFalse(main.AIChatIn(messages=[{"role": "user", "content": "hola"}],
+                                       voz=False).voz)
