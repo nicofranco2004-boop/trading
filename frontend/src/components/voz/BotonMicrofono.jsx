@@ -28,8 +28,10 @@ const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart
  * @param onAntesDeGrabar () => void — callar a Rendi antes de abrir el micrófono.
  * @param deshabilitado   mientras hay una consulta en vuelo.
  * @param compacto        true en la isla (30px), false en el chat grande (34px).
- * @returns { boton, aviso, grabando } — `grabando` sirve para esconder el
- *          cuadro de escribir mientras el panel lo reemplaza.
+ * @returns { boton, aviso, grabando, cancelar } — `grabando` sirve para
+ *          esconder el cuadro de escribir mientras el panel lo reemplaza;
+ *          `cancelar` es obligatorio llamarlo si dejás de dibujar el panel
+ *          (si no, el micrófono sigue prendido sin nada que lo pare).
  */
 export function useMicrofono({ onTexto, onAntesDeGrabar, deshabilitado, compacto = true } = {}) {
   const d = useDictado({ onTexto, onAntesDeGrabar })
@@ -40,6 +42,11 @@ export function useMicrofono({ onTexto, onAntesDeGrabar, deshabilitado, compacto
 
   return {
     grabando,
+    // PARAR DESDE AFUERA. Quien lo usa puede dejar de dibujar el panel —la
+    // isla se cierra sola al entrar a /ai— y el grabador no se entera: sigue
+    // tomando, con la lucecita del micrófono prendida y sin botón para
+    // pararlo. Con esto, el que esconde el panel corta la grabación.
+    cancelar: d.cancelar,
     aviso: !hay ? null : (d.sugerida
       ? <Sugerida s={d.sugerida} onAceptar={d.aceptarSugerida} onDescartar={d.descartarSugerida} />
       : <Aviso error={d.error} onCerrar={d.limpiarError} />),

@@ -389,6 +389,22 @@ export function VozProvider({ children }) {
         acc = ''
         setLoading(true)
         if (agregado) { setThread(t => t.slice(0, -1)); agregado = false }
+        // 🔴 Y EL AUDIO TAMBIÉN SE BORRA, no sólo el texto.
+        //
+        // Si el preámbulo traía su resumen hablado, Rendi ya está diciendo en
+        // voz alta "dejame ver los precios" — algo que acaba de desaparecer de
+        // la pantalla. Peor: `yaSono` quedaba en true, así que cuando llegaba
+        // la respuesta DE VERDAD el audio no arrancaba nunca. El usuario
+        // escuchaba el preámbulo, se quedaba esperando el resto, y la escucha
+        // ya estaba gastada.
+        //
+        // El servidor también limpia su copia (frame `reset` en utils/api.js);
+        // eso solo no alcanzaba, porque acá ya habíamos empezado a hablar.
+        if (yaSono) {
+          stop()
+          setCurrent(null)
+          yaSono = false
+        }
       }
       const res = await api.chatStream(
         { messages, snapshot: snapRef.current, ...(analisis ? { analisis } : {}) },
@@ -431,7 +447,7 @@ export function VozProvider({ children }) {
       setLoading(false)
       setPaso(null)
     }
-  }, [thread, enabled, speak])
+  }, [thread, enabled, speak, stop])
 
   /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
   const limpiar = useCallback(() => {

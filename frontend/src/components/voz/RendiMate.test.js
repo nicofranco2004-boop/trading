@@ -30,3 +30,19 @@ describe('en /ai el acompañante no se dibuja', () => {
     expect(salida).toBeGreaterThan(efecto)
   })
 })
+
+describe('el micrófono no se queda grabando a escondidas', () => {
+  it('se corta cuando el panel deja de estar a la vista', () => {
+    // El panel de grabar vive adentro de la tarjeta abierta. Al entrar a /ai la
+    // isla se cierra sola: el panel desaparece y el grabador seguía tomando,
+    // con la lucecita del micrófono prendida y sin nada que lo pare.
+    expect(fuente).toMatch(/if \(!panelALaVista && micGrabando\) micCancelar\(\)/)
+  })
+
+  it('el hook del micrófono expone con qué pararlo', () => {
+    // Sin esto no hay arreglo posible desde acá: el grabador es privado del
+    // hook y quien esconde el panel no tiene cómo avisarle.
+    const boton = readFileSync(new URL('./BotonMicrofono.jsx', import.meta.url), 'utf8')
+    expect(boton).toMatch(/cancelar: d\.cancelar/)
+  })
+})

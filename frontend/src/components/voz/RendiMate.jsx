@@ -149,6 +149,20 @@ export default function RendiMate() {
     rutaPrevia.current = loc.pathname
   }, [loc.pathname, enElChatGrande, status, setOpen])
 
+  // EL GRABADOR NO PUEDE SEGUIR SI SU PANEL NO ESTÁ A LA VISTA.
+  //
+  // El panel de grabar vive adentro de la tarjeta abierta. Cuando la isla se
+  // cierra sola —entrar a /ai la cierra— el panel desaparece y el grabador
+  // sigue: la lucecita del micrófono queda prendida hasta que se cumplen los
+  // 30 segundos, sin nada en pantalla que lo pare, y encima al terminar se
+  // gasta una transcripción que nadie va a ver. Visto leyendo el código, no en
+  // el navegador: acá el micrófono no se puede probar.
+  const panelALaVista = open && !enElChatGrande
+  const { grabando: micGrabando, cancelar: micCancelar } = mic
+  useEffect(() => {
+    if (!panelALaVista && micGrabando) micCancelar()
+  }, [panelALaVista, micGrabando, micCancelar])
+
   if (enElChatGrande) return null
 
   if (!open) {

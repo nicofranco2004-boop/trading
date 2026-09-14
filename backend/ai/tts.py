@@ -84,6 +84,7 @@ import hmac
 import logging
 import os
 import re
+import time
 import threading
 from collections import OrderedDict
 from typing import Iterator
@@ -427,6 +428,8 @@ def cache_clear() -> None:
         for ev in _inflight.values():
             ev.set()
         _inflight.clear()
+    with _pagos_lock:
+        _pagos.clear()
 
 
 # ─── Un solo generador por texto ─────────────────────────────────────────────
@@ -475,6 +478,65 @@ def finish(key: str) -> None:
         ev = _inflight.pop(key, None)
     if ev is not None:
         ev.set()
+
+
+# ─── Quién ya pagó este audio ────────────────────────────────────────────────
+# 🔴 EL CASO QUE SE COBRABA DOS VECES, y es el más común de todos en un celular.
+#
+# El audio se cobra al empezar a generarlo y se guarda en el cache al
+# terminarlo. Entre esas dos cosas está el viaje, y el viaje se corta: se va la
+# señal, el usuario navega, o el propio reproductor del navegador abre y cierra
+# el pedido (lo hace solo, para leer la duración). Ese corte llega como
+# GeneratorExit, que NO lo atrapa un `except Exception` — así que no se guarda
+# nada en el cache y tampoco se devuelve la ficha.
+#
+# Resultado: el segundo intento no encuentra nada cacheado y COBRA DE NUEVO.
+# Para un Free, que tiene UNA escucha por semana, la primera conexión floja le
+# quema la semana entera sin haber oído la respuesta completa.
+#
+# Acá se anota quién ya pagó qué. Si vuelve el mismo usuario por el mismo audio,
+# no se le cobra otra vez: es exactamente la regla de producto que ya estaba
+# escrita —"re-escuchar es gratis"—, que hasta ahora sólo valía si el primer
+# intento había llegado hasta el final.
+#
+# Se olvida sola a la media hora y tiene tope de entradas: es una marca para
+# cubrir un reintento, no un registro contable.
+_PAGOS_TTL = 1800.0
+_PAGOS_MAX = 5000
+_pagos = {}                  # (uid, clave) → cuándo se pagó
+_pagos_lock = threading.Lock()
+
+
+def marcar_pago(uid: int, key: str) -> None:
+    """Este usuario ya pagó este audio."""
+    ahora = time.time()
+    with _pagos_lock:
+        if len(_pagos) >= _PAGOS_MAX:
+            viejo = ahora - _PAGOS_TTL
+            for k in [k for k, t in _pagos.items() if t < viejo]:
+                del _pagos[k]
+            if len(_pagos) >= _PAGOS_MAX:
+                _pagos.clear()
+        _pagos[(uid, key)] = ahora
+
+
+def ya_pago(uid: int, key: str) -> bool:
+    """¿Ya pagó este audio y se le cortó? Entonces el reintento es gratis."""
+    with _pagos_lock:
+        t = _pagos.get((uid, key))
+        if t is None:
+            return False
+        if time.time() - t > _PAGOS_TTL:
+            del _pagos[(uid, key)]
+            return False
+        return True
+
+
+def olvidar_pago(uid: int, key: str) -> None:
+    """Se le devolvió la ficha (no escuchó nada): la marca se borra, si no el
+    próximo intento saldría gratis sin haber pagado ninguno."""
+    with _pagos_lock:
+        _pagos.pop((uid, key), None)
 
 
 def inflight_count() -> int:

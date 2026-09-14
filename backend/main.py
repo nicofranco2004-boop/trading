@@ -31488,6 +31488,12 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     # escuche y "re-escuchar es gratis" dejaría de ser cierto justo para el tier
     # al que más le importa.
     from ai import quota
+    # ¿YA LO PAGÓ Y SE LE CORTÓ? Entonces el reintento es gratis. El corte a
+    # mitad del viaje (señal, navegar, o el propio reproductor abriendo y
+    # cerrando el pedido) no deja nada en el cache, así que sin esto el segundo
+    # intento cobraba de nuevo — y a un Free, con UNA escucha por semana, la
+    # primera conexión floja le quemaba la semana sin haber oído nada entero.
+    _ya_pagado = tts.ya_pago(uid, key)
     _conn = get_db()
     try:
         # Mismo criterio que el paso 1 y que el chat: con lente de asesor el
@@ -31497,7 +31503,9 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
         # chocaría contra la cuota de 1 de la cuenta que está mirando.
         _tier, _lens = _tier_con_lente(_conn, request, uid)
         _con_cupo = quota.listen_limit(_tier) is not None
-        if _con_cupo:
+        if _ya_pagado:
+            _ok, _usage = True, quota.get_current_usage(_conn, uid, tier_override=_lens)
+        elif _con_cupo:
             _ok, _usage = quota.reserve_listen(_conn, uid, tier_override=_lens)
         else:
             _ok, _usage = quota.reserve_chat(_conn, uid, tier_override=_lens)
@@ -31509,6 +31517,7 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     if not _ok:
         tts.finish(key)          # ídem: rebotamos, que pase el que sigue
         raise _voz_quota_429(_tier, _usage, con_cupo=_con_cupo)
+    tts.marcar_pago(uid, key)
 
     log.info("ai_voz cache MISS uid=%s tier=%s chars=%d ≈%.1fs",
              uid, _tier, len(text), tts.estimated_seconds(text))
@@ -31538,6 +31547,11 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
                     # se reservó: el escuche si era Free, la ficha si era pago.
                     # Con audio parcial ya entregado sí se cobra (mismo criterio
                     # que el chat: el gasto con OpenAI ya está hecho).
+                    # Se devuelve SIEMPRE, haya cobrado este pedido o el que
+                    # se cortó antes: en los dos casos hay exactamente UN cobro
+                    # sin escuchar. Y se borra la marca, porque si no el próximo
+                    # intento saldría gratis sin ningún pago atrás.
+                    tts.olvidar_pago(uid, key)
                     if _con_cupo:
                         _refund_listen_quota(uid)
                     else:

@@ -12,6 +12,7 @@ Estos tests son la contracara de las tres cosas que pueden salir CARAS:
 
 Corre con: cd backend && python3 -m pytest tests/test_ai_voz.py
 """
+import asyncio
 import json
 import os
 import threading
@@ -23,6 +24,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKEND = os.path.dirname(HERE)
@@ -1065,3 +1067,129 @@ class PromptTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─── El corte a mitad del audio ──────────────────────────────────────────────
+# 🔴 EL CASO MÁS COMÚN EN UN CELULAR, y se cobraba dos veces.
+#
+# El audio se cobra al empezar a generarlo y se guarda en el cache al
+# terminarlo. Si el viaje se corta en el medio —se va la señal, el usuario
+# navega, o el propio reproductor abre y cierra el pedido para leer la
+# duración— el corte llega como GeneratorExit, que NO lo atrapa un
+# `except Exception`: no queda nada en el cache y tampoco se devuelve la ficha.
+# El segundo intento no encuentra cache y cobra de nuevo.
+#
+# Para un Free, que tiene UNA escucha por semana, la primera conexión floja le
+# quemaba la semana entera sin haber oído la respuesta completa.
+
+class ElCorteAMitadDelAudioTest(unittest.TestCase):
+    def setUp(self):
+        tts.cache_clear()
+        self.conn = main.get_db()
+        tag = os.urandom(5).hex()
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved,tier) VALUES (?,?,1,'free')",
+            ("corte-%s@rendi.test" % tag, "x")).lastrowid
+        self.conn.commit()
+        self.client = TestClient(main.app)
+        self._env = patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-no-se-usa"})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        try:
+            self.conn.execute("DELETE FROM ai_usage_daily WHERE user_id=?", (self.uid,))
+            self.conn.execute("DELETE FROM users WHERE id=?", (self.uid,))
+            self.conn.commit()
+            self.conn.close()
+        except Exception:
+            pass
+
+    def _hdr(self):
+        return {"Authorization": "Bearer " + main.create_token(self.uid)}
+
+    def _escuchas(self):
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(listen_count),0) AS n FROM ai_usage_daily WHERE user_id=?",
+            (self.uid,)).fetchone()
+        return row["n"] if isinstance(row, sqlite3.Row) else row[0]
+
+    def _preparar(self, texto):
+        r = self.client.post("/api/ai/voz", json={"text": texto, "sig": tts.sign(texto)},
+                             headers=self._hdr())
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["url"]
+
+    def _cortar_a_mitad(self, url):
+        """Reproduce el corte a mitad del viaje, del lado del SERVIDOR.
+
+        ⚠️ Dos intentos anteriores no reproducían nada y quedaban en verde:
+          · cerrar el pedido desde el cliente de prueba → lo drena entero
+            igual, el audio termina y se cachea (medido: 128 bytes adentro);
+          · lanzar GeneratorExit desde adentro de `speak` → revienta la
+            maquinaria async con "aclose(): generator is already running".
+
+        Lo que pasa de verdad es que Starlette CIERRA el generador de la
+        respuesta cuando el cliente se va, y eso mete GeneratorExit en el
+        `yield` — que no lo atrapa un `except Exception`. Así que acá se toma el
+        generador de la respuesta real y se lo cierra después del primer pedazo,
+        que es literalmente lo mismo.
+        """
+        key = url.rsplit("/", 1)[-1].replace(".mp3", "")
+        pedido = Request({
+            "type": "http", "method": "GET", "path": url, "headers": [],
+            "query_string": b"", "client": ("10.0.0.1", 1234), "scheme": "http",
+            "server": ("test", 80), "root_path": "", "app": main.app,
+        })
+        with patch.object(tts, "speak", return_value=iter([b"\xff\xfb" + b"\x00" * 64,
+                                                           b"\x00" * 64])):
+            resp = main.ai_voz_audio(key, pedido, uid=self.uid)
+            gen = resp.body_iterator
+            asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+                self._un_pedazo_y_cerrar(gen))
+
+    @staticmethod
+    async def _un_pedazo_y_cerrar(gen):
+        async for _ in gen:
+            break                        # un pedazo y el cliente se va
+        await gen.aclose()               # Starlette hace exactamente esto
+
+    def test_el_reintento_despues_de_un_corte_NO_vuelve_a_cobrar(self):
+        texto = "Tu cartera subió tres por ciento esta semana."
+        url = self._preparar(texto)
+        self._cortar_a_mitad(url)
+        self.assertEqual(self._escuchas(), 1, "el primer intento sí cobra")
+        self.assertIsNone(tts.cache_get(url.rsplit("/", 1)[-1].replace(".mp3", "")),
+                          "un audio cortado no se puede cachear a medias")
+
+        # El reintento: mismo usuario, mismo audio. Tiene que sonar y NO cobrar.
+        with patch.object(tts, "speak", return_value=iter([MP3])):
+            r = self.client.get(url, headers=self._hdr())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._escuchas(), 1,
+                         "se cobró dos veces el mismo audio por un corte de red")
+
+    def test_un_free_sin_cupo_igual_puede_reintentar_lo_que_ya_pago(self):
+        """El síntoma que ve el usuario: con 1 escucha por semana, tras el corte
+        el reintento devolvía 429 'te quedaste sin escuchas'."""
+        url = self._preparar("Tu cartera bajó un uno por ciento.")
+        self._cortar_a_mitad(url)
+        with patch.object(tts, "speak", return_value=iter([MP3])):
+            r = self.client.get(url, headers=self._hdr())
+        self.assertEqual(r.status_code, 200,
+                         "el Free se quedó afuera de un audio que ya pagó")
+
+    def test_otro_usuario_NO_se_cuelga_del_pago_ajeno(self):
+        """La marca es por (usuario, audio). Si fuera sólo por audio, el primero
+        que paga le abriría la puerta a todos los demás."""
+        url = self._preparar("Un texto cualquiera de Rendi.")
+        self._cortar_a_mitad(url)
+        otro = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved,tier) VALUES (?,?,1,'free')",
+            ("otro-%s@rendi.test" % os.urandom(4).hex(), "x")).lastrowid
+        self.conn.commit()
+        try:
+            self.assertFalse(tts.ya_pago(otro, url.rsplit("/", 1)[-1].replace(".mp3", "")))
+        finally:
+            self.conn.execute("DELETE FROM users WHERE id=?", (otro,))
+            self.conn.commit()
