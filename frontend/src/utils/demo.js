@@ -1,6 +1,8 @@
 // demo — modo "probá Rendi sin login" con portfolio simulado.
 // ═══════════════════════════════════════════════════════════════════════════
 import { isBondTicker } from './tickers'
+import { claveSemanaISO } from './semanas'
+import { hoyISO } from './fecha'
 
 // Cuando la URL tiene `?demo=1`, AuthContext setea un user demo y este módulo
 // intercepta las llamadas al backend devolviendo fixtures hardcodeadas.
@@ -340,6 +342,81 @@ const MONTHLY_LAST_VALUATION = MONTHLY.length
 const MONTH_NAMES_ES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                         'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
 
+// ─── Semanas de cada mes (la tira "Semana a semana" de Reportes) ────────────
+// El backend real manda las semanas anidadas dentro de cada mes; el fixture las
+// mandaba vacías y la tira quedaba en blanco en la cuenta demo.
+//
+// El reparto usa pesos fijos, no azar: dado el resultado de un mes, sus semanas
+// salen siempre iguales. (El mes SÍ cambia entre recargas — MONTHLY se genera
+// con `Math.random`, de antes—, así que la tira igual se ve distinta cada vez.
+// Lo que este reparto garantiza es que las semanas siempre CIERREN con su mes.)
+// Los pesos suman uno, así que las semanas de un mes suman el resultado del mes.
+// Y el no realizado se deriva igual que en el motor —total menos realizado—
+// para que la barra partida cierre exactamente, como cierra en producción.
+const PESOS_SEMANA = [0.42, -0.18, 0.51, 0.16, 0.09]
+
+function semanasDelMesDemo(m, deltaMes) {
+  // El "hoy" del repo, no uno propio: `utils/fecha` existe justamente porque 27
+  // lugares calculaban el día con UTC y de 21:00 a medianoche devolvían mañana.
+  const hoyIso = hoyISO()
+
+  const lunes = []
+  const cursor = new Date(Date.UTC(m.year, m.month - 1, 1))
+  while (cursor.getUTCMonth() === m.month - 1) {
+    if (cursor.getUTCDay() === 1) lunes.push(new Date(cursor.getTime()))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+
+  const pesos = PESOS_SEMANA.slice(0, lunes.length)
+  const suma = pesos.reduce((a, b) => a + b, 0) || 1
+  const base = Math.max(m.capital_inicio || 0, 1)
+
+  return lunes.map((inicio, i) => {
+    const fin = new Date(inicio.getTime())
+    fin.setUTCDate(fin.getUTCDate() + 6)
+    const inicioIso = inicio.toISOString().slice(0, 10)
+    const finIso = fin.toISOString().slice(0, 10)
+    if (inicioIso > hoyIso) return null   // semana que todavía no empezó
+
+    const delta = Math.round((deltaMes * pesos[i]) / suma)
+    // El realizado del mes cae en dos semanas, no repartido parejo: así se ve
+    // la diferencia entre una semana de mercado y una con ventas.
+    const realizado = i === 1 ? Math.round((m.pnl_realized || 0) * 0.6)
+      : i === 3 ? Math.round((m.pnl_realized || 0) * 0.4)
+      : 0
+    return {
+      period_type: 'week',
+      period_key: claveSemanaISO(inicioIso),
+      // Sin el Number quedaba "Semana 07": el backend escribe "Semana 7"
+      // (reporting/builder.py:78, `int(w)`) y el propio demo también.
+      period_label: `Semana ${Number(claveSemanaISO(inicioIso).slice(-2))}`,
+      period_start: inicioIso,
+      period_end: finIso,
+      is_current: inicioIso <= hoyIso && hoyIso <= finIso,
+      is_relevant: Math.abs(delta) >= 100 || realizado !== 0,
+      metrics: {
+        start_value: base,
+        end_value: base + delta,
+        delta_usd: delta,
+        delta_pct: +((delta / base) * 100).toFixed(2),
+        realized_pnl: realizado,
+        unrealized_pnl: delta - realizado,
+        deposits: 0,
+        withdrawals: 0,
+        trades_count: realizado !== 0 ? 2 : 0,
+        basis_incomparable: false,
+      },
+      // WeekCard usa el headline como el texto de la fila: vacío, la lista de
+      // semanas de la cuenta demo se ve rota. Mismo tono que el resto del fixture.
+      headline: delta > 0 ? 'Semana en alza.' : delta < 0 ? 'Semana en baja.' : 'Semana sin cambios.',
+      subheadline: null,
+      insights: [],
+      highlights: [],
+      children: [],
+    }
+  }).filter(Boolean)
+}
+
 const REPORTS_TIMELINE = (() => {
   // Solo los globals — el frontend agrupa por año
   const globals = MONTHLY.filter(m => m.broker === 'global')
@@ -418,7 +495,7 @@ const REPORTS_TIMELINE = (() => {
       narrative,
       highlights: [],
       insights: [],
-      children: [],
+      children: semanasDelMesDemo(m, Math.round(pnlTotal)),
     }
   }).reverse()  // descendente — mes en curso primero
 })()
@@ -497,8 +574,36 @@ function buildDemoPeriodReport(periodType, periodKey) {
     }
   }
 
-  // 'week' o 'day' — sintetizamos a partir del rendimiento mensual con noise
-  // Capital base: último valuation conocido
+  // 'week' — si esa semana ya existe dentro del timeline, se devuelve ESA.
+  //
+  // En producción las dos vistas de una semana (la barra de la tira y la
+  // tarjeta grande de abajo) salen del mismo `build_period_report`. Acá la
+  // tarjeta pega a este generador y la tira lee los `children` del timeline: si
+  // este generador sintetiza su propia semana con azar, la misma pantalla
+  // muestra dos números distintos del mismo período, uno al lado del otro.
+  if (periodType === 'week') {
+    for (const mes of REPORTS_TIMELINE) {
+      const dentro = (mes.children || []).find(s => s.period_key === periodKey)
+      if (dentro) {
+        // La tarjeta grande muestra un párrafo que la barra no necesita, así que
+        // la semana del timeline no lo trae. Sin esto, el atajo dejaba esa
+        // tarjeta sin explicación — una regresión del propio arreglo.
+        const d = dentro.metrics.delta_usd
+        const signo = d >= 0 ? 'ganaste' : 'perdiste'
+        const monto = Math.abs(d).toLocaleString('es-AR', { maximumFractionDigits: 0 })
+        const ops = dentro.metrics.trades_count
+        return {
+          ...dentro,
+          narrative: `En esta semana ${signo} US$ ${monto} (${dentro.metrics.delta_pct >= 0 ? '+' : ''}${dentro.metrics.delta_pct}%). `
+            + (ops > 0 ? `Cerraste ${ops} operacion${ops === 1 ? '' : 'es'}.` : 'Sin operaciones cerradas.'),
+          portfolio_snapshot: _demoPortfolioSnapshot(),
+        }
+      }
+    }
+  }
+
+  // 'week' que no está en el timeline, o 'day' — se sintetiza a partir del
+  // rendimiento mensual con ruido. Capital base: último valuation conocido.
   const base = MONTHLY_LAST_VALUATION
   const isWeek = periodType === 'week'
   const periodReturn = isWeek
