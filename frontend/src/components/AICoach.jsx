@@ -25,6 +25,7 @@ import { markAIDiscovered } from './ai/AIDiscoveryBanner'
 import UpgradePromoCard from './ai/UpgradePromoCard'
 import { Link } from 'react-router-dom'
 import { useVoz } from '../contexts/VozContext'
+import { useMicrofono } from './voz/BotonMicrofono'
 import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota, fechaLegible } from '../utils/cuotaTexto'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
@@ -97,7 +98,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   // en VozContext, la misma que muestra la isla flotante. Ver el comentario de
   // `thread` allá: eran dos hilos que se copiaban al final, y por eso se
   // desincronizaban.
-  const { escuchar: vozEscuchar, toggle: vozToggle,
+  const { escuchar: vozEscuchar, toggle: vozToggle, stop: vozStop,
           status: vozStatus, current: vozCurrent,
           thread: messages, ask, limpiar,
           sending, loading, paso, askError: error,
@@ -212,6 +213,23 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
     markAIDiscovered()
     ask(text, { snapshot })
   }
+
+  // EL MICRÓFONO. Es el mismo que el de la isla — un solo cableado, igual que
+  // la conversación. Lo dictado cae EN EL CUADRO, editable: no se manda solo.
+  const mic = useMicrofono({
+    compacto: false,
+    deshabilitado: loading || sending,
+    onAntesDeGrabar: vozStop,
+    onTexto: (t) => {
+      setFreeText(prev => (prev.trim() ? prev.trim() + ' ' + t : t))
+      setTimeout(() => {
+        const el = freeInputRef.current
+        if (!el) return
+        el.focus()
+        try { el.setSelectionRange(el.value.length, el.value.length) } catch { /* sin soporte */ }
+      }, 0)
+    },
+  })
 
   function handleFreeSubmit(e) {
     e.preventDefault()
@@ -546,32 +564,41 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             </div>
           )
         })()}
+        {mic.aviso && <div className="mb-2">{mic.aviso}</div>}
         <form
           onSubmit={handleFreeSubmit}
-          className="flex items-center gap-2.5 bg-bg-1 border border-line focus-within:border-data-violet/50 rounded-2xl pl-4 pr-2 py-1.5 transition-colors"
+          className={`flex items-center gap-2.5 bg-bg-1 border border-line focus-within:border-data-violet/50 rounded-2xl py-1.5 transition-colors ${mic.grabando ? 'px-1.5' : 'pl-2 pr-2'}`}
         >
-          <input
-            type="text"
-            ref={freeInputRef}
-            value={freeText}
-            onChange={e => setFreeText(e.target.value)}
-            disabled={loading || sending}
-            placeholder={canChatFree
-              ? 'Preguntale a Rendi AI sobre tu cartera…'
-              : 'Registrá: "compré 2000 USD de BTC" o "deposité 600.000 pesos en Balanz"'}
-            className="flex-1 bg-transparent text-[14px] text-ink-0 placeholder:text-ink-3 py-2 focus:outline-none disabled:opacity-50"
-            maxLength={500}
-            aria-label={canChatFree ? 'Pregunta libre a Rendi AI' : 'Registrar una operación con Rendi AI'}
-          />
-          <button
-            type="submit"
-            disabled={loading || sending || !freeText.trim()}
-            className="bg-data-violet hover:bg-data-violet/90 text-white rounded-xl w-9 h-9 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center flex-none"
-            title="Enviar"
-            aria-label="Enviar"
-          >
-            <Send size={15} strokeWidth={2} />
-          </button>
+          {mic.boton}
+          {/* Mientras graba, el panel del micrófono OCUPA el pie: el cuadro de
+              escribir se va. Tener las dos cosas a la vez invita a escribir
+              mientras habla, y lo dictado le pisaría lo tipeado. */}
+          {!mic.grabando && (
+            <>
+              <input
+                type="text"
+                ref={freeInputRef}
+                value={freeText}
+                onChange={e => setFreeText(e.target.value)}
+                disabled={loading || sending}
+                placeholder={canChatFree
+                  ? 'Preguntale a Rendi AI sobre tu cartera…'
+                  : 'Registrá: "compré 2000 USD de BTC" o "deposité 600.000 pesos en Balanz"'}
+                className="flex-1 bg-transparent text-[14px] text-ink-0 placeholder:text-ink-3 py-2 focus:outline-none disabled:opacity-50"
+                maxLength={500}
+                aria-label={canChatFree ? 'Pregunta libre a Rendi AI' : 'Registrar una operación con Rendi AI'}
+              />
+              <button
+                type="submit"
+                disabled={loading || sending || !freeText.trim()}
+                className="bg-data-violet hover:bg-data-violet/90 text-white rounded-xl w-9 h-9 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center flex-none"
+                title="Enviar"
+                aria-label="Enviar"
+              >
+                <Send size={15} strokeWidth={2} />
+              </button>
+            </>
+          )}
         </form>
         <div className="flex items-center justify-between mt-2 px-1 text-[11.5px] text-ink-3">
           <span>Rendi AI puede equivocarse — no es asesoramiento financiero.</span>

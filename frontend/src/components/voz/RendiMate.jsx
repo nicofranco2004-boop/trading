@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Volume2, VolumeX, X, Play, Pause, Send, Loader2, ArrowUpRight } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
+import { useMicrofono } from './BotonMicrofono'
 import { useVoz, RATES } from '../../contexts/VozContext'
 
 // Preguntas de arranque: dos, cortas, y de las que ya están en la whitelist
@@ -49,7 +50,7 @@ export default function RendiMate() {
   const {
     enabled, setEnabled, rate, setRate,
     status, progress, current,
-    escuchar, toggle,
+    escuchar, toggle, stop,
     open, setOpen,
     thread, sending, paso, askError, sinCupo, ask,
   } = useVoz()
@@ -109,6 +110,25 @@ export default function RendiMate() {
   // desde que la conversación es UNA sola, la isla abierta ahí muestra lo
   // mismo que estás leyendo, y encima tapándolo. La burbuja cerrada igual
   // deja el botón de pausa a mano, así que no se pierde nada.
+  // EL MICRÓFONO. Lo dictado cae EN EL CUADRO, editable — no se manda solo
+  // (ver components/voz/BotonMicrofono.jsx). Y Rendi se calla antes de abrir
+  // el micrófono: si sigue hablando, se escucha a sí misma.
+  const inputRef = useRef(null)
+  const mic = useMicrofono({
+    deshabilitado: sending,
+    onAntesDeGrabar: stop,
+    onTexto: (t) => {
+      setTexto(prev => (prev.trim() ? prev.trim() + ' ' + t : t))
+      // El foco al final, para que corregir sea escribir y no buscar el cursor.
+      setTimeout(() => {
+        const el = inputRef.current
+        if (!el) return
+        el.focus()
+        try { el.setSelectionRange(el.value.length, el.value.length) } catch { /* sin soporte */ }
+      }, 0)
+    },
+  })
+
   const loc = useLocation()
   const enElChatGrande = loc.pathname === '/ai'
   const rutaPrevia = useRef(loc.pathname)
@@ -340,29 +360,39 @@ export default function RendiMate() {
         </div>
       )}
 
-      {/* ── Repreguntar ──────────────────────────────────────────────────── */}
+      {/* ── Repreguntar, escribiendo o hablando ──────────────────────────── */}
+      {mic.aviso && <div className="px-2.5 pb-1">{mic.aviso}</div>}
       <form
         onSubmit={(e) => { e.preventDefault(); const t = texto.trim(); if (!t) return; setTexto(''); ask(t) }}
         className="flex items-center gap-2 border-t border-line-2 px-2.5 py-2"
       >
-        <input
-          value={texto}
-          onChange={(e) => setTexto(e.target.value)}
-          placeholder="Escribile a Rendi…"
-          aria-label="Escribile a Rendi"
-          autoComplete="off"
-          className="flex-1 min-w-0 rounded-full border border-line-2 bg-bg-1 px-3 py-1.5
-                     text-[12.5px] text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-3"
-        />
-        <button
-          type="submit"
-          disabled={!texto.trim() || sending}
-          aria-label="Enviar"
-          className="w-7 h-7 rounded-full grid place-items-center flex-none bg-rendi-accent text-bg-0
-                     disabled:bg-bg-3 disabled:text-ink-3 transition-colors"
-        >
-          <Send size={13} strokeWidth={2.2} />
-        </button>
+        {mic.boton}
+        {/* Mientras graba, el panel del micrófono OCUPA el pie: el cuadro de
+            escribir se va. Tener las dos cosas a la vez invita a escribir
+            mientras habla, y lo dictado le pisaría lo tipeado. */}
+        {!mic.grabando && (
+          <>
+            <input
+              ref={inputRef}
+              value={texto}
+              onChange={(e) => setTexto(e.target.value)}
+              placeholder="Escribile a Rendi…"
+              aria-label="Escribile a Rendi"
+              autoComplete="off"
+              className="flex-1 min-w-0 rounded-full border border-line-2 bg-bg-1 px-3 py-1.5
+                         text-[12.5px] text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-3"
+            />
+            <button
+              type="submit"
+              disabled={!texto.trim() || sending}
+              aria-label="Enviar"
+              className="w-7 h-7 rounded-full grid place-items-center flex-none bg-rendi-accent text-bg-0
+                         disabled:bg-bg-3 disabled:text-ink-3 transition-colors"
+            >
+              <Send size={13} strokeWidth={2.2} />
+            </button>
+          </>
+        )}
       </form>
     </section>
   )
