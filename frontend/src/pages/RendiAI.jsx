@@ -11,7 +11,7 @@
 // open(question) ahora navega acá y deja la pregunta en el contexto; la
 // consumimos una sola vez y AICoach la auto-envía (autoAsk).
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Loader2, AlertCircle, Plus, Volume2, VolumeX } from 'lucide-react'
 import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
@@ -83,33 +83,83 @@ export default function RendiAI() {
     return () => window.removeEventListener('rendi:portfolio-changed', onPortfolioChanged)
   }, [])
 
+  // 🔴 EL ALTO DE ESTA PÁGINA SE MIDE, NO SE ESCRIBE.
+  //
+  // Antes decía `h-dvh`: el alto ENTERO de la pantalla. Pero la página no
+  // arranca arriba de todo — arriba hay una barra fija con el logo y, debajo,
+  // la tira de cotizaciones. Medido en 375px: la página empezaba en y=93 y
+  // medía 812, o sea terminaba en 905 sobre una pantalla de 812. El pie del
+  // chat quedaba 29 px abajo del borde y tapado por la barra de navegación,
+  // con el botón de enviar y el del micrófono a medio tapar.
+  //
+  // No se puede poner un número fijo porque ese alto CAMBIA: la tira de
+  // cotizaciones, el aviso del free trial, la barra de contexto de cliente y
+  // el cartel del modo demo aparecen o no según quién mire. Un `calc(100dvh -
+  // 93px)` andaría para una combinación y mentiría para las otras cinco.
+  //
+  // Así que se mide dónde arranca la página de verdad y se le da lo que queda.
+  // Se vuelve a medir al rotar el teléfono y al aparecer el teclado (los dos
+  // disparan `resize`).
+  const cajaRef = useRef(null)
+  const [alto, setAlto] = useState('100dvh')
+  useLayoutEffect(() => {
+    const medir = () => {
+      const el = cajaRef.current
+      if (!el) return
+      // ⚠️ `getBoundingClientRect().top` A SECAS NO SIRVE: es relativo a lo
+      // que se ve, así que con la página corrida da cero o negativo y el alto
+      // sale igual de grande que antes. Medido: daba "calc(100dvh + 0px)".
+      // Lo que hace falta es CUÁNTO OCUPA LO DE ARRIBA, que no se mueve con el
+      // scroll — o sea la posición dentro del documento.
+      const arriba = el.getBoundingClientRect().top + window.scrollY
+      setAlto(`calc(100dvh - ${Math.max(0, Math.round(arriba))}px)`)
+    }
+    medir()
+    window.addEventListener('resize', medir)
+    // Los avisos de arriba (trial, demo, contexto de cliente) aparecen después
+    // de montar: sin volver a medir, el alto queda calculado con lo que había
+    // en el primer cuadro y la página vuelve a pasarse de largo.
+    const obs = new ResizeObserver(medir)
+    if (document.body) obs.observe(document.body)
+    return () => { window.removeEventListener('resize', medir); obs.disconnect() }
+  }, [])
+
   const nPos = snapshot?.summary?.open_positions_count
   const nBrokers = snapshot?.brokers?.length
 
   return (
-    <div className="h-dvh flex flex-col pb-16 sm:pb-0">
+    <div ref={cajaRef} style={{ height: alto }} className="flex flex-col pb-16 sm:pb-0">
       {/* Topbar de la página */}
       <div className="flex items-center justify-between gap-3 px-4 sm:px-7 py-3.5 border-b border-line/60 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-9 h-9 rounded-xl grid place-items-center text-white text-[15px] flex-none"
             style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
+          {/* QUÉ ESTÁ MIRANDO RENDI — va acá abajo del título y no como chip
+              suelto a la derecha.
+              El chip decía `hidden md:inline-flex`: aparecía según el ancho de
+              la VENTANA, pero el lugar donde tenía que entrar es la ventana
+              MENOS el sidebar. Con el sidebar abierto y la ventana grande,
+              aparecía en un espacio que no le daba y se montaba encima del
+              título — visto en pantalla, no deducido.
+              Como subtítulo no puede pasar: es la misma línea que ya estaba
+              ahí, y encima dice algo más útil que la frase fija de antes. */}
           <div className="min-w-0">
             <div className="text-[15.5px] font-semibold text-ink-0 leading-tight">Rendi AI</div>
-            <div className="text-[12px] text-ink-3 truncate">{bookMode ? 'Respondo mirando todo tu libro' : 'Conoce tu cartera en tiempo real'}</div>
+            <div className="flex items-center gap-1.5 text-[12px] text-ink-3 truncate">
+              {(bookMode || snapshot) && (
+                <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos flex-none" aria-hidden />
+              )}
+              <span className="truncate">
+                {bookMode
+                  ? 'Viendo tu libro · todas las carteras de tus clientes'
+                  : snapshot
+                    ? `Viendo tu cartera${nPos != null ? ` · ${nPos} posiciones` : ''}${nBrokers ? ` · ${nBrokers} brokers` : ''}`
+                    : 'Conoce tu cartera en tiempo real'}
+              </span>
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2.5 flex-shrink-0">
-          {bookMode ? (
-            <span className="hidden md:inline-flex items-center gap-2 text-[12.5px] text-ink-2 bg-bg-1 border border-line rounded-full px-3.5 py-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden />
-              Viendo tu libro · todas las carteras de tus clientes
-            </span>
-          ) : snapshot && (
-            <span className="hidden md:inline-flex items-center gap-2 text-[12.5px] text-ink-2 bg-bg-1 border border-line rounded-full px-3.5 py-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden />
-              Viendo tu cartera{nPos != null ? ` · ${nPos} posiciones` : ''}{nBrokers ? ` · ${nBrokers} brokers` : ''}
-            </span>
-          )}
           {/* SILENCIAR / DES-SILENCIAR, acá arriba del chat. El mismo
               interruptor está en la cabecera del acompañante flotante, pero
               esta es la pantalla donde el usuario pregunta: tener que
@@ -130,18 +180,26 @@ export default function RendiAI() {
                 Antes mostraba "Silenciado" mientras la respuesta se escuchaba
                 —la pantalla contradecía a los parlantes— porque el chip miraba
                 sólo el interruptor y no si había audio. */}
+            {/* En celular va SÓLO el ícono. Medido a 375px: con las dos
+                etiquetas, los botones de la derecha sumaban 320 de 375 y
+                aplastaban el título a ancho CERO — "Rendi AI" quedaba
+                escrito encima de este botón. El estado igual se entiende: el
+                ícono cambia y late cuando está hablando. */}
             {vozHablando
-              ? <><Volume2 size={13} strokeWidth={2.2} aria-hidden="true" className="animate-pulse" /> Hablando…</>
+              ? <><Volume2 size={13} strokeWidth={2.2} aria-hidden="true" className="animate-pulse" /> <span className="hidden sm:inline">Hablando…</span></>
               : vozEnabled
-                ? <><Volume2 size={13} strokeWidth={2.2} aria-hidden="true" /> Te lee en voz alta</>
-                : <><VolumeX size={13} strokeWidth={2} aria-hidden="true" /> Silenciado</>}
+                ? <><Volume2 size={13} strokeWidth={2.2} aria-hidden="true" /> <span className="hidden sm:inline">Te lee en voz alta</span></>
+                : <><VolumeX size={13} strokeWidth={2} aria-hidden="true" /> <span className="hidden sm:inline">Silenciado</span></>}
           </button>
           <button
             type="button"
             onClick={() => { clearChatSession(); setConvKey(k => k + 1) }}
+            title="Nueva conversación"
+            aria-label="Nueva conversación"
             className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-ink-2 hover:text-ink-0 border border-line hover:border-ink-3 rounded-lg px-3 py-1.5 transition-colors"
           >
-            <Plus size={13} strokeWidth={2} aria-hidden="true" /> Nueva conversación
+            <Plus size={13} strokeWidth={2} aria-hidden="true" />
+            <span className="hidden sm:inline">Nueva conversación</span>
           </button>
         </div>
       </div>

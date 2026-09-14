@@ -600,7 +600,12 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             </>
           )}
         </form>
-        <div className="flex items-center justify-between mt-2 px-1 text-[11.5px] text-ink-3">
+        {/* EN CELULAR VAN UNO ABAJO DEL OTRO. Medido a 375px: las dos frases
+            son largas, así que al costado se partían en dos y tres renglones
+            pegados sin un espacio en el medio — 52px de alto para algo que no
+            se leía. Apilados entran en un renglón cada uno y ocupan menos. */}
+        <div className="flex flex-col items-start gap-0.5 sm:flex-row sm:items-center sm:justify-between
+                        mt-2 px-1 text-[11.5px] text-ink-3">
           <span>Rendi AI puede equivocarse — no es asesoramiento financiero.</span>
           {usage && usage.chat_limit > 0 && (
             <span className="tabular num" title={costoDeEscuchar(usage)}>

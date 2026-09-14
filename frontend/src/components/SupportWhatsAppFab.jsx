@@ -2,8 +2,24 @@
 // Persiste en toda la app autenticada. Click abre WhatsApp con mensaje
 // pre-llenado al número de soporte (ver utils/support.js).
 
+import { useLocation } from 'react-router-dom'
 import { whatsappUrl } from '../utils/support'
 import { useIsMobile } from '../hooks/useIsMobile'
+
+// DÓNDE NO VA. El botón se para en la esquina de abajo a la derecha y se queda
+// ahí: en una página que scrollea eso es gratis, porque el contenido le pasa
+// por debajo. En una pantalla que ocupa el alto entero y clava su propio pie
+// abajo, NO: lo que queda tapado, queda tapado para siempre.
+//
+// Medido en /ai, con el pie del chat clavado abajo: el botón cae encima del
+// contador de consultas en las dos pantallas (celular a 375px — el botón de
+// y=684 a 732 y el contador de 684 a 736; escritorio a 840 — el botón de
+// x=764 a 820 y el contador de 559 a 804). La esquina la tiene que tener uno
+// solo, y en esa pantalla el dueño es el pie del chat.
+//
+// Se saca de /ai y de ningún lado más: el soporte sigue a un toque desde
+// cualquier otra sección, y justo ahí el usuario está hablando con Rendi.
+const SIN_BOTON = ['/ai']
 
 // Logo oficial simplificado de WhatsApp (un solo path, fill currentColor)
 function WhatsAppIcon({ size = 22 }) {
@@ -16,6 +32,11 @@ function WhatsAppIcon({ size = 22 }) {
 
 export default function SupportWhatsAppFab() {
   const isMobile = useIsMobile()
+  const { pathname } = useLocation()
+  // La regla vive ACÁ y no en quien lo monta: el shell de celular y el de
+  // escritorio lo dibujan cada uno por su lado, y una regla escrita en uno
+  // solo arregla la mitad de las pantallas.
+  if (SIN_BOTON.some(r => pathname === r || pathname.startsWith(r + '/'))) return null
   // En mobile, levantamos el FAB para no chocar con la TabBar.
   const bottomOffset = isMobile ? 'bottom-20' : 'bottom-5'
   return (

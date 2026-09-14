@@ -106,10 +106,19 @@ export default function RendiMate() {
   // repreguntar sin volver. En la pantalla donde preguntaste no se abre: ahí
   // ya estás leyendo la respuesta entera.
   //
-  // Y en /ai se cierra SIEMPRE, aunque la hayas abierto vos en otra pantalla:
-  // desde que la conversación es UNA sola, la isla abierta ahí muestra lo
-  // mismo que estás leyendo, y encima tapándolo. La burbuja cerrada igual
-  // deja el botón de pausa a mano, así que no se pierde nada.
+  // Y en /ai NO SE DIBUJA NADA, ni abierta ni cerrada: la conversación es UNA
+  // sola, así que la tarjeta muestra lo mismo que estás leyendo y encima lo
+  // tapa. La burbuja cerrada tampoco agrega nada ahí —esa pantalla tiene su
+  // propio parlante arriba y un "Escuchar/Pausar" en CADA respuesta— y sí
+  // molesta: cae justo sobre la barra de la página (medido a 375px, la burbuja
+  // de y=93 a 117 y el título de la página en y=107).
+  //
+  // Se esconde el DIBUJO, no el componente: los avisos de más arriba tienen
+  // que seguir corriendo. Si dejáramos de montarlo en /ai, al salir de ahí
+  // arrancaría de cero creyendo que /dashboard es la pantalla de siempre, y
+  // justo el momento que esto existe para cubrir —preguntar en /ai, irse al
+  // panel y que Rendi siga hablando— dejaría de abrir la isla.
+  //
   // EL MICRÓFONO. Lo dictado cae EN EL CUADRO, editable — no se manda solo
   // (ver components/voz/BotonMicrofono.jsx). Y Rendi se calla antes de abrir
   // el micrófono: si sigue hablando, se escucha a sí misma.
@@ -139,6 +148,8 @@ export default function RendiMate() {
     }
     rutaPrevia.current = loc.pathname
   }, [loc.pathname, enElChatGrande, status, setOpen])
+
+  if (enElChatGrande) return null
 
   if (!open) {
     // LA BURBUJA CERRADA. Antes decía sólo "Rendi" y no se entendía: ni que se
