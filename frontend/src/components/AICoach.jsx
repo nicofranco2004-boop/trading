@@ -352,7 +352,25 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
               </div>
             )
           }
-          const { prose, meta } = parseStructured(m.content)
+          // 🔴 LAS TARJETAS VIENEN EN `m.meta`, NO ADENTRO DEL TEXTO.
+          //
+          // Acá se re-parseaba `m.content` buscando el bloque de datos — y
+          // `content` guarda SÓLO LA PROSA: el bloque ya lo separó quien armó
+          // el mensaje (VozContext). O sea que esto devolvía siempre vacío y
+          // NO SE DIBUJABA NADA: ni el veredicto, ni el titular, ni las cifras,
+          // ni el gráfico de composición, ni las fuentes, ni los botones de
+          // "seguí por acá". En las dos pantallas, desde que la conversación se
+          // mudó al contexto.
+          //
+          // MEDIDO en pantalla: Rendi mandó veredicto "Concentración alta",
+          // titular, 2 cifras, 1 gráfico y 3 seguimientos. En pantalla, cero.
+          //
+          // El parseo se queda como respaldo para un mensaje que sí traiga el
+          // bloque adentro (una conversación guardada de antes de este cambio,
+          // o el camino del modo demo).
+          const parseado = m.meta ? null : parseStructured(m.content)
+          const meta = m.meta || parseado?.meta
+          const prose = m.meta ? m.content : parseado?.prose
           const isLastMsg = i === messages.length - 1
           return (
             <div key={i} className="flex items-start gap-3">

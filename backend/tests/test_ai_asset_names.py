@@ -92,9 +92,60 @@ class TestNombresHablables(unittest.TestCase):
     def test_sin_parentesis_ni_siglas(self):
         # El caso que motivó todo: leído tal cual, el nombre del catálogo dice
         # "paréntesis U-S-D ley local".
-        self.assertEqual(asset_name("AL30"), "Argentina 2030")
+        self.assertEqual(asset_name("AL30"), "Bonar 2030")     # era '… (USD ley local)'
         self.assertEqual(asset_name("MUX"), "McEwen")          # era 'McEwen Inc.'
         self.assertEqual(asset_name("GOOGL"), "Alphabet")      # era 'Alphabet (A)'
+
+    def test_sacar_el_parentesis_no_puede_borrar_LA_DIFERENCIA(self):
+        """🔴 AL30 y GD30 se decían los DOS "Argentina 2030".
+
+        Son bonos distintos: ley argentina y ley Nueva York. Distinto precio y
+        distinto riesgo legal — la primera distinción que hace cualquiera acá.
+        Lo único que los separaba era el paréntesis ("(USD ley local)" contra
+        "(USD ley extranjera)"), y el paréntesis es justo lo que se saca para
+        que el nombre se pueda decir. Un usuario con los dos escuchaba el mismo
+        nombre dos veces y no tenía cómo saber de cuál le estaban hablando.
+
+        Los nombres de mercado los distinguen solos, que es lo que una persona
+        diría en voz alta.
+        """
+        for anio in ("30", "35", "41"):
+            self.assertEqual(asset_name("AL" + anio), "Bonar 20" + anio)
+            self.assertEqual(asset_name("GD" + anio), "Global 20" + anio)
+        self.assertEqual(asset_name("AE38"), "Bonar 2038")
+        self.assertEqual(asset_name("GD38"), "Global 2038")
+        # AL29 queda afuera del patrón A PROPÓSITO: "Bonar 2029" ya es AO29, que
+        # es OTRO bono del mismo año. Quién se queda con ese nombre es una
+        # decisión de producto, no de código — mientras tanto los tres se
+        # llaman distinto, que es lo que este test protege.
+        self.assertEqual(asset_name("AL29"), "Argentina 2029")
+        self.assertEqual(asset_name("AO29"), "Bonar 2029")
+        self.assertEqual(asset_name("GD29"), "Global 2029")
+
+    def test_dos_activos_distintos_no_pueden_llamarse_igual(self):
+        """El guard general del de arriba, para el próximo par que se agregue.
+
+        Se permiten sólo los que SON el mismo instrumento escrito de dos formas
+        (la clase A y la C de Alphabet, el ticker viejo y el nuevo de Block).
+        Cualquier par nuevo que comparta nombre hay que mirarlo: o son lo mismo
+        y va a esta lista, o es el bug de los bonos otra vez.
+        """
+        MISMO_INSTRUMENTO = {
+            ("GOOG", "GOOGL"),          # Alphabet clase C y clase A
+            ("BRK-B", "BRKB"),          # Berkshire, dos formas del mismo código
+            ("SQ", "XYZ"),              # Block, ticker viejo y nuevo
+            ("DIS", "DISN"),            # Disney, US y CEDEAR
+            ("CAPU", "CAPX"),           # Capex, dos códigos del mismo papel
+            ("TLC5O", "TLCMO"),         # Telecom 2031, misma ON
+        }
+        import collections
+        por_nombre = collections.defaultdict(list)
+        for t, n in ASSET_NAMES.items():
+            por_nombre[n].append(t)
+        choques = [tuple(sorted(ts)) for ts in por_nombre.values() if len(ts) > 1]
+        inesperados = [c for c in choques if c not in MISMO_INSTRUMENTO]
+        self.assertEqual(inesperados, [],
+                         "activos distintos con el mismo nombre hablado: %s" % (inesperados,))
 
     def test_ningun_nombre_tiene_parentesis(self):
         con_parentesis = [f"{t}={n}" for t, n in ASSET_NAMES.items() if "(" in n or ")" in n]

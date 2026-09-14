@@ -994,7 +994,7 @@ class NombresTest(unittest.TestCase):
     def test_el_server_le_pega_el_nombre_a_cada_posicion(self):
         out = main._con_nombres([{"asset": "NVDA"}, {"asset": "AL30"}])
         self.assertEqual(out[0]["name"], "NVIDIA")
-        self.assertEqual(out[1]["name"], "Argentina 2030")
+        self.assertEqual(out[1]["name"], "Bonar 2030")   # ley argentina; GD30 es "Global 2030"
 
     def test_un_activo_fuera_del_catalogo_no_lleva_nombre_inventado(self):
         out = main._con_nombres([{"asset": "OT42"}])

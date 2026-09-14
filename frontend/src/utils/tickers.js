@@ -321,21 +321,30 @@ export const US_SEARCH = [
 // === BONOS — Soberanos AR en USD ============================================
 // Los AL son ley local, los GD ley extranjera (NY/UK). AE = ley local variantes.
 // Los sufijos C/D = USD nominal (vs los normales que se operan en pesos al TC).
+// 🔴 EL NOMBRE TIENE QUE DISTINGUIRLOS SIN EL PARÉNTESIS.
+// Rendi lee estos nombres en voz alta y, para que suenen bien, le saca lo que
+// va entre paréntesis (leído, "(USD ley local)" suena a formulario). Con
+// "Argentina 2030 (USD ley local)" y "Argentina 2030 (USD ley extranjera)" eso
+// borraba lo ÚNICO que los diferenciaba: AL30 y GD30 se decían igual, siendo
+// ley argentina y ley Nueva York — distinto precio y distinto riesgo legal, que
+// es la primera distinción que hace cualquiera acá.
+// Los nombres de mercado (Bonar / Global) los distinguen solos, y además ya
+// eran los que usaba AO28/AO29 acá abajo y la lista de búsqueda más abajo.
 export const BONDS_AR_SOV_USD = [
-  { s: 'AL29', n: 'Argentina 2029 (USD ley local)' },
-  { s: 'AL30', n: 'Argentina 2030 (USD ley local)' },
-  { s: 'AL35', n: 'Argentina 2035 (USD ley local)' },
-  { s: 'AE38', n: 'Argentina 2038 (USD ley local)' },
-  { s: 'AL41', n: 'Argentina 2041 (USD ley local)' },
+  { s: 'AL29', n: 'Argentina 2029 (USD ley local)' }  // ver la nota de arriba: 'Bonar 2029' ya lo usa AO29,
+  { s: 'AL30', n: 'Bonar 2030 (USD ley local)' },
+  { s: 'AL35', n: 'Bonar 2035 (USD ley local)' },
+  { s: 'AE38', n: 'Bonar 2038 (USD ley local)' },
+  { s: 'AL41', n: 'Bonar 2041 (USD ley local)' },
   // Bonares nuevos (soberano USD ley local; precio live en data912 arg_bonds).
   { s: 'AO28', n: 'Bonar 2028 (USD)' },
   { s: 'AO29', n: 'Bonar 2029 (USD)' },
-  { s: 'GD29', n: 'Argentina 2029 (USD ley extranjera)' },
-  { s: 'GD30', n: 'Argentina 2030 (USD ley extranjera)' },
-  { s: 'GD35', n: 'Argentina 2035 (USD ley extranjera)' },
-  { s: 'GD38', n: 'Argentina 2038 (USD ley extranjera)' },
-  { s: 'GD41', n: 'Argentina 2041 (USD ley extranjera)' },
-  { s: 'GD46', n: 'Argentina 2046 (USD ley extranjera)' },
+  { s: 'GD29', n: 'Global 2029 (USD ley extranjera)' },
+  { s: 'GD30', n: 'Global 2030 (USD ley extranjera)' },
+  { s: 'GD35', n: 'Global 2035 (USD ley extranjera)' },
+  { s: 'GD38', n: 'Global 2038 (USD ley extranjera)' },
+  { s: 'GD41', n: 'Global 2041 (USD ley extranjera)' },
+  { s: 'GD46', n: 'Global 2046 (USD ley extranjera)' },
   // Sub-soberano provincial (precio live en data912):
   { s: 'BA37D', n: 'Buenos Aires 2037 (Prov., USD ley NY)' },
   // BOPREAL (BCRA, USD). El Serie 3 (BPY26) venció 31/05/26 → no tiene precio
