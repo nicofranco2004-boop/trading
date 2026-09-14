@@ -2736,6 +2736,9 @@ def init_db():
         # Migración: ai_usage_daily.listen_count (cupo de escuchas de Free).
         if ai_usage_cols and 'listen_count' not in ai_usage_cols:
             conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN listen_count INTEGER NOT NULL DEFAULT 0")
+        # Migración: ai_usage_daily.dictado_seconds (techo de gasto del micrófono).
+        if ai_usage_cols and 'dictado_seconds' not in ai_usage_cols:
+            conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN dictado_seconds INTEGER NOT NULL DEFAULT 0")
 
         # Migración: columna broker en import_normalized_tx (agregada después de la
         # versión inicial de las tablas).
@@ -27350,7 +27353,7 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
         # Lente del asesor dentro de un cliente Free/Plus → se sirve como pro
         # (prompts con causalidad + follow-ups sin upsell). La regla vive en
         # _tier_con_lente, que es el único lugar donde está escrita.
-        tier, _ = _tier_con_lente(conn, request, uid)
+        tier, _lente_analyze = _tier_con_lente(conn, request, uid)
 
         # Follow-ups son exclusivos Pro — el diferencial real del paywall.
         # Free Y Plus que intentan follow-up reciben 403 con upgrade payload
@@ -27416,7 +27419,7 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
                 }
 
         # Cache MISS o follow-up → chequeamos cupo (la llamada al LLM cuesta)
-        allowed, usage_now = quota.can_analyze(conn, uid)
+        allowed, usage_now = quota.can_analyze(conn, uid, tier_override=_lente_analyze)
         if not allowed:
             # Mensaje 429 dinámico por tier — antes hardcodeaba "plan Free"
             # aunque el user fuera Plus (mismo cap 6) y daba confusión.
@@ -27628,7 +27631,10 @@ def fundamentals_ai_summary(data: FundamentalsAISummaryIn, request: Request,
 
     conn = get_db()
     try:
-        tier = quota.get_tier(conn, uid)
+        # Con LENTE, igual que /api/ai/analyze y que el chat. Acá resolvía con
+        # get_tier a secas, o sea sin ella: un asesor adentro de un cliente Free
+        # se medía contra el tope del cliente.
+        tier, _lente_fund = _tier_con_lente(conn, request, uid)
 
         # Cache HIT → gratis, no descuenta cupo (igual que analyze).
         cached = cache.get_cached(conn, uid, screen, packet, tier=tier)
@@ -27643,7 +27649,7 @@ def fundamentals_ai_summary(data: FundamentalsAISummaryIn, request: Request,
         # Cache MISS → chequeamos cupo semanal de analyses. 429 con el MISMO
         # shape que /api/ai/analyze (para que el handler 429/upgrade del front
         # ande igual).
-        allowed, usage_now = quota.can_analyze(conn, uid)
+        allowed, usage_now = quota.can_analyze(conn, uid, tier_override=_lente_fund)
         if not allowed:
             tier_label = {"free": "Free", "plus": "Plus", "pro": "Pro", "admin": "Admin"}.get(tier, "Free")
             limit_n = usage_now.get("analyses_limit", 6)
@@ -30340,7 +30346,11 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
         # excepción cobraba el slot sin dar respuesta.
         # El turno del botón ✦ se cobra del cupo de ANÁLISIS, no del de
         # consultas: cambió dónde aparece la respuesta, no cuánto vale.
-        allowed, usage = (quota.can_analyze(conn, uid) if data.analisis
+        # Las DOS con la lente. El chequeo del chat la pasaba y el de análisis
+        # no, en esta misma línea: un asesor adentro de un cliente Free veía
+        # "te quedaste sin análisis" al segundo ✦ de la semana.
+        allowed, usage = (quota.can_analyze(conn, uid, tier_override=_lens_override)
+                          if data.analisis
                           else quota.can_chat(conn, uid, tier_override=_lens_override))
         # Continuación de un registro en curso (draft fresco): NO la bloquea el
         # cap. El usuario ya "gastó" su slot en el turno que abrió el registro;
@@ -31590,25 +31600,53 @@ def ai_dictado(request: Request,
     # Es el techo del gasto con OpenAI si alguien automatiza el endpoint.
     _check_rate_limit(request, max_calls=20, window_seconds=60, suffix=f"ai_dictado:{uid}")
 
-    crudo = audio.file.read()
     try:
         # El content_type lo dice el navegador y podría venir cualquier cosa:
-        # `extension_de` sólo deja pasar los de la lista cerrada.
+        # `extension_de` sólo deja pasar los de la lista cerrada. Va ANTES de
+        # leer el archivo: si el formato no sirve, no hay para qué levantarlo.
         ext = oido.extension_de(audio.content_type or "")
     except oido.AudioInvalido as ex:
         raise HTTPException(415, detail={
             "error": "dictado_formato",
             "message": "Ese formato de audio no lo puedo leer.",
         }) from ex
+
+    # SE LEE ACOTADO, no entero. `read()` a secas se trae a memoria lo que
+    # hayan mandado: con 20 pedidos por minuto permitidos, veinte archivos
+    # gigantes son veinte archivos gigantes en RAM. Leyendo el tope + 1 byte
+    # alcanza para saber que se pasaron sin cargarlo.
+    tope = oido.tope_de(ext)
+    crudo = audio.file.read(tope + 1)
     if not crudo:
         raise HTTPException(400, detail={
             "error": "dictado_vacio",
             "message": "No llegó audio. Probá de nuevo.",
         })
-    if len(crudo) > oido.MAX_BYTES:
+    if len(crudo) > tope:
         raise HTTPException(413, detail={
             "error": "dictado_largo",
             "message": "La grabación es muy larga. Probá con una pregunta más corta.",
+        })
+
+    # ── El techo de gasto del micrófono ─────────────────────────────────────
+    # Se mira ANTES de llamar al proveedor. No es una cuota de producto (ver
+    # ai/quota.py): son 30-60 minutos de audio por semana, o sea sesenta
+    # preguntas dictadas. Quien llega ahí no está usando el micrófono.
+    from ai import quota as _quota
+    _dconn = get_db()
+    try:
+        _dtier, _dlens = _tier_con_lente(_dconn, request, uid)
+        _puede, _dusage = _quota.puede_dictar(_dconn, uid, tier_override=_dlens)
+    finally:
+        _dconn.close()
+    if not _puede:
+        log.warning("dictado: techo semanal alcanzado uid=%s tier=%s seg=%s",
+                    uid, _dtier, _dusage.get("dictado_seconds"))
+        raise HTTPException(429, detail={
+            "error": "dictado_techo",
+            "message": "Usaste el micrófono muchísimo esta semana. "
+                       "Podés seguir escribiendo las preguntas; el micrófono "
+                       "vuelve en unos días.",
         })
 
     # La pista de vocabulario sale de la cartera del usuario: los activos que
@@ -31643,8 +31681,9 @@ def ai_dictado(request: Request,
         # El mismo vocabulario va dos veces: como PISTA antes de transcribir, y
         # como corrección después — la pista no siempre gana contra un homófono
         # común ("Balanz" volvía "Balance" con la pista puesta).
-        texto = oido.escuchar(crudo, audio.content_type or "", pista=pista,
-                              tickers=_tickers, brokers=_brokers)
+        _oido_out = oido.escuchar(crudo, audio.content_type or "", pista=pista,
+                                  tickers=_tickers, brokers=_brokers)
+        texto = _oido_out.texto
     except oido.AudioInvalido as ex:
         raise HTTPException(400, detail={
             "error": "dictado_invalido",
@@ -31656,6 +31695,20 @@ def ai_dictado(request: Request,
             "error": "dictado_fallo",
             "message": "No pude pasar tu audio a texto. Probá de nuevo, o escribilo.",
         }) from ex
+
+    # Se anota lo que se PAGÓ, que son los segundos que el proveedor dice que
+    # duró el audio — no los que el navegador prometió ni los que pesa el
+    # archivo. Va acá y no antes porque hasta acá no se sabía. Si anotarlo
+    # falla, el dictado igual se entrega: perder el techo de una llamada es
+    # mejor que hacerle perder al usuario lo que dijo.
+    try:
+        _dconn2 = get_db()
+        try:
+            _quota.record_dictado_seconds(_dconn2, uid, _oido_out.segundos)
+        finally:
+            _dconn2.close()
+    except Exception as ex:
+        log.warning("dictado: no se pudo anotar el gasto uid=%s: %s", uid, ex)
 
     # ── Free y Plus: emparejar con una de las doce ──────────────────────────
     # Esos planes sólo pueden mandar 12 preguntas EXACTAS. Lo dictado nunca va
@@ -31688,8 +31741,8 @@ def ai_dictado(request: Request,
             # registrar operaciones. No es motivo para fallar el dictado.
             log.warning("dictado: no se pudo emparejar uid=%s: %s", uid, ex)
 
-    log.info("dictado uid=%s bytes=%d fmt=%s chars=%d sugerida=%s",
-             uid, len(crudo), ext, len(texto), bool(sugerida))
+    log.info("dictado uid=%s bytes=%d fmt=%s seg=%d chars=%d sugerida=%s",
+             uid, len(crudo), ext, _oido_out.segundos, len(texto), bool(sugerida))
     # `texto` vacío = no se escuchó nada. Es una respuesta legítima, no un
     # error: el frontend muestra "no se escuchó nada" y deja reintentar.
     out = {"texto": texto, "segundos_max": oido.MAX_SEGUNDOS}

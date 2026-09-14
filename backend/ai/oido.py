@@ -22,8 +22,15 @@ Tres cosas lo descartan:
 
 CUÁNTO SALE: US$0,006 el minuto. Una pregunta dictada de diez segundos son
 US$0,001 — el 5% de lo que sale la respuesta escrita (US$0,021, ver tts.py).
-Por eso dictar NO gasta cuota aparte: es una forma de escribir, y cobrarla
-necesitaría un tercer contador para un costo que es ruido.
+Por eso dictar NO GASTA CONSULTA: es una forma de escribir, y la consulta se
+cobra después, cuando el texto se manda.
+
+Pero "no gasta consulta" NO es "no tiene techo", y así había quedado: éste era
+el único endpoint que le habla a un proveedor pago sin nada que lo limitara
+salvo un tope por minuto guardado en la memoria del proceso, que se esquiva
+cambiando de red. Hay un presupuesto SEMANAL DE SEGUNDOS DE AUDIO (ver
+quota.dictado_budget) que no se le muestra al usuario porque nadie lo alcanza
+usando el micrófono para lo que está.
 
 LO QUE NO SE GUARDA: el audio. Entra, se manda, vuelve texto y se descarta.
 No hay cache —no tendría sentido, nadie dicta dos veces lo mismo— ni queda
@@ -38,7 +45,7 @@ import logging
 import os
 import re
 import threading
-from typing import Iterable, Optional
+from typing import Iterable, NamedTuple, Optional
 
 import httpx
 
@@ -59,11 +66,31 @@ IDIOMA = "es"
 # más que eso ya es un monólogo que además transcribe peor (el modelo pierde
 # el hilo) y cuesta más. El navegador corta solo al llegar; esto es la red.
 MAX_SEGUNDOS = 30
-# Tope de bytes, que es el que de verdad protege al servidor: el navegador
-# puede mentir sobre la duración, no sobre cuánto pesa lo que manda.
-# 30 s de webm/opus a 32 kbps son ~120 KB; 4 MB deja aire para formatos
-# peores (wav sin comprimir) sin abrir la puerta a que suban una película.
-MAX_BYTES = 4 * 1024 * 1024
+# ─── El tope de bytes NO es un tope de plata ─────────────────────────────────
+# 🔴 Acá había un solo tope de 4 MB "para que no suban una película", y eso
+# protegía la MEMORIA, no el gasto. OpenAI cobra por MINUTO, y cuántos bytes
+# entran en un minuto cambia VEINTE VECES de un formato a otro: 4 MB de opus a
+# 32 kbps son ~17 minutos de audio, no 30 segundos. O sea que una sola llamada
+# podía costar 33 veces lo que el diseño suponía, y el límite de 30 segundos
+# vive sólo en el navegador — que es del usuario.
+#
+# Ahora el tope depende del formato. 30 s a 192 kbps —muchísimo más de lo que
+# graba un navegador para una voz— son 720 KB: con 1 MB sobra y el peor caso de
+# los comprimidos baja de 17 minutos a 4. Los SIN COMPRIMIR sí necesitan los
+# 4 MB (30 s de wav a 44,1 kHz estéreo pesan 5,3 MB) y son justo los que el
+# navegador no manda nunca.
+#
+# Y esto tampoco alcanza solo: un opus a 6 kbps vuelve a meter una hora en 1 MB.
+# El techo de verdad es el presupuesto de SEGUNDOS por semana (ver quota.py):
+# ahí se cuenta lo que de verdad se paga, que son minutos de audio.
+MAX_BYTES = 4 * 1024 * 1024               # techo duro, para los sin comprimir
+MAX_BYTES_COMPRIMIDO = 1024 * 1024
+_SIN_COMPRIMIR = frozenset(("wav", "flac"))
+
+
+def tope_de(ext: str) -> int:
+    """Cuántos bytes se le aceptan a ese formato."""
+    return MAX_BYTES if ext in _SIN_COMPRIMIR else MAX_BYTES_COMPRIMIDO
 
 # Lo que el navegador puede mandar. MediaRecorder produce webm en Chrome y
 # Firefox, y mp4/aac en Safari; los otros están porque OpenAI los acepta y no
@@ -226,8 +253,13 @@ def extension_de(content_type: str) -> str:
 
 def escuchar(audio: bytes, content_type: str, pista: str = "",
              tickers: Optional[Iterable[str]] = None,
-             brokers: Optional[Iterable[str]] = None) -> str:
-    """Devuelve lo que se dijo, en texto. Cadena vacía si no se escuchó nada.
+             brokers: Optional[Iterable[str]] = None) -> "Transcripcion":
+    """Lo que se dijo, y CUÁNTO DURÓ. Texto vacío si no se escuchó nada.
+
+    Los segundos vienen del propio proveedor (`verbose_json` los devuelve) y
+    no de lo que pese el archivo: son la unidad en la que nos cobran, así que
+    son la única que sirve para llevar la cuenta de lo que gastamos. Ver
+    quota.dictado_budget.
 
     `pista` es el vocabulario esperado (ver `pista`), que va ANTES de
     transcribir. `tickers` y `brokers` son el mismo vocabulario usado DESPUÉS,
@@ -237,11 +269,15 @@ def escuchar(audio: bytes, content_type: str, pista: str = "",
     """
     if not audio:
         raise AudioInvalido("No llegó audio")
-    if len(audio) > MAX_BYTES:
-        raise AudioInvalido("El audio pesa %d bytes, el tope es %d" % (len(audio), MAX_BYTES))
     ext = extension_de(content_type)
+    tope = tope_de(ext)
+    if len(audio) > tope:
+        raise AudioInvalido("El audio pesa %d bytes, el tope de %s es %d"
+                            % (len(audio), ext, tope))
 
-    data = {"model": MODELO, "language": IDIOMA, "response_format": "json"}
+    # `verbose_json` en vez de `json`: trae el mismo texto y además `duration`.
+    # Cuesta lo mismo y es lo que nos deja cobrar en la unidad real.
+    data = {"model": MODELO, "language": IDIOMA, "response_format": "verbose_json"}
     if pista:
         data["prompt"] = pista
     resp = _client().post(
@@ -255,9 +291,34 @@ def escuchar(audio: bytes, content_type: str, pista: str = "",
         # usuario. Mismo criterio que tts.py.
         log.error("OpenAI transcripción %s: %s", resp.status_code, resp.text[:300])
         raise RuntimeError("OpenAI devolvió %s" % resp.status_code)
-    texto = (resp.json().get("text") or "").strip()
+    cuerpo = resp.json()
+    texto = (cuerpo.get("text") or "").strip()
     texto = corregir_con_lo_del_usuario(texto, tickers, brokers)
-    return limpiar(texto)
+    return Transcripcion(limpiar(texto), _segundos_de(cuerpo, len(audio), ext))
+
+
+class Transcripcion(NamedTuple):
+    """Lo que volvió del proveedor: el texto y los segundos que nos facturan."""
+    texto: str
+    segundos: int
+
+
+def _segundos_de(cuerpo: dict, bytes_: int, ext: str) -> int:
+    """Los segundos que se pagaron, redondeados para arriba y nunca 0.
+
+    Si el proveedor no manda la duración —una versión distinta, un formato que
+    no la reporta— se ESTIMA por peso y por lo bajo del rango de calidad, o sea
+    por el lado que nos hace cobrar de más. Que un fallo de lectura abarate el
+    dictado sería exactamente el agujero que esto viene a tapar.
+    """
+    try:
+        d = float(cuerpo.get("duration"))
+        if d > 0:
+            return max(1, int(d + 0.999))
+    except (TypeError, ValueError):
+        pass
+    bits_por_segundo = 128_000 if ext in _SIN_COMPRIMIR else 16_000
+    return max(1, int(bytes_ * 8 / bits_por_segundo))
 
 
 # ─── Corregir con lo que el usuario TIENE ────────────────────────────────────

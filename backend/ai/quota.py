@@ -89,6 +89,14 @@ LIMITS = {
         # "cuesta el doble" es un precio proporcional; sobre una cuota de 1,
         # significa "jamás". Ver reserve_listen.
         "listens_per_week": 1,
+        # dictado_seconds_per_week: SEGUNDOS de audio dictado por semana. NO es
+        # un límite de producto —nadie dicta media hora de preguntas— sino el
+        # techo de lo que puede gastarnos una cuenta con el micrófono.
+        #
+        # Va en SEGUNDOS y no en cantidad de dictados porque OpenAI cobra por
+        # MINUTO: contar llamadas deja pasar una llamada de una hora. Ver
+        # ai/oido.py, donde el tope de BYTES resultó no ser un tope de plata.
+        "dictado_seconds_per_week": 1800,
     },
     # Plus diferencial IA: 9× más chat que Free (9 vs 1) y 6× más análisis
     # (6 vs 1). Plus es upgrade de "más broker + algo más de IA descriptiva".
@@ -101,6 +109,7 @@ LIMITS = {
         # None = este tier NO usa el cupo de escuchas: escuchar le descuenta
         # 1 ficha de chat, que es la regla general.
         "listens_per_week": None,
+        "dictado_seconds_per_week": 1800,
     },
     "pro": {
         "analyses_per_week": 60,        # 60× Free · 10× Plus
@@ -114,6 +123,7 @@ LIMITS = {
         # None = este tier NO usa el cupo de escuchas: escuchar le descuenta
         # 1 ficha de chat, que es la regla general.
         "listens_per_week": None,
+        "dictado_seconds_per_week": 3600,
     },
     # Advisor — Plan Asesor Financiero (B2B). Pool PROPIO del asesor: toda la
     # IA que use (en su cuenta o dentro de un cliente vía contexto) descuenta
@@ -127,6 +137,7 @@ LIMITS = {
         # None = este tier NO usa el cupo de escuchas: escuchar le descuenta
         # 1 ficha de chat, que es la regla general.
         "listens_per_week": None,
+        "dictado_seconds_per_week": 3600,
     },
     "admin": {
         "analyses_per_week": 1000,
@@ -136,6 +147,7 @@ LIMITS = {
         # None = este tier NO usa el cupo de escuchas: escuchar le descuenta
         # 1 ficha de chat, que es la regla general.
         "listens_per_week": None,
+        "dictado_seconds_per_week": 3600,
     },
 }
 
@@ -381,11 +393,13 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
                   COALESCE(SUM(chat_count), 0) AS c,
                   COALESCE(SUM(diag_dismiss_count), 0) AS d,
                   COALESCE(SUM(listen_count), 0) AS l,
+                  COALESCE(SUM(dictado_seconds), 0) AS ds,
                   date(MIN(date), '+7 days') AS resets_on
              FROM ai_usage_daily
             WHERE user_id = ? AND date >= ?
               AND (analyses_count > 0 OR hub_queries_count > 0 OR chat_count > 0
-                   OR diag_dismiss_count > 0 OR listen_count > 0)""",
+                   OR diag_dismiss_count > 0 OR listen_count > 0
+                   OR dictado_seconds > 0)""",
         (user_id, window_start.isoformat()),
     ).fetchone()
     analyses = int(row["a"] or 0) if row else 0
@@ -393,6 +407,7 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
     chat = int(row["c"] or 0) if row else 0
     diag_dismiss = int(row["d"] or 0) if row else 0
     listens = int(row["l"] or 0) if row else 0
+    dictado_s = int(row["ds"] or 0) if row else 0
     resets_on = row["resets_on"] if row else None
 
     tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
@@ -407,6 +422,7 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
     # decir "no aplica". El frontend lo lee así: si listens_limit viene, la voz
     # se cobra de este cupo; si viene null, se cobra de chat.
     l_limit = limits.get("listens_per_week")
+    d_limit = limits.get("dictado_seconds_per_week")
 
     return {
         "tier": tier,
@@ -426,6 +442,11 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
         "listen_count": listens,
         "listens_limit": l_limit,       # None = no aplica (paga con fichas de chat)
         "listens_remaining": None if l_limit is None else max(0, l_limit - listens),
+        # Segundos de audio dictado. No se le muestran al usuario: es un techo
+        # de abuso, no una cuota de producto (ver LIMITS).
+        "dictado_seconds": dictado_s,
+        "dictado_seconds_limit": d_limit,
+        "dictado_seconds_remaining": None if d_limit is None else max(0, d_limit - dictado_s),
         "resets_on": resets_on,
         "window_starts_on": window_start.isoformat(),
         # Alias back-compat para callers viejos.
@@ -438,9 +459,18 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
 get_today_usage = get_current_usage
 
 
-def can_analyze(conn, user_id: int) -> tuple[bool, dict]:
-    """(allowed, usage_dict). Si False, el endpoint responde 429."""
-    usage = get_current_usage(conn, user_id)
+def can_analyze(conn, user_id: int, tier_override: str = None) -> tuple[bool, dict]:
+    """(allowed, usage_dict). Si False, el endpoint responde 429.
+
+    🔴 `tier_override` NO es opcional en la práctica: es la LENTE del asesor
+    (ver _tier_con_lente en main.py). Sin él, un asesor mirando la cuenta de un
+    cliente Free se mide contra el tope del CLIENTE —1 análisis por semana— y al
+    segundo recibe un cartel para que se pase a Pro, estando en el plan más caro
+    que vendemos.
+
+    Esta función no lo tenía y `can_chat`, su gemela, sí: por eso el chat
+    respetaba la lente y los análisis no. Faltaba en los tres llamadores."""
+    usage = get_current_usage(conn, user_id, tier_override=tier_override)
     return usage["analyses_remaining"] > 0, usage
 
 
@@ -731,3 +761,60 @@ def reserve_diag_dismiss(conn, user_id: int) -> tuple[bool, dict]:
         )
         ok = cur.rowcount > 0
     return ok, get_current_usage(conn, user_id)
+
+
+# ─── El presupuesto del micrófono ────────────────────────────────────────────
+# 🔴 POR QUÉ ESTO EXISTE, porque no es obvio y se decidió al revés primero.
+#
+# Dictar no gasta consulta: es una forma de ESCRIBIR, y la consulta se cobra
+# después, cuando el texto se manda. Eso sigue siendo cierto y está bien.
+#
+# Pero "no gasta cuota" se había leído como "no necesita ningún techo", y el
+# endpoint quedó siendo el único que le habla a un proveedor pago SIN nada que
+# lo limite salvo un tope por minuto guardado en la memoria del proceso — que
+# se esquiva cambiando de red. El tope de BYTES no ayudaba: OpenAI cobra por
+# MINUTO y en 4 MB entran 17 minutos de audio comprimido (ver ai/oido.py).
+# Medido sobre esos números: US$126 por hora desde una cuenta gratis.
+#
+# El techo va en SEGUNDOS DE AUDIO porque es la unidad en la que nos facturan.
+# Contar llamadas no sirve: una sola llamada puede traer una hora.
+#
+# No es una cuota de producto y no se le muestra al usuario: 1800 segundos son
+# sesenta preguntas dictadas de treinta segundos en una semana. Quien llega ahí
+# no está usando el micrófono, lo está exprimiendo.
+
+
+def dictado_budget(tier: str):
+    """Cuántos segundos de audio por semana tiene ese tier, o None si no tiene
+    techo (ningún tier hoy: None sería un agujero, no un premio)."""
+    return LIMITS.get(tier, {}).get("dictado_seconds_per_week")
+
+
+def puede_dictar(conn, user_id: int, tier_override: str = None) -> tuple[bool, dict]:
+    """(permitido, usage). Se mira ANTES de llamar al proveedor.
+
+    Es un chequeo y no una reserva a propósito: cuánto dura el audio recién se
+    sabe DESPUÉS de transcribirlo, así que no hay nada que reservar. El peor
+    caso es que alguien con el presupuesto casi lleno cuele una llamada más —
+    acotada por el tope de bytes de su formato, que es justamente para qué
+    está ese tope.
+    """
+    usage = get_current_usage(conn, user_id, tier_override=tier_override)
+    quedan = usage.get("dictado_seconds_remaining")
+    return (quedan is None or quedan > 0), usage
+
+
+def record_dictado_seconds(conn, user_id: int, segundos: int) -> None:
+    """Suma los segundos que se facturaron. Se llama DESPUÉS de transcribir,
+    con la duración que devolvió el proveedor."""
+    if segundos <= 0:
+        return
+    today = date.today().isoformat()
+    with conn:
+        conn.execute(
+            """INSERT INTO ai_usage_daily (user_id, date, dictado_seconds, cost_usd_cents)
+               VALUES (?, ?, ?, 0)
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 dictado_seconds = ai_usage_daily.dictado_seconds + ?""",
+            (user_id, today, int(segundos), int(segundos)),
+        )

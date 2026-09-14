@@ -22,6 +22,7 @@ exactamente lo que hay que verificar.
 
 import os
 import sqlite3
+import re
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -326,3 +327,98 @@ class LaReservaDeAnalisisEsAtomicaTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─── La lente del asesor en el cupo de ANÁLISIS ──────────────────────────────
+# 🔴 TERCERA VEZ QUE SE OLVIDA ESTA REGLA, y la primera que queda un test.
+#
+# Cuando un asesor entra al Rendi de un cliente, el usuario efectivo es el
+# CLIENTE. Si ese cliente es Free, servirle su tier a secas le da al ASESOR
+# —que está en el plan más caro— la experiencia del más barato. `_tier_con_lente`
+# existe para eso y su propio comentario avisa que la regla "ya se había
+# olvidado dos veces".
+#
+# El botón ✦ la olvidó de nuevo, y de la forma más difícil de ver: la RESERVA
+# la pasaba y el CHEQUEO PREVIO no, en la misma línea donde el chat sí la
+# pasaba. Efecto: al segundo ✦ de la semana el asesor comía "te quedaste sin
+# análisis (1/1)" y un cartel para que se pase a Pro.
+#
+# `can_analyze` ni siquiera aceptaba el parámetro que `can_chat` ya tenía. Los
+# tres llamadores estaban sin él.
+
+class LaLenteDelAsesorEnElCupoDeAnalisisTest(unittest.TestCase):
+    def setUp(self):
+        self.conn = main.get_db()
+        tag = os.urandom(5).hex()
+        self.asesor = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved,tier) VALUES (?,?,1,'advisor')",
+            ("asesor-boton-%s@rendi.test" % tag, "x")).lastrowid
+        self.cliente = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved,tier) VALUES (?,?,1,'free')",
+            ("cliente-boton-%s@rendi.test" % tag, "x")).lastrowid
+        self.conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.asesor, self.cliente))
+        self.conn.execute(
+            """INSERT INTO advisor_clients (advisor_uid, client_uid, link_type,
+                   permission, status, label) VALUES (?,?,'managed','read_write','active','Juan P')""",
+            (self.asesor, self.cliente))
+        self.conn.commit()
+
+    def tearDown(self):
+        try:
+            self.conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=?", (self.asesor,))
+            self.conn.execute("DELETE FROM ai_usage_daily WHERE user_id IN (?,?)",
+                              (self.asesor, self.cliente))
+            self.conn.execute("UPDATE users SET managed_by=NULL WHERE id=?", (self.cliente,))
+            self.conn.execute("DELETE FROM users WHERE id IN (?,?)", (self.asesor, self.cliente))
+            self.conn.commit()
+            self.conn.close()
+        except Exception:
+            pass
+
+    def test_el_cupo_del_asesor_NO_es_el_del_cliente_free(self):
+        """Con el único análisis del cliente gastado, el asesor tiene que poder
+        seguir: su tope es el de la lente (60), no el del cliente (1)."""
+        from ai import quota
+        limite_cliente = quota.LIMITS["free"]["analyses_per_week"]
+        self.conn.execute(
+            "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, date('now'), ?)",
+            (self.cliente, limite_cliente))
+        self.conn.commit()
+
+        # Sin lente (el cliente mirando lo suyo): se quedó sin análisis.
+        ok_cliente, _ = quota.can_analyze(self.conn, self.cliente)
+        self.assertFalse(ok_cliente, "el cliente Free ya gastó su análisis")
+
+        # Con lente: el mismo contador, otro techo.
+        ok_asesor, uso = quota.can_analyze(self.conn, self.cliente, tier_override="pro")
+        self.assertTrue(ok_asesor,
+                        "el asesor se está midiendo contra el tope del cliente")
+        self.assertEqual(uso["analyses_limit"], quota.LIMITS["pro"]["analyses_per_week"])
+
+    def test_el_chequeo_previo_y_la_reserva_miden_LO_MISMO(self):
+        """El bug no era que faltara la lente: era que estaba en uno de los dos
+        pasos. Un chequeo previo más estricto que la reserva rebota turnos que
+        la reserva habría dejado pasar, y nadie lo ve en los contadores."""
+        from ai import quota
+        self.conn.execute(
+            "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, date('now'), ?)",
+            (self.cliente, quota.LIMITS["free"]["analyses_per_week"]))
+        self.conn.commit()
+        previo, _ = quota.can_analyze(self.conn, self.cliente, tier_override="pro")
+        reserva, _ = quota.reserve_analysis(self.conn, self.cliente, tier_override="pro")
+        self.assertEqual(previo, reserva,
+                         "el chequeo previo y la reserva no coinciden: "
+                         "previo=%s reserva=%s" % (previo, reserva))
+
+    def test_los_TRES_llamadores_le_pasan_la_lente(self):
+        """El guard de propagación. `can_analyze` se llama en tres lugares y el
+        arreglo sólo vale si está en los tres — arreglar uno de N es como se
+        generó toda la deuda que venimos limpiando."""
+        import inspect
+        fuente = inspect.getsource(main)
+        llamadas = re.findall(r"quota\.can_analyze\(([^)]*)\)", fuente)
+        self.assertEqual(len(llamadas), 3,
+                         "cambió la cantidad de llamadores: %r" % (llamadas,))
+        for c in llamadas:
+            self.assertIn("tier_override", c,
+                          "este llamador se quedó sin lente: can_analyze(%s)" % c)

@@ -369,6 +369,7 @@ CREATE TABLE IF NOT EXISTS ai_usage_daily (
   chat_count bigint NOT NULL DEFAULT 0,
   diag_dismiss_count bigint NOT NULL DEFAULT 0,
   listen_count bigint NOT NULL DEFAULT 0,
+  dictado_seconds bigint NOT NULL DEFAULT 0,
   cost_usd_cents bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, date)
 );
@@ -386,6 +387,8 @@ ALTER TABLE ai_usage_daily ADD COLUMN IF NOT EXISTS chat_count bigint DEFAULT 0;
 ALTER TABLE ai_usage_daily ADD COLUMN IF NOT EXISTS diag_dismiss_count bigint DEFAULT 0;
 
 ALTER TABLE ai_usage_daily ADD COLUMN IF NOT EXISTS listen_count bigint DEFAULT 0;
+
+ALTER TABLE ai_usage_daily ADD COLUMN IF NOT EXISTS dictado_seconds bigint DEFAULT 0;
 
 ALTER TABLE ai_usage_daily ADD COLUMN IF NOT EXISTS cost_usd_cents bigint DEFAULT 0;
 

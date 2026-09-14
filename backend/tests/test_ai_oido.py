@@ -156,7 +156,7 @@ class LoQueNoSeMandaAOpenAITest(unittest.TestCase):
         with self.assertRaises(oido.AudioInvalido):
             oido.escuchar(b"", "audio/webm")
         with self.assertRaises(oido.AudioInvalido):
-            oido.escuchar(b"x" * (oido.MAX_BYTES + 1), "audio/webm")
+            oido.escuchar(b"x" * (oido.tope_de("webm") + 1), "audio/webm")
 
 
 class ElEndpointTest(unittest.TestCase):
@@ -186,7 +186,7 @@ class ElEndpointTest(unittest.TestCase):
             files={"audio": ("d.webm", io.BytesIO(audio), ct)})
 
     def test_devuelve_el_texto(self):
-        with patch.object(oido, "escuchar", return_value="¿Cómo viene mi cartera?"):
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("¿Cómo viene mi cartera?", 4)):
             r = self._dictar()
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["texto"], "¿Cómo viene mi cartera?")
@@ -195,7 +195,7 @@ class ElEndpointTest(unittest.TestCase):
         """Dictar es una forma de ESCRIBIR. La consulta se cobra después, al
         mandar el texto al chat, igual que si lo hubiera tipeado. Si esto
         empieza a cobrar, el usuario paga dos veces la misma pregunta."""
-        with patch.object(oido, "escuchar", return_value="hola"):
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("hola", 4)):
             self._dictar()
         fila = self.conn.execute(
             "SELECT COALESCE(SUM(chat_count),0) c, COALESCE(SUM(analyses_count),0) a "
@@ -207,7 +207,7 @@ class ElEndpointTest(unittest.TestCase):
         """Devuelve el texto y ahí termina. Mandarlo lo decide el usuario
         después de leer lo que entendimos — un número mal escuchado en
         "compré a sesenta y cinco mil" se carga en la cartera y queda."""
-        with patch.object(oido, "escuchar", return_value="compré 100 de BTC a 65.000"), \
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("compré 100 de BTC a 65.000", 4)), \
              patch.object(main, "_get_anthropic_client") as llm:
             r = self._dictar()
         self.assertEqual(r.status_code, 200)
@@ -217,7 +217,7 @@ class ElEndpointTest(unittest.TestCase):
         """Texto vacío NO es un error: el frontend muestra "no se escuchó
         nada" y deja reintentar o escribir. Un 500 ahí sería un cartel rojo
         por haber tocado el micrófono sin hablar."""
-        with patch.object(oido, "escuchar", return_value=""):
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("", 4)):
             r = self._dictar()
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["texto"], "")
@@ -229,7 +229,7 @@ class ElEndpointTest(unittest.TestCase):
 
     def test_audio_enorme_no_llega_al_proveedor(self):
         with patch.object(oido, "escuchar") as esc:
-            r = self._dictar(audio=b"x" * (oido.MAX_BYTES + 10))
+            r = self._dictar(audio=b"x" * (oido.tope_de("webm") + 10))
         self.assertEqual(r.status_code, 413)
         esc.assert_not_called()
 
@@ -260,7 +260,7 @@ class ElEndpointTest(unittest.TestCase):
             self.conn.execute(
                 "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                 (self.uid, "Balanz", "ARS"))
-        with patch.object(oido, "escuchar", return_value="ok") as esc:
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("ok", 4)) as esc:
             self._dictar()
         pista = esc.call_args.kwargs["pista"]
         self.assertIn("NVDA", pista, "la cartera del usuario no llegó a la pista")
@@ -335,14 +335,14 @@ class ElDictadoDevuelveLaSugerenciaTest(ElEndpointTest):
 
     def test_a_FREE_le_llega_la_sugerencia(self):
         self._con_tier("free")
-        with patch.object(oido, "escuchar", return_value="cómo viene mi cartera en general"):
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("cómo viene mi cartera en general", 4)):
             r = self._dictar()
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["sugerida"]["pregunta"], "¿Cómo está mi portfolio en general?")
 
     def test_a_PLUS_tambien(self):
         self._con_tier("plus")
-        with patch.object(oido, "escuchar", return_value="estoy muy concentrado"):
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("estoy muy concentrado", 4)):
             r = self._dictar()
         self.assertIn("sugerida", r.json())
 
@@ -350,13 +350,13 @@ class ElDictadoDevuelveLaSugerenciaTest(ElEndpointTest):
         """Pro puede mandar lo que quiera: ofrecerle una de doce sería
         recortarle lo que paga."""
         self._con_tier("pro")
-        with patch.object(oido, "escuchar", return_value="cómo viene mi cartera en general"):
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("cómo viene mi cartera en general", 4)):
             r = self._dictar()
         self.assertNotIn("sugerida", r.json())
 
     def test_si_ya_coincide_exacto_no_hay_nada_que_confirmar(self):
         self._con_tier("free")
-        with patch.object(oido, "escuchar", return_value="¿Cómo está mi portfolio en general?"):
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("¿Cómo está mi portfolio en general?", 4)):
             r = self._dictar()
         self.assertNotIn("sugerida", r.json())
 
@@ -364,7 +364,7 @@ class ElDictadoDevuelveLaSugerenciaTest(ElEndpointTest):
         """Lo más valioso del micrófono para Free. Si esto se emparejara con
         una pregunta, se rompería la única cosa que ya les andaba."""
         self._con_tier("free")
-        with patch.object(oido, "escuchar", return_value="compré 100 dólares de bitcoin a 65.000"):
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("compré 100 dólares de bitcoin a 65.000", 4)):
             r = self._dictar()
         self.assertNotIn("sugerida", r.json())
         self.assertIn("65.000", r.json()["texto"])
@@ -372,3 +372,85 @@ class ElDictadoDevuelveLaSugerenciaTest(ElEndpointTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ElTechoDeGastoDelMicrofonoTest(ElEndpointTest):
+    """🔴 EL TOPE DE BYTES NO ERA UN TOPE DE PLATA.
+
+    OpenAI cobra por MINUTO, y cuántos bytes entran en un minuto cambia veinte
+    veces de un formato a otro: con un tope único de 4 MB, una sola llamada
+    podía traer 17 minutos de audio comprimido en vez de 30 segundos. Sumado a
+    que dictar no gastaba cuota de ninguna clase, la cuenta daba US$126 por
+    hora desde una cuenta gratis.
+
+    Estos tests son la guardia de las dos mitades del arreglo: el tope por
+    formato y el presupuesto semanal de SEGUNDOS, que es la unidad real.
+    """
+
+    def test_a_los_comprimidos_se_les_pide_mucho_menos_que_a_los_crudos(self):
+        # Un wav de 30 s pesa megas de verdad; un opus de 30 s, kilobytes.
+        # Darles el mismo tope es darle al comprimido 17 minutos de aire.
+        self.assertLess(oido.tope_de("webm"), oido.tope_de("wav"))
+        self.assertEqual(oido.tope_de("webm"), oido.MAX_BYTES_COMPRIMIDO)
+
+    def test_un_comprimido_pasado_de_tope_rebota_con_413(self):
+        r = self._dictar(audio=b"x" * (oido.tope_de("webm") + 10))
+        self.assertEqual(r.status_code, 413, r.text)
+
+    def test_el_archivo_grande_NO_se_levanta_entero_a_memoria(self):
+        """Se lee el tope + 1 byte, no lo que hayan mandado.
+
+        Con 20 pedidos por minuto permitidos, `read()` a secas son veinte
+        archivos gigantes en RAM. Se mide pidiéndole al archivo que registre
+        con qué tamaño lo leyeron.
+        """
+        pedidos = []
+        real = io.BytesIO(b"x" * (oido.tope_de("webm") + 10))
+
+        class Espia(io.BytesIO):
+            def read(self, n=-1):
+                pedidos.append(n)
+                return super().read(n)
+
+        espia = Espia(real.getvalue())
+        self.client.post("/api/ai/dictado",
+                         headers={"Authorization": "Bearer %s" % self.token},
+                         files={"audio": ("d.webm", espia, "audio/webm")})
+        self.assertTrue(pedidos, "nadie leyó el archivo")
+        self.assertTrue(all(n is not None and n > 0 for n in pedidos),
+                        "se leyó sin límite: %r" % pedidos)
+
+    def test_se_anotan_los_SEGUNDOS_que_dijo_el_proveedor(self):
+        # No los que pesa el archivo ni los que prometió el navegador: los que
+        # nos facturan.
+        with patch.object(oido, "escuchar", return_value=oido.Transcripcion("hola", 17)):
+            self._dictar()
+        fila = self.conn.execute(
+            "SELECT COALESCE(SUM(dictado_seconds),0) AS s FROM ai_usage_daily WHERE user_id=?",
+            (self.uid,)).fetchone()
+        self.assertEqual(int(fila["s"]), 17)
+
+    def test_con_el_presupuesto_gastado_no_se_llama_al_proveedor(self):
+        """Y sobre todo: NO se llama a OpenAI. Un 429 que igual paga la llamada
+        no es un techo de gasto, es un cartel."""
+        from ai import quota
+        # El tope se lee del plan REAL del usuario de prueba, no del que uno
+        # supone: escribir "free" acá dejaba el test en verde sin haber
+        # llenado nada (el usuario era de otro plan y el techo era el doble).
+        tope = quota.dictado_budget(quota.get_tier(self.conn, self.uid))
+        self.conn.execute(
+            "INSERT INTO ai_usage_daily (user_id, date, dictado_seconds) VALUES (?, date('now'), ?)",
+            (self.uid, tope))
+        self.conn.commit()
+        with patch.object(oido, "escuchar") as esc:
+            r = self._dictar()
+        self.assertEqual(r.status_code, 429, r.text)
+        esc.assert_not_called()
+
+    def test_el_techo_se_mide_en_segundos_y_no_en_llamadas(self):
+        """Contar llamadas deja pasar una llamada de una hora — que es
+        exactamente el agujero que esto tapa."""
+        from ai import quota
+        for t in ("free", "plus", "pro", "advisor", "admin"):
+            self.assertIsNotNone(quota.dictado_budget(t),
+                                 "%s se quedó sin techo" % t)

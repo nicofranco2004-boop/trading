@@ -7,6 +7,34 @@ from unittest.mock import patch
 
 from ai import quota
 
+# ─── La tabla de uso, UNA sola vez ───────────────────────────────────────────
+# Estaba escrita a mano DOS veces en este archivo, y encima incompleta en una
+# de las dos. Cada columna nueva de ai_usage_daily (chat_count, después
+# diag_dismiss_count, después listen_count, después dictado_seconds) había que
+# copiarla en los dos lados, y olvidarse de uno no da un error que se entienda:
+# da "no such column" repetido en 19 tests que no hablan de esa columna.
+#
+# Acá va una sola vez y las dos fixtures la usan. Sigue siendo una copia de lo
+# que arma init_db —este archivo prueba quota.py solo, sin levantar la app, y
+# eso es lo que lo hace rápido— así que el test de abajo compara esta lista
+# contra las columnas que quota.py realmente lee, y se pone rojo con el nombre
+# de la que falta en vez de con 19 errores mudos.
+DDL_AI_USAGE = """
+        CREATE TABLE ai_usage_daily (
+            user_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            analyses_count INTEGER DEFAULT 0,
+            hub_queries_count INTEGER DEFAULT 0,
+            chat_count INTEGER NOT NULL DEFAULT 0,
+            diag_dismiss_count INTEGER NOT NULL DEFAULT 0,
+            listen_count INTEGER NOT NULL DEFAULT 0,
+            dictado_seconds INTEGER NOT NULL DEFAULT 0,
+            cost_usd_cents INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, date)
+        );
+"""
+
+
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -21,18 +49,7 @@ def _make_db():
             is_admin INTEGER DEFAULT 0,
             tier TEXT
         );
-        CREATE TABLE ai_usage_daily (
-            user_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            analyses_count INTEGER DEFAULT 0,
-            hub_queries_count INTEGER DEFAULT 0,
-            chat_count INTEGER NOT NULL DEFAULT 0,
-            diag_dismiss_count INTEGER NOT NULL DEFAULT 0,
-            listen_count INTEGER NOT NULL DEFAULT 0,
-            cost_usd_cents INTEGER DEFAULT 0,
-            PRIMARY KEY (user_id, date)
-        );
-    """)
+    """ + DDL_AI_USAGE)
     # Cuatro users: 1=admin, 2=free, 3=free (sin uso aún), 4=pro (admin con override)
     conn.executescript("""
         INSERT INTO users (id, email, is_admin, tier) VALUES
@@ -98,14 +115,7 @@ def test_get_tier_no_users_table():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     # Solo creamos ai_usage_daily, no users
-    conn.execute("""
-        CREATE TABLE ai_usage_daily (
-            user_id INTEGER, date TEXT, analyses_count INTEGER DEFAULT 0,
-            hub_queries_count INTEGER DEFAULT 0, chat_count INTEGER NOT NULL DEFAULT 0,
-            cost_usd_cents INTEGER DEFAULT 0,
-            PRIMARY KEY (user_id, date)
-        );
-    """)
+    conn.executescript(DDL_AI_USAGE)
     assert quota.get_tier(conn, 1) == "free"
 
 
@@ -436,3 +446,19 @@ def test_can_diag_dismiss():
     quota.reserve_diag_dismiss(conn, 2)
     allowed2, _ = quota.can_diag_dismiss(conn, 2)
     assert not allowed2
+
+
+def test_la_tabla_de_prueba_tiene_todo_lo_que_quota_lee():
+    """El guard de la copia: si quota.py empieza a leer una columna que esta
+    fixture no tiene, este test la nombra. Sin él, el síntoma son 19 tests
+    ajenos fallando con "no such column" y hay que ir a buscar cuál es."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, is_admin INTEGER DEFAULT 0, tier TEXT);")
+    conn.executescript(DDL_AI_USAGE)
+    conn.execute("INSERT INTO users (id, email) VALUES (1, 'x@y.z')")
+    # Si falta una columna, esto revienta con su nombre adentro.
+    u = quota.get_current_usage(conn, 1)
+    # Y que estén los contadores que hoy existen, para que sacar uno se note.
+    for k in ("analyses_count", "chat_count", "listen_count", "dictado_seconds"):
+        assert k in u, k
