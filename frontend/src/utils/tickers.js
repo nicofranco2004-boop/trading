@@ -331,7 +331,8 @@ export const US_SEARCH = [
 // Los nombres de mercado (Bonar / Global) los distinguen solos, y además ya
 // eran los que usaba AO28/AO29 acá abajo y la lista de búsqueda más abajo.
 export const BONDS_AR_SOV_USD = [
-  { s: 'AL29', n: 'Argentina 2029 (USD ley local)' }  // ver la nota de arriba: 'Bonar 2029' ya lo usa AO29,
+  // AL29 se queda como 'Argentina': 'Bonar 2029' ya lo usa AO29, que es OTRO bono.
+  { s: 'AL29', n: 'Argentina 2029 (USD ley local)' },
   { s: 'AL30', n: 'Bonar 2030 (USD ley local)' },
   { s: 'AL35', n: 'Bonar 2035 (USD ley local)' },
   { s: 'AE38', n: 'Bonar 2038 (USD ley local)' },
