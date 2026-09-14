@@ -31406,6 +31406,122 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     })
 
 
+# ─── El micrófono: pasar a texto lo que el usuario dijo ──────────────────────
+# El espejo de la voz. Aquél convierte la respuesta de Rendi en audio; éste
+# convierte la pregunta del usuario en texto.
+#
+# NO COBRA NADA, y es a propósito: dictar es una forma de ESCRIBIR. La consulta
+# se cobra después, cuando el texto se manda al chat, exactamente igual que si
+# lo hubiera tipeado. Cobrar el dictado aparte necesitaría un tercer contador
+# para un costo que es ruido: US$0,001 contra los US$0,021 de la respuesta.
+#
+# NO GUARDA EL AUDIO. Entra, se manda a OpenAI, vuelve texto y se descarta. No
+# hay cache (nadie dicta dos veces lo mismo) ni queda nada en disco.
+#
+# Y NO MANDA NADA AL CHAT: devuelve el texto y ahí termina. Que se mande lo
+# decide el usuario tocando enviar, después de leer lo que entendimos. Un
+# número mal escuchado en "compré a sesenta y cinco mil" se carga en la cartera
+# y queda; un toque de más es barato al lado de eso.
+@app.post("/api/ai/dictado")
+def ai_dictado(request: Request,
+               audio: UploadFile = File(...),
+               uid: int = Depends(get_effective_user)):
+    """Recibe el audio de una pregunta hablada y devuelve el texto.
+
+    Va SIN `async` a propósito, y esto lo cazó un guard del repo
+    (tests/test_endpoints_no_bloquean.py): un endpoint `async` que toca la
+    base congela la app entera mientras corre, porque se queda con el único
+    hilo que atiende a todos. Sin el `async`, FastAPI lo manda al threadpool y
+    puede hacer trabajo bloqueante tranquilo — que es lo que este hace dos
+    veces: la consulta de la cartera y la espera al proveedor.
+
+    Por eso el archivo se lee con `audio.file.read()` (sincrónico) y no con
+    `await audio.read()`."""
+    from ai import oido
+
+    if not oido.enabled():
+        raise HTTPException(503, detail={
+            "error": "dictado_unavailable",
+            "message": "El micrófono no está disponible en este momento.",
+        })
+
+    # 20/min: alguien dictando preguntas no pasa de una cada pocos segundos.
+    # Es el techo del gasto con OpenAI si alguien automatiza el endpoint.
+    _check_rate_limit(request, max_calls=20, window_seconds=60, suffix=f"ai_dictado:{uid}")
+
+    crudo = audio.file.read()
+    try:
+        # El content_type lo dice el navegador y podría venir cualquier cosa:
+        # `extension_de` sólo deja pasar los de la lista cerrada.
+        ext = oido.extension_de(audio.content_type or "")
+    except oido.AudioInvalido as ex:
+        raise HTTPException(415, detail={
+            "error": "dictado_formato",
+            "message": "Ese formato de audio no lo puedo leer.",
+        }) from ex
+    if not crudo:
+        raise HTTPException(400, detail={
+            "error": "dictado_vacio",
+            "message": "No llegó audio. Probá de nuevo.",
+        })
+    if len(crudo) > oido.MAX_BYTES:
+        raise HTTPException(413, detail={
+            "error": "dictado_largo",
+            "message": "La grabación es muy larga. Probá con una pregunta más corta.",
+        })
+
+    # La pista de vocabulario sale de la cartera del usuario: los activos que
+    # TIENE son los que va a nombrar. Ver ai/oido.py — el tope del prompt de
+    # whisper obliga a elegir, y ésta es la elección que sirve.
+    pista = ""
+    try:
+        conn = get_db()
+        try:
+            # `positions` sólo guarda lo ABIERTO (lo cerrado se va a `operations`),
+            # así que no hay ninguna columna de cerrado que filtrar. La primera
+            # versión de esta consulta filtraba por un `is_closed` inexistente y
+            # reventaba en TODOS los pedidos — silenciosamente, porque el except
+            # de abajo la tapaba y seguía sin pista. Se vio en el log.
+            activos = conn.execute(
+                "SELECT DISTINCT asset FROM positions WHERE user_id=? AND is_cash=0 "
+                "LIMIT 40", (uid,)).fetchall()
+            casas = conn.execute(
+                "SELECT DISTINCT name FROM brokers WHERE user_id=? LIMIT 20", (uid,)).fetchall()
+        finally:
+            conn.close()
+        _tickers = [r["asset"] for r in activos]
+        _brokers = [r["name"] for r in casas]
+        pista = oido.pista(_tickers, _brokers)
+    except Exception as ex:
+        # Sin pista transcribe igual, sólo que los códigos y los nombres de
+        # broker salen peor. No es motivo para dejar al usuario sin micrófono.
+        log.warning("dictado: no se pudo armar la pista uid=%s: %s", uid, ex)
+        pista, _tickers, _brokers = oido.pista(), [], []
+
+    try:
+        # El mismo vocabulario va dos veces: como PISTA antes de transcribir, y
+        # como corrección después — la pista no siempre gana contra un homófono
+        # común ("Balanz" volvía "Balance" con la pista puesta).
+        texto = oido.escuchar(crudo, audio.content_type or "", pista=pista,
+                              tickers=_tickers, brokers=_brokers)
+    except oido.AudioInvalido as ex:
+        raise HTTPException(400, detail={
+            "error": "dictado_invalido",
+            "message": "No pude leer esa grabación. Probá de nuevo.",
+        }) from ex
+    except Exception as ex:
+        log.error("dictado: falló la transcripción uid=%s: %s", uid, str(ex)[:200])
+        raise HTTPException(503, detail={
+            "error": "dictado_fallo",
+            "message": "No pude pasar tu audio a texto. Probá de nuevo, o escribilo.",
+        }) from ex
+
+    log.info("dictado uid=%s bytes=%d fmt=%s chars=%d", uid, len(crudo), ext, len(texto))
+    # `texto` vacío = no se escuchó nada. Es una respuesta legítima, no un
+    # error: el frontend muestra "no se escuchó nada" y deja reintentar.
+    return {"texto": texto, "segundos_max": oido.MAX_SEGUNDOS}
+
+
 # ─── AI memory — ai_user_facts (Ola 3-L) ─────────────────────────────────────
 # CRUD para "hechos" que el user le aclara al bot y deben persistir entre
 # sesiones. El bot los lee en /api/ai/chat al construir el system prompt.
