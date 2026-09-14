@@ -53,6 +53,10 @@ export function useMicrofono({ onTexto, onAntesDeGrabar, deshabilitado, compacto
 function Boton({ d, deshabilitado, compacto }) {
   const lado = compacto ? 'w-[30px] h-[30px]' : 'w-[34px] h-[34px]'
   const ocupado = d.estado === 'transcribiendo'
+  // EL ÁREA DE TOQUE ES MÁS GRANDE QUE EL BOTÓN. Medido en 375px: el círculo
+  // mide 30px, y el mínimo para un dedo son 44. Agrandar el círculo lo dejaba
+  // desparejo al lado del de enviar, que mide 28; así que crece el área y no
+  // el dibujo — el `after` invisible es la zona que responde al toque.
   return (
     <button
       type="button"
@@ -60,7 +64,8 @@ function Boton({ d, deshabilitado, compacto }) {
       disabled={deshabilitado || ocupado}
       aria-label={ocupado ? 'Pasando a texto…' : 'Hablarle a Rendi'}
       title={ocupado ? 'Pasando a texto…' : 'Hablarle a Rendi'}
-      className={`${lado} rounded-full grid place-items-center flex-none border transition-colors
+      className={`${lado} relative rounded-full grid place-items-center flex-none border transition-colors
+                  after:absolute after:content-[''] after:-inset-2 sm:after:inset-0
                   border-data-violet/40 bg-data-violet/[0.12] text-data-violet
                   hover:bg-data-violet/20 hover:border-data-violet/60
                   disabled:border-line-2 disabled:bg-transparent disabled:text-ink-3`}
@@ -97,10 +102,13 @@ function PanelGrabando({ d }) {
           entera de que no lo escuchó recién cuando vuelve el texto vacío. */}
       {!pidiendo && (
         <>
-          <div className="flex items-center gap-[2.5px] h-[22px] my-2" aria-hidden="true">
+          {/* Las barritas OCUPAN EL ANCHO. Con ancho fijo quedaban en 108px de
+              los 303 disponibles, amontonadas a la izquierda: se leían como
+              puntitos y no como un medidor. */}
+          <div className="flex items-center justify-between gap-[2px] h-[22px] my-2" aria-hidden="true">
             {d.niveles.map((n, i) => (
               <i key={i}
-                 className={`block w-[3px] rounded-full transition-[height] duration-75
+                 className={`block flex-1 min-w-[2px] max-w-[5px] rounded-full transition-[height] duration-75
                              ${n > 0.12 ? 'bg-data-violet' : 'bg-line-3'}`}
                  style={{ height: `${Math.max(3, Math.round(n * 22))}px` }} />
             ))}
@@ -117,7 +125,7 @@ function PanelGrabando({ d }) {
           type="button"
           onClick={d.terminar}
           disabled={pidiendo}
-          className="flex-1 h-9 rounded-full inline-flex items-center justify-center gap-1.5
+          className="flex-1 h-11 sm:h-9 rounded-full inline-flex items-center justify-center gap-1.5
                      bg-data-violet text-bg-0 text-[12.5px] font-semibold
                      disabled:opacity-50 disabled:cursor-default transition-opacity"
         >
@@ -126,7 +134,7 @@ function PanelGrabando({ d }) {
         <button
           type="button"
           onClick={d.cancelar}
-          className="h-9 px-3.5 rounded-full border border-line-2 text-[12.5px] text-ink-2
+          className="h-11 sm:h-9 px-4 sm:px-3.5 rounded-full border border-line-2 text-[12.5px] text-ink-2
                      hover:text-ink-0 hover:border-ink-3 transition-colors"
         >
           Cancelar
@@ -160,14 +168,16 @@ function Sugerida({ s, onAceptar, onDescartar }) {
         <button
           type="button"
           onClick={onAceptar}
-          className="rounded-full bg-data-violet text-bg-0 text-[12px] font-semibold px-3.5 py-1.5"
+          className="rounded-full bg-data-violet text-bg-0 text-[12px] font-semibold
+                     px-4 h-11 sm:h-auto sm:px-3.5 sm:py-1.5"
         >
           Sí, esa
         </button>
         <button
           type="button"
           onClick={onDescartar}
-          className="rounded-full border border-line-2 text-[12px] text-ink-2 px-3.5 py-1.5
+          className="rounded-full border border-line-2 text-[12px] text-ink-2
+                     px-4 h-11 sm:h-auto sm:px-3.5 sm:py-1.5
                      hover:text-ink-0 hover:border-ink-3 transition-colors"
         >
           No, otra cosa

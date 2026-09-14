@@ -168,6 +168,34 @@ describe('reintentar después de un error', () => {
   })
 })
 
+describe('en el celular se tiene que poder tocar', () => {
+  // MEDIDO en 375px: el círculo del micrófono daba 30px y los botones del
+  // panel 36 de alto. El mínimo para un dedo son 44. No es un detalle de
+  // estética: el micrófono en el teléfono es EL caso de uso —caminando,
+  // manejando— y un blanco de 30px se falla.
+  const boton = () => readFileSync(
+    new URL('../components/voz/BotonMicrofono.jsx', import.meta.url), 'utf8')
+
+  it('el micrófono tiene área de toque aunque el círculo sea chico', () => {
+    // Agrandar el círculo lo dejaba desparejo al lado del de enviar (28px),
+    // así que crece el ÁREA y no el dibujo.
+    expect(boton()).toMatch(/after:-inset-2/)
+  })
+
+  it('los botones del panel miden 44 en celular', () => {
+    const src = boton()
+    // h-11 = 44px en celular, h-9 = 36 de sm: para arriba, donde hay mouse.
+    expect(src).toMatch(/h-11 sm:h-9/)
+    expect(src).not.toMatch(/className="flex-1 h-9 /)
+  })
+
+  it('el medidor ocupa el ancho y no queda amontonado', () => {
+    // Con ancho fijo daba 108px de los 303 disponibles: se leía como puntitos
+    // y no como un medidor, que es justo lo único que prueba que toma audio.
+    expect(boton()).toMatch(/flex-1 min-w-\[2px\]/)
+  })
+})
+
 describe('el tope de grabación', () => {
   it('son 30 segundos, los mismos que el servidor', () => {
     // Si los dos números se separan, el navegador manda algo que el servidor
