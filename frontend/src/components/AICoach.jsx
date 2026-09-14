@@ -27,6 +27,7 @@ import { Link } from 'react-router-dom'
 import { useVoz } from '../contexts/VozContext'
 import { useMicrofono } from './voz/BotonMicrofono'
 import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota, fechaLegible } from '../utils/cuotaTexto'
+import { usePegadoAlFondo } from '../hooks/usePegadoAlFondo'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
@@ -128,52 +129,12 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const [freeText, setFreeText] = useState('')
   // Usage: { chat_count, chat_limit, chat_remaining, resets_on }
   const [usage, setUsage] = useState(null)
-  const scrollRef = useRef(null)
-  // ¿el user está pegado al fondo? Solo auto-scrolleamos si sí (ver useEffect).
-  const stickToBottomRef = useRef(true)
-  // La posición sola no alcanza: el auto-scroll corre al llegar cada palabra y
-  // el aviso de que el usuario se movió llega un cuadro después, así que el
-  // tirón gana la carrera. Escuchamos también la INTENCIÓN (rueda o dedo).
-  const tomoElControlRef = useRef(false)
-  const tomarControlDelScroll = () => {
-    tomoElControlRef.current = true
-    stickToBottomRef.current = false
-  }
-  // Ya NO se aborta el stream al desmontar. Era justo el bug: irse a otra
-  // sección en medio de una respuesta la CANCELABA —y la ficha se cobraba
-  // igual—. Ahora el stream lo maneja el proveedor, que no se desmonta.
-
-  // La cuota que viene pegada a un error de cuota, para que el pie del chat
-  // muestre el número nuevo sin pedirlo otra vez.
-  useEffect(() => { if (usageDelError) setUsage(usageDelError) }, [usageDelError])
-
-  // "Corregir" del ConfirmBlock enfoca el input (evento global, sin drilling).
-  const freeInputRef = useRef(null)
-  useEffect(() => {
-    const onFocus = () => freeInputRef.current?.focus()
-    window.addEventListener('rendi:chat-focus', onFocus)
-    return () => window.removeEventListener('rendi:chat-focus', onFocus)
-  }, [])
-
-  // Cargar cuota inicial — solo lectura, sin gating front (el server tiene la
-  // verdad). Si falla, no rompemos UX — el server devolverá 429 si excede.
-  useEffect(() => {
-    let cancelled = false
-    api.get('/ai/usage').then(u => {
-      if (!cancelled) setUsage(u)
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [])
-
-  // Auto-scroll al final SOLO si el user está pegado al fondo. Durante el
-  // streaming los mensajes cambian en cada token; si el user scrolleó para
-  // arriba a leer el principio, NO lo forzamos abajo (antes cada token lo
-  // tiraba al final y no podía leer hasta que terminaba de escribir).
-  useEffect(() => {
-    if (scrollRef.current && stickToBottomRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [messages, loading])
+  // Seguir la respuesta mientras se escribe, sin arrastrar al que se fue para
+  // arriba a leer. El cómo vive en hooks/usePegadoAlFondo.js — acá estaba
+  // copiado igual que en la isla, y las dos copias fallaban igual: sólo
+  // escuchaban la rueda y el dedo, así que arrastrar la barra, el teclado y la
+  // INERCIA del dedo en el celular se seguían yendo al fondo solas.
+  const { ref: scrollRef, alFondo } = usePegadoAlFondo()
 
   // Auto-envío de pregunta pre-cargada (ej. botón ✦ "Analizar" de otra
   // pantalla). Se dispara una sola vez al montar, cuando ya hay snapshot.
@@ -202,8 +163,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   // En el uso normal el proveedor lo resuelve solo.
   function send(text) {
     if (!snapshot) return          // la página todavía está armando la foto
-    stickToBottomRef.current = true   // pregunta nueva → pegados al fondo
-    tomoElControlRef.current = false
+    alFondo()          // pregunta nueva → volvemos a seguirla
     trackEvent('ai_chat_sent', { is_freeform: !!(isPro || isAdmin), tier })
     const _q = (text || '').toLowerCase()
     if (_q.includes('s&p') || _q.includes('inflación') || _q.includes('inflacion')) {
@@ -308,15 +268,6 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       {/* Mensajes */}
       <div
         ref={scrollRef}
-        onScroll={(e) => {
-          const el = e.currentTarget
-          // pegado al fondo si está a menos de 80px del final
-          const abajo = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80
-          if (abajo) tomoElControlRef.current = false
-          stickToBottomRef.current = abajo && !tomoElControlRef.current
-        }}
-        onWheel={tomarControlDelScroll}
-        onTouchMove={tomarControlDelScroll}
         className={`overflow-y-auto px-4 py-3 space-y-4 ${
           messages.length === 0 && fullHeight
             ? ''                                     /* vacío: hero+chips juntos, sin estirar */

@@ -19,6 +19,7 @@ import { Volume2, VolumeX, X, Play, Pause, Send, Loader2, ArrowUpRight } from 'l
 import { Link, useLocation } from 'react-router-dom'
 import { useMicrofono } from './BotonMicrofono'
 import { useVoz, RATES } from '../../contexts/VozContext'
+import { usePegadoAlFondo } from '../../hooks/usePegadoAlFondo'
 
 // Preguntas de arranque: dos, cortas, y de las que ya están en la whitelist
 // del backend (si no, Free y Plus se comen un 403 al tocarlas).
@@ -55,7 +56,6 @@ export default function RendiMate() {
     thread, sending, paso, askError, sinCupo, ask,
   } = useVoz()
   const [texto, setTexto] = useState('')
-  const hiloRef = useRef(null)
 
   const hablando = status === 'playing'
   const preparando = status === 'preparing'
@@ -67,39 +67,12 @@ export default function RendiMate() {
   // esconder. Visto en pantalla, no deducido.
   const hayAudio = !!(current && (current.url || preparando))
 
-  // Auto-scroll SÓLO si el usuario está pegado al fondo. Si se fue para arriba
-  // a leer el principio mientras Rendi escribe, no se lo arrastra de vuelta:
-  // cada palabra nueva lo tiraba abajo y no podía leer hasta que terminaba.
-  // Mismo criterio (y mismos 80px) que el chat grande, que ya lo resolvía.
-  //
-  // ⚠️ Mirar la posición del scroll NO ALCANZA, y esto costó una prueba fallida:
-  // el auto-scroll corre apenas llega cada palabra, y el aviso de "el usuario
-  // se movió" llega DESPUÉS (el navegador lo manda en el cuadro siguiente).
-  // O sea que el tirón gana la carrera, y para cuando el aviso llega la barra
-  // ya está de nuevo abajo — así que "¿está abajo?" contesta que sí y todo
-  // sigue igual. Medido: subir a cero y a los 120 ms ya estaba en 691.
-  //
-  // Por eso además de la posición se escucha la INTENCIÓN: apenas la rueda o
-  // el dedo tocan el hilo, el usuario toma el control y no se lo suelta hasta
-  // que él mismo vuelva al fondo.
-  const pegadoAlFondoRef = useRef(true)
-  const tomoElControlRef = useRef(false)
-  const tomarControl = () => { tomoElControlRef.current = true; pegadoAlFondoRef.current = false }
-  const alScrollear = (e) => {
-    const el = e.currentTarget
-    const abajo = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80
-    if (abajo) tomoElControlRef.current = false     // volvió solo al fondo
-    pegadoAlFondoRef.current = abajo && !tomoElControlRef.current
-  }
-  useEffect(() => {
-    if (hiloRef.current && pegadoAlFondoRef.current) {
-      hiloRef.current.scrollTop = hiloRef.current.scrollHeight
-    }
-  }, [thread, hayAudio, askError, paso])
-  // Pregunta nueva → arrancamos pegados al fondo de nuevo.
-  useEffect(() => {
-    if (sending) { tomoElControlRef.current = false; pegadoAlFondoRef.current = true }
-  }, [sending])
+  // Seguir la respuesta mientras se escribe, sin arrastrar al que se fue para
+  // arriba a leer. El cómo vive en hooks/usePegadoAlFondo.js: acá estaba
+  // copiado igual que en el chat grande, y las dos copias fallaban igual.
+  const { ref: hiloRef, alFondo } = usePegadoAlFondo()
+  // Pregunta nueva → volvemos a seguirla, esté donde esté el usuario.
+  useEffect(() => { if (sending) alFondo() }, [sending, alFondo])
 
   // ESTE es el momento del acompañante: te fuiste a otra sección y Rendi
   // sigue hablando. Ahí se abre solo, para que tengas dónde pausarla y
@@ -252,9 +225,6 @@ export default function RendiMate() {
       {/* ── El hilo ──────────────────────────────────────────────────────── */}
       <div
         ref={hiloRef}
-        onScroll={alScrollear}
-        onWheel={tomarControl}
-        onTouchMove={tomarControl}
         className="flex flex-col gap-2.5 px-3 py-3 max-h-[260px] overflow-y-auto"
       >
         {thread.length === 0 && (
