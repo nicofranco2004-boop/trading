@@ -24,6 +24,31 @@ describe('cada paso resalta algo que está de verdad', () => {
     expect(sinMarcar.map(p => p.id)).toEqual([])
   })
 
+  it('el gesto que promete el tutorial es el que el botón hace', () => {
+    // Decía «mantené el micrófono» y el botón NUNCA fue de mantener apretado:
+    // arranca con un toque y se corta con «Listo» en el panel que reemplaza al
+    // cuadro. El que le hacía caso al tutorial soltaba el dedo y el micrófono
+    // seguía tomando, sin nada en pantalla que dijera por qué.
+    //
+    // El guard DERIVA las dos puntas del código en vez de copiarlas: si el
+    // botón pasa a ser de mantener apretado, o si «Listo» se renombra, el
+    // tutorial se pone en rojo acá y no en la cara del usuario.
+    const mic = leer('../voz/BotonMicrofono.jsx')
+    const paso = PASOS.find(p => p.id === 'microfono')
+
+    // 1. Empieza con un toque, no apretando.
+    expect(mic).toMatch(/onClick=\{d\.grabar\}/)
+    expect(mic).not.toMatch(/on(PointerDown|MouseDown|TouchStart)=\{d\.grabar\}/)
+    expect(paso.texto).not.toMatch(/manten[ée]|sosten[ée]|dej[áa] apretado/i)
+
+    // 2. Y el botón que el tutorial nombra para terminar existe con ESE nombre.
+    const corta = mic.match(/onClick=\{d\.terminar\}[^>]*>([\s\S]*?)<\/button>/)
+    expect(corta, 'no encontré el botón que corta la grabación').toBeTruthy()
+    const etiqueta = corta[1].replace(/<[^>]*>/g, '').trim()
+    expect(etiqueta, 'el botón de cortar quedó sin texto').toBeTruthy()
+    expect(paso.texto, `el tutorial no nombra «${etiqueta}»`).toContain(etiqueta)
+  })
+
   it('cada paso dice a dónde va y qué cuenta', () => {
     for (const p of PASOS) {
       expect(p.id, 'id').toBeTruthy()

@@ -34,8 +34,13 @@ export const PASOS = [
     marca: 'microfono',
     ruta: '/ai',
     titulo: 'Hablale en vez de escribir',
-    texto: 'Mantené el micrófono y contale la pregunta. Lo que dijiste aparece en el '
-      + 'cuadro para que lo revises: nunca se manda solo.',
+    // EL GESTO QUE SE PROMETE TIENE QUE SER EL QUE EL BOTÓN HACE. Acá decía
+    // «mantené el micrófono» y el botón nunca fue de mantener apretado: es un
+    // toque para empezar y el botón «Listo» del panel para terminar (ver
+    // BotonMicrofono.jsx — `onClick={d.grabar}`, no `onPointerDown`). Quien le
+    // hacía caso al tutorial soltaba el dedo y el micrófono seguía tomando.
+    texto: 'Tocá el micrófono y contale la pregunta; cuando termines, tocá «Listo». '
+      + 'Lo que dijiste aparece en el cuadro para que lo revises: nunca se manda solo.',
   },
   {
     id: 'parlante',
