@@ -111,6 +111,8 @@ export function VozProvider({ children }) {
   // ── El parlante ──────────────────────────────────────────────────────────
   const [enabled, setEnabledState] = useState(() => leerBool(LS_ON, true))
   const [rate, setRateState] = useState(leerRate)
+  const rateRef = useRef(rate)
+  rateRef.current = rate
 
   // ── El reproductor ───────────────────────────────────────────────────────
   // 'idle' · 'preparing' (pidiendo el audio) · 'playing' · 'paused'
@@ -275,7 +277,18 @@ export function VozProvider({ children }) {
       if (!url) throw new Error('sin url')
       setCurrent({ ...voz, url })
       a.src = url
-      aplicarRate(a, rate)
+      // 🔴 ARRANCA SIEMPRE A VELOCIDAD NORMAL, aunque el usuario haya elegido
+      // más rápido. Reportado por Nico: con 1,25× no arrancaba —se quedaba en
+      // 0:02— y tocando 1× salía sola, sin apretar play.
+      //
+      // El motivo: el audio llega EN VIVO, generándose mientras suena. Pedirle
+      // ir 25% más rápido antes de que haya bajado un solo byte hace que se
+      // coma lo poco que tiene y se quede esperando lo que falta. A 1× lo
+      // consume al ritmo que llega.
+      //
+      // La velocidad que eligió el usuario se aplica abajo, cuando el navegador
+      // avisa que ya tiene con qué llegar hasta el final.
+      aplicarRate(a, 1)
       await a.play()
       setStatus('playing')
     } catch (e) {
@@ -600,6 +613,17 @@ export function VozProvider({ children }) {
     const onErr = () => { if (!mudo()) setStatus('error') }
     const onPlay = () => { if (!mudo()) setStatus('playing') }
     const onPause = () => { if (!mudo()) setStatus(s => (s === 'playing' ? 'paused' : s)) }
+    // LA VELOCIDAD SUBE CUANDO HAY CON QUÉ, Y BAJA SI SE QUEDA SIN.
+    //
+    // `canplaythrough` es el navegador diciendo "ya puedo llegar al final sin
+    // frenar": recién ahí tiene sentido correr más rápido. Y `waiting` es lo
+    // contrario —se quedó sin audio— así que se vuelve a 1 hasta que haya.
+    // Si nunca alcanza para más, se escucha a velocidad normal, que es
+    // exactamente lo que hay que hacer: sonar despacio es mejor que no sonar.
+    const onPuedeLlegar = () => { if (rateRef.current !== 1) aplicarRate(a, rateRef.current) }
+    const onSeQuedoSinAudio = () => { try { a.playbackRate = 1 } catch { /* sin soporte */ } }
+    a.addEventListener('canplaythrough', onPuedeLlegar)
+    a.addEventListener('waiting', onSeQuedoSinAudio)
     a.addEventListener('timeupdate', onTime)
     a.addEventListener('loadedmetadata', onTime)
     a.addEventListener('ended', onEnd)
@@ -607,6 +631,8 @@ export function VozProvider({ children }) {
     a.addEventListener('play', onPlay)
     a.addEventListener('pause', onPause)
     return () => {
+      a.removeEventListener('canplaythrough', onPuedeLlegar)
+      a.removeEventListener('waiting', onSeQuedoSinAudio)
       a.removeEventListener('timeupdate', onTime)
       a.removeEventListener('loadedmetadata', onTime)
       a.removeEventListener('ended', onEnd)

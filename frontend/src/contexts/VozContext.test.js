@@ -150,3 +150,39 @@ describe('cuando no habla, dice por qué', () => {
     expect(fuente).toMatch(/motivoSinVoz,/)
   })
 })
+
+// ─── Arrancar a velocidad normal y acelerar cuando haya con qué ─────────────
+// 🔴 Reportado por Nico: con 1,25× no arrancaba —se quedaba en 0:02— y tocando
+// 1× salía sola, SIN apretar play. Eso descartó que fuera el navegador
+// bloqueando el sonido (dos arreglos míos anteriores, los dos errados).
+//
+// El motivo real: el audio llega EN VIVO, generándose mientras suena. Pedirle
+// ir 25% más rápido antes de que haya bajado un byte hace que se coma lo poco
+// que tiene y se quede esperando. La cronología medida lo muestra:
+//   play@0s ×1 → waiting@0s ×1 → playing@0s ×1 → canplaythrough@0,9s ×1,25
+//   → ended@17,3s ×1,25
+// El `waiting` es el momento donde antes se moría.
+describe('la velocidad no puede impedir que arranque', () => {
+  it('empieza siempre a velocidad normal', () => {
+    const speak = fuente.slice(fuente.indexOf('const speak = useCallback'))
+    const hastaPlay = speak.slice(0, speak.indexOf('await a.play()'))
+    expect(hastaPlay).toMatch(/aplicarRate\(a, 1\)/)
+    // Y NO con la que eligió el usuario, que es lo que lo trababa.
+    const codigo = hastaPlay.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    expect(codigo).not.toMatch(/aplicarRate\(a, rate\)/)
+  })
+
+  it('sube a la velocidad elegida recién cuando puede llegar al final', () => {
+    expect(fuente).toMatch(/addEventListener\('canplaythrough', onPuedeLlegar\)/)
+    expect(fuente).toMatch(/if \(rateRef\.current !== 1\) aplicarRate\(a, rateRef\.current\)/)
+  })
+
+  it('y vuelve a normal si se queda sin audio', () => {
+    // Sonar despacio es mejor que no sonar.
+    expect(fuente).toMatch(/addEventListener\('waiting', onSeQuedoSinAudio\)/)
+  })
+
+  it('el aviso ve la velocidad ACTUAL, no la de cuando se enganchó', () => {
+    expect(fuente).toMatch(/rateRef\.current = rate/)
+  })
+})
