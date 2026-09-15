@@ -78,13 +78,39 @@ export function isArStock(asset) {
  * @param {boolean} isARS Si el broker es ARS
  * @returns {string}
  */
+// ─── Tickers cuyo símbolo en BYMA no es el de Nueva York con el sufijo pegado ──
+//
+// ⚠️ ES UNA LISTA DE EXCEPCIONES VERIFICADAS, NO UNA REGLA. La regla obvia
+// —"sacarle los puntos al ticker"— está MAL: BYMA publica `AKO.B` CON punto, así
+// que aplicarla a todos rompería ese. Cada entrada se agrega mirando el universo
+// real de la fuente, no por analogía.
+//
+//   BRK.B → BRKB. Verificado el 2026-09-15 contra data912/arg_cedears: existen
+//   BRKB, BRKBC y BRKBD; `BRK.B` no aparece en ninguna variante. Sin esto el
+//   símbolo pedido era `BRK.B.BA`, que no cotiza en ningún lado — y la cuenta
+//   que tenía ese CEDEAR quedaba sin precio, sin foto diaria y sin poder medir
+//   una sola semana.
+//
+// El espejo vive en backend/snapshots_job.py (BYMA_EXCEPCIONES). Si se separan,
+// el precio que se PIDE deja de ser el que se LEE.
+export const BYMA_EXCEPCIONES = {
+  'BRK.B': 'BRKB',
+  'BRK B': 'BRKB',
+}
+
+/** El símbolo `.BA` con el que BYMA cotiza este activo. */
+function simboloByma(asset) {
+  const base = asset || ''
+  return `${BYMA_EXCEPCIONES[base] || base}.BA`
+}
+
 export function priceSymbol(asset, isARS, assetType) {
   if ((asset || '').startsWith('FCI:')) return asset
   // CEDEARs son instrumentos de BYMA: se valúan por su precio LOCAL (.BA), nunca
   // por la acción US del mismo ticker — aunque vivan en un broker USD (compra
   // dólar-MEP). Sin esto, 'MELI' se preciaría como la acción (~US$2.400) en vez
   // del CEDEAR (~US$14). Ver computeBrokerValue (rama USD) para la conversión.
-  if (assetType === 'CEDEAR' && !(asset || '').endsWith('.BA')) return `${asset}.BA`
+  if (assetType === 'CEDEAR' && !(asset || '').endsWith('.BA')) return simboloByma(asset)
   // Acción argentina (GGAL, BMA, YPFD, PAMP…): a diferencia del CEDEAR, NO se fuerza
   // .BA — la decisión la toma el PADRE (isARS), igual que _byma en el backend
   // (byma_broker_names: currency + parent_broker_id). Padre ARS / sub-broker AR·USD →
@@ -92,7 +118,7 @@ export function priceSymbol(asset, isARS, assetType) {
   // NYSE cuando el símbolo coincide (GGAL/BMA) o el ticker US. Forzar .BA acá preciaba
   // el ADR de Schwab por su .BA local ÷ MEP (o lo dejaba en "—" por key mismatch con
   // calcUSDT, que lee prices[asset] pelado).
-  if (isARS) return `${asset}.BA`
+  if (isARS) return simboloByma(asset)
   // Acción US: yfinance cotiza las CLASES con guión ('BRK-B', 'BF-B'). El import de
   // brokers US (Schwab/IBKR) puede guardar 'BRK B' (espacio) o 'BRK.B' (punto) →
   // ninguno cotiza en yfinance. Normalizamos a guión para pedir/buscar el precio
