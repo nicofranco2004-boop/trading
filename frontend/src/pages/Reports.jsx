@@ -10,7 +10,7 @@
 // Cada tab fetcha N períodos hacia atrás y los renderiza como cards consistentes.
 
 import { useState, useMemo, useEffect, Fragment } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import { Loader2, FileText, AlertTriangle, ChevronDown, ChevronUp, ArrowRight } from 'lucide-react'
@@ -19,6 +19,7 @@ import useReportYears from '../hooks/useReportYears'
 import BrokerSelector from '../components/reports/BrokerSelector'
 import MonthCard from '../components/reports/MonthCard'
 import PerformanceCalendar from '../components/reports/PerformanceCalendar'
+import WeeklyStrip from '../components/reports/WeeklyStrip'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import LockedSection from '../components/plan/LockedSection'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
@@ -26,7 +27,8 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { api } from '../utils/api'
 import ModoRendimiento from '../components/ModoRendimiento'
 import { useCurrency } from '../contexts/CurrencyContext'
-import { hoyISO } from '../utils/fecha'
+import { hoyISO, fechaISO } from '../utils/fecha'
+import { claveSemanaISO } from '../utils/semanas'
 
 // ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
@@ -35,13 +37,11 @@ function todayIso() {
 }
 
 function isoWeekKey(d = new Date()) {
-  // ISO week (lunes a domingo). Mismo cálculo que Python date.isocalendar()
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
-  const dayNum = date.getUTCDay() || 7
-  date.setUTCDate(date.getUTCDate() + 4 - dayNum)
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
-  const weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7)
-  return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+  // La cuenta vive en utils/semanas (y tiene tests). Acá estaba escrita a mano,
+  // y era la única copia hasta que la tira semanal necesitó la misma semana:
+  // dos copias de "qué semana es hoy" es exactamente como empiezan las pantallas
+  // que muestran dos números distintos del mismo período.
+  return claveSemanaISO(fechaISO(d))
 }
 
 function monthKey(d = new Date()) {
@@ -162,12 +162,37 @@ export default function Reports() {
   // El rendimiento por año, del motor canónico. Una sola fuente para el número
   // del año: el calendario, la pestaña Año y el inicio leen de acá.
   const yearsData = useReportYears(broker, modoRend, moneda)
-  const [tab, setTab] = useState('month')
+  // El período puede venir pedido por la URL (`?periodo=week`), que es como el
+  // Dashboard manda a alguien directo a la tira semanal. Se lee UNA vez, para
+  // arrancar: después manda el estado local, así el usuario puede cambiar de
+  // solapa sin que la URL se lo revierta. Un valor que no exista cae en 'month'.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const periodoPedido = searchParams.get('periodo')
+  const [tab, setTab] = useState(
+    TAB_IDS.includes(periodoPedido) ? periodoPedido : 'month',
+  )
+  // El interruptor "Todo / Sólo abiertas" de la tira semanal vive ACÁ y no
+  // adentro de la tira: al cambiar de moneda esta pantalla esconde el bloque
+  // entero mientras recarga, la tira se desmonta y un estado propio se
+  // perdería — el usuario elegía "Sólo abiertas", tocaba Pesos y volvía a
+  // "Todo" sin haber pedido nada.
+  const [modoTira, setModoTira] = useState('todo')
   const [expandedKey, setExpandedKey] = useState(null)
   const plan = usePlanFeatures()
 
   const { items, loading: loadingItems, error: itemsError } =
     usePeriodItems(tab, broker, timelineData, modoRend, moneda)
+
+  // El `?periodo=` es una ORDEN DE APERTURA, no un estado: se consume al entrar
+  // y se borra de la dirección. Si se queda pegado, cada vez que esta pantalla
+  // se vuelve a montar —volver de otra solapa, un paso atrás del navegador—
+  // vuelve a forzar la solapa Semana y le pisa al usuario la que había elegido.
+  useEffect(() => {
+    if (!periodoPedido) return
+    const resto = new URLSearchParams(searchParams)
+    resto.delete('periodo')
+    setSearchParams(resto, { replace: true })
+  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset expanded key cuando cambia el tab
   useEffect(() => { setExpandedKey(null) }, [tab])
@@ -240,6 +265,14 @@ export default function Reports() {
                   <span>{itemsError}</span>
                 </div>
               )}
+              {tab === 'week' && (
+                <WeeklyStrip
+                  yearGroups={timelineData.yearGroups}
+                  broker={broker}
+                  modo={modoTira}
+                  onModo={setModoTira}
+                />
+              )}
               {tab === 'month' ? (
                 <MonthDisclosure
                   items={items}
@@ -309,6 +342,11 @@ function ReportsFreeTeaser({ yearGroups }) {
 
 // ─── Period tabs ─────────────────────────────────────────────────────────────
 
+// Los ids de las solapas viven en UNA lista: la usan las pestañas para
+// dibujarse y la raíz para validar el `?periodo=` que puede venir de afuera.
+// Separadas, un id nuevo entraría en un lado y no en el otro.
+const TAB_IDS = ['day', 'week', 'month', 'year']
+
 const LABELS = {
   day:   'Día',
   week:  'Semana',
@@ -317,7 +355,7 @@ const LABELS = {
 }
 
 function PeriodTabs({ value, onChange }) {
-  const tabs = ['day', 'week', 'month', 'year']
+  const tabs = TAB_IDS
   return (
     <div className="flex items-center gap-2 mb-4">
       <span className="text-[12.5px] text-ink-2 mr-1 font-medium">Período</span>

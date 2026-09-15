@@ -16,6 +16,7 @@ import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
 import { DashboardSkeleton } from '../components/Skeleton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
+import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import YearReturnLine from '../components/YearReturnLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
 import LazySparkline from '../components/LazySparkline'
@@ -71,6 +72,11 @@ function PersonalDashboard() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [range, setRange] = useState('1M')
+  // Sólo para decidir si se ofrece el puente a la tira semanal de Reportes, que
+  // es material de Plus/Pro. El hook cachea a nivel módulo y en localStorage: el
+  // tier se lee al instante, y el pedido a /plan/features se hace una vez por
+  // sesión (si ninguna otra pantalla lo hizo antes, esa vez ocurre acá).
+  const plan = usePlanFeatures()
   // El rendimiento histórico sale del MOTOR CANÓNICO (`/goals/cagr`, que es
   // `twr.curva_indexada`), no de un cálculo propio del Dashboard. Y con los mismos
   // dos modos que la tarjeta de Performance de Métricas.
@@ -1131,7 +1137,25 @@ function PersonalDashboard() {
               </span>
             )}
           </div>
-          <RangeTabs value={range} onChange={setRange} />
+          {/* El selector y el puente van en UN solo hijo del flex a propósito:
+              como tercer hermano, el espacio se repartiría en tres y el selector
+              dejaría de quedar contra el borde.
+              ⚠️ El id de la solapa es '1W'; lo que se VE en el botón es '1S'.
+              Comparar contra '1S' compila, no rompe nada y el enlace no aparece
+              nunca. Y sólo se ofrece a quien puede entrar: para un usuario Free
+              el destino es un candado, y un enlace que promete y no cumple es
+              peor que no estar. */}
+          <div className="flex flex-col items-end gap-2">
+            <RangeTabs value={range} onChange={setRange} />
+            {range === '1W' && plan.can('reportes.historicos') && (
+              <Link
+                to="/analisis?tab=reportes&periodo=week"
+                className="text-[12.5px] text-rendi-accent hover:text-rendi-accent/80 inline-flex items-center gap-0.5 transition-colors font-medium"
+              >
+                Ver semana a semana <ArrowRight size={11} strokeWidth={1.75} />
+              </Link>
+            )}
+          </div>
         </div>
 
         {evoSeries.length < 2 ? (
