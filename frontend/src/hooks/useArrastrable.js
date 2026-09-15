@@ -37,9 +37,27 @@
 
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 
-// Cuánto hay que moverse para que deje de ser un toque. 4px aguanta el
-// temblor del dedo sin comerse un arrastre de verdad.
-const UMBRAL = 4
+// 🔴 CUÁNTO HAY QUE MOVERSE PARA QUE DEJE DE SER UN TOQUE.
+//
+// Reportado por Nico: "tuve que clickear varias veces para que abra la isla".
+// MEDIDO simulando un toque con el temblor normal de un dedo: con CERO píxeles
+// abría, con DOS ya no. La tolerancia era, en la práctica, ninguna.
+//
+// Dos errores encima del mismo número:
+//
+//   1. Se sumaban los dos ejes en vez de medir la distancia. Un movimiento
+//      diagonal de 2px daba 2+2 = 4 y ya pasaba el umbral. Ahora se mide la
+//      distancia de verdad, que para ese caso son 2,8.
+//   2. Y 4px es un número de MOUSE. Un dedo tapa 40 píxeles de pantalla y se
+//      mueve varios nada más que al levantarlo; los navegadores usan del orden
+//      de 10 para decidir lo mismo.
+//
+// Por eso ahora depende de con qué se toca: preciso con el mouse, holgado con
+// el dedo. Pasarse para el otro lado también cuesta —arrastrar se sentiría
+// pegajoso— pero mucho menos: un arrastre de verdad recorre cientos de píxeles,
+// no doce.
+const UMBRAL_MOUSE = 5
+const UMBRAL_DEDO = 12
 // Cuánto tiene que quedar siempre visible del borde.
 const MARGEN = 8
 
@@ -164,7 +182,13 @@ export function useArrastrable(clave) {
   const alApretar = useCallback((e) => {
     // Sólo el botón principal del mouse; el derecho abre el menú del sistema.
     if (e.button != null && e.button !== 0) return
-    arrastreRef.current = { x: e.clientX, y: e.clientY, dx: posRef.current.dx, dy: posRef.current.dy }
+    arrastreRef.current = {
+      x: e.clientX, y: e.clientY, dx: posRef.current.dx, dy: posRef.current.dy,
+      // `mouse` es preciso; `touch` y `pen` no. Si el navegador no lo dice,
+      // se asume dedo: equivocarse hacia el lado holgado sólo hace que el
+      // arrastre arranque un pelo más tarde; hacia el otro, no abre.
+      umbral: e.pointerType === 'mouse' ? UMBRAL_MOUSE : UMBRAL_DEDO,
+    }
     arrastroRef.current = false
     try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* el navegador no lo soporta */ }
   }, [])
@@ -174,7 +198,8 @@ export function useArrastrable(clave) {
     if (!a) return
     const mx = e.clientX - a.x
     const my = e.clientY - a.y
-    if (!arrastroRef.current && Math.abs(mx) + Math.abs(my) < UMBRAL) return   // todavía es un toque
+    // Distancia de VERDAD, no la suma de los dos lados.
+    if (!arrastroRef.current && Math.hypot(mx, my) < a.umbral) return   // todavía es un toque
     arrastroRef.current = true
     setPos(recortar(a.dx + mx, a.dy + my))
   }, [recortar])

@@ -11,10 +11,38 @@ const isla = readFileSync(new URL('../components/voz/RendiMate.jsx', import.meta
 describe('mover la isla con el dedo', () => {
   it('un toque sigue siendo un toque', () => {
     // El botón de abrir, el parlante y la X viven ADENTRO de la zona que
-    // arrastra. Sin el umbral, mover la isla te la abría o te la cerraba al
-    // soltar; con él, menos de 4px es un toque y el botón hace lo suyo.
-    expect(fuente).toMatch(/UMBRAL = 4/)
-    expect(fuente).toMatch(/if \(!arrastroRef\.current && Math\.abs\(mx\) \+ Math\.abs\(my\) < UMBRAL\) return/)
+    // arrastra, así que hay que decidir si el dedo vino a TOCAR o a ARRASTRAR.
+    //
+    // 🔴 Nico: "tuve que clickear varias veces para que abra la isla".
+    // MEDIDO en el navegador, tocando la burbuja con distintos temblores de
+    // dedo. ANTES: 0px abría, 2px YA NO. DESPUÉS: 2, 6 y 11px abren; 14 y 40
+    // arrastran y no abren. Con mouse: 3px abre, 8px arrastra.
+    //
+    // Dos errores encima del mismo número, y los dos se vigilan acá:
+    //   1. se SUMABAN los dos ejes en vez de medir la distancia (un temblor
+    //      diagonal de 2px daba 4 y ya contaba como arrastre);
+    //   2. y 4px es un número de MOUSE — un dedo tapa 40px de pantalla.
+    expect(fuente).toMatch(/Math\.hypot\(mx, my\) < a\.umbral/)
+    expect(fuente).not.toMatch(/Math\.abs\(mx\) \+ Math\.abs\(my\)/)
+    // El umbral lo elige el TIPO de puntero, no es uno solo para todos.
+    expect(fuente).toMatch(/umbral: e\.pointerType === 'mouse' \? UMBRAL_MOUSE : UMBRAL_DEDO/)
+  })
+
+  it('el dedo tiene más tolerancia que el mouse', () => {
+    // Los números se LEEN de la fuente en vez de copiarse: un guard que repite
+    // la constante sólo certifica que alguien escribió dos veces lo mismo.
+    const nro = (nombre) => Number(fuente.match(new RegExp(`const ${nombre} = (\\d+)`))?.[1])
+    const mouse = nro('UMBRAL_MOUSE')
+    const dedo = nro('UMBRAL_DEDO')
+    expect(mouse).toBeGreaterThan(0)
+    // 10px es el orden que usan los navegadores para decidir lo mismo con un
+    // dedo. Menos que eso es lo que produjo el reporte de Nico.
+    expect(dedo).toBeGreaterThanOrEqual(10)
+    expect(dedo).toBeGreaterThan(mouse)
+    // Y pasarse para el otro lado también cuesta: un arrastre de verdad
+    // recorre cientos de píxeles, pero con el umbral muy alto se siente
+    // pegajoso al empezar.
+    expect(dedo).toBeLessThanOrEqual(24)
   })
 
   it('el clic que viene DESPUÉS de arrastrar se descarta', () => {
@@ -25,8 +53,15 @@ describe('mover la isla con el dedo', () => {
   it('cada toque nuevo arranca limpio', () => {
     // Si el "vengo de arrastrar" sobreviviera al gesto, se comería el toque
     // siguiente y la isla no abriría hasta el segundo intento.
-    const apretar = fuente.slice(fuente.indexOf('const alApretar'))
-    expect(apretar.slice(0, 400)).toMatch(/arrastroRef\.current = false/)
+    // Se lee el bloque REAL de `alApretar`, no una ventana de N caracteres:
+    // este mismo test se puso en rojo solo al agregarle un comentario a la
+    // función —la línea se corrió más allá del recorte y el test dijo que
+    // faltaba algo que estaba ahí—. Un guard atado a un largo fijo vigila el
+    // formato, no la decisión.
+    const desde = fuente.indexOf('const alApretar')
+    const apretar = fuente.slice(desde, fuente.indexOf('const alMover', desde))
+    expect(desde).toBeGreaterThan(0)
+    expect(apretar).toMatch(/arrastroRef\.current = false/)
   })
 
   it('no se puede ir de la pantalla, ni al soltar ni al cambiar de tamaño', () => {
