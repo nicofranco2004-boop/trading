@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Target, Plus, Pencil, Trash2, TrendingUp, Calendar, DollarSign, CheckCircle2, AlertTriangle, Compass, Zap, ArrowRight } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, Legend } from 'recharts'
+import { chartGrid, chartTickSm, chartTooltip, trendStroke } from '../utils/chartTheme'
 import Modal from '../components/Modal'
 import DateInput from '../components/DateInput'
 import PageHeader from '../components/PageHeader'
@@ -362,17 +363,24 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
           <p className="text-xs text-ink-3 mb-2">Proyección mes a mes con un aporte mensual de <span className="font-medium text-ink-1">{monthly != null ? fmtUsd(monthly) : 'USD 0'}</span> al {goal.expected_return_pct}% anual.</p>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={trajectory} margin={{ top: 5, right: 10, bottom: 0, left: 0 }}>
-              <CartesianGrid stroke="#334155" strokeOpacity={0.3} vertical={false} />
-              <XAxis dataKey="mes" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `${v}m`} />
-              <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+              {/* Usaba #334155 (slate-700): el chrome del sistema anterior. */}
+              <CartesianGrid {...chartGrid} />
+              <XAxis dataKey="mes" tick={chartTickSm} axisLine={false} tickLine={false} tickFormatter={v => `${v}m`} />
+              <YAxis tick={chartTickSm} axisLine={false} tickLine={false} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
               <Tooltip
-                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
-                labelStyle={{ color: '#f1f5f9' }}
+                contentStyle={chartTooltip.contentStyle}
+                labelStyle={chartTooltip.labelStyle}
+                itemStyle={chartTooltip.itemStyle}
                 formatter={(v) => `$${usd(v)}`}
                 labelFormatter={(l) => `Mes ${l}`}
               />
-              <ReferenceLine y={target} stroke="#22c55e" strokeDasharray="4 4" label={{ value: 'Meta', fill: '#22c55e', fontSize: 11, position: 'right' }} />
-              <Line type="monotone" dataKey="ideal" stroke="#4FFF78" strokeWidth={2.5} dot={false} />
+              {/* La meta y la trayectoria usaban #22c55e (emerald-500 de Tailwind) y
+                  #4FFF78, dos verdes que no pertenecían a la paleta. El rótulo
+                  "Meta" es texto y va con el verde de TEXTO; la línea es un trazo
+                  y va con el de relleno, que en claro se queda vivo. */}
+              <ReferenceLine y={target} stroke={trendStroke(true)} strokeDasharray="4 4"
+                             label={{ value: 'Meta', fill: 'rgb(var(--rendi-pos))', fontSize: 11, position: 'right' }} />
+              <Line type="monotone" dataKey="ideal" stroke={trendStroke(true)} strokeWidth={2.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>

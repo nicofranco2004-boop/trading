@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { chartGrid, chartTickSm, chartTooltip, chartReferenceStroke, areaFill, MONO_VIOLET } from '../utils/chartTheme'
 import { PhoneCall, Landmark, TrendingUp, TrendingDown, Users, ArrowRight, LineChart, FileText, ExternalLink } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -247,7 +248,10 @@ function BookHero({ book }) {
 // no es ganancia) y su suma cierra EXACTO con el hero — misma regla de
 // comparabilidad que /advisor/book (solo clientes con foto en ambos cortes).
 
-const COMP_COLORS = ['#8B7DFF', '#7466E8', '#5F53C4', '#4C429E', '#3D357E']
+// Rampa monocroma: el color dice CUÁNTO pesa cada parte, no quién es. Por eso
+// es un tono en pasos y no la paleta de series — y por eso se recorre al revés
+// en claro (la porción mayor es la más profunda, no la más brillante).
+const COMP_COLORS = MONO_VIOLET
 const DETAIL_GRID = { display: 'grid', gridTemplateColumns: '1.5fr 0.9fr 1fr 1.35fr 1.25fr', gap: '12px', alignItems: 'center' }
 
 function BookDetailModal({ onClose }) {
@@ -548,38 +552,36 @@ function BookEvolution({ series, error }) {
           <AreaChart data={visible} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <defs>
               <linearGradient id="bookEvoFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#8B7DFF" stopOpacity={0.18} />
-                <stop offset="100%" stopColor="#8B7DFF" stopOpacity={0} />
+                <stop offset="0%" stopColor={areaFill('rgb(var(--data-violet))')} stopOpacity={1} />
+                <stop offset="100%" stopColor="rgb(var(--data-violet))" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} strokeDasharray="2 4" vertical={false} />
-            <XAxis dataKey="date" tick={{ fill: '#7C8698', fontSize: 11 }}
+            <CartesianGrid {...chartGrid} />
+            <XAxis dataKey="date" tick={chartTickSm}
                    axisLine={false} tickLine={false} minTickGap={48} dy={4}
                    tickFormatter={(d) => {
                      const dt = new Date(d + 'T12:00:00')
                      return dt.toLocaleDateString('es-AR', { day: 'numeric', month: 'short' })
                    }} />
-            <YAxis tick={{ fill: '#7C8698', fontSize: 11 }} axisLine={false} tickLine={false}
+            <YAxis tick={chartTickSm} axisLine={false} tickLine={false}
                    tickFormatter={fmtShort} width={64}
                    domain={[mn > 0 ? mn * 0.97 : 0, mx * 1.02]} />
             <Tooltip
-              cursor={{ stroke: '#5A5C5B', strokeWidth: 1, strokeDasharray: '3 3' }}
-              contentStyle={{ background: '#10151F', border: '1px solid #262E40',
-                              borderRadius: 12, padding: '10px 14px',
-                              boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
-              labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 5 }}
-              itemStyle={{ color: '#F4F4F0', fontSize: 12.5, padding: '2px 0' }}
+              cursor={chartTooltip.cursor}
+              contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
+              labelStyle={chartTooltip.labelStyle}
+              itemStyle={chartTooltip.itemStyle}
               formatter={(v, name) => [money(v, 0), name === 'aum_usd' ? 'Administrado' : 'Aportado neto']}
               labelFormatter={(label, payload) => {
                 const p = payload?.[0]?.payload
                 return p ? `${p.date} · ${p.clients} cliente${p.clients === 1 ? '' : 's'}` : label
               }}
             />
-            <Area type="monotone" dataKey="net_deposited_usd" stroke="#3A4256" strokeWidth={1.5}
+            <Area type="monotone" dataKey="net_deposited_usd" stroke={chartReferenceStroke} strokeWidth={1.5}
                   strokeDasharray="4 4" fill="none" dot={false} activeDot={false} />
-            <Area type="monotone" dataKey="aum_usd" stroke="#8B7DFF" strokeWidth={1.75}
+            <Area type="monotone" dataKey="aum_usd" stroke="rgb(var(--data-violet))" strokeWidth={1.75}
                   fill="url(#bookEvoFill)" dot={false}
-                  activeDot={{ r: 4, fill: '#8B7DFF', stroke: '#0A0B0E', strokeWidth: 2 }} />
+                  activeDot={{ r: 4, fill: 'rgb(var(--data-violet))', stroke: 'rgb(var(--bg-1))', strokeWidth: 2 }} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
@@ -1032,13 +1034,13 @@ function ReportModal({ onClose }) {
           )}
           <div className="border border-line rounded-md max-h-44 overflow-y-auto divide-y divide-line/40">
             <label className="flex items-center gap-2.5 px-3 py-2 text-[12.5px] font-semibold text-ink-0 cursor-pointer hover:bg-bg-2/50">
-              <input type="checkbox" className="accent-[#8B7DFF]" checked={!!allChecked}
+              <input type="checkbox" className="accent-data-violet" checked={!!allChecked}
                      onChange={toggleAll} />
               Todos {clients ? `(${clients.length})` : ''}
             </label>
             {(clients || []).map(c => (
               <label key={c.client_uid} className="flex items-center gap-2.5 px-3 py-2 text-[12.5px] text-ink-1 cursor-pointer hover:bg-bg-2/50">
-                <input type="checkbox" className="accent-[#8B7DFF]"
+                <input type="checkbox" className="accent-data-violet"
                        checked={!!checked?.has(c.client_uid)}
                        onChange={() => toggleOne(c.client_uid)} />
                 <span className="truncate">{c.label}</span>

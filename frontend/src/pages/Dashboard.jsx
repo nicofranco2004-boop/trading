@@ -2,6 +2,7 @@ import ModoRendimiento from '../components/ModoRendimiento'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, trendArea, SERIES_COLORS } from '../utils/chartTheme'
 import { TrendingUp, TrendingDown, Upload, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import { BrokerCard } from '../components/BrokerManager'
 import MonthlyTeaser from '../components/MonthlyTeaser'
@@ -1169,28 +1170,30 @@ function PersonalDashboard() {
             // Color condicional: verde solo si el portfolio gana, rojo si pierde.
             // Audit visual: verde es semántico, no decorativo.
             const isProfit = totalReturnUsd >= 0
-            const lineColor = isProfit ? '#21D07A' : '#FF5360'
+            const lineColor = trendStroke(isProfit)
             const fillId = isProfit ? 'grad-value-pos' : 'grad-value-neg'
             return (
               <ResponsiveContainer width="100%" height={300}>
                 <AreaChart data={evoSeriesDisplay} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
                   <defs>
                     <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={lineColor} stopOpacity={0.18} />
+                      {/* La opacidad va adentro del color: sobre blanco la misma
+                          transparencia se percibe más débil, así que sube por tema. */}
+                      <stop offset="0%" stopColor={trendArea(isProfit)} stopOpacity={1} />
                       <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} strokeDasharray="2 4" vertical={false} />
+                  <CartesianGrid {...chartGrid} />
                   <XAxis
                     dataKey="label"
-                    tick={{ fill: '#7C8698', fontSize: 12 }}
+                    tick={chartTick}
                     axisLine={false}
                     tickLine={false}
                     minTickGap={40}
                     dy={4}
                   />
                   <YAxis
-                    tick={{ fill: '#7C8698', fontSize: 12 }}
+                    tick={chartTick}
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={v => {
@@ -1207,16 +1210,10 @@ function PersonalDashboard() {
                     width={64}
                   />
                   <Tooltip
-                    cursor={{ stroke: '#5A5C5B', strokeWidth: 1, strokeDasharray: '3 3' }}
-                    contentStyle={{
-                      background: '#10151F',
-                      border: '1px solid #262E40',
-                      borderRadius: 12,
-                      padding: '10px 14px',
-                      boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)',
-                    }}
-                    labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 5 }}
-                    itemStyle={{ color: '#F4F4F0', fontSize: 12.5, padding: '2px 0' }}
+                    cursor={chartTooltip.cursor}
+                    contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
+                    labelStyle={chartTooltip.labelStyle}
+                    itemStyle={chartTooltip.itemStyle}
                     formatter={(v, name) => {
                       // Audit fix C1: data ya está en la currency target.
                       // Solo formateamos. Mismo valor que el axis.
@@ -1237,7 +1234,7 @@ function PersonalDashboard() {
                   <Area
                     type="monotone"
                     dataKey="netDeposited"
-                    stroke="#3A4256"
+                    stroke={chartReferenceStroke}
                     strokeWidth={1.5}
                     strokeDasharray="4 4"
                     fill="none"
@@ -1251,7 +1248,7 @@ function PersonalDashboard() {
                     strokeWidth={1.75}
                     fill={`url(#${fillId})`}
                     dot={false}
-                    activeDot={{ r: 4, fill: lineColor, stroke: '#0A0B0E', strokeWidth: 2 }}
+                    activeDot={{ r: 4, fill: lineColor, stroke: 'rgb(var(--bg-1))', strokeWidth: 2 }}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -1264,7 +1261,7 @@ function PersonalDashboard() {
             <span className="inline-flex items-center gap-1.5">
               <span
                 className="inline-block w-3 h-0.5 rounded-full"
-                style={{ background: totalReturnUsd >= 0 ? '#21D07A' : '#FF5360' }}
+                style={{ background: trendStroke(totalReturnUsd >= 0) }}
               />
               Valor de la cartera
             </span>
@@ -1497,7 +1494,7 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right' }) {
 // Barra horizontal de distribución del portfolio por activo. Top 5 + "otros".
 // Más operativa que un pie — densa, leíble, sin ocupar mucho vertical space.
 
-const ASSET_COLORS = ['#21D07A', '#46C6E0', '#4E83FF', '#E8B14A', '#8B7DFF', '#5A6478']
+const ASSET_COLORS = SERIES_COLORS
 
 function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcValuacion = 1 }) {
   const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)

@@ -12,7 +12,11 @@
 // texto adentro no se puede comprimir. Las barras muestran la forma sin leer un
 // solo número y sí se comprimen; el detalle aparece al pasar el mouse.
 //
-// Visual: barras en los verdes/rojos semánticos, números en Geist + tabular.
+// Visual: barras en los verdes/rojos de RELLENO (no los de texto: una barra es
+// un trazo, no un número), y el hover en `--bar-hover-*`. El hover tiene que
+// alejarse del fondo, y el fondo cambia de tema: aclara en oscuro, oscurece en
+// claro. Antes eran `green-200`/`red-100` fijos, que sobre blanco dan 1,65:1 —
+// la barra se borraba justo al señalarla. Números en Geist + tabular.
 
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -141,8 +145,8 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
               <div
                 className={`absolute left-[14%] right-[14%] rounded-xs transition-colors ${
                   m.pct >= 0
-                    ? `bottom-1/2 ${encima === i ? 'bg-green-200' : 'bg-rendi-pos'}`
-                    : `top-1/2 ${encima === i ? 'bg-red-100' : 'bg-rendi-neg'}`}`}
+                    ? `bottom-1/2 ${encima === i ? 'bg-[rgb(var(--bar-hover-up))]' : 'bg-rendi-pos-fill'}`
+                    : `top-1/2 ${encima === i ? 'bg-[rgb(var(--bar-hover-down))]' : 'bg-rendi-neg-fill'}`}`}
                 style={{ height: `${Math.max(2, (Math.abs(m.pct) / max) * ALTO_MAX_PCT / 2)}%` }}
               />
             ) : (

@@ -6,6 +6,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine,
   ComposedChart,
 } from 'recharts'
+import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, areaFill, SERIES_COLORS } from '../utils/chartTheme'
 import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target, Layers, Clock, Stethoscope, BarChart3, Scale, PiggyBank, Wallet, CircleDollarSign, Building2, BarChart2, UserRound, Droplets } from 'lucide-react'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
@@ -100,7 +101,7 @@ const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Se
 const monthName = (m) => MONTH_NAMES[(m - 1) % 12] || ''
 
 // Paleta v2: signal + data accents. Cero neón.
-const PIE_COLORS = ['#21D07A', '#46C6E0', '#4E83FF', '#E8B14A', '#FF5360', '#8B7DFF']
+const PIE_COLORS = SERIES_COLORS
 
 // Severity → badge styling para las tarjetas de Diagnóstico (audit pattern).
 // La severidad solo se codifica en el badge, no en todo el bloque, para
@@ -2741,7 +2742,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
       {/* ── Desde tu última visita — el gancho de retención ─────────────────── */}
       {visitDelta && !visitDelta.isFirstVisit && (
-        <section className="bg-white dark:bg-bg-1 border border-line rounded-xl p-4">
+        <section className="bg-bg-1 border border-line rounded-xl p-4">
           <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
             <p className="eyebrow">Desde tu última visita</p>
             {visitDelta.sinceLabel && (
@@ -2857,7 +2858,7 @@ function InsightsDesktop({ _embeddedTab }) {
           (era "Por activo" en Distribución, gateada Pro). El cruce por CLASE
           de activo vive ahora en el Perfil del inversor. ──────────────────── */}
       {compositionRows.length > 0 && (
-        <section className="bg-white dark:bg-bg-1 border border-line rounded-xl p-4 sm:p-5">
+        <section className="bg-bg-1 border border-line rounded-xl p-4 sm:p-5">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <p className="eyebrow">Distribución de activos</p>
             <span className="text-xs text-ink-2">
@@ -2961,7 +2962,7 @@ function InsightsDesktop({ _embeddedTab }) {
         params={{ window_days: 365 }}
         subtitle="Tu trayectoria mensual"
       >
-      <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
+      <div className="bg-bg-1 border border-line rounded-xl p-5">
         <div className="flex items-start justify-between mb-3 flex-wrap gap-3">
           {/* ⚠️ EL CHIP VA EN SU PROPIO RENGLÓN, Y NO ES COSMÉTICO.
               Antes el título, el chip y el toggle compartían UNA fila flex, así que
@@ -3084,13 +3085,13 @@ function InsightsDesktop({ _embeddedTab }) {
               <p>Tu cartera comparada contra un benchmark, ambos en % desde el inicio del rango visible (las 3 líneas arrancan en 0%).</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-semibold text-ink-0">{_perfContable ? 'Las 2 líneas' : 'Las 3 líneas'}</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#21D07A'}}/><strong>Verde sólido</strong>: {_perfContable
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: trendStroke(true)}}/><strong>Verde sólido</strong>: {_perfContable
                 ? 'lo que ya vendiste, reconstruido de tu contabilidad. NO incluye la ganancia o pérdida de lo que todavía tenés abierto — ese dato no existe hacia atrás.'
                 : 'tu cartera total (lo cerrado + lo abierto).'}</p>
               {!_perfContable && (
-                <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#E8B14A'}}/><strong>Amarillo punteado</strong>: solo lo cobrado (ventas + dividendos + intereses). Sin la plusvalía abierta.</p>
+                <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: 'rgb(var(--data-amber))'}}/><strong>Amarillo punteado</strong>: solo lo cobrado (ventas + dividendos + intereses). Sin la plusvalía abierta.</p>
               )}
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? '#46C6E0' : '#8B7DFF'}}/><strong>{benchmarkKey}</strong>: {currency === 'USD' ? `cómo iría el ${benchmarkKey} si hubiera recibido tus mismos depósitos y retiros en las mismas fechas.` : 'inflación acumulada del período — para ver si tu cartera mantiene poder de compra en pesos.'}</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? 'rgb(var(--data-cyan))' : 'rgb(var(--data-violet))'}}/><strong>{benchmarkKey}</strong>: {currency === 'USD' ? `cómo iría el ${benchmarkKey} si hubiera recibido tus mismos depósitos y retiros en las mismas fechas.` : 'inflación acumulada del período — para ver si tu cartera mantiene poder de compra en pesos.'}</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-semibold text-ink-1">Puede no coincidir con el Dashboard</p>
               <p className="text-ink-3">El Dashboard divide por lo que tenés aportado HOY. Este chart divide por el MÁXIMO histórico de capital aportado — más conservador si tuviste retiros grandes. Para flujos normales (depósitos sin retiros importantes), ambos coinciden.</p>
@@ -3264,11 +3265,11 @@ function InsightsDesktop({ _embeddedTab }) {
             <ComposedChart data={chartData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="portGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#21D07A" stopOpacity={0.20} />
-                  <stop offset="100%" stopColor="#21D07A" stopOpacity={0} />
+                  <stop offset="0%" stopColor={areaFill(trendStroke(true))} stopOpacity={1} />
+                  <stop offset="100%" stopColor={trendStroke(true)} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
+              <CartesianGrid {...chartGrid} strokeDasharray={undefined} />
               {/* ⚠️ EJE DE TIEMPO, NO DE CATEGORÍA. Un eje de categoría reparte los
                   puntos en partes iguales por índice y no mira la fecha: mientras la
                   serie tuvo una sola densidad no se notaba, pero desde que conviven
@@ -3282,12 +3283,12 @@ function InsightsDesktop({ _embeddedTab }) {
                   que quede el hueco a la vista donde cambia la regla de valuación. */}
               <XAxis dataKey="ts" type="number" scale="time" domain={['dataMin', 'dataMax']}
                      tickFormatter={fmtMarcaEje}
-                     tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
-              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} width={44} />
-              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.5} strokeDasharray="2 4" />
+                     tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+              <YAxis tick={chartTick} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} width={44} />
+              <ReferenceLine y={0} stroke={chartReferenceStroke} strokeOpacity={0.5} strokeDasharray="2 4" />
               <Tooltip
-                contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px', boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
-                labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
+                contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
+                labelStyle={chartTooltip.labelStyle}
                 formatter={(v) => [v != null ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : '—', '']}
                 // Con el eje en tiempo el `label` que recibe el tooltip es el
                 // timestamp. El encabezado sigue siendo el rótulo de la fila —el
@@ -3303,10 +3304,10 @@ function InsightsDesktop({ _embeddedTab }) {
                   es la punteada, que es lo único que las distingue a simple vista. */}
               <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }}
                       formatter={(v) => v === `${userName} estimado` ? `${v} (línea punteada)` : v} />
-              <Area type="monotone" dataKey={claveCartera} stroke="#21D07A" strokeWidth={2.5} fill="url(#portGrad)" dot={<DotSolo fill="#21D07A" />} activeDot={{ r: 4 }} />
+              <Area type="monotone" dataKey={claveCartera} stroke={trendStroke(true)} strokeWidth={2.5} fill="url(#portGrad)" dot={<DotSolo fill="#21D07A" />} activeDot={{ r: 4 }} />
               {/* Lo NO medido: misma curva, punteada y en un tono apagado. Es lo
                   que comunica "esta parte es estimada" sin esconderla. */}
-              <Line type="monotone" dataKey={`${userName} estimado`} stroke="#21D07A" strokeOpacity={0.55} strokeWidth={2} strokeDasharray="3 4" dot={<DotSolo fill="#21D07A" opacity={0.55} />} />
+              <Line type="monotone" dataKey={`${userName} estimado`} stroke={trendStroke(true)} strokeOpacity={0.55} strokeWidth={2} strokeDasharray="3 4" dot={<DotSolo fill="#21D07A" opacity={0.55} />} />
               {/* ⚠️ EN ESTIMADO ESTA SEGUNDA LÍNEA SE OCULTA, y es la respuesta a
                   "¿sigue teniendo sentido o es redundante?".
                   En CERTERO las dos dicen cosas distintas: la verde es la cartera
@@ -3321,9 +3322,9 @@ function InsightsDesktop({ _embeddedTab }) {
                   no información sobre la plata del usuario. Dos curvas casi iguales
                   con nombres sinónimos confunden más de lo que aportan. */}
               {!_perfContable && (
-                <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="#E8B14A" strokeWidth={1.5} strokeDasharray="2 5" dot={false} />
+                <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="rgb(var(--data-amber))" strokeWidth={1.5} strokeDasharray="2 5" dot={false} />
               )}
-              <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#46C6E0' : '#8B7DFF'} strokeWidth={1.75} strokeDasharray="5 5" dot={false} />
+              <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? 'rgb(var(--data-cyan))' : 'rgb(var(--data-violet))'} strokeWidth={1.75} strokeDasharray="5 5" dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
         )}
@@ -3331,7 +3332,7 @@ function InsightsDesktop({ _embeddedTab }) {
       </AskAIAbout>
 
       {currency === 'USD' && contableSeries.length >= 2 && (
-        <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5 mt-6">
+        <div className="bg-bg-1 border border-line rounded-xl p-5 mt-6">
           <div className="flex items-center gap-1.5 mb-1">
             <h2 className="font-semibold text-ink-0">Reconstrucción contable</h2>
             <InfoTooltip>
@@ -3355,17 +3356,17 @@ function InsightsDesktop({ _embeddedTab }) {
           </p>
           <ResponsiveContainer width="100%" height={160}>
             <ComposedChart data={contableSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
-              <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
-              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} width={56}
+              <CartesianGrid {...chartGrid} strokeDasharray={undefined} />
+              <XAxis dataKey="label" tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+              <YAxis tick={chartTick} axisLine={false} tickLine={false} width={56}
                      tickFormatter={v => `US$${Math.round(v / 1000)}k`} />
               <Tooltip
-                contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px' }}
-                labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
+                contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
+                labelStyle={chartTooltip.labelStyle}
                 formatter={(v) => [`US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
               />
               <Line type="monotone" dataKey="usd" name="Reconstrucción contable"
-                    stroke="#7C8698" strokeWidth={1.75} strokeDasharray="4 4" dot={false} />
+                    stroke="rgb(var(--ink-2))" strokeWidth={1.75} strokeDasharray="4 4" dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -3380,7 +3381,7 @@ function InsightsDesktop({ _embeddedTab }) {
         params={{ window_days: 365 }}
         subtitle="Drawdown de la cartera"
       >
-      <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5 mt-6">
+      <div className="bg-bg-1 border border-line rounded-xl p-5 mt-6">
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
@@ -3414,20 +3415,20 @@ function InsightsDesktop({ _embeddedTab }) {
             <AreaChart data={drawdownSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%"  stopColor="#FF5360" stopOpacity={0} />
-                  <stop offset="100%" stopColor="#FF5360" stopOpacity={0.35} />
+                  <stop offset="0%"  stopColor={trendStroke(false)} stopOpacity={0} />
+                  <stop offset="100%" stopColor={areaFill(trendStroke(false))} stopOpacity={1} />
                 </linearGradient>
               </defs>
-              <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
-              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} domain={['auto', 0]} width={44} />
-              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.5} />
+              <CartesianGrid {...chartGrid} strokeDasharray={undefined} />
+              <XAxis dataKey="label" tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+              <YAxis tick={chartTick} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} domain={['auto', 0]} width={44} />
+              <ReferenceLine y={0} stroke={chartReferenceStroke} strokeOpacity={0.5} />
               <Tooltip
-                contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px', boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
-                labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
+                contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
+                labelStyle={chartTooltip.labelStyle}
                 formatter={(v) => [`${v.toFixed(2)}%`, 'Drawdown']}
               />
-              <Area type="monotone" dataKey="ddPct" stroke="#FF5360" strokeWidth={2} fill="url(#ddGrad)" dot={false} activeDot={{ r: 4 }} />
+              <Area type="monotone" dataKey="ddPct" stroke={trendStroke(false)} strokeWidth={2} fill="url(#ddGrad)" dot={false} activeDot={{ r: 4 }} />
             </AreaChart>
           </ResponsiveContainer>
         )}
@@ -3465,7 +3466,7 @@ function InsightsDesktop({ _embeddedTab }) {
           de una sola porción que no aporta). ─────────────────────────────── */}
       {pieData.length >= 2 && (
         <Section title="Distribución por broker" subtitle="Cómo se reparte tu capital entre brokers.">
-          <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
+          <div className="bg-bg-1 border border-line rounded-xl p-5">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-ink-0">Por broker</h2>
               {brokerConcentration && (
@@ -3481,7 +3482,8 @@ function InsightsDesktop({ _embeddedTab }) {
                 </Pie>
                 <Legend formatter={(v) => <span className="text-ink-2 text-xs">{v}</span>} iconType="circle" iconSize={8} />
                 <Tooltip
-                  contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                  /* Usaba #1e293b/#334155: el chrome del sistema anterior, igual que Goals. */
+                  contentStyle={chartTooltip.contentStyle}
                   formatter={(v) => [`${amt(v)} (${((v / totalPortfolio) * 100).toFixed(1)}%)`, '']}
                 />
               </PieChart>
@@ -3542,7 +3544,7 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
   // Verde si gano al benchmark, rojo si pierdo.
   if (disabled || benchmarkValue == null || delta == null) {
     return (
-      <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
+      <div className="bg-bg-1 border border-line rounded-xl p-5">
         <p className="text-xs font-semibold text-ink-3">{label}</p>
         <p className="text-sm text-ink-3 mt-2">{disabledHint || 'Datos insuficientes para calcular.'}</p>
       </div>
@@ -3552,7 +3554,7 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
   const accentBorder = gano ? 'border-rendi-pos/40' : 'border-rendi-neg/40'
   const accentText = gano ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
-    <div className={`bg-white dark:bg-bg-2/60 border ${accentBorder} rounded-xl shadow-sm dark:shadow-none p-5`}>
+    <div className={`bg-bg-2/60 border ${accentBorder} rounded-xl shadow-sm dark:shadow-none p-5`}>
       <p className="text-xs font-semibold text-ink-3">{label}</p>
       <p className={`text-2xl font-bold tabular mt-2 ${accentText}`}>
         {gano ? '+' : '-'}{amt(Math.abs(delta.delta))}
@@ -3573,14 +3575,14 @@ function InflationCard({ inflation }) {
   // para mantener poder de compra.
   if (!inflation) {
     return (
-      <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
+      <div className="bg-bg-1 border border-line rounded-xl p-5">
         <p className="text-xs font-semibold text-ink-3">Inflación AR</p>
         <p className="text-sm text-ink-3 mt-2">No hay datos de IPC suficientes para el período seleccionado.</p>
       </div>
     )
   }
   return (
-    <div className="bg-white dark:bg-bg-1 border border-rendi-warn/30 rounded p-5">
+    <div className="bg-bg-1 border border-rendi-warn/30 rounded p-5">
       <p className="text-xs font-semibold text-ink-3">Inflación AR (período)</p>
       <p className="text-2xl font-bold tabular mt-2 text-rendi-warn">
         +{inflation.cumPct.toFixed(1)}%
@@ -3609,7 +3611,7 @@ function PerformanceAttribution({ discipline, amt }) {
   const pnlPositive = pnl >= 0
 
   return (
-    <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5 mt-6">
+    <div className="bg-bg-1 border border-line rounded-xl p-5 mt-6">
       <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
         <div className="flex items-center gap-1.5">
           <h2 className="font-semibold text-ink-0">Atribución del crecimiento</h2>
@@ -3681,7 +3683,7 @@ function ContribList({ tone, title, items, fmt }) {
   const isPos = tone === 'positive'
   const accentText = isPos ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
-    <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
+    <div className="bg-bg-1 border border-line rounded-xl p-5">
       <div className="flex items-center gap-2 mb-3 text-ink-3">
         {isPos ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
         <span className="text-xs font-semibold">{title}</span>
@@ -3894,7 +3896,7 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
   return (
     <section id="diagnostico" className="scroll-mt-20 space-y-4">
       <FeaturedFinding d={featured} />
-      <div className="border border-line/70 dark:border-line rounded-lg bg-white/40 dark:bg-bg-1/40 overflow-hidden">
+      <div className="border border-line/70 dark:border-line rounded-lg bg-bg-1/40 overflow-hidden">
         <button
           type="button"
           onClick={() => setCollapsed(c => !c)}
@@ -4018,7 +4020,7 @@ function DiagnosisCard({ d, onDismiss }) {
   // valor → teaser de conversión. Sigue siendo descartable ("No me interesa").
   if (d.locked) {
     return (
-      <div className="bg-white dark:bg-bg-1 p-5 flex flex-col h-full">
+      <div className="bg-bg-1 p-5 flex flex-col h-full">
         {dismissBtn}
         <div className="flex items-center gap-2 mb-3">
           <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-data-violet/30 bg-data-violet/10 text-data-violet">
@@ -4062,7 +4064,7 @@ function DiagnosisCard({ d, onDismiss }) {
       subtitle={title.length > 60 ? title.slice(0, 60) + '…' : title}
       className="h-full"
     >
-      <div className="bg-white dark:bg-bg-1 p-5 flex flex-col h-full">
+      <div className="bg-bg-1 p-5 flex flex-col h-full">
         {/* "No me interesa" ARRIBA del badge (dismissBtn compartido). En su
             propia fila no compite por ancho con el badge ni se corta en cards
             angostas; reserva la banda del ✦ flotante con max-width. */}
@@ -4136,7 +4138,7 @@ function AlertBanner({ level, category, title, text }) {
 
 function InsightCard({ icon, title, children, accent, tooltip }) {
   return (
-    <div className={`bg-white dark:bg-bg-1 border rounded p-5 ${
+    <div className={`bg-bg-1 border rounded p-5 ${
       accent ? 'border-rendi-accent/40 dark:border-rendi-accent/30' : 'border-line/80 dark:border-line'
     }`}>
       <div className="flex items-center gap-2 mb-3 text-ink-3">
@@ -4175,7 +4177,7 @@ function ProfileInvestorBlock({
     // Configuración › Test de inversor (2026-07-14) — ya no vive en esta
     // página —, así que el CTA linkea allá.
     return (
-      <div className="bg-white dark:bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
+      <div className="bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
         <div className="flex items-center gap-2 text-ink-3">
           <UserRound size={18} />
           <span className="text-xs font-medium">Completá tu test de inversor</span>
@@ -4246,7 +4248,7 @@ function AccordionSection({ title, count, summary, previewItems, open, onToggle,
       : null
   )
   return (
-    <section className="border border-line/70 dark:border-line rounded-lg overflow-hidden bg-white/40 dark:bg-bg-1/40 transition-colors hover:border-rendi-accent/40">
+    <section className="border border-line/70 dark:border-line rounded-lg overflow-hidden bg-bg-1/40 transition-colors hover:border-rendi-accent/40">
       <button
         type="button"
         onClick={onToggle}
