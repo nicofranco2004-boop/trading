@@ -338,11 +338,24 @@ export default function RendiMate() {
               : <Play size={12} fill="currentColor" />}
           </button>
 
-          <span className="flex-1 h-1 rounded-full bg-bg-3 overflow-hidden" aria-hidden="true">
-            <i className="block h-full rounded-full bg-rendi-accent transition-[width] duration-200"
-              style={{ width: progress.d ? `${Math.min(100, (progress.t / progress.d) * 100)}%` : '0%' }} />
-          </span>
-          <span className="text-[11px] text-ink-3 tabular min-w-[30px] text-right">{mmss(progress.t)}</span>
+          {/* EL NAVEGADOR LO FRENÓ, Y HAY QUE DECIRLO. Cuando rechaza el
+              sonido, antes sólo aparecía el play: se leía como si Rendi
+              hubiera decidido no hablar, y el usuario no tenía forma de saber
+              que el que decidió fue su navegador. Con esto, una vez que toca,
+              queda habilitado para el resto de la sesión. */}
+          {status === 'blocked' ? (
+            <span className="flex-1 text-[11px] leading-tight text-ink-3">
+              Tu navegador pide que lo toques la primera vez
+            </span>
+          ) : (
+            <>
+              <span className="flex-1 h-1 rounded-full bg-bg-3 overflow-hidden" aria-hidden="true">
+                <i className="block h-full rounded-full bg-rendi-accent transition-[width] duration-200"
+                  style={{ width: progress.d ? `${Math.min(100, (progress.t / progress.d) * 100)}%` : '0%' }} />
+              </span>
+              <span className="text-[11px] text-ink-3 tabular min-w-[30px] text-right">{mmss(progress.t)}</span>
+            </>
+          )}
 
           {/* La velocidad se controla ACÁ y no pidiéndole al modelo que hable
               más rápido: se midió y no hace nada (24,2 s vs 24,4 s con el

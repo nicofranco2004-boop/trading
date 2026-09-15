@@ -67,6 +67,26 @@ export function puedeArrancarSolo(usage) {
   return (usage.chat_remaining ?? 1) > 0
 }
 
+// ─── Pedir permiso para sonar ANTES de tener qué decir ──────────────────────
+// 🔴 EL PROBLEMA: Rendi pide sonar ~15 SEGUNDOS DESPUÉS del toque del usuario.
+//
+// Los navegadores sólo dejan que un sonido arranque solo si viene de la mano de
+// algo que el usuario tocó. Nosotros tocamos "enviar", esperamos a que el
+// modelo escriba la respuesta —diez, quince, veinte segundos— y recién ahí
+// pedimos reproducir. Para ese momento el navegador ya no ve ningún gesto:
+// lo rechaza, y al usuario le aparece un botón de play sin ninguna explicación.
+// Reportado por Nico EN LAS DOS pantallas, celular y escritorio.
+//
+// La salida es pedir el permiso cuando el permiso existe: en el toque mismo.
+// Se reproduce este clip MUDO de 54 bytes apenas el usuario manda la pregunta
+// —dura un parpadeo y no se oye— y con eso el navegador marca al reproductor
+// como "habilitado por el usuario". Cuando la respuesta llega quince segundos
+// después, ya tiene permiso.
+//
+// Es la misma idea que dejar la puerta trabada antes de salir con las manos
+// llenas: el momento de hacerlo no es cuando ya no te queda mano libre.
+const SILENCIO = 'data:audio/wav;base64,UklGRi4AAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoAAACAgICAgICAgICA'
+
 const VozContext = createContext(null)
 
 function leerBool(k, def) {
@@ -214,6 +234,26 @@ export function VozProvider({ children }) {
    * celular puede seguir reproduciéndolo con la pantalla apagada — dos cosas
    * que se pierden si el audio se baja entero por JavaScript antes de sonar.
    */
+  // Se hace UNA sola vez por carga de página: alcanza para el resto de la
+  // sesión. Y va con bandera propia para que los avisos del reproductor no
+  // muestren "hablando" por el parpadeo del clip mudo.
+  const desbloqueadoRef = useRef(false)
+  const desbloqueandoRef = useRef(false)
+  const desbloquearElSonido = useCallback(() => {
+    const a = audioRef.current
+    if (!a || desbloqueadoRef.current) return
+    desbloqueadoRef.current = true
+    desbloqueandoRef.current = true
+    const listo = () => { try { a.pause() } catch { /* ya parado */ } desbloqueandoRef.current = false }
+    const fallo = () => { desbloqueadoRef.current = false; desbloqueandoRef.current = false }
+    try {
+      a.src = SILENCIO
+      const p = a.play()
+      if (p && p.then) p.then(listo, fallo)
+      else listo()
+    } catch { fallo() }
+  }, [])
+
   const speak = useCallback(async (voz) => {
     const a = audioRef.current
     if (!a || !voz?.text || !voz?.sig) return
@@ -319,6 +359,11 @@ export function VozProvider({ children }) {
   const ask = useCallback(async (texto, { analisis, snapshot: snapDeAfuera } = {}) => {
     const content = (texto || '').trim()
     if ((!content && !analisis) || sendingRef.current) return
+    // 🔴 LO PRIMERO, Y SIN `await` ANTES. Estamos adentro del toque del usuario
+    // —esto lo llama el botón de enviar, un chip o el ✦— y ese es el único
+    // momento en que el navegador concede el permiso para sonar. Una sola
+    // línea de espera acá arriba y el gesto ya no cuenta.
+    if (enabled) desbloquearElSonido()
     sendingRef.current = true
     setSending(true)
     setLoading(true)
@@ -480,7 +525,7 @@ export function VozProvider({ children }) {
         setPaso(null)
       }
     }
-  }, [thread, enabled, speak, stop])
+  }, [thread, enabled, speak, stop, desbloquearElSonido])
 
   /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
   const limpiar = useCallback(() => {
@@ -525,11 +570,15 @@ export function VozProvider({ children }) {
   useEffect(() => {
     const a = audioRef.current
     if (!a) return
-    const onTime = () => setProgress({ t: a.currentTime || 0, d: a.duration || 0 })
-    const onEnd = () => { setStatus('idle'); setProgress(p => ({ ...p, t: 0 })) }
-    const onErr = () => setStatus('error')
-    const onPlay = () => setStatus('playing')
-    const onPause = () => setStatus(s => (s === 'playing' ? 'paused' : s))
+    // El clip mudo del desbloqueo pasa por acá igual que un audio de verdad.
+    // Sin esta guarda, mandar una pregunta mostraba "Rendi está hablando" por
+    // un parpadeo, sin que hubiera nada que oír.
+    const mudo = () => desbloqueandoRef.current
+    const onTime = () => { if (!mudo()) setProgress({ t: a.currentTime || 0, d: a.duration || 0 }) }
+    const onEnd = () => { if (!mudo()) { setStatus('idle'); setProgress(p => ({ ...p, t: 0 })) } }
+    const onErr = () => { if (!mudo()) setStatus('error') }
+    const onPlay = () => { if (!mudo()) setStatus('playing') }
+    const onPause = () => { if (!mudo()) setStatus(s => (s === 'playing' ? 'paused' : s)) }
     a.addEventListener('timeupdate', onTime)
     a.addEventListener('loadedmetadata', onTime)
     a.addEventListener('ended', onEnd)

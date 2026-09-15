@@ -76,3 +76,47 @@ describe('lo que llega tarde de una conversación borrada se descarta', () => {
     expect(fuente).toMatch(/if \(vigente\(\)\) \{\s*\n\s*sendingRef\.current = false/)
   })
 })
+
+// ─── Pedir permiso para sonar antes de tener qué decir ───────────────────────
+// Rendi pide reproducir ~15 SEGUNDOS después del toque del usuario: manda la
+// pregunta, el modelo escribe, y recién ahí hay audio. Para ese momento el
+// navegador ya no ve ningún gesto y lo rechaza — al usuario le aparece un play
+// sin explicación. Reportado por Nico en las DOS pantallas, celular y
+// escritorio (en escritorio también: la política no es sólo del celular).
+describe('el sonido se habilita en el toque, no cuando llega el audio', () => {
+  it('se desbloquea con un clip mudo', () => {
+    expect(fuente).toMatch(/const SILENCIO = 'data:audio\/wav;base64,/)
+    expect(fuente).toMatch(/const desbloquearElSonido = useCallback/)
+  })
+
+  it('se llama LO PRIMERO de ask, antes de cualquier espera', () => {
+    // Una sola línea de `await` antes y el gesto ya no cuenta: el navegador
+    // sólo concede el permiso mientras el toque está vigente.
+    const ask = fuente.slice(fuente.indexOf('const ask = useCallback'))
+    const hasta = ask.slice(0, ask.indexOf('sendingRef.current = true'))
+    expect(hasta).toMatch(/desbloquearElSonido\(\)/)
+    // Mirando CÓDIGO, no comentarios: el de arriba dice "SIN `await` ANTES" al
+    // explicar por qué, y eso hacía fallar al guard contra sí mismo. Es la
+    // segunda vez que pasa — un guard que se lee a sí mismo no guarda nada.
+    const codigo = hasta.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    expect(codigo).not.toMatch(/await/)
+  })
+
+  it('no se hace si el usuario tiene a Rendi callada', () => {
+    expect(fuente).toMatch(/if \(enabled\) desbloquearElSonido\(\)/)
+  })
+
+  it('el clip mudo no ensucia el estado del reproductor', () => {
+    // Pasa por los mismos avisos que un audio de verdad: sin la guarda,
+    // mandar una pregunta mostraba "Rendi está hablando" por un parpadeo.
+    expect(fuente).toMatch(/const mudo = \(\) => desbloqueandoRef\.current/)
+    for (const aviso of ['onTime', 'onEnd', 'onErr', 'onPlay', 'onPause']) {
+      const i = fuente.indexOf('const ' + aviso + ' =')
+      expect(fuente.slice(i, i + 160), aviso).toMatch(/mudo\(\)/)
+    }
+  })
+
+  it('una sola vez por carga: alcanza para toda la sesión', () => {
+    expect(fuente).toMatch(/if \(!a \|\| desbloqueadoRef\.current\) return/)
+  })
+})
