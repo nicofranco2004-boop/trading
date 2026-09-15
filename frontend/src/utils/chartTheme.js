@@ -70,7 +70,7 @@ export const chartTooltip = Object.freeze({
     borderRadius: 12,
     fontSize: 12.5,
     padding: '8px 12px',
-    boxShadow: 'var(--chart-tooltip-shadow)',
+    boxShadow: 'var(--shadow-raised)',
   },
   labelStyle: { color: v('ink-0'), fontSize: 12, fontWeight: 600, marginBottom: 5 },
   itemStyle: { color: v('ink-1'), fontSize: 12.5, padding: '2px 0' },

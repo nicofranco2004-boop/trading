@@ -165,7 +165,7 @@ export default function DateInput({ value, onChange, min, max, className = '', p
       </div>
 
       {open && (
-        <div className="absolute z-50 mt-1 left-0 bg-bg-2 border border-line rounded-lg shadow-2xl p-3 w-[280px]">
+        <div className="absolute z-50 mt-1 left-0 bg-bg-raised border border-line rounded-lg shadow-2xl p-3 w-[280px]">
           {/* Header — saltos de mes (‹ ›) y de año (« »), para llegar rápido a fechas viejas */}
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center">

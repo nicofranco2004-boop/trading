@@ -183,7 +183,7 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
       </div>
 
       {open && (
-        <div className="absolute z-50 mt-1 left-0 bg-bg-2 border border-line rounded-lg shadow-2xl overflow-hidden w-[min(680px,92vw)] flex flex-col" style={{ maxHeight: '70vh' }}>
+        <div className="absolute z-50 mt-1 left-0 bg-bg-raised border border-line rounded-lg shadow-2xl overflow-hidden w-[min(680px,92vw)] flex flex-col" style={{ maxHeight: '70vh' }}>
           {/* Tabs de categorías — sticky para que no se vayan al scrollear */}
           <div className="flex flex-wrap gap-1.5 p-2.5 bg-bg-2 dark:bg-bg-1/50 border-b border-line shrink-0">
             {CATEGORIES.map(cat => {

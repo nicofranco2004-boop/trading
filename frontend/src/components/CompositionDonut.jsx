@@ -370,7 +370,7 @@ function DonutTooltip({ active, payload, fmt }) {
   const d = payload[0]?.payload
   if (!d) return null
   return (
-    <div className="border border-line-2 bg-bg-2 rounded px-2.5 py-1.5 shadow-lg">
+    <div className="border border-line-2 bg-bg-raised rounded px-2.5 py-1.5 shadow-lg">
       <div className="flex items-center gap-2">
         <span
           className="inline-block w-2 h-2 rounded-sm flex-shrink-0"

@@ -761,7 +761,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4 overflow-y-auto">
-      <div className="bg-bg-2 border border-line rounded-t-2xl sm:rounded-xl w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[90vh] flex flex-col">
+      <div className="bg-bg-raised border border-line rounded-t-2xl sm:rounded-xl w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-line flex-shrink-0">
           <h2 className="font-semibold text-ink-0 text-sm sm:text-base">
             Importar

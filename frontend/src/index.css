@@ -151,9 +151,12 @@
     /* No son colores: son las dos cosas del gráfico que cambian de FORMA
        entre temas. La transparencia se percibe más débil sobre blanco, así
        que el relleno bajo la línea sube. Y la elevación en claro se hace con
-       sombra, porque sobre un panel ya blanco no queda nada que aclarar. */
+       sombra, porque sobre un panel ya blanco no queda nada que aclarar.
+       `--shadow-raised` es la sombra de TODO lo que flota —el globo de datos
+       y el átomo Panel con `elevated`—, no sólo del gráfico: son la misma
+       cosa y llevan un solo nombre. */
     --chart-area-op       : 0.22           ;
-    --chart-tooltip-shadow: 0 1px 2px rgb(21 23 30 / .06), 0 8px 24px -12px rgb(21 23 30 / .28);
+    --shadow-raised: 0 1px 2px rgb(21 23 30 / .06), 0 8px 24px -12px rgb(21 23 30 / .28);
 
     /* ── El hover de una barra del año (reports/PerformanceCalendar) ─────
        El hover tiene que ALEJARSE del fondo, y el fondo cambia de tema: en
@@ -194,6 +197,18 @@
        apenas más profundo para llegar a 4,64:1. En oscuro se queda el verde
        de siempre, que es el que la gente reconoce. */
     --whatsapp            : 16 131 118     ;
+
+    /* ── La superficie que FLOTA (modales, menús, globos, el buscador) ───
+       El defecto que F3 viene a arreglar: `bg-2` hacía dos trabajos que en
+       claro tiran para lados opuestos. Como "hover" tiene que ALEJARSE del
+       panel, y como "elevado" tiene que estar POR ENCIMA de él. En oscuro los
+       dos son aclarar, así que el mismo valor servía para ambos. En claro el
+       panel ya es blanco: elevar es quedarse en blanco y dejar que la sombra
+       haga el trabajo, mientras que el hover se va al gris. Direcciones
+       opuestas, un solo token: eso no cierra.
+       Ahora `bg-2` se queda con hover y relleno sutil, y lo que flota usa
+       esto. En oscuro vale lo mismo que `bg-2` valía — cero cambio. */
+    --bg-raised           : 255 255 255    ;
   }
 
   .dark {
@@ -288,7 +303,7 @@
     --mono-violet-5       : 61 53 126      ;
 
     --chart-area-op       : 0.18           ;
-    --chart-tooltip-shadow: none           ;
+    --shadow-raised: none           ;
 
     /* ── El hover de una barra del año (reports/PerformanceCalendar) ─────
        El hover tiene que ALEJARSE del fondo, y el fondo cambia de tema: en
@@ -329,6 +344,18 @@
        apenas más profundo para llegar a 4,64:1. En oscuro se queda el verde
        de siempre, que es el que la gente reconoce. */
     --whatsapp            : 37 211 102     ;
+
+    /* ── La superficie que FLOTA (modales, menús, globos, el buscador) ───
+       El defecto que F3 viene a arreglar: `bg-2` hacía dos trabajos que en
+       claro tiran para lados opuestos. Como "hover" tiene que ALEJARSE del
+       panel, y como "elevado" tiene que estar POR ENCIMA de él. En oscuro los
+       dos son aclarar, así que el mismo valor servía para ambos. En claro el
+       panel ya es blanco: elevar es quedarse en blanco y dejar que la sombra
+       haga el trabajo, mientras que el hover se va al gris. Direcciones
+       opuestas, un solo token: eso no cierra.
+       Ahora `bg-2` se queda con hover y relleno sutil, y lo que flota usa
+       esto. En oscuro vale lo mismo que `bg-2` valía — cero cambio. */
+    --bg-raised           : 20 25 35       ;
   }
 }
 

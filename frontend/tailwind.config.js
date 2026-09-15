@@ -72,6 +72,13 @@ export default {
         'rendi-warn':   'rgb(var(--rendi-warn) / <alpha-value>)',    // amber — warnings
         'rendi-accent': 'rgb(var(--rendi-accent) / <alpha-value>)',  // sky — información, benchmarks, links
 
+        // ── La superficie que flota (F3) ──────────────────────────────────
+        // Modales, menús, globos de datos, el desplegable del buscador. Usaban
+        // `bg-2`, que además es el hover: dos trabajos que en claro tiran para
+        // lados opuestos (elevar es quedarse blanco, el hover es irse al gris).
+        // En oscuro vale lo mismo que valía `bg-2`.
+        'bg-raised': 'rgb(var(--bg-raised) / <alpha-value>)',
+
         // ── El verde y el rojo se parten en dos trabajos (F0) ─────────────
         // En oscuro un solo verde alcanzaba para el número Y para la barra
         // del gráfico. Sobre blanco no: el verde vivo como TEXTO da 2,03:1

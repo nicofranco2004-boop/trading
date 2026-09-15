@@ -421,7 +421,7 @@ function TickerCombobox({ value, onChange, placeholder }) {
         />
       </div>
       {open && results.length > 0 && (
-        <div className="absolute z-30 left-0 right-0 mt-1 bg-bg-2 border border-line rounded-lg shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
+        <div className="absolute z-30 left-0 right-0 mt-1 bg-bg-raised border border-line rounded-lg shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
           {results.map(t => (
             <AssetResultRow
               key={t.symbol}

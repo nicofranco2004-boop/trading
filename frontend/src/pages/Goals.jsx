@@ -150,7 +150,7 @@ export default function Goals() {
       />
 
       {/* CAGR card */}
-      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
+      <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
         <div className="flex items-center gap-1.5 mb-2">
           <TrendingUp size={16} className="text-ink-3" />
           <h2 className="font-semibold text-ink-0">Rendimiento histórico (CAGR)</h2>
@@ -213,7 +213,7 @@ export default function Goals() {
 
       {/* Goals list */}
       {goals.length === 0 ? (
-        <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl">
+        <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl">
           <EmptyState
             icon={<Target size={20} />}
             title="Sin objetivos definidos"
@@ -292,7 +292,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
       params={{ goal_id: goal.id }}
       subtitle={goal.label || `Objetivo · $${usd(target)}`}
     >
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
       <div className="flex items-start justify-between mb-4">
         <div>
           <div className="flex items-center gap-2">
@@ -316,7 +316,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
           <span className="font-medium">{progressPct.toFixed(1).replace('.', ',')}%</span>
           <span>${usd(target)}</span>
         </div>
-        <div className="h-2 bg-bg-2 dark:bg-bg-2 rounded-full overflow-hidden">
+        <div className="h-2 bg-bg-2 rounded-full overflow-hidden">
           <div
             className={`h-full rounded-full transition-[width] duration-300 ease-out motion-reduce:transition-none ${reached ? 'bg-rendi-pos' : 'bg-rendi-accent'}`}
             style={{ width: `${progressPct}%` }}
@@ -534,7 +534,7 @@ function Scenario({ title, value, sub, warn }) {
 }
 
 function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
-  const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0'
+  const inputClass = 'w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0'
 
   return (
     <div className="space-y-4">
@@ -616,7 +616,7 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
             step={0.1}
             value={form.expected_return_pct}
             onChange={e => setForm(f => ({ ...f, expected_return_pct: e.target.value }))}
-            className="w-20 bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-2 py-1 text-sm text-ink-0 text-center"
+            className="w-20 bg-bg-2 border border-line-2 rounded-md px-2 py-1 text-sm text-ink-0 text-center"
           />
           <span className="text-sm text-ink-3">%</span>
         </div>

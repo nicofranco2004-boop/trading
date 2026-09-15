@@ -58,6 +58,10 @@ const DARK_ANTES_DE_F0 = {
   // La partición sólo se nota en claro. Si alguien los separa en oscuro, es
   // un cambio visual para todos los usuarios y tiene que ser deliberado.
   'rendi-pos-fill': '#21D07A', 'rendi-neg-fill': '#FF5360',
+  // El que F3 agregó: la superficie que flota. En oscuro vale EXACTAMENTE lo
+  // que valía `bg-2`, que es lo que esas superficies usaban. Si alguien lo
+  // separa en oscuro, es un cambio visual para todos y tiene que ser a mano.
+  'bg-raised': '#141923',
 }
 
 // La rampa de polaridad (heatmap + calendario). No pasa por Tailwind: se usa
@@ -105,7 +109,7 @@ const GRAFICO_DARK = {
 // lleva el relleno bajo la línea, y si el globo de datos tiene sombra o no.
 // No se les puede aplicar la regla de "tres canales": una opacidad es un
 // número y una sombra es una lista de largos y colores.
-const NO_SON_COLORES = new Set(['chart-area-op', 'chart-tooltip-shadow'])
+const NO_SON_COLORES = new Set(['chart-area-op', 'shadow-raised'])
 
 const hexACanales = (hex) => {
   const h = hex.replace('#', '')
