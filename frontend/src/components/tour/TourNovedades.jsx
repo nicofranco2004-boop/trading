@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { PASOS, ATRIBUTO, yaLoVio, marcarVisto } from './pasos'
+import { useVoz } from '../../contexts/VozContext'
 
 // Cuánto aire se deja alrededor de lo iluminado.
 const AIRE = 8
@@ -65,7 +66,11 @@ export default function TourNovedades() {
     if (typeof localStorage !== 'undefined') marcarVisto(localStorage)
   }, [])
 
-  const paso = activo ? PASOS[i] : null
+  // El asesor en su propio nivel ve EL MISMO tutorial; sólo cambia el texto de
+  // los pasos donde lo que puede hacer es otra cosa (ver `libro` en pasos.js).
+  const { modoLibro } = useVoz()
+  const crudo = activo ? PASOS[i] : null
+  const paso = crudo && modoLibro && crudo.libro ? { ...crudo, ...crudo.libro } : crudo
 
   // Llevar al usuario a donde vive el paso.
   useEffect(() => {

@@ -29,6 +29,8 @@ import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
 import { loadChatSession, saveChatSession, clearChatSession, sendWindow, MAX_STORED } from '../utils/chatSession'
+import { useAuth } from './AuthContext'
+import { getClientContext } from '../utils/api'
 import { traducirErrorDeChat, esCancelacion } from '../utils/errorChat'
 
 const LS_ON = 'rendi:voz:on'
@@ -175,6 +177,15 @@ export function VozProvider({ children }) {
   // Snapshot de la cartera para poder repreguntar desde cualquier pantalla.
   // Perezoso: recién se pide cuando hace falta, y se refresca si el chat
   // registró una operación.
+  // ¿El asesor EN SU PROPIO NIVEL? Su chat habla del LIBRO —todas las carteras
+  // de sus clientes— y ese contexto lo arma el SERVIDOR: decide el modo libro
+  // solo, mirando quién pregunta, e ignora lo que mande el navegador.
+  //
+  // Por eso acá lo único que hay que hacer es NO pedirle su cartera personal,
+  // que está vacía. Mismo criterio que la pantalla de Rendi AI.
+  const { user } = useAuth()
+  const modoLibro = user?.tier === 'advisor' && !getClientContext()
+
   const snapRef = useRef(null)
   const sendingRef = useRef(false)
   // 🔴 DE QUÉ CONVERSACIÓN ES LO QUE ESTÁ LLEGANDO.
@@ -412,6 +423,10 @@ export function VozProvider({ children }) {
     }
     try {
       if (snapDeAfuera) snapRef.current = snapDeAfuera
+      // En modo LIBRO no se pide la cartera personal del asesor: está vacía, y
+      // el contexto lo arma el servidor. Se manda un objeto vacío —el chat
+      // exige algo truthy para habilitar el envío— igual que hace /ai.
+      else if (modoLibro) snapRef.current = snapRef.current || {}
       else if (!snapRef.current) snapRef.current = await fetchAiSnapshot()
       let acc = ''
       // Al modelo van SOLO role y content: el hilo de acá guarda además el
@@ -559,7 +574,7 @@ export function VozProvider({ children }) {
         setPaso(null)
       }
     }
-  }, [thread, enabled, speak, stop, desbloquearElSonido])
+  }, [thread, enabled, speak, stop, desbloquearElSonido, modoLibro])
 
   /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
   const limpiar = useCallback(() => {
@@ -669,10 +684,11 @@ export function VozProvider({ children }) {
     speak, escuchar, toggle, stop,
     open, setOpen,
     thread, sending, loading, paso, askError, upgradeInfo, usageDelError, motivoSinVoz,
+    modoLibro,
     sinCupo, ask, analizar, limpiar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
        speak, escuchar, toggle, stop, open, thread, sending, loading, paso, askError,
-       upgradeInfo, usageDelError, sinCupo, motivoSinVoz, ask, analizar, limpiar])
+       upgradeInfo, usageDelError, sinCupo, motivoSinVoz, modoLibro, ask, analizar, limpiar])
 
   return (
     <VozContext.Provider value={value}>
@@ -692,7 +708,7 @@ const INERTE = {
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
-  thread: [], sending: false, paso: null, askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null, motivoSinVoz: null,
+  thread: [], sending: false, paso: null, askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null, motivoSinVoz: null, modoLibro: false,
   ask: () => {}, analizar: () => {}, limpiar: () => {},
 }
 

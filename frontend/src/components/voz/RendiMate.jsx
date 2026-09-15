@@ -21,13 +21,9 @@ import { useMicrofono } from './BotonMicrofono'
 import { useVoz, RATES } from '../../contexts/VozContext'
 import { usePegadoAlFondo } from '../../hooks/usePegadoAlFondo'
 import { useArrastrable } from '../../hooks/useArrastrable'
+import { paraLaIsla } from '../ai/preguntasSugeridas'
 
-// Preguntas de arranque: dos, cortas, y de las que ya están en la whitelist
-// del backend (si no, Free y Plus se comen un 403 al tocarlas).
-const SUGERIDAS = [
-  '¿Cómo está mi portfolio en general?',
-  '¿Qué riesgos detectás en mi cartera?',
-]
+
 
 const mmss = (s) => {
   if (!isFinite(s) || s < 0) return '0:00'
@@ -54,7 +50,7 @@ export default function RendiMate() {
     status, progress, current,
     escuchar, toggle, stop,
     open, setOpen,
-    thread, sending, paso, askError, sinCupo, ask, motivoSinVoz,
+    thread, sending, paso, askError, sinCupo, ask, motivoSinVoz, modoLibro,
   } = useVoz()
   const [texto, setTexto] = useState('')
 
@@ -381,7 +377,7 @@ export default function RendiMate() {
       {/* ── Sugeridas ────────────────────────────────────────────────────── */}
       {thread.length === 0 && !sending && (
         <div className="flex flex-wrap gap-1.5 px-3 pb-2.5">
-          {SUGERIDAS.map(q => (
+          {paraLaIsla(modoLibro).map(q => (
             <button key={q} type="button" onClick={() => ask(q)}
               className="rounded-full border border-line-2 px-2.5 py-1 text-[11.5px] text-ink-2
                          hover:text-ink-0 hover:border-ink-3 transition-colors">

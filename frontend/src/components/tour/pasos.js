@@ -14,7 +14,11 @@
 // existe si ya hay una respuesta, y el tutorial corre con el chat vacío. Se
 // resalta el interruptor de arriba, que decide lo mismo y siempre está.
 
-/** Dónde vive cada paso. `null` = donde esté el usuario, sin moverlo. */
+/** Dónde vive cada paso. `null` = donde esté el usuario, sin moverlo.
+ *
+ *  `libro` es la variante para el ASESOR en su propio nivel, donde el producto
+ *  de verdad es otro. Es el MISMO tutorial —mismos pasos, mismo aspecto— y sólo
+ *  cambia donde cambia lo que puede hacer. */
 export const PASOS = [
   {
     id: 'isla',
@@ -48,6 +52,17 @@ export const PASOS = [
     titulo: 'Contale lo que compraste',
     texto: 'Escribí o dictá «compré 100 dólares a 1.450» y Rendi lo carga en tu cartera. '
       + 'Te muestra qué entendió antes de guardar nada.',
+    // 🔴 EL ASESOR NO PUEDE REGISTRAR OPERACIONES PROPIAS y no es un olvido:
+    // la herramienta está excluida a propósito de su juego (ver
+    // _AI_TOOLS_ADVISOR). Lo que SÍ tiene es la compra GRUPAL, que es la misma
+    // idea a escala de su libro. Prometerle el botón que no tiene sería peor
+    // que no mostrarle el paso.
+    libro: {
+      titulo: 'Contale una compra de varios clientes',
+      texto: 'Dictá «registrale a Juan 300.000 pesos y a Ana 400.000 del CEDEAR de Tesla '
+        + 'a 58.900» y Rendi lo anota para los dos. Te muestra qué entendió antes de '
+        + 'guardar nada, y no toca los brokers: sólo lo registra en Rendi.',
+    },
   },
 ]
 
