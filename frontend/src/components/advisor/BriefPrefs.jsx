@@ -11,10 +11,11 @@ import { api } from '../../utils/api'
 import { useToast } from '../Toast'
 
 const ROWS = [
-  { key: 'brief_open', icon: Sunrise, title: 'Cuando abre el mercado',
-    when: '~11:00', desc: 'El plan del día: a quién llamar, quién tiene plata parada, qué eventos hay hoy.' },
-  { key: 'brief_close', icon: Sunset, title: 'Cuando cierra el mercado',
-    when: '~17:15', desc: 'El resultado del día: cuánto se movió tu libro, quién subió y quién bajó.' },
+  { key: 'brief_open', icon: Sunrise, title: 'Resumen del día',
+    when: '~11:00', desc: 'Qué pasó en el mercado —tasas, dólar, inflación, petróleo— y a cuántos '
+      + 'de tus clientes les toca. Después, a quién llamar y qué eventos hay hoy.' },
+  { key: 'brief_close', icon: Sunset, title: 'Cómo cerró el día',
+    when: '~17:15', desc: 'El resultado: cuánto se movió tu libro, quién subió y quién bajó.' },
 ]
 
 export default function BriefPrefs() {
@@ -56,8 +57,8 @@ export default function BriefPrefs() {
   return (
     <Panel padding="none">
       <header className="px-4 py-3 border-b border-line">
-        <h2 className="text-sm font-medium text-ink-0">Brief de tu libro</h2>
-        <p className="text-xs text-ink-3 mt-0.5">Dos mails por día hábil, en los horarios del mercado argentino</p>
+        <h2 className="text-sm font-medium text-ink-0">Tus mails diarios</h2>
+        <p className="text-xs text-ink-3 mt-0.5">Dos por día hábil, en los horarios del mercado argentino</p>
       </header>
 
       {loadError && (

@@ -1637,9 +1637,17 @@ def send_recommendation_acknowledgment(user_email: str, user_name: str) -> bool:
 
 
 def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
-    """Brief del libro del asesor. Dos sabores anclados al mercado argentino:
-    'open' (abre BYMA — el plan del día) y 'close' (cerró — el resultado).
-    `brief` viene de advisor_brief.build_brief(). No-reply (es automático)."""
+    """El mail diario del asesor. Dos sabores anclados al mercado argentino:
+    'open' → «Resumen del día» (abre BYMA: qué pasó afuera y el plan de hoy)
+    'close' → «Cómo cerró el día» (cerró BYMA: el resultado del libro).
+
+    ⚠️ LOS DOS TÍTULOS TIENEN QUE SER DISTINTOS. Ya pasó una vez que el de cierre
+    salía con el título del de apertura y en la bandeja se confundían.
+
+    El de APERTURA lleva arriba el resumen del mercado (`brief["narrative"]`),
+    porque el asesor ya recibe este mail a las 11:00 en punto y mandarle un
+    segundo mail de Rendi en el mismo minuto es cómo se logra que deje de abrir
+    los dos. `brief` viene de advisor_brief.build_brief(). No-reply."""
     kind = (brief or {}).get("kind") or "open"
     is_open = kind == "open"
     # Saludo solo con un nombre que PAREZCA un nombre: las cuentas de trabajo
@@ -1648,7 +1656,32 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
     _raw = (user_name or "").strip().split(" ")[0]
     name = _raw if (len(_raw) >= 3 and _raw.isalpha()) else ""
     hi = f"Buen día{', ' + name if name else ''}." if is_open else f"Cierre del día{', ' + name if name else ''}."
-    title = "Tu libro hoy" if is_open else "Cómo cerró tu libro"
+    title = "Resumen del día" if is_open else "Cómo cerró el día"
+
+    # El resumen del mercado, sólo en el de apertura.
+    nar = (brief or {}).get("narrative") or {}
+    nar_titular = (nar.get("titular") or "").strip()
+    nar_mercado = [p for p in (nar.get("mercado") or []) if (p or "").strip()]
+    nar_libro = [p for p in (nar.get("tu_cartera") or []) if (p or "").strip()]
+
+    def _parrafos(ps, top):
+        return "".join(
+            f'<p style="font-size:15.5px;line-height:1.62;color:#2b2f3a;'
+            f'margin:{top if i == 0 else 14}px 0 0;">{html.escape(p.strip())}</p>'
+            for i, p in enumerate(ps))
+
+    narrativa_html = ""
+    if nar_mercado:
+        narrativa_html = (
+            f'<h1 style="font-size:21px;font-weight:700;line-height:1.28;'
+            f'margin:0 0 4px;color:#1a1f2e;">{html.escape(nar_titular)}</h1>'
+            + _parrafos(nar_mercado, 14))
+        if nar_libro:
+            narrativa_html += (
+                '<h2 style="font-size:12px;font-weight:700;letter-spacing:.05em;'
+                'text-transform:uppercase;color:#8B7BFF;margin:26px 0 2px;">'
+                'Qué significa para tu libro</h2>' + _parrafos(nar_libro, 8))
+        narrativa_html += '<div style="height:1px;background:#eceaf3;margin:26px 0 0;"></div>'
 
     aum = brief.get("aum_total_usd")
     day = brief.get("day") or {}
@@ -1679,9 +1712,29 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
             f"  - {it.get('label','')}: {it.get('detail','')}" for it in (sec.get("items") or [])))
 
     url = f"{APP_URL}/dashboard"
+    # Con resumen de mercado, el titular de la narración ES el encabezado: el
+    # nombre del mail ("Resumen del día") pasa a ser un rótulo chico arriba, y
+    # lo grande es lo que cambió hoy. Sin narración, el encabezado es el título
+    # de siempre.
+    # ⚠️ EL RESUMEN DEL LIBRO ("Administrás US$ X · 4 clientes") VA ARRIBA CUANDO
+    # HAY NARRACIÓN. Puesto en su lugar de siempre —entre el texto y las
+    # secciones— quedaba una línea suelta en el medio del mail, sin nada que la
+    # explicara: se leía como un error. Arriba, al lado del saludo, es contexto.
+    if narrativa_html:
+        _ctx = (f'<p style="font-size:13px;color:#9ca3af;margin:0 0 14px;">'
+                f'{html.escape(hi)}'
+                f'{" · " + html.escape(headline) if headline else ""}</p>')
+        encabezado = (
+            f'<p style="font-size:11px;font-weight:700;letter-spacing:.06em;'
+            f'text-transform:uppercase;color:#9ca3af;margin:0 0 8px;">{title}</p>'
+            + _ctx + narrativa_html)
+        headline = ""          # ya se mostró arriba
+    else:
+        encabezado = (
+            f'<h1 style="font-size:21px;font-weight:700;margin:0 0 6px;">{title}</h1>'
+            f'<p style="font-size:14px;color:#6b7280;margin:0 0 4px;">{html.escape(hi)}</p>')
     body_html = f"""
-      <h1 style="font-size:21px;font-weight:700;margin:0 0 6px;">{title}</h1>
-      <p style="font-size:14px;color:#6b7280;margin:0 0 4px;">{html.escape(hi)}</p>
+      {encabezado}
       {f'<p style="font-size:15px;color:#1a1f2e;margin:0 0 6px;"><b>{html.escape(headline)}</b></p>' if headline else ''}
       {''.join(secs_html)}
       <div style="text-align:center;margin:26px 0 6px;">
@@ -1691,14 +1744,28 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
       </div>
       <p style="font-size:12px;color:#9ca3af;line-height:1.6;margin:14px 0 0;">
         {'Te lo mandamos cuando abre el mercado argentino.' if is_open else 'Te lo mandamos al cierre del mercado argentino.'}
-        Podés apagarlo en Rendi, en la sección Alertas.
+        {'El resumen de mercado lo escribimos a partir de las noticias del día; no es una recomendación de inversión. ' if narrativa_html else ''}Podés apagarlo en Rendi, en la sección Alertas.
       </p>
     """
-    text = (f"{title}\n\n{hi}\n{headline}\n\n" + "\n\n".join(secs_txt)
+    txt_narrativa = ""
+    if nar_mercado:
+        txt_narrativa = nar_titular + "\n\n" + "\n\n".join(nar_mercado)
+        if nar_libro:
+            txt_narrativa += "\n\nQUÉ SIGNIFICA PARA TU LIBRO\n" + "\n\n".join(nar_libro)
+        txt_narrativa += "\n\n"
+    text = (f"{title}\n\n{hi}{' · ' + headline if headline and not txt_narrativa else ''}\n\n"
+            f"{txt_narrativa}" + "\n\n".join(secs_txt)
             + f"\n\nAbrir tu libro: {url}\n\n— Rendi")
-    # El asunto tiene que decir de qué brief es: el de cierre salía con el
-    # título del de apertura ("Tu libro hoy") y en la bandeja se confundían.
-    subject = (f"{title} · {headline}" if headline else title)[:120]
+
+    # EL ASUNTO. Con resumen de mercado, el titular de la narración manda: es lo
+    # que cambia todos los días y lo que decide si se abre. Sin él, el título.
+    # ⚠️ Los dos mails del día tienen que distinguirse en la bandeja — el de
+    # cierre salió una vez con el título del de apertura y se confundían.
+    if nar_titular:
+        _cola = f" · {brief['clients_n']} clientes" if brief.get("clients_n") else ""
+        subject = (nar_titular + _cola)[:120]
+    else:
+        subject = (f"{title} · {headline}" if headline else title)[:120]
     return _send(to, subject, _wrap_html(body_html), text, from_addr=_from_noreply())
 
 

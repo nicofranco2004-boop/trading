@@ -224,7 +224,8 @@ def _event_label(t: str) -> str:
     return _EVENT_LABELS.get(t or "", t or "Evento")
 
 
-def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
+def build_brief(conn, uid: int, kind: str, price_cache: dict = None,
+                market_ctx: list = None) -> dict:
     """Contenido del brief. Devuelve {} si el asesor no tiene nada que contar
     (sin clientes) — el caller no manda email vacío."""
     import main
@@ -251,6 +252,42 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
            "aum_total_usd": aum.get("total_usd"), "sections": []}
 
     if kind == "open":
+        # 0. EL MERCADO. Va arriba de todo y es lo primero que se lee.
+        #
+        # Decisión de producto (Nico, 2026-09-15): el resumen de mercado vive
+        # ACÁ ADENTRO y no en un mail aparte. El asesor ya recibe este mail a
+        # las 11:00 en punto, que es la misma hora del resumen del inversor:
+        # mandarle dos mails de Rendi en el mismo minuto, los dos sobre la
+        # mañana, es la forma más rápida de que deje de abrir los dos.
+        #
+        # Y el orden importa: primero el mercado, después a quién llamar. Al
+        # revés la llamada llega sin tema de conversación, y cruzar la noticia
+        # con el cliente a mano es justamente el trabajo que el mail le tiene
+        # que ahorrar.
+        try:
+            import market_brief
+            holders = main._advisor_ticker_holders(conn, uid) or {}
+            desde = market_brief._news_window_start(out["date"])
+            # El contexto de mercado es el MISMO para todos: si la corrida ya
+            # lo leyó, llega por parámetro y no se vuelve a consultar.
+            ctx = (market_ctx if market_ctx is not None
+                   else market_brief.market_context(conn, desde))
+            tickers = sorted(holders)[:market_brief.MAX_TICKERS]
+            news = market_brief._news_for(conn, tickers, desde) if tickers else []
+            if ctx:
+                nar = market_brief.narrate(ctx, news, tickers, holders=holders)
+                if nar:
+                    out["narrative"] = {
+                        "titular": nar.titular,
+                        "mercado": list(nar.mercado),
+                        "tu_cartera": list(nar.tu_cartera),
+                    }
+        except Exception as ex:
+            # El brief sale igual sin la parte de mercado: lo de abajo —a quién
+            # llamar, los eventos del día— es lo que el asesor no puede
+            # conseguir en ningún otro lado.
+            log.warning("brief mercado uid=%s: %s", uid, ex)
+
         # 1. A quién llamar hoy (las colas del libro, ya en criollo)
         queues = (book.get("queues") or [])[:5]
         if queues:
@@ -399,7 +436,13 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None) -> dict:
                 "items": [{"label": "Aportes − retiros",
                            "detail": f"US$ {flows['net_deposited_usd']:,.0f}".replace(",", ".")}]})
 
-    if not out["sections"] and not out.get("day"):
+    # Nunca un mail vacío. ⚠️ `narrative` ENTRA EN LA CUENTA desde que el de
+    # apertura lleva resumen de mercado: sin esto, un asesor sin nadie a quien
+    # llamar y sin eventos hoy se quedaba sin el mail entero, aunque el resumen
+    # del mercado —que es la parte que SIEMPRE tiene contenido— estuviera
+    # escrito y pago. Es el guard que decide si el mail sale, y agregarle una
+    # sección al mail sin tocarlo lo deja mintiendo sobre qué es "vacío".
+    if not out["sections"] and not out.get("day") and not out.get("narrative"):
         return {}
     return out
 
@@ -417,12 +460,23 @@ def run_briefs(kind: str, get_db, only_uid: int = None) -> dict:
     conn = get_db()
     try:
         uids = [only_uid] if only_uid else advisor_uids(conn)
+        # El contexto de mercado es el MISMO para todos los asesores: se lee una
+        # vez por corrida, igual que el price_cache. Sólo para el de apertura,
+        # que es el único que lleva resumen de mercado.
+        market_ctx = None
+        if kind == "open" and uids:
+            try:
+                import market_brief
+                market_ctx = market_brief.market_context(
+                    conn, market_brief._news_window_start(day))
+            except Exception as ex:
+                log.warning("brief: contexto de mercado no disponible: %s", ex)
         for uid in uids:
             try:
                 if not brief_enabled(conn, uid, kind) or already_sent(conn, uid, kind, day):
                     skipped += 1
                     continue
-                data = build_brief(conn, uid, kind, price_cache)
+                data = build_brief(conn, uid, kind, price_cache, market_ctx)
                 if not data:
                     skipped += 1
                     continue

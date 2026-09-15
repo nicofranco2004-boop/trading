@@ -680,3 +680,171 @@ class MarketBriefTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BriefDelAsesorTest(unittest.TestCase):
+    """El resumen de mercado DENTRO del mail del asesor.
+
+    Va adentro y no en un mail aparte porque el asesor ya recibe el brief a las
+    11:00 en punto — la misma hora del resumen del inversor. Dos mails de Rendi
+    en el mismo minuto, los dos sobre la mañana, es cómo se logra que deje de
+    abrir los dos.
+    """
+
+    def setUp(self):
+        p = patch.object(market_brief, "narrate",
+                         lambda *a, **k: _NarracionFake(
+                             titular="Las tasas tocan su máximo en 19 años",
+                             tu_cartera=["GGAL cae tras el anuncio del BCRA: la tienen "
+                                         "8 de tus 12 clientes."]))
+        p.start(); self.addCleanup(p.stop)
+
+    def _mail(self, brief):
+        cap = {}
+        with patch.object(emails, "_send",
+                          lambda to, subject, html, text, **kw: cap.update(
+                              subject=subject, html=html, text=text) or True):
+            emails.send_advisor_brief(to="a@b.co", user_name="Nicolas", brief=brief)
+        return cap
+
+    def test_los_dos_mails_del_dia_no_se_confunden_en_la_bandeja(self):
+        """Ya pasó una vez: el de cierre salía con el título del de apertura."""
+        cierre = self._mail({"kind": "close", "date": "2026-09-15", "sections": []})
+        self.assertIn("Cómo cerró el día", cierre["text"])
+        self.assertNotIn("Resumen del día", cierre["text"])
+
+    def test_el_de_apertura_lleva_el_mercado_arriba(self):
+        m = self._mail({"kind": "open", "date": "2026-09-15", "clients_n": 12,
+                        "sections": [{"title": "Para llamar hoy",
+                                      "items": [{"label": "María", "detail": "41 días"}]}],
+                        "narrative": {"titular": "Las tasas tocan su máximo en 19 años",
+                                      "mercado": ["El bono a diez años superó el 5%."],
+                                      "tu_cartera": ["GGAL la tienen 8 de tus 12 clientes."]}})
+        # el mercado va ANTES que a quién llamar
+        self.assertLess(m["html"].index("superó el 5%"),
+                        m["html"].index("Para llamar hoy"),
+                        "el mercado tiene que ir arriba: si no, la llamada llega sin tema")
+        self.assertIn("Qué significa para tu libro", m["html"])
+        # y el asunto es el titular del mercado, no "Resumen del día"
+        self.assertTrue(m["subject"].startswith("Las tasas tocan"))
+
+    def test_sin_mercado_el_mail_sale_igual(self):
+        """Si la narración falla, el asesor igual recibe lo suyo: a quién llamar
+        y los eventos del día no los consigue en ningún otro lado."""
+        m = self._mail({"kind": "open", "date": "2026-09-15",
+                        "sections": [{"title": "Para llamar hoy",
+                                      "items": [{"label": "María", "detail": "41 días"}]}]})
+        self.assertIn("Para llamar hoy", m["html"])
+        self.assertIn("Resumen del día", m["html"])
+
+    def test_al_asesor_se_le_habla_de_su_LIBRO_no_de_su_cartera(self):
+        """El asesor no tiene cartera propia. Y el packet le pasa a CUÁNTOS
+        clientes les toca cada activo, que es lo que convierte una noticia en
+        una llamada."""
+        holders = {"GGAL": [{"client_uid": i, "label": f"C{i}"} for i in range(8)],
+                   "NVDA": [{"client_uid": 1, "label": "C1"}]}
+        news = [{"ticker": "GGAL", "title": "Galicia cae"},
+                {"ticker": "NVDA", "title": "Nvidia sube"}]
+        packet = market_brief._packet_para_narrar([], news, ["GGAL", "NVDA"], holders)
+
+        self.assertIn("activos_del_libro", packet)
+        self.assertNotIn("activos_con_noticias", packet, "ese es el del inversor")
+        conteo = {a["activo"]: a["clientes"] for a in packet["activos_del_libro"]}
+        self.assertEqual(conteo, {"GGAL": 8, "NVDA": 1})
+        self.assertEqual(packet["clientes_en_el_libro"], 8)
+
+    def test_el_prompt_del_asesor_y_el_del_inversor_comparten_el_mercado(self):
+        """Un solo prompt con el último bloque variable. Dos copias del texto de
+        mercado es cómo este repo genera deuda: se corrige una y la otra queda
+        vieja."""
+        self.assertIn("LOS TEMAS QUE IMPORTAN", market_brief._SYSTEM_BASE)
+        self.assertIn("REGLAS QUE NO SE NEGOCIAN", market_brief._SYSTEM_BASE)
+        # y lo del asesor NO repite nada de eso
+        self.assertNotIn("LOS TEMAS QUE IMPORTAN", market_brief._CIERRE_ASESOR)
+        self.assertIn("ASESOR FINANCIERO", market_brief._CIERRE_ASESOR)
+        self.assertIn("clientes", market_brief._CIERRE_ASESOR)
+
+    def test_el_resumen_de_mercado_cuenta_como_contenido(self):
+        """🔴 Bug propio de la integración: el guard de "mail vacío" miraba sólo
+        las secciones del libro y el delta del día. Un asesor sin nadie a quien
+        llamar y sin eventos hoy se quedaba sin el mail ENTERO, aunque el
+        resumen del mercado —la parte que siempre tiene contenido— ya estuviera
+        escrito y pago.
+
+        Agregarle una sección al mail sin tocar el guard que decide si sale lo
+        deja mintiendo sobre qué es "vacío".
+        """
+        import advisor_brief
+        fuente = open(advisor_brief.__file__, encoding="utf-8").read()
+        self.assertIn('not out.get("narrative")', fuente,
+                      "el guard de mail vacío ignora el resumen de mercado")
+
+
+class NumerosInventadosTest(unittest.TestCase):
+    """🔴 El modelo inventa cifras aunque el prompt lo prohíba.
+
+    Caso real del 2026-09-15, con titulares que decían "máximo en 19 años" y
+    "nivel más alto desde 2007": el modelo escribió "el rendimiento superó el
+    5%" y "el escenario más hostil en los últimos dieciocho meses". Ninguno de
+    los dos números estaba en ninguna parte.
+
+    La regla está en el prompt desde el día uno. Pedirlo mejor no es un
+    mecanismo — contarlo sí.
+    """
+
+    def _nar(self, titular="", mercado=(), cartera=()):
+        return _NarracionFake(titular=titular, mercado=list(mercado),
+                              tu_cartera=list(cartera))
+
+    def test_caza_el_porcentaje_que_no_esta_en_ningun_titular(self):
+        ctx = [{"title": "US 10-Year Treasury Yields Rise to Highest Level Since 2007"}]
+        n = self._nar(mercado=["El rendimiento del bono a diez años superó el 5%."])
+        self.assertIn("5", market_brief.numeros_sin_respaldo(n, ctx, []))
+
+    def test_deja_pasar_el_numero_que_SI_esta(self):
+        ctx = [{"title": "Brent Nears $108 as FOMC Commences"},
+               {"title": "10-year Treasury yield hits 19-year high"}]
+        n = self._nar(mercado=["El Brent se acercó a 108 dólares.",
+                               "La tasa tocó un máximo de 19 años."])
+        self.assertEqual(market_brief.numeros_sin_respaldo(n, ctx, []), [])
+
+    def test_los_anios_del_titular_valen(self):
+        ctx = [{"title": "Yields Rise to Highest Level Since 2007"}]
+        n = self._nar(mercado=["Es su nivel más alto desde 2007."])
+        self.assertEqual(market_brief.numeros_sin_respaldo(n, ctx, []), [])
+
+    def test_tambien_mira_el_titular_y_el_bloque_de_la_cartera(self):
+        ctx = [{"title": "Treasury yields hit 19-year high"}]
+        n = self._nar(titular="Las tasas suben 7,3% en la semana",
+                      mercado=["Máximo de 19 años."])
+        self.assertIn("7,3", market_brief.numeros_sin_respaldo(n, ctx, []))
+        n2 = self._nar(mercado=["Máximo de 19 años."],
+                       cartera=["GGAL cayó 4,8% hoy."])
+        self.assertIn("4,8", market_brief.numeros_sin_respaldo(n2, ctx, []))
+
+    def test_los_conteos_de_clientes_no_cuentan_como_invento(self):
+        """«la tienen 8 de tus 12 clientes» sale del libro, no de un titular."""
+        ctx = [{"title": "Treasury yields hit 19-year high"}]
+        n = self._nar(mercado=["Máximo de 19 años."],
+                      cartera=["GGAL la tienen 8 de tus 12 clientes."])
+        self.assertEqual(market_brief.numeros_sin_respaldo(n, ctx, []), [])
+
+    def test_dos_intentos_inventando_y_el_mail_no_sale(self):
+        """Un mail con un número falso es peor que ningún mail: es el único
+        lugar donde Rendi le afirma algo a alguien sin que pueda contrastarlo
+        contra su propia pantalla."""
+        ctx = [{"title": "Treasury yields hit 19-year high"}]
+        malo = self._nar(titular="Tasas", mercado=["Subió 5,4% en el día."])
+
+        class _Res:
+            output = malo
+        # `ai.llm` tiene que estar IMPORTADO para poder reemplazarlo: si no, el
+        # patch no lo encuentra, `narrate` explota y el except se traga el error
+        # devolviendo None — el test pasaría por el motivo equivocado.
+        from ai import llm as _llm
+        with patch.object(market_brief, "numeros_sin_respaldo",
+                          wraps=market_brief.numeros_sin_respaldo) as _spy, \
+             patch.object(_llm, "is_configured", return_value=True), \
+             patch.object(_llm, "analyze", return_value=_Res()):
+            self.assertIsNone(market_brief.narrate(ctx, [], ["GGAL"]))
+        self.assertEqual(_spy.call_count, 2, "tiene que reintentar UNA vez")

@@ -383,7 +383,12 @@ def _events_today(conn, tickers: list, day: str) -> list:
 
 # ─── La narración ────────────────────────────────────────────────────────────
 
-_SYSTEM = """Sos el que le cuenta a un inversor argentino qué pasó en el mercado, \
+# ⚠️ EL PROMPT ES UNO SOLO, con el último bloque variable. Lo usan DOS mails: el
+# del inversor (su cartera) y el del asesor (el libro de sus clientes). Todo lo
+# del mercado —los temas, las reglas de invención, el ritmo— es idéntico para los
+# dos, y tenerlo dos veces sería la forma exacta en que este repo genera deuda:
+# se corrige una copia y la otra queda vieja. Sólo cambia QUÉ ES "lo tuyo".
+_SYSTEM_BASE = """Sos el que le cuenta a un inversor argentino qué pasó en el mercado, \
 en un mail que recibe a las 11 de la mañana, cuando abre la rueda local.
 
 QUÉ TENÉS QUE ESCRIBIR
@@ -458,7 +463,10 @@ petróleo, riesgo país, conflictos. ⚠️ NO nombres acá ningún activo de la
 ni siquiera de paso. Su lugar es el bloque de abajo, y decirlo dos veces hace un \
 mail el doble de largo que no dice nada nuevo.
 
-- tu_cartera: 1 o 2 párrafos, y **SÓLO podés nombrar los activos que están en la \
+"""
+
+# Lo que cambia entre los dos mails: qué es "lo tuyo".
+_CIERRE_INVERSOR = """- tu_cartera: 1 o 2 párrafos, y **SÓLO podés nombrar los activos que están en la \
 lista `activos_con_noticias`**. Ningún otro, por ningún motivo. Si un activo no \
 está en esa lista, no tenés noticias suyas: no digas que subió, que cayó, que se \
 beneficia ni que sufre, ni siquiera deduciéndolo del contexto. Esa deducción suena \
@@ -472,8 +480,33 @@ la persona tiene un banco), el hecho va en "mercado" y el efecto sobre su activo
 va en "tu_cartera", en una sola oración y sin volver a explicar el hecho.
 """
 
+# El asesor NO tiene cartera: tiene un LIBRO de clientes. Y ahí aparece el dato
+# que ningún resumen de mercado genérico puede dar — a CUÁNTOS de sus clientes
+# les toca cada noticia. Es lo que convierte una nota en una llamada.
+_CIERRE_ASESOR = """⚠️ QUIEN LEE ESTO ES UN ASESOR FINANCIERO, no un inversor. No tiene cartera \
+propia: administra el LIBRO de sus clientes. Nunca le digas "tu cartera" ni "tus \
+activos"; son los activos DE SUS CLIENTES.
 
-def _packet_para_narrar(contexto: list, news: list, tickers: list) -> dict:
+- tu_cartera: 1 o 2 párrafos sobre los activos del libro, y **SÓLO podés nombrar \
+los que están en `activos_del_libro`**. Ninguno más, por ningún motivo. Si un \
+activo no está en esa lista, no tenés noticias suyas: no digas que subió, que \
+cayó, que se beneficia ni que sufre, ni siquiera deduciéndolo del contexto. Esa \
+deducción suena razonable y es exactamente cómo se afirma un hecho falso.
+  ⚠️ **USÁ EL DATO DE CUÁNTOS CLIENTES LO TIENEN.** Viene en `clientes` de cada \
+activo y es lo más valioso del mail: convierte una noticia en una llamada. \
+Escribilo natural — "la tienen 8 de tus 12 clientes", "está en 6 carteras". Si el \
+número es 1, "uno de tus clientes".
+  ⚠️ NO repitas acá lo que ya explicaste en "mercado": si la tasa ya quedó contada \
+arriba, acá se da por sabida.
+  Si la lista viene vacía, devolvé lista vacía — no rellenes con generalidades.
+
+Nada de pronósticos ni de qué debería hacer con sus clientes: contás lo que pasó y \
+a quiénes les toca. La decisión es del asesor.
+"""
+
+
+def _packet_para_narrar(contexto: list, news: list, tickers: list,
+                        holders: dict = None) -> dict:
     """Lo único que ve el modelo.
 
     Sin datos de plata: ni cantidades, ni valuaciones, ni cuánto pesa cada
@@ -491,20 +524,110 @@ def _packet_para_narrar(contexto: list, news: list, tickers: list) -> dict:
     prohibición en el prompt no alcanzaba: hay que sacarle el dato que habilita
     el relleno. Si de PAMP no hay noticia, PAMP no entra al packet.
     """
-    con_material = sorted({n["ticker"] for n in news if n.get("ticker")})
-    return {
+    con_material = sorted({n.get("ticker") for n in news if n.get("ticker")})
+    packet = {
         "hoy": _today_art(),
+        # .get() y no [ ]: una clave faltante acá tiraba un KeyError que el
+        # except de `narrate` convierte en "sin narración", o sea en un mail
+        # menos. El tipo y el ticker son contexto, no datos críticos.
         "titulares_de_mercado": [
-            {"t": c["title"], "tipo": c["category"]} for c in contexto],
+            {"t": c.get("title"), "tipo": c.get("category")} for c in contexto],
         "titulares_de_sus_activos": [
-            {"activo": n["ticker"], "t": n["title"]} for n in news],
-        # Los únicos activos de los que se puede hablar en `tu_cartera`.
-        "activos_con_noticias": con_material,
+            {"activo": n.get("ticker"), "t": n.get("title")} for n in news],
     }
+    if holders is None:
+        # Mail del INVERSOR: los únicos activos de los que se puede hablar.
+        packet["activos_con_noticias"] = con_material
+    else:
+        # Mail del ASESOR: además de qué activos, A CUÁNTOS CLIENTES les toca.
+        # Ese número es lo que convierte una noticia en una llamada, y sale de
+        # `_advisor_ticker_holders`, que ya existe para los eventos del día.
+        packet["activos_del_libro"] = [
+            {"activo": t, "clientes": len(holders.get(t) or [])} for t in con_material]
+        packet["clientes_en_el_libro"] = len({
+            c["client_uid"] for cs in holders.values() for c in cs})
+    return packet
 
 
-def narrate(contexto: list, news: list, tickers: list):
+# Lo que se le agrega al prompt en el segundo intento, cuando el primero trajo
+# una cifra que no estaba en ningún titular.
+_AVISO_NUMEROS = """
+
+⚠️ ATENCIÓN: en tu intento anterior escribiste un número que NO estaba en \
+ninguno de los titulares. Eso no se puede. Revisá cada cifra que vayas a poner \
+—precios, porcentajes, plazos, cantidades— y si no la ves ESCRITA en un titular \
+de abajo, sacala y contá el hecho sin el número. "El rendimiento tocó su nivel \
+más alto desde 2007" es correcto si el titular lo dice; "superó el 5%" es \
+inventado si ese 5% no aparece en ninguna parte.
+"""
+
+_re_num = __import__("re")
+_NUM = _re_num.compile(r"\d[\d.,]*")
+
+# ⚠️ QUÉ NÚMERO ESTÁ EXENTO SE DECIDE POR LO QUE LE SIGUE, no por su valor.
+# El primer intento fue una lista de números chicos ("del 1 al 12 son conteos de
+# clientes") y tenía un agujero grande: dejaba pasar «subió 5%», que es
+# exactamente la clase de cifra que hay que cazar. Lo que distingue a los dos no
+# es el número sino la unidad — «8 de tus 12 clientes» sale del libro, «el 5%»
+# sale (o no) de un titular.
+_CONTEXTO_LIBRE = _re_num.compile(
+    r"\d[\d.,]*\s*(de\s+(tus|sus)\s+\d+\s+)?"
+    r"(client|cartera|de\s+tus|de\s+sus)", _re_num.IGNORECASE)
+
+
+def numeros_sin_respaldo(narrativa, contexto: list, news: list) -> list:
+    """Los números del texto que NO aparecen en ningún titular.
+
+    ⚠️ ESTO EXISTE PORQUE EL PROMPT NO ALCANZÓ. La regla "ningún número que no
+    esté escrito en un titular" está en el prompt desde el día uno, y el modelo
+    igual escribió "el rendimiento superó el 5%" y "el escenario más hostil en
+    los últimos dieciocho meses" con titulares que sólo decían "máximo en 19
+    años" y "nivel más alto desde 2007". Medido el 2026-09-15.
+
+    Un número inventado en un mail financiero no es un detalle de estilo: es la
+    clase de dato que alguien repite en una llamada a un cliente. Pedirlo mejor
+    no es un mecanismo; contarlo sí.
+
+    Se comparan sólo DÍGITOS: los números escritos en letras ("dieciocho") no
+    los caza, y queda dicho para que nadie lea este guard como una garantía
+    total. Cubre el caso peligroso, que es la cifra con pinta de dato duro.
+    """
+    material = " ".join(
+        [c.get("title") or "" for c in (contexto or [])]
+        + [n.get("title") or "" for n in (news or [])])
+    # Los números del material, normalizados sin separadores.
+    presentes = {m.group().replace(".", "").replace(",", "").rstrip("0").rstrip(".")
+                 or m.group() for m in _NUM.finditer(material)}
+    presentes |= {m.group() for m in _NUM.finditer(material)}
+
+    texto = " ".join(list(narrativa.mercado) + list(narrativa.tu_cartera)
+                     + [narrativa.titular])
+    # Los tramos que hablan del libro ("8 de tus 12 clientes"): esos números
+    # salen de la base, no de un titular.
+    libres = set()
+    for m in _CONTEXTO_LIBRE.finditer(texto):
+        libres.update(x.rstrip(".,") for x in _NUM.findall(m.group()))
+
+    sueltos = []
+    for m in _NUM.finditer(texto):
+        crudo = m.group().rstrip(".,")
+        if crudo in libres or crudo in presentes:
+            continue
+        limpio = crudo.replace(".", "").replace(",", "")
+        if limpio in presentes or any(limpio in p for p in presentes):
+            continue
+        sueltos.append(crudo)
+    return sueltos
+
+
+def narrate(contexto: list, news: list, tickers: list, holders: dict = None):
     """Escribe la narración. Devuelve el objeto validado, o None.
+
+    `holders` decide para quién se escribe: si viene (mapa {activo: [clientes]}
+    de `_advisor_ticker_holders`), el mail es el del ASESOR y el último bloque
+    habla de su libro y de a cuántos clientes les toca cada noticia. Si no
+    viene, es el del inversor y habla de su cartera. Todo lo demás —los temas,
+    las reglas contra la invención, el ritmo— es el mismo prompt.
 
     None significa "no se manda el mail": sin IA no hay resumen, y un listado
     de titulares —que es lo único que se puede armar sin modelo— ya se descartó
@@ -522,14 +645,34 @@ def narrate(contexto: list, news: list, tickers: list):
         log.warning("market_brief: IA no configurada — no se manda el resumen")
         return None
     try:
-        res = llm.analyze(
-            system_prompt=_SYSTEM,
-            packet=_packet_para_narrar(contexto, news, tickers),
-            output_model=MarketNarrative,
-            model=llm.MODEL_HAIKU,   # resumir es donde Haiku empata con Sonnet
-            max_tokens=1200,
-        )
-        return res.output if res else None
+        sistema = _SYSTEM_BASE + (
+            _CIERRE_ASESOR if holders is not None else _CIERRE_INVERSOR)
+        packet = _packet_para_narrar(contexto, news, tickers, holders)
+
+        # Dos intentos: si el primero inventa un número, se rehace UNA vez.
+        # No es un reintento por las dudas — el modelo ya demostró que se le
+        # escapa una cifra cada tanto, y un número inventado en un mail
+        # financiero es lo que alguien repite después en una llamada.
+        for intento in (1, 2):
+            res = llm.analyze(
+                system_prompt=sistema if intento == 1 else sistema + _AVISO_NUMEROS,
+                packet=packet,
+                output_model=MarketNarrative,
+                model=llm.MODEL_HAIKU,   # resumir es donde Haiku empata con Sonnet
+                max_tokens=1200,
+            )
+            if not res:
+                return None
+            sueltos = numeros_sin_respaldo(res.output, contexto, news)
+            if not sueltos:
+                return res.output
+            log.warning("market_brief: números sin respaldo en el intento %d: %s",
+                        intento, sueltos)
+        # Dos veces inventando: no se manda. Un mail con un número falso es peor
+        # que no mandar mail — este es el único lugar donde Rendi le afirma algo
+        # a alguien sin que pueda contrastarlo contra su propia pantalla.
+        log.error("market_brief: se descarta la narración por números inventados")
+        return None
     except Exception as ex:
         log.error("market_brief: la narración falló: %s", ex)
         return None
