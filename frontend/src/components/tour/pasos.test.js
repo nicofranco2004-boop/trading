@@ -14,9 +14,12 @@ describe('cada paso resalta algo que está de verdad', () => {
   const FUENTES = [
     '../voz/RendiMate.jsx', '../voz/BotonMicrofono.jsx',
     '../AICoach.jsx', '../../pages/RendiAI.jsx',
+    // Los pasos de Alertas: el resumen diario del mercado (lo nuevo) y los
+    // avisos de precio (lo que ya estaba).
+    '../alerts/MarketBriefPrefs.jsx', '../alerts/AlertsManager.jsx',
   ].map(leer).join('\n')
 
-  it('las cuatro marcas existen en la pantalla', () => {
+  it('todas las marcas existen en la pantalla', () => {
     const sinMarcar = PASOS.filter(p => !FUENTES.includes(`${ATRIBUTO}="${p.marca}"`))
     expect(sinMarcar.map(p => p.id)).toEqual([])
   })
@@ -33,6 +36,23 @@ describe('cada paso resalta algo que está de verdad', () => {
     // Arranca donde esté: sacarlo de la pantalla que estaba mirando antes de
     // explicarle nada es empezar desorientándolo.
     expect(PASOS[0].ruta).toBeNull()
+  })
+
+  it('el paseo termina en Alertas, y primero lo nuevo', () => {
+    // Orden pedido por Nico: el resumen del mercado es la novedad, así que va
+    // antes que los avisos de precio, que ya existían. Si alguien los da
+    // vuelta, el tutorial presenta como noticia algo que el usuario ya tenía.
+    const ids = PASOS.map(p => p.id)
+    expect(ids.indexOf('resumen-mercado')).toBeLessThan(ids.indexOf('alertas-precio'))
+    expect(ids.slice(-2)).toEqual(['resumen-mercado', 'alertas-precio'])
+  })
+
+  it('los pasos de Alertas llevan a /alertas', () => {
+    // Sin ruta, el tutorial los explicaría desde donde esté el usuario: iría a
+    // buscar un interruptor que no está en pantalla y saltearía los dos pasos.
+    for (const id of ['resumen-mercado', 'alertas-precio']) {
+      expect(PASOS.find(p => p.id === id).ruta, id).toBe('/alertas')
+    }
   })
 })
 
