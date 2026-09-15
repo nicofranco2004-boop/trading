@@ -344,7 +344,7 @@ function ClientCard({ c, salud, onOpen, onNotes, onInvite, onRevoke, menuOpen, o
             target="_blank" rel="noreferrer noopener"
             onClick={(e) => e.stopPropagation()}
             aria-label="Escribirle por WhatsApp"
-            className="p-1.5 rounded-md text-[#25D366] hover:bg-[#25D366]/10 transition-colors"
+            className="p-1.5 rounded-md text-[rgb(var(--whatsapp))] hover:bg-[rgb(var(--whatsapp))]/10 transition-colors"
           >
             <WhatsAppIcon size={14} />
           </a>

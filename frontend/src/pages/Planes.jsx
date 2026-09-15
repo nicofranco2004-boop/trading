@@ -609,7 +609,7 @@ export default function Planes({ embedded = false }) {
           href={whatsappUrl('Hola, tengo una consulta sobre los planes de Rendi.')}
           target="_blank"
           rel="noreferrer noopener"
-          className="inline-flex items-center gap-1.5 text-xs text-ink-2 hover:text-[#25D366] transition-colors"
+          className="inline-flex items-center gap-1.5 text-xs text-ink-2 hover:text-[rgb(var(--whatsapp))] transition-colors"
         >
           <WhatsAppIcon size={13} />
           ¿Dudas sobre el plan? Hablanos por WhatsApp

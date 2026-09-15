@@ -99,6 +99,21 @@ export const trendArea = (isUp) =>
 export const areaFill = (color) => color.replace(/\)$/, ' / var(--chart-area-op))')
 
 /**
+ * El mismo color, con transparencia.
+ *
+ * Existe porque el atajo de antes era pegarle dos dígitos hex al final
+ * (`` `${color}80` ``), y eso sólo funciona si el color ES un hex. Desde que
+ * los colores son `rgb(var(--x))`, esa concatenación produce CSS inválido
+ * —`rgb(var(--x))80`— que el navegador descarta sin decir nada: el borde o el
+ * fondo simplemente desaparece. Si ves un `${...}` seguido de dos hex sobre un
+ * color, es este bug.
+ *
+ * @param {string} color  un `rgb(var(--x))`
+ * @param {number} alpha  0 a 1
+ */
+export const withAlpha = (color, alpha) => color.replace(/\)$/, ` / ${alpha})`)
+
+/**
  * La paleta de series, en orden fijo.
  *
  * Se asigna por posición y NUNCA se cicla: una novena serie no recibe un color

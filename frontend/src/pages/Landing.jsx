@@ -1485,7 +1485,7 @@ function Footer() {
                   href={whatsappUrl()}
                   target="_blank"
                   rel="noreferrer noopener"
-                  className="inline-flex items-center gap-2 text-ink-1 hover:text-[#25D366] transition-colors"
+                  className="inline-flex items-center gap-2 text-ink-1 hover:text-[rgb(var(--whatsapp))] transition-colors"
                   title="WhatsApp"
                 >
                   <WhatsAppIcon size={13} />

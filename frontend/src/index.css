@@ -162,6 +162,38 @@
        justo al señalarla. Los valores oscuros son los de siempre. */
     --bar-hover-up        : 10 107 61      ;
     --bar-hover-down      : 142 29 38      ;
+
+    /* ── Colores de categoría (tipo de activo · sector · composición) ────
+       Identidad, no magnitud: cada categoría conserva SU tono en los dos
+       temas; lo que cambia es la luminancia. En oscuro son los de siempre;
+       en claro bajan hasta pasar 4:1 contra el blanco, porque su swatch en
+       la leyenda es de 2-3 px y un área chica necesita más contraste que
+       una grande. Once de los veinte quedaban por debajo de 3:1.
+       Los otros seis tonos de estas paletas ya eran tokens del sistema
+       (rendi-pos, data-cyan, rendi-accent, data-violet, data-amber, ink-3)
+       y se usan directamente, sin duplicar variable. */
+    --cat-steel           : 77 124 170     ;
+    --cat-teal            : 78 132 125     ;
+    --cat-indigo          : 119 101 248    ;
+    --cat-slate           : 113 122 152    ;
+    --cat-gray-2          : 111 123 147    ;
+    --cat-slate-2         : 119 121 152    ;
+    --cat-olive           : 118 129 67     ;
+    --cat-brown           : 158 114 82     ;
+    --cat-bronze          : 165 112 34     ;
+    --cat-gold            : 161 115 35     ;
+    --cat-magenta         : 201 53 212     ;
+    --cat-pink            : 211 72 121     ;
+    --cat-orange          : 195 96 9       ;
+
+    /* ── WhatsApp ────────────────────────────────────────────────────────
+       Marca de terceros, no un token del sistema: no se reemplaza por uno.
+       Pero el verde brillante (#25D366) sobre blanco da 1,98:1 y el botón
+       "Escribirle" quedaba ilegible. En claro va el teal oscuro, que TAMBIÉN
+       es de la paleta oficial de WhatsApp (la familia de #128C7E / #075E54),
+       apenas más profundo para llegar a 4,64:1. En oscuro se queda el verde
+       de siempre, que es el que la gente reconoce. */
+    --whatsapp            : 16 131 118     ;
   }
 
   .dark {
@@ -265,6 +297,38 @@
        justo al señalarla. Los valores oscuros son los de siempre. */
     --bar-hover-up        : 95 225 157     ;
     --bar-hover-down      : 255 180 186    ;
+
+    /* ── Colores de categoría (tipo de activo · sector · composición) ────
+       Identidad, no magnitud: cada categoría conserva SU tono en los dos
+       temas; lo que cambia es la luminancia. En oscuro son los de siempre;
+       en claro bajan hasta pasar 4:1 contra el blanco, porque su swatch en
+       la leyenda es de 2-3 px y un área chica necesita más contraste que
+       una grande. Once de los veinte quedaban por debajo de 3:1.
+       Los otros seis tonos de estas paletas ya eran tokens del sistema
+       (rendi-pos, data-cyan, rendi-accent, data-violet, data-amber, ink-3)
+       y se usan directamente, sin duplicar variable. */
+    --cat-steel           : 79 124 168     ;
+    --cat-teal            : 111 168 160    ;
+    --cat-indigo          : 124 107 245    ;
+    --cat-slate           : 126 134 160    ;
+    --cat-gray-2          : 138 147 166    ;
+    --cat-slate-2         : 141 143 168    ;
+    --cat-olive           : 154 168 92     ;
+    --cat-brown           : 168 124 92     ;
+    --cat-bronze          : 201 138 46     ;
+    --cat-gold            : 212 162 76     ;
+    --cat-magenta         : 217 123 224    ;
+    --cat-pink            : 224 138 168    ;
+    --cat-orange          : 242 153 74     ;
+
+    /* ── WhatsApp ────────────────────────────────────────────────────────
+       Marca de terceros, no un token del sistema: no se reemplaza por uno.
+       Pero el verde brillante (#25D366) sobre blanco da 1,98:1 y el botón
+       "Escribirle" quedaba ilegible. En claro va el teal oscuro, que TAMBIÉN
+       es de la paleta oficial de WhatsApp (la familia de #128C7E / #075E54),
+       apenas más profundo para llegar a 4,64:1. En oscuro se queda el verde
+       de siempre, que es el que la gente reconoce. */
+    --whatsapp            : 37 211 102     ;
   }
 }
 

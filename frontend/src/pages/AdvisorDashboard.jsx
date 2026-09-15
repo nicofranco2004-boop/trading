@@ -627,7 +627,7 @@ function CallQueue({ queues, onOpen }) {
               <a
                 href={whatsappUrl(`Hola ${(q.label || '').split(' ')[0]}! Estuve revisando tu cartera y quiero comentarte un par de cosas. ¿Cuándo te queda cómodo un llamado?`, q.phone)}
                 target="_blank" rel="noreferrer noopener"
-                className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1 flex-shrink-0"
+                className="text-[11px] font-semibold text-[rgb(var(--whatsapp))] border border-[rgb(var(--whatsapp))]/30 hover:bg-[rgb(var(--whatsapp))]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1 flex-shrink-0"
               >
                 <WhatsAppIcon size={11} /> Escribirle
               </a>
@@ -919,7 +919,7 @@ function ReportModal({ onClose }) {
                 </button>
                 {phoneOf[r.client_uid] ? (
                   <a href={whatsappUrl(r.wa_text, phoneOf[r.client_uid])} target="_blank" rel="noreferrer noopener"
-                    className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
+                    className="text-[11px] font-semibold text-[rgb(var(--whatsapp))] border border-[rgb(var(--whatsapp))]/30 hover:bg-[rgb(var(--whatsapp))]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
                     <WhatsAppIcon size={11} /> Mandar por WhatsApp
                   </a>
                 ) : (
@@ -975,7 +975,7 @@ function ReportModal({ onClose }) {
                   )}
                   {activo && r.phone && r.wa_text && (
                     <a href={whatsappUrl(r.wa_text, r.phone)} target="_blank" rel="noreferrer noopener"
-                      className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
+                      className="text-[11px] font-semibold text-[rgb(var(--whatsapp))] border border-[rgb(var(--whatsapp))]/30 hover:bg-[rgb(var(--whatsapp))]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
                       <WhatsAppIcon size={11} /> WhatsApp
                     </a>
                   )}

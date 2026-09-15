@@ -31,6 +31,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
+import { execSync } from 'child_process'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -84,6 +85,17 @@ const GRAFICO_DARK = {
   // El hover de las barras del año. Los valores oscuros son `green-200` y
   // `red-100`, que es lo que ese componente usaba antes de tener tema.
   'bar-hover-up': '#5FE19D', 'bar-hover-down': '#FFB4BA',
+  // Colores de categoría (tipo de activo · sector · composición del libro).
+  // Los valores oscuros son los que esas paletas tenían escritos a mano. Los
+  // otros seis tonos que usan ya eran tokens del sistema y no se duplican acá.
+  'cat-steel': '#4F7CA8', 'cat-teal': '#6FA8A0', 'cat-indigo': '#7C6BF5',
+  'cat-slate': '#7E86A0', 'cat-gray-2': '#8A93A6', 'cat-slate-2': '#8D8FA8',
+  'cat-olive': '#9AA85C', 'cat-brown': '#A87C5C', 'cat-bronze': '#C98A2E',
+  'cat-gold': '#D4A24C', 'cat-magenta': '#D97BE0', 'cat-pink': '#E08AA8',
+  'cat-orange': '#F2994A',
+  // WhatsApp: marca de terceros. En oscuro es su verde de siempre; en claro,
+  // el teal oscuro de su propia paleta (el brillante daba 1,98:1 sobre blanco).
+  'whatsapp': '#25D366',
   'mono-violet-1': '#8B7DFF', 'mono-violet-2': '#7466E8', 'mono-violet-3': '#5F53C4',
   'mono-violet-4': '#4C429E', 'mono-violet-5': '#3D357E',
 }
@@ -191,25 +203,37 @@ describe('tokens de tema — los dos temas cubren lo mismo', () => {
       .toEqual([])
   })
 
-  it('cada token del config se usa, y cada variable de rampa también', () => {
-    // Dos familias, dos lectores. Un token de tema lo resuelve una clase de
-    // Tailwind; una variable de rampa la nombra polarityScale.js. Una variable
-    // que no tiene ninguno de los dos no la lee nadie: es peso muerto que el
-    // próximo que mire la paleta va a creer que está en uso.
-    const RAMPA = readFileSync(resolve(ROOT, 'src/utils/polarityScale.js'), 'utf8')
-      + readFileSync(resolve(ROOT, 'src/utils/chartTheme.js'), 'utf8')
-      + CSS  // algunas las usa el propio CSS (la sombra del globo de datos)
-      + readFileSync(resolve(ROOT, 'src/components/reports/PerformanceCalendar.jsx'), 'utf8')
+  it('cada token del config se usa, y cada variable de tema también', () => {
+    // Una variable que nadie lee es peso muerto: el próximo que mire la paleta
+    // va a creer que está en uso. Un token de tema lo resuelve una clase de
+    // Tailwind; el resto tiene que aparecer en algún `var(--x)` del código.
+    //
+    // ⚠️ SE BUSCA EN TODO src/ MENOS index.css, Y ESO ES EL PUNTO. Una versión
+    // anterior de este test sumaba el propio index.css al material donde
+    // buscar — y como ahí están las DEFINICIONES, toda variable se encontraba
+    // a sí misma y la comprobación no podía fallar nunca. Si alguien vuelve a
+    // agregar el CSS acá, este test deja de servir en silencio.
+    // Se extraen SÓLO las ocurrencias, no los archivos enteros: volcar todo
+    // src/ al buffer de execSync lo revienta (ENOBUFS) y el test falla por el
+    // motivo equivocado.
+    const USOS = execSync(
+      "grep -rhoE \"var\\(--[a-z0-9-]+|v\\('[a-z0-9-]+'\\)|--pol-\\\\$\\{lado\\}\" " +
+      "src/ --include='*.jsx' --include='*.js' --include='*.css' --exclude='index.css' || true"
+    ).toString()
+
     const huerfanas = Object.keys(LIGHT).filter(t => {
       if (TOKENS_DEL_CONFIG.includes(t)) return false
-      // polarityScale arma los nombres por pedazos (`--pol-${lado}-${step}`),
-      // así que se busca el patrón, no el nombre completo.
-      const patron = t.replace(/^pol-(up|down)-(\d)/, 'pol-${lado}-${step}')
-      // `--chart-area-op` y la sombra se nombran adentro de un string más
-      // largo (`var(--chart-area-op)`), así que alcanza con buscar el nombre.
-      return !RAMPA.includes(`--${t}`) && !RAMPA.includes(`--${patron}`)
+      // Dos formas de nombrar una variable, y las dos cuentan:
+      //   · escrita entera — `var(--chart-area-op)`
+      //   · armada por pedazos — chartTheme tiene `v('chart-grid')` y
+      //     polarityScale `--pol-${lado}-${step}`. Ahí el literal `var(--x)`
+      //     no existe en el archivo, sólo el nombre del token entre comillas.
+      if (USOS.includes(`var(--${t}`)) return false
+      if (USOS.includes(`v('${t}')`)) return false
+      if (/^pol-(up|down)-\d/.test(t) && USOS.includes('--pol-${lado}')) return false
+      return true
     })
-    expect(huerfanas, `Variables que no lee nadie. O falta el token en tailwind.config.js, o falta usarlas en polarityScale.js / chartTheme.js, o sobran acá: ${huerfanas.join(', ')}`)
+    expect(huerfanas, `Variables que no lee nadie. O falta el token en tailwind.config.js, o falta usarlas desde el código, o sobran de index.css: ${huerfanas.join(', ')}`)
       .toEqual([])
   })
 

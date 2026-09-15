@@ -25,6 +25,7 @@ import { useState, useMemo } from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { ChevronRight } from 'lucide-react'
 import InfoTooltip from './InfoTooltip'
+import { withAlpha } from '../utils/chartTheme'
 
 // Debajo de este peso la porción no se lista aparte: se agrupa en "Otros" para
 // que la leyenda no se llene de slivers ilegibles. 10 clases de activo ya es
@@ -276,7 +277,7 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
         // de tipografía quedarían ilegibles.
         <div
           className="ml-[15px] pl-2.5 pr-1 border-l-2 rounded-r-sm space-y-1 py-1.5 mb-1"
-          style={{ borderColor: `${slice.color}80`, background: `${slice.color}0F` }}
+          style={{ borderColor: withAlpha(slice.color, 0.5), background: withAlpha(slice.color, 0.06) }}
         >
           {slice.pnl && (
             // El titular de la porción: cuánta plata te dejó y a qué tasa.
