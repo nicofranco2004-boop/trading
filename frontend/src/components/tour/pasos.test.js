@@ -86,6 +86,25 @@ describe('el tutorial no puede dejar la pantalla trabada', () => {
     expect(tour).toMatch(/if \(esperado >= ESPERA_MAX\) \{ setCaja\(null\); avanzar\(\) \}/)
   })
 
+  it('SIGUE al blanco en vez de escuchar eventos sueltos', () => {
+    // Antes medía una vez y escuchaba `resize` y `scroll`. Falla: el paso de
+    // "Nueva alerta" iluminaba un rectángulo vacío a 160px del botón, y el
+    // resize no lo corregía (medido a 1000x560). El problema de fondo es que
+    // escuchar eventos obliga a ACERTAR POR QUÉ se movió, y el blanco se mueve
+    // por cosas que no emiten ninguno de los dos: una tarjeta que se abre
+    // arriba, contenido que llega del servidor, el sidebar que colapsa.
+    expect(tour).toMatch(/requestAnimationFrame\(mirar\)/)
+    expect(tour).toMatch(/cancelAnimationFrame/)
+    // Y no vuelve a caer en el patrón viejo.
+    expect(tour).not.toMatch(/addEventListener\('resize'/)
+    expect(tour).not.toMatch(/addEventListener\('scroll'/)
+  })
+
+  it('sólo re-renderiza cuando el blanco se movió de verdad', () => {
+    // Un chequeo por frame es barato; un setState por frame no lo es.
+    expect(tour).toMatch(/if \(!iguales\(nueva, ultima\)\)/)
+  })
+
   it('siempre hay cómo salir', () => {
     expect(tour).toMatch(/Omitir/)
     expect(tour).toMatch(/onClick=\{cerrar\}/)
