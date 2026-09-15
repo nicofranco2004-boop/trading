@@ -8,6 +8,7 @@ V2: real-time con polling/WebSocket.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import threading
 import time
@@ -255,6 +256,53 @@ def _to_yf(sym: str) -> str:
     return s
 
 
+# ─── ¿De qué RUEDA es este número? ───────────────────────────────────────────
+# Un `change_pct` sin fecha no alcanza para decir "hoy". yfinance devuelve las
+# dos últimas barras diarias que TENGA: antes de que abra el mercado —o cuando
+# la barra del día viene con los OHLC en NaN, que con los `.BA` pasa seguido
+# (ver project_ba_nan_bar)— esas dos barras son las de AYER y ANTEAYER, y el
+# porcentaje sale igual, sin nada que lo distinga del de hoy.
+#
+# Es la MISMA lección que ya se había aprendido cuando `/api/prices` devolvía un
+# precio pelado y se le estampó procedencia (`src`/`as_of`/`stale`): ese arreglo
+# nunca se propagó hasta acá, que es de donde comen las alertas y la IA.
+# Desde ahora cada quote viaja con `as_of` (la rueda que midió) e `is_today`.
+
+def session_today(symbol: str) -> str:
+    """Qué día es "hoy" para el mercado de `symbol`, en ISO.
+
+    · Cripto: las barras diarias de yfinance son días UTC (cortan a las 00:00
+      UTC = 21:00 ART) y opera 24/7 → su día es el día UTC.
+    · Acciones y CEDEARs: BYMA (11–17 ART) y NYSE/Nasdaq (9:30–16 ET) caen
+      enteras dentro del mismo día calendario argentino, que es el "hoy" de
+      Rendi → se lo preguntamos al dueño del calendario, no lo recalculamos.
+    """
+    s = (symbol or "").upper()
+    if s in _CRYPTO_TICKERS or s.endswith("-USD"):
+        return _dt.datetime.utcnow().date().isoformat()
+    from fechas import hoy_art
+    return hoy_art()
+
+
+def _bar_date(idx_value) -> Optional[str]:
+    """Fecha de una barra diaria como ISO. Devuelve None si el índice no es una
+    fecha (no queremos inventar una rueda que no sabemos cuál es)."""
+    try:
+        return idx_value.date().isoformat()
+    except Exception:
+        return None
+
+
+def _stamp_session(entry: Dict[str, Any], orig_sym: str) -> Dict[str, Any]:
+    """Marca si el `change_pct` de este quote es el de la rueda de HOY.
+
+    Se recalcula al SERVIR y no se guarda en el cache: el cache dura 60s y
+    puede cruzar el cambio de día. Sin `as_of` → `is_today` False: "no sé de
+    qué rueda es" tiene que pesar lo mismo que "es vieja"."""
+    entry["is_today"] = bool(entry.get("as_of")) and entry["as_of"] == session_today(orig_sym)
+    return entry
+
+
 # ─── Quote cache per-symbol ──────────────────────────────────────────────────
 # Cada quote vive 60s. Antes el watchlist refetcheaba yfinance entero en cada
 # GET — 1-3s de latencia. Con cache, solo los símbolos nuevos/expirados se
@@ -281,7 +329,7 @@ def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     for s in symbols:
         cached = _QUOTE_CACHE.get(s)
         if cached and now - cached.get("_ts", 0) < _QUOTE_TTL_S:
-            out[s] = {k: v for k, v in cached.items() if k != "_ts"}
+            out[s] = _stamp_session({k: v for k, v in cached.items() if k != "_ts"}, s)
         else:
             to_fetch.append(s)
     if not to_fetch:
@@ -313,8 +361,12 @@ def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
                     "price": round(last, 2),
                     "prev_close": round(prev, 2),
                     "change_pct": round(((last / prev) - 1) * 100, 2),
+                    # De qué DOS ruedas salió este porcentaje. Sin esto, "ayer
+                    # vs anteayer" y "hoy vs ayer" son el mismo número pelado.
+                    "as_of": _bar_date(closes.index[-1]),
+                    "prev_as_of": _bar_date(closes.index[-2]),
                 }
-                out[orig_sym] = entry
+                out[orig_sym] = _stamp_session(entry, orig_sym)
                 _QUOTE_CACHE[orig_sym] = {**entry, "_ts": now}
             except Exception as ex:
                 log.warning(f"_fetch_batch_quotes parsing {yf_sym} (orig {orig_sym}): {ex}")
@@ -347,8 +399,10 @@ def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
                     "price": round(last, 2),
                     "prev_close": round(prev, 2),
                     "change_pct": round(((last / prev) - 1) * 100, 2),
+                    "as_of": _bar_date(closes.index[-1]),
+                    "prev_as_of": _bar_date(closes.index[-2]),
                 }
-                out[orig_sym] = entry
+                out[orig_sym] = _stamp_session(entry, orig_sym)
                 _QUOTE_CACHE[orig_sym] = {**entry, "_ts": now}
             except Exception as ex:
                 log.warning(f"_fetch_batch_quotes single-fallback {orig_sym} falló: {ex}")

@@ -178,6 +178,11 @@ export default function AlertsManager({ plan, prefill }) {
         {!showForm && (
           <button
             onClick={() => { if (atLimit) { setUpsell(true) } else { setErr(null); setShowForm(true) } }}
+            // Blanco del tutorial de novedades (components/tour/pasos.js). Se
+            // resalta este botón y NO una alerta ya creada: el tutorial le
+            // aparece a gente que puede no tener ninguna, y entonces el paso se
+            // saltearía justo para quien más lo necesita.
+            data-tour="nueva-alerta"
             className="inline-flex items-center gap-1.5 text-xs bg-rendi-accent/10 hover:bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 px-3 py-1.5 rounded-sm transition-colors"
           >
             <Plus size={14} /> Nueva alerta

@@ -126,6 +126,10 @@ export default function MarketBriefPrefs() {
           aria-label={`${on ? 'Apagar' : 'Prender'} el resumen del mercado`}
           onClick={() => prefs && toggle()}
           disabled={!prefs}
+          // Blanco del tutorial de novedades (components/tour/pasos.js). Va en
+          // el INTERRUPTOR y no en una fila de la lista: el tutorial resalta
+          // sólo cosas que están SIEMPRE en pantalla, y esto está siempre.
+          data-tour="resumen-mercado"
           className={`relative w-10 h-6 rounded-full transition-colors flex-shrink-0 ${on ? 'bg-rendi-accent' : 'bg-bg-3'}`}
         >
           <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${on ? 'left-5' : 'left-1'}`} />

@@ -14,9 +14,12 @@ describe('cada paso resalta algo que está de verdad', () => {
   const FUENTES = [
     '../voz/RendiMate.jsx', '../voz/BotonMicrofono.jsx',
     '../AICoach.jsx', '../../pages/RendiAI.jsx',
+    // Los pasos de Alertas: el resumen diario del mercado (lo nuevo) y los
+    // avisos de precio (lo que ya estaba).
+    '../alerts/MarketBriefPrefs.jsx', '../alerts/AlertsManager.jsx',
   ].map(leer).join('\n')
 
-  it('las cuatro marcas existen en la pantalla', () => {
+  it('todas las marcas existen en la pantalla', () => {
     const sinMarcar = PASOS.filter(p => !FUENTES.includes(`${ATRIBUTO}="${p.marca}"`))
     expect(sinMarcar.map(p => p.id)).toEqual([])
   })
@@ -33,6 +36,23 @@ describe('cada paso resalta algo que está de verdad', () => {
     // Arranca donde esté: sacarlo de la pantalla que estaba mirando antes de
     // explicarle nada es empezar desorientándolo.
     expect(PASOS[0].ruta).toBeNull()
+  })
+
+  it('el paseo termina en Alertas, y primero lo nuevo', () => {
+    // Orden pedido por Nico: el resumen del mercado es la novedad, así que va
+    // antes que los avisos de precio, que ya existían. Si alguien los da
+    // vuelta, el tutorial presenta como noticia algo que el usuario ya tenía.
+    const ids = PASOS.map(p => p.id)
+    expect(ids.indexOf('resumen-mercado')).toBeLessThan(ids.indexOf('alertas-precio'))
+    expect(ids.slice(-2)).toEqual(['resumen-mercado', 'alertas-precio'])
+  })
+
+  it('los pasos de Alertas llevan a /alertas', () => {
+    // Sin ruta, el tutorial los explicaría desde donde esté el usuario: iría a
+    // buscar un interruptor que no está en pantalla y saltearía los dos pasos.
+    for (const id of ['resumen-mercado', 'alertas-precio']) {
+      expect(PASOS.find(p => p.id === id).ruta, id).toBe('/alertas')
+    }
   })
 })
 
@@ -66,9 +86,40 @@ describe('el tutorial no puede dejar la pantalla trabada', () => {
     expect(tour).toMatch(/if \(esperado >= ESPERA_MAX\) \{ setCaja\(null\); avanzar\(\) \}/)
   })
 
+  it('SIGUE al blanco en vez de escuchar eventos sueltos', () => {
+    // Antes medía una vez y escuchaba `resize` y `scroll`. Falla: el paso de
+    // "Nueva alerta" iluminaba un rectángulo vacío a 160px del botón, y el
+    // resize no lo corregía (medido a 1000x560). El problema de fondo es que
+    // escuchar eventos obliga a ACERTAR POR QUÉ se movió, y el blanco se mueve
+    // por cosas que no emiten ninguno de los dos: una tarjeta que se abre
+    // arriba, contenido que llega del servidor, el sidebar que colapsa.
+    expect(tour).toMatch(/requestAnimationFrame\(mirar\)/)
+    expect(tour).toMatch(/cancelAnimationFrame/)
+    // Y no vuelve a caer en el patrón viejo.
+    expect(tour).not.toMatch(/addEventListener\('resize'/)
+    expect(tour).not.toMatch(/addEventListener\('scroll'/)
+  })
+
+  it('sólo re-renderiza cuando el blanco se movió de verdad', () => {
+    // Un chequeo por frame es barato; un setState por frame no lo es.
+    expect(tour).toMatch(/if \(!iguales\(nueva, ultima\)\)/)
+  })
+
   it('siempre hay cómo salir', () => {
     expect(tour).toMatch(/Omitir/)
     expect(tour).toMatch(/onClick=\{cerrar\}/)
+  })
+
+  it('el cartel tiene una punta que apunta a lo resaltado', () => {
+    // El cartel se centra bajo lo resaltado, PERO si eso lo dejaría fuera de
+    // la pantalla el recorte lo empuja hacia adentro. Con el interruptor del
+    // resumen del mercado —pegado al borde derecho— el cartel terminaba 131px
+    // corrido y se leía como un cartel suelto que no apunta a nada. Moverlo no
+    // es opción: no hay lugar. La punta es lo que mantiene la conexión.
+    expect(tour).toMatch(/rotate-45/)
+    expect(tour).toMatch(/const puntaX =/)
+    // Y se limita para no salirse por las esquinas redondeadas del cartel.
+    expect(tour).toMatch(/Math\.min\(Math\.max\(20,[\s\S]{0,80}cartelAncho - 32\)/)
   })
 
   it('lo resaltado no se puede tocar', () => {

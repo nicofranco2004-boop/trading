@@ -642,7 +642,8 @@ def _from_alerts() -> str:
 
 
 def send_alert_email(*, to: str, user_name: str = "", heading: str,
-                     detail: str, cta_path: str = "/dashboard") -> bool:
+                     detail: str, cta_path: str = "/dashboard",
+                     lines: Optional[list] = None) -> bool:
     """Email de una alerta disparada (precio, % de variacion, movimiento del
     libro del asesor). Template branded: logo arriba y boton a Rendi, igual
     que el brief del asesor.
@@ -659,17 +660,31 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
     ese boton caia en Configuracion > Cuenta (o en el menu, en mobile).
 
     reply_to a soporte@: si el usuario contesta el aviso, el mail le llega al
-    equipo en vez de perderse en no_reply@."""
+    equipo en vez de perderse en no_reply@.
+
+    `lines` opcional: cuando una alerta de "toda mi cartera" dispara con varios
+    activos a la vez, va UN mail con la lista en vez de uno por activo. Antes
+    salían cuatro mails en el mismo minuto — molesto de leer, y además la señal
+    más fuerte de "correo automático" que mira Gmail para decidir la pestaña.
+    Sin `lines` el mail es exactamente el de siempre."""
     name = (user_name or "").strip()
     safe_name = html.escape(name)
     hi = f"Hola {safe_name}, " if safe_name else ""
     url = f"{APP_URL}{cta_path}"
     alerts_url = f"{APP_URL}/alertas"
+    lista_html = ""
+    if lines:
+        renglones = "".join(
+            f'<li style="margin:0 0 8px;">{html.escape(str(l))}</li>' for l in lines)
+        lista_html = (
+            '<ul style="font-size:15px;line-height:1.6;color:#374151;'
+            'margin:0 0 20px;padding-left:20px;">' + renglones + "</ul>")
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{html.escape(heading)}</h1>
-      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 {'8px' if lines else '20px'};">
         {hi}{html.escape(detail)}
       </p>
+      {lista_html}
       <div style="text-align:center;margin:24px 0;">
         <a href="{url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
           Ver en Rendi
@@ -681,7 +696,8 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
         respondeme este mail.
       </p>
     """
-    text = (f"{heading}\n\n{hi}{detail}\n\n"
+    lista_txt = ("\n" + "\n".join(f"  · {l}" for l in lines) + "\n") if lines else ""
+    text = (f"{heading}\n\n{hi}{detail}\n{lista_txt}\n"
             f"Ver en Rendi: {url}\n\n"
             f"Recib\u00eds este aviso porque configuraste una alerta. Pod\u00e9s editarla o "
             f"apagarla en {alerts_url}, y si algo no cierra respondeme este mail.\n\n"

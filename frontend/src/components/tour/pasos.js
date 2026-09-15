@@ -64,6 +64,26 @@ export const PASOS = [
         + 'guardar nada, y no toca los brokers: sólo lo registra en Rendi.',
     },
   },
+  // Los dos últimos llevan a Alertas. El ORDEN importa: primero el resumen,
+  // que es la novedad, y después los avisos de precio, que ya existían. Al
+  // revés, el tutorial presentaría como noticia algo que el usuario ya tenía.
+  {
+    id: 'resumen-mercado',
+    marca: 'resumen-mercado',
+    ruta: '/alertas',
+    titulo: 'Enterate sin entrar',
+    texto: 'Prendé esto y cada mañana te llega un mail con lo que pasó desde que cerró '
+      + 'el mercado: las tasas, el dólar, la inflación, el petróleo — y qué de todo eso '
+      + 'toca a tus activos. Un mail por día hábil, y lo apagás cuando quieras.',
+  },
+  {
+    id: 'alertas-precio',
+    marca: 'nueva-alerta',
+    ruta: '/alertas',
+    titulo: 'Y avisos cuando algo se mueve',
+    texto: 'Acá pedís que te avisemos si un activo llega a cierto precio, o si alguno de '
+      + 'los tuyos sube o baja más de lo que vos digas. Te llega por mail y al teléfono.',
+  },
 ]
 
 /** La marca que se le pone al elemento que hay que resaltar. */

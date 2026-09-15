@@ -8086,6 +8086,65 @@ def _resolve_ar_equity_price(symbol):
     return px if px and px > 0 else None
 
 
+# ─── Letras del Tesoro: ArgentinaDatos ────────────────────────────────────────
+#
+# POR QUÉ HACE FALTA OTRA FUENTE. data912 cubre soberanos y una parte de las ONs,
+# pero no las letras: de las 13 vivas al 2026-09-15, SIETE no están en ninguno de
+# sus endpoints (T15E7, T30A7, T30J7, T31Y7, TO26, TTD26, TY30P). Y las otras
+# candidatas están cerradas: BYMA devuelve 401 en `titulosPublicos`, `letes` y
+# `obligacionesNegociables` (probado con cabeceras de navegador, mismo resultado),
+# y Rava carga el precio por una API con token.
+#
+# Un papel sin precio no es un hueco cosmético: arrastra la cobertura de esa
+# cuenta abajo del 95 % y el cron deja de escribirle la foto diaria. Sin foto no
+# hay cierre medido, y sin cierre medido esa persona no puede medir una semana,
+# ni un mes, ni su variación diaria.
+#
+# LA UNIDAD ESTÁ DECLARADA, NO ADIVINADA — y es la razón por la que se eligió
+# ESTA fuente y no el endpoint `arg_notes` de data912. Ahí conviven letras en
+# pesos cerca de 100 con dólar-linked cerca de 150.000, y el clasificador per-100
+# vs per-1 de `_resolve_ar_bond_price` decide por MAGNITUD: leería una letra a
+# 105,565 como precio por unidad cuando cotiza por cada 100, y la valuaría 100×
+# más cara. Acá el campo se llama `precioArs` y viene con `paridadPorcentaje`, así
+# que la convención es explícita: se divide por 100 una sola vez, acá, y lo que
+# sale ya es per-1 VN como el resto del sistema.
+#
+# VERIFICADO contra data912 en los 6 tickers que están en las dos fuentes
+# (S13N6, S16O6, S29E7, S30N6, S30O6, S30S6): la diferencia máxima fue 0,1 %.
+_ad_letras_cache = {'data': None, 'ts': 0}
+AD_LETRAS_TTL = 900  # 15 min — el feed se actualiza 1x/día, no hace falta más
+
+
+def _fetch_argentinadatos_letras():
+    """{ticker: precio per-1 VN en ARS} de las letras vivas. {} si la fuente cae.
+
+    Sólo trae las que NO vencieron: la fuente publica el universo vivo. Eso es
+    deseable — un papel vencido no tiene precio en ningún lado, y pedirle a una
+    fuente que lo invente sería peor que no tenerlo.
+    """
+    now = time.time()
+    cached = _ad_letras_cache['data']
+    if cached is not None and now - _ad_letras_cache['ts'] < AD_LETRAS_TTL:
+        return cached
+    try:
+        r = requests.get("https://api.argentinadatos.com/v1/finanzas/letras", timeout=8)
+        if r.status_code != 200:
+            return cached or {}
+        out = {}
+        for item in (r.json() or {}).get('letras', []) or []:
+            t = (item.get('ticker') or '').strip().upper()
+            px = item.get('precioArs')
+            if t and isinstance(px, (int, float)) and px > 0:
+                out[t] = px / 100.0     # per-100 declarado → per-1, como todo el resto
+        if out:
+            _ad_letras_cache['data'] = out
+            _ad_letras_cache['ts'] = now
+            return out
+        return cached or {}
+    except Exception:
+        return cached or {}
+
+
 def _resolve_ar_bond_price(symbol):
     """Resuelve el precio per-1 VN de un bono AR usando data912.
 
@@ -8101,13 +8160,34 @@ def _resolve_ar_bond_price(symbol):
     """
     if not symbol:
         return None
-    prices = _fetch_data912_bonds()
-    if not prices:
-        return None
+    prices = _fetch_data912_bonds() or {}
     is_ars = symbol.endswith('.BA')
     base = symbol[:-3] if is_ars else symbol
     # ARS si vino con .BA (ticker base), USD MEP si no (base + 'D')
     raw = prices.get(base) if is_ars else prices.get(base + 'D')
+
+    # ⚠️ LA UNIDAD DECLARADA LE GANA A LA ADIVINADA.
+    #
+    # El clasificador de más abajo deduce per-100 vs per-1 por la MAGNITUD en
+    # dólares, y con las letras se equivoca: cotizan cerca de 100 pesos por cada
+    # 100 nominales, o sea ~0,07 USD, muy por debajo del umbral de 3 → las leía
+    # como precio por unidad y las devolvía CIEN VECES más caras. Medido el
+    # 2026-09-15 contra la unidad declarada: TTD26 daba 170,2 cuando vale 1,70;
+    # T15E7 148,64 cuando vale 1,49. Siete de las trece letras vivas.
+    #
+    # Para estos tickers no hace falta adivinar: ArgentinaDatos publica el precio
+    # con su unidad (`precioArs` por cada 100, con `paridadPorcentaje` al lado), y
+    # el propio feed lo confirma por otra vía — `volumenEfectivoArs / volumen` da
+    # exactamente `precioArs / 100`, que es el precio por unidad nominal.
+    #
+    # Se usa la fuente que DECLARA para la unidad y, cuando está, el precio VIVO
+    # de data912 para el valor: lo mejor de las dos. Si data912 no lo tiene
+    # (7 de 13 letras), se sirve el de ArgentinaDatos, que ya viene per-1.
+    if is_ars:
+        _letras = _fetch_argentinadatos_letras()
+        if base in _letras:
+            return (raw / 100.0) if (raw and raw > 0) else _letras[base]
+
     if raw is None or raw <= 0:
         return None
     # Clasificación per-100 vs per-1 por USD-equivalente: per-1 ≈ parity/100 (<~2 USD),

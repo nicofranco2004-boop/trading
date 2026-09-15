@@ -77,34 +77,56 @@ export default function TourNovedades() {
     if (paso?.ruta && pathname !== paso.ruta) navigate(paso.ruta)
   }, [paso, pathname, navigate])
 
-  // Buscar el blanco y medirlo. Si no aparece, se saltea el paso.
+  // Buscar el blanco y SEGUIRLO. Si no aparece, se saltea el paso.
+  //
+  // 🔴 ANTES ESTO MEDÍA UNA VEZ y escuchaba `resize` y `scroll`. Falla, y se vio
+  // en la pantalla de Nico: el paso de "Nueva alerta" iluminaba un rectángulo
+  // vacío a 160px del botón. Medido al achicar la ventana a 1000x560 — con el
+  // botón en x=845, el recuadro se quedó en x=677 y el evento de resize no lo
+  // corrigió.
+  //
+  // El problema de fondo no es ese listener puntual: es que escuchar eventos
+  // obliga a ACERTAR POR QUÉ SE MOVIÓ. Y el blanco se mueve por cosas que no
+  // emiten ni `resize` ni `scroll`: una tarjeta de arriba que se abre o se
+  // cierra, contenido que llega del servidor y empuja la lista, el sidebar que
+  // colapsa, una tipografía que termina de cargar. Cada causa nueva es otro
+  // listener que alguien se va a olvidar de agregar.
+  //
+  // Así que no se escucha nada: se MIRA. Un chequeo por frame mientras el paso
+  // está activo, que sólo toca el estado si la posición cambió de verdad. Es
+  // barato (una lectura de geometría por frame, y el tutorial dura segundos) y
+  // no hay forma de que el blanco se mueva sin que lo siga.
   useLayoutEffect(() => {
     if (!paso) return
     let vivo = true
     let esperado = 0
-    const medir = () => {
+    let pedido = 0
+    let ultima = null
+
+    const iguales = (a, b) => a && b
+      && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
+      && Math.abs(a.w - b.w) < 0.5 && Math.abs(a.h - b.h) < 0.5
+
+    const mirar = () => {
       if (!vivo) return
       const el = buscar(paso.marca)
       if (el) {
         const r = el.getBoundingClientRect()
-        setCaja({
+        const nueva = {
           x: Math.max(0, r.left - AIRE), y: Math.max(0, r.top - AIRE),
           w: r.width + AIRE * 2, h: r.height + AIRE * 2,
-        })
+        }
+        // Sólo se re-renderiza cuando de verdad se movió.
+        if (!iguales(nueva, ultima)) { ultima = nueva; setCaja(nueva) }
+        pedido = requestAnimationFrame(mirar)
         return
       }
       esperado += REINTENTO
       if (esperado >= ESPERA_MAX) { setCaja(null); avanzar() }
-      else setTimeout(medir, REINTENTO)
+      else setTimeout(mirar, REINTENTO)
     }
-    medir()
-    window.addEventListener('resize', medir)
-    window.addEventListener('scroll', medir, true)
-    return () => {
-      vivo = false
-      window.removeEventListener('resize', medir)
-      window.removeEventListener('scroll', medir, true)
-    }
+    mirar()
+    return () => { vivo = false; cancelAnimationFrame(pedido) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paso, pathname])
 
@@ -131,6 +153,20 @@ export default function TourNovedades() {
         left: Math.min(Math.max(12, caja.x + caja.w / 2 - ANCHO_CARTEL / 2),
                        ancho - ANCHO_CARTEL - 12) }
 
+  // LA PUNTA, y por qué hace falta. Centrar el cartel bajo lo resaltado sólo
+  // funciona cuando hay lugar: si lo resaltado está pegado a un borde —el
+  // interruptor del resumen del mercado vive en el extremo derecho— centrarlo
+  // lo dejaría fuera de la pantalla, así que el recorte de arriba lo empuja
+  // hacia adentro. Medido: el cartel terminaba 131px a la izquierda del
+  // interruptor, y se leía como un cartel suelto que no apunta a nada.
+  // Moverlo no es opción (no hay lugar); lo que faltaba era CONECTARLO.
+  // La punta se clava en el centro de lo resaltado y se limita para no salirse
+  // por las esquinas redondeadas del propio cartel.
+  const cartelIzq = ancho < 640 ? 12 : cartel.left
+  const cartelAncho = ancho < 640 ? ancho - 24 : ANCHO_CARTEL
+  const puntaX = Math.min(Math.max(20, caja.x + caja.w / 2 - cartelIzq - 6),
+                          cartelAncho - 32)
+
   return (
     <div className="fixed inset-0 z-[100]" role="dialog" aria-modal="true"
          aria-label={`Novedades: ${paso.titulo}`}>
@@ -152,13 +188,25 @@ export default function TourNovedades() {
           en la pantalla de Nico: la burbuja iluminada arriba a la derecha y el
           cartel allá lejos, sin forma de saber de qué hablaba.
           Ahora se centra bajo lo resaltado y se recorta contra los bordes. En
-          el celular ocupa el ancho, que es lo único que entra. */}
+          el celular ocupa el ancho, que es lo único que entra. Y cuando el
+          recorte lo corre —lo resaltado pegado a un borde—, LA PUNTA de abajo
+          mantiene la conexión: ver el comentario de `puntaX`. */}
       <div
         className="absolute rounded-xl border border-line-3 bg-bg-2 shadow-2xl p-4"
         style={{ ...cartel, ...(debajo
           ? { top: Math.min(alto - 210, caja.y + caja.h + 12) }
           : { bottom: Math.max(12, alto - caja.y + 12) }) }}
       >
+        {/* La punta que apunta a lo resaltado. Es un cuadrado girado 45° con el
+            mismo fondo y borde que el cartel: se ve como un triángulo pegado al
+            borde, y las dos caras que quedan adentro las tapa el cartel. */}
+        <div
+          aria-hidden="true"
+          className="absolute w-3 h-3 bg-bg-2 border-line-3 rotate-45"
+          style={{ left: puntaX, ...(debajo
+            ? { top: -7, borderLeftWidth: 1, borderTopWidth: 1 }
+            : { bottom: -7, borderRightWidth: 1, borderBottomWidth: 1 }) }}
+        />
         <div className="text-[11px] font-semibold tracking-wide text-data-violet">
           Novedades · {i + 1} de {PASOS.length}
         </div>

@@ -15,8 +15,18 @@ Precios: reusa los MISMOS rieles que el snapshot diario (fetch_prices_for_symbol
 → stocks/CEDEARs/cripto/FCI/bonos) para price_target, y _fetch_batch_quotes
 (change_pct vs cierre previo) para pct_move. NUNCA dispara con precio None/stale.
 
+Y nunca dispara con un porcentaje que no sea el de la rueda de HOY: cada quote
+viaja con la fecha de la rueda que midió (`as_of`/`is_today`, ver home.market),
+y si esa fecha no es la de hoy el número no se usa ni para disparar ni para
+re-armar. Hacía falta porque antes de que abra el mercado —y cuando la barra del
+día viene con los OHLC en NaN, que con los `.BA` pasa seguido— el proveedor
+devuelve el cierre a cierre de AYER, y salía por mail con el título "hoy".
+
 Entrega: reusa _send_push_to_user (Web Push) + billing.emails.send_alert_email
-(Resend). Cada disparo queda logueado en alert_events (dedup + feed in-app).
+(Resend). Cada disparo queda logueado en alert_events (dedup + feed in-app), uno
+por activo — pero el ENVÍO es uno por alerta y por ciclo: una alerta de "toda mi
+cartera" se expande a todas las tenencias y un día movido dispara varias juntas.
+Los disparos se acumulan durante el loop y salen agrupados al final.
 """
 from __future__ import annotations
 
@@ -110,14 +120,66 @@ def _norm_sym(sym):
     return sym
 
 
-def _market_open_now(now) -> bool:
-    """Aproximado: L-V, ~13:00–21:00 UTC (cubre US 9:30–16 ET + BYMA 11–17 ART).
-    Las alertas de acciones/CEDEARs/bonos SOLO disparan en esta ventana — así no
-    saltan de madrugada/finde sobre el `change_pct` congelado del último cierre.
-    Cripto no pasa por acá (opera 24/7)."""
-    if now.weekday() >= 5:      # 5=sábado, 6=domingo
+_SESION_US = (9, 30, 16, 0)     # NYSE/Nasdaq 09:30–16:00 hora de Nueva York
+_SESION_BYMA = (11, 0, 17, 0)   # BYMA        11:00–17:00 hora argentina
+
+
+def _en_rueda(local_dt, h1, m1, h2, m2) -> bool:
+    if local_dt.weekday() >= 5:      # 5=sábado, 6=domingo
         return False
-    return 13 <= now.hour < 21
+    minutos = local_dt.hour * 60 + local_dt.minute
+    return (h1 * 60 + m1) <= minutos < (h2 * 60 + m2)
+
+
+def _sesion_hoy(sym) -> str:
+    """Qué día es "hoy" para el mercado de este símbolo. Una sola definición,
+    compartida con el que estampa las cotizaciones — si el tope de "1 aviso por
+    jornada" contara los días con otro almanaque que el `as_of` del quote, la
+    jornada del tope y la de la rueda se correrían una respecto de la otra.
+
+    Antes el tope contaba días UTC (`utcnow().strftime`), que cambian a las
+    21:00 de Buenos Aires: un aviso disparado a las 22:00 quedaba anotado como
+    del día SIGUIENTE y se comía el cupo de mañana."""
+    try:
+        from home.market import session_today
+        return session_today(sym)
+    except Exception:
+        from fechas import hoy_art
+        return hoy_art()
+
+
+def _market_open_now(now) -> bool:
+    """¿Hay alguna rueda abierta ahora? Es la unión de las dos que nos importan:
+    NYSE/Nasdaq y BYMA. Las alertas de acciones/CEDEARs/bonos SOLO disparan acá
+    adentro; cripto no pasa por esta función (opera 24/7).
+
+    🔴 Lo que decía antes: "L-V, 13:00–21:00 UTC". Esa media hora de más por
+    delante es la que mandó la ráfaga del 15/09/2026 a las 13:01 UTC (10:01 ART):
+    Nueva York abre 13:30 UTC en horario de verano y BYMA 14:00 UTC, así que a
+    las 13:01 NO había rueda abierta en ningún lado y el `change_pct` que traía
+    el proveedor era todavía el del día anterior. Cuatro mails con el movimiento
+    del lunes fechados como "hoy".
+
+    Las horas se preguntan a la base de zonas horarias en vez de escribirse como
+    un offset fijo, porque Estados Unidos sí tiene horario de verano y la ventana
+    en UTC se corre una hora dos veces al año. Esto NO es un segundo calendario:
+    contesta "¿hay rueda?", no "¿qué día es?" — esa sigue siendo de `fechas.py`."""
+    from datetime import timezone
+    ahora = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now
+    try:
+        from zoneinfo import ZoneInfo
+        return (_en_rueda(ahora.astimezone(ZoneInfo("America/New_York")), *_SESION_US)
+                or _en_rueda(ahora.astimezone(ZoneInfo("America/Argentina/Buenos_Aires")),
+                             *_SESION_BYMA))
+    except Exception as ex:
+        # Sin base de zonas horarias (imagen sin tzdata): ventana fija ANCHA pero
+        # que nunca empieza antes que la apertura más temprana real (13:30 UTC,
+        # NY en verano) — no puede repetir el bug de las 13:01. El guard fino de
+        # pct_move no depende de esta función: mira la FECHA de la rueda.
+        log.warning("alerts _market_open_now sin zoneinfo (%s): ventana fija UTC", ex)
+        if ahora.weekday() >= 5:
+            return False
+        return (13 * 60 + 30) <= (ahora.hour * 60 + ahora.minute) < (21 * 60)
 
 
 # ─── Lógica de condición ──────────────────────────────────────────────────────
@@ -212,6 +274,27 @@ def _display_symbol(symbol: str) -> str:
     return s
 
 
+def _ccy_for(symbol, fallback=None) -> str:
+    """Moneda del RIEL del símbolo: `.BA` cotiza en pesos, el símbolo pelado en
+    dólares (es la misma convención con la que se guardan los símbolos, ver
+    `_norm_sym` y `build_price_symbols`).
+
+    Por qué no alcanza con la moneda guardada en la alerta: una alerta de "toda
+    mi cartera" guarda UNA sola moneda —la que haya quedado al crearla— y después
+    se expande a N tenencias que están en los dos rieles. Por eso el mail del
+    15/09 decía "INTC cayó 5.8% y cotiza a US$ 31.020,00": 31.020 eran PESOS del
+    CEDEAR y el rótulo salía de la fila de la alerta, no del activo que disparó.
+
+    Los FCI son un tercer riel (los hay en pesos y en dólares) y ahí el símbolo
+    no contesta la pregunta: se respeta lo que guardó la alerta."""
+    if symbol:
+        if symbol.endswith(".BA"):
+            return "ARS"
+        if not symbol.startswith("FCI:"):
+            return "USD"
+    return (fallback or "USD")
+
+
 def _fmt(price, currency) -> str:
     """Precio en convención argentina. Mostraba los pesos bien ($7.350) y los
     dólares a la inglesa (US$2,145.30) en el MISMO mail; ahora los dos salen
@@ -223,9 +306,10 @@ def _fmt(price, currency) -> str:
 
 def _compose_message(alert, symbol, price, change_pct) -> str:
     sym = _display_symbol(symbol)
+    ccy = _ccy_for(symbol, alert["currency"])
     if alert["kind"] == "price_target":
-        thr = _fmt(alert["threshold"], alert["currency"])
-        cur = _fmt(price, alert["currency"])
+        thr = _fmt(alert["threshold"], ccy)
+        cur = _fmt(price, ccy)
         if alert["direction"] == "above":
             return f"{sym} alcanzó {cur}"
         return f"{sym} bajó a {cur}"
@@ -239,6 +323,39 @@ def _fmt_pct(v) -> str:
     """% limpio: 3.0 → '3', 3.2 → '3.2' (sin decimales de más en el título)."""
     v = abs(v or 0)
     return f"{v:.0f}" if abs(v - round(v)) < 0.05 else f"{v:.1f}"
+
+
+def _short_label(alert, symbol, price, change_pct) -> str:
+    """Un movimiento en pocas palabras: "INTC cayó 5.8%".
+
+    Es `_compose_message` sin el "hoy" del final, que en una lista de cuatro se
+    repetiría cuatro veces. El "hoy" lo dice el asunto una sola vez."""
+    if alert["kind"] == "price_target":
+        return _compose_message(alert, symbol, price, change_pct)
+    verbo = "subió" if (change_pct or 0) >= 0 else "cayó"
+    return f"{_display_symbol(symbol)} {verbo} {_fmt_pct(change_pct)}%"
+
+
+def _group_line(alert, symbol, price, change_pct) -> str:
+    """Un renglón de la lista del mail agrupado: el movimiento y a cuánto
+    cotiza, en la moneda del activo (un CEDEAR cotiza en pesos)."""
+    base = _short_label(alert, symbol, price, change_pct)
+    if price is None:
+        return base
+    return f"{base} y cotiza a {_fmt(price, _ccy_for(symbol, alert['currency']))}"
+
+
+def _compose_group_message(items) -> str:
+    """El asunto de un aviso agrupado. Nombra los movimientos en vez de
+    contarlos: "INTC cayó 5.8%, NVDA cayó 3.4% y 2 más hoy", no "4 alertas".
+
+    Es la misma lección que el resumen de mercado — el asunto ES el titular y es
+    lo que decide si el mail se abre; cuántos avisos hay es justo lo que a nadie
+    le importa. `items` llega ya ordenado de mayor a menor movimiento."""
+    etiquetas = [it["label"] for it in items]
+    if len(etiquetas) == 2:
+        return f"{etiquetas[0]} y {etiquetas[1]} hoy"
+    return f"{etiquetas[0]}, {etiquetas[1]} y {len(etiquetas) - 2} más hoy"
 
 
 # ─── Entrega ──────────────────────────────────────────────────────────────────
@@ -263,12 +380,28 @@ def _delivery_target(conn, uid: int):
     return uid, None
 
 
-def _deliver(conn, alert, symbol, price, change_pct, message) -> tuple:
-    """Manda push + email según channel. Devuelve (push_ok, email_ok)."""
+def _deliver(conn, alert, items) -> tuple:
+    """Manda UN push + UN email por alerta y por ciclo, con todo lo que disparó.
+    Devuelve (push_ok, email_ok).
+
+    `items` es la lista de movimientos de ESTA alerta en ESTE ciclo. Con uno
+    solo el mail es igual que siempre. Con varios va uno solo, porque una alerta
+    de "toda mi cartera" se expande a todas las tenencias y un día movido
+    dispara varias juntas: el 15/09/2026 salieron cuatro mails en el mismo
+    minuto. Cuatro mails idénticos en un minuto además son la señal más fuerte
+    de "esto lo manda un robot" que mira Gmail para elegir la pestaña.
+
+    Los avisos de la app siguen siendo uno por activo (`alert_events`): se
+    movieron cuatro cosas, no una. Lo que se agrupa es la ENTREGA."""
     uid, client_label = _delivery_target(conn, alert["user_id"])
+    # Más grande primero: si hay que nombrar dos en el asunto, que sean los dos
+    # que más se movieron.
+    items = sorted(items, key=lambda it: abs(it.get("change_pct") or 0), reverse=True)
+    heading = (items[0]["message"] if len(items) == 1
+               else _compose_group_message(items))
     if client_label:
         # El asesor recibe alertas de N clientes: el prefijo dice de quién es.
-        message = f"[{client_label}] {message}"
+        heading = f"[{client_label}] {heading}"
     channel = alert["channel"] or "both"
     push_ok = email_ok = False
 
@@ -277,12 +410,13 @@ def _deliver(conn, alert, symbol, price, change_pct, message) -> tuple:
             import main
             sent = main._send_push_to_user(uid, {
                 "title": "Rendi · Alerta",
-                "body": message,
+                "body": heading,
                 # Iba a /config?tab=notificaciones: ruta MUERTA desde que las
                 # alertas se mudaron a /alertas (en Config ya no existe esa
                 # pestana), asi que tocar el push caia en Config > Cuenta.
                 "url": "/dashboard",
-                "tag": f"alert-{alert['id']}-{symbol or ''}",
+                "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
+                        if len(items) == 1 else f"alert-{alert['id']}-grupo"),
             })
             push_ok = sent > 0
         except Exception as ex:
@@ -293,10 +427,17 @@ def _deliver(conn, alert, symbol, price, change_pct, message) -> tuple:
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
             if row and row["email"]:
                 from billing import emails
+                if len(items) == 1:
+                    it = items[0]
+                    detail = _email_detail(alert, it["symbol"], it["price"],
+                                           it["change_pct"])
+                    lines = None
+                else:
+                    detail = f"se movieron {len(items)} activos de tu cartera hoy:"
+                    lines = [it["line"] for it in items]
                 email_ok = emails.send_alert_email(
                     to=row["email"], user_name=(row["name"] or ""),
-                    heading=message,
-                    detail=_email_detail(alert, symbol, price, change_pct))
+                    heading=heading, detail=detail, lines=lines)
         except Exception as ex:
             log.warning("alerts email uid=%s falló: %s", uid, ex)
 
@@ -314,9 +455,10 @@ def _email_detail(alert, symbol, price=None, change_pct=None) -> str:
     que estaban leídas. `price` y `change_pct` ya los tenía _deliver() al
     lado; sólo no se los pasaba a esta función."""
     sym = _display_symbol(symbol)
-    cur = _fmt(price, alert["currency"])
+    ccy = _ccy_for(symbol, alert["currency"])
+    cur = _fmt(price, ccy)
     if alert["kind"] == "price_target":
-        thr = _fmt(alert["threshold"], alert["currency"])
+        thr = _fmt(alert["threshold"], ccy)
         lado = "subió hasta" if alert["direction"] == "above" else "bajó hasta"
         if price is None:
             return f"{sym} cruzó los {thr} que habías marcado."
@@ -332,25 +474,61 @@ def _email_detail(alert, symbol, price=None, change_pct=None) -> str:
     return f"{sym} {verbo} {_fmt_pct(change_pct)}% {desde}{cotiza}."
 
 
-def _fire(conn, alert, symbol, price, change_pct, now: datetime):
-    """Dispara: entrega + log en alert_events + actualiza last_fired_*."""
+def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list):
+    """Dispara: log en alert_events + actualiza last_fired_* + ENCOLA la entrega.
+
+    El mail y el push no salen acá. Se acumulan en `pendientes` y salen al
+    cerrar el ciclo, agrupados por alerta (ver `_entregar_pendientes`): si no,
+    una alerta de toda la cartera manda un mail por cada activo que se movió.
+
+    El evento de la app se escribe igual, uno por activo y en el momento — es lo
+    que alimenta la lista de "Últimos avisos" y el puntito del sidebar. Las dos
+    banderas de entregado se completan cuando la entrega efectivamente sale."""
     message = _compose_message(alert, symbol, price, change_pct)
-    push_ok, email_ok = _deliver(conn, alert, symbol, price, change_pct, message)
-    conn.execute(
+    cur = conn.execute(
         """INSERT INTO alert_events
            (alert_id, user_id, symbol, fired_at, price, message,
             delivered_push, delivered_email)
-           VALUES (?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,0,0)""",
         (alert["id"], alert["user_id"], symbol, now.isoformat(),
-         price if price is not None else change_pct, message,
-         1 if push_ok else 0, 1 if email_ok else 0),
+         price if price is not None else change_pct, message),
     )
     conn.execute(
         "UPDATE alerts SET last_fired_at=?, last_fired_price=? WHERE id=?",
         (now.isoformat(), price if price is not None else None, alert["id"]),
     )
-    log.info("alert %s fired (uid=%s sym=%s push=%s email=%s): %s",
-             alert["id"], alert["user_id"], symbol, push_ok, email_ok, message)
+    pendientes.append({
+        "alert": alert, "symbol": symbol, "price": price,
+        "change_pct": change_pct, "message": message,
+        "label": _short_label(alert, symbol, price, change_pct),
+        "line": _group_line(alert, symbol, price, change_pct),
+        "event_id": cur.lastrowid,
+    })
+    log.info("alert %s fired (uid=%s sym=%s): %s",
+             alert["id"], alert["user_id"], symbol, message)
+
+
+def _entregar_pendientes(conn, pendientes: list) -> None:
+    """Entrega todo lo que disparó en el ciclo, con un envío por alerta.
+
+    Una alerta que falla al entregar no puede dejar sin avisar a las otras: cada
+    grupo va en su propio try (misma guarda que el cron usa entre el motor de
+    precios y el del libro del asesor)."""
+    por_alerta: dict = {}
+    for it in pendientes:
+        por_alerta.setdefault(it["alert"]["id"], []).append(it)
+    for items in por_alerta.values():
+        alert = items[0]["alert"]
+        try:
+            push_ok, email_ok = _deliver(conn, alert, items)
+        except Exception as ex:
+            log.warning("alerts entrega de la alerta %s falló: %s", alert["id"], ex)
+            continue
+        conn.executemany(
+            "UPDATE alert_events SET delivered_push=?, delivered_email=? WHERE id=?",
+            [(1 if push_ok else 0, 1 if email_ok else 0, it["event_id"]) for it in items])
+        log.info("alert %s entregada (%s aviso/s, push=%s email=%s)",
+                 alert["id"], len(items), push_ok, email_ok)
 
 
 # ─── Loop principal ────────────────────────────────────────────────────────────
@@ -401,6 +579,9 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     quotes = _quotes_for(list(quote_syms)) if quote_syms else {}
 
     market_open = _market_open_now(now)
+    # Los avisos de este ciclo se acumulan acá y salen todos juntos al final,
+    # un envío por alerta. Ver `_entregar_pendientes`.
+    pendientes: list = []
     fired = 0
     deactivated: set = set()   # alertas 'once' de pct_move ya disparadas este ciclo
     for a, sym in units:
@@ -416,7 +597,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
             if met is None:
                 continue  # sin precio → no adivinar
             if a["armed"] and met and tradeable:
-                _fire(conn, a, sym, price, None, now)
+                _fire(conn, a, sym, price, None, now, pendientes)
                 fired += 1
                 new_active = 0 if a["repeat"] == "once" else 1
                 conn.execute("UPDATE alerts SET armed=0, active=? WHERE id=?",
@@ -438,13 +619,26 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                 quote = quotes.get(sym)
                 change = quote.get("change_pct") if quote else None
                 fire_price = (quote or {}).get("price")
+                # ⛔ El número tiene que ser el de la rueda de HOY. Si la última
+                # barra que trajo el proveedor es la de ayer (pre-apertura,
+                # feriado, o la barra del día con los OHLC en NaN), ese
+                # `change_pct` es el movimiento de AYER: ni dispara ni re-arma.
+                # `change = None` corta las dos cosas de una, porque la rama que
+                # re-arma exige `change is not None`.
+                if change is not None and not (quote or {}).get("is_today"):
+                    log.info("alert %s %s: el %+.2f%% es de la rueda %s, no de "
+                             "hoy (%s) → ni disparo ni re-armo",
+                             a["id"], sym, change, (quote or {}).get("as_of"),
+                             _sesion_hoy(sym))
+                    change = None
+                    fire_price = None
             side = pct_move_side(change, a["up_pct"], a["down_pct"])
 
             if base == "set_price":
                 # "Desde ahora": la dedup la da el re-ancla (no edge-trigger por símbolo).
                 if not side or not tradeable:
                     continue
-                _fire(conn, a, sym, fire_price, change, now)
+                _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1
                 if a["repeat"] != "once" and fire_price:
                     # "Siempre" = avisar CADA X%: re-anclar al precio actual.
@@ -461,7 +655,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                 #  • NO se re-arma el mismo día que disparó → el % congelado de ayer no
                 #    re-dispara hoy; recién se re-arma un día nuevo cuando el % vuelve
                 #    dentro de la banda (al abrir el mercado el change_pct resetea).
-                today = now.strftime("%Y-%m-%d")
+                today = _sesion_hoy(sym)
                 armed, last_fired_date = _sym_state(conn, a["id"], sym)
                 fired_today = (last_fired_date == today)
                 if not side:
@@ -470,12 +664,16 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     continue
                 if not armed or not tradeable or fired_today:
                     continue
-                _fire(conn, a, sym, fire_price, change, now)
+                _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1
                 _set_sym_fired(conn, a["id"], sym, today)
                 if a["repeat"] == "once":
                     conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
                     deactivated.add(a["id"])
+
+    # La entrega va DESPUÉS del loop: recién cuando terminó de evaluarse toda la
+    # cartera se sabe cuántos activos se movieron y puede salir un mail solo.
+    _entregar_pendientes(conn, pendientes)
 
     conn.execute(
         "UPDATE alerts SET last_evaluated_at=? WHERE active=1"

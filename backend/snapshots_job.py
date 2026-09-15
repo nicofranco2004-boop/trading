@@ -137,6 +137,40 @@ def _cost_in_pesos(p: dict) -> bool:
             and (p.get('asset') or '').upper() not in _crypto_symbol_set())
 
 
+# ─── Tickers cuyo símbolo en BYMA no es el de Nueva York con el sufijo pegado ──
+#
+# ⚠️ ES UNA LISTA DE EXCEPCIONES VERIFICADAS, NO UNA REGLA. La regla obvia
+# —"sacarle los puntos al ticker"— está MAL: BYMA publica `AKO.B` CON punto,
+# así que aplicarla a todos rompería ese. Cada entrada se agrega mirando el
+# universo real de la fuente, no por analogía.
+#
+#   BRK.B → BRKB. Verificado el 2026-09-15 contra data912/arg_cedears: existen
+#   BRKB, BRKBC y BRKBD; `BRK.B` no aparece en ninguna variante. Sin esto el
+#   símbolo que se pedía era `BRK.B.BA`, que no cotiza en ningún lado — y como
+#   el CEDEAR de Berkshire era el único papel no-cash de esa cuenta, la dejaba
+#   en 0 % de cobertura y sin una sola foto diaria. Sin foto no hay cierre
+#   medido, y sin cierre medido esa persona no puede medir ni una semana.
+#
+# El espejo de esta tabla vive en frontend/src/utils/valuation.js. Si se separan,
+# el precio que se PIDE deja de ser el que se LEE — que es la raíz del bug C1.
+# `tests/test_simbolo_byma.py` y su par en JS verifican que digan lo mismo.
+BYMA_EXCEPCIONES = {
+    'BRK.B': 'BRKB',
+    'BRK B': 'BRKB',
+}
+
+
+def simbolo_byma(asset) -> str:
+    """El símbolo `.BA` con el que BYMA cotiza este activo.
+
+    Espejo de `priceSymbol(asset, isARS=true)` en valuation.js. Usarlo SIEMPRE en
+    vez de pegar el sufijo a mano: el símbolo que se pide, el que se chequea y el
+    que se lee al valuar tienen que ser el mismo.
+    """
+    base = (asset or '')
+    return f"{BYMA_EXCEPCIONES.get(base, base)}.BA"
+
+
 def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     """Símbolo de precio que valúa esta posición: '<ASSET>.BA' (precio LOCAL ARS)
     si se valúa por su .BA — holdings en broker ARS, en sub-broker '· USD',
@@ -169,7 +203,7 @@ def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     wants_ba = (broker in ars_names or broker in ar_usd_names
                 or (p.get('asset_type') or '').upper() == 'CEDEAR'
                 or _cost_in_pesos(p))
-    return f"{asset}.BA" if wants_ba else asset
+    return simbolo_byma(asset) if wants_ba else asset
 
 
 def build_price_symbols(positions: list, brokers: list) -> list:
@@ -344,7 +378,7 @@ def compute_broker_value_usd(
                 if asset.startswith('FCI:'):
                     sym, is_ars = asset, False          # NAV USD directo
                 else:
-                    sym, is_ars = f"{asset}.BA", True   # BYMA en ARS → ÷MEP
+                    sym, is_ars = simbolo_byma(asset), True  # BYMA en ARS → ÷MEP
                 price = override if override is not None else prices.get(sym)
                 if price is not None:
                     raw = price * (p.get('quantity') or 0)
@@ -402,7 +436,7 @@ def compute_broker_value_usd(
                 # pesos), cualquier otro → '.BA'. Coincide con position_price_key para
                 # esta posición, así que lo que se PIDE es lo que se LEE.
                 asset = p.get('asset') or ''
-                sym = asset if asset.startswith('FCI:') else f"{asset}.BA"
+                sym = asset if asset.startswith('FCI:') else simbolo_byma(asset)
                 price_ars = override if override is not None else prices.get(sym)
                 mkt_ars = price_ars * (p.get('quantity') or 0) if price_ars is not None else None
                 trust_ars = mkt_ars is not None and _trust_mkt_value(

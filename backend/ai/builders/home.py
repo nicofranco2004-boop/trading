@@ -210,7 +210,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             if symbols_for_change:
                 quotes = _m._fetch_batch_quotes(list(symbols_for_change))
                 for sym, q in (quotes or {}).items():
-                    if q and q.get("change_pct") is not None:
+                    # `change_pct_today` dice "today" en el nombre, así que sólo
+                    # se llena si el quote es de la rueda de HOY. Antes de que
+                    # abra el mercado el proveedor sirve el cierre a cierre de
+                    # AYER y la IA lo repetía como movimiento del día — el mismo
+                    # agujero que mandó cuatro mails de alerta con el
+                    # movimiento del lunes fechados como "hoy" (15/09/2026).
+                    if q and q.get("change_pct") is not None and q.get("is_today"):
                         base = sym.replace(".BA", "")
                         ticker_change[base] = round(float(q["change_pct"]), 2)
         except Exception:
