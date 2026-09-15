@@ -72,13 +72,28 @@ export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoE
   const indice = elegida != null && elegida < medidas.length ? elegida : medidas.length - 1
   const foco = medidas[indice]
 
-  if (medidas.length === 0) {
+  // ⚠️ EL VACÍO DE VERDAD NO ES "NO LLEGARON SEMANAS", ES "NINGUNA SE PUDO
+  // MEDIR". El backend arma las semanas de todos los meses SIEMPRE
+  // (timeline.py:218), así que una lista vacía casi no existe: el caso real de
+  // una cuenta nueva es que lleguen doce y no se pueda medir ninguna. Sin este
+  // chequeo, esa cuenta veía doce cajas punteadas vacías abajo de un título que
+  // le prometía datos, y leía "esto no funciona". Nos pasó con el primer usuario
+  // que lo pidió.
+  const medibles = medidas.filter(m => m.estado !== 'sin-medicion').length
+
+  if (medidas.length === 0 || medibles === 0) {
     return (
       <Panel padding="lg" className="mb-4">
         <Cabecera modo={modo} porBroker={porBroker} onModo={onModo} cantidad={0} />
         <p className="text-xs text-ink-2 leading-relaxed max-w-lg">
-          Todavía no hay semanas medidas. La primera aparece cuando haya dos cierres
-          diarios de tu cartera — el primero abre la semana y el segundo la cierra.
+          Todavía no podemos medir ninguna semana. Para saber cuánto rindió una
+          semana hacen falta dos fotos del valor de tu cartera: la que la abre y la
+          que la cierra. Se guardan solas, una por día, y en cuanto haya dos aparece
+          la primera barra.{' '}
+          <span className="text-ink-3">
+            Si esto sigue vacío dentro de unos días, el problema es nuestro y no tuyo:
+            escribinos y lo miramos.
+          </span>
         </p>
       </Panel>
     )
