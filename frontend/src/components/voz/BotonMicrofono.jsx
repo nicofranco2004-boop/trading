@@ -68,6 +68,7 @@ function Boton({ d, deshabilitado, compacto }) {
     <button
       type="button"
       onClick={d.grabar}
+      data-tour="microfono"
       disabled={deshabilitado || ocupado}
       aria-label={ocupado ? 'Pasando a texto…' : 'Hablarle a Rendi'}
       title={ocupado ? 'Pasando a texto…' : 'Hablarle a Rendi'}
