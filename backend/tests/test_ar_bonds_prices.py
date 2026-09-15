@@ -125,3 +125,90 @@ class FetchData912BondsCacheTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _mock_dos_fuentes(data912, letras):
+    """data912 (bonds, corp) + ArgentinaDatos letras, en ese orden de llamada."""
+    main._data912_cache['data'] = None
+    main._data912_cache['ts'] = 0
+    main._ad_letras_cache['data'] = None
+    main._ad_letras_cache['ts'] = 0
+    r_bonds = MagicMock(); r_bonds.status_code = 200
+    r_bonds.json.return_value = [{'symbol': k, 'c': v} for k, v in data912.items()]
+    r_corp = MagicMock(); r_corp.status_code = 200
+    r_corp.json.return_value = []
+    r_letras = MagicMock(); r_letras.status_code = 200
+    r_letras.json.return_value = {'letras': letras}
+    return [r_bonds, r_corp, r_letras]
+
+
+class LetrasUnidadDeclaradaTest(unittest.TestCase):
+    """Las letras cotizan POR CADA 100 y el clasificador las leía por unidad.
+
+    EL BUG, medido en producción el 2026-09-15: el clasificador de
+    `_resolve_ar_bond_price` deduce per-100 vs per-1 por la MAGNITUD en dólares.
+    Una letra cotiza ~100 pesos por cada 100 nominales — unos 0,07 USD, muy por
+    debajo del umbral de 3 — así que la leía como precio POR UNIDAD y la devolvía
+    CIEN VECES más cara. Siete de las trece letras vivas estaban así: TTD26 daba
+    170,2 cuando vale 1,70; T15E7 daba 148,64 cuando vale 1,49.
+
+    El arreglo no es mover el umbral: es dejar de adivinar donde hay una fuente
+    que DECLARA la unidad. ArgentinaDatos publica `precioArs` (por cada 100) y el
+    propio feed lo confirma por otra vía — `volumenEfectivoArs / volumen` da
+    exactamente `precioArs / 100`.
+    """
+
+    def tearDown(self):
+        main._data912_cache['data'] = None
+        main._data912_cache['ts'] = 0
+        main._ad_letras_cache['data'] = None
+        main._ad_letras_cache['ts'] = 0
+
+    def test_el_error_de_100x_no_vuelve(self):
+        """Una letra a 170,1 vale 1,70 por unidad. Nunca 170."""
+        with patch('main.requests.get', side_effect=_mock_dos_fuentes(
+                {'TTD26': 170.2}, [{'ticker': 'TTD26', 'precioArs': 170.1}])):
+            px = main._resolve_ar_bond_price('TTD26.BA')
+        self.assertAlmostEqual(px, 1.702, places=3)
+        self.assertLess(px, 10, 'volvió el error de las 100 veces')
+
+    def test_si_esta_en_las_dos_manda_el_precio_vivo_con_la_unidad_declarada(self):
+        """El valor lo pone data912 (live); la unidad, la fuente que la declara."""
+        with patch('main.requests.get', side_effect=_mock_dos_fuentes(
+                {'TO26': 105.7}, [{'ticker': 'TO26', 'precioArs': 105.55}])):
+            px = main._resolve_ar_bond_price('TO26.BA')
+        self.assertAlmostEqual(px, 1.057, places=3)   # 105.7/100, el de data912
+
+    def test_letra_que_data912_no_tiene(self):
+        """7 de las 13 vivas no están en data912: se sirven de la otra fuente."""
+        with patch('main.requests.get', side_effect=_mock_dos_fuentes(
+                {}, [{'ticker': 'TY30P', 'precioArs': 110.75}])):
+            px = main._resolve_ar_bond_price('TY30P.BA')
+        self.assertAlmostEqual(px, 1.1075, places=4)
+
+    def test_un_bono_que_no_es_letra_sigue_igual(self):
+        """El clasificador por magnitud sigue gobernando a los soberanos."""
+        with patch('main.requests.get', side_effect=_mock_dos_fuentes(
+                {'AL30': 91610.0}, [{'ticker': 'TTD26', 'precioArs': 170.1}])):
+            px = main._resolve_ar_bond_price('AL30.BA')
+        self.assertAlmostEqual(px, 916.10, places=2)
+
+    def test_si_la_fuente_de_letras_cae_no_rompe_nada(self):
+        """Sin esa fuente, todo vuelve a comportarse como antes."""
+        def boom(url, *a, **k):
+            if 'argentinadatos' in url:
+                raise RuntimeError('caída')
+            r = MagicMock(); r.status_code = 200
+            r.json.return_value = [{'symbol': 'AL30', 'c': 91610.0}] if 'arg_bonds' in url else []
+            return r
+        main._data912_cache['data'] = None; main._data912_cache['ts'] = 0
+        main._ad_letras_cache['data'] = None; main._ad_letras_cache['ts'] = 0
+        with patch('main.requests.get', side_effect=boom):
+            self.assertAlmostEqual(main._resolve_ar_bond_price('AL30.BA'), 916.10, places=2)
+
+    def test_la_moneda_extranjera_no_pasa_por_las_letras(self):
+        """Las letras cotizan en pesos: un pedido sin .BA no las mira."""
+        with patch('main.requests.get', side_effect=_mock_dos_fuentes(
+                {}, [{'ticker': 'TTD26', 'precioArs': 170.1}])):
+            self.assertIsNone(main._resolve_ar_bond_price('TTD26'))
+
