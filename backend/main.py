@@ -37454,14 +37454,26 @@ def advisor_brief_run_cron(request: Request):
 
 
 @app.get("/api/advisor/brief/preview")
-def advisor_brief_preview(kind: str = "open", uid: int = Depends(get_current_user)):
-    """Vista previa del brief para el asesor (sin mandar email)."""
+def advisor_brief_preview(request: Request, kind: str = "open",
+                          uid: int = Depends(get_current_user)):
+    """Vista previa del brief para el asesor (sin mandar email).
+
+    ⚠️ El de APERTURA cuesta una llamada al modelo por click desde que lleva
+    resumen de mercado, así que va con tope: es un botón de "mirá cómo queda",
+    no un generador. El de cierre no narra y no gasta nada.
+
+    Lee las noticias que HAYA en la base; no sale a buscarlas (eso lo hace el
+    cron). Con la base fría puede mostrar menos de lo que va a traer el mail de
+    mañana — nunca más."""
     conn = get_db()
     try:
         _require_advisor(conn, uid)
         import advisor_brief
         if kind not in advisor_brief.KINDS:
             raise HTTPException(400, "kind debe ser 'open' o 'close'.")
+        if kind == "open":
+            _check_rate_limit(request, max_calls=4, window_seconds=3600,
+                              suffix=f"advisor_brief_preview:{uid}")
         return {"brief": advisor_brief.build_brief(conn, uid, kind) or None}
     finally:
         conn.close()

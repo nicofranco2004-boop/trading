@@ -109,6 +109,30 @@ export default function BriefPrefs() {
             </p>
           ) : (
             <div className="space-y-2">
+              {/* El resumen del mercado, que va arriba de todo en el mail de la
+                  mañana. Sin esto la vista previa mostraba sólo las listas del
+                  libro y el asesor no tenía forma de ver lo que de verdad
+                  cambió — el botón le enseñaba un mail que ya no es el suyo. */}
+              {preview.data.narrative && (
+                <div className="pb-1">
+                  <div className="text-sm font-medium text-ink-0 leading-snug">
+                    {preview.data.narrative.titular}
+                  </div>
+                  {(preview.data.narrative.mercado || []).map((p, k) => (
+                    <p key={k} className="text-xs text-ink-1 leading-relaxed mt-1.5">{p}</p>
+                  ))}
+                  {(preview.data.narrative.tu_cartera || []).length > 0 && (
+                    <>
+                      <div className="text-[11px] uppercase tracking-wider text-ink-3 mt-2.5">
+                        Qué significa para tu libro
+                      </div>
+                      {preview.data.narrative.tu_cartera.map((p, k) => (
+                        <p key={k} className="text-xs text-ink-1 leading-relaxed mt-1">{p}</p>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
               {(preview.data.sections || []).map(sec => (
                 <div key={sec.title}>
                   <div className="text-[11px] uppercase tracking-wider text-ink-3">{sec.title}</div>

@@ -1027,3 +1027,28 @@ class SinRedEnLosTestsTest(unittest.TestCase):
         setup = fuente[fuente.index("    def setUp(self):"):fuente.index("    # ── helpers")]
         self.assertIn("refresh_market_news", setup)
         self.assertIn('patch.object(market_brief, "narrate"', setup)
+
+
+class VistaPreviaDelAsesorTest(unittest.TestCase):
+    """El botón «Ver cómo se ve» del asesor tiene que mostrar lo que de verdad
+    cambió: el resumen del mercado. Se cambiaron los títulos de la tarjeta y no
+    el cuerpo de la vista previa, así que el botón le enseñaba un mail que ya no
+    es el suyo — sólo las listas del libro, sin una línea de mercado."""
+
+    def test_la_tarjeta_muestra_la_narracion(self):
+        import pathlib
+        card = (pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src" /
+                "components" / "advisor" / "BriefPrefs.jsx").read_text(encoding="utf-8")
+        self.assertIn("preview.data.narrative", card,
+                      "la vista previa del asesor no muestra el resumen de mercado")
+        self.assertIn("Qué significa para tu libro", card)
+
+    def test_la_vista_previa_de_apertura_tiene_tope(self):
+        """Desde que narra, cada click cuesta una llamada al modelo."""
+        fuente = open(main.__file__, encoding="utf-8").read()
+        bloque = fuente[fuente.index("def advisor_brief_preview"):]
+        bloque = bloque[:bloque.index("\n@app.")]
+        self.assertIn("advisor_brief_preview:", bloque,
+                      "el preview del asesor narra sin tope: un click = una llamada")
+        self.assertIn('if kind == "open":', bloque,
+                      "el tope tiene que aplicar sólo al de apertura, que es el que narra")
