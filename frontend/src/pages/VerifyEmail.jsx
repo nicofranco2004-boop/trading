@@ -180,7 +180,7 @@ export default function VerifyEmail() {
   }
 
   return (
-    <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-bg-0 flex items-center justify-center px-4">
       <PageMeta
         title="Verificar email — Rendi"
         description="Confirmá tu email para activar tu cuenta de Rendi."

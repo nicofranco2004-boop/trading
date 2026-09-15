@@ -110,7 +110,7 @@ export default function ClaimAccount() {
   const inputClass = 'w-full bg-bg-2 border border-line rounded-lg px-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-data-violet focus:ring-2 focus:ring-data-violet/20 transition-colors'
 
   return (
-    <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-bg-0 flex items-center justify-center px-4">
       <PageMeta
         title="Activá tu cuenta — Rendi"
         description="Creá tu contraseña para entrar a la cartera que tu asesor cargó en Rendi."

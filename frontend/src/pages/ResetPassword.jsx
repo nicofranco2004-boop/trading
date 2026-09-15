@@ -75,7 +75,7 @@ export default function ResetPassword() {
   const inputClass = 'w-full bg-bg-2 border border-line rounded-lg px-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-pos focus:ring-2 focus:ring-rendi-pos/20 transition-colors'
 
   return (
-    <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-bg-0 flex items-center justify-center px-4">
       <PageMeta
         title="Cambiar contraseña — Rendi"
         description="Restablecé tu contraseña de Rendi con el link que te enviamos por email."

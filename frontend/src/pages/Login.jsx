@@ -234,7 +234,7 @@ export default function Login() {
   const inputClass = 'w-full bg-bg-2 border border-line rounded-lg px-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent focus:ring-2 focus:ring-rendi-accent/20 transition-colors'
 
   return (
-    <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-bg-0 flex items-center justify-center px-4">
       <PageMeta
         title="Iniciar sesión — Rendi"
         description="Accedé a tu cuenta de Rendi para ver tu portfolio multi-broker."

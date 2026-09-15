@@ -277,7 +277,7 @@ function BookDetailModal({ onClose }) {
     const restV = valued.slice(5).reduce((s, c) => s + c.value_usd, 0)
     const comp = top.map((c, i) => ({ label: c.label, pct: c.share_pct ?? 0, color: COMP_COLORS[i] }))
     if (restV > 0 && data?.total_usd > 0) {
-      comp.push({ label: `Resto (${valued.length - 5})`, pct: Math.round((restV / data.total_usd) * 1000) / 10, color: '#3A4256' })
+      comp.push({ label: `Resto (${valued.length - 5})`, pct: Math.round((restV / data.total_usd) * 1000) / 10, color: 'rgb(var(--line-3))' })
     }
     return {
       rows: sorted, edge, comp,

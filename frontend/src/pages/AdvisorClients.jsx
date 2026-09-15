@@ -905,7 +905,7 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
               <label key={c.client_uid} className={`flex items-center gap-3 px-3 py-2.5 text-sm ${c.brokers.length === 0 ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-bg-1'}`}>
                 <input
                   type="checkbox"
-                  className="accent-[#8B7DFF]"
+                  className="accent-data-violet"
                   disabled={c.brokers.length === 0}
                   checked={!!selected[c.client_uid]}
                   onChange={(e) => setSelected({ ...selected, [c.client_uid]: e.target.checked })}
