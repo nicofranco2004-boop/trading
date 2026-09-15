@@ -28,6 +28,7 @@ import { useVoz } from '../contexts/VozContext'
 import { useMicrofono } from './voz/BotonMicrofono'
 import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota, fechaLegible } from '../utils/cuotaTexto'
 import { usePegadoAlFondo } from '../hooks/usePegadoAlFondo'
+import { SUGERIDAS, SUGERIDAS_ASESOR } from './ai/preguntasSugeridas'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
@@ -38,34 +39,12 @@ import { usePegadoAlFondo } from '../hooks/usePegadoAlFondo'
 // Slots #5 y #8 introducidos en Pack A v2 — disparan get_value_scorecard y
 // get_earnings_history respectivamente. Buscan que el user descubra
 // orgánicamente las nuevas tools de mercado al elegir el chip.
-const DEFAULT_SUGGESTED = [
-  '¿Cómo está mi portfolio en general?',
-  '¿Qué riesgos detectás en mi cartera?',
-  '¿Mi nivel de concentración es elevado?',
-  '¿Cómo evalúo mi win rate?',
-  '¿Está cara mi posición más grande?',
-  '¿Detectás algún sesgo en mi forma de operar?',
-  '¿Mi exposure por sector/región está equilibrado?',
-  '¿Cuándo reportan earnings los activos de mi cartera?',
-  'Si tuvieras que mejorar UNA cosa de mi cartera, ¿cuál sería?',
-  '¿Cómo voy vs el S&P 500?',
-  '¿Le estoy ganando a la inflación argentina?',
-  '¿Qué activo es el que más riesgo me agrega?',
-]
+const DEFAULT_SUGGESTED = SUGERIDAS
 
 // Chips del ASESOR en su propio nivel (book-mode): preguntas sobre el LIBRO,
 // no sobre una cartera. No necesitan whitelist — el tier advisor tiene chat
 // libre (es premium); son solo sugerencias de arranque.
-const ADVISOR_SUGGESTED = [
-  '¿Cómo viene mi libro en general?',
-  '¿Qué cliente necesita mi atención hoy?',
-  '¿Qué clientes tienen plata sin invertir?',
-  '¿Quién está más concentrado en un solo activo?',
-  '¿Qué activo le está haciendo perder plata a más clientes?',
-  '¿Cómo está repartido el libro entre mis clientes?',
-  '¿Qué cliente rindió mejor y cuál peor?',
-  'Armame un resumen del libro para una reunión',
-]
+const ADVISOR_SUGGESTED = SUGERIDAS_ASESOR
 
 // stripMarkdown vive en utils/stripMarkdown.js (testeable sin la cadena de
 // imports de React; ver B-14 del audit IA #2 — el regex viejo mutilaba

@@ -1,6 +1,5 @@
 import { useEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { getClientContext } from './utils/api'
 import { VozProvider } from './contexts/VozContext'
 import RendiMate from './components/voz/RendiMate'
 import IslaSegura from './components/voz/IslaSegura'
@@ -173,11 +172,15 @@ function VozGate() {
   const { pathname } = useLocation()
   if (!user) return null
   if (SIN_ACOMPANANTE.some(r => pathname.startsWith(r))) return null
-  // El asesor EN SU PROPIO NIVEL queda afuera de esta etapa: su chat habla del
-  // LIBRO y ese contexto lo arma el servidor. El acompañante le mandaría el
-  // snapshot de su cuenta personal, que está vacía. Adentro de un cliente
-  // (hay contexto) sí corresponde: ahí la cartera es la del cliente.
-  if (user.tier === 'advisor' && !getClientContext()) return null
+  // EL ASESOR TAMBIÉN. Quedó afuera cuando esto se armó, con un motivo que era
+  // cierto entonces: el acompañante le habría mandado el snapshot de su cuenta
+  // personal, que está vacía. Desde que el modo LIBRO existe eso ya no pasa —
+  // el servidor arma el contexto del libro solo, mirando quién pregunta, y el
+  // acompañante directamente no le pide la cartera personal (ver VozContext).
+  //
+  // Y le sirve igual o más: el asesor se pasa el día mirando carteras de
+  // clientes, que es exactamente cuando conviene poder preguntar sin salir de
+  // la pantalla.
   // La isla va ADENTRO de su propia red: si falla, se apaga sola y el resto de
   // la app sigue. Un acompañante que se lleva puesta la pantalla de la cartera
   // es una desproporción, aunque esté roto. `reintentarEn` le da otra
