@@ -523,5 +523,5 @@ function KpiCell({ label, value, sub, tone, subTone, bordered, leftBorder, topBo
 
 function fmtNumber(n) {
   if (n == null || isNaN(n)) return '—'
-  return Math.round(n).toLocaleString('en-US')
+  return Math.round(n).toLocaleString('es-AR')
 }

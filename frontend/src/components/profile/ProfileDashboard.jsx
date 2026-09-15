@@ -28,6 +28,7 @@ import LiquidityBar from './LiquidityBar'
 import HorizonStat from './HorizonStat'
 import ObjectiveStat from './ObjectiveStat'
 import DrawdownStat from './DrawdownStat'
+import { pctTxt } from '../../utils/format'
 
 const MODULE_META = {
   radar:         { title: 'Radar de perfil',        icon: Layers,         aiCode: null },
@@ -147,7 +148,7 @@ function moduleBody(id, cards, dash) {
       return (
         <DrawdownStat
           behaviorLabel={card.declared?.behaviorLabel}
-          toleranceLabel={`${card.declared?.impliedTolerance?.min}-${card.declared?.impliedTolerance?.max}%`}
+          toleranceLabel={`${card.declared?.impliedTolerance?.min}-${pctTxt(card.declared?.impliedTolerance?.max)}`}
           drawdownPct={card.actual.drawdownPct}
           comparison={card.comparison}
         />

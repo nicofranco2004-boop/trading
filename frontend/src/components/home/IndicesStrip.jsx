@@ -7,14 +7,15 @@ import { api } from '../../utils/api'
 function fmtPct(p) {
   if (p == null) return '—'
   const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(2)}%`
+  return `${sign}${p.toFixed(2).replace('.', ',')}%`
 }
 
 function fmtPrice(p, kind) {
   if (p == null) return '—'
-  if (kind === 'crypto') return p.toLocaleString('en-US', { maximumFractionDigits: 0 })
-  if (kind === 'commodity') return p.toFixed(2)
-  return p.toLocaleString('en-US', { maximumFractionDigits: 2 })
+  if (kind === 'crypto') return p.toLocaleString('es-AR', { maximumFractionDigits: 0 })
+    // Con toFixed el oro salía "2748,20": coma bien, pero SIN el punto de miles.
+  if (kind === 'commodity') return p.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return p.toLocaleString('es-AR', { maximumFractionDigits: 2 })
 }
 
 export default function IndicesStrip() {

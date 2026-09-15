@@ -204,7 +204,7 @@ export function BondDetailBody({
               {meta.type === 'cer' && (
                 cerFactorToday != null ? (
                   <p className="text-[10.5px] text-data-cyan pt-1">
-                    Capital ajustado por CER · factor hoy ≈ {cerFactorToday.toFixed(3)}×
+                    Capital ajustado por CER · factor hoy ≈ {cerFactorToday.toFixed(3).replace('.', ',')}×
                     {/* La fuente de CER está caída y el backend sirve UVA, que el
                         BCRA actualiza POR CER: el ratio entre dos fechas es el
                         mismo. Se dice cuál se usó en vez de rotularlo "CER" a

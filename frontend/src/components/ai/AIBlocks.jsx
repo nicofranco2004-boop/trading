@@ -18,6 +18,7 @@ import {
   Sparkles, ChevronRight, PencilLine, Check, Loader2, Users, LayoutDashboard,
 } from 'lucide-react'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
+import { parseNum } from '../../utils/format'
 
 // Paleta de composición (por índice; el último cae en gris).
 const ALLOC_COLORS = ['#7c6df0', '#4bd0e8', '#2ad17f', '#f5b752', '#ff6472', '#5f6a7e']
@@ -56,16 +57,7 @@ export default function AIBlocks({ blocks, onSendMessage = null, interactive = f
 // (audit). Reglas: hay coma → puntos son miles; solo puntos en grupos de
 // 3 → miles; si no, decimal normal.
 function parseMoneyish(v) {
-  const cleaned = String(v ?? '').replace(/[^\d.,-]/g, '')
-  if (!cleaned) return 0
-  let n
-  if (cleaned.includes(',')) {
-    n = parseFloat(cleaned.replace(/\./g, '').replace(',', '.'))
-  } else if (/^-?\d{1,3}(\.\d{3})+$/.test(cleaned)) {
-    n = parseFloat(cleaned.replace(/\./g, ''))
-  } else {
-    n = parseFloat(cleaned)
-  }
+  const n = parseNum(v)
   return Number.isFinite(n) ? Math.abs(n) : 0
 }
 

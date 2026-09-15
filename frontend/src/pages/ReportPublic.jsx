@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import PageMeta from '../components/PageMeta'
+import { pctTxt } from '../utils/format'
 
 const P = {
   paper: '#FDFDFB', paper2: '#F4F4F1', ink0: '#191D26', ink2: '#5C6474',
@@ -123,7 +124,7 @@ export default function ReportPublic() {
             <div>
               <div style={{ fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, marginBottom: 4 }}>Resultado del período</div>
               <div style={{ fontSize: 24, fontWeight: 750, color: (r.market_usd ?? 0) >= 0 ? P.up : P.down }}>
-                {r.ret_pct != null ? `${r.ret_pct >= 0 ? '+' : ''}${r.ret_pct}%` : '—'}
+                {r.ret_pct != null ? `${r.ret_pct >= 0 ? '+' : ''}${pctTxt(r.ret_pct)}` : '—'}
               </div>
               <div style={{ fontSize: 11, color: P.ink2, marginTop: 3 }}>{signed(r.market_usd)} · neto de comisiones</div>
             </div>

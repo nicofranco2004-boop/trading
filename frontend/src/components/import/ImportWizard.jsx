@@ -79,6 +79,7 @@ const STEP_SEED = 'seed'
 const STEP_RECONCILE = 'reconcile'
 import { TrialCta, TrialFinePrint, TRIAL_PRO_DAYS } from '../plan/TrialCta'
 import { usePlanFeatures as _usePlanFeaturesTrial } from '../../hooks/usePlanFeatures'
+import { parseNum, parseNumOrNull } from '../../utils/format'
 
 const STEP_DONE = 'done'
 
@@ -637,7 +638,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
             .filter(([_, v]) => v !== '')
             .map(([cur, v]) => {
               const F = Number(b.final_balance?.[cur] || 0)
-              return [cur, Number(v) - F]   // ajuste = saldo_real − estimado (+ o −)
+              return [cur, parseNum(v) - F]   // ajuste = saldo_real − estimado (+ o −)
             })
             // Mandamos el ajuste sea POSITIVO (faltaba plata previa) o NEGATIVO
             // (el cash estimado por los trades quedó más alto que el real — típico
@@ -651,11 +652,11 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
           // aunque el user no haya puesto precio: se crean con costo 0 (editable
           // luego) para no volver a perderlas. Las de qty mínima (sell sin compra
           // previa) siguen siendo opcionales — solo si el user cargó el precio.
-          .filter(a => a.symbol && Number(a.qty) > 0 && (a.cost_basis_unit !== '' || a.exact_qty))
+          .filter(a => a.symbol && parseNum(a.qty) > 0 && (a.cost_basis_unit !== '' || a.exact_qty))
           .map(a => ({
             symbol: a.symbol.trim().toUpperCase(),
-            qty: Number(a.qty),
-            cost_basis_unit: a.cost_basis_unit === '' ? 0 : Number(a.cost_basis_unit),
+            qty: parseNum(a.qty),
+            cost_basis_unit: a.cost_basis_unit === '' ? 0 : parseNum(a.cost_basis_unit),
           })),
       }))
       .filter(b => Object.keys(b.cash).length > 0 || b.assets.length > 0)
@@ -1555,7 +1556,7 @@ function UploadStep({ faltaTenencia = null, sourceType, platform, format, parser
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <FileText size={14} className="flex-shrink-0 text-ink-3" />
                       <span className="font-medium truncate">{f.name}</span>
-                      <span className="text-ink-3 text-xs flex-shrink-0">({(f.size / 1024).toFixed(1)} KB)</span>
+                      <span className="text-ink-3 text-xs flex-shrink-0">({(f.size / 1024).toFixed(1).replace('.', ',')} KB)</span>
                     </div>
                     <button
                       type="button"
@@ -2595,7 +2596,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                     const hasF = F != null
                     const current = b.cash?.[cur] ?? ''       // saldo de HOY que pone el user
                     const isSame = hasF && F >= 0 && current !== '' &&
-                      Math.abs(Number(current) - F) < 0.01
+                      Math.abs(parseNum(current) - F) < 0.01
                     return (
                       <div key={cur} className="block">
                         <div className="mb-2 flex items-center gap-2 flex-wrap">
@@ -2632,9 +2633,8 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           </button>
                         )}
                         <input
-                          type="number"
-                          step="any"
-                          min="0"
+                          type="text"
+                          inputMode="decimal"
                           value={current}
                           onChange={e => setCash(bi, cur, e.target.value)}
                           placeholder={`¿Cuánto ${curLabel} tenés hoy?`}
@@ -2674,7 +2674,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                     {(b.assets || []).map((a, ai) => {
                       const curLabel = displayCur(b.broker_currency, b.broker)
                       const empty = a.cost_basis_unit === '' || a.cost_basis_unit == null
-                      const isZero = !empty && Number(a.cost_basis_unit) === 0
+                      const isZero = !empty && parseNum(a.cost_basis_unit) === 0
                       // exact_qty = posición que SÍ se va a crear (transferida o
                       // compra sin precio) → el precio es requerido (o "no sé" → 0).
                       // min_qty = venta sin compra previa → opcional (el motor
@@ -2698,9 +2698,8 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           <div className="flex items-center gap-1.5 ml-auto">
                             <span className="text-[12px] text-ink-3 font-medium">{curLabel}</span>
                             <input
-                              type="number"
-                              step="any"
-                              min="0"
+                              type="text"
+                          inputMode="decimal"
                               value={a.cost_basis_unit}
                               onChange={e => setAsset(bi, ai, 'cost_basis_unit', e.target.value)}
                               placeholder={a.exact_qty ? 'precio prom.' : 'precio (opcional)'}
@@ -2761,8 +2760,8 @@ function CashReconcileCard({ c, onApplied }) {
   const computedFmt = formatMoney(c.balance, c.currency)
 
   // Diff preview en vivo mientras el user escribe
-  const target = value === '' ? null : Number(value)
-  const validTarget = target !== null && Number.isFinite(target)
+  const target = parseNumOrNull(value)
+  const validTarget = target !== null
   const diff = validTarget ? target - c.balance : null
   const diffAbs = diff !== null ? Math.abs(diff) : 0
   const diffSig = diff !== null && Math.abs(diff) >= 0.01
@@ -2839,11 +2838,12 @@ function CashReconcileCard({ c, onApplied }) {
               {currencySymbol}
             </span>
             <input
-              type="number" step="0.01" value={value}
+              type="text"
+                          inputMode="decimal" value={value}
               onChange={e => { setValue(e.target.value); setErr(null) }}
               onKeyDown={e => { if (e.key === 'Enter' && validTarget) apply() }}
               disabled={busy}
-              placeholder="0.00"
+              placeholder="0,00"
               className="w-full pl-9 pr-2 py-2 text-sm bg-white dark:bg-bg-2 border border-line-2 rounded-md tabular text-ink-0 focus:outline-none focus:border-rendi-accent disabled:opacity-50"
             />
           </div>

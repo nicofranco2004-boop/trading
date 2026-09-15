@@ -25,12 +25,12 @@ function Chip({ nombre, articulo, pp, detalle }) {
   return (
     <span
       className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1)} puntos porcentuales`
+      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1).replace('.', ',')} puntos porcentuales`
              + (detalle ? `. ${detalle}` : '')}
     >
       vs {articulo} {nombre}
       <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1)} pp
+        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1).replace('.', ',')} pp
       </b>
     </span>
   )
@@ -110,7 +110,7 @@ export default function YearReturnLine({ modo = 'certero', className = '' }) {
             <Chip
               nombre="inflación" articulo="la" pp={vsInfl}
               detalle={moneda !== 'ars' && current.retorno_ars_pct != null
-                ? `Se compara en pesos: tu cartera hizo ${current.retorno_ars_pct.toFixed(2)} % en pesos y la inflación ${current.inflation_pct?.toFixed(1)} %`
+                ? `Se compara en pesos: tu cartera hizo ${current.retorno_ars_pct.toFixed(2).replace('.', ',')} % en pesos y la inflación ${current.inflation_pct?.toFixed(1).replace('.', ',')} %`
                 : null}
             />
           )}

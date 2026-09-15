@@ -44,25 +44,25 @@ function fmtMarketCap(n) {
   if (n == null || Number.isNaN(n)) return '—'
   const abs = Math.abs(n)
   const sign = n < 0 ? '−' : ''
-  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`
-  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2).replace('.', ',')}T`
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2).replace('.', ',')}B`
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2).replace('.', ',')}M`
   return `${sign}$${abs.toFixed(0)}`
 }
 
 function fmtMultiple(n) {
   if (n == null || Number.isNaN(n)) return '—'
-  return `${n.toFixed(2)}x`
+  return `${n.toFixed(2).replace('.', ',')}x`
 }
 
 function fmtPct(n) {
   if (n == null || Number.isNaN(n)) return '—'
-  return `${n.toFixed(2)}%`
+  return `${n.toFixed(2).replace('.', ',')}%`
 }
 
 function fmtBeta(n) {
   if (n == null || Number.isNaN(n)) return '—'
-  return n.toFixed(2)
+  return n.toFixed(2).replace('.', ',')
 }
 
 // FooterStrip — barra full-width de 4 celdas con métricas clave de mercado.

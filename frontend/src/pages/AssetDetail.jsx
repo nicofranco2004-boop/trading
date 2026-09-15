@@ -22,7 +22,7 @@ import AssetMiniChart from '../components/home/AssetMiniChart'
 import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
-import { pctSigned, colorClass } from '../utils/format'
+import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { inferType } from '../utils/tickers'
@@ -235,13 +235,13 @@ export default function AssetDetail() {
             Valor actual {agg.brokerCount > 1 && `· ${agg.brokerCount} brokers`}
           </div>
           <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
-            ${Math.round(agg.valueUsd).toLocaleString('en-US')}
+            ${Math.round(agg.valueUsd).toLocaleString('es-AR')}
             <span className="text-base text-ink-3 ml-1.5 font-normal">USD</span>
           </div>
           {agg.pnlPct != null && (
             <div className={`flex items-center gap-2 mt-3 text-sm font-medium tabular ${colorClass(agg.pnlPct)}`}>
               {agg.pnlPct >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
-              <span>{agg.pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(agg.pnlUsd)).toLocaleString('en-US')}</span>
+              <span>{agg.pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(agg.pnlUsd)).toLocaleString('es-AR')}</span>
               <span className="text-ink-3 font-mono text-xs">·</span>
               <span>{pctSigned(agg.pnlPct)}</span>
               <span className="text-ink-3 text-xs ml-1">no realizado</span>
@@ -270,22 +270,22 @@ export default function AssetDetail() {
       <section className="mb-5">
         <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu operatoria en {asset}</div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          <StatCell label="Costo promedio" value={agg.avgCostUsd != null ? `$${agg.avgCostUsd.toFixed(2)}` : '—'} sub="por unidad (USD)" />
+          <StatCell label="Costo promedio" value={agg.avgCostUsd != null ? `$${agg.avgCostUsd.toFixed(2).replace('.', ',')}` : '—'} sub="por unidad (USD)" />
           <StatCell label="Cantidad" value={agg.qty ? formatQty(agg.qty) : '—'} sub={`${agg.lots.length} lote${agg.lots.length !== 1 ? 's' : ''} abierto${agg.lots.length !== 1 ? 's' : ''}`} />
-          <StatCell label="Invertido" value={`$${Math.round(agg.investedUsd).toLocaleString('en-US')}`} sub="costo total (USD)" />
+          <StatCell label="Invertido" value={`$${Math.round(agg.investedUsd).toLocaleString('es-AR')}`} sub="costo total (USD)" />
           {agg.tradesCount > 0 && (
             <>
               <StatCell
                 label="P&L realizado"
-                value={`${agg.realizedTotal >= 0 ? '+' : '−'}$${Math.abs(Math.round(agg.realizedTotal)).toLocaleString('en-US')}`}
+                value={`${agg.realizedTotal >= 0 ? '+' : '−'}$${Math.abs(Math.round(agg.realizedTotal)).toLocaleString('es-AR')}`}
                 sub={`${agg.tradesCount} op${agg.tradesCount !== 1 ? 's' : ''} cerrada${agg.tradesCount !== 1 ? 's' : ''}`}
                 tone={agg.realizedTotal}
               />
               {agg.winRate != null && (
-                <StatCell label="Win rate" value={`${agg.winRate}%`} sub={`${agg.wins} ganadas · ${agg.losses} perdidas`} tone={agg.winRate >= 50 ? 1 : -1} />
+                <StatCell label="Win rate" value={`${pctTxt(agg.winRate)}`} sub={`${agg.wins} ganadas · ${agg.losses} perdidas`} tone={agg.winRate >= 50 ? 1 : -1} />
               )}
               {agg.best && (
-                <StatCell label="Mejor trade" value={`${agg.best.pnl_usd >= 0 ? '+' : '−'}$${Math.abs(Math.round(agg.best.pnl_usd)).toLocaleString('en-US')}`} sub={agg.best.date || ''} tone={agg.best.pnl_usd} />
+                <StatCell label="Mejor trade" value={`${agg.best.pnl_usd >= 0 ? '+' : '−'}$${Math.abs(Math.round(agg.best.pnl_usd)).toLocaleString('es-AR')}`} sub={agg.best.date || ''} tone={agg.best.pnl_usd} />
               )}
             </>
           )}
@@ -318,9 +318,9 @@ export default function AssetDetail() {
                       <td className="px-3 py-2.5 text-ink-1">{lot.entry_date || '—'}{i === 0 && <span className="ml-1.5 text-[12.5px] text-rendi-warn font-medium">próximo</span>}</td>
                       <td className="px-3 py-2.5 text-ink-3 text-xs hidden sm:table-cell">{lot.broker}</td>
                       <td className="px-3 py-2.5 text-right tabular text-ink-1">{formatQty(lot.quantity)}</td>
-                      <td className="px-3 py-2.5 text-right tabular text-ink-3">${Math.round(lot.investedUsd).toLocaleString('en-US')}</td>
+                      <td className="px-3 py-2.5 text-right tabular text-ink-3">${Math.round(lot.investedUsd).toLocaleString('es-AR')}</td>
                       <td className={`px-3 py-2.5 text-right tabular font-medium ${colorClass(lotPct)}`}>
-                        {lot.pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(lot.pnlUsd)).toLocaleString('en-US')}
+                        {lot.pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(lot.pnlUsd)).toLocaleString('es-AR')}
                       </td>
                     </tr>
                   )
@@ -359,7 +359,7 @@ export default function AssetDetail() {
                     )}
                     {isClosed && (
                       <div className={`text-sm font-medium tabular leading-none w-20 text-right ${colorClass(op.pnl_usd)}`}>
-                        {op.pnl_usd >= 0 ? '+' : '−'}${Math.abs(Math.round(op.pnl_usd)).toLocaleString('en-US')}
+                        {op.pnl_usd >= 0 ? '+' : '−'}${Math.abs(Math.round(op.pnl_usd)).toLocaleString('es-AR')}
                       </div>
                     )}
                   </li>
@@ -419,7 +419,7 @@ function StatCell({ label, value, sub, tone }) {
 
 function formatQty(q) {
   if (q == null || isNaN(q)) return '—'
-  if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('en-US')
-  if (Math.abs(q) >= 1) return q.toFixed(2).replace(/\.00$/, '')
-  return q.toFixed(4)
+  if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('es-AR')
+  if (Math.abs(q) >= 1) return q.toLocaleString(LOCALE, { maximumFractionDigits: 2 })
+  return q.toFixed(4).replace('.', ',')
 }

@@ -1,3 +1,4 @@
+import { pctTxt } from '../../utils/format'
 // HorizonStat — % en activos de plazo largo vs horizonte declarado.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body de la card de horizonte en Análisis › Perfil. Stat grande con el % de
@@ -10,7 +11,7 @@ export default function HorizonStat({ longTermPct, horizonLabel, clashes }) {
   return (
     <div>
       <div className="flex items-baseline gap-3">
-        <span className="text-3xl font-semibold text-ink-0 tabular-nums">{longTermPct}%</span>
+        <span className="text-3xl font-semibold text-ink-0 tabular-nums">{pctTxt(longTermPct)}</span>
         <span className="text-xs text-ink-2 max-w-[220px] leading-snug">
           en activos de plazo largo (renta variable + alternativos)
         </span>
@@ -21,7 +22,7 @@ export default function HorizonStat({ longTermPct, horizonLabel, clashes }) {
         {clashes ? (
           <>
             <span className="text-rendi-warn">Choca</span> con tener{' '}
-            <span className="tabular-nums">{longTermPct}%</span> en activos de años.
+            <span className="tabular-nums">{pctTxt(longTermPct)}</span> en activos de años.
           </>
         ) : (
           'Coherente con tu composición.'

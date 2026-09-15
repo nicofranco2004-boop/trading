@@ -13,7 +13,7 @@ import { useMoneyFormat } from '../../contexts/CurrencyContext'
 function fmtPct(p) {
   if (p == null) return '—'
   const sign = p >= 0 ? '+' : '−'
-  return `${sign}${Math.abs(p).toFixed(2)}%`
+  return `${sign}${Math.abs(p).toFixed(2).replace('.', ',')}%`
 }
 
 export default function WeekCard({ week }) {
@@ -81,7 +81,7 @@ export default function WeekCard({ week }) {
           )}
           <div className="grid grid-cols-3 gap-2 text-[10px]">
             <Stat label="Trades" value={week.metrics.trades_count} />
-            <Stat label="Win rate" value={week.metrics.win_rate != null ? `${week.metrics.win_rate.toFixed(0)}%` : '—'} />
+            <Stat label="Win rate" value={week.metrics.win_rate != null ? `${week.metrics.win_rate.toFixed(0).replace('.', ',')}%` : '—'} />
             <Stat label="Realizado" value={fmtUsd(week.metrics.realized_pnl)} />
           </div>
         </div>

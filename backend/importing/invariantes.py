@@ -20,6 +20,7 @@ CHEQUEOS. Si el chequeo puede marcar algo legítimo, va con severidad "aviso", n
 "error". Ante la duda: aviso.
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 
 from typing import Any, Dict, List, Optional
 
@@ -259,7 +260,7 @@ def check_caja_concilia(conn, uid: Optional[int] = None,
         out.append(Violacion(
             chequeo="caja_concilia", severidad="aviso", user_id=r["user_id"],
             que_pasa=(f"En '{r['broker']}' la foto tuvo que corregir el efectivo en "
-                      f"{ccy} {amt:,.2f}. Los movimientos reconstruyeron un saldo y el "
+                      f"{ccy} {fmt_num(amt, 2)}. Los movimientos reconstruyeron un saldo y el "
                       f"resumen del broker decía otro. Puede ser una fila que el parser "
                       f"perdió en silencio, o que el rango de fechas subido no cubra "
                       f"toda la vida de la cuenta — hay que mirarlo."),

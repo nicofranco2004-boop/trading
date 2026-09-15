@@ -10,7 +10,7 @@ import EmptyState from '../components/EmptyState'
 import { PageSkeleton } from '../components/Skeleton'
 import InfoTooltip from '../components/InfoTooltip'
 import { useToast } from '../components/Toast'
-import { usd, fmtUsd } from '../utils/format'
+import { usd, fmtUsd, pctTxt, parseNum } from '../utils/format'
 import { priceSymbol, computeBrokerValue, isArUsdBroker } from '../utils/valuation'
 import { api } from '../utils/api'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
@@ -107,9 +107,9 @@ export default function Goals() {
   async function save() {
     if (!form.target_usd || !form.target_date) return
     const body = {
-      target_usd: +form.target_usd,
+      target_usd: parseNum(form.target_usd),
       target_date: form.target_date,
-      expected_return_pct: +form.expected_return_pct,
+      expected_return_pct: parseNum(form.expected_return_pct),
       label: form.label || null,
     }
     try {
@@ -185,7 +185,7 @@ export default function Goals() {
           <p className="text-sm text-ink-2">
             Basado en {cagr.months} {cagr.months === 1 ? 'mes' : 'meses'} medidos:
             <span className={`ml-2 text-2xl font-bold ${cagr.cagr >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-              {cagr.cagr >= 0 ? '+' : ''}{cagr.cagr.toFixed(2)}%
+              {cagr.cagr >= 0 ? '+' : ''}{cagr.cagr.toFixed(2).replace('.', ',')}%
             </span>
             <span className="text-xs text-ink-3 ml-2">anualizado (TWR)</span>
           </p>
@@ -194,7 +194,7 @@ export default function Goals() {
             <p className="text-sm text-ink-2">
               En los {cagr.dias} días medidos:
               <span className={`ml-2 text-2xl font-bold ${cagr.total_return_pct >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                {cagr.total_return_pct >= 0 ? '+' : ''}{cagr.total_return_pct.toFixed(2)}%
+                {cagr.total_return_pct >= 0 ? '+' : ''}{cagr.total_return_pct.toFixed(2).replace('.', ',')}%
               </span>
               <span className="text-xs text-ink-3 ml-2">acumulado (TWR)</span>
             </p>
@@ -303,7 +303,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
           <p className="text-xs text-ink-3 mt-1">
             <DollarSign size={11} className="inline -mt-0.5" /> ${usd(target)} ·
             <Calendar size={11} className="inline -mt-0.5 ml-2" /> {goal.target_date} ({monthsLeft} {monthsLeft === 1 ? 'mes' : 'meses'}) ·
-            <TrendingUp size={11} className="inline -mt-0.5 ml-2" /> {goal.expected_return_pct}% anual
+            <TrendingUp size={11} className="inline -mt-0.5 ml-2" /> {pctTxt(goal.expected_return_pct)} anual
           </p>
         </div>
       </div>
@@ -312,7 +312,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
       <div className="mb-4">
         <div className="flex justify-between text-xs text-ink-3 mb-1">
           <span>${usd(currentValue)}</span>
-          <span className="font-medium">{progressPct.toFixed(1)}%</span>
+          <span className="font-medium">{progressPct.toFixed(1).replace('.', ',')}%</span>
           <span>${usd(target)}</span>
         </div>
         <div className="h-2 bg-bg-2 dark:bg-bg-2 rounded-full overflow-hidden">
@@ -331,18 +331,18 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
             <Scenario
               title="Con aportes mensuales"
               value={monthly != null ? `${fmtUsd(monthly)} / mes` : '—'}
-              sub={`Aporte mensual necesario para alcanzar la meta asumiendo ${goal.expected_return_pct}% anual.`}
+              sub={`Aporte mensual necesario para alcanzar la meta asumiendo ${pctTxt(goal.expected_return_pct)} anual.`}
             />
             <Scenario
               title="Solo con rendimiento"
-              value={requiredReturnNoContrib != null ? `${requiredReturnNoContrib.toFixed(1)}% anual` : '—'}
+              value={requiredReturnNoContrib != null ? `${requiredReturnNoContrib.toFixed(1).replace('.', ',')}% anual` : '—'}
               sub="Rendimiento anual requerido para alcanzar la meta sin aportes adicionales."
               warn={requiredReturnNoContrib != null && userCagr != null && requiredReturnNoContrib > userCagr * 1.5}
             />
             <Scenario
               title="Sin aportes"
               value={fmtUsd(noContribValue)}
-              sub={`Capital final proyectado en ${monthsLeft} ${monthsLeft === 1 ? 'mes' : 'meses'} con un rendimiento del ${goal.expected_return_pct}% anual.`}
+              sub={`Capital final proyectado en ${monthsLeft} ${monthsLeft === 1 ? 'mes' : 'meses'} con un rendimiento del ${pctTxt(goal.expected_return_pct)} anual.`}
             />
           </div>
 
@@ -359,7 +359,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
       {/* Chart trayectoria */}
       {!reached && trajectory.length > 1 && (
         <div className="mt-5">
-          <p className="text-xs text-ink-3 mb-2">Proyección mes a mes con un aporte mensual de <span className="font-medium text-ink-1">{monthly != null ? fmtUsd(monthly) : 'USD 0'}</span> al {goal.expected_return_pct}% anual.</p>
+          <p className="text-xs text-ink-3 mb-2">Proyección mes a mes con un aporte mensual de <span className="font-medium text-ink-1">{monthly != null ? fmtUsd(monthly) : 'USD 0'}</span> al {pctTxt(goal.expected_return_pct)} anual.</p>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={trajectory} margin={{ top: 5, right: 10, bottom: 0, left: 0 }}>
               <CartesianGrid stroke="#334155" strokeOpacity={0.3} vertical={false} />
@@ -386,8 +386,8 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
             : 'bg-amber-500/[0.06] border-amber-500/25 text-amber-700 dark:text-amber-300'
         }`}>
           {userCagr >= goal.expected_return_pct
-            ? `Tu rendimiento histórico (${userCagr.toFixed(1)}%) supera al asumido (${goal.expected_return_pct}%). El plan está alineado.`
-            : `Tu rendimiento histórico (${userCagr.toFixed(1)}%) se ubica por debajo del asumido (${goal.expected_return_pct}%). Conviene aumentar los aportes o revisar la meta.`}
+            ? `Tu rendimiento histórico (${userCagr.toFixed(1).replace('.', ',')}%) supera al asumido (${pctTxt(goal.expected_return_pct)}). El plan está alineado.`
+            : `Tu rendimiento histórico (${userCagr.toFixed(1).replace('.', ',')}%) se ubica por debajo del asumido (${pctTxt(goal.expected_return_pct)}). Conviene aumentar los aportes o revisar la meta.`}
         </div>
       )}
 
@@ -476,7 +476,7 @@ function GoalDiagnostic({ goalId, reached }) {
             )}
             {diag.required_annual_pct != null && (
               <span className="text-[12.5px] text-ink-2 font-medium">
-                Necesario · {diag.required_annual_pct.toFixed(1)}%/año
+                Necesario · {diag.required_annual_pct.toFixed(1).replace('.', ',')}%/año
               </span>
             )}
           </div>
@@ -543,7 +543,8 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
         <div>
           <label className="block text-xs text-ink-3 mb-1">Objetivo (USD)</label>
           <input
-            type="number"
+            type="text"
+                          inputMode="decimal"
             value={form.target_usd}
             onChange={e => setForm(f => ({ ...f, target_usd: e.target.value }))}
             placeholder="8000"
@@ -572,7 +573,7 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
                   : 'border-line-2 text-ink-2 hover:bg-bg-2 dark:hover:bg-bg-2/50'
               }`}
             >
-              Tu CAGR ({cagr.toFixed(1)}%)
+              Tu CAGR ({cagr.toFixed(1).replace('.', ',')}%)
             </button>
           )}
           {PRESETS.map(p => (
@@ -581,13 +582,13 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
               type="button"
               onClick={() => setForm(f => ({ ...f, expected_return_pct: p.pct }))}
               className={`text-xs px-3 py-1.5 rounded-md border ${
-                +form.expected_return_pct === p.pct
+                parseNum(form.expected_return_pct) === p.pct
                   ? 'border-rendi-accent bg-rendi-accent/15 text-rendi-accent'
                   : 'border-line-2 text-ink-2 hover:bg-bg-2 dark:hover:bg-bg-2/50'
               }`}
               title={p.hint}
             >
-              {p.label} ({p.pct}%)
+              {p.label} ({pctTxt(p.pct)})
             </button>
           ))}
         </div>
@@ -602,7 +603,8 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
             className="flex-1"
           />
           <input
-            type="number"
+            type="text"
+                          inputMode="decimal"
             step={0.1}
             value={form.expected_return_pct}
             onChange={e => setForm(f => ({ ...f, expected_return_pct: e.target.value }))}
@@ -638,7 +640,7 @@ function buildAltScenarios({ currentValue, target, monthsLeft, userCagr }) {
   const histRate = userCagr != null ? +userCagr.toFixed(1) : 10
   const list = [
     { id: 'cons', label: 'Conservador', rate: 6,  hint: 'Bonos y exposición pasiva al S&P' },
-    { id: 'hist', label: 'Histórico',   rate: histRate, hint: userCagr != null ? `Basado en tu CAGR real (${histRate}%)` : 'Aproximación al 10% anual' },
+    { id: 'hist', label: 'Histórico',   rate: histRate, hint: userCagr != null ? `Basado en tu CAGR real (${pctTxt(histRate)})` : 'Aproximación al 10% anual' },
     { id: 'agr',  label: 'Agresivo',    rate: 15, hint: 'Acciones de crecimiento y cripto' },
   ]
   return list.map(s => {
@@ -657,7 +659,7 @@ function AltScenarioCard({ scenario }) {
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-ink-1">{label}</span>
         <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-bg-2 dark:bg-bg-2/60 text-ink-2">
-          {rate}% anual
+          {pctTxt(rate)} anual
         </span>
       </div>
       <p className="text-[11px] text-ink-3 mb-2 leading-snug">{hint}</p>

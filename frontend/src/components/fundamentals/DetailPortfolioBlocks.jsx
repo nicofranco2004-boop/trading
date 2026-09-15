@@ -17,9 +17,9 @@ import { costInPesos, costInUsd, valueEquityLot, isArUsdBroker, costBasisRate } 
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 
 const baseOf = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
-const fmtUsd = (n) => (n == null ? '—' : '$' + Math.round(n).toLocaleString('en-US'))
-const fmtUsd2 = (n) => (n == null ? '—' : '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
-const fmtPct = (n, sign = false) => (n == null ? '—' : (sign && n >= 0 ? '+' : '') + n.toFixed(1) + '%')
+const fmtUsd = (n) => (n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR'))
+const fmtUsd2 = (n) => (n == null ? '—' : '$' + n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+const fmtPct = (n, sign = false) => (n == null ? '—' : (sign && n >= 0 ? '+' : '') + n.toFixed(1).replace('.', ',') + '%')
 
 // Costo USD de un lote (sin precio live): pesos→USD por el dólar financiero, USD
 // queda como está. Espeja la convención de valueLot/valueEquityLot para el COSTO.
@@ -199,7 +199,7 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
 
         {owned && (
           <p className="text-sm text-ink-1 leading-relaxed mb-1">
-            Tenés <span className="font-medium text-ink-0">{owned.qty.toLocaleString('en-US')} {base}</span>
+            Tenés <span className="font-medium text-ink-0">{owned.qty.toLocaleString('es-AR')} {base}</span>
             {' '}en {owned.brokers.join(' · ')}
             {owned.costOnAxis != null && (<>
               {' '}· costo prom <span className="font-medium">{fmtUsd2(owned.costOnAxis)}</span>
@@ -230,8 +230,8 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
         {price.margin_of_safety_pct != null && (
           <p className="text-xs text-ink-2 mt-3 leading-relaxed">
             {price.margin_of_safety_pct >= 0
-              ? `Cotiza ~${Math.abs(price.margin_of_safety_pct).toFixed(0)}% por debajo del valor justo que estiman los analistas`
-              : `Cotiza ~${Math.abs(price.margin_of_safety_pct).toFixed(0)}% por encima del valor justo que estiman los analistas`}
+              ? `Cotiza ~${Math.abs(price.margin_of_safety_pct).toFixed(0).replace('.', ',')}% por debajo del valor justo que estiman los analistas`
+              : `Cotiza ~${Math.abs(price.margin_of_safety_pct).toFixed(0).replace('.', ',')}% por encima del valor justo que estiman los analistas`}
             {data.analysts?.n_analysts ? ` (consenso de ${data.analysts.n_analysts}).` : '.'}
           </p>
         )}
@@ -252,10 +252,10 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
           </div>
 
           <p className="text-xs text-ink-2 mt-4 leading-relaxed">
-            {dy != null && `Incluye ~${ey.toFixed(1)}% de earnings yield + ~${dy.toFixed(1)}% de dividendos. `}
+            {dy != null && `Incluye ~${ey.toFixed(1).replace('.', ',')}% de earnings yield + ~${dy.toFixed(1).replace('.', ',')}% de dividendos. `}
             Es retorno de acción (con riesgo), no garantizado.
             {pfTea != null
-              ? ` Tu plazo fijo rinde ~${pfTea.toFixed(0)}% TEA pero en pesos: en dólares solo te gana si el dólar sube menos que esa tasa.`
+              ? ` Tu plazo fijo rinde ~${pfTea.toFixed(0).replace('.', ',')}% TEA pero en pesos: en dólares solo te gana si el dólar sube menos que esa tasa.`
               : ' Compará contra tu plazo fijo (en pesos) y la inflación según tu caso.'}
           </p>
         </Panel>
@@ -272,7 +272,7 @@ function YieldRow({ label, pct, max, tone }) {
       <div className="hidden sm:block h-2 rounded-full bg-bg-2 overflow-hidden">
         <div className={`h-full rounded-full ${tone}`} style={{ width: `${w}%` }} />
       </div>
-      <span className="text-sm text-ink-1 tabular text-right">{pct.toFixed(1)}%</span>
+      <span className="text-sm text-ink-1 tabular text-right">{pct.toFixed(1).replace('.', ',')}%</span>
     </div>
   )
 }

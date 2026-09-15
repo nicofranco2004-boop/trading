@@ -21,7 +21,7 @@ import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
 import { whatsappUrl } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
-import { usd as usdFmt, ars as arsFmt } from '../utils/format'
+import { usd as usdFmt, ars as arsFmt, pctTxt } from '../utils/format'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
 import BookComposition from '../components/advisor/BookComposition'
 
@@ -34,7 +34,7 @@ const moneyHelpers = ({ isArs, convert }) => {
   const smoney = (n) => (n >= 0 ? `+${money(n, 0)}` : `−${money(Math.abs(n), 0)}`)
   return { money, smoney }
 }
-const signedPct = (n) => (n >= 0 ? `+${n}%` : `${n}%`)
+const signedPct = (n) => (n >= 0 ? `+${pctTxt(n)}` : `${pctTxt(n)}`)
 
 export default function AdvisorDashboard() {
   const navigate = useNavigate()
@@ -308,7 +308,7 @@ function BookDetailModal({ onClose }) {
                 {comp.map((s) => (
                   <span key={s.label} className="inline-flex items-center gap-1.5 text-[11px] text-ink-2">
                     <i className="w-2 h-2 rounded-[2px]" style={{ background: s.color }} />
-                    {s.label} <span className="tabular-nums">{s.pct}%</span>
+                    {s.label} <span className="tabular-nums">{pctTxt(s.pct)}</span>
                   </span>
                 ))}
               </div>
@@ -347,7 +347,7 @@ function BookDetailModal({ onClose }) {
                       <span className="text-[13px] font-medium text-ink-0 truncate">{c.label}</span>
                       <span className="text-right text-[13px] text-ink-0 tabular-nums">{money(c.value_usd, 0)}</span>
                       <span className="flex items-center justify-end gap-2">
-                        <b className="text-xs font-medium text-ink-1 tabular-nums">{c.share_pct != null ? `${c.share_pct}%` : '—'}</b>
+                        <b className="text-xs font-medium text-ink-1 tabular-nums">{c.share_pct != null ? `${pctTxt(c.share_pct)}` : '—'}</b>
                         <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
                           <i className="block h-full bg-data-violet rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
                         </span>
@@ -390,7 +390,7 @@ function BookDetailModal({ onClose }) {
                         <>
                           <span className="text-right text-[13px] text-ink-1 tabular-nums">{money(c.value_usd, 0)}</span>
                           <span className="flex items-center justify-end gap-2">
-                            <b className="text-xs font-medium text-ink-2 tabular-nums">{c.share_pct != null ? `${c.share_pct}%` : '—'}</b>
+                            <b className="text-xs font-medium text-ink-2 tabular-nums">{c.share_pct != null ? `${pctTxt(c.share_pct)}` : '—'}</b>
                             <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
                               <i className="block h-full bg-line-3 rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
                             </span>
@@ -502,8 +502,8 @@ function BookEvolution({ series, error }) {
     const v = isArs ? convert(vUsd) : vUsd
     const sym = isArs ? '$' : 'US$'
     const abs = Math.abs(v)
-    if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(1)}B`
-    if (abs >= 1e6) return `${sym}${(v / 1e6).toFixed(1)}M`
+    if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(1).replace('.', ',')}B`
+    if (abs >= 1e6) return `${sym}${(v / 1e6).toFixed(1).replace('.', ',')}M`
     if (abs >= 1e3) return `${sym}${Math.round(v / 1e3)}k`
     return `${sym}${Math.round(v)}`
   }

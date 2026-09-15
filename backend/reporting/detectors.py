@@ -10,6 +10,7 @@ Filosofía:
 - Si en duda, devolver None. Mejor silencio que ruido.
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 from typing import List, Optional, Dict, Any
 
 from .schema import PeriodReport, Insight
@@ -82,7 +83,7 @@ def detect_driver_of_period(report: PeriodReport) -> Optional[Insight]:
         title=f"{top.asset} fue el motor del período",
         body=(
             f"{top.asset} explicó el {top.contribution_pct:.0f}% de la "
-            f"{direction} (US${abs(top.pnl_usd):,.0f}). "
+            f"{direction} (US${fmt_num(abs(top.pnl_usd), 0)}). "
             f"Tu rendimiento depende fuerte de cómo se mueve este activo."
         ),
         evidence={"type": "asset", "asset": top.asset, "pnl": top.pnl_usd},
@@ -104,7 +105,7 @@ def detect_high_turnover(report: PeriodReport, avg_trades_per_period: float = 0)
         title="Operaste más que tu promedio",
         body=(
             f"Hiciste {report.metrics.trades_count} operaciones — "
-            f"{ratio:.1f}x tu promedio histórico. "
+            f"{fmt_num(ratio, 1)}x tu promedio histórico. "
             f"Más rotación = más comisiones y mayor probabilidad de errores."
         ),
         evidence={"type": "metric", "value": report.metrics.trades_count, "avg": round(avg_trades_per_period, 1)},
@@ -134,8 +135,8 @@ def detect_deposits_vs_gains(report: PeriodReport) -> Optional[Insight]:
         severity="info",
         title="El crecimiento vino de aportes, no de rendimiento",
         body=(
-            f"Aportaste US${deps:,.0f} este período. "
-            f"El portfolio creció US${delta:+,.0f} por rendimiento de mercado. "
+            f"Aportaste US${fmt_num(deps, 0)} este período. "
+            f"El portfolio creció US${fmt_num(delta, 0, signed=True)} por rendimiento de mercado. "
             f"La mayor parte del aumento de valor fue plata que pusiste, no que generaste."
         ),
         evidence={"type": "metric", "deposits": deps, "market_growth": delta},
@@ -196,8 +197,8 @@ def detect_vs_benchmark(report: PeriodReport) -> Optional[Insight]:
             severity="positive",
             title="Le ganaste al S&P 500",
             body=(
-                f"Tu portfolio: {report.metrics.delta_pct:+.1f}%. "
-                f"S&P 500: {sp:+.1f}%. Diferencia: +{delta:.1f} puntos."
+                f"Tu portfolio: {fmt_num(report.metrics.delta_pct, 1, signed=True)}%. "
+                f"S&P 500: {fmt_num(sp, 1, signed=True)}%. Diferencia: +{fmt_num(delta, 1)} puntos."
             ),
             evidence={"type": "metric", "portfolio": report.metrics.delta_pct, "sp500": sp},
         )
@@ -206,8 +207,8 @@ def detect_vs_benchmark(report: PeriodReport) -> Optional[Insight]:
         severity="info",
         title="El S&P 500 te ganó",
         body=(
-            f"Tu portfolio: {report.metrics.delta_pct:+.1f}%. "
-            f"S&P 500: {sp:+.1f}%. Diferencia: {delta:.1f} puntos."
+            f"Tu portfolio: {fmt_num(report.metrics.delta_pct, 1, signed=True)}%. "
+            f"S&P 500: {fmt_num(sp, 1, signed=True)}%. Diferencia: {fmt_num(delta, 1)} puntos."
         ),
         evidence={"type": "metric", "portfolio": report.metrics.delta_pct, "sp500": sp},
     )
@@ -230,7 +231,7 @@ def detect_large_cash_drag(report: PeriodReport, positions: List[Dict[str, Any]]
         severity="info",
         title=f"{cash_pct:.0f}% de tu portfolio está en cash",
         body=(
-            f"Tenés US${cash_value:,.0f} sin invertir ({cash_pct:.0f}% del total). "
+            f"Tenés US${fmt_num(cash_value, 0)} sin invertir ({cash_pct:.0f}% del total). "
             f"Considerá si esa proporción de liquidez está alineada con tus objetivos — "
             f"el cash pierde poder adquisitivo con inflación."
         ),
@@ -309,8 +310,8 @@ def detect_realized_vs_unrealized_gap(report: PeriodReport) -> Optional[Insight]
         severity="warning",
         title="Cerraste ganancias pero arrastrás pérdidas abiertas",
         body=(
-            f"Realizaste US${realized:,.0f} este período, pero tus posiciones abiertas "
-            f"están US${abs(unrealized):,.0f} en negativo. "
+            f"Realizaste US${fmt_num(realized, 0)} este período, pero tus posiciones abiertas "
+            f"están US${fmt_num(abs(unrealized), 0)} en negativo. "
             f"Cuidado con vender ganadoras temprano y holdear perdedoras — sesgo común."
         ),
         evidence={"type": "metric", "realized": realized, "unrealized": unrealized},
@@ -346,7 +347,7 @@ def detect_reversal(report: PeriodReport, prior_delta: Optional[float]) -> Optio
         severity="info",
         title="Cambio de tendencia respecto del mes anterior",
         body=(
-            f"El mes pasado cerró con {prior_delta:+.1f}%, este con {current:+.1f}%. "
+            f"El mes pasado cerró con {fmt_num(prior_delta, 1, signed=True)}%, este con {fmt_num(current, 1, signed=True)}%. "
             f"Pasaste de {'pérdida' if prior_delta < 0 else 'ganancia'} a {direction}. "
             f"Si el patrón se repite, considerá revisar tu exposición."
         ),
@@ -375,7 +376,7 @@ def detect_dividend_heavy(report: PeriodReport, ops: List[Dict[str, Any]]) -> Op
         severity="info",
         title=f"Los dividendos explicaron el {pct:.0f}% del rendimiento",
         body=(
-            f"Cobraste US${div_int:,.0f} en dividendos e intereses (de US${total_realized:,.0f} totales realizados). "
+            f"Cobraste US${fmt_num(div_int, 0)} en dividendos e intereses (de US${fmt_num(total_realized, 0)} totales realizados). "
             f"Es income que no depende de timing — pero significa que tu trading activo "
             f"aportó relativamente poco al resultado."
         ),

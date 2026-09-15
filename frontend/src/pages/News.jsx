@@ -38,7 +38,7 @@ const TAB_VALUES = TABS.map(t => t.value)
 // "afecta X% de tu cartera" cuando el backend adjunta weight_pct (top holdings).
 function weightLabel(weightPct) {
   if (weightPct == null || weightPct < 0.05) return null
-  return `afecta ${weightPct.toFixed(1)}% de tu cartera`
+  return `afecta ${weightPct.toFixed(1).replace('.', ',')}% de tu cartera`
 }
 
 export default function News({ embedded = false }) {

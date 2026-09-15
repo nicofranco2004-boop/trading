@@ -1,3 +1,4 @@
+import { pctTxt } from './format'
 // diagnostics.js
 // ──────────────
 // Motor de diagnóstico del portfolio. La idea es que existan MUCHOS
@@ -24,7 +25,7 @@
 
 const fmtUsd = (n) => {
   if (n == null || !isFinite(n)) return '—'
-  return `${n >= 0 ? '+' : '−'}USD ${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+  return `${n >= 0 ? '+' : '−'}USD ${Math.abs(n).toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
 }
 
 const fmtPct = (n, decimals = 1) => {
@@ -70,7 +71,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (!isFinite(sharePct) || sharePct < 50 || sharePct > 110) return null
       const shownPct = Math.min(sharePct, 100)   // ~101% por redondeo de valuación → 100
       const impact = shownPct * 0.2
-      return `**${top.name}** representa el **${shownPct.toFixed(0)}%** de tu cartera. Una caída del 20% en ese activo se traduce en **−${impact.toFixed(1)}%** sobre el total.`
+      return `**${top.name}** representa el **${shownPct.toFixed(0).replace('.', ',')}%** de tu cartera. Una caída del 20% en ese activo se traduce en **−${impact.toFixed(1).replace('.', ',')}%** sobre el total.`
     },
   },
   {
@@ -82,7 +83,7 @@ export const DIAGNOSTIC_GENERATORS = [
       const top = [...pieData].sort((a, b) => b.value - a.value)[0]
       const sharePct = (top.value / totalPortfolio) * 100
       if (sharePct < 35 || sharePct >= 50) return null
-      return `**${top.name}** pesa **${sharePct.toFixed(0)}%** del portfolio. Concentración elevada en un único activo.`
+      return `**${top.name}** pesa **${sharePct.toFixed(0).replace('.', ',')}%** del portfolio. Concentración elevada en un único activo.`
     },
   },
   {
@@ -94,7 +95,7 @@ export const DIAGNOSTIC_GENERATORS = [
       const top = concentration.top3 || []
       const n = top.length
       const names = top.map(t => t.asset).join(', ')
-      return `El **${concentration.sharePct.toFixed(0)}%** de la cartera está concentrado en ${n} activo${n === 1 ? '' : 's'}: **${names}**.`
+      return `El **${concentration.sharePct.toFixed(0).replace('.', ',')}%** de la cartera está concentrado en ${n} activo${n === 1 ? '' : 's'}: **${names}**.`
     },
   },
   {
@@ -103,7 +104,7 @@ export const DIAGNOSTIC_GENERATORS = [
     severity: 'warn',
     generate: ({ brokerConcentration }) => {
       if (!brokerConcentration || brokerConcentration.top.sharePct < 70) return null
-      return `**${brokerConcentration.top.sharePct.toFixed(0)}%** de tu capital está custodiado en **${brokerConcentration.top.name}**. Si ese broker tuviera un problema operativo o regulatorio, todo tu capital quedaría expuesto. Diversificar entre brokers reduce ese riesgo.`
+      return `**${brokerConcentration.top.sharePct.toFixed(0).replace('.', ',')}%** de tu capital está custodiado en **${brokerConcentration.top.name}**. Si ese broker tuviera un problema operativo o regulatorio, todo tu capital quedaría expuesto. Diversificar entre brokers reduce ese riesgo.`
     },
   },
   {
@@ -114,7 +115,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (!assetTypeBreakdown || !assetTypeBreakdown.length) return null
       const top = [...assetTypeBreakdown].sort((a, b) => b.sharePct - a.sharePct)[0]
       if (top.sharePct < 70) return null
-      return `**${top.sharePct.toFixed(0)}%** de la cartera está en una sola clase de activo (**${top.type}**). Diversificar entre instrumentos reduce la sensibilidad a un mismo factor.`
+      return `**${top.sharePct.toFixed(0).replace('.', ',')}%** de la cartera está en una sola clase de activo (**${top.type}**). Diversificar entre instrumentos reduce la sensibilidad a un mismo factor.`
     },
   },
   {
@@ -144,7 +145,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (denom <= 0) return null
       const depositShare = (Math.abs(discipline.deposits) / denom) * 100
       if (depositShare < 70) return null
-      return `El **${depositShare.toFixed(0)}%** del crecimiento de tu portfolio proviene de aportes, no del rendimiento del mercado. La performance real es la que genera tu capital existente.`
+      return `El **${depositShare.toFixed(0).replace('.', ',')}%** del crecimiento de tu portfolio proviene de aportes, no del rendimiento del mercado. La performance real es la que genera tu capital existente.`
     },
   },
   {
@@ -159,7 +160,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (denom <= 0 || discipline.pnl <= 0) return null
       const pnlShare = (discipline.pnl / denom) * 100
       if (pnlShare < 60) return null
-      return `El **${pnlShare.toFixed(0)}%** del crecimiento proviene del rendimiento del mercado, no de aportes nuevos. Indicador positivo de gestión.`
+      return `El **${pnlShare.toFixed(0).replace('.', ',')}%** del crecimiento proviene del rendimiento del mercado, no de aportes nuevos. Indicador positivo de gestión.`
     },
   },
   {
@@ -174,7 +175,7 @@ export const DIAGNOSTIC_GENERATORS = [
       const top = positive.sort((a, b) => b.pnl - a.pnl)[0]
       const share = (top.pnl / totalGains) * 100
       if (share < 50) return null
-      return `El **${share.toFixed(0)}%** de tus ganancias proviene de **${top.asset}**. Sin esa posición, el rendimiento se reduce significativamente.`
+      return `El **${share.toFixed(0).replace('.', ',')}%** de tus ganancias proviene de **${top.asset}**. Sin esa posición, el rendimiento se reduce significativamente.`
     },
   },
   {
@@ -184,7 +185,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ vsSp500, currency }) => {
       if (currency !== 'USD' || !vsSp500 || vsSp500.pct == null) return null
       if (vsSp500.pct >= -5) return null
-      return `Tu portfolio rinde **${Math.abs(vsSp500.pct).toFixed(1)}%** por debajo del **S&P 500**. Si la brecha persiste, conviene evaluar si la gestión activa justifica el costo frente a un índice.`
+      return `Tu portfolio rinde **${Math.abs(vsSp500.pct).toFixed(1).replace('.', ',')}%** por debajo del **S&P 500**. Si la brecha persiste, conviene evaluar si la gestión activa justifica el costo frente a un índice.`
     },
   },
   {
@@ -194,7 +195,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ vsSp500, currency }) => {
       if (currency !== 'USD' || !vsSp500 || vsSp500.pct == null) return null
       if (vsSp500.pct < 5) return null
-      return `Tu portfolio rinde **+${vsSp500.pct.toFixed(1)}%** por encima del **S&P 500**, el índice de referencia del mercado de acciones de EEUU.`
+      return `Tu portfolio rinde **+${vsSp500.pct.toFixed(1).replace('.', ',')}%** por encima del **S&P 500**, el índice de referencia del mercado de acciones de EEUU.`
     },
   },
   {
@@ -211,7 +212,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (portfolioReturnArsPct == null || !isFinite(portfolioReturnArsPct)) return null
       const realPct = ((1 + portfolioReturnArsPct / 100) / (1 + inflationCum.cumPct / 100) - 1) * 100
       if (realPct < 0) return null
-      return `Tu cartera en pesos supera a la inflación INDEC con un retorno real de **+${realPct.toFixed(1)}%**.`
+      return `Tu cartera en pesos supera a la inflación INDEC con un retorno real de **+${realPct.toFixed(1).replace('.', ',')}%**.`
     },
   },
   {
@@ -225,7 +226,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (portfolioReturnArsPct == null || !isFinite(portfolioReturnArsPct)) return null
       const realPct = ((1 + portfolioReturnArsPct / 100) / (1 + inflationCum.cumPct / 100) - 1) * 100
       if (realPct >= 0) return null
-      return `Tu cartera en pesos rinde **${Math.abs(realPct).toFixed(1)}%** por debajo de la inflación INDEC. Hay pérdida de poder adquisitivo en términos reales.`
+      return `Tu cartera en pesos rinde **${Math.abs(realPct).toFixed(1).replace('.', ',')}%** por debajo de la inflación INDEC. Hay pérdida de poder adquisitivo en términos reales.`
     },
   },
 
@@ -236,7 +237,7 @@ export const DIAGNOSTIC_GENERATORS = [
     severity: 'urgent',
     generate: ({ drawdown }) => {
       if (!drawdown || drawdown.current >= -20) return null
-      return `Drawdown profundo: **${drawdown.current.toFixed(1)}%** desde el máximo histórico. Mantené tu plan — las decisiones impulsivas en esta zona suelen consolidar pérdidas.`
+      return `Drawdown profundo: **${drawdown.current.toFixed(1).replace('.', ',')}%** desde el máximo histórico. Mantené tu plan — las decisiones impulsivas en esta zona suelen consolidar pérdidas.`
     },
   },
   {
@@ -245,7 +246,7 @@ export const DIAGNOSTIC_GENERATORS = [
     severity: 'warn',
     generate: ({ drawdown }) => {
       if (!drawdown || drawdown.current >= -10 || drawdown.current < -20) return null
-      return `Drawdown del **${drawdown.current.toFixed(1)}%** desde el máximo histórico. Caída habitual del mercado — revisá si tu tesis de inversión sigue intacta.`
+      return `Drawdown del **${drawdown.current.toFixed(1).replace('.', ',')}%** desde el máximo histórico. Caída habitual del mercado — revisá si tu tesis de inversión sigue intacta.`
     },
   },
   {
@@ -255,7 +256,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ drawdown }) => {
       if (!drawdown || drawdown.current < -1 || drawdown.max == null) return null
       if (drawdown.max > -3) return null  // sin drawdown histórico relevante, no es noticia
-      return `Tu portfolio está en máximos históricos. Recuperado de un drawdown previo del **${Math.abs(drawdown.max).toFixed(1)}%**.`
+      return `Tu portfolio está en máximos históricos. Recuperado de un drawdown previo del **${Math.abs(drawdown.max).toFixed(1).replace('.', ',')}%**.`
     },
   },
 
@@ -267,7 +268,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ winRate, profitFactor }) => {
       if (!winRate || !profitFactor || winRate.wins + winRate.losses < 5) return null
       if (winRate.pct < 60 || profitFactor.profitFactor >= 1) return null
-      return `Win rate alto (**${winRate.pct.toFixed(0)}%**) pero profit factor de **${profitFactor.profitFactor.toFixed(2)}**: las pérdidas individuales superan a las ganancias. El sistema acierta más de lo que falla, pero pierde dinero neto.`
+      return `Win rate alto (**${winRate.pct.toFixed(0).replace('.', ',')}%**) pero profit factor de **${profitFactor.profitFactor.toFixed(2)}**: las pérdidas individuales superan a las ganancias. El sistema acierta más de lo que falla, pero pierde dinero neto.`
     },
   },
   {
@@ -277,7 +278,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ profitFactor }) => {
       if (!profitFactor || profitFactor.profitFactor === Infinity) return null
       if (profitFactor.profitFactor < 2) return null
-      return `Profit factor de **${profitFactor.profitFactor.toFixed(1)}**: por cada dólar perdido, generás ${profitFactor.profitFactor.toFixed(1)}. Sistema con expectativa positiva sólida.`
+      return `Profit factor de **${profitFactor.profitFactor.toFixed(1).replace('.', ',')}**: por cada dólar perdido, generás ${profitFactor.profitFactor.toFixed(1).replace('.', ',')}. Sistema con expectativa positiva sólida.`
     },
   },
   {
@@ -334,8 +335,8 @@ export const DIAGNOSTIC_GENERATORS = [
       // específicos. Caso: win rate normal (no extremo) Y profit factor sano.
       if (winRate.pct >= 60 && profitFactor.profitFactor < 1) return null  // ya cubre profit_factor_low_winrate_high
       if (profitFactor.profitFactor >= 2) return null  // ya cubre profit_factor_strong
-      const pf = profitFactor.profitFactor === Infinity ? '∞' : profitFactor.profitFactor.toFixed(2)
-      return `Win rate **${winRate.pct.toFixed(0)}%** (${winRate.wins} ganadoras vs ${winRate.losses} perdedoras), profit factor **${pf}**. Métricas dentro de un rango normal.`
+      const pf = profitFactor.profitFactor === Infinity ? '∞' : profitFactor.profitFactor.toFixed(2).replace('.', ',')
+      return `Win rate **${winRate.pct.toFixed(0).replace('.', ',')}%** (${winRate.wins} ganadoras vs ${winRate.losses} perdedoras), profit factor **${pf}**. Métricas dentro de un rango normal.`
     },
   },
   {
@@ -360,7 +361,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ commissionsStats }) => {
       if (!commissionsStats || commissionsStats.total <= 0) return null
       if (commissionsStats.pctOfGrossWin == null || commissionsStats.pctOfGrossWin < 15) return null
-      return `Pagaste **${fmtUsd(commissionsStats.total)}** en comisiones — el **${commissionsStats.pctOfGrossWin.toFixed(1)}%** de tus ganancias brutas. Revisá si conviene operar menos o cambiar de broker.`
+      return `Pagaste **${fmtUsd(commissionsStats.total)}** en comisiones — el **${commissionsStats.pctOfGrossWin.toFixed(1).replace('.', ',')}%** de tus ganancias brutas. Revisá si conviene operar menos o cambiar de broker.`
     },
   },
   {
@@ -372,7 +373,7 @@ export const DIAGNOSTIC_GENERATORS = [
       // Solo dispara si NO disparó el warn (comisiones < 15% de ganancias)
       if (commissionsStats.pctOfGrossWin != null && commissionsStats.pctOfGrossWin >= 15) return null
       const tag = commissionsStats.pctOfGrossWin != null && commissionsStats.pctOfGrossWin >= 5
-        ? ` (${commissionsStats.pctOfGrossWin.toFixed(1)}% de tus ganancias brutas)`
+        ? ` (${commissionsStats.pctOfGrossWin.toFixed(1).replace('.', ',')}% de tus ganancias brutas)`
         : ''
       return `Comisiones acumuladas: **${fmtUsd(commissionsStats.total)}** sobre ${commissionsStats.count} ${commissionsStats.count === 1 ? 'operación' : 'operaciones'}${tag}. Costo razonable en relación a lo generado.`
     },
@@ -393,7 +394,7 @@ export const DIAGNOSTIC_GENERATORS = [
         .reduce((s, p) => s + (arsBrokerSet.has(p.broker) ? (p.invested || 0) / tcValuacion : (p.invested || 0)), 0)
       const sharePct = (cashUsd / totalPortfolio) * 100
       if (sharePct < 30) return null
-      return `**${sharePct.toFixed(0)}%** del portfolio está en cash. Aporta liquidez para aprovechar correcciones del mercado, pero también limita el rendimiento si el mercado tiene una tendencia alcista sostenida.`
+      return `**${sharePct.toFixed(0).replace('.', ',')}%** del portfolio está en cash. Aporta liquidez para aprovechar correcciones del mercado, pero también limita el rendimiento si el mercado tiene una tendencia alcista sostenida.`
     },
   },
   {
@@ -410,7 +411,7 @@ export const DIAGNOSTIC_GENERATORS = [
         .reduce((s, p) => s + (arsBrokerSet.has(p.broker) ? (p.invested || 0) / tcValuacion : (p.invested || 0)), 0)
       const sharePct = (cashUsd / totalPortfolio) * 100
       if (sharePct >= 5 || sharePct < 0.5) return null
-      return `Solo **${sharePct.toFixed(1)}%** del portfolio en cash. Una reserva mayor te permitiría aprovechar correcciones del mercado.`
+      return `Solo **${sharePct.toFixed(1).replace('.', ',')}%** del portfolio en cash. Una reserva mayor te permitiría aprovechar correcciones del mercado.`
     },
   },
 
@@ -423,7 +424,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (!openExtremes || !openExtremes.worst || openExtremes.worst.pnl_usd >= 0) return null
       const lossPct = (Math.abs(openExtremes.worst.pnl_usd) / (totalPortfolio || 1)) * 100
       if (lossPct < 3) return null
-      const pctTxt = openExtremes.worst.pnl_pct != null ? ` (${openExtremes.worst.pnl_pct.toFixed(1)}%)` : ''
+      const pctTxt = openExtremes.worst.pnl_pct != null ? ` (${openExtremes.worst.pnl_pct.toFixed(1).replace('.', ',')}%)` : ''
       return `**${openExtremes.worst.asset}** acumula la mayor pérdida no realizada: **${fmtUsd(openExtremes.worst.pnl_usd)}**${pctTxt}. Revisá si la tesis original sigue vigente o si conviene reasignar capital.`
     },
   },
@@ -455,7 +456,7 @@ export const DIAGNOSTIC_GENERATORS = [
       const arsValue = brokerPieData.filter(p => arsBrokerSet.has(p.name)).reduce((s, p) => s + p.value, 0)
       const sharePct = (arsValue / totalPortfolio) * 100
       if (sharePct < 60) return null
-      return `**${sharePct.toFixed(0)}%** de la cartera está custodiada en brokers ARS. Tu rendimiento medido en USD depende de la evolución del dólar blue.`
+      return `**${sharePct.toFixed(0).replace('.', ',')}%** de la cartera está custodiada en brokers ARS. Tu rendimiento medido en USD depende de la evolución del dólar blue.`
     },
   },
   {
@@ -478,7 +479,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (sharePct < 5) return null
       // Sensibilidad a un movimiento del 10% del blue
       const sensUsd = cashUsd * 0.1
-      return `**${sharePct.toFixed(0)}%** del portfolio (≈ **${fmtUsd(cashUsd)}**) está en cash ARS. Una variación del 10% en el dólar blue mueve tu valor en USD aproximadamente ±**${fmtUsd(sensUsd)}** sin operaciones — esto explica buena parte de la diferencia entre Dashboard y Resumen Mensual.`
+      return `**${sharePct.toFixed(0).replace('.', ',')}%** del portfolio (≈ **${fmtUsd(cashUsd)}**) está en cash ARS. Una variación del 10% en el dólar blue mueve tu valor en USD aproximadamente ±**${fmtUsd(sensUsd)}** sin operaciones — esto explica buena parte de la diferencia entre Dashboard y Resumen Mensual.`
     },
   },
 
@@ -609,7 +610,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (unrealizedPnl <= 0) return null
       const share = (unrealizedPnl / totalPnl) * 100
       if (share < 75) return null
-      return `El **${share.toFixed(0)}%** de tu P&L total está sin realizar (${fmtUsd(unrealizedPnl)}). Es ganancia "en papel" que puede esfumarse con una corrección — considerá realizar parcialmente las posiciones más concentradas.`
+      return `El **${share.toFixed(0).replace('.', ',')}%** de tu P&L total está sin realizar (${fmtUsd(unrealizedPnl)}). Es ganancia "en papel" que puede esfumarse con una corrección — considerá realizar parcialmente las posiciones más concentradas.`
     },
   },
 
@@ -637,7 +638,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (totalCommissionsUsd <= 0) return null
       const share = (totalCommissionsUsd / totalPortfolio) * 100
       if (share < 0.5) return null
-      return `Las comisiones acumuladas suman **${fmtUsd(totalCommissionsUsd)}** (**${share.toFixed(1)}%** del portfolio). Cada operación adicional come tu rendimiento — vale la pena chequear si el broker está cobrando comisiones competitivas.`
+      return `Las comisiones acumuladas suman **${fmtUsd(totalCommissionsUsd)}** (**${share.toFixed(1).replace('.', ',')}%** del portfolio). Cada operación adicional come tu rendimiento — vale la pena chequear si el broker está cobrando comisiones competitivas.`
     },
   },
 
@@ -667,7 +668,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (tinies.length < 3) return null
       const totalShare = tinies.reduce((s, p) => s + (p.value / totalPortfolio) * 100, 0)
       if (totalShare > 8) return null  // si la suma es >8%, no son tan menores
-      return `Tenés **${tinies.length} posiciones** que pesan menos del 2% cada una y representan apenas el **${totalShare.toFixed(1)}%** del total. Posiciones tan chicas no mueven la aguja pero suman complejidad operativa — considerá consolidar o salir.`
+      return `Tenés **${tinies.length} posiciones** que pesan menos del 2% cada una y representan apenas el **${totalShare.toFixed(1).replace('.', ',')}%** del total. Posiciones tan chicas no mueven la aguja pero suman complejidad operativa — considerá consolidar o salir.`
     },
   },
 
@@ -706,7 +707,7 @@ export const DIAGNOSTIC_GENERATORS = [
         }, 0)
       const sharePct = (arValue / totalPortfolio) * 100
       if (sharePct < 50) return null
-      return `**${sharePct.toFixed(0)}%** del portfolio está en activos argentinos (acciones BCBA, CEDEARs locales). Concentración geográfica alta — para diversificar considerá cuentas USD con ETFs internacionales (SPY, EEM, VEA).`
+      return `**${sharePct.toFixed(0).replace('.', ',')}%** del portfolio está en activos argentinos (acciones BCBA, CEDEARs locales). Concentración geográfica alta — para diversificar considerá cuentas USD con ETFs internacionales (SPY, EEM, VEA).`
     },
   },
 
@@ -722,7 +723,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (drawdown.current < -3) return null
       const recovered = Math.abs(drawdown.max) - Math.abs(drawdown.current)
       if (recovered < 5) return null
-      return `Recuperaste **${recovered.toFixed(1)}** puntos de un drawdown que llegó a **${drawdown.max.toFixed(1)}%**. Tu portfolio mostró resiliencia — el peor momento ya pasó y se sostuvo la disciplina.`
+      return `Recuperaste **${recovered.toFixed(1).replace('.', ',')}** puntos de un drawdown que llegó a **${drawdown.max.toFixed(1).replace('.', ',')}%**. Tu portfolio mostró resiliencia — el peor momento ya pasó y se sostuvo la disciplina.`
     },
   },
 
@@ -734,7 +735,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ profitFactor }) => {
       if (!profitFactor || profitFactor.profitFactor === Infinity) return null
       if (profitFactor.profitFactor < 3) return null
-      return `Profit factor de **${profitFactor.profitFactor.toFixed(1)}**: por cada dólar perdido, generás ${profitFactor.profitFactor.toFixed(1)}. Performance excepcional — el desafío ahora es mantener disciplina y no agrandar el sizing por sobre-confianza.`
+      return `Profit factor de **${profitFactor.profitFactor.toFixed(1).replace('.', ',')}**: por cada dólar perdido, generás ${profitFactor.profitFactor.toFixed(1).replace('.', ',')}. Performance excepcional — el desafío ahora es mantener disciplina y no agrandar el sizing por sobre-confianza.`
     },
   },
 
@@ -850,8 +851,8 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ proMetrics }) => {
       const c = proMetrics?.cagr
       if (!c || c.cagr == null || !isFinite(c.cagr) || (c.months || 0) < 2) return null
-      const pct = (c.cagr * 100).toFixed(1)
-      return `Tu CAGR anualizado es **${c.cagr >= 0 ? '+' : ''}${pct}%**. Es el ritmo de crecimiento compuesto de tu cartera proyectado a un año, sobre ${c.months} ${c.months === 1 ? 'mes' : 'meses'} de historial.`
+      const pct = (c.cagr * 100).toFixed(1).replace('.', ',')
+      return `Tu CAGR anualizado es **${c.cagr >= 0 ? '+' : ''}${pctTxt(pct)}**. Es el ritmo de crecimiento compuesto de tu cartera proyectado a un año, sobre ${c.months} ${c.months === 1 ? 'mes' : 'meses'} de historial.`
     },
   },
   {
@@ -862,12 +863,12 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ proMetrics }) => {
       const v = proMetrics?.volatility
       if (v == null || !isFinite(v)) return null
-      const pct = (v * 100).toFixed(1)
+      const pct = (v * 100).toFixed(1).replace('.', ',')
       const band = v < 0.10 ? 'baja (perfil conservador)'
         : v < 0.20 ? 'moderada (similar a equities diversificadas)'
         : v < 0.40 ? 'alta (cartera concentrada o sectorial)'
         : 'muy alta (cripto / especulativo)'
-      return `Tu volatilidad anualizada es **${pct}%** — ${band}. Mide cuánto varían tus retornos mes a mes; el S&P 500 ronda 15-18%.`
+      return `Tu volatilidad anualizada es **${pctTxt(pct)}** — ${band}. Mide cuánto varían tus retornos mes a mes; el S&P 500 ronda 15-18%.`
     },
   },
   {
@@ -881,7 +882,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (!s || s.sharpe == null || !isFinite(s.sharpe)) return null
       const band = s.sharpe < 0 ? 'negativo — no compensaste el riesgo tomado'
         : s.sharpe < 1 ? 'aceptable' : s.sharpe < 2 ? 'bueno' : 'excelente'
-      return `Tu Sharpe ratio es **${s.sharpe.toFixed(2)}** (${band}). Mide el retorno por unidad de riesgo total; por encima de 1 se considera bueno.`
+      return `Tu Sharpe ratio es **${s.sharpe.toFixed(2).replace('.', ',')}** (${band}). Mide el retorno por unidad de riesgo total; por encima de 1 se considera bueno.`
     },
   },
   {
@@ -893,7 +894,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ proMetrics }) => {
       const s = proMetrics?.sortino
       if (!s || s.sortino == null || !isFinite(s.sortino)) return null
-      return `Tu Sortino ratio es **${s.sortino.toFixed(2)}**. Como el Sharpe pero penalizando solo la volatilidad a la BAJA — más justo si tenés meses muy buenos que inflan el desvío total.`
+      return `Tu Sortino ratio es **${s.sortino.toFixed(2).replace('.', ',')}**. Como el Sharpe pero penalizando solo la volatilidad a la BAJA — más justo si tenés meses muy buenos que inflan el desvío total.`
     },
   },
   {
@@ -905,12 +906,12 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ proMetrics }) => {
       const ab = proMetrics?.alphaBeta
       if (!ab || ab.beta == null || !isFinite(ab.beta)) return null
-      const val = ab.beta.toFixed(2)
+      const val = ab.beta.toFixed(2).replace('.', ',')
       const band = ab.beta > 1.2 ? 'más volátil que el mercado'
         : ab.beta < 0 ? 'te movés en contra del mercado (hedge)'
         : ab.beta < 0.8 ? 'más defensiva que el mercado'
         : 'te movés parecido al mercado'
-      return `Tu beta vs S&P 500 es **${val}** — ${band}. Por cada 1% que se mueve el S&P, tu cartera se mueve ~${val}% (en promedio histórico).`
+      return `Tu beta vs S&P 500 es **${val}** — ${band}. Por cada 1% que se mueve el S&P, tu cartera se mueve ~${pctTxt(val)} (en promedio histórico).`
     },
   },
   {
@@ -923,8 +924,8 @@ export const DIAGNOSTIC_GENERATORS = [
       const ab = proMetrics?.alphaBeta
       if (!ab || ab.alphaAnnual == null || !isFinite(ab.alphaAnnual)) return null
       const pos = ab.alphaAnnual >= 0
-      const pct = (ab.alphaAnnual * 100).toFixed(1)
-      return `Tu alpha anualizado vs S&P 500 es **${pos ? '+' : ''}${pct}%**. Es el rendimiento ${pos ? 'por encima' : 'por debajo'} de lo que explicaría tu beta — ${pos ? 'el valor que agregaste vos' : 'quedaste corto vs el riesgo de mercado que tomaste'}.`
+      const pct = (ab.alphaAnnual * 100).toFixed(1).replace('.', ',')
+      return `Tu alpha anualizado vs S&P 500 es **${pos ? '+' : ''}${pctTxt(pct)}**. Es el rendimiento ${pos ? 'por encima' : 'por debajo'} de lo que explicaría tu beta — ${pos ? 'el valor que agregaste vos' : 'quedaste corto vs el riesgo de mercado que tomaste'}.`
     },
   },
   {
@@ -936,7 +937,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ proMetrics }) => {
       const ir = proMetrics?.infoRatio
       if (!ir || ir.infoRatio == null || !isFinite(ir.infoRatio)) return null
-      return `Tu Information Ratio es **${ir.infoRatio.toFixed(2)}**. Mide qué tan CONSISTENTE fue tu exceso de retorno sobre el S&P 500 (no solo cuánto, sino qué tan estable) — por encima de 0.5 es sólido.`
+      return `Tu Information Ratio es **${ir.infoRatio.toFixed(2).replace('.', ',')}**. Mide qué tan CONSISTENTE fue tu exceso de retorno sobre el S&P 500 (no solo cuánto, sino qué tan estable) — por encima de 0.5 es sólido.`
     },
   },
   {
@@ -950,7 +951,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (!c || c.calmar == null || !isFinite(c.calmar)) return null
       const band = c.calmar < 0 ? 'negativo (CAGR negativo)'
         : c.calmar < 1 ? 'moderado' : c.calmar < 3 ? 'bueno' : 'excelente'
-      return `Tu Calmar ratio es **${c.calmar.toFixed(2)}** (${band}). Es tu retorno anualizado dividido por tu peor caída — cuánto rendiste por cada unidad de "dolor" (drawdown) sufrido.`
+      return `Tu Calmar ratio es **${c.calmar.toFixed(2).replace('.', ',')}** (${band}). Es tu retorno anualizado dividido por tu peor caída — cuánto rendiste por cada unidad de "dolor" (drawdown) sufrido.`
     },
   },
 ]

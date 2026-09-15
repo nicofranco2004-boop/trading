@@ -18,7 +18,7 @@ function toneForRec(key) {
 
 function fmtUsd(v) {
   if (v == null) return '—'
-  return `$${Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+  return `$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
 }
 
 export default function AnalystConsensus({ analysts }) {
@@ -28,7 +28,7 @@ export default function AnalystConsensus({ analysts }) {
   const hasUpside = typeof upside === 'number' && !Number.isNaN(upside)
   const upsideTone = hasUpside ? (upside >= 0 ? 'signal' : 'red') : 'default'
   const upsideLabel = hasUpside
-    ? `${upside >= 0 ? '+' : ''}${upside.toFixed(0)}%`
+    ? `${upside >= 0 ? '+' : ''}${upside.toFixed(0).replace('.', ',')}%`
     : '—'
 
   return (

@@ -40,7 +40,7 @@ export default function ArAlternativesVerdict({ items }) {
                 <span className="text-[14.5px] font-semibold">{win ? 'Le ganás' : 'Le perdés'}</span>
               </div>
               <span className={`block font-semibold text-[24px] leading-none tabular num mt-2 ${color}`}>
-                {win ? '+' : ''}{it.pct.toFixed(1)}%
+                {win ? '+' : ''}{it.pct.toFixed(1).replace('.', ',')}%
               </span>
               {/* La base de CADA celda, en la celda. Las tres se calculan
                   distinto y sin esto no hay forma de saberlo mirando. */}

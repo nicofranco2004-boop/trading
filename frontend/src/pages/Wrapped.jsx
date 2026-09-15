@@ -376,7 +376,7 @@ function VsLayout({ slide, tone, accentHex }) {
   const bars = slide.bars || []
   // Normalizar a fracciones. Calcular escala: max abs + algo de aire
   const maxAbs = Math.max(0.001, ...bars.map(b => Math.abs(Number(b.value) || 0)))
-  const fmtPct = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(2)}%`
+  const fmtPct = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(2).replace('.', ',')}%`
 
   return (
     <>

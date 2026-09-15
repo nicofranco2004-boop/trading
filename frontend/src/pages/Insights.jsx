@@ -25,7 +25,7 @@ import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { ChevronDown, ChevronUp, Sparkles, X, Lock } from 'lucide-react'
-import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/format'
+import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS, pctTxt } from '../utils/format'
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
@@ -1130,7 +1130,7 @@ function InsightsDesktop({ _embeddedTab }) {
           Medido desde {fmtFecha(perf.medido_desde)}
           {/* La cobertura, VISIBLE — no escondida en el tooltip. Era el punto:
               mostrar la curva y declarar qué parte es estimada. */}
-          {cob != null && cob < 0.999 && ` · ${(cob * 100).toFixed(0)}% a precio real`}
+          {cob != null && cob < 0.999 && ` · ${(cob * 100).toFixed(0).replace('.', ',')}% a precio real`}
           {partida && ' · con un hueco'}
         </span>
         {/* ⚠️ LA FECHA SOLA NO ALCANZA. "Medido desde 29/06/2026" es cierto y deja al
@@ -1165,7 +1165,7 @@ function InsightsDesktop({ _embeddedTab }) {
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-semibold text-ink-0">Cuánto está valuado a precio real</p>
               <p className="text-ink-3">
-                {(cob * 100).toFixed(0)}% de tu cartera valuada a precio real
+                {(cob * 100).toFixed(0).replace('.', ',')}% de tu cartera valuada a precio real
                 {alCosto.length > 0
                   ? ` · el resto (${alCosto.slice(0, 4).join(', ')}${alCosto.length > 4 ? '…' : ''}) va al costo`
                   : ''}.
@@ -2360,7 +2360,7 @@ function InsightsDesktop({ _embeddedTab }) {
       alerts.push({
         level: 'warning',
         category: 'Concentración',
-        title: `${top.asset} representa el ${top.pct_of_portfolio.toFixed(0)}% de la cartera`,
+        title: `${top.asset} representa el ${top.pct_of_portfolio.toFixed(0).replace('.', ',')}% de la cartera`,
         text: 'Concentración elevada en un único activo. Una caída significativa de ese instrumento impactaría de forma desproporcionada en el resultado total.',
       })
     }
@@ -2371,7 +2371,7 @@ function InsightsDesktop({ _embeddedTab }) {
     alerts.push({
       level: 'warning',
       category: 'Drawdown',
-      title: `La cartera está ${Math.abs(drawdown.current).toFixed(1)}% por debajo de su máximo histórico`,
+      title: `La cartera está ${Math.abs(drawdown.current).toFixed(1).replace('.', ',')}% por debajo de su máximo histórico`,
       text: 'Tu cartera atraviesa un drawdown. Es momento de revisar si los fundamentos de tu estrategia siguen siendo válidos.',
     })
   }
@@ -2383,7 +2383,7 @@ function InsightsDesktop({ _embeddedTab }) {
     alerts.push({
       level: 'danger',
       category: 'Riesgo',
-      title: `${worst.asset} registra una pérdida del ${Math.abs(worst.pnl_pct).toFixed(0)}%`,
+      title: `${worst.asset} registra una pérdida del ${Math.abs(worst.pnl_pct).toFixed(0).replace('.', ',')}%`,
       text: `Pérdida no realizada de ${fmtUsd(Math.abs(worst.pnl_usd))}. Conviene revisar si las razones que originaron la inversión siguen vigentes.`,
     })
   }
@@ -2393,7 +2393,7 @@ function InsightsDesktop({ _embeddedTab }) {
     alerts.push({
       level: 'warning',
       category: 'Comportamiento',
-      title: `Win rate del ${winRate.pct.toFixed(0)}% en ${winRate.total} operaciones`,
+      title: `Win rate del ${winRate.pct.toFixed(0).replace('.', ',')}% en ${winRate.total} operaciones`,
       text: 'Más operaciones perdedoras que ganadoras. Conviene revisar los criterios de entrada del sistema de trading.',
     })
   }
@@ -2424,7 +2424,7 @@ function InsightsDesktop({ _embeddedTab }) {
     alerts.push({
       level: 'info',
       category: 'Oportunidad de revisión',
-      title: `${s.asset} acumula ${days} días con un rendimiento de ${s.pnl_pct.toFixed(0)}%`,
+      title: `${s.asset} acumula ${days} días con un rendimiento de ${s.pnl_pct.toFixed(0).replace('.', ',')}%`,
       text: 'Conviene evaluar si los fundamentos de la inversión siguen siendo válidos o si hay mejores alternativas para reasignar el capital.',
     })
   }
@@ -2515,7 +2515,7 @@ function InsightsDesktop({ _embeddedTab }) {
       const arsValue = abs * tcValuacion
       return `${sign}ARS ${arsValue.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
     }
-    return `${sign}USD ${abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    return `${sign}USD ${abs.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   }
 
   // NOTA: removida la variable `aiSuggested` con 12 preguntas data-driven —
@@ -2861,7 +2861,7 @@ function InsightsDesktop({ _embeddedTab }) {
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <p className="eyebrow">Distribución de activos</p>
             <span className="text-xs text-ink-2">
-              Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-ink-1'}`}>{cashRatio.toFixed(1)}%</span>
+              Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-ink-1'}`}>{cashRatio.toFixed(1).replace('.', ',')}%</span>
             </span>
           </div>
           <CompositionByAsset rows={compositionRows} />
@@ -3283,12 +3283,12 @@ function InsightsDesktop({ _embeddedTab }) {
               <XAxis dataKey="ts" type="number" scale="time" domain={['dataMin', 'dataMax']}
                      tickFormatter={fmtMarcaEje}
                      tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
-              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} width={44} />
+              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${pctTxt(v)}`} width={44} />
               <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.5} strokeDasharray="2 4" />
               <Tooltip
                 contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px', boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
                 labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
-                formatter={(v) => [v != null ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : '—', '']}
+                formatter={(v) => [v != null ? `${v > 0 ? '+' : ''}${v.toFixed(1).replace('.', ',')}%` : '—', '']}
                 // Con el eje en tiempo el `label` que recibe el tooltip es el
                 // timestamp. El encabezado sigue siendo el rótulo de la fila —el
                 // mismo texto que mostraba antes—, no el número.
@@ -3401,8 +3401,8 @@ function InsightsDesktop({ _embeddedTab }) {
           </div>
           {drawdown && (
             <div className="flex gap-3 text-xs">
-              <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdown.current < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{drawdown.current.toFixed(1)}%</span></span>
-              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg">{drawdown.max.toFixed(1)}%</span></span>
+              <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdown.current < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{drawdown.current.toFixed(1).replace('.', ',')}%</span></span>
+              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg">{drawdown.max.toFixed(1).replace('.', ',')}%</span></span>
             </div>
           )}
         </div>
@@ -3420,12 +3420,12 @@ function InsightsDesktop({ _embeddedTab }) {
               </defs>
               <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
               <XAxis dataKey="label" tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
-              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} domain={['auto', 0]} width={44} />
+              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${pctTxt(v)}`} domain={['auto', 0]} width={44} />
               <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.5} />
               <Tooltip
                 contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px', boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
                 labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
-                formatter={(v) => [`${v.toFixed(2)}%`, 'Drawdown']}
+                formatter={(v) => [`${v.toFixed(2).replace('.', ',')}%`, 'Drawdown']}
               />
               <Area type="monotone" dataKey="ddPct" stroke="#FF5360" strokeWidth={2} fill="url(#ddGrad)" dot={false} activeDot={{ r: 4 }} />
             </AreaChart>
@@ -3470,7 +3470,7 @@ function InsightsDesktop({ _embeddedTab }) {
               <h2 className="font-semibold text-ink-0">Por broker</h2>
               {brokerConcentration && (
                 <span className="text-xs text-ink-3">
-                  Top: <span className="font-medium text-ink-1">{brokerConcentration.top.name}</span> ({brokerConcentration.top.sharePct.toFixed(0)}%)
+                  Top: <span className="font-medium text-ink-1">{brokerConcentration.top.name}</span> ({brokerConcentration.top.sharePct.toFixed(0).replace('.', ',')}%)
                 </span>
               )}
             </div>
@@ -3482,7 +3482,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 <Legend formatter={(v) => <span className="text-ink-2 text-xs">{v}</span>} iconType="circle" iconSize={8} />
                 <Tooltip
                   contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
-                  formatter={(v) => [`${amt(v)} (${((v / totalPortfolio) * 100).toFixed(1)}%)`, '']}
+                  formatter={(v) => [`${amt(v)} (${((v / totalPortfolio) * 100).toFixed(1).replace('.', ',')}%)`, '']}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -3558,7 +3558,7 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
         {gano ? '+' : '-'}{amt(Math.abs(delta.delta))}
       </p>
       <p className={`text-xs tabular mt-0.5 ${accentText}`}>
-        {delta.pct >= 0 ? '+' : ''}{delta.pct.toFixed(1)}% {gano ? 'por encima' : 'por debajo'} del benchmark
+        {delta.pct >= 0 ? '+' : ''}{delta.pct.toFixed(1).replace('.', ',')}% {gano ? 'por encima' : 'por debajo'} del benchmark
       </p>
       <p className="text-[11px] text-ink-3 mt-3 leading-snug">
         {hint}: <span className="font-medium text-ink-1">{amt(benchmarkValue)}</span>
@@ -3583,7 +3583,7 @@ function InflationCard({ inflation }) {
     <div className="bg-white dark:bg-bg-1 border border-rendi-warn/30 rounded p-5">
       <p className="text-xs font-semibold text-ink-3">Inflación AR (período)</p>
       <p className="text-2xl font-bold tabular mt-2 text-rendi-warn">
-        +{inflation.cumPct.toFixed(1)}%
+        +{inflation.cumPct.toFixed(1).replace('.', ',')}%
       </p>
       <p className="text-[11px] text-ink-3 mt-3 leading-snug">
 IPC acumulado en {inflation.monthsCounted} {inflation.monthsCounted === 1 ? 'mes' : 'meses'}. Rendimiento mínimo necesario en pesos para preservar el poder adquisitivo.
@@ -3648,7 +3648,7 @@ function PerformanceAttribution({ discipline, amt }) {
           <div>
             <p className="text-xs text-ink-3">Aportes netos</p>
             <p className="text-lg font-semibold text-ink-1 tabular">{amt(deposits, { signed: true })}</p>
-            <p className="text-[11px] text-ink-3">{depShare.toFixed(0)}% del cambio</p>
+            <p className="text-[11px] text-ink-3">{depShare.toFixed(0).replace('.', ',')}% del cambio</p>
           </div>
         </div>
         <div className="flex items-start gap-2">
@@ -3656,7 +3656,7 @@ function PerformanceAttribution({ discipline, amt }) {
           <div>
             <p className="text-xs text-ink-3">{pnlPositive ? 'Rendimiento del mercado' : 'Pérdida del mercado'}</p>
             <p className={`text-lg font-semibold tabular ${pnlPositive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{amt(pnl, { signed: true })}</p>
-            <p className="text-[11px] text-ink-3">{pnlShare.toFixed(0)}% del cambio</p>
+            <p className="text-[11px] text-ink-3">{pnlShare.toFixed(0).replace('.', ',')}% del cambio</p>
           </div>
         </div>
       </div>
@@ -3698,7 +3698,7 @@ function ContribList({ tone, title, items, fmt }) {
                 <span className="font-semibold text-ink-0">{it.asset}</span>
               </div>
               <span className={`tabular font-bold ${accentText}`}>
-                {fmt ? fmt(it.pnl, { signed: true }) : (it.pnl >= 0 ? `+USD ${it.pnl.toFixed(2)}` : `-USD ${Math.abs(it.pnl).toFixed(2)}`)}
+                {fmt ? fmt(it.pnl, { signed: true }) : (it.pnl >= 0 ? `+USD ${it.pnl.toFixed(2).replace('.', ',')}` : `-USD ${Math.abs(it.pnl).toFixed(2).replace('.', ',')}`)}
               </span>
             </li>
           ))}
@@ -4305,10 +4305,10 @@ function ProfileAllocationCard({ data }) {
             Tu perfil es <span className="font-semibold text-ink-0">{data.declared.categoryLabel}</span>.
             La asignación de referencia es{' '}
             <span className="text-ink-0">
-              {data.declared.suggested.cash}% cash · {data.declared.suggested.fixed_income}% renta fija ·{' '}
-              {data.declared.suggested.equity}% renta variable
+              {pctTxt(data.declared.suggested.cash)} cash · {pctTxt(data.declared.suggested.fixed_income)} renta fija ·{' '}
+              {pctTxt(data.declared.suggested.equity)} renta variable
               {data.declared.suggested.alternative > 0 && (
-                <> · {data.declared.suggested.alternative}% alternativos</>
+                <> · {pctTxt(data.declared.suggested.alternative)} alternativos</>
               )}
             </span>.
           </p>
@@ -4383,14 +4383,14 @@ function ProfileObjectiveCard({ data }) {
           </p>
           <div className="mt-3 flex items-baseline gap-3">
             <p className="text-2xl font-bold text-ink-0 tabular">
-              {data.actual.alignedPct}%
+              {pctTxt(data.actual.alignedPct)}
             </p>
             <p className="text-xs text-ink-3">
               de tu cartera está en {data.declared.alignedLabel}
             </p>
           </div>
           <p className="text-xs text-ink-2 mt-3 leading-snug">
-            El restante <span className="text-ink-0 tabular">{data.actual.misalignedPct}%</span> está en {data.declared.misalignedLabel}.
+            El restante <span className="text-ink-0 tabular">{pctTxt(data.actual.misalignedPct)}</span> está en {data.declared.misalignedLabel}.
           </p>
         </>
       )}
@@ -4424,7 +4424,7 @@ function ProfileReturnExpectationCard({ data }) {
       </p>
       <div className="mt-3 flex items-baseline gap-3">
         <p className={`text-2xl font-bold tabular ${realPos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-          {realReturnPct > 0 ? '+' : ''}{realReturnPct}%
+          {realReturnPct > 0 ? '+' : ''}{pctTxt(realReturnPct)}
         </p>
         <p className="text-xs text-ink-3">
           retorno real (neto de inflación){monthsCounted ? `, ${monthsCounted} meses` : ''}
@@ -4432,7 +4432,7 @@ function ProfileReturnExpectationCard({ data }) {
       </div>
       {portfolioReturnPct != null && inflationPct != null && (
         <p className="text-xs text-ink-3 mt-1 leading-snug tabular">
-          Cartera {portfolioReturnPct > 0 ? '+' : ''}{portfolioReturnPct}% en pesos · Inflación {inflationPct}%
+          Cartera {portfolioReturnPct > 0 ? '+' : ''}{pctTxt(portfolioReturnPct)} en pesos · Inflación {pctTxt(inflationPct)}
         </p>
       )}
       <p className="text-xs text-ink-2 mt-3 leading-snug">{verdictText}</p>
@@ -4478,14 +4478,14 @@ function ProfileHorizonCard({ data }) {
           </p>
           <div className="mt-3 flex items-baseline gap-3">
             <p className="text-2xl font-bold text-ink-0 tabular">
-              {data.actual.expectedPct}%
+              {pctTxt(data.actual.expectedPct)}
             </p>
             <p className="text-xs text-ink-3">
               de tu cartera está en {data.declared.expectedLabel}
             </p>
           </div>
           <p className="text-xs text-ink-2 mt-3 leading-snug">
-            El restante <span className="text-ink-0 tabular">{data.actual.riskPct}%</span> está en {data.declared.riskLabel}.
+            El restante <span className="text-ink-0 tabular">{pctTxt(data.actual.riskPct)}</span> está en {data.declared.riskLabel}.
           </p>
         </>
       )}
@@ -4515,7 +4515,7 @@ function ProfileDrawdownCard({ data }) {
           <p className="text-sm text-ink-1 leading-snug">
             Ante un drawdown del 30% marcaste que <span className="font-semibold text-ink-0">{data.declared.behaviorLabel}</span>,
             lo que implica una tolerancia aproximada de{' '}
-            <span className="text-ink-0 tabular">{data.declared.impliedTolerance.min}-{data.declared.impliedTolerance.max}%</span>.
+            <span className="text-ink-0 tabular">{data.declared.impliedTolerance.min}-{pctTxt(data.declared.impliedTolerance.max)}</span>.
           </p>
           <p className="text-xs text-ink-3 mt-3 leading-snug">
             Cargá operaciones para ver el drawdown máximo histórico de tu cartera.
@@ -4525,11 +4525,11 @@ function ProfileDrawdownCard({ data }) {
         <>
           <p className="text-sm text-ink-1 leading-snug">
             Marcaste <span className="font-semibold text-ink-0">{data.declared.behaviorLabel}</span>{' '}
-            (tolerancia aprox <span className="tabular">{data.declared.impliedTolerance.min}-{data.declared.impliedTolerance.max}%</span>).
+            (tolerancia aprox <span className="tabular">{data.declared.impliedTolerance.min}-{pctTxt(data.declared.impliedTolerance.max)}</span>).
           </p>
           <div className="mt-3 flex items-baseline gap-3">
             <p className="text-2xl font-bold text-ink-0 tabular">
-              {data.actual.drawdownPct}%
+              {pctTxt(data.actual.drawdownPct)}
             </p>
             <p className="text-xs text-ink-3">
               drawdown máximo de tu cartera (TWRR)
@@ -4570,7 +4570,7 @@ function ProfileConcentrationCard({ data }) {
           <p className="text-sm text-ink-1 leading-snug">
             Tu perfil es <span className="font-semibold text-ink-0">{data.declared.categoryLabel}</span>.
             La concentración top 3 típica para este perfil está entre{' '}
-            <span className="text-ink-0 tabular">{data.declared.typicalRange.min}-{data.declared.typicalRange.max}%</span>.
+            <span className="text-ink-0 tabular">{data.declared.typicalRange.min}-{pctTxt(data.declared.typicalRange.max)}</span>.
           </p>
           <p className="text-xs text-ink-3 mt-3 leading-snug">
             Cargá posiciones para ver tu concentración real.
@@ -4580,11 +4580,11 @@ function ProfileConcentrationCard({ data }) {
         <>
           <p className="text-sm text-ink-1 leading-snug">
             Tu perfil es <span className="font-semibold text-ink-0">{data.declared.categoryLabel}</span>{' '}
-            (rango típico top 3: <span className="tabular">{data.declared.typicalRange.min}-{data.declared.typicalRange.max}%</span>).
+            (rango típico top 3: <span className="tabular">{data.declared.typicalRange.min}-{pctTxt(data.declared.typicalRange.max)}</span>).
           </p>
           <div className="mt-3 flex items-baseline gap-3">
             <p className="text-2xl font-bold text-ink-0 tabular">
-              {data.actual.top3Pct}%
+              {pctTxt(data.actual.top3Pct)}
             </p>
             <p className="text-xs text-ink-3">
               en {data.actual.holdingsCount < 3
@@ -4688,7 +4688,7 @@ function ProfileLiquidityCard({ data }) {
             Declaraste: <span className="font-semibold text-ink-0">{data.declared.liquidityLabel}</span>.
             {data.declared.safeMinPct > 0 && (
               <> Recomendación de referencia: tener al menos{' '}
-              <span className="text-ink-0 tabular">{data.declared.safeMinPct}%</span> en cash/RF.</>
+              <span className="text-ink-0 tabular">{pctTxt(data.declared.safeMinPct)}</span> en cash/RF.</>
             )}
           </p>
           <p className="text-xs text-ink-3 mt-3 leading-snug">
@@ -4707,10 +4707,10 @@ function ProfileLiquidityCard({ data }) {
               : data.comparison === 'mismatch_severe' ? 'text-rendi-neg'
               : 'text-ink-0'
             }`}>
-              {data.actual.safePct}%
+              {pctTxt(data.actual.safePct)}
             </p>
             <p className="text-xs text-ink-3">
-              en cash + renta fija · <span className="tabular">{data.actual.volatilePct}%</span> en volátiles
+              en cash + renta fija · <span className="tabular">{pctTxt(data.actual.volatilePct)}</span> en volátiles
             </p>
           </div>
           <p className="text-xs text-ink-2 mt-3 leading-snug">
@@ -4721,7 +4721,7 @@ function ProfileLiquidityCard({ data }) {
               `Tu mix actual te deja buffer suficiente si necesitás retirar parte de la plata en el plazo declarado.`
             )}
             {data.comparison === 'mismatch_risky' && (
-              <>Tenés menos del recomendado (<span className="tabular">{data.declared.safeMinPct}%</span> en cash/RF) para cubrir la necesidad declarada. Una caída de mercado podría obligarte a vender activos volátiles en el peor momento.</>
+              <>Tenés menos del recomendado (<span className="tabular">{pctTxt(data.declared.safeMinPct)}</span> en cash/RF) para cubrir la necesidad declarada. Una caída de mercado podría obligarte a vender activos volátiles en el peor momento.</>
             )}
             {data.comparison === 'mismatch_severe' && (
               <>Tu exposición a volatilidad es alta para una necesidad de liquidez en 12-24 meses. Si el mercado cae justo cuando necesitás retirar, estarías vendiendo al fondo.</>
@@ -4767,7 +4767,7 @@ function AllocationRow({ label, buckets, tone = 'muted' }) {
               key={b}
               className={`${colorByBucket[b]} transition-all`}
               style={{ width: `${pct}%` }}
-              title={`${labelByBucket[b]}: ${pct}%`}
+              title={`${labelByBucket[b]}: ${pctTxt(pct)}`}
             />
           )
         })}

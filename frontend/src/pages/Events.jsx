@@ -31,7 +31,7 @@ import { api } from '../utils/api'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos } from '../utils/valuation'
-import { pct } from '../utils/format'
+import { pct, pctTxt } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import {
   upcomingBondEvents,
@@ -863,7 +863,7 @@ function EarningsExpectations({ symbol }) {
         <div className="bg-bg-1 border border-line/50 rounded-xl px-3 py-2.5">
           <div className="text-[11px] text-ink-3 mb-1">Surprise prom. últimos 4Q</div>
           <div className={`text-[15px] font-semibold num tabular ${data.surprise_avg_last_4q_pct > 0 ? 'text-rendi-pos' : data.surprise_avg_last_4q_pct < 0 ? 'text-rendi-neg' : 'text-ink-0'}`}>
-            {data.surprise_avg_last_4q_pct != null ? `${data.surprise_avg_last_4q_pct > 0 ? '+' : ''}${data.surprise_avg_last_4q_pct}%` : '—'}
+            {data.surprise_avg_last_4q_pct != null ? `${data.surprise_avg_last_4q_pct > 0 ? '+' : ''}${pctTxt(data.surprise_avg_last_4q_pct)}` : '—'}
           </div>
         </div>
       </div>
@@ -876,7 +876,7 @@ function EarningsExpectations({ symbol }) {
             const beat = s >= 0
             return (
               <span key={i} className={`text-[10.5px] font-bold rounded-full px-2 py-0.5 ${beat ? 'text-rendi-pos bg-rendi-pos/10' : 'text-rendi-neg bg-rendi-neg/10'}`}>
-                {beat ? 'Beat' : 'Miss'} {s > 0 ? '+' : ''}{s}%
+                {beat ? 'Beat' : 'Miss'} {s > 0 ? '+' : ''}{pctTxt(s)}
               </span>
             )
           })}
@@ -904,9 +904,9 @@ function renderDetail(event) {
   if (eventType?.startsWith('bond_')) {
     const cur = details?.currency || 'USD'
     if (details?.coupon > 0 && details?.amort > 0) {
-      return `Cupón ${cur} ${details.coupon.toFixed(2)} + amort ${cur} ${details.amort.toFixed(2)}`
+      return `Cupón ${cur} ${details.coupon.toFixed(2).replace('.', ',')} + amort ${cur} ${details.amort.toFixed(2).replace('.', ',')}`
     }
-    if (details?.coupon > 0) return `Cupón ${cur} ${details.coupon.toFixed(2)}`
+    if (details?.coupon > 0) return `Cupón ${cur} ${details.coupon.toFixed(2).replace('.', ',')}`
     if (details?.amort > 0)  return `${eventType === 'bond_maturity' ? 'Vencimiento' : 'Amortización'} ${cur} ${details.amort.toFixed(2)}`
   }
   return ''
@@ -1047,9 +1047,9 @@ function macroCategoryLabel(c) {
 function formatCompact(n) {
   if (n == null || isNaN(n)) return '—'
   const abs = Math.abs(n)
-  if (abs >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M'
-  if (abs >= 10_000)    return (n / 1_000).toFixed(1) + 'K'
-  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (abs >= 1_000_000) return (n / 1_000_000).toFixed(2).replace('.', ',') + 'M'
+  if (abs >= 10_000)    return (n / 1_000).toFixed(1).replace('.', ',') + 'K'
+  return n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 function collectPriceSymbols(positions, brokers) {

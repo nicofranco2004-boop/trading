@@ -35,7 +35,7 @@ function colorForChange(pct) {
 function fmtPct(p) {
   if (p == null) return '—'
   const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(1)}%`
+  return `${sign}${p.toFixed(1).replace('.', ',')}%`
 }
 
 // Tickers crypto del backend vienen como `BTC-USD`, `ETH-USD`. El endpoint

@@ -1,3 +1,4 @@
+import { pctTxt } from '../../utils/format'
 // ObjectiveStat — % de la cartera alineado con el objetivo declarado.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body de la card de objetivo en Análisis › Perfil. Stat grande con el % que
@@ -11,7 +12,7 @@ export default function ObjectiveStat({ goalLabel, alignedPct, alignedLabel, mis
   return (
     <div>
       <div className="flex items-baseline gap-3">
-        <span className="text-3xl font-semibold text-ink-0 tabular-nums">{alignedPct}%</span>
+        <span className="text-3xl font-semibold text-ink-0 tabular-nums">{pctTxt(alignedPct)}</span>
         <span className="text-xs text-ink-2 max-w-[220px] leading-snug">
           de la cartera alineado con tu objetivo ({alignedLabel})
         </span>
@@ -30,7 +31,7 @@ export default function ObjectiveStat({ goalLabel, alignedPct, alignedLabel, mis
         {misalignedPct > 40 ? (
           <>
             {' '}
-            <span className="text-rendi-warn tabular-nums">{misalignedPct}%</span> apunta para
+            <span className="text-rendi-warn tabular-nums">{pctTxt(misalignedPct)}</span> apunta para
             otro lado.
           </>
         ) : (

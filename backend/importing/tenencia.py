@@ -26,6 +26,7 @@ Cada fila de tenencia: TICKER  <nombre variable>  cantidad precio importe
 (los 3 últimos en formato AR: '.' miles, ',' decimal).
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -735,7 +736,7 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
             if abs(_sec_sum - _sec_total) > tol:
                 snap.warnings.append(
                     f"Sección '{_sec_name}' no cuadra con su total del PDF "
-                    f"({_sec_sum:,.0f} vs {_sec_total:,.0f}) — la lectura pudo ser parcial.")
+                    f"({fmt_num(_sec_sum, 0)} vs {fmt_num(_sec_total, 0)}) — la lectura pudo ser parcial.")
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -794,7 +795,7 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
             per100 = True              # per-100 (bono) — esperado, no es error
         else:
             snap.warnings.append(
-                f"{tk}: importe ({value:,.2f}) no es cantidad×precio ni /100 — revisar")
+                f"{tk}: importe ({fmt_num(value, 2)}) no es cantidad×precio ni /100 — revisar")
         key = (tk, cur_ccy)
         if key in seen_tickers:
             continue
@@ -939,8 +940,8 @@ def parse_iol_tenencia(text: str) -> TenenciaSnapshot:
         tol = max(50.0, 0.0005 * abs(declared_titulos))
         if abs(imp_sum - declared_titulos) > tol:
             snap.warnings.append(
-                f"La suma de tus títulos ({imp_sum:,.0f}) no cuadra con el total del "
-                f"Resumen ({declared_titulos:,.0f}) — la lectura del PDF pudo ser parcial.")
+                f"La suma de tus títulos ({fmt_num(imp_sum, 0)}) no cuadra con el total del "
+                f"Resumen ({fmt_num(declared_titulos, 0)}) — la lectura del PDF pudo ser parcial.")
     elif snap.holdings and not declared_titulos:
         # Sin línea de total ('Títulos Valorizados') no hay ANCLA para verificar que la
         # lectura fue completa (el OCR pudo comerse esa línea Y filas) → avisamos para
@@ -1497,7 +1498,7 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
             per100 = True
         else:
             snap.warnings.append(
-                f"{tk}: importe ({value:,.2f}) no es cantidad×precio ni /100 — revisar")
+                f"{tk}: importe ({fmt_num(value, 2)}) no es cantidad×precio ni /100 — revisar")
         if cur_type == "FUND":
             tk = _canon_fund_ticker(tk)   # FCI:<slug> si está mapeado → matchea Movimientos
         key = (tk, "ARS")
@@ -1978,7 +1979,7 @@ def seed_plausibility_warning(seed_total: float, patrimonio_conocido: float,
     def _ar(n: float) -> str:
         """Miles con punto. Formatea SÓLO el número: aplicar .replace(',', '.')
         sobre la frase entera se come las comas de la prosa."""
-        return f"{n:,.0f}".replace(",", ".")
+        return f"{fmt_num(n, 0)}"
 
     # Sin patrimonio previo no hay contra qué comparar: sólo avisamos si el
     # monto es absurdo en términos absolutos.

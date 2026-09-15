@@ -1,3 +1,4 @@
+import { pctTxt } from '../../utils/format'
 // ConcentrationDonut — donut CSS de concentración (top 3 tenencias vs cartera).
 // ═══════════════════════════════════════════════════════════════════════════
 // Body del módulo de concentración en el perfil: donut por conic-gradient
@@ -46,7 +47,7 @@ export default function ConcentrationDonut({ holdings, top3Pct, comparison }) {
         >
           <div className="absolute inset-[18px] rounded-full bg-bg-1 flex flex-col items-center justify-center">
             <div className="text-xl font-semibold text-ink-0 tabular-nums leading-none">
-              {top3Pct}%
+              {pctTxt(top3Pct)}
             </div>
             <div className="text-[12.5px] text-ink-2 mt-1 font-medium">
               Top 3
@@ -63,7 +64,7 @@ export default function ConcentrationDonut({ holdings, top3Pct, comparison }) {
                 style={{ background: SLICE_COLORS[i] }}
               />
               <span className="text-xs text-ink-1 truncate flex-1">{h.name}</span>
-              <span className="font-mono text-[11px] text-ink-2 tabular-nums">{h.pct}%</span>
+              <span className="font-mono text-[11px] text-ink-2 tabular-nums">{pctTxt(h.pct)}</span>
             </div>
           ))}
         </div>
@@ -71,7 +72,7 @@ export default function ConcentrationDonut({ holdings, top3Pct, comparison }) {
 
       <p className="text-xs text-ink-2 mt-4">
         Tus 3 mayores tenencias concentran{' '}
-        <span className={`${toneCls} tabular-nums`}>{top3Pct}%</span> de la cartera
+        <span className={`${toneCls} tabular-nums`}>{pctTxt(top3Pct)}</span> de la cartera
         {suffix}
       </p>
     </div>

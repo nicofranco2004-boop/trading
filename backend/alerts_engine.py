@@ -29,6 +29,7 @@ cartera" se expande a todas las tenencias y un día movido dispara varias juntas
 Los disparos se acumulan durante el loop y salen agrupados al final.
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 
 import logging
 from datetime import datetime, timedelta
@@ -322,7 +323,7 @@ def _compose_message(alert, symbol, price, change_pct) -> str:
 def _fmt_pct(v) -> str:
     """% limpio: 3.0 → '3', 3.2 → '3.2' (sin decimales de más en el título)."""
     v = abs(v or 0)
-    return f"{v:.0f}" if abs(v - round(v)) < 0.05 else f"{v:.1f}"
+    return f"{v:.0f}" if abs(v - round(v)) < 0.05 else f"{fmt_num(v, 1)}"
 
 
 def _short_label(alert, symbol, price, change_pct) -> str:

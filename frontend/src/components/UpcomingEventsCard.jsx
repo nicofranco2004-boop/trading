@@ -104,7 +104,7 @@ function RowAmount({ event }) {
     const currency = details.currency || 'USD'
     return (
       <p className="text-[11.5px] text-data-cyan tabular mt-0.5">
-        cobrás ~+{currency} {details.total.toFixed(2)}
+        cobrás ~+{currency} {details.total.toFixed(2).replace('.', ',')}
       </p>
     )
   }
