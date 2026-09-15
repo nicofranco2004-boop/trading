@@ -8,6 +8,7 @@ import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import AlertsManager from '../components/alerts/AlertsManager'
+import MarketBriefPrefs from '../components/alerts/MarketBriefPrefs'
 import AdvisorAlerts from '../components/advisor/AdvisorAlerts'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAlertsContext } from '../contexts/AlertsContext'
@@ -36,7 +37,7 @@ export default function Alertas() {
         title="Alertas"
         subtitle={atOwnLevel
           ? 'Lo que te avisamos de tu libro: el brief diario y los movimientos de tus clientes.'
-          : 'Avisos de precio objetivo y variación sobre tus activos.'}
+          : 'El resumen diario del mercado y los avisos de precio sobre tus activos.'}
       />
       {clientCtx && (
         <div className="mb-4 text-[12.5px] text-ink-1 bg-data-violet/[0.08] border border-data-violet/30 rounded-md px-3 py-2">
@@ -44,7 +45,14 @@ export default function Alertas() {
           email y tus notificaciones), con el nombre de <span className="font-semibold">{clientCtx.label}</span> adelante.
         </div>
       )}
-      {atOwnLevel ? <AdvisorAlerts /> : <AlertsManager plan={plan} prefill={prefill} />}
+      {/* El asesor a su propio nivel no tiene cartera: el resumen del mercado
+          es sobre TUS activos, así que ahí va el brief del libro en su lugar. */}
+      {atOwnLevel ? <AdvisorAlerts /> : (
+        <div className="space-y-4">
+          <MarketBriefPrefs />
+          <AlertsManager plan={plan} prefill={prefill} />
+        </div>
+      )}
     </div>
   )
 }

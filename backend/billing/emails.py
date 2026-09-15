@@ -691,6 +691,119 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
                  reply_to="soporte@rendi.finance")
 
 
+def send_market_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
+    """Resumen del mercado del usuario — un mail por día hábil, 11:00 ART.
+
+    `brief` viene de market_brief.build_brief() y NUNCA llega vacío (el motor
+    saltea a quien no tiene nada que contar: un mail sin contenido entrena a la
+    gente a no abrirlo, y el día que importe ya no lo mira).
+
+    EL CUERPO ES UNA NARRACIÓN, no una lista de titulares — eso último ya se ve
+    en la app y no agregaba nada (corrección de Nico, 2026-09-15). La escribe un
+    modelo a partir de los titulares del día; acá sólo se maqueta.
+
+    ⚠️ Los titulares crudos (`brief["news"]`) NO se muestran. Viajan en el dict
+    para la vista previa y para poder auditar con qué material se escribió cada
+    mail, pero volver a listarlos abajo del resumen es exactamente lo que se
+    sacó. La única lista que queda es la del CALENDARIO (qué cobra hoy), que
+    son datos duros y no pasan por el modelo.
+
+    Remitente y reply_to iguales a los de las alertas de precio: es una alerta
+    más, y si la persona responde tiene que llegarle a alguien.
+
+    El botón va a /novedades?tab=noticias, la pantalla que muestra lo mismo
+    adentro de la app. ⚠️ Verificar la ruta si alguna vez se mueve: el botón de
+    las alertas apuntó durante un mes a /config?tab=notificaciones, que había
+    dejado de existir."""
+    name = (user_name or "").strip().split(" ")[0]
+    # Saludar con "test5" o "usuario01" queda peor que no saludar.
+    safe_name = html.escape(name) if (len(name) >= 3 and name.isalpha()) else ""
+    hi = f"Buen día{', ' + safe_name if safe_name else ''}."
+
+    nar = (brief or {}).get("narrative") or {}
+    titular = (nar.get("titular") or "").strip()
+    mercado = [p for p in (nar.get("mercado") or []) if (p or "").strip()]
+    cartera = [p for p in (nar.get("tu_cartera") or []) if (p or "").strip()]
+    events = (brief or {}).get("events") or []
+
+    def _parrafos(ps, margen_top):
+        """Párrafos de lectura cómoda: 16px y interlineado 1.65 — el cuerpo es
+        para LEER, no para escanear como una tabla."""
+        return "".join(
+            f'<p style="font-size:16px;line-height:1.65;color:#2b2f3a;'
+            f'margin:{margen_top if i == 0 else 14}px 0 0;">{html.escape(p.strip())}</p>'
+            for i, p in enumerate(ps))
+
+    mercado_html = _parrafos(mercado, 18)
+
+    cartera_html = ""
+    if cartera:
+        cartera_html = (
+            '<h2 style="font-size:13px;font-weight:600;margin:28px 0 0;'
+            'color:#8B7BFF;letter-spacing:.03em;">Lo tuyo</h2>'
+            + _parrafos(cartera, 10))
+
+    # La ÚNICA lista que sobrevive: el calendario. Son datos duros (fecha y tipo
+    # de evento) que no pasan por el modelo, y "hoy cobrás el cupón de AL30" es
+    # accionable de una forma en que un titular no lo es.
+    events_html = ""
+    if events:
+        rows = "".join(
+            f'<tr><td style="padding:5px 0;font-size:14px;color:#1a1f2e;width:28%;">'
+            f'<b>{html.escape(str(e.get("ticker") or ""))}</b></td>'
+            f'<td style="padding:5px 0;font-size:14px;color:#4b5563;">'
+            f'{html.escape(str(e.get("label") or ""))}</td></tr>'
+            for e in events)
+        events_html = (
+            '<div style="margin:28px 0 0;padding:14px 16px;background:#f7f7fb;border-radius:8px;">'
+            '<h2 style="font-size:13px;font-weight:600;margin:0 0 6px;color:#1a1f2e;">'
+            'En tu agenda de hoy</h2>'
+            f'<table style="width:100%;border-collapse:collapse;">{rows}</table></div>')
+
+    url = f"{APP_URL}/novedades"
+    alerts_url = f"{APP_URL}/alertas"
+    body_html = f"""
+      <p style="font-size:13px;color:#9ca3af;margin:0 0 10px;">{html.escape(hi)}</p>
+      <h1 style="font-size:22px;font-weight:700;line-height:1.3;margin:0;color:#1a1f2e;">
+        {html.escape(titular)}
+      </h1>
+      {mercado_html}
+      {cartera_html}
+      {events_html}
+      <div style="text-align:center;margin:30px 0 6px;">
+        <a href="{url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:13px 30px;border-radius:8px;font-weight:600;font-size:15px;">
+          Ver tu cartera
+        </a>
+      </div>
+      <p style="font-size:12px;color:#9ca3af;line-height:1.6;margin:14px 0 0;">
+        Te lo mandamos cuando abre el mercado argentino, los días hábiles, porque
+        activaste el resumen diario. Lo escribimos a partir de las noticias del día;
+        no es una recomendación de inversión. Podés apagarlo en
+        <a href="{alerts_url}" style="color:#5b4ddb;">Alertas</a>, y si algo no cierra
+        respondeme este mail.
+      </p>
+    """
+
+    txt_parts = [f"{titular}\n\n{hi}", "\n\n".join(mercado)]
+    if cartera:
+        txt_parts.append("LO TUYO\n" + "\n\n".join(cartera))
+    if events:
+        txt_parts.append("EN TU AGENDA DE HOY\n" + "\n".join(
+            f"  - {e.get('ticker','')}: {e.get('label','')}" for e in events))
+    txt_parts.append(f"Ver tu cartera: {url}\n\n"
+                     f"Lo escribimos a partir de las noticias del día; no es una "
+                     f"recomendación de inversión.\n"
+                     f"Podés apagar este resumen en {alerts_url}.\n\n— Rendi")
+    text = "\n\n".join(txt_parts)
+
+    # El asunto ES el titular: es lo que decide si se abre. Antes decía cuántas
+    # noticias había, que es justo lo que a nadie le importa.
+    subject = titular[:120] if titular else "Tu mercado hoy"
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_alerts(),
+                 reply_to="soporte@rendi.finance")
+
+
 def send_reengagement(*, to: str, user_name: str = "") -> bool:
     """Re-engagement para usuarios verificados que se registraron pero casi no
     cargaron nada (≤1 operación). Tono lite, sin presión. Replies → soporte@.

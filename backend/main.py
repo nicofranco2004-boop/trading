@@ -1882,6 +1882,53 @@ def init_db():
                 PRIMARY KEY (alert_id, symbol)
             );
         """)
+        # Resumen del mercado por mail — una alerta más, opt-in, 11:00 ART.
+        # Ver backend/market_brief.py.
+        #
+        # ⚠️ La columna se llama `user_id` A PROPÓSITO, no `uid`: al borrar una
+        # cuenta hay un barrido que recorre todas las tablas y limpia las que
+        # tengan exactamente ese nombre. Las tablas del asesor usan
+        # `advisor_uid` y por eso hubo que agregarlas a mano tras un audit
+        # (sobrevivían datos de cuentas borradas). Con este nombre se resuelve
+        # solo, hoy y el día que alguien agregue una tabla más.
+        #
+        # `enabled` arranca en 0: es opt-in de verdad. El brief del ASESOR
+        # viene prendido de fábrica porque son decenas de casillas conocidas;
+        # este va a toda la base y un mail diario que nadie pidió es cómo se
+        # llega a la pestaña "Actualizaciones" de Gmail para siempre.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS market_brief_prefs (
+                user_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Anti-duplicado: re-correr el cron no manda el mail dos veces.
+            -- `date` es la fecha ARGENTINA (fechas.hoy_art), no UTC — entre
+            -- las 21:00 y la medianoche el reloj universal ya está en el día
+            -- siguiente y el sello quedaría fechado mañana.
+            CREATE TABLE IF NOT EXISTS market_brief_log (
+                user_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                sent_at TEXT DEFAULT (datetime('now')),
+                narrative TEXT,          -- JSON de lo que se le mandó
+                PRIMARY KEY (user_id, date)
+            );
+        """)
+        # La narración se guarda para poder AUDITARLA: un resumen escrito por
+        # un modelo que nadie puede releer después no es auditable, y el día
+        # que alguien diga "Rendi me dijo que tal cosa subió" hay que poder ir
+        # a ver qué le dijimos exactamente.
+        #
+        # ⚠️ El ALTER va DESPUÉS del CREATE, nunca antes: al revés es un no-op
+        # en una base nueva (la tabla todavía no existe) y revienta en una
+        # vieja. Es el orden que ya rompió producción una vez.
+        _mbl_cols = [r[1] for r in conn.execute(
+            "PRAGMA table_info(market_brief_log)").fetchall()]
+        if _mbl_cols and 'narrative' not in _mbl_cols:
+            conn.executescript(
+                "ALTER TABLE market_brief_log ADD COLUMN narrative TEXT;")
 
         # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
         # recalculan solos). `rules` es JSON con las condiciones; `excluded` la
@@ -6781,6 +6828,22 @@ MARKET_NEWS_QUERIES = [
     ("inflación Argentina INDEC", "macro", "es"),
     ("dolar blue MEP CCL Argentina", "macro", "es"),
     ("BCRA tasa interés Argentina", "macro", "es"),
+    # ── Commodities y geopolítica
+    # Faltaban las dos, y son la mitad de lo que explica un día de mercado: el
+    # petróleo mueve la inflación y a las energéticas (YPF, Vista, PAM), y un
+    # conflicto o un arancel mueve al petróleo. Sin esto, el resumen diario
+    # podía decir que la tasa de EE.UU. tocó 5% y no por qué.
+    #
+    # ⚠️ LAS CONSULTAS ESTÁN MEDIDAS, NO ELEGIDAS A OJO. Las primeras que puse
+    # ("precio del petróleo Brent WTI" y "geopolitical risk oil supply
+    # sanctions") sonaban precisas y eran las peores: Google News devolvía
+    # notas de HACE TRES SEMANAS, que la ventana del resumen descarta con
+    # razón — 1 y 0 noticias de las últimas 48 horas. Medido el 2026-09-15
+    # sobre seis candidatas, contando cuántas vuelven frescas Y pasan el
+    # filtro de relevancia. Si alguien las cambia, que las vuelva a medir:
+    # una búsqueda muy específica parece mejor y trae archivo.
+    ("petroleo Brent barril", "macro", "es"),          # 9 frescas de 15
+    ("oil market geopolitics", "macro", "en"),         # 3 frescas de 15
 ]
 
 
@@ -6939,6 +7002,38 @@ _STRONG_MACRO_KEYWORDS = frozenset({
     'wall street', 'russell 2000', 'magnificent 7', 'mag seven',
     # USA — commodities
     'crude oil', 'oil prices', 'gold prices', 'natural gas prices',
+    # …y los mismos EN CASTELLANO. Faltaban: la lista de commodities estaba
+    # entera en inglés, así que "El petróleo Brent sube 3%" —un titular normal
+    # de cualquier medio argentino— se caía del feed mientras que "Oil prices
+    # surge" entraba. Verificado con `_is_market_relevant` sobre los dos.
+    'petróleo', 'petroleo', 'crudo', 'barril de', 'brent', 'wti',
+    'precio del oro', 'onza de oro',
+    # AR — macro
+    'inflación argentina', 'inflacion argentina', 'ipc indec', 'indec',
+    'bcra', 'banco central argentina', 'tasa de referencia', 'tasa badlar',
+    'política monetaria argentina', 'politica monetaria argentina',
+    'dolar blue', 'dólar blue', 'dolar mep', 'dolar ccl', 'dolar oficial',
+    'cepo cambiario', 'control de cambios', 'brecha cambiaria',
+    'reservas bcra', 'reservas internacionales',
+    # AR — mercados
+    's&p merval', 'merval cierra', 'merval abre', 'índice merval',
+    'bonos argentinos', 'bonos soberanos', 'deuda argentina',
+    'lecap', 'cer bonos',
+    # AR — política económica
+    'milei', 'caputo', 'ley bases', 'rigi', 'fmi argentina',
+    # Crypto — macro
+    'bitcoin halving', 'crypto market', 'crypto regulation', 'spot etf',
+    # Geopolítica QUE MUEVE PRECIOS — no noticias de guerra en general.
+    # El criterio es el mismo que el resto de la lista: entra si un inversor
+    # necesita saberlo para entender por qué se movió algo. Un conflicto que
+    # corta la oferta de crudo mueve el petróleo y con él la inflación; un
+    # arancel mueve a las exportadoras. Una nota de política internacional
+    # sin ese hilo NO entra, y por eso los términos son los del impacto
+    # (sanciones, aranceles, oferta, suministro) y no los del conflicto.
+    'geopolitical risk', 'geopolitical tension', 'oil supply', 'supply disruption',
+    'sanctions', 'sanciones', 'embargo', 'ceasefire', 'alto el fuego',
+    'trade war', 'guerra comercial', 'tariffs', 'aranceles',
+    'strait of hormuz', 'opec', 'opep',
     # AR — macro
     'inflación argentina', 'inflacion argentina', 'ipc indec', 'indec',
     'bcra', 'banco central argentina', 'tasa de referencia', 'tasa badlar',
@@ -37313,6 +37408,93 @@ def advisor_brief_prefs_set(data: AdvisorBriefPrefsIn, uid: int = Depends(get_cu
     finally:
         conn.close()
 
+
+# ─── Resumen del mercado del usuario (una alerta más, opt-in) ────────────────
+# Un mail por día hábil a las 11:00 ART con las noticias de SUS activos y los
+# eventos que le pasan hoy. Motor: backend/market_brief.py.
+
+_market_brief_lock = threading.Lock()
+_market_brief_running = {"v": False}
+
+
+@app.api_route("/api/market-brief/run-cron", methods=["GET", "POST"])
+def market_brief_run_cron(request: Request):
+    """Manda el resumen del mercado a quienes lo activaron. Lo pega un cron
+    externo los días hábiles a las 14:00 UTC (= 11:00 ART, abre BYMA).
+
+    Idempotente por (usuario, día ART) → re-correr no duplica mails.
+
+    ⚠️ CORRE EN BACKGROUND Y CONTESTA AL INSTANTE. Antes de redactar sale a
+    buscar las noticias de todos los activos suscriptos y espera a que
+    terminen; eso más los envíos tarda bastante más que el timeout del gateway.
+    El cron de fotos diarias ya se comió un 502 por correr sincrónico (arreglado
+    en 62eee59) — no repetirlo acá. Igual que allá, un 200 significa
+    "arrancó", no "terminó bien": el resultado se ve en los logs.
+
+    Auth: header X-Cron-Token o ?token= contra MARKET_BRIEF_TOKEN, con fallback
+    al de snapshots para no multiplicar secretos (mismo criterio que el brief
+    del asesor: así se da de alta el cron sin tocar Railway).
+    """
+    expected = ((os.environ.get("MARKET_BRIEF_TOKEN") or "").strip()
+                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())
+    if not expected:
+        raise HTTPException(503, "Resumen de mercado no configurado (falta MARKET_BRIEF_TOKEN).")
+    got = (request.headers.get("x-cron-token")
+           or request.query_params.get("token") or "").strip()
+    if got != expected:
+        raise HTTPException(401, "Token inválido.")
+
+    with _market_brief_lock:
+        if _market_brief_running["v"]:
+            return {"ok": True, "status": "already_running"}
+        _market_brief_running["v"] = True
+
+    def _bg():
+        try:
+            import market_brief
+            res = market_brief.run_briefs(get_db)
+            log.info("market brief: %s", res)
+        except Exception as ex:
+            log.error("market brief falló: %s", ex)
+        finally:
+            with _market_brief_lock:
+                _market_brief_running["v"] = False
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "status": "started"}
+
+
+@app.get("/api/market-brief/prefs")
+def market_brief_prefs_get(uid: int = Depends(get_current_user)):
+    """Estado del interruptor. Sin fila = apagado (es opt-in)."""
+    conn = get_db()
+    try:
+        import market_brief
+        return {"enabled": market_brief.brief_enabled(conn, uid)}
+    finally:
+        conn.close()
+
+
+class MarketBriefPrefsIn(BaseModel):
+    enabled: bool
+
+
+@app.patch("/api/market-brief/prefs")
+def market_brief_prefs_set(data: MarketBriefPrefsIn,
+                           uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO market_brief_prefs (user_id, enabled)
+                   VALUES (?, ?)
+                   ON CONFLICT(user_id) DO UPDATE
+                     SET enabled = excluded.enabled,
+                         updated_at = datetime('now')""",
+                (uid, 1 if data.enabled else 0))
+        return {"ok": True, "enabled": bool(data.enabled)}
+    finally:
+        conn.close()
 
 # ─── Push notifications (Sprint M4) ──────────────────────────────────────────
 # Web Push (VAPID). Funciona en Chrome/Firefox/Edge desktop + Android. iOS Safari

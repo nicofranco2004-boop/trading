@@ -20,6 +20,7 @@ import AssetLogo from '../components/AssetLogo'
 import NewsTagBadge, { newsTagLabel } from '../components/NewsTagBadge'
 import { api } from '../utils/api'
 import { safeExternalUrl } from '../utils/safeUrl'
+import { sentimentMeta } from '../utils/sentiment'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
 
@@ -31,14 +32,8 @@ const TABS = [
 const LIMIT = 25
 const TAB_VALUES = TABS.map(t => t.value)
 
-// Sentimiento (heurística del backend). Clases literales completas para que el
-// purge de Tailwind no las borre.
-const SENTIMENT_META = {
-  positive: { label: 'POS', dot: 'bg-rendi-pos', text: 'text-rendi-pos', stripe: 'border-l-rendi-pos' },
-  negative: { label: 'NEG', dot: 'bg-rendi-neg', text: 'text-rendi-neg', stripe: 'border-l-rendi-neg' },
-  neutral:  { label: 'NEU', dot: 'bg-ink-3',     text: 'text-ink-3',     stripe: 'border-l-line-3' },
-}
-function sentimentMeta(s) { return SENTIMENT_META[s] || SENTIMENT_META.neutral }
+// Sentimiento (heurística del backend). La tabla de colores se mudó a
+// utils/sentiment.js — el lugar correcto es ese y no adentro de una página.
 
 // "afecta X% de tu cartera" cuando el backend adjunta weight_pct (top holdings).
 function weightLabel(weightPct) {
