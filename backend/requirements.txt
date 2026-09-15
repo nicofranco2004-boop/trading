@@ -39,3 +39,9 @@ boto3>=1.34.0
 openpyxl>=3.1.0
 
 pdfplumber>=0.11.0
+
+# Base de zonas horarias para `zoneinfo` (horario de mercado de NY, que sí
+# tiene horario de verano). Las imágenes slim de Linux suelen venir sin ella y
+# ahí `ZoneInfo` levanta excepción; el motor de alertas tiene un fallback, pero
+# con el paquete no hace falta usarlo.
+tzdata>=2024.1

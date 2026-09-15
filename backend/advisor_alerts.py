@@ -138,8 +138,30 @@ def _set_state(conn, uid: int, cid: int, armed: int, fired_date=None):
         (uid, cid, armed, fired_date))
 
 
-def _deliver(conn, uid: int, channel: str, title: str, body: str,
-             detail: str = "") -> tuple:
+def _titular(items) -> str:
+    """El asunto de una tanda. Nombra las dos carteras que más se movieron en
+    vez de contarlas: para el asesor los nombres SON la información.
+    `items` llega ordenado de mayor a menor movimiento."""
+    if len(items) == 1:
+        return items[0]["msg"]
+    verbo = lambda it: "subió" if it["pct"] >= 0 else "cayó"
+    a = f"La cartera de {items[0]['label']} {verbo(items[0])} {abs(items[0]['pct']):.1f}%"
+    b = f"la de {items[1]['label']} {verbo(items[1])} {abs(items[1]['pct']):.1f}%"
+    if len(items) == 2:
+        return f"{a} y {b} hoy"
+    return f"{a}, {b} y {len(items) - 2} más hoy"
+
+
+def _deliver(conn, uid: int, channel: str, title: str, items) -> tuple:
+    """Un push y un mail por asesor y por corrida, con TODAS las carteras que se
+    movieron.
+
+    Antes salía un envío por cliente: un asesor con cinco clientes en un día de
+    −3% recibía cinco mails en el mismo minuto. Es el mismo arreglo que el motor
+    de alertas de precio (`alerts_engine._deliver`) — ahí eran cuatro mails por
+    cuatro CEDEARs. Con un solo cliente el mail es idéntico al de siempre."""
+    items = sorted(items, key=lambda it: abs(it.get("pct") or 0), reverse=True)
+    body = _titular(items)
     push_ok = email_ok = False
     if channel in ("push", "both"):
         try:
@@ -153,10 +175,15 @@ def _deliver(conn, uid: int, channel: str, title: str, body: str,
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
             if row and row["email"]:
                 from billing import emails
+                if len(items) == 1:
+                    detail = items[0]["detail"] or items[0]["msg"]
+                    lines = None
+                else:
+                    detail = f"se movieron {len(items)} carteras de tu libro hoy:"
+                    lines = [it["line"] for it in items]
                 email_ok = emails.send_alert_email(
                     to=row["email"], user_name=(row["name"] or ""),
-                    heading=body,
-                    detail=(detail or body),
+                    heading=body, detail=detail, lines=lines,
                     cta_path="/clientes")
         except Exception as ex:
             log.warning("advisor alert email uid=%s: %s", uid, ex)
@@ -283,6 +310,7 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 snaps[r["user_id"]] = float(r["total_value"] or 0)
                 base_nd[r["user_id"]] = float(r["net_deposited"] or 0)
 
+            pendientes: list = []
             for cid, now_v in live.items():
                 base = snaps.get(cid) or 0.0
                 if base <= 0:
@@ -328,14 +356,24 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                     (uid, cid, msg, round(pct, 2), datetime.utcnow().isoformat()))
                 _evid = _ev.lastrowid
                 conn.commit()
-                p_ok, e_ok = _deliver(conn, uid, cfg["channel"] or "both",
-                                      "Rendi · Movimiento en tu libro", msg,
-                                      detail=detail)
-                conn.execute("UPDATE advisor_alert_events SET delivered_push=?, "
-                             "delivered_email=? WHERE id=?",
-                             (1 if p_ok else 0, 1 if e_ok else 0, _evid))
-                conn.commit()
+                # No se entrega acá: se acumula y sale UN envío por asesor
+                # cuando termina de recorrerse el libro. Ver `_deliver`.
+                pendientes.append({
+                    "msg": msg, "detail": detail, "event_id": _evid,
+                    "label": labels.get(cid), "pct": pct,
+                    "line": (f"{labels.get(cid)}: {verbo} {abs(pct):.1f}% "
+                             f"y hoy vale {_val}"),
+                })
                 fired += 1
+            if pendientes:
+                p_ok, e_ok = _deliver(conn, uid, cfg["channel"] or "both",
+                                      "Rendi · Movimiento en tu libro", pendientes)
+                conn.executemany(
+                    "UPDATE advisor_alert_events SET delivered_push=?, "
+                    "delivered_email=? WHERE id=?",
+                    [(1 if p_ok else 0, 1 if e_ok else 0, it["event_id"])
+                     for it in pendientes])
+                conn.commit()
         except Exception as ex:
             log.error("advisor alerts uid=%s falló: %s", uid, ex)
     conn.commit()

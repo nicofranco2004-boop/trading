@@ -4066,3 +4066,93 @@ class LinkRequestTest(AdvisorBase):
             (self._pedido()["id"],))
         conn.commit(); conn.close()
         self.assertEqual(self._invite(mode="link_request").status_code, 200)
+
+class AdvisorAlertsAgrupadasTest(AdvisorAlertsAuditTest):
+    """Un envío por corrida, no uno por cliente.
+
+    Un asesor con cinco clientes en un día de −3% recibía cinco mails en el
+    mismo minuto. Es el mismo arreglo que el motor de alertas de precio, donde
+    el 15/09/2026 salieron cuatro mails por cuatro CEDEARs. Hereda el harness
+    del audit (_base_snapshot)."""
+
+    def _segundo_cliente(self, label="Ana G"):
+        from datetime import datetime as _d, timedelta as _t
+        day = (_d.utcnow() - _t(hours=3) - _t(days=1)).date().isoformat()
+        conn = main.get_db()
+        try:
+            uid = _new_user(conn, f"cliente2-{uuid.uuid4().hex[:10]}@rendi.test", approved=0)
+            conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.advisor, uid))
+            _link(conn, self.advisor, uid, label=label)
+            # ⚠️ net_deposited=0 A PROPÓSITO: el motor resta (aportado vivo −
+            # aportado de la base) para no contar un depósito como suba, y el
+            # cliente de este fixture no tiene NINGUNA operación, así que su
+            # aportado vivo es 0. Una base con 9.000 se leería como un retiro de
+            # 9.000 y el +10% saldría +100%. En producción los dos números salen
+            # de la misma función y coinciden; acá hay que hacerlos coincidir.
+            conn.execute(
+                "INSERT INTO snapshots (user_id,date,total_value,total_invested,"
+                "net_deposited,source) VALUES (?,?,?,?,?,'cron')",
+                (uid, day, 10000, 10000, 0))
+            conn.commit()
+            return uid
+        finally:
+            conn.close()
+
+    def _correr(self, valores):
+        """Corre el motor de verdad y mockea un escalón más abajo que `_run`:
+        la entrega se arma entera y lo único falso es el envío. Con `_deliver`
+        mockeado el agrupado no se probaría nunca."""
+        import advisor_alerts as aa, advisor_brief
+        from billing import emails as _emails
+        mails, pushes = [], []
+        conn = main.get_db()
+        try:
+            aa.set_config(conn, self.advisor, up_pct=5, down_pct=5, active=True)
+            conn.execute("DELETE FROM advisor_alert_state WHERE advisor_uid=?", (self.advisor,))
+            conn.commit()
+            _l0, _p0, _e0 = (advisor_brief.live_book_values,
+                             main._send_push_to_user, _emails.send_alert_email)
+            advisor_brief.live_book_values = lambda c, i, p: valores
+            main._send_push_to_user = lambda uid, payload: (pushes.append(payload), 1)[1]
+            _emails.send_alert_email = lambda **kw: (mails.append(kw), True)[1]
+            try:
+                res = aa.evaluate(conn, market_open=True, only_uid=self.advisor)
+            finally:
+                (advisor_brief.live_book_values, main._send_push_to_user,
+                 _emails.send_alert_email) = _l0, _p0, _e0
+            return res, mails, pushes
+        finally:
+            conn.close()
+
+    def test_dos_clientes_se_mueven_y_llega_un_solo_mail(self):
+        self._base_snapshot(nd=0)      # ver la nota de _segundo_cliente
+        otro = self._segundo_cliente()
+        res, mails, pushes = self._correr({self.client_uid: 11000, otro: 8800})
+        self.assertEqual(res["fired"], 2)
+        self.assertEqual(len(mails), 1)          # UN mail…
+        self.assertEqual(len(pushes), 1)         # …y UN push
+        self.assertEqual(len(mails[0]["lines"]), 2)
+        # El asunto nombra a los dos, la que más se movió primero (−12% vs +10%).
+        self.assertEqual(mails[0]["heading"],
+                         "La cartera de Ana G cayó 12.0% y la de Juan P subió 10.0% hoy")
+        self.assertIn("se movieron 2 carteras de tu libro hoy", mails[0]["detail"])
+        # Los dos eventos quedan registrados y marcados como entregados.
+        conn = main.get_db()
+        try:
+            filas = conn.execute(
+                "SELECT delivered_email, delivered_push FROM advisor_alert_events "
+                "WHERE advisor_uid=?", (self.advisor,)).fetchall()
+            self.assertEqual(len(filas), 2)
+            self.assertTrue(all(f["delivered_email"] and f["delivered_push"] for f in filas))
+        finally:
+            conn.close()
+
+    def test_un_solo_cliente_manda_el_mail_de_siempre(self):
+        """El agrupado no puede cambiarle el mail al asesor con un solo aviso."""
+        self._base_snapshot(nd=0)
+        res, mails, _ = self._correr({self.client_uid: 11000})
+        self.assertEqual(res["fired"], 1)
+        self.assertEqual(len(mails), 1)
+        self.assertIsNone(mails[0]["lines"])
+        self.assertEqual(mails[0]["heading"], "La cartera de Juan P subió 10.0% hoy")
+        self.assertIn("y hoy vale", mails[0]["detail"])
