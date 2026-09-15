@@ -159,6 +159,16 @@ export function VozProvider({ children }) {
   // Se acabó el cupo de escuchas: { message, upgrade }. Se dibuja como aviso
   // con su atajo a Planes, no como error.
   const [sinCupo, setSinCupo] = useState(null)
+  // 🔴 POR QUÉ NO ARRANCÓ SOLA. Hasta acá, los CINCO motivos por los que Rendi
+  // puede no ponerse a hablar se veían exactamente igual: un botón de play, sin
+  // una palabra. El usuario no tenía cómo saber si el que decidió fue él (la
+  // tiene callada), su plan, su navegador, o si Rendi directamente no escribió
+  // nada para leer.
+  //
+  // Esto costó dos arreglos a ciegas —uno para el celular y otro para el
+  // permiso del navegador— y el problema seguía. La salida no era una tercera
+  // corazonada: era que el programa dijera qué estaba pasando.
+  const [motivoSinVoz, setMotivoSinVoz] = useState(null)
 
   // Snapshot de la cartera para poder repreguntar desde cualquier pantalla.
   // Perezoso: recién se pide cuando hace falta, y se refresca si el chat
@@ -274,6 +284,7 @@ export function VozProvider({ children }) {
         // sonido (iPhone, sobre todo). No es un error: mostramos el botón de
         // play y con ese toque queda habilitado para el resto de la sesión.
         setStatus('blocked')
+        setMotivoSinVoz('Tu navegador no la deja arrancar sola: tocá una vez y queda habilitada')
         return
       }
       const detail = e?.payload?.detail
@@ -370,6 +381,7 @@ export function VozProvider({ children }) {
     setPaso(null)
     setAskError(null)
     setUpgradeInfo(null)
+    setMotivoSinVoz(null)
     const miTurno = turnoRef.current
     // ¿Esta conversación sigue siendo la que está en pantalla?
     const vigente = () => turnoRef.current === miTurno
@@ -440,13 +452,19 @@ export function VozProvider({ children }) {
         if (yaSono || !v || !vigente()) return
         yaSono = true
         setCurrent(v)
-        if (!enabled) return
+        if (!enabled) { setMotivoSinVoz('La tenés silenciada'); return }
         // Con el parlante prendido arranca solo, salvo que el plan pague con
         // cupo propio de escuchas (Free) — ahí siempre lo tiene que tocar él.
         // La cuota se pregunta ACÁ y no antes del turno: el turno ya descontó
         // su ficha y con una sola de saldo la respuesta cambia.
         const u = await api.get('/ai/usage').catch(() => null)
-        if (puedeArrancarSolo(u)) speak(v)
+        if (!puedeArrancarSolo(u)) {
+          setMotivoSinVoz(u?.listens_limit != null
+            ? 'Tu plan tiene un audio por semana: lo arrancás vos'
+            : 'Te quedaste sin consultas por esta semana')
+          return
+        }
+        speak(v)
       }
 
       // El turno terminó en una herramienta: lo que se escribió era el
@@ -499,6 +517,9 @@ export function VozProvider({ children }) {
       // del titular), acá está el que viaja en el frame final. Si ya sonó,
       // esto no hace nada.
       await arrancarAudio(res?.voz)
+      if (!res?.voz && !yaSono && vigente() && enabled) {
+        setMotivoSinVoz('Esta respuesta no trajo resumen para escuchar')
+      }
     } catch (e) {
       // Cancelar no es fallar: tocó "Nueva conversación" y ya se limpió todo.
       if (esCancelacion(e) || !vigente()) return
@@ -621,11 +642,11 @@ export function VozProvider({ children }) {
     status, progress, current,
     speak, escuchar, toggle, stop,
     open, setOpen,
-    thread, sending, loading, paso, askError, upgradeInfo, usageDelError,
+    thread, sending, loading, paso, askError, upgradeInfo, usageDelError, motivoSinVoz,
     sinCupo, ask, analizar, limpiar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
        speak, escuchar, toggle, stop, open, thread, sending, loading, paso, askError,
-       upgradeInfo, usageDelError, sinCupo, ask, analizar, limpiar])
+       upgradeInfo, usageDelError, sinCupo, motivoSinVoz, ask, analizar, limpiar])
 
   return (
     <VozContext.Provider value={value}>
@@ -645,7 +666,7 @@ const INERTE = {
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
-  thread: [], sending: false, paso: null, askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null,
+  thread: [], sending: false, paso: null, askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null, motivoSinVoz: null,
   ask: () => {}, analizar: () => {}, limpiar: () => {},
 }
 

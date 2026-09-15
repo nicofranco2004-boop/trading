@@ -120,3 +120,33 @@ describe('el sonido se habilita en el toque, no cuando llega el audio', () => {
     expect(fuente).toMatch(/if \(!a \|\| desbloqueadoRef\.current\) return/)
   })
 })
+
+// ─── Decir POR QUÉ no arrancó sola ──────────────────────────────────────────
+// Los cinco motivos por los que Rendi puede no ponerse a hablar se veían
+// exactamente igual: un botón de play, sin una palabra. Eso costó dos arreglos
+// a ciegas —uno para el celular, otro para el permiso del navegador— con el
+// problema intacto después de los dos. La salida no era una tercera
+// corazonada: era que el programa dijera qué estaba pasando.
+describe('cuando no habla, dice por qué', () => {
+  it('cubre los cinco motivos', () => {
+    for (const motivo of [
+      'La tenés silenciada',                 // el usuario la calló
+      'Tu plan tiene un audio por semana',   // Free, cupo propio
+      'sin consultas por esta semana',       // se acabó la cuota
+      'Tu navegador no la deja arrancar',    // política de autoplay
+      'no trajo resumen para escuchar',      // el modelo no escribió voz
+    ]) {
+      expect(fuente).toContain(motivo)
+    }
+  })
+
+  it('se limpia al empezar un turno nuevo', () => {
+    // Si no, el motivo de la respuesta anterior queda colgado abajo de la nueva.
+    const ask = fuente.slice(fuente.indexOf('const ask = useCallback'))
+    expect(ask.slice(0, 1400)).toMatch(/setMotivoSinVoz\(null\)/)
+  })
+
+  it('viaja a las dos pantallas', () => {
+    expect(fuente).toMatch(/motivoSinVoz,/)
+  })
+})

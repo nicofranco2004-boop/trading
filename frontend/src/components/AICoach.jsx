@@ -103,7 +103,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           status: vozStatus, current: vozCurrent,
           thread: messages, ask, limpiar,
           sending, loading, paso, askError: error,
-          upgradeInfo, usageDelError } = useVoz()
+          upgradeInfo, usageDelError, motivoSinVoz } = useVoz()
   // ¿El audio de ESTE mensaje está CARGADO en el reproductor?
   //
   // No alcanza con que coincida el texto: la respuesta se guarda como "actual"
@@ -415,6 +415,11 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                         ? <><Pause size={12} aria-hidden="true" /> Pausar</>
                         : <><Volume2 size={12} aria-hidden="true" /> Escuchar</>}
                   </button>
+                )}
+                {/* POR QUÉ NO ARRANCÓ SOLA. Hasta acá los cinco motivos se
+                    veían igual: un botón "Escuchar" y nada más. */}
+                {isLastMsg && motivoSinVoz && vozStatus !== 'playing' && (
+                  <div className="mt-1.5 text-[11px] text-ink-3">{motivoSinVoz}</div>
                 )}
                 {meta?.sources?.length > 0 && (
                   <div className="flex items-center gap-1.5 mt-2.5 flex-wrap text-[11px] text-ink-3">

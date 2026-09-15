@@ -54,7 +54,7 @@ export default function RendiMate() {
     status, progress, current,
     escuchar, toggle, stop,
     open, setOpen,
-    thread, sending, paso, askError, sinCupo, ask,
+    thread, sending, paso, askError, sinCupo, ask, motivoSinVoz,
   } = useVoz()
   const [texto, setTexto] = useState('')
 
@@ -343,10 +343,8 @@ export default function RendiMate() {
               hubiera decidido no hablar, y el usuario no tenía forma de saber
               que el que decidió fue su navegador. Con esto, una vez que toca,
               queda habilitado para el resto de la sesión. */}
-          {status === 'blocked' ? (
-            <span className="flex-1 text-[11px] leading-tight text-ink-3">
-              Tu navegador pide que lo toques la primera vez
-            </span>
+          {(status !== 'playing' && motivoSinVoz) ? (
+            <span className="flex-1 text-[11px] leading-tight text-ink-3">{motivoSinVoz}</span>
           ) : (
             <>
               <span className="flex-1 h-1 rounded-full bg-bg-3 overflow-hidden" aria-hidden="true">
