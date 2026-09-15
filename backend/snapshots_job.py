@@ -893,6 +893,58 @@ def apply_last_known_prices(conn, prices: dict, *, fresh_since: str = None) -> d
 
 # ─── Snapshot por usuario ───────────────────────────────────────────────────
 
+def _falta_estructural(asset_type, base_sym, universo_bonos):
+    """¿Este papel sin precio está MUERTO, o sólo no lo conseguimos hoy?
+
+    La diferencia importa porque el guard de cobertura de más abajo fue escrito
+    para una falla PASAJERA ("hoy la fuente se cayó, mañana reintento") y con esa
+    premisa no escribir es lo correcto. Pero un bono vencido no vuelve: para esas
+    cuentas el guard no espera, bloquea para siempre. Medido el 2026-09-15: 112
+    cuentas sin foto, ~16 % del padrón, varias por papeles muertos (TZX26 venció
+    el 30/6, TZXD5 en dic 2025, T13F6, TTM26, TTJ26).
+
+    ⚠️ NO ALCANZA CON QUE EL PRECIO SEA VIEJO. Ese fue el primer intento y un test
+    del repo lo refutó con razón (`TestPrecioViejoNoEntraALaHistoria`): AAPL con
+    el último precio de hace tres meses y yfinance caído daría "estructural", y
+    AAPL no está muerta — lo que falló es la fuente. Deducir "muerto" de "viejo"
+    es falso para cualquier papel líquido durante una caída.
+
+    Así que la muerte se PRUEBA, con tres condiciones y un veto:
+
+      1. Es renta fija. Una acción sin precio es la fuente caída, no el papel.
+      2. La fuente de bonos CONTESTÓ (universo no vacío). Si no contestó, no se
+         puede afirmar nada de nadie.
+      3. Y aun así no lo lista. La fuente publica el universo que se opera: un
+         papel vivo está ahí. Si la fuente está sana y el papel no aparece, no se
+         opera más.
+
+      · VETO: si el vencimiento se puede decodificar del ticker y todavía no
+        pasó, NO es estructural — es una letra viva que hoy no conseguimos. El
+        decodificador es el que ya usa el importador para cerrar letras vencidas
+        (`importing/maturity.letra_maturity`), así que la convención vive en un
+        solo lugar.
+    """
+    if (asset_type or '').upper() not in _FIXED_INCOME_TYPES:
+        return False
+    if not universo_bonos:
+        return False
+    # ⚠️ LAS DOS CLAVES. Un bono en un broker ARS se pide como '<TICKER>.BA' y la
+    # fuente lo lista como '<TICKER>'; en un broker en dólares se pide pelado y la
+    # fuente lo lista como '<TICKER>D' (la pata MEP). Mirando una sola, un bono
+    # VIVO de una cuenta en dólares no aparecía en el universo y se marcaba como
+    # muerto — lo cazó el test al primer intento.
+    if base_sym in universo_bonos or (base_sym + 'D') in universo_bonos:
+        return False
+    try:
+        from importing.maturity import letra_maturity
+        vence = letra_maturity(base_sym)
+        if vence and vence >= hoy_art():
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def take_snapshot_for_user(
     conn: sqlite3.Connection,
     uid: int,
@@ -1023,21 +1075,39 @@ def take_snapshot_for_user(
     # busca es el `.BA`, no el de Nueva York — y mandaría a arreglar el precio
     # equivocado.
     _sin_precio = {}
+    _tipo_de = {}
     for p in non_cash:
         if _has_price(p):
             continue
         sym = position_price_key(p, _ars_names, _ar_usd_names)
         _sin_precio[sym] = _sin_precio.get(sym, 0.0) + _cost_usd(p)
+        _tipo_de.setdefault(sym, p.get('asset_type'))
     sin_precio = sorted(_sin_precio.items(), key=lambda kv: -kv[1])
 
+    # ── El papel que no vuelve no puede bloquear para siempre ────────────────
+    # Ver `_falta_estructural`. La cobertura que DECIDE deja afuera lo que está
+    # probadamente muerto; la que se GUARDA en la fila es la real, sin excluir
+    # nada, para que ningún lector se coma el número sin saber cuánto se midió.
+    try:
+        from main import _fetch_data912_bonds as _u_bonos
+        _universo = _u_bonos() or {}
+    except Exception:
+        _universo = {}
+    estructural = {
+        sym for sym, _ in sin_precio
+        if _falta_estructural(_tipo_de.get(sym), sym[:-3] if sym.endswith('.BA') else sym, _universo)
+    }
+    costo_estructural = sum(c for sym, c in sin_precio if sym in estructural)
+    cobertura_efectiva = ((priced_cost + costo_estructural) / total_cost) if total_cost > 0 else 1.0
+
     MIN_COVERAGE = 0.95
-    if non_cash and coverage < MIN_COVERAGE:
+    if non_cash and cobertura_efectiva < MIN_COVERAGE:
         # Un decimal, no cero: con `:.0%` una cobertura de 94,96 % se imprimía
         # como "95% < 95%" y el renglón parecía un bug del código en vez de un
         # redondeo. Seis de las 112 cuentas de la corrida del 15/09 salían así.
         _detalle = ", ".join(f"{sym} (US$ {int(costo)})" for sym, costo in sin_precio[:6])
         log.warning(
-            f"user={uid}: cobertura de precios {coverage:.1%} < {MIN_COVERAGE:.0%} "
+            f"user={uid}: cobertura de precios {cobertura_efectiva:.1%} < {MIN_COVERAGE:.0%} "
             f"— NO escribo snapshot {target_date} (evita dato subvaluado)"
             + (f" · sin precio: {_detalle}" if _detalle else "")
         )
@@ -1081,8 +1151,8 @@ def take_snapshot_for_user(
         -- único que conoce el contexto, y así los ~40 lectores no tienen que
         -- deducirlo cada uno a su manera. Un cierre del cron es posiciones ×
         -- precio real y es un CIERRE: base de mercado y apto para fijar picos.
-        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json, source, base, apto)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'cron', 'mercado', 1)
+        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json, source, base, apto, mtm_coverage)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'cron', 'mercado', 1, ?)
         ON CONFLICT(user_id, date) DO UPDATE SET
             total_value = excluded.total_value,
             total_invested = excluded.total_invested,
@@ -1093,12 +1163,16 @@ def take_snapshot_for_user(
             -- medición buena del día.
             source = 'cron',
             base = 'mercado',
-            apto = 1
-    """, (uid, target_date, total_value, total_invested, net_deposited, tc_blue, holdings_json))
+            apto = 1,
+            mtm_coverage = excluded.mtm_coverage
+    """, (uid, target_date, total_value, total_invested, net_deposited, tc_blue, holdings_json,
+          round(coverage, 4)))
 
     return {
         'ok': True,
         'sin_precio': [s for s, _ in sin_precio],
+        'estructural': sorted(estructural),
+        'cobertura': round(coverage, 4),
         'total_value': round(total_value, 2),
         'total_invested': round(total_invested, 2),
         'net_deposited': round(net_deposited, 2),

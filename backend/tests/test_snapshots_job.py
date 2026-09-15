@@ -1174,3 +1174,97 @@ class TestSimboloByma(unittest.TestCase):
         import inspect, snapshots_job
         fuente = inspect.getsource(snapshots_job)
         self.assertNotIn('f"{asset}.BA"', fuente)
+
+
+class FaltaEstructuralTest(unittest.TestCase):
+    """Un papel que no vuelve no puede bloquear la foto para siempre.
+
+    EL PROBLEMA. El guard de cobertura fue escrito para una falla PASAJERA, y con
+    esa premisa no escribir es lo correcto. Pero un bono vencido no vuelve nunca:
+    para esas cuentas el guard no espera, bloquea. Medido el 2026-09-15: 112
+    cuentas sin foto diaria, ~16 % del padrón, varias por papeles muertos.
+
+    Y NO ALCANZA CON QUE EL PRECIO SEA VIEJO — el primer intento usaba eso y el
+    test de al lado (TestPrecioViejoNoEntraALaHistoria) lo refutó con razón: AAPL
+    con un precio de hace tres meses y la fuente caída no está muerta. Por eso la
+    muerte se prueba: renta fija + la fuente contestó + aun así no lo lista.
+    """
+
+    def setUp(self):
+        TestSnapshotCoverageGate.setUp(self)
+        conn = sqlite3.connect(self.db_path)
+        # El papel grande pasa a ser un bono; el chico, con precio.
+        conn.execute("UPDATE positions SET asset='TZX26', asset_type='BONO' WHERE asset='AAPL'")
+        conn.commit(); conn.close()
+
+    tearDown = TestSnapshotCoverageGate.tearDown
+    _snap_count = TestSnapshotCoverageGate._snap_count
+
+    def _correr(self, universo, sin_precio_para=('TZX26',)):
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: (None if any(k in s for k in sin_precio_para) else 100.0)
+                                                 for s in syms}):
+            with patch('main._fetch_data912_bonds', return_value=universo):
+                with conn:
+                    r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-09-15')
+        n = self._snap_count(conn, '2026-09-15')
+        cob = conn.execute("SELECT mtm_coverage FROM snapshots WHERE user_id=1 AND date='2026-09-15'").fetchone()
+        conn.close()
+        return r, n, (cob[0] if cob else None)
+
+    def test_un_bono_muerto_deja_de_bloquear_la_foto(self):
+        """La fuente contestó (195 bonos) y TZX26 no está entre ellos: se fue."""
+        r, n, _ = self._correr({'AL30': 91610.0, 'GD38': 126890.0})
+        self.assertTrue(r['ok'], "un papel muerto no puede bloquear para siempre")
+        self.assertEqual(n, 1)
+        self.assertIn('TZX26', r['estructural'])
+
+    def test_pero_la_foto_DECLARA_cuánto_se_midió_de_verdad(self):
+        """Cambiar un bloqueo honesto por un dato mudo sería peor. La fila guarda
+        la cobertura REAL, sin excluir lo estructural."""
+        _, _, cobertura = self._correr({'AL30': 91610.0})
+        self.assertIsNotNone(cobertura, "la foto tiene que decir cuánto de ella se valuó a mercado")
+        self.assertLess(cobertura, 0.95)
+
+    def test_si_la_fuente_NO_contestó_se_sigue_bloqueando(self):
+        """Universo vacío = la fuente está caída. Ahí no se puede afirmar que el
+        papel murió, y escribir sería justo el dato subvaluado que el guard evita."""
+        r, n, _ = self._correr({})
+        self.assertFalse(r['ok'])
+        self.assertEqual(r['reason'], 'low_price_coverage')
+        self.assertEqual(n, 0)
+
+    def test_si_la_fuente_SÍ_lo_lista_se_sigue_bloqueando(self):
+        """Está en el universo: cotiza, hoy no lo conseguimos. Falta pasajera."""
+        r, n, _ = self._correr({'TZX26': 105.0, 'AL30': 91610.0})
+        self.assertFalse(r['ok'])
+        self.assertEqual(n, 0)
+
+    def test_y_tambien_si_lo_lista_con_la_pata_en_dolares(self):
+        """Un bono en cuenta dólar se pide pelado y la fuente lo lista con 'D'.
+        Mirando una sola clave, un bono VIVO quedaba marcado como muerto."""
+        r, n, _ = self._correr({'TZX26D': 65.0, 'AL30': 91610.0})
+        self.assertFalse(r['ok'])
+        self.assertEqual(n, 0)
+
+    def test_una_accion_sin_precio_NUNCA_es_estructural(self):
+        """El caso que refutó el primer intento: AAPL con la fuente caída."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("UPDATE positions SET asset='AAPL', asset_type='CEDEAR' WHERE asset='TZX26'")
+        conn.commit(); conn.close()
+        r, n, _ = self._correr({'AL30': 91610.0}, sin_precio_para=('AAPL',))
+        self.assertFalse(r['ok'], "una acción sin precio es la fuente caída, no el papel")
+        self.assertEqual(n, 0)
+
+    def test_una_letra_que_todavia_no_venció_no_es_estructural(self):
+        """El veto: si el vencimiento se decodifica del ticker y es futuro, está
+        viva aunque la fuente no la liste hoy."""
+        conn = sqlite3.connect(self.db_path)
+        # S30S9 → 30/sep/2029, futuro.
+        conn.execute("UPDATE positions SET asset='S30S9', asset_type='LETRA' WHERE asset='TZX26'")
+        conn.commit(); conn.close()
+        r, n, _ = self._correr({'AL30': 91610.0}, sin_precio_para=('S30S9',))
+        self.assertFalse(r['ok'])
+        self.assertEqual(n, 0)
+
