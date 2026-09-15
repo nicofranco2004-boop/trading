@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-
 import { getClientContext } from './utils/api'
 import { VozProvider } from './contexts/VozContext'
 import RendiMate from './components/voz/RendiMate'
+import IslaSegura from './components/voz/IslaSegura'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
@@ -176,7 +177,15 @@ function VozGate() {
   // snapshot de su cuenta personal, que está vacía. Adentro de un cliente
   // (hay contexto) sí corresponde: ahí la cartera es la del cliente.
   if (user.tier === 'advisor' && !getClientContext()) return null
-  return <RendiMate />
+  // La isla va ADENTRO de su propia red: si falla, se apaga sola y el resto de
+  // la app sigue. Un acompañante que se lleva puesta la pantalla de la cartera
+  // es una desproporción, aunque esté roto. `reintentarEn` le da otra
+  // oportunidad al cambiar de sección.
+  return (
+    <IslaSegura reintentarEn={pathname}>
+      <RendiMate />
+    </IslaSegura>
+  )
 }
 
 function AdvisorLandingRedirect() {
