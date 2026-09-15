@@ -1658,6 +1658,7 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
     hi = f"Buen día{', ' + name if name else ''}." if is_open else f"Cierre del día{', ' + name if name else ''}."
     title = "Resumen del día" if is_open else "Cómo cerró el día"
 
+    headline_txt = ""            # ver el armado del texto plano, más abajo
     # El resumen del mercado, sólo en el de apertura.
     nar = (brief or {}).get("narrative") or {}
     nar_titular = (nar.get("titular") or "").strip()
@@ -1728,7 +1729,8 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
             f'<p style="font-size:11px;font-weight:700;letter-spacing:.06em;'
             f'text-transform:uppercase;color:#9ca3af;margin:0 0 8px;">{title}</p>'
             + _ctx + narrativa_html)
-        headline = ""          # ya se mostró arriba
+        headline_txt = headline      # la versión de texto plano lo sigue usando
+        headline = ""                # en el HTML ya se mostró arriba
     else:
         encabezado = (
             f'<h1 style="font-size:21px;font-weight:700;margin:0 0 6px;">{title}</h1>'
@@ -1753,7 +1755,12 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
         if nar_libro:
             txt_narrativa += "\n\nQUÉ SIGNIFICA PARA TU LIBRO\n" + "\n\n".join(nar_libro)
         txt_narrativa += "\n\n"
-    text = (f"{title}\n\n{hi}{' · ' + headline if headline and not txt_narrativa else ''}\n\n"
+    # ⚠️ El texto plano lleva el MISMO contenido que el HTML. `headline` se
+    # vacía arriba para no repetirlo en el cuerpo del HTML —ya va junto al
+    # saludo— y sin esta variable el resumen del libro ("Administrás US$ X · 4
+    # clientes") desaparecía de la versión texto sin que nada lo avisara.
+    _head_txt = headline or (headline_txt if txt_narrativa else "")
+    text = (f"{title}\n\n{hi}{' · ' + _head_txt if _head_txt else ''}\n\n"
             f"{txt_narrativa}" + "\n\n".join(secs_txt)
             + f"\n\nAbrir tu libro: {url}\n\n— Rendi")
 

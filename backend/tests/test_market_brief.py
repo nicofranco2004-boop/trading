@@ -99,6 +99,15 @@ class MarketBriefTest(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
+        # ⚠️ NI LA RED. `run_briefs` llama a `refresh_market_news()`, que sale a
+        # Google News de verdad y deja WORKERS EN THREADS corriendo: esos hilos
+        # tardíos llamaban al mock de OTRO archivo de test y lo hacían fallar
+        # ("esperaba 1 llamada, recibió 22"). Como el mock del modelo, vive acá
+        # y no en cada test, para que el próximo no se olvide.
+        pr = patch.object(market_brief, "refresh_market_news", lambda: None)
+        pr.start()
+        self.addCleanup(pr.stop)
+
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _pos(self, asset, uid=1, qty=10):
@@ -848,3 +857,173 @@ class NumerosInventadosTest(unittest.TestCase):
              patch.object(_llm, "analyze", return_value=_Res()):
             self.assertIsNone(market_brief.narrate(ctx, [], ["GGAL"]))
         self.assertEqual(_spy.call_count, 2, "tiene que reintentar UNA vez")
+
+    # ── Lo que el primer guard dejaba pasar ──────────────────────────────────
+    # La primera versión comparaba por PEDAZOS (`any(n in p for p in ...)`): con
+    # un "2007" en cualquier titular daba por respaldados el 20, el 7, el 200 y
+    # el 0. Medido: cinco de seis cifras inventadas pasaban. Y el test que lo
+    # cubría pasaba DE CASUALIDAD —probaba con "5%", que justo no es pedazo de
+    # 2007— así que el verde no significaba nada.
+
+    _CTX = [{"title": "US 10-Year Treasury Yields Rise to Highest Level Since 2007"},
+            {"title": "Dow falls 450 points as losses accelerate"},
+            {"title": "Brent Nears $108 as oil rises 2.2%"}]
+
+    def _cifras(self, frase):
+        return market_brief.numeros_sin_respaldo(self._nar(mercado=[frase]),
+                                                 self._CTX, [])
+
+    def test_no_alcanza_con_ser_pedazo_de_un_numero_del_material(self):
+        for frase, num in [("subió 20% en el día", "20"),
+                           ("cayó 7% esta semana", "7"),
+                           ("el índice llegó a 200", "200"),
+                           ("rinde 45% anual", "45"),
+                           ("perdió 0,7 puntos", "0,7")]:
+            with self.subTest(frase=frase):
+                self.assertIn(num, self._cifras(frase),
+                              f"«{frase}» pasó: {num} es pedazo de otro número")
+
+    def test_los_numeros_reales_no_se_bloquean(self):
+        """Tan importante como cazar inventados: si el guard es paranoico, no
+        sale ningún mail y el remedio es peor que la enfermedad."""
+        for frase in ["cayó 450 puntos", "desde 2007",
+                      "el Brent cerca de 108 dólares", "el bono a 10 años"]:
+            with self.subTest(frase=frase):
+                self.assertEqual(self._cifras(frase), [], f"bloqueó «{frase}»")
+
+    def test_el_titular_en_ingles_y_el_texto_en_castellano_son_el_mismo_numero(self):
+        """Los cables escriben "2.2%" y el resumen "2,2%". Compararlos como
+        texto los daría por distintos y bloquearía un número que SÍ está."""
+        self.assertEqual(self._cifras("el crudo subió 2,2%"), [])
+        # Las dos convenciones tienen que CRUZARSE en algo — no importa en
+        # cuántas formas, importa que el guard las reconozca como el mismo.
+        self.assertIn("1234.5", market_brief._variantes("1.234,5"))
+        self.assertIn("1234.5", market_brief._variantes("1,234.5"))
+
+
+class LibroGrandeTest(unittest.TestCase):
+    """El corte a 20 activos no es teórico: un asesor con 50 en el libro pierde
+    30 todos los días. Con orden alfabético pierde SIEMPRE los mismos."""
+
+    def test_entran_los_activos_que_tocan_a_mas_clientes(self):
+        import advisor_brief
+        fuente = open(advisor_brief.__file__, encoding="utf-8").read()
+        self.assertIn("key=lambda t: (-len(holders.get(t) or []), t)", fuente,
+                      "el libro se corta por orden alfabético: el asesor pierde "
+                      "siempre los mismos activos")
+
+    def test_el_orden_pone_primero_al_mas_extendido(self):
+        holders = {"ZZZZ": [1] * 9, "AAAA": [1], "MMMM": [1] * 5}
+        orden = sorted(holders, key=lambda t: (-len(holders.get(t) or []), t))
+        self.assertEqual(orden, ["ZZZZ", "MMMM", "AAAA"])
+
+
+class TextoPlanoTest(unittest.TestCase):
+    """La versión de texto tiene que llevar lo mismo que el HTML.
+
+    Al mover el resumen del libro arriba en el HTML se vaciaba la variable, y el
+    texto plano perdía "Administrás US$ X · N clientes" sin que nada lo avisara:
+    no hay test que compare las dos versiones, y un mail que se lee bien en
+    Gmail puede llegar mutilado a quien lo recibe en texto.
+    """
+
+    def _mail(self, brief):
+        cap = {}
+        with patch.object(emails, "_send",
+                          lambda to, subject, html, text, **kw: cap.update(
+                              html=html, text=text, subject=subject) or True):
+            emails.send_advisor_brief(to="a@b.co", user_name="Nicolas", brief=brief)
+        return cap
+
+    def test_el_resumen_del_libro_esta_en_las_dos_versiones(self):
+        m = self._mail({"kind": "open", "date": "2026-09-15", "clients_n": 12,
+                        "aum_total_usd": 250000, "sections": [],
+                        "narrative": {"titular": "Las tasas suben",
+                                      "mercado": ["El bono a diez años."],
+                                      "tu_cartera": []}})
+        for version in ("html", "text"):
+            self.assertIn("12 clientes", m[version],
+                          f"el resumen del libro no está en la versión {version}")
+
+    def test_el_de_cierre_no_perdio_nada(self):
+        """El de la tarde no lleva narración: tiene que seguir igual que antes."""
+        m = self._mail({"kind": "close", "date": "2026-09-15", "clients_n": 12,
+                        "aum_total_usd": 250000,
+                        "day": {"delta_usd": 1500.0, "pct": 0.6},
+                        "sections": [{"title": "Movimientos",
+                                      "items": [{"label": "X", "detail": "y"}]}]})
+        self.assertIn("Cómo cerró el día", m["text"])
+        self.assertIn("12 clientes", m["text"])
+        self.assertIn("Movimientos", m["text"])
+
+
+class NoticiasFrescasParaTodosTest(unittest.TestCase):
+    """🔴 EL PEOR HALLAZGO DE LA SEGUNDA AUDITORÍA.
+
+    El brief del asesor sólo LEÍA noticias, apoyado en que el cron del inversor
+    las traía. Pero ese cron **se va temprano si nadie tiene el resumen
+    prendido** — que es el estado de fábrica, porque el interruptor arranca
+    apagado. Resultado: el asesor recibía un «resumen del mercado» armado con lo
+    que quedó de la última vez que alguien abrió la app.
+
+    Es el mismo bug que motivó toda esta feature, reproducido del otro lado. Y
+    el más difícil de ver: el mail sale y se lee perfecto, sólo que cuenta el
+    mercado de anteayer.
+    """
+
+    def test_el_cron_del_inversor_refresca_aunque_no_haya_suscriptos(self):
+        fuente = open(market_brief.__file__, encoding="utf-8").read()
+        i_refresh = fuente.index("refresh_market_news()\n\n        if not pending")
+        self.assertGreater(i_refresh, 0,
+                           "el refresh de mercado quedó DESPUÉS del early return: "
+                           "sin suscriptos no se trae una sola noticia")
+
+    def test_el_brief_del_asesor_trae_sus_propias_noticias(self):
+        import advisor_brief
+        fuente = open(advisor_brief.__file__, encoding="utf-8").read()
+        self.assertIn("market_brief.refresh_market_news()", fuente,
+                      "el asesor lee noticias que nadie garantiza que estén frescas")
+        self.assertIn("market_brief._refresh_news_for(sorted(union), get_db)", fuente,
+                      "no trae las noticias de los activos de los libros")
+        # Y las trae ANTES de leer el contexto.
+        self.assertLess(fuente.index("refresh_market_news()"),
+                        fuente.index("market_ctx = market_brief.market_context"),
+                        "lee el contexto antes de refrescarlo")
+
+    def test_refresh_market_news_pide_las_busquedas_fijas(self):
+        import main
+        llamado = {}
+        with patch.object(main, "_ensure_news_batch_parallel",
+                          lambda specs, ttl, **kw: llamado.update(specs=specs, ttl=ttl)):
+            market_brief.refresh_market_news()
+        # Las 12 búsquedas + los feeds de Investing
+        self.assertGreaterEqual(len(llamado["specs"]), len(main.MARKET_NEWS_QUERIES))
+        self.assertEqual(llamado["ttl"], main.NEWS_MARKET_TTL,
+                         "sin TTL, los dos crons se pisan y refetchean todo dos veces")
+
+    def test_si_el_refresh_falla_el_mail_sale_igual(self):
+        import main
+        def _explota(*a, **k):
+            raise RuntimeError("Google no responde")
+        with patch.object(main, "_ensure_news_batch_parallel", _explota):
+            market_brief.refresh_market_news()   # no debe propagar
+
+
+class SinRedEnLosTestsTest(unittest.TestCase):
+    """🔴 Agregar una llamada de red al camino del cron sin taparla en los tests
+    no sólo los hace lentos: `_ensure_news_batch_parallel` deja WORKERS EN
+    THREADS corriendo, y esos hilos tardíos llamaron al mock de test_news.py
+    haciéndolo fallar con "esperaba 1 llamada, recibió 22" — un rojo en un
+    archivo que nadie tocó, imposible de explicar mirando ese archivo.
+
+    Es la segunda vez en esta feature: primero fue el modelo, ahora la red.
+    """
+
+    def test_el_cron_no_sale_a_la_red_en_los_tests(self):
+        fuente = open(__file__, encoding="utf-8").read()
+        self.assertIn('patch.object(market_brief, "refresh_market_news"', fuente,
+                      "los tests del cron salen a Google News de verdad")
+        # Y el tapón vive en setUp, no en un test suelto.
+        setup = fuente[fuente.index("    def setUp(self):"):fuente.index("    # ── helpers")]
+        self.assertIn("refresh_market_news", setup)
+        self.assertIn('patch.object(market_brief, "narrate"', setup)

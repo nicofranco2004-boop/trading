@@ -272,7 +272,14 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None,
             # lo leyó, llega por parámetro y no se vuelve a consultar.
             ctx = (market_ctx if market_ctx is not None
                    else market_brief.market_context(conn, desde))
-            tickers = sorted(holders)[:market_brief.MAX_TICKERS]
+            # ⚠️ ORDENADOS POR CUÁNTOS CLIENTES LO TIENEN, no alfabéticamente.
+            # El corte a 20 no es teórico: un asesor con 50 activos en el libro
+            # pierde 30, y con orden alfabético pierde SIEMPRE los mismos —los
+            # del final del abecedario— mientras que los de la A entran todos
+            # los días. Lo que le importa es el activo que toca a más clientes,
+            # que es el que va a tener que explicar en más llamadas.
+            tickers = sorted(holders, key=lambda t: (-len(holders.get(t) or []), t)
+                             )[:market_brief.MAX_TICKERS]
             news = market_brief._news_for(conn, tickers, desde) if tickers else []
             if ctx:
                 nar = market_brief.narrate(ctx, news, tickers, holders=holders)
@@ -466,7 +473,22 @@ def run_briefs(kind: str, get_db, only_uid: int = None) -> dict:
         market_ctx = None
         if kind == "open" and uids:
             try:
+                import main as _main
                 import market_brief
+                # ⚠️ PRIMERO SE TRAEN LAS NOTICIAS, DESPUÉS SE LEEN. El brief del
+                # asesor sólo LEÍA, apoyado en que el cron del inversor las
+                # traía — y ese cron se va temprano si nadie tiene el resumen
+                # prendido, que es el estado de fábrica. El asesor terminaba
+                # recibiendo un «resumen del mercado» armado con lo que quedó de
+                # la última vez que alguien abrió la app.
+                market_brief.refresh_market_news()
+                # Y los activos de TODOS los libros, en una sola pasada: dos
+                # asesores con GGAL lo buscan una vez.
+                union = set()
+                for uid in uids:
+                    union |= set(_main._advisor_ticker_holders(conn, uid) or {})
+                if union:
+                    market_brief._refresh_news_for(sorted(union), get_db)
                 market_ctx = market_brief.market_context(
                     conn, market_brief._news_window_start(day))
             except Exception as ex:

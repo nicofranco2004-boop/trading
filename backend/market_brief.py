@@ -204,6 +204,31 @@ def portfolio_tickers(conn, uid: int) -> list:
         return []
 
 
+def refresh_market_news() -> None:
+    """Trae las búsquedas FIJAS de mercado (tasas, dólar, INDEC, petróleo…).
+
+    ⚠️ LA LLAMAN LOS DOS CRONS, y tiene que ser así. El recolector de Rendi no
+    tiene reloj propio, así que alguien de la corrida de las 11:00 tiene que
+    salir a buscar. Durante un rato lo hizo sólo el cron del inversor — y ese
+    cron **se va temprano si nadie tiene el resumen prendido**, que es el caso
+    mientras el interruptor arranque apagado. Con eso, el brief del ASESOR leía
+    lo que hubiera quedado de la última vez que alguien abrió la app: un
+    «resumen del mercado» contando el mercado de anteayer, sin nada que lo
+    avisara, porque el mail sale y se lee perfecto.
+
+    Llamarla de más es barato: `_ensure_news_batch_parallel` respeta el TTL, así
+    que si el otro cron ya las trajo hace dos minutos esto no hace nada.
+    """
+    import main
+    specs = ([(q, lang, cat) for q, cat, lang in main.MARKET_NEWS_QUERIES]
+             + [('investing', url, lang, cat) for url, cat, lang in main.INVESTING_FEEDS])
+    try:
+        main._ensure_news_batch_parallel(specs, main.NEWS_MARKET_TTL)
+    except Exception as ex:
+        # Se sigue: mejor un resumen con lo que haya que ningún mail.
+        log.warning("market_brief: refresh de mercado falló: %s", ex)
+
+
 def _refresh_news_for(tickers: list, get_db=None) -> int:
     """Sale a buscar noticias de estos tickers y ESPERA a que termine.
 
@@ -575,6 +600,31 @@ _CONTEXTO_LIBRE = _re_num.compile(
     r"(client|cartera|de\s+tus|de\s+sus)", _re_num.IGNORECASE)
 
 
+def _variantes(token: str) -> set:
+    """Las formas en que un mismo número puede estar escrito.
+
+    Un titular dice "$1,234.50" y el resumen "1.234,5": es el MISMO número, y
+    compararlos como texto los daría por distintos. Se generan las variantes de
+    los dos lados y se cruzan.
+
+    Cubre las dos convenciones de separador (la inglesa de los cables y la
+    nuestra) y los ceros decimales que sobran. No convierte a float a propósito:
+    un "2007" que es un año y un "2.007" que es una cantidad no tienen por qué
+    unificarse, y acá alcanza con comparar cómo se escriben.
+    """
+    t = (token or "").strip().rstrip(".,")
+    if not t:
+        return set()
+    out = {t,
+           t.replace(".", "").replace(",", "."),   # 1.234,5 → 1234.5
+           t.replace(",", ""),                      # 1,234.5 → 1234.5
+           t.replace(".", "").replace(",", "")}     # sin separadores
+    for v in list(out):
+        if "." in v:
+            out.add(v.rstrip("0").rstrip("."))      # 5.0 → 5
+    return {v for v in out if v}
+
+
 def numeros_sin_respaldo(narrativa, contexto: list, news: list) -> list:
     """Los números del texto que NO aparecen en ningún titular.
 
@@ -595,13 +645,12 @@ def numeros_sin_respaldo(narrativa, contexto: list, news: list) -> list:
     material = " ".join(
         [c.get("title") or "" for c in (contexto or [])]
         + [n.get("title") or "" for n in (news or [])])
-    # Los números del material, normalizados sin separadores.
-    presentes = {m.group().replace(".", "").replace(",", "").rstrip("0").rstrip(".")
-                 or m.group() for m in _NUM.finditer(material)}
-    presentes |= {m.group() for m in _NUM.finditer(material)}
+    presentes = set()
+    for m in _NUM.finditer(material):
+        presentes |= _variantes(m.group())
 
     texto = " ".join(list(narrativa.mercado) + list(narrativa.tu_cartera)
-                     + [narrativa.titular])
+                     + [narrativa.titular or ""])
     # Los tramos que hablan del libro ("8 de tus 12 clientes"): esos números
     # salen de la base, no de un titular.
     libres = set()
@@ -611,10 +660,15 @@ def numeros_sin_respaldo(narrativa, contexto: list, news: list) -> list:
     sueltos = []
     for m in _NUM.finditer(texto):
         crudo = m.group().rstrip(".,")
-        if crudo in libres or crudo in presentes:
+        if crudo in libres:
             continue
-        limpio = crudo.replace(".", "").replace(",", "")
-        if limpio in presentes or any(limpio in p for p in presentes):
+        # ⚠️ SE COMPARAN NÚMEROS COMPLETOS, NO PEDAZOS. La primera versión hacía
+        # `any(n in p for p in presentes)` y con un "2007" en cualquier titular
+        # daban por respaldados el 20, el 7, el 200 y el 0. Medido: dejaba pasar
+        # CINCO de seis cifras inventadas. Y el test que lo cubría pasaba de
+        # casualidad —probaba con "5%", que justo no es pedazo de 2007— así que
+        # el verde no significaba nada.
+        if _variantes(crudo) & presentes:
             continue
         sueltos.append(crudo)
     return sueltos
@@ -765,6 +819,13 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
                 continue
             pending.append(uid)
             tickers_by_uid[uid] = t
+
+        # ⚠️ EL MERCADO SE REFRESCA AUNQUE NO HAYA A QUIÉN ESCRIBIRLE. Esto
+        #    estaba DESPUÉS del early return, y con el interruptor apagado para
+        #    todos —que es el estado de fábrica— la corrida se iba sin traer una
+        #    sola noticia. De eso dependen el brief del asesor y la pantalla de
+        #    Novedades de toda la app, no sólo este mail.
+        refresh_market_news()
 
         if not pending:
             return {"date": day, "sent": 0, "skipped": skipped, "failed": 0,
