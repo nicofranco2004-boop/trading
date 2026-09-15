@@ -33994,12 +33994,29 @@ def _log_config_arranque() -> None:
         v = (os.environ.get(nombre) or "")
         if not v:
             return f"{nombre}=AUSENTE"
-        tipo = "parece-clave-de-anthropic" if v.startswith("sk-ant-") else "no-anthropic"
+        if v.startswith("sk-ant-"):
+            tipo = "parece-clave-de-anthropic"
+        elif v.startswith("sk-"):
+            tipo = "parece-clave-de-openai"
+        else:
+            tipo = "no-es-de-un-proveedor"
         return f"{nombre}=[{len(v)} chars, {tipo}]"
 
-    log.warning("config al arrancar: %s | %s | %s | RENDI_ENV=%s",
+    # Las dos de la voz también, para poder confirmar DESPUÉS DE DEPLOYAR que
+    # quedaron puestas sin tener que abrir la variable y mirarla. Acá nunca sale
+    # el valor: sólo cuántos caracteres tiene y a qué se parece.
+    #
+    # Y sirve para cazar el error fácil: poner la MISMA en las dos. Son cosas
+    # distintas —una es la credencial de OpenAI y la otra una cadena nuestra
+    # para firmar— y si coinciden, la de OpenAI queda haciendo un segundo
+    # trabajo para el que no es.
+    _misma = bool(os.environ.get("OPENAI_API_KEY")) and \
+        os.environ.get("OPENAI_API_KEY") == os.environ.get("VOZ_SIGNING_KEY")
+    log.warning("config al arrancar: %s | %s | %s | %s | %s | RENDI_ENV=%s%s",
                 _forma("SECRET_KEY"), _forma("ANTHROPIC_API_KEY"),
-                _forma("CREDENTIALS_KEY"), os.environ.get("RENDI_ENV") or "AUSENTE")
+                _forma("CREDENTIALS_KEY"), _forma("OPENAI_API_KEY"),
+                _forma("VOZ_SIGNING_KEY"), os.environ.get("RENDI_ENV") or "AUSENTE",
+                "  ⚠️ OPENAI_API_KEY y VOZ_SIGNING_KEY son LA MISMA — no debería" if _misma else "")
 
 
 _log_config_arranque()
