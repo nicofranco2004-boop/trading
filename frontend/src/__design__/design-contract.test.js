@@ -202,6 +202,9 @@ describe('contrato de diseño — R6, no se bifurca por viewport', () => {
     // obvio fuera bajar la aserción.
     const CONOCIDOS = [
       'src/components/ActionMenu.jsx',  // clamp de posición de popup, no breakpoint
+      'src/components/tour/TourNovedades.jsx',  // ídem: ubica el cartel del
+                                        // tutorial al lado de lo que resalta y
+                                        // lo recorta contra los bordes.
       'src/hooks/useArrastrable.js',    // ídem: recorta la isla arrastrada contra
                                         // los bordes para que no se vaya de la
                                         // pantalla. No decide NADA por tamaño.

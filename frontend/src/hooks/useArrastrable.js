@@ -117,14 +117,35 @@ export function useArrastrable(clave) {
   // Por eso corre en CADA dibujo (sin lista de dependencias): es lo único que
   // se entera de que el elemento cambió. El vigilante se vuelve a enganchar
   // sólo cuando el elemento es de verdad otro.
+  // 🔴 Y ACÁ NO SE PUEDE TOCAR EL ESTADO EN CADA DIBUJO.
+  //
+  // La primera versión llamaba a `acomodar()` arriba de todo, sin lista de
+  // dependencias — o sea, después de CADA dibujo. Eso es un bucle esperando a
+  // pasar: recortar cambia la posición, cambiar la posición redibuja, y
+  // redibujar vuelve a recortar. Mientras nada se mueva el recorte da igual y
+  // React corta solo; pero si el alto de la pantalla está cambiando cuadro a
+  // cuadro —justo lo que hace el teclado del celular al abrirse— cada vuelta da
+  // un número distinto y no corta nunca. React lo mata con "demasiados
+  // redibujos", la isla desaparece y en el peor caso se lleva la pantalla.
+  //
+  // Nico reportó las dos caras de eso en su iPhone: primero "Se rompió esta
+  // pantalla" al abrir la isla, después la isla desapareciendo sola al tocar el
+  // cuadro para escribir (que es exactamente cuando sale el teclado).
+  //
+  // No pude reproducirlo —cuatro intentos, incluido falsear el alto de la
+  // pantalla cuadro a cuadro— porque el teclado de iOS no mueve el mismo valor
+  // que un navegador de escritorio. Pero el peligro se lee sin reproducirlo, y
+  // no hace falta: el recorte sólo tiene que correr cuando algo CAMBIA —el
+  // elemento, el tamaño de la pantalla, el tamaño de la isla— y nunca porque sí.
   const vigiaRef = useRef({ obs: null, nodo: null })
   useLayoutEffect(() => {
-    acomodar()
     const nodo = ref.current
-    if (vigiaRef.current.nodo === nodo) return
+    if (vigiaRef.current.nodo === nodo) return     // nada cambió: no tocar nada
     vigiaRef.current.obs?.disconnect()
     vigiaRef.current = { obs: null, nodo }
-    if (nodo && typeof ResizeObserver !== 'undefined') {
+    if (!nodo) return
+    acomodar()                                     // el elemento es OTRO: recortar
+    if (typeof ResizeObserver !== 'undefined') {
       const o = new ResizeObserver(acomodar)
       o.observe(nodo)
       vigiaRef.current.obs = o

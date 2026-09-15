@@ -39,23 +39,36 @@ describe('mover la isla con el dedo', () => {
   })
 
   it('al ABRIRSE se vuelve a recortar, porque es otro elemento', () => {
-    // 🔴 Cerrada es una burbujita y abierta es una tarjeta del ancho entero:
-    // React desmonta una y monta la otra, no la agranda. El efecto corría UNA
-    // vez y dejaba al vigilante mirando el elemento viejo, así que el recorte
-    // no se ejecutaba para el nuevo.
+    // Cerrada es una burbujita y abierta es una tarjeta del ancho entero: React
+    // desmonta una y monta la otra. MEDIDO: arrastrar la burbuja 140px a la
+    // izquierda y abrirla dejaba la tarjeta en x = -128, afuera de la pantalla.
     //
-    // MEDIDO en el celular: arrastrar la burbuja 140px a la izquierda y tocarla
-    // abría la tarjeta en x = -128, o sea 128px afuera de la pantalla.
-    //
-    // El efecto que recorta va SIN lista de dependencias —corre en cada
-    // dibujo— porque es lo único que se entera de que el elemento cambió.
-    const i = fuente.indexOf('useLayoutEffect(() => {\n    acomodar()')
-    expect(i).toBeGreaterThan(0)
-    // Entre ese useLayoutEffect y el siguiente no puede aparecer una lista de
-    // dependencias: `}, [algo])` lo dejaría corriendo una sola vez.
+    // El efecto va SIN lista de dependencias —corre en cada dibujo— porque es
+    // lo único que se entera de que el elemento cambió.
+    const i = fuente.indexOf('const vigiaRef')
     const bloque = fuente.slice(i, fuente.indexOf('// Rotar el teléfono'))
-    expect(bloque).toMatch(/\n  \}\)\n/)          // cierra con `})`, sin deps
-    expect(bloque).not.toMatch(/\}, \[/)
+    expect(bloque).toMatch(/useLayoutEffect\(\(\) => \{/)
+    expect(bloque).not.toMatch(/\}, \[/)          // sin dependencias
+    expect(bloque).toMatch(/acomodar\(\)/)
+  })
+
+  it('pero NO cambia el estado en cada dibujo', () => {
+    // 🔴 Eso es un bucle esperando a pasar: recortar cambia la posición,
+    // cambiar la posición redibuja, y redibujar vuelve a recortar. Mientras
+    // nada se mueva React corta solo; pero con el alto de la pantalla cambiando
+    // cuadro a cuadro —el teclado del celular abriéndose— cada vuelta da un
+    // número distinto y no corta nunca. Nico reportó las dos caras: "Se rompió
+    // esta pantalla" al abrir la isla, y la isla desapareciendo sola al tocar
+    // el cuadro para escribir.
+    //
+    // La guarda: primero se pregunta si el elemento cambió y se sale si no.
+    const i = fuente.indexOf('const vigiaRef')
+    const bloque = fuente.slice(i, fuente.indexOf('// Rotar el teléfono'))
+    const cuerpo = bloque.slice(bloque.indexOf('useLayoutEffect'))
+    const salida = cuerpo.indexOf('if (vigiaRef.current.nodo === nodo) return')
+    const trabajo = cuerpo.indexOf('acomodar()')
+    expect(salida).toBeGreaterThan(0)
+    expect(trabajo).toBeGreaterThan(salida)   // recorta DESPUÉS de la guarda
   })
 
   it('el vigilante se re-engancha al elemento nuevo', () => {

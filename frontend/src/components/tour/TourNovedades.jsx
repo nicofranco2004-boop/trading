@@ -34,6 +34,8 @@ const AIRE = 8
 // pantalla de Rendi AI pide la foto de la cartera antes de dibujar el chat.
 const ESPERA_MAX = 2500
 const REINTENTO = 120
+// Lo que mide el cartel en pantalla grande.
+const ANCHO_CARTEL = 360
 
 const buscar = (marca) => document.querySelector(`[${ATRIBUTO}="${marca}"]`)
 
@@ -113,8 +115,16 @@ export default function TourNovedades() {
 
   // El cartel va del lado donde hay lugar: abajo si el blanco está arriba.
   const alto = typeof window !== 'undefined' ? window.innerHeight : 800
+  const ancho = typeof window !== 'undefined' ? window.innerWidth : 1200
   const debajo = caja.y + caja.h < alto * 0.55
   const ultimo = i === PASOS.length - 1
+  // Dónde va el cartel a lo ancho. En el celular ocupa todo lo que hay; en
+  // pantalla grande se centra debajo de lo resaltado, sin pasarse de los bordes.
+  const cartel = ancho < 640
+    ? { left: 12, right: 12 }
+    : { width: ANCHO_CARTEL,
+        left: Math.min(Math.max(12, caja.x + caja.w / 2 - ANCHO_CARTEL / 2),
+                       ancho - ANCHO_CARTEL - 12) }
 
   return (
     <div className="fixed inset-0 z-[100]" role="dialog" aria-modal="true"
@@ -131,12 +141,18 @@ export default function TourNovedades() {
         }}
       />
 
+      {/* 🔴 EL CARTEL VA AL LADO DE LO QUE EXPLICA. Parece obvio y salió mal:
+          en pantalla grande no le puse posición horizontal, así que se pegaba
+          al borde izquierdo mientras lo resaltado estaba a la derecha. Visto
+          en la pantalla de Nico: la burbuja iluminada arriba a la derecha y el
+          cartel allá lejos, sin forma de saber de qué hablaba.
+          Ahora se centra bajo lo resaltado y se recorta contra los bordes. En
+          el celular ocupa el ancho, que es lo único que entra. */}
       <div
-        className="absolute left-3 right-3 sm:left-auto sm:right-auto sm:w-[360px] rounded-xl
-                   border border-line-3 bg-bg-2 shadow-2xl p-4"
-        style={debajo
-          ? { top: Math.min(alto - 200, caja.y + caja.h + 12) }
-          : { bottom: Math.max(12, alto - caja.y + 12) }}
+        className="absolute rounded-xl border border-line-3 bg-bg-2 shadow-2xl p-4"
+        style={{ ...cartel, ...(debajo
+          ? { top: Math.min(alto - 210, caja.y + caja.h + 12) }
+          : { bottom: Math.max(12, alto - caja.y + 12) }) }}
       >
         <div className="text-[11px] font-semibold tracking-wide text-data-violet">
           Novedades · {i + 1} de {PASOS.length}
