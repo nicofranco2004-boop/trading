@@ -147,19 +147,19 @@ export default function InsightsYReportes() {
         <ReturnsDiagram />
         <div className="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-1.5 text-[11px] text-ink-2">
           <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#8B7DFF' }} />
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: 'rgb(var(--data-violet))' }} />
             lo que pusiste
           </span>
           <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#21D07A' }} />
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: 'rgb(var(--rendi-pos))' }} />
             ganancia (USD)
           </span>
           <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#5B9DF9' }} />
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: 'rgb(var(--rendi-accent))' }} />
             el % en el tiempo
           </span>
           <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#3A4256' }} />
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: 'rgb(var(--line-3))' }} />
             FIFO (la maquinaria)
           </span>
         </div>

@@ -19,9 +19,14 @@ import {
 } from 'lucide-react'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { parseNum } from '../../utils/format'
+import { SERIES_COLORS } from '../../utils/chartTheme'
 
 // Paleta de composición (por índice; el último cae en gris).
-const ALLOC_COLORS = ['#7c6df0', '#4bd0e8', '#2ad17f', '#f5b752', '#ff6472', '#5f6a7e']
+// Era una cuarta copia de la paleta de series, con los mismos seis tonos
+// desviados entre 10 y 27 puntos RGB de los canónicos — lo bastante cerca
+// como para que nadie notara que eran otros, y lo bastante lejos como para
+// que una torta de Análisis y una de la IA no combinaran.
+const ALLOC_COLORS = SERIES_COLORS
 
 const TONE_TEXT = {
   pos: 'text-rendi-pos', warn: 'text-rendi-warn', neg: 'text-rendi-neg', neutral: 'text-ink-0',
@@ -95,7 +100,9 @@ function CompareBlock({ items, title }) {
                 className="h-full rounded-lg transition-[width] duration-500"
                 style={{
                   width: `${Math.max(5, Math.min(100, (it.n / max) * 100))}%`,
-                  background: i === 0 ? 'linear-gradient(90deg, #9d8cff, #4bd0e8)' : '#5f6a7e',
+                  background: i === 0
+                    ? 'linear-gradient(90deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))'
+                    : 'rgb(var(--ink-3))',
                   opacity: i === 0 ? 1 : 0.55,
                 }}
               />
@@ -241,7 +248,9 @@ function ClientListBlock({ items, title }) {
                 className="h-full rounded-lg transition-[width] duration-500"
                 style={{
                   width: `${Math.max(5, Math.min(100, (it.n / max) * 100))}%`,
-                  background: i === 0 ? 'linear-gradient(90deg, #9d8cff, #8B7DFF)' : '#5f6a7e',
+                  background: i === 0
+                    ? 'linear-gradient(90deg, rgb(var(--rendi-violet-hover)), rgb(var(--data-violet)))'
+                    : 'rgb(var(--ink-3))',
                   opacity: i === 0 ? 1 : 0.55,
                 }}
               />
@@ -388,7 +397,7 @@ function ConfirmBlock({ title, rows, yes, no, onSendMessage, interactive }) {
       <div className="flex gap-2">
         <button type="button" disabled={!live}
           onClick={() => { if (!live) return; setSent(true); onSendMessage('sí, confirmá') }}
-          className="flex-1 max-w-[240px] inline-flex items-center justify-center gap-1.5 text-[13px] font-bold rounded-xl px-4 py-2.5 bg-rendi-pos text-[#04120a] hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed">
+          className="flex-1 max-w-[240px] inline-flex items-center justify-center gap-1.5 text-[13px] font-bold rounded-xl px-4 py-2.5 bg-rendi-pos text-[rgb(var(--pol-up-3-ink))] hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed">
           {sent ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Check size={13} strokeWidth={2.5} aria-hidden />}
           {sent ? 'Registrando…' : (yes || 'Confirmar')}
         </button>

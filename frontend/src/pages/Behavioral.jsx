@@ -27,6 +27,7 @@ import AskAIAbout from '../components/ai/AskAIAbout'
 import LockedSection from '../components/plan/LockedSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { pctTxt } from '../utils/format'
+import { SERIES_COLORS } from '../utils/chartTheme'
 
 // Mapeo code → icono + tono visual + descripción educativa.
 // `what`: 1-2 frases que explican qué detecta el sesgo (en abstracto, sin
@@ -607,7 +608,7 @@ function ModalEvidence({ card }) {
               {/* Barra stacked */}
               <div className="flex h-2 rounded-sm overflow-hidden bg-bg-2 mb-2">
                 {ev.breakdown.slice(0, 6).map((b, i) => {
-                  const COLORS = ['#21D07A', '#46C6E0', '#4E83FF', '#E8B14A', '#8B7DFF', '#5A6478']
+                  const COLORS = SERIES_COLORS  // era la sexta copia de la paleta de series
                   return (
                     <div
                       key={i}

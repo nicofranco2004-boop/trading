@@ -246,10 +246,13 @@ function SlideStage({ slide, year }) {
   const tone = slide.tone || 'neutral'
   const bgClass = TONE_BG[tone] || TONE_BG.neutral
   const accent = TONE_ACCENT[tone] || TONE_ACCENT.neutral
+  // Se queda en el DOM (shareCard tiene su propia paleta para el canvas), así
+  // que puede ser variable. El neutro era #4E83FF: el accent de ANTES del
+  // Brand Kit v1.0, que quedó suelto acá cuando el resto migró.
   const accentHex =
-    tone === 'positive' ? '#21D07A' :
-    tone === 'negative' ? '#FF5360' :
-    '#4E83FF'
+    tone === 'positive' ? 'rgb(var(--rendi-pos))' :
+    tone === 'negative' ? 'rgb(var(--rendi-neg))' :
+    'rgb(var(--rendi-accent))'
 
   // Header común a todos los layouts
   const eyebrow = (
@@ -393,9 +396,11 @@ function VsLayout({ slide, tone, accentHex }) {
             const v = Number(b.value) || 0
             const pctOfMax = Math.abs(v) / maxAbs
             const isHighlight = b.highlight
+            // Barras: relleno, no texto. En claro el verde de texto es más
+            // oscuro para poder leerse; el de relleno se queda vivo.
             const barColor = v >= 0
-              ? (isHighlight ? '#21D07A' : '#46C6E0')
-              : (isHighlight ? '#FF5360' : '#8B7DFF')
+              ? (isHighlight ? 'rgb(var(--rendi-pos-fill))' : 'rgb(var(--data-cyan))')
+              : (isHighlight ? 'rgb(var(--rendi-neg-fill))' : 'rgb(var(--data-violet))')
             return (
               <div key={i}>
                 <div className="flex items-baseline justify-between mb-1">

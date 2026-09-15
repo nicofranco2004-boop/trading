@@ -5,27 +5,38 @@
 // la PLATA en USD (verde) y el RENDIMIENTO en % (sky, ponderado por tiempo).
 // El mini-timeline del carril % prueba que el % ignora CUÁNDO aportaste.
 //
-// App dark-only (darkMode:'class', .dark siempre puesta) → paleta hardcodeada
-// del theme (patrón ProfileRadar/Heatmap). Sin sombras: elevación = borde 1px.
+// Los colores son los tokens del sistema. Acá estaban COPIADOS A MANO, con
+// este motivo escrito al lado: "app dark-only → paleta hardcodeada del theme".
+// Era cierto cuando se escribió y dejó de serlo: desde que los tokens son
+// variables, una copia a mano es una paleta que no sigue al tema. Los dos
+// componentes que el comentario citaba como patrón a seguir —ProfileRadar y
+// Heatmap— ya no lo hacen tampoco.
+// Sin sombras: elevación = borde 1px.
 // Se usa en /guia/insights-y-reportes dentro de <figure> (fuera de .blog-prose).
 
+const v = (t) => `rgb(var(--${t}))`
 const C = {
-  violet: '#8B7DFF', violetFill: 'rgba(139,125,255,0.12)', violetDeep: '#1E1840',
-  green: '#21D07A', greenFill: 'rgba(33,208,122,0.10)',
-  sky: '#5B9DF9', skyFill: 'rgba(91,157,249,0.10)', aqua: '#46C6E0',
-  ink0: '#E6EAF2', ink1: '#C3CAD8', ink2: '#9CA3B5', ink3: '#5A6478',
-  line: '#1B2230', line2: '#262E40', surface: '#141923', panel: '#0E1218',
+  violet: v('data-violet'), violetFill: 'rgb(var(--data-violet) / 0.12)', violetDeep: v('rendi-violet-deep'),
+  green: v('rendi-pos-fill'), greenFill: 'rgb(var(--rendi-pos-fill) / 0.10)',
+  sky: v('rendi-accent'), skyFill: 'rgb(var(--rendi-accent) / 0.10)', aqua: v('data-cyan'),
+  ink0: v('ink-0'), ink1: v('ink-1'), ink2: v('ink-2'), ink3: v('ink-3'),
+  line: v('line'), line2: v('line-2'), line3: v('line-3'),
+  surface: v('bg-2'), panel: v('bg-1'),
 }
 const SANS = 'Geist, system-ui, sans-serif'
 const MONO = "'JetBrains Mono', ui-monospace, monospace"
 
-// Badge numerado (riel de progreso 1-5). Texto oscuro sobre acento, claro sobre neutro.
+// Badge numerado (riel de progreso 1-5). La prop `dark` NO dice qué tema es:
+// dice si el fondo del badge es un acento (texto que contrasta con él) o un
+// neutro (texto normal). Y qué contrasta con el acento depende del tema: en
+// oscuro el acento es brillante y la tinta va negra; en claro es profundo y la
+// tinta va blanca. Ese par ya existe como `--pol-up-3-ink`.
 function Badge({ x, y, n, fill, dark = true }) {
   return (
     <g aria-hidden="true">
       <rect x={x} y={y} width="17" height="17" rx="4" fill={fill} />
       <text x={x + 8.5} y={y + 12.3} textAnchor="middle" fontFamily={SANS}
-        fontSize="10.5" fontWeight="600" fill={dark ? '#07090C' : C.ink0}>{n}</text>
+        fontSize="10.5" fontWeight="600" fill={dark ? 'rgb(var(--pol-up-3-ink))' : C.ink0}>{n}</text>
     </g>
   )
 }
@@ -65,8 +76,8 @@ export default function ReturnsDiagram() {
       <text x="44" y="133" fontFamily={SANS} fontSize="9" fill={C.ink3}>depósitos suman · retiros restan</text>
 
       {/* A2 · FIFO (neutro) */}
-      <rect x="256" y="42" width="196" height="100" rx="8" fill={C.surface} stroke="#3A4256" strokeWidth="1" />
-      <Badge x={266} y={52} n="5" fill="#3A4256" dark={false} />
+      <rect x="256" y="42" width="196" height="100" rx="8" fill={C.surface} stroke={C.line3} strokeWidth="1" />
+      <Badge x={266} y={52} n="5" fill={C.line3} dark={false} />
       <text x="292" y="66" fontFamily={SANS} fontSize="13.5" fontWeight="600" fill={C.ink0}>FIFO arma la ganancia</text>
       <text x="272" y="92" fontFamily={SANS} fontSize="10.5" fill={C.ink2}>match vs la compra más vieja</text>
       <text x="272" y="118" fontFamily={MONO} fontSize="10.5" fill={C.ink1}>venta − costo − comis.</text>

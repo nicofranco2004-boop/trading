@@ -42,7 +42,7 @@ export default function ProfileRadar({ axes }) {
         aria-label={`Radar del perfil: declarado vs cartera real en ${n} ejes`}
       >
         {/* Grilla — polígonos concéntricos + rayos */}
-        <g aria-hidden="true" stroke="#1B2230" strokeWidth="1" fill="none">
+        <g aria-hidden="true" stroke="rgb(var(--chart-grid))" strokeWidth="1" fill="none">
           {[25, 50, 75, 100].map((pct) => (
             <polygon key={pct} points={gridPts(pct)} />
           ))}
@@ -55,15 +55,15 @@ export default function ProfileRadar({ axes }) {
         <polygon
           points={polygon(axes, 'declared')}
           fill="none"
-          stroke="#9CA3B5"
+          stroke="rgb(var(--ink-2))"
           strokeWidth="1.5"
           strokeDasharray="3 3"
         />
         {/* Cartera real — área violeta */}
         <polygon
           points={polygon(axes, 'actual')}
-          fill="rgba(139,125,255,.20)"
-          stroke="#8B7DFF"
+          fill="rgb(var(--data-violet) / .20)"
+          stroke="rgb(var(--data-violet))"
           strokeWidth="2"
         />
         {/* Labels de eje, afuera de la grilla */}
@@ -74,7 +74,7 @@ export default function ProfileRadar({ axes }) {
               key={i}
               x={x}
               y={y}
-              fill="#9CA3B5"
+              fill="rgb(var(--ink-2))"
               fontSize="9"
               textAnchor="middle"
               dominantBaseline="middle"
@@ -90,7 +90,7 @@ export default function ProfileRadar({ axes }) {
         <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-2">
           <span
             className="inline-block w-4 border-t border-dashed"
-            style={{ borderColor: '#9CA3B5' }}
+            style={{ borderColor: 'rgb(var(--ink-2))' }}
             aria-hidden="true"
           />
           Perfil declarado
@@ -98,7 +98,7 @@ export default function ProfileRadar({ axes }) {
         <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-2">
           <span
             className="inline-block w-3 h-2 rounded-[2px]"
-            style={{ background: 'rgba(139,125,255,.20)', border: '1px solid #8B7DFF' }}
+            style={{ background: 'rgb(var(--data-violet) / .20)', border: '1px solid #8B7DFF' }}
             aria-hidden="true"
           />
           Tu cartera real

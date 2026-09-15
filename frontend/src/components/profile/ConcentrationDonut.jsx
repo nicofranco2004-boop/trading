@@ -1,4 +1,5 @@
 import { pctTxt } from '../../utils/format'
+import { MONO_VIOLET } from '../../utils/chartTheme'
 // ConcentrationDonut — donut CSS de concentración (top 3 tenencias vs cartera).
 // ═══════════════════════════════════════════════════════════════════════════
 // Body del módulo de concentración en el perfil: donut por conic-gradient
@@ -6,8 +7,15 @@ import { pctTxt } from '../../utils/format'
 // el perfil declarado (comparison: above/within/below). El header lo pone
 // la card contenedora — acá solo va el cuerpo.
 
-const SLICE_COLORS = ['#8B7DFF', '#A79BFF', '#C4BCFF', '#2E3650', '#232B3E']
-const REST_COLOR = '#1B2230'
+// Proporción de un mismo todo: el color dice CUÁNTO pesa cada porción, no
+// quién es. Era una quinta copia de esa rampa, y estaba construida sólo para
+// fondo oscuro — sus pasos 2 y 3 eran violetas casi blancos (sobre papel
+// blanco, invisibles) y los dos últimos, azules casi negros (lo más pesado de
+// la pantalla, justo para las porciones que menos importan).
+const SLICE_COLORS = MONO_VIOLET
+// Lo que sobra tiende al fondo. `bg-3` vale exactamente #1B2230 en oscuro, o
+// sea el valor de siempre, y en claro es el gris de superficie.
+const REST_COLOR = 'rgb(var(--bg-3))'
 
 export default function ConcentrationDonut({ holdings, top3Pct, comparison }) {
   if (!holdings?.length || top3Pct == null) return null

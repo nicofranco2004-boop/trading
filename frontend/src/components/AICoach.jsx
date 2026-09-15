@@ -282,7 +282,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         {messages.length === 0 && !loading && (
           <div className="text-center pt-6 pb-2">
             <div className="w-12 h-12 rounded-2xl mx-auto grid place-items-center text-white text-xl"
-              style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
+              style={{ background: 'linear-gradient(135deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))' }}>✦</div>
             <p className="text-[22px] font-semibold text-ink-0 tracking-tight mt-3 mb-1.5">
               ¿Qué querés saber de tu plata?
             </p>
@@ -330,7 +330,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           return (
             <div key={i} className="flex items-start gap-3">
               <div className="w-7 h-7 rounded-lg grid place-items-center text-white text-[12px] flex-none mt-0.5"
-                style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
+                style={{ background: 'linear-gradient(135deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))' }}>✦</div>
               <div className="flex-1 min-w-0 pt-0.5">
                 {(meta?.verdict || meta?.headline) && (() => {
                   const band = VERDICT_BAND[meta.tone] || VERDICT_BAND.neutral
