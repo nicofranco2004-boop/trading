@@ -91,6 +91,18 @@ describe('el tutorial no puede dejar la pantalla trabada', () => {
     expect(tour).toMatch(/onClick=\{cerrar\}/)
   })
 
+  it('el cartel tiene una punta que apunta a lo resaltado', () => {
+    // El cartel se centra bajo lo resaltado, PERO si eso lo dejaría fuera de
+    // la pantalla el recorte lo empuja hacia adentro. Con el interruptor del
+    // resumen del mercado —pegado al borde derecho— el cartel terminaba 131px
+    // corrido y se leía como un cartel suelto que no apunta a nada. Moverlo no
+    // es opción: no hay lugar. La punta es lo que mantiene la conexión.
+    expect(tour).toMatch(/rotate-45/)
+    expect(tour).toMatch(/const puntaX =/)
+    // Y se limita para no salirse por las esquinas redondeadas del cartel.
+    expect(tour).toMatch(/Math\.min\(Math\.max\(20,[\s\S]{0,80}cartelAncho - 32\)/)
+  })
+
   it('lo resaltado no se puede tocar', () => {
     // Si el usuario aprieta el botón iluminado se va del paseo a mitad de
     // camino y el tutorial queda hablando de algo que ya no está.
