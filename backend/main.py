@@ -24323,8 +24323,11 @@ def _valuate_positions_for_chat(conn, uid: int):
         "SELECT id, name, currency FROM brokers WHERE user_id=?", (uid,)
     ).fetchall()]
     positions = [dict(r) for r in conn.execute(
+        # `tc_compra` es el dólar del día de la compra. Sin él acá, el costo de un
+        # lote en pesos sólo se podía pasar a USD al dólar de HOY — que es
+        # justamente el número que no coincidía con la pantalla.
         "SELECT broker, asset, asset_type, is_cash, invested, quantity, "
-        "commissions, price_override, currency FROM positions WHERE user_id=?",
+        "commissions, price_override, currency, tc_compra FROM positions WHERE user_id=?",
         (uid,),
     ).fetchall()]
 
@@ -24357,9 +24360,20 @@ def _valuate_positions_for_chat(conn, uid: int):
             # (~MEP× inflado) — el mismísimo bug que este PR erradica (review B1).
             continue
         try:
+            # 🔴 `costo='compra'` = el mismo dólar que usa la PANTALLA.
+            #
+            # Acá no se pasaba nada, así que caía al default 'hoy' y Rendi
+            # calculaba la ganancia sobre otro costo que la tarjeta de arriba.
+            # Medido por Nico: la pantalla decía US$156 de ganancia sin realizar
+            # y Rendi decía US$461, sobre la misma cartera.
+            #
+            # 'compra' es el default del frontend (costBasisRate en
+            # valuation.js) y se eligió a propósito: "es lo que el usuario
+            # calcula". El chat quedó afuera de esa decisión — el mismo olvido
+            # que ese archivo ya describe, una capa más abajo.
             r = compute_broker_value_usd(
                 [p], prices, bccy, tc_blue,
-                broker_name=p['broker'], cedear_rate=tc_cedear)
+                broker_name=p['broker'], cedear_rate=tc_cedear, costo='compra')
             v = float(r.get('value', 0) or 0)
             inv = float(r.get('invested', 0) or 0)
         except Exception as ex:

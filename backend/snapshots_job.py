@@ -209,14 +209,32 @@ def compute_broker_value_usd(
     tc_blue: float,
     broker_name: str = '',
     cedear_rate: Optional[float] = None,
+    costo: str = 'hoy',
 ) -> dict:
     """Equivalente Python de frontend `computeBrokerValue` (port fiel de sus seis
     ramas, en el mismo orden que `valuePositionLot`: cash · costo en PESOS en
     cuenta USD · costo en USD en broker ARS · ARS nativo · CEDEAR/'· USD' por
     .BA÷MEP · USD nativo). Las DOS ramas cruzadas las decide `positions.currency`
     —la moneda del LOTE, no la de la cuenta—, así que este motor LEE ese campo.
-    Devuelve {value, invested} en USD. Maneja FX-phantom fix para
-    brokers ARS (cost basis al blue actual, no al tc_compra histórico).
+    Devuelve {value, invested} en USD.
+
+    🔴 `costo` decide a QUÉ DÓLAR se pasa a USD un costo que está en pesos, y es
+    la diferencia entre dos números que la app llama igual:
+
+      'hoy'    — al dólar de hoy. Es el default y NO SE TOCA: así viene
+                 calculado todo el histórico de snapshots, el replay del ledger
+                 y los mails del asesor. Cambiarlo les reescribiría el pasado.
+      'compra' — al dólar del día en que se compró (`tc_compra` del lote), y si
+                 el lote no lo tiene, al de hoy.
+
+    'compra' es lo que ve el usuario EN PANTALLA: es el default del frontend
+    (ver costBasisRate en valuation.js) y se eligió a propósito porque "es lo
+    que el usuario calcula". El chat quedó afuera de esa decisión y por eso
+    Rendi decía una ganancia distinta a la de la tarjeta de arriba — medido por
+    Nico: la pantalla US$156 y Rendi US$461 sobre la misma cartera.
+
+    MEDIDO en valuation.test.js sobre un lote de ALUA: el mismo costo da 0,84 al
+    dólar de compra y 0,58 al de hoy. Un 45% de diferencia.
 
     Args:
         broker_positions: dicts con keys (asset, asset_type, is_cash, invested,
@@ -246,6 +264,23 @@ def compute_broker_value_usd(
         _CS = set()
     value = 0.0
     invested = 0.0
+
+    def _rate_del_costo(p):
+        """Espejo de `costBasisRate` (valuation.js), la regla canónica:
+
+            (costBasis === 'purchase' && p?.tc_compra > 0) ? p.tc_compra : currentRate
+
+        Un lote sin `tc_compra` cae al dólar de hoy, igual que allá — son las
+        compras anteriores al arreglo del importador. El frontend las marca con
+        un badge "TC?"; acá simplemente no se puede hacer mejor."""
+        if costo == 'compra':
+            try:
+                tcc = float(p.get('tc_compra') or 0)
+            except (TypeError, ValueError):
+                tcc = 0
+            if tcc > 0:
+                return tcc
+        return cedear_rate
 
     def _cost_in_usd(p):
         # Espejo de costInPesos (valuation.js): el costo del lote está en USD
@@ -288,7 +323,7 @@ def compute_broker_value_usd(
                 cf = _cb_factor(asset, broker_name, override is not None, _cripto_rate,
                                 cedear_rate, broker_currency)
                 inv_usd = (real_cost if ccy in ('USD', 'USDT')
-                           else (real_cost / cedear_rate if cedear_rate > 0 else 0)) * cf
+                           else (lambda rc: real_cost / rc if rc > 0 else 0)(_rate_del_costo(p))) * cf
                 invested += inv_usd
                 spot = override if override is not None else prices.get(asset)
                 if spot is not None:
@@ -323,7 +358,8 @@ def compute_broker_value_usd(
                 # (cedear_rate), el dólar al que realmente salís de la inversión y
                 # el que muestra el broker. El blue es solo para el cash. invested y
                 # value usan el MISMO rate (MEP) → sin FX-phantom. (Ver valuation.js.)
-                inv_usd = real_cost / cedear_rate if cedear_rate > 0 else 0
+                _rc = _rate_del_costo(p)
+                inv_usd = real_cost / _rc if _rc > 0 else 0
                 invested += inv_usd
                 # `is not None` (no `or`): un price_override=0 es válido (activo
                 # marcado sin valor) y NO debe caer al precio de mercado. Mirror
@@ -359,7 +395,8 @@ def compute_broker_value_usd(
                 # El backend no tiene modo 'purchase' (costBasis='today' siempre) →
                 # costBasisRate(p, cedear_rate, 'today') == cedear_rate, así que el
                 # invUsd y el invUsdHoy del canónico colapsan en el mismo número.
-                inv_usd = real_cost / cedear_rate if cedear_rate > 0 else 0
+                _rc = _rate_del_costo(p)
+                inv_usd = real_cost / _rc if _rc > 0 else 0
                 invested += inv_usd
                 # priceSymbol(asset, isARS=True, asset_type): FCI: as-is (su NAV en
                 # pesos), cualquier otro → '.BA'. Coincide con position_price_key para

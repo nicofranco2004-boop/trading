@@ -252,3 +252,80 @@ class TestChatSnapshotValuation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─── El dólar del costo: Rendi y la pantalla tienen que decir lo mismo ───────
+# 🔴 Nico preguntó "¿cómo ves mi cartera?" y Rendi contestó "ganancia sin
+# realizar de 461 dólares". La tarjeta de arriba, sobre la MISMA cartera, decía
+# +US$156,53. Dos números para lo mismo, en la misma pantalla.
+#
+# La causa: un costo que está en PESOS se pasa a dólares, y hay dos dólares
+# posibles — el de hoy y el del día de la compra. La pantalla usa el de COMPRA
+# (es el default del frontend, elegido a propósito porque "es lo que el usuario
+# calcula"); el chat nunca pasaba el modo y caía al de HOY en silencio.
+#
+# El propio valuation.js ya describe este olvido: "cualquier caller que se
+# olvidara de pasar costBasis volvía al dólar de hoy en silencio". Era el mismo
+# olvido una capa más abajo.
+
+import unittest
+
+
+class ElDolarDelCostoTest(unittest.TestCase):
+    """Espejo del caso que valuation.test.js fija para el frontend: un lote de
+    ALUA comprado a 1.048 con el MEP de hoy en 1.517 vale 0,84 al dólar de
+    compra y 0,58 al de hoy. Un 45% de diferencia sobre el MISMO lote."""
+
+    MEP_HOY = 1517
+
+    def _lote(self, **extra):
+        base = dict(asset='ALUA', asset_type='STOCK', is_cash=0,
+                    invested=880 * 1000, quantity=1000, commissions=0,
+                    price_override=None, currency='ARS', tc_compra=1048)
+        base.update(extra)
+        return base
+
+    def _valuar(self, lote, **kw):
+        from snapshots_job import compute_broker_value_usd
+        return compute_broker_value_usd([lote], {'ALUA': {'price': 880}}, 'ARS',
+                                        self.MEP_HOY, cedear_rate=self.MEP_HOY, **kw)
+
+    def test_los_dos_dolares_dan_numeros_bien_distintos(self):
+        hoy = self._valuar(self._lote())['invested']
+        compra = self._valuar(self._lote(), costo='compra')['invested']
+        self.assertAlmostEqual(hoy, 880 * 1000 / self.MEP_HOY, places=2)
+        self.assertAlmostEqual(compra, 880 * 1000 / 1048, places=2)
+        # Si algún día dejaran de diferir, este test perdió su sentido.
+        self.assertGreater(compra / hoy, 1.4)
+
+    def test_el_chat_pide_el_MISMO_dolar_que_la_pantalla(self):
+        """El guard de verdad: que el camino del chat pase 'compra'.
+
+        Sin esto el motor puede estar perfecto y Rendi seguir diciendo otro
+        número — que es exactamente lo que pasaba."""
+        import inspect, re
+        import main
+        fuente = inspect.getsource(main._valuate_positions_for_chat)
+        self.assertIn("costo='compra'", fuente,
+                      "el chat volvió a caer al dólar de hoy en silencio")
+        # Y que la consulta traiga el dato: sin tc_compra no se puede.
+        self.assertIn('tc_compra', fuente,
+                      "sin tc_compra en la consulta, 'compra' no cambia nada")
+
+    def test_los_OTROS_llamadores_no_cambian(self):
+        """El cron de snapshots, el replay del histórico y los mails del asesor
+        llaman a la misma función. Cambiarles el default les reescribiría el
+        pasado: el default tiene que seguir siendo 'hoy'."""
+        porDefecto = self._valuar(self._lote())['invested']
+        explicito = self._valuar(self._lote(), costo='hoy')['invested']
+        self.assertEqual(porDefecto, explicito)
+
+    def test_un_lote_sin_dolar_de_compra_cae_al_de_hoy(self):
+        """Igual que el frontend: son las compras anteriores al arreglo del
+        importador. Allá se marcan con un badge 'TC?'; acá no se puede hacer
+        mejor, pero tampoco se puede inventar un dólar."""
+        for vacio in (None, 0, ''):
+            sin = self._lote(tc_compra=vacio)
+            self.assertAlmostEqual(self._valuar(sin)['invested'],
+                                   self._valuar(sin, costo='compra')['invested'],
+                                   places=2, msg='tc_compra=%r' % (vacio,))
