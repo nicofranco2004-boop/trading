@@ -720,6 +720,45 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         self.assertEqual(snap['total_value'], 12345.0)  # intacto
         conn.close()
 
+    def test_rechazo_dice_QUE_simbolo_falto(self):
+        """El rechazo tiene que nombrar el papel, no sólo el porcentaje.
+
+        Durante meses el log decía "112 cuentas rechazadas por cobertura" y
+        nunca QUÉ faltaba, así que desde afuera era imposible saber si eran 5
+        símbolos rompiendo a todos o 112 problemas distintos. Este test fija que
+        el dato viaje.
+        """
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        # El que tiene que faltar es el GRANDE: AAPL es el 98,9 % del costo de
+        # este fixture, así que sin su precio la cobertura se derrumba y el
+        # guard rechaza. (Al revés no sirve de test: faltando sólo XYZ la
+        # cobertura queda en 98,9 % y la foto se escribe — ese es el test de
+        # abajo.)
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: (None if s == 'AAPL' else 100.0) for s in syms}):
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        conn.close()
+        self.assertFalse(r['ok'])
+        self.assertEqual(r['reason'], 'low_price_coverage')
+        # El que faltó, nombrado. Y el que SÍ tenía precio, afuera: una lista que
+        # nombra a los dos no sirve para decidir qué precio arreglar.
+        self.assertIn('AAPL', r['sin_precio'])
+        self.assertNotIn('XYZ', r['sin_precio'])
+
+    def test_la_foto_que_SI_se_escribe_tambien_declara_sus_huecos(self):
+        """Una cuenta al 98 % pasa el umbral, pero le falta un precio: es el
+        próximo rechazo. El dato viaja igual, para poder verlo venir."""
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        # Sólo XYZ (US$100 de US$9.800) sin precio → 98,9 % → pasa el umbral.
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: (None if s == 'XYZ' else 100.0) for s in syms}):
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        conn.close()
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['sin_precio'], ['XYZ'])
+
     def test_full_coverage_writes(self):
         """Todos los símbolos con precio → escribe normal."""
         conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row

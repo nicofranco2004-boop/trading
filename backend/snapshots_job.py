@@ -935,14 +935,44 @@ def take_snapshot_for_user(
     total_cost = sum(_cost_usd(p) for p in non_cash)
     priced_cost = sum(_cost_usd(p) for p in non_cash if _has_price(p))
     coverage = (priced_cost / total_cost) if total_cost > 0 else 1.0
+
+    # QUÉ símbolos quedaron sin precio, y cuánto pesan.
+    #
+    # El job ya sabía esto y no lo decía: el guard de abajo reportaba el
+    # PORCENTAJE que faltaba pero nunca QUÉ faltaba, así que desde los logs se
+    # veía "112 cuentas rechazadas" sin una sola pista de por qué. Y las carteras
+    # argentinas comparten los mismos papeles: es esperable que un puñado de
+    # símbolos sin cotización explique a casi todas esas cuentas. Sin esta lista
+    # hay que adivinar cuál; con la lista, el arreglo es de la fuente de precios
+    # y sirve para todas a la vez.
+    #
+    # ⚠️ USA `position_price_key`, el MISMO símbolo con el que `_has_price`
+    # decide. Cualquier otro (el ticker "a secas", por ejemplo) nombraría un
+    # papel que no es el que falló — para un CEDEAR pagado por MEP el que se
+    # busca es el `.BA`, no el de Nueva York — y mandaría a arreglar el precio
+    # equivocado.
+    _sin_precio = {}
+    for p in non_cash:
+        if _has_price(p):
+            continue
+        sym = position_price_key(p, _ars_names, _ar_usd_names)
+        _sin_precio[sym] = _sin_precio.get(sym, 0.0) + _cost_usd(p)
+    sin_precio = sorted(_sin_precio.items(), key=lambda kv: -kv[1])
+
     MIN_COVERAGE = 0.95
     if non_cash and coverage < MIN_COVERAGE:
+        # Un decimal, no cero: con `:.0%` una cobertura de 94,96 % se imprimía
+        # como "95% < 95%" y el renglón parecía un bug del código en vez de un
+        # redondeo. Seis de las 112 cuentas de la corrida del 15/09 salían así.
+        _detalle = ", ".join(f"{sym} (US$ {int(costo)})" for sym, costo in sin_precio[:6])
         log.warning(
-            f"user={uid}: cobertura de precios {coverage:.0%} < {MIN_COVERAGE:.0%} "
+            f"user={uid}: cobertura de precios {coverage:.1%} < {MIN_COVERAGE:.0%} "
             f"— NO escribo snapshot {target_date} (evita dato subvaluado)"
+            + (f" · sin precio: {_detalle}" if _detalle else "")
         )
         return {'ok': False, 'reason': 'low_price_coverage',
                 'coverage': round(coverage, 3),
+                'sin_precio': [s for s, _ in sin_precio],
                 'total_value': 0, 'total_invested': 0, 'net_deposited': 0,
                 'symbols_fetched': len(all_symbols)}
 
@@ -997,6 +1027,7 @@ def take_snapshot_for_user(
 
     return {
         'ok': True,
+        'sin_precio': [s for s, _ in sin_precio],
         'total_value': round(total_value, 2),
         'total_invested': round(total_invested, 2),
         'net_deposited': round(net_deposited, 2),
@@ -1238,6 +1269,13 @@ def run_daily_snapshot(
         ok_count = 0
         failed_count = 0
         errors = []
+        # El resumen que faltaba: qué símbolos dejaron sin foto a cuánta gente.
+        # Se cuenta POR CUENTA RECHAZADA, que es la pregunta que importa — un
+        # símbolo sin precio en una cuenta que igual pasó el 95 % no rompió nada
+        # hoy (pero se informa aparte, porque es el próximo rechazo).
+        rechazadas = 0
+        culpables = {}
+        ok_con_hueco = 0
         # NO envolvemos todo el loop en UNA transacción: eso mantenía el lock de
         # escritura abierto a través del fetch de red de TODOS los users (minutos),
         # y cualquier write concurrente (wipe-broker, import, compra) fallaba con
@@ -1249,10 +1287,17 @@ def run_daily_snapshot(
                 result = take_snapshot_for_user(conn, uid, tc_blue, crypto_yf, target,
                                                 tc_mep=tc_mep)
                 conn.commit()
+                huecos = result.get('sin_precio') or []
                 if result['ok']:
                     ok_count += 1
+                    if huecos:
+                        ok_con_hueco += 1
                     log.info(f"user={uid}: snapshot ok — value=${result['total_value']}")
                 else:
+                    if result.get('reason') == 'low_price_coverage':
+                        rechazadas += 1
+                        for sym in huecos:
+                            culpables[sym] = culpables.get(sym, 0) + 1
                     log.info(f"user={uid}: skipped ({result.get('reason')})")
             except Exception as e:
                 try:
@@ -1264,6 +1309,26 @@ def run_daily_snapshot(
                 log.error(f"user={uid}: snapshot falló — {e}")
 
         log.info(f"Job terminado: ok={ok_count}, failed={failed_count}")
+
+        # ⚠️ ESTE RENGLÓN ES EL QUE CONVIERTE "112 CUENTAS RECHAZADAS" EN UNA
+        # LISTA DE COMPRAS. Se escribe siempre que haya alguna cuenta rechazada,
+        # ordenado por a cuánta gente afecta cada símbolo: el primero de la lista
+        # es el precio que más conviene arreglar. Antes esta información existía
+        # dentro del job y se tiraba.
+        if rechazadas:
+            ranking = sorted(culpables.items(), key=lambda kv: -kv[1])
+            detalle = " · ".join(f"{sym} ({n} cuentas)" for sym, n in ranking[:25])
+            resto = len(ranking) - 25
+            log.warning(
+                f"SIN PRECIO — {rechazadas} cuentas sin foto hoy por cobertura. "
+                f"Símbolos que las explican, de mayor a menor: {detalle}"
+                + (f" · y {resto} símbolos más" if resto > 0 else "")
+            )
+        if ok_con_hueco:
+            log.info(
+                f"SIN PRECIO (no bloqueante) — {ok_con_hueco} cuentas guardaron "
+                f"su foto igual, pero con algún símbolo sin precio adentro."
+            )
         return {
             'ok': True,
             'target_date': target,
