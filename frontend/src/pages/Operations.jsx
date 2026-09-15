@@ -18,7 +18,7 @@ import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import { fmtUsd as fmtUsdRaw, colorClass } from '../utils/format'
+import { fmtUsd as fmtUsdRaw, colorClass, parseNum, parseNumOrNull } from '../utils/format'
 import { track } from '../utils/track'
 import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
@@ -167,15 +167,15 @@ export default function Operations() {
   async function save() {
     const body = {
       ...form,
-      entry_price: form.entry_price !== '' ? +form.entry_price : null,
-      exit_price: form.exit_price !== '' ? +form.exit_price : null,
-      quantity: form.quantity !== '' ? +form.quantity : null,
+      entry_price: parseNumOrNull(form.entry_price),
+      exit_price: parseNumOrNull(form.exit_price),
+      quantity: parseNumOrNull(form.quantity),
       // P&L USD: si el user lo deja vacío, mandamos null (no 0) — eso
       // significa "no registré la ganancia/pérdida". Backend distingue
       // null vs 0 explícito (un trade flat sí puede tener pnl_usd=0).
-      pnl_usd: form.pnl_usd !== '' && form.pnl_usd !== null ? +form.pnl_usd : null,
-      pnl_pct: form.pnl_pct !== '' ? +form.pnl_pct : null,
-      commissions: form.commissions !== '' ? +form.commissions : 0,
+      pnl_usd: parseNumOrNull(form.pnl_usd),
+      pnl_pct: parseNumOrNull(form.pnl_pct),
+      commissions: parseNum(form.commissions) || 0,
       // 'futures' hace que el backend ACREDITE el P&L al efectivo del broker.
       // Sólo se manda cuando el usuario lo tildó: cualquier otra operación
       // conserva el comportamiento de siempre (registra P&L y no toca la plata).
@@ -474,7 +474,7 @@ export default function Operations() {
           {winRate != null && (
             <KpiCell
               label="Win rate"
-              value={`${(winRate * 100).toFixed(0)}%`}
+              value={`${(winRate * 100).toFixed(0).replace('.', ',')}%`}
               tone={winRate >= 0.5 ? 'pos' : 'neg'}
               sub={`${wins} ganadoras · ${losses} perdedoras · ${trades} cerradas`}
             />
@@ -517,7 +517,7 @@ export default function Operations() {
                   Win rate
                 </div>
                 <div className="text-xl font-medium tabular text-ink-0 leading-none">
-                  {(winRate * 100).toFixed(0)}%
+                  {(winRate * 100).toFixed(0).replace('.', ',')}%
                 </div>
                 <div className="text-[10px] tabular text-ink-3 leading-none mt-1">
                   <span className="text-rendi-pos">{wins}W</span> · <span className="text-rendi-neg">{losses}L</span> · {trades} cerradas
@@ -848,15 +848,15 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
         <div className="grid grid-cols-3 gap-3">
           <div>
             <label className={labelClass}>P. Entrada</label>
-            <input type="number" step="any" value={form.entry_price} onChange={e => setForm(f => ({ ...f, entry_price: e.target.value }))} className={inputClass} />
+            <input type="text" inputMode="decimal" value={form.entry_price} onChange={e => setForm(f => ({ ...f, entry_price: e.target.value }))} className={inputClass} />
           </div>
           <div>
             <label className={labelClass}>P. Salida</label>
-            <input type="number" step="any" value={form.exit_price} onChange={e => setForm(f => ({ ...f, exit_price: e.target.value }))} className={inputClass} />
+            <input type="text" inputMode="decimal" value={form.exit_price} onChange={e => setForm(f => ({ ...f, exit_price: e.target.value }))} className={inputClass} />
           </div>
           <div>
             <label className={labelClass}>Cantidad</label>
-            <input type="number" step="any" value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} className={inputClass} />
+            <input type="text" inputMode="decimal" value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} className={inputClass} />
           </div>
         </div>
         )}
@@ -864,8 +864,8 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
           <div>
             <label className={labelClass}>P&L (USD)</label>
             <input
-              type="number"
-              step="any"
+              type="text"
+                          inputMode="decimal"
               value={form.pnl_usd}
               onChange={e => setForm(f => ({ ...f, pnl_usd: e.target.value }))}
               className={inputClass}
@@ -874,7 +874,7 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
           </div>
           <div>
             <label className={labelClass}>Comisiones</label>
-            <input type="number" step="any" value={form.commissions} onChange={e => setForm(f => ({ ...f, commissions: e.target.value }))} className={inputClass} placeholder="0" />
+            <input type="text" inputMode="decimal" value={form.commissions} onChange={e => setForm(f => ({ ...f, commissions: e.target.value }))} className={inputClass} placeholder="0" />
           </div>
         </div>
         {/* FUTUROS. Va explícito y no deducido del campo "Tipo" (que es texto

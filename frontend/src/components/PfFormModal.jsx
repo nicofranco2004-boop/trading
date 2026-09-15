@@ -9,9 +9,10 @@ import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
 import DateField from './DateField'
 import { hoyISO } from '../utils/fecha'
+import { parseNum, numToInput } from '../utils/format'
 
 const today = () => hoyISO()
-const pct = (x) => (x * 100).toFixed(2) + '%'
+const pct = (x) => (x * 100).toFixed(2).replace('.', ',') + '%'
 
 // Aritmética de fechas local (sin shift de timezone).
 function addDays(dateStr, days) {
@@ -158,7 +159,7 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
     // Prefill SIEMPRE con la TNA del banco elegido (fix del bug de antes, que
     // solo prefilleaba la primera vez). Si la cambiás a mano queda lo que pongas.
     setManual(false)
-    setForm(f => ({ ...f, banco: b.banco, logo: b.logo, tasa: +(b.tna_clientes * 100).toFixed(2), rate_type: 'TNA' }))
+    setForm(f => ({ ...f, banco: b.banco, logo: b.logo, tasa: numToInput(+(b.tna_clientes * 100).toFixed(2)), rate_type: 'TNA' }))
     setStep('form')
   }
 
@@ -170,9 +171,9 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
   }
 
   const preview = useMemo(() => {
-    const capital = +form.capital || 0
-    const tasaFrac = (+form.tasa || 0) / 100
-    const plazo = +form.plazo_dias || 0
+    const capital = parseNum(form.capital) || 0
+    const tasaFrac = (parseNum(form.tasa) || 0) / 100
+    const plazo = parseNum(form.plazo_dias) || 0
     if (capital <= 0 || tasaFrac <= 0 || plazo <= 0) return null
     return computePf(
       {
@@ -189,7 +190,7 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
   const vencimiento = addDays(form.fecha_inicio, form.plazo_dias)
 
   async function save() {
-    const capital = +form.capital, tasa = (+form.tasa) / 100, plazo = +form.plazo_dias
+    const capital = parseNum(form.capital), tasa = parseNum(form.tasa) / 100, plazo = parseNum(form.plazo_dias)
     if (!form.banco.trim()) { setStep('bank'); return toast.push('Elegí el banco.', { type: 'warn' }) }
     if (!(capital > 0)) return toast.push('Poné el capital.', { type: 'warn' })
     if (!(tasa > 0)) return toast.push('Poné la tasa anual.', { type: 'warn' })
@@ -270,7 +271,7 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs text-ink-3 mb-1">Capital</label>
-                  <input type="number" inputMode="decimal" className={inputClass} value={form.capital} onChange={e => set('capital', e.target.value)} placeholder="1000000" />
+                  <input type="text" inputMode="decimal" inputMode="decimal" className={inputClass} value={form.capital} onChange={e => set('capital', e.target.value)} placeholder="1000000" />
                 </div>
                 <div>
                   <label className="block text-xs text-ink-3 mb-1">Moneda</label>
@@ -294,7 +295,7 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
                   </select>
                   {form.source_broker && (
                     <p className="text-[11px] text-ink-3 mt-1">
-                      Se debita {form.capital ? money(+form.capital) : 'el capital'} del cash de {form.source_broker}.
+                      Se debita {form.capital ? money(parseNum(form.capital)) : 'el capital'} del cash de {form.source_broker}.
                     </p>
                   )}
                 </div>
@@ -303,7 +304,7 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs text-ink-3 mb-1">Tasa anual (%)</label>
-                  <input type="number" step="0.01" inputMode="decimal" className={inputClass} value={form.tasa} onChange={e => set('tasa', e.target.value)} placeholder="19" />
+                  <input type="text" inputMode="decimal" inputMode="decimal" className={inputClass} value={form.tasa} onChange={e => set('tasa', e.target.value)} placeholder="19" />
                 </div>
                 <div>
                   <label className="block text-xs text-ink-3 mb-1">Tipo de tasa</label>

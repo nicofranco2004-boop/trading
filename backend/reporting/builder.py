@@ -9,6 +9,7 @@ Reusa lógica existente del backend:
 - benchmarks (sp500, inflation) → vs S&P / vs inflación
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 
 import json
 import logging
@@ -2300,7 +2301,7 @@ def compute_highlights(ops: List[Dict[str, Any]]) -> List[Highlight]:
                 kind="best_op",
                 icon="🚀",
                 label="Mejor operación",
-                value_label=f"{best['asset']} +US${best['pnl_usd']:,.0f}",
+                value_label=f"{best['asset']} +US${fmt_num(best['pnl_usd'], 0)}",
                 context=best["date"],
             ))
         if worst["pnl_usd"] < -1:
@@ -2308,7 +2309,7 @@ def compute_highlights(ops: List[Dict[str, Any]]) -> List[Highlight]:
                 kind="worst_op",
                 icon="💀",
                 label="Peor operación",
-                value_label=f"{worst['asset']} −US${abs(worst['pnl_usd']):,.0f}",
+                value_label=f"{worst['asset']} −US${fmt_num(abs(worst['pnl_usd']), 0)}",
                 context=worst["date"],
             ))
     return out
@@ -2376,13 +2377,13 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
     # "perdiste X%" cuando en realidad cerraste con ganancia.
     if realized >= 50 and delta < -0.5 and metrics.trades_count > 0:
         return (
-            f"Cerraste con ganancia (+US$ {realized:,.0f}), pero el portfolio bajó {abs(delta):.1f}%.".replace(",", "."),
+            f"Cerraste con ganancia (+US$ {fmt_num(realized, 0)}), pero el portfolio bajó {fmt_num(abs(delta), 1)}%.",
             "Operaciones ganadoras compensadas por mark-to-market negativo de las posiciones abiertas.",
         )
     # Caso simétrico inverso: cerraste con pérdida pero el portfolio subió por mark-to-market positivo
     if realized <= -50 and delta > 0.5 and metrics.trades_count > 0:
         return (
-            f"Operaciones con pérdida (US$ {realized:,.0f}), pero el portfolio subió {delta:.1f}%.".replace(",", "."),
+            f"Operaciones con pérdida (US$ {fmt_num(realized, 0)}), pero el portfolio subió {fmt_num(delta, 1)}%.",
             "Mark-to-market positivo compensó las pérdidas realizadas.",
         )
 
@@ -2394,7 +2395,7 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
             return (f"{period_word} sin grandes movimientos.", None)
         sign = "+" if (metrics.delta_usd or 0) >= 0 else "−"
         return (
-            f"{period_word}: {sign}US$ {abs_usd:,.0f}.".replace(",", "."),
+            f"{period_word}: {sign}US$ {fmt_num(abs_usd, 0)}.",
             "Sin base suficiente para calcular el % del período.",
         )
 
@@ -2409,7 +2410,7 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
             top_neg = next((d for d in drivers if d.pnl_usd < 0), None)
             if top_neg:
                 sub = f"{top_neg.asset} fue el principal responsable de la caída."
-        return (f"{period_word} difícil — {delta:.1f}%.", sub)
+        return (f"{period_word} difícil — {fmt_num(delta, 1)}%.", sub)
 
     # Caso 3: período positivo significativo — "sólido/sólida"
     if delta > 3:
@@ -2418,11 +2419,11 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
             top_pos = next((d for d in drivers if d.pnl_usd > 0), None)
             if top_pos and top_pos.contribution_pct >= 30:
                 sub = f"{top_pos.asset} explicó el {top_pos.contribution_pct:.0f}% del rendimiento."
-        return (f"{period_word} {_conjugate('sólido', gender)} — +{delta:.1f}%.", sub)
+        return (f"{period_word} {_conjugate('sólido', gender)} — +{fmt_num(delta, 1)}%.", sub)
 
     # Default: período mixto — "mixto/mixta"
     sign = "+" if delta >= 0 else ""
-    return (f"{period_word} {_conjugate('mixto', gender)} — {sign}{delta:.1f}%.", None)
+    return (f"{period_word} {_conjugate('mixto', gender)} — {sign}{fmt_num(delta, 1)}%.", None)
 
 
 # ─── Narrativa larga (qué pasó en el período) ────────────────────────────────
@@ -2456,12 +2457,12 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
             parts.append(
                 f"Lo que sí está medido: cerraste {metrics.trades_count} "
                 f"operación{'es' if metrics.trades_count != 1 else ''} por "
-                f"US$ {realized:+,.0f} de P&L realizado.".replace(",", ".")
+                f"US$ {fmt_num(realized, 0, signed=True)} de P&L realizado."
             )
         net_flow = (metrics.deposits or 0) - (metrics.withdrawals or 0)
         if abs(net_flow) >= 100:
             verbo = "Aportaste" if net_flow > 0 else "Retiraste"
-            parts.append(f"{verbo} US$ {abs(net_flow):,.0f} en el período.".replace(",", "."))
+            parts.append(f"{verbo} US$ {fmt_num(abs(net_flow), 0)} en el período.")
         return " ".join(parts)
     if abs(delta) < 0.5 and abs_usd < 100 and metrics.trades_count == 0:
         return None
@@ -2477,10 +2478,9 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
         port_dir = "bajó" if delta < 0 else "subió"
         real_sign = "+" if realized >= 0 else "−"
         parts.append(
-            f"En {period_label_str.lower()} tu portfolio {port_dir} US$ {abs(metrics.delta_usd):,.0f} ({delta:+.1f}%), "
-            f"pero las operaciones cerradas dejaron {real_sign}US$ {abs(realized):,.0f} de P&L realizado. "
+            f"En {period_label_str.lower()} tu portfolio {port_dir} US$ {fmt_num(abs(metrics.delta_usd), 0)} ({fmt_num(delta, 1, signed=True)}%), "
+            f"pero las operaciones cerradas dejaron {real_sign}US$ {fmt_num(abs(realized), 0)} de P&L realizado. "
             f"La diferencia viene del mark-to-market de tus posiciones abiertas."
-            .replace(",", ".")
         )
     else:
         # AUDIT B3 (F4): con delta_pct None (día/semana per-broker, base
@@ -2490,13 +2490,12 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
         # vaciada).
         _dir_sign = delta if metrics.delta_pct is not None else (metrics.delta_usd or 0)
         direction = "ganaste" if _dir_sign >= 0 else "perdiste"
-        pct_txt = f" ({delta:+.1f}%)" if metrics.delta_pct is not None else ""
-        base_txt = (f" sobre un capital inicial de US$ {metrics.start_value:,.0f}"
+        pct_txt = f" ({fmt_num(delta, 1, signed=True)}%)" if metrics.delta_pct is not None else ""
+        base_txt = (f" sobre un capital inicial de US$ {fmt_num(metrics.start_value, 0)}"
                     if (metrics.start_value or 0) > 0 else "")
         parts.append(
             f"En {period_label_str.lower()} {direction} "
-            f"US$ {abs(metrics.delta_usd):,.0f}{pct_txt}{base_txt}."
-            .replace(",", ".")
+            f"US$ {fmt_num(abs(metrics.delta_usd), 0)}{pct_txt}{base_txt}."
         )
 
     # Oración 2: drivers principales (top + bottom).
@@ -2505,11 +2504,11 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
     driver_bits: List[str] = []
     if top_pos and abs(top_pos.pnl_usd) >= 50:
         driver_bits.append(
-            f"{top_pos.asset} aportó +US$ {top_pos.pnl_usd:,.0f}".replace(",", ".")
+            f"{top_pos.asset} aportó +US$ {fmt_num(top_pos.pnl_usd, 0)}"
         )
     if top_neg and abs(top_neg.pnl_usd) >= 50:
         driver_bits.append(
-            f"{top_neg.asset} restó US$ {abs(top_neg.pnl_usd):,.0f}".replace(",", ".")
+            f"{top_neg.asset} restó US$ {fmt_num(abs(top_neg.pnl_usd), 0)}"
         )
     if driver_bits:
         parts.append("Los movimientos más relevantes: " + " · ".join(driver_bits) + ".")
@@ -2518,9 +2517,9 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
     net_flow = metrics.deposits - metrics.withdrawals
     if abs(net_flow) >= 100:
         if net_flow > 0:
-            parts.append(f"Aportaste US$ {net_flow:,.0f} de capital nuevo.".replace(",", "."))
+            parts.append(f"Aportaste US$ {fmt_num(net_flow, 0)} de capital nuevo.")
         else:
-            parts.append(f"Retiraste US$ {abs(net_flow):,.0f} del portfolio.".replace(",", "."))
+            parts.append(f"Retiraste US$ {fmt_num(abs(net_flow), 0)} del portfolio.")
 
     # Oración 4: trades cerrados + win rate.
     if metrics.trades_count > 0:
@@ -2528,7 +2527,7 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
         wr_str = f" con {wr:.0f}% de win rate" if wr is not None else ""
         parts.append(
             f"Cerraste {metrics.trades_count} operación{'es' if metrics.trades_count != 1 else ''}"
-            f"{wr_str}, sumando US$ {metrics.realized_pnl:+,.0f} de P&L realizado.".replace(",", ".")
+            f"{wr_str}, sumando US$ {fmt_num(metrics.realized_pnl, 0, signed=True)} de P&L realizado."
         )
 
     # Oración 5: comparativa vs S&P 500 (solo si hay dato).
@@ -2546,7 +2545,7 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
     # calculada.
     if metrics.vs_sp500_pct is not None and abs(metrics.vs_sp500_pct) >= 0.5:
         sign = "encima" if metrics.vs_sp500_pct > 0 else "debajo"
-        _frase = f"Quedaste {abs(metrics.vs_sp500_pct):.1f} puntos por {sign} del S&P 500."
+        _frase = f"Quedaste {fmt_num(abs(metrics.vs_sp500_pct), 1)} puntos por {sign} del S&P 500."
         if getattr(metrics, "basis", None) == "contable":
             _frase += (" Ojo: tu número está reconstruido de tu contabilidad y no "
                        "cuenta las ganancias que todavía no vendiste, así que la "

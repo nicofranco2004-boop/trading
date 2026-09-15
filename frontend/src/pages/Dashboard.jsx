@@ -1201,8 +1201,8 @@ function PersonalDashboard() {
                       // currency del toggle. Acá solo formateamos con símbolo.
                       const abs = Math.abs(v)
                       const sym = currency === 'ARS' ? '$' : 'US$'
-                      if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(1)}B`
-                      if (abs >= 1e6) return `${sym}${(v / 1e6).toFixed(1)}M`
+                      if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(1).replace('.', ',')}B`
+                      if (abs >= 1e6) return `${sym}${(v / 1e6).toFixed(1).replace('.', ',')}M`
                       if (abs >= 1e3) return `${sym}${Math.round(v / 1e3)}k`
                       return `${sym}${Math.round(v)}`
                     }}
@@ -1542,7 +1542,7 @@ function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcValuacio
           <div
             key={it.asset}
             style={{ width: `${it.pct}%`, background: it.color }}
-            title={`${it.asset}: ${it.pct.toFixed(1)}%`}
+            title={`${it.asset}: ${it.pct.toFixed(1).replace('.', ',')}%`}
           />
         ))}
       </div>
@@ -1555,7 +1555,7 @@ function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcValuacio
             </div>
             <div className="flex items-baseline gap-2.5 flex-shrink-0">
               <span className="text-ink-3 tabular text-[11.5px]">{fmt(it.value)}</span>
-              <span className="text-ink-1 tabular font-semibold min-w-[46px] text-right">{it.pct.toFixed(1)}%</span>
+              <span className="text-ink-1 tabular font-semibold min-w-[46px] text-right">{it.pct.toFixed(1).replace('.', ',')}%</span>
             </div>
           </div>
         ))}

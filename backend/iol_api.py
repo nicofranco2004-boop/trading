@@ -22,6 +22,7 @@ Garantías (no negociables):
 Spec real: backend/scripts/iol_swagger_v2.json (bajado de /v2/swagger).
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 
 import time
 from datetime import date, datetime, timedelta
@@ -295,7 +296,7 @@ class _Probe:
                                          if any(s in k.lower() for s in ("retry", "limit", "rate"))}}
                 break
         el = time.time() - t0
-        self.note(f"  {n} OK en {el:.1f}s ({(n / el) if el else 0:.1f} req/s); primer error: {first_err}")
+        self.note(f"  {n} OK en {fmt_num(el, 1)}s ({fmt_num((n / el) if el else 0, 1)} req/s); primer error: {first_err}")
         self.data["s5"] = {"ok": n, "seconds": round(el, 2), "first_error": first_err}
 
         self.note("\n## S7 Clave de dedup contra el .xls (Nro. de Boleto)")

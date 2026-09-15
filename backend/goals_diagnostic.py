@@ -17,6 +17,7 @@ Output:
 """
 
 from __future__ import annotations
+from money_fmt import fmt_num
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -194,7 +195,7 @@ def build_goal_diagnostic(
     # No faltan datos: simplemente venció la fecha → status 'behind' con mensaje claro.
     if months_left <= 0:
         falta = target - current_value
-        diag = f'La fecha objetivo ya llegó y todavía estás a US$ {falta:,.0f} de la meta de US$ {target:,.0f}.'
+        diag = f'La fecha objetivo ya llegó y todavía estás a US$ {fmt_num(falta, 0)} de la meta de US$ {fmt_num(target, 0)}.'
         bias = _pick_dominant_bias(behavioral_cards)
         suggestion = None
         if bias and bias.get('code') in SUGGESTION_MAP:
@@ -231,10 +232,10 @@ def build_goal_diagnostic(
 
     # Diagnóstico textual
     if status == 'on_track':
-        diag = f'Vas muy cerca del ritmo necesario: proyección US$ {projected:,.0f} vs meta US$ {target:,.0f} en {months_left} meses.'
+        diag = f'Vas muy cerca del ritmo necesario: proyección US$ {fmt_num(projected, 0)} vs meta US$ {fmt_num(target, 0)} en {months_left} meses.'
     elif status == 'ahead':
         eta_str = f'{eta}' if eta is not None else '?'
-        diag = f'Vas por encima del ritmo necesario. Proyección: US$ {projected:,.0f} en {months_left} meses (vs meta US$ {target:,.0f}).'
+        diag = f'Vas por encima del ritmo necesario. Proyección: US$ {fmt_num(projected, 0)} en {months_left} meses (vs meta US$ {fmt_num(target, 0)}).'
         if eta is not None and eta < months_left:
             diag += f' Llegarías {months_left - eta} meses antes.'
     elif status == 'unreachable':

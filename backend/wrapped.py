@@ -24,6 +24,7 @@ Cada slide tiene:
 """
 
 from __future__ import annotations
+from money_fmt import fmt_num
 from typing import Dict, List, Optional, Tuple
 from collections import Counter
 
@@ -183,11 +184,11 @@ def _slide_intro(year: int, teaser: Optional[dict] = None) -> dict:
         twr = teaser.get('twr')
         if twr is not None:
             sign = '+' if twr >= 0 else '−'
-            stats.append({'label': 'Rendimiento', 'value': f'{sign}{abs(twr) * 100:.2f}%'})
+            stats.append({'label': 'Rendimiento', 'value': f'{sign}{fmt_num(abs(twr) * 100, 2)}%'})
         pnl_usd = teaser.get('pnl_usd')
         if pnl_usd is not None:
             sign = '+' if pnl_usd >= 0 else '−'
-            stats.append({'label': 'P&L total', 'value': f'{sign}${abs(pnl_usd):,.0f}'})
+            stats.append({'label': 'P&L total', 'value': f'{sign}${fmt_num(abs(pnl_usd), 0)}'})
         total_trades = teaser.get('total_trades')
         if total_trades is not None and total_trades > 0:
             stats.append({'label': 'Operaciones', 'value': str(total_trades)})
@@ -241,14 +242,14 @@ def _slide_pnl(rows: List[dict], year: int, rendimiento: Optional[dict] = None) 
     return {
         'code': 'pnl',
         'kind': 'pnl',
-        'title': f'{sign}{abs(twr) * 100:.2f}%',
+        'title': f'{sign}{fmt_num(abs(twr) * 100, 2)}%',
         'subtitle': _sub,
         # Para que el frontend pueda marcarlo sin volver a adivinar del texto.
         'base': _base,
-        'metric': {'value': f'{sign}${abs(pnl_usd):,.0f}', 'label': 'P&L TOTAL'},
+        'metric': {'value': f'{sign}${fmt_num(abs(pnl_usd), 0)}', 'label': 'P&L TOTAL'},
         'stats': [
-            {'label': 'Capital inicio', 'value': f'${capital_inicio:,.0f}'},
-            {'label': 'Capital final', 'value': f'${capital_final:,.0f}'},
+            {'label': 'Capital inicio', 'value': f'${fmt_num(capital_inicio, 0)}'},
+            {'label': 'Capital final', 'value': f'${fmt_num(capital_final, 0)}'},
             {'label': 'Meses operados', 'value': str(len(rows))},
         ],
         'tone': 'positive' if twr >= 0 else 'negative',
@@ -270,8 +271,8 @@ def _slide_best_month(rows: List[dict]) -> Optional[dict]:
         'code': 'best_month',
         'kind': 'best_month',
         'title': f'{month_name} fue tu mejor mes',
-        'subtitle': f'{sign}{abs(ret) * 100:.2f}% — ${row.get("capital_inicio", 0):,.0f} → ${row.get("capital_final", 0):,.0f}',
-        'metric': {'value': f'{sign}{abs(ret) * 100:.2f}%', 'label': f'{month_name.upper()}'},
+        'subtitle': f'{sign}{fmt_num(abs(ret) * 100, 2)}% — ${fmt_num(row.get("capital_inicio", 0), 0)} → ${fmt_num(row.get("capital_final", 0), 0)}',
+        'metric': {'value': f'{sign}{fmt_num(abs(ret) * 100, 2)}%', 'label': f'{month_name.upper()}'},
         'stats': [],
         'tone': 'positive' if ret >= 0 else 'negative',
     }
@@ -291,8 +292,8 @@ def _slide_worst_month(rows: List[dict]) -> Optional[dict]:
         'code': 'worst_month',
         'kind': 'worst_month',
         'title': f'{month_name} fue el más duro',
-        'subtitle': f'−{abs(ret) * 100:.2f}% — todos tenemos meses así.',
-        'metric': {'value': f'−{abs(ret) * 100:.2f}%', 'label': f'{month_name.upper()}'},
+        'subtitle': f'−{fmt_num(abs(ret) * 100, 2)}% — todos tenemos meses así.',
+        'metric': {'value': f'−{fmt_num(abs(ret) * 100, 2)}%', 'label': f'{month_name.upper()}'},
         'stats': [],
         'tone': 'negative',
     }
@@ -317,13 +318,13 @@ def _slide_best_trade(ops: List[dict]) -> Optional[dict]:
     pnl_pct = pct_creible(pnl_pct)
     if pnl_pct is not None:
         # pnl_pct viene como número (no fracción): 18.2 = 18.2%
-        pct_str = f' ({"+" if pnl_pct >= 0 else "−"}{abs(pnl_pct):.1f}%)'
+        pct_str = f' ({"+" if pnl_pct >= 0 else "−"}{fmt_num(abs(pnl_pct), 1)}%)'
     return {
         'code': 'best_trade',
         'kind': 'best_trade',
         'title': f'{asset} fue tu mejor trade',
-        'subtitle': f'+${pnl_usd:,.0f}{pct_str}',
-        'metric': {'value': f'+${pnl_usd:,.0f}', 'label': asset.upper()},
+        'subtitle': f'+${fmt_num(pnl_usd, 0)}{pct_str}',
+        'metric': {'value': f'+${fmt_num(pnl_usd, 0)}', 'label': asset.upper()},
         'stats': [
             {'label': 'Activo', 'value': asset},
             {'label': 'Fecha', 'value': str(best.get('date') or '—')},
@@ -422,7 +423,7 @@ def _slide_vs_benchmark(twr_user: Optional[float], benchmarks: Optional[dict], y
         sign = '+' if delta >= 0 else '−'
         stats.append({
             'label': 'vs S&P 500',
-            'value': f'{sign}{abs(delta) * 100:.2f}pp',
+            'value': f'{sign}{fmt_num(abs(delta) * 100, 2)}pp',
         })
     if merval is not None:
         delta = twr_user - merval
@@ -430,7 +431,7 @@ def _slide_vs_benchmark(twr_user: Optional[float], benchmarks: Optional[dict], y
         sign = '+' if delta >= 0 else '−'
         stats.append({
             'label': 'vs MERVAL',
-            'value': f'{sign}{abs(delta) * 100:.2f}pp',
+            'value': f'{sign}{fmt_num(abs(delta) * 100, 2)}pp',
         })
     avg_delta = sum(deltas) / len(deltas) if deltas else 0
     if avg_delta >= 0:
@@ -453,7 +454,7 @@ def _slide_vs_benchmark(twr_user: Optional[float], benchmarks: Optional[dict], y
         'title': title,
         'subtitle': subtitle,
         'metric': {
-            'value': f'{"+" if twr_user >= 0 else "−"}{abs(twr_user) * 100:.2f}%',
+            'value': f'{"+" if twr_user >= 0 else "−"}{fmt_num(abs(twr_user) * 100, 2)}%',
             'label': 'TU RENDIMIENTO',
         },
         'stats': stats,
@@ -499,11 +500,11 @@ def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float
             'code': 'vs_inflation',
             'kind': 'vs_inflation',
             'title': 'Le ganaste a la inflación AR',
-            'subtitle': f'Tu rendimiento estuvo {sign}{abs(delta) * 100:.2f}pp por encima de la inflación de {year}.',
-            'metric': {'value': f'{sign}{abs(delta) * 100:.2f}pp', 'label': 'VS INFLACIÓN AR'},
+            'subtitle': f'Tu rendimiento estuvo {sign}{fmt_num(abs(delta) * 100, 2)}pp por encima de la inflación de {year}.',
+            'metric': {'value': f'{sign}{fmt_num(abs(delta) * 100, 2)}pp', 'label': 'VS INFLACIÓN AR'},
             'stats': [
-                {'label': 'Tu rendimiento en pesos', 'value': f'{"+" if twr_user >= 0 else "−"}{abs(twr_user) * 100:.2f}%'},
-                {'label': f'Inflación {year}', 'value': f'{inflation_ytd * 100:.2f}%'},
+                {'label': 'Tu rendimiento en pesos', 'value': f'{"+" if twr_user >= 0 else "−"}{fmt_num(abs(twr_user) * 100, 2)}%'},
+                {'label': f'Inflación {year}', 'value': f'{fmt_num(inflation_ytd * 100, 2)}%'},
             ],
             'tone': 'positive',
             'bars': bars,
@@ -512,11 +513,11 @@ def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float
         'code': 'vs_inflation',
         'kind': 'vs_inflation',
         'title': 'La inflación te ganó',
-        'subtitle': f'Tu rendimiento quedó {abs(delta) * 100:.2f}pp por debajo de la inflación AR.',
-        'metric': {'value': f'−{abs(delta) * 100:.2f}pp', 'label': 'VS INFLACIÓN AR'},
+        'subtitle': f'Tu rendimiento quedó {fmt_num(abs(delta) * 100, 2)}pp por debajo de la inflación AR.',
+        'metric': {'value': f'−{fmt_num(abs(delta) * 100, 2)}pp', 'label': 'VS INFLACIÓN AR'},
         'stats': [
-            {'label': 'Tu rendimiento en pesos', 'value': f'{"+" if twr_user >= 0 else "−"}{abs(twr_user) * 100:.2f}%'},
-            {'label': f'Inflación {year}', 'value': f'{inflation_ytd * 100:.2f}%'},
+            {'label': 'Tu rendimiento en pesos', 'value': f'{"+" if twr_user >= 0 else "−"}{fmt_num(abs(twr_user) * 100, 2)}%'},
+            {'label': f'Inflación {year}', 'value': f'{fmt_num(inflation_ytd * 100, 2)}%'},
         ],
         'tone': 'negative',
         'bars': bars,

@@ -27,7 +27,7 @@ import { nextPaymentForPosition } from '../utils/bondSchedule'
 import BondDetailRow from '../components/BondDetail'
 import ReturnFxHint from '../components/ReturnFxHint'
 import StalePricesNotice from '../components/StalePricesNotice'
-import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
+import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput } from '../utils/format'
 import { api, errorMessage } from '../utils/api'
 import { computeBrokerValue, sellPriceSuggestion, sellCurrency, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
@@ -339,7 +339,7 @@ function PositionsDesktop() {
         notes: 'Confirmado desde el inbox (monto teórico del cronograma)',
         decrement_quantity: false,
       })
-      toast.push(`${item.asset} · cupón del ${item.date} registrado · +${item.currency} ${(item.coupon || item.total).toFixed(2)}`, { type: 'success' })
+      toast.push(`${item.asset} · cupón del ${item.date} registrado · +${item.currency} ${(item.coupon || item.total).toFixed(2).replace('.', ',')}`, { type: 'success' })
       await loadAll()
     } catch (e) {
       toast.push(`No se pudo registrar: ${e.message}`, { type: 'error' })
@@ -713,23 +713,24 @@ function PositionsDesktop() {
     }
   }
 
-  // Número tolerante a la coma decimal (es-AR). El campo TC Compra es un
-  // <input type="number">: según el browser/locale, tipear "1448,6" puede llegar
-  // como "1448,6" y `+valor` daba NaN → se mandaba null y el backend BORRABA el
-  // TC que ya estaba (ahora el PUT usa COALESCE, pero igual conviene no perder
-  // lo que el usuario escribió). Devuelve null solo si de verdad no hay número.
+  // Número tolerante a la coma decimal, que es lo que se tipea acá. Antes, con
+  // el campo como `<input type="number">`, tipear "1448,6" podía llegar tal cual
+  // y `+valor` daba NaN → se mandaba null y el backend BORRABA el TC que ya
+  // estaba. El parseo lo hace parseNum (utils/format), el único de la app: la
+  // copia local que vivía en esta línea sólo cambiaba la coma por punto y por eso
+  // leía "1.448,60" como 1,448. Se conserva el `> 0` porque un TC en cero es
+  // inválido (división por cero) y tiene que viajar como null.
   function _numLoose(v) {
-    if (v === '' || v == null) return null
-    const n = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'))
+    const n = parseNum(v)
     return Number.isFinite(n) && n > 0 ? n : null
   }
 
   async function save() {
     const body = {
       ...form,
-      buy_price: form.buy_price !== '' ? +form.buy_price : null,
-      quantity: form.quantity !== '' ? +form.quantity : null,
-      invested: form.invested !== '' ? +form.invested : null,
+      buy_price: parseNumOrNull(form.buy_price),
+      quantity: parseNumOrNull(form.quantity),
+      invested: parseNumOrNull(form.invested),
       // TC de compra: 0 o vacío → null. El backend exige tc_compra > 0 (un TC=0 es
       // inválido: div-by-zero). Antes mandábamos tc_compra:0 → el PUT daba 422 y,
       // sin manejo de error, el modal fallaba EN SILENCIO ("el botón no guarda").
@@ -739,7 +740,7 @@ function PositionsDesktop() {
       // así el activo vuelve a valuarse por el precio de mercado si algún día
       // empieza a cotizar (mandar 0 lo dejaría clavado en cero).
       price_override: _numLoose(form.price_override),
-      commissions: form.commissions !== '' ? +form.commissions : 0,
+      commissions: parseNum(form.commissions) || 0,
       entry_date: form.entry_date || null,
       // Moneda del lote (mismo ticker en ARS vs USD). Vacío → el backend la
       // infiere del broker.
@@ -992,7 +993,7 @@ function PositionsDesktop() {
     const debit = convertForm.direction === 'ars_to_usd' ? arsAmount : usdAmount
     if (debit > convertForm.available + 0.001) {
       const curr = convertForm.direction === 'ars_to_usd' ? 'ARS' : 'USD'
-      return toast.push(`Saldo insuficiente. Disponible: ${convertForm.available.toFixed(2)} ${curr}.`, { type: 'warn' })
+      return toast.push(`Saldo insuficiente. Disponible: ${convertForm.available.toFixed(2).replace('.', ',')} ${curr}.`, { type: 'warn' })
     }
     try {
       await api.post('/conversions', {
@@ -1021,10 +1022,10 @@ function PositionsDesktop() {
   }
 
   async function confirmCashFlow() {
-    const amount = +cashFlowForm.amount
+    const amount = parseNum(cashFlowForm.amount)
     if (!amount || amount <= 0) return toast.push('Ingresá un monto válido.', { type: 'warn' })
     if (cashFlowForm.direction === 'withdraw' && amount > cashFlowForm.available + 0.001) {
-      return toast.push(`Saldo insuficiente. Disponible: ${cashFlowForm.available.toFixed(2)} ${cashFlowForm.currency}.`, { type: 'warn' })
+      return toast.push(`Saldo insuficiente. Disponible: ${cashFlowForm.available.toFixed(2).replace('.', ',')} ${cashFlowForm.currency}.`, { type: 'warn' })
     }
     try {
       await api.post('/cash/flow', {
@@ -2884,8 +2885,8 @@ function PositionsDesktop() {
                 Monto ({cashFlowForm.currency})
               </label>
               <input
-                type="number"
-                step="any"
+                type="text"
+                          inputMode="decimal"
                 autoFocus
                 value={cashFlowForm.amount}
                 onChange={e => setCashFlowForm(f => ({ ...f, amount: e.target.value }))}
@@ -2906,7 +2907,7 @@ function PositionsDesktop() {
                 <p className="text-xs text-ink-3">
                   Equivalente en USD al dólar {esHoy ? 'de hoy' : `del ${fecha.split('-').reverse().join('/')}`} ({Math.round(tc)}):
                   <span className="font-medium text-ink-2 ml-1">
-                    ${usd((+cashFlowForm.amount || 0) / (tc || 1))}
+                    ${usd((parseNum(cashFlowForm.amount) || 0) / (tc || 1))}
                   </span>
                   {' '}· es el valor que va a contar como capital aportado.
                 </p>
@@ -2921,7 +2922,7 @@ function PositionsDesktop() {
               </button>
               <button
                 onClick={confirmCashFlow}
-                disabled={!+cashFlowForm.amount}
+                disabled={!(parseNum(cashFlowForm.amount) > 0)}
                 className={`px-4 py-2 text-sm rounded-md font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed transition ${
                   cashFlowForm.direction === 'deposit'
                     ? 'bg-emerald-600 hover:bg-emerald-500'
@@ -3258,30 +3259,33 @@ function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
   //   2. Acredita la moneda de destino (auto-creando el sub-broker USD si es la primera conversión)
   //   3. Registra una operación tipo CONVERSION (auditoría)
   const isArsToUsd = form.direction === 'ars_to_usd'
-  const arsNum = +form.ars_amount || 0
-  const usdNum = +form.usd_amount || 0
-  const tcNum = +form.tc || 0
+  const arsNum = parseNum(form.ars_amount) || 0
+  const usdNum = parseNum(form.usd_amount) || 0
+  const tcNum = parseNum(form.tc) || 0
 
   // Auto-cálculo: si el usuario tipea ARS o TC, recalculamos USD (y viceversa).
   // Mantiene los dos campos editables pero coherentes.
+  // El campo guarda el TEXTO tal cual se tipea y el otro lado se deriva con
+  // parseNum: con `+v` a secas, escribir "200.000,50" daba NaN y el campo espejo
+  // dejaba de actualizarse sin ningún aviso.
   function setArs(v) {
-    const ars = +v
+    const ars = parseNum(v)
     const next = { ...form, ars_amount: v }
-    if (ars > 0 && tcNum > 0) next.usd_amount = (ars / tcNum).toFixed(2)
+    if (ars > 0 && tcNum > 0) next.usd_amount = numToInput(+(ars / tcNum).toFixed(2))
     setForm(next)
   }
   function setUsd(v) {
-    const usd = +v
+    const usd = parseNum(v)
     const next = { ...form, usd_amount: v }
-    if (usd > 0 && tcNum > 0) next.ars_amount = (usd * tcNum).toFixed(2)
+    if (usd > 0 && tcNum > 0) next.ars_amount = numToInput(+(usd * tcNum).toFixed(2))
     setForm(next)
   }
   function setTc(v) {
-    const tc = +v
+    const tc = parseNum(v)
     const next = { ...form, tc: v }
     // Si hay ARS, recalculamos USD; si solo hay USD, recalculamos ARS.
-    if (arsNum > 0 && tc > 0) next.usd_amount = (arsNum / tc).toFixed(2)
-    else if (usdNum > 0 && tc > 0) next.ars_amount = (usdNum * tc).toFixed(2)
+    if (arsNum > 0 && tc > 0) next.usd_amount = numToInput(+(arsNum / tc).toFixed(2))
+    else if (usdNum > 0 && tc > 0) next.ars_amount = numToInput(+(usdNum * tc).toFixed(2))
     setForm(next)
   }
 
@@ -3302,7 +3306,7 @@ function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
 
         <div className="bg-bg-2/40 rounded-lg px-3 py-2 text-xs text-ink-3">
           Disponible: <span className="font-semibold text-ink-1 tabular">
-            {form.available?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isArsToUsd ? 'ARS' : 'USD'}
+            {form.available?.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isArsToUsd ? 'ARS' : 'USD'}
           </span>
         </div>
 
@@ -3334,8 +3338,8 @@ function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
               {isArsToUsd ? 'Monto ARS a convertir' : 'ARS a recibir'}
             </label>
             <input
-              type="number"
-              step="any"
+              type="text"
+                          inputMode="decimal"
               autoFocus={isArsToUsd}
               value={form.ars_amount}
               onChange={e => setArs(e.target.value)}
@@ -3348,8 +3352,8 @@ function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
               {isArsToUsd ? 'USD a recibir' : 'Monto USD a convertir'}
             </label>
             <input
-              type="number"
-              step="any"
+              type="text"
+                          inputMode="decimal"
               autoFocus={!isArsToUsd}
               value={form.usd_amount}
               onChange={e => setUsd(e.target.value)}
@@ -3363,8 +3367,8 @@ function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
         <div>
           <label className="block text-xs text-ink-3 mb-1">Tipo de cambio (ARS por USD)</label>
           <input
-            type="number"
-            step="any"
+            type="text"
+                          inputMode="decimal"
             value={form.tc}
             onChange={e => setTc(e.target.value)}
             className={inputCls}
@@ -3372,7 +3376,7 @@ function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
           />
           {tcNum > 0 && tcValuacion > 0 && (
             <p className="text-[10px] text-ink-3 mt-1">
-              Blue actual: {tcValuacion} · {Math.abs((tcNum - tcValuacion) / tcValuacion * 100).toFixed(1)}% {tcNum > tcValuacion ? 'por encima' : 'por debajo'}
+              Blue actual: {tcValuacion} · {Math.abs((tcNum - tcValuacion) / tcValuacion * 100).toFixed(1).replace('.', ',')}% {tcNum > tcValuacion ? 'por encima' : 'por debajo'}
             </p>
           )}
         </div>
@@ -3391,14 +3395,14 @@ function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
           <div className="bg-rendi-accent/[0.06] border border-rendi-accent/25 rounded-md px-3 py-2 text-xs leading-relaxed">
             {isArsToUsd ? (
               <>
-                Vas a convertir <span className="font-semibold tabular">ARS {arsNum.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>{' '}
-                en <span className="font-semibold tabular">USD {usdNum.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>{' '}
+                Vas a convertir <span className="font-semibold tabular">ARS {arsNum.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>{' '}
+                en <span className="font-semibold tabular">USD {usdNum.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>{' '}
                 a un TC de <span className="font-semibold tabular">{tcNum}</span>.
               </>
             ) : (
               <>
-                Vas a convertir <span className="font-semibold tabular">USD {usdNum.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>{' '}
-                en <span className="font-semibold tabular">ARS {arsNum.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>{' '}
+                Vas a convertir <span className="font-semibold tabular">USD {usdNum.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>{' '}
+                en <span className="font-semibold tabular">ARS {arsNum.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>{' '}
                 a un TC de <span className="font-semibold tabular">{tcNum}</span>.
               </>
             )}
@@ -3423,17 +3427,17 @@ function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
               </p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
                 <span>Costo en pesos (TC compra prom.):</span>
-                <span className="text-right tabular font-medium">ARS {costBasisArs.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                <span className="text-right tabular font-medium">ARS {costBasisArs.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>
                 <span>Pesos a recibir:</span>
-                <span className="text-right tabular font-medium">ARS {arsReceived.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                <span className="text-right tabular font-medium">ARS {arsReceived.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>
                 <span className="font-semibold">P&L:</span>
                 <span className="text-right tabular font-bold">
-                  {isProfit ? '+' : '-'}ARS {Math.abs(pnlArs).toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                  {' '}({isProfit ? '+' : '-'}USD {Math.abs(pnlUsd).toLocaleString('en-US', { maximumFractionDigits: 2 })})
+                  {isProfit ? '+' : '-'}ARS {Math.abs(pnlArs).toLocaleString('es-AR', { maximumFractionDigits: 2 })}
+                  {' '}({isProfit ? '+' : '-'}USD {Math.abs(pnlUsd).toLocaleString('es-AR', { maximumFractionDigits: 2 })})
                 </span>
               </div>
               <p className="text-[10px] mt-1.5 opacity-80">
-                TC compra promedio: {form.tc_compra_avg.toFixed(2)} · TC venta: {tcNum.toFixed(2)}
+                TC compra promedio: {form.tc_compra_avg.toFixed(2).replace('.', ',')} · TC venta: {tcNum.toFixed(2).replace('.', ',')}
               </p>
             </div>
           )
@@ -3505,12 +3509,12 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
   const [tcValue, setTcValue] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const avgNum = avg === '' ? null : parseFloat(String(avg).replace(',', '.'))
+  const avgNum = parseNumOrNull(avg)
   const k = (avgNum && avgNow > 0) ? avgNum / avgNow : null
   const renamed = asset && asset !== group?.asset
   const nothing = !renamed && avgNum == null && !tcMode
   const badAvg = avg !== '' && !(avgNum > 0)
-  const badTc = tcMode === 'fixed' && !(parseFloat(String(tcValue).replace(',', '.')) > 0)
+  const badTc = tcMode === 'fixed' && !(parseNum(tcValue) > 0)
 
   const fmtN = n => n == null ? '—' : Number(n).toLocaleString('es-AR', { maximumFractionDigits: 2 })
 
@@ -3545,7 +3549,7 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
           />
           {k && (
             <p className="text-[11px] text-ink-3 mt-1">
-              Se reparte proporcional: cada lote se multiplica por {k.toFixed(4)}. El lote más
+              Se reparte proporcional: cada lote se multiplica por {k.toFixed(4).replace('.', ',')}. El lote más
               barato sigue siendo el más barato.
             </p>
           )}
@@ -3639,7 +3643,7 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
                   new_asset: renamed ? asset : undefined,
                   avg_price: avgNum ?? undefined,
                   tc_mode: tcMode || undefined,
-                  tc_value: tcMode === 'fixed' ? parseFloat(String(tcValue).replace(',', '.')) : undefined,
+                  tc_value: tcMode === 'fixed' ? parseNum(tcValue) : undefined,
                 })
               } finally { setSaving(false) }
             }}
@@ -3753,9 +3757,9 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
   const avgBuy = totalInvested && totalQty ? totalInvested / totalQty : null
   const isARS = form.currency === 'ARS'
 
-  const qtyNum = +form.quantity || 0
-  const priceNum = +form.exit_price || 0
-  const tcVenta = +form.tc_venta || tcValuacion || 1
+  const qtyNum = parseNum(form.quantity) || 0
+  const priceNum = parseNum(form.exit_price) || 0
+  const tcVenta = parseNum(form.tc_venta) || tcValuacion || 1
 
   // TC de la venta = el que existía en la FECHA de la venta, no el de hoy.
   // Mismo criterio que el aporte con fecha (MEP del día, blue de fallback; y
@@ -3821,7 +3825,7 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
         <div className="bg-bg-2/50 rounded-lg p-3 grid grid-cols-3 gap-3 text-xs">
           <div>
             <div className="text-ink-3">Total disponible</div>
-            <div className="font-mono font-semibold text-ink-0 dark:text-white">{totalQty.toLocaleString('en-US', { maximumFractionDigits: 8 })}</div>
+            <div className="font-mono font-semibold text-ink-0 dark:text-white">{totalQty.toLocaleString('es-AR', { maximumFractionDigits: 8 })}</div>
           </div>
           <div>
             <div className="text-ink-3">Lotes ({lots.length})</div>
@@ -3880,8 +3884,8 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
             Precio de venta {isARS ? '(ARS)' : '(USD)'}
           </label>
           <input
-            type="number"
-            step="any"
+            type="text"
+                          inputMode="decimal"
             value={form.exit_price}
             onChange={e => setForm(f => ({ ...f, exit_price: e.target.value }))}
             className={inputCls}
@@ -3901,8 +3905,8 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
               Comisiones {isARS ? '(ARS)' : '(USD)'}
             </label>
             <input
-              type="number"
-              step="any"
+              type="text"
+                          inputMode="decimal"
               value={form.commissions}
               onChange={e => setForm(f => ({ ...f, commissions: e.target.value }))}
               className={inputCls}
@@ -3915,8 +3919,8 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
           <div>
             <label className="block text-xs text-ink-3 mb-1">TC Venta</label>
             <input
-              type="number"
-              step="any"
+              type="text"
+                          inputMode="decimal"
               value={form.tc_venta}
               onChange={e => { tcTouchedRef.current = true; setForm(f => ({ ...f, tc_venta: e.target.value })) }}
               className={inputCls}
@@ -3933,21 +3937,21 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
             <div className="flex items-center justify-between">
               <span className="text-ink-3">Bruto</span>
               <span className="font-mono text-ink-1">
-                {(qtyNum * priceNum).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
+                {(qtyNum * priceNum).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
               </span>
             </div>
-            {(+form.commissions || 0) > 0 && (
+            {(parseNum(form.commissions) || 0) > 0 && (
               <div className="flex items-center justify-between mt-1">
                 <span className="text-ink-3">Comisiones</span>
                 <span className="font-mono text-red-500 dark:text-red-400">
-                  −{(+form.commissions).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
+                  −{parseNum(form.commissions).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
                 </span>
               </div>
             )}
             <div className="flex items-center justify-between border-t border-line/50 mt-1.5 pt-1.5">
               <span className="text-ink-2 font-medium">Neto recibido</span>
               <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
-                {(qtyNum * priceNum - (+form.commissions || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
+                {(qtyNum * priceNum - (parseNum(form.commissions) || 0)).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
               </span>
             </div>
           </div>
@@ -3998,10 +4002,16 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
           </span>
         )}
       </label>
+      {/* type="number" se renderiza como TEXTO con teclado numérico. Con el type
+          nativo el navegador valida contra SU idioma: en uno configurado en
+          inglés, tipear "1037,74" deja el campo inválido y `e.target.value` llega
+          VACÍO — el usuario ve en pantalla lo que escribió y se guarda un nulo,
+          sin un solo error a la vista. */}
       <input
         ref={inputRef}
-        type={type}
-        step={step}
+        type={type === 'number' ? 'text' : type}
+        inputMode={type === 'number' ? 'decimal' : undefined}
+        step={type === 'number' ? undefined : step}
         autoFocus={autoFocus}
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -4059,15 +4069,19 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
   }, [mode, form.asset])
 
   // Redondeo razonable según rango (cripto = más decimales, acciones = menos)
+  // Devuelven TEXTO con coma, no un número: es lo que va a parar al input y tiene
+  // que leerse igual que lo que el usuario tipea. Devolver el número hacía que el
+  // campo autocalculado mostrara "1037.74" con punto al lado de los que él
+  // escribió con coma.
   const roundQty = (n) => {
     if (!n || !isFinite(n)) return ''
-    if (n < 1) return +n.toFixed(8)
-    if (n < 100) return +n.toFixed(6)
-    return +n.toFixed(4)
+    if (n < 1) return numToInput(+n.toFixed(8))
+    if (n < 100) return numToInput(+n.toFixed(6))
+    return numToInput(+n.toFixed(4))
   }
   const roundMoney = (n) => {
     if (!n || !isFinite(n)) return ''
-    return +n.toFixed(2)
+    return numToInput(+n.toFixed(2))
   }
 
   // Auto-fill del precio cuando elegís ticker (solo en modo "add", para no
@@ -4114,9 +4128,9 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
   // update para aplicar via setForm. Si no se puede derivar (faltan inputs),
   // devuelve {} y el form no cambia.
   function recalcDerived(formState, derived) {
-    const price = +formState.buy_price
-    const qty = +formState.quantity
-    const inv = +formState.invested
+    const price = parseNum(formState.buy_price)
+    const qty = parseNum(formState.quantity)
+    const inv = parseNum(formState.invested)
     if (derived === 'invested' && price > 0 && qty > 0) {
       return { invested: roundMoney(price * qty) }
     }
@@ -4168,8 +4182,8 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
 
   // Costo real total (incluye comisiones) — feedback en vivo
   const realCost = (() => {
-    const inv = +form.invested || 0
-    const com = +form.commissions || 0
+    const inv = parseNum(form.invested) || 0
+    const com = parseNum(form.commissions) || 0
     return inv + com
   })()
   const moneyLabel = isARS ? 'ARS' : 'USD'
@@ -4292,10 +4306,10 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
               onChange={onPriceChange}
               type="number"
               step="any"
-              autoCalculated={derivedField === 'buy_price' && !!form.buy_price && +form.quantity > 0 && +form.invested > 0}
+              autoCalculated={derivedField === 'buy_price' && !!form.buy_price && parseNum(form.quantity) > 0 && parseNum(form.invested) > 0}
               hint={
                 bondMeta
-                  ? `Convención del sistema: precio por 1 VN (valor nominal). Si Cocos te muestra "${form.buy_price ? Math.round((+form.buy_price)*100) : '71.5'} por 100 VN", entrá ${form.buy_price ? (+form.buy_price).toFixed(3) : '0.715'} acá (precio quote ÷ 100). El total invertido se autocompleta abajo.`
+                  ? `Convención del sistema: precio por 1 VN (valor nominal). Si Cocos te muestra "${form.buy_price ? Math.round(parseNum(form.buy_price)*100) : '71.5'} por 100 VN", entrá ${form.buy_price ? numToInput(+parseNum(form.buy_price).toFixed(3)) : '0.715'} acá (precio quote ÷ 100). El total invertido se autocompleta abajo.`
                   : (pricesFetched && form.buy_price ? 'Precio actual de mercado · editable.' : 'Se autocompleta al seleccionar el activo. Ajustalo si la compra se realizó a otro precio.')
               }
             />
@@ -4309,13 +4323,13 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
                 onChange={onInvestedChange}
                 type="number"
                 step="any"
-                autoCalculated={derivedField === 'invested' && !!form.invested && +form.buy_price > 0 && +form.quantity > 0}
+                autoCalculated={derivedField === 'invested' && !!form.invested && parseNum(form.buy_price) > 0 && parseNum(form.quantity) > 0}
               />
               <Field
                 label={bondMeta ? 'Cantidad (VN)' : 'Cantidad'}
                 value={form.quantity}
                 onChange={onQuantityChange}
-                autoCalculated={derivedField === 'quantity' && !!form.quantity && +form.buy_price > 0 && +form.invested > 0}
+                autoCalculated={derivedField === 'quantity' && !!form.quantity && parseNum(form.buy_price) > 0 && parseNum(form.invested) > 0}
                 type="number"
                 step="any"
                 hint={bondMeta ? 'Valor nominal: 1 VN = 1 unidad de face value. Ej: 1000 VN de AL30 = USD 1000 face.' : undefined}
@@ -4332,8 +4346,8 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
             onChange={v => setForm(f => ({ ...f, commissions: v }))}
             type="number"
             step="any"
-            hint={(+form.commissions || 0) > 0
-              ? `Costo total: ${realCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${moneyLabel} (invertido + comisión).`
+            hint={(parseNum(form.commissions) || 0) > 0
+              ? `Costo total: ${realCost.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${moneyLabel} (invertido + comisión).`
               : 'Opcional. Se incluye en el costo de adquisición sin modificar la cantidad.'}
           />
         )}
@@ -4388,7 +4402,7 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
 }
 
 function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
-  const qtyNum = +quantity || 0
+  const qtyNum = parseNum(quantity) || 0
   const pctRaw = totalQty > 0 ? (qtyNum / totalQty) * 100 : 0
   const pct = Math.max(0, Math.min(100, pctRaw))
   const usdEq = priceUsd && qtyNum ? priceUsd * qtyNum : 0
@@ -4410,7 +4424,7 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs text-ink-3">Cantidad a vender</label>
         <span className="text-xs text-ink-3">
-          Disp. <span className="font-mono text-ink-1">{totalQty.toLocaleString('en-US', { maximumFractionDigits: 8 })}</span>
+          Disp. <span className="font-mono text-ink-1">{totalQty.toLocaleString('es-AR', { maximumFractionDigits: 8 })}</span>
         </span>
       </div>
 
@@ -4418,8 +4432,8 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
       <div className="flex items-stretch gap-2 mb-3">
         <div className="flex-1 relative">
           <input
-            type="number"
-            step="any"
+            type="text"
+                          inputMode="decimal"
             value={quantity}
             onChange={e => setQty(e.target.value)}
             placeholder="0"
@@ -4430,7 +4444,7 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
           </span>
         </div>
         <div className="w-20 bg-bg-2 border border-line-2 rounded-md px-2 flex items-center justify-center">
-          <span className="font-mono text-sm font-semibold text-rendi-accent">{pct.toFixed(0)}%</span>
+          <span className="font-mono text-sm font-semibold text-rendi-accent">{pct.toFixed(0).replace('.', ',')}%</span>
         </div>
       </div>
 
@@ -4459,7 +4473,7 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
                   : 'text-ink-3 hover:text-ink-1'
               }`}
             >
-              {p === 100 ? 'MAX' : `${p}%`}
+              {p === 100 ? 'MAX' : `${pctTxt(p)}`}
             </button>
           ))}
         </div>
@@ -4470,14 +4484,14 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
         <div className="flex items-center justify-between">
           <span className="text-xs text-ink-3">Equivalente</span>
           <span className="font-mono text-sm font-semibold text-ink-0 dark:text-white">
-            ≈ ${usdEq.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+            ≈ ${usdEq.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
           </span>
         </div>
         {pnlUsd != null && (
           <div className="flex items-center justify-between border-t border-line/50 pt-1.5">
             <span className="text-xs text-ink-3">Profit estimado</span>
             <span className={`font-mono text-sm font-semibold ${pnlUsd >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>
-              {pnlUsd >= 0 ? '+' : ''}${Math.abs(pnlUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+              {pnlUsd >= 0 ? '+' : ''}${Math.abs(pnlUsd).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
             </span>
           </div>
         )}

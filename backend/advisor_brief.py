@@ -19,6 +19,7 @@ corrida y se comparte entre todos los asesores (y de paso refresca
 asset_last_price, que beneficia al resto de la app).
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 
 import logging
 from datetime import datetime, timedelta
@@ -415,12 +416,12 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None,
                 _best, _worst = movers[0], movers[-1]
                 _items = [{"label": _best["label"],
                            "detail": ("el mejor del día" if _best["pct"] >= 0
-                                      else "el que menos cayó") + f": {_best['pct']:+.1f}%"}]
+                                      else "el que menos cayó") + f": {fmt_num(_best['pct'], 1, signed=True)}%"}]
                 if len(movers) > 1:
                     # Si nadie cerró en rojo, "el que más cayó" sería mentira.
                     _items.append({"label": _worst["label"],
                                    "detail": ("el que más cayó" if _worst["pct"] < 0
-                                              else "el que menos subió") + f": {_worst['pct']:+.1f}%"})
+                                              else "el que menos subió") + f": {fmt_num(_worst['pct'], 1, signed=True)}%"})
                 out["sections"].append({"title": "Cómo cerraron tus clientes", "items": _items})
         # Qué activo pesa hoy en el libro (motor estrella — P&L acumulado)
         star = (book.get("star") or {})
@@ -441,7 +442,7 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None,
             out["sections"].append({
                 "title": "Movimientos de plata (este mes)",
                 "items": [{"label": "Aportes − retiros",
-                           "detail": f"US$ {flows['net_deposited_usd']:,.0f}".replace(",", ".")}]})
+                           "detail": f"US$ {fmt_num(flows['net_deposited_usd'], 0)}"}]})
 
     # Nunca un mail vacío. ⚠️ `narrative` ENTRA EN LA CUENTA desde que el de
     # apertura lleva resumen de mercado: sin esto, un asesor sin nadie a quien

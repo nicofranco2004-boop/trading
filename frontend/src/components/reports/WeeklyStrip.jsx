@@ -58,13 +58,13 @@ export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoE
 
   const fmtPlata = (v) => fmtMoney(v, { signed: true })
   const frac = fraccionArriba(escala)
-  const topCero = `${(frac * 100).toFixed(2)}%`
-  const altoAbajo = `${((1 - frac) * 100).toFixed(2)}%`
+  const topCero = `${(frac * 100).toFixed(2).replace('.', ',')}%`
+  const altoAbajo = `${((1 - frac) * 100).toFixed(2).replace('.', ',')}%`
   // La marca de "sin medición" va CENTRADA en la línea del cero, pero la línea
   // puede quedar pegada a un borde (una serie toda positiva la manda al 100%) y
   // entonces la marca se salía de la caja y caía encima de las fechas. Se acota
   // su posición sin tocar la línea: lo que se corrige es el adorno, no la escala.
-  const topMarca = `${Math.min(86, Math.max(0, frac * 100 - 7)).toFixed(2)}%`
+  const topMarca = `${Math.min(86, Math.max(0, frac * 100 - 7)).toFixed(2).replace('.', ',')}%`
 
   // La elegida por defecto es la última: la semana más reciente es la que el
   // usuario viene a mirar. El recorte por índice cubre el caso de que cambien
@@ -386,7 +386,7 @@ function Detalle({ medida, modo, porBroker, enPesos, fmtPlata }) {
   // en qué moneda está medido.
   const pct = modo === 'abiertas' || medida.pct == null
     ? null
-    : `${medida.pct >= 0 ? '+' : ''}${medida.pct.toFixed(2)}%${enPesos ? ' en dólares' : ''}`
+    : `${medida.pct >= 0 ? '+' : ''}${medida.pct.toFixed(2).replace('.', ',')}%${enPesos ? ' en dólares' : ''}`
 
   return (
     <div className="rounded-lg border border-line bg-bg-2/50 p-3.5 flex flex-col gap-2.5">

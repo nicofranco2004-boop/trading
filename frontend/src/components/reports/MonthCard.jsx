@@ -36,7 +36,7 @@ import { useMoneyFormat } from '../../contexts/CurrencyContext'
 function fmtPct(p) {
   if (p == null) return '—'
   const sign = p >= 0 ? '+' : '−'
-  return `${sign}${Math.abs(p).toFixed(2)}%`
+  return `${sign}${Math.abs(p).toFixed(2).replace('.', ',')}%`
 }
 
 function daysUntilPeriodEnd(period_end_iso) {
@@ -225,15 +225,15 @@ function MetricsGrid({ metrics: m, money }) {
       <Cell label="Realizado" value={fmt(m.realized_pnl, { signed: true })} accent />
       <Cell label="No realizado" value={fmt(m.unrealized_pnl, { signed: true })} accent />
       <Cell label="Trades" value={m.trades_count} />
-      <Cell label="Win rate" value={m.win_rate != null ? `${m.win_rate.toFixed(0)}%` : '—'} />
+      <Cell label="Win rate" value={m.win_rate != null ? `${m.win_rate.toFixed(0).replace('.', ',')}%` : '—'} />
       {m.vs_sp500_pct != null && (
-        <Cell label="vs S&P 500" value={`${m.vs_sp500_pct >= 0 ? '+' : ''}${m.vs_sp500_pct.toFixed(1)}%`} accent />
+        <Cell label="vs S&P 500" value={`${m.vs_sp500_pct >= 0 ? '+' : ''}${m.vs_sp500_pct.toFixed(1).replace('.', ',')}%`} accent />
       )}
       {m.vs_inflation_pct != null && (
-        <Cell label="vs Inflación AR" value={`${m.vs_inflation_pct >= 0 ? '+' : ''}${m.vs_inflation_pct.toFixed(1)}%`} accent />
+        <Cell label="vs Inflación AR" value={`${m.vs_inflation_pct >= 0 ? '+' : ''}${m.vs_inflation_pct.toFixed(1).replace('.', ',')}%`} accent />
       )}
       {m.delta_pct_over_contrib != null && (
-        <Cell label="Sobre aportado" value={`${m.delta_pct_over_contrib >= 0 ? '+' : ''}${m.delta_pct_over_contrib.toFixed(1)}%`} accent />
+        <Cell label="Sobre aportado" value={`${m.delta_pct_over_contrib >= 0 ? '+' : ''}${m.delta_pct_over_contrib.toFixed(1).replace('.', ',')}%`} accent />
       )}
     </div>
   )

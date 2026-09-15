@@ -19,6 +19,7 @@ import { Plus, TrendingUp, TrendingDown, Trash2, X, ArrowLeft, Wallet } from 'lu
 import { api } from '../utils/api'
 import { useToast } from './Toast'
 import { hoyISO } from '../utils/fecha'
+import { parseNum } from '../utils/format'
 
 const hoy = () => hoyISO()
 const usd = (n) => (n < 0 ? '−' : '') + 'US$' + Math.abs(n).toLocaleString('es-AR',
@@ -169,7 +170,7 @@ export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
                       {r.pnl >= 0 ? '+' : ''}{usd(r.pnl)}
                     </div>
                     <div className="text-[11.5px] text-ink-3 font-medium">
-                      {usd(r.precio)}{r.pct != null ? ` · ${(r.pct * 100).toFixed(1)}%` : ''}
+                      {usd(r.precio)}{r.pct != null ? ` · ${(r.pct * 100).toFixed(1).replace('.', ',')}%` : ''}
                     </div>
                   </>
                 ) : (
@@ -250,9 +251,9 @@ function FuturoFlow({ brokers, onClose, onSaved }) {
     try {
       await api.post('/futures', {
         broker: f.broker, symbol: f.symbol.trim().toUpperCase(), side: f.side,
-        quantity: +f.quantity, entry_price: +f.entry_price,
-        leverage: f.leverage ? +f.leverage : null,
-        margin_usd: f.margin_usd ? +f.margin_usd : null,
+        quantity: parseNum(f.quantity), entry_price: parseNum(f.entry_price),
+        leverage: f.leverage ? parseNum(f.leverage) : null,
+        margin_usd: f.margin_usd ? parseNum(f.margin_usd) : null,
         opened_at: f.opened_at,
       })
       toast.push('Posición agregada')
@@ -359,24 +360,28 @@ function FuturoFlow({ brokers, onClose, onSaved }) {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Campo label="Tamaño" ayuda={baseDe(f.symbol) ? `En unidades de ${baseDe(f.symbol)}` : 'En unidades del activo'}>
-              <input type="number" step="any" value={f.quantity}
+              <input type="text"
+                          inputMode="decimal" value={f.quantity}
                 onChange={e => setF(x => ({ ...x, quantity: e.target.value }))}
                 className={INPUT} placeholder="0.5" />
             </Campo>
             <Campo label="Precio de entrada">
-              <input type="number" step="any" value={f.entry_price}
+              <input type="text"
+                          inputMode="decimal" value={f.entry_price}
                 onChange={e => setF(x => ({ ...x, entry_price: e.target.value }))}
                 className={INPUT} placeholder="60000" />
             </Campo>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Campo label="Apalancamiento" ayuda="Opcional — no entra en ningún cálculo">
-              <input type="number" step="any" value={f.leverage}
+              <input type="text"
+                          inputMode="decimal" value={f.leverage}
                 onChange={e => setF(x => ({ ...x, leverage: e.target.value }))}
                 className={INPUT} placeholder="10" />
             </Campo>
             <Campo label="Margen" ayuda="Opcional — no se descuenta de tu efectivo">
-              <input type="number" step="any" value={f.margin_usd}
+              <input type="text"
+                          inputMode="decimal" value={f.margin_usd}
                 onChange={e => setF(x => ({ ...x, margin_usd: e.target.value }))}
                 className={INPUT} placeholder="3000" />
             </Campo>
@@ -431,18 +436,18 @@ function CerrarFuturo({ pos, precio, onClose, onDone }) {
   }, [onClose])
 
   const dir = pos.dir ?? (pos.side === 'short' ? -1 : 1)
-  const previa = salida !== '' && isFinite(+salida)
-    ? (+salida - pos.entry_price) * pos.quantity * dir - (+comis || 0)
+  const previa = salida !== '' && isFinite(parseNum(salida))
+    ? (parseNum(salida) - pos.entry_price) * pos.quantity * dir - (parseNum(comis) || 0)
     : null
 
   async function cerrar() {
-    if (salida === '' || !isFinite(+salida) || +salida <= 0) {
+    if (salida === '' || !isFinite(parseNum(salida)) || parseNum(salida) <= 0) {
       toast.push('Poné el precio al que cerraste', { type: 'error' }); return
     }
     setCerrandoYa(true)
     try {
       const r = await api.post(`/futures/${pos.id}/close`, {
-        exit_price: +salida, closed_at: fecha, commissions: +comis || 0,
+        exit_price: parseNum(salida), closed_at: fecha, commissions: parseNum(comis) || 0,
       })
       toast.push(`Cerrada · ${r.pnl_usd >= 0 ? '+' : ''}${usd(r.pnl_usd)} al efectivo`)
       onDone()
@@ -462,7 +467,8 @@ function CerrarFuturo({ pos, precio, onClose, onDone }) {
       <div className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Campo label="Precio de salida" ayuda="A cuánto cerraste">
-            <input type="number" step="any" value={salida} autoFocus
+            <input type="text"
+                          inputMode="decimal" value={salida} autoFocus
               onChange={e => setSalida(e.target.value)} className={INPUT} />
           </Campo>
           <Campo label="Fecha">
@@ -470,7 +476,8 @@ function CerrarFuturo({ pos, precio, onClose, onDone }) {
           </Campo>
         </div>
         <Campo label="Comisiones" ayuda="Opcional — restan del resultado">
-          <input type="number" step="any" value={comis}
+          <input type="text"
+                          inputMode="decimal" value={comis}
             onChange={e => setComis(e.target.value)} className={INPUT} placeholder="0" />
         </Campo>
 

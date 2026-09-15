@@ -293,7 +293,7 @@ export function specFromMonth(monthRow) {
   const positive = pnlPct >= 0
   const tone = positive ? 'green' : 'red'
   const sign = positive ? '+' : '−'
-  const pctStr = `${sign}${Math.abs(pnlPct * 100).toFixed(2)}%`
+  const pctStr = `${sign}${Math.abs(pnlPct * 100).toFixed(2).replace('.', ',')}%`
 
   const label = monthRow?.month_label || monthRow?.month || ''
 
@@ -301,20 +301,20 @@ export function specFromMonth(monthRow) {
   if (monthRow?.capital_inicio != null && !isNaN(monthRow.capital_inicio)) {
     stats.push({
       label: 'Capital inicial',
-      value: `$${Math.round(monthRow.capital_inicio).toLocaleString('en-US')}`,
+      value: `$${Math.round(monthRow.capital_inicio).toLocaleString('es-AR')}`,
     })
   }
   if (monthRow?.capital_final != null && !isNaN(monthRow.capital_final)) {
     stats.push({
       label: 'Capital final',
-      value: `$${Math.round(monthRow.capital_final).toLocaleString('en-US')}`,
+      value: `$${Math.round(monthRow.capital_final).toLocaleString('es-AR')}`,
     })
   }
   if (monthRow?.net != null && !isNaN(monthRow.net) && monthRow.net !== 0) {
     const netSign = monthRow.net >= 0 ? '+' : '−'
     stats.push({
       label: monthRow.net >= 0 ? 'Aportes netos' : 'Retiros netos',
-      value: `${netSign}$${Math.abs(Math.round(monthRow.net)).toLocaleString('en-US')}`,
+      value: `${netSign}$${Math.abs(Math.round(monthRow.net)).toLocaleString('es-AR')}`,
     })
   }
   if (monthRow?.best_trade) {

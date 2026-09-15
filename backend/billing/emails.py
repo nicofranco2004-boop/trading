@@ -28,6 +28,7 @@ Estilo:
 """
 
 from __future__ import annotations
+from money_fmt import fmt_num
 import os
 import sys
 import html
@@ -191,7 +192,7 @@ def _send(to: str, subject: str, html: str, text: str,
 
 def _fmt_ars(n: int | float) -> str:
     """ARS 12.100 con separador de miles."""
-    return f"ARS {int(n):,}".replace(",", ".")
+    return f"ARS {fmt_num(int(n), 0)}"
 
 
 def _fmt_date(iso_str: Optional[str]) -> str:
@@ -1169,12 +1170,12 @@ def send_plan_change_admin(*, user_email: str, old_plan: Optional[str],
     amount_text = ""
     if amount_usd:
         try:
-            safe_amount = html.escape(f"USD {float(amount_usd):,.2f}")
+            safe_amount = html.escape(f"USD {fmt_num(float(amount_usd), 2)}")
             amount_row = (
                 f'<tr><td style="padding:6px 0;color:#6b7280;">Monto</td>'
                 f'<td style="padding:6px 0;font-weight:600;">{safe_amount}</td></tr>'
             )
-            amount_text = f"Monto:  USD {float(amount_usd):,.2f}\n"
+            amount_text = f"Monto:  USD {fmt_num(float(amount_usd), 2)}\n"
         except (TypeError, ValueError):
             pass
 
@@ -1704,13 +1705,13 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
     day = brief.get("day") or {}
     head_bits = []
     if aum:
-        head_bits.append(f"Administrás US$ {aum:,.0f}".replace(",", "."))
+        head_bits.append(f"Administrás US$ {fmt_num(aum, 0)}")
     if brief.get("clients_n"):
         head_bits.append(f"{brief['clients_n']} cliente" + ("s" if brief["clients_n"] != 1 else ""))
     if day.get("delta_usd") is not None:
         _s = "+" if day["delta_usd"] >= 0 else "−"
-        _p = f" ({day['pct']:+.1f}%)" if day.get("pct") is not None else ""
-        head_bits.append(f"hoy {_s}US$ {abs(day['delta_usd']):,.0f}".replace(",", ".") + _p)
+        _p = f" ({fmt_num(day['pct'], 1, signed=True)}%)" if day.get("pct") is not None else ""
+        head_bits.append(f"hoy {_s}US$ {fmt_num(abs(day['delta_usd']), 0)}" + _p)
     headline = " · ".join(head_bits)
 
     secs_html, secs_txt = [], []

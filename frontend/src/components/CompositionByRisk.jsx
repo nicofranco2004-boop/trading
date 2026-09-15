@@ -44,7 +44,7 @@ export default function CompositionByRisk({
           <span className="text-xs text-ink-2 flex-shrink-0">
             Variable:{' '}
             <span className="font-semibold tabular text-ink-1">
-              {variable.pct.toFixed(1)}%
+              {variable.pct.toFixed(1).replace('.', ',')}%
             </span>
           </span>
         )}
@@ -81,7 +81,7 @@ export default function CompositionByRisk({
                 {fmt(it.value)}
               </span>
               <span className="text-ink-0 tabular font-medium text-xs w-11 text-right flex-shrink-0">
-                {pct.toFixed(1)}%
+                {pct.toFixed(1).replace('.', ',')}%
               </span>
             </div>
           )

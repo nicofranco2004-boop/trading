@@ -10,6 +10,7 @@ confirme el import. No bloquea — el persister actual ya permite overdraft
 silencioso. La idea es transparencia, no enforcement.
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
@@ -126,7 +127,7 @@ def simulate(
             cost = (invested or 0) + float(tx.fees or 0)
             if cost > 0:
                 _adjust(broker, currency, -cost, tx,
-                        f"Compra de {tx.asset_symbol or 'activo'}: {currency} {cost:,.2f}")
+                        f"Compra de {tx.asset_symbol or 'activo'}: {currency} {fmt_num(cost, 2)}")
 
         elif op == OP_SELL:
             qty = float(tx.quantity or 0)
@@ -152,7 +153,7 @@ def simulate(
             amount = float(tx.gross_amount or 0)
             if amount > 0:
                 _label = {OP_WITHDRAW: "Retiro", OP_FEE: "Comisión"}.get(op, "Impuesto")
-                _adjust(broker, currency, -amount, tx, f"{_label}: {currency} {amount:,.2f}")
+                _adjust(broker, currency, -amount, tx, f"{_label}: {currency} {fmt_num(amount, 2)}")
 
         elif op == OP_FX_ARS_TO_USD:
             ars = float(tx.gross_amount or 0)
@@ -161,7 +162,7 @@ def simulate(
             # Debit ARS del padre
             if ars > 0:
                 _adjust(tx.broker, "ARS", -ars, tx,
-                        f"Conversión ARS→USD: ARS {ars:,.2f}")
+                        f"Conversión ARS→USD: ARS {fmt_num(ars, 2)}")
             # Credit USD al sibling
             if usd > 0:
                 key = (sib, "USDT")
@@ -174,7 +175,7 @@ def simulate(
             # Debit USD del sibling
             if usd > 0:
                 _adjust(sib, "USDT", -usd, tx,
-                        f"Conversión USD→ARS: USD {usd:,.2f}")
+                        f"Conversión USD→ARS: USD {fmt_num(usd, 2)}")
             # Credit ARS al padre
             if ars > 0:
                 key = (tx.broker, "ARS")

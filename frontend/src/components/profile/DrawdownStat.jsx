@@ -1,3 +1,4 @@
+import { pctTxt } from '../../utils/format'
 // DrawdownStat — peor caída real del período vs tolerancia declarada.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body de la card de drawdown en Análisis › Perfil. Stat grande con la peor
@@ -15,7 +16,7 @@ export default function DrawdownStat({ behaviorLabel, toleranceLabel, drawdownPc
             comparison === 'above' ? 'text-rendi-warn' : 'text-ink-0'
           }`}
         >
-          -{drawdownPct}%
+          -{pctTxt(drawdownPct)}
         </span>
         <span className="text-xs text-ink-2 max-w-[220px] leading-snug">
           tu peor caída del período

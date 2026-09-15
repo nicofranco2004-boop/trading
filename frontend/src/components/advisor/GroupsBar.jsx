@@ -9,15 +9,15 @@ import { Filter, Plus, Trash2 } from 'lucide-react'
 import Modal from '../Modal'
 import { api } from '../../utils/api'
 import { useToast } from '../Toast'
+import { parseNum } from '../../utils/format'
 
 const inputCls = 'w-full text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none'
 
-// Coma o punto (formato argentino).
-function num(v) {
-  let s = String(v == null ? '' : v).trim()
-  if (!s) return null
-  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.')
-  const n = parseFloat(s.replace(/[^\d.]/g, ''))
+// Coma o punto: el parseo es el único de la app (parseNum, utils/format). Acá se
+// conserva sólo el filtro propio de estos filtros de grupo — un umbral de AUM en
+// 0 o negativo no filtra nada, así que vale lo mismo que no haber puesto nada.
+const num = (v) => {
+  const n = parseNum(v)
   return Number.isFinite(n) && n > 0 ? n : null
 }
 

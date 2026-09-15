@@ -32,3 +32,36 @@ def fmt_money(value: Optional[float], currency: Optional[str] = "USD",
     s = s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
     sign = "−" if float(value) < 0 else ""
     return f"{sign}$" + s if ccy == "ARS" else f"{sign}US$ " + s
+
+
+def fmt_num(value, decimals: int = 2, signed: bool = False, dash: str = "—") -> str:
+    """Sólo el NÚMERO, con separadores argentinos: punto para los miles, coma
+    para los decimales. `fmt_num(2145.3, 2)` → '2.145,30'. `fmt_num(1234, 0)` →
+    '1.234'. Con `signed=True` antepone '+' a los positivos.
+
+    Existe al lado de `fmt_money` porque casi todos los textos del producto ya
+    traen su propio símbolo pegado al número ("US$ {x}", "ARS {x}", "{ccy} {x}")
+    y cambiarlos por `fmt_money` les cambiaría el símbolo y el espaciado. Esto
+    reemplaza sólo el `:,.2f` y deja la frase igual.
+
+    El swap de separadores es el mismo de `fmt_money`, y por el mismo motivo:
+    un `.replace(",", ".")` suelto sobre un número CON decimales deja
+    '2,145.30' → '2.145.30', que se lee como dos millones.
+    """
+    if value is None:
+        return dash
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return dash
+    # inf/nan no son números que se puedan mostrar: sin este corte, una división
+    # por cero río arriba terminaba publicando "US$ inf" en un mail. Es el mismo
+    # criterio que los guards de TC: "tiene valor" no es lo mismo que "es un
+    # número".
+    if v != v or v in (float("inf"), float("-inf")):
+        return dash
+    s = f"{abs(v):,.{decimals}f}"
+    s = s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+    if v < 0:
+        return "-" + s
+    return ("+" + s) if signed else s

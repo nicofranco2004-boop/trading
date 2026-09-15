@@ -1,3 +1,4 @@
+import { pctTxt } from '../../utils/format'
 // LiquidityBar — barra partida: qué % de la cartera es líquido/estable.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body de la card de liquidez en Análisis › Perfil. Verde = cash + renta fija
@@ -22,7 +23,7 @@ export default function LiquidityBar({ safePct, volatilePct, needsLiquidity, com
           style={{ width: `${safePct}%` }}
         >
           {safePct >= 8 && (
-            <span className="text-[11px] font-semibold text-bg-0 tabular-nums">{safePct}%</span>
+            <span className="text-[11px] font-semibold text-bg-0 tabular-nums">{pctTxt(safePct)}</span>
           )}
         </div>
         <div
@@ -30,7 +31,7 @@ export default function LiquidityBar({ safePct, volatilePct, needsLiquidity, com
           style={{ width: `${volatilePct}%` }}
         >
           {volatilePct >= 8 && (
-            <span className="text-[11px] font-semibold text-bg-0 tabular-nums">{volatilePct}%</span>
+            <span className="text-[11px] font-semibold text-bg-0 tabular-nums">{pctTxt(volatilePct)}</span>
           )}
         </div>
       </div>
@@ -51,12 +52,12 @@ export default function LiquidityBar({ safePct, volatilePct, needsLiquidity, com
         {mismatch ? (
           <>
             Necesitás la plata pronto, pero{' '}
-            <span className="text-rendi-warn tabular-nums">{volatilePct}%</span> está en activos
+            <span className="text-rendi-warn tabular-nums">{pctTxt(volatilePct)}</span> está en activos
             que pueden tardar o bajar justo cuando la precises.
           </>
         ) : (
           <>
-            Tenés <span className="text-rendi-pos tabular-nums">{safePct}%</span>{' '}
+            Tenés <span className="text-rendi-pos tabular-nums">{pctTxt(safePct)}</span>{' '}
             disponible/estable — cómodo para tu horizonte.
           </>
         )}

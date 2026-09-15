@@ -37,7 +37,7 @@ import PfFormModal from '../components/PfFormModal'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
-import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
+import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull } from '../utils/format'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
 import { isBondPosition } from '../utils/tickers'
 import TcMissingBadge from '../components/TcMissingBadge'
@@ -371,10 +371,10 @@ export default function PositionsMobile() {
   }
 
   async function confirmCashFlow() {
-    const amount = +cashFlowForm.amount
+    const amount = parseNum(cashFlowForm.amount)
     if (!amount || amount <= 0) return alert('Ingresá un monto válido.')
     if (cashFlowForm.direction === 'withdraw' && amount > cashFlowForm.available + 0.001) {
-      return alert(`Saldo insuficiente. Disponible: ${cashFlowForm.available.toFixed(2)} ${cashFlowForm.currency}.`)
+      return alert(`Saldo insuficiente. Disponible: ${cashFlowForm.available.toFixed(2).replace('.', ',')} ${cashFlowForm.currency}.`)
     }
     try {
       await api.post('/cash/flow', {
@@ -429,20 +429,22 @@ export default function PositionsMobile() {
   // Igual que `_numLoose` de desktop: acepta la COMA decimal, que en es-AR es lo
   // que la gente escribe. Sin eso, "312,68" se convertía en NaN y el precio
   // manual se descartaba en silencio.
+  // Mismo criterio que `_numLoose` de desktop: el parseo lo hace parseNum
+  // (utils/format), el único de la app. Se conserva el `> 0` porque un TC en
+  // cero es inválido y tiene que viajar como null.
   function _numLooseMobile(v) {
-    if (v === '' || v == null) return null
-    const n = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'))
+    const n = parseNum(v)
     return Number.isFinite(n) && n > 0 ? n : null
   }
 
   async function saveEditPosition() {
     const body = {
       ...addForm,
-      buy_price:   addForm.buy_price   !== '' ? +addForm.buy_price   : null,
-      quantity:    addForm.quantity    !== '' ? +addForm.quantity    : null,
-      invested:    addForm.invested    !== '' ? +addForm.invested    : null,
-      tc_compra:   addForm.tc_compra   !== '' ? +addForm.tc_compra   : null,
-      commissions: addForm.commissions !== '' ? +addForm.commissions : 0,
+      buy_price:   parseNumOrNull(addForm.buy_price),
+      quantity:    parseNumOrNull(addForm.quantity),
+      invested:    parseNumOrNull(addForm.invested),
+      tc_compra:   parseNumOrNull(addForm.tc_compra),
+      commissions: parseNum(addForm.commissions) || 0,
       // Faltaba, y el comentario de arriba ya prometía "misma normalización que
       // desktop": el campo "Precio actual" arranca en '' y se mandaba tal cual,
       // así que el backend rechazaba el alta entera con
@@ -1158,7 +1160,7 @@ export default function PositionsMobile() {
   // para "$41.417" pero no para "$58.977.218". Se mide por largo del string, que
   // es lo que determina el ancho con dígitos tabulares.
   const heroTexto = '$' + Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcValuacion : (total + pfValueUsd))
-    .toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')
+    .toLocaleString(LOCALE)
   const heroClass = heroTexto.length >= 13 ? 'text-3xl' : heroTexto.length >= 10 ? 'text-4xl' : 'text-5xl'
 
   function restablecerVista() {
@@ -1677,7 +1679,7 @@ export default function PositionsMobile() {
             {cashFlowForm.direction === 'withdraw' && (
               <p className="text-xs text-ink-3">
                 Disponible: <span className="font-medium text-ink-1">
-                  {cashFlowForm.available.toFixed(2)} {cashFlowForm.currency}
+                  {cashFlowForm.available.toFixed(2).replace('.', ',')} {cashFlowForm.currency}
                 </span>
               </p>
             )}
@@ -1686,8 +1688,8 @@ export default function PositionsMobile() {
                 Monto ({cashFlowForm.currency})
               </label>
               <input
-                type="number"
-                step="any"
+                type="text"
+                          inputMode="decimal"
                 inputMode="decimal"
                 autoFocus
                 value={cashFlowForm.amount}
@@ -1707,7 +1709,7 @@ export default function PositionsMobile() {
               <button
                 type="button"
                 onClick={confirmCashFlow}
-                disabled={!+cashFlowForm.amount}
+                disabled={!(parseNum(cashFlowForm.amount) > 0)}
                 className={`px-4 py-2 text-sm rounded-md font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed transition ${
                   cashFlowForm.direction === 'deposit'
                     ? 'bg-rendi-pos hover:bg-rendi-pos/90'
@@ -1821,11 +1823,11 @@ export default function PositionsMobile() {
   async function saveNewPosition() {
     const body = {
       ...addForm,
-      buy_price:   addForm.buy_price   !== '' ? +addForm.buy_price   : null,
-      quantity:    addForm.quantity    !== '' ? +addForm.quantity    : null,
-      invested:    addForm.invested    !== '' ? +addForm.invested    : null,
-      tc_compra:   addForm.tc_compra   !== '' ? +addForm.tc_compra   : null,
-      commissions: addForm.commissions !== '' ? +addForm.commissions : 0,
+      buy_price:   parseNumOrNull(addForm.buy_price),
+      quantity:    parseNumOrNull(addForm.quantity),
+      invested:    parseNumOrNull(addForm.invested),
+      tc_compra:   parseNumOrNull(addForm.tc_compra),
+      commissions: parseNum(addForm.commissions) || 0,
       // Mismo arreglo que en saveEditPosition: sin esto el alta se rechazaba
       // entera con `float_parsing` porque el campo vacío viajaba como ''.
       price_override: _numLooseMobile(addForm.price_override),
@@ -2769,33 +2771,37 @@ const TONO_ACCION = {
 // Monto de card: sin abreviar y SIN el código de moneda. El código lo dice el
 // segmentado del header y la línea del valor; repetirlo en cada chip es lo que
 // hacía que "+$1.794.240 ARS" no entrara y se cortara en "+$1.794.240 A…".
+// `currency` ya no decide el formato de los separadores —se escriben siempre a
+// la argentina, ver LOCALE en utils/format— pero sigue en la firma porque el
+// tercer argumento (`{ signed }`) se correría de posición. No volver a usarlo
+// para ramificar el idioma del número.
 function montoCard(n, currency, { signed = false } = {}) {
   if (n == null || isNaN(n)) return '—'
-  const isArs = String(currency).toUpperCase() === 'ARS'
   const abs = Math.abs(n)
-  const body = abs.toLocaleString(isArs ? 'es-AR' : 'en-US', { maximumFractionDigits: 0 })
+  const body = abs.toLocaleString(LOCALE, { maximumFractionDigits: 0 })
   const sign = signed ? (n > 0 ? '+' : n < 0 ? '−' : '') : (n < 0 ? '−' : '')
   return `${sign}$${body}`
 }
 
 function formatQty(q) {
   if (q == null || isNaN(q)) return '—'
-  if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('en-US')
-  if (Math.abs(q) >= 1) return q.toFixed(2).replace(/\.00$/, '')
-  return q.toFixed(4)
+  if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString(LOCALE)
+  // maximumFractionDigits sin minimum = el mismo "sacá los ceros de atrás" que
+  // hacía el .replace(/\.00$/), pero con la coma decimal que corresponde.
+  if (Math.abs(q) >= 1) return q.toLocaleString(LOCALE, { maximumFractionDigits: 2 })
+  return q.toLocaleString(LOCALE, { minimumFractionDigits: 4, maximumFractionDigits: 4 })
 }
 
 // El PRECIO sí lleva decimales: `montoCard` redondea a entero (sirve para un
 // valor de cartera, no para un precio unitario — un CEDEAR a US$14,37 se
 // mostraría "US$14").
-function precioCard(n, currency) {
+function precioCard(n, currency) {  // `currency` idem montoCard: no ramifica el idioma
   if (n == null || isNaN(n)) return '—'
-  const isArs = String(currency).toUpperCase() === 'ARS'
   const abs = Math.abs(n)
   // Precios chicos (cripto, un bono per-1) necesitan más resolución que una
   // acción; sin esto una posición a US$0,0043 se lee "$0,00".
   const dec = abs >= 1000 ? 0 : abs >= 1 ? 2 : 4
-  const body = abs.toLocaleString(isArs ? 'es-AR' : 'en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec })
+  const body = abs.toLocaleString(LOCALE, { minimumFractionDigits: dec, maximumFractionDigits: dec })
   return `${n < 0 ? '−' : ''}$${body}`
 }
 

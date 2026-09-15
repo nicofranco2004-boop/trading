@@ -26,6 +26,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import LockedSection from '../components/plan/LockedSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { pctTxt } from '../utils/format'
 
 // Mapeo code → icono + tono visual + descripción educativa.
 // `what`: 1-2 frases que explican qué detecta el sesgo (en abstracto, sin
@@ -398,9 +399,9 @@ function ModalEvidence({ card }) {
     case 'disposition_effect':
       return (
         <div className="space-y-3">
-          <EvidenceRow label="Ganadoras (avg holding)" value={`${ev.winners_avg_days?.toFixed(1)} días`} count={ev.winners_count} />
-          <EvidenceRow label="Perdedoras (avg holding)" value={`${ev.losers_avg_days?.toFixed(1)} días`} count={ev.losers_count} />
-          <EvidenceRow label="Ratio" value={`${ev.ratio?.toFixed(2)}× (winners/losers)`} mono />
+          <EvidenceRow label="Ganadoras (avg holding)" value={`${ev.winners_avg_days?.toFixed(1).replace('.', ',')} días`} count={ev.winners_count} />
+          <EvidenceRow label="Perdedoras (avg holding)" value={`${ev.losers_avg_days?.toFixed(1).replace('.', ',')} días`} count={ev.losers_count} />
+          <EvidenceRow label="Ratio" value={`${ev.ratio?.toFixed(2).replace('.', ',')}× (winners/losers)`} mono />
           {(ev.sample_winners?.length > 0 || ev.sample_losers?.length > 0) && (
             <div className="grid grid-cols-2 gap-3 pt-2">
               {ev.sample_winners?.length > 0 && (
@@ -417,9 +418,9 @@ function ModalEvidence({ card }) {
       return (
         <div className="space-y-2">
           <EvidenceRow label="Trades cerrados" value={ev.total_trades} mono />
-          <EvidenceRow label="Período analizado" value={`${ev.period_years?.toFixed(1)} años (${ev.period_days} días)`} />
-          <EvidenceRow label="Ops por año" value={ev.annual_ops?.toFixed(1)} mono />
-          <EvidenceRow label="Turnover anualizado" value={`${ev.annual_turnover?.toFixed(2)}×`} mono />
+          <EvidenceRow label="Período analizado" value={`${ev.period_years?.toFixed(1).replace('.', ',')} años (${ev.period_days} días)`} />
+          <EvidenceRow label="Ops por año" value={ev.annual_ops?.toFixed(1).replace('.', ',')} mono />
+          <EvidenceRow label="Turnover anualizado" value={`${ev.annual_turnover?.toFixed(2).replace('.', ',')}×`} mono />
           <EvidenceRow label="Notional total" value={`US$ ${ev.total_notional?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
           <EvidenceRow label="Capital promedio" value={`US$ ${ev.capital_avg?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
         </div>
@@ -429,14 +430,14 @@ function ModalEvidence({ card }) {
         <div className="space-y-2">
           <EvidenceRow label="Ganadoras" value={ev.winners_count} count={`avg US$ ${ev.winners_avg_size_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
           <EvidenceRow label="Perdedoras" value={ev.losers_count} count={`avg US$ ${ev.losers_avg_size_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
-          <EvidenceRow label="Ratio losers/winners" value={`${ev.ratio?.toFixed(2)}×`} mono />
+          <EvidenceRow label="Ratio losers/winners" value={`${ev.ratio?.toFixed(2).replace('.', ',')}×`} mono />
         </div>
       )
     case 'averaging_down':
       return (
         <div className="space-y-3">
           <EvidenceRow label="Instancias detectadas" value={ev.total_instances} mono />
-          <EvidenceRow label="Caída promedio entre compras" value={`${ev.avg_drop_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Caída promedio entre compras" value={`${ev.avg_drop_pct?.toFixed(1).replace('.', ',')}%`} mono />
           {ev.instances?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-2">
               <div className="text-[12.5px] text-ink-2 font-medium">Ejemplos</div>
@@ -444,7 +445,7 @@ function ModalEvidence({ card }) {
                 <div key={i} className="text-xs border border-line/40 rounded-sm p-2 bg-bg-2/40">
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-medium text-ink-0">{inst.asset}</span>
-                    <span className="font-mono tabular text-rendi-neg">{inst.price_drop_pct}%</span>
+                    <span className="font-mono tabular text-rendi-neg">{pctTxt(inst.price_drop_pct)}</span>
                   </div>
                   <div className="text-[11px] text-ink-3 tabular">
                     {inst.first_buy.date}: US$ {inst.first_buy.price} → {inst.second_buy.date}: US$ {inst.second_buy.price}
@@ -462,9 +463,9 @@ function ModalEvidence({ card }) {
       return (
         <div className="space-y-3">
           <EvidenceRow label="Activo más grande" value={ev.top_asset} />
-          <EvidenceRow label="Top 1" value={`${ev.top1_pct?.toFixed(1)}%`} mono />
-          <EvidenceRow label="Top 3" value={`${ev.top3_pct?.toFixed(1)}%`} mono />
-          <EvidenceRow label="Top 5" value={`${ev.top5_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Top 1" value={`${ev.top1_pct?.toFixed(1).replace('.', ',')}%`} mono />
+          <EvidenceRow label="Top 3" value={`${ev.top3_pct?.toFixed(1).replace('.', ',')}%`} mono />
+          <EvidenceRow label="Top 5" value={`${ev.top5_pct?.toFixed(1).replace('.', ',')}%`} mono />
           <EvidenceRow label="Activos totales" value={ev.total_assets} mono />
           {ev.top_5?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-1">
@@ -474,7 +475,7 @@ function ModalEvidence({ card }) {
                   <span className="text-ink-1 font-mono">{a.asset}</span>
                   <div className="flex items-baseline gap-2">
                     <span className="text-ink-3 tabular text-[11px]">US$ {a.value_usd.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
-                    <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">{a.pct}%</span>
+                    <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">{pctTxt(a.pct)}</span>
                   </div>
                 </div>
               ))}
@@ -487,7 +488,7 @@ function ModalEvidence({ card }) {
       return (
         <div className="space-y-2">
           <EvidenceRow label="Cash en pesos" value={`ARS ${ev.cash_ars_pesos?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
-          <EvidenceRow label="Inflación 12M acumulada" value={`${ev.inflation_cum_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Inflación 12M acumulada" value={`${ev.inflation_cum_pct?.toFixed(1).replace('.', ',')}%`} mono />
           <EvidenceRow label="Pérdida en pesos" value={`ARS ${ev.loss_pesos?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
           <EvidenceRow label="Pérdida en USD (al blue)" value={`US$ ${ev.loss_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
         </div>
@@ -528,19 +529,19 @@ function ModalEvidence({ card }) {
     case 'winrate_payoff':
       return (
         <div className="space-y-2">
-          <EvidenceRow label="Win rate" value={`${ev.win_rate_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Win rate" value={`${ev.win_rate_pct?.toFixed(1).replace('.', ',')}%`} mono />
           <EvidenceRow label="Ganadoras" value={ev.winners_count} count={`avg US$ ${ev.avg_win_usd?.toFixed(0)}`} />
           <EvidenceRow label="Perdedoras" value={ev.losers_count} count={`avg US$ ${ev.avg_loss_usd?.toFixed(0)}`} />
-          <EvidenceRow label="Payoff ratio" value={ev.payoff_ratio != null ? `${ev.payoff_ratio.toFixed(2)}×` : '∞'} mono />
-          <EvidenceRow label="Expectancy" value={`${ev.expectancy_usd >= 0 ? '+' : ''}US$ ${ev.expectancy_usd?.toFixed(2)} por op`} mono />
+          <EvidenceRow label="Payoff ratio" value={ev.payoff_ratio != null ? `${ev.payoff_ratio.toFixed(2).replace('.', ',')}×` : '∞'} mono />
+          <EvidenceRow label="Expectancy" value={`${ev.expectancy_usd >= 0 ? '+' : ''}US$ ${ev.expectancy_usd?.toFixed(2).replace('.', ',')} por op`} mono />
         </div>
       )
 
     case 'home_bias':
       return (
         <div className="space-y-3">
-          <EvidenceRow label="Argentina" value={`${ev.ar_pct?.toFixed(1)}%`} count={`US$ ${ev.ar_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
-          <EvidenceRow label="Internacional" value={`${ev.intl_pct?.toFixed(1)}%`} count={`US$ ${ev.intl_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
+          <EvidenceRow label="Argentina" value={`${ev.ar_pct?.toFixed(1).replace('.', ',')}%`} count={`US$ ${ev.ar_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
+          <EvidenceRow label="Internacional" value={`${ev.intl_pct?.toFixed(1).replace('.', ',')}%`} count={`US$ ${ev.intl_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
           <EvidenceRow label="Total cartera" value={`US$ ${ev.total_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
           {/* Barra visual de mix AR / INTL */}
           <div className="pt-1">
@@ -559,9 +560,9 @@ function ModalEvidence({ card }) {
     case 'cash_drag':
       return (
         <div className="space-y-2">
-          <EvidenceRow label="Cash total" value={`${ev.cash_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Cash total" value={`${ev.cash_pct?.toFixed(1).replace('.', ',')}%`} mono />
           <EvidenceRow label="Cash USD" value={`US$ ${ev.cash_usd_amount?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
-          <EvidenceRow label="Cash ARS (en USD)" value={`US$ ${ev.cash_ars_usd_equiv?.toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${ev.cash_ars_pct?.toFixed(1)}%)`} mono />
+          <EvidenceRow label="Cash ARS (en USD)" value={`US$ ${ev.cash_ars_usd_equiv?.toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${ev.cash_ars_pct?.toFixed(1).replace('.', ',')}%)`} mono />
           <EvidenceRow label="Invertido" value={`US$ ${ev.invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
           <EvidenceRow label="Total cartera" value={`US$ ${ev.total_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
         </div>
@@ -571,7 +572,7 @@ function ModalEvidence({ card }) {
     case 'recency_bias':
       return (
         <div className="space-y-3">
-          <EvidenceRow label="Invested afectado" value={`${ev.chase_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Invested afectado" value={`${ev.chase_pct?.toFixed(1).replace('.', ',')}%`} mono />
           <EvidenceRow label="Monto chase pumps" value={`US$ ${ev.chase_pumps_invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
           <EvidenceRow label="Activos flagged" value={ev.flagged_count} count={`de ${ev.flagged_count > 0 ? ev.flagged_count : 0}`} />
           {ev.flagged_assets?.length > 0 && (
@@ -581,7 +582,7 @@ function ModalEvidence({ card }) {
                 <div key={i} className="text-xs border border-line/40 rounded-sm p-2 bg-bg-2/40">
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-medium text-ink-0">{a.asset}</span>
-                    <span className="font-mono tabular text-rendi-neg">{a.drawdown_pct}%</span>
+                    <span className="font-mono tabular text-rendi-neg">{pctTxt(a.drawdown_pct)}</span>
                   </div>
                   <div className="text-[11px] text-ink-3 tabular">
                     Compraste a US$ {a.buy_price?.toLocaleString('es-AR', { maximumFractionDigits: 2 })} · hoy US$ {a.current_price?.toLocaleString('es-AR', { maximumFractionDigits: 2 })} · invested US$ {a.invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
@@ -597,8 +598,8 @@ function ModalEvidence({ card }) {
       return (
         <div className="space-y-3">
           <EvidenceRow label="Sector más grande" value={ev.top_sector} />
-          <EvidenceRow label="Top sector" value={`${ev.top1_pct?.toFixed(1)}%`} mono />
-          <EvidenceRow label="Top 3 sectores" value={`${ev.top3_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Top sector" value={`${ev.top1_pct?.toFixed(1).replace('.', ',')}%`} mono />
+          <EvidenceRow label="Top 3 sectores" value={`${ev.top3_pct?.toFixed(1).replace('.', ',')}%`} mono />
           <EvidenceRow label="Sectores distintos" value={ev.total_sectors} mono />
           {ev.breakdown?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-1">
@@ -611,7 +612,7 @@ function ModalEvidence({ card }) {
                     <div
                       key={i}
                       style={{ width: `${b.pct}%`, background: COLORS[i % COLORS.length] }}
-                      title={`${b.sector}: ${b.pct}%`}
+                      title={`${b.sector}: ${pctTxt(b.pct)}`}
                     />
                   )
                 })}
@@ -621,7 +622,7 @@ function ModalEvidence({ card }) {
                   <span className="text-ink-1 truncate flex-1">{b.sector}</span>
                   <div className="flex items-baseline gap-2 flex-shrink-0">
                     <span className="text-ink-3 tabular text-[11px]">US$ {b.value_usd.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
-                    <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">{b.pct}%</span>
+                    <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">{pctTxt(b.pct)}</span>
                   </div>
                 </div>
               ))}

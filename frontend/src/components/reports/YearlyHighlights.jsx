@@ -3,6 +3,7 @@
 // sin emojis. Tono por tipo (positivo / negativo / actividad / hit).
 
 import { Trophy, TrendingDown, Activity, Rocket, Award } from 'lucide-react'
+import { parseNum } from '../../utils/format'
 
 function computeHighlights(months) {
   if (!months || months.length === 0) return []
@@ -24,9 +25,14 @@ function computeHighlights(months) {
   for (const m of months) {
     for (const h of m.highlights || []) {
       if (h.kind === 'best_op') {
-        const match = (h.value_label || '').match(/US\$([\d,]+)/)
+        // El monto viene DENTRO de un texto que arma el backend, ya formateado
+        // ("+US$1.234"). La clase de caracteres tiene que incluir el punto: con
+        // sólo [\d,] la captura se corta en el primer separador de miles y
+        // "+US$1.234" se leía como 1 — el "mejor trade del año" comparaba
+        // unidades contra miles y elegía cualquier cosa.
+        const match = (h.value_label || '').match(/US\$\s?([\d.,]+)/)
         if (!match) continue
-        const amt = parseInt(match[1].replace(/,/g, ''), 10) || 0
+        const amt = parseNum(match[1]) || 0
         if (amt > bestOpAmount) {
           bestOpAmount = amt
           bestOpHighlight = { ...h, month_label: m.period_label }
@@ -41,7 +47,7 @@ function computeHighlights(months) {
       kind: 'best_month',
       Icon: Trophy,
       label: 'Mejor mes',
-      value: `${bestMonth.period_label.split(' ')[0]} ${bestMonth.metrics.delta_pct >= 0 ? '+' : ''}${bestMonth.metrics.delta_pct.toFixed(1)}%`,
+      value: `${bestMonth.period_label.split(' ')[0]} ${bestMonth.metrics.delta_pct >= 0 ? '+' : ''}${bestMonth.metrics.delta_pct.toFixed(1).replace('.', ',')}%`,
       tone: 'positive',
     })
   }
@@ -50,7 +56,7 @@ function computeHighlights(months) {
       kind: 'worst_month',
       Icon: TrendingDown,
       label: 'Peor mes',
-      value: `${worstMonth.period_label.split(' ')[0]} ${worstMonth.metrics.delta_pct.toFixed(1)}%`,
+      value: `${worstMonth.period_label.split(' ')[0]} ${worstMonth.metrics.delta_pct.toFixed(1).replace('.', ',')}%`,
       tone: 'negative',
     })
   }

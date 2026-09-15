@@ -279,7 +279,7 @@ function LivePreview() {
           <KpiCell
             label="Resultado total"
             value={`+US$ ${resultado.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`}
-            sub={`+${resultadoPct.toFixed(1)}% desde el inicio`}
+            sub={`+${resultadoPct.toFixed(1).replace('.', ',')}% desde el inicio`}
             positive
           />
           <KpiCell
@@ -311,7 +311,7 @@ function LivePreview() {
                     US$ {b.value.toLocaleString('es-AR')}
                   </div>
                   <div className="text-[10px] font-mono text-ink-3">
-                    Inv US$ {b.invested.toLocaleString('es-AR')} · <span className="text-rendi-pos">+US$ {pnl.toLocaleString('es-AR')} ({b.pct.toFixed(1)}%)</span>
+                    Inv US$ {b.invested.toLocaleString('es-AR')} · <span className="text-rendi-pos">+US$ {pnl.toLocaleString('es-AR')} ({b.pct.toFixed(1).replace('.', ',')}%)</span>
                   </div>
                 </div>
               )

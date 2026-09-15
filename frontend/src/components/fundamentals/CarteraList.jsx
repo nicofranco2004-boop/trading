@@ -23,6 +23,7 @@ import {
   holdingHasReliableFundamentals,
 } from '../../utils/valuation'
 import { businessQuality, priceRead, AXIS_PILL } from './axes'
+import { pctTxt } from '../../utils/format'
 
 const baseTicker = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
 
@@ -33,7 +34,7 @@ function isEquityLike(p) {
 }
 const symHasFund = (s) => { const t = inferType(s); return t === 'stock_us' || t === 'cedear' }
 
-const fmtPct = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n.toFixed(1) + '%')
+const fmtPct = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n.toFixed(1).replace('.', ',') + '%')
 
 export default function CarteraList({ onOpenTicker, watchlist }) {
   const { valuationDollar } = useCurrency()
@@ -174,7 +175,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
           </div>
         </div>
 
-        <div className="hidden sm:block text-sm text-ink-1 tabular">{weight != null ? weight.toFixed(1) + '%' : '—'}</div>
+        <div className="hidden sm:block text-sm text-ink-1 tabular">{weight != null ? weight.toFixed(1).replace('.', ',') + '%' : '—'}</div>
 
         <div>
           {loadingFund ? <Skeleton className="h-4 w-16 rounded" />
@@ -232,7 +233,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
             <p className="text-xs text-ink-2">Tus acciones y CEDEARs, ordenadas por peso en la cartera.</p>
             {pctAnalizable != null && (
               <p className="text-[11px] text-ink-3">
-                {pctAnalizable}% de tu cartera analizable
+                {pctTxt(pctAnalizable)} de tu cartera analizable
                 {excludedCount > 0 && ` · ${excludedCount} ${excludedCount === 1 ? 'tenencia' : 'tenencias'} sin fundamentals (cripto, bonos, FCI, acciones locales)`}
               </p>
             )}

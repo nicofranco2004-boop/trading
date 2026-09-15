@@ -16,6 +16,7 @@ import {
   PlusCircle, SkipForward,
 } from 'lucide-react'
 import { api } from '../../utils/api'
+import { parseNum } from '../../utils/format'
 
 // Brokers comunes en AR + moneda default sugerida (mismo set que el viejo
 // BrokerStep). El chip pre-llena nombre + moneda; el user puede tipear otro.
@@ -168,8 +169,8 @@ function ManualForm({ onNext, onBack }) {
     e?.preventDefault?.()
     const cleanBroker = brokerName.trim()
     const cleanAsset = asset.trim().toUpperCase()
-    const qty = parseFloat(quantity)
-    const price = parseFloat(buyPrice)
+    const qty = parseNum(quantity)
+    const price = parseNum(buyPrice)
     if (!cleanBroker) {
       setError('Elegí o tipeá el broker donde tenés esta posición.')
       return
@@ -310,13 +311,12 @@ function ManualForm({ onNext, onBack }) {
               / cantidad
             </label>
             <input
-              type="number"
+              type="text"
+                          inputMode="decimal"
               inputMode="decimal"
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
               placeholder="10"
-              step="any"
-              min="0"
               className="w-full px-3 py-2.5 rounded bg-bg-1 border border-line focus:border-data-violet focus:outline-none text-base text-ink-0 placeholder-ink-3"
             />
           </div>
@@ -325,13 +325,12 @@ function ManualForm({ onNext, onBack }) {
               / precio promedio
             </label>
             <input
-              type="number"
+              type="text"
+                          inputMode="decimal"
               inputMode="decimal"
               value={buyPrice}
               onChange={(e) => setBuyPrice(e.target.value)}
               placeholder="120.50"
-              step="any"
-              min="0"
               className="w-full px-3 py-2.5 rounded bg-bg-1 border border-line focus:border-data-violet focus:outline-none text-base text-ink-0 placeholder-ink-3"
             />
           </div>

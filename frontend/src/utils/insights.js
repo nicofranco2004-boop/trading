@@ -34,7 +34,7 @@ export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, capita
   const winners = withPnl.filter(p => p.pnl_usd > 0).sort((a, b) => b.pnl_usd - a.pnl_usd)
 
   const pctTxt = totalReturnPct != null
-    ? `${totalReturnPct >= 0 ? '+' : ''}${(totalReturnPct * 100).toFixed(1)}%`
+    ? `${totalReturnPct >= 0 ? '+' : ''}${(totalReturnPct * 100).toFixed(1).replace('.', ',')}%`
     : null
 
   // Sin porcentaje que sostener, la frase se cuenta con la PLATA. Es el mismo

@@ -16,7 +16,7 @@ import { ArrowLeft, TrendingUp, TrendingDown, Calendar } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
-import { usd, pctSigned, colorClass } from '../utils/format'
+import { usd, pctSigned, colorClass, LOCALE } from '../utils/format'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey, cashAssetLabel } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -230,7 +230,7 @@ export default function PositionDetailMobile() {
             Valor actual
           </div>
           <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
-            ${Math.round(valueUsd).toLocaleString('en-US')}
+            ${Math.round(valueUsd).toLocaleString('es-AR')}
             <span className="text-base text-ink-3 ml-1.5 font-normal">USD</span>
           </div>
           {!p.is_cash && pnlUsd != null && (
@@ -239,7 +239,7 @@ export default function PositionDetailMobile() {
                 ? <TrendingUp size={13} strokeWidth={1.75} />
                 : <TrendingDown size={13} strokeWidth={1.75} />}
               <span>
-                {pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(pnlUsd)).toLocaleString('en-US')}
+                {pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(pnlUsd)).toLocaleString('es-AR')}
               </span>
               <span className="text-ink-3 text-xs">·</span>
               <span>{pctSigned(pnlPct)}</span>
@@ -278,26 +278,26 @@ export default function PositionDetailMobile() {
               {avgPriceDisp != null && (
                 <DetailRow
                   label="Precio promedio"
-                  value={lotShowsUsd ? `$${avgPriceDisp.toFixed(2)} USD` : `${formatLocalPrice(avgPriceDisp)} ARS`}
+                  value={lotShowsUsd ? `$${avgPriceDisp.toFixed(2).replace('.', ',')} USD` : `${formatLocalPrice(avgPriceDisp)} ARS`}
                   bordered
                 />
               )}
               {priceLocal != null && (
                 <DetailRow
                   label="Precio actual"
-                  value={lotShowsUsd ? `$${priceLocal.toFixed(2)} USD` : `${formatLocalPrice(priceLocal)} ARS`}
+                  value={lotShowsUsd ? `$${priceLocal.toFixed(2).replace('.', ',')} USD` : `${formatLocalPrice(priceLocal)} ARS`}
                   bordered
                 />
               )}
               <DetailRow
                 label="Invertido"
-                value={lotShowsUsd ? `$${Math.round(investedDisp).toLocaleString('en-US')} USD` : `${formatLocalPrice(investedDisp)} ARS`}
+                value={lotShowsUsd ? `$${Math.round(investedDisp).toLocaleString('es-AR')} USD` : `${formatLocalPrice(investedDisp)} ARS`}
                 bordered
               />
               <DetailRow
                 label="P/L"
                 value={pnlUsd != null
-                  ? `${pnlUsd >= 0 ? '+' : '−'}$${Math.abs(Math.round(pnlUsd)).toLocaleString('en-US')} USD`
+                  ? `${pnlUsd >= 0 ? '+' : '−'}$${Math.abs(Math.round(pnlUsd)).toLocaleString('es-AR')} USD`
                   : '—'}
                 bordered
                 valueTone={pnlPct}
@@ -309,12 +309,12 @@ export default function PositionDetailMobile() {
               <DetailRow label="Tipo" value="Cash" />
               <DetailRow
                 label="Saldo"
-                value={isAR ? `${formatLocalPrice(invested)} ARS` : `$${Math.round(invested).toLocaleString('en-US')} USD`}
+                value={isAR ? `${formatLocalPrice(invested)} ARS` : `$${Math.round(invested).toLocaleString('es-AR')} USD`}
                 bordered
               />
               <DetailRow
                 label="Equivalente USD"
-                value={`$${Math.round(valueUsd).toLocaleString('en-US')}`}
+                value={`$${Math.round(valueUsd).toLocaleString('es-AR')}`}
                 bordered
               />
             </>
@@ -355,7 +355,7 @@ export default function PositionDetailMobile() {
                 </div>
                 {op.pnl_usd != null && (
                   <div className={`text-sm font-medium tabular leading-none ${colorClass(op.pnl_usd)}`}>
-                    {op.pnl_usd >= 0 ? '+' : '−'}${Math.abs(Math.round(op.pnl_usd)).toLocaleString('en-US')}
+                    {op.pnl_usd >= 0 ? '+' : '−'}${Math.abs(Math.round(op.pnl_usd)).toLocaleString('es-AR')}
                   </div>
                 )}
               </li>
@@ -390,9 +390,9 @@ function DetailRow({ label, value, bordered, valueTone }) {
 
 function formatQty(q) {
   if (q == null || isNaN(q)) return '—'
-  if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('en-US')
-  if (Math.abs(q) >= 1) return q.toFixed(2).replace(/\.00$/, '')
-  return q.toFixed(4)
+  if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('es-AR')
+  if (Math.abs(q) >= 1) return q.toLocaleString(LOCALE, { maximumFractionDigits: 2 })
+  return q.toFixed(4).replace('.', ',')
 }
 
 function formatLocalPrice(n) {

@@ -4134,7 +4134,7 @@ class AdvisorAlertsAgrupadasTest(AdvisorAlertsAuditTest):
         self.assertEqual(len(mails[0]["lines"]), 2)
         # El asunto nombra a los dos, la que más se movió primero (−12% vs +10%).
         self.assertEqual(mails[0]["heading"],
-                         "La cartera de Ana G cayó 12.0% y la de Juan P subió 10.0% hoy")
+                         "La cartera de Ana G cayó 12,0% y la de Juan P subió 10,0% hoy")
         self.assertIn("se movieron 2 carteras de tu libro hoy", mails[0]["detail"])
         # Los dos eventos quedan registrados y marcados como entregados.
         conn = main.get_db()
@@ -4154,5 +4154,5 @@ class AdvisorAlertsAgrupadasTest(AdvisorAlertsAuditTest):
         self.assertEqual(res["fired"], 1)
         self.assertEqual(len(mails), 1)
         self.assertIsNone(mails[0]["lines"])
-        self.assertEqual(mails[0]["heading"], "La cartera de Juan P subió 10.0% hoy")
+        self.assertEqual(mails[0]["heading"], "La cartera de Juan P subió 10,0% hoy")
         self.assertIn("y hoy vale", mails[0]["detail"])

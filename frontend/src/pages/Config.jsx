@@ -1354,7 +1354,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           <div className="text-[10px] text-ink-3 leading-tight">
             Acceso a <span className="text-ink-2 capitalize">{anchorPlan}</span>{' '}
             ({anchorPeriod === 'annual' ? 'anual' : 'mensual'}){' '}
-            equivale a <span className="text-ink-2 tabular">${creditUsd.toFixed(2)}</span>
+            equivale a <span className="text-ink-2 tabular">${creditUsd.toFixed(2).replace('.', ',')}</span>
           </div>
           {periodEndLabel && (
             <div className="text-[10px] text-ink-3 leading-tight mt-0.5">

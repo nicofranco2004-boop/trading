@@ -61,7 +61,7 @@ export default function BenchmarksLine({ monthly, bench, totalPortfolio, classNa
     const sign = d.delta >= 0 ? '+' : '−'
     return {
       ref: name,
-      pct: `${sign}${Math.abs(d.pct).toFixed(1)}%`,
+      pct: `${sign}${Math.abs(d.pct).toFixed(1).replace('.', ',')}%`,
       pos: d.delta >= 0,
       amount: `${sign}USD ${usd(Math.abs(d.delta), 0)} vs ${name}`,
     }

@@ -188,7 +188,7 @@ class BuilderMetricsTest(unittest.TestCase):
         )
         self.assertEqual(rpt.period_label, "Mar 2026")
         self.assertTrue(rpt.is_relevant)
-        self.assertIn("+9.5%", rpt.headline)  # Modified Dietz ~9.52
+        self.assertIn("+9,5%", rpt.headline)  # Modified Dietz ~9.52
         # Drivers debe incluir BTC con contribución 100% (única operación)
         self.assertEqual(len(rpt.drivers), 1)
         self.assertEqual(rpt.drivers[0].asset, "BTC")
@@ -282,8 +282,8 @@ class DetectorsTest(unittest.TestCase):
         i = detectors.detect_vs_benchmark(_stub_report(metrics=m))
         self.assertIsNotNone(i)
         self.assertEqual(i.code, "BEAT_BENCHMARK")
-        self.assertIn("Diferencia: +10.0 puntos", i.body)
-        self.assertIn("S&P 500: +5.0%", i.body)
+        self.assertIn("Diferencia: +10,0 puntos", i.body)
+        self.assertIn("S&P 500: +5,0%", i.body)
 
     def test_vs_benchmark_no_resta_dos_veces(self):
         """AUDIT D-2: el detector lee el exceso, no lo despeja restando.
@@ -298,7 +298,7 @@ class DetectorsTest(unittest.TestCase):
         i = detectors.detect_vs_benchmark(_stub_report(metrics=m))
         self.assertIsNotNone(i)
         self.assertEqual(i.code, "UNDERPERFORM_BENCHMARK")
-        self.assertIn("-65.9 puntos", i.body)
+        self.assertIn("-65,9 puntos", i.body)
 
     # ─── Detectores nuevos de Phase 2 ────────────────────────────────────────
 
