@@ -18,11 +18,11 @@
 //    más, es un arrastre y el clic se descarta. Sin eso, mover la isla te la
 //    abría o te la cerraba al soltar.
 //
-// 3. No se puede ir de la pantalla. Se recorta al soltar y también cuando
-//    cambia de tamaño —al abrirse crece, y al rotar el teléfono la pantalla se
-//    da vuelta—: sin eso, arrastrarla abajo estando cerrada y después abrirla
-//    la dejaba con el cuadro de escribir fuera de la vista, sin forma de
-//    volver a agarrarla.
+// 3. No se puede ir de la pantalla. Se recorta al arrastrar, al rotar el
+//    teléfono y —la que costó— al ABRIRSE: cerrada es una burbujita y abierta
+//    es una tarjeta del ancho entero, así que el desplazamiento que a una le
+//    queda bien a la otra la saca de la pantalla. Medido: arrastrar 140px a la
+//    izquierda y abrir dejaba la tarjeta en x = -128.
 //
 // 4. La posición dura LO QUE DURA LA PESTAÑA, no para siempre. Pedido de
 //    Nico: al volver a entrar, la isla tiene que estar en su lugar de siempre.
@@ -93,21 +93,52 @@ export function useArrastrable(clave) {
     try { sessionStorage.setItem(clave, JSON.stringify(p)) } catch { /* sin almacenamiento */ }
   }, [clave])
 
-  // Recortar cuando cambia el tamaño: al abrirse la isla crece, y al rotar el
-  // teléfono la pantalla se da vuelta. Sin esto queda medio afuera.
-  useLayoutEffect(() => {
-    const acomodar = () => {
-      setPos((p) => {
-        const nueva = recortar(p.dx, p.dy)
-        return (nueva.dx === p.dx && nueva.dy === p.dy) ? p : nueva
-      })
-    }
-    acomodar()
-    window.addEventListener('resize', acomodar)
-    const obs = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(acomodar) : null
-    if (obs && ref.current) obs.observe(ref.current)
-    return () => { window.removeEventListener('resize', acomodar); obs?.disconnect() }
+  const acomodar = useCallback(() => {
+    setPos((p) => {
+      const nueva = recortar(p.dx, p.dy)
+      // Devolver el MISMO objeto cuando no cambió nada es lo que evita que
+      // esto se llame a sí mismo para siempre: React no vuelve a dibujar.
+      return (nueva.dx === p.dx && nueva.dy === p.dy) ? p : nueva
+    })
   }, [recortar])
+
+  // 🔴 AL ABRIRSE, LA ISLA NO CRECE: ES OTRO ELEMENTO.
+  //
+  // Cerrada es una burbujita y abierta es una tarjeta — React desmonta una y
+  // monta la otra, no la agranda. Este efecto corría UNA vez y dejaba al
+  // vigilante de tamaño mirando el elemento viejo, que ya no existe: el
+  // recorte no se ejecutaba nunca para el nuevo.
+  //
+  // MEDIDO en el celular: arrastrar la burbuja 140px a la izquierda y tocarla
+  // abría la tarjeta en x = -128, o sea 128 píxeles afuera de la pantalla por
+  // la izquierda. La burbuja mide 159px y la tarjeta ocupa el ancho entero, así
+  // que el mismo desplazamiento que a una le queda bien a la otra la saca.
+  //
+  // Por eso corre en CADA dibujo (sin lista de dependencias): es lo único que
+  // se entera de que el elemento cambió. El vigilante se vuelve a enganchar
+  // sólo cuando el elemento es de verdad otro.
+  const vigiaRef = useRef({ obs: null, nodo: null })
+  useLayoutEffect(() => {
+    acomodar()
+    const nodo = ref.current
+    if (vigiaRef.current.nodo === nodo) return
+    vigiaRef.current.obs?.disconnect()
+    vigiaRef.current = { obs: null, nodo }
+    if (nodo && typeof ResizeObserver !== 'undefined') {
+      const o = new ResizeObserver(acomodar)
+      o.observe(nodo)
+      vigiaRef.current.obs = o
+    }
+  })
+
+  // Rotar el teléfono da vuelta la pantalla sin tocar la isla.
+  useLayoutEffect(() => {
+    window.addEventListener('resize', acomodar)
+    return () => {
+      window.removeEventListener('resize', acomodar)
+      vigiaRef.current.obs?.disconnect()
+    }
+  }, [acomodar])
 
   const alApretar = useCallback((e) => {
     // Sólo el botón principal del mouse; el derecho abre el menú del sistema.

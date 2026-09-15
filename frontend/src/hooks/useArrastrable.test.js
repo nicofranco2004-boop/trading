@@ -38,6 +38,31 @@ describe('mover la isla con el dedo', () => {
     expect(fuente).toMatch(/MARGEN = 8/)
   })
 
+  it('al ABRIRSE se vuelve a recortar, porque es otro elemento', () => {
+    // 🔴 Cerrada es una burbujita y abierta es una tarjeta del ancho entero:
+    // React desmonta una y monta la otra, no la agranda. El efecto corría UNA
+    // vez y dejaba al vigilante mirando el elemento viejo, así que el recorte
+    // no se ejecutaba para el nuevo.
+    //
+    // MEDIDO en el celular: arrastrar la burbuja 140px a la izquierda y tocarla
+    // abría la tarjeta en x = -128, o sea 128px afuera de la pantalla.
+    //
+    // El efecto que recorta va SIN lista de dependencias —corre en cada
+    // dibujo— porque es lo único que se entera de que el elemento cambió.
+    const i = fuente.indexOf('useLayoutEffect(() => {\n    acomodar()')
+    expect(i).toBeGreaterThan(0)
+    // Entre ese useLayoutEffect y el siguiente no puede aparecer una lista de
+    // dependencias: `}, [algo])` lo dejaría corriendo una sola vez.
+    const bloque = fuente.slice(i, fuente.indexOf('// Rotar el teléfono'))
+    expect(bloque).toMatch(/\n  \}\)\n/)          // cierra con `})`, sin deps
+    expect(bloque).not.toMatch(/\}, \[/)
+  })
+
+  it('el vigilante se re-engancha al elemento nuevo', () => {
+    expect(fuente).toMatch(/if \(vigiaRef\.current\.nodo === nodo\) return/)
+    expect(fuente).toMatch(/vigiaRef\.current\.obs\?\.disconnect\(\)/)
+  })
+
   it('el gesto no se lo queda el navegador para scrollear', () => {
     // Sin touchAction 'none' el arrastre no llega nunca en el celular.
     expect(fuente).toMatch(/touchAction: 'none'/)
