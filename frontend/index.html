@@ -194,7 +194,26 @@
     }
     </script>
 
-    <script>if(localStorage.getItem('rendi_theme')!=='light')document.documentElement.classList.add('dark')</script>
+    <!-- Tema, antes del primer pixel. Sin esto la app arranca clara y salta a
+         oscura cuando monta React: un flash blanco en cada carga.
+
+         OJO — ESTE SCRIPT Y EL LOCK DE ThemeContext.jsx SE CAMBIAN JUNTOS.
+         El modo claro sigue trabado (LIGHT_MODE_LOCKED en
+         src/contexts/ThemeContext.jsx). Mientras lo esté, acá se fuerza
+         oscuro y NO se mira la preferencia guardada — porque hay cuentas
+         con `rendi_theme=light` guardado de cuando el modo claro existía,
+         y desde F0 esa preferencia vieja sí tiñe la app. Antes de F0 no
+         pasaba nada: los colores eran fijos y no había nada que teñir.
+         Cuando se destrabe, acá va la línea comentada de abajo. -->
+    <script>
+      (function () {
+        var LIGHT_MODE_LOCKED = true
+        var pref = null
+        try { pref = localStorage.getItem('rendi_theme') } catch (e) { /* modo privado */ }
+        var dark = LIGHT_MODE_LOCKED || pref !== 'light'
+        document.documentElement.classList.toggle('dark', dark)
+      })()
+    </script>
 
     <!-- Meta Pixel -->
     <script>
