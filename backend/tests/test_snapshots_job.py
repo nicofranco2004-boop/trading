@@ -1140,3 +1140,37 @@ class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
         self.assertAlmostEqual(v, 10050.0, places=1)
         self.assertEqual(self._snap_count(conn), 0, "y no escribió nada")
         conn.close()
+
+
+class TestSimboloByma(unittest.TestCase):
+    """El símbolo que se PIDE tiene que ser el que se LEE.
+
+    El CEDEAR de Berkshire se llama BRK.B y el código le pegaba el sufijo a mano:
+    `BRK.B` + `.BA` = `BRK.B.BA`, que no cotiza en ningún lado. Era el único papel
+    no-cash de esa cuenta, así que la cobertura daba 0 %, el cron se negaba a
+    guardar la foto —con razón— y esa persona quedó sin un solo cierre medido.
+    Un punto en un ticker le apagó el historial entero.
+    """
+
+    def test_berkshire_se_pide_como_lo_publica_byma(self):
+        from snapshots_job import simbolo_byma
+        self.assertEqual(simbolo_byma('BRK.B'), 'BRKB.BA')
+        self.assertEqual(simbolo_byma('BRK B'), 'BRKB.BA')
+
+    def test_no_es_una_regla_de_sacar_puntos(self):
+        """BYMA publica AKO.B CON punto. Generalizar la excepción a una regla
+        arreglaría Berkshire y rompería Andina."""
+        from snapshots_job import simbolo_byma
+        self.assertEqual(simbolo_byma('AKO.B'), 'AKO.B.BA')
+
+    def test_un_ticker_comun_no_se_toca(self):
+        from snapshots_job import simbolo_byma
+        self.assertEqual(simbolo_byma('NVDA'), 'NVDA.BA')
+        self.assertEqual(simbolo_byma('GGAL'), 'GGAL.BA')
+
+    def test_los_tres_lugares_que_arman_el_simbolo_usan_el_helper(self):
+        """Ninguno puede volver a pegar el sufijo a mano: si uno diverge, el
+        precio que se pide deja de ser el que se lee (raíz del bug C1)."""
+        import inspect, snapshots_job
+        fuente = inspect.getsource(snapshots_job)
+        self.assertNotIn('f"{asset}.BA"', fuente)
