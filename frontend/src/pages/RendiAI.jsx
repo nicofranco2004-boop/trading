@@ -188,6 +188,7 @@ export default function RendiAI() {
               se pueden contradecir. */}
           <button
             type="button"
+            data-tour="parlante"
             onClick={() => setVozEnabled(!vozEnabled)}
             aria-pressed={vozEnabled}
             title={vozEnabled ? 'Rendi te lee las respuestas en voz alta' : 'Rendi te deja las respuestas sólo escritas'}

@@ -575,6 +575,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           {!mic.grabando && (
             <>
               <input
+                data-tour="cuadro"
                 type="text"
                 ref={freeInputRef}
                 value={freeText}

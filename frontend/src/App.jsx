@@ -4,6 +4,7 @@ import { getClientContext } from './utils/api'
 import { VozProvider } from './contexts/VozContext'
 import RendiMate from './components/voz/RendiMate'
 import IslaSegura from './components/voz/IslaSegura'
+import TourNovedades from './components/tour/TourNovedades'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
@@ -184,6 +185,10 @@ function VozGate() {
   return (
     <IslaSegura reintentarEn={pathname}>
       <RendiMate />
+      {/* El tutorial va en la misma red: si algo falla al resaltar, se apaga
+          solo en vez de dejar la pantalla oscurecida y sin salida — que sería
+          peor que no tenerlo. */}
+      <TourNovedades />
     </IslaSegura>
   )
 }

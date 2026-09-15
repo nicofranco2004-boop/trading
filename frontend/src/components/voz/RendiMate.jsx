@@ -154,6 +154,7 @@ export default function RendiMate() {
     return (
       <div
         ref={islaRef}
+        data-tour="isla"
         style={{ ...islaEstilo, ...manija.style }}
         onPointerDown={manija.onPointerDown}
         onPointerMove={manija.onPointerMove}
