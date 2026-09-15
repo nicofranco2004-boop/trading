@@ -43,6 +43,22 @@ describe('lo que la página promete sobre el micrófono sigue siendo cierto', ()
     expect(pagina).toMatch(/no se env[ií]a solo/i)
   })
 
+  it('dice que OpenAI lo retiene un tiempo, y cuánto', () => {
+    // La promesa que FALTABA. "No guardamos el audio" es cierto y estaba, pero
+    // un lector podía inferir que entonces desaparece del todo. No es así:
+    // OpenAI lo retiene para controlar abusos. Ninguna frase era falsa sin
+    // esto; la que faltaba era ésta, y es la que más se le puede reclamar.
+    expect(pagina).toMatch(/30 días/)
+    expect(pagina).toMatch(/abusiv|abuso/i)
+    // Y que se aclare que eso NO es entrenamiento, para no confundir las dos.
+    expect(pagina).toMatch(/No lo usan para entrenar/i)
+  })
+
+  it('la retención también está en el resumen de arriba', () => {
+    const resumen = pagina.slice(0, pagina.indexOf('1. Introducción'))
+    expect(resumen).toMatch(/30 días/)
+  })
+
   it('el micrófono aparece también en el resumen de arriba', () => {
     // El resumen es lo único que lee la mayoría. Una función nueva que manda
     // datos a un tercero no puede estar sólo en la letra chica.

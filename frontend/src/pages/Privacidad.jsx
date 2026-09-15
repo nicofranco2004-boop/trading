@@ -47,7 +47,7 @@ export default function Privacidad() {
             <li>No vendemos, alquilamos ni compartimos tus datos con fines comerciales, ni hacemos profiling publicitario.</li>
             <li>El pago lo procesa Rebill: nunca almacenamos datos de tu tarjeta o medio de pago.</li>
             <li>El Coach IA usa Claude (Anthropic) para pensar la respuesta y, si pedís escucharla, OpenAI para leerla en voz alta. Ninguno de los dos entrena sus modelos con tus datos.</li>
-            <li>Si le hablás al Coach IA con el micrófono, ese audio va a OpenAI para convertirse en texto. Nosotros no lo guardamos en ningún lado, y el micrófono sólo se prende cuando vos lo tocás.</li>
+            <li>Si le hablás al Coach IA con el micrófono, ese audio va a OpenAI para convertirse en texto. Nosotros no lo guardamos en ningún lado, y el micrófono sólo se prende cuando vos lo tocás. OpenAI lo retiene hasta 30 días para controlar abusos y después lo borra.</li>
             <li>Podés acceder, rectificar o eliminar tus datos en cualquier momento escribiéndonos.</li>
             <li>Sujeto a la Ley 25.326 (Protección de Datos Personales, Argentina).</li>
           </ul>
@@ -248,6 +248,20 @@ export default function Privacidad() {
               Según la política de OpenAI para su API, el contenido que se le envía por esa
               vía no se usa para entrenar ni mejorar sus modelos. Podés consultar su política en{' '}
               <a href="https://openai.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">openai.com/policies/privacy-policy</a>.
+            </li>
+            <li>
+              {/* 🔴 LO QUE FALTABA DECIR. Nosotros no guardamos el audio ni el
+                  texto, y eso ya estaba arriba — pero un lector podía inferir
+                  que entonces desaparece del todo, y no es así: OpenAI lo
+                  retiene un tiempo para controlar abusos. Ninguna frase de esta
+                  página era falsa sin esto; la que faltaba era ésta. */}
+              <strong className="text-ink-0">Pero OpenAI sí lo guarda un tiempo.</strong>{' '}
+              Que nosotros no guardemos nada no quiere decir que desaparezca en el acto.
+              Según la política de OpenAI para su API, lo que se le envía —el audio de tu
+              dictado y el texto que Rendi le manda para leerte— queda hasta{' '}
+              <strong className="text-ink-0">30 días</strong> en sus sistemas para detectar
+              usos abusivos, y después se borra. Durante ese tiempo puede ser revisado por
+              su personal autorizado si hay sospecha de abuso. No lo usan para entrenar.
             </li>
             <li>
               <strong className="text-ink-0">Para qué sirve y para qué no.</strong> Las
