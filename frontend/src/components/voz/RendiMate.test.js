@@ -46,3 +46,30 @@ describe('el micrófono no se queda grabando a escondidas', () => {
     expect(boton).toMatch(/cancelar: d\.cancelar/)
   })
 })
+
+describe('en el celular los botones del pie se pueden tocar', () => {
+  // El mínimo para un dedo son 44px. El de enviar dibujaba 28 y no tenía área
+  // agrandada: el micrófono de al lado sí, y su propio comentario explicaba
+  // que no crecía el dibujo "para no quedar desparejo al lado del de enviar,
+  // que mide 28" — o sea que el de enviar era la referencia, y era el chico.
+  //
+  // MEDIDO después del arreglo: enviar 28 de dibujo y 44×44 de área; el
+  // micrófono 30 y 46×46. Y las dos áreas quedan pegadas SIN pisarse ni
+  // comerse el cuadro de escribir, que conserva sus 281px.
+  it('el de enviar tiene área de toque aunque el círculo sea chico', () => {
+    const boton = fuente.slice(fuente.indexOf('aria-label="Enviar"'))
+    expect(boton.slice(0, 400)).toMatch(/after:-inset-2/)
+  })
+
+  it('crece el área y NO el dibujo', () => {
+    // Un botón de 44 al lado de un micrófono de 30 queda desparejo, y es la
+    // misma razón por la que el micrófono tampoco creció.
+    const boton = fuente.slice(fuente.indexOf('aria-label="Enviar"'))
+    expect(boton.slice(0, 400)).toMatch(/w-7 h-7/)
+  })
+
+  it('con mouse se apaga: ahí el blanco alcanza', () => {
+    const boton = fuente.slice(fuente.indexOf('aria-label="Enviar"'))
+    expect(boton.slice(0, 400)).toMatch(/sm:after:inset-0/)
+  })
+})

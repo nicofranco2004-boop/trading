@@ -401,11 +401,19 @@ export default function RendiMate() {
               className="flex-1 min-w-0 rounded-full border border-line-2 bg-bg-1 px-3 py-1.5
                          text-[12.5px] text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-3"
             />
+            {/* EL ÁREA DE TOQUE ES MÁS GRANDE QUE EL BOTÓN, igual que el
+                micrófono de al lado. El círculo dibuja 28px y el mínimo para un
+                dedo son 44: el `after` invisible agrega 8 por lado y llega
+                justo a 44. Crece el área y NO el dibujo porque al lado hay un
+                micrófono de 30 — un botón de 44 ahí quedaría desparejo, y esa
+                es la misma razón por la que el micrófono tampoco creció.
+                De sm: para arriba se apaga: con mouse el blanco alcanza. */}
             <button
               type="submit"
               disabled={!texto.trim() || sending}
               aria-label="Enviar"
-              className="w-7 h-7 rounded-full grid place-items-center flex-none bg-rendi-accent text-bg-0
+              className="w-7 h-7 relative rounded-full grid place-items-center flex-none bg-rendi-accent text-bg-0
+                         after:absolute after:content-[''] after:-inset-2 sm:after:inset-0
                          disabled:bg-bg-3 disabled:text-ink-3 transition-colors"
             >
               <Send size={13} strokeWidth={2.2} />
