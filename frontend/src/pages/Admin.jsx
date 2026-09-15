@@ -241,7 +241,7 @@ export default function Admin() {
             <StatCard label="Operaciones" value={stats.operations_total} sub={`${stats.monthly_total} registros mensuales`} />
           </div>
 
-          <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
+          <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
             <div className="flex items-center gap-2 mb-3">
               <Activity size={16} className="text-ink-3" />
               <h2 className="font-semibold text-ink-0">Estado del sistema</h2>
@@ -261,7 +261,7 @@ export default function Admin() {
 
           {/* ── Embudo de activación ─────────────────────────────────────── */}
           {stats.activation && (
-            <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
+            <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
               <div className="flex items-center gap-2 mb-1">
                 <Activity size={16} className="text-ink-3" />
                 <h2 className="font-semibold text-ink-0">Embudo de activación</h2>
@@ -362,7 +362,7 @@ export default function Admin() {
         </div>
       )}
 
-      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden">
+      <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-line/50 flex items-center gap-2 flex-wrap">
           <Users size={16} className="text-ink-3" />
           <h2 className="font-semibold text-ink-0">
@@ -572,7 +572,7 @@ function BroadcastPanel({ toast }) {
   const inputCls = 'w-full text-sm px-3 py-2 rounded-md bg-bg-2 dark:bg-bg-2/40 border border-line/60 focus:border-data-violet/60 outline-none text-ink-1 placeholder:text-ink-3'
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center gap-2">
         <Send size={16} className="text-data-violet" />
         <h2 className="font-semibold text-ink-0">Email a usuarios · escribí el tuyo</h2>
@@ -713,7 +713,7 @@ function ReengagementPanel({ toast }) {
   const toSend = resend ? recipients : pending
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Mail size={16} className="text-data-violet" />
@@ -828,7 +828,7 @@ function BackupPanel({ toast }) {
 
   const st = result?.stats || {}
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-start gap-2">
           <Database size={16} className="text-rendi-accent mt-0.5 flex-shrink-0" />
@@ -906,7 +906,7 @@ function TrialInvitePanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Mail size={16} className="text-data-violet" />
@@ -1050,7 +1050,7 @@ function GiftPlanPanel({ toast }) {
   const toSend = resend ? recipients : pending
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Mail size={16} className="text-emerald-500" />
@@ -1268,7 +1268,7 @@ function BackfillPanel({ toast }) {
   const changes = preview?.changes || []
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RotateCcw size={16} className="text-data-violet" />
@@ -1512,7 +1512,7 @@ function MtmBackfillPanel({ toast }) {
   const changes = preview?.changes || []
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <TrendingUp size={16} className="text-data-violet" />
@@ -1626,7 +1626,7 @@ function FciRefreshPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RefreshCw size={16} className="text-violet-500" />
@@ -1675,7 +1675,7 @@ function RepairCaja1415Panel({ toast }) {
   const n = prev?.meses_a_corregir?.length ?? 0
   const fmt = v => (v ?? 0).toLocaleString('es-AR')
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <AlertTriangle size={16} className="text-amber-500" />
@@ -1752,7 +1752,7 @@ function RepairInteresPfPanel({ toast }) {
 
   const n = prev?.filas_a_sellar?.length ?? 0
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <AlertTriangle size={16} className="text-amber-500" />
@@ -1836,7 +1836,7 @@ function AlcanceAuditoriaPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Search size={16} className="text-cyan-500" />
@@ -1949,7 +1949,7 @@ function MtmAuditPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Activity size={16} className="text-violet-500" />
@@ -2417,7 +2417,7 @@ function FxMigratePanel({ toast }) {
   const fmt = (n) => (n == null ? '—' : Math.round(n).toLocaleString())
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RefreshCw size={16} className="text-violet-500" />
@@ -2914,7 +2914,7 @@ function CurrencyBackfillPanel({ toast }) {
   const fmt = (n) => Math.round(n || 0).toLocaleString()
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <AlertTriangle size={16} className="text-amber-500" />
@@ -3079,7 +3079,7 @@ function RepairUserPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center gap-2">
         <RotateCcw size={16} className="text-rendi-warn" />
         <h2 className="font-semibold text-ink-0">Reparar histórico de un usuario</h2>
@@ -3173,7 +3173,7 @@ function ResetUserPanel({ toast }) {
   const puedeBorrar = preview && confirmar.trim().toLowerCase() === email.trim().toLowerCase()
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center gap-2">
         <Trash2 size={16} className="text-rose-500" />
         <h2 className="font-semibold text-ink-0">Dejar una cuenta en cero</h2>
@@ -3346,7 +3346,7 @@ function MassRepairPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RotateCcw size={16} className="text-rendi-warn" />
@@ -3397,7 +3397,7 @@ function MassRepairPanel({ toast }) {
 function ConversionPanel({ data }) {
   if (!data) {
     return (
-      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
+      <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
         <div className="flex items-center gap-2 mb-2">
           <Sparkles size={16} className="text-data-violet" />
           <h2 className="font-semibold text-ink-0">Conversión Pro</h2>
@@ -3414,7 +3414,7 @@ function ConversionPanel({ data }) {
   const totalEvents = Object.values(data.totals || {}).reduce((s, n) => s + n, 0)
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-5">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Sparkles size={16} className="text-data-violet" />

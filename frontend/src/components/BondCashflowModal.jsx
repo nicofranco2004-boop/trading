@@ -262,7 +262,7 @@ export default function BondCashflowModal({
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-md shadow-2xl flex flex-col"
+        className="bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-md shadow-2xl flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -370,7 +370,7 @@ export default function BondCashflowModal({
                 type="date"
                 value={date}
                 onChange={e => setDate(e.target.value)}
-                className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+                className="w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
                 required
               />
             </div>
@@ -383,7 +383,7 @@ export default function BondCashflowModal({
                 value={amount}
                 onChange={e => setAmount(e.target.value)}
                 placeholder="0.00"
-                className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+                className="w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
                 autoFocus
                 required
               />
@@ -399,7 +399,7 @@ export default function BondCashflowModal({
               value={commissions}
               onChange={e => setCommissions(e.target.value)}
               placeholder="0.00"
-              className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+              className="w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
             />
             <p className="text-[10px] text-ink-3 mt-1">
               Se descuentan del monto neto que se acredita al cash.
@@ -468,7 +468,7 @@ export default function BondCashflowModal({
               value={notes}
               onChange={e => setNotes(e.target.value)}
               placeholder="Ej.: Cupón nominal USD 28, recibí 27.500 después de retención"
-              className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+              className="w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
             />
           </div>
 

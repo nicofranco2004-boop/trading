@@ -221,7 +221,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   return (
     <div className={fullHeight
       ? 'flex flex-col h-full min-h-0'
-      : 'bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden flex flex-col'}>
+      : 'bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden flex flex-col'}>
       {/* Header — solo en modo embebido; la página /ai trae su propio chrome */}
       {!fullHeight && (
       <div className="flex items-center justify-between px-4 py-3 border-b border-line/70 dark:border-line/40">

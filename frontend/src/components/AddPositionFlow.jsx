@@ -236,7 +236,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[85vh] flex flex-col"
+        className="bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[85vh] flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         <FlowHeader
@@ -336,7 +336,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
             <button
               key={b.id ?? b.name}
               onClick={() => onPick(b)}
-              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+              className="text-left bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
             >
               <div className="flex items-center gap-3">
                 <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
@@ -446,7 +446,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
             placeholder="Buscar cualquier activo — ticker o nombre (AAPL, Bitcoin, GGAL…)"
             autoComplete="off"
             spellCheck="false"
-            className={`w-full bg-white dark:bg-bg-1 border border-line rounded-sm pl-9 ${engaged ? 'pr-9' : 'pr-3'} py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition`}
+            className={`w-full bg-bg-1 border border-line rounded-sm pl-9 ${engaged ? 'pr-9' : 'pr-3'} py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition`}
           />
           {engaged && (
             <button
@@ -546,7 +546,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
                     <button
                       key={cat.id}
                       onClick={() => onPick(cat)}
-                      className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+                      className="text-left bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
                     >
                       <div className="flex items-start gap-3">
                         <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
@@ -607,7 +607,7 @@ function Step2TickerPicker({ category, onPick }) {
             placeholder={`Buscar por ticker o nombre…`}
             autoComplete="off"
             spellCheck="false"
-            className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
+            className="w-full bg-bg-1 border border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
           />
         </div>
         <p className="text-xs text-ink-3 font-mono mt-2">
@@ -711,7 +711,7 @@ function StepOtroPicker({ onPick, onPlazoFijo }) {
           placeholder="Como figura en tu broker — ej. PETR3, YMCXO, BA37D"
           autoComplete="off"
           spellCheck="false"
-          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition font-mono font-medium uppercase"
+          className="w-full bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition font-mono font-medium uppercase"
         />
       </div>
 
@@ -758,7 +758,7 @@ function StepOtroPicker({ onPick, onPlazoFijo }) {
           onChange={e => setNombre(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && listo && confirm()}
           placeholder="Para reconocerlo de un vistazo"
-          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
+          className="w-full bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
         />
       </div>
 
@@ -810,7 +810,7 @@ function StepLetraPicker({ onPick }) {
           placeholder="T30A7, S31O5, X18J5…"
           autoComplete="off"
           spellCheck="false"
-          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition font-medium"
+          className="w-full bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition font-medium"
         />
         {upper && (
           <p className={`text-xs mt-2 ${valid ? 'text-rendi-pos' : 'text-rendi-warn'}`}>
@@ -880,7 +880,7 @@ function StepFciPicker({ list, onPick }) {
             placeholder="Buscar fondo (ej. Premium, Money Market…)"
             autoComplete="off"
             spellCheck="false"
-            className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
+            className="w-full bg-bg-1 border border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
           />
         </div>
         <p className="text-xs text-ink-3 font-mono mt-2">

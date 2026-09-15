@@ -81,7 +81,7 @@ function BankPicker({ banks, onPick, onManual }) {
             placeholder="Buscar banco…"
             autoComplete="off"
             spellCheck="false"
-            className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
+            className="w-full bg-bg-1 border border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
           />
         </div>
         <p className="text-xs text-ink-3 font-mono mt-2">
@@ -218,7 +218,7 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4 overflow-y-auto" onClick={onClose}>
-      <div className="bg-white dark:bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-lg shadow-2xl max-h-[92vh] sm:max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-lg shadow-2xl max-h-[92vh] sm:max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-start gap-3 px-5 py-4 border-b border-line flex-shrink-0">
           {step === 'form' ? (
             <button onClick={() => setStep('bank')} className="-ml-2 p-2 rounded-sm text-ink-2 hover:text-ink-0 hover:bg-bg-2 transition-colors" aria-label="Volver">

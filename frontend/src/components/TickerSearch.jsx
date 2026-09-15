@@ -169,7 +169,7 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
           placeholder={placeholder || 'Buscar por ticker o nombre (ej.: AAPL, Bitcoin, S&P 500)'}
           autoComplete="off"
           spellCheck="false"
-          className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md pl-8 pr-8 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
+          className="w-full bg-bg-2 border border-line rounded-md pl-8 pr-8 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
         />
         {query && (
           <button
@@ -183,7 +183,7 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
       </div>
 
       {open && (
-        <div className="absolute z-50 mt-1 left-0 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-2xl overflow-hidden w-[min(680px,92vw)] flex flex-col" style={{ maxHeight: '70vh' }}>
+        <div className="absolute z-50 mt-1 left-0 bg-bg-2 border border-line rounded-lg shadow-2xl overflow-hidden w-[min(680px,92vw)] flex flex-col" style={{ maxHeight: '70vh' }}>
           {/* Tabs de categorías — sticky para que no se vayan al scrollear */}
           <div className="flex flex-wrap gap-1.5 p-2.5 bg-bg-2 dark:bg-bg-1/50 border-b border-line shrink-0">
             {CATEGORIES.map(cat => {
@@ -275,11 +275,11 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
           <div className="px-3 py-1.5 text-[10px] text-ink-3 bg-bg-2 dark:bg-bg-1/50 border-t border-line flex items-center justify-between">
             <span>{filtered.length} resultados</span>
             <span className="flex items-center gap-2">
-              <kbd className="px-1 py-0.5 bg-bg-2 dark:bg-bg-2 rounded">↑↓</kbd>
+              <kbd className="px-1 py-0.5 bg-bg-2 rounded">↑↓</kbd>
               navegar
-              <kbd className="px-1 py-0.5 bg-bg-2 dark:bg-bg-2 rounded">↵</kbd>
+              <kbd className="px-1 py-0.5 bg-bg-2 rounded">↵</kbd>
               seleccionar
-              <kbd className="px-1 py-0.5 bg-bg-2 dark:bg-bg-2 rounded">esc</kbd>
+              <kbd className="px-1 py-0.5 bg-bg-2 rounded">esc</kbd>
               cerrar
             </span>
           </div>

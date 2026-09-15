@@ -522,7 +522,7 @@ function FlowShell({ paso, total, titulo, bajada, onBack, onClose, ancho = 'max-
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4 overflow-y-auto"
       onClick={onClose}>
-      <div className={`bg-white dark:bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full ${ancho} shadow-2xl max-h-[95vh] sm:max-h-[85vh] flex flex-col`}
+      <div className={`bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full ${ancho} shadow-2xl max-h-[95vh] sm:max-h-[85vh] flex flex-col`}
         onClick={e => e.stopPropagation()}>
         <div className="flex items-start gap-3 px-5 py-4 border-b border-line flex-shrink-0">
           {onBack && (

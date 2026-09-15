@@ -167,7 +167,7 @@ export default function ProfileDashboard({ cards, positions = [] }) {
   // una sección en blanco ni 9 candados.
   if (dash.availCount === 0) {
     return (
-      <div className="bg-white dark:bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
+      <div className="bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
         <p className="text-sm text-ink-1 leading-snug max-w-xl">
           Tu test está cargado. Cargá tus posiciones (o importá tu cartera) y acá
           la cruzamos contra lo que declaraste: asignación, concentración,

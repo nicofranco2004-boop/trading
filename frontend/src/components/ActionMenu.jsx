@@ -84,7 +84,7 @@ export default function ActionMenu({ items = [], align = 'right' }) {
       {open && pos && createPortal(
         <div
           ref={menuRef}
-          className="fixed z-[200] min-w-[190px] py-1 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-lg"
+          className="fixed z-[200] min-w-[190px] py-1 bg-bg-2 border border-line rounded-lg shadow-lg"
           style={{ top: pos.top, left: pos.left }}
           role="menu"
         >

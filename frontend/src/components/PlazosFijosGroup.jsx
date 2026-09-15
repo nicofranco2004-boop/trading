@@ -117,7 +117,7 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
   return (
     <div className="mt-6">
       {Header}
-      <div className="bg-white dark:bg-bg-2/40 border border-line rounded-md overflow-hidden">
+      <div className="bg-bg-2/40 border border-line rounded-md overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

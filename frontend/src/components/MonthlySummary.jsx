@@ -381,7 +381,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 
   const thClass = 'px-4 py-2 text-left text-[12.5px] text-ink-3 font-semibold'
   const tdClass = 'px-4 py-2 text-sm'
-  const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
+  const inputClass = 'w-full bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   return (
     <div>
@@ -430,7 +430,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
               onClick={() => setViewMode('simple')}
               className={`px-2.5 py-1 text-[11px] font-semibold rounded transition ${
                 viewMode === 'simple'
-                  ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                  ? 'bg-bg-2 text-ink-0 shadow-sm'
                   : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
               title="Vista simple"
@@ -439,7 +439,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
               onClick={() => setViewMode('advanced')}
               className={`px-2.5 py-1 text-[11px] font-semibold rounded transition ${
                 viewMode === 'advanced'
-                  ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                  ? 'bg-bg-2 text-ink-0 shadow-sm'
                   : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
               title="Vista detallada"
@@ -462,7 +462,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             onClick={() => setTab(b)}
             className={`px-4 py-1.5 text-sm rounded-md font-medium transition-colors capitalize ${
               tab === b
-                ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                ? 'bg-bg-2 text-ink-0 shadow-sm'
                 : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
             }`}
           >
@@ -575,7 +575,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                               En curso
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 text-[12px] font-semibold tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-2 dark:bg-bg-2 text-ink-3 border border-line/50 dark:border-line">
+                            <span className="inline-flex items-center gap-1 text-[12px] font-semibold tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-2 text-ink-3 border border-line/50 dark:border-line">
                               <Lock size={9} /> Cerrado
                             </span>
                           )}
@@ -757,7 +757,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 value={form.capital_final}
                 onChange={e => setField('capital_final', +e.target.value)}
                 readOnly={autoCalc}
-                className={`${inputClass} ${autoCalc ? 'opacity-70 cursor-default bg-bg-2 dark:bg-bg-2' : ''}`}
+                className={`${inputClass} ${autoCalc ? 'opacity-70 cursor-default bg-bg-2' : ''}`}
               />
               {autoCalc && (
                 <p className="text-[11px] text-ink-3 mt-1">
@@ -826,7 +826,7 @@ function ConciliationBanner({ live, entries }) {
   const significantDrift = drift != null && (Math.abs(drift) > 0.5 || Math.abs(driftPct) > 0.05)
 
   return (
-    <div className="mb-5 bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-4">
+    <div className="mb-5 bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-4">
       <div className="flex items-center gap-2 mb-3">
         <h3 className="text-xs font-semibold text-ink-3">
           Conciliación

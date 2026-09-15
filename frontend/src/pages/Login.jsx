@@ -231,7 +231,7 @@ export default function Login() {
     }
   }
 
-  const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-lg px-3 py-2 text-sm text-ink-0 placeholder-ink-3 dark:placeholder-ink-3 focus:outline-none focus:border-rendi-accent focus:ring-2 focus:ring-rendi-accent/20 transition-colors'
+  const inputClass = 'w-full bg-bg-2 border border-line rounded-lg px-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent focus:ring-2 focus:ring-rendi-accent/20 transition-colors'
 
   return (
     <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
@@ -262,7 +262,7 @@ export default function Login() {
           <ArrowRight size={13} strokeWidth={1.75} />
         </button>
 
-        <div className="bg-white dark:bg-bg-2/60 border border-line/50 rounded-2xl p-6">
+        <div className="bg-bg-2/60 border border-line/50 rounded-2xl p-6">
           <div className="flex mb-6 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-1">
             <button
               onClick={() => { setMode('login'); setEmailExists(false); setError(''); }}

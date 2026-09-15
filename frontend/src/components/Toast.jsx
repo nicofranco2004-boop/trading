@@ -97,7 +97,7 @@ function ToastItem({ toast, onDismiss }) {
     <div
       role="status"
       aria-live="polite"
-      className={`pointer-events-auto flex items-start gap-3 px-4 py-3 rounded bg-white dark:bg-bg-1 border border-line border-l-4 ${accent} shadow-lg dark:shadow-2xl animate-[slide-in_0.2s_ease-out] motion-reduce:animate-none`}
+      className={`pointer-events-auto flex items-start gap-3 px-4 py-3 rounded bg-bg-1 border border-line border-l-4 ${accent} shadow-lg dark:shadow-2xl animate-[slide-in_0.2s_ease-out] motion-reduce:animate-none`}
       style={{
         // Inline keyframes para no tocar tailwind config
         animationFillMode: 'both',

@@ -118,7 +118,7 @@ export default function AdvisorAccessRequest() {
           <span className="text-2xl font-bold text-ink-0 dark:text-white tracking-tight">rendi</span>
         </div>
 
-        <div className="bg-white dark:bg-bg-2/60 border border-line/50 rounded-xl p-7">
+        <div className="bg-bg-2/60 border border-line/50 rounded-xl p-7">
           {done ? (
             <div className="text-center">
               <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full mb-3 ${done === 'accepted' ? 'bg-rendi-pos/10' : 'bg-bg-2'}`}>

@@ -23,7 +23,7 @@ export default function ModuleShell({ icon: Icon, title, rel, topPick = false, l
 
   return (
     <section
-      className={`border border-line/70 dark:border-line rounded-lg bg-white/40 dark:bg-bg-1/40 p-4 flex flex-col gap-3 ${wide ? 'md:col-span-2' : ''} ${locked ? 'opacity-80' : ''}`}
+      className={`border border-line/70 dark:border-line rounded-lg bg-bg-1/40 p-4 flex flex-col gap-3 ${wide ? 'md:col-span-2' : ''} ${locked ? 'opacity-80' : ''}`}
     >
       {/* pr-9: deja lugar al pill ✦ de AskAIAbout (absolute top-2 right-2)
           para que no tape el badge REL/★, sobre todo en mobile donde el pill

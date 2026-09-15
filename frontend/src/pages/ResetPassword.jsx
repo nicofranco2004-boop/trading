@@ -72,7 +72,7 @@ export default function ResetPassword() {
     }
   }
 
-  const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-lg px-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-pos focus:ring-2 focus:ring-rendi-pos/20 transition-colors'
+  const inputClass = 'w-full bg-bg-2 border border-line rounded-lg px-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-pos focus:ring-2 focus:ring-rendi-pos/20 transition-colors'
 
   return (
     <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
@@ -88,7 +88,7 @@ export default function ResetPassword() {
           <span className="text-2xl font-bold text-ink-0 dark:text-white tracking-tight">rendi</span>
         </div>
 
-        <div className="bg-white dark:bg-bg-2/60 border border-line/50 rounded-2xl p-7">
+        <div className="bg-bg-2/60 border border-line/50 rounded-2xl p-7">
           <div className="text-center mb-6">
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rendi-pos/10 mb-3">
               <Lock size={22} className="text-rendi-pos" strokeWidth={1.75} />

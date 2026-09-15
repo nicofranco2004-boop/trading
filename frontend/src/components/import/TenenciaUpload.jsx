@@ -100,7 +100,7 @@ export default function TenenciaUpload({
             <label className="block text-xs text-ink-3 mb-1">{fileLabel}</label>
             <input type="file" accept={accept}
                    onChange={e => setFile(e.target.files?.[0] || null)}
-                   className="w-full mb-1 text-sm text-ink-2 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-white/10 file:text-ink-1 file:text-sm" />
+                   className="w-full mb-1 text-sm text-ink-2 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-bg-3 file:text-ink-1 file:text-sm" />
             {Array.isArray(fileHint) ? (
               <ol className="text-xs text-ink-3 mb-4 list-decimal pl-4 space-y-0.5">
                 {fileHint.map((s, i) => <li key={i}>{s}</li>)}
