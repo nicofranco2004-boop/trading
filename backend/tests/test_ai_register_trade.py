@@ -442,6 +442,25 @@ class TestGateIntent(unittest.TestCase):
                     "está cargando la pantalla", "ya está cargada"):
             self.assertFalse(main._is_trade_intent(msg), msg)
 
+    def test_las_12_guiadas_dictadas_no_son_registro(self):
+        """PREEXISTENTE, encontrado auditando: `agreg\\w*` matcheaba "me agrega".
+        "¿Qué activo es el que más riesgo me agrega?" DICTADA pierde los signos
+        "¿?", deja de ser whitelist exacta, el detector la tomaba por registro,
+        el emparejador NO le ofrecía la pregunta y el mensaje viajaba como si
+        fuera una operación — gastándole la consulta de la semana."""
+        for q in main._FREE_QUESTIONS_WHITELIST:
+            dictada = q.replace("¿", "").replace("?", "").strip()
+            self.assertFalse(main._is_trade_intent(dictada), dictada)
+
+    def test_agregar_riesgo_no_es_agregar_una_compra(self):
+        for msg in ("qué activo es el que más riesgo me agrega",
+                    "cuál me agrega más volatilidad",
+                    "eso le agrega riesgo a la cartera"):
+            self.assertFalse(main._is_trade_intent(msg), msg)
+        for msg in ("agregame una compra de 10 GGAL", "agregá una compra",
+                    "agregá 3 ETH a binance", "agregalos"):
+            self.assertTrue(main._is_trade_intent(msg), msg)
+
     def test_imperativo_y_pasado_de_cargar_siguen_pasando(self):
         """El filtro del participio no puede llevarse puesto el registro real."""
         for msg in ("cargá una compra de 10 GGAL", "cargué 300 mil en balanz",

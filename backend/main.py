@@ -29554,12 +29554,19 @@ _FREE_QUESTIONS_NORMALIZED = frozenset(_normalize_question(q) for q in _FREE_QUE
 
 _TRADE_INTENT_RE = re.compile(
     r"\b(compr[eéoóá]\w*|vend[ií]\w*|anot[aáeé]\w*|registr[aáoóeé]\w*|"
+    # `agreg…` NO cuando viene de "me/le/nos/les agrega": eso es sumar riesgo o
+    # volatilidad, no registrar nada. Rompía UNA de las 12 preguntas guiadas
+    # —"¿Qué activo es el que más riesgo me agrega?"— al DICTARLA: sin los
+    # signos "¿?" deja de ser whitelist, el detector la tomaba por registro, el
+    # emparejador no le ofrecía la pregunta y el mensaje viajaba como si fuera
+    # una operación (gastando la consulta). "agregame una compra" no se toca:
+    # ahí el pronombre va pegado atrás, no adelante.
     # `carg…` sin el PARTICIPIO ni el gerundio: "tengo 3 brokers cargados" y
     # "los tengo cargados" son DESCRIPCIONES de lo que ya está, no la orden de
     # registrar algo. Antes pasaban el gate, forzaban la tool de registro y
     # encima le cobraban la consulta. "cargá", "cargué", "cargame", "cargalos"
     # siguen entrando: el filtro mira sólo lo que viene pegado a la raíz.
-    r"carg[aáoóuú](?!d[oa]s?\b|ndo\b)\w*|agreg[aáoóuú]\w*|deshac[eé]\w*|desharme|revert[íi]\w*|"
+    r"carg[aáoóuú](?!d[oa]s?\b|ndo\b)\w*|(?<!me )(?<!le )(?<!nos )(?<!les )agreg[aáoóuú]\w*|deshac[eé]\w*|desharme|revert[íi]\w*|"
     r"corregí|me equivoqué)\b",
     re.IGNORECASE)
 # Movimientos de cash: los VERBOS solos son ambiguos en castellano ('me
