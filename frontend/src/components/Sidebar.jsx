@@ -315,7 +315,7 @@ export default function Sidebar() {
                 {showDot && (
                   <span aria-hidden title="Tenés alertas sin ver"
                     className={`w-2 h-2 rounded-full bg-data-violet ${collapsed ? 'absolute top-1.5 right-1.5' : ''}`}
-                    style={collapsed ? undefined : { boxShadow: '0 0 0 3px rgba(139,125,255,0.12)' }} />
+                    style={collapsed ? undefined : { boxShadow: '0 0 0 3px rgb(var(--data-violet) / 0.12)' }} />
                 )}
                 {isActive && <ActiveBar />}
               </>

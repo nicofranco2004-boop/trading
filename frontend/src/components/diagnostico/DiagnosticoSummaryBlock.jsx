@@ -16,8 +16,8 @@ import { useAuth } from '../../contexts/AuthContext'
 import AnalysisCard from '../ai/AnalysisCard'
 import UpgradePromoCard from '../ai/UpgradePromoCard'
 
-const VIOLET_BORDER = 'rgba(139,125,255,.32)'
-const VIOLET_BG = 'linear-gradient(180deg, rgba(139,125,255,.07), rgba(139,125,255,.025))'
+const VIOLET_BORDER = 'rgb(var(--data-violet) / .32)'
+const VIOLET_BG = 'linear-gradient(180deg, rgb(var(--data-violet) / .07), rgb(var(--data-violet) / .025))'
 
 export default function DiagnosticoSummaryBlock({ params = {}, className = '' }) {
   const { user } = useAuth()
@@ -42,12 +42,12 @@ export default function DiagnosticoSummaryBlock({ params = {}, className = '' })
     >
       <div
         className="flex items-center justify-between gap-3 px-4 py-3 border-b"
-        style={{ borderColor: 'rgba(139,125,255,.15)' }}
+        style={{ borderColor: 'rgb(var(--data-violet) / .15)' }}
       >
         <div className="flex items-center gap-2.5 min-w-0">
           <span
             className="w-6 h-6 rounded-md grid place-items-center flex-shrink-0"
-            style={{ background: 'rgba(139,125,255,.16)' }}
+            style={{ background: 'rgb(var(--data-violet) / .16)' }}
           >
             <Sparkles size={13} strokeWidth={1.9} className="text-data-violet" />
           </span>
@@ -96,7 +96,7 @@ export default function DiagnosticoSummaryBlock({ params = {}, className = '' })
           <div className="text-center py-4">
             <div
               className="w-10 h-10 rounded-xl grid place-items-center mx-auto mb-3"
-              style={{ background: 'rgba(139,125,255,.14)' }}
+              style={{ background: 'rgb(var(--data-violet) / .14)' }}
             >
               <Sparkles size={19} strokeWidth={1.7} className="text-data-violet" />
             </div>

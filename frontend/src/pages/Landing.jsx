@@ -136,14 +136,14 @@ function Hero() {
         <div className="flex items-center justify-center gap-3 flex-wrap mb-4">
           <Link
             to="/login?mode=register"
-            className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgba(139,125,255,0.6)]"
+            className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgb(var(--data-violet) / 0.6)]"
           >
             Crear mi cuenta gratis
           </Link>
           <button
             type="button"
             onClick={() => { window.location.href = '/?demo=1' }}
-            className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgba(139,125,255,0.6)]"
+            className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgb(var(--data-violet) / 0.6)]"
           >
             <Sparkles size={14} strokeWidth={2} />
             Ver demo sin registrarme
@@ -252,7 +252,7 @@ function LivePreview() {
         </p>
       </div>
 
-      <div className="border border-line rounded-lg bg-bg-1/80 backdrop-blur-sm overflow-hidden shadow-[0_0_60px_-20px_rgba(139,125,255,0.25)]">
+      <div className="border border-line rounded-lg bg-bg-1/80 backdrop-blur-sm overflow-hidden shadow-[0_0_60px_-20px_rgb(var(--data-violet) / 0.25)]">
         {/* Mac-style header */}
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-line/60 bg-bg-2/40">
           <div className="flex gap-1.5">
@@ -747,7 +747,7 @@ function BrokerSolutionCard({ to, Icon, title, desc, meta, delayMs }) {
 
 function MockFrame({ title, children, footer }) {
   return (
-    <div className="relative border border-line rounded-lg bg-bg-1/80 backdrop-blur-sm overflow-hidden shadow-[0_20px_60px_-30px_rgba(139,125,255,0.4)]">
+    <div className="relative border border-line rounded-lg bg-bg-1/80 backdrop-blur-sm overflow-hidden shadow-[0_20px_60px_-30px_rgb(var(--data-violet) / 0.4)]">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-line/60 bg-bg-2/40">
         <div className="flex gap-1.5">
           <span className="w-2 h-2 rounded-full bg-rendi-neg/40" />
@@ -1092,14 +1092,14 @@ function PlanCard({ name, tagline, price, priceSub, priceFootnote, features, cta
   // Hover en el wrapper externo (con `group`) para que badge + card se muevan
   // juntos. Visuales del card responden via `group-hover:`.
   const wrapper = isPro
-    ? 'border-2 border-data-violet/60 bg-gradient-to-br from-data-violet/[0.10] via-bg-1 to-data-violet/[0.04] shadow-[0_0_60px_-12px_rgba(139,125,255,0.45)] ring-1 ring-data-violet/20 scale-[1.02] group-hover:scale-[1.04] group-hover:shadow-[0_0_80px_-8px_rgba(139,125,255,0.65)] group-hover:border-data-violet group-hover:ring-data-violet/40'
+    ? 'border-2 border-data-violet/60 bg-gradient-to-br from-data-violet/[0.10] via-bg-1 to-data-violet/[0.04] shadow-[0_0_60px_-12px_rgb(var(--data-violet) / 0.45)] ring-1 ring-data-violet/20 scale-[1.02] group-hover:scale-[1.04] group-hover:shadow-[0_0_80px_-8px_rgb(var(--data-violet) / 0.65)] group-hover:border-data-violet group-hover:ring-data-violet/40'
     : isPlus
       ? 'border border-data-cyan/30 bg-bg-1/80 group-hover:border-data-cyan/60 group-hover:shadow-[0_0_40px_-12px_rgba(70,198,224,0.35)]'
       : 'border border-line bg-bg-1/60 group-hover:border-line-3 group-hover:shadow-[0_0_30px_-12px_rgba(255,255,255,0.08)]'
   const accent = isPro ? 'data-violet' : isPlus ? 'data-cyan' : 'rendi-pos'
   const checkColor = `text-${accent}`
   const ctaClass = isPro
-    ? 'bg-data-violet hover:bg-data-violet/90 text-white hover:shadow-[0_0_32px_-4px_rgba(139,125,255,0.7)] shadow-md shadow-data-violet/30'
+    ? 'bg-data-violet hover:bg-data-violet/90 text-white hover:shadow-[0_0_32px_-4px_rgb(var(--data-violet) / 0.7)] shadow-md shadow-data-violet/30'
     : isPlus
       ? 'bg-data-cyan/10 hover:bg-data-cyan/20 text-data-cyan border border-data-cyan/40'
       : 'border border-line-3 hover:border-ink-2 hover:bg-bg-2/50 text-ink-0'
@@ -1343,7 +1343,7 @@ function CtaFinal() {
           <div className="flex items-center justify-center gap-3 flex-wrap">
             <Link
               to="/login?mode=register"
-              className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgba(139,125,255,0.6)]"
+              className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgb(var(--data-violet) / 0.6)]"
             >
               Crear cuenta gratis
               <ArrowRight size={14} strokeWidth={2} />

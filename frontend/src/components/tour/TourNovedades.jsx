@@ -178,7 +178,7 @@ export default function TourNovedades() {
         style={{
           left: caja.x, top: caja.y, width: caja.w, height: caja.h,
           boxShadow: '0 0 0 9999px rgba(0,0,0,0.72)',
-          outline: '2px solid rgba(139,125,255,0.9)',
+          outline: '2px solid rgb(var(--data-violet) / 0.9)',
         }}
       />
 

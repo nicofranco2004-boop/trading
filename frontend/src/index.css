@@ -57,7 +57,28 @@
    ════════════════════════════════════════════════════════════════════════ */
 
 @layer base {
+  /* ── El tema del NAVEGADOR, no sólo el de la app ─────────────────────────
+     Esto es lo que decide el cromo que Rendi no dibuja: el fondo con el que
+     Chrome pinta un campo autocompletado, las barras de scroll nativas, el
+     calendario de un `<input type=date>`, los desplegables de `<select>` y el
+     color por defecto detrás de todo.
+
+     Sin esto, el `<meta name="color-scheme" content="dark light">` de
+     index.html manda siempre y es ESTÁTICO: en modo claro el navegador seguiría
+     usando su cromo oscuro. El síntoma más visible sería un campo de email
+     autocompletado por Chrome con fondo casi negro en medio de un formulario
+     blanco — y no hay CSS de la app que lo pueda pisar, porque ese fondo lo
+     pinta el navegador por fuera de la cascada.
+
+     El meta se deja como está: pinta el fondo inicial antes de que cargue esta
+     hoja, y eso es lo que evita el flash blanco al arrancar.
+
+     ⚠️ Va DENTRO de cada bloque, no en un `:root` aparte: el guard lee el
+     primer `:root {` hasta su cierre, y un segundo bloque le esconde los
+     tokens — lo cazó apenas se intentó. */
   :root {
+    color-scheme: light;
+
     /* ── Superficies ───────────────────────────────────────────────────── */
     --bg-0                : 240 240 246    ;  /* fondo de la app */
     --bg-1                : 255 255 255    ;  /* panel / card (el atomo Panel) */
@@ -212,6 +233,7 @@
   }
 
   .dark {
+    color-scheme: dark;
     /* ── Superficies ───────────────────────────────────────────────────── */
     --bg-0                : 7 9 12         ;  /* fondo de la app */
     --bg-1                : 14 18 24       ;  /* panel / card (el atomo Panel) */
