@@ -29554,7 +29554,12 @@ _FREE_QUESTIONS_NORMALIZED = frozenset(_normalize_question(q) for q in _FREE_QUE
 
 _TRADE_INTENT_RE = re.compile(
     r"\b(compr[eéoóá]\w*|vend[ií]\w*|anot[aáeé]\w*|registr[aáoóeé]\w*|"
-    r"carg[aáoóuú]\w*|agreg[aáoóuú]\w*|deshac[eé]\w*|desharme|revert[íi]\w*|"
+    # `carg…` sin el PARTICIPIO ni el gerundio: "tengo 3 brokers cargados" y
+    # "los tengo cargados" son DESCRIPCIONES de lo que ya está, no la orden de
+    # registrar algo. Antes pasaban el gate, forzaban la tool de registro y
+    # encima le cobraban la consulta. "cargá", "cargué", "cargame", "cargalos"
+    # siguen entrando: el filtro mira sólo lo que viene pegado a la raíz.
+    r"carg[aáoóuú](?!d[oa]s?\b|ndo\b)\w*|agreg[aáoóuú]\w*|deshac[eé]\w*|desharme|revert[íi]\w*|"
     r"corregí|me equivoqué)\b",
     re.IGNORECASE)
 # Movimientos de cash: los VERBOS solos son ambiguos en castellano ('me
@@ -29591,6 +29596,57 @@ _GROUP_INTENT_RE = re.compile(
     r"c[oó]mpra(le|les)|comprale[s]?)\b")
 
 
+# ─── "Tengo 0,001 bitcoin" TAMBIÉN es registrar ──────────────────────────────
+# Un usuario Free escribió exactamente eso y rebotó contra el candado del chat
+# libre (producción 2026-09-16). Es la forma más natural de decirlo y su plan SÍ
+# se lo permite: lo que no lo permitía era este detector, que sólo miraba VERBOS
+# de operación ("compré", "vendí", "deposité").
+#
+# 🔴 "tengo" SOLO no alcanza, y por lejos: "tengo una duda", "tengo 3 brokers",
+# "qué riesgos ves en lo que tengo". Se exige la terna completa —tenencia +
+# CANTIDAD + un activo que Rendi sepa registrar—, que es el mismo criterio que
+# ya se le aplica a los verbos de cash ('me retiro a dormir' no es un retiro).
+_TENENCIA_RE = re.compile(
+    r"\b(tengo|ten[ií]a|poseo|me\s+qued[ao]n?|acumul[eé]|junt[eé])\b",
+    re.IGNORECASE)
+# La cantidad y el activo, PEGADOS: el activo tiene que ser LO QUE SE CUENTA.
+# Sin esa adyacencia "tengo 2 preguntas para vos" registraría Paramount (PARA).
+# El mínimo de 2 letras deja afuera los tickers de una sola (T, V, F, U, C…),
+# que en una frase castellana son ruido garantizado.
+_CANTIDAD_ACTIVO_RE = re.compile(
+    r"\b\d[\d.,]*\s*"
+    r"(?:(?:acciones?|unidades?|nominales?|cedears?|papeles?|monedas?)\s+)?"
+    r"(?:de\s+)?"
+    r"([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9.\-]{1,14})",
+    re.IGNORECASE)
+# Tickers que ADEMÁS son palabras castellanas. NO es una lista a ojo: sale de
+# cruzar las cuatro listas de ai/trade_tickers.py contra vocabulario castellano
+# corriente. Son 11, y cada una es un ticker de verdad —"tengo 3 de esos"
+# resolvería DE (Deere) y "tengo 1 dia libre" resolvería DIA (el ETF del Dow)—.
+# La lista no los borra del catálogo: los deja fuera de ESTE camino nada más.
+# Por el verbo ("compré 10 DE") siguen entrando igual que siempre.
+_TICKERS_QUE_SON_PALABRAS = {
+    "BRASIL", "COME", "DE", "DIA", "DOME", "LONG", "ONE", "PARA", "ROSE",
+    "TON", "UNI",
+}
+
+
+def _menciona_activo_registrable(text: str) -> bool:
+    """¿El mensaje dice una CANTIDAD de un activo que Rendi sabe registrar?
+
+    El activo se valida contra `trade_tickers.resolve_asset` — la MISMA
+    allowlist que usa el write-path del chat. Si Rendi no lo sabe registrar, no
+    hay ninguna razón para abrirle la puerta al mensaje: sería cambiar un
+    rebote temprano y claro por uno tardío y confuso (y encima cobrado)."""
+    from ai.trade_tickers import resolve_asset
+    for token in _CANTIDAD_ACTIVO_RE.findall(text or ""):
+        if token.upper() in _TICKERS_QUE_SON_PALABRAS:
+            continue
+        if resolve_asset(token)[0]:
+            return True
+    return False
+
+
 def _is_trade_intent(text: str) -> bool:
     """¿El mensaje es intención de REGISTRAR o DESHACER una operación ('compré
     2000 usd de btc a 65000', 'anotame una compra', 'deshacelo')? Gate del texto
@@ -29609,7 +29665,8 @@ def _is_trade_intent(text: str) -> bool:
         _TRADE_INTENT_RE.search(t)
         or _CASH_NOUN_RE.search(t)
         or _CASH_NOUN2_RE.search(t)
-        or (_CASH_VERB_RE.search(t) and _CASH_CONTEXT_RE.search(t)))
+        or (_CASH_VERB_RE.search(t) and _CASH_CONTEXT_RE.search(t))
+        or (_TENENCIA_RE.search(t) and _menciona_activo_registrable(t)))
 
 
 def _is_whitelisted_question(text: str) -> bool:

@@ -407,6 +407,47 @@ class TestGateIntent(unittest.TestCase):
                     "agregá una compra", "deshacelo", "me equivoqué"):
             self.assertTrue(main._is_trade_intent(msg), msg)
 
+    def test_tenencia_con_cantidad_y_activo_es_registro(self):
+        """"tengo 0,001 bitcoin" — la frase REAL que rebotó en producción
+        (2026-09-16). Es la forma más natural de decirlo y el plan Free lo
+        permite; el detector sólo miraba verbos de operación."""
+        for msg in ("tengo 0,001 bitcoin", "tengo 0.001 BTC",
+                    "tengo 10 acciones de AAPL", "tenía 250 GGAL en cocos",
+                    "me quedan 3 ETH", "poseo 5 unidades de TSLA",
+                    "junté 1200 usdt"):
+            self.assertTrue(main._is_trade_intent(msg), msg)
+
+    def test_tenencia_sin_la_terna_completa_no_es_registro(self):
+        """Tenencia + cantidad + ACTIVO CONOCIDO, las tres. "tengo" solo abriría
+        la puerta a media conversación."""
+        for msg in ("tengo una duda", "tengo 3 brokers", "tengo plata en cocos",
+                    "qué riesgos ves en lo que tengo", "tengo 2 cuentas"):
+            self.assertFalse(main._is_trade_intent(msg), msg)
+
+    def test_tickers_que_son_palabras_castellanas(self):
+        """Los 11 choques MEDIDOS entre el catálogo y el castellano corriente.
+        Sin la exclusión, "tengo 3 de esos" registra Deere (DE), "tengo 1 dia
+        libre" el ETF del Dow (DIA) y "tengo 2 preguntas para vos" Paramount."""
+        for msg in ("tengo 3 de esos", "tengo 2 preguntas para vos",
+                    "tengo 1 dia libre", "tengo 3 cuentas en brasil",
+                    "tengo 1 uni por delante"):
+            self.assertFalse(main._is_trade_intent(msg), msg)
+
+    def test_participio_de_cargar_no_es_registro(self):
+        """PREEXISTENTE, encontrado al medir: la regex de `cargar` matcheaba
+        "cargados".
+        "tengo 3 brokers cargados" describe lo que YA está — pasaba el gate,
+        forzaba la tool de registro y encima cobraba la consulta."""
+        for msg in ("tengo 3 brokers cargados", "los tengo cargados a mano",
+                    "está cargando la pantalla", "ya está cargada"):
+            self.assertFalse(main._is_trade_intent(msg), msg)
+
+    def test_imperativo_y_pasado_de_cargar_siguen_pasando(self):
+        """El filtro del participio no puede llevarse puesto el registro real."""
+        for msg in ("cargá una compra de 10 GGAL", "cargué 300 mil en balanz",
+                    "cargame 2 ETH", "cargalos vos"):
+            self.assertTrue(main._is_trade_intent(msg), msg)
+
     def test_non_trade_blocked(self):
         for msg in ("¿está cara NVDA?", "dame un análisis", "hola",
                     "¿qué opinás del merval?"):
