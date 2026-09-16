@@ -75,3 +75,71 @@ describe('cancelar no es fallar', () => {
     expect(esCancelacion(null)).toBe(false)
   })
 })
+
+describe('traducirErrorDeChat — qué cupo se agotó', () => {
+  it('deja pasar el `kind` del backend', () => {
+    const r = traducirErrorDeChat({
+      status: 429,
+      payload: { detail: {
+        error: 'chat_quota_exceeded',
+        kind: 'analyses',
+        message: 'Llegaste al máximo de análisis (1/1) de esta semana.',
+        usage: { analyses_count: 1, analyses_limit: 1, chat_count: 0, chat_limit: 1 },
+        upgrade: { available: true, current_tier: 'free', target_tier: 'plus' },
+      } },
+    })
+    expect(r.kind).toBe('analyses')
+    expect(r.usage.analyses_count).toBe(1)
+    expect(r.upgrade.target_tier).toBe('plus')
+  })
+
+  it('un backend viejo, sin el campo, no rompe nada', () => {
+    const r = traducirErrorDeChat({
+      status: 429,
+      payload: { detail: { error: 'chat_quota_exceeded', message: 'x', usage: {} } },
+    })
+    expect(r.kind).toBeUndefined()
+    expect(r.mensaje).toBe('x')
+  })
+})
+
+describe('traducirErrorDeChat — el 403 de "chat libre" NO es una cuota', () => {
+  // El caso real de producción (2026-09-16): un Free escribió "tengo 0,001
+  // bitcoin". No es una de las 12 preguntas guiadas y no se parece a registrar
+  // una operación, así que el backend contesta 403 con el texto que le dice qué
+  // SÍ puede hacer. La tarjeta lo tapaba con un contador que no frenó nada.
+  const RESPUESTA_403 = {
+    status: 403,
+    payload: { detail: {
+      error: 'free_chat_not_allowed',
+      message: 'El chat libre está disponible solo en el plan Pro. Elegí una de las preguntas guiadas, registrá una operación o un movimiento…',
+      tier: 'free',
+      upgrade: { available: true, current_tier: 'free', target_tier: 'pro', benefits: ['Chat libre con el Coach IA — preguntá lo que quieras'] },
+    } },
+  }
+
+  it('trae el código, para que la tarjeta no lo confunda con cuota agotada', () => {
+    const r = traducirErrorDeChat(RESPUESTA_403)
+    expect(r.codigo).toBe('free_chat_not_allowed')
+  })
+
+  it('NO trae usage: no hay ningún contador que se haya llenado', () => {
+    const r = traducirErrorDeChat(RESPUESTA_403)
+    expect(r.usage).toBeUndefined()
+  })
+
+  it('conserva el mensaje accionable — es lo único útil de la pantalla', () => {
+    const r = traducirErrorDeChat(RESPUESTA_403)
+    expect(r.mensaje).toContain('preguntas guiadas')
+    expect(r.mensaje).toContain('registrá una operación')
+  })
+
+  it('la cuota de verdad sigue distinguiéndose por su propio código', () => {
+    const r = traducirErrorDeChat({
+      status: 429,
+      payload: { detail: { error: 'chat_quota_exceeded', kind: 'analyses', message: 'x', usage: {} } },
+    })
+    expect(r.codigo).toBe('chat_quota_exceeded')
+    expect(r.kind).toBe('analyses')
+  })
+})

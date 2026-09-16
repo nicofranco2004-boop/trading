@@ -30512,6 +30512,16 @@ def _chat_quota_429(tier: str, usage: dict, es_analisis: bool = False) -> HTTPEx
         429,
         detail={
             "error": "chat_quota_exceeded",
+            # 🔴 QUÉ cupo se agotó, en un campo que se pueda LEER.
+            #
+            # El dato ya existía acá (es_analisis) pero sólo salía adentro de
+            # `message`, en prosa. La tarjeta de upgrade no muestra ese texto:
+            # arma su propio título con los contadores, y tenía el tipo escrito
+            # a mano como "chat". Resultado: a alguien que se quedó sin
+            # ANÁLISIS le decía "Usaste 0 de 1 consultas al Coach IA" —
+            # el sustantivo equivocado Y un número que se contradice solo.
+            # Reportado en producción (2026-09-16).
+            "kind": "analyses" if es_analisis else "chat",
             "message": msg,
             "usage": usage,
             "upgrade": {

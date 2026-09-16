@@ -160,6 +160,13 @@ export function VozProvider({ children }) {
   const [upgradeInfo, setUpgradeInfo] = useState(null)
   // La cuota que viene pegada al error, para refrescar el pie sin otro viaje.
   const [usageDelError, setUsageDelError] = useState(null)
+  // Qué cupo se agotó, tal como lo dice el backend ('analyses' | 'chat').
+  // La tarjeta lo tenía escrito a mano y le mentía a quien se quedaba
+  // sin análisis. Ver kindDeCuota() en UpgradePromoCard.jsx.
+  const [kindDeCuotaDelError, setKindDeCuotaDelError] = useState(null)
+  // El CÓDIGO del backend: distingue "te quedaste sin cupo" de "esto no
+  // está en tu plan". Son carteles distintos y decían el mismo.
+  const [codigoDelError, setCodigoDelError] = useState(null)
   // Se acabó el cupo de escuchas: { message, upgrade }. Se dibuja como aviso
   // con su atajo a Planes, no como error.
   const [sinCupo, setSinCupo] = useState(null)
@@ -559,10 +566,12 @@ export function VozProvider({ children }) {
     } catch (e) {
       // Cancelar no es fallar: tocó "Nueva conversación" y ya se limpió todo.
       if (esCancelacion(e) || !vigente()) return
-      const { mensaje, usage, upgrade } = traducirErrorDeChat(e)
+      const { mensaje, usage, upgrade, kind, codigo } = traducirErrorDeChat(e)
       setAskError(mensaje)
       if (usage) setUsageDelError(usage)
       if (upgrade) setUpgradeInfo(upgrade)
+      setKindDeCuotaDelError(kind || null)
+      setCodigoDelError(codigo || null)
       // Sacar del hilo lo que falló, para que se pueda reintentar: la burbuja
       // a medio escribir si la hubo, y la pregunta. Con el botón ✦ un 429
       // revienta ANTES del frame con la pregunta: ahí no hay burbuja que sacar
@@ -601,6 +610,8 @@ export function VozProvider({ children }) {
     setAskError(null)
     setUpgradeInfo(null)
     setUsageDelError(null)
+    setKindDeCuotaDelError(null)
+    setCodigoDelError(null)
   }, [])
 
   /**
@@ -691,12 +702,15 @@ export function VozProvider({ children }) {
     status, progress, current,
     speak, escuchar, toggle, stop,
     open, setOpen,
-    thread, sending, loading, paso, askError, upgradeInfo, usageDelError, motivoSinVoz,
+    thread, sending, loading, paso, askError, upgradeInfo, usageDelError,
+    kindDeCuotaDelError, codigoDelError, motivoSinVoz,
     modoLibro,
     sinCupo, ask, analizar, limpiar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
        speak, escuchar, toggle, stop, open, thread, sending, loading, paso, askError,
-       upgradeInfo, usageDelError, sinCupo, motivoSinVoz, modoLibro, ask, analizar, limpiar])
+       upgradeInfo, usageDelError, kindDeCuotaDelError, codigoDelError, sinCupo,
+       motivoSinVoz, modoLibro,
+       ask, analizar, limpiar])
 
   return (
     <VozContext.Provider value={value}>
@@ -716,7 +730,7 @@ const INERTE = {
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
-  thread: [], sending: false, paso: null, askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null, motivoSinVoz: null, modoLibro: false,
+  thread: [], sending: false, paso: null, askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null, kindDeCuotaDelError: null, codigoDelError: null, motivoSinVoz: null, modoLibro: false,
   ask: () => {}, analizar: () => {}, limpiar: () => {},
 }
 

@@ -22,7 +22,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { trackEvent } from '../utils/analytics'
 import { markAIDiscovered } from './ai/AIDiscoveryBanner'
-import UpgradePromoCard from './ai/UpgradePromoCard'
+import UpgradePromoCard, { kindDeCuota } from './ai/UpgradePromoCard'
 import { Link } from 'react-router-dom'
 import { useVoz } from '../contexts/VozContext'
 import { useMicrofono } from './voz/BotonMicrofono'
@@ -82,7 +82,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           status: vozStatus, current: vozCurrent,
           thread: messages, ask, limpiar,
           sending, loading, paso, askError: error,
-          upgradeInfo, usageDelError, motivoSinVoz } = useVoz()
+          upgradeInfo, usageDelError, kindDeCuotaDelError, codigoDelError,
+          motivoSinVoz } = useVoz()
   // ¿El audio de ESTE mensaje está CARGADO en el reproductor?
   //
   // No alcanza con que coincida el texto: la respuesta se guarda como "actual"
@@ -451,7 +452,9 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           <UpgradePromoCard
             usage={usage}
             upgrade={upgradeInfo}
-            kind="chat"
+            kind={kindDeCuota(usage, kindDeCuotaDelError)}
+            codigo={codigoDelError}
+            mensaje={error}
             source="coach_drawer_429"
           />
         )}
