@@ -415,6 +415,15 @@ export function VozProvider({ children }) {
     // Se espera ese pestañeo en vez de pintar una burbuja inventada que
     // después habría que corregir en pantalla.
     let preguntaPuesta = !analisis
+    // 🔴 VA ACÁ, FUERA DEL try, aunque sólo se escriba adentro.
+    //
+    // `let` es de bloque: declarada adentro del try, el catch NO la ve. Y el
+    // catch la usa para sacar del hilo la burbuja a medio escribir. O sea que
+    // cuando el chat fallaba —justo cuando hace falta el mensaje de error— el
+    // propio manejador reventaba con "agregado is not defined" y se llevaba
+    // puesta la pantalla entera. Reportado en producción (2026-09-16) por un
+    // usuario que quiso registrar una operación de Bitcoin.
+    let agregado = false
     if (!analisis) setThread(t => [...t, { role: 'user', content }].slice(-MAX_THREAD))
     const onPregunta = (q) => {
       if (!vigente()) return
@@ -446,7 +455,6 @@ export function VozProvider({ children }) {
       // escupía el texto entero de golpe. Se sentía muchísimo más lento que el
       // chat grande aunque tardara lo mismo: la espera con algo pasando en
       // pantalla es corta, la espera mirando nada es eterna.
-      let agregado = false
       const pintar = (texto) => { if (!vigente()) return; setThread(t => {
         const copia = t.slice()
         if (agregado && copia.length && copia[copia.length - 1].role === 'assistant') {
