@@ -2029,7 +2029,7 @@ function ReconcileStep({ data, aprobados, onToggle }) {
 
 function RecSection({ titulo, sub, chip, tono, children }) {
   const borde = tono === 'ok' ? 'border-blue-500/30'
-    : tono === 'decide' ? 'border-amber-500/40' : 'border-white/10'
+    : tono === 'decide' ? 'border-amber-500/40' : 'border-line-2'
   return (
     <div className={`rounded-md border ${borde} px-3 py-2.5`}>
       <div className="flex items-start justify-between gap-2 mb-1">
@@ -2065,7 +2065,7 @@ function OverrideDetalle({ ov }) {
   const removed = ov.removed || []
   if (!ov.capped && !skipped.length && !removed.length) return null
   return (
-    <div className="rounded-md border border-white/10 px-3 py-2.5 space-y-2">
+    <div className="rounded-md border border-line-2 px-3 py-2.5 space-y-2">
       <div className="font-medium text-sm text-ink-0">Lo que no tocamos</div>
 
       {ov.capped && (

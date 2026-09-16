@@ -63,7 +63,10 @@ export const chartReferenceStroke = v('line-3')
 /** El globo de datos al pasar el mouse. En oscuro es un panel elevado; en
  *  claro es blanco con sombra, porque en claro no se puede elevar aclarando. */
 export const chartTooltip = Object.freeze({
-  cursor: { stroke: v('line-3'), strokeWidth: 1, strokeDasharray: '3 3' },
+  // El crosshair. Antes era #5A5C5B, un gris neutro que no pertenecía a la
+  // paleta (la paleta es fría). `line-3` lo dejaba 42 puntos RGB más oscuro y
+  // el cursor se perdía; `ink-3` está a 20 del original y sí es un token.
+  cursor: { stroke: v('ink-3'), strokeWidth: 1, strokeDasharray: '3 3' },
   contentStyle: {
     background: v('bg-1'),
     border: `1px solid ${v('line-2')}`,
@@ -73,7 +76,11 @@ export const chartTooltip = Object.freeze({
     boxShadow: 'var(--shadow-raised)',
   },
   labelStyle: { color: v('ink-0'), fontSize: 12, fontWeight: 600, marginBottom: 5 },
-  itemStyle: { color: v('ink-1'), fontSize: 12.5, padding: '2px 0' },
+  // El VALOR del globo es el dato: va en tinta principal. Antes era #F4F4F0,
+  // un blanco cálido fuera de la paleta y —raro— más claro que su propio
+  // título. `ink-1` lo dejaba 69 puntos más gris; `ink-0` está a 17 del
+  // original y es lo que un dato principal debe llevar.
+  itemStyle: { color: v('ink-0'), fontSize: 12.5, padding: '2px 0' },
 })
 
 /** El color de una línea o área según vaya ganando o perdiendo.

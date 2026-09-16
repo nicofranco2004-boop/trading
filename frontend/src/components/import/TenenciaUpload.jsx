@@ -69,7 +69,7 @@ export default function TenenciaUpload({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div className="w-full max-w-lg max-h-[88vh] overflow-y-auto rounded-xl bg-rendi-card border border-white/10 p-6"
+      <div className="w-full max-w-lg max-h-[88vh] overflow-y-auto rounded-xl bg-rendi-card border border-line-2 p-6"
            onClick={e => e.stopPropagation()}>
         <div className="flex items-start justify-between mb-1">
           <h2 className="text-lg font-semibold text-ink-1">{title}</h2>
@@ -93,7 +93,7 @@ export default function TenenciaUpload({
           <>
             <label className="block text-xs text-ink-3 mb-1">Broker</label>
             <select value={broker} onChange={e => setBroker(e.target.value)}
-                    className="w-full mb-3 bg-rendi-bg border border-white/10 rounded-md px-3 py-2 text-sm text-ink-1">
+                    className="w-full mb-3 bg-rendi-bg border border-line-2 rounded-md px-3 py-2 text-sm text-ink-1">
               {brokers.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
             </select>
 
@@ -125,21 +125,21 @@ export default function TenenciaUpload({
           </div>
         ) : (
           <>
-            <div className="rounded-md bg-rendi-bg border border-white/10 p-3 mb-3 text-sm">
+            <div className="rounded-md bg-rendi-bg border border-line-2 p-3 mb-3 text-sm">
               <p className="text-ink-2">
                 Ya tenés <strong className="text-ink-1">{preview.matched}</strong> posiciones cargadas (no las tocamos)
                 y vamos a <strong className="text-rendi-accent">completar {seeded.length}</strong> que faltaban
                 {seedValueLabel && <> (≈ {seedValueLabel})</>}.
               </p>
             </div>
-            <div className="max-h-56 overflow-y-auto border border-white/10 rounded-md mb-3">
+            <div className="max-h-56 overflow-y-auto border border-line-2 rounded-md mb-3">
               <table className="w-full text-sm">
                 <thead className="text-xs text-ink-3 sticky top-0 bg-rendi-card">
                   <tr><th className="text-left px-3 py-1.5">Activo</th><th className="text-right px-3 py-1.5">Cantidad</th><th className="text-right px-3 py-1.5">Valor</th></tr>
                 </thead>
                 <tbody>
                   {seeded.map(h => (
-                    <tr key={`${h.ticker}-${h.currency || ''}`} className="border-t border-white/5">
+                    <tr key={`${h.ticker}-${h.currency || ''}`} className="border-t border-line">
                       <td className="px-3 py-1.5 text-ink-1">{h.ticker} <span className="text-ink-3 text-xs">{h.type}{h.currency === 'USD' ? ' · USD' : ''}</span></td>
                       <td className="px-3 py-1.5 text-right text-ink-2 tabular">{fmt(h.qty)}</td>
                       <td className="px-3 py-1.5 text-right text-ink-2 tabular">{fmt(h.value)}</td>
@@ -151,7 +151,7 @@ export default function TenenciaUpload({
             {/* Foto en modo OVERRIDE (Balanz / IEB): la foto PISA — ajusta lo que
                 quedó de más/de menos (cierra a costo, sin P&L). Lo mostramos. */}
             {preview.override && (preview.override.reduced?.length > 0 || preview.override.removed?.length > 0) && (
-              <div className="rounded-md border border-white/10 bg-rendi-bg p-2.5 mb-2 text-xs text-ink-2">
+              <div className="rounded-md border border-line-2 bg-rendi-bg p-2.5 mb-2 text-xs text-ink-2">
                 <p className="mb-1">La foto ajusta tu cartera (se cierra a costo, sin ganancia/pérdida):</p>
                 <ul className="list-disc pl-4 space-y-0.5">
                   {(preview.override.reduced || []).map(r => (

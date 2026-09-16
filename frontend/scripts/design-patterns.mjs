@@ -200,6 +200,42 @@ export const CATEGORIAS = {
       return frases.reduce((n, f) => n + (t.includes(f) ? 1 : 0), 0)
     },
   },
+
+  // ── R8 · El tema no se escribe a mano (modo claro, F0-F3) ────────────────
+  // Los 33 colores del sistema son variables desde F0: un hex escrito a mano en
+  // un componente NO sigue al tema y vuelve a romper el modo claro, que es
+  // exactamente la deuda que F0-F3 terminó de limpiar (334 → 88).
+  //
+  // ⚠️ POR QUÉ ESTAS DOS CATEGORÍAS Y NO UNA: son dos formas distintas de la
+  // misma falla y se arreglan distinto. Un hex se reemplaza por su token; un
+  // `bg-white` suelto puede ser deuda O puede ser blanco de verdad (el fondo
+  // detrás del logo de una empresa, la perilla de un interruptor). Contarlas
+  // juntas mezclaría "hay que migrarlo" con "está bien así".
+  color_a_mano: {
+    regla: 'R8',
+    alcance: 'fuentes',
+    nota:
+      'Hex de 6 dígitos en JSX/JS. Los 88 que quedan son deliberados y están declarados en ' +
+      'src/__design__/CRITERIO-modo-claro.md: logos de brokers, banderas de países, la ' +
+      'paleta del informe público (papel claro siempre, se imprime) y el canvas de la ' +
+      'imagen para redes, que no resuelve var(). El `#` se exige seguido de 6 hex Y límite ' +
+      'de palabra: sin el límite, `#portGrad` y `calc(100%_-_1.5rem)` entran como colores.',
+    contar: (t) => contar(t, /#[0-9A-Fa-f]{6}\b/g),
+  },
+
+  superficie_fija: {
+    regla: 'R8',
+    alcance: 'fuentes',
+    nota:
+      'Blanco o negro escritos como superficie, sin par por tema. En oscuro un `border-white/10` ' +
+      'se ve y sobre papel blanco desaparece — sin error y sin que ningún test lo note. Los que ' +
+      'quedan son blanco DE VERDAD: el fondo detrás del logo de una empresa, la perilla de un ' +
+      'interruptor, el velo negro de un modal. NO cuenta `text-white`: sobre un botón de color ' +
+      'es correcto en los dos temas (los seis fondos de botón dan >= 4,9:1 en claro, medido).',
+    contar: (t) =>
+      contar(t, /\bbg-white\b(?!\/)/g) +
+      contar(t, /\b(?:border|divide|ring|from|via|to)-white\/\d+/g),
+  },
 }
 
 // ── Categorías con forma distinta ─────────────────────────────────────────
