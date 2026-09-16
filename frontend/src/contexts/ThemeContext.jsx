@@ -2,30 +2,28 @@ import { createContext, useContext, useState, useEffect } from 'react'
 
 const ThemeContext = createContext()
 
-// El modo claro sigue trabado, pero ya no por falta de paleta.
+// El modo claro está ABIERTO desde 2026-09-16.
 //
-// ── Lo que había antes (y ya no) ──────────────────────────────────────────
+// ── Por qué estuvo trabado, y qué lo destrabó ─────────────────────────────
 // Los tokens V2 eran hex fijos: `bg-bg-1` valía #0E1218 y no había forma de
-// que valiera otra cosa. Eso hacía el modo claro literalmente imposible, no
-// difícil. F0 (2026-09-15) los pasó a variables CSS con un set claro y uno
-// oscuro — la paleta existe, está medida contra WCAG AA y vive en
-// src/index.css. Los ~8.900 usos del código ya responden al tema solos.
+// que valiera otra cosa. El modo claro no era difícil, era IMPOSIBLE — y los
+// dos intentos anteriores se vieron mal por eso, no por el diseño. Sobre fondo
+// blanco, el borde de las tarjetas pasaba de contrastar 1,18:1 a 15,93:1 y el
+// texto principal de 15,57 a 1,21.
 //
-// ── Lo que falta para destrabar ───────────────────────────────────────────
-//   F1 · Enterrar el modo claro viejo: 92 `bg-white` y 482 `dark:` sueltos
-//        del sistema anterior, que hoy producen blanco sobre blanco.
-//   F2 · Los gráficos: ~360 colores escritos a mano adentro de cada gráfico,
-//        que no miran el tema. Las rampas de heatmap hay que recorrerlas al
-//        revés, no cambiarles los valores.
-//   F3 · Elevación: bg-2 hace dos trabajos (elevar y hover) que en claro
-//        tiran para lados opuestos, y las sombras están apagadas.
+// Cuatro tandas lo abrieron: los 33 colores pasaron a variables (F0), se
+// enterraron las dos mitades del sistema anterior que convivían (F1), los
+// gráficos dejaron de tener cada uno su copia de la escala (F2) y la
+// superficie que flota dejó de compartir color con el hover (F3).
+// El criterio de qué NO se toca: src/__design__/CRITERIO-modo-claro.md
 //
-// ── Cuando se destrabe ────────────────────────────────────────────────────
-// ESTA CONSTANTE Y EL SCRIPT DE index.html SE CAMBIAN JUNTOS. Si se saca
-// acá y no allá, la app parpadea claro→oscuro en cada carga; si se saca
-// allá y no acá, las cuentas con `rendi_theme=light` guardado de la época
-// vieja arrancan claras y saltan a oscuras.
-const LIGHT_MODE_LOCKED = true
+// ── ESTA CONSTANTE Y EL SCRIPT DE index.html SE MUEVEN JUNTOS ─────────────
+// Se deja puesta, en `false`, y no se borra: es el interruptor para volver
+// atrás sin revertir cuatro tandas de trabajo. Si algún día hay que apagarlo,
+// se pone en `true` EN LOS DOS LADOS. Con uno solo: o la app parpadea
+// claro→oscuro en cada carga, o las cuentas con `rendi_theme` guardado
+// arrancan del color equivocado.
+const LIGHT_MODE_LOCKED = false
 
 export function ThemeProvider({ children }) {
   const [dark, setDark] = useState(() => {

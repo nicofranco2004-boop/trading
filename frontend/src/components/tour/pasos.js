@@ -89,12 +89,40 @@ export const PASOS = [
     texto: 'Acá pedís que te avisemos si un activo llega a cierto precio, o si alguno de '
       + 'los tuyos sube o baja más de lo que vos digas. Te llega por mail y al teléfono.',
   },
+  // Cierra el tutorial y no es del asistente: es de la app entera. Va último a
+  // propósito — los cinco anteriores cuentan una historia (Rendi te acompaña →
+  // le hablás → te contesta → le registrás → te avisa) y meter el tema en el
+  // medio la corta.
+  //
+  // Va a `/mas` y NO con `ruta: null`, que era lo primero que parecía bien. El
+  // interruptor vive en dos lugares según el tamaño de pantalla: el menú
+  // lateral en la computadora y «Más» en el celular. Con `null` el paso se
+  // muestra donde el usuario esté — y como los dos pasos anteriores lo dejan en
+  // /alertas, en CELULAR ahí no hay ningún interruptor y el paso se saltearía
+  // solo: justo el usuario que no tiene menú lateral se quedaría sin enterarse.
+  // `/mas` es la única ruta donde existe en los dos tamaños. En escritorio el
+  // del menú lateral va antes en el DOM, así que es el que se resalta.
+  {
+    id: 'tema',
+    marca: 'tema',
+    ruta: '/mas',
+    titulo: 'Y ahora, Rendi en claro',
+    texto: 'Con este botón cambiás entre fondo oscuro y fondo blanco. Elegís una vez y '
+      + 'Rendi se acuerda. Probá el que te resulte más cómodo para leer: de día suele '
+      + 'ganar el claro.',
+  },
 ]
 
 /** La marca que se le pone al elemento que hay que resaltar. */
 export const ATRIBUTO = 'data-tour'
 
-export const CLAVE_VISTO = 'rendi:tour:novedades:v1'
+// ⚠️ SUBIR ESTO ES LA ÚNICA FORMA DE QUE UNA NOVEDAD LLEGUE A QUIEN YA VIO EL
+// TUTORIAL. El almacenamiento guarda un sí/no, no qué pasos vio, así que con la
+// clave vieja un paso nuevo sólo lo verían los usuarios nuevos — o sea,
+// exactamente los que no lo necesitan. El costo es que todos vuelven a ver el
+// tutorial entero una vez. Se sube SÓLO cuando se agrega algo que vale ese
+// costo; v2 = el modo claro.
+export const CLAVE_VISTO = 'rendi:tour:novedades:v2'
 
 /** ¿Ya lo vio? Si el almacenamiento no se puede leer, se asume que SÍ: mejor
  *  no mostrarlo que mostrarlo en loop a alguien que no lo puede apagar. */

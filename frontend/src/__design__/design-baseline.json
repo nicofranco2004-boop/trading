@@ -14,7 +14,7 @@
     "fork_ternario": 0,
     "comentarios_fosiles": 0,
     "color_a_mano": 94,
-    "superficie_fija": 5,
+    "superficie_fija": 4,
     "mono_css": 3,
     "paginas_mobile": 3
   },
@@ -227,8 +227,7 @@
       "src/components/AssetLogo.jsx": 1,
       "src/components/PfFormModal.jsx": 1,
       "src/components/advisor/BriefPrefs.jsx": 1,
-      "src/components/alerts/MarketBriefPrefs.jsx": 1,
-      "src/contexts/ThemeContext.jsx": 1
+      "src/components/alerts/MarketBriefPrefs.jsx": 1
     }
   }
 }
