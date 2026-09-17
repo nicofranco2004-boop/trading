@@ -96,6 +96,9 @@ export function isArStock(asset) {
 export const BYMA_EXCEPCIONES = {
   'BRK.B': 'BRKB',
   'BRK B': 'BRKB',
+  // Y con guión: así lo guardan los imports que ya normalizaron el ticker para
+  // yfinance. Faltaba, y en producción una cuenta seguía pidiendo 'BRK-B.BA'.
+  'BRK-B': 'BRKB',
 }
 
 /** El símbolo `.BA` con el que BYMA cotiza este activo. */
