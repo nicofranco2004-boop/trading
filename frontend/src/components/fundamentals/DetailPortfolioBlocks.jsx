@@ -15,6 +15,7 @@ import Panel from '../Panel'
 import { api } from '../../utils/api'
 import { costInPesos, costInUsd, valueEquityLot, isArUsdBroker, costBasisRate } from '../../utils/valuation'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
+import { resolveCedearRatio } from '../../utils/cedearRatio'
 
 const baseOf = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
 const fmtUsd = (n) => (n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR'))
@@ -149,9 +150,21 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
       let costOnAxis = avgCostUsd
       let converted = false
       if (allLocal) {
-        const priceBa = prices[base + '.BA']
-        const nowUsdPerUnit = priceBa > 0 && tc > 0 ? priceBa / tc : null   // precio USD del CEDEAR
-        const ratio = nowUsdPerUnit != null && cur > 0 ? cur / nowUsdPerUnit : null  // acción US ÷ CEDEAR
+        // El ratio sale de utils/cedearRatio (lista oficial de Comafi, con el
+        // derivado del precio como respaldo). Antes se derivaba acá suelto, y era
+        // la única copia del cálculo en toda la app: el cobro de dividendos no la
+        // usaba y por eso multiplicaba por la cantidad cruda.
+        //
+        // La condición de ENTRADA no cambia: se sigue exigiendo precio .BA. Con la
+        // tabla el ratio existiría igual sin él, pero entonces esta tarjeta pasaría
+        // a marcar "Tu costo" (y un P&L de 0%) para CEDEARs ilíquidos sin precio,
+        // donde antes se abstenía a propósito. Acá sólo mejora la exactitud del
+        // ratio, no se amplía qué se muestra.
+        const priceBa = Number(prices[`${base}.BA`])
+        const resolved = (priceBa > 0 && tc > 0)
+          ? resolveCedearRatio(base, { ...prices, [base]: cur }, tc)
+          : null
+        const ratio = resolved?.ratio ?? null
         if (ratio != null && Number.isFinite(ratio) && ratio > 0) {
           costOnAxis = avgCostUsd * ratio   // tu costo, llevado a la acción US
           converted = true

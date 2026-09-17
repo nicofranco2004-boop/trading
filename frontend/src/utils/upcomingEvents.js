@@ -15,8 +15,9 @@
 
 import { generateSchedule, cerOptsFor } from './bondSchedule'
 import { getBondMeta } from './bondMeta'
-import { isBondTicker } from './tickers'
+import { isBondTicker, cedearEspecieBase } from './tickers'
 import { hoyISO } from './fecha'
+import { underlyingSharesForTicker } from './cedearRatio'
 
 const DEFAULT_WINDOW_DAYS = 90
 
@@ -133,6 +134,68 @@ export function mergeEvents(...arrays) {
 }
 
 // Group helper: agrupa eventos por (asset) o por (date) para vistas distintas.
+// ─── Dividendos: de "por acción" a "lo que vas a cobrar vos" ────────────────
+//
+// El backend guarda `dividend_per_share` en la escala del SUBYACENTE — la acción
+// que cotiza en su mercado de origen (ver details.dividend_scale, estampado en
+// _fetch_yf_events). Tu tenencia puede estar en OTRA escala: 130 CEDEARs de AVGO
+// son 3,33 acciones, no 130.
+//
+// Éste es el único lugar donde se hace esa cuenta. Antes vivía suelta en
+// Events.jsx (`eventCobro`) multiplicando por la cantidad cruda, y de ahí salió
+// el bug reportado el 2026-09-17: US$40 anunciados contra US$0,70 depositados.
+//
+// Devuelve null cuando NO se puede saber (sin ratio, sin monto, sin tenencia).
+// Null significa "no publiques un número", no "publicá cero".
+const DIV_EVENTS = new Set(['ex_dividend', 'payment_date'])
+
+export function dividendPayout(event, positions, opts = {}) {
+  if (!event || !DIV_EVENTS.has(event.eventType)) return null
+  const perShare = Number(event.details?.dividend_per_share)
+  if (!(perShare > 0)) return null
+
+  // Escala del dato. Hoy yfinance sólo publica el subyacente; si algún día
+  // llegara ya convertido, respetamos lo que diga el evento en vez de asumir.
+  const scaleIn = event.details?.dividend_scale || 'underlying_share'
+  if (scaleIn !== 'underlying_share') return null
+
+  // Una sola pasada, en el módulo que sabe de escalas (cedearRatio). Antes este
+  // loop estaba duplicado acá: la misma cuenta en dos lugares es justo lo que
+  // dejó el bug vivo cinco pantallas.
+  const t = underlyingSharesForTicker(positions, event.ticker, opts)
+  const { shares, units, unitsUnknown, partial, scale, ratio } = t
+
+  if (!(units > 0) && !(unitsUnknown > 0)) {
+    // No tenés el activo (tab "Populares"): sólo se puede hablar del dividendo
+    // por acción del subyacente, sin monto propio.
+    return {
+      amount: null, perShare, perUnit: null, shares: null, units: 0, unitsUnknown: 0,
+      ratio: null, scale: 'share', currency: 'USD', partial: false,
+      estimated: !!event.details?.dividend_amount_estimated,
+      asOf: event.details?.dividend_as_of || null,
+    }
+  }
+  if (!(shares > 0)) return null            // tenés, pero no sabemos convertir NADA
+
+  return {
+    amount: shares * perShare,
+    perShare,
+    // Cuánto paga UNA unidad de lo que vos tenés (un CEDEAR).
+    perUnit: scale === 'mixed' ? null : perShare * (shares / units),
+    shares,
+    units,          // sólo lo convertible: `amount` cubre exactamente esto
+    unitsUnknown,   // lo que quedó afuera del monto
+    ratio,
+    scale,
+    currency: 'USD',
+    // El monto viene del dividendo ANTERIOR (ver _fetch_yf_events): es una
+    // estimación, no lo que la empresa declaró para esta fecha.
+    estimated: !!event.details?.dividend_amount_estimated,
+    asOf: event.details?.dividend_as_of || null,
+    partial,
+  }
+}
+
 export function groupEventsByAsset(events) {
   const map = new Map()
   for (const ev of events) {

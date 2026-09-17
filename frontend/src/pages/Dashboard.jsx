@@ -32,7 +32,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, valuationPriceKey } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, valuationPriceKey, setBrokersRegistry } from '../utils/valuation'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -162,6 +162,10 @@ function PersonalDashboard() {
       setMonthly(mon)
       setConfig(cfg)
       setBrokers(bkrs)
+      // Idem Novedades: el registro se vacía en cada login y el Dashboard no pasa
+      // por Posiciones. Sin él, la tarjeta de próximos eventos no sabe qué brokers
+      // son argentinos y publica el dividendo en la escala equivocada.
+      setBrokersRegistry(bkrs || [])
       setDolar(dol)
       setSnapshots(snaps || [])
       latestRef.current = { pos, cfg, bkrs }

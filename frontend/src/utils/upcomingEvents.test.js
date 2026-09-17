@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { setBrokersRegistry } from './valuation'
 import {
   upcomingBondEvents,
   normalizeBackendEvents,
@@ -11,6 +12,7 @@ import {
   formatRelativeDate,
   countryFlag,
   isMacroEvent,
+  dividendPayout,
 } from './upcomingEvents.js'
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -312,5 +314,128 @@ describe('eventTypeLabel + eventTypeIcon', () => {
   it('icon devuelve string siempre', () => {
     expect(typeof eventTypeIcon('earnings')).toBe('string')
     expect(typeof eventTypeIcon('mystery')).toBe('string')
+  })
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// dividendPayout — el cobro de dividendos en la escala de TU tenencia.
+//
+// Estos tests entran por donde entra producción: el evento arranca con la forma
+// EXACTA que devuelve /api/events/portfolio (snake_case, details crudos) y pasa
+// por normalizeBackendEvents antes de llegar al cálculo. Un test que armara el
+// evento ya normalizado a mano se saltearía ese paso y certificaría en verde un
+// camino que la app no recorre.
+// ════════════════════════════════════════════════════════════════════════════
+describe('dividendPayout', () => {
+  beforeEach(() => setBrokersRegistry([
+    { id: 1, name: 'Balanz',       currency: 'ARS' },
+    { id: 2, name: 'Balanz · USD', currency: 'USD', parent_broker_id: 1 },
+    { id: 3, name: 'Schwab',       currency: 'USD' },
+  ]))
+
+  // Tal cual sale de _fetch_yf_events → /api/events/portfolio.
+  const backendEvent = (ticker, perShare, extra = {}) => ({
+    ticker,
+    event_type: 'ex_dividend',
+    event_date: '2026-09-21',
+    details: { dividend_per_share: perShare, dividend_scale: 'underlying_share', ...extra },
+    confirmed: true,
+    source: 'yfinance',
+  })
+  const norm = (...evs) => normalizeBackendEvents(evs)[0]
+
+  it('el caso reportado: 130 CEDEARs de AVGO cobran US$2,17 y no US$84,50', () => {
+    const ev = norm(backendEvent('AVGO', 0.65))
+    const positions = [{ asset: 'AVGO', quantity: 130, broker: 'Balanz', is_cash: 0 }]
+    const r = dividendPayout(ev, positions)
+    expect(r.units).toBe(130)                 // lo que tenés
+    expect(r.shares).toBeCloseTo(130 / 39, 6) // lo que eso es en acciones
+    expect(r.amount).toBeCloseTo(2.17, 2)     // lo que vas a cobrar
+    expect(130 * 0.65).toBeCloseTo(84.5, 2)   // lo que decía la app
+  })
+
+  it('el caso GOOGL reconcilia con el depósito real del broker', () => {
+    const ev = norm(backendEvent('GOOGL', 0.21))
+    const r = dividendPayout(ev, [{ asset: 'GOOGL', quantity: 190, broker: 'Balanz', is_cash: 0 }])
+    expect(r.amount).toBeCloseTo(0.69, 2)     // el broker depositó 0,70
+    expect(r.ratio).toBe(58)
+  })
+
+  it('una acción real en broker USD no se divide', () => {
+    const ev = norm(backendEvent('AVGO', 0.65))
+    const r = dividendPayout(ev, [{ asset: 'AVGO', quantity: 130, broker: 'Schwab', is_cash: 0 }])
+    expect(r.amount).toBeCloseTo(84.5, 2)
+    expect(r.scale).toBe('share')
+  })
+
+  it('CEDEAR y acción real del mismo ticker se suman cada uno en su escala', () => {
+    const ev = norm(backendEvent('AVGO', 0.65))
+    const r = dividendPayout(ev, [
+      { asset: 'AVGO', quantity: 39, broker: 'Balanz', is_cash: 0 },  // = 1 acción
+      { asset: 'AVGO', quantity: 2,  broker: 'Schwab', is_cash: 0 },  // = 2 acciones
+    ])
+    expect(r.shares).toBeCloseTo(3, 6)
+    expect(r.amount).toBeCloseTo(3 * 0.65, 6)
+    expect(r.scale).toBe('mixed')
+    expect(r.perUnit).toBeNull()   // dos escalas → no hay "por unidad" único
+    expect(r.units).toBe(41)
+  })
+
+  it('marca partial cuando hay tenencia sin ratio conocido', () => {
+    const ev = norm(backendEvent('ZZZZ', 0.26))
+    const r = dividendPayout(ev, [
+      { asset: 'ZZZZ', quantity: 400, broker: 'Balanz', is_cash: 0 },  // sin ratio
+      { asset: 'ZZZZ', quantity: 10,  broker: 'Schwab', is_cash: 0 },
+    ])
+    expect(r.partial).toBe(true)
+    expect(r.amount).toBeCloseTo(10 * 0.26, 6)   // sólo lo que supimos convertir
+  })
+
+  it('si NADA se puede convertir devuelve null en vez de un número inventado', () => {
+    const ev = norm(backendEvent('ZZZZ', 0.26))
+    const r = dividendPayout(ev, [{ asset: 'ZZZZ', quantity: 400, broker: 'Balanz', is_cash: 0 }])
+    expect(r).toBeNull()
+  })
+
+  it('sin tenencia (tab Populares) informa el por-acción, sin monto propio', () => {
+    const ev = norm(backendEvent('KO', 0.53))
+    const r = dividendPayout(ev, [])
+    expect(r.amount).toBeNull()
+    expect(r.perShare).toBe(0.53)
+    expect(r.units).toBe(0)
+  })
+
+  it('propaga que el monto es del período anterior', () => {
+    const ev = norm(backendEvent('AVGO', 0.65, {
+      dividend_amount_estimated: true, dividend_as_of: '2026-06-22',
+    }))
+    const r = dividendPayout(ev, [{ asset: 'AVGO', quantity: 39, broker: 'Balanz', is_cash: 0 }])
+    expect(r.estimated).toBe(true)
+    expect(r.asOf).toBe('2026-06-22')
+  })
+
+  it('no toca earnings ni macro ni bonos', () => {
+    const earn = normalizeBackendEvents([{ ticker: 'AVGO', event_type: 'earnings', event_date: '2026-09-21', details: { eps_estimate: 1.2 } }])[0]
+    expect(dividendPayout(earn, [{ asset: 'AVGO', quantity: 39, broker: 'Balanz', is_cash: 0 }])).toBeNull()
+  })
+
+  it('un evento sin monto no produce cobro', () => {
+    const ev = normalizeBackendEvents([{ ticker: 'AVGO', event_type: 'ex_dividend', event_date: '2026-09-21', details: {} }])[0]
+    expect(dividendPayout(ev, [{ asset: 'AVGO', quantity: 39, broker: 'Balanz', is_cash: 0 }])).toBeNull()
+  })
+
+  it('rechaza el dato si viniera en una escala que no sabe convertir', () => {
+    // Defensivo: si algún día el backend publicara el monto ya por CEDEAR, este
+    // módulo no debe volver a dividir. Mejor no publicar que publicar mal.
+    const ev = norm(backendEvent('AVGO', 0.0167, { dividend_scale: 'cedear' }))
+    expect(dividendPayout(ev, [{ asset: 'AVGO', quantity: 130, broker: 'Balanz', is_cash: 0 }])).toBeNull()
+  })
+
+  it('un evento SIN dividend_scale (cacheado antes del fix) se trata como subyacente', () => {
+    // La tabla financial_events tiene filas viejas sin el campo. Asumir la
+    // escala histórica es correcto: siempre fue la del subyacente.
+    const ev = normalizeBackendEvents([{ ticker: 'AVGO', event_type: 'ex_dividend', event_date: '2026-09-21', details: { dividend_per_share: 0.65 } }])[0]
+    const r = dividendPayout(ev, [{ asset: 'AVGO', quantity: 130, broker: 'Balanz', is_cash: 0 }])
+    expect(r.amount).toBeCloseTo(2.17, 2)
   })
 })

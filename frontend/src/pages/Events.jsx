@@ -30,13 +30,16 @@ import EventBadge from '../components/EventBadge'
 import { api } from '../utils/api'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos } from '../utils/valuation'
-import { pct, pctTxt } from '../utils/format'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, setBrokersRegistry } from '../utils/valuation'
+import { cedearRatio } from '../utils/cedearRatio'
+import { cedearEspecieBase } from '../utils/tickers'
+import { pct, pctTxt, nfmt } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import {
   upcomingBondEvents,
   normalizeBackendEvents,
   mergeEvents,
+  dividendPayout,
   formatRelativeDate,
   countryFlag,
   isMacroEvent,
@@ -136,11 +139,26 @@ export default function Events({ embedded = false }) {
       ])
       setPositions(pos || [])
       setBrokers(bkrs || [])
+      // El registro se vacía en cada login y esta pantalla no pasa por Posiciones:
+      // sin esto, isBymaHolding no sabe qué brokers son argentinos y el cobro de
+      // dividendos vuelve a salir en la escala de la acción.
+      setBrokersRegistry(bkrs || [])
       setConfig(cfg || { tc_blue: 1415 })
       setDolar(dol)
       setPortfolioEvents(portEv?.events || [])
       setPopularEvents(popEv?.events || [])
-      const symList = collectPriceSymbols(pos || [], bkrs || [])
+      // Al set normal de precios le sumamos el ticker PELADO de los activos con
+      // dividendo cuyo ratio no está en la tabla: sin la acción US al lado del
+      // .BA, deriveCedearRatio no tiene con qué derivar y el respaldo sería
+      // letra muerta. Son pocos (la tabla cubre 162 símbolos) y sólo los que
+      // efectivamente tienen un dividendo en la ventana.
+      const symList = [...new Set([
+        ...collectPriceSymbols(pos || [], bkrs || []),
+        ...(portEv?.events || [])
+          .filter(e => e.event_type === 'ex_dividend' && e.details?.dividend_per_share != null)
+          .map(e => cedearEspecieBase(e.ticker))
+          .filter(t => t && !cedearRatio(t)),
+      ])]
       if (symList.length > 0) {
         try {
           const p = await api.get(`/prices?symbols=${symList.join(',')}`)
@@ -190,6 +208,14 @@ export default function Events({ embedded = false }) {
     }
     return map
   }, [positions])
+
+  // Contexto del cobro: la conversión de la tenencia a la escala del subyacente
+  // necesita las POSICIONES (una por una: el CEDEAR de AVGO y la acción real de
+  // AVGO no se pueden sumar) y, como respaldo, los precios para derivar el ratio
+  // de lo que la tabla no cubre.
+  const cobroCtx = useMemo(
+    () => ({ positions, prices, tc: tcCedear, tickerShares }),
+    [positions, prices, tcCedear, tickerShares])
 
   // Tickers que el user tiene (para flag en tab Popular)
   const userTickerSet = useMemo(() => {
@@ -290,7 +316,7 @@ export default function Events({ embedded = false }) {
           impactPct={(tickerValueUsd && portfolioTotalUsd > 0)
             ? (tickerValueUsd.get(nextEvent.ticker) || 0) / portfolioTotalUsd
             : null}
-          cobro={eventCobro(nextEvent, tickerShares)}
+          cobro={eventCobro(nextEvent, cobroCtx)}
           onView={() => navigate(`/activo/${encodeURIComponent(nextEvent.ticker)}`)}
         />
       )}
@@ -357,7 +383,7 @@ export default function Events({ embedded = false }) {
           tab={tab}
           tickerValueUsd={tickerValueUsd}
           portfolioTotalUsd={portfolioTotalUsd}
-          tickerShares={tickerShares}
+          cobroCtx={cobroCtx}
         />
       )}
 
@@ -702,7 +728,7 @@ function eventIconMeta(eventType) {
   return { Icon: Calendar, cls: 'bg-bg-2 text-ink-2' }
 }
 
-function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, tickerShares }) {
+function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx }) {
   const groups = useMemo(() => groupByDay(events), [events])
   return (
     <div>
@@ -722,7 +748,7 @@ function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, tickerSha
                   tab={tab}
                   tickerValueUsd={tickerValueUsd}
                   portfolioTotalUsd={portfolioTotalUsd}
-                  tickerShares={tickerShares}
+                  cobroCtx={cobroCtx}
                 />
               ))}
             </div>
@@ -733,10 +759,10 @@ function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, tickerSha
   )
 }
 
-function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, tickerShares }) {
+function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx }) {
   const { ticker, eventType, eventDate, confirmed, inPortfolio, details } = event
   const isMacro = isMacroEvent(event)
-  const cobro = tab === 'portfolio' ? eventCobro(event, tickerShares) : null
+  const cobro = tab === 'portfolio' ? eventCobro(event, cobroCtx) : null
   const impactPct = (tab === 'portfolio' && tickerValueUsd && portfolioTotalUsd > 0)
     ? (tickerValueUsd.get(ticker) || 0) / portfolioTotalUsd
     : null
@@ -756,10 +782,13 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, tickerShare
     : ticker
 
   // Sub-línea: detalle + lo personal (cuánto te toca) en cyan.
-  const detail = renderDetail(event)
-  const shares = tickerShares?.get?.(ticker) || null
+  const detail = renderDetail(event, cobro)
+  const shares = cobroCtx?.tickerShares?.get?.(ticker) || null
+  // Los nominales que se muestran son los de TU tenencia (130 CEDEARs), pero el
+  // cobro sale de las acciones equivalentes (3,33). Mezclarlos era el bug.
+  const nominales = cobro?.units || shares || 0
   const personal = cobro?.amount != null
-    ? `tenés ${formatCompact(cobro.shares || shares || 0)} nominales → ~+${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`
+    ? `tenés ${formatCompact(nominales)} nominales → ~+${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}${cobro.partial ? ' (parcial)' : ''}`
     : (tab === 'portfolio' && shares && impactPct != null && impactPct > 0.0001)
       ? `tenés ${formatCompact(shares)} nominales (${pct(impactPct)} de tu cartera)`
       : (tab === 'popular' && inPortfolio) ? 'está en tu cartera' : null
@@ -886,7 +915,7 @@ function EarningsExpectations({ symbol }) {
   )
 }
 
-function renderDetail(event) {
+function renderDetail(event, payout) {
   const { eventType, details } = event
   if (eventType === 'macro') {
     return `${details?.country || ''} · ${macroCategoryLabel(details?.category)}`
@@ -897,9 +926,25 @@ function renderDetail(event) {
       : 'Resultados trimestrales'
   }
   if (eventType === 'ex_dividend') {
-    return details?.dividend_per_share != null
-      ? `Div $${details.dividend_per_share}/acción`
-      : 'Fecha ex-dividendo'
+    if (details?.dividend_per_share == null) return 'Fecha ex-dividendo'
+    // El monto es SIEMPRE por acción del subyacente (yfinance no cotiza el
+    // CEDEAR). Cuando la tenencia está en CEDEARs lo decimos, porque el número
+    // por sí solo invita a multiplicarlo por la cantidad — que es justo el error
+    // que este dato causó.
+    // El payout ya trae esta marca resuelta; leerla de details otra vez sería una
+    // segunda copia del mismo criterio.
+    const tilde = (payout?.estimated ?? details?.dividend_amount_estimated) ? '~' : ''
+    // Separadores argentinos (coma decimal), y el ratio sin decimales de relleno:
+    // "39 CEDEARs", no "39,00 CEDEARs".
+    // 2 decimales para un dividendo normal; 4 para los muy chicos (el del ADR de
+    // GGAL son US$0,048 y con 2 quedaría en 0,05).
+    const dps = details.dividend_per_share
+    const porAccion = nfmt(dps, Math.abs(dps) >= 0.01 ? 2 : 4)
+    const base = `Div ${tilde}US$${porAccion} por acción`
+    const r = payout?.ratio != null ? nfmt(payout.ratio, Number.isInteger(payout.ratio) ? 0 : 2) : null
+    if (payout?.scale === 'cedear' && r) return `${base} · ${r} CEDEARs = 1 acción`
+    if (payout?.scale === 'adr' && r)    return `${base} del ADR · ${r} acciones = 1 ADR`
+    return base
   }
   if (eventType?.startsWith('bond_')) {
     const cur = details?.currency || 'USD'
@@ -912,47 +957,18 @@ function renderDetail(event) {
   return ''
 }
 
-function renderAmount(event) {
-  const { eventType, details } = event
-  if (eventType?.startsWith('bond_') && typeof details?.total === 'number') {
-    const cur = details.currency || 'USD'
-    return (
-      <span className="text-rendi-pos">
-        +{cur} {formatCompact(details.total)}
-      </span>
-    )
-  }
-  if (eventType === 'ex_dividend' && details?.dividend_per_share != null) {
-    return (
-      <span className="text-rendi-pos">+${details.dividend_per_share}/acc</span>
-    )
-  }
-  if (eventType === 'earnings') {
-    return <span className="text-ink-3">—</span>
-  }
-  if (eventType === 'macro') {
-    return <span className="text-ink-3">—</span>
-  }
-  return <span className="text-ink-3">—</span>
-}
-
-// Cobro estimado del evento según tus acciones.
+// Cobro estimado del evento según tu tenencia.
 //   • Bono: details.total ya es el total (coupon×qty, calculado en upcomingBondEvents).
-//   • Dividendo: dividend_per_share × acciones que tenés.
+//   • Dividendo: lo resuelve dividendPayout, que convierte la tenencia a la
+//     escala del subyacente (130 CEDEARs de AVGO = 3,33 acciones). Antes acá se
+//     multiplicaba por la cantidad cruda y el cobro salía hasta 58× inflado.
 //   • Otros (earnings, macro): sin cobro.
-function eventCobro(event, sharesMap) {
+function eventCobro(event, ctx) {
   const { eventType, details, ticker } = event
   if (eventType?.startsWith('bond_') && typeof details?.total === 'number') {
-    return { amount: details.total, currency: details.currency || 'USD', shares: sharesMap?.get(ticker) || null }
+    return { amount: details.total, currency: details.currency || 'USD', shares: ctx?.tickerShares?.get(ticker) || null }
   }
-  if (eventType === 'ex_dividend' && details?.dividend_per_share != null) {
-    const shares = sharesMap?.get(ticker) || 0
-    if (shares > 0) {
-      return { amount: details.dividend_per_share * shares, currency: 'USD', shares, perShare: details.dividend_per_share }
-    }
-    return { amount: null, currency: 'USD', shares: null, perShare: details.dividend_per_share }
-  }
-  return null
+  return dividendPayout(event, ctx?.positions, { prices: ctx?.prices, tc: ctx?.tc })
 }
 
 // ─── Spotlight hero ─────────────────────────────────────────────────────────
@@ -961,10 +977,20 @@ function eventCobro(event, sharesMap) {
 function SpotlightHero({ event, impactPct, cobro, onView }) {
   const days = daysUntil(event.eventDate)
   const countdown = days == null ? '—' : days === 0 ? 'HOY' : days === 1 ? 'MAÑANA' : days
-  const detail = renderDetail(event)
+  const detail = renderDetail(event, cobro)
   const contextParts = []
   if (detail) contextParts.push(detail)
-  if (cobro?.shares) contextParts.push(`tenés ${formatCompact(cobro.shares)} acc`)
+  // Lo que tenés se dice en LA UNIDAD QUE TENÉS (130 CEDEARs), no en acciones:
+  // decir "tenés 130 acc" al lado de un dividendo por acción es lo que hacía
+  // que el cobro pareciera 130 × el dividendo.
+  if (cobro?.units) {
+    const unidad = cobro.scale === 'cedear' ? 'CEDEARs'
+      : cobro.scale === 'adr' ? 'acciones (locales)'
+      : 'acc'
+    contextParts.push(`tenés ${formatCompact(cobro.units)} ${unidad}`)
+  } else if (cobro?.shares) {
+    contextParts.push(`tenés ${formatCompact(cobro.shares)} acc`)
+  }
   if (impactPct != null && impactPct > 0.0001) contextParts.push(`${pct(impactPct)} de tu cartera`)
 
   return (
@@ -998,7 +1024,15 @@ function SpotlightHero({ event, impactPct, cobro, onView }) {
           <>
             <p className="kpi-label mb-0.5">Tu cobro est.</p>
             <p className="text-xl font-semibold text-rendi-pos leading-none">
-              +{cobro.currency === 'USD' ? '$' : `${cobro.currency} `}{formatCompact(cobro.amount)}
+              ~+{cobro.currency === 'USD' ? 'US$' : `${cobro.currency} `}{formatCompact(cobro.amount)}
+            </p>
+            {/* El monto es bruto y, casi siempre, el del dividendo anterior (ver
+                dividend_amount_estimated). Decirlo acá evita que el usuario lo
+                compare contra el depósito del broker y crea que Rendi miente. */}
+            <p className="text-[10px] text-ink-3 leading-tight mt-0.5">
+              {cobro.partial
+                ? 'parcial: hay tenencia sin ratio conocido'
+                : cobro.estimated ? 'estimado, antes de retenciones' : 'antes de retenciones'}
             </p>
           </>
         )}

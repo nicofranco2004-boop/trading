@@ -12,10 +12,12 @@ import { Calendar, ArrowRight } from 'lucide-react'
 import AssetLogo from './AssetLogo'
 import EventBadge from './EventBadge'
 import { api } from '../utils/api'
+import { nfmt } from '../utils/format'
 import {
   upcomingBondEvents,
   normalizeBackendEvents,
   mergeEvents,
+  dividendPayout,
   formatRelativeDate,
 } from '../utils/upcomingEvents'
 import { useCerSeries } from '../hooks/useCerSeries'
@@ -69,14 +71,14 @@ export default function UpcomingEventsCard({ positions }) {
       </div>
       <ul className="divide-y divide-line/50 dark:divide-line/40">
         {events.map((ev, i) => (
-          <EventRow key={`${ev.ticker}:${ev.eventType}:${ev.eventDate}:${i}`} event={ev} />
+          <EventRow key={`${ev.ticker}:${ev.eventType}:${ev.eventDate}:${i}`} event={ev} positions={positions} />
         ))}
       </ul>
     </div>
   )
 }
 
-function EventRow({ event }) {
+function EventRow({ event, positions }) {
   const { ticker, eventType, eventDate, confirmed } = event
   return (
     <li className="px-4 py-2.5 flex items-center gap-3 hover:bg-bg-2 dark:hover:bg-bg-2/40">
@@ -86,7 +88,7 @@ function EventRow({ event }) {
           <span className="font-semibold text-ink-0 text-sm tabular">{ticker}</span>
           <EventBadge eventType={eventType} />
         </div>
-        <RowAmount event={event} />
+        <RowAmount event={event} positions={positions} />
       </div>
       <span className="text-[11px] font-medium text-ink-2 bg-bg-2 border border-line/60 rounded-full px-2 py-0.5 whitespace-nowrap shrink-0">
         {formatRelativeDate(eventDate)}
@@ -98,7 +100,7 @@ function EventRow({ event }) {
 
 // Sub-línea de contexto: para cobros (bonos, dividendos) va en cyan — es el
 // "qué significa para vos" (mismo código de color que la agenda de Novedades).
-function RowAmount({ event }) {
+function RowAmount({ event, positions }) {
   const { eventType, details } = event
   if (eventType.startsWith('bond_') && details?.total != null) {
     const currency = details.currency || 'USD'
@@ -109,9 +111,26 @@ function RowAmount({ event }) {
     )
   }
   if (eventType === 'ex_dividend' && details?.dividend_per_share != null) {
+    // Antes decía "$0,65/acción" con el monto de la ACCIÓN US al lado de una
+    // tenencia en CEDEARs — el número invitaba a multiplicarlo por la cantidad
+    // y daba hasta 58× de más. Ahora se publica el cobro ya convertido; si no
+    // sabemos convertirlo, se dice de qué acción habla el monto.
+    // Sin prices/tc acá: alcanza con la tabla de ratios (162 símbolos).
+    const payout = dividendPayout(event, positions)
+    if (payout?.amount != null) {
+      return (
+        <p className="text-[11.5px] text-data-cyan tabular mt-0.5">
+          cobrás ~+US$ {nfmt(payout.amount, 2)}
+          {payout.partial && <span className="text-ink-3"> (parcial)</span>}
+        </p>
+      )
+    }
     return (
       <p className="text-[11.5px] text-data-cyan tabular mt-0.5">
-        ${details.dividend_per_share}/acción
+        US${nfmt(details.dividend_per_share, Math.abs(details.dividend_per_share) >= 0.01 ? 2 : 4)} por acción
+        {payout?.scale === 'cedear' && payout?.ratio
+          ? <span className="text-ink-3"> · {nfmt(payout.ratio, Number.isInteger(payout.ratio) ? 0 : 2)} CEDEARs = 1 acción</span>
+          : null}
       </p>
     )
   }

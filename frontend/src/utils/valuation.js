@@ -160,6 +160,18 @@ export function fciLabel(asset) {
 // parent_broker_id (ROBUSTO al rename) y no solo por el sufijo del nombre.
 let _brokersByName = new Map()
 let _brokersById = new Map()
+/**
+ * hasBrokersRegistry — ¿el registro está poblado?
+ *
+ * Importa porque el registro se VACÍA en cada login (identidad nueva) y sólo lo
+ * repueblan algunas pantallas. Quien decida algo por la moneda del broker tiene
+ * que poder distinguir "este broker no es argentino" de "todavía no sé qué
+ * brokers hay" — son cosas distintas y la segunda no se puede responder.
+ */
+export function hasBrokersRegistry() {
+  return _brokersByName.size > 0
+}
+
 export function setBrokersRegistry(brokers) {
   _brokersByName = new Map((brokers || []).filter(b => b && b.name).map(b => [b.name, b]))
   _brokersById = new Map((brokers || []).filter(b => b && b.id != null).map(b => [b.id, b]))
@@ -245,6 +257,30 @@ export function costInPesos(p) {
   // tenga currency='ARS' → la excluimos para no dividir un costo cripto por el MEP
   // (y evitar doble conversión). Solo aplica a CEDEAR/acción AR/bono en pesos.
   return (p?.currency || '').toUpperCase() === 'ARS' && !isCrypto(p?.asset)
+}
+
+/**
+ * isBymaHolding — ¿esta tenencia se valúa por su precio LOCAL de BYMA (o sea, es
+ * un CEDEAR / acción argentina) en vez de por el ticker del mercado de origen?
+ *
+ * Es el discriminador que ya estaba repetido a lo largo del frontend
+ * (`p.asset_type === 'CEDEAR' || broker ARS || isArUsdBroker || costInPesos`),
+ * extraído acá para que el cálculo de dividendos no lo copie una vez más. La
+ * diferencia con `holdingHasReliableFundamentals` es la pregunta: aquélla
+ * responde "¿el símbolo mapea a la empresa correcta en yfinance?", ésta
+ * responde "¿la CANTIDAD está en la escala del instrumento local?" — y de esa
+ * segunda depende dividir por el ratio del CEDEAR (ver utils/cedearRatio.js).
+ *
+ * No necesita que le pasen los brokers: los lee del registro que llena
+ * setBrokersRegistry al cargar /brokers.
+ */
+export function isBymaHolding(p) {
+  if (!p || p.is_cash) return false
+  if (isCrypto(p.asset) || isFciSym(p.asset)) return false
+  if (p.asset_type === 'CEDEAR') return true
+  const b = _brokersByName.get(p.broker)
+  if (b && (b.currency || '').toUpperCase() === 'ARS') return true
+  return isArUsdBroker(p.broker) || costInPesos(p)
 }
 
 /**

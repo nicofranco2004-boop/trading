@@ -384,6 +384,56 @@ class PopularEventsTest(unittest.TestCase):
         self.assertIn(res.status_code, (401, 403))
 
 
+class AiPacketScaleTest(unittest.TestCase):
+    """El packet que ve la IA tiene que declarar en qué escala está el monto.
+
+    `dashboard_events` le pasa el `details` crudo del evento, que incluye
+    `dividend_per_share` — el monto por acción del SUBYACENTE. El packet no trae
+    cantidades, así que el modelo no puede calcular el cobro; la nota está para
+    que tampoco lo intente cruzando otro packet.
+    """
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, f"aiscale-{self.id()}@rendi.test")
+        _add_broker(conn, self.uid, "Balanz", "ARS")
+        with conn:
+            conn.execute("DELETE FROM financial_events")
+            conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested, buy_price)"
+                " VALUES (?, 'Balanz', 'AVGO', 0, 130, 1000, 7.7)", (self.uid,))
+        conn.commit()
+        conn.close()
+
+    def _events(self, details):
+        conn = main.get_db()
+        fecha = (main._hoy_art_date() + timedelta(days=5)).isoformat()
+        with conn:
+            conn.execute(
+                "INSERT INTO financial_events (ticker, event_type, event_date, details, confirmed,"
+                " source, fetched_at) VALUES ('AVGO', ?, ?, ?, 1, 'yfinance', '2026-09-17T00:00:00Z')",
+                ('ex_dividend', fecha, json.dumps(details)))
+        conn.commit()
+        from ai.builders.dashboard_events import build
+        try:
+            return build(conn, self.uid)
+        finally:
+            conn.close()
+
+    def test_dividend_packet_warns_about_the_scale(self):
+        pkt = self._events({"dividend_per_share": 0.65, "dividend_scale": "underlying_share"})
+        evs = [e for e in pkt.get("events", []) if e["ticker"] == "AVGO"]
+        self.assertTrue(evs, "el evento sembrado no llegó al packet")
+        self.assertIn("dividend_scale_note", evs[0])
+        self.assertIn("CEDEAR", evs[0]["dividend_scale_note"])
+
+    def test_event_without_amount_has_no_note(self):
+        pkt = self._events({})
+        evs = [e for e in pkt.get("events", []) if e["ticker"] == "AVGO"]
+        self.assertTrue(evs)
+        self.assertNotIn("dividend_scale_note", evs[0])
+
+
 class FetcherTest(unittest.TestCase):
     """Tests del fetcher yfinance — siempre mockeado para no depender de la red."""
 
@@ -403,6 +453,120 @@ class FetcherTest(unittest.TestCase):
         with patch('main.yf.Ticker', side_effect=Exception('network error')):
             events = main._fetch_yf_events('AAPL')
         self.assertEqual(events, [])
+
+    # ── La escala y la frescura del monto del dividendo ──────────────────────
+    # yfinance mezcla dos cosas: la PRÓXIMA fecha ex-dividendo (declarada) con el
+    # ÚLTIMO monto pagado. Y el monto es siempre por acción del SUBYACENTE, nunca
+    # por CEDEAR. Sin estas dos marcas en el evento, el consumidor no tiene cómo
+    # saber que no puede multiplicarlo por la cantidad de la posición — que es el
+    # bug reportado el 2026-09-17 (US$40 anunciados, US$0,70 depositados).
+
+    AVGO_EX = 1789948800      # 2026-09-21 — la próxima ex-date declarada
+    AVGO_LAST = 1782086400    # 2026-06-22 — el ex-date del monto que trae yfinance
+
+    def _fetch_div(self, **info):
+        base = {'exDividendDate': self.AVGO_EX, 'lastDividendValue': 0.65}
+        base.update(info)
+        with patch('main.yf.Ticker') as mock_t:
+            mock_t.return_value.calendar = None
+            mock_t.return_value.info = base
+            evs = main._fetch_yf_events('AVGO')
+        return [e for e in evs if e['event_type'] == 'ex_dividend']
+
+    def test_dividend_declares_its_scale(self):
+        """El monto sale rotulado como 'por acción del subyacente'."""
+        evs = self._fetch_div(lastDividendDate=self.AVGO_LAST)
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]['details']['dividend_scale'], 'underlying_share')
+        self.assertEqual(evs[0]['details']['dividend_per_share'], 0.65)
+
+    def test_dividend_from_previous_period_is_flagged(self):
+        """Fecha del próximo pago + monto del anterior → marcado como estimado."""
+        evs = self._fetch_div(lastDividendDate=self.AVGO_LAST)
+        d = evs[0]['details']
+        self.assertTrue(d['dividend_amount_estimated'])
+        self.assertEqual(d['dividend_as_of'], '2026-06-22')   # de qué pago salió
+
+    def test_dividend_of_the_same_period_is_not_flagged(self):
+        """Si el monto ES el de esa fecha, no se marca estimado ni se inventa as_of."""
+        evs = self._fetch_div(lastDividendDate=self.AVGO_EX)
+        d = evs[0]['details']
+        self.assertFalse(d['dividend_amount_estimated'])
+        self.assertNotIn('dividend_as_of', d)
+
+    def test_dividend_without_last_date_is_flagged(self):
+        """Sin lastDividendDate no se puede afirmar que el monto sea de esa fecha."""
+        evs = self._fetch_div()
+        self.assertTrue(evs[0]['details']['dividend_amount_estimated'])
+
+    def test_dividend_survives_a_corrupt_last_date(self):
+        """Una fecha basura no debe tumbar el evento ni colar un as_of falso."""
+        evs = self._fetch_div(lastDividendDate='no-es-un-timestamp')
+        self.assertEqual(len(evs), 1)
+        self.assertTrue(evs[0]['details']['dividend_amount_estimated'])
+        self.assertNotIn('dividend_as_of', evs[0]['details'])
+
+    # ── 'confirmed' de earnings deja de ser una constante ────────────────────
+    # El KPI "Confirmados" de Novedades decía 100% siempre porque el fetcher
+    # escribía confirmed=1 para todo. yfinance devuelve DOS fechas cuando la
+    # empresa aún no confirmó el día: eso es la señal que faltaba leer.
+
+    def _fetch_earnings(self, earnings_date):
+        with patch('main.yf.Ticker') as mock_t:
+            mock_t.return_value.calendar = {'Earnings Date': earnings_date,
+                                            'Earnings Average': 1.23}
+            mock_t.return_value.info = {}
+            evs = main._fetch_yf_events('AVGO')
+        return [e for e in evs if e['event_type'] == 'earnings']
+
+    def test_earnings_single_date_is_confirmed(self):
+        evs = self._fetch_earnings([datetime(2026, 12, 11)])
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]['confirmed'], 1)
+
+    def test_earnings_dataframe_range_is_not_confirmed(self):
+        """Mismo criterio en la rama DataFrame (yfinance viejo).
+
+        El fetcher tiene dos ramas según lo que devuelva `t.calendar`: dict en las
+        versiones nuevas, DataFrame en las viejas. Si sólo una aplica el criterio,
+        el dato sale "confirmado" o no según la versión INSTALADA — el mismo tipo
+        de inconsistencia que hace que un bug reaparezca en producción.
+        """
+        import pandas as pd
+        cal = pd.DataFrame(
+            [[datetime(2026, 12, 9), datetime(2026, 12, 15)], [1.23, None]],
+            index=['Earnings Date', 'Earnings Average'],
+        )
+        with patch('main.yf.Ticker') as mock_t:
+            mock_t.return_value.calendar = cal
+            mock_t.return_value.info = {}
+            evs = [e for e in main._fetch_yf_events('AVGO') if e['event_type'] == 'earnings']
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]['confirmed'], 0)
+
+    def test_earnings_dataframe_single_date_is_confirmed(self):
+        import pandas as pd
+        cal = pd.DataFrame([[datetime(2026, 12, 11)], [1.23]],
+                           index=['Earnings Date', 'Earnings Average'])
+        with patch('main.yf.Ticker') as mock_t:
+            mock_t.return_value.calendar = cal
+            mock_t.return_value.info = {}
+            evs = [e for e in main._fetch_yf_events('AVGO') if e['event_type'] == 'earnings']
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]['confirmed'], 1)
+
+    def test_dividend_without_amount_declares_no_scale(self):
+        """Sin monto no hay escala que declarar: el campo describe AL MONTO."""
+        evs = self._fetch_div(lastDividendValue=None, lastDividendDate=self.AVGO_LAST)
+        self.assertEqual(len(evs), 1)
+        self.assertNotIn('dividend_per_share', evs[0]['details'])
+        self.assertNotIn('dividend_scale', evs[0]['details'])
+
+    def test_earnings_date_range_is_not_confirmed(self):
+        """Ventana estimada (dos fechas) → confirmed=0, y la UI lo rotula 'est.'."""
+        evs = self._fetch_earnings([datetime(2026, 12, 9), datetime(2026, 12, 15)])
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]['confirmed'], 0)
 
 
 if __name__ == "__main__":

@@ -6561,10 +6561,19 @@ def _fetch_yf_events(ticker: str) -> list:
                 # cal puede ser DataFrame o dict según versión de yfinance
                 earnings_date = None
                 eps_estimate = None
+                earnings_confirmed = True   # sin señal en contra, la fecha es firme
                 if hasattr(cal, 'loc'):
                     # DataFrame variant — buscar Earnings Date
                     if 'Earnings Date' in cal.index:
                         ed = cal.loc['Earnings Date']
+                        # Mismo criterio que la rama dict de abajo: más de una fecha
+                        # = ventana estimada. Sin esto, el dato salía "confirmado"
+                        # o no según la versión de yfinance instalada.
+                        try:
+                            if hasattr(ed, '__len__') and not isinstance(ed, str) and len(ed) > 1:
+                                earnings_confirmed = False
+                        except TypeError:
+                            pass
                         earnings_date = ed.iloc[0] if hasattr(ed, 'iloc') else ed
                     if 'Earnings Average' in cal.index:
                         ea = cal.loc['Earnings Average']
@@ -6572,6 +6581,12 @@ def _fetch_yf_events(ticker: str) -> list:
                 elif isinstance(cal, dict):
                     earnings_date = cal.get('Earnings Date')
                     if isinstance(earnings_date, list):
+                        # yfinance devuelve DOS fechas cuando la empresa todavía no
+                        # confirmó el día y el dato es una VENTANA estimada; una sola
+                        # fecha = confirmada. Antes guardábamos confirmed=1 siempre,
+                        # así que el KPI "Confirmados" de Novedades decía 100% sin
+                        # haber medido nada.
+                        earnings_confirmed = len(earnings_date) == 1
                         earnings_date = earnings_date[0] if earnings_date else None
                     eps_estimate = cal.get('Earnings Average')
                 if earnings_date is not None:
@@ -6587,7 +6602,7 @@ def _fetch_yf_events(ticker: str) -> list:
                             'event_type': 'earnings',
                             'event_date': date_str,
                             'details': details,
-                            'confirmed': 1,
+                            'confirmed': 1 if earnings_confirmed else 0,
                         })
         except Exception:
             pass
@@ -6597,18 +6612,55 @@ def _fetch_yf_events(ticker: str) -> list:
             info = t.info  # cache interno de yfinance
             ex_div = info.get('exDividendDate')  # timestamp UNIX
             div_amount = info.get('lastDividendValue')
+            # Fecha a la que corresponde `lastDividendValue`. NO siempre es `ex_div`:
+            # yfinance mezcla la PRÓXIMA ex-date (declarada por la empresa) con el
+            # ÚLTIMO monto PAGADO. Medido 2026-09-17: AVGO devuelve ex-date
+            # 2026-09-21 y el monto del ex-date 2026-06-22. Si la empresa subió el
+            # dividendo en el medio, publicábamos el viejo como si fuera un hecho.
+            last_div_date = info.get('lastDividendDate')
             if ex_div:
                 # ex_div es timestamp unix (segundos); convertir a fecha ISO
                 d = datetime.utcfromtimestamp(ex_div).strftime('%Y-%m-%d')
                 if _DATE_RE.match(d):
                     details = {}
+                    same_period = False
+                    try:
+                        same_period = (last_div_date is not None
+                                       and abs(int(last_div_date) - int(ex_div)) < 86400)
+                    except (TypeError, ValueError):
+                        same_period = False
                     if div_amount is not None and isinstance(div_amount, (int, float)):
                         details['dividend_per_share'] = round(float(div_amount), 4)
+                        # El consumidor tiene que poder distinguir "esto es lo que la
+                        # empresa declaró para ESTA fecha" de "esto es lo que pagó la
+                        # vez pasada". La UI lo rotula con ~ / "est.".
+                        details['dividend_amount_estimated'] = not same_period
+                        if last_div_date is not None and not same_period:
+                            try:
+                                details['dividend_as_of'] = datetime.utcfromtimestamp(
+                                    int(last_div_date)).strftime('%Y-%m-%d')
+                            except (TypeError, ValueError, OSError):
+                                pass
+                    # ⚠️ ESCALA DEL MONTO. yfinance sólo cotiza el SUBYACENTE, así que
+                    # `dividend_per_share` es siempre por acción del mercado de origen
+                    # (la acción US, o el ADR en el caso de las argentinas). Quien
+                    # tenga el CEDEAR tiene una FRACCIÓN de acción — 130 CEDEARs de
+                    # AVGO son 3,33 acciones, no 130. Multiplicar este monto por la
+                    # cantidad de la posición sin dividir por el ratio infla el cobro
+                    # hasta 58× (reportado por un usuario 2026-09-17: Rendi decía
+                    # US$40 de dividendo de GOOGL y el broker depositó US$0,70).
+                    # Quien convierta a la escala de la tenencia:
+                    # frontend/src/utils/cedearRatio.js.
+                    if 'dividend_per_share' in details:
+                        details['dividend_scale'] = 'underlying_share'
                     events.append({
                         'ticker': ticker,
                         'event_type': 'ex_dividend',
                         'event_date': d,
                         'details': details,
+                        # La FECHA sí la declaró la empresa (es lo que rotula la UI al
+                        # lado del día). Lo que puede ser estimado es el MONTO, y eso
+                        # viaja en details.dividend_amount_estimated.
                         'confirmed': 1,
                     })
         except Exception:
