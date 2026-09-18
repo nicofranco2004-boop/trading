@@ -110,10 +110,34 @@ def leer_tabla_js(path: str = TABLA_JS) -> tuple[dict[str, float], str, tuple[in
     return tabla, src, (ini, fin)
 
 
+def aplicar_correcciones(src: str, ini: int, fin: int,
+                         diferentes: list[tuple[str, float, float, str]]) -> str:
+    """Devuelve el módulo con los ratios corregidos. Sin I/O, para poder testearla.
+
+    Toca SOLO el bloque [ini:fin] de CEDEAR_RATIOS a propósito: el módulo tiene
+    números en los comentarios (el ejemplo `GOOGL: 347.45` de deriveCedearRatio)
+    que no son ratios y no se deben pisar.
+    """
+    bloque = src[ini:fin]
+    for k, _mio, ofi, _nombre in diferentes:
+        clave = k if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", k) else f"'{k}'"
+        val = str(int(ofi)) if abs(ofi - round(ofi)) < 1e-9 else f"1/{round(1 / ofi)}"
+        # El lookbehind evita que al corregir 'BA' se pise el ratio de 'BABA'.
+        patron = rf"(?<![A-Z0-9]){re.escape(clave)}:\s*[0-9]+(?:/[0-9]+)?"
+        bloque, n = re.subn(patron, f"{clave}: {val}", bloque, count=1)
+        if n != 1:
+            raise RuntimeError(
+                f"no pude ubicar {clave} en la tabla para corregirlo — "
+                f"revisá el formato a mano antes de confiar en --write")
+    return src[:ini] + bloque + src[fin:]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--write", action="store_true",
                     help="corrige en cedearRatio.js los ratios que difieren de la oficial")
+    ap.add_argument("--tabla", default=TABLA_JS,
+                    help="ruta del módulo cedearRatio.js (por defecto, el del repo)")
     args = ap.parse_args()
 
     try:
@@ -122,7 +146,7 @@ def main() -> int:
         print(f"No se pudo bajar la lista de Comafi: {ex}")
         print("Si la URL cambió, buscala en comafi.com.ar/custodiaglobal/programas.aspx")
         return 2
-    tabla, src, (ini, fin) = leer_tabla_js()
+    tabla, src, (ini, fin) = leer_tabla_js(args.tabla)
     print(f"oficial (Comafi): {len(oficial)} ratios · tabla de Rendi: {len(tabla)}")
 
     diferentes, sin_oficial = [], []
@@ -147,14 +171,17 @@ def main() -> int:
     print(f"· {len(faltantes)} en la lista oficial que la tabla no cubre")
 
     if diferentes and args.write:
-        nuevo = src[ini:fin]
-        for k, _mio, ofi, _n in diferentes:
-            clave = k if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", k) else f"'{k}'"
-            val = str(int(ofi)) if abs(ofi - round(ofi)) < 1e-9 else f"1/{round(1 / ofi)}"
-            nuevo = re.sub(rf"(?<![A-Z0-9]){re.escape(clave)}:\s*[0-9]+(?:/[0-9]+)?",
-                           f"{clave}: {val}", nuevo, count=1)
-        open(TABLA_JS, "w", encoding="utf-8").write(src[:ini] + nuevo + src[fin:])
-        print(f"\n→ {len(diferentes)} corregidos en cedearRatio.js. Corré los tests del frontend.")
+        # Lee y escribe la MISMA ruta: antes leía del default del parámetro y
+        # escribía en la constante global, así que apuntar a otro archivo habría
+        # pisado el destino con el contenido del otro.
+        try:
+            nuevo = aplicar_correcciones(src, ini, fin, diferentes)
+        except RuntimeError as ex:
+            print(f"\n{ex}")
+            return 2
+        open(args.tabla, "w", encoding="utf-8").write(nuevo)
+        print(f"\n→ {len(diferentes)} corregidos en {os.path.basename(args.tabla)}."
+              f" Corré los tests del frontend.")
         return 0
 
     if diferentes:
