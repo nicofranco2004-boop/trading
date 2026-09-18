@@ -786,9 +786,20 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
   const shares = cobroCtx?.tickerShares?.get?.(ticker) || null
   // Los nominales que se muestran son los de TU tenencia (130 CEDEARs), pero el
   // cobro sale de las acciones equivalentes (3,33). Mezclarlos era el bug.
+  //
+  // Dos casos donde el número de nominales, solo, miente:
+  //   • PARCIAL: el monto cubre sólo lo convertible. Decir "tenés 4 nominales"
+  //     cuando tenés 304 parece que perdimos 300 — va "4 de 304".
+  //   • MEZCLADO: 39 CEDEARs + 2 acciones no son "41 acc" de nada. Se aclara a
+  //     cuántas acciones equivale, que es de donde sale el monto.
   const nominales = cobro?.units || shares || 0
+  const cuantos = cobro?.partial
+    ? `${formatCompact(nominales)} de ${formatCompact(nominales + (cobro.unitsUnknown || 0))} nominales`
+    : cobro?.scale === 'mixed'
+      ? `${formatCompact(nominales)} nominales (= ${formatCompact(cobro.shares)} acciones)`
+      : `${formatCompact(nominales)} nominales`
   const personal = cobro?.amount != null
-    ? `tenés ${formatCompact(nominales)} nominales → ~+${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}${cobro.partial ? ' (parcial)' : ''}`
+    ? `tenés ${cuantos} → ~+${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`
     : (tab === 'portfolio' && shares && impactPct != null && impactPct > 0.0001)
       ? `tenés ${formatCompact(shares)} nominales (${pct(impactPct)} de tu cartera)`
       : (tab === 'popular' && inPortfolio) ? 'está en tu cartera' : null
@@ -986,8 +997,12 @@ function SpotlightHero({ event, impactPct, cobro, onView }) {
   if (cobro?.units) {
     const unidad = cobro.scale === 'cedear' ? 'CEDEARs'
       : cobro.scale === 'adr' ? 'acciones (locales)'
+      : cobro.scale === 'mixed' ? 'nominales en dos escalas'   // CEDEAR + acción real
       : 'acc'
-    contextParts.push(`tenés ${formatCompact(cobro.units)} ${unidad}`)
+    const total = cobro.units + (cobro.unitsUnknown || 0)
+    contextParts.push(cobro.partial
+      ? `tenés ${formatCompact(cobro.units)} de ${formatCompact(total)} ${unidad}`
+      : `tenés ${formatCompact(cobro.units)} ${unidad}`)
   } else if (cobro?.shares) {
     contextParts.push(`tenés ${formatCompact(cobro.shares)} acc`)
   }
